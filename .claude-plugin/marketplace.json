@@ -1,0 +1,16 @@
+{
+  "name": "lestrrat-ai",
+  "description": "Claude Code plugins by lestrrat.",
+  "owner": {
+    "name": "lestrrat"
+  },
+  "plugins": [
+    {
+      "name": "gauntlet",
+      "source": "./plugins/gauntlet",
+      "description": "Adversarial review-to-merge pipeline for Claude Code.",
+      "license": "MIT",
+      "keywords": ["code-review", "adversarial-review", "pull-request", "ci", "codex"]
+    }
+  ]
+}
