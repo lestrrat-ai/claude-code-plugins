@@ -1,5 +1,7 @@
 # Campaign
 
+Part of the [gauntlet](../../README.md) plugin.
+
 Point it at your code and it runs a tough, end-to-end review cycle for you: an adversarial review
 finds problems, each real one gets fixed in its own pull request, every PR is re-reviewed until it
 passes a strict quality bar **and** CI is green, and then it merges — all on its own, hands-off.
