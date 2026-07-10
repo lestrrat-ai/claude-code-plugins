@@ -1,5 +1,7 @@
 # gauntlet
 
+Part of the [claude-code-plugins](../../README.md) marketplace.
+
 Adversarial code review that follows through to a merge.
 
 The centerpiece is `/gauntlet:campaign`: point it at your code and it runs an adversarial review, files
@@ -20,10 +22,10 @@ If you only want to know what's wrong, `/gauntlet:review` reports findings and c
 
 | Skill | What it does |
 |-------|--------------|
-| `/gauntlet:campaign` | The review-to-merge pipeline. Writes code and merges it. See [its README](skills/campaign/README.md). |
-| `/gauntlet:review` | A standalone two-pass hostile review: pass 1 surfaces everything, pass 2 neutrally confirms or refutes each finding. Reports only. |
-| `/gauntlet:copilot-address-reviews` | Verify and address GitHub Copilot's PR review comments, one at a time. |
-| `/gauntlet:codex-exec` | Delegate a lightweight task to Codex CLI via `codex exec`. |
+| [`/gauntlet:campaign`](skills/campaign/README.md) | The review-to-merge pipeline. Writes code and merges it. |
+| [`/gauntlet:review`](skills/review/SKILL.md) | A standalone two-pass hostile review: pass 1 surfaces everything, pass 2 neutrally confirms or refutes each finding. Reports only. |
+| [`/gauntlet:copilot-address-reviews`](skills/copilot-address-reviews/SKILL.md) | Verify and address GitHub Copilot's PR review comments, one at a time. |
+| [`/gauntlet:codex-exec`](skills/codex-exec/SKILL.md) | Delegate a lightweight task to Codex CLI via `codex exec`. |
 
 ## Requirements
 
