@@ -5,30 +5,36 @@ verification chunks, and fan-out overlap: each completion is a wake, and a confi
 its fix while later shards are still sweeping. The dispatcher (Loop control step 3) owns every launch
 below — never barrier on the full sweep or full verification before starting downstream work.
 
-1. **Launch the codex adversarial sweep as background task(s).** Scope = the arg if given, else the
-   whole repo.
+1. **Launch the adversarial sweep as background task(s), using the selected reviewer** (see
+   "The reviewer"; default = Claude subagents following `gauntlet:review`, else the user's preferred
+   reviewer). Scope = the arg if given, else the whole repo. Each shard writes the standard finding
+   shape — stable ID, severity, file:line, defect, reproduction trigger, impact, concrete fix — to
+   `<rundir>/findings-raw-<shard>.md`.
 
-   ```
-   # run in background — the driver never blocks on a sweep
-   codex exec --sandbox workspace-write -c "sandbox_workspace_write.network_access=true" -o <rundir>/findings-raw-<shard>.md \
-     "Perform an adversarial code review of <SHARD SCOPE>. For each finding give: a stable ID, \
-      severity, file:line, the defect, a concrete reproduction trigger, the impact, and a \
-      concrete fix. Be hostile — surface everything that could be wrong. Do not edit code."
-   ```
+   - **Default (Claude subagents)** → dispatch the sweep as background subagents per `gauntlet:review`.
+   - **External reviewer (e.g. Codex)** → invoke it in background, output to the shard file, e.g.:
+
+     ```
+     # run in background — the driver never blocks on a sweep
+     codex exec --sandbox workspace-write -c "sandbox_workspace_write.network_access=true" -o <rundir>/findings-raw-<shard>.md \
+       "Perform an adversarial code review of <SHARD SCOPE>. For each finding give: a stable ID, \
+        severity, file:line, the defect, a concrete reproduction trigger, the impact, and a \
+        concrete fix. Be hostile — surface everything that could be wrong. Do not edit code."
+     ```
 
    - **Small/scoped surface** → a single shard.
    - **Whole-repo or large surface** → split into shards by area, mirroring the tiering strategy in
      the `gauntlet:review` skill, and launch them concurrently within the dispatcher cap. Shards
-     also keep each codex call short relative to the ~30-min lease-stale window (see "Run lease");
+     also keep each reviewer call short relative to the ~30-min lease-stale window (see "Run lease");
      the driver heartbeats on every wake between completions.
 
    Backgrounding, not sharding, is what keeps the driver free: even a single-shard sweep runs in
    background while the driver heartbeats, dispatches anything else due, reschedules, and folds the
    shard's findings when its completion wakes it.
 
-   If a shard can't produce findings (quota/rate-limit, auth, timeout, hang, or other system error —
-   see "Codex fallback"), retry that shard once, then run it with your own subagents into the same
-   `findings-raw-<shard>.md` and continue.
+   If a shard can't produce findings (an *external* reviewer hitting quota/rate-limit, auth, timeout,
+   hang, or other system error — see "The reviewer"), retry that shard once, then run it with your own
+   subagents into the same `findings-raw-<shard>.md` and continue.
 
    **On a fresh run, load carryover first** (all of `.gauntlet/history/`, pruned of stale
    entries per "Pruning the ledger" — pruning never blocks the sweep launch) and pass the prior

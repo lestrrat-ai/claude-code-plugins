@@ -23,8 +23,8 @@
   the whole space with a dedicated read-only mapper and fix at one chokepoint. This is a hard backstop:
   even if the archetype wasn't obvious on finding 1, the 2nd sibling finding forces the pass no later.
 
-Other stop conditions — escalate rather than loop: a worktree won't build, codex keeps returning the
-same unactionable verdict, or CI fails identically after a fix attempt.
+Other stop conditions — escalate rather than loop: a worktree won't build, the reviewer keeps
+returning the same unactionable verdict, or CI fails identically after a fix attempt.
 
 ---
 

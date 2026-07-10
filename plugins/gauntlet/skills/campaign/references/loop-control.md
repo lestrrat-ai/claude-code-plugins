@@ -68,7 +68,7 @@ so the driver never blocks; each completion is its own wake.
    Launch only what is actually due *and not already in flight* (check ground truth first, never the
    ledger alone). This owns **both** the initial fan-out and all downstream work — there is no
    separate batched fan-out phase:
-   - any Stage 0 sweep shard not yet launched → launch it as a background codex task; any folded
+   - any Stage 0 sweep shard not yet launched → launch it as a background reviewer task; any folded
      shard whose verification isn't dispatched → launch its verification chunks (Stage 0). Survivors
      confirmed and deduped this wake become `pending` rows and fan out **this same wake** — Stage 0
      and Stage 1+ overlap by design.

@@ -74,8 +74,8 @@ flowchart TD
     A3 -- yes --> B
     A1 -->|"nothing yet / --new"| B
     B{area or topic given?}
-    B -- yes --> C[codex reviews that area]
-    B -- no --> D[codex whole-repo sweep, in slices]
+    B -- yes --> C[reviewer sweeps that area]
+    B -- no --> D[reviewer whole-repo sweep, in slices]
     C --> E["neutral verification pass<br/>(streamed: each slice verifies as it lands)"]
     D --> E
     E --> F{more than 10 findings?}
@@ -96,7 +96,7 @@ flowchart TD
     L --> M[[event loop: gate each PR]]
 
     M --> N{2 SATISFIED on current SHA?}
-    N -- no --> O[run one codex review on HEAD SHA<br/>second only after the first passes]
+    N -- no --> O[run one review on HEAD SHA<br/>second only after the first passes]
     O --> P{SATISFIED?}
     P -- no --> Q[scoped fix subagent: commit + push, new SHA]
     P -- yes --> M
@@ -127,9 +127,13 @@ flowchart TD
   step on each other. And if a run gets interrupted, another agent can pick it up right where it left
   off: it can tell a run that's still being actively driven from one that's been abandoned, so it only
   ever resumes an orphaned run and never doubles up on one already in progress.
-- It uses Codex as the reviewer, so Codex CLI should be available. If Codex can't return a verdict
-  because of a system problem — quota or rate limits, auth, a timeout — it retries once and then does
-  the equivalent review with its own subagents, so a transient Codex outage slows a run down but
+- By default the reviewer is Claude's own subagents, so it runs with nothing extra installed. For a
+  stronger gauntlet you can point it at a reviewer that runs a different agent/model than the
+  orchestrator — Codex CLI (`codex exec`) is the recommended example, since an independent engine
+  catches defects a same-model re-roll can miss. Name it when you invoke the campaign ("review with
+  codex") or record it as your preferred reviewer (memory or `CLAUDE.md`). If an external reviewer
+  can't return a verdict because of a system problem — quota or rate limits, auth, a timeout — it
+  retries once and then falls back to its own subagents, so a transient outage slows a run down but
   doesn't stall it.
 - It works through GitHub PRs via the `gh` CLI, so the repo needs a GitHub remote.
 - Before it spends a review on a PR, it first clears anything that would waste one: it addresses any

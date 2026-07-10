@@ -2,7 +2,7 @@
 
 ### 2a. The review gauntlet
 
-**Preconditions — clear Copilot items, CI, and conflicts before reviewing.** A codex review pass is
+**Preconditions — clear Copilot items, CI, and conflicts before reviewing.** A review pass is
 expensive and is invalidated by any PR-content change, so never spend one on a PR whose current tip
 still has review-blocking issues. Before launching a pass, check three things and clear any that are
 dirty. Each fix changes PR content, so `reviews_ok` resets to 0 and the review re-starts on the clean
@@ -29,8 +29,9 @@ Only launch a review pass once all three are clear for the current tip.
 
 Run reviews **one at a time per PR** — never two at once for the same SHA. When a PR's tip
 (`head_sha`) has fewer than two SATISFIED verdicts and no review already running for it, the wake's
-dispatch step launches **one** review pass: a **fresh** `codex exec` over the whole `<base>...HEAD`
-diff, no shared context, run as a **background** task (its completion is a wake; the loop folds the
+dispatch step launches **one** review pass by the selected reviewer (see "The reviewer") — a
+**fresh**, context-isolated pass over the whole `<base>...HEAD` diff, run as a **background** task
+(its completion is a wake; the loop folds the
 verdict in at step 2). The second, corroborating review is launched only **after** the first comes
 back SATISFIED — so a still-broken commit never burns the second review before the first has said
 "fix it". (Reviews for *different* PRs still run concurrently, up to the ~8 cap; it's only the two
@@ -45,12 +46,13 @@ verdict can only describe a SHA that is about to be replaced, so letting it run 
 tokens and the review slot. The freed slot immediately refills with the next due review (Loop
 control step 3).
 
-If a pass's `codex exec` can't return a verdict (quota/rate-limit, auth, timeout, or other system
-error — see "Codex fallback"), retry it once, then run that pass as a **fresh subagent** reviewing the
-whole `<base>...HEAD` diff under the same output contract — a `RESIDUAL-RISK` line on SATISFIED
-immediately above exactly one final `VERDICT:` line. A subagent fallback pass counts
-toward the two-SATISFIED-verdict gate exactly like a codex pass — it's another fresh, context-isolated
-re-roll in its own context.
+If the selected reviewer is external (e.g. `codex exec`) and a pass can't return a verdict
+(quota/rate-limit, auth, timeout, or other system error — see "The reviewer"), retry it once, then run
+that pass as a **fresh subagent** reviewing the whole `<base>...HEAD` diff under the same output
+contract — a `RESIDUAL-RISK` line on SATISFIED immediately above exactly one final `VERDICT:` line. A
+subagent fallback pass counts toward the two-SATISFIED-verdict gate exactly like an external pass —
+it's another fresh, context-isolated re-roll in its own context. (When the reviewer is already Claude
+subagents, this *is* the normal path, not a fallback.)
 
 **Review work-plan ledger — orchestrator-owned, target-generic.** Before launching each review pass,
 write `<rundir>/review-<pr>-<n>.plan.jsonl`. The orchestrator owns the plan; the reviewer reports
@@ -104,9 +106,13 @@ Meaningful progress = a `done` event for a planned unit, or an accepted plan ame
 events and vague "still working" lines prove only process liveness and MUST NOT reset the meaningful
 progress timer. The reviewer MUST append progress events immediately as units complete, not batch them
 at final output. If no meaningful progress lands for ~15 min while the review process is still alive,
-mark the review suspicious; if it remains stale on the next wake, treat it as a codex system failure:
-retry once, then use the fresh-subagent fallback. Ignore any late verdict from a stale/superseded
-attempt unless its attempt id still matches the active review pass.
+mark the review suspicious; if it remains stale on the next wake, treat it as a reviewer system
+failure: for an external reviewer, retry once then use the fresh-subagent fallback; for a subagent
+reviewer, re-roll a fresh subagent pass. Ignore any late verdict from a stale/superseded attempt
+unless its attempt id still matches the active review pass.
+
+The reviewer runs the following review contract (shown as the external-reviewer `codex exec` form; the
+default Claude-subagent path gives a fresh subagent the same instructions and output file):
 
 ```
 codex exec --sandbox workspace-write -c "sandbox_workspace_write.network_access=true" -C $PROJECT/.worktrees/<branch> \
@@ -172,8 +178,8 @@ fresh review round starts — but it never blocks the current gate.
 
 **Gate is two fresh, context-isolated SATISFIED verdicts on the same PR content.** The two passes are
 not statistically or epistemically independent observations — they judge the same diff under the same
-review task and protocol (and, on the normal both-codex path, the same model and prompt), so their
-verdicts are correlated and this is not a probabilistic proof of correctness. What the second pass
+review task and protocol (and, when both passes run the same reviewer, the same model and prompt), so
+their verdicts are correlated and this is not a probabilistic proof of correctness. What the second pass
 buys is a re-roll of a stochastic reviewer: a fresh execution, with none of the first pass's context
 to anchor it, that can catch a defect the first pass happened to miss. Record the reviewed SHA
 (`git rev-parse HEAD`) with each pass. A verdict counts while its SHA equals the live tip. It also

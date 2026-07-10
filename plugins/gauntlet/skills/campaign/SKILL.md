@@ -8,8 +8,12 @@ description: >-
 
 Self-looping, reactive adversarial-review-to-merge pipeline.
 
-Codex is adversarial reviewer. Claude Code is orchestrator + implementer. Fixes fan out in
-parallel, but gates, CI watching, and merges stay centralized.
+Claude Code is orchestrator + implementer. The **adversarial reviewer** is a selectable role: by
+default Claude's own subagents (no external tool required); use the user's preferred reviewer when one
+is set (explicit invocation, or a preference in memory/`CLAUDE.md`/carryover). A reviewer running a
+different agent/model than the orchestrator (e.g. Codex CLI) is recommended for stronger reviewer
+diversity but never required — see `references/reviewer.md`. Fixes fan out in parallel, but gates, CI
+watching, and merges stay centralized.
 
 Invoke once. This skill drives its own loop via `ScheduleWakeup`; do NOT wrap it in `/loop`.
 
@@ -17,7 +21,7 @@ Invoke once. This skill drives its own loop via `ScheduleWakeup`; do NOT wrap it
 
 `/gauntlet:campaign [--run <id>] [--new] [area or topic]`
 
-- Argument -> Codex reviews that area/topic.
+- Argument -> the reviewer reviews that area/topic.
 - No argument -> whole-repo adversarial sweep, or resume sole orphaned run.
 - `--run <id>` -> resume specific run; self-wakes also carry internal `--token`.
 - `--new` or "fresh run" -> force independent new run with carryover.
@@ -40,7 +44,7 @@ Read stage refs only when that stage/action is due:
 |-----------|------|
 | Public API change, run-owned operation scope | `references/scope-and-constraints.md` |
 | Fresh run, carryover, pruning old findings | `references/carryover.md` |
-| Codex quota/auth/timeout/system error | `references/codex-fallback.md` |
+| Selecting the reviewer; external-reviewer failure/fallback | `references/reviewer.md` |
 | Stage 0 sweep / neutral verification | `references/stage-0-review-and-verify.md` |
 | Implementing survivor fixes / opening PRs | `references/stage-1-fanout.md` |
 | PR review gauntlet / progress ledger | `references/stage-2-review-gate.md` |
@@ -84,7 +88,7 @@ Read stage refs only when that stage/action is due:
 - NEVER ask scope confirmation for no-arg invocation.
 - NEVER review unpublished local work.
 - NEVER spend review over open Copilot items, red checks, or conflicts.
-- NEVER pass destructive instructions to `codex exec`.
+- NEVER pass destructive instructions to an external reviewer command (e.g. `codex exec`).
 - NEVER use `--dangerously-bypass-approvals-and-sandbox`; use `--sandbox workspace-write`.
 - NEVER force-push/reset/delete outside explicit stage procedure and run scope.
 - NEVER touch another run's PR/branch/worktree.

@@ -6,18 +6,18 @@ files from colliding — see "Run identity and concurrency".
 
 | File (under `<rundir>`) | Contents |
 |------|----------|
-| `findings-raw-<shard>.md` | Codex's raw adversarial findings, one file per sweep shard (single-shard runs have one) |
+| `findings-raw-<shard>.md` | The reviewer's raw adversarial findings, one file per sweep shard (single-shard runs have one) |
 | `verdicts-<chunk>.md` | Neutral verification verdicts per chunk (which findings survive) |
 | `state.md` | Live per-finding ledger — a **cache/hint**, not the source of truth (see below) |
 | `prs.json` | Batched `gh pr list` snapshot of this run's PRs — the per-wake reconcile input (Loop control) |
 | `lease.json` | This run's active-driver lease (`{agent, updated}`; see "Run lease") |
-| `review-<pr>-<n>.txt` | Codex's PR review output, round `n` |
+| `review-<pr>-<n>.txt` | The reviewer's PR review output, round `n` |
 | `review-<pr>-<n>.plan.jsonl` | Orchestrator-authored review work units for round `n` |
 | `review-<pr>-<n>.progress.jsonl` | Reviewer progress events against the plan for round `n` |
 | `ci-<pr>.txt` | Latest `gh pr checks` snapshot for a PR (re-polled after the watch, not the watch stream) |
 | `abort-<id>.md` | Detailed log for an aborted finding-task |
 
-Store ALL codex and `gh` output under `<rundir>` first, then Read/Grep it. NEVER `/tmp/`.
+Store ALL reviewer and `gh` output under `<rundir>` first, then Read/Grep it. NEVER `/tmp/`.
 
 All of this is driver bookkeeping, **never repo content — do NOT commit it**: the whole `.gauntlet/`
 tree stays git-ignored, and a fix commit stages only the specific source files it changes (explicit

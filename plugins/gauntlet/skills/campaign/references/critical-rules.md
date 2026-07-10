@@ -25,8 +25,10 @@
   git-ignored; add `.gauntlet/` to `.gitignore` if missing.
 - NEVER `rm -rf .gauntlet/` — that destroys the durable carryover history. Only `.gauntlet/tmp/**` is
   disposable.
-- NEVER pass destructive instructions (delete, force-push, reset) to `codex exec`.
-- NEVER use `--dangerously-bypass-approvals-and-sandbox`; always `--sandbox workspace-write`.
+- NEVER pass destructive instructions (delete, force-push, reset) to an external reviewer command
+  (e.g. `codex exec`).
+- NEVER use `--dangerously-bypass-approvals-and-sandbox` with an external reviewer; always
+  `--sandbox workspace-write`.
 - One finding = one tightly-scoped PR. Do not bundle unrelated fixes.
 - PR-first loop is mandatory: implement → commit → push → create/update PR → watch CI + review PR
   HEAD. NEVER do local gauntlet reviews first and wait to push/open a PR until the end.
@@ -59,10 +61,11 @@
   prefer a scoped subagent), and rebase away any conflict with `<base>`. PR-content changes reset
   verdicts. Clean base-only rebase with unchanged PR diff keeps `reviews_ok` and sets `ci = pending`.
   Never spend a review over open Copilot items, a red check, or a conflicting PR (Stage 2a).
-- Reviews are fresh, context-isolated re-rolls: separate `codex exec` each pass, no shared context.
-  Two passes re-roll a stochastic reviewer to catch a missed defect — they are NOT statistically
-  independent (the same diff, task, and protocol correlate them; the normal codex path also shares
-  model/prompt), so the gate is a miss-catcher, not a proof of correctness.
+- Reviews are fresh, context-isolated re-rolls: a separate reviewer invocation each pass (Claude
+  subagent by default, or the user's preferred reviewer), no shared context. Two passes re-roll a
+  stochastic reviewer to catch a missed defect — they are NOT statistically independent (the same
+  diff, task, and protocol correlate them; same-reviewer passes also share model/prompt), so the gate
+  is a miss-catcher, not a proof of correctness.
 - Before each review, write an orchestrator-owned `review-<pr>-<n>.plan.jsonl`; reviewers append
   `review-<pr>-<n>.progress.jsonl` events against planned units. Meaningful progress = planned unit
   `done` or accepted plan amendment, not vague "still working" output. Stale meaningful progress →
@@ -104,10 +107,14 @@
 - Prune `.gauntlet/history/` at every fresh run: drop only entries unambiguously moot against
   current `<base>`; for anything uncertain, list it and ask the user before deleting. Never silently
   prune an entry you're unsure about.
-- If `codex exec` can't deliver a verdict (quota/rate-limit, auth, timeout, or other system error —
-  *not* a real finding list / `VERDICT:` line), retry once, then do the equivalent work with your own
-  subagents: the Stage 0 adversarial sweep, or a fresh, context-isolated subagent pass in Stage 2a. The
-  gate is unchanged — note any fallback pass in the report. See "Codex fallback".
+- Default reviewer is Claude's own subagents; no external tool is required. Use the user's preferred
+  reviewer when one is set (explicit invocation, or a preference in memory/`CLAUDE.md`/carryover). A
+  different-model reviewer (e.g. Codex) is recommended for diversity but never required. See
+  "The reviewer".
+- If an *external* reviewer can't deliver a verdict (quota/rate-limit, auth, timeout, or other system
+  error — *not* a real finding list / `VERDICT:` line), retry once, then do the equivalent work with
+  your own subagents: the Stage 0 adversarial sweep, or a fresh, context-isolated subagent pass in
+  Stage 2a. The gate is unchanged — note any fallback pass in the report. See "The reviewer".
 - CI status comes from a re-polled `gh pr checks` snapshot with **zero fail AND zero pending lines** —
   never from the `--watch` exit code (it can exit 0 on pending/unregistered checks). No green, no merge.
 - The run targets a **base branch** (`base_branch` in the ledger header), which is **not assumed to
