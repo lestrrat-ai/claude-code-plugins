@@ -7,15 +7,14 @@ gauntlet without reopening it.
 
 To adopt PR `<pr>` into run `<run-id>`:
 
-1. **Own it — but check for an existing owner first.** Before adding any label, inspect the PR's
-   current labels: `gh pr view <pr> --json labels --jq '.labels[].name'`. If it already carries a
-   `gauntlet-run-<other>` owner label for a *different* run, do NOT adopt it blindly — two runs would
-   otherwise both treat the PR as theirs. In that case either refuse the adoption, or transfer
-   ownership only after confirming the other run is inactive (its lease is absent or stale) AND first
-   removing the old owner label
-   (`gh api -X DELETE repos/<owner>/<repo>/issues/<pr>/labels/gauntlet-run-<other>`), so that exactly
-   one run owns the PR. Only once no other `gauntlet-run-*` owner label remains, add this run's owner
-   label and the reviewing status label:
+1. **Own it — but refuse a PR already owned by another run.** Before adding any label, inspect the
+   PR's current labels: `gh pr view <pr> --json labels --jq '.labels[].name'`. If it already carries a
+   `gauntlet-run-<other>` owner label for a *different* run, do NOT adopt it — refuse the adoption and
+   tell the user to let that other run finish, or to release the PR (drop its `gauntlet-run-<other>`
+   label) first. Never remove or transfer another run's owner label yourself: that would orphan the
+   other run's ledger row. Only a PR with no existing `gauntlet-run-*` owner label, or one already
+   owned by THIS run, may be adopted. Once you have confirmed no other run owns it, add this run's
+   owner label and the reviewing status label:
    `gh api -X POST repos/<owner>/<repo>/issues/<pr>/labels -f 'labels[]=gauntlet-run-<run-id>' -f 'labels[]=gauntlet-reviewing'`
    (use the REST API if `gh pr edit --add-label` fails). The owner label is what makes the PR "this
    run's" for every scoped git/gh scan — an adopted PR keeps its original branch name, so the label,
