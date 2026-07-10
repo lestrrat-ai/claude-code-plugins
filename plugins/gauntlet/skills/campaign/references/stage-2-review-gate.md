@@ -102,12 +102,19 @@ other event types for unit progress. Unit-progress events carry ONLY the exact r
 (no extra keys such as `ts`); each event's required keys must be present and named exactly. The
 `plan_amendment_request` event keeps its existing shape.
 
-**Calling `emit-progress.py` is the ONLY sanctioned way to record a progress event.** The reviewer
-MUST NOT ever write the progress file directly — no hand-written JSON, no `echo`/`printf`/redirection
-into it, no editor append. Every event reaches the file through the tool and no other path.
+**Calling `emit-progress.py` is the ONLY sanctioned way to record a unit-progress event
+(`started`/`done`).** The reviewer MUST NOT ever write those unit-progress events into the progress
+file directly — no hand-written JSON, no `echo`/`printf`/redirection into it, no editor append. Every
+unit-progress event reaches the file through the tool and no other path. This emit-only rule applies
+ONLY to the `started`/`done` unit-progress events: the tool does not produce any other event type.
+`plan_amendment_request` events are NOT emitted by the tool — the reviewer raises them through the
+amendment mechanism above — and `pass_identity` is written by the orchestrator; both are EXEMPT from
+the tool-only rule.
 
-The block below is the canonical event shape the tool emits — shown for reference and as the parser's
-contract, NOT a template for you to write by hand:
+The block below shows the canonical event shapes the parser accepts. The two unit-progress lines
+(`started`/`done`) are exactly what the tool emits — shown for reference and as the parser's contract,
+NOT a template for you to write by hand. The third line (`plan_amendment_request`) is NOT produced by
+the tool and is shown only to document its shape:
 
 ```
 {"type":"progress","unit":"u01","status":"started"}
@@ -115,7 +122,9 @@ contract, NOT a template for you to write by hand:
 {"type":"plan_amendment_request","ts":"2026-07-06T00:05:00Z","reason":"diff changes generated docs; add doc consistency unit","proposed_unit":{"id":"u99","kind":"docs","target":"docs/generated.md","checks":["sync with API behavior"]}}
 ```
 
-Reviewers do NOT hand-write these events — ever; the emit tool is the only way they are produced. The
+Reviewers do NOT hand-write the unit-progress events (`started`/`done`) — ever; the emit tool is the
+only way those are produced. (The `plan_amendment_request` line is the exception: the tool does not
+emit it, so it is not subject to the emit-only rule.) The
 orchestrator resolves the bundled emitter's absolute path as `<skill-dir>/scripts/emit-progress.py`
 (skill dir = the directory holding the campaign `SKILL.md`) and, before dispatch, substitutes it for
 the `<SCRIPT>` placeholder in the review prompt — in the SAME way it substitutes `<rundir>`, `<pr>`,
@@ -140,6 +149,7 @@ literal `<SCRIPT>`.
 
 ```
 codex exec --sandbox workspace-write -c "sandbox_workspace_write.network_access=true" -C $PROJECT/.worktrees/<branch> \
+  --add-dir $PROJECT/<rundir> \
   -o <rundir>/review-<pr>-<n>.txt \
   "Review the changes on this branch vs <base> (the whole git diff <base>...HEAD). \
    First read $PROJECT/<rundir>/review-<pr>-<n>.plan.jsonl, then critically assess whether its units \
