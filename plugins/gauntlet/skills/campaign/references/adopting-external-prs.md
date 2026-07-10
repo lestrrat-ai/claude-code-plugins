@@ -12,9 +12,15 @@ To adopt PR `<pr>` into run `<run-id>`:
    (use the REST API if `gh pr edit --add-label` fails). The owner label is what makes the PR "this
    run's" for every scoped git/gh scan — an adopted PR keeps its original branch name, so the label,
    not a `fix-<run-id>-` prefix, is what ties it to the run.
-2. **Add a ledger row.** Append a `state.md` row: `id`, a slug, the PR's existing `branch` and a
-   `worktree` for it (create one off `<base>` if none exists), `pr`, current `head_sha`,
-   `reviews_ok=0`, live `ci`, and `status: in_review`. It is NOT a Stage 0 finding, so it has no
+2. **Add a ledger row.** First get the PR's head branch onto disk and into a worktree that checks out
+   THAT branch (not `<base>`): `git fetch origin <pr-branch>` then
+   `git worktree add $PROJECT/.worktrees/<pr-branch> <pr-branch>`. An adopted PR already has its own
+   branch at its head, so the worktree must check out that branch — never create it off `<base>`, which
+   would give you the base branch instead of the PR's changes. Then append a complete `state.md` row
+   with every column in order — `id | slug | branch | worktree | pr | head_sha | reviews_ok | ci |
+   attempts | started | api_approval | status` — e.g. the PR's existing `branch` and its `worktree`,
+   `pr`, current `head_sha`, `reviews_ok=0`, live `ci`, `attempts=1`, `started=<timestamp>`,
+   `api_approval=-`, and `status: in_review`. It is NOT a Stage 0 finding, so it has no
    `findings-raw`/verdict entry — it enters the pipeline at Stage 2.
 3. **Gate and merge as usual.** From here the normal loop applies with no special-casing: clear the
    Stage 2a preconditions (Copilot / CI / conflicts), run the two-review gauntlet over `<base>...HEAD`,
@@ -26,5 +32,7 @@ Constraints:
   campaign whose base matches.
 - Merging an adopted PR is still a merge, so the run-wide `api_changes` gate applies — an API-changing
   adopted PR needs user confirmation unless `api_changes: allowed`.
-- Cleanup at merge treats the adopted PR like any other (squash-merge, delete the remote branch,
-  remove its worktree/local branch) — but only ever this run's own labelled PR.
+- Cleanup at merge: squash-merge and delete the remote branch as usual, but the Stage 3 worktree/local
+  branch cleanup only sweeps `fix-<run-id>-*` names, so an adopted PR's differently-named branch is
+  SKIPPED by that rule. You must clean up its worktree and local branch explicitly, by the exact
+  `branch`/`worktree` names recorded in the ledger row — and only ever for this run's own labelled PR.
