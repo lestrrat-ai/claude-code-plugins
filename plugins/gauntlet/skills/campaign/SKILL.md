@@ -22,6 +22,7 @@ Invoke once. This skill drives its own loop via `ScheduleWakeup`; do NOT wrap it
 - `--run <id>` -> resume specific run; self-wakes also carry internal `--token`.
 - `--new` or "fresh run" -> force independent new run with carryover.
 - Do NOT ask user to confirm no-arg scope; no arg intentionally means whole repo.
+- To fold an **existing repo PR** (one the campaign did not open) into a run and drive it through the same gate + merge, see `references/adopting-external-prs.md`.
 
 ## Load Discipline
 
@@ -49,6 +50,7 @@ Read stage refs only when that stage/action is due:
 | Merge candidate / base refresh / cleanup | `references/stage-3-merge.md` |
 | Stuck task, abort, final report | `references/bailout-and-final-report.md` |
 | Rule lookup / uncertainty | `references/critical-rules.md` |
+| Folding an existing (non-campaign) PR into the run | `references/adopting-external-prs.md` |
 
 ## Core Invariants
 
