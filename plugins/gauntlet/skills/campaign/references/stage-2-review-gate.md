@@ -157,8 +157,11 @@ codex exec --sandbox workspace-write -c "sandbox_workspace_write.network_access=
    point, not a guarantee of complete coverage. If an important dimension is missing or a unit is \
    wrong, append a plan_amendment_request event to the progress JSONL naming the gap; do NOT silently \
    limit your review to the listed units, and do NOT rewrite the plan yourself. Running the emit tool \
-   is the ONLY way to record progress: you MUST NOT write the progress file directly — never \
-   hand-write JSON, echo, printf, or redirect into it. Run \
+   is the ONLY way to record unit-progress (started/done) events: you MUST NOT write those unit-progress \
+   events into the progress file directly — never hand-write JSON, echo, printf, or redirect them into \
+   it. That emit-only rule covers ONLY started/done unit-progress; the emit tool does not emit \
+   plan_amendment_request, so append that event directly to the progress JSONL (it is exempt from the \
+   emit-only rule). Run \
    'python3 <SCRIPT> --file $PROJECT/<rundir>/review-<pr>-<n>.progress.jsonl --unit <plan unit id> \
    --status started' when a planned unit begins, and the same command with \
    '--status done --evidence \"<concrete citation: a file:line, a backticked span, or a filename>\"' \
