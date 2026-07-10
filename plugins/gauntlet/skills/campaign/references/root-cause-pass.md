@@ -48,6 +48,7 @@ Caveats:
 - A whole AXIS can be missed. When a later finding reveals a dimension the enumeration didn't have,
   RE-RUN it on the expanded space rather than patching the single new cell.
 
-Pairs with the **Codex fallback** subagents, and — when the user authorizes the spend for a large PR
-— a **parallel adversarial reviewer** running the same enumeration independently for breadth while
-codex runs the gate; reviewer diversity catches different cells.
+Pairs with the default Claude-subagent reviewer, and — when the user authorizes the spend for a large
+PR — a **parallel adversarial reviewer** running the same enumeration independently for breadth while
+the gate reviewer runs; reviewer diversity (especially a different-model reviewer such as Codex)
+catches different cells.

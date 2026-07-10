@@ -31,13 +31,15 @@ so the driver never blocks; each completion is its own wake.
      `gh pr list --label gauntlet-run-<run-id> --json number,headRefName,headRefOid,state,mergeable,mergeStateStatus,labels > <rundir>/prs.json`
      — and drive reconcile from that file; fall back to per-PR `gh pr view` only where the snapshot
      isn't enough (merge-gate CI truth stays the re-polled `gh pr checks` snapshot, Stage 2b). Wake
-     turnaround is throughput: every serial `gh` call in reconcile delays every dispatch behind it. Re-read `run_id`, `base_branch`, and `api_changes` from the ledger header — they
-     govern namespacing, the merge/diff target, and API-change handling, and must be consulted fresh
-     each wake, never from memory (a wake may be a fresh agent instance that just adopted the run;
-     Constraints, Base branch). Refresh the lease. This is the path every `--run` self-wake takes.
+     turnaround is throughput: every serial `gh` call in reconcile delays every dispatch behind it. Re-read `run_id`, `base_branch`, `api_changes`, and `reviewer` from the ledger header — they
+     govern namespacing, the merge/diff target, API-change handling, and which reviewer runs the
+     sweep/review passes, and must be consulted fresh each wake, never from memory (a wake may be a
+     fresh agent instance that just adopted the run, so an explicit/preferred reviewer would otherwise
+     be lost and silently revert to the default; Constraints, Base branch, "The reviewer"). Refresh
+     the lease. This is the path every `--run` self-wake takes.
    - **No run bound and none live (no `gauntlet-run-*` PR, no non-terminal `<rundir>`) → first run.**
      Mint a run-id + agent token, atomically create `<rundir>`, write the lease **and a minimal
-     `state.md` header** (`run_id`/`base_branch`/`api_changes`, `phase: reviewing`) *before* Stage 0 —
+     `state.md` header** (`run_id`/`base_branch`/`api_changes`/`reviewer`, `phase: reviewing`) *before* Stage 0 —
      so a death mid-sweep leaves a discoverable, adoptable run rather than an invisible one — then
      launch Stage 0's sweep shard(s) as background tasks and fall through to dispatch/reschedule.
      Stage 1 fan-out starts as survivors confirm, not after Stage 0 completes (Stage 0 is pipelined).
@@ -68,7 +70,7 @@ so the driver never blocks; each completion is its own wake.
    Launch only what is actually due *and not already in flight* (check ground truth first, never the
    ledger alone). This owns **both** the initial fan-out and all downstream work — there is no
    separate batched fan-out phase:
-   - any Stage 0 sweep shard not yet launched → launch it as a background codex task; any folded
+   - any Stage 0 sweep shard not yet launched → launch it as a background reviewer task; any folded
      shard whose verification isn't dispatched → launch its verification chunks (Stage 0). Survivors
      confirmed and deduped this wake become `pending` rows and fan out **this same wake** — Stage 0
      and Stage 1+ overlap by design.

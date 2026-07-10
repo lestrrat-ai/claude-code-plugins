@@ -30,9 +30,21 @@ If you only want to know what's wrong, `/gauntlet:review` reports findings and c
 ## Requirements
 
 - A GitHub remote — the pipeline works through PRs via the `gh` CLI.
-- [Codex CLI](https://github.com/openai/codex) for the adversarial reviewer. If Codex can't return a
-  verdict because of a system problem (quota, auth, timeout), the pipeline retries once and then does
-  the equivalent review with its own subagents, so an outage slows a run rather than stalling it.
+
+That's it. By default the adversarial reviewer is Claude's own subagents, so nothing else is needed.
+
+### Recommended — a second-opinion reviewer
+
+The gate's strength comes from re-reviewing each change with a *fresh, independent* reviewer. Two
+Claude subagents share the orchestrator's model, so for a tougher gauntlet point the pipeline at a
+reviewer that runs a **different agent/model** — e.g. [Codex CLI](https://github.com/openai/codex)
+(`codex exec`). A different engine catches defects a same-model re-roll can miss.
+
+To use one, either name it when you invoke the campaign ("review with codex") or record it as your
+preferred reviewer (in memory or `CLAUDE.md`) and the pipeline will pick it up. If an external
+reviewer can't return a verdict because of a system problem (quota, auth, timeout), the pipeline
+retries once and then falls back to its own subagents, so an outage slows a run rather than stalling
+it.
 
 ## Scratch files
 

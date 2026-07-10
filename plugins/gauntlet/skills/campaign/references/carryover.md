@@ -2,7 +2,7 @@
 
 A **fresh run** is a new Stage 0/1 cycle started when a prior run already happened — triggered either
 by the user answering "yes" to the finished-run prompt (Loop control step 1) or by an explicit
-`--new`. It is *not* a resume: it does a brand-new codex sweep. What makes it more than a blind
+`--new`. It is *not* a resume: it does a brand-new adversarial sweep. What makes it more than a blind
 re-run is **carryover** — it inherits what earlier runs already learned.
 
 ### The carryover ledger — `.gauntlet/history/`
@@ -86,7 +86,7 @@ mid-flight snapshot path.)
 ### How carryover shapes Stage 0
 
 - **Re-surface unresolved items.** Seed the verification pass with the prior **aborted**,
-  **declined-api**, and **uncertain** findings as priority candidates: if the new codex sweep
+  **declined-api**, and **uncertain** findings as priority candidates: if the new sweep
   re-finds them (or they're still live in the code), they survive into the ledger ahead of net-new
   findings rather than being silently forgotten. A declined-api finding stays parked under `ask`
   unless the user has since OK'd it.

@@ -23,8 +23,8 @@
   the whole space with a dedicated read-only mapper and fix at one chokepoint. This is a hard backstop:
   even if the archetype wasn't obvious on finding 1, the 2nd sibling finding forces the pass no later.
 
-Other stop conditions — escalate rather than loop: a worktree won't build, codex keeps returning the
-same unactionable verdict, or CI fails identically after a fix attempt.
+Other stop conditions — escalate rather than loop: a worktree won't build, the reviewer keeps
+returning the same unactionable verdict, or CI fails identically after a fix attempt.
 
 ---
 
@@ -32,6 +32,8 @@ same unactionable verdict, or CI fails identically after a fix attempt.
 
 When the loop exits, summarize:
 
+- **Reviewer** — the ledger `reviewer` value the run used, plus any review pass where an external
+  reviewer failed and fell back to Claude subagents (see "The reviewer").
 - **Merged** — finding id, PR number, one-line fix.
 - **Residual risk** — for each merged PR, both accepting SATISFIED passes' `RESIDUAL-RISK` lines (the
   least-certain area each named), and a flag when the two name the same area. This is non-actionable,

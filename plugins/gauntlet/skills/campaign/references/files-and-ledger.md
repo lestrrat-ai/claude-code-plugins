@@ -6,18 +6,18 @@ files from colliding — see "Run identity and concurrency".
 
 | File (under `<rundir>`) | Contents |
 |------|----------|
-| `findings-raw-<shard>.md` | Codex's raw adversarial findings, one file per sweep shard (single-shard runs have one) |
+| `findings-raw-<shard>.md` | The reviewer's raw adversarial findings, one file per sweep shard (single-shard runs have one) |
 | `verdicts-<chunk>.md` | Neutral verification verdicts per chunk (which findings survive) |
 | `state.md` | Live per-finding ledger — a **cache/hint**, not the source of truth (see below) |
 | `prs.json` | Batched `gh pr list` snapshot of this run's PRs — the per-wake reconcile input (Loop control) |
 | `lease.json` | This run's active-driver lease (`{agent, updated}`; see "Run lease") |
-| `review-<pr>-<n>.txt` | Codex's PR review output, round `n` |
+| `review-<pr>-<n>.txt` | The reviewer's PR review output, round `n` |
 | `review-<pr>-<n>.plan.jsonl` | Orchestrator-authored review work units for round `n` |
 | `review-<pr>-<n>.progress.jsonl` | Reviewer progress events against the plan for round `n` |
 | `ci-<pr>.txt` | Latest `gh pr checks` snapshot for a PR (re-polled after the watch, not the watch stream) |
 | `abort-<id>.md` | Detailed log for an aborted finding-task |
 
-Store ALL codex and `gh` output under `<rundir>` first, then Read/Grep it. NEVER `/tmp/`.
+Store ALL reviewer and `gh` output under `<rundir>` first, then Read/Grep it. NEVER `/tmp/`.
 
 All of this is driver bookkeeping, **never repo content — do NOT commit it**: the whole `.gauntlet/`
 tree stays git-ignored, and a fix commit stages only the specific source files it changes (explicit
@@ -46,13 +46,15 @@ exist on which SHA). Every wake re-derives what's due from those, then refreshes
 stale or half-written ledger is self-healing — never act on it without reconciling against git/gh
 first.
 
-The file opens with a short run-config header (`run_id`, `base_branch`, `api_changes`, `phase` —
-re-read every wake, see Constraints and "Run identity and concurrency"), then one row per finding:
+The file opens with a short run-config header (`run_id`, `base_branch`, `api_changes`, `reviewer`,
+`phase` — re-read every wake, see Constraints and "Run identity and concurrency"), then one row per
+finding:
 
 ```
 run_id: g260704-0915-a3f29c1b  # this run's identity — namespaces its dir/branches/label/wakes (set once)
 base_branch: main       # the branch PRs target & diffs measure against (set once; see "Base branch")
 api_changes: ask        # ask | allowed (run-wide; set once from the invocation)
+reviewer: default       # default (Claude subagents) | codex | <other> — the selected reviewer (set once; see "The reviewer")
 phase: fanout           # reviewing (Stage 0) → fanout (Stage 1+); written at run start before Stage 0
 
 id | slug | branch | worktree | pr | head_sha | reviews_ok | ci | attempts | started | api_approval | status
