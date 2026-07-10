@@ -108,6 +108,13 @@ other event types for unit progress. Unit-progress events carry ONLY the exact r
 {"type":"plan_amendment_request","ts":"2026-07-06T00:05:00Z","reason":"diff changes generated docs; add doc consistency unit","proposed_unit":{"id":"u99","kind":"docs","target":"docs/generated.md","checks":["sync with API behavior"]}}
 ```
 
+Reviewers do NOT hand-write these events. The orchestrator resolves the bundled emitter's absolute
+path as `<skill-dir>/scripts/emit-progress.py` (skill dir = the directory holding the campaign
+`SKILL.md`) and passes it into the review prompt, exactly as it already passes the progress file's
+absolute path; it also ensures the `<rundir>` is a reviewer-writable root (via `--add-dir`) so the
+reviewer can append. The reviewer calls that script to emit each event, which writes the canonical
+shape by construction; a non-zero exit means the inputs were rejected and must be fixed and re-run.
+
 Meaningful progress = a `done` event for a planned unit, or an accepted plan amendment. `started`
 events and vague "still working" lines prove only process liveness and MUST NOT reset the meaningful
 progress timer. The reviewer MUST append progress events immediately as units complete, not batch them
@@ -124,18 +131,14 @@ codex exec --sandbox workspace-write -c "sandbox_workspace_write.network_access=
    cover the review dimensions this change actually needs — the plan is the orchestrator's starting \
    point, not a guarantee of complete coverage. If an important dimension is missing or a unit is \
    wrong, append a plan_amendment_request event to the progress JSONL naming the gap; do NOT silently \
-   limit your review to the listed units, and do NOT rewrite the plan yourself. Then append progress \
-   JSONL to $PROJECT/<rundir>/review-<pr>-<n>.progress.jsonl, emitting per planned unit EXACTLY two \
-   single-line JSON events with EXACTLY these keys and values, using the key names verbatim: a start \
-   event {\"type\":\"progress\",\"unit\":\"<plan unit id>\",\"status\":\"started\"} when the unit \
-   begins, and a done event \
-   {\"type\":\"progress\",\"unit\":\"<plan unit id>\",\"status\":\"done\",\"evidence\":\"<concrete \
-   citation: a file:line, a backticked span, or a filename>\"} when it finishes. The started event has \
-   EXACTLY the keys type, unit, status (status=started) and NO evidence; the done event has type, \
-   unit, status (status=done) AND a required evidence field; the only allowed status values are \
-   started and done; do NOT rename to unit_done/unit_id/id/no_findings or add other event types for \
-   unit progress. progress counts only when it references a planned unit and its done event includes \
-   concrete evidence. \
+   limit your review to the listed units, and do NOT rewrite the plan yourself. To record unit \
+   progress, do NOT hand-write JSON. Run \
+   'python3 <SCRIPT> --file $PROJECT/<rundir>/review-<pr>-<n>.progress.jsonl --unit <plan unit id> \
+   --status started' when a planned unit begins, and the same command with \
+   '--status done --evidence \"<concrete citation: a file:line, a backticked span, or a filename>\"' \
+   when it finishes. The tool appends the canonical progress event; a non-zero exit means your inputs \
+   were rejected — fix them and re-run. progress counts only when it references a planned unit and its \
+   done event includes concrete evidence. \
    After every planned unit is done, do a brief UNSTRUCTURED ADVERSARIAL SWEEP: deliberately hunt for \
    defects no plan unit would naturally catch — cross-unit interactions, unstated assumptions, edge \
    cases, and whole categories the plan did not enumerate. This complements the plan, never replaces \

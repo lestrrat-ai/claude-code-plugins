@@ -23,6 +23,14 @@ Invoke once. This skill drives its own loop via `ScheduleWakeup`; do NOT wrap it
 - `--new` or "fresh run" -> force independent new run with carryover.
 - Do NOT ask user to confirm no-arg scope; no arg intentionally means whole repo.
 
+## Bundled Scripts
+
+Bundled scripts live in `scripts/`, resolved relative to the directory holding this `SKILL.md` (not
+the current working directory) — installed as `${CLAUDE_PLUGIN_ROOT}/skills/campaign/scripts/`, or in
+the repo at `plugins/gauntlet/skills/campaign/scripts/`. Pass their absolute paths to subtasks. The
+review gauntlet's `scripts/emit-progress.py` emits canonical reviewer progress events (see
+`references/stage-2-review-gate.md`).
+
 ## Load Discipline
 
 Read references on demand. Do NOT load every reference up front.
