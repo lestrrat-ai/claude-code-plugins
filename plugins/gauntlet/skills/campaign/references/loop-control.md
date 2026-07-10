@@ -105,8 +105,15 @@ so the driver never blocks; each completion is its own wake.
    - Any sweep shard or verification chunk still running, or any non-terminal finding/PR remains →
      refresh this run's lease, then set a `ScheduleWakeup` heartbeat
      (`prompt: "/gauntlet:campaign --run <run-id> --token <agent-token> <args>"` — `--run` rebinds the
-     wake to this run and `--token` re-proves ownership of its lease; delay ~3–4 min, cache-warm) as a
-     fallback; background completions will usually wake you sooner. Return.
+     wake to this run and `--token` re-proves ownership of its lease). This heartbeat is a
+     **stall-detector, not a poll**: background completions are the primary wake and normally fire
+     first, so the heartbeat exists only to force a wake when a background task **hangs and never
+     sends a completion** (e.g. a reviewer stuck on input) — the one failure mode completions can't
+     surface. Size the delay to the stall it guards, **~15 min**, matching the Stage 2a
+     meaningful-progress threshold: nothing can declare a review stalled before then, so a shorter
+     interval only re-reconciles git/gh with no new signal (and paying a fresh-context cost per wake).
+     ALWAYS schedule it whenever non-terminal work remains — skipping it means a hung task wakes no
+     one. Return.
    - All this run's PRs `merged` or `aborted` → **distill the run into the carryover ledger** (write
      this run's block to its own file `.gauntlet/history/<run-id>.md` — merged fixes, aborted
      findings + why, declined-API findings, and the REFUTED/UNCERTAIN sets; per-run files never
