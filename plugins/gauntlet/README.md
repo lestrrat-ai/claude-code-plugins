@@ -4,12 +4,12 @@ Part of the [claude-code-plugins](../../README.md) marketplace.
 
 Adversarial code review that follows through to a merge.
 
-The centerpiece is `/gauntlet:campaign`: point it at your code and it runs an adversarial review, files
+The centerpiece is [`/gauntlet:campaign`](skills/campaign/README.md): point it at your code and it runs an adversarial review, files
 each real finding as its own pull request, defends that PR through repeated context-isolated review
 rounds until it passes a strict bar with green CI, and merges. Run it once — it schedules its own
 follow-ups and keeps working unattended.
 
-If you only want to know what's wrong, `/gauntlet:review` reports findings and changes nothing.
+If you only want to know what's wrong, [`/gauntlet:review`](skills/review/SKILL.md) reports findings and changes nothing.
 
 ## Install
 
