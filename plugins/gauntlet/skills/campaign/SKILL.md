@@ -66,6 +66,7 @@ Read stage refs only when that stage/action is due:
 - **Run isolation:** touch only this run's `<rundir>`, ledger, labels, branches, PRs, and worktrees.
 - **One active driver:** lease controls ownership; never double-drive one run.
 - **Base branch is data:** read `base_branch` from ledger every wake; never assume `main`.
+- **Reviewer is data:** read `reviewer` from ledger every wake before dispatching any sweep/review; set once at run start, never re-derived from memory (else an explicit/preferred reviewer silently reverts to default on a self-wake or adoption).
 - **Two-review gate:** two fresh, context-isolated `SATISFIED` verdicts on same live PR content + green CI.
 - **Sequential same-PR reviews:** launch review 2 only after review 1 is `SATISFIED`.
 - **Progress ledger:** reviewer progress means planned unit `done` or accepted amendment, not vague

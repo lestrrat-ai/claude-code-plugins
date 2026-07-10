@@ -6,8 +6,10 @@ implementer; the reviewer is chosen per run.
 
 ### Selecting the reviewer
 
-Resolve once at run start (record the choice in the ledger header note / final report), in priority
-order:
+Resolve once at run start and record the choice as the ledger `reviewer` header field (see
+`files-and-ledger.md`) so every later wake — including a self-wake or a fresh agent that adopted the
+run — re-reads it before launching any sweep or review and never silently reverts to the default; also
+note it in the final report. Resolve in priority order:
 
 1. **Explicit invocation.** User named a reviewer for this run (e.g. "review with codex") → use it.
 2. **User preference from memory.** A recorded preference (memory entry, `CLAUDE.md`, or a prior
