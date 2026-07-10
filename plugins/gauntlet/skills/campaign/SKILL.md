@@ -77,7 +77,8 @@ Read stage refs only when that stage/action is due:
 4. Launch all due work up to caps — sweep shards, verification chunks, fix fan-out, reviews, CI
    watches/fixes, base refresh; stop in-flight reviews doomed by a content change.
 5. Merge ready PRs one at a time until no candidate remains immediately ready after base refresh.
-6. Update carryover/final state if terminal; otherwise refresh lease and schedule next wake.
+6. **Launch audit — before sleeping, verify every due launch actually happened.** Re-run step 4's dispatch scan across both concurrency pools (fix subagents and review passes each have their own cap): confirm every ready sweep shard, verification chunk, fix, and review pass was launched, a CI watch is live for every pending-CI PR, and — whenever any non-terminal work remains — a `ScheduleWakeup` heartbeat is actually scheduled. If any due launch or the heartbeat is missing, launch it and re-audit. NEVER sleep with due work un-launched or the heartbeat unscheduled.
+7. Update carryover/final state if terminal; otherwise refresh lease and return (step 6 has already ensured the heartbeat is scheduled).
 
 ## Critical Rules
 
