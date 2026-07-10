@@ -98,13 +98,13 @@ always `progress`; the only allowed `status` values are `started` and `done`. Th
 `status="started"`) and NO `evidence`; a `done` event has `type`, `unit`, `status` (with
 `status="done"`) AND a required `evidence` field carrying a concrete citation (a `file:line`, a
 backticked span, or a filename). Do NOT rename to `unit_done`/`unit_id`/`id`/`no_findings` or invent
-other event types for unit progress. Additional keys (e.g. `ts`) are tolerated, but each event's
-required keys above must be present and named exactly. The `plan_amendment_request` event keeps its
-existing shape:
+other event types for unit progress. Unit-progress events carry ONLY the exact required keys above
+(no extra keys such as `ts`); each event's required keys must be present and named exactly. The
+`plan_amendment_request` event keeps its existing shape:
 
 ```
-{"type":"progress","unit":"u01","status":"started","ts":"2026-07-06T00:00:00Z"}
-{"type":"progress","unit":"u01","status":"done","ts":"2026-07-06T00:04:00Z","evidence":"checked canonicalization paths and edge-case tests"}
+{"type":"progress","unit":"u01","status":"started"}
+{"type":"progress","unit":"u01","status":"done","evidence":"checked canonicalization paths and edge-case tests"}
 {"type":"plan_amendment_request","ts":"2026-07-06T00:05:00Z","reason":"diff changes generated docs; add doc consistency unit","proposed_unit":{"id":"u99","kind":"docs","target":"docs/generated.md","checks":["sync with API behavior"]}}
 ```
 
