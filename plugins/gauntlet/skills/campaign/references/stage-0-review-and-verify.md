@@ -63,8 +63,8 @@ below — never barrier on the full sweep or full verification before starting d
    re-verification — the chunk already judged each finding.
 
 4. **Append survivors and fan out immediately.** Each deduped survivor becomes a `pending` row in
-   `state.md` (the run-config header — `run_id`, `base_branch`, `api_changes` — was written at run
-   start; Loop control step 1 / "Starting a fresh run"), eligible for a Stage 1 fix slot **on the
+   `state.md` (the run-config header — `run_id`, `base_branch`, `api_changes`, `reviewer` — was written
+   at run start; Loop control step 1 / "Starting a fresh run"), eligible for a Stage 1 fix slot **on the
    same wake**. Flip `phase` from `reviewing` to `fanout` when the first row lands; sweep shards and
    verification chunks may still be running during fanout — `phase` is advisory, liveness comes from
    rows + PRs (Loop control).
