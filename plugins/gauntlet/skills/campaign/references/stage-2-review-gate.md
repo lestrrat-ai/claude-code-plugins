@@ -92,7 +92,12 @@ Rules:
   orchestrator folds that request on the next wake and either updates the plan + restarts the review
   pass, or ignores it with a note; the reviewer completes the existing units meanwhile.
 
-Progress JSONL schema:
+Progress JSONL schema. Unit-progress events use the REQUIRED exact keys and values below — key names
+`type`, `unit`, `status`, `evidence` verbatim; `type` is always `progress`; the only allowed `status`
+values are `started` and `done`; a `done` event MUST carry `evidence` (a concrete `file:line`, a
+backticked span, or a filename). Do NOT rename to `unit_done`/`unit_id`/`id`/`no_findings` or invent
+other event types for unit progress. Additional keys (e.g. `ts`) are tolerated but the four required
+keys must be present and named exactly. The `plan_amendment_request` event keeps its existing shape:
 
 ```
 {"type":"progress","unit":"u01","status":"started","ts":"2026-07-06T00:00:00Z"}
@@ -117,8 +122,15 @@ codex exec --sandbox workspace-write -c "sandbox_workspace_write.network_access=
    point, not a guarantee of complete coverage. If an important dimension is missing or a unit is \
    wrong, append a plan_amendment_request event to the progress JSONL naming the gap; do NOT silently \
    limit your review to the listed units, and do NOT rewrite the plan yourself. Then append progress \
-   JSONL to $PROJECT/<rundir>/review-<pr>-<n>.progress.jsonl as each planned unit starts and finishes; \
-   progress counts only when it references a planned unit and includes concrete evidence. \
+   JSONL to $PROJECT/<rundir>/review-<pr>-<n>.progress.jsonl, emitting per planned unit EXACTLY two \
+   single-line JSON events with EXACTLY these keys and values, using the key names verbatim: a start \
+   event {\"type\":\"progress\",\"unit\":\"<plan unit id>\",\"status\":\"started\"} when the unit \
+   begins, and a done event \
+   {\"type\":\"progress\",\"unit\":\"<plan unit id>\",\"status\":\"done\",\"evidence\":\"<concrete \
+   citation: a file:line, a backticked span, or a filename>\"} when it finishes. Use the exact keys \
+   type, unit, status, evidence; the only allowed status values are started and done; do NOT rename to \
+   unit_done/unit_id/id/no_findings or add other event types for unit progress. progress counts only \
+   when it references a planned unit and includes concrete evidence. \
    After every planned unit is done, do a brief UNSTRUCTURED ADVERSARIAL SWEEP: deliberately hunt for \
    defects no plan unit would naturally catch — cross-unit interactions, unstated assumptions, edge \
    cases, and whole categories the plan did not enumerate. This complements the plan, never replaces \
