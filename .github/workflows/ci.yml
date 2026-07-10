@@ -18,11 +18,11 @@ jobs:
     name: Validate plugins
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: '22'
+          node-version: '24'
 
       # Pinned so a new Claude Code release can't turn CI red without a commit.
       # Bump deliberately; new versions may add validation rules.
@@ -38,7 +38,7 @@ jobs:
     name: Lint scripts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Shellcheck
         run: |
