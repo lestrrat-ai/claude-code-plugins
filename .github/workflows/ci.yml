@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plugins:
+    name: Validate plugins
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      # Pinned so a new Claude Code release can't turn CI red without a commit.
+      # Bump deliberately; new versions may add validation rules.
+      - name: Install Claude Code
+        run: npm install -g '@anthropic-ai/claude-code@2.1.206'
+
+      # `claude plugin validate` is offline and needs no credentials, so this
+      # step works unchanged on pull requests from forks.
+      - name: Validate marketplace, plugins, and skills
+        run: ./scripts/validate-plugins.sh
+
+  scripts:
+    name: Lint scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Shellcheck
+        run: |
+          mapfile -t files < <(find . -name '*.sh' -not -path './.git/*')
+          printf 'checking %s\n' "${files[@]}"
+          shellcheck "${files[@]}"
+
+      - name: Python syntax
+        run: |
+          mapfile -t files < <(find . -name '*.py' -not -path './.git/*')
+          printf 'checking %s\n' "${files[@]}"
+          python3 -m py_compile "${files[@]}"

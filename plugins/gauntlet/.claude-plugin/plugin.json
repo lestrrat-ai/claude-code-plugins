@@ -1,0 +1,12 @@
+{
+  "name": "gauntlet",
+  "version": "0.1.0",
+  "description": "Adversarial review-to-merge pipeline: sweep, verify, fan out, gate, merge.",
+  "author": {
+    "name": "lestrrat"
+  },
+  "homepage": "https://github.com/lestrrat-ai/claude-code-plugins",
+  "repository": "https://github.com/lestrrat-ai/claude-code-plugins",
+  "license": "MIT",
+  "keywords": ["code-review", "adversarial-review", "pull-request", "ci", "codex"]
+}
