@@ -32,7 +32,8 @@ address the Copilot reviews on https://github.com/owner/repo/pull/42
 
 It needs the PR's branch checked out locally, or a clear path to fetch and switch to it, since it
 addresses review items on an existing checkout — it doesn't open or merge the PR. It talks to GitHub
-through the `gh` CLI, so the repo needs a GitHub remote.
+through the `gh` CLI (which figures out the repo from the PR URL), so `gh` must be installed and
+authenticated for the PR's GitHub host.
 
 It goes item by item and doesn't decide the judgment calls for you. When an item is subjective
 (naming, style, wording), touches public API or compatibility, is a performance-vs-simplicity
