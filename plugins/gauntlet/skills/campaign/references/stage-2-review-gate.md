@@ -5,8 +5,9 @@
 Before the review gauntlet, triage each PR to a **risk tier**. Triage is **deterministic** and
 **size-agnostic** — there are **NO line-count or file-count thresholds**; only *what kind* of file the
 PR touches and whether the change is systemic. Re-derive the tier **every wake** from the PR's current
-`head_sha` and pin it there; record it in the ledger `tier` column. Default to **STANDARD** whenever
-you are unsure. `reviews_ok` target = `required(tier)`: **1 if `tier==TRIVIAL`, else 2**.
+`head_sha` and pin it there; record it in the ledger `tier` column via `scripts/ledger.py … set --pr
+<N> --tier <tier>` (by field name — the schema-owning accessor, `files-and-ledger.md`; never hand-edit
+the row by column position). Default to **STANDARD** whenever you are unsure. `reviews_ok` target = `required(tier)`: **1 if `tier==TRIVIAL`, else 2**.
 
 **File classes (classify every changed file; default CODE when unsure).**
 
@@ -253,7 +254,8 @@ As each verdict lands, tally it for the SHA it ran on:
   `worktree` column value) with the issue list; it
   commits + pushes → HEAD advances → the SHA's tally is void. A later wake starts a fresh review on
   the new tip. (Because reviews are sequential, no second review was spent on this broken commit.)
-- **SATISFIED** → record it. The gate is met once this SHA holds `required(tier)` SATISFIED verdicts
+- **SATISFIED** → record it (bump `reviews_ok` via `ledger.py … set --pr <N> --reviews_ok <count>`, by
+  field name). The gate is met once this SHA holds `required(tier)` SATISFIED verdicts
   (2, or 1 for TRIVIAL). If the tally is still short of the target — e.g. the **first** SATISFIED on a
   `required==2` PR — the next wake launches the next (corroborating) review on the same SHA. When the
   tally **reaches** `required(tier)` on the same SHA, the review gate is met for this HEAD — swap the

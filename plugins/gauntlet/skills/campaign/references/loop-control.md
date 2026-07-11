@@ -17,18 +17,20 @@ blocks; each completion is its own wake.
    the idle prompt (run `gauntlet:review`, or pass PR numbers).
    This claim-locked lease check is what guarantees **no two agents drive one ledger**.
 
-   Once bound and confirmed owner, decide on **liveness of THIS run**, not on whether some `state.md`
+   Once bound and confirmed owner, decide on **liveness of THIS run**, not on whether some `state.jsonl`
    exists — and scope **every** git/gh scan to this run's `gauntlet-run-<run-id>` label so another run's
    PRs are never mistaken for your own (adopted PRs keep their OWN head branch, so ownership is the
    LABEL only — never a branch prefix). Live work (this run) = any open PR carrying this run's label,
-   **OR** any non-terminal row in this run's `state.md` (`in_review` / `mergeable` / `awaiting-api`).
+   **OR** any non-terminal row in this run's `state.jsonl` (`in_review` / `mergeable` / `awaiting-api`).
    Three cases:
 
    - **This run has live work → resume.** **Reconcile against ground truth** (do NOT redo *completed*
      work — a review/CI task whose output file is missing may be re-launched, since in-flight tasks die
      with their session):
      for each of this run's branches/PRs read the live SHA, CI status, and verdict files, and refresh
-     the ledger. Do the PR scan as **one batched snapshot per wake** —
+     the ledger — write every ledger update through `scripts/ledger.py … set/header set` **by field
+     name** (`files-and-ledger.md`), never by hand-editing rows by column position. Do the PR scan as
+     **one batched snapshot per wake** —
      `gh pr list --label gauntlet-run-<run-id> --json number,headRefName,headRefOid,state,mergeable,mergeStateStatus,labels > <rundir>/prs.json`
      — and drive reconcile from that file; fall back to per-PR `gh pr view` only where the snapshot
      isn't enough (merge-gate CI truth stays the re-polled `gh pr checks` snapshot, Stage 2b). Wake
@@ -44,7 +46,7 @@ blocks; each completion is its own wake.
    - **No run bound and none live (no `gauntlet-run-*` PR, no non-terminal `<rundir>`) → first run.**
      **Check there is something to adopt BEFORE creating any run state.** If the invocation carries no
      `#PR` args (a bare or non-`#PR` invocation that found no live run to resume — likewise `--new`
-     with no `#PR` args), **create nothing** — no run-id, no `<rundir>`, no lease, no `state.md` — and
+     with no `#PR` args), **create nothing** — no run-id, no `<rundir>`, no lease, no `state.jsonl` — and
      **PROMPT** the user: "No PRs under a campaign. Run gauntlet:review to find issues, or pass PR
      numbers to gate." Creating `<rundir>`/lease/header before a PR is confirmed would leave an empty
      orphan run that later no-arg invocations rediscover as bogus state.
@@ -52,20 +54,20 @@ blocks; each completion is its own wake.
      When there **are** `#PR` args, **preflight the whole set FIRST — read-only, before creating any
      run state**: read every PR's metadata (`gh pr view`), run the refusal checks (foreign-owned,
      cross-repo/fork per `pr-adoption.md`), and verify all share a common `baseRefName`. This touches
-     **no** run-id, `<rundir>`, lease, `state.md`, label, worktree, or CI watch. **If the bases
+     **no** run-id, `<rundir>`, lease, `state.jsonl`, label, worktree, or CI watch. **If the bases
      disagree or any PR is refused, prompt and create nothing** — so a rejected set never leaves an
      empty orphan run behind. **Only once the full set passes preflight**: mint a run-id + agent token,
-     atomically create `<rundir>`, and write the lease **and `state.md` header** — now with
+     atomically create `<rundir>`, and write the lease **and `state.jsonl` header** — now with
      `base_branch` filled from the agreed `baseRefName` (known from preflight). Then **adopt** each PR
      (ledger row + labels + worktree + CI watch per `pr-adoption.md`); a death mid-adoption still leaves
      a discoverable, adoptable run. Then fall through to dispatch/reschedule.
-   - **This run's `state.md` is fully terminal — every row `merged`/`aborted`, no open PR carrying this
+   - **This run's `state.jsonl` is fully terminal — every row `merged`/`aborted`, no open PR carrying this
      run's label → the run is finished.** Do **not** silently exit "all fixed" (the old bug) and do **not**
      silently restart. **Ask the user** whether to gate more PRs — e.g. "gauntlet run
      <run-id> finished (N merged, M aborted). Gate more PRs? Pass PR numbers (or run gauntlet:review
      first)." A new run needs a `#PR` set, so collect PR numbers (equivalently direct the user to
      `/gauntlet:campaign --new #PR...`); on a PR set, start a fresh run **with carryover** (see "Fresh
-     runs and carryover") — **no run-id/lease/`state.md` is created until that set passes preflight**.
+     runs and carryover") — **no run-id/lease/`state.jsonl` is created until that set passes preflight**.
      With no PR numbers (or "no"), emit that run's final report and stop. This prompt is the *only* wake
      that asks the user about scope.
 
@@ -93,7 +95,8 @@ blocks; each completion is its own wake.
    - any newly-adopted PR whose ledger row lacks a `tier`, or any PR whose `head_sha` changed since it
      was last triaged → **re-triage its tier** (deterministic file-class classification of the changed
      files at that `head_sha`; agent-docs = code; default STANDARD on uncertainty — see the tiers
-     spec). The tier is pinned to `head_sha` and sets `required(tier)` = **1 if TRIVIAL else 2**.
+     spec) and write it back with `ledger.py … set --pr <N> --tier <tier>`. The tier is pinned to
+     `head_sha` and sets `required(tier)` = **1 if TRIVIAL else 2**.
    - current tip has `reviews_ok < required(tier)`, its **review preconditions are clear** (no
      unaddressed Copilot review items, CI not red, no merge conflict with `<base>` — see Stage 2a
      preconditions), and no review running for that SHA → **first ensure the PR-head worktree exists**
@@ -157,7 +160,7 @@ blocks; each completion is its own wake.
      `gauntlet-run-<run-id>` owner label via `gh label delete gauntlet-run-<run-id> --yes`, and delete
      `<rundir>/lease.json`; the shared status labels stay), emit the final report, and **do not
      reschedule**. This run's loop ends. **Leave
-     `<rundir>` in place** (do NOT delete it here) — its terminal `state.md` is what lets a later bare
+     `<rundir>` in place** (do NOT delete it here) — its terminal `state.jsonl` is what lets a later bare
      invocation detect *this* *finished* run and take the "ask the user" branch in step 1 instead of a
      silent exit. (A stale heartbeat firing after exit harmlessly re-hits the finished-run branch via
      its `--run <run-id>`; with the lease released it reads as an un-driven finished run.)

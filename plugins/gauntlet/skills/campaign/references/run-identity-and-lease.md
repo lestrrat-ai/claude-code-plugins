@@ -36,20 +36,21 @@ mkdir "$PROJECT/.gauntlet/tmp/$run_id" || run_id=…   # NO -p: must fail on col
 The run dir's `mkdir` carries **no `-p`** on purpose — it must fail if the id is already taken. Create
 the `.gauntlet/tmp` parent in its own `-p` call, never by `-p`-ing the run dir itself.
 
-Record it in the ledger header (`run_id:`) and re-read it every wake (like `base_branch`); never trust
+Record it in the ledger header field `run_id` (`ledger.py --file <state.jsonl> header set run_id
+<run-id>`) and re-read it every wake (`ledger.py … header get run_id`, like `base_branch`); never trust
 in-context memory for it — a wake may be a fresh agent instance. It flows into:
 
 | Owned by the run | Namespaced form |
 |------------------|-----------------|
 | tmp working dir  | `<rundir>` = `.gauntlet/tmp/<run-id>/` (all state/pr/review/ci/abort/lease files) |
-| ledger header    | `run_id: <run-id>` |
+| ledger header    | the `run_id` header field (set/read via `ledger.py … header set/get run_id`) |
 | PR owner label   | `gauntlet-run-<run-id>` — the **authoritative "mine" marker**. Every adopted PR is tagged with it; it, not any branch name, is what makes a PR this run's. |
 | branch           | the **adopted PR's own `headRefName`** — campaign reuses the PR's existing branch and does NOT mint a `fix-<run-id>-...` branch, so ownership can't be read off the branch name (that's the label's job). |
 | worktree         | the ledger-recorded `worktree` path — the created default `$PROJECT/.worktrees/<headRefName>` when campaign runs `git worktree add`, or a reused existing checkout when the branch was already checked out elsewhere — resolved from the PR's head branch during adoption / before its first review, and reused for review/CI fixes. Only a campaign-created worktree (`worktree_owned = yes`) is ever removed; a reused checkout (the root/main checkout or a user worktree) and a reused local branch are **always** left in place — in **both** `declined` and `granted` modes, regardless of `branch_ownership`, which governs only the remote head branch (see "PR adoption" / Stage 3). |
 | self-wake prompt | `/gauntlet:campaign --run <run-id> --token <agent-token>` — **only** these two flags (carries the id **and** the driver token so a summarized wake re-proves ownership without guessing). It **never** carries `--new` or the original `#PR` adoption args: those are **start-time-only** (they *create/adopt*), whereas `--run` **resumes** an existing run — replaying `--new` on a self-wake would mint a fresh run every heartbeat. |
 
 **Isolation invariant — a run touches ONLY its own work.** It reads/writes only its `<rundir>`, only
-its `state.md`, and only PRs carrying its `gauntlet-run-<run-id>` label (adopted PRs keep their own
+its `state.jsonl`, and only PRs carrying its `gauntlet-run-<run-id>` label (adopted PRs keep their own
 branch names, so the **label alone** — not any branch prefix — scopes ownership), and only those
 PRs' branches/worktrees. It MUST NOT reconcile, relabel, review, fix, merge, or clean up another run's
 PRs/branches — **every git/gh scan is filtered to this run's owner label.** The status labels
@@ -102,7 +103,7 @@ Each run has `<rundir>/lease.json`:
 
 ### Resolving a wake (Loop control step 1 applies this)
 
-1. **`--run <id>` given** (every self-wake; also a manual targeted resume). Load `<rundir>/state.md`.
+1. **`--run <id>` given** (every self-wake; also a manual targeted resume). Load `<rundir>/state.jsonl`.
    Under the claim lock, compare the token you present to the lease: **matches** (self-wake with
    `--token`) → refresh lease, reconcile, continue; **lease absent/stale** → adopt (write token, fresh
    ts, read-back); **lease fresh but a different token** → for a self-wake, stand down (superseded);
@@ -117,7 +118,7 @@ Each run has `<rundir>/lease.json`:
    - **No arg at all** (`/gauntlet:campaign`) → resume-oriented: **discover runs** and bucket by lease —
      the distinct `gauntlet-run-*` ids present on open PRs — list PRs **with their labels** and extract
      the ids, since no id is known yet to query by (`gh pr list --state open --json number,labels`, then
-     pick labels matching `gauntlet-run-*`) ∪ run-ids with a `<rundir>/` (its `state.md` or
+     pick labels matching `gauntlet-run-*`) ∪ run-ids with a `<rundir>/` (its `state.jsonl` or
      `lease.json`), each **actively-driven** (fresh lease),
      **orphaned** (non-terminal, lease absent/stale), or **finished** (terminal, no open PR):
      - exactly one **orphaned** → adopt and resume it ("pick up where the previous instance left off"),

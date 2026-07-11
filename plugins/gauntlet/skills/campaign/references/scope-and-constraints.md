@@ -36,8 +36,9 @@ Handling depends on the run's `api_changes` flag, stored in the ledger header:
 - **`allowed`** — proceed without asking. Set this *only* when the user, at invocation, explicitly
   said API breakage is acceptable (e.g. "allow API changes" / "ignore breakage").
 
-**Store the flag in the ledger and re-consult it every wake.** Derive `api_changes: ask|allowed` once
-from the invocation and record it in the ledger header. A run is long, so NEVER trust in-context
+**Store the flag in the ledger and re-consult it every wake.** Derive the `api_changes` header field
+(`ask` | `allowed`) once from the invocation and record it via `ledger.py --file <state.jsonl> header
+set api_changes <ask|allowed>`. A run is long, so NEVER trust in-context
 memory for this — re-read the flag from the ledger before any API-affecting change, so the behavior
 can't drift mid-run. A blanket "yes, stop asking" from the user flips the header to `allowed`; a
 one-off "yes" approves only that PR (recorded durably in its `api_approval`) and leaves the

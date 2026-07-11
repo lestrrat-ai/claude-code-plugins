@@ -6,7 +6,7 @@ files from colliding — see "Run identity and concurrency".
 
 | File (under `<rundir>`) | Contents |
 |------|----------|
-| `state.md` | Live per-PR ledger — a **cache/hint**, not the source of truth (see below) |
+| `state.jsonl` | Live per-PR ledger — a **cache/hint**, not the source of truth (see below) |
 | `pr-<pr>.json` | `gh pr view` snapshot captured at adoption (PR facts the ledger row is built from) |
 | `prs.json` | Batched `gh pr list` snapshot of this run's PRs — the per-wake reconcile input (Loop control) |
 | `lease.json` | This run's active-driver lease (`{agent, updated}`; see "Run lease") |
@@ -36,7 +36,7 @@ carryover history with it. Scratch cleanup targets `.gauntlet/tmp/**` and nothin
 The history tree keeps **one file per run** (`<run-id>.md`) so concurrent runs never clobber a shared
 file. Everything else stays ephemeral under the per-run `<rundir>`. See "Fresh runs and carryover".
 
-### The ledger — `state.md`
+### The ledger — `state.jsonl`
 
 One row per adopted PR. It is a **cache**, not the authoritative state — **ground truth is
 GitHub via `gh`, plus local worktrees** (`gh pr list/view` for PRs and merged/open state, each PR's
@@ -47,19 +47,25 @@ PR's live head (an adopted PR may have no local branch/worktree at all). Every w
 due from those, then refreshes this file. So a stale or half-written ledger is self-healing — never
 act on it without reconciling against gh (and any existing worktree) first.
 
-The file opens with a short run-config header (`run_id`, `base_branch`, `api_changes`, `reviewer`,
-`branch_ownership` — re-read every wake, see Constraints and "Run identity and concurrency"), then one
-row per adopted PR:
+The store is **JSONL** — one JSON object per line, `cat`/`grep`/`jq`-able. The first line is the
+run-config header record (`{"type": "header", …}` — `run_id`, `base_branch`, `api_changes`, `reviewer`,
+`branch_ownership`, re-read every wake, see Constraints and "Run identity and concurrency"); each
+following line is one adopted PR's row record (`{"type": "row", …}`). Every record is **self-describing**
+— fields are keyed by NAME, never by column position:
 
 ```
-run_id: g260704-0915-a3f29c1b  # this run's identity — namespaces its dir/label/wakes (set once)
-base_branch: main       # the adopted PRs' baseRefName — the branch they merge into & diffs measure against (set once; see "Base branch")
-api_changes: ask        # ask | allowed (run-wide; set once from the invocation)
-reviewer: default       # default (Claude subagents) | codex | <other> — the selected reviewer (set once; see "The reviewer")
-branch_ownership: declined  # declined | granted — may campaign delete the adopted PR's REMOTE head branch on merge (local worktree/branch cleanup is ALWAYS per-PR worktree_owned/branch_owned; set once; see "PR adoption")
-
-id | slug | branch | worktree | worktree_owned | branch_owned | pr | head_sha | reviews_ok | ci | tier | attempts | started | api_approval | status
+{"type": "header", "run_id": "g260704-0915-a3f29c1b", "base_branch": "main", "api_changes": "ask", "reviewer": "default", "branch_ownership": "declined"}
+{"type": "row", "id": "pr41", "slug": "fix-null-deref", "branch": "fix-null-deref", "worktree": ".worktrees/fix-null-deref", "worktree_owned": "yes", "branch_owned": "yes", "pr": "41", "head_sha": "a3f29c1b", "reviews_ok": "2", "ci": "green", "tier": "STANDARD", "attempts": "1", "started": "2026-07-04T09:15:00Z", "api_approval": "-", "status": "mergeable"}
+{"type": "row", "id": "pr52", "slug": "add-retry-flag", "branch": "add-retry-flag", "worktree": ".worktrees/add-retry-flag", "worktree_owned": "no", "branch_owned": "no", "pr": "52", "head_sha": "b1c2d3e4", "reviews_ok": "0", "ci": "pending", "tier": "HIGH", "attempts": "0", "started": "-", "api_approval": "-", "status": "in_review"}
 ```
+
+Header-record fields: `run_id` (this run's identity — namespaces its dir/label/wakes; set once),
+`base_branch` (the adopted PRs' baseRefName — the branch they merge into & diffs measure against; set
+once, see "Base branch"), `api_changes` (`ask` | `allowed`, run-wide; set once from the invocation),
+`reviewer` (`default` (Claude subagents) | `codex` | `<other>` — the selected reviewer; set once, see
+"The reviewer"), `branch_ownership` (`declined` | `granted` — may campaign delete the adopted PR's
+REMOTE head branch on merge; local worktree/branch cleanup is ALWAYS per-PR worktree_owned/branch_owned;
+set once, see "PR adoption").
 
 Header field notes (the header fields above; per-row fields follow):
 
@@ -122,5 +128,40 @@ Header field notes (the header fields above; per-row fields follow):
 - `status` — `in_review` → `mergeable` → `merged`, or `aborted`; plus `awaiting-api`
   while parked for the user to approve an API-changing fix. That park resolves via `api_approval`:
   `approved` returns the PR to the normal flow, `declined` makes it `aborted` (terminal).
+
+### Editing the ledger — use `scripts/ledger.py`
+
+`scripts/ledger.py` is the **sanctioned way** to read and write `state.jsonl` (both the header record
+and the per-PR row records) **by FIELD NAME**. The script owns the schema (the header fields and the
+row fields above) in ONE place, so agents and subtasks **must not hand-edit the JSONL**. Address fields
+by name and the script keeps the store canonical.
+
+This mirrors how `stage-2-review-gate.md` treats `emit-progress.py`: the file stays **plaintext and
+human-readable** JSONL (`cat`/`grep`/`jq`-able), the accessor just owns the schema and writes the
+canonical layout — the store is now JSONL owned by the script. `state.jsonl` is still a cache reconciled
+against ground truth every wake (above) — the accessor changes *how* records are written, not what the
+ledger means.
+
+Resolve its absolute path as `<skill-dir>/scripts/ledger.py` (skill dir = the directory holding the
+campaign `SKILL.md`) and pass that path to subtasks, exactly as with `emit-progress.py`. Subcommands
+(`<state.jsonl>` = this run's `<rundir>/state.jsonl`):
+
+```
+ledger.py --file <state.jsonl> header get <field>                 # read a run-config header field
+ledger.py --file <state.jsonl> header set <field> <value>         # set a run-config header field
+ledger.py --file <state.jsonl> add-row --pr N [--<field> <val> …] # register a row (refuses a duplicate pr; unset fields default)
+ledger.py --file <state.jsonl> set --pr N --<field> <val> [--<field> <val> …]  # update named fields on the row for PR N
+ledger.py --file <state.jsonl> get --pr N [--field <f>]           # print the row as JSON, or one field
+ledger.py --file <state.jsonl> list [--where <field>=<val>]       # print matching rows' pr numbers (all if no filter)
+```
+
+It rejects an unknown field name (listing the valid ones), refuses a duplicate `pr` on `add-row`,
+errors on a missing row for `set`/`get`, and creates the file with the header if it is missing. It also
+validates the store on every read and refuses a corrupt ledger — a malformed JSON line, a record that
+is not a JSON object or has a missing/unknown `type`, a duplicate `pr` row, or a header that is missing,
+not first, or repeated — reporting the offending line number rather than silently dropping records. On
+read it also normalizes every field value to a string (so an on-disk numeric/boolean `pr` matches the
+string key) and recomputes each row's derived `id` from its `pr`, never trusting the `id` on disk. A
+non-zero exit with a clear stderr message means the input was rejected — fix it and re-run.
 
 ---

@@ -3,7 +3,9 @@
 Each PR has a background task that waits on `gh pr checks --watch`, then **re-polls** `gh pr checks
 <pr>` into `ci-<pr>.txt`. The watch only blocks; the re-polled snapshot is the source of truth. When
 the task completes, a wake reads the file and decides `ci` **from the file's contents — never from
-the watch exit code**:
+the watch exit code** — and writes the `ci`/`reviews_ok` result through `scripts/ledger.py … set --pr
+<N> --ci <state> [--reviews_ok 0]` **by field name** (`files-and-ledger.md`), never by hand-editing the
+row by column position:
 
 - **green** → ONLY if the snapshot shows **zero failing lines AND zero pending lines** and the
   expected checks are actually present. `gh pr checks --watch` can exit 0 while checks are still
