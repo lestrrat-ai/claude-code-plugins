@@ -111,7 +111,7 @@ For each `#PR` to adopt:
    remote ref (always safe), then **reuse an existing checkout if there is one, else add a worktree**:
 
    ```
-   git fetch origin <headRefName>                       # update origin/<headRefName>; always safe
+   git fetch origin refs/heads/<headRefName>:refs/remotes/origin/<headRefName>   # update origin/<headRefName> (explicit refspec — a bare `git fetch origin <hrn>` only writes FETCH_HEAD)
    # is <headRefName> already checked out somewhere? (root or a worktree)
    existing=$(git worktree list --porcelain | awk '/^worktree /{p=$2} /^branch refs\/heads\/<headRefName>$/{print p}')
    if [ -n "$existing" ]; then

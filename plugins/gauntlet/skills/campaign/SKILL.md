@@ -22,7 +22,7 @@ Invoke once. This skill drives its own loop via `ScheduleWakeup`; do NOT wrap it
 
 `/gauntlet:campaign [--run <id>] [--new] [#PR ...]`
 
-- `#12` / `12` / `#12 #15` -> adopt those existing PRs into a run; gate + merge them.
+- `#12` / `#12 #15` -> adopt those existing PRs into a run; gate + merge them.
 - No argument -> discover this run's labelled PRs and continue. If none and nothing to do, PROMPT:
   "No PRs under a campaign. Run gauntlet:review to find issues, or pass PR numbers to gate."
 - Non-PR arg (e.g. `auth`) -> same prompt (the old area/topic sweep arg is REMOVED).
