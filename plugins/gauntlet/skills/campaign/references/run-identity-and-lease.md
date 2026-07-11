@@ -49,7 +49,7 @@ in-context memory for it — a wake may be a fresh agent instance. It flows into
 | self-wake prompt | `/gauntlet:campaign --run <run-id> --token <agent-token>` — **only** these two flags (carries the id **and** the driver token so a summarized wake re-proves ownership without guessing). It **never** carries `--new` or the original `#PR` adoption args: those are **start-time-only** (they *create/adopt*), whereas `--run` **resumes** an existing run — replaying `--new` on a self-wake would mint a fresh run every heartbeat. |
 
 **Isolation invariant — a run touches ONLY its own work.** It reads/writes only its `<rundir>`, only
-its `state.md`, and only PRs carrying its `gauntlet-run-<run-id>` label (adopted PRs keep their own
+its `state.jsonl`, and only PRs carrying its `gauntlet-run-<run-id>` label (adopted PRs keep their own
 branch names, so the **label alone** — not any branch prefix — scopes ownership), and only those
 PRs' branches/worktrees. It MUST NOT reconcile, relabel, review, fix, merge, or clean up another run's
 PRs/branches — **every git/gh scan is filtered to this run's owner label.** The status labels
@@ -102,7 +102,7 @@ Each run has `<rundir>/lease.json`:
 
 ### Resolving a wake (Loop control step 1 applies this)
 
-1. **`--run <id>` given** (every self-wake; also a manual targeted resume). Load `<rundir>/state.md`.
+1. **`--run <id>` given** (every self-wake; also a manual targeted resume). Load `<rundir>/state.jsonl`.
    Under the claim lock, compare the token you present to the lease: **matches** (self-wake with
    `--token`) → refresh lease, reconcile, continue; **lease absent/stale** → adopt (write token, fresh
    ts, read-back); **lease fresh but a different token** → for a self-wake, stand down (superseded);
@@ -117,7 +117,7 @@ Each run has `<rundir>/lease.json`:
    - **No arg at all** (`/gauntlet:campaign`) → resume-oriented: **discover runs** and bucket by lease —
      the distinct `gauntlet-run-*` ids present on open PRs — list PRs **with their labels** and extract
      the ids, since no id is known yet to query by (`gh pr list --state open --json number,labels`, then
-     pick labels matching `gauntlet-run-*`) ∪ run-ids with a `<rundir>/` (its `state.md` or
+     pick labels matching `gauntlet-run-*`) ∪ run-ids with a `<rundir>/` (its `state.jsonl` or
      `lease.json`), each **actively-driven** (fresh lease),
      **orphaned** (non-terminal, lease absent/stale), or **finished** (terminal, no open PR):
      - exactly one **orphaned** → adopt and resume it ("pick up where the previous instance left off"),

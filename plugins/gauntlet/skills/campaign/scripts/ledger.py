@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Schema-owning accessor for the campaign ledger (state.md).
+"""Schema-owning accessor for the campaign ledger (state.jsonl).
 
-The store stays a plaintext, cat/grep-able file: a small `key: value` run-config
-header block, a blank line, one pipe-table header line naming the columns, then
-one `val | val | ...` row per adopted PR. This script owns the schema ONCE (the
-field lists below) so callers read/write by FIELD NAME and never by column
-position — adding a column here can't silently shift every offset in the skill.
+The store is a plaintext, cat/grep/jq-able JSONL file: one JSON object per line.
+Line 1 is the run-config header record (`{"type": "header", ...}`); each following
+line is one adopted PR's row record (`{"type": "row", ...}`). This script owns the
+schema ONCE (the field lists below) so callers read/write by FIELD NAME and never
+by column position — adding a field here can't silently shift every offset in the
+skill.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import argparse
 import json
 import sys
 
-DESCRIPTION = "Schema-owning accessor for the campaign ledger (state.md)."
+DESCRIPTION = "Schema-owning accessor for the campaign ledger (state.jsonl)."
 from pathlib import Path
 from typing import NoReturn
 
@@ -49,51 +50,37 @@ def fail(msg: str) -> NoReturn:
 # --- parse / serialize --------------------------------------------------------
 
 def load(path: Path) -> "tuple[dict, list[dict]]":
-    """Return (header, rows). A missing file yields defaults + no rows."""
+    """Return (header, rows). A missing file yields defaults + no rows.
+
+    The store is JSONL: one JSON object per line, routed by its `type` key. The
+    `header` record populates the header dict; each `row` record appends a row.
+    Missing fields fill from the defaults; unknown `type` values are ignored.
+    """
     header = dict(HEADER_DEFAULTS)
     rows: list[dict] = []
     if not path.exists():
         return header, rows
-    lines = path.read_text().splitlines()
-    i = 0
-    # header block: leading `key: value` lines (inline `# comments` tolerated)
-    while i < len(lines):
-        line = lines[i]
-        if not line.strip():
-            i += 1
-            break
-        # a run-config line is `key: value`; the table-header line has no colon.
-        # (an inline `# a | b` comment must NOT be mistaken for the table.)
-        if line.lstrip().startswith("#") or ":" not in line:
-            break
-        key, _, value = line.partition(":")
-        key = key.strip()
-        value = value.split("#", 1)[0].strip()
-        if key in HEADER_FIELDS:
-            header[key] = value
-        i += 1
-    # table: find the column-header line, then read rows under it
-    while i < len(lines) and "|" not in lines[i]:
-        i += 1
-    if i < len(lines):
-        i += 1  # skip the column-header line itself
-    for line in lines[i:]:
+    for line in path.read_text().splitlines():
         if not line.strip():
             continue
-        cells = [c.strip() for c in line.split("|")]
-        row = dict(ROW_DEFAULTS)
-        for name, cell in zip(ROW_FIELDS, cells):
-            row[name] = cell
-        rows.append(row)
+        rec = json.loads(line)
+        kind = rec.get("type")
+        if kind == "header":
+            for f in HEADER_FIELDS:
+                header[f] = rec.get(f, HEADER_DEFAULTS[f])
+        elif kind == "row":
+            row = dict(ROW_DEFAULTS)
+            for f in ROW_FIELDS:
+                row[f] = rec.get(f, ROW_DEFAULTS[f])
+            rows.append(row)
+        # unknown `type` values are ignored defensively
     return header, rows
 
 
 def dump(path: Path, header: dict, rows: list[dict]) -> None:
-    out = [f"{f}: {header.get(f, HEADER_DEFAULTS[f])}" for f in HEADER_FIELDS]
-    out.append("")
-    out.append(" | ".join(ROW_FIELDS))
+    out = [json.dumps({"type": "header", **{f: header.get(f, HEADER_DEFAULTS[f]) for f in HEADER_FIELDS}})]
     for row in rows:
-        out.append(" | ".join(str(row.get(f, ROW_DEFAULTS[f])) for f in ROW_FIELDS))
+        out.append(json.dumps({"type": "row", **{f: str(row.get(f, ROW_DEFAULTS[f])) for f in ROW_FIELDS}}))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(out) + "\n")
 
@@ -175,7 +162,8 @@ def cmd_get(path: Path, args) -> int:
         check_field(args.field, ROW_FIELDS)
         print(row[args.field])
     else:
-        print(json.dumps(row))
+        # project onto ROW_FIELDS so the injected `type` key never leaks out
+        print(json.dumps({f: row[f] for f in ROW_FIELDS}))
     return 0
 
 
@@ -196,7 +184,7 @@ def cmd_list(path: Path, args) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=DESCRIPTION)
-    parser.add_argument("--file", required=True, help="path to the ledger (state.md)")
+    parser.add_argument("--file", required=True, help="path to the ledger (state.jsonl)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     h = sub.add_parser("header", help="get/set a run-config header field")

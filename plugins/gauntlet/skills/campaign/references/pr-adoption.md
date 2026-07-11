@@ -94,8 +94,8 @@ For each `#PR` to adopt:
 
 3. **Register the ledger row — refresh, never duplicate.** Write the row through
    `scripts/ledger.py` (the schema-owning accessor — `references/files-and-ledger.md`), addressing
-   every field **by name**; never hand-edit `state.md` rows by column position. Look the PR up first
-   (`ledger.py --file <state.md> get --pr <N>`): if a row already exists (re-adoption / resume),
+   every field **by name**; never hand-edit `state.jsonl` rows by column position. Look the PR up first
+   (`ledger.py --file <state.jsonl> get --pr <N>`): if a row already exists (re-adoption / resume),
    **refresh it in place** with `ledger.py … set --pr <N> --<field> <val> …` — never append a second
    row for the same PR (`add-row` refuses a duplicate `pr`). Otherwise create it with
    `ledger.py … add-row --pr <N> --<field> <val> …`. Write the **full** row:
@@ -173,7 +173,7 @@ For each `#PR` to adopt:
      worktree_owned=yes                                 # campaign created the worktree — safe to remove at cleanup
    fi
    # record via the accessor, by field name (never by column position):
-   #   ledger.py --file <state.md> set --pr <N> --worktree "$worktree" \
+   #   ledger.py --file <state.jsonl> set --pr <N> --worktree "$worktree" \
    #     --worktree_owned "$worktree_owned" --branch_owned "$branch_owned"
    # (worktree ownership and branch ownership are tracked separately)
    ```

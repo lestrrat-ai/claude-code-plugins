@@ -1,6 +1,6 @@
 ## Rules
 
-- Runs are isolated by `run_id`: a run touches ONLY its own `<rundir>`, its `state.md`, and the PRs
+- Runs are isolated by `run_id`: a run touches ONLY its own `<rundir>`, its `state.jsonl`, and the PRs
   carrying its `gauntlet-run-<run-id>` label. Adopted PRs keep their OWN head branch, so ownership is
   scoped by that LABEL only (never a branch prefix). NEVER reconcile, review, fix, merge, relabel, or
   clean up another run's work — scope every git/gh scan by that label.
@@ -103,7 +103,7 @@
   conflict-resolving rebase / bot or manual PR-branch commit) makes prior verdicts stale. Base
   advancement with no conflict and unchanged PR diff does NOT invalidate verdicts; carry `reviews_ok`
   forward, update `head_sha`, and require fresh CI.
-- Resume vs. fresh run is decided by **liveness**, not by `state.md` existing: live work → resume;
+- Resume vs. fresh run is decided by **liveness**, not by `state.jsonl` existing: live work → resume;
   a finished prior run → ask the user before a fresh run; `--new` → fresh run with
   carryover (Loop control step 1). A finished run must never silently exit "all done" or silently
   restart.

@@ -40,7 +40,7 @@ the current working directory) — installed as `${CLAUDE_PLUGIN_ROOT}/skills/ca
 the repo at `plugins/gauntlet/skills/campaign/scripts/`. Pass their absolute paths to subtasks. The
 review gauntlet's `scripts/emit-progress.py` (already present there) emits canonical reviewer progress
 events (see `references/stage-2-review-gate.md`). `scripts/ledger.py` is the schema-owning accessor for
-`state.md` — read/write the ledger header and per-PR rows **by field name** through it, never by column
+`state.jsonl` — read/write the ledger header and per-PR rows **by field name** through it, never by column
 position (see `references/files-and-ledger.md`); pass its absolute path to subtasks the same way.
 
 ## Load Discipline
@@ -97,7 +97,7 @@ Read stage refs only when that stage/action is due:
 1. **Resolve run + lease;** adopt only absent/stale lease, stand down if fresh different owner.
 2. **Adopt `#PR` args + reconcile run-labelled PRs.** For each explicit `#PR`, adopt it per
    `references/pr-adoption.md` (refresh existing row on re-adoption, never duplicate); then reconcile
-   every PR carrying this run's `gauntlet-run-<run-id>` label from a batched snapshot. Treat `state.md`
+   every PR carrying this run's `gauntlet-run-<run-id>` label from a batched snapshot. Treat `state.jsonl`
    as cache.
 3. **Fold completed review / CI / fix tasks** against the SHA each ran on.
 4. **Triage tier per PR, then launch due gate work up to caps.** Re-derive each PR's tier from its

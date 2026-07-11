@@ -64,11 +64,11 @@ snapshot path.
 1. **Preflight the `#PR` set FIRST — read-only, before any run state.** Read every PR's metadata
    (`gh pr view`), run the refusal checks (foreign-owned, cross-repo/fork per `pr-adoption.md`), and
    verify all share a common `baseRefName`. This touches **no** run-id, `<rundir>`, lease, or
-   `state.md`. If any PR is refused or the bases disagree, **prompt and create nothing** — a rejected
+   `state.jsonl`. If any PR is refused or the bases disagree, **prompt and create nothing** — a rejected
    set must never leave an orphan run behind.
 2. **Only once preflight passes: mint the run-id + token, atomically create the clean `<rundir>`, and
    record the run.** A bare `mkdir` (no `-p`) of `.gauntlet/tmp/<new-run-id>/` starts empty and fails
-   loudly on the rare id clash (retry with a fresh id). Write the lease and the `state.md` header —
+   loudly on the rare id clash (retry with a fresh id). Write the lease and the `state.jsonl` header —
    with `base_branch` filled from the agreed `baseRefName` (known from preflight) — then adopt each PR
    (ledger row + labels + worktree + CI watch); a death mid-adoption still leaves a discoverable run.
    Any already-live run keeps its own dir, lease, and heartbeat; a fresh run never closes, merges, or
