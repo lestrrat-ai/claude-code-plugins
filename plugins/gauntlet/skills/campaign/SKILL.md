@@ -20,7 +20,11 @@ Invoke once. This skill drives its own loop via `ScheduleWakeup`; do NOT wrap it
 
 ## Args
 
-`/gauntlet:campaign [--run <id>] [--new] [#PR ...]`
+`/gauntlet:campaign  #PR... | --new #PR... | --run <id> | (no args)`
+
+These are **distinct modes**, not freely-composable flags: `--new` requires a `#PR` set; `--run <id>`
+resumes and takes no `#PR`/`--new`; `#PR` args alone start/adopt into a run. Invalid combinations
+(e.g. `--new` with no PRs, or `--run` with `#PR`) are rejected / fall through to the idle prompt.
 
 - `#12` / `#12 #15` -> adopt those existing PRs into a run; gate + merge them.
 - No argument -> discover this run's labelled PRs and continue. If none and nothing to do, PROMPT:

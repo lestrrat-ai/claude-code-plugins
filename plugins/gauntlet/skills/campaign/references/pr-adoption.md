@@ -113,7 +113,7 @@ For each `#PR` to adopt:
    ```
    git fetch origin refs/heads/<headRefName>:refs/remotes/origin/<headRefName>   # update origin/<headRefName> (explicit refspec — a bare `git fetch origin <hrn>` only writes FETCH_HEAD)
    # is <headRefName> already checked out somewhere? (root or a worktree)
-   existing=$(git worktree list --porcelain | awk '/^worktree /{p=$2} /^branch refs\/heads\/<headRefName>$/{print p}')
+   existing=$(git worktree list --porcelain | awk -v b="refs/heads/<headRefName>" '$1=="worktree"{p=$2} $1=="branch" && $2==b{print p}')
    if [ -n "$existing" ]; then
      worktree=$existing                                 # REUSE it; do NOT add another
      worktree_owned=no                                  # pre-existing checkout — campaign did NOT create it
@@ -138,8 +138,9 @@ For each `#PR` to adopt:
    # record $worktree in the row's `worktree` column, and $worktree_owned in `worktree_owned`
    ```
 
-   (The PR-numbered `git fetch origin pull/<pr>/head:<headRefName>` resolves to the same same-repo head
-   and may be used interchangeably; either way the local branch is the PR's `headRefName`.)
+   (Do **not** substitute `git fetch origin pull/<pr>/head:<headRefName>` here — that form writes the
+   local branch directly and is **refused** when `<headRefName>` already exists or is checked out. Use
+   the remote-tracking fetch above, then let the create/reuse logic handle the local branch.)
 
    Record the **actual** resolved `$worktree` — `$PROJECT/.worktrees/<headRefName>` is only the
    **created default** used on the `git worktree add` path; a reused checkout sits at some **other**

@@ -387,8 +387,10 @@ After delivering the confirmed-findings report, offer exactly once:
 - **Yes** → hand the confirmed fixes to `gauntlet:campaign`. Fix-implementation lives here now
   (salvaged from the old campaign fan-out); the campaign itself never writes fixes from scratch.
 
-On "yes", for each **Confirmed** or **Adjusted** finding only (skip Refuted and Uncertain), in its
-own branch off the base branch:
+On "yes", **first resolve the base branch** — for a PR/branch review target it's the PR's base /
+the branch's upstream; for a package/dir/single-file target where no base was resolved, use the repo's
+default branch or **ask the user** (never branch off an unresolved base). Then, for each **Confirmed**
+or **Adjusted** finding only (skip Refuted and Uncertain), in its own branch off that resolved base:
 
 1. Implement the fix — exactly the change in the finding's `Fix:`, nothing more; no drive-by edits.
 2. `git commit` the fix, then `git push` the branch.

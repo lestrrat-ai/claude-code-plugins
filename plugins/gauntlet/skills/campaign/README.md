@@ -117,7 +117,7 @@ flowchart TD
     I --> M
 
     M --> N{required SATISFIED verdicts on current SHA?}
-    N -- no --> PC{preconditions clear?<br/>Copilot done, CI green, no conflict}
+    N -- no --> PC{preconditions clear?<br/>Copilot done, CI not red, no conflict}
     PC -- no --> PCF[clear it first: address Copilot / fix CI / rebase] --> M
     PC -- yes --> O[run one review on HEAD SHA<br/>next only after the previous passes]
     O --> P{SATISFIED?}
