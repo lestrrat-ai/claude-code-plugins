@@ -20,7 +20,7 @@ Then install whichever plugins you want:
 
 | Plugin | What it is |
 |--------|------------|
-| [`gauntlet`](plugins/gauntlet/README.md) | Adversarial code review that follows through to a merge — reviews, files fixes as PRs, defends them through repeated review rounds and green CI, and merges. |
+| [`gauntlet`](plugins/gauntlet/README.md) | Adversarial review that gates PRs to merge: `review` reports findings (report-only by default, can opt in to opening PRs); `campaign` adopts existing PRs and defends each through repeated context-isolated reviews and green CI, then merges. |
 
 ## License
 

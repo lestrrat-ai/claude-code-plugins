@@ -1,5 +1,39 @@
 ## Stage 2 — Gates (orchestrator-owned, reactive)
 
+### 2a-triage. PR triage — file class & risk tier (deterministic, per `head_sha`)
+
+Before the review gauntlet, triage each PR to a **risk tier**. Triage is **deterministic** and
+**size-agnostic** — there are **NO line-count or file-count thresholds**; only *what kind* of file the
+PR touches and whether the change is systemic. Re-derive the tier **every wake** from the PR's current
+`head_sha` and pin it there; record it in the ledger `tier` column. Default to **STANDARD** whenever
+you are unsure. `reviews_ok` target = `required(tier)`: **1 if `tier==TRIVIAL`, else 2**.
+
+**File classes (classify every changed file; default CODE when unsure).**
+
+- **HUMAN-DOC** — human-facing prose only: top-level `README.md`, human `docs/**`, `CHANGELOG`,
+  `LICENSE`.
+- **CODE** — source files **and agent-consumed docs**: `SKILL.md`, a skill's `references/**`,
+  `CLAUDE.md`/`AGENTS.md`, `.claude/**`, prompt / agent-instruction files, any `.md` carrying
+  skill/agent frontmatter. Agent-docs are CODE, never HUMAN-DOC.
+- **SENSITIVE** (a CODE subset) — CI (`.github/**`), `scripts/**`, executables (`+x`),
+  `Dockerfile`/`Makefile`, dependency manifests/lockfiles, IaC, auth/crypto/secret paths.
+
+**Tiers (no size thresholds).**
+
+- **TRIVIAL** — **ALL** changed files are HUMAN-DOC → **1** review pass, **minimal** plan.
+- **STANDARD** — any CODE / agent-doc file changed, none SENSITIVE → **2** passes, plan **covers the
+  real review dimensions**.
+- **HIGH** — any SENSITIVE file changed, OR a systemic / cross-package / root-cause change → **2**
+  passes with **mandatory cross-cutting units + a deeper sweep** (Stage 2a-deep).
+
+**Escalation guardrails.**
+
+- Agent-docs are **never** TRIVIAL. A **single** non-HUMAN-DOC byte in the diff disqualifies TRIVIAL.
+- Re-triage and **escalate** (never de-escalate below what the content warrants) when: a `NOT
+  SATISFIED` lands, a `plan_amendment_request` is raised, or a content change **adds a
+  CODE/agent-doc/SENSITIVE file** to a PR that was TRIVIAL.
+- Tier is pinned to `head_sha` and re-derived every wake; on any uncertainty default STANDARD.
+
 ### 2a. The review gauntlet
 
 **Preconditions — clear Copilot items, CI, and conflicts before reviewing.** A review pass is
@@ -28,16 +62,16 @@ tip:
 Only launch a review pass once all three are clear for the current tip.
 
 Run reviews **one at a time per PR** — never two at once for the same SHA. When a PR's tip
-(`head_sha`) has fewer than two SATISFIED verdicts and no review already running for it, the wake's
-dispatch step launches **one** review pass by the selected reviewer (see "The reviewer") — a
-**fresh**, context-isolated pass over the whole `<base>...HEAD` diff, run as a **background** task
-(its completion is a wake; the loop folds the
-verdict in at step 2). The second, corroborating review is launched only **after** the first comes
-back SATISFIED — so a still-broken commit never burns the second review before the first has said
-"fix it". (Reviews for *different* PRs still run concurrently, up to the ~8 cap; it's only the two
-reviews for the same PR that serialize.) Each pass is a separate process with no shared context, so
-the second verdict is a fresh, context-isolated execution rather than a continuation influenced by the
-first.
+(`head_sha`) has fewer than `required(tier)` SATISFIED verdicts (2, or 1 for TRIVIAL) and no review
+already running for it, the wake's dispatch step launches **one** review pass by the selected reviewer
+(see "The reviewer") — a **fresh**, context-isolated pass over the whole `origin/<base>...HEAD` diff, run as
+a **background** task (its completion is a wake; the loop folds the verdict in at step 2). For a
+`required==2` tier the second, corroborating review is launched only **after** the first comes back
+SATISFIED — so a still-broken commit never burns the second review before the first has said "fix it"
+(a TRIVIAL PR needs no second pass). (Reviews for *different* PRs still run concurrently, up to the ~8
+cap; it's only the two reviews for the same PR that serialize.) Each pass is a separate process with no
+shared context, so the second verdict is a fresh, context-isolated execution rather than a
+continuation influenced by the first.
 
 **Kill doomed passes — don't let them finish.** If a precondition goes dirty while a review is in
 flight on a PR — CI turns red, Copilot items land, a conflict appears — or any content-changing fix
@@ -48,9 +82,9 @@ control step 3).
 
 If the selected reviewer is external (e.g. `codex exec`) and a pass can't return a verdict
 (quota/rate-limit, auth, timeout, or other system error — see "The reviewer"), retry it once, then run
-that pass as a **fresh subagent** reviewing the whole `<base>...HEAD` diff under the same output
+that pass as a **fresh subagent** reviewing the whole `origin/<base>...HEAD` diff under the same output
 contract — a `RESIDUAL-RISK` line on SATISFIED immediately above exactly one final `VERDICT:` line. A
-subagent fallback pass counts toward the two-SATISFIED-verdict gate exactly like an external pass —
+subagent fallback pass counts toward the review gate exactly like an external pass —
 it's another fresh, context-isolated re-roll in its own context. (When the reviewer is already Claude
 subagents, this *is* the normal path, not a fallback.)
 
@@ -76,7 +110,11 @@ Plan JSONL schema:
 
 Rules:
 
-- Keep units auditable and finite. Prefer 5–15 units; split huge units, merge tiny mechanical ones.
+- Keep units auditable and finite; split huge units, merge tiny mechanical ones. **Plan size follows
+  the tier, not a line count:** TRIVIAL → a **minimal** plan (the prose artifact(s) as unit(s));
+  STANDARD → enough units to **cover the real review dimensions** of the change; HIGH → those
+  dimensions **plus mandatory cross-cutting unit(s) and the deeper sweep** (Stage 2a-deep). There is
+  **no fixed unit-count band** — size to what the tier and content demand.
 - The plan describes PR content, so **reuse it across passes on unchanged content**: for pass 2 on
   the same SHA (or clean base-only rebase, diff unchanged), copy pass 1's plan to
   `review-<pr>-2.plan.jsonl` instead of re-deriving. Re-derive only when PR content changed.
@@ -130,7 +168,7 @@ emit it, so it is not subject to the emit-only rule.) The
 orchestrator resolves the bundled emitter's absolute path as `<skill-dir>/scripts/emit-progress.py`
 (skill dir = the directory holding the campaign `SKILL.md`) and, before dispatch, substitutes it for
 the `<SCRIPT>` placeholder in the review prompt — in the SAME way it substitutes `<rundir>`, `<pr>`,
-`<n>`, `<base>`, and `<branch>` — so the reviewer receives a concrete runnable path and never a literal
+`<n>`, `<base>`, and `<worktree>` — so the reviewer receives a concrete runnable path and never a literal
 `<SCRIPT>`. It passes that path into the prompt exactly as it already passes the progress file's
 absolute path; it also ensures the `<rundir>` is a reviewer-writable root (via `--add-dir`) so the
 reviewer can append. The reviewer MUST call that script to emit each event, which writes the canonical
@@ -149,15 +187,35 @@ The reviewer runs the following review contract (shown as the external-reviewer 
 default Claude-subagent path gives a fresh subagent the same instructions and output file):
 
 **Orchestrator:** before dispatching this command, substitute EVERY placeholder with its resolved
-value — `<rundir>`, `<pr>`, `<n>`, `<base>`, `<branch>`, and `<SCRIPT>` (the resolved absolute path
+value — `<rundir>`, `<pr>`, `<n>`, `<base>`, `<worktree>`, and `<SCRIPT>` (the resolved absolute path
 `<skill-dir>/scripts/emit-progress.py`). The reviewer must receive a concrete runnable path, never a
 literal `<SCRIPT>`.
 
+**Note:** the review runs in `<worktree>` — the PR row's ledger `worktree` column value, the single
+source of truth for this PR's checkout path (created at adoption/pre-review per `pr-adoption.md`; the
+ledger-recorded `<worktree>` path — default `.worktrees/<headRefName>` when campaign creates it, else
+a reused existing checkout). That `<worktree>` is guaranteed to
+exist here — it is created from the PR head before dispatch (per `pr-adoption.md` step 5 / Loop
+control's review-launch precondition), so the review always has a real checkout to diff `origin/<base>...HEAD`.
+
+**Fetch `origin/<base>` fresh before the first review dispatch.** The review diffs
+`origin/<base>...HEAD` — a **remote-tracking** ref, not a possibly-absent local `<base>` (adoption
+fetches only the PR head, so a local `<base>` may not exist, and a PR may target a stale or as-yet-
+uncreated base). Before dispatching the first review pass for a PR, refresh the base's remote-tracking
+ref so the diff always has a base to measure against:
+
 ```
-codex exec --sandbox workspace-write -c "sandbox_workspace_write.network_access=true" -C $PROJECT/.worktrees/<branch> \
+git fetch origin refs/heads/<base>:refs/remotes/origin/<base>   # explicit refspec — updates origin/<base> even when no local <base> is checked out
+```
+
+This is idempotent and safe to repeat; run it (or rely on adoption's step-5 base fetch) before the
+review launches. All review diffs then use `origin/<base>...HEAD`.
+
+```
+codex exec --sandbox workspace-write -c "sandbox_workspace_write.network_access=true" -C <worktree> \
   --add-dir $PROJECT/<rundir> \
-  -o <rundir>/review-<pr>-<n>.txt \
-  "Review the changes on this branch vs <base> (the whole git diff <base>...HEAD). \
+  -o $PROJECT/<rundir>/review-<pr>-<n>.txt \
+  "Review the changes on this branch vs origin/<base> (the whole git diff origin/<base>...HEAD). \
    First read $PROJECT/<rundir>/review-<pr>-<n>.plan.jsonl, then critically assess whether its units \
    cover the review dimensions this change actually needs — the plan is the orchestrator's starting \
    point, not a guarantee of complete coverage. If an important dimension is missing or a unit is \
@@ -191,15 +249,17 @@ codex exec --sandbox workspace-write -c "sandbox_workspace_write.network_access=
 
 As each verdict lands, tally it for the SHA it ran on:
 
-- **NOT SATISFIED** → dispatch a scoped fix subagent into that worktree with the issue list; it
+- **NOT SATISFIED** → dispatch a scoped fix subagent into `<worktree>` (the PR row's ledger
+  `worktree` column value) with the issue list; it
   commits + pushes → HEAD advances → the SHA's tally is void. A later wake starts a fresh review on
   the new tip. (Because reviews are sequential, no second review was spent on this broken commit.)
-- **SATISFIED** → record it. If it's the **first** for this SHA, the next wake launches the second
-  (corroborating) review on the same SHA. If it's the **second** SATISFIED on the same SHA, the
-  review gate is met for this HEAD — swap the PR's label:
-  `gh pr edit <pr> --remove-label gauntlet-reviewing --add-label gauntlet-accepted`.
+- **SATISFIED** → record it. The gate is met once this SHA holds `required(tier)` SATISFIED verdicts
+  (2, or 1 for TRIVIAL). If the tally is still short of the target — e.g. the **first** SATISFIED on a
+  `required==2` PR — the next wake launches the next (corroborating) review on the same SHA. When the
+  tally **reaches** `required(tier)` on the same SHA, the review gate is met for this HEAD — swap the
+  PR's label: `gh pr edit <pr> --remove-label gauntlet-reviewing --add-label gauntlet-accepted`.
 
-Every pass reviews the whole `<base>...HEAD` diff (not just the last fix-delta), so accumulated fixes
+Every pass reviews the whole `origin/<base>...HEAD` diff (not just the last fix-delta), so accumulated fixes
 are always judged as one piece.
 
 **Unstructured adversarial sweep.** After a pass finishes every planned unit, it runs one brief
@@ -220,17 +280,26 @@ gate, NEVER enters the fix loop, and is NEVER fed into the corroborating review 
 context-isolated). It reflects the gauntlet's purpose — lower the odds a defect survives stochastic
 variation, not claim certainty — by making residual uncertainty explicit instead of hidden behind a
 binary verdict. Record it with the verdict and carry **each accepting pass's** line into the final
-report, grouped by PR (a PR accepts on two SATISFIED passes, so two lines). Its only aggregate use:
+report, grouped by PR (one line per accepting pass — so `required(tier)` lines: two for a
+STANDARD/HIGH PR, one for a TRIVIAL PR). Its only aggregate use (when a PR has ≥2 accepting passes):
 when **both** accepting passes on the same content name the same area, note that convergence in the
 report, and the orchestrator MAY add a plan unit covering it the next time the PR content changes and a
 fresh review round starts — but it never blocks the current gate.
 
-**Gate is two fresh, context-isolated SATISFIED verdicts on the same PR content.** The two passes are
+**Gate is `required(tier)` fresh, context-isolated SATISFIED verdicts on the same PR content — two,
+EXCEPT a TRIVIAL human-prose-only PR gates on one.** Any change touching code, an agent-doc, or a
+SENSITIVE file always requires **two**; only a PR whose *entire* diff is HUMAN-DOC prose (tier TRIVIAL)
+gates on **one**. A `NOT SATISFIED`, a `plan_amendment_request`, or a content change that adds a
+CODE/agent-doc/SENSITIVE file re-triages the PR upward (Stage 2a-triage), which can raise the target
+from one to two — so a PR can never merge on a single pass once its content stops being pure prose. For
+a two-pass gate the passes are
 not statistically or epistemically independent observations — they judge the same diff under the same
 review task and protocol (and, when both passes run the same reviewer, the same model and prompt), so
 their verdicts are correlated and this is not a probabilistic proof of correctness. What the second pass
 buys is a re-roll of a stochastic reviewer: a fresh execution, with none of the first pass's context
-to anchor it, that can catch a defect the first pass happened to miss. Record the reviewed SHA
+to anchor it, that can catch a defect the first pass happened to miss — worth the spend for code and
+agent-facing instructions, where a surviving defect is expensive, but not for pure human prose, where
+one adversarial pass is proportionate. Record the reviewed SHA
 (`git rev-parse HEAD`) with each pass. A verdict counts while its SHA equals the live tip. It also
 continues to count after `<base>` advances if the PR is still non-conflicting and the PR diff/content
 is unchanged (e.g. clean base-only rebase); carry `reviews_ok` forward to the new `head_sha` and set
@@ -238,11 +307,11 @@ is unchanged (e.g. clean base-only rebase); carry `reviews_ok` forward to the ne
 formatter/bot commit on the PR branch, or manual push — earlier verdicts are stale and `reviews_ok`
 drops to 0. Pinning to SHA plus the clean-base-only exception makes the gate verifiable from git while
 not burning reviews merely because another PR merged cleanly. A `NOT SATISFIED` invalidates that
-content's tally even before a fix lands. The two satisfied verdicts and green CI must all describe the
-same live PR content; CI must still be green for the current HEAD SHA.
+content's tally even before a fix lands. The `required(tier)` SATISFIED verdicts and green CI must all
+describe the same live PR content; CI must still be green for the current HEAD SHA.
 
 **Status labels mirror the review gate.** A PR carries `gauntlet-reviewing` until its current HEAD
-holds two SATISFIED verdicts for the same live PR content, then `gauntlet-accepted`. Because any
+holds `required(tier)` SATISFIED verdicts for the same live PR content, then `gauntlet-accepted`. Because any
 PR-content change resets the gate, if an accepted PR's content later changes — a CI fix,
 conflict-resolving rebase, formatter/bot commit, etc. — swap the label back
 (`--remove-label gauntlet-accepted --add-label gauntlet-reviewing`). A clean base-only rebase with

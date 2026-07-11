@@ -2,65 +2,109 @@
 
 Part of the [gauntlet](../../README.md) plugin.
 
-Point it at your code and it runs a tough, end-to-end review cycle for you: an adversarial review
-finds problems, each real one gets fixed in its own pull request, every PR is re-reviewed until it
-passes a strict quality bar **and** CI is green, and then it merges — all on its own, hands-off.
+Point it at existing pull requests and it drives each one to merge: it re-reviews the PR against a
+strict quality bar, waits for CI to go green, and merges — all on its own, hands-off. It doesn't go
+hunting for problems and it doesn't write fixes from scratch; it **gates PRs that already exist**
+(yours, or ones [`/gauntlet:review`](../review/SKILL.md) opened for you) and merges each only once it
+clears the bar.
 
-Think of it as an automated senior reviewer that doesn't just leave comments, but follows through:
-files the fixes, defends them through repeated review rounds, waits for CI, and ships.
+Think of it as an automated senior reviewer that follows through: it defends each PR through repeated
+context-isolated review rounds, fixes up whatever review or CI turns up on the PR itself, waits for
+CI, and ships.
 
 ## What it's good for
 
-- Hardening a codebase or a feature area before a release.
-- Turning "someone should really review this" into actual merged fixes.
-- Running a thorough pass unattended while you do something else.
+- Driving a batch of open pull requests to merge under one strict, repeatable quality gate.
+- Following up on a `gauntlet:review` report — turning its confirmed findings (opened as PRs) into
+  actual merged fixes.
+- Gating agent-facing changes (a `SKILL.md`, `CLAUDE.md`, prompt or reference file) with the same
+  two-pass rigor as source code — those never get the lighter docs-only treatment.
 
 ## How to use it
 
 ```
-/gauntlet:campaign                 # campaign over the whole repo
-/gauntlet:campaign auth & sessions # campaign over just that area or topic
-/gauntlet:campaign --new           # force a brand-new run, even over an old one
+/gauntlet:campaign #12          # adopt PR #12 into a run, gate it, merge it
+/gauntlet:campaign #12 #15      # adopt several PRs into one run
+/gauntlet:campaign              # resume this run's PRs, or prompt if there's nothing to gate
+/gauntlet:campaign --new #20    # start a fresh run for a new set of PRs
 ```
 
-Run it **once** — that's it. It schedules its own follow-ups and keeps working until everything is
-resolved; you don't need to keep it open or re-run it.
+Give it one or more PR numbers and it **adopts** them into a run: it labels each PR so the run owns
+it, classifies the change by the *kind* of files it touches — human-facing docs vs code vs
+agent-consumed docs vs sensitive surfaces — to pick a review tier (the change's size never enters
+into it), then starts gating. Run it **once** — it schedules its
+own follow-ups and keeps working until every adopted PR is merged or set aside; you don't need to
+keep it open or re-run it.
 
-If you do come back and run it again later, it does the sensible thing. Run it plain (no area) and it
-resumes a run that's still in progress; if the last run already finished it asks whether to start a
-fresh one rather than restarting silently or insisting everything's already fixed. Give it an area
-(or `--new`) and it starts a new run instead — which is also how you deliberately run two at once over
-different parts of the code. A fresh run isn't a blind redo — it remembers what earlier runs learned (which findings it
-gave up on, which it set aside as your call, and which it judged not worth fixing) so it can pick up
-the unfinished threads and not re-litigate the same non-issues. Add `--new` (or just say "start a
-fresh run") to force a new run immediately without being asked.
+Run it plain, with no arguments, and it picks up the PRs already under this run and continues where
+it left off. If there's nothing left to gate it doesn't invent work — it tells you so and points you
+at `gauntlet:review` to find issues, or asks for PR numbers. There's no whole-repo sweep and no
+area/topic argument any more: campaign gates PRs you hand it, it doesn't go looking for problems.
+
+Where do the PRs come from? You open them, or `gauntlet:review` does. Run `gauntlet:review` first for
+a confirmed-findings report; at the end it can open one PR per confirmed fix and hand them
+straight to a campaign — see [the handoff below](#where-the-prs-come-from-the-review-handoff).
+
+Come back later and it still does the sensible thing. `--run <id>` resumes a specific run; `--new`
+(or just "start a fresh run") begins a fresh run over a new PR set — which is also how you
+deliberately run two at once over different PRs. A fresh run isn't a blind redo: it remembers what
+earlier runs learned (which PRs it gave up on, which it set aside as your call) so it doesn't
+re-litigate the same ground.
+
+## Where the PRs come from: the review handoff
+
+Campaign gates PRs; it doesn't find the problems. [`/gauntlet:review`](../review/SKILL.md) is the
+other half. Review runs its two-pass adversarial pass and, by default, only reports — it makes no
+source/tracked-file or GitHub changes (it may write ephemeral `.gauntlet/tmp` review scratch). But at
+the end of a confirmed-findings report it offers an opt-in step: open one pull request per
+confirmed fix, then invoke `/gauntlet:campaign #PRs` on exactly those PRs. That handoff is where a
+finding turns into code and a PR; campaign takes it from there and drives each PR to merge. Decline
+the offer and review stays report-only — no source or GitHub changes are written. So the usual
+progression is **`gauntlet:review` to find and confirm, then `gauntlet:campaign` to gate and merge**.
+You can also skip review entirely and hand campaign PR numbers you opened yourself.
 
 ## What to expect
 
-It opens a pull request for each problem worth fixing and merges them itself once they pass two
-separate, context-isolated reviews of the same PR content and CI is green. (Two fresh reviews rather than
-one because a single stochastic review can miss a defect — not because two runs are statistically
-independent; reading the same diff under the same review task makes their verdicts correlated.) There's no approval step along the way, so
-starting it is your sign-off — and a whole-repo run can spin up several PRs and keep going for a
-while before it's done.
+It drives each adopted PR to merge and merges it itself once the PR passes the reviews its tier
+requires and CI is green. How many reviews depends on what the PR touches: a documentation-only PR
+(human-facing prose alone) needs **one**; anything touching code or agent-facing files — source,
+`SKILL.md`, `CLAUDE.md`, prompts, CI, scripts — always gets the full **two-pass** gate. (Two reviews
+rather than one because a single stochastic review can miss a defect — not because two runs are
+statistically independent; reading the same diff under the same review task makes their verdicts
+correlated.) Aside from the public-API confirmation described below, there's no approval step along
+the way, so starting it is your sign-off — and a run over
+several PRs can keep going for a while before it's done.
 
-The loop is PR-first: it implements, commits, pushes, opens or updates the PR, then watches CI and
-reviews that PR's current HEAD. Review and CI fixes get another commit and push on the same PR; it
-doesn't keep work local until everything has passed.
+The loop works on each PR in place: it reviews the PR's current HEAD and watches its CI. When a
+review or CI failure needs fixing, a scoped subagent commits and pushes the fix onto the PR's **own**
+branch — a new HEAD that resets the gate (verdicts and CI are pinned to a SHA). It never writes a fix
+from scratch or opens a PR of its own; every change it makes is in service of getting an existing PR
+through.
 
-It also doesn't wait around. On a big scope the review sweep runs in slices, and fixes start flowing
-as soon as the first findings are confirmed — while the rest of the sweep is still going. Everything
-long-running happens in the background, so at any moment it's doing all the work that's ready to do.
+It also doesn't wait around. Everything long-running — reviews, CI watches, fix subagents — happens
+in the background across all the adopted PRs at once, so at any moment it's doing all the work that's
+ready to do.
 
 You can follow along on GitHub: each PR is labeled `gauntlet-reviewing` while it's working through
-the loop, and that flips to `gauntlet-accepted` once it has passed both reviews (the skill creates
-the labels if your repo doesn't have them).
+the loop, and that flips to `gauntlet-accepted` once it has passed the review(s) its tier requires —
+one for a TRIVIAL docs-only PR, two for anything touching code or agent-facing files (the skill
+creates the labels if your repo doesn't have them).
 
 By default it checks with you before changing anything in your public API — exported signatures,
 formats, CLI flags, defaults, or any behavior callers depend on — so it never merges a breaking
 change behind your back. Tell it up front that breakage is fine and it'll stop asking.
 
-It tidies up as it goes, deleting merged branches and their worktrees. If a fix just can't clear the
+It tidies up as it goes, but by default it leaves your branches alone. A merged PR's **remote** head
+branch is **left in place** — it may be your own branch, so campaign never deletes it (your repo's
+auto-delete setting, or you, handle that). Locally it removes only the worktree and branch it created
+itself for that PR; a pre-existing checkout or a pre-existing local branch it merely reused (e.g. your
+own branch already checked out) is left untouched and reported. If you'd rather it tidy the **remote**
+side too, you can tell it — in plain language when you start the run (there's no special flag), or via a
+saved preference — that it may delete the PRs' **remote** head branches on merge; then the merge deletes
+that remote branch. That grant affects **only** the remote branch: locally it still removes only the
+worktree and branch it created itself, and it **never** deletes a checkout or local branch you already
+had (or your main checkout) — that safety is identical whether or not you grant it. It's opt-in; left
+unset, the leave-your-branches-alone default holds. If a fix just can't clear the
 bar, it retries once, then sets that one aside with a note on why and moves on rather than stalling
 everything else. When it's finished you get a short rundown: what merged, what it gave up on, and
 anything it left for you to weigh in on.
@@ -69,48 +113,34 @@ anything it left for you to weigh in on.
 
 ```mermaid
 flowchart TD
-    A(["invoke /gauntlet:campaign"]) --> A1{"live work, finished run, or --new?"}
-    A1 -- live work --> A2[resume: reconcile + continue loop] --> M
-    A1 -- finished run --> A3{start a new run?}
-    A3 -- no --> A4([prior final report])
-    A3 -- yes --> B
-    A1 -->|"nothing yet / --new"| B
-    B{area or topic given?}
-    B -- yes --> C[reviewer sweeps that area]
-    B -- no --> D[reviewer whole-repo sweep, in slices]
-    C --> E["neutral verification pass<br/>(streamed: each slice verifies as it lands)"]
-    D --> E
-    E --> F{more than 10 findings?}
-    F -- yes --> G[parallel verifier shards] --> H[dedup each survivor against the run's set on arrival]
-    F -- no --> I[single verifier]
-    H --> J
-    I --> J[survivors = CONFIRMED or ADJUSTED]
-    J --> K[Stage 1: fan out - one PR per finding,<br/>starting while the sweep continues]
-    K --> L0[per finding: worktree off base branch, implement the fix]
-    L0 --> AB{changes public API surface or behavior?}
-    AB -- no --> L[commit, push, open PR, launch CI watch]
-    AB -- yes --> AC{api_changes flag?}
-    AC -- allowed --> L
-    AC -- ask --> AD[park finding awaiting-api, confirm with user]
-    AD --> AE{approved?}
-    AE -- yes --> L
-    AE -- no --> AF[skip - report at end]
-    L --> M[[event loop: gate each PR]]
+    A(["invoke /gauntlet:campaign #PRs"]) --> B{PR numbers, no args, or --new?}
+    B -- "#PRs / --new #PRs" --> C[adopt each PR: ledger row + run label,<br/>launch CI watch]
+    B -- "no args" --> D{PRs already under this run?}
+    D -- yes --> C
+    D -- no --> E([prompt: run gauntlet:review<br/>or pass PR numbers])
+    C --> F[triage tier per PR head SHA]
+    F --> G{tier}
+    G -- "TRIVIAL: human-docs only" --> H[target: 1 SATISFIED review]
+    G -- "STANDARD / HIGH: any code or agent-doc" --> I[target: 2 SATISFIED reviews]
+    H --> M[[event loop: gate each PR]]
+    I --> M
 
-    M --> N{2 SATISFIED on current SHA?}
-    N -- no --> O[run one review on HEAD SHA<br/>second only after the first passes]
+    M --> N{required SATISFIED verdicts on current SHA?}
+    N -- no --> PC{preconditions clear?<br/>Copilot done, CI not red, no conflict}
+    PC -- no --> PCF[clear it first: address Copilot / fix CI / rebase] --> M
+    PC -- yes --> O[run one review on HEAD SHA<br/>next only after the previous passes]
     O --> P{SATISFIED?}
-    P -- no --> Q[scoped fix subagent: commit + push, new SHA]
+    P -- no --> Q[scoped fix subagent: commit + push<br/>to the PR's own branch, new SHA]
     P -- yes --> M
     N -- yes --> R{CI status on current SHA?}
     R -- red --> S[scoped CI-fix subagent: commit + push, new SHA]
     R -- pending --> M
-    Q --> T[reset gates - verdicts and CI are SHA-pinned]
+    Q --> T[reset gate - verdicts and CI are SHA-pinned,<br/>re-triage tier on the new SHA]
     S --> T
     T --> M
-    R -- green --> U[merge: serialized, auto, squash, delete-branch]
+    R -- green --> U[merge: serialized, auto, squash<br/>remote branch per ownership: default left in place]
     U --> U2[sync local base branch to remote ff-only]
-    U2 --> V[cleanup worktree + local branch, mark merged]
+    U2 --> V[cleanup campaign-created worktree/branch only<br/>reused checkouts + branches left in place, mark merged]
     V --> W{all PRs merged or aborted?}
     W -- no --> M
     W -- yes --> X[write carryover ledger + final report] --> X2([done])
@@ -124,9 +154,10 @@ flowchart TD
 
 ## Good to know
 
-- You can run more than one at a time in the same repo — say one over `auth` and another over
-  `storage`. Each is its own isolated run with its own pull requests and bookkeeping, so they never
-  step on each other. And if a run gets interrupted, another agent can pick it up right where it left
+- You can run more than one at a time in the same repo — say one gating PRs `#12 #13` and another
+  gating `#20`. Each is its own isolated run with its own pull requests and bookkeeping, so they never
+  step on each other; a PR already owned by one run's label won't be stolen by another. And if a run
+  gets interrupted, another agent can pick it up right where it left
   off: it can tell a run that's still being actively driven from one that's been abandoned, so it only
   ever resumes an orphaned run and never doubles up on one already in progress.
 - By default the reviewer is Claude's own subagents, so it runs with nothing extra installed. For a

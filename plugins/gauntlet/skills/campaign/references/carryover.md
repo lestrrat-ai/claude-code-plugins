@@ -1,103 +1,84 @@
 ## Fresh runs and carryover
 
-A **fresh run** is a new Stage 0/1 cycle started when a prior run already happened — triggered either
-by the user answering "yes" to the finished-run prompt (Loop control step 1) or by an explicit
-`--new`. It is *not* a resume: it does a brand-new adversarial sweep. What makes it more than a blind
-re-run is **carryover** — it inherits what earlier runs already learned.
+A **fresh run** gates a **new PR set** under a new run-id — triggered either by the user answering
+"yes" to the finished-run prompt (Loop control step 1) or by an explicit `--new`. It is *not* a
+resume of the prior run's PRs: `--new` mints a **fresh run-id** for a new set of PRs to adopt (see the
+args grammar), leaving any already-live run untouched. There is **no adversarial sweep to seed** — the
+campaign only gates+merges the PRs it is handed — so carryover is a lightweight **historical record**,
+not sweep input.
 
 ### The carryover ledger — `.gauntlet/history/`
 
 A durable, git-ignored store (a sibling of `.gauntlet/tmp/`, NOT under it — scratch gets wiped, this
-must not). To stay
-concurrency-safe it is **one file per run**, `.gauntlet/history/<run-id>.md` — never a single
-shared file two runs could clobber. Each finished run writes **its own** file exactly once; a fresh
-run reads **every file in the directory** (concatenated) so knowledge compounds across runs. A per-run
-file records:
+must not). To stay concurrency-safe it is **one file per run**, `.gauntlet/history/<run-id>.md` —
+never a single shared file two runs could clobber. Each finished run writes **its own** file exactly
+once. A per-run file records what that run's PRs came to:
 
-- **merged** — finding slug + one-line fix, per PR that shipped.
-- **aborted** — finding slug + why it couldn't clear the bar (pointer to its `abort-<id>.md` if still
-  present).
-- **declined-api** — findings parked under `ask` that the user declined, with the change they'd have
-  needed.
-- **refuted** — findings the verification pass rejected as non-issues, with a one-line reason.
-- **uncertain** — findings left for the user to triage.
+- **merged** — PR number + slug + one-line description, per PR that shipped.
+- **aborted** — PR number + slug + why it couldn't clear the bar (pointer to its `abort-<id>.md` if
+  still present).
+- **skipped (API-declined)** — a PR whose API-changing fix the user was asked about and declined, with
+  the change it would have needed.
 
-If `.gauntlet/history/` doesn't exist, create it (and add `.gauntlet/` to the repo's
-`.gitignore` if it's not already ignored). When the directory is empty, a fresh run is just a normal
-first run.
+If `.gauntlet/history/` doesn't exist, create it (and add `.gauntlet/` to the repo's `.gitignore` if
+it's not already ignored). When the directory is empty, a fresh run is just a normal first run.
 
-**Why per-run files.** Because each run only ever writes and prunes its **own** file, appends never
-contend and there is no shared-file rewrite to race — the append/prune hazard of a single `history.md`
-is gone. (A legacy single `history.md`, if present from before this split, is still read for carryover;
-leave it in place as read-only history.)
+**Why per-run files.** In normal operation each run WRITES only its **own** file, so concurrent runs
+never contend on a shared rewrite. Pruning is the one exception: a **fresh** run may edit or remove
+OTHER runs' files, but only those of **finished** runs (no live writer/lease) — never a file an
+actively-driven run owns — so there is still no write contention with a live writer. (A legacy single
+`history.md`, if present from before this split, is still read as read-only history; leave it in
+place.)
 
 ### Pruning the ledger
 
-The ledger grows append-only during runs, so **prune it regularly** — at the start of every fresh
-run (right before feeding carryover into Stage 0), and any time the user asks. The goal is to drop
-entries that **no longer apply to the current code**, so stale context can't mislead the new sweep.
-Check each entry against current `<base>`:
+The store grows one file per run, so **prune it regularly** — early in every fresh run, once that
+run's PRs are adopted and its `base_branch` is resolved (pruning keys off the base), and any time the
+user asks. The goal is to drop entries that **no longer apply to the current code**:
 
-- **refuted / aborted / uncertain** whose cited `file:line` no longer exists, or whose code has
-  materially changed since — the finding as recorded can't still hold. A changed refuted/aborted site
-  should be *re-judged fresh* by the new sweep, not carried as a settled verdict, so drop the stale
-  entry.
-- **declined-api** whose referenced surface no longer exists, or that has since shipped — moot.
+- **aborted** whose cited `file:line` no longer exists, or whose PR has since merged/closed by other
+  means — the recorded blocker can't still hold.
+- **skipped (API-declined)** whose referenced surface no longer exists, or that has since shipped —
+  moot.
 - **merged** entries are historical record and cheap; keep them unless the user wants them condensed.
 
 **Confirm before deleting when unsure — this is the load-bearing rule.** Delete outright *only*
-entries that are unambiguously moot: the exact cited site is gone and there's nothing to re-judge.
-For anything you're not certain about — the site moved but the concern might still stand, an aborted
-finding you can't confirm was resolved, a declined-api you're unsure shipped — **do NOT delete it.
-List those candidates with why each looks stale and ask the user** which to remove. Never silently
-drop an entry you're uncertain about; a wrongly-pruned `refuted` re-opens a settled non-issue, and a
-wrongly-pruned `aborted` loses a real unfinished thread.
+entries that are unambiguously moot: the exact cited site is gone. For anything you're not certain
+about — an aborted PR you can't confirm was resolved, a declined API change you're unsure shipped —
+**do NOT delete it. List those candidates with why each looks stale and ask the user** which to
+remove. Never silently drop an entry you're uncertain about.
 
-**The question must not stall the run.** Keep every uncertain entry in place, feed carryover as-is,
-and launch Stage 0 immediately — surface the candidate list to the user in the same message and fold
-the answer in when it lands as its own wake (prune then; kept-by-default entries are only advisory
-verifier context, so starting without the answer costs nothing). Same principle as "never hold the
-run hostage on a user prompt" (Run lease).
-
-Note what was pruned (and what the user kept) so the decision is auditable on the next run.
+**The question must not stall the run.** Keep every uncertain entry in place and start the run's work
+immediately — surface the candidate list to the user in the same message and fold the answer in when
+it lands as its own wake (prune then). Same principle as "never hold the run hostage on a user prompt"
+(Run lease). Note what was pruned (and what the user kept) so the decision is auditable next run.
 
 A run is distilled into the ledger **exactly once**, on its **normal exit** (all its PRs terminal) —
 Loop control step 5 writes that run's own `.gauntlet/history/<run-id>.md`. The finished-run
-"ask the user → yes" path reuses *that* file; it does not re-distill. (`--new` no longer pre-empts
-other runs — each run is isolated and always distills itself on its own exit — so there is no
-mid-flight snapshot path.)
+"ask the user → yes" path reuses *that* file; it does not re-distill. `--new` never pre-empts other
+runs — each run is isolated and always distills itself on its own exit — so there is no mid-flight
+snapshot path.
 
 ### Starting a fresh run
 
-1. **Mint the new run-id + agent token; atomically create its clean `<rundir>`.** Per-run dirs make a
-   fresh run isolated by construction — a bare `mkdir` (no `-p`) of `.gauntlet/tmp/<new-run-id>/`
-   starts empty and fails loudly on the rare id clash, so retry with a fresh id; there is nothing to
-   archive and no prior scratch to wipe. Write the
-   lease and a minimal `state.md` header immediately (so the run is discoverable before Stage 0
-   finishes). Any already-live run keeps its own dir, lease, and heartbeat; a fresh run never closes,
-   merges, or stops driving another run's PRs (abandoning a specific run is a separate explicit ask).
-2. **Read every file in `.gauntlet/history/`, then prune** (drop entries no longer applicable
-   to current `<base>`; uncertain deletions are asked about **without blocking** — keep the entries
-   and launch Stage 0 while the question is pending, see "Pruning the ledger"). Pruning only ever
-   edits **finished** runs' own files (no live writer), so there's nothing to race. Feed the pruned
-   carryover into Stage 0 (below).
-3. Proceed through Stage 0 → Stage 1 → the loop as normal, on the clean `<rundir>`.
-
-### How carryover shapes Stage 0
-
-- **Re-surface unresolved items.** Seed the verification pass with the prior **aborted**,
-  **declined-api**, and **uncertain** findings as priority candidates: if the new sweep
-  re-finds them (or they're still live in the code), they survive into the ledger ahead of net-new
-  findings rather than being silently forgotten. A declined-api finding stays parked under `ask`
-  unless the user has since OK'd it.
-- **Suppress known false-positives.** Give the neutral verifier the prior **refuted** set so it
-  doesn't re-litigate the same non-issues — a finding matching a prior refutation is dropped unless
-  the code at that site has since changed (in which case re-judge it fresh).
-- **Dedup already-merged fixes.** Give the verifier the prior **merged** set so it doesn't re-propose
-  work already shipped. (Usually moot — the merged fix changed the code — but it catches a sweep that
-  re-flags the same site from a different angle.)
-
-Carryover is advisory context for the verifier, never an auto-accept or auto-reject: every finding
-still goes through normal CONFIRMED/ADJUSTED/REFUTED/UNCERTAIN judgement.
+1. **Preflight the `#PR` set FIRST — read-only, before any run state.** Read every PR's metadata
+   (`gh pr view`), run the refusal checks (foreign-owned, cross-repo/fork per `pr-adoption.md`), and
+   verify all share a common `baseRefName`. This touches **no** run-id, `<rundir>`, lease, or
+   `state.md`. If any PR is refused or the bases disagree, **prompt and create nothing** — a rejected
+   set must never leave an orphan run behind.
+2. **Only once preflight passes: mint the run-id + token, atomically create the clean `<rundir>`, and
+   record the run.** A bare `mkdir` (no `-p`) of `.gauntlet/tmp/<new-run-id>/` starts empty and fails
+   loudly on the rare id clash (retry with a fresh id). Write the lease and the `state.md` header —
+   with `base_branch` filled from the agreed `baseRefName` (known from preflight) — then adopt each PR
+   (ledger row + labels + worktree + CI watch); a death mid-adoption still leaves a discoverable run.
+   Any already-live run keeps its own dir, lease, and heartbeat; a fresh run never closes, merges, or
+   stops driving another run's PRs.
+3. **Read every file in `.gauntlet/history/`, then prune against the resolved `base_branch`** (drop
+   entries no longer applicable to that base; uncertain deletions are asked about **without blocking**
+   — keep the entries and proceed, see "Pruning the ledger"). Pruning only ever edits **finished**
+   runs' own files (no live writer), so there's nothing to race.
+4. Enter the loop as normal, on the clean `<rundir>`. Carryover is advisory historical context only —
+   it de-dups against already-merged/aborted work and reminds the user of parked API-declined changes;
+   it never auto-adopts or auto-skips a PR.
 
 ---
