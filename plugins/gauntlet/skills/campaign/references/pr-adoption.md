@@ -74,9 +74,15 @@ For each `#PR` to adopt:
      keep their branch — do NOT mint a `fix-<run-id>-...` branch); `worktree` = `-` until the head
      worktree is created in step 5 (before its first review pass), then `$PROJECT/.worktrees/<headRefName>`;
      `pr` = `<N>`; `head_sha` = `headRefOid`.
-   - `reviews_ok` = `0` on first adoption (no verdicts yet against our watch); `ci` = `pending`
-     (unknown until the first `gh pr checks`); `tier` = triage per `head_sha` ("Adaptive review tiers");
-     `attempts` = `1`; `started` = now; `api_approval` = `-`; `status` = `in_review`.
+   - **On a NEW row only, initialize:** `reviews_ok` = `0` (no verdicts yet); `ci` = `pending`;
+     `tier` = triage per `head_sha` ("Adaptive review tiers"); `attempts` = `1`; `started` = now;
+     `api_approval` = `-`; `status` = `in_review`.
+   - **On a REFRESH of an existing row, PRESERVE the durable/live fields** — `api_approval`, `attempts`,
+     `started`, `status`, `reviews_ok`, and `tier` — do **NOT** reset them (that would violate the
+     durable API-decision contract, `files-and-ledger.md` / `scope-and-constraints.md`, and could re-ask
+     or revive an already-declined/aborted PR). Only re-read `head_sha`/`ci` from ground truth; reset
+     `reviews_ok` to `0` and re-triage `tier` **only if** reconciliation detects a PR-content change
+     since the recorded `head_sha` (per the gate's SHA-pinning rules).
 
    The ownership marker for an adopted PR is the **label**, not the branch name (its branch won't match
    the `fix-<run-id>-` prefix) — so labelling in step 4 is what makes the PR ours.
