@@ -27,7 +27,7 @@ repo root, `.gauntlet/` (git-ignored; add `.gauntlet/` to `.gitignore` if missin
 
 | Path | Lifetime |
 |------|----------|
-| `.gauntlet/tmp/<run-id>/` | Ephemeral. Safe to wipe once a run reaches a terminal state. |
+| `.gauntlet/tmp/<run-id>/` | Ephemeral scratch. A **terminal** run's dir is kept so a later bare invocation can detect the *finished* run and offer the finished-run prompt (Loop control step 1); it is otherwise disposable — wiping it only loses that prompt (discovery then falls back to the generic "pass PR numbers" prompt), never carryover, which lives in `history/`. Not wiped mid-run. |
 | `.gauntlet/history/<run-id>.md` | Durable. The carryover ledger — the one thing a *new* run needs to remember from old ones. |
 
 **Only `.gauntlet/tmp/` is disposable — never `rm -rf .gauntlet/` itself.** That would take the

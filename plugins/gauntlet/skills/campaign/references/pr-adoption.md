@@ -120,7 +120,7 @@ For each `#PR` to adopt:
      # Ensure the reused checkout is CLEAN and AT the PR head, else review/CI would run on stale local
      # content while the ledger pins the live GitHub SHA. Fast-forward only; never reset a checkout we
      # don't own — bail on a dirty tree or divergence:
-     git -C "$existing" diff --quiet && git -C "$existing" diff --cached --quiet || { echo "reused checkout $existing is dirty — bail"; exit 1; }
+     [ -z "$(git -C "$existing" status --porcelain --untracked-files=all)" ] || { echo "reused checkout $existing is dirty (tracked, staged, OR untracked) — bail"; exit 1; }
      git -C "$existing" merge --ff-only origin/<headRefName> || { echo "reused checkout $existing diverges from PR head — bail"; exit 1; }
      # (equivalently, verify git -C "$existing" rev-parse HEAD == <headRefOid>)
    else

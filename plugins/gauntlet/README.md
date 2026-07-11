@@ -57,8 +57,10 @@ it.
 ## Scratch files
 
 Both skills keep working state under `.gauntlet/` at the repo root, which is git-ignored. Run scratch
-lives in `.gauntlet/tmp/` and is safe to delete; `.gauntlet/history/` holds durable carryover between
-campaign runs, so don't remove `.gauntlet/` wholesale.
+lives in `.gauntlet/tmp/` and is mostly safe to delete — a just-finished run's dir is kept so campaign
+can still offer to gate more PRs, but deleting it only loses that prompt, not your history.
+`.gauntlet/history/` holds the durable carryover between campaign runs, so don't remove `.gauntlet/`
+wholesale.
 
 ## License
 
