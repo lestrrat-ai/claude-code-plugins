@@ -197,7 +197,7 @@ def cmd_get(path: Path, args) -> int:
     row = find_row(rows, str(args.pr))
     if row is None:
         fail(f"no row for pr {args.pr}")
-    if args.field:
+    if args.field is not None:  # an empty --field is an invalid field, not "omitted"
         check_field(args.field, ROW_FIELDS)
         print(row[args.field])
     else:
@@ -208,7 +208,7 @@ def cmd_get(path: Path, args) -> int:
 
 def cmd_list(path: Path, args) -> int:
     _, rows = load(path)
-    if args.where:
+    if args.where is not None:  # an empty --where is malformed, not "omitted"
         if "=" not in args.where:
             fail("--where must be <field>=<value>")
         field, _, value = args.where.partition("=")
