@@ -6,7 +6,8 @@ Point it at a GitHub pull request and it works through that PR's **GitHub Copilo
 comments** one at a time. It never assumes the review is right: for each comment it checks the
 claim against the actual source and tests *before* touching anything, fixes only what turns out to
 be genuinely valid, asks you before subjective or design or constraint-driven changes, resolves the
-review threads it handles, and finishes with a summary of every item and what it decided.
+threads for the items it fixes (plus any deferred or won't-fix items you've confirmed), and finishes
+with a summary of every item and what it decided.
 
 The core stance is evidence first. It will **never** change code just to make a review comment go
 away — a Copilot suggestion is a claim to verify, not an instruction to follow. If the code is
@@ -46,13 +47,14 @@ Every item ends with exactly one outcome:
 - **Valid** — it makes the smallest change that addresses the verified issue, runs focused tests
   first (adding one that fails before the fix and passes after, when that materially proves the
   claim), commits only that item's files, and resolves the corresponding review thread.
-- **Invalid, deferred, won't-fix, or already-fixed** — no code change. It records why, and if the
+- **Invalid, deferred, won't-fix, or already-fixed** — no fix. It records why, and if the
   reasoning isn't already obvious from the source or tests it may leave a brief code comment near the
   relevant logic so a future reviewer sees the decision. Deferred and won't-fix threads are resolved
   only after you've confirmed that outcome.
 
 It commits per item — one item, its own focused commit, built around the behavioral change rather
-than around Copilot — and never makes a no-op commit for an item it didn't fix. It runs focused
+than around Copilot — and never makes a no-op commit for an item it didn't fix. When several comments turn out to be the
+same underlying defect, it asks before folding them into one commit. It runs focused
 tests for the item at hand and reaches for broader tests when the change touches shared behavior.
 At the end it reports every item with its decision, the evidence, and the commit hash where one
 applies.
