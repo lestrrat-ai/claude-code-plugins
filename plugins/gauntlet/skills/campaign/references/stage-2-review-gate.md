@@ -245,8 +245,15 @@ codex exec --sandbox workspace-write -c "sandbox_workspace_write.network_access=
    certainty relative to the rest. It is a calibration signal, NOT a finding, and does not weaken your \
    SATISFIED — do not manufacture a concern to fill it; if identifying it surfaces a real defect, list \
    it with file:line and return NOT SATISFIED instead. End with exactly one line: \
-   'VERDICT: SATISFIED' or 'VERDICT: NOT SATISFIED'."   # run in background
+   'VERDICT: SATISFIED' or 'VERDICT: NOT SATISFIED'." < /dev/null   # run in background
 ```
+
+**Redirect stdin from `/dev/null` (`< /dev/null`).** `codex exec` reads stdin and, when a prompt is
+also passed as an argument, appends it as a `<stdin>` block; in a background / non-interactive context
+stdin stays open with no EOF, so codex **blocks forever waiting for input**. `< /dev/null` gives an
+immediate EOF. Keep it on every review dispatch (omit only if you ever deliberately pipe input into the
+prompt). Also: NEVER pass destructive instructions (delete, force-push, reset) to `codex exec`, and
+NEVER use `--dangerously-bypass-approvals-and-sandbox` — always `--sandbox workspace-write`.
 
 As each verdict lands, tally it for the SHA it ran on:
 
