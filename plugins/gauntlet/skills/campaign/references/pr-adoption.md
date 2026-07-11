@@ -19,32 +19,13 @@ Two entry paths feed it (see "Run identity and concurrency" for the full grammar
 `base_branch` for the run = the adopted PR's `baseRefName`. When several PRs are adopted at once they
 **must agree** on `baseRefName`; if they disagree, stop and prompt the user (one run targets one base).
 
-**Resolve `branch_ownership` once at run start** and record it in the ledger header (see
-`files-and-ledger.md`), the same way `reviewer`/`base_branch` are resolved once and read every wake.
-Use the same explicit > preference > default precedence as the reviewer (`references/reviewer.md`):
+Campaign **never** deletes the adopted PR's **remote** head branch — it never passes `--delete-branch`
+on merge; the repo's "Automatically delete head branches" setting governs remote-branch cleanup (see
+"Stage 3 — Merge").
 
-1. **Explicit user instruction in the invocation.** The user granted (or refused) branch ownership for
-   this run in the invocation, in natural language — exactly like how the reviewer is chosen (e.g. the
-   user says "you can delete the branches") → use it. There is **no `--branch-ownership` CLI flag**; the
-   grant is a plain-language instruction, not a documented flag in the Args grammar.
-2. **Stored user preference.** A recorded preference that grants branch ownership (a memory entry,
-   `CLAUDE.md`, or config) → `granted`. Do NOT invent a grant; use one only when it actually exists.
-3. **Default — `declined`.** No explicit instruction and no stored grant → `declined`. An unattended run
-   with no stored grant stays `declined`.
-
-Do **NOT** block the loop on a live prompt for this — never hold the run hostage on a user prompt. The
-grant comes from an explicit instruction in the invocation or from stored settings, not a mandatory
-question; absent one, the safe default holds.
-Record the resolved value in the `branch_ownership` header field (`ledger.py --file <state.jsonl>
-header set branch_ownership <declined|granted>`); it is re-read every
-wake and never re-derived mid-run.
-
-`worktree_owned`/`branch_owned` are tracked **per-PR** (below) and govern **local** cleanup in **both**
-modes — they alone decide whether the worktree/local branch is removed, identically under `declined` and
-`granted`. `branch_ownership = granted` changes **only** the **remote** head branch: it lets the merge
-delete the PR's remote head branch (`--delete-branch`). It never widens local teardown — a reused
-worktree, the root/main checkout, and a reused local branch are left in place under `granted` exactly as
-under `declined` (see "Stage 3 — Merge").
+`worktree_owned`/`branch_owned` are tracked **per-PR** (below) and govern **local** cleanup — they alone
+decide whether the worktree/local branch is removed. A reused worktree, the root/main checkout, and a
+reused local branch are always left in place (see "Stage 3 — Merge").
 
 **Ensure the labels exist** first — the two shared status labels plus this run's owner label
 (idempotent — `--force` creates or updates, safe on every resume):

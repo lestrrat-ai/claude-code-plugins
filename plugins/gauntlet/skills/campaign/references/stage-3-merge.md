@@ -17,20 +17,13 @@ via `gh`, never a local `git rev-parse HEAD`.)
    refresh the PR per step 6 instead of merging it.
 2. Push guard: `gh pr view <pr> --json state --jq .state` (PR number from the ledger row) must be
    `OPEN`.
-3. Merge — the `--delete-branch` decision is gated on the run's `branch_ownership` header (read from
-   the ledger; resolved once at adoption, see "PR adoption"):
-   - **`branch_ownership = declined` (default)** → `gh pr merge <pr> --squash` (use the repo's prevailing
-     merge method if not squash). **No `--delete-branch`** — the PR's remote head branch may be
-     **user-owned** (an adopted PR keeps its own branch; campaign did not create it), so campaign must
-     not delete it. Leave the remote branch in place; the repo's "automatically delete head branches"
-     setting, or the user, handles it.
-   - **`branch_ownership = granted`** → campaign may delete the adopted PR's **remote** head branch:
-     `gh pr merge <pr> --squash --delete-branch` (prevailing merge method if not squash) — this deletes
-     the remote head branch as part of the merge.
-
-   This `--delete-branch` choice is the **ONLY** thing `branch_ownership` controls, and it touches the
-   **remote** branch alone. Local cleanup (step 5) is identical in both modes — never keyed off
-   `branch_ownership`.
+3. Merge — always `gh pr merge <pr> --squash` (use the repo's prevailing merge method if not squash),
+   with **NO `--delete-branch`**. Campaign never deletes the adopted PR's **remote** head branch: an
+   adopted PR keeps its own branch (campaign did not create it), so campaign leaves the remote branch
+   alone. If the repo has "Automatically delete head branches" enabled, GitHub deletes it on merge;
+   otherwise it remains — either way that is the repo setting's doing, not campaign's action. Local
+   cleanup (step 5) is a separate concern, keyed only off the per-PR `worktree_owned`/`branch_owned`
+   flags.
 4. **Sync the local base branch with the remote.** The merge landed on `origin/<base>`, but local
    `<base>` is now behind. Fast-forward it so every subsequent rebase and `origin/<base>...HEAD` diff is
    measured against the just-merged tip, not a stale one (`<base>` = the adopted PRs' `baseRefName`,
@@ -62,12 +55,10 @@ via `gh`, never a local `git rev-parse HEAD`.)
    and its worktree are the adopted PR's **own head branch** and the worktree recorded in that PR's
    ledger row (its `branch`/`worktree` columns) — there is no `fix-<run-id>-*` branch to clean up.
 
-   **The remote head branch was already handled by step 3** — deleted when `branch_ownership = granted`
-   (the `--delete-branch` merge), left in place when `declined`. That is the **only** ref
-   `branch_ownership` governs.
+   **The remote head branch is not campaign's concern** — step 3 never deletes it; the repo's
+   "Automatically delete head branches" setting governs whether GitHub removes it on merge.
 
-   **Local cleanup is gated on the per-PR `worktree_owned`/`branch_owned` flags — identically in both
-   `granted` and `declined` modes, and never keyed off `branch_ownership`.** Adoption records the two
+   **Local cleanup is gated on the per-PR `worktree_owned`/`branch_owned` flags.** Adoption records the two
    independently (campaign can create a worktree over a **pre-existing** local branch, in which case
    `worktree_owned = yes` but `branch_owned = no`; see "PR adoption"). **Never remove a worktree or
    delete a branch campaign didn't create:**
@@ -89,9 +80,8 @@ via `gh`, never a local `git rev-parse HEAD`.)
    - **Report** any reused worktree and any reused local branch that were left in place (path + branch)
      in the final report, so the user knows their working tree/branches were untouched.
 
-   So the **only** difference between `granted` and `declined` is step 3's remote `--delete-branch`;
-   local ref safety (`worktree_owned`/`branch_owned`, never touching the root/main checkout or any
-   reused ref) is identical and absolute in both. Once cleanup is done set status `merged` (via
+   Local ref safety (`worktree_owned`/`branch_owned`, never touching the root/main checkout or any
+   reused ref) is absolute. Once cleanup is done set status `merged` (via
    `scripts/ledger.py … set --pr <N> --status merged`, by field name — the schema-owning accessor,
    `files-and-ledger.md`; never hand-edit the row by column position) and stop the PR's background
    tasks.

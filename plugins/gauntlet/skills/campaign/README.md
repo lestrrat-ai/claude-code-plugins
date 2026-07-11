@@ -94,17 +94,12 @@ By default it checks with you before changing anything in your public API — ex
 formats, CLI flags, defaults, or any behavior callers depend on — so it never merges a breaking
 change behind your back. Tell it up front that breakage is fine and it'll stop asking.
 
-It tidies up as it goes, but by default it leaves your branches alone. A merged PR's **remote** head
-branch is **left in place** — it may be your own branch, so campaign never deletes it (your repo's
-auto-delete setting, or you, handle that). Locally it removes only the worktree and branch it created
-itself for that PR; a pre-existing checkout or a pre-existing local branch it merely reused (e.g. your
-own branch already checked out) is left untouched and reported. If you'd rather it tidy the **remote**
-side too, you can tell it — in plain language when you start the run (there's no special flag), or via a
-saved preference — that it may delete the PRs' **remote** head branches on merge; then the merge deletes
-that remote branch. That grant affects **only** the remote branch: locally it still removes only the
-worktree and branch it created itself, and it **never** deletes a checkout or local branch you already
-had (or your main checkout) — that safety is identical whether or not you grant it. It's opt-in; left
-unset, the leave-your-branches-alone default holds. If a fix just can't clear the
+It tidies up as it goes, but it leaves your branches alone. Campaign **never** deletes a merged PR's
+**remote** head branch — that's your repo's job: if you've turned on GitHub's "Automatically delete head
+branches" setting, GitHub removes it on merge; otherwise it stays. Either way it's the repo setting, not
+campaign, that decides. Locally it removes only the worktree and branch it created itself for that PR; a
+pre-existing checkout or a pre-existing local branch it merely reused (e.g. your own branch already
+checked out) — or your main checkout — is left untouched and reported. If a fix just can't clear the
 bar, it retries once, then sets that one aside with a note on why and moves on rather than stalling
 everything else. When it's finished you get a short rundown: what merged, what it gave up on, and
 anything it left for you to weigh in on.
@@ -138,7 +133,7 @@ flowchart TD
     Q --> T[reset gate - verdicts and CI are SHA-pinned,<br/>re-triage tier on the new SHA]
     S --> T
     T --> M
-    R -- green --> U[merge: serialized, auto, squash<br/>remote branch per ownership: default left in place]
+    R -- green --> U[merge: serialized, auto, squash<br/>no --delete-branch; repo auto-delete setting governs remote branch]
     U --> U2[sync local base branch to remote ff-only]
     U2 --> V[cleanup campaign-created worktree/branch only<br/>reused checkouts + branches left in place, mark merged]
     V --> W{all PRs merged or aborted?}
