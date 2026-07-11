@@ -208,7 +208,13 @@ def build_parser() -> argparse.ArgumentParser:
         for name in ROW_FIELDS:
             if name == "pr":
                 continue  # pr is the row key, passed via --pr
-            p.add_argument(f"--{name}", help=f"row field '{name}'")
+            # Canonical flag is dash-form (--reviews-ok); accept the underscore
+            # alias too. dest stays the underscore field name so getattr(args,
+            # name) in cmd_set/cmd_add_row keeps working.
+            opts = [f"--{name.replace('_', '-')}"]
+            if "_" in name:
+                opts.append(f"--{name}")
+            p.add_argument(*opts, dest=name, help=f"row field '{name}'")
 
     a = sub.add_parser("add-row", help="append a new row for --pr")
     a.add_argument("--pr", required=True, help="PR number (row key)")
