@@ -5,7 +5,7 @@ Part of the [gauntlet](../../README.md) plugin.
 Point it at existing pull requests and it drives each one to merge: it re-reviews the PR against a
 strict quality bar, waits for CI to go green, and merges — all on its own, hands-off. It doesn't go
 hunting for problems and it doesn't write fixes from scratch; it **gates PRs that already exist**
-(yours, or ones [`/gauntlet:review`](../review/SKILL.md) opened for you) and merges each only once it
+(yours, or ones [`/gauntlet:review`](../review/README.md) opened for you) and merges each only once it
 clears the bar.
 
 Think of it as an automated senior reviewer that follows through: it defends each PR through repeated
@@ -53,7 +53,7 @@ re-litigate the same ground.
 
 ## Where the PRs come from: the review handoff
 
-Campaign gates PRs; it doesn't find the problems. [`/gauntlet:review`](../review/SKILL.md) is the
+Campaign gates PRs; it doesn't find the problems. [`/gauntlet:review`](../review/README.md) is the
 other half. Review runs its two-pass adversarial pass and, by default, only reports — it makes no
 source/tracked-file or GitHub changes (it may write ephemeral `.gauntlet/tmp` review scratch). But at
 the end of a confirmed-findings report it offers an opt-in step: open one pull request per
