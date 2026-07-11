@@ -33,7 +33,8 @@ It stays inside the guardrails: it never passes destructive instructions (delete
 codex and never bypasses the sandbox. If codex fails or times out, it falls back to handling the task
 directly, so a hiccup on the codex side doesn't leave you stuck.
 
-Good to know: it always feeds codex EOF on stdin (`< /dev/null`), so a backgrounded `codex exec` can't hang
-waiting for input that never comes.
+Good to know: by default it feeds codex EOF on stdin (`< /dev/null`) so a non-interactive `codex exec`
+can't hang waiting for input that never comes — omitted only when you're deliberately piping input into
+the prompt.
 
 Full mechanics live in [`SKILL.md`](./SKILL.md).
