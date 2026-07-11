@@ -51,11 +51,13 @@ blocks; each completion is its own wake.
      adopting the PRs — so a death mid-adoption leaves a discoverable, adoptable run rather than an
      invisible one. **`base_branch` is NOT known yet** at header-write time (it is the adopted PRs'
      `baseRefName`), so the initial header **omits `base_branch` (or marks it `pending`)**; do NOT
-     invent one. Then **adopt the `#PR` args** (`gh pr view` -> ledger row + labels + CI watch per
-     `pr-adoption.md`). Once the adopted PRs' metadata is read, **fill `base_branch` from their
-     `baseRefName`** (all adopted PRs must agree — if they disagree, stop and prompt, per
-     `pr-adoption.md`) into the header **before any dispatch or pruning that needs it**. Then fall
-     through to dispatch/reschedule.
+     invent one. Then **preflight the whole `#PR` set BEFORE any mutation**: read every PR's metadata
+     (`gh pr view`), run the refusal checks (foreign-owned, cross-repo/fork per `pr-adoption.md`), and
+     verify all share a common `baseRefName` — **without writing any label, ledger row, worktree, or CI
+     watch yet**. If the bases disagree or any PR is refused, **stop and prompt with nothing mutated**
+     (do not leave half the set registered). Only once the full set passes preflight, **fill
+     `base_branch`** from the agreed `baseRefName` into the header, then **adopt** each PR (ledger row +
+     labels + worktree + CI watch per `pr-adoption.md`). Then fall through to dispatch/reschedule.
    - **This run's `state.md` is fully terminal — every row `merged`/`aborted`, no open PR carrying this
      run's label → the run is finished.** Do **not** silently exit "all fixed" (the old bug) and do **not**
      silently restart. **Ask the user** whether to start a new run — e.g. "gauntlet run

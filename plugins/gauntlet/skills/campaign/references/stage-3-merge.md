@@ -50,9 +50,11 @@ via `gh`, never a local `git rev-parse HEAD`.)
    adopted PR's **own head branch** and the worktree named for it, exactly as recorded in that PR's
    ledger row (its `branch`/`worktree` columns) — there is no `fix-<run-id>-*` branch to clean up:
    - `--delete-branch` above already removed the **remote** branch (the PR's own head branch).
-   - Verify the merge with the `git-detect-merged` skill, then use `git-cleanup-merged` to remove the
-     **ledger-recorded worktree** and delete the **ledger-recorded local branch** (the PR's own head
-     branch).
+   - Verify the merge with the `git-detect-merged` skill **against the run's `<base>`** (the ledger
+     `base_branch` — NOT the helpers' default `main`, since the base may be a release/integration
+     branch), then use `git-cleanup-merged` **with that same `<base>`** and the ledger-recorded
+     `branch`/`worktree` to remove the **ledger-recorded worktree** and delete the **ledger-recorded
+     local branch** (the PR's own head branch).
    - Set status `merged` and stop its background tasks.
 
    This runs only after the merge is verified, and only ever touches PRs this run **owns** — those
