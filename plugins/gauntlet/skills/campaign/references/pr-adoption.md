@@ -49,8 +49,8 @@ For each `#PR` to adopt:
    second row for the same PR. Otherwise append a new row. Write the **full** row:
 
    - `id` = `pr<N>`; `slug` = slugified PR title; `branch` = the PR's **own** `headRefName` (adopted PRs
-     keep their branch — do NOT mint a `fix-<run-id>-...` branch); `worktree` = `-` until a fix needs
-     to push (created lazily, step 5); `pr` = `<N>`; `head_sha` = `headRefOid`.
+     keep their branch — do NOT mint a `fix-<run-id>-...` branch); `worktree` = `-` until the PR-head
+     worktree is created in step 5 (before its first review pass); `pr` = `<N>`; `head_sha` = `headRefOid`.
    - `reviews_ok` = `0` on first adoption (no verdicts yet against our watch); `ci` = `pending`
      (unknown until the first `gh pr checks`); `tier` = triage per `head_sha` ("Adaptive review tiers");
      `attempts` = `1`; `started` = now; `api_approval` = `-`; `status` = `in_review`.
@@ -64,19 +64,23 @@ For each `#PR` to adopt:
    gh pr edit <pr> --add-label gauntlet-run-<run-id> --add-label gauntlet-reviewing
    ```
 
-5. **Worktree only when a fix must push — off the PR's OWN head, never `<base>`.** Adoption itself needs
-   no worktree; reviews read the PR diff via `gh`. Create one lazily the first time a review/CI fix has
-   to commit. Branch it from the **PR's head branch/SHA**, not `<base>` (branching off `<base>` would
-   throw the PR's own commits away). Fetch the head branch to a named local ref first, then add the
-   worktree on it:
+5. **Create the PR-head worktree before the first review pass — off the PR's OWN head, never `<base>`.**
+   The review itself needs a real checkout: the review command runs `codex exec -C
+   $PROJECT/.worktrees/<branch>` and diffs `<base>...HEAD`, so the worktree MUST exist **before the PR's
+   first review pass dispatches** — create it here as part of adoption, or as a guaranteed pre-review
+   step (Loop control makes it a precondition of the review launch). It is NOT created lazily only on a
+   fix; a review always needs it. Branch it from the **PR's head branch/SHA**, not `<base>` (branching
+   off `<base>` would throw the PR's own commits away). Fetch the head branch to a named local ref
+   first, then add the worktree on it:
 
    ```
    git fetch origin <headRefName>:<headRefName>          # bring the PR's branch down as a local branch
    git worktree add $PROJECT/.worktrees/<headRefName> <headRefName>
    ```
 
-   Record the resulting path in the row's `worktree`. All fix commits for the PR go here; stage only the
-   specific source files changed (explicit paths, never `git add -A`).
+   Record the resulting path in the row's `worktree`. Reviews read/diff this checkout, and all fix
+   commits for the PR also go here; stage only the specific source files changed (explicit paths, never
+   `git add -A`).
 
 6. **Ensure a live CI watch when `ci = pending`.** Every adopted PR whose CI state is unknown gets a
    background watch so a settling run wakes the driver. The `--watch` only **blocks** until the run

@@ -39,11 +39,13 @@ file. Everything else stays ephemeral under the per-run `<rundir>`. See "Fresh r
 ### The ledger — `state.md`
 
 One row per adopted PR. It is a **cache**, not the authoritative state — **ground truth is
-git + GitHub** (`gh pr list/view` for PRs and merged/open state, `git rev-parse HEAD` per branch for
-the live SHA, `gh pr checks` for live CI, and the `review-<pr>-<n>.txt` files for which verdicts
-exist on which SHA). Every wake re-derives what's due from those, then refreshes this file. So a
-stale or half-written ledger is self-healing — never act on it without reconciling against git/gh
-first.
+GitHub via `gh`, plus local worktrees** (`gh pr list/view` for PRs and merged/open state, each PR's
+`headRefOid` from `gh` — keyed by PR number — for the live head SHA, `gh pr checks` for live CI, and
+the `review-<pr>-<n>.txt` files for which verdicts exist on which SHA). `git rev-parse HEAD` is used
+ONLY to validate/read an existing worktree when one is checked out — never as the primary source of a
+PR's live head (an adopted PR may have no local branch/worktree at all). Every wake re-derives what's
+due from those, then refreshes this file. So a stale or half-written ledger is self-healing — never
+act on it without reconciling against gh (and any existing worktree) first.
 
 The file opens with a short run-config header (`run_id`, `base_branch`, `api_changes`, `reviewer` —
 re-read every wake, see Constraints and "Run identity and concurrency"), then one row per adopted PR:
@@ -64,7 +66,8 @@ id | slug | branch | worktree | pr | head_sha | reviews_ok | ci | tier | attempt
   label is the ownership marker**, not the branch prefix.
 - `worktree` — `-` until a review/CI fix must push; then created lazily off the PR's head branch (see
   "PR adoption").
-- `head_sha` — the branch tip (`git rev-parse HEAD`) that `reviews_ok`, `ci`, and `tier` describe. `ci`
+- `head_sha` — the PR's live head (`headRefOid` from `gh`, keyed by PR number) that `reviews_ok`, `ci`,
+  and `tier` describe. `ci`
   and `tier` are pinned to this exact SHA (re-triage on any content change). `reviews_ok` is pinned to
   this SHA **unless** the only change is a clean base-only rebase/merge with the PR diff unchanged;
   then carry `reviews_ok` forward to the new `head_sha` and set `ci = pending`.

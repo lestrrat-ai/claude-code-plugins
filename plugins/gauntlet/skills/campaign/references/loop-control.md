@@ -38,11 +38,16 @@ blocks; each completion is its own wake.
      the lease. This is the path every `--run` self-wake takes.
    - **No run bound and none live (no `gauntlet-run-*` PR, no non-terminal `<rundir>`) → first run.**
      Mint a run-id + agent token, atomically create `<rundir>`, write the lease **and a minimal
-     `state.md` header** (`run_id`/`base_branch`/`api_changes`/`reviewer`) *before* adopting any PR —
-     so a death mid-adoption leaves a discoverable, adoptable run rather than an invisible one — then
+     `state.md` header** (`run_id`/`api_changes`/`reviewer`) *before* adopting any PR — so a death
+     mid-adoption leaves a discoverable, adoptable run rather than an invisible one. **`base_branch` is
+     NOT known yet** at header-write time (it is the adopted PRs' `baseRefName`, unknown until adoption),
+     so the initial header **omits `base_branch` (or marks it `pending`)**; do NOT invent one. Then
      **adopt the invocation's `#PR` args** (`gh pr view` -> ledger row + labels + CI watch per
      `pr-adoption.md`), or if there are none **discover this run's labelled PRs**
-     (`gh pr list --label gauntlet-run-<run-id>`), and fall through to dispatch/reschedule. If neither
+     (`gh pr list --label gauntlet-run-<run-id>`). Once the adopted PRs' metadata is read, **fill
+     `base_branch` from their `baseRefName`** (all adopted PRs must agree — if they disagree, stop and
+     prompt the user, per `pr-adoption.md`) into the header **before any dispatch or pruning that needs
+     it**. Then fall through to dispatch/reschedule. If neither
      yields a PR and nothing is in flight, **PROMPT** the user: "No PRs under a campaign. Run
      gauntlet:review to find issues, or pass PR numbers to gate." — do not spin an empty run.
    - **This run's `state.md` is fully terminal — every row `merged`/`aborted`, no open PR carrying this
@@ -76,7 +81,12 @@ blocks; each completion is its own wake.
      spec). The tier is pinned to `head_sha` and sets `required(tier)` = **1 if TRIVIAL else 2**.
    - current tip has `reviews_ok < required(tier)`, its **review preconditions are clear** (no
      unaddressed Copilot review items, CI not red, no merge conflict with `<base>` — see Stage 2a
-     preconditions), and no review running for that SHA → launch **one** review pass as a **background**
+     preconditions), and no review running for that SHA → **first ensure the PR-head worktree exists**
+     (the review runs `codex exec -C $PROJECT/.worktrees/<branch>` and diffs `<base>...HEAD`, so a real
+     checkout must be present): if `$PROJECT/.worktrees/<branch>` is missing, create it from the PR head
+     (`git fetch origin <branch>:<branch>` then `git worktree add $PROJECT/.worktrees/<branch> <branch>`,
+     per `pr-adoption.md` step 5) and record its path in the row's `worktree` — this is an explicit
+     precondition of the review launch. Then launch **one** review pass as a **background**
      task (one at a time per PR — the second, when the tier requires two, only after the first is
      SATISFIED; Stage 2a). If a precondition is dirty, clear it first (address Copilot items / fix CI /
      rebase) instead of spending a review;

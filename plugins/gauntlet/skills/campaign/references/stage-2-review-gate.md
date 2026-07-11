@@ -191,6 +191,10 @@ value — `<rundir>`, `<pr>`, `<n>`, `<base>`, `<branch>`, and `<SCRIPT>` (the r
 `<skill-dir>/scripts/emit-progress.py`). The reviewer must receive a concrete runnable path, never a
 literal `<SCRIPT>`.
 
+**Note:** `$PROJECT/.worktrees/<branch>` is guaranteed to exist here — it is created from the PR head
+before dispatch (per `pr-adoption.md` step 5 / Loop control's review-launch precondition), so the
+review always has a real checkout to diff `<base>...HEAD`.
+
 ```
 codex exec --sandbox workspace-write -c "sandbox_workspace_write.network_access=true" -C $PROJECT/.worktrees/<branch> \
   --add-dir $PROJECT/<rundir> \
