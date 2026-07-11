@@ -94,13 +94,47 @@ Rules:
   orchestrator folds that request on the next wake and either updates the plan + restarts the review
   pass, or ignores it with a note; the reviewer completes the existing units meanwhile.
 
-Progress JSONL schema:
+Progress JSONL schema. Unit-progress events use the REQUIRED exact key names verbatim; `type` is
+always `progress`; the only allowed `status` values are `started` and `done`. The required keys are
+**per event type**: a `started` event has EXACTLY the keys `type`, `unit`, `status` (with
+`status="started"`) and NO `evidence`; a `done` event has `type`, `unit`, `status` (with
+`status="done"`) AND a required `evidence` field carrying a concrete citation (a `file:line`, a
+backticked span, or a filename). Do NOT rename to `unit_done`/`unit_id`/`id`/`no_findings` or invent
+other event types for unit progress. Unit-progress events carry ONLY the exact required keys above
+(no extra keys such as `ts`); each event's required keys must be present and named exactly. The
+`plan_amendment_request` event keeps its existing shape.
+
+**Calling `emit-progress.py` is the ONLY sanctioned way to record a unit-progress event
+(`started`/`done`).** The reviewer MUST NOT ever write those unit-progress events into the progress
+file directly — no hand-written JSON, no `echo`/`printf`/redirection into it, no editor append. Every
+unit-progress event reaches the file through the tool and no other path. This emit-only rule applies
+ONLY to the `started`/`done` unit-progress events: the tool does not produce any other event type.
+`plan_amendment_request` events are NOT emitted by the tool — the reviewer raises them through the
+amendment mechanism above — and `pass_identity` is written by the orchestrator; both are EXEMPT from
+the tool-only rule.
+
+The block below shows the canonical event shapes the parser accepts. The two unit-progress lines
+(`started`/`done`) are exactly what the tool emits — shown for reference and as the parser's contract,
+NOT a template for you to write by hand. The third line (`plan_amendment_request`) is NOT produced by
+the tool and is shown only to document its shape:
 
 ```
-{"type":"progress","unit":"u01","status":"started","ts":"2026-07-06T00:00:00Z"}
-{"type":"progress","unit":"u01","status":"done","ts":"2026-07-06T00:04:00Z","evidence":"checked canonicalization paths and edge-case tests"}
+{"type":"progress","unit":"u01","status":"started"}
+{"type":"progress","unit":"u01","status":"done","evidence":"validate_idc.go:42 `canonicalizeValue`; edge case tested at validate_idc_test.go:88"}
 {"type":"plan_amendment_request","ts":"2026-07-06T00:05:00Z","reason":"diff changes generated docs; add doc consistency unit","proposed_unit":{"id":"u99","kind":"docs","target":"docs/generated.md","checks":["sync with API behavior"]}}
 ```
+
+Reviewers do NOT hand-write the unit-progress events (`started`/`done`) — ever; the emit tool is the
+only way those are produced. (The `plan_amendment_request` line is the exception: the tool does not
+emit it, so it is not subject to the emit-only rule.) The
+orchestrator resolves the bundled emitter's absolute path as `<skill-dir>/scripts/emit-progress.py`
+(skill dir = the directory holding the campaign `SKILL.md`) and, before dispatch, substitutes it for
+the `<SCRIPT>` placeholder in the review prompt — in the SAME way it substitutes `<rundir>`, `<pr>`,
+`<n>`, `<base>`, and `<branch>` — so the reviewer receives a concrete runnable path and never a literal
+`<SCRIPT>`. It passes that path into the prompt exactly as it already passes the progress file's
+absolute path; it also ensures the `<rundir>` is a reviewer-writable root (via `--add-dir`) so the
+reviewer can append. The reviewer MUST call that script to emit each event, which writes the canonical
+shape by construction; a non-zero exit means the inputs were rejected and must be fixed and re-run.
 
 Meaningful progress = a `done` event for a planned unit, or an accepted plan amendment. `started`
 events and vague "still working" lines prove only process liveness and MUST NOT reset the meaningful
@@ -114,17 +148,32 @@ unless its attempt id still matches the active review pass.
 The reviewer runs the following review contract (shown as the external-reviewer `codex exec` form; the
 default Claude-subagent path gives a fresh subagent the same instructions and output file):
 
+**Orchestrator:** before dispatching this command, substitute EVERY placeholder with its resolved
+value — `<rundir>`, `<pr>`, `<n>`, `<base>`, `<branch>`, and `<SCRIPT>` (the resolved absolute path
+`<skill-dir>/scripts/emit-progress.py`). The reviewer must receive a concrete runnable path, never a
+literal `<SCRIPT>`.
+
 ```
 codex exec --sandbox workspace-write -c "sandbox_workspace_write.network_access=true" -C $PROJECT/.worktrees/<branch> \
+  --add-dir $PROJECT/<rundir> \
   -o <rundir>/review-<pr>-<n>.txt \
   "Review the changes on this branch vs <base> (the whole git diff <base>...HEAD). \
    First read $PROJECT/<rundir>/review-<pr>-<n>.plan.jsonl, then critically assess whether its units \
    cover the review dimensions this change actually needs — the plan is the orchestrator's starting \
    point, not a guarantee of complete coverage. If an important dimension is missing or a unit is \
    wrong, append a plan_amendment_request event to the progress JSONL naming the gap; do NOT silently \
-   limit your review to the listed units, and do NOT rewrite the plan yourself. Then append progress \
-   JSONL to $PROJECT/<rundir>/review-<pr>-<n>.progress.jsonl as each planned unit starts and finishes; \
-   progress counts only when it references a planned unit and includes concrete evidence. \
+   limit your review to the listed units, and do NOT rewrite the plan yourself. Running the emit tool \
+   is the ONLY way to record unit-progress (started/done) events: you MUST NOT write those unit-progress \
+   events into the progress file directly — never hand-write JSON, echo, printf, or redirect them into \
+   it. That emit-only rule covers ONLY started/done unit-progress; the emit tool does not emit \
+   plan_amendment_request, so append that event directly to the progress JSONL (it is exempt from the \
+   emit-only rule). Run \
+   'python3 <SCRIPT> --file $PROJECT/<rundir>/review-<pr>-<n>.progress.jsonl --unit <plan unit id> \
+   --status started' when a planned unit begins, and the same command with \
+   '--status done --evidence \"<concrete citation: a file:line, a backticked span, or a filename>\"' \
+   when it finishes. The tool appends the canonical progress event; a non-zero exit means your inputs \
+   were rejected — fix them and re-run. progress counts only when it references a planned unit and its \
+   done event includes concrete evidence. \
    After every planned unit is done, do a brief UNSTRUCTURED ADVERSARIAL SWEEP: deliberately hunt for \
    defects no plan unit would naturally catch — cross-unit interactions, unstated assumptions, edge \
    cases, and whole categories the plan did not enumerate. This complements the plan, never replaces \
