@@ -1,6 +1,6 @@
 ---
 name: review
-description: Reports findings; by default makes no changes. A two-pass adversarial code review focused on security, API consistency/symmetry, and user experience. Pass 1 is hostile (assume the worst, surface everything). Pass 2 is a neutral audit that confirms, adjusts, or refutes each finding. Use when the user asks for a hostile, skeptical, or hard review — not a friendly pass. After the report there is an opt-in handoff to gauntlet:campaign: it can open one labelled PR per confirmed fix (implementing the fixes) and hand them to campaign to gate and merge; decline and it stays report-only, changing nothing.
+description: Reports findings; by default makes no changes. A two-pass adversarial code review focused on security, API consistency/symmetry, and user experience. Pass 1 is hostile (assume the worst, surface everything). Pass 2 is a neutral audit that confirms, adjusts, or refutes each finding. Use when the user asks for a hostile, skeptical, or hard review — not a friendly pass. After the report there is an opt-in handoff to gauntlet:campaign — it can open one labelled PR per confirmed fix (implementing the fixes) and hand them to campaign to gate and merge; decline and it stays report-only, changing nothing.
 ---
 
 # Review
