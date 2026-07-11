@@ -2,8 +2,8 @@
 
 Part of the [gauntlet](../../README.md) plugin.
 
-It hands a self-contained task off to the **Codex CLI** (`codex exec`) to run non-interactively in the
-background, then reads the result back and reports it to you. Think of it as a way to offload lightweight
+It hands a self-contained task off to the **Codex CLI** (`codex exec`) to run non-interactively,
+then reads the result back and reports it to you. Think of it as a way to offload lightweight
 work — exploration, file reads, simple searches, a subtask that can run on its own — to a separate engine,
 so the main session doesn't have to spend its own reasoning on it.
 
