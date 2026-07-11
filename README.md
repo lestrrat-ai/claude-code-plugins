@@ -16,6 +16,22 @@ Then install whichever plugins you want:
 /plugin install gauntlet@lestrrat-ai
 ```
 
+## Prerequisites
+
+The plugins shell out to a few external tools. Have these available before installing.
+
+Required:
+
+- **git** — the skills use worktrees and branch operations.
+- **GitHub CLI (`gh`)** — every GitHub interaction (PRs, reviews, labels, checks) goes through `gh`, so it must be authenticated (`gh auth login`) and the repo needs a GitHub remote.
+- **Python 3 (`python3`)** — runs the bundled scripts (campaign ledger, progress emitter, review-item deduper). Standard library only, nothing to `pip install`.
+- **`jq`** — parses `gh` JSON in the Copilot review-item fetcher.
+- **`bash`** — runs the bundled shell scripts (standard on macOS/Linux).
+
+Optional:
+
+- **Codex CLI (`codex`)** — an independent external reviewer for `gauntlet:campaign`. Recommended for a stronger gauntlet, since a different engine than the orchestrator catches defects a same-model re-roll can miss, but not required: without it, campaign falls back to Claude's own subagents as the reviewer.
+
 ## Plugins
 
 | Plugin | What it is |
