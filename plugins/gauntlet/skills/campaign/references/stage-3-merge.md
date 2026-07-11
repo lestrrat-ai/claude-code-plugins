@@ -1,7 +1,8 @@
 ## Stage 3 — Merge (serialized, auto)
 
-A PR is mergeable when the **current** `git rev-parse HEAD` equals `head_sha` AND `reviews_ok == 2`
-AND `ci == green` — i.e. two SATISFIED verdicts and green CI all recorded against the live tip.
+A PR is mergeable when the **current** `git rev-parse HEAD` equals `head_sha` AND
+`reviews_ok >= required(tier)` AND `ci == green` — i.e. `required(tier)` SATISFIED verdicts
+(1 if `tier == TRIVIAL`, else 2) and green CI all recorded against the live tip.
 
 1. **Serialize merge operations, not wakes.** A wake may merge multiple PRs, but only one at a time.
    Before each merge, re-confirm both gates still hold for the current HEAD (a late push may have
@@ -13,9 +14,9 @@ AND `ci == green` — i.e. two SATISFIED verdicts and green CI all recorded agai
 3. Merge: `gh pr merge <pr> --squash --delete-branch` (use the repo's prevailing merge method if not
    squash).
 4. **Sync the local base branch with the remote.** The merge landed on `origin/<base>`, but local
-   `<base>` is now behind — and Stage 1 worktrees branch off it (`git worktree add … -b <branch>
-   <base>`). Fast-forward it so every subsequent fan-out, rebase, and `<base>...HEAD` diff is measured
-   against the just-merged tip, not a stale one (`<base>` = the run's base branch, not assumed `main`).
+   `<base>` is now behind. Fast-forward it so every subsequent rebase and `<base>...HEAD` diff is
+   measured against the just-merged tip, not a stale one (`<base>` = the adopted PRs' `baseRefName`,
+   not assumed `main`).
    Local `<base>` is **shared** with any concurrent run on the same base; the fast-forward is
    idempotent, so if another run already advanced it, a no-op "already up to date" is fine — just never
    force it.
@@ -36,19 +37,21 @@ AND `ci == green` — i.e. two SATISFIED verdicts and green CI all recorded agai
    ```
 
    Fast-forward only — never a merge commit or reset. If the fast-forward fails (local `<base>` somehow
-   diverged), do NOT force it: that's a bailout condition (stop and surface it), since branching new
-   fixes off a wrong base would corrupt every downstream diff.
+   diverged), do NOT force it: that's a bailout condition (stop and surface it), since rebasing PRs
+   onto a wrong base would corrupt every downstream diff.
 5. **Clean up on successful merge.** Once the merge is confirmed (`gh pr view <branch> --json state
-   --jq .state` → `MERGED`), tear down that PR's local footprint:
-   - `--delete-branch` above already removed the **remote** branch.
+   --jq .state` → `MERGED`), tear down that PR's local footprint. `<branch>` and its worktree are the
+   adopted PR's **own head branch** and the worktree named for it, exactly as recorded in that PR's
+   ledger row (its `branch`/`worktree` columns) — there is no `fix-<run-id>-*` branch to clean up:
+   - `--delete-branch` above already removed the **remote** branch (the PR's own head branch).
    - Verify the merge with the `git-detect-merged` skill, then use `git-cleanup-merged` to remove the
-     **worktree** (`.worktrees/<branch>`) and delete the **local branch**.
+     **ledger-recorded worktree** and delete the **ledger-recorded local branch** (the PR's own head
+     branch).
    - Set status `merged` and stop its background tasks.
 
-   This runs only after the merge is verified, and only ever touches **this run's own**
-   `fix-<run-id>-*` worktrees/branches (per the Authorization note and the isolation invariant) — never
-   another run's. Leave the worktree in place if the merge cannot be confirmed — treat that as a
-   bailout condition, not a cleanup.
+   This runs only after the merge is verified, and only ever touches PRs this run **owns** — those
+   carrying its `gauntlet-run-<run-id>` label — never another run's. Leave the worktree in place if the
+   merge cannot be confirmed — treat that as a bailout condition, not a cleanup.
 6. After each merge+sync+cleanup, reconcile other open PRs. **Base advancement alone does NOT
    invalidate gauntlet reviews.** Rebase only if GitHub flags the PR behind/conflicting:
    - Clean rebase (no conflicts) → verify the PR's own diff/content is unchanged → keep `reviews_ok`,
@@ -57,8 +60,9 @@ AND `ci == green` — i.e. two SATISFIED verdicts and green CI all recorded agai
      merging.
    - Rebase requiring conflict resolution → PR content changed → **reset `reviews_ok` to 0**, relaunch
      the CI watch, re-enter Stage 2.
-   - Still open, mergeable, not behind/dirty/conflicting, same live `head_sha`, `reviews_ok == 2`,
-     and `ci == green` → still immediately mergeable; return to step 1 in the same wake.
+   - Still open, mergeable, not behind/dirty/conflicting, same live `head_sha`,
+     `reviews_ok >= required(tier)`, and `ci == green` → still immediately mergeable; return to step 1
+     in the same wake.
 
 Stop the merge loop only when no remaining PR is immediately mergeable after the latest base refresh.
 

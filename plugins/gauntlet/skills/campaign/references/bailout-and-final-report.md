@@ -6,9 +6,10 @@
   the cap on a wake where the row is blocked on an external wait** — `status == awaiting-api` (parked
   for user approval), or `ci == pending` for the current `head_sha` (CI still running). Only a wake
   where `started` is over an hour old *and* the row is agent-controlled (not in either wait) trips it.
-  When it trips, abort cleanly and **retry once** from a fresh worktree (`attempts` += 1, reset
-  `started`). **Supersede the prior attempt's PR** — close it noting the supersession — so a stale
-  open PR doesn't linger; the retry opens its own.
+  When it trips, abort cleanly and **retry once against the SAME adopted PR** (`attempts` += 1, reset
+  `started`). The PR is user/externally owned — campaign never closes it and opens a replacement of
+  its own. Instead, **rebuild the worktree from the PR's head branch** so the retry runs with fresh
+  LOCAL state against that same PR / its head; the PR itself is left in place.
 - On the **second** stuck/failure, abort permanently: stop work on that PR, **close its open PR and
   remove its gate labels**, write `<rundir>/abort-<id>.md` with the full history (reviews, CI
   failures, diffs, what blocked it), set status `aborted`, and **continue the other PRs**. Only ever

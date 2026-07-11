@@ -391,9 +391,11 @@ own branch off the base branch:
 1. Implement the fix — exactly the change in the finding's `Fix:`, nothing more; no drive-by edits.
 2. `git commit` the fix, then `git push` the branch.
 3. `gh pr create` one PR for that finding. Title from the finding; body cites the finding ID,
-   trigger, impact, and fix. Apply the two labels the campaign gates on: the run label
-   `gauntlet-run-<run-id>` (mint one run-id for this batch, shared across the PRs) and
-   `gauntlet-reviewing`. Create either label with `gh label create` if the repo lacks it.
+   trigger, impact, and fix. Do **NOT** apply any `gauntlet-run-*` owner label — review does not know
+   a campaign run-id, and pre-labelling with a fabricated run-id would make campaign's adoption refuse
+   the PR (pr-adoption rejects a PR already owned by a *different* run). Leave each PR with **no
+   run-owner label**; a neutral `gauntlet-reviewing` status label is fine but is not required. Create
+   the status label with `gh label create` if you apply it and the repo lacks it.
 
 One finding = one PR. Never batch multiple findings into a single PR.
 
@@ -403,8 +405,10 @@ Then invoke the campaign on exactly those PRs:
 /gauntlet:campaign #<pr1> #<pr2> ...
 ```
 
-Campaign adopts them, gates each through its tier's reviews plus CI, and merges — it only gates and
-merges what this handoff opened, and never re-writes these fixes. Agent-facing changes (a `SKILL.md`,
+Campaign mints its own run-id, adopts the PRs — applying its `gauntlet-run-<run-id>` owner label to
+each during adoption (a fresh handoff PR carries no owner label, so it adopts cleanly) — gates each
+through its tier's reviews plus CI, and merges. It only gates and merges what this handoff opened, and
+never re-writes these fixes. Agent-facing changes (a `SKILL.md`,
 `CLAUDE.md`, prompt, or reference file) always draw the full two-pass gate there, same as source.
 
 Handoff rules:

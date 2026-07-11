@@ -30,7 +30,9 @@ CI, and ships.
 ```
 
 Give it one or more PR numbers and it **adopts** them into a run: it labels each PR so the run owns
-it, sizes the change to pick a review tier, then starts gating. Run it **once** — it schedules its
+it, classifies the change by the *kind* of files it touches — human-facing docs vs code vs
+agent-consumed docs vs sensitive surfaces — to pick a review tier (the change's size never enters
+into it), then starts gating. Run it **once** — it schedules its
 own follow-ups and keeps working until every adopted PR is merged or set aside; you don't need to
 keep it open or re-run it.
 
@@ -82,8 +84,9 @@ in the background across all the adopted PRs at once, so at any moment it's doin
 ready to do.
 
 You can follow along on GitHub: each PR is labeled `gauntlet-reviewing` while it's working through
-the loop, and that flips to `gauntlet-accepted` once it has passed both reviews (the skill creates
-the labels if your repo doesn't have them).
+the loop, and that flips to `gauntlet-accepted` once it has passed the review(s) its tier requires —
+one for a TRIVIAL docs-only PR, two for anything touching code or agent-facing files (the skill
+creates the labels if your repo doesn't have them).
 
 By default it checks with you before changing anything in your public API — exported signatures,
 formats, CLI flags, defaults, or any behavior callers depend on — so it never merges a breaking

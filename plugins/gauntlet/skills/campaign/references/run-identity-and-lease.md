@@ -115,8 +115,10 @@ Each run has `<rundir>/lease.json`:
      alongside another). To resume a specific run instead, pass `--run <id>`. A **non-PR** arg (e.g.
      `auth`) is not a scope any more — treat it like the no-arg idle case below and prompt.
    - **No arg at all** (`/gauntlet:campaign`) → resume-oriented: **discover runs** and bucket by lease —
-     distinct `gauntlet-run-*` labels on open PRs (`gh pr list --label gauntlet-run-<id>`) ∪ run-ids
-     with a `<rundir>/` (its `state.md` or `lease.json`), each **actively-driven** (fresh lease),
+     the distinct `gauntlet-run-*` ids present on open PRs — list PRs **with their labels** and extract
+     the ids, since no id is known yet to query by (`gh pr list --state open --json number,labels`, then
+     pick labels matching `gauntlet-run-*`) ∪ run-ids with a `<rundir>/` (its `state.md` or
+     `lease.json`), each **actively-driven** (fresh lease),
      **orphaned** (non-terminal, lease absent/stale), or **finished** (terminal, no open PR):
      - exactly one **orphaned** → adopt and resume it ("pick up where the previous instance left off"),
        reconciling its run-labelled PRs (see "PR adoption");

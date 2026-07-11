@@ -29,8 +29,9 @@ before this split, is still read as read-only history; leave it in place.)
 
 ### Pruning the ledger
 
-The store grows one file per run, so **prune it regularly** — at the start of every fresh run, and any
-time the user asks. The goal is to drop entries that **no longer apply to the current code**:
+The store grows one file per run, so **prune it regularly** — early in every fresh run, once that
+run's PRs are adopted and its `base_branch` is resolved (pruning keys off the base), and any time the
+user asks. The goal is to drop entries that **no longer apply to the current code**:
 
 - **aborted** whose cited `file:line` no longer exists, or whose PR has since merged/closed by other
   means — the recorded blocker can't still hold.
@@ -63,12 +64,16 @@ snapshot path.
    minimal `state.md` header immediately (so the run is discoverable before its first PR is adopted).
    Any already-live run keeps its own dir, lease, and heartbeat; a fresh run never closes, merges, or
    stops driving another run's PRs.
-2. **Read every file in `.gauntlet/history/`, then prune** (drop entries no longer applicable to
-   current `<base>`; uncertain deletions are asked about **without blocking** — keep the entries and
-   proceed, see "Pruning the ledger"). Pruning only ever edits **finished** runs' own files (no live
-   writer), so there's nothing to race.
-3. Proceed to adopt the run's PR set and enter the loop as normal, on the clean `<rundir>`. Carryover
-   is advisory historical context only — it de-dups against already-merged/aborted work and reminds the
-   user of parked API-declined changes; it never auto-adopts or auto-skips a PR.
+2. **Adopt the run's PR set and resolve `base_branch` FIRST.** `<base>` is no longer a standing
+   value — it is derived from the adopted PRs' `baseRefName`, so it isn't known until the PRs are
+   adopted. Record `base_branch` in the run's `state.md` before any history pruning, since pruning
+   keys off it.
+3. **Read every file in `.gauntlet/history/`, then prune against the resolved `base_branch`** (drop
+   entries no longer applicable to that base; uncertain deletions are asked about **without blocking**
+   — keep the entries and proceed, see "Pruning the ledger"). Pruning only ever edits **finished**
+   runs' own files (no live writer), so there's nothing to race.
+4. Enter the loop as normal, on the clean `<rundir>`. Carryover is advisory historical context only —
+   it de-dups against already-merged/aborted work and reminds the user of parked API-declined changes;
+   it never auto-adopts or auto-skips a PR.
 
 ---
