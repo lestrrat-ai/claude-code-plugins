@@ -46,18 +46,16 @@ blocks; each completion is its own wake.
      numbers to gate." Creating `<rundir>`/lease/header before a PR is confirmed would leave an empty
      orphan run that later no-arg invocations rediscover as bogus state.
 
-     Only when there **are** `#PR` args: mint a run-id + agent token, atomically create `<rundir>`,
-     write the lease **and a minimal `state.md` header** (`run_id`/`api_changes`/`reviewer`) *before*
-     adopting the PRs — so a death mid-adoption leaves a discoverable, adoptable run rather than an
-     invisible one. **`base_branch` is NOT known yet** at header-write time (it is the adopted PRs'
-     `baseRefName`), so the initial header **omits `base_branch` (or marks it `pending`)**; do NOT
-     invent one. Then **preflight the whole `#PR` set BEFORE any mutation**: read every PR's metadata
-     (`gh pr view`), run the refusal checks (foreign-owned, cross-repo/fork per `pr-adoption.md`), and
-     verify all share a common `baseRefName` — **without writing any label, ledger row, worktree, or CI
-     watch yet**. If the bases disagree or any PR is refused, **stop and prompt with nothing mutated**
-     (do not leave half the set registered). Only once the full set passes preflight, **fill
-     `base_branch`** from the agreed `baseRefName` into the header, then **adopt** each PR (ledger row +
-     labels + worktree + CI watch per `pr-adoption.md`). Then fall through to dispatch/reschedule.
+     When there **are** `#PR` args, **preflight the whole set FIRST — read-only, before creating any
+     run state**: read every PR's metadata (`gh pr view`), run the refusal checks (foreign-owned,
+     cross-repo/fork per `pr-adoption.md`), and verify all share a common `baseRefName`. This touches
+     **no** run-id, `<rundir>`, lease, `state.md`, label, worktree, or CI watch. **If the bases
+     disagree or any PR is refused, prompt and create nothing** — so a rejected set never leaves an
+     empty orphan run behind. **Only once the full set passes preflight**: mint a run-id + agent token,
+     atomically create `<rundir>`, and write the lease **and `state.md` header** — now with
+     `base_branch` filled from the agreed `baseRefName` (known from preflight). Then **adopt** each PR
+     (ledger row + labels + worktree + CI watch per `pr-adoption.md`); a death mid-adoption still leaves
+     a discoverable, adoptable run. Then fall through to dispatch/reschedule.
    - **This run's `state.md` is fully terminal — every row `merged`/`aborted`, no open PR carrying this
      run's label → the run is finished.** Do **not** silently exit "all fixed" (the old bug) and do **not**
      silently restart. **Ask the user** whether to start a new run — e.g. "gauntlet run
