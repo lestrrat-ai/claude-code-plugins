@@ -102,6 +102,12 @@ def load(path: Path) -> "tuple[dict, list[dict]]":
                 fail(f"line {n}: duplicate row for pr {pr}")
             seen_pr.add(pr)
             rows.append(row)
+    # A present file must carry a header record. A genuinely MISSING file is a
+    # fresh start (returned defaults above); a present-but-headerless file (empty,
+    # all-blank, or truncated) is corrupt — reject it rather than silently reset to
+    # defaults, which would drop the run config and every row without complaint.
+    if not saw_first:
+        fail("line 1: missing header record")
     return header, rows
 
 
