@@ -137,6 +137,8 @@ def cmd_header(path: Path, args) -> int:
     header, rows = load(path)
     check_field(args.field, HEADER_FIELDS)
     if args.action == "get":
+        if args.value is not None:  # `header get <field>` takes no value; reject a stray extra arg
+            fail("header get takes no value")
         print(header.get(args.field, HEADER_DEFAULTS[args.field]))
         return 0
     if args.value is None:
