@@ -36,13 +36,16 @@ escalation rung, which forces this pass no later than the 2nd `NOT SATISFIED` on
    Enumeration and fix are two subagents, in that order, always.
 3. **One batch-fix round** for all confirmed gaps. Route every site through **ONE shared
    chokepoint/helper** so the cells can't diverge again. Add a test per cell.
-4. **Resume the gauntlet** (two fresh, context-isolated SATISFIED) on the batched result.
+4. **Resume the gauntlet** on the batched result — the review gate's `required(tier)` fresh,
+   context-isolated SATISFIED verdicts (two: a systemic / root-cause change is HIGH tier, never
+   TRIVIAL).
 
 Caveats:
 
 - A cell's verdict can be **wrong** — the analysis is a hypothesis (e.g. "handled by X" when X doesn't
-  actually cover it). The adversarial gauntlet still arbitrates; the deep pass *accelerates*
-  convergence, it does NOT replace the gate. Re-feed any reviewer-found gap into the enumeration.
+  actually cover it). The adversarial gauntlet still arbitrates its two fresh, context-isolated
+  SATISFIED verdicts; the deep pass *accelerates* convergence, it does NOT replace the gate. Re-feed
+  any reviewer-found gap into the enumeration.
 - Completeness = no false-positive AND no false-negative across the space. The pass surfaces both: an
   over-strict path that rejects valid cells is as much a gap as a missing one.
 - A whole AXIS can be missed. When a later finding reveals a dimension the enumeration didn't have,

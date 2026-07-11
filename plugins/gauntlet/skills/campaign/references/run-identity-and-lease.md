@@ -1,17 +1,18 @@
 ## Base branch
 
-The run targets a **base branch** — the branch every PR merges into and every fix diff is measured
-against. It is **not assumed to be `main`**: it defaults to the branch checked out at invocation
-(`git rev-parse --abbrev-ref HEAD`; fall back to the repo's default branch if HEAD is detached), which
-may be a release or integration branch. Resolve it **once** at the start of a run and record it in the
-ledger header as `base_branch`; re-read it from the ledger every wake, never from memory (a run is
-long and the checked-out branch can drift).
+The run targets a **base branch** — the branch every adopted PR merges into and every review diff is
+measured against. It is **not assumed to be `main`**: it is the **adopted PRs' `baseRefName`** (from
+`gh pr view`), which may be a release or integration branch. When several PRs are adopted at once they
+must **agree** on `baseRefName`; if they disagree, stop and prompt (one run targets one base). Resolve
+it **once** at the start of a run and record it in the ledger header as `base_branch`; re-read it from
+the ledger every wake, never from memory.
 
 Throughout this doc, `<base>` means that branch and `origin/<base>` its remote-tracking branch.
-Concretely: fix worktrees branch off `<base>`, PRs open with `--base <base>`, every review diffs
-`<base>...HEAD`, carryover entries are re-judged against current `<base>`, and after each merge local
-`<base>` is fast-forwarded to `origin/<base>`. Where examples below show `main`, read it as `<base>` —
-`main` is only the common default.
+Concretely: adopted PRs already target `<base>` (their `baseRefName`), every review diffs
+`<base>...HEAD`, and after each merge local `<base>` is fast-forwarded to `origin/<base>`. **Fix
+worktrees do NOT branch off `<base>`** — they branch off the PR's **own head** (see "PR adoption"),
+since the PR's commits live there. Where examples below show `main`, read it as `<base>` — `main` is
+only the common default.
 
 ## Run identity and concurrency
 
@@ -40,19 +41,21 @@ in-context memory for it — a wake may be a fresh agent instance. It flows into
 
 | Owned by the run | Namespaced form |
 |------------------|-----------------|
-| tmp working dir  | `<rundir>` = `.gauntlet/tmp/<run-id>/` (all findings/verdicts/state/review/ci/abort/lease files) |
+| tmp working dir  | `<rundir>` = `.gauntlet/tmp/<run-id>/` (all state/pr/review/ci/abort/lease files) |
 | ledger header    | `run_id: <run-id>` |
-| fix branch       | `fix-<run-id>-<finding-id>-<slug>` (finding-id keeps same-slug findings from colliding) |
-| worktree         | `$PROJECT/.worktrees/fix-<run-id>-<finding-id>-<slug>` |
-| PR owner label   | `gauntlet-run-<run-id>` (every PR the run opens carries it; authoritative "mine" marker) |
+| PR owner label   | `gauntlet-run-<run-id>` — the **authoritative "mine" marker**. Every adopted PR is tagged with it; it, not any branch name, is what makes a PR this run's. |
+| branch           | the **adopted PR's own `headRefName`** — campaign reuses the PR's existing branch and does NOT mint a `fix-<run-id>-...` branch, so ownership can't be read off the branch name (that's the label's job). |
+| worktree         | `$PROJECT/.worktrees/<headRefName>` — created lazily off the PR's head branch only when a review/CI fix must push. |
 | self-wake prompt | `/gauntlet:campaign --run <run-id> --token <agent-token> <args>` (carries the id **and** the driver token so a summarized wake re-proves ownership without guessing) |
 
 **Isolation invariant — a run touches ONLY its own work.** It reads/writes only its `<rundir>`, only
-its `state.md`, only PRs carrying its `gauntlet-run-<run-id>` label (equivalently on a `fix-<run-id>-`
-branch), and only those worktrees/branches. It MUST NOT reconcile, relabel, review, fix, merge, or
-clean up another run's PRs/branches — **every git/gh scan is filtered to this run's label or branch
-prefix.** The status labels `gauntlet-reviewing` / `gauntlet-accepted` describe gate state and are
-shared across runs; ownership is the per-run label, never a status label.
+its `state.md`, and only PRs carrying its `gauntlet-run-<run-id>` label (adopted PRs keep their own
+branch names, so the **label alone** — not any branch prefix — scopes ownership), and only those
+PRs' branches/worktrees. It MUST NOT reconcile, relabel, review, fix, merge, or clean up another run's
+PRs/branches — **every git/gh scan is filtered to this run's owner label.** The status labels
+`gauntlet-reviewing` / `gauntlet-accepted` describe gate state and are shared across runs; ownership is
+the per-run label, never a status label. Refuse to adopt a PR already carrying a **different**
+`gauntlet-run-*` label — never steal or transfer another run's marker (see "PR adoption").
 
 **Shared across runs:** the carryover ledger tree `.gauntlet/history/` (kept race-free by one
 file per run — see "Fresh runs and carryover"), the two status labels, and the Copilot precondition's
@@ -80,13 +83,13 @@ Each run has `<rundir>/lease.json`:
   `claim.lock`; treat one whose mtime is older than a few minutes as abandoned and clear it.)
 - **Heartbeat.** Rewrite the lease with `updated = $(date +%s)` every wake once you're the confirmed
   owner, **and** immediately before and after any long *foreground* step, should one be unavoidable,
-  so a busy turn still looks alive. All long work — sweep shards, verification chunks, reviews, CI —
+  so a busy turn still looks alive. All long work — reviews, CI watches, and fix subagents —
   is backgrounded, so turns stay short and the per-wake refresh normally suffices. A lease is
   **stale** only once `now - updated` exceeds **~30 min** — comfortably longer than any single
   foreground operation, so liveness flags a *dead* driver, not a busy one.
 - **Never hold the run hostage on a user prompt.** Do NOT block the loop waiting on a user answer —
-  that freezes the heartbeat and could let the run be declared stale mid-drive. Park the finding
-  `awaiting-api`, surface the question, keep driving the other findings, reschedule, and fold the
+  that freezes the heartbeat and could let the run be declared stale mid-drive. Park the PR
+  `awaiting-api`, surface the question, keep driving the other PRs, reschedule, and fold the
   answer in when it lands as its own wake (Constraints).
 - **Adopt only an orphaned run.** Safe to take over only when the lease is **absent or stale** (under
   the claim lock). After writing your token, re-read: if it isn't yours, you lost the race — stand down.
@@ -106,19 +109,24 @@ Each run has `<rundir>/lease.json`:
    for a **manual** `--run` with no matching token, another agent appears active, so **confirm takeover
    with the user** before adopting.
 2. **Bare invocation** → the arg decides intent:
-   - **A scope arg is given** (`/gauntlet:campaign <area>`, no `--run`) → **start a NEW run** on that
-     scope. A scope is an explicit "sweep this now", so it never silently adopts an existing run — this
-     is how you launch a second concurrent run (`auth` alongside `storage`). To resume a specific run
-     instead, pass `--run <id>`.
+   - **`#PR` args are given** (`/gauntlet:campaign #12 #15`, no `--run`) → **start a NEW run** that
+     **adopts those PRs** (see "PR adoption"). Passing PRs is an explicit "gate these now", so it never
+     silently resumes an existing run — this is how you launch a second concurrent run (one PR set
+     alongside another). To resume a specific run instead, pass `--run <id>`. A **non-PR** arg (e.g.
+     `auth`) is not a scope any more — treat it like the no-arg idle case below and prompt.
    - **No arg at all** (`/gauntlet:campaign`) → resume-oriented: **discover runs** and bucket by lease —
-     distinct `gauntlet-run-*` labels on open `fix-*` PRs ∪ run-ids with a `<rundir>/` (its `state.md`
-     or `lease.json`; a run mid-Stage-0 has a dir before any PR), each **actively-driven** (fresh
-     lease), **orphaned** (non-terminal, lease absent/stale), or **finished** (terminal, no open PR):
-     - exactly one **orphaned** → adopt and resume it ("pick up where the previous instance left off");
-     - several orphaned → list them (id, scope, #open PRs) and **ask which to resume, or start new**;
+     distinct `gauntlet-run-*` labels on open PRs (`gh pr list --label gauntlet-run-<id>`) ∪ run-ids
+     with a `<rundir>/` (its `state.md` or `lease.json`), each **actively-driven** (fresh lease),
+     **orphaned** (non-terminal, lease absent/stale), or **finished** (terminal, no open PR):
+     - exactly one **orphaned** → adopt and resume it ("pick up where the previous instance left off"),
+       reconciling its run-labelled PRs (see "PR adoption");
+     - several orphaned → list them (id, #open PRs) and **ask which to resume, or start new**;
      - only **actively-driven** → each has a live driver; do NOT hijack — offer to start a **new** run;
      - only **finished** → the finished-run prompt (Loop control step 1), per run;
-     - none at all → first run: mint a run-id, Stage 0 → Stage 1.
-3. **`--new`** (or "fresh run" / "start over") → always mint a NEW run-id + token and start fresh with
-   carryover; it creates an independent run and does **not** pre-empt other runs (they keep their own
-   drivers). Scope is the arg, if any.
+     - **none at all** (idle — nothing to drive) → **prompt**: "No PRs under a campaign. Run
+       `gauntlet:review` to find issues, or pass PR numbers to gate." Campaign never sweeps or mints
+       PRs itself, so with no run and no `#PR` args there is nothing to do.
+3. **`--new`** (or "fresh run" / "start over") → always mint a NEW run-id + token and start a fresh run;
+   it creates an independent run and does **not** pre-empt other runs (they keep their own drivers). Its
+   PR set is whatever `#PR` args accompany it (adopted per "PR adoption"); with no `#PR` args, fall
+   through to the idle prompt.

@@ -1,6 +1,6 @@
 ---
 name: review
-description: Reports findings; makes no changes. A two-pass adversarial code review focused on security, API consistency/symmetry, and user experience. Pass 1 is hostile (assume the worst, surface everything). Pass 2 is a neutral audit that confirms, adjusts, or refutes each finding. Use when the user asks for a hostile, skeptical, or hard review — not a friendly pass. To also fix and merge the findings, use gauntlet:campaign instead.
+description: Reports findings; by default makes no changes. A two-pass adversarial code review focused on security, API consistency/symmetry, and user experience. Pass 1 is hostile (assume the worst, surface everything). Pass 2 is a neutral audit that confirms, adjusts, or refutes each finding. Use when the user asks for a hostile, skeptical, or hard review — not a friendly pass. After the report there is an opt-in handoff to gauntlet:campaign: it can open one labelled PR per confirmed fix (implementing the fixes) and hand them to campaign to gate and merge; decline and it stays report-only, changing nothing.
 ---
 
 # Review
@@ -368,4 +368,47 @@ End with:
 
 - Phase 2 is mandatory. A single-pass hostile review is NOT this skill.
 - Refuted findings stay in the report. The user benefits from seeing what was considered and ruled out.
-- Do NOT edit code. Review only. User decides what to fix.
+- Do NOT edit code during the review itself. Review only; the user decides what to fix. The one
+  exception is the opt-in campaign handoff below — and only after an explicit "yes".
+
+## Handoff to campaign (opt-in)
+
+Default is report-only. Everything above changes nothing on disk or on GitHub. This section is the
+ONLY path where this skill writes code, and it runs only on an explicit "yes".
+
+After delivering the confirmed-findings report, offer exactly once:
+
+> Open a PR per confirmed fix and run the gauntlet on them? [y/N]
+
+- **No, or no answer (default)** → stop here. Report-only. Nothing is implemented, committed, pushed,
+  labelled, or merged. This is where the skill ends unless the user opts in.
+- **Yes** → hand the confirmed fixes to `gauntlet:campaign`. Fix-implementation lives here now
+  (salvaged from the old campaign fan-out); the campaign itself never writes fixes from scratch.
+
+On "yes", for each **Confirmed** or **Adjusted** finding only (skip Refuted and Uncertain), in its
+own branch off the base branch:
+
+1. Implement the fix — exactly the change in the finding's `Fix:`, nothing more; no drive-by edits.
+2. `git commit` the fix, then `git push` the branch.
+3. `gh pr create` one PR for that finding. Title from the finding; body cites the finding ID,
+   trigger, impact, and fix. Apply the two labels the campaign gates on: the run label
+   `gauntlet-run-<run-id>` (mint one run-id for this batch, shared across the PRs) and
+   `gauntlet-reviewing`. Create either label with `gh label create` if the repo lacks it.
+
+One finding = one PR. Never batch multiple findings into a single PR.
+
+Then invoke the campaign on exactly those PRs:
+
+```
+/gauntlet:campaign #<pr1> #<pr2> ...
+```
+
+Campaign adopts them, gates each through its tier's reviews plus CI, and merges — it only gates and
+merges what this handoff opened, and never re-writes these fixes. Agent-facing changes (a `SKILL.md`,
+`CLAUDE.md`, prompt, or reference file) always draw the full two-pass gate there, same as source.
+
+Handoff rules:
+
+- Ask once. Never open PRs without an explicit "yes".
+- Only Confirmed and Adjusted findings become PRs.
+- On decline, deliver the report as-is and stop — no side effects.

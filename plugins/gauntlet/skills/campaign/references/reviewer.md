@@ -1,14 +1,14 @@
 ## The reviewer — selection, invocation, failure handling
 
-The campaign needs an **adversarial reviewer** for two jobs: the Stage 0 sweep and each Stage 2a PR
-review pass. The reviewer is a *role*, not a fixed tool. Claude Code is always the orchestrator +
-implementer; the reviewer is chosen per run.
+The campaign needs an **adversarial reviewer** for one job: each Stage 2a per-PR review pass. The
+reviewer is a *role*, not a fixed tool. Claude Code is always the orchestrator + implementer; the
+reviewer is chosen per run.
 
 ### Selecting the reviewer
 
 Resolve once at run start and record the choice as the ledger `reviewer` header field (see
 `files-and-ledger.md`) so every later wake — including a self-wake or a fresh agent that adopted the
-run — re-reads it before launching any sweep or review and never silently reverts to the default; also
+run — re-reads it before launching any review pass and never silently reverts to the default; also
 note it in the final report. Resolve in priority order:
 
 1. **Explicit invocation.** User named a reviewer for this run (e.g. "review with codex") → use it.
@@ -28,17 +28,13 @@ complete, valid reviewer.
 
 ### Running the default reviewer — Claude subagents
 
-- **Stage 0 (adversarial sweep)** → run the sweep with your own subagents following the
-  `gauntlet:review` skill over the scope (tier/shard it for a large surface, as Stage 0 describes),
-  writing findings to that shard's `findings-raw-<shard>.md` in the standard finding shape. The
-  streamed verification (Stage 0 step 2) is unchanged.
-- **Stage 2a (per-PR review)** → spawn a **fresh** subagent to review the whole `<base>...HEAD` diff
-  with an adversarial pass, using the same `review-<pr>-<n>.plan.jsonl` /
-  `review-<pr>-<n>.progress.jsonl` protocol — planned units, then the unstructured adversarial sweep —
-  and, on SATISFIED, the same `RESIDUAL-RISK: <area> — <why>` line immediately above exactly one
-  final `VERDICT: SATISFIED` / `VERDICT: NOT SATISFIED` line. Each pass is a fresh, context-isolated
-  subagent, so the two-SATISFIED-verdict gate holds: launch review 2 only after review 1 is
-  SATISFIED, one at a time per PR.
+The reviewer's only job is the **Stage 2a per-PR review pass**: spawn a **fresh** subagent to review
+the whole `<base>...HEAD` diff with an adversarial pass, using the same `review-<pr>-<n>.plan.jsonl` /
+`review-<pr>-<n>.progress.jsonl` protocol — planned units, then the unstructured adversarial sweep —
+and, on SATISFIED, the same `RESIDUAL-RISK: <area> — <why>` line immediately above exactly one final
+`VERDICT: SATISFIED` / `VERDICT: NOT SATISFIED` line. Each pass is a fresh, context-isolated subagent,
+so the review gate holds: for a two-pass tier, launch review 2 only after review 1 is SATISFIED, one
+at a time per PR (see Stage 2a-triage for the per-tier pass count).
 
 ### Running an external reviewer (e.g. Codex CLI)
 
@@ -53,7 +49,7 @@ run that returns an actual finding list or a `VERDICT: …` line is a *result*, 
 is the absence of a verdict.
 
 **On external-reviewer failure, retry once. If it still can't deliver a verdict, fall back to the
-default Claude subagents** (the two procedures above) rather than stalling, looping, or skipping the
+default Claude subagents** (the per-PR procedure above) rather than stalling, looping, or skipping the
 gate — then note in the final report which passes ran on the subagent fallback. The gate is unchanged:
-a subagent pass is a fresh, context-isolated re-roll that counts toward the two-SATISFIED-verdict gate
-exactly like an external pass.
+a subagent pass is a fresh, context-isolated re-roll that counts toward the review gate exactly like an
+external pass.

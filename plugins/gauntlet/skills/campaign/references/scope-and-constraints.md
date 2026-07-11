@@ -1,7 +1,10 @@
 ## Run-owned operation scope
 
-Invoking this skill authorizes the git/GitHub operations it performs on branches/PRs it creates:
-`add`, `commit`, `push`, PR create/update, labels/checks/comments, and merge.
+Invoking this skill authorizes the git/GitHub operations it performs on branches/PRs it creates **or
+adopts**: `add`, `commit`, `push`, PR create/update, labels/checks/comments, and merge. **Passing a
+`#PR` (or discovering one under this run's label) authorizes the campaign to gate and merge that PR** —
+adopt it, run the review gauntlet on it, push review/CI fixes to its branch, and merge it when the gate
+and CI are green.
 
 Do NOT ask again before run-owned operations when the state machine reaches them.
 
@@ -22,12 +25,12 @@ Internal-only changes that leave both identical need no confirmation.
 
 Handling depends on the run's `api_changes` flag, stored in the ledger header:
 
-- **`ask` (default)** — when a fix would cross the line, do NOT make the change. Park that finding
+- **`ask` (default)** — when a fix would cross the line, do NOT make the change. Park that PR
   (status `awaiting-api`, `api_approval: -`), show the user the proposed change and what it would
-  break, and ask whether to proceed. Keep working the other findings meanwhile. On approval, apply it
-  and set `api_approval: approved@<iso>` (the finding resumes normal fanout); if the user declines,
-  set `api_approval: declined@<iso>`, set the finding aside as skipped (status `aborted`), and report
-  it. Both decisions are durable: before re-asking on a later wake, check `api_approval` — a finding
+  break, and ask whether to proceed. Keep working the other PRs meanwhile. On approval, apply it
+  and set `api_approval: approved@<iso>` (the PR resumes normal gating); if the user declines,
+  set `api_approval: declined@<iso>`, set the PR aside as skipped (status `aborted`), and report
+  it. Both decisions are durable: before re-asking on a later wake, check `api_approval` — a PR
   already approved or declined is settled, never re-ask it.
 - **`allowed`** — proceed without asking. Set this *only* when the user, at invocation, explicitly
   said API breakage is acceptable (e.g. "allow API changes" / "ignore breakage").
@@ -39,5 +42,5 @@ can't drift mid-run. A blanket "yes, stop asking" from the user flips the header
 one-off "yes" approves only that finding (recorded durably in its `api_approval`) and leaves the
 flag at `ask`.
 
-Backstop: when you scan a PR you built, flag any public-API change in its diff. Under `ask`, an
+Backstop: when you scan a PR you built or adopted, flag any public-API change in its diff. Under `ask`, an
 unapproved API change must not merge — revert it or get approval first (grounds for `NOT SATISFIED`).

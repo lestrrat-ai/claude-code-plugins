@@ -4,12 +4,19 @@ Part of the [claude-code-plugins](../../README.md) marketplace.
 
 Adversarial code review that follows through to a merge.
 
-The centerpiece is [`/gauntlet:campaign`](skills/campaign/README.md): point it at your code and it runs an adversarial review, files
-each real finding as its own pull request, defends that PR through repeated context-isolated review
-rounds until it passes a strict bar with green CI, and merges. Run it once — it schedules its own
-follow-ups and keeps working unattended.
+The centerpiece is [`/gauntlet:campaign`](skills/campaign/README.md): hand it existing pull requests
+(`/gauntlet:campaign #12 #15`) and it gates each one to merge — defending that PR through repeated
+context-isolated review rounds until it passes a strict bar with green CI, fixing up whatever review
+or CI turns up on the PR itself, and then merging. It doesn't hunt for problems or write fixes from
+scratch; it drives PRs that already exist. Run it once — it schedules its own follow-ups and keeps
+working unattended.
 
-If you only want to know what's wrong, [`/gauntlet:review`](skills/review/SKILL.md) reports findings and changes nothing.
+Where do those PRs come from? [`/gauntlet:review`](skills/review/SKILL.md) is the front half. By
+default it runs a two-pass adversarial review and only reports — it changes nothing. But at the end
+it can, opt-in, open one labelled PR per confirmed fix and hand them straight to a campaign. So the
+usual progression is **`gauntlet:review` to find and confirm the problems, then `gauntlet:campaign`
+to gate and merge the fixes** — and you can always skip review and hand campaign PRs you opened
+yourself.
 
 ## Install
 
@@ -22,8 +29,8 @@ If you only want to know what's wrong, [`/gauntlet:review`](skills/review/SKILL.
 
 | Skill | What it does |
 |-------|--------------|
-| [`/gauntlet:campaign`](skills/campaign/README.md) | The review-to-merge pipeline. Writes code and merges it. |
-| [`/gauntlet:review`](skills/review/SKILL.md) | A standalone two-pass hostile review: pass 1 surfaces everything, pass 2 neutrally confirms or refutes each finding. Reports only. |
+| [`/gauntlet:campaign`](skills/campaign/README.md) | The PR-gating pipeline. Adopts existing pull requests and drives each through review + CI to merge. |
+| [`/gauntlet:review`](skills/review/SKILL.md) | A standalone two-pass hostile review: pass 1 surfaces everything, pass 2 neutrally confirms or refutes each finding. Reports only by default; can opt-in to open PRs and hand them to a campaign. |
 | [`/gauntlet:copilot-address-reviews`](skills/copilot-address-reviews/SKILL.md) | Verify and address GitHub Copilot's PR review comments, one at a time. |
 | [`/gauntlet:codex-exec`](skills/codex-exec/SKILL.md) | Delegate a lightweight task to Codex CLI via `codex exec`. |
 
