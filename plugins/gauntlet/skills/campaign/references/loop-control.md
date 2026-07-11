@@ -39,19 +39,23 @@ blocks; each completion is its own wake.
      be lost and silently revert to the default; Constraints, Base branch, "The reviewer"). Refresh
      the lease. This is the path every `--run` self-wake takes.
    - **No run bound and none live (no `gauntlet-run-*` PR, no non-terminal `<rundir>`) → first run.**
-     Mint a run-id + agent token, atomically create `<rundir>`, write the lease **and a minimal
-     `state.md` header** (`run_id`/`api_changes`/`reviewer`) *before* adopting any PR — so a death
-     mid-adoption leaves a discoverable, adoptable run rather than an invisible one. **`base_branch` is
-     NOT known yet** at header-write time (it is the adopted PRs' `baseRefName`, unknown until adoption),
-     so the initial header **omits `base_branch` (or marks it `pending`)**; do NOT invent one. Then
-     **adopt the invocation's `#PR` args** (`gh pr view` -> ledger row + labels + CI watch per
-     `pr-adoption.md`), or if there are none **discover this run's labelled PRs**
-     (`gh pr list --label gauntlet-run-<run-id>`). Once the adopted PRs' metadata is read, **fill
-     `base_branch` from their `baseRefName`** (all adopted PRs must agree — if they disagree, stop and
-     prompt the user, per `pr-adoption.md`) into the header **before any dispatch or pruning that needs
-     it**. Then fall through to dispatch/reschedule. If neither
-     yields a PR and nothing is in flight, **PROMPT** the user: "No PRs under a campaign. Run
-     gauntlet:review to find issues, or pass PR numbers to gate." — do not spin an empty run.
+     **Check there is something to adopt BEFORE creating any run state.** If the invocation carries no
+     `#PR` args (a bare or non-`#PR` invocation that found no live run to resume — likewise `--new`
+     with no `#PR` args), **create nothing** — no run-id, no `<rundir>`, no lease, no `state.md` — and
+     **PROMPT** the user: "No PRs under a campaign. Run gauntlet:review to find issues, or pass PR
+     numbers to gate." Creating `<rundir>`/lease/header before a PR is confirmed would leave an empty
+     orphan run that later no-arg invocations rediscover as bogus state.
+
+     Only when there **are** `#PR` args: mint a run-id + agent token, atomically create `<rundir>`,
+     write the lease **and a minimal `state.md` header** (`run_id`/`api_changes`/`reviewer`) *before*
+     adopting the PRs — so a death mid-adoption leaves a discoverable, adoptable run rather than an
+     invisible one. **`base_branch` is NOT known yet** at header-write time (it is the adopted PRs'
+     `baseRefName`), so the initial header **omits `base_branch` (or marks it `pending`)**; do NOT
+     invent one. Then **adopt the `#PR` args** (`gh pr view` -> ledger row + labels + CI watch per
+     `pr-adoption.md`). Once the adopted PRs' metadata is read, **fill `base_branch` from their
+     `baseRefName`** (all adopted PRs must agree — if they disagree, stop and prompt, per
+     `pr-adoption.md`) into the header **before any dispatch or pruning that needs it**. Then fall
+     through to dispatch/reschedule.
    - **This run's `state.md` is fully terminal — every row `merged`/`aborted`, no open PR carrying this
      run's label → the run is finished.** Do **not** silently exit "all fixed" (the old bug) and do **not**
      silently restart. **Ask the user** whether to start a new run — e.g. "gauntlet run
