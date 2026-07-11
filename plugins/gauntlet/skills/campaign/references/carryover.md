@@ -61,16 +61,18 @@ snapshot path.
 
 ### Starting a fresh run
 
-1. **Mint the new run-id + agent token; atomically create its clean `<rundir>`.** Per-run dirs make a
-   fresh run isolated by construction — a bare `mkdir` (no `-p`) of `.gauntlet/tmp/<new-run-id>/`
-   starts empty and fails loudly on the rare id clash, so retry with a fresh id. Write the lease and a
-   minimal `state.md` header immediately (so the run is discoverable before its first PR is adopted).
+1. **Preflight the `#PR` set FIRST — read-only, before any run state.** Read every PR's metadata
+   (`gh pr view`), run the refusal checks (foreign-owned, cross-repo/fork per `pr-adoption.md`), and
+   verify all share a common `baseRefName`. This touches **no** run-id, `<rundir>`, lease, or
+   `state.md`. If any PR is refused or the bases disagree, **prompt and create nothing** — a rejected
+   set must never leave an orphan run behind.
+2. **Only once preflight passes: mint the run-id + token, atomically create the clean `<rundir>`, and
+   record the run.** A bare `mkdir` (no `-p`) of `.gauntlet/tmp/<new-run-id>/` starts empty and fails
+   loudly on the rare id clash (retry with a fresh id). Write the lease and the `state.md` header —
+   with `base_branch` filled from the agreed `baseRefName` (known from preflight) — then adopt each PR
+   (ledger row + labels + worktree + CI watch); a death mid-adoption still leaves a discoverable run.
    Any already-live run keeps its own dir, lease, and heartbeat; a fresh run never closes, merges, or
    stops driving another run's PRs.
-2. **Adopt the run's PR set and resolve `base_branch` FIRST.** `<base>` is no longer a standing
-   value — it is derived from the adopted PRs' `baseRefName`, so it isn't known until the PRs are
-   adopted. Record `base_branch` in the run's `state.md` before any history pruning, since pruning
-   keys off it.
 3. **Read every file in `.gauntlet/history/`, then prune against the resolved `base_branch`** (drop
    entries no longer applicable to that base; uncertain deletions are asked about **without blocking**
    — keep the entries and proceed, see "Pruning the ledger"). Pruning only ever edits **finished**
