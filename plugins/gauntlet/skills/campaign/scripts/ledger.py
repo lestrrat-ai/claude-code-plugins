@@ -53,14 +53,19 @@ def load(path: Path) -> "tuple[dict, list[dict]]":
     """Return (header, rows). A missing file yields defaults + no rows.
 
     The store is JSONL: one JSON object per line, routed by its `type` key. The
-    `header` record populates the header dict; each `row` record appends a row.
-    Missing fields fill from the defaults; unknown `type` values are ignored.
+    header record MUST be the first non-blank line and appear exactly once; each
+    following `row` record appends a row. Missing fields fill from the defaults.
+    Every ingested field value is coerced to `str` (mirroring how `dump()` writes
+    via `str()`), so on-disk JSON numbers/bools compare as the string keys the rest
+    of the accessor uses; a row's `id` is always recomputed from its normalized
+    `pr` (never trusted from the file). An unknown `type` is rejected, not dropped.
     """
     header = dict(HEADER_DEFAULTS)
     rows: list[dict] = []
     if not path.exists():
         return header, rows
     seen_pr: set[str] = set()
+    saw_first = False
     for n, line in enumerate(path.read_text().splitlines(), start=1):
         if not line.strip():
             continue
@@ -73,14 +78,26 @@ def load(path: Path) -> "tuple[dict, list[dict]]":
         kind = rec.get("type")
         if kind not in ("header", "row"):
             fail(f"line {n}: missing or unknown record type {kind!r}")
+        # Header must be the first non-blank record and appear exactly once.
+        if not saw_first:
+            if kind != "header":
+                fail(f"line {n}: first record must be the header")
+            saw_first = True
+        elif kind == "header":
+            fail(f"line {n}: unexpected second/out-of-order header record")
         if kind == "header":
+            # coerce every value to str, matching dump()'s write side
             for f in HEADER_FIELDS:
-                header[f] = rec.get(f, HEADER_DEFAULTS[f])
+                header[f] = str(rec.get(f, HEADER_DEFAULTS[f]))
         else:  # kind == "row"
             row = dict(ROW_DEFAULTS)
+            # coerce every value to str first, so 11 and "11" are one key
             for f in ROW_FIELDS:
-                row[f] = rec.get(f, ROW_DEFAULTS[f])
+                row[f] = str(rec.get(f, ROW_DEFAULTS[f]))
             pr = row["pr"]
+            # id is derived, never trusted from the file: recompute from pr
+            row["id"] = f"pr{pr}"
+            # duplicate detection runs on the normalized (string) pr key
             if pr in seen_pr:
                 fail(f"line {n}: duplicate row for pr {pr}")
             seen_pr.add(pr)
