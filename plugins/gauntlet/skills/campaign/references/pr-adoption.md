@@ -19,6 +19,26 @@ Two entry paths feed it (see "Run identity and concurrency" for the full grammar
 `base_branch` for the run = the adopted PR's `baseRefName`. When several PRs are adopted at once they
 **must agree** on `baseRefName`; if they disagree, stop and prompt the user (one run targets one base).
 
+**Resolve `branch_ownership` once at run start** and record it in the ledger header (see
+`files-and-ledger.md`), the same way `reviewer`/`base_branch` are resolved once and read every wake.
+Use the same explicit > preference > default precedence as the reviewer (`references/reviewer.md`):
+
+1. **Explicit invocation/flag.** The user granted (or refused) branch ownership for this run on the
+   invocation → use it.
+2. **Stored user preference.** A recorded preference that grants branch ownership (a memory entry,
+   `CLAUDE.md`, or config) → `granted`. Do NOT invent a grant; use one only when it actually exists.
+3. **Default — `declined`.** No explicit flag and no stored grant → `declined`. An unattended run with
+   no stored grant stays `declined`.
+
+Do **NOT** block the loop on a live prompt for this — never hold the run hostage on a user prompt. The
+grant comes from stored settings/the flag, not a mandatory question; absent one, the safe default holds.
+Record the resolved value in the header (`branch_ownership: declined | granted`); it is re-read every
+wake and never re-derived mid-run.
+
+`worktree_owned`/`branch_owned` are still tracked **per-PR** (below) exactly as before — they govern the
+`declined` path's cleanup. `branch_ownership = granted` overrides toward full cleanup on merge (see
+"Stage 3 — Merge"): it only ever *enables* more teardown, never less.
+
 **Ensure the labels exist** first — the two shared status labels plus this run's owner label
 (idempotent — `--force` creates or updates, safe on every resume):
 

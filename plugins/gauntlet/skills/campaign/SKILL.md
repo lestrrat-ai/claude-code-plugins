@@ -80,6 +80,7 @@ Read stage refs only when that stage/action is due:
 - **One active driver:** lease controls ownership; never double-drive one run.
 - **Base branch is data:** read `base_branch` from ledger every wake; never assume `main`.
 - **Reviewer is data:** read `reviewer` from ledger every wake before dispatching any review; set once at run start, never re-derived from memory (else an explicit/preferred reviewer silently reverts to default on a self-wake or adoption).
+- **Branch ownership is data:** read `branch_ownership` from ledger every wake — default `declined`: never delete an adopted PR's remote branch/worktree/local branch unless ownership is `granted` (via explicit flag or a stored preference), resolved once at run start by the same explicit > preference > default shape as `reviewer`. `granted` only ever enables more cleanup; an unattended run with no stored grant stays `declined`. Never hold the run on a live prompt for it.
 - **Review gate is tier-dependent:** `required(tier)` fresh, context-isolated `SATISFIED` verdicts on
   same live PR content + green CI — **1 if TRIVIAL, else 2** (any code/agent-doc/sensitive change is 2).
 - **Sequential same-PR reviews:** launch review 2 only after review 1 is `SATISFIED` (TRIVIAL needs

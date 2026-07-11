@@ -47,17 +47,32 @@ PR's live head (an adopted PR may have no local branch/worktree at all). Every w
 due from those, then refreshes this file. So a stale or half-written ledger is self-healing — never
 act on it without reconciling against gh (and any existing worktree) first.
 
-The file opens with a short run-config header (`run_id`, `base_branch`, `api_changes`, `reviewer` —
-re-read every wake, see Constraints and "Run identity and concurrency"), then one row per adopted PR:
+The file opens with a short run-config header (`run_id`, `base_branch`, `api_changes`, `reviewer`,
+`branch_ownership` — re-read every wake, see Constraints and "Run identity and concurrency"), then one
+row per adopted PR:
 
 ```
 run_id: g260704-0915-a3f29c1b  # this run's identity — namespaces its dir/label/wakes (set once)
 base_branch: main       # the adopted PRs' baseRefName — the branch they merge into & diffs measure against (set once; see "Base branch")
 api_changes: ask        # ask | allowed (run-wide; set once from the invocation)
 reviewer: default       # default (Claude subagents) | codex | <other> — the selected reviewer (set once; see "The reviewer")
+branch_ownership: declined  # declined | granted — may campaign own+delete an adopted PR's branch/worktree on merge (set once; see "PR adoption")
 
 id | slug | branch | worktree | worktree_owned | branch_owned | pr | head_sha | reviews_ok | ci | tier | attempts | started | api_approval | status
 ```
+
+Header field notes (the header fields above; per-row fields follow):
+
+- `branch_ownership` — run-wide consent to fully tidy up an adopted PR's refs on merge: `declined`
+  (default) | `granted`. **Resolved once at run start** by the same explicit > preference > default
+  precedence as `reviewer` (explicit invocation/flag > a stored user preference — memory entry /
+  `CLAUDE.md` / config — that grants branch ownership > default `declined`; see "PR adoption"), then
+  re-read every wake like the other header fields — never re-derived mid-run. `declined` is the safe
+  floor: campaign never deletes an adopted PR's remote branch, and cleans up the worktree/local branch
+  only per the per-PR `worktree_owned`/`branch_owned` flags. `granted` is opt-in and only ever *enables*
+  more cleanup — on merge campaign owns the adopted branch and fully tidies up (deletes the remote head
+  branch, the local branch, and the worktree) regardless of `worktree_owned`/`branch_owned` (see
+  "Stage 3 — Merge"). An unattended run with no stored grant stays `declined`.
 
 - `id` — `pr<N>` (the adopted PR number). `slug` — slugified PR title. Together they identify the row;
   re-adoption looks up by `pr`/`id` and refreshes in place, never appends a duplicate.

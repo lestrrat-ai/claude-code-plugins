@@ -17,10 +17,16 @@ via `gh`, never a local `git rev-parse HEAD`.)
    refresh the PR per step 6 instead of merging it.
 2. Push guard: `gh pr view <pr> --json state --jq .state` (PR number from the ledger row) must be
    `OPEN`.
-3. Merge: `gh pr merge <pr> --squash` (use the repo's prevailing merge method if not squash).
-   **No `--delete-branch`** — the PR's remote head branch may be **user-owned** (an adopted PR keeps
-   its own branch; campaign did not create it), so campaign must not delete it. Leave the remote branch
-   in place; the repo's "automatically delete head branches" setting, or the user, handles it.
+3. Merge — the `--delete-branch` decision is gated on the run's `branch_ownership` header (read from
+   the ledger; resolved once at adoption, see "PR adoption"):
+   - **`branch_ownership = declined` (default)** → `gh pr merge <pr> --squash` (use the repo's prevailing
+     merge method if not squash). **No `--delete-branch`** — the PR's remote head branch may be
+     **user-owned** (an adopted PR keeps its own branch; campaign did not create it), so campaign must
+     not delete it. Leave the remote branch in place; the repo's "automatically delete head branches"
+     setting, or the user, handles it.
+   - **`branch_ownership = granted`** → campaign owns the adopted branch, so tidy the remote too:
+     `gh pr merge <pr> --squash --delete-branch` (prevailing merge method if not squash) — this deletes
+     the remote head branch as part of the merge.
 4. **Sync the local base branch with the remote.** The merge landed on `origin/<base>`, but local
    `<base>` is now behind. Fast-forward it so every subsequent rebase and `<base>...HEAD` diff is
    measured against the just-merged tip, not a stale one (`<base>` = the adopted PRs' `baseRefName`,
@@ -48,10 +54,24 @@ via `gh`, never a local `git rev-parse HEAD`.)
    diverged), do NOT force it: that's a bailout condition (stop and surface it), since rebasing PRs
    onto a wrong base would corrupt every downstream diff.
 5. **Clean up on successful merge.** Once the merge is confirmed (`gh pr view <pr> --json state
-   --jq .state` → `MERGED`, PR number from the ledger row), tear down **only the local footprint
-   campaign created**. `<branch>` and its worktree are the adopted PR's **own head branch** and the
-   worktree recorded in that PR's ledger row (its `branch`/`worktree` columns) — there is no
-   `fix-<run-id>-*` branch to clean up:
+   --jq .state` → `MERGED`, PR number from the ledger row), tear down the local footprint. `<branch>`
+   and its worktree are the adopted PR's **own head branch** and the worktree recorded in that PR's
+   ledger row (its `branch`/`worktree` columns) — there is no `fix-<run-id>-*` branch to clean up. **How
+   much is torn down is gated on the run's `branch_ownership` header** (read from the ledger; resolved
+   once at adoption). The two paths are explicit:
+
+   **`branch_ownership = granted` — campaign owns adopted branches; full tidy.** Campaign may delete
+   what it adopted, so clean up **regardless of `worktree_owned`/`branch_owned`**:
+   - **The PR's remote head branch is already gone** — step 3 merged with `--delete-branch`.
+   - **Remove the worktree and delete the local branch unconditionally.** Verify the merge with the
+     `git-detect-merged` skill **against the run's `<base>`** (the ledger `base_branch` — NOT the
+     helpers' default `main`), then `git worktree remove` the ledger-recorded worktree and delete the
+     ledger-recorded local `branch` (e.g. `git-cleanup-merged` with that same `<base>`, or `git branch
+     -d` after the worktree is gone) — even for a reused worktree or a pre-existing local branch. The
+     user granted this; report what was removed.
+
+   **`branch_ownership = declined` (default) — the safe behavior; tear down only what campaign
+   created:**
    - **The PR's remote head branch is left in place** (step 3 dropped `--delete-branch`) — it may be
      user-owned, so campaign never deletes it; the repo's auto-delete setting or the user handles it.
    - **Worktree removal and local-branch deletion are gated SEPARATELY**, on `worktree_owned` and
@@ -71,7 +91,8 @@ via `gh`, never a local `git rev-parse HEAD`.)
        branch may be the user's.
      - **Report** any reused worktree and any reused local branch that were left in place (path +
        branch) in the final report, so the user knows their working tree/branches were untouched.
-   - Set status `merged` and stop its background tasks.
+
+   In **both** paths, once cleanup is done set status `merged` and stop the PR's background tasks.
 
    This runs only after the merge is verified, and only ever touches PRs this run **owns** — those
    carrying its `gauntlet-run-<run-id>` label — never another run's. Leave the worktree in place if the

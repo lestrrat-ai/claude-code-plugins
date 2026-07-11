@@ -93,11 +93,15 @@ By default it checks with you before changing anything in your public API — ex
 formats, CLI flags, defaults, or any behavior callers depend on — so it never merges a breaking
 change behind your back. Tell it up front that breakage is fine and it'll stop asking.
 
-It tidies up as it goes, but only touches what it created. A merged PR's **remote** head branch is
-**left in place** — it may be your own branch, so campaign never deletes it (your repo's auto-delete
-setting, or you, handle that). Locally it removes only the worktree and branch it created itself for
-that PR; a pre-existing checkout or a pre-existing local branch it merely reused (e.g. your own branch
-already checked out) is left untouched and reported. If a fix just can't clear the
+It tidies up as it goes, but by default it leaves your branches alone. A merged PR's **remote** head
+branch is **left in place** — it may be your own branch, so campaign never deletes it (your repo's
+auto-delete setting, or you, handle that). Locally it removes only the worktree and branch it created
+itself for that PR; a pre-existing checkout or a pre-existing local branch it merely reused (e.g. your
+own branch already checked out) is left untouched and reported. If you'd rather it clean up fully, you
+can tell it — via a saved preference (or by granting branch ownership when you start the run) — that it
+may **own** the PRs' branches; then on merge it deletes the remote head branch and removes the local
+branch and worktree it adopted too. That's opt-in and only ever removes *more*; left unset, the
+leave-your-branches-alone default holds. If a fix just can't clear the
 bar, it retries once, then sets that one aside with a note on why and moves on rather than stalling
 everything else. When it's finished you get a short rundown: what merged, what it gave up on, and
 anything it left for you to weigh in on.
