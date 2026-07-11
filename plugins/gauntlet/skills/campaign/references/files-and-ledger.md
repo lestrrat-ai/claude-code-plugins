@@ -123,4 +123,34 @@ Header field notes (the header fields above; per-row fields follow):
   while parked for the user to approve an API-changing fix. That park resolves via `api_approval`:
   `approved` returns the PR to the normal flow, `declined` makes it `aborted` (terminal).
 
+### Editing the ledger — use `scripts/ledger.py`
+
+`scripts/ledger.py` is the **sanctioned way** to read and write `state.md` (both the header block and
+the per-PR rows) **by FIELD NAME**. The script owns the schema (the header fields and the row column
+order above) in ONE place, so agents and subtasks **must not hand-edit rows by column position** —
+adding a column shifts every positional offset and silently corrupts hand-edited rows. Address fields
+by name and the script keeps the layout correct.
+
+This mirrors how `stage-2-review-gate.md` treats `emit-progress.py`: the file stays **plaintext and
+human-readable** (`cat`/grep-able), the accessor just owns the schema and writes the canonical layout.
+`state.md` is still a cache reconciled against ground truth every wake (above) — the accessor changes
+*how* rows are written, not what the ledger means.
+
+Resolve its absolute path as `<skill-dir>/scripts/ledger.py` (skill dir = the directory holding the
+campaign `SKILL.md`) and pass that path to subtasks, exactly as with `emit-progress.py`. Subcommands
+(`<state.md>` = this run's `<rundir>/state.md`):
+
+```
+ledger.py --file <state.md> header get <field>                 # read a run-config header field
+ledger.py --file <state.md> header set <field> <value>         # set a run-config header field
+ledger.py --file <state.md> add-row --pr N [--<field> <val> …] # register a row (refuses a duplicate pr; unset fields default)
+ledger.py --file <state.md> set --pr N --<field> <val> [--<field> <val> …]  # update named fields on the row for PR N
+ledger.py --file <state.md> get --pr N [--field <f>]           # print the row as JSON, or one field
+ledger.py --file <state.md> list [--where <field>=<val>]       # print matching rows' pr numbers (all if no filter)
+```
+
+It rejects an unknown field name (listing the valid ones), refuses a duplicate `pr` on `add-row`,
+errors on a missing row for `set`/`get`, and creates the file with the header if it is missing. A
+non-zero exit with a clear stderr message means the input was rejected — fix it and re-run.
+
 ---

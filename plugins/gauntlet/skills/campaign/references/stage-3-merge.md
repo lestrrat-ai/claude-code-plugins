@@ -91,13 +91,17 @@ via `gh`, never a local `git rev-parse HEAD`.)
 
    So the **only** difference between `granted` and `declined` is step 3's remote `--delete-branch`;
    local ref safety (`worktree_owned`/`branch_owned`, never touching the root/main checkout or any
-   reused ref) is identical and absolute in both. Once cleanup is done set status `merged` and stop the
-   PR's background tasks.
+   reused ref) is identical and absolute in both. Once cleanup is done set status `merged` (via
+   `scripts/ledger.py … set --pr <N> --status merged`, by field name — the schema-owning accessor,
+   `files-and-ledger.md`; never hand-edit the row by column position) and stop the PR's background
+   tasks.
 
    This runs only after the merge is verified, and only ever touches PRs this run **owns** — those
    carrying its `gauntlet-run-<run-id>` label — never another run's. Leave the worktree in place if the
    merge cannot be confirmed — treat that as a bailout condition, not a cleanup.
-6. After each merge+sync+cleanup, reconcile other open PRs. **Base advancement alone does NOT
+6. After each merge+sync+cleanup, reconcile other open PRs (write any `reviews_ok`/`head_sha`/`ci`
+   change below through `scripts/ledger.py … set --pr <N> --<field> <val>` by field name, never by
+   hand-editing the row by column position). **Base advancement alone does NOT
    invalidate gauntlet reviews.** Rebase only if GitHub flags the PR behind/conflicting:
    - Clean rebase (no conflicts) → verify the PR's own diff/content is unchanged → keep `reviews_ok`,
      update `head_sha` to the new tip, set `ci = pending`, **and relaunch its CI watch in the same

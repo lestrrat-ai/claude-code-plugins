@@ -28,7 +28,9 @@ blocks; each completion is its own wake.
      work — a review/CI task whose output file is missing may be re-launched, since in-flight tasks die
      with their session):
      for each of this run's branches/PRs read the live SHA, CI status, and verdict files, and refresh
-     the ledger. Do the PR scan as **one batched snapshot per wake** —
+     the ledger — write every ledger update through `scripts/ledger.py … set/header set` **by field
+     name** (`files-and-ledger.md`), never by hand-editing rows by column position. Do the PR scan as
+     **one batched snapshot per wake** —
      `gh pr list --label gauntlet-run-<run-id> --json number,headRefName,headRefOid,state,mergeable,mergeStateStatus,labels > <rundir>/prs.json`
      — and drive reconcile from that file; fall back to per-PR `gh pr view` only where the snapshot
      isn't enough (merge-gate CI truth stays the re-polled `gh pr checks` snapshot, Stage 2b). Wake
@@ -93,7 +95,8 @@ blocks; each completion is its own wake.
    - any newly-adopted PR whose ledger row lacks a `tier`, or any PR whose `head_sha` changed since it
      was last triaged → **re-triage its tier** (deterministic file-class classification of the changed
      files at that `head_sha`; agent-docs = code; default STANDARD on uncertainty — see the tiers
-     spec). The tier is pinned to `head_sha` and sets `required(tier)` = **1 if TRIVIAL else 2**.
+     spec) and write it back with `ledger.py … set --pr <N> --tier <tier>`. The tier is pinned to
+     `head_sha` and sets `required(tier)` = **1 if TRIVIAL else 2**.
    - current tip has `reviews_ok < required(tier)`, its **review preconditions are clear** (no
      unaddressed Copilot review items, CI not red, no merge conflict with `<base>` — see Stage 2a
      preconditions), and no review running for that SHA → **first ensure the PR-head worktree exists**

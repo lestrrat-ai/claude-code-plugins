@@ -39,7 +39,9 @@ Bundled scripts live in `scripts/`, resolved relative to the directory holding t
 the current working directory) — installed as `${CLAUDE_PLUGIN_ROOT}/skills/campaign/scripts/`, or in
 the repo at `plugins/gauntlet/skills/campaign/scripts/`. Pass their absolute paths to subtasks. The
 review gauntlet's `scripts/emit-progress.py` (already present there) emits canonical reviewer progress
-events (see `references/stage-2-review-gate.md`).
+events (see `references/stage-2-review-gate.md`). `scripts/ledger.py` is the schema-owning accessor for
+`state.md` — read/write the ledger header and per-PR rows **by field name** through it, never by column
+position (see `references/files-and-ledger.md`); pass its absolute path to subtasks the same way.
 
 ## Load Discipline
 

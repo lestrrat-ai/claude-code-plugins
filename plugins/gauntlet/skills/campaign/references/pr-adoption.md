@@ -92,9 +92,13 @@ For each `#PR` to adopt:
    re-open from a branch in this repo) so campaign can adopt it. Only a same-repo PR
    (`isCrossRepository=false`) adopts normally.
 
-3. **Register the ledger row — refresh, never duplicate.** Look the PR up in `state.md` by `pr`/`id`
-   first. If a row already exists (re-adoption / resume), **refresh it in place** — never append a
-   second row for the same PR. Otherwise append a new row. Write the **full** row:
+3. **Register the ledger row — refresh, never duplicate.** Write the row through
+   `scripts/ledger.py` (the schema-owning accessor — `references/files-and-ledger.md`), addressing
+   every field **by name**; never hand-edit `state.md` rows by column position. Look the PR up first
+   (`ledger.py --file <state.md> get --pr <N>`): if a row already exists (re-adoption / resume),
+   **refresh it in place** with `ledger.py … set --pr <N> --<field> <val> …` — never append a second
+   row for the same PR (`add-row` refuses a duplicate `pr`). Otherwise create it with
+   `ledger.py … add-row --pr <N> --<field> <val> …`. Write the **full** row:
 
    - `id` = `pr<N>`; `slug` = slugified PR title; `branch` = the PR's **own** `headRefName` (adopted PRs
      keep their branch — do NOT mint a `fix-<run-id>-...` branch); `worktree` = `-`,
@@ -168,8 +172,10 @@ For each `#PR` to adopt:
      worktree=$PROJECT/.worktrees/<headRefName>         # created default path: .worktrees/<headRefName>
      worktree_owned=yes                                 # campaign created the worktree — safe to remove at cleanup
    fi
-   # record $worktree in the row's `worktree` column, $worktree_owned in `worktree_owned`,
-   # and $branch_owned in `branch_owned` (worktree ownership and branch ownership are tracked separately)
+   # record via the accessor, by field name (never by column position):
+   #   ledger.py --file <state.md> set --pr <N> --worktree "$worktree" \
+   #     --worktree_owned "$worktree_owned" --branch_owned "$branch_owned"
+   # (worktree ownership and branch ownership are tracked separately)
    ```
 
    (Do **not** substitute `git fetch origin pull/<pr>/head:<headRefName>` here — that form writes the
@@ -178,10 +184,11 @@ For each `#PR` to adopt:
 
    Record the **actual** resolved `$worktree` — `$PROJECT/.worktrees/<headRefName>` is only the
    **created default** used on the `git worktree add` path; a reused checkout sits at some **other**
-   path — in the row's `worktree`, record `$worktree_owned` (`yes` = campaign created the worktree,
-   `no` = reused a pre-existing checkout) in the row's `worktree_owned`, and record `$branch_owned`
-   (`yes` = campaign created the local branch via `-b`, `no` = reused a pre-existing local branch or
-   checkout) in the row's `branch_owned`. **That `worktree` path is the source
+   path — in the row's `worktree` (via `ledger.py … set --pr <N> --worktree …`), record
+   `$worktree_owned` (`yes` = campaign created the worktree, `no` = reused a pre-existing checkout) in
+   the row's `worktree_owned`, and record `$branch_owned` (`yes` = campaign created the local branch
+   via `-b`, `no` = reused a pre-existing local branch or checkout) in the row's `branch_owned` — all
+   by field name through the accessor. **That `worktree` path is the source
    of truth the review and CI steps read/diff against**, and `worktree_owned`/`branch_owned` tell
    Stage 3 cleanup what it may remove: it removes the worktree only when `worktree_owned = yes` and
    deletes the local branch only when `branch_owned = yes` — a reused worktree or a pre-existing local
