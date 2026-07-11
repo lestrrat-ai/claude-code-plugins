@@ -11,7 +11,7 @@ with a summary of every item and what it decided.
 
 The core stance is evidence first. It will **never** change code just to make a review comment go
 away — a Copilot suggestion is a claim to verify, not an instruction to follow. If the code is
-already correct, the item is rejected with the reasoning recorded and no edit made.
+already correct, the item is rejected with the reasoning recorded and no fix made.
 
 ## What it's good for
 
