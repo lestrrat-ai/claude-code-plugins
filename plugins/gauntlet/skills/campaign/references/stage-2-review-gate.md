@@ -168,7 +168,7 @@ emit it, so it is not subject to the emit-only rule.) The
 orchestrator resolves the bundled emitter's absolute path as `<skill-dir>/scripts/emit-progress.py`
 (skill dir = the directory holding the campaign `SKILL.md`) and, before dispatch, substitutes it for
 the `<SCRIPT>` placeholder in the review prompt — in the SAME way it substitutes `<rundir>`, `<pr>`,
-`<n>`, `<base>`, and `<branch>` — so the reviewer receives a concrete runnable path and never a literal
+`<n>`, `<base>`, and `<worktree>` — so the reviewer receives a concrete runnable path and never a literal
 `<SCRIPT>`. It passes that path into the prompt exactly as it already passes the progress file's
 absolute path; it also ensures the `<rundir>` is a reviewer-writable root (via `--add-dir`) so the
 reviewer can append. The reviewer MUST call that script to emit each event, which writes the canonical
@@ -187,16 +187,18 @@ The reviewer runs the following review contract (shown as the external-reviewer 
 default Claude-subagent path gives a fresh subagent the same instructions and output file):
 
 **Orchestrator:** before dispatching this command, substitute EVERY placeholder with its resolved
-value — `<rundir>`, `<pr>`, `<n>`, `<base>`, `<branch>`, and `<SCRIPT>` (the resolved absolute path
+value — `<rundir>`, `<pr>`, `<n>`, `<base>`, `<worktree>`, and `<SCRIPT>` (the resolved absolute path
 `<skill-dir>/scripts/emit-progress.py`). The reviewer must receive a concrete runnable path, never a
 literal `<SCRIPT>`.
 
-**Note:** `$PROJECT/.worktrees/<branch>` is guaranteed to exist here — it is created from the PR head
-before dispatch (per `pr-adoption.md` step 5 / Loop control's review-launch precondition), so the
-review always has a real checkout to diff `<base>...HEAD`.
+**Note:** the review runs in `<worktree>` — the PR row's ledger `worktree` column value, the single
+source of truth for this PR's checkout path (created at adoption/pre-review per `pr-adoption.md`;
+same-repo PRs only, so it is `$PROJECT/.worktrees/<headRefName>`). That `<worktree>` is guaranteed to
+exist here — it is created from the PR head before dispatch (per `pr-adoption.md` step 5 / Loop
+control's review-launch precondition), so the review always has a real checkout to diff `<base>...HEAD`.
 
 ```
-codex exec --sandbox workspace-write -c "sandbox_workspace_write.network_access=true" -C $PROJECT/.worktrees/<branch> \
+codex exec --sandbox workspace-write -c "sandbox_workspace_write.network_access=true" -C <worktree> \
   --add-dir $PROJECT/<rundir> \
   -o <rundir>/review-<pr>-<n>.txt \
   "Review the changes on this branch vs <base> (the whole git diff <base>...HEAD). \
@@ -233,7 +235,8 @@ codex exec --sandbox workspace-write -c "sandbox_workspace_write.network_access=
 
 As each verdict lands, tally it for the SHA it ran on:
 
-- **NOT SATISFIED** → dispatch a scoped fix subagent into that worktree with the issue list; it
+- **NOT SATISFIED** → dispatch a scoped fix subagent into `<worktree>` (the PR row's ledger
+  `worktree` column value) with the issue list; it
   commits + pushes → HEAD advances → the SHA's tally is void. A later wake starts a fresh review on
   the new tip. (Because reviews are sequential, no second review was spent on this broken commit.)
 - **SATISFIED** → record it. The gate is met once this SHA holds `required(tier)` SATISFIED verdicts

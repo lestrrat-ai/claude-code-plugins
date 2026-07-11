@@ -13,8 +13,10 @@ the watch exit code**:
   pending PR must never sit unwatched waiting for the heartbeat.
 - **red** → any failing line → **stop any review pass in flight on that PR first** (Loop control
   step 3 — the fix will replace its SHA, so the verdict is already void; free the slot), then
-  diagnose from the check logs and dispatch a scoped CI-fix subagent into that PR's own worktree (its
-  head-branch worktree, per the ledger row). Its fix commits + pushes to the PR's **own head branch**
+  diagnose from the check logs and dispatch a scoped CI-fix subagent into `<worktree>` — the PR row's
+  ledger `worktree` column value, the single source of truth for this PR's checkout path (created at
+  adoption/pre-review per `pr-adoption.md`; same-repo PRs only, so it is
+  `$PROJECT/.worktrees/<headRefName>`). Its fix commits + pushes to the PR's **own head branch**
   → code changed → **reset `reviews_ok` to 0**, relaunch the watch immediately, re-enter 2a.
 
 Every CI failure must be handled; never merge over a red or pending check, and never infer green from

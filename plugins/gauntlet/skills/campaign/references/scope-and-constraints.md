@@ -40,7 +40,7 @@ Handling depends on the run's `api_changes` flag, stored in the ledger header:
 from the invocation and record it in the ledger header. A run is long, so NEVER trust in-context
 memory for this — re-read the flag from the ledger before any API-affecting change, so the behavior
 can't drift mid-run. A blanket "yes, stop asking" from the user flips the header to `allowed`; a
-one-off "yes" approves only that finding (recorded durably in its `api_approval`) and leaves the
+one-off "yes" approves only that PR (recorded durably in its `api_approval`) and leaves the
 flag at `ask`.
 
 Backstop: when you scan a PR you built or adopted, flag any public-API change in its diff. Under `ask`, an

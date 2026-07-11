@@ -82,9 +82,11 @@ blocks; each completion is its own wake.
    - current tip has `reviews_ok < required(tier)`, its **review preconditions are clear** (no
      unaddressed Copilot review items, CI not red, no merge conflict with `<base>` — see Stage 2a
      preconditions), and no review running for that SHA → **first ensure the PR-head worktree exists**
-     (the review runs `codex exec -C $PROJECT/.worktrees/<branch>` and diffs `<base>...HEAD`, so a real
-     checkout must be present): if `$PROJECT/.worktrees/<branch>` is missing, create it from the PR head
-     (`git fetch origin <branch>:<branch>` then `git worktree add $PROJECT/.worktrees/<branch> <branch>`,
+     (the review runs `codex exec -C <worktree>` — the PR row's ledger `worktree` column value, the
+     single source of truth for this PR's checkout path (created at adoption/pre-review per
+     `pr-adoption.md`; same-repo PRs only, so it is `$PROJECT/.worktrees/<headRefName>`) — and diffs
+     `<base>...HEAD`, so a real checkout must be present): if that `<worktree>` is missing, create it
+     from the PR head (`git fetch origin <branch>:<branch>` then `git worktree add <worktree> <branch>`,
      per `pr-adoption.md` step 5) and record its path in the row's `worktree` — this is an explicit
      precondition of the review launch. Then launch **one** review pass as a **background**
      task (one at a time per PR — the second, when the tier requires two, only after the first is
