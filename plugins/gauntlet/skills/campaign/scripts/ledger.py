@@ -21,13 +21,12 @@ from typing import NoReturn
 
 # --- schema (owned here, once) ------------------------------------------------
 
-HEADER_FIELDS = ("run_id", "base_branch", "api_changes", "reviewer", "branch_ownership")
+HEADER_FIELDS = ("run_id", "base_branch", "api_changes", "reviewer")
 HEADER_DEFAULTS = {
     "run_id": "-",
     "base_branch": "-",
     "api_changes": "ask",
     "reviewer": "default",
-    "branch_ownership": "declined",
 }
 
 ROW_FIELDS = (

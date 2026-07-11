@@ -49,12 +49,12 @@ act on it without reconciling against gh (and any existing worktree) first.
 
 The store is **JSONL** — one JSON object per line, `cat`/`grep`/`jq`-able. The first line is the
 run-config header record (`{"type": "header", …}` — `run_id`, `base_branch`, `api_changes`, `reviewer`,
-`branch_ownership`, re-read every wake, see Constraints and "Run identity and concurrency"); each
+re-read every wake, see Constraints and "Run identity and concurrency"); each
 following line is one adopted PR's row record (`{"type": "row", …}`). Every record is **self-describing**
 — fields are keyed by NAME, never by column position:
 
 ```
-{"type": "header", "run_id": "g260704-0915-a3f29c1b", "base_branch": "main", "api_changes": "ask", "reviewer": "default", "branch_ownership": "declined"}
+{"type": "header", "run_id": "g260704-0915-a3f29c1b", "base_branch": "main", "api_changes": "ask", "reviewer": "default"}
 {"type": "row", "id": "pr41", "slug": "fix-null-deref", "branch": "fix-null-deref", "worktree": ".worktrees/fix-null-deref", "worktree_owned": "yes", "branch_owned": "yes", "pr": "41", "head_sha": "a3f29c1b", "reviews_ok": "2", "ci": "green", "tier": "STANDARD", "attempts": "1", "started": "2026-07-04T09:15:00Z", "api_approval": "-", "status": "mergeable"}
 {"type": "row", "id": "pr52", "slug": "add-retry-flag", "branch": "add-retry-flag", "worktree": ".worktrees/add-retry-flag", "worktree_owned": "no", "branch_owned": "no", "pr": "52", "head_sha": "b1c2d3e4", "reviews_ok": "0", "ci": "pending", "tier": "HIGH", "attempts": "0", "started": "-", "api_approval": "-", "status": "in_review"}
 ```
@@ -63,24 +63,16 @@ Header-record fields: `run_id` (this run's identity — namespaces its dir/label
 `base_branch` (the adopted PRs' baseRefName — the branch they merge into & diffs measure against; set
 once, see "Base branch"), `api_changes` (`ask` | `allowed`, run-wide; set once from the invocation),
 `reviewer` (`default` (Claude subagents) | `codex` | `<other>` — the selected reviewer; set once, see
-"The reviewer"), `branch_ownership` (`declined` | `granted` — may campaign delete the adopted PR's
-REMOTE head branch on merge; local worktree/branch cleanup is ALWAYS per-PR worktree_owned/branch_owned;
-set once, see "PR adoption").
+"The reviewer").
 
 Header field notes (the header fields above; per-row fields follow):
 
-- `branch_ownership` — run-wide consent to delete the adopted PR's **remote** head branch on merge:
-  `declined` (default) | `granted`. **Resolved once at run start** by the same explicit > preference >
-  default precedence as `reviewer` (an explicit user instruction in the invocation — natural language,
-  like naming the reviewer, NOT a CLI flag — > a stored user preference — memory entry / `CLAUDE.md` /
-  config — that grants branch ownership > default `declined`; see "PR adoption"), then re-read every
-  wake like the other header fields — never re-derived mid-run. It governs **only** the remote branch.
-  `declined` is the safe floor: campaign never deletes the remote head branch. `granted` is opt-in and
-  lets the merge delete the remote head branch (`--delete-branch`). **Local cleanup is identical in both
-  modes** and never keyed off `branch_ownership`: the worktree is removed only when `worktree_owned =
-  yes` and the local branch deleted only when `branch_owned = yes`; a reused worktree, the root/main
-  checkout, and a reused local branch are **never** removed regardless of `branch_ownership` (see
-  "Stage 3 — Merge"). An unattended run with no stored grant stays `declined`.
+- Campaign **never** deletes the adopted PR's **remote** head branch — it never passes `--delete-branch`
+  on merge. The repo's "Automatically delete head branches" setting governs remote-branch cleanup: if
+  enabled, GitHub deletes the head branch on merge; otherwise it stays. Either way it is not campaign's
+  action. **Local cleanup** is governed solely by the per-PR flags: the worktree is removed only when
+  `worktree_owned = yes` and the local branch deleted only when `branch_owned = yes`; a reused worktree,
+  the root/main checkout, and a reused local branch are **never** removed (see "Stage 3 — Merge").
 
 - `id` — `pr<N>` (the adopted PR number). `slug` — slugified PR title. Together they identify the row;
   re-adoption looks up by `pr`/`id` and refreshes in place, never appends a duplicate.

@@ -18,11 +18,6 @@ note it in the final report. Resolve in priority order:
 3. **Default — Claude subagents.** No preference → the reviewer is Claude's own subagents, run
    fresh and context-isolated. **No external tool is required for the campaign to run.**
 
-The run's `branch_ownership` header follows this **same** explicit > preference > default selection
-shape — an explicit user instruction in the invocation (natural language, exactly like naming the
-reviewer; there is no CLI flag for it) > stored user preference > safe default (`declined`) — resolved
-once at run start and re-read every wake (see "PR adoption" and `files-and-ledger.md`).
-
 **Reviewer diversity is a quality lever, not a requirement.** The gate's two passes are already
 fresh, context-isolated re-rolls, but two Claude subagents share the orchestrator's model, so they
 are less independent than a *different* engine would be. When available, a reviewer running a
