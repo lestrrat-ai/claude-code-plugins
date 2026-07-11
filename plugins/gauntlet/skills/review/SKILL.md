@@ -35,7 +35,7 @@ Measure surface BEFORE reading code:
 - PR/branch: `git diff --stat <base>...HEAD` (changed-file count, lines added+removed)
 - Dir/package: enumerate files with Glob (count = file count), then `wc -l <files>` for LOC.
 
-Before starting, `mkdir -p .gauntlet/tmp` (git-ignored; add `.gauntlet/` to `.gitignore` if missing) and delete stale `.gauntlet/tmp/review-*` files from previous runs. Never `rm -rf .gauntlet/` — a campaign's carryover history lives under `.gauntlet/history/`. Intermediate file paths are fixed — concurrent reviews in the same checkout collide; run one at a time.
+Before starting, `mkdir -p .gauntlet/tmp` and delete stale `.gauntlet/tmp/review-*` files from previous runs. `.gauntlet/` should be git-ignored; if it is **not**, **warn the user** rather than editing `.gitignore` — report-only review makes no tracked-file changes, so it never edits `.gitignore` itself (the opt-in handoff / campaign path may add it). Never `rm -rf .gauntlet/` — a campaign's carryover history lives under `.gauntlet/history/`. Intermediate file paths are fixed — concurrent reviews in the same checkout collide; run one at a time.
 
 Pick by the larger of file count or LOC:
 
