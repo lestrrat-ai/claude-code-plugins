@@ -45,7 +45,7 @@ in-context memory for it — a wake may be a fresh agent instance. It flows into
 | ledger header    | `run_id: <run-id>` |
 | PR owner label   | `gauntlet-run-<run-id>` — the **authoritative "mine" marker**. Every adopted PR is tagged with it; it, not any branch name, is what makes a PR this run's. |
 | branch           | the **adopted PR's own `headRefName`** — campaign reuses the PR's existing branch and does NOT mint a `fix-<run-id>-...` branch, so ownership can't be read off the branch name (that's the label's job). |
-| worktree         | `$PROJECT/.worktrees/<headRefName>` — created lazily off the PR's head branch only when a review/CI fix must push. |
+| worktree         | `$PROJECT/.worktrees/<headRefName>` — created from the PR's head branch during adoption / before its first review, and reused for review/CI fixes. |
 | self-wake prompt | `/gauntlet:campaign --run <run-id> --token <agent-token>` — **only** these two flags (carries the id **and** the driver token so a summarized wake re-proves ownership without guessing). It **never** carries `--new` or the original `#PR` adoption args: those are **start-time-only** (they *create/adopt*), whereas `--run` **resumes** an existing run — replaying `--new` on a self-wake would mint a fresh run every heartbeat. |
 
 **Isolation invariant — a run touches ONLY its own work.** It reads/writes only its `<rundir>`, only

@@ -32,17 +32,32 @@ gh label create gauntlet-run-<run-id> --color 5319E7 --description "gauntlet: ru
 
 For each `#PR` to adopt:
 
-1. **Read the PR** — one `gh pr view` for the facts the ledger row needs:
+1. **Read the PR** — one `gh pr view` for the facts the ledger row needs, **including the fork/cross-repo
+   fields** so the checkout and push-eligibility checks below can reason about forks:
 
    ```
-   gh pr view <pr> --json number,title,headRefName,headRefOid,baseRefName,labels,state > <rundir>/pr-<pr>.json
+   gh pr view <pr> --json number,title,headRefName,headRefOid,baseRefName,labels,state,isCrossRepository,headRepositoryOwner,headRepository,maintainerCanModify > <rundir>/pr-<pr>.json
    ```
+
+   `isCrossRepository` is `true` when the head branch lives in a **fork**, not `origin`; in that case
+   `headRepositoryOwner`/`headRepository` name the fork and `maintainerCanModify` says whether this
+   repo's maintainers may push to the PR's head branch. A same-repo PR has `isCrossRepository=false` and
+   its head branch is on `origin`.
 
 2. **Refuse a foreign-owned PR.** If `labels` already contains a `gauntlet-run-*` label that is **not**
    this run's `gauntlet-run-<run-id>`, another run owns it — **do NOT adopt, relabel, or touch it**.
    Tell the user that PR is owned by that other run and to let that run finish or release it first.
    Never steal or transfer another run's owner label (isolation invariant, "Run identity and
    concurrency"). A PR with **no** `gauntlet-run-*` label, or already carrying **ours**, is adoptable.
+
+   **Refuse an un-pushable fork PR.** Campaign pushes review/CI fix commits to the PR's **own head
+   branch** (step 5). For a cross-repository PR that head branch lives in a fork, so this is only
+   possible when the maintainer may push to it. If `isCrossRepository` is `true` **and**
+   `maintainerCanModify` is `false`, **do NOT adopt, relabel, or touch it** — campaign could never land
+   its fixes there. Tell the user the fork PR is not adoptable because "Allow edits by maintainers" is
+   off (the fork owner must enable it, or push the fixes themselves), and stop before applying any label.
+   A same-repo PR (`isCrossRepository=false`), or a fork PR with `maintainerCanModify=true`, adopts
+   normally.
 
 3. **Register the ledger row — refresh, never duplicate.** Look the PR up in `state.md` by `pr`/`id`
    first. If a row already exists (re-adoption / resume), **refresh it in place** — never append a
@@ -70,17 +85,31 @@ For each `#PR` to adopt:
    first review pass dispatches** — create it here as part of adoption, or as a guaranteed pre-review
    step (Loop control makes it a precondition of the review launch). It is NOT created lazily only on a
    fix; a review always needs it. Branch it from the **PR's head branch/SHA**, not `<base>` (branching
-   off `<base>` would throw the PR's own commits away). Fetch the head branch to a named local ref
-   first, then add the worktree on it:
+   off `<base>` would throw the PR's own commits away).
+
+   Use a **PR-based, fork-aware checkout** — never a raw `git fetch origin <headRefName>:<headRefName>`,
+   because for a cross-repository (fork) PR the head branch is **not** on `origin`, so that fetch fails or
+   collides with an unrelated same-named `origin` branch. Resolve the PR by **number** via the
+   `pull/<pr>/head` ref, which `origin` serves for same-repo **and** fork PRs regardless of where the head
+   branch actually lives, and materialise it as a **PR-scoped local branch** (e.g. `pr-<pr>-<headRefName>`)
+   so a fork's head name can't collide with a same-named `origin` branch. Create the ref, then add the
+   worktree on it:
 
    ```
-   git fetch origin <headRefName>:<headRefName>          # bring the PR's branch down as a local branch
-   git worktree add $PROJECT/.worktrees/<headRefName> <headRefName>
+   # PR-numbered, fork-safe: works for same-repo AND fork PRs (origin serves pull/<pr>/head)
+   git fetch origin pull/<pr>/head:<local-branch>
+   git worktree add $PROJECT/.worktrees/<local-branch> <local-branch>
    ```
+
+   (`gh pr checkout <pr>` is the tracking-aware equivalent for a plain checkout — it creates/tracks the
+   right local branch for forks too — but it checks the branch out in the current worktree, which then
+   blocks `git worktree add` on that same branch, so the `pull/<pr>/head` fetch above is what composes
+   with the worktree step.)
 
    Record the resulting path in the row's `worktree`. Reviews read/diff this checkout, and all fix
    commits for the PR also go here; stage only the specific source files changed (explicit paths, never
-   `git add -A`).
+   `git add -A`). Fix commits are pushed back to the PR's head — same-repo PRs and fork PRs with
+   `maintainerCanModify=true` (the only forks adoption accepts, per step 2) both accept those pushes.
 
 6. **Ensure a live CI watch when `ci = pending`.** Every adopted PR whose CI state is unknown gets a
    background watch so a settling run wakes the driver. The `--watch` only **blocks** until the run

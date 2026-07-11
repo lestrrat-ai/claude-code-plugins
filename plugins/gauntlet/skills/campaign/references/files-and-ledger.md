@@ -64,7 +64,8 @@ id | slug | branch | worktree | pr | head_sha | reviews_ok | ci | tier | attempt
 - `branch` — the PR's **own** `headRefName`. Adopted PRs keep their branch — campaign does NOT mint a
   `fix-<run-id>-...` branch, so the branch name won't carry the run id. **The `gauntlet-run-<run-id>`
   label is the ownership marker**, not the branch prefix.
-- `worktree` — `-` until a review/CI fix must push; then created lazily off the PR's head branch (see
+- `worktree` — created off the PR's head branch during adoption (or as a guaranteed pre-review step,
+  before its first review pass) and reused for any review/CI fix — not created lazily only on fix (see
   "PR adoption").
 - `head_sha` — the PR's live head (`headRefOid` from `gh`, keyed by PR number) that `reviews_ok`, `ci`,
   and `tier` describe. `ci`
