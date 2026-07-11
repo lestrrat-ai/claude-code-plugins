@@ -28,10 +28,11 @@ to do with the findings.
 ## How to use it
 
 Point it at what you want reviewed — a pull request, a branch, a directory, a single file, or the
-whole repository — and it works out how deep to go from the size of the target. A single file gets a
-thorough one-pass read; a large package fans the work out across the three lenses; a whole-repo audit
-is ranked by risk so the hottest surfaces (untrusted input, auth, crypto, secrets) get the most
-rigor and nothing is quietly dropped without being noted.
+whole repository — and it works out how deep to go from the size of the target (measured by the larger
+of file count or lines changed). A small target gets a single thorough pass across all three lenses; a
+larger one fans the work out — by lens, then by area as it grows; and a whole-repo audit is ranked by
+risk so the hottest surfaces (untrusted input, auth, crypto, secrets) get the most rigor and nothing is
+quietly dropped without being noted.
 
 Reach for it when you specifically want a hard, hostile review — the kind that assumes every input is
 malicious and every assumption is wrong — rather than a quick sanity check.
