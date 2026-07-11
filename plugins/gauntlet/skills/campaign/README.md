@@ -93,9 +93,11 @@ By default it checks with you before changing anything in your public API — ex
 formats, CLI flags, defaults, or any behavior callers depend on — so it never merges a breaking
 change behind your back. Tell it up front that breakage is fine and it'll stop asking.
 
-It tidies up as it goes: each merged PR's remote branch is deleted, and any worktree/local branch the
-campaign itself created for that PR is removed — but a pre-existing checkout it merely reused (e.g. your
-own branch already checked out) is left untouched. If a fix just can't clear the
+It tidies up as it goes, but only touches what it created. A merged PR's **remote** head branch is
+**left in place** — it may be your own branch, so campaign never deletes it (your repo's auto-delete
+setting, or you, handle that). Locally it removes only the worktree and branch it created itself for
+that PR; a pre-existing checkout or a pre-existing local branch it merely reused (e.g. your own branch
+already checked out) is left untouched and reported. If a fix just can't clear the
 bar, it retries once, then sets that one aside with a note on why and moves on rather than stalling
 everything else. When it's finished you get a short rundown: what merged, what it gave up on, and
 anything it left for you to weigh in on.
@@ -129,9 +131,9 @@ flowchart TD
     Q --> T[reset gate - verdicts and CI are SHA-pinned,<br/>re-triage tier on the new SHA]
     S --> T
     T --> M
-    R -- green --> U[merge: serialized, auto, squash, delete-branch]
+    R -- green --> U[merge: serialized, auto, squash<br/>remote branch left in place]
     U --> U2[sync local base branch to remote ff-only]
-    U2 --> V[cleanup campaign-created worktree/branch<br/>reused checkouts left in place, mark merged]
+    U2 --> V[cleanup campaign-created worktree/branch only<br/>reused checkouts + branches left in place, mark merged]
     V --> W{all PRs merged or aborted?}
     W -- no --> M
     W -- yes --> X[write carryover ledger + final report] --> X2([done])

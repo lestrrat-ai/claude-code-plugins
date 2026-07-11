@@ -56,7 +56,7 @@ base_branch: main       # the adopted PRs' baseRefName — the branch they merge
 api_changes: ask        # ask | allowed (run-wide; set once from the invocation)
 reviewer: default       # default (Claude subagents) | codex | <other> — the selected reviewer (set once; see "The reviewer")
 
-id | slug | branch | worktree | worktree_owned | pr | head_sha | reviews_ok | ci | tier | attempts | started | api_approval | status
+id | slug | branch | worktree | worktree_owned | branch_owned | pr | head_sha | reviews_ok | ci | tier | attempts | started | api_approval | status
 ```
 
 - `id` — `pr<N>` (the adopted PR number). `slug` — slugified PR title. Together they identify the row;
@@ -73,8 +73,15 @@ id | slug | branch | worktree | worktree_owned | pr | head_sha | reviews_ok | ci
 - `worktree_owned` — whether **campaign created** this worktree: `yes` (campaign ran `git worktree
   add`, so cleanup may remove it) | `no` (campaign **reused** a pre-existing checkout it did not
   create, so Stage 3 leaves it in place) | `-` (not yet resolved). Set at adoption alongside
-  `worktree` (see "PR adoption"); read by Stage 3 cleanup so it never deletes a checkout/branch the
+  `worktree` (see "PR adoption"); read by Stage 3 cleanup so it never deletes a checkout the
   user owns.
+- `branch_owned` — whether **campaign created** the local branch, tracked **separately** from
+  `worktree_owned`: `yes` (campaign created the branch on the `git worktree add -b <headRefName> ...
+  origin/<headRefName>` path) | `no` (campaign **reused** a pre-existing local branch — the `git
+  worktree add <path> <branch>` path — or a pre-existing checkout it did not create) | `-` (not yet
+  resolved). Set at adoption alongside `worktree_owned` (see "PR adoption"). Stage 3 deletes the local
+  branch **only when `branch_owned = yes`**, so campaign never deletes a branch the user owns even
+  when it created the worktree.
 - `head_sha` — the PR's live head (`headRefOid` from `gh`, keyed by PR number) that `reviews_ok`, `ci`,
   and `tier` describe. `ci`
   and `tier` are pinned to this exact SHA (re-triage on any content change). `reviews_ok` is pinned to

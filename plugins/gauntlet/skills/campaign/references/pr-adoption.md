@@ -71,11 +71,13 @@ For each `#PR` to adopt:
    second row for the same PR. Otherwise append a new row. Write the **full** row:
 
    - `id` = `pr<N>`; `slug` = slugified PR title; `branch` = the PR's **own** `headRefName` (adopted PRs
-     keep their branch — do NOT mint a `fix-<run-id>-...` branch); `worktree` = `-` and
-     `worktree_owned` = `-` until the head worktree is resolved in step 5 (before its first review
-     pass), then the **actual** resolved `$worktree` (the created default
+     keep their branch — do NOT mint a `fix-<run-id>-...` branch); `worktree` = `-`,
+     `worktree_owned` = `-`, and `branch_owned` = `-` until the head worktree is resolved in step 5
+     (before its first review pass), then the **actual** resolved `$worktree` (the created default
      `$PROJECT/.worktrees/<headRefName>`, or a reused existing checkout's path) with `worktree_owned` =
-     `yes` when campaign created it / `no` when it reused a pre-existing checkout;
+     `yes` when campaign created the worktree / `no` when it reused a pre-existing checkout, and
+     `branch_owned` = `yes` **only** when campaign created the local branch (the `-b` path) / `no` when
+     it reused a pre-existing local branch or checkout;
      `pr` = `<N>`; `head_sha` = `headRefOid`.
    - **On a NEW row only, initialize:** `reviews_ok` = `0` (no verdicts yet); `ci` = `pending`;
      `tier` = triage per `head_sha` ("Adaptive review tiers"); `attempts` = `1`; `started` = now;
@@ -117,6 +119,7 @@ For each `#PR` to adopt:
    if [ -n "$existing" ]; then
      worktree=$existing                                 # REUSE it; do NOT add another
      worktree_owned=no                                  # pre-existing checkout — campaign did NOT create it
+     branch_owned=no                                    # pre-existing local branch — campaign did NOT create it
      # Ensure the reused checkout is CLEAN and AT the PR head, else review/CI would run on stale local
      # content while the ledger pins the live GitHub SHA. Fast-forward only; never reset a checkout we
      # don't own — bail on a dirty tree or divergence:
@@ -129,13 +132,16 @@ For each `#PR` to adopt:
      if git show-ref --verify --quiet refs/heads/<headRefName>; then
        git worktree add $PROJECT/.worktrees/<headRefName> <headRefName>          # existing local branch — checkout, no reset
        git -C $PROJECT/.worktrees/<headRefName> merge --ff-only origin/<headRefName>  # fast-forward to PR head; STOP/bail on divergence (never reset)
+       branch_owned=no                                  # reused a PRE-EXISTING local branch — campaign did NOT create it
      else
        git worktree add -b <headRefName> $PROJECT/.worktrees/<headRefName> origin/<headRefName>  # new local branch at PR head
+       branch_owned=yes                                 # campaign CREATED this local branch — safe to delete at cleanup
      fi
      worktree=$PROJECT/.worktrees/<headRefName>         # created default path: .worktrees/<headRefName>
-     worktree_owned=yes                                 # campaign created it — safe to remove at cleanup
+     worktree_owned=yes                                 # campaign created the worktree — safe to remove at cleanup
    fi
-   # record $worktree in the row's `worktree` column, and $worktree_owned in `worktree_owned`
+   # record $worktree in the row's `worktree` column, $worktree_owned in `worktree_owned`,
+   # and $branch_owned in `branch_owned` (worktree ownership and branch ownership are tracked separately)
    ```
 
    (Do **not** substitute `git fetch origin pull/<pr>/head:<headRefName>` here — that form writes the
@@ -144,11 +150,15 @@ For each `#PR` to adopt:
 
    Record the **actual** resolved `$worktree` — `$PROJECT/.worktrees/<headRefName>` is only the
    **created default** used on the `git worktree add` path; a reused checkout sits at some **other**
-   path — in the row's `worktree`, and record `$worktree_owned` (`yes` = campaign created it, `no` =
-   reused a pre-existing checkout) in the row's `worktree_owned`. **That `worktree` path is the source
-   of truth the review and CI steps read/diff against**, and `worktree_owned` tells Stage 3 cleanup
-   whether it may remove this worktree/branch (only a campaign-created `yes` is ever removed; a reused
-   `no` checkout is left in place). All fix commits for the PR also go here; stage only the specific
+   path — in the row's `worktree`, record `$worktree_owned` (`yes` = campaign created the worktree,
+   `no` = reused a pre-existing checkout) in the row's `worktree_owned`, and record `$branch_owned`
+   (`yes` = campaign created the local branch via `-b`, `no` = reused a pre-existing local branch or
+   checkout) in the row's `branch_owned`. **That `worktree` path is the source
+   of truth the review and CI steps read/diff against**, and `worktree_owned`/`branch_owned` tell
+   Stage 3 cleanup what it may remove: it removes the worktree only when `worktree_owned = yes` and
+   deletes the local branch only when `branch_owned = yes` — a reused worktree or a pre-existing local
+   branch (`no`) is left in place, so campaign never deletes a ref the user owns. All fix commits for
+   the PR also go here; stage only the specific
    source files changed (explicit paths, never `git add -A`). Fix commits are pushed back to the PR's
    head branch on `origin`.
 
