@@ -1,6 +1,6 @@
 ---
 name: review
-description: Reports findings; by default makes no changes. A two-pass adversarial code review focused on security, API consistency/symmetry, and user experience. Pass 1 is hostile (assume the worst, surface everything). Pass 2 is a neutral audit that confirms, adjusts, or refutes each finding. Use when the user asks for a hostile, skeptical, or hard review — not a friendly pass. After the report there is an opt-in handoff to gauntlet:campaign — it can open one labelled PR per confirmed fix (implementing the fixes) and hand them to campaign to gate and merge; decline and it stays report-only, changing nothing.
+description: Reports findings; by default makes no changes. A two-pass adversarial code review focused on security, API consistency/symmetry, and user experience. Pass 1 is hostile (assume the worst, surface everything). Pass 2 is a neutral audit that confirms, adjusts, or refutes each finding. Use when the user asks for a hostile, skeptical, or hard review — not a friendly pass. After the report there is an opt-in handoff to gauntlet:campaign — it can open one labelled PR per confirmed fix (implementing the fixes) and hand them to campaign to gate and merge; decline and it stays report-only, making no source/tracked-file or GitHub changes (it may write ephemeral `.gauntlet/tmp` review scratch).
 ---
 
 # Review
@@ -373,8 +373,10 @@ End with:
 
 ## Handoff to campaign (opt-in)
 
-Default is report-only. Everything above changes nothing on disk or on GitHub. This section is the
-ONLY path where this skill writes code, and it runs only on an explicit "yes".
+Default is report-only. Everything above makes no source/tracked-file changes and no GitHub changes —
+it opens no PRs and edits no committed files (it may write ephemeral `.gauntlet/tmp` review scratch).
+This section is the ONLY path where this skill changes tracked state (writing code, opening PRs), and
+it runs only on an explicit "yes".
 
 After delivering the confirmed-findings report, offer exactly once:
 

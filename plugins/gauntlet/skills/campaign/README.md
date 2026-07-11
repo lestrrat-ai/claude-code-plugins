@@ -54,11 +54,12 @@ re-litigate the same ground.
 ## Where the PRs come from: the review handoff
 
 Campaign gates PRs; it doesn't find the problems. [`/gauntlet:review`](../review/SKILL.md) is the
-other half. Review runs its two-pass adversarial pass and, by default, only reports — it changes
-nothing. But at the end of a confirmed-findings report it offers an opt-in step: open one labelled
-pull request per confirmed fix, then invoke `/gauntlet:campaign #PRs` on exactly those PRs. That
-handoff is where a finding turns into code and a PR; campaign takes it from there and drives each PR
-to merge. Decline the offer and review stays report-only — nothing is written. So the usual
+other half. Review runs its two-pass adversarial pass and, by default, only reports — it makes no
+source/tracked-file or GitHub changes (it may write ephemeral `.gauntlet/tmp` review scratch). But at
+the end of a confirmed-findings report it offers an opt-in step: open one labelled pull request per
+confirmed fix, then invoke `/gauntlet:campaign #PRs` on exactly those PRs. That handoff is where a
+finding turns into code and a PR; campaign takes it from there and drives each PR to merge. Decline
+the offer and review stays report-only — no source or GitHub changes are written. So the usual
 progression is **`gauntlet:review` to find and confirm, then `gauntlet:campaign` to gate and merge**.
 You can also skip review entirely and hand campaign PR numbers you opened yourself.
 

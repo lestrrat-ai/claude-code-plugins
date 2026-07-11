@@ -14,11 +14,15 @@
 - Resume is intent-scoped: a fresh instance resumes via `--run <id>` or an **arg-less** bare invocation
   (adopts the sole orphaned run). A **scoped** bare invocation and `--new` start an independent new run
   and never pre-empt other live runs.
-- Carryover is **one file per run** under `.gauntlet/history/<run-id>.md`: a run writes and
-  prunes only its own file, so appends never contend and there's no shared-file rewrite to race.
-- Run-owned git/GitHub operations are authorized by invocation: `add`, `commit`, `push`, PR
-  create/update, labels/checks/comments, and merge. Ask only for public API changes, active-run
-  takeover, uncertain carryover pruning, or out-of-scope/destructive work.
+- Carryover is **one file per run** under `.gauntlet/history/<run-id>.md`. In normal operation a run
+  WRITES only its OWN file, so concurrent runs never contend on a shared rewrite. A **fresh** run,
+  while pruning history, MAY edit or remove OTHER runs' files — but only those of **finished** runs
+  (no live writer/lease), never a file an actively-driven run owns — so there's still no write
+  contention with a live writer.
+- Run-owned git/GitHub operations are authorized by invocation: `add`, `commit`, `push`, and — on
+  adopted PRs — PR update, labels/checks/comments, and merge. Campaign never opens its own PR (PR
+  creation lives only in the `gauntlet:review` handoff); it ADOPTS existing PRs. Ask only for public
+  API changes, active-run takeover, uncertain carryover pruning, or out-of-scope/destructive work.
 - NEVER commit the run's own bookkeeping — the whole `.gauntlet/**` tree: the `<rundir>` under
   `.gauntlet/tmp/**` (ledger, plans, progress, review/CI outputs, lease) and the carryover tree
   `.gauntlet/history/**`. A fix commit stages ONLY the specific source files it changes, by explicit

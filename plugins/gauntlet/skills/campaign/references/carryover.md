@@ -23,9 +23,12 @@ once. A per-run file records what that run's PRs came to:
 If `.gauntlet/history/` doesn't exist, create it (and add `.gauntlet/` to the repo's `.gitignore` if
 it's not already ignored). When the directory is empty, a fresh run is just a normal first run.
 
-**Why per-run files.** Because each run only ever writes and prunes its **own** file, appends never
-contend and there is no shared-file rewrite to race. (A legacy single `history.md`, if present from
-before this split, is still read as read-only history; leave it in place.)
+**Why per-run files.** In normal operation each run WRITES only its **own** file, so concurrent runs
+never contend on a shared rewrite. Pruning is the one exception: a **fresh** run may edit or remove
+OTHER runs' files, but only those of **finished** runs (no live writer/lease) — never a file an
+actively-driven run owns — so there is still no write contention with a live writer. (A legacy single
+`history.md`, if present from before this split, is still read as read-only history; leave it in
+place.)
 
 ### Pruning the ledger
 
