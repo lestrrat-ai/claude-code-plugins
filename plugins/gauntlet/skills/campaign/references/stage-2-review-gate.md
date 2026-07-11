@@ -118,7 +118,7 @@ the tool and is shown only to document its shape:
 
 ```
 {"type":"progress","unit":"u01","status":"started"}
-{"type":"progress","unit":"u01","status":"done","evidence":"checked canonicalization paths and edge-case tests"}
+{"type":"progress","unit":"u01","status":"done","evidence":"validate_idc.go:42 `canonicalizeValue`; edge case tested at validate_idc_test.go:88"}
 {"type":"plan_amendment_request","ts":"2026-07-06T00:05:00Z","reason":"diff changes generated docs; add doc consistency unit","proposed_unit":{"id":"u99","kind":"docs","target":"docs/generated.md","checks":["sync with API behavior"]}}
 ```
 
