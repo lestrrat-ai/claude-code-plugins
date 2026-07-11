@@ -60,20 +60,31 @@ def load(path: Path) -> "tuple[dict, list[dict]]":
     rows: list[dict] = []
     if not path.exists():
         return header, rows
-    for line in path.read_text().splitlines():
+    seen_pr: set[str] = set()
+    for n, line in enumerate(path.read_text().splitlines(), start=1):
         if not line.strip():
             continue
-        rec = json.loads(line)
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError as e:
+            fail(f"malformed JSON on line {n}: {e}")
+        if not isinstance(rec, dict):
+            fail(f"line {n}: record is not a JSON object")
         kind = rec.get("type")
+        if kind not in ("header", "row"):
+            fail(f"line {n}: missing or unknown record type {kind!r}")
         if kind == "header":
             for f in HEADER_FIELDS:
                 header[f] = rec.get(f, HEADER_DEFAULTS[f])
-        elif kind == "row":
+        else:  # kind == "row"
             row = dict(ROW_DEFAULTS)
             for f in ROW_FIELDS:
                 row[f] = rec.get(f, ROW_DEFAULTS[f])
+            pr = row["pr"]
+            if pr in seen_pr:
+                fail(f"line {n}: duplicate row for pr {pr}")
+            seen_pr.add(pr)
             rows.append(row)
-        # unknown `type` values are ignored defensively
     return header, rows
 
 
@@ -113,9 +124,15 @@ def cmd_header(path: Path, args) -> int:
 
 
 def _named_field_values(args) -> dict:
-    """Collect the --<row-field> options that were actually supplied."""
+    """Collect the --<row-field> options that were actually supplied.
+
+    `pr` is the row key (passed via --pr) and `id` is always derived from it,
+    so neither is a settable update field; both are excluded here.
+    """
     values = {}
     for name in ROW_FIELDS:
+        if name in ("pr", "id"):
+            continue
         val = getattr(args, name, None)
         if val is not None:
             values[name] = val
@@ -128,10 +145,9 @@ def cmd_add_row(path: Path, args) -> int:
     if find_row(rows, pr) is not None:
         fail(f"a row for pr {pr} already exists; use `set` to update it")
     row = dict(ROW_DEFAULTS)
-    row["pr"] = pr
-    row["id"] = f"pr{pr}"
-    row.update(_named_field_values(args))
-    row["pr"] = pr  # --pr is the key, not overridable by a stray --pr option
+    row.update(_named_field_values(args))  # pr/id excluded, so both stay derived
+    row["pr"] = pr  # --pr is the row key
+    row["id"] = f"pr{pr}"  # id is always derived from pr, never caller-set
     rows.append(row)
     dump(path, header, rows)
     print(json.dumps(row))
@@ -194,8 +210,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     def add_row_field_opts(p) -> None:
         for name in ROW_FIELDS:
-            if name == "pr":
-                continue  # pr is the row key, passed via --pr
+            if name in ("pr", "id"):
+                continue  # pr is the row key (via --pr); id is always derived
             # Canonical flag is dash-form (--reviews-ok); accept the underscore
             # alias too. dest stays the underscore field name so getattr(args,
             # name) in cmd_set/cmd_add_row keeps working.

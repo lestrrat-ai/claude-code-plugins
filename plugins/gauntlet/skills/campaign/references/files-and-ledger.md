@@ -156,7 +156,10 @@ ledger.py --file <state.jsonl> list [--where <field>=<val>]       # print matchi
 ```
 
 It rejects an unknown field name (listing the valid ones), refuses a duplicate `pr` on `add-row`,
-errors on a missing row for `set`/`get`, and creates the file with the header if it is missing. A
-non-zero exit with a clear stderr message means the input was rejected — fix it and re-run.
+errors on a missing row for `set`/`get`, and creates the file with the header if it is missing. It also
+validates the store on every read and refuses a corrupt ledger — a malformed JSON line, a record that
+is not a JSON object or has a missing/unknown `type`, or a duplicate `pr` row — reporting the offending
+line number rather than silently dropping records. A non-zero exit with a clear stderr message means the
+input was rejected — fix it and re-run.
 
 ---
