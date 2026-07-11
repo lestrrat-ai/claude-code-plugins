@@ -11,8 +11,10 @@ blocks; each completion is its own wake.
    for** and confirm you may drive it, per "Run identity and concurrency": a `--run <id>` self-wake
    presents its `--token` and, under the run's claim lock, continues if the token matches the lease,
    adopts if the lease is absent/stale, or **stands down** if a fresh lease bears a different token; a
-   **scoped** bare invocation starts a NEW run, while an **arg-less** bare invocation discovers runs
-   and adopts the sole **orphaned** one (asks among several, refuses to hijack an actively-driven one).
+   bare invocation **with `#PR` args** starts a NEW run adopting those PRs, while an **arg-less** bare
+   invocation discovers runs and adopts the sole **orphaned** one (asks among several, refuses to
+   hijack an actively-driven one); a bare invocation with a **non-PR** arg starts nothing — it hits
+   the idle prompt (run `gauntlet:review`, or pass PR numbers).
    This claim-locked lease check is what guarantees **no two agents drive one ledger**.
 
    Once bound and confirmed owner, decide on **liveness of THIS run**, not on whether some `state.md`

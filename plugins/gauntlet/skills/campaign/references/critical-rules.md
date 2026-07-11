@@ -12,8 +12,9 @@
   completions); the token re-proves lease ownership so a summarized wake never mistakes its own run for
   another's. Re-read `run_id` from the ledger each wake, never from memory.
 - Resume is intent-scoped: a fresh instance resumes via `--run <id>` or an **arg-less** bare invocation
-  (adopts the sole orphaned run). A **scoped** bare invocation and `--new` start an independent new run
-  and never pre-empt other live runs.
+  (adopts the sole orphaned run). A bare invocation **with `#PR` args** and `--new` start an independent
+  new run (adopting those PRs) and never pre-empt other live runs; a **non-PR** arg starts nothing —
+  it hits the idle prompt.
 - Carryover is **one file per run** under `.gauntlet/history/<run-id>.md`. In normal operation a run
   WRITES only its OWN file, so concurrent runs never contend on a shared rewrite. A **fresh** run,
   while pruning history, MAY edit or remove OTHER runs' files — but only those of **finished** runs
