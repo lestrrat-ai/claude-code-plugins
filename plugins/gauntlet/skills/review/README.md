@@ -28,8 +28,8 @@ to do with the findings.
 ## How to use it
 
 Point it at what you want reviewed — a pull request, a branch, a directory, a single file, or the
-whole repository — and it works out how deep to go from the size of the target (measured by the larger
-of file count or lines changed). A small target gets a single thorough pass across all three lenses; a
+whole repository — and it works out how deep to go from the size of the target. A small target gets a
+single thorough pass across all three lenses; a
 larger one fans the work out — by lens, then by area as it grows; and a whole-repo audit is ranked by
 risk so the hottest surfaces (untrusted input, auth, crypto, secrets) get the most rigor and nothing is
 quietly dropped without being noted.
@@ -76,8 +76,8 @@ review half never crosses into changing anything until you explicitly say yes.
 ## Good to know
 
 - The two passes run separately: the neutral audit defaults to a fresh, separate context so it isn't
-  anchored by the hostile pass's conclusions (it falls back to a same-context audit only when a fresh
-  subagent isn't available). It re-reads the cited code with intent to disprove each finding rather than
+  anchored by the hostile pass's conclusions (it falls back to a same-context audit only when a separate
+  subagent isn't available or you decline one). It re-reads the cited code with intent to disprove each finding rather than
   rubber-stamp it. This second pass is mandatory; a single hostile pass on its own is not this skill.
 - Any GitHub work in the handoff goes through the `gh` CLI, so that path needs a GitHub remote.
 - Full mechanics live in [`SKILL.md`](./SKILL.md).
