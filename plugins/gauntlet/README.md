@@ -33,7 +33,6 @@ yourself.
 | [`/gauntlet:campaign`](skills/campaign/README.md) | The PR-gating pipeline. Adopts existing pull requests and drives each through review + CI to merge. |
 | [`/gauntlet:review`](skills/review/README.md) | A standalone two-pass hostile review: pass 1 surfaces everything, pass 2 neutrally confirms or refutes each finding. Reports only by default; can opt-in to open PRs and hand them to a campaign. |
 | [`/gauntlet:copilot-address-reviews`](skills/copilot-address-reviews/README.md) | Verify and address GitHub Copilot's PR review comments, one at a time. |
-| [`/gauntlet:codex-exec`](skills/codex-exec/README.md) | Delegate a lightweight task to Codex CLI via `codex exec`. |
 
 ## Requirements
 
