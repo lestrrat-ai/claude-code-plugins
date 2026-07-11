@@ -118,7 +118,14 @@ For each `#PR` to adopt:
      worktree=$existing                                 # REUSE it; do NOT add another
      worktree_owned=no                                  # pre-existing checkout — campaign did NOT create it
    else
-     git worktree add -B <headRefName> $PROJECT/.worktrees/<headRefName> origin/<headRefName>
+     # Not checked out anywhere. Create the worktree WITHOUT resetting an existing local branch
+     # (never use `-B`, which resets the branch and could drop the user's local commits):
+     if git show-ref --verify --quiet refs/heads/<headRefName>; then
+       git worktree add $PROJECT/.worktrees/<headRefName> <headRefName>          # existing local branch — checkout, no reset
+       git -C $PROJECT/.worktrees/<headRefName> merge --ff-only origin/<headRefName>  # fast-forward to PR head; STOP/bail on divergence (never reset)
+     else
+       git worktree add -b <headRefName> $PROJECT/.worktrees/<headRefName> origin/<headRefName>  # new local branch at PR head
+     fi
      worktree=$PROJECT/.worktrees/<headRefName>         # created default path: .worktrees/<headRefName>
      worktree_owned=yes                                 # campaign created it — safe to remove at cleanup
    fi

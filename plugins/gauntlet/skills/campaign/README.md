@@ -93,7 +93,9 @@ By default it checks with you before changing anything in your public API — ex
 formats, CLI flags, defaults, or any behavior callers depend on — so it never merges a breaking
 change behind your back. Tell it up front that breakage is fine and it'll stop asking.
 
-It tidies up as it goes, deleting merged branches and their worktrees. If a fix just can't clear the
+It tidies up as it goes: each merged PR's remote branch is deleted, and any worktree/local branch the
+campaign itself created for that PR is removed — but a pre-existing checkout it merely reused (e.g. your
+own branch already checked out) is left untouched. If a fix just can't clear the
 bar, it retries once, then sets that one aside with a note on why and moves on rather than stalling
 everything else. When it's finished you get a short rundown: what merged, what it gave up on, and
 anything it left for you to weigh in on.
@@ -115,7 +117,9 @@ flowchart TD
     I --> M
 
     M --> N{required SATISFIED verdicts on current SHA?}
-    N -- no --> O[run one review on HEAD SHA<br/>next only after the previous passes]
+    N -- no --> PC{preconditions clear?<br/>Copilot done, CI green, no conflict}
+    PC -- no --> PCF[clear it first: address Copilot / fix CI / rebase] --> M
+    PC -- yes --> O[run one review on HEAD SHA<br/>next only after the previous passes]
     O --> P{SATISFIED?}
     P -- no --> Q[scoped fix subagent: commit + push<br/>to the PR's own branch, new SHA]
     P -- yes --> M
@@ -127,7 +131,7 @@ flowchart TD
     T --> M
     R -- green --> U[merge: serialized, auto, squash, delete-branch]
     U --> U2[sync local base branch to remote ff-only]
-    U2 --> V[cleanup worktree + local branch, mark merged]
+    U2 --> V[cleanup campaign-created worktree/branch<br/>reused checkouts left in place, mark merged]
     V --> W{all PRs merged or aborted?}
     W -- no --> M
     W -- yes --> X[write carryover ledger + final report] --> X2([done])
