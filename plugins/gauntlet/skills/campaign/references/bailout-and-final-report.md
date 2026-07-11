@@ -10,14 +10,17 @@
   `started`). The PR is user/externally owned — campaign never closes it and opens a replacement of
   its own. Instead, **rebuild the worktree from the PR's head branch** so the retry runs with fresh
   LOCAL state against that same PR / its head; the PR itself is left in place.
-- On the **second** stuck/failure, abort permanently: stop work on that PR, **close its open PR and
-  remove its gate labels**, write `<rundir>/abort-<id>.md` with the full history (reviews, CI
-  failures, diffs, what blocked it), set status `aborted`, and **continue the other PRs**. Only ever
-  touch this run's own PRs (ownership = the `gauntlet-run-<run-id>` label). **Terminal detection
-  requires the closure**: loop control gates the finished-run branch on "no open PR still carrying this
-  run's label", and a PR-first pipeline almost always left one open — an aborted row is terminal and
-  lacks its `required(tier)` SATISFIED verdicts, so reconcile will never merge or keep driving it, but
-  a dangling labelled PR would block terminal exit and heartbeat forever.
+- On the **second** stuck/failure, abort permanently: stop work on that PR but **leave the PR OPEN** —
+  the adopted PR may be user/externally owned, so closing it is destructive and contradicts "set aside
+  and move on." Instead, **remove THIS run's owner label (`gauntlet-run-<run-id>`) and its status
+  label** from the PR, write `<rundir>/abort-<id>.md` with the full history (reviews, CI failures,
+  diffs, what blocked it), set the ledger row `status = aborted`, and **continue the other PRs**. Only
+  ever touch this run's own PRs (ownership = the `gauntlet-run-<run-id>` label). **Terminal detection
+  relies on label removal, not closure**: loop control gates the finished-run branch on "no open PR
+  still carrying this run's label", so once this run's owner label is removed the still-open PR no
+  longer carries it and can no longer block terminal exit — an aborted row is terminal and lacks its
+  `required(tier)` SATISFIED verdicts, so reconcile will never merge or keep driving it, and the
+  un-labelled open PR is simply left for its owner.
 - **Converging-but-expensively → escalate to the root-cause pass.** The bailouts above catch a *stuck*
   task; this catches one that's *progressing by whack-a-mole*. A targeted per-finding fix is right for
   the **first** `NOT SATISFIED` on a PR, or for genuinely independent findings. But on the **second**

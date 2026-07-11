@@ -1,10 +1,11 @@
 ## Run-owned operation scope
 
-Invoking this skill authorizes the git/GitHub operations it performs on branches/PRs it creates **or
-adopts**: `add`, `commit`, `push`, PR create/update, labels/checks/comments, and merge. **Passing a
-`#PR` (or discovering one under this run's label) authorizes the campaign to gate and merge that PR** —
-adopt it, run the review gauntlet on it, push review/CI fixes to its branch, and merge it when the gate
-and CI are green.
+Invoking this skill authorizes the git/GitHub operations it performs on the branches/PRs it **adopts**
+(existing PRs the run adopted and tagged with its owner label): `add`, `commit`, `push`, PR update,
+labels/checks/comments, and merge. The campaign never opens its own PRs — PR creation now lives in the
+gauntlet:review handoff. **Passing a `#PR` (or discovering one under this run's label) authorizes the
+campaign to gate and merge that PR** — adopt it, run the review gauntlet on it, push review/CI fixes to
+its branch, and merge it when the gate and CI are green.
 
 Do NOT ask again before run-owned operations when the state machine reaches them.
 

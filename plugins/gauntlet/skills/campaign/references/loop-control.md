@@ -104,8 +104,10 @@ blocks; each completion is its own wake.
 5. **Reschedule or exit.**
    - Any non-terminal PR remains (in review, pending CI, or awaiting API/precondition) →
      refresh this run's lease, then set a `ScheduleWakeup` heartbeat
-     (`prompt: "/gauntlet:campaign --run <run-id> --token <agent-token> <args>"` — `--run` rebinds the
-     wake to this run and `--token` re-proves ownership of its lease). This heartbeat is a
+     (`prompt: "/gauntlet:campaign --run <run-id> --token <agent-token>"` — exactly those two flags:
+     `--run` rebinds the wake to this run and `--token` re-proves ownership of its lease). A self-wake
+     **never replays `--new` or the original `#PR` adoption args** — the run is *resumed* by `--run`,
+     not re-created, and carrying `--new` would mint a brand-new run every heartbeat. This heartbeat is a
      **fallback wake, not a poll**: background completions are the primary wake and normally fire
      first, so the heartbeat forces a wake in the cases **no completion ever arrives** — a background
      task that **hangs** (e.g. a reviewer stuck on input) and never completes, or a **killed/orphaned

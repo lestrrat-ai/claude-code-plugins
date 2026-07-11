@@ -1,16 +1,22 @@
 ## Stage 3 — Merge (serialized, auto)
 
-A PR is mergeable when the **current** `git rev-parse HEAD` equals `head_sha` AND
-`reviews_ok >= required(tier)` AND `ci == green` — i.e. `required(tier)` SATISFIED verdicts
-(1 if `tier == TRIVIAL`, else 2) and green CI all recorded against the live tip.
+A PR is mergeable when the **live PR head SHA** —
+`gh pr view <pr> --json headRefOid --jq .headRefOid`, keyed by the PR number from the ledger row —
+equals the ledger `head_sha` AND `reviews_ok >= required(tier)` AND `ci == green` — i.e.
+`required(tier)` SATISFIED verdicts (1 if `tier == TRIVIAL`, else 2) and green CI all recorded
+against the live tip. (An adopted PR may have no local worktree checked out, so use the PR's own head
+via `gh`, never a local `git rev-parse HEAD`.)
 
 1. **Serialize merge operations, not wakes.** A wake may merge multiple PRs, but only one at a time.
-   Before each merge, re-confirm both gates still hold for the current HEAD (a late push may have
-   reset them), **and re-fetch `origin/<base>` and re-check
+   Before each merge, re-confirm both gates still hold against the live PR head SHA
+   (`gh pr view <pr> --json headRefOid --jq .headRefOid`, PR number from the ledger row) — a late push
+   may have moved the tip past the recorded `head_sha` and reset the gates —
+   **and re-fetch `origin/<base>` and re-check
    `gh pr view <pr> --json mergeable,mergeStateStatus`** — a concurrent run sharing this base may
    have advanced it since the PR was last reviewed. If it now reads `BEHIND`/`DIRTY`/`CONFLICTING`,
    refresh the PR per step 6 instead of merging it.
-2. Push guard: `gh pr view <branch> --json state --jq .state` must be `OPEN`.
+2. Push guard: `gh pr view <pr> --json state --jq .state` (PR number from the ledger row) must be
+   `OPEN`.
 3. Merge: `gh pr merge <pr> --squash --delete-branch` (use the repo's prevailing merge method if not
    squash).
 4. **Sync the local base branch with the remote.** The merge landed on `origin/<base>`, but local
@@ -39,8 +45,8 @@ A PR is mergeable when the **current** `git rev-parse HEAD` equals `head_sha` AN
    Fast-forward only — never a merge commit or reset. If the fast-forward fails (local `<base>` somehow
    diverged), do NOT force it: that's a bailout condition (stop and surface it), since rebasing PRs
    onto a wrong base would corrupt every downstream diff.
-5. **Clean up on successful merge.** Once the merge is confirmed (`gh pr view <branch> --json state
-   --jq .state` → `MERGED`), tear down that PR's local footprint. `<branch>` and its worktree are the
+5. **Clean up on successful merge.** Once the merge is confirmed (`gh pr view <pr> --json state
+   --jq .state` → `MERGED`, PR number from the ledger row), tear down that PR's local footprint. `<branch>` and its worktree are the
    adopted PR's **own head branch** and the worktree named for it, exactly as recorded in that PR's
    ledger row (its `branch`/`worktree` columns) — there is no `fix-<run-id>-*` branch to clean up:
    - `--delete-branch` above already removed the **remote** branch (the PR's own head branch).
