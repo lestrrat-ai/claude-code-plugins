@@ -71,7 +71,8 @@ requires and CI is green. How many reviews depends on what the PR touches: a doc
 `SKILL.md`, `CLAUDE.md`, prompts, CI, scripts — always gets the full **two-pass** gate. (Two reviews
 rather than one because a single stochastic review can miss a defect — not because two runs are
 statistically independent; reading the same diff under the same review task makes their verdicts
-correlated.) There's no approval step along the way, so starting it is your sign-off — and a run over
+correlated.) Aside from the public-API confirmation described below, there's no approval step along
+the way, so starting it is your sign-off — and a run over
 several PRs can keep going for a while before it's done.
 
 The loop works on each PR in place: it reviews the PR's current HEAD and watches its CI. When a
@@ -137,7 +138,7 @@ flowchart TD
     Q --> T[reset gate - verdicts and CI are SHA-pinned,<br/>re-triage tier on the new SHA]
     S --> T
     T --> M
-    R -- green --> U[merge: serialized, auto, squash<br/>remote branch left in place]
+    R -- green --> U[merge: serialized, auto, squash<br/>remote branch per ownership: default left in place]
     U --> U2[sync local base branch to remote ff-only]
     U2 --> V[cleanup campaign-created worktree/branch only<br/>reused checkouts + branches left in place, mark merged]
     V --> W{all PRs merged or aborted?}
