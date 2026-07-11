@@ -63,10 +63,13 @@ blocks; each completion is its own wake.
      carryover** (see "Fresh runs and carryover"). On no, emit that run's final report and stop. This
      prompt is the *only* wake that asks the user about scope.
 
-   **The `--new` fresh-run signal short-circuits the above:** `--new` (or "fresh run" / "start over")
-   mints a NEW run-id + token and starts a fresh run with carryover immediately, regardless of any
-   run's liveness — no prompt, and **other live runs are left untouched** (they keep running under
-   their own drivers). Its scope is the arg, if any.
+   **The `--new` fresh-run signal short-circuits the above — but only WITH `#PR` args:** `--new #PR...`
+   (or "fresh run" / "start over" with PR numbers) mints a NEW run-id + token and starts a fresh run
+   adopting those PRs immediately, regardless of any run's liveness — no prompt, and **other live runs
+   are left untouched** (they keep running under
+   their own drivers). **`--new` with no `#PR` args creates nothing** — it falls through to the idle
+   prompt (run `gauntlet:review`, or pass PR numbers), exactly like a bare no-arg first run, and mints
+   no run-id/`<rundir>`/lease.
 
    **Reconcile labels too** (idempotent, retroactive, **scoped to this run**). Ensure the labels exist
    (`gh label create … --force`, including this run's `gauntlet-run-<run-id>`), then for every PR **of
