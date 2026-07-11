@@ -14,7 +14,9 @@ is set (explicit invocation, or a preference in memory/`CLAUDE.md`/carryover). A
 different agent/model than the orchestrator (e.g. Codex CLI) is recommended for stronger reviewer
 diversity but never required — see `references/reviewer.md`. Reviews and CI watches run as background
 tasks; gates and merges stay centralized. Campaign gates **existing** PRs; it never writes fixes from
-scratch — to find issues first, use `gauntlet:review`.
+scratch — to find issues first, use `gauntlet:review`, which after its report offers to open one PR per
+confirmed fix and hand them straight here (`/gauntlet:campaign #PRs`). That opt-in handoff is a common
+way PRs enter a campaign; you can also open them yourself.
 
 Invoke once. This skill drives its own loop via `ScheduleWakeup`; do NOT wrap it in `/loop`.
 
