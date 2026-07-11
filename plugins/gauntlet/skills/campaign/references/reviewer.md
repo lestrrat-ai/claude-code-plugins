@@ -19,8 +19,9 @@ note it in the final report. Resolve in priority order:
    fresh and context-isolated. **No external tool is required for the campaign to run.**
 
 The run's `branch_ownership` header follows this **same** explicit > preference > default selection
-shape — explicit invocation/flag > stored user preference > safe default (`declined`) — resolved once
-at run start and re-read every wake (see "PR adoption" and `files-and-ledger.md`).
+shape — an explicit user instruction in the invocation (natural language, exactly like naming the
+reviewer; there is no CLI flag for it) > stored user preference > safe default (`declined`) — resolved
+once at run start and re-read every wake (see "PR adoption" and `files-and-ledger.md`).
 
 **Reviewer diversity is a quality lever, not a requirement.** The gate's two passes are already
 fresh, context-isolated re-rolls, but two Claude subagents share the orchestrator's model, so they
@@ -33,7 +34,7 @@ complete, valid reviewer.
 ### Running the default reviewer — Claude subagents
 
 The reviewer's only job is the **Stage 2a per-PR review pass**: spawn a **fresh** subagent to review
-the whole `<base>...HEAD` diff with an adversarial pass, using the same `review-<pr>-<n>.plan.jsonl` /
+the whole `origin/<base>...HEAD` diff with an adversarial pass, using the same `review-<pr>-<n>.plan.jsonl` /
 `review-<pr>-<n>.progress.jsonl` protocol — planned units, then the unstructured adversarial sweep —
 and, on SATISFIED, the same `RESIDUAL-RISK: <area> — <why>` line immediately above exactly one final
 `VERDICT: SATISFIED` / `VERDICT: NOT SATISFIED` line. Each pass is a fresh, context-isolated subagent,

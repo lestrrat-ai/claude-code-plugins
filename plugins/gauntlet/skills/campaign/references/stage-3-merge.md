@@ -24,11 +24,15 @@ via `gh`, never a local `git rev-parse HEAD`.)
      **user-owned** (an adopted PR keeps its own branch; campaign did not create it), so campaign must
      not delete it. Leave the remote branch in place; the repo's "automatically delete head branches"
      setting, or the user, handles it.
-   - **`branch_ownership = granted`** → campaign owns the adopted branch, so tidy the remote too:
+   - **`branch_ownership = granted`** → campaign may delete the adopted PR's **remote** head branch:
      `gh pr merge <pr> --squash --delete-branch` (prevailing merge method if not squash) — this deletes
      the remote head branch as part of the merge.
+
+   This `--delete-branch` choice is the **ONLY** thing `branch_ownership` controls, and it touches the
+   **remote** branch alone. Local cleanup (step 5) is identical in both modes — never keyed off
+   `branch_ownership`.
 4. **Sync the local base branch with the remote.** The merge landed on `origin/<base>`, but local
-   `<base>` is now behind. Fast-forward it so every subsequent rebase and `<base>...HEAD` diff is
+   `<base>` is now behind. Fast-forward it so every subsequent rebase and `origin/<base>...HEAD` diff is
    measured against the just-merged tip, not a stale one (`<base>` = the adopted PRs' `baseRefName`,
    not assumed `main`).
    Local `<base>` is **shared** with any concurrent run on the same base; the fast-forward is
@@ -56,43 +60,39 @@ via `gh`, never a local `git rev-parse HEAD`.)
 5. **Clean up on successful merge.** Once the merge is confirmed (`gh pr view <pr> --json state
    --jq .state` → `MERGED`, PR number from the ledger row), tear down the local footprint. `<branch>`
    and its worktree are the adopted PR's **own head branch** and the worktree recorded in that PR's
-   ledger row (its `branch`/`worktree` columns) — there is no `fix-<run-id>-*` branch to clean up. **How
-   much is torn down is gated on the run's `branch_ownership` header** (read from the ledger; resolved
-   once at adoption). The two paths are explicit:
+   ledger row (its `branch`/`worktree` columns) — there is no `fix-<run-id>-*` branch to clean up.
 
-   **`branch_ownership = granted` — campaign owns adopted branches; full tidy.** Campaign may delete
-   what it adopted, so clean up **regardless of `worktree_owned`/`branch_owned`**:
-   - **The PR's remote head branch is already gone** — step 3 merged with `--delete-branch`.
-   - **Remove the worktree and delete the local branch unconditionally.** Verify the merge with the
-     `git-detect-merged` skill **against the run's `<base>`** (the ledger `base_branch` — NOT the
-     helpers' default `main`), then `git worktree remove` the ledger-recorded worktree and delete the
-     ledger-recorded local `branch` (e.g. `git-cleanup-merged` with that same `<base>`, or `git branch
-     -d` after the worktree is gone) — even for a reused worktree or a pre-existing local branch. The
-     user granted this; report what was removed.
+   **The remote head branch was already handled by step 3** — deleted when `branch_ownership = granted`
+   (the `--delete-branch` merge), left in place when `declined`. That is the **only** ref
+   `branch_ownership` governs.
 
-   **`branch_ownership = declined` (default) — the safe behavior; tear down only what campaign
-   created:**
-   - **The PR's remote head branch is left in place** (step 3 dropped `--delete-branch`) — it may be
-     user-owned, so campaign never deletes it; the repo's auto-delete setting or the user handles it.
-   - **Worktree removal and local-branch deletion are gated SEPARATELY**, on `worktree_owned` and
-     `branch_owned` respectively (adoption records the two independently — campaign can create a
-     worktree over a **pre-existing** local branch, in which case `worktree_owned = yes` but
-     `branch_owned = no`; see "PR adoption"). Never delete a worktree or branch campaign didn't create:
-     - **`worktree_owned = yes`** → campaign created the worktree, so remove it: verify the merge with
-       the `git-detect-merged` skill **against the run's `<base>`** (the ledger `base_branch` — NOT the
-       helpers' default `main`, since the base may be a release/integration branch), then `git worktree
-       remove` the **ledger-recorded worktree**. **`worktree_owned = no`** → campaign reused a
-       pre-existing checkout (the user's root checkout or their own worktree), so **leave the worktree
-       in place** — do NOT `git worktree remove` it.
-     - **`branch_owned = yes`** → campaign created the local branch (the `-b` path), so delete it (e.g.
-       via `git-cleanup-merged` **with that same `<base>`**, or `git branch -d` the ledger-recorded
-       `branch` after the worktree is gone). **`branch_owned = no`** → campaign reused a pre-existing
-       local branch (or checkout), so **leave the local branch in place** — do NOT delete it; that
-       branch may be the user's.
-     - **Report** any reused worktree and any reused local branch that were left in place (path +
-       branch) in the final report, so the user knows their working tree/branches were untouched.
+   **Local cleanup is gated on the per-PR `worktree_owned`/`branch_owned` flags — identically in both
+   `granted` and `declined` modes, and never keyed off `branch_ownership`.** Adoption records the two
+   independently (campaign can create a worktree over a **pre-existing** local branch, in which case
+   `worktree_owned = yes` but `branch_owned = no`; see "PR adoption"). **Never remove a worktree or
+   delete a branch campaign didn't create:**
+   - **`worktree_owned = yes`** → campaign created the worktree, so remove it: verify the merge with
+     the `git-detect-merged` skill **against the run's `<base>`** (the ledger `base_branch` — NOT the
+     helpers' default `main`, since the base may be a release/integration branch), then `git worktree
+     remove` the **ledger-recorded worktree**. **`worktree_owned = no`** → campaign reused a
+     pre-existing checkout (the user's root/main checkout or their own worktree), so **leave the
+     worktree in place** — do NOT `git worktree remove` it.
+   - **NEVER `git worktree remove` the root/main checkout** (the repo's primary working tree) under any
+     circumstances — even were it somehow flagged owned. Removing/replacing the main checkout is
+     destructive and, for the primary working tree, impossible; `worktree_owned = yes` only ever names a
+     `.worktrees/<...>` worktree campaign itself created via `git worktree add`.
+   - **`branch_owned = yes`** → campaign created the local branch (the `-b` path), so delete it (e.g.
+     via `git-cleanup-merged` **with that same `<base>`**, or `git branch -d` the ledger-recorded
+     `branch` after the worktree is gone). **`branch_owned = no`** → campaign reused a pre-existing
+     local branch (or checkout), so **leave the local branch in place** — do NOT delete it; that branch
+     may be the user's.
+   - **Report** any reused worktree and any reused local branch that were left in place (path + branch)
+     in the final report, so the user knows their working tree/branches were untouched.
 
-   In **both** paths, once cleanup is done set status `merged` and stop the PR's background tasks.
+   So the **only** difference between `granted` and `declined` is step 3's remote `--delete-branch`;
+   local ref safety (`worktree_owned`/`branch_owned`, never touching the root/main checkout or any
+   reused ref) is identical and absolute in both. Once cleanup is done set status `merged` and stop the
+   PR's background tasks.
 
    This runs only after the merge is verified, and only ever touches PRs this run **owns** — those
    carrying its `gauntlet-run-<run-id>` label — never another run's. Leave the worktree in place if the

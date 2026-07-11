@@ -125,9 +125,9 @@
   never from the `--watch` exit code (it can exit 0 on pending/unregistered checks). No green, no merge.
 - The run targets a **base branch** (`base_branch` in the ledger header), which is **not assumed to
   be `main`** — it is the `baseRefName` of the adopted PRs (must agree across them, else prompt).
-  Reviews diff `<base>...HEAD` and PRs merge into `<base>`; a fix worktree branches off the PR's OWN
+  Reviews diff `origin/<base>...HEAD` and PRs merge into `<base>`; a fix worktree branches off the PR's OWN
   head branch/SHA, never off `<base>` (see `pr-adoption.md`). Re-read it each wake (see "Base branch").
 - After every merge, fast-forward local `<base>` to `origin/<base>` (Stage 3 step 4) so subsequent
-  `<base>...HEAD` diffs and rebases branch off the just-merged tip, not a stale base. If the
+  `origin/<base>...HEAD` diffs and rebases branch off the just-merged tip, not a stale base. If the
   fast-forward fails, bail out — never force it.
 - No "Test plan" section in PR bodies.

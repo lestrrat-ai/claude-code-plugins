@@ -23,21 +23,27 @@ Two entry paths feed it (see "Run identity and concurrency" for the full grammar
 `files-and-ledger.md`), the same way `reviewer`/`base_branch` are resolved once and read every wake.
 Use the same explicit > preference > default precedence as the reviewer (`references/reviewer.md`):
 
-1. **Explicit invocation/flag.** The user granted (or refused) branch ownership for this run on the
-   invocation → use it.
+1. **Explicit user instruction in the invocation.** The user granted (or refused) branch ownership for
+   this run in the invocation, in natural language — exactly like how the reviewer is chosen (e.g. the
+   user says "you can delete the branches") → use it. There is **no `--branch-ownership` CLI flag**; the
+   grant is a plain-language instruction, not a documented flag in the Args grammar.
 2. **Stored user preference.** A recorded preference that grants branch ownership (a memory entry,
    `CLAUDE.md`, or config) → `granted`. Do NOT invent a grant; use one only when it actually exists.
-3. **Default — `declined`.** No explicit flag and no stored grant → `declined`. An unattended run with
-   no stored grant stays `declined`.
+3. **Default — `declined`.** No explicit instruction and no stored grant → `declined`. An unattended run
+   with no stored grant stays `declined`.
 
 Do **NOT** block the loop on a live prompt for this — never hold the run hostage on a user prompt. The
-grant comes from stored settings/the flag, not a mandatory question; absent one, the safe default holds.
+grant comes from an explicit instruction in the invocation or from stored settings, not a mandatory
+question; absent one, the safe default holds.
 Record the resolved value in the header (`branch_ownership: declined | granted`); it is re-read every
 wake and never re-derived mid-run.
 
-`worktree_owned`/`branch_owned` are still tracked **per-PR** (below) exactly as before — they govern the
-`declined` path's cleanup. `branch_ownership = granted` overrides toward full cleanup on merge (see
-"Stage 3 — Merge"): it only ever *enables* more teardown, never less.
+`worktree_owned`/`branch_owned` are tracked **per-PR** (below) and govern **local** cleanup in **both**
+modes — they alone decide whether the worktree/local branch is removed, identically under `declined` and
+`granted`. `branch_ownership = granted` changes **only** the **remote** head branch: it lets the merge
+delete the PR's remote head branch (`--delete-branch`). It never widens local teardown — a reused
+worktree, the root/main checkout, and a reused local branch are left in place under `granted` exactly as
+under `declined` (see "Stage 3 — Merge").
 
 **Ensure the labels exist** first — the two shared status labels plus this run's owner label
 (idempotent — `--force` creates or updates, safe on every resume):
@@ -120,7 +126,7 @@ For each `#PR` to adopt:
 
 5. **Create the PR-head worktree before the first review pass — off the PR's OWN head, never `<base>`.**
    The review itself needs a real checkout: the review command runs `codex exec -C
-   $PROJECT/.worktrees/<branch>` and diffs `<base>...HEAD`, so the worktree MUST exist **before the PR's
+   $PROJECT/.worktrees/<branch>` and diffs `origin/<base>...HEAD`, so the worktree MUST exist **before the PR's
    first review pass dispatches** — create it here as part of adoption, or as a guaranteed pre-review
    step (Loop control makes it a precondition of the review launch). It is NOT created lazily only on a
    fix; a review always needs it. Branch it from the **PR's head branch/SHA**, not `<base>` (branching
@@ -133,6 +139,7 @@ For each `#PR` to adopt:
    remote ref (always safe), then **reuse an existing checkout if there is one, else add a worktree**:
 
    ```
+   git fetch origin refs/heads/<base>:refs/remotes/origin/<base>                 # refresh origin/<base> — the review diffs origin/<base>...HEAD, and adoption otherwise fetches only the PR head, not <base>
    git fetch origin refs/heads/<headRefName>:refs/remotes/origin/<headRefName>   # update origin/<headRefName> (explicit refspec — a bare `git fetch origin <hrn>` only writes FETCH_HEAD)
    # is <headRefName> already checked out somewhere? (root or a worktree)
    existing=$(git worktree list --porcelain | awk -v b="refs/heads/<headRefName>" '$1=="worktree"{p=$2} $1=="branch" && $2==b{print p}')

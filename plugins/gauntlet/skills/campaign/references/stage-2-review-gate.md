@@ -64,7 +64,7 @@ Only launch a review pass once all three are clear for the current tip.
 Run reviews **one at a time per PR** — never two at once for the same SHA. When a PR's tip
 (`head_sha`) has fewer than `required(tier)` SATISFIED verdicts (2, or 1 for TRIVIAL) and no review
 already running for it, the wake's dispatch step launches **one** review pass by the selected reviewer
-(see "The reviewer") — a **fresh**, context-isolated pass over the whole `<base>...HEAD` diff, run as
+(see "The reviewer") — a **fresh**, context-isolated pass over the whole `origin/<base>...HEAD` diff, run as
 a **background** task (its completion is a wake; the loop folds the verdict in at step 2). For a
 `required==2` tier the second, corroborating review is launched only **after** the first comes back
 SATISFIED — so a still-broken commit never burns the second review before the first has said "fix it"
@@ -82,7 +82,7 @@ control step 3).
 
 If the selected reviewer is external (e.g. `codex exec`) and a pass can't return a verdict
 (quota/rate-limit, auth, timeout, or other system error — see "The reviewer"), retry it once, then run
-that pass as a **fresh subagent** reviewing the whole `<base>...HEAD` diff under the same output
+that pass as a **fresh subagent** reviewing the whole `origin/<base>...HEAD` diff under the same output
 contract — a `RESIDUAL-RISK` line on SATISFIED immediately above exactly one final `VERDICT:` line. A
 subagent fallback pass counts toward the review gate exactly like an external pass —
 it's another fresh, context-isolated re-roll in its own context. (When the reviewer is already Claude
@@ -196,13 +196,26 @@ source of truth for this PR's checkout path (created at adoption/pre-review per 
 ledger-recorded `<worktree>` path — default `.worktrees/<headRefName>` when campaign creates it, else
 a reused existing checkout). That `<worktree>` is guaranteed to
 exist here — it is created from the PR head before dispatch (per `pr-adoption.md` step 5 / Loop
-control's review-launch precondition), so the review always has a real checkout to diff `<base>...HEAD`.
+control's review-launch precondition), so the review always has a real checkout to diff `origin/<base>...HEAD`.
+
+**Fetch `origin/<base>` fresh before the first review dispatch.** The review diffs
+`origin/<base>...HEAD` — a **remote-tracking** ref, not a possibly-absent local `<base>` (adoption
+fetches only the PR head, so a local `<base>` may not exist, and a PR may target a stale or as-yet-
+uncreated base). Before dispatching the first review pass for a PR, refresh the base's remote-tracking
+ref so the diff always has a base to measure against:
+
+```
+git fetch origin refs/heads/<base>:refs/remotes/origin/<base>   # explicit refspec — updates origin/<base> even when no local <base> is checked out
+```
+
+This is idempotent and safe to repeat; run it (or rely on adoption's step-5 base fetch) before the
+review launches. All review diffs then use `origin/<base>...HEAD`.
 
 ```
 codex exec --sandbox workspace-write -c "sandbox_workspace_write.network_access=true" -C <worktree> \
   --add-dir $PROJECT/<rundir> \
   -o $PROJECT/<rundir>/review-<pr>-<n>.txt \
-  "Review the changes on this branch vs <base> (the whole git diff <base>...HEAD). \
+  "Review the changes on this branch vs origin/<base> (the whole git diff origin/<base>...HEAD). \
    First read $PROJECT/<rundir>/review-<pr>-<n>.plan.jsonl, then critically assess whether its units \
    cover the review dimensions this change actually needs — the plan is the orchestrator's starting \
    point, not a guarantee of complete coverage. If an important dimension is missing or a unit is \
@@ -246,7 +259,7 @@ As each verdict lands, tally it for the SHA it ran on:
   tally **reaches** `required(tier)` on the same SHA, the review gate is met for this HEAD — swap the
   PR's label: `gh pr edit <pr> --remove-label gauntlet-reviewing --add-label gauntlet-accepted`.
 
-Every pass reviews the whole `<base>...HEAD` diff (not just the last fix-delta), so accumulated fixes
+Every pass reviews the whole `origin/<base>...HEAD` diff (not just the last fix-delta), so accumulated fixes
 are always judged as one piece.
 
 **Unstructured adversarial sweep.** After a pass finishes every planned unit, it runs one brief

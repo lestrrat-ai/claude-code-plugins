@@ -97,11 +97,13 @@ It tidies up as it goes, but by default it leaves your branches alone. A merged 
 branch is **left in place** — it may be your own branch, so campaign never deletes it (your repo's
 auto-delete setting, or you, handle that). Locally it removes only the worktree and branch it created
 itself for that PR; a pre-existing checkout or a pre-existing local branch it merely reused (e.g. your
-own branch already checked out) is left untouched and reported. If you'd rather it clean up fully, you
-can tell it — via a saved preference (or by granting branch ownership when you start the run) — that it
-may **own** the PRs' branches; then on merge it deletes the remote head branch and removes the local
-branch and worktree it adopted too. That's opt-in and only ever removes *more*; left unset, the
-leave-your-branches-alone default holds. If a fix just can't clear the
+own branch already checked out) is left untouched and reported. If you'd rather it tidy the **remote**
+side too, you can tell it — in plain language when you start the run (there's no special flag), or via a
+saved preference — that it may delete the PRs' **remote** head branches on merge; then the merge deletes
+that remote branch. That grant affects **only** the remote branch: locally it still removes only the
+worktree and branch it created itself, and it **never** deletes a checkout or local branch you already
+had (or your main checkout) — that safety is identical whether or not you grant it. It's opt-in; left
+unset, the leave-your-branches-alone default holds. If a fix just can't clear the
 bar, it retries once, then sets that one aside with a note on why and moves on rather than stalling
 everything else. When it's finished you get a short rundown: what merged, what it gave up on, and
 anything it left for you to weigh in on.

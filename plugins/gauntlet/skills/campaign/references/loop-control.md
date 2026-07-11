@@ -34,7 +34,8 @@ blocks; each completion is its own wake.
      isn't enough (merge-gate CI truth stays the re-polled `gh pr checks` snapshot, Stage 2b). Wake
      turnaround is throughput: every serial `gh` call in reconcile delays every dispatch behind it. Re-read `run_id`, `base_branch`, `api_changes`, `reviewer`, and `branch_ownership` from the ledger
      header — they govern namespacing, the merge/diff target, API-change handling, which reviewer runs
-     the review passes, and whether campaign may own+delete an adopted PR's branch on merge, and must be
+     the review passes, and whether campaign may delete an adopted PR's remote head branch on merge (local
+     cleanup stays per-PR `worktree_owned`/`branch_owned`), and must be
      consulted fresh each wake, never from memory (a wake may be a fresh agent instance that just
      adopted the run, so an explicit/preferred reviewer or a branch-ownership grant would otherwise
      be lost and silently revert to the default; Constraints, Base branch, "The reviewer",
@@ -100,11 +101,15 @@ blocks; each completion is its own wake.
      single source of truth for this PR's checkout path (created at adoption/pre-review per
      `pr-adoption.md`; the ledger-recorded `<worktree>` path — default `.worktrees/<headRefName>` when
      campaign creates it, else a reused existing checkout) — and diffs
-     `<base>...HEAD`, so a real checkout must be present): if that `<worktree>` is missing, create it
+     `origin/<base>...HEAD`, so a real checkout must be present): if that `<worktree>` is missing, create it
      from the PR head **per `pr-adoption.md` step 5** — which reuses an existing checkout of that branch
      if one exists (root or another worktree), else adds a fresh worktree, since `git worktree add`
      refuses a branch checked out elsewhere — and record its path in the row's `worktree`. This is an
-     explicit precondition of the review launch. Then launch **one** review pass as a **background**
+     explicit precondition of the review launch. **Also fetch `origin/<base>` fresh before the first
+     review dispatch** (`git fetch origin refs/heads/<base>:refs/remotes/origin/<base>`) — the review
+     diffs `origin/<base>...HEAD`, a remote-tracking ref that always exists, since adoption fetches only
+     the PR head and a local `<base>` may be absent or stale (see `pr-adoption.md` / Stage 2a). Then
+     launch **one** review pass as a **background**
      task (one at a time per PR — the second, when the tier requires two, only after the first is
      SATISFIED; Stage 2a). If a precondition is dirty, clear it first (address Copilot items / fix CI /
      rebase) instead of spending a review;

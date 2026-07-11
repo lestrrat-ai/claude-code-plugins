@@ -9,7 +9,7 @@ the ledger every wake, never from memory.
 
 Throughout this doc, `<base>` means that branch and `origin/<base>` its remote-tracking branch.
 Concretely: adopted PRs already target `<base>` (their `baseRefName`), every review diffs
-`<base>...HEAD`, and after each merge local `<base>` is fast-forwarded to `origin/<base>`. **Fix
+`origin/<base>...HEAD`, and after each merge local `<base>` is fast-forwarded to `origin/<base>`. **Fix
 worktrees do NOT branch off `<base>`** — they branch off the PR's **own head** (see "PR adoption"),
 since the PR's commits live there. Where examples below show `main`, read it as `<base>` — `main` is
 only the common default.
@@ -45,7 +45,7 @@ in-context memory for it — a wake may be a fresh agent instance. It flows into
 | ledger header    | `run_id: <run-id>` |
 | PR owner label   | `gauntlet-run-<run-id>` — the **authoritative "mine" marker**. Every adopted PR is tagged with it; it, not any branch name, is what makes a PR this run's. |
 | branch           | the **adopted PR's own `headRefName`** — campaign reuses the PR's existing branch and does NOT mint a `fix-<run-id>-...` branch, so ownership can't be read off the branch name (that's the label's job). |
-| worktree         | the ledger-recorded `worktree` path — the created default `$PROJECT/.worktrees/<headRefName>` when campaign runs `git worktree add`, or a reused existing checkout when the branch was already checked out elsewhere — resolved from the PR's head branch during adoption / before its first review, and reused for review/CI fixes. Only a campaign-created worktree (`worktree_owned = yes`) is cleaned up; a reused one is left in place (see "PR adoption" / Stage 3). |
+| worktree         | the ledger-recorded `worktree` path — the created default `$PROJECT/.worktrees/<headRefName>` when campaign runs `git worktree add`, or a reused existing checkout when the branch was already checked out elsewhere — resolved from the PR's head branch during adoption / before its first review, and reused for review/CI fixes. Only a campaign-created worktree (`worktree_owned = yes`) is ever removed; a reused checkout (the root/main checkout or a user worktree) and a reused local branch are **always** left in place — in **both** `declined` and `granted` modes, regardless of `branch_ownership`, which governs only the remote head branch (see "PR adoption" / Stage 3). |
 | self-wake prompt | `/gauntlet:campaign --run <run-id> --token <agent-token>` — **only** these two flags (carries the id **and** the driver token so a summarized wake re-proves ownership without guessing). It **never** carries `--new` or the original `#PR` adoption args: those are **start-time-only** (they *create/adopt*), whereas `--run` **resumes** an existing run — replaying `--new` on a self-wake would mint a fresh run every heartbeat. |
 
 **Isolation invariant — a run touches ONLY its own work.** It reads/writes only its `<rundir>`, only

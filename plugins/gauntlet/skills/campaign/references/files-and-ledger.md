@@ -56,22 +56,24 @@ run_id: g260704-0915-a3f29c1b  # this run's identity — namespaces its dir/labe
 base_branch: main       # the adopted PRs' baseRefName — the branch they merge into & diffs measure against (set once; see "Base branch")
 api_changes: ask        # ask | allowed (run-wide; set once from the invocation)
 reviewer: default       # default (Claude subagents) | codex | <other> — the selected reviewer (set once; see "The reviewer")
-branch_ownership: declined  # declined | granted — may campaign own+delete an adopted PR's branch/worktree on merge (set once; see "PR adoption")
+branch_ownership: declined  # declined | granted — may campaign delete the adopted PR's REMOTE head branch on merge (local worktree/branch cleanup is ALWAYS per-PR worktree_owned/branch_owned; set once; see "PR adoption")
 
 id | slug | branch | worktree | worktree_owned | branch_owned | pr | head_sha | reviews_ok | ci | tier | attempts | started | api_approval | status
 ```
 
 Header field notes (the header fields above; per-row fields follow):
 
-- `branch_ownership` — run-wide consent to fully tidy up an adopted PR's refs on merge: `declined`
-  (default) | `granted`. **Resolved once at run start** by the same explicit > preference > default
-  precedence as `reviewer` (explicit invocation/flag > a stored user preference — memory entry /
-  `CLAUDE.md` / config — that grants branch ownership > default `declined`; see "PR adoption"), then
-  re-read every wake like the other header fields — never re-derived mid-run. `declined` is the safe
-  floor: campaign never deletes an adopted PR's remote branch, and cleans up the worktree/local branch
-  only per the per-PR `worktree_owned`/`branch_owned` flags. `granted` is opt-in and only ever *enables*
-  more cleanup — on merge campaign owns the adopted branch and fully tidies up (deletes the remote head
-  branch, the local branch, and the worktree) regardless of `worktree_owned`/`branch_owned` (see
+- `branch_ownership` — run-wide consent to delete the adopted PR's **remote** head branch on merge:
+  `declined` (default) | `granted`. **Resolved once at run start** by the same explicit > preference >
+  default precedence as `reviewer` (an explicit user instruction in the invocation — natural language,
+  like naming the reviewer, NOT a CLI flag — > a stored user preference — memory entry / `CLAUDE.md` /
+  config — that grants branch ownership > default `declined`; see "PR adoption"), then re-read every
+  wake like the other header fields — never re-derived mid-run. It governs **only** the remote branch.
+  `declined` is the safe floor: campaign never deletes the remote head branch. `granted` is opt-in and
+  lets the merge delete the remote head branch (`--delete-branch`). **Local cleanup is identical in both
+  modes** and never keyed off `branch_ownership`: the worktree is removed only when `worktree_owned =
+  yes` and the local branch deleted only when `branch_owned = yes`; a reused worktree, the root/main
+  checkout, and a reused local branch are **never** removed regardless of `branch_ownership` (see
   "Stage 3 — Merge"). An unattended run with no stored grant stays `declined`.
 
 - `id` — `pr<N>` (the adopted PR number). `slug` — slugified PR title. Together they identify the row;
