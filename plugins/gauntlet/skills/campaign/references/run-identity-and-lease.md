@@ -36,13 +36,14 @@ mkdir "$PROJECT/.gauntlet/tmp/$run_id" || run_id=…   # NO -p: must fail on col
 The run dir's `mkdir` carries **no `-p`** on purpose — it must fail if the id is already taken. Create
 the `.gauntlet/tmp` parent in its own `-p` call, never by `-p`-ing the run dir itself.
 
-Record it in the ledger header (`run_id:`) and re-read it every wake (like `base_branch`); never trust
+Record it in the ledger header field `run_id` (`ledger.py --file <state.jsonl> header set run_id
+<run-id>`) and re-read it every wake (`ledger.py … header get run_id`, like `base_branch`); never trust
 in-context memory for it — a wake may be a fresh agent instance. It flows into:
 
 | Owned by the run | Namespaced form |
 |------------------|-----------------|
 | tmp working dir  | `<rundir>` = `.gauntlet/tmp/<run-id>/` (all state/pr/review/ci/abort/lease files) |
-| ledger header    | `run_id: <run-id>` |
+| ledger header    | the `run_id` header field (set/read via `ledger.py … header set/get run_id`) |
 | PR owner label   | `gauntlet-run-<run-id>` — the **authoritative "mine" marker**. Every adopted PR is tagged with it; it, not any branch name, is what makes a PR this run's. |
 | branch           | the **adopted PR's own `headRefName`** — campaign reuses the PR's existing branch and does NOT mint a `fix-<run-id>-...` branch, so ownership can't be read off the branch name (that's the label's job). |
 | worktree         | the ledger-recorded `worktree` path — the created default `$PROJECT/.worktrees/<headRefName>` when campaign runs `git worktree add`, or a reused existing checkout when the branch was already checked out elsewhere — resolved from the PR's head branch during adoption / before its first review, and reused for review/CI fixes. Only a campaign-created worktree (`worktree_owned = yes`) is ever removed; a reused checkout (the root/main checkout or a user worktree) and a reused local branch are **always** left in place — in **both** `declined` and `granted` modes, regardless of `branch_ownership`, which governs only the remote head branch (see "PR adoption" / Stage 3). |

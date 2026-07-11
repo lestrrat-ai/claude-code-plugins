@@ -35,7 +35,8 @@ Use the same explicit > preference > default precedence as the reviewer (`refere
 Do **NOT** block the loop on a live prompt for this — never hold the run hostage on a user prompt. The
 grant comes from an explicit instruction in the invocation or from stored settings, not a mandatory
 question; absent one, the safe default holds.
-Record the resolved value in the header (`branch_ownership: declined | granted`); it is re-read every
+Record the resolved value in the `branch_ownership` header field (`ledger.py --file <state.jsonl>
+header set branch_ownership <declined|granted>`); it is re-read every
 wake and never re-derived mid-run.
 
 `worktree_owned`/`branch_owned` are tracked **per-PR** (below) and govern **local** cleanup in **both**

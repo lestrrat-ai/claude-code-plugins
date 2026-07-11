@@ -90,7 +90,7 @@ Read stage refs only when that stage/action is due:
 - **Progress ledger:** reviewer progress means planned unit `done` or accepted amendment, not vague
   output.
 - **No green by watch exit:** derive CI from re-polled `gh pr checks` snapshot.
-- **Public API changes require user confirmation** unless ledger `api_changes: allowed`.
+- **Public API changes require user confirmation** unless the ledger's `api_changes` field is `allowed`.
 
 ## Wake Skeleton
 
