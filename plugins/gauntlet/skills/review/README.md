@@ -3,8 +3,9 @@
 Part of the [gauntlet](../../README.md) plugin.
 
 A hostile, skeptical, two-pass code review. The first pass is adversarial: it treats the code as a
-suspect, assumes the worst, and surfaces everything that looks wrong. The second pass is a neutral,
-fresh-context audit that re-examines each of those findings and **confirms, adjusts, or refutes** it.
+suspect, assumes the worst, and surfaces everything that looks wrong. The second pass is a neutral
+audit — by default run in a fresh, separate context — that re-examines each of those findings and
+**confirms, adjusts, or refutes** it.
 So what you get back isn't a pile of raw complaints — it's a triaged report where the noise has
 already been separated from the real problems.
 
@@ -73,8 +74,9 @@ review half never crosses into changing anything until you explicitly say yes.
 
 ## Good to know
 
-- The two passes run separately, in fresh context, so the neutral audit isn't anchored by the hostile
-  pass's conclusions — it re-reads the cited code with intent to disprove each finding rather than
+- The two passes run separately: the neutral audit defaults to a fresh, separate context so it isn't
+  anchored by the hostile pass's conclusions (it falls back to a same-context audit only when a fresh
+  subagent isn't available). It re-reads the cited code with intent to disprove each finding rather than
   rubber-stamp it. This second pass is mandatory; a single hostile pass on its own is not this skill.
 - Any GitHub work in the handoff goes through the `gh` CLI, so that path needs a GitHub remote.
 - Full mechanics live in [`SKILL.md`](./SKILL.md).
