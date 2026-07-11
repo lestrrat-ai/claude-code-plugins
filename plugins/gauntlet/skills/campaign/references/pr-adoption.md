@@ -71,8 +71,11 @@ For each `#PR` to adopt:
    second row for the same PR. Otherwise append a new row. Write the **full** row:
 
    - `id` = `pr<N>`; `slug` = slugified PR title; `branch` = the PR's **own** `headRefName` (adopted PRs
-     keep their branch — do NOT mint a `fix-<run-id>-...` branch); `worktree` = `-` until the head
-     worktree is created in step 5 (before its first review pass), then `$PROJECT/.worktrees/<headRefName>`;
+     keep their branch — do NOT mint a `fix-<run-id>-...` branch); `worktree` = `-` and
+     `worktree_owned` = `-` until the head worktree is resolved in step 5 (before its first review
+     pass), then the **actual** resolved `$worktree` (the created default
+     `$PROJECT/.worktrees/<headRefName>`, or a reused existing checkout's path) with `worktree_owned` =
+     `yes` when campaign created it / `no` when it reused a pre-existing checkout;
      `pr` = `<N>`; `head_sha` = `headRefOid`.
    - **On a NEW row only, initialize:** `reviews_ok` = `0` (no verdicts yet); `ci` = `pending`;
      `tier` = triage per `head_sha` ("Adaptive review tiers"); `attempts` = `1`; `started` = now;
@@ -113,20 +116,27 @@ For each `#PR` to adopt:
    existing=$(git worktree list --porcelain | awk '/^worktree /{p=$2} /^branch refs\/heads\/<headRefName>$/{print p}')
    if [ -n "$existing" ]; then
      worktree=$existing                                 # REUSE it; do NOT add another
+     worktree_owned=no                                  # pre-existing checkout — campaign did NOT create it
    else
      git worktree add -B <headRefName> $PROJECT/.worktrees/<headRefName> origin/<headRefName>
-     worktree=$PROJECT/.worktrees/<headRefName>
+     worktree=$PROJECT/.worktrees/<headRefName>         # created default path: .worktrees/<headRefName>
+     worktree_owned=yes                                 # campaign created it — safe to remove at cleanup
    fi
-   # record $worktree in the row's `worktree` column
+   # record $worktree in the row's `worktree` column, and $worktree_owned in `worktree_owned`
    ```
 
    (The PR-numbered `git fetch origin pull/<pr>/head:<headRefName>` resolves to the same same-repo head
    and may be used interchangeably; either way the local branch is the PR's `headRefName`.)
 
-   Record the resulting path — `$PROJECT/.worktrees/<headRefName>` — in the row's `worktree`. **That
-   `worktree` path is the source of truth the review and CI steps read/diff against.** All fix commits
-   for the PR also go here; stage only the specific source files changed (explicit paths, never
-   `git add -A`). Fix commits are pushed back to the PR's head branch on `origin`.
+   Record the **actual** resolved `$worktree` — `$PROJECT/.worktrees/<headRefName>` is only the
+   **created default** used on the `git worktree add` path; a reused checkout sits at some **other**
+   path — in the row's `worktree`, and record `$worktree_owned` (`yes` = campaign created it, `no` =
+   reused a pre-existing checkout) in the row's `worktree_owned`. **That `worktree` path is the source
+   of truth the review and CI steps read/diff against**, and `worktree_owned` tells Stage 3 cleanup
+   whether it may remove this worktree/branch (only a campaign-created `yes` is ever removed; a reused
+   `no` checkout is left in place). All fix commits for the PR also go here; stage only the specific
+   source files changed (explicit paths, never `git add -A`). Fix commits are pushed back to the PR's
+   head branch on `origin`.
 
 6. **Ensure a live CI watch when `ci = pending`.** Every adopted PR whose CI state is unknown gets a
    background watch so a settling run wakes the driver. The `--watch` only **blocks** until the run

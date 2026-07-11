@@ -96,7 +96,8 @@ blocks; each completion is its own wake.
      preconditions), and no review running for that SHA → **first ensure the PR-head worktree exists**
      (the review runs `codex exec -C <worktree>` — the PR row's ledger `worktree` column value, the
      single source of truth for this PR's checkout path (created at adoption/pre-review per
-     `pr-adoption.md`; same-repo PRs only, so it is `$PROJECT/.worktrees/<headRefName>`) — and diffs
+     `pr-adoption.md`; the ledger-recorded `<worktree>` path — default `.worktrees/<headRefName>` when
+     campaign creates it, else a reused existing checkout) — and diffs
      `<base>...HEAD`, so a real checkout must be present): if that `<worktree>` is missing, create it
      from the PR head **per `pr-adoption.md` step 5** — which reuses an existing checkout of that branch
      if one exists (root or another worktree), else adds a fresh worktree, since `git worktree add`

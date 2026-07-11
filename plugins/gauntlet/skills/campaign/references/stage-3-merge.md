@@ -46,15 +46,26 @@ via `gh`, never a local `git rev-parse HEAD`.)
    diverged), do NOT force it: that's a bailout condition (stop and surface it), since rebasing PRs
    onto a wrong base would corrupt every downstream diff.
 5. **Clean up on successful merge.** Once the merge is confirmed (`gh pr view <pr> --json state
-   --jq .state` → `MERGED`, PR number from the ledger row), tear down that PR's local footprint. `<branch>` and its worktree are the
-   adopted PR's **own head branch** and the worktree named for it, exactly as recorded in that PR's
-   ledger row (its `branch`/`worktree` columns) — there is no `fix-<run-id>-*` branch to clean up:
-   - `--delete-branch` above already removed the **remote** branch (the PR's own head branch).
-   - Verify the merge with the `git-detect-merged` skill **against the run's `<base>`** (the ledger
-     `base_branch` — NOT the helpers' default `main`, since the base may be a release/integration
-     branch), then use `git-cleanup-merged` **with that same `<base>`** and the ledger-recorded
-     `branch`/`worktree` to remove the **ledger-recorded worktree** and delete the **ledger-recorded
-     local branch** (the PR's own head branch).
+   --jq .state` → `MERGED`, PR number from the ledger row), tear down **only the local footprint
+   campaign created**. `<branch>` and its worktree are the adopted PR's **own head branch** and the
+   worktree recorded in that PR's ledger row (its `branch`/`worktree` columns) — there is no
+   `fix-<run-id>-*` branch to clean up:
+   - `--delete-branch` above already removed the **remote** branch (the PR's own head branch on
+     `origin`) — that delete is unchanged and always applies.
+   - **Local worktree/branch removal is gated on `worktree_owned`.** Adoption records whether campaign
+     **created** this worktree (`worktree_owned = yes`, via `git worktree add`) or **reused** a
+     pre-existing checkout (`worktree_owned = no` — the user's root checkout or their own worktree; see
+     "PR adoption"):
+     - **`worktree_owned = yes`** → campaign created it, so remove it: verify the merge with the
+       `git-detect-merged` skill **against the run's `<base>`** (the ledger `base_branch` — NOT the
+       helpers' default `main`, since the base may be a release/integration branch), then use
+       `git-cleanup-merged` **with that same `<base>`** and the ledger-recorded `branch`/`worktree` to
+       remove the **ledger-recorded worktree** and delete the **ledger-recorded local branch** (the
+       PR's own head branch).
+     - **`worktree_owned = no`** → campaign did NOT create this checkout/branch, so **leave both in
+       place** — do NOT `git worktree remove` it or delete its local branch (that would disrupt the
+       user's root checkout or their own worktree). **Report it** in the final report as a reused
+       checkout left in place (path + branch), so the user knows their working tree was untouched.
    - Set status `merged` and stop its background tasks.
 
    This runs only after the merge is verified, and only ever touches PRs this run **owns** — those

@@ -56,7 +56,7 @@ base_branch: main       # the adopted PRs' baseRefName — the branch they merge
 api_changes: ask        # ask | allowed (run-wide; set once from the invocation)
 reviewer: default       # default (Claude subagents) | codex | <other> — the selected reviewer (set once; see "The reviewer")
 
-id | slug | branch | worktree | pr | head_sha | reviews_ok | ci | tier | attempts | started | api_approval | status
+id | slug | branch | worktree | worktree_owned | pr | head_sha | reviews_ok | ci | tier | attempts | started | api_approval | status
 ```
 
 - `id` — `pr<N>` (the adopted PR number). `slug` — slugified PR title. Together they identify the row;
@@ -64,9 +64,17 @@ id | slug | branch | worktree | pr | head_sha | reviews_ok | ci | tier | attempt
 - `branch` — the PR's **own** `headRefName`. Adopted PRs keep their branch — campaign does NOT mint a
   `fix-<run-id>-...` branch, so the branch name won't carry the run id. **The `gauntlet-run-<run-id>`
   label is the ownership marker**, not the branch prefix.
-- `worktree` — created off the PR's head branch during adoption (or as a guaranteed pre-review step,
-  before its first review pass) and reused for any review/CI fix — not created lazily only on fix (see
-  "PR adoption").
+- `worktree` — the **actual** checkout path for this PR, resolved off the PR's head branch during
+  adoption (or as a guaranteed pre-review step, before its first review pass) and reused for any
+  review/CI fix — not created lazily only on fix (see "PR adoption"). This is the **created default**
+  `$PROJECT/.worktrees/<headRefName>` when campaign runs `git worktree add`, **or** a **reused existing
+  checkout** (the root checkout or a prior worktree) when the branch was already checked out elsewhere
+  — in which case the path is wherever that checkout already lives, not `.worktrees/<headRefName>`.
+- `worktree_owned` — whether **campaign created** this worktree: `yes` (campaign ran `git worktree
+  add`, so cleanup may remove it) | `no` (campaign **reused** a pre-existing checkout it did not
+  create, so Stage 3 leaves it in place) | `-` (not yet resolved). Set at adoption alongside
+  `worktree` (see "PR adoption"); read by Stage 3 cleanup so it never deletes a checkout/branch the
+  user owns.
 - `head_sha` — the PR's live head (`headRefOid` from `gh`, keyed by PR number) that `reviews_ok`, `ci`,
   and `tier` describe. `ci`
   and `tier` are pinned to this exact SHA (re-triage on any content change). `reviews_ok` is pinned to

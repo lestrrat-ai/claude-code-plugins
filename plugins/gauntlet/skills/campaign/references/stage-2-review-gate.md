@@ -192,8 +192,9 @@ value — `<rundir>`, `<pr>`, `<n>`, `<base>`, `<worktree>`, and `<SCRIPT>` (the
 literal `<SCRIPT>`.
 
 **Note:** the review runs in `<worktree>` — the PR row's ledger `worktree` column value, the single
-source of truth for this PR's checkout path (created at adoption/pre-review per `pr-adoption.md`;
-same-repo PRs only, so it is `$PROJECT/.worktrees/<headRefName>`). That `<worktree>` is guaranteed to
+source of truth for this PR's checkout path (created at adoption/pre-review per `pr-adoption.md`; the
+ledger-recorded `<worktree>` path — default `.worktrees/<headRefName>` when campaign creates it, else
+a reused existing checkout). That `<worktree>` is guaranteed to
 exist here — it is created from the PR head before dispatch (per `pr-adoption.md` step 5 / Loop
 control's review-launch precondition), so the review always has a real checkout to diff `<base>...HEAD`.
 
