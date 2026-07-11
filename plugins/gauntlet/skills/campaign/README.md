@@ -42,7 +42,7 @@ at `gauntlet:review` to find issues, or asks for PR numbers. There's no whole-re
 area/topic argument any more: campaign gates PRs you hand it, it doesn't go looking for problems.
 
 Where do the PRs come from? You open them, or `gauntlet:review` does. Run `gauntlet:review` first for
-a confirmed-findings report; at the end it can open one labelled PR per confirmed fix and hand them
+a confirmed-findings report; at the end it can open one PR per confirmed fix and hand them
 straight to a campaign — see [the handoff below](#where-the-prs-come-from-the-review-handoff).
 
 Come back later and it still does the sensible thing. `--run <id>` resumes a specific run; `--new`
@@ -56,7 +56,7 @@ re-litigate the same ground.
 Campaign gates PRs; it doesn't find the problems. [`/gauntlet:review`](../review/SKILL.md) is the
 other half. Review runs its two-pass adversarial pass and, by default, only reports — it makes no
 source/tracked-file or GitHub changes (it may write ephemeral `.gauntlet/tmp` review scratch). But at
-the end of a confirmed-findings report it offers an opt-in step: open one labelled pull request per
+the end of a confirmed-findings report it offers an opt-in step: open one pull request per
 confirmed fix, then invoke `/gauntlet:campaign #PRs` on exactly those PRs. That handoff is where a
 finding turns into code and a PR; campaign takes it from there and drives each PR to merge. Decline
 the offer and review stays report-only — no source or GitHub changes are written. So the usual

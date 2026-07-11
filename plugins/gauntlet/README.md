@@ -14,7 +14,7 @@ working unattended.
 Where do those PRs come from? [`/gauntlet:review`](skills/review/SKILL.md) is the front half. By
 default it runs a two-pass adversarial review and only reports — it makes no source/tracked-file or
 GitHub changes (it may write ephemeral `.gauntlet/tmp` review scratch). But at the end
-it can, opt-in, open one labelled PR per confirmed fix and hand them straight to a campaign. So the
+it can, opt-in, open one PR per confirmed fix and hand them straight to a campaign. So the
 usual progression is **`gauntlet:review` to find and confirm the problems, then `gauntlet:campaign`
 to gate and merge the fixes** — and you can always skip review and hand campaign PRs you opened
 yourself.

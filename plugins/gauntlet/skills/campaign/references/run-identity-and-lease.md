@@ -128,7 +128,7 @@ Each run has `<rundir>/lease.json`:
      - **none at all** (idle — nothing to drive) → **prompt**: "No PRs under a campaign. Run
        `gauntlet:review` to find issues, or pass PR numbers to gate." Campaign never sweeps or mints
        PRs itself, so with no run and no `#PR` args there is nothing to do.
-3. **`--new`** (or "fresh run" / "start over") → always mint a NEW run-id + token and start a fresh run;
-   it creates an independent run and does **not** pre-empt other runs (they keep their own drivers). Its
-   PR set is whatever `#PR` args accompany it (adopted per "PR adoption"); with no `#PR` args, fall
-   through to the idle prompt.
+3. **`--new #PR...`** (or "fresh run" / "start over" with PR numbers) → mint a NEW run-id + token and
+   start a fresh run adopting those PRs; it creates an independent run and does **not** pre-empt other
+   runs (they keep their own drivers). **`--new` with no `#PR` args mints nothing** — it falls through
+   to the idle prompt (create no run-id/`<rundir>`/lease), exactly like a bare no-arg first run.
