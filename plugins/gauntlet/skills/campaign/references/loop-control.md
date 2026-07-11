@@ -58,10 +58,13 @@ blocks; each completion is its own wake.
      a discoverable, adoptable run. Then fall through to dispatch/reschedule.
    - **This run's `state.md` is fully terminal — every row `merged`/`aborted`, no open PR carrying this
      run's label → the run is finished.** Do **not** silently exit "all fixed" (the old bug) and do **not**
-     silently restart. **Ask the user** whether to start a new run — e.g. "gauntlet run
-     <run-id> finished (N merged, M aborted). Start a new run?" On yes, start a fresh run **with
-     carryover** (see "Fresh runs and carryover"). On no, emit that run's final report and stop. This
-     prompt is the *only* wake that asks the user about scope.
+     silently restart. **Ask the user** whether to gate more PRs — e.g. "gauntlet run
+     <run-id> finished (N merged, M aborted). Gate more PRs? Pass PR numbers (or run gauntlet:review
+     first)." A new run needs a `#PR` set, so collect PR numbers (equivalently direct the user to
+     `/gauntlet:campaign --new #PR...`); on a PR set, start a fresh run **with carryover** (see "Fresh
+     runs and carryover") — **no run-id/lease/`state.md` is created until that set passes preflight**.
+     With no PR numbers (or "no"), emit that run's final report and stop. This prompt is the *only* wake
+     that asks the user about scope.
 
    **The `--new` fresh-run signal short-circuits the above — but only WITH `#PR` args:** `--new #PR...`
    (or "fresh run" / "start over" with PR numbers) mints a NEW run-id + token and starts a fresh run
