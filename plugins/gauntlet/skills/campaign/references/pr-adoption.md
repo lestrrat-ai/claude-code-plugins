@@ -101,14 +101,23 @@ For each `#PR` to adopt:
    fix; a review always needs it. Branch it from the **PR's head branch/SHA**, not `<base>` (branching
    off `<base>` would throw the PR's own commits away).
 
-   Since adoption accepts **same-repo PRs only** (step 2), the head branch always lives on `origin`, so
-   the checkout is a plain same-repo fetch of the PR's `headRefName` — no fork-scoped ref or PR-numbered
-   branch naming is needed. Fetch the head branch, then add the worktree on it:
+   Since adoption accepts **same-repo PRs only** (step 2), the head branch always lives on `origin`.
+   **The branch may already be checked out** — in the root checkout or a prior worktree (common for a
+   same-repo PR, e.g. the branch you are on) — and `git worktree add` **refuses** a branch checked out
+   elsewhere (as does `git fetch origin <hrn>:<hrn>` updating a checked-out branch). So update the
+   remote ref (always safe), then **reuse an existing checkout if there is one, else add a worktree**:
 
    ```
-   # same-repo PR: head branch is on origin
-   git fetch origin <headRefName>:<headRefName>
-   git worktree add $PROJECT/.worktrees/<headRefName> <headRefName>
+   git fetch origin <headRefName>                       # update origin/<headRefName>; always safe
+   # is <headRefName> already checked out somewhere? (root or a worktree)
+   existing=$(git worktree list --porcelain | awk '/^worktree /{p=$2} /^branch refs\/heads\/<headRefName>$/{print p}')
+   if [ -n "$existing" ]; then
+     worktree=$existing                                 # REUSE it; do NOT add another
+   else
+     git worktree add -B <headRefName> $PROJECT/.worktrees/<headRefName> origin/<headRefName>
+     worktree=$PROJECT/.worktrees/<headRefName>
+   fi
+   # record $worktree in the row's `worktree` column
    ```
 
    (The PR-numbered `git fetch origin pull/<pr>/head:<headRefName>` resolves to the same same-repo head

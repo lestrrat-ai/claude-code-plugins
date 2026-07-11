@@ -98,9 +98,10 @@ blocks; each completion is its own wake.
      single source of truth for this PR's checkout path (created at adoption/pre-review per
      `pr-adoption.md`; same-repo PRs only, so it is `$PROJECT/.worktrees/<headRefName>`) — and diffs
      `<base>...HEAD`, so a real checkout must be present): if that `<worktree>` is missing, create it
-     from the PR head (`git fetch origin <branch>:<branch>` then `git worktree add <worktree> <branch>`,
-     per `pr-adoption.md` step 5) and record its path in the row's `worktree` — this is an explicit
-     precondition of the review launch. Then launch **one** review pass as a **background**
+     from the PR head **per `pr-adoption.md` step 5** — which reuses an existing checkout of that branch
+     if one exists (root or another worktree), else adds a fresh worktree, since `git worktree add`
+     refuses a branch checked out elsewhere — and record its path in the row's `worktree`. This is an
+     explicit precondition of the review launch. Then launch **one** review pass as a **background**
      task (one at a time per PR — the second, when the tier requires two, only after the first is
      SATISFIED; Stage 2a). If a precondition is dirty, clear it first (address Copilot items / fix CI /
      rebase) instead of spending a review;
