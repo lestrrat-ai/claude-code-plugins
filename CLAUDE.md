@@ -2,7 +2,7 @@
 
 This repo **authors** the agent instructions: `plugins/**` defines the skills that may be driving the
 current session. The skills actually running in a session are the **installed** copies, not the working
-tree. Two consequences, both non-obvious:
+tree. The consequences below are all non-obvious:
 
 ## Follow the procedure the running skill specifies
 
