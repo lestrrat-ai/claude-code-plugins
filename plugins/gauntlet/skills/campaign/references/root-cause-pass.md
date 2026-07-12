@@ -34,6 +34,14 @@ escalation rung, which forces this pass no later than the 2nd `NOT SATISFIED` on
    it finds the sites next to its diff and misses the caller two layers up or the code path it has no
    handle on. A mapper carries no fix pressure, so it maps the space exhaustively — which is the point.
    Enumeration and fix are two subagents, in that order, always.
+
+   **Run the mapper on the session model — do NOT downgrade it because it is "read-only."**
+   Read-only is not low-judgment: this subagent derives the axes, enumerates every cell, and confirms
+   each gap with a `file:line` and a working repro. A weaker model **under-maps** — it returns a
+   plausible, tidy, *incomplete* table — which is precisely the failure this whole two-subagent split
+   exists to prevent, and an under-map is invisible: the gaps it misses look exactly like cells that
+   were never there. The cheap version of this subagent defeats its own purpose (`SKILL.md`,
+   "Subagent Dispatch").
 3. **One batch-fix round** for all confirmed gaps. Route every site through **ONE shared
    chokepoint/helper** so the cells can't diverge again. Add a test per cell.
 4. **Resume the gauntlet** on the batched result — the review gate's `required(tier)` fresh,

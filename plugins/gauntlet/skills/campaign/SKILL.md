@@ -45,6 +45,34 @@ events (see `references/stage-2-review-gate.md`). `scripts/ledger.py` is the sch
 `state.jsonl` — read/write the ledger header and per-PR rows **by field name** through it, never by column
 position (see `references/files-and-ledger.md`); pass its absolute path to subtasks the same way.
 
+## Subagent Dispatch — model per class
+
+Campaign spawns subagents for several jobs. **Set the model explicitly on every dispatch.** With no
+model set, a subagent inherits the session model (often the most expensive one) — so an unset model is
+a silent cost decision, taken by default, on every subagent this skill launches.
+
+| Subagent | Model | Why |
+|---|---|---|
+| Review pass (default reviewer) | **session model** (do not downgrade) | It *is* the gate. A weaker verdict is a worse gate — the one thing never worth cheapening. |
+| Fresh-subagent fallback review | **session model** | Same job as a review pass; counts toward the gate identically. |
+| Review-fix (after `NOT SATISFIED`) | **session model** | Authors code that a full review pass must then judge. A cheap bad fix burns a whole review pass and a gate reset — it *costs* more than the tier saves. |
+| Root-cause **mapper** | **session model** | Read-only, but NOT low-judgment: it enumerates a full matrix and confirms each gap with a repro. A weaker model **under-maps**, which is the exact failure the mapper exists to prevent (`root-cause-pass.md`). "Read-only" is not a licence to downgrade. |
+| **CI-fix** | **`sonnet`** | The one safe downgrade. Failure is **self-detecting**: a bad CI fix leaves CI red, which campaign re-dispatches, and a red check blocks the review pass anyway — so it cannot silently corrupt the gate. |
+
+**The rule behind the table: downgrade only where a bad result is caught by something else.** CI-fix is
+caught by CI. Every other class either *is* the check (review passes) or feeds work into an expensive
+check (fixes, mapping), where a cheap wrong answer is paid for twice.
+
+**The biggest lever is not the model — it is the reviewer.** Review passes re-read the whole PR diff,
+`required(tier)` times per SHA, and re-run from scratch on every gate reset, so they dominate campaign's
+subagent spend. Running an **external reviewer** (e.g. `codex exec`, see `references/reviewer.md`) moves
+that cost off the subagent pool entirely — the quality argument (reviewer diversity) and the cost
+argument point the same way.
+
+**Scope every fix subagent.** Give it the worktree path and the specific issue list, and tell it **not**
+to re-derive the whole diff or re-read the repo beyond the named files. An unscoped fixer re-reads
+everything it was already told.
+
 ## Load Discipline
 
 Read references on demand. Do NOT load every reference up front.

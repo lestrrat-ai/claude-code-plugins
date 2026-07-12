@@ -18,8 +18,16 @@ row by column position:
   diagnose from the check logs and dispatch a scoped CI-fix subagent into `<worktree>` — the PR row's
   ledger `worktree` column value, the single source of truth for this PR's checkout path (created at
   adoption/pre-review per `pr-adoption.md`; the ledger-recorded `<worktree>` path — default
-  `.worktrees/<headRefName>` when campaign creates it, else a reused existing checkout). Its fix
-  commits + pushes to the PR's **own head branch**
+  `.worktrees/<headRefName>` when campaign creates it, else a reused existing checkout).
+
+  **Dispatch it on `sonnet`** (`model: "sonnet"`), not the session model — the one sanctioned
+  downgrade in this skill (`SKILL.md`, "Subagent Dispatch"). It is safe here *because the failure is
+  self-detecting*: a bad CI fix leaves CI red, campaign re-dispatches, and a red check blocks the
+  review pass regardless — so a weaker fix can never silently reach the gate. **Scope it**: give it
+  the failing check's logs, the specific failing file(s), and the worktree path, and tell it NOT to
+  re-derive the whole diff or read beyond what the failure touches.
+
+  Its fix commits + pushes to the PR's **own head branch**
   → code changed → **reset `reviews_ok` to 0 AND, in that same step, restore `gauntlet-reviewing` if
   the PR carries `gauntlet-accepted`** (`gh pr edit <pr> --remove-label gauntlet-accepted --add-label
   gauntlet-reviewing`) — the gate and its label move together, never one without the other

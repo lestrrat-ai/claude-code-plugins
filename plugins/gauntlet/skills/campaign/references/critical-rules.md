@@ -133,6 +133,15 @@
 - Prune `.gauntlet/history/` at every fresh run: drop only entries unambiguously moot against
   current `<base>`; for anything uncertain, list it and ask the user before deleting. Never silently
   prune an entry you're unsure about.
+- **Set the model explicitly on EVERY subagent dispatch** (`SKILL.md`, "Subagent Dispatch"). An unset
+  model silently inherits the session model — a cost decision taken by default. Only **CI-fix** is
+  downgraded (**`sonnet`**), because its failure is self-detecting: bad fix → CI stays red → re-dispatch,
+  and a red check blocks the review pass anyway. Review passes, the subagent-fallback review, review-fixes,
+  and the root-cause **mapper** all stay on the **session model** — the first two *are* the gate, and the
+  last two feed an expensive check, so a cheap wrong answer is paid for twice. NEVER downgrade the mapper
+  on the grounds that it is "read-only": read-only is not low-judgment, and an under-map is invisible.
+- Scope every fix subagent to its worktree + concrete issue list; tell it NOT to re-derive the whole diff.
+  That, not the model tier, is where fix-subagent savings live.
 - Default reviewer is Claude's own subagents; no external tool is required. Use the user's preferred
   reviewer when one is set (explicit invocation, or a preference in memory/`CLAUDE.md`/carryover). A
   different-model reviewer (e.g. Codex) is recommended for diversity but never required. See
