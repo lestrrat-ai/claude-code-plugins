@@ -134,16 +134,16 @@
   current `<base>`; for anything uncertain, list it and ask the user before deleting. Never silently
   prune an entry you're unsure about.
 - **Set the model explicitly on EVERY subagent dispatch** (`SKILL.md`, "Subagent Dispatch"). An unset
-  model silently inherits the session model — a cost decision taken by default. Only **CI-fix** is
-  downgraded (**`sonnet`**), because both its failure modes are caught, by two different nets: *fix didn't
-  work* → CI stays red → re-dispatch; *fix weakened the check* → CI turns **green**, so CI misses it and
-  the **review gate** catches it on the full diff. NEVER claim CI catches everything. A CI-fix subagent
-  MUST be dispatched under the no-weakening prohibition (`stage-2-ci.md`): fix the cause, NEVER gut an
-  assertion, add `skip`/`xfail`, disable a lint rule, or raise a timeout to force green.
-  Review passes, the subagent-fallback review, review-fixes,
-  and the root-cause **mapper** all stay on the **session model** — the first two *are* the gate, and the
-  last two feed an expensive check, so a cheap wrong answer is paid for twice. NEVER downgrade the mapper
-  on the grounds that it is "read-only": read-only is not low-judgment, and an under-map is invisible.
+  model silently inherits the session model — a cost decision taken by default. **NO class is
+  downgraded**: review passes and the subagent-fallback review *are* the gate; CI-fix and review-fix write
+  **code that gets merged**; the root-cause **mapper** feeds an expensive fix. Nothing downstream
+  *guarantees* a bad result is caught — CI misses a wrong-but-green fix, and the review gate is a
+  miss-catcher, not a proof of correctness — so no class's mistakes are reliably absorbed. NEVER claim CI
+  catches a bad fix. NEVER downgrade the mapper on the grounds that it is "read-only": read-only is not
+  low-judgment, and an under-map is invisible.
+- A CI-fix subagent MUST be dispatched under the no-weakening prohibition (`stage-2-ci.md`): fix the
+  cause, NEVER gut an assertion, add `skip`/`xfail`, disable a lint rule, or raise a timeout to force
+  green.
 - Scope every fix subagent to its worktree + concrete issue list; tell it NOT to re-derive the whole diff.
   That, not the model tier, is where fix-subagent savings live.
 - Default reviewer is Claude's own subagents; no external tool is required. Use the user's preferred

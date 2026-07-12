@@ -53,16 +53,19 @@ a silent cost decision, taken by default, on every subagent this skill launches.
 
 | Subagent | Model | Why |
 |---|---|---|
-| Review pass (default reviewer) | **session model** (do not downgrade) | It *is* the gate. A weaker verdict is a worse gate — the one thing never worth cheapening. |
+| Review pass (default reviewer) | **session model** | It *is* the gate. A weaker verdict is a worse gate — the one thing never worth cheapening. |
 | Fresh-subagent fallback review | **session model** | Same job as a review pass; counts toward the gate identically. |
-| Review-fix (after `NOT SATISFIED`) | **session model** | Authors code that a full review pass must then judge. A cheap bad fix burns a whole review pass and a gate reset — it *costs* more than the tier saves. |
+| Review-fix (after `NOT SATISFIED`) | **session model** | Authors code that gets merged, judged only by another full review pass. A cheap bad fix burns a whole review pass and a gate reset — it *costs* more than the tier saves. |
+| **CI-fix** | **session model** | Also authors code that gets merged. CI does **not** validate it: a wrong fix can turn CI green — by weakening a check, or by being plain wrong in product code that no check covers. Dispatched under an explicit no-weakening prohibition (`stage-2-ci.md`), which constrains the fixer but proves nothing about the fix. |
 | Root-cause **mapper** | **session model** | Read-only, but NOT low-judgment: it enumerates a full matrix and confirms each gap with a repro. A weaker model **under-maps**, which is the exact failure the mapper exists to prevent (`root-cause-pass.md`). "Read-only" is not a licence to downgrade. |
-| **CI-fix** | **`sonnet`** | The one safe downgrade — because **both** its failure modes are caught, by two different nets. *Fix didn't work* → CI stays red → re-dispatch. *Fix weakened the check* (gutted assertion, `skip`/`xfail`, disabled lint rule, raised timeout) → CI turns **green**, so CI does **not** catch it — the **review gate** does, reading the whole diff. Hence it is dispatched under an explicit no-weakening prohibition (`stage-2-ci.md`). |
 
-**The rule behind the table: downgrade only where a bad result is caught by something else.** CI-fix is
-caught by CI *and* the review gate — CI alone is not enough, and never claim it is. Every other class
-either *is* the check (review passes) or feeds work into an expensive check (fixes, mapping), where a
-cheap wrong answer is paid for twice.
+**No class is downgraded, and the reason is uniform.** Every subagent here either *is* the gate (review
+passes), writes **code that gets merged** (CI-fix, review-fix), or produces the enumeration an expensive
+fix depends on (mapper). Nothing downstream *guarantees* a bad result is caught: CI misses a
+wrong-but-green fix, and the review gate is a miss-catcher, not a proof of correctness
+(`stage-2-review-gate.md`). So there is no class whose mistakes are reliably absorbed, and therefore no
+class where a cheaper model is free. NEVER justify a downgrade by claiming something downstream will
+catch it.
 
 **The biggest lever is not the model — it is the reviewer.** Review passes re-read the whole PR diff,
 `required(tier)` times per SHA, and re-run from scratch on every gate reset, so they dominate campaign's

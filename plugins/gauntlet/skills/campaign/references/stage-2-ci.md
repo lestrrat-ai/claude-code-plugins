@@ -20,16 +20,11 @@ row by column position:
   adoption/pre-review per `pr-adoption.md`; the ledger-recorded `<worktree>` path — default
   `.worktrees/<headRefName>` when campaign creates it, else a reused existing checkout).
 
-  **Dispatch it on `sonnet`** (`model: "sonnet"`), not the session model — the one sanctioned
-  downgrade in this skill (`SKILL.md`, "Subagent Dispatch"). It is safe because **both** of its
-  failure modes are caught — but by two different mechanisms, not by CI alone:
-  - *fix didn't work* → CI stays red → campaign re-dispatches, and a red check blocks the review pass
-    regardless. CI catches this one.
-  - *fix weakened the check* (gutted assertion, `skip`/`xfail`, disabled lint rule, raised timeout) →
-    **CI turns green, so CI does NOT catch it.** It is caught by the **review gate**, which reads the
-    whole `origin/<base>...HEAD` diff and sees the weakened check as the code change it is.
-
-  Never claim "CI catches everything" — it does not. Both nets must stay in place.
+  **Dispatch it on the session model** — set the model explicitly, and do NOT downgrade it
+  (`SKILL.md`, "Subagent Dispatch"). Its output is **code that gets merged**, and nothing downstream
+  validates it: a wrong fix can turn CI **green** — by weakening the check, or by being plain wrong in
+  product code no check covers — and the review gate is a miss-catcher, not a proof of correctness. A
+  green check means the check passed, never that the fix is right. NEVER claim CI catches a bad fix.
 
   **Scope it**: give it the failing check's logs, the specific failing file(s), and the worktree path,
   and tell it NOT to re-derive the whole diff or read beyond what the failure touches.

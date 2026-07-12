@@ -360,11 +360,12 @@ As each verdict lands, tally it for the SHA it ran on:
   skipped). A later wake starts a fresh review on the new tip. (Because reviews are sequential, no
   second review was spent on this broken commit.)
 
-  **Run the review-fix on the session model — do NOT downgrade it** (`SKILL.md`, "Subagent Dispatch").
-  A CI fix has a cheap net under it (a fix that does not work leaves CI red); a review fix has **no
-  cheap net at all** — its only judge is another full review pass. A weak review fix produces a
-  plausible-looking commit, the next pass returns `NOT SATISFIED`, the gate resets, and the whole diff
-  is re-reviewed. A cheap wrong fix is therefore paid for twice, and it is the expensive half that pays.
+  **Run the review-fix on the session model — do NOT downgrade it** (`SKILL.md`, "Subagent Dispatch";
+  no fix subagent is downgraded, CI-fix included). Its output is **code that gets merged**, and its only
+  judge is another full review pass — which is a miss-catcher, not a proof of correctness. Best case, a
+  weak fix produces a plausible-looking commit, the next pass returns `NOT SATISFIED`, the gate resets,
+  and the whole diff is re-reviewed: the cheap wrong fix is paid for twice, and it is the expensive half
+  that pays. Worst case the pass misses it and the defect merges.
   **Scope it** instead — hand it the worktree path and the concrete issue list, and tell it NOT to
   re-derive the whole diff or read beyond the files those issues name; that is where the savings are,
   not in the model tier. **Scope by defect, not by guess:** name every file the defect actually touches,

@@ -35,8 +35,10 @@ say so: it is the change that most reduces token spend, not the model tier of an
 
 **Review passes themselves are never downgraded.** Whether the reviewer is a Claude subagent or the
 subagent fallback for a failed external reviewer, the pass runs on the **session model** — it *is* the
-gate, and a weaker verdict is simply a worse gate (`SKILL.md`, "Subagent Dispatch"). Cheapen the fixes
-that CI can catch, never the check itself.
+gate, and a weaker verdict is simply a worse gate (`SKILL.md`, "Subagent Dispatch"). No other class is
+downgraded either: the fix subagents write code that gets merged, and nothing downstream guarantees a bad
+fix is caught. Save tokens by moving review passes to an external reviewer and by scoping every fix
+subagent — never by cheapening a model.
 
 ### Running the default reviewer — Claude subagents
 
