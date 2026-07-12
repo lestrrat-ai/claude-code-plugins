@@ -90,6 +90,12 @@ the loop, and that flips to `gauntlet-accepted` once it has passed the review(s)
 one for a TRIVIAL docs-only PR, two for anything touching code or agent-facing files (the skill
 creates the labels if your repo doesn't have them).
 
+The label flips **back** just as readily. Anything that changes a PR's content after it was accepted —
+a CI fix, a rebase that had to resolve conflicts, a stray push to the branch — invalidates the reviews
+it had passed, so the PR returns to `gauntlet-reviewing` and must earn its verdicts again on the new
+content. The label always describes the code that is on the PR *right now*, so `gauntlet-accepted`
+never means "this passed at some point" — it means "this, as it currently stands, passed."
+
 By default it checks with you before changing anything in your public API — exported signatures,
 formats, CLI flags, defaults, or any behavior callers depend on — so it never merges a breaking
 change behind your back. Tell it up front that breakage is fine and it'll stop asking.

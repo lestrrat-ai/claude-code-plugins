@@ -35,7 +35,18 @@ blocks; each completion is its own wake.
      re-arm the relaunch budget, and a dead attempt `2` must never be left un-dispatched):
      for each of this run's branches/PRs read the live SHA, CI status, and verdict files, and refresh
      the ledger — write every ledger update through `scripts/ledger.py … set/header set` **by field
-     name** (`files-and-ledger.md`), never by hand-editing rows by column position. Do the PR scan as
+     name** (`files-and-ledger.md`), never by hand-editing rows by column position.
+
+     **This refresh is itself a gate-reset site — relabel here, in this step.** When it detects that a
+     PR's live `head_sha` has moved with the PR diff changed (a formatter/bot commit, a manual push,
+     any content change this run did not dispatch), it resets `reviews_ok` to 0 — and MUST, in the same
+     step, run `gh pr edit <pr> --remove-label gauntlet-accepted --add-label gauntlet-reviewing` on a PR
+     carrying `gauntlet-accepted` (`stage-2-review-gate.md`, "Status labels mirror the review gate").
+     Do NOT leave this to the label-reconcile pass below: that pass is the **backstop**, and a reset
+     site that defers to it is the exact bug this rule forbids. (A clean base-only advance with the PR
+     diff unchanged does not reset the gate, so it keeps `gauntlet-accepted`.)
+
+     Do the PR scan as
      **one batched snapshot per wake** —
      `gh pr list --label gauntlet-run-<run-id> --json number,headRefName,headRefOid,state,mergeable,mergeStateStatus,labels > <rundir>/prs.json`
      — and drive reconcile from that file; fall back to per-PR `gh pr view` only where the snapshot
@@ -87,9 +98,32 @@ blocks; each completion is its own wake.
    **Reconcile labels too** (idempotent, retroactive, **scoped to this run**). Ensure the labels exist
    (`gh label create … --force`, including this run's `gauntlet-run-<run-id>`), then for every PR **of
    this run** (its `gauntlet-run-<run-id>` label — the only ownership marker for adopted PRs): ensure
-   it carries `gauntlet-run-<run-id>`, and set its status label to match its **live** gate state —
-   `gauntlet-accepted` if its current HEAD holds `required(tier)` SATISFIED verdicts, else
-   `gauntlet-reviewing`; add the status label if it has none. **Never touch another run's PRs.**
+   it carries `gauntlet-run-<run-id>`, and **overwrite** its status label to match its **live** gate
+   state. **Never touch another run's PRs.**
+
+   **Always apply one status label AND remove the other — never merely add.** The two status labels are
+   mutually exclusive, so a purely additive reconcile cannot repair the one state it most needs to: a
+   PR wearing **both** labels (what a missed swap at a reset site actually produces) would keep the
+   contradictory label forever, because adding a label it already carries changes nothing. Write it
+   unconditionally, in one call per PR, so the outcome does not depend on which labels are already there:
+
+   ```
+   # current HEAD holds required(tier) SATISFIED verdicts:
+   gh pr edit <pr> --add-label gauntlet-accepted  --remove-label gauntlet-reviewing
+   # otherwise:
+   gh pr edit <pr> --add-label gauntlet-reviewing --remove-label gauntlet-accepted
+   ```
+
+   Both forms are idempotent (`--add-label` of a label already present and `--remove-label` of one that
+   is absent are both no-ops), so this converges from **any** starting state — neither label, one label,
+   the wrong label, or both.
+
+   This reconcile is a **backstop, not the mechanism**. The relabel is owed at the moment the gate
+   resets, in the same step that writes `reviews_ok = 0` (`stage-2-review-gate.md`, "Status labels
+   mirror the review gate"); this pass only *self-heals* a swap that was somehow missed. A PR that
+   reaches this point wearing a stale `gauntlet-accepted` — or both labels at once — means some reset
+   site skipped its relabel: fix the label here, and treat it as a bug in that site, not as normal
+   operation.
 2. **Fold in completions.** For any background task that finished (CI watch → `ci-<pr>.txt`; review →
    the **active launch attempt's** output file, with its progress file as liveness evidence — attempt 1
    writes `review-<pr>-<n>.txt` / `.progress.jsonl`, a relaunch writes `review-<pr>-<n>.a<k>.*`, and

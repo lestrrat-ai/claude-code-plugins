@@ -94,11 +94,15 @@ via `gh`, never a local `git rev-parse HEAD`.)
    hand-editing the row by column position). **Base advancement alone does NOT
    invalidate gauntlet reviews.** Rebase only if GitHub flags the PR behind/conflicting:
    - Clean rebase (no conflicts) → verify the PR's own diff/content is unchanged → keep `reviews_ok`,
-     update `head_sha` to the new tip, set `ci = pending`, **and relaunch its CI watch in the same
-     wake** — the rebased PR must not sit unwatched until the heartbeat; CI must return green before
-     merging.
-   - Rebase requiring conflict resolution → PR content changed → **reset `reviews_ok` to 0**, relaunch
-     the CI watch, re-enter Stage 2.
+     **keep its status label as-is** (the gate did not reset, so an accepted PR stays
+     `gauntlet-accepted`), update `head_sha` to the new tip, set `ci = pending`, **and relaunch its CI
+     watch in the same wake** — the rebased PR must not sit unwatched until the heartbeat; CI must
+     return green before merging.
+   - Rebase requiring conflict resolution → PR content changed → **reset `reviews_ok` to 0 AND, in that
+     same step, restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`** (`gh pr edit <pr>
+     --remove-label gauntlet-accepted --add-label gauntlet-reviewing`) — the gate and its label move
+     together (`stage-2-review-gate.md`, "Status labels mirror the review gate"). Then relaunch the CI
+     watch and re-enter Stage 2.
    - Still open, mergeable, not behind/dirty/conflicting, same live `head_sha`,
      `reviews_ok >= required(tier)`, and `ci == green` → still immediately mergeable; return to step 1
      in the same wake.

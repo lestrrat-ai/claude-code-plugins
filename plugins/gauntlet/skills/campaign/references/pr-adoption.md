@@ -99,16 +99,39 @@ For each `#PR` to adopt:
      durable API-decision contract, `files-and-ledger.md` / `scope-and-constraints.md`, and could re-ask
      or revive an already-declined/aborted PR). Only re-read `head_sha`/`ci` from ground truth; reset
      `reviews_ok` to `0` and re-triage `tier` **only if** reconciliation detects a PR-content change
-     since the recorded `head_sha` (per the gate's SHA-pinning rules).
+     since the recorded `head_sha` (per the gate's SHA-pinning rules). **That reset is a gate-reset
+     site: in the same step, restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`**
+     (`gh pr edit <pr> --remove-label gauntlet-accepted --add-label gauntlet-reviewing` —
+     `stage-2-review-gate.md`, "Status labels mirror the review gate"). Step 4's `--add-label
+     gauntlet-reviewing` alone is NOT sufficient: it would leave the stale `gauntlet-accepted` in
+     place, so the PR would carry **both** status labels and still publicly claim it passed.
 
    The ownership marker for an adopted PR is the **label**, not the branch name (its branch won't match
    the `fix-<run-id>-` prefix) — so labelling in step 4 is what makes the PR ours.
 
-4. **Label it ours + under review.** Add this run's owner label and the shared reviewing status label:
+4. **Label it ours, and set the status label from the LIVE gate.** Add this run's owner label, then
+   apply the status label that matches the PR's gate state **as it stands after step 3** — never a
+   hardcoded `gauntlet-reviewing`.
+
+   **The status labels are mutually exclusive** — a PR carries exactly one — so whichever you apply,
+   remove the other in the same call. Which one you apply is decided by the live gate, not by the fact
+   that you are adopting:
 
    ```
-   gh pr edit <pr> --add-label gauntlet-run-<run-id> --add-label gauntlet-reviewing
+   # Gate NOT met at the current HEAD — a fresh adoption (reviews_ok = 0), or a re-adoption whose
+   # content changed (step 3 just reset reviews_ok). The common case:
+   gh pr edit <pr> --add-label gauntlet-run-<run-id> --add-label gauntlet-reviewing --remove-label gauntlet-accepted
+
+   # Gate ALREADY met at the current HEAD — re-adoption of a PR whose content did NOT change, so step 3
+   # preserved reviews_ok >= required(tier). Its acceptance is still valid; do not revoke it:
+   gh pr edit <pr> --add-label gauntlet-run-<run-id> --add-label gauntlet-accepted --remove-label gauntlet-reviewing
    ```
+
+   Applying the first form unconditionally would **strip a valid `gauntlet-accepted`** from a PR whose
+   verdicts step 3 just preserved, sending an already-passed PR back under review — the mirror-image bug
+   of leaving a stale `gauntlet-accepted` in place. The label tracks the gate in **both** directions.
+   (`--remove-label` on a label the PR does not carry is a harmless no-op, so neither form needs a
+   pre-check for the label's presence — only for the gate's state.)
 
 5. **Create the PR-head worktree before the first review pass — off the PR's OWN head, never `<base>`.**
    The review itself needs a real checkout: the review command runs `codex exec -C <worktree>` (the

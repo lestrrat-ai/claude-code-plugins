@@ -66,6 +66,17 @@
 - The review gate is **tier-dependent**: `required(tier)` fresh, context-isolated `SATISFIED` verdicts
   on the same live PR content — **one if TRIVIAL, two otherwise** (any code / agent-doc / sensitive
   change always requires two). Re-derive the tier from `head_sha` each wake.
+- **NEVER leave `gauntlet-accepted` on a PR whose live content no longer holds `required(tier)`
+  SATISFIED verdicts.** The label is a projection of `reviews_ok`, and it is the only run state a human
+  sees on GitHub — a stale `gauntlet-accepted` publicly claims a PR passed a gauntlet it did not. So the
+  **gate and the label move together, in the same step**: every action that drops `reviews_ok` to 0 (a
+  `NOT SATISFIED` verdict, a review/CI/copilot fix commit, a conflict-resolving rebase, any other
+  content change on the head branch) MUST also run `gh pr edit <pr> --remove-label gauntlet-accepted
+  --add-label gauntlet-reviewing`. Never defer the swap to the next wake — that leaves the label lying
+  until reconcile, and lying forever if the session dies first. A **clean base-only rebase** with an
+  unchanged PR diff does NOT reset the gate, so it correctly KEEPS `gauntlet-accepted` (it only sets
+  `ci = pending`). Per-wake label reconcile is the self-healing backstop, never the mechanism
+  (`stage-2-review-gate.md`, "Status labels mirror the review gate").
 - Reviews are fresh, context-isolated re-rolls: a separate reviewer invocation each pass (Claude
   subagent by default, or the user's preferred reviewer), no shared context. A second pass re-rolls a
   stochastic reviewer to catch a missed defect — the two are NOT statistically independent (the same

@@ -20,7 +20,11 @@ row by column position:
   adoption/pre-review per `pr-adoption.md`; the ledger-recorded `<worktree>` path — default
   `.worktrees/<headRefName>` when campaign creates it, else a reused existing checkout). Its fix
   commits + pushes to the PR's **own head branch**
-  → code changed → **reset `reviews_ok` to 0**, relaunch the watch immediately, re-enter 2a.
+  → code changed → **reset `reviews_ok` to 0 AND, in that same step, restore `gauntlet-reviewing` if
+  the PR carries `gauntlet-accepted`** (`gh pr edit <pr> --remove-label gauntlet-accepted --add-label
+  gauntlet-reviewing`) — the gate and its label move together, never one without the other
+  (`stage-2-review-gate.md`, "Status labels mirror the review gate"). Then relaunch the watch
+  immediately and re-enter 2a.
 
 Every CI failure must be handled; never merge over a red or pending check, and never infer green from
 the watch's exit code alone — always confirm against the re-polled snapshot.
