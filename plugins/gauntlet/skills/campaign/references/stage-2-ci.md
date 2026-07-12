@@ -36,54 +36,81 @@ row by column position:
   wrong, in which case it MUST say so explicitly and name the change in its output so the review gate
   can judge it.
 
-  Its fix commits + pushes to the PR's **own head branch**
-  → code changed → **reset `reviews_ok` to 0 AND, in that same step, restore `gauntlet-reviewing` if
-  the PR carries `gauntlet-accepted`** (`gh pr edit <pr> --remove-label gauntlet-accepted --add-label
-  gauntlet-reviewing`) — the gate and its label move together, never one without the other
-  (`stage-2-review-gate.md`, "Status labels mirror the review gate"). Then relaunch the watch
-  immediately and re-enter 2a.
+  Its fix commits + pushes to the PR's **own head branch** → **apply the gate reset** below
+  ("Any campaign commit to the PR head resets the gate").
 
-#### Whitelist classification — run the formatter TOOL, or the session model
+#### Any campaign commit to the PR head resets the gate
 
-Before dispatching anything, decide whether the failing check is **whitelisted**. A check is whitelisted
-**only because its fixer is semantics-preserving BY CONSTRUCTION**: it rewrites LAYOUT and cannot change
-program meaning at all (`SKILL.md`, "The only cheap path"). That guarantee belongs to **the tool's
-output** and to nothing else — a model hand-editing the same file does NOT inherit it, however
-formatting-like its diff looks. A pure-indentation edit can move behavior in a whitespace-significant
-language and still be formatter-clean, so there is no diff-shape guard that makes a cheap model's edit
-safe to accept. **NO SUBAGENT IS EVER RUN ON A DOWNGRADED MODEL.**
+**THE RULE — every commit campaign pushes to a PR's head branch is a PR-content change, whatever wrote
+it: a CI-fix subagent, a review-fix subagent, or a whitelisted TOOL run with no model at all.** Every one
+of them MUST, in the same step:
 
-- **IN** — pure formatting / import ordering: `gofmt`, `gofumpt`, `goimports` (import block only), `gci`,
-  `whitespace`, `prettier`, `ruff format`.
+- **reset `reviews_ok` to 0 AND restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`**
+  (`gh pr edit <pr> --remove-label gauntlet-accepted --add-label gauntlet-reviewing`) — the gate and its
+  label move together, never one without the other (`stage-2-review-gate.md`, "Status labels mirror the
+  review gate");
+- **relaunch the CI watch immediately**;
+- **re-enter Stage 2a.**
+
+NEVER treat a tool-written commit as exempt: the verdicts on the old SHA describe content that no longer
+exists, and a `gauntlet-accepted` label on it is a false public claim.
+
+#### Whitelist classification — run the whitelisted TOOL, or the session model
+
+Before dispatching anything, decide whether the failing check's fixer is a **whitelisted tool**. **A tool
+is whitelisted ONLY IF it guarantees its output is SEMANTICALLY EQUIVALENT to its input** — an
+AST-preserving pretty-printer, not a text munger — and the burden is the tool's **documented behaviour**
+(`SKILL.md`, "The only cheap path"). **Cannot point to that guarantee → NOT whitelisted → session
+model.** There is NO blanket "formatters are safe" rule.
+
+That guarantee belongs to the whitelisted **tool's output** and to nothing else — a model hand-editing the
+same file does NOT inherit it, however formatting-like its diff looks. A pure-indentation edit can move
+behavior in a whitespace-significant language and still be formatter-clean, so there is no diff-shape
+guard that makes a cheap model's edit safe to accept. **NO SUBAGENT IS EVER RUN ON A DOWNGRADED MODEL.**
+
+- **IN** — `gofmt`, `gofumpt` (AST-preserving Go pretty-printers; never touch string-literal contents);
+  `goimports` (import block only); `gci` (import grouping/ordering only — Go package init order is by
+  **dependency**, not by import order in a file); golangci-lint `whitespace` (Go: leading/trailing
+  newlines inside function bodies only); `ruff format` (verifies its output is AST-equivalent to the
+  input).
+- **OUT** — `prettier`: it reformats the **contents** of tagged template literals (`` gql`…` ``,
+  `` css`…` ``), changing the runtime string the tag function receives — a semantic change made by the
+  tool itself.
+- **OUT** — any **generic or unscoped** "whitespace" / "trailing-whitespace" fixer that can rewrite
+  content inside string literals, heredocs, or Markdown (e.g. trailing double-space hard breaks).
 - **OUT** — every **semantic rewriter**, including `modernize` and any rule that rewrites logic. A
   `modernize` rewrite can PASS its own rule while CHANGING BEHAVIOR (e.g. `sort.Slice` → `slices.SortFunc`
   with a reversed or non-equivalent comparator): lint-clean, semantics changed.
 - **OUT** — blanket `golangci-lint run --fix` and blanket `ruff --fix`: they apply semantic autofixes
-  too. A whitelisted run MUST invoke **only the formatter**, NEVER a catch-all `--fix`.
+  too. A whitelisted run MUST invoke **only the whitelisted formatter**, NEVER a catch-all `--fix`.
 - **NEVER whitelisted**: a failing product test (making a test pass is not the same as fixing the bug), a
   compile error, and any rule that rewrites logic.
 
-Key it on the **check / fixer IDENTITY** from the failing check's output — NEVER on a judgment that the
-failure "looks mechanical". **Default is NOT whitelisted. Unknown check → session model.**
+Key it on the **tool's IDENTITY and its documented guarantee** — NEVER on a judgment that the failure
+"looks mechanical", NEVER on the category "formatter". **Default is NOT whitelisted. Unknown check or
+unlisted tool → session model.**
 
 Then, in order:
 
-1. **Whitelisted formatter → run the TOOL, no model (prefer this always).** In `<worktree>`: `gofmt -w`,
-   `gofumpt -w`, `goimports -w`, `gci write`, `prettier --write`, `ruff format`. NEVER a catch-all
-   `--fix`. ACCEPT only if **both** hold: re-running the **exact** failing check now **passes**, AND the
-   diff touches **no check definition, config, or test**. Then commit + push — **zero model spend**.
+1. **Whitelisted tool → run the TOOL, no model (prefer this always).** In `<worktree>`: `gofmt -w`,
+   `gofumpt -w`, `goimports -w`, `gci write`, `ruff format`. NEVER a catch-all `--fix`. ACCEPT only if
+   **both** hold: re-running the **exact** failing check now **passes**, AND the diff touches **no check
+   definition, config, or test**. Then commit + push — **zero model spend** — and **apply the gate reset**
+   above ("Any campaign commit to the PR head resets the gate"): `reviews_ok` to 0 + relabel, relaunch the
+   watch, re-enter 2a. A tool commit gates exactly like a subagent commit.
 2. **Everything else → the scoped CI-fix subagent on the session model**, set explicitly, per the red-CI
-   dispatch above. Covers: the tool did not fix it, the tool left residue, the check is not whitelisted,
-   or the failure needs any judgment.
+   dispatch above. Covers: the tool did not fix it, the tool left residue, the tool/check is not
+   whitelisted, or the failure needs any judgment.
 
 If the tool's run fails either acceptance point → **discard the work** (reset the worktree to the PR
 head) and **re-dispatch the same failure on the session model**. NEVER patch a formatter run in place;
 NEVER commit an unverified one; NEVER hand the failure to a cheap model instead.
 
-**Residual risk, stated honestly:** it is small and specific — reordering imports could in principle
-change init side-effect order (blank/`_` imports). That is the whole of it. Do NOT widen the whitelist
-past it, and NEVER re-derive its safety from the review gate: the whitelist stands on the fixer being
-incapable of changing semantics, or it does not stand at all.
+**Residual risk, stated honestly:** the whitelist is only as strong as each tool's documented guarantee —
+a tool bug, or a config/plugin that switches on non-formatting rules, is the whole of the exposure. Run
+whitelisted tools with the project's own config and no extra rule sets. Do NOT widen the whitelist past a
+guarantee you can point to, and NEVER re-derive its safety from the review gate: the whitelist stands on
+the TOOL being incapable of changing semantics, or it does not stand at all.
 
 Every CI failure must be handled; never merge over a red or pending check, and never infer green from
 the watch's exit code alone — always confirm against the re-polled snapshot.

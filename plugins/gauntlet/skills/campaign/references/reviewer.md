@@ -37,7 +37,8 @@ say so: it is the change that most reduces token spend, not the model tier of an
 subagent fallback for a failed external reviewer, the pass runs on the **session model** — it *is* the
 gate, and a weaker verdict is simply a worse gate (`SKILL.md`, "Subagent Dispatch"). Neither is any other
 class: the fix subagents write code that gets merged, and nothing downstream guarantees a bad fix is
-caught. The only cheap path is a whitelisted CI formatter, and it is cheap because it runs the **tool**
+caught. The only cheap path is a whitelisted CI **tool** — one that guarantees semantic equivalence of its
+output — and it is cheap because it runs the **tool**
 with **no model at all** (`SKILL.md`, "The only cheap path"; `stage-2-ci.md`) — never a review pass. Save
 tokens by moving review passes to an external reviewer and by scoping every fix subagent — never by
 cheapening a model.

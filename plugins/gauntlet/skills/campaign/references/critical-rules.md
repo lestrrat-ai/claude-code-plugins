@@ -141,22 +141,37 @@
   a miss-catcher, not a proof of correctness — so no class's mistakes are reliably absorbed. NEVER claim CI
   catches a bad fix. NEVER downgrade the mapper on the grounds that it is "read-only": read-only is not
   low-judgment, and an under-map is invisible.
-- **The only cheap path: a whitelisted CI check whose fixer is a semantics-preserving formatter — run the
-  TOOL, no model at all** (`SKILL.md`, "The only cheap path"; `stage-2-ci.md`). The safety comes from the
-  TOOL's construction: its output cannot change program meaning. That guarantee does **NOT** transfer to a
-  model hand-editing the same file — a diff that *looks* like formatting is NOT a proof of semantic
-  equivalence (a pure-indentation edit can move behavior in a whitespace-significant language and still be
-  formatter-clean), so there is no diff-shape guard that would make a cheap model's edit safe to accept.
-  **IN**: `gofmt`, `gofumpt`, `goimports` (import block only), `gci`, `whitespace`, `prettier`,
-  `ruff format`. **OUT**: `modernize` and every other semantic rewriter (a `modernize` rewrite can pass its
-  own rule while changing behavior), plus blanket `golangci-lint run --fix` and blanket `ruff --fix` — a
-  whitelisted run MUST invoke only the formatter, NEVER a catch-all `--fix`. Failing product tests, compile
-  errors, and any rule that rewrites logic are NEVER whitelisted. Keyed on **check/fixer IDENTITY**, NEVER
-  on a failure "looking mechanical". Default is NOT whitelisted; unknown check → session model. ACCEPT the
-  tool's run **only if both hold**: (a) re-running the **exact** failing check now **passes**; AND (b) the
-  diff touches **no check definition, config, or test**. Either fails → **discard the work** (reset the
-  worktree to the PR head) and **re-dispatch the same failure on the session model**. NEVER patch a
-  formatter run in place; NEVER commit an unverified one; NEVER hand the failure to a cheap model instead.
+- **The only cheap path: a CI check whose fixer is a WHITELISTED TOOL — run the TOOL, no model at all**
+  (`SKILL.md`, "The only cheap path"; `stage-2-ci.md`). **A tool is whitelisted ONLY IF it guarantees its
+  output is SEMANTICALLY EQUIVALENT to its input** — an AST-preserving pretty-printer, not a text munger —
+  and the burden is the tool's **documented behaviour**. Cannot point to that guarantee → NOT whitelisted →
+  session model. There is **NO blanket "formatters are safe" rule**. The guarantee is the TOOL's, and does
+  **NOT** transfer to a model hand-editing the same file — a diff that *looks* like formatting is NOT a
+  proof of semantic equivalence (a pure-indentation edit can move behavior in a whitespace-significant
+  language and still be formatter-clean), so there is no diff-shape guard that would make a cheap model's
+  edit safe to accept.
+  **IN**: `gofmt`, `gofumpt` (AST-preserving Go pretty-printers; never touch string-literal contents),
+  `goimports` (import block only), `gci` (import grouping/ordering only — Go init order is by dependency,
+  not by import order), golangci-lint `whitespace` (Go: leading/trailing newlines inside function bodies),
+  `ruff format` (verifies AST equivalence of its output).
+  **OUT**: `prettier` — it reformats the contents of tagged template literals (`` gql`…` ``, `` css`…` ``),
+  changing the runtime string the tag receives; any generic/unscoped "whitespace" or "trailing-whitespace"
+  fixer that can touch string literals, heredocs, or Markdown; `modernize` and every other semantic
+  rewriter (a `modernize` rewrite can pass its own rule while changing behavior); plus blanket
+  `golangci-lint run --fix` and blanket `ruff --fix` — a whitelisted run MUST invoke only the whitelisted
+  formatter, NEVER a catch-all `--fix`. Failing product tests, compile errors, and any rule that rewrites
+  logic are NEVER whitelisted. Keyed on the **tool's IDENTITY and documented guarantee**, NEVER on a
+  failure "looking mechanical" or on the category "formatter". Default is NOT whitelisted; unknown check or
+  unlisted tool → session model. ACCEPT the tool's run **only if both hold**: (a) re-running the **exact**
+  failing check now **passes**; AND (b) the diff touches **no check definition, config, or test**. Either
+  fails → **discard the work** (reset the worktree to the PR head) and **re-dispatch the same failure on
+  the session model**. NEVER patch a formatter run in place; NEVER commit an unverified one; NEVER hand the
+  failure to a cheap model instead.
+- **A whitelisted TOOL's commit resets the gate exactly like a subagent's** (`stage-2-ci.md`, "Any campaign
+  commit to the PR head resets the gate"). Every commit campaign pushes to a PR head — CI-fix subagent,
+  review-fix subagent, or tool run with no model — MUST in the same step reset `reviews_ok` to 0 AND
+  restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`, then relaunch the CI watch and
+  re-enter Stage 2a. NEVER treat a tool-written commit as exempt.
 - **Everything the tool does not fix → the scoped CI-fix subagent on the session model**, set explicitly:
   tool left residue, check not whitelisted, or the failure needs any judgment.
 - A CI-fix subagent MUST be dispatched under the no-weakening prohibition (`stage-2-ci.md`): fix the

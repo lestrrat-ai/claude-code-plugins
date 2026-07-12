@@ -69,45 +69,63 @@ justify a downgrade by claiming something downstream will catch it.
 
 ### The only cheap path — run the formatter TOOL, no model at all
 
-Some CI failures need **no subagent**. A whitelisted check has a fixer that is semantics-preserving **BY
-CONSTRUCTION** — it rewrites LAYOUT and cannot change program meaning. Run **the tool**; commit its
-output. Zero model tokens, zero model risk. The safety comes from the **tool's construction** — and from
-**nothing else**. It does **not** transfer to a model that hand-edits the same file: only the tool's own
-output is semantics-preserving. A hand-written diff that merely LOOKS like formatting is not. In a
-whitespace-significant language it can move behavior while staying formatter-clean — indenting
-`result.append("always")` under an `if` is a pure-indentation edit that turns `["always"]` into `[]`, and
-`ruff format` is perfectly happy with it.
+Some CI failures need **no subagent**: run the fixer **tool** and commit its output. Zero model tokens,
+zero model risk.
 
-**The whitelist (exhaustive in kind):**
+**THE CRITERION — a tool is whitelisted ONLY IF it guarantees its output is SEMANTICALLY EQUIVALENT to
+its input**: an AST-preserving pretty-printer, not a text munger. Whitelisting is **per-TOOL**, and the
+burden is the **tool's documented behaviour**. **If you cannot point to that guarantee, the tool is NOT
+whitelisted — use the session model.** There is NO blanket "formatters are safe" rule: a tool that looks
+like a formatter can still rewrite meaning (see `prettier`, below).
 
-- **IN** — pure formatting / import ordering: `gofmt`, `gofumpt`, `goimports` (import block only), `gci`,
-  `whitespace`, `prettier`, `ruff format`.
+The guarantee belongs to the whitelisted **tool's output** and to **nothing else**. It does **not**
+transfer to a model that hand-edits the same file: a diff that merely LOOKS like formatting is not
+semantics-preserving. In a whitespace-significant language it can move behavior while staying
+formatter-clean — indenting `result.append("always")` under an `if` is a pure-indentation edit that turns
+`["always"]` into `[]`, and `ruff format` is perfectly happy with it.
+
+**The whitelist (exhaustive — a tool not listed IN is OUT):**
+
+- **IN** — `gofmt`, `gofumpt`: AST-preserving Go pretty-printers; they re-print layout and never touch
+  string-literal contents.
+- **IN** — `goimports`: import block only. `gci`: import grouping/ordering only — Go package init order
+  is by **dependency**, not by import order in a file.
+- **IN** — golangci-lint `whitespace`: Go-only, leading/trailing newlines **inside function bodies**.
+- **IN** — `ruff format`: verifies its output is AST-equivalent to the input.
+- **OUT** — `prettier`: it reformats the **contents** of tagged template literals (`` gql`…` ``,
+  `` css`…` ``), changing the runtime string the tag function receives. That is a semantic change made by
+  the tool itself.
+- **OUT** — any **generic or unscoped** "whitespace" / "trailing-whitespace" fixer, which can rewrite
+  content inside string literals, heredocs, or Markdown (e.g. trailing double-space hard breaks). A tool
+  that cannot promise it leaves literal content alone is NOT whitelisted.
 - **OUT** — every **semantic rewriter**, including `modernize` and any rule that rewrites logic. A
   `modernize` rewrite can PASS its own rule while CHANGING BEHAVIOR (e.g. `sort.Slice` → `slices.SortFunc`
   with a reversed or non-equivalent comparator): lint-clean, semantics changed.
 - **OUT** — blanket `golangci-lint run --fix` and blanket `ruff --fix`: they apply semantic autofixes too.
-  A whitelisted run MUST invoke **only the formatter**, NEVER a catch-all `--fix`.
+  A whitelisted run MUST invoke **only the whitelisted formatter**, NEVER a catch-all `--fix`.
 - **NEVER whitelisted**: a failing product test (making a test pass is not the same as fixing the bug), a
   compile error, and any rule that rewrites logic.
 
-Eligibility is keyed on **check / fixer IDENTITY** — NEVER on an impression that a failure "looks
-mechanical". A vibes-based whitelist is the same unsound reasoning in a new hat. **Default is NOT
-whitelisted; unknown check → session model.**
+Eligibility is keyed on the **tool's IDENTITY and its documented guarantee** — NEVER on an impression that
+a failure "looks mechanical", and NEVER on the *category* "formatter". A vibes-based whitelist is the same
+unsound reasoning in a new hat. **Default is NOT whitelisted; unknown check or unlisted tool → session
+model.**
 
 | When | Action |
 |---|---|
-| **Whitelisted formatter** (prefer always) | Run the **tool** in `<worktree>` — `gofmt -w`, `gofumpt -w`, `goimports -w`, `gci write`, `prettier --write`, `ruff format`. NEVER a catch-all `--fix`. Re-run the **exact** failing check; it must pass and the diff must touch **no check definition, config, or test**. Then commit. **No model at all.** |
-| **Everything else** | Dispatch the scoped CI-fix subagent on the **session model**, set explicitly. Covers: the tool did not fix it, the tool left residue, the check is not whitelisted, or the failure needs any judgment (product tests, compile errors, semantic lint rules, logic). |
+| **Whitelisted tool** (prefer always) | Run the **tool** in `<worktree>` — `gofmt -w`, `gofumpt -w`, `goimports -w`, `gci write`, `ruff format`. NEVER a catch-all `--fix`. Re-run the **exact** failing check; it must pass and the diff must touch **no check definition, config, or test**. Then commit + push — and **reset the gate exactly as any other PR-content change does** (`stage-2-ci.md`). **No model at all.** |
+| **Everything else** | Dispatch the scoped CI-fix subagent on the **session model**, set explicitly. Covers: the tool did not fix it, the tool left residue, the tool/check is not whitelisted, or the failure needs any judgment (product tests, compile errors, semantic lint rules, logic). |
 
 If the tool's output does not clear the failing check, or it touched a check definition, config, or test
 → **discard the work** (reset the worktree to the PR head) and **re-dispatch the same failure on the
 session model**. NEVER commit an unverified formatter run. NEVER hand a "formatting" failure to a cheap
 model instead.
 
-**Residual risk, stated honestly:** it is small and specific — reordering imports could in principle
-change init side-effect order (blank/`_` imports). That is the whole of it. Do NOT widen the whitelist
-past it, and NEVER re-derive its safety from the review gate: the whitelist stands on the fixer being
-incapable of changing semantics, or it does not stand at all.
+**Residual risk, stated honestly:** the whitelist is only as strong as each tool's documented guarantee —
+a tool bug, or a config/plugin that switches on non-formatting rules, is the whole of the exposure. Run
+whitelisted tools with the project's own config and no extra rule sets. Do NOT widen the whitelist past a
+guarantee you can point to, and NEVER re-derive its safety from the review gate: the whitelist stands on
+the TOOL being incapable of changing semantics, or it does not stand at all.
 
 **The biggest lever is not the model — it is the reviewer.** Review passes re-read the whole PR diff,
 `required(tier)` times per SHA, and re-run from scratch on every gate reset, so they dominate campaign's

@@ -361,7 +361,7 @@ As each verdict lands, tally it for the SHA it ran on:
   second review was spent on this broken commit.)
 
   **Run the review-fix on the session model — no subagent is ever run on a downgraded model**
-  (`SKILL.md`, "Subagent Dispatch"). The one cheap path — running a whitelisted formatter **tool** with no
+  (`SKILL.md`, "Subagent Dispatch"). The one cheap path — running a whitelisted **tool** with no
   model at all (`stage-2-ci.md`) — cannot fix a review defect. Its output is **code that gets merged**, and its only
   judge is another full review pass — which is a miss-catcher, not a proof of correctness. Best case, a
   weak fix produces a plausible-looking commit, the next pass returns `NOT SATISFIED`, the gate resets,
@@ -456,7 +456,7 @@ that drop `reviews_ok` to 0):
 |---|---|
 | `NOT SATISFIED` verdict lands | this file, verdict tally |
 | Review-fix commit pushed | this file, verdict tally |
-| CI-fix commit pushed | `stage-2-ci.md` |
+| CI-fix commit pushed — by the subagent **or** by a whitelisted-tool run with no model | `stage-2-ci.md`, "Any campaign commit to the PR head resets the gate" |
 | Copilot-item fix pushed | Stage 2a preconditions, above |
 | Conflict-resolving rebase | `stage-3-merge.md` |
 | Re-adoption refresh detects changed content | `pr-adoption.md` step 3 (step 4 then sets the status label from the **live** gate — `gauntlet-reviewing` here, but `gauntlet-accepted` for a re-adoption whose content did **not** change and whose verdicts step 3 preserved; either way it removes the other label) |
