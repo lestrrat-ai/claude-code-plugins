@@ -29,8 +29,10 @@ complete, valid reviewer.
 ### Running the default reviewer — Claude subagents
 
 The reviewer's only job is the **Stage 2a per-PR review pass**: spawn a **fresh** subagent to review
-the whole `origin/<base>...HEAD` diff with an adversarial pass, using the same `review-<pr>-<n>.plan.jsonl` /
-`review-<pr>-<n>.progress.jsonl` protocol — planned units, then the unstructured adversarial sweep —
+the whole `origin/<base>...HEAD` diff with an adversarial pass, using the same plan / progress protocol
+— the per-pass `review-<pr>-<n>.plan.jsonl` and the **active launch attempt's** progress file
+(`review-<pr>-<n>.progress.jsonl`, or `review-<pr>-<n>.a<k>.progress.jsonl` after a relaunch;
+`stage-2-review-gate.md`) — planned units, then the unstructured adversarial sweep —
 and, on SATISFIED, the same `RESIDUAL-RISK: <area> — <why>` line immediately above exactly one final
 `VERDICT: SATISFIED` / `VERDICT: NOT SATISFIED` line. Each pass is a fresh, context-isolated subagent,
 so the review gate holds: for a two-pass tier, launch review 2 only after review 1 is SATISFIED, one
