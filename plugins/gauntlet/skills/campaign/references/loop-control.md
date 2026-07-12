@@ -35,7 +35,18 @@ blocks; each completion is its own wake.
      re-arm the relaunch budget, and a dead attempt `2` must never be left un-dispatched):
      for each of this run's branches/PRs read the live SHA, CI status, and verdict files, and refresh
      the ledger — write every ledger update through `scripts/ledger.py … set/header set` **by field
-     name** (`files-and-ledger.md`), never by hand-editing rows by column position. Do the PR scan as
+     name** (`files-and-ledger.md`), never by hand-editing rows by column position.
+
+     **This refresh is itself a gate-reset site — relabel here, in this step.** When it detects that a
+     PR's live `head_sha` has moved with the PR diff changed (a formatter/bot commit, a manual push,
+     any content change this run did not dispatch), it resets `reviews_ok` to 0 — and MUST, in the same
+     step, run `gh pr edit <pr> --remove-label gauntlet-accepted --add-label gauntlet-reviewing` on a PR
+     carrying `gauntlet-accepted` (`stage-2-review-gate.md`, "Status labels mirror the review gate").
+     Do NOT leave this to the label-reconcile pass below: that pass is the **backstop**, and a reset
+     site that defers to it is the exact bug this rule forbids. (A clean base-only advance with the PR
+     diff unchanged does not reset the gate, so it keeps `gauntlet-accepted`.)
+
+     Do the PR scan as
      **one batched snapshot per wake** —
      `gh pr list --label gauntlet-run-<run-id> --json number,headRefName,headRefOid,state,mergeable,mergeStateStatus,labels > <rundir>/prs.json`
      — and drive reconcile from that file; fall back to per-PR `gh pr view` only where the snapshot

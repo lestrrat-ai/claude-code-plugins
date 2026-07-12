@@ -440,14 +440,21 @@ reconcile it is simply wrong; if the session dies in that window it stays wrong 
 **Every trigger that resets the gate must relabel** (this is the exhaustive list — the same events
 that drop `reviews_ok` to 0):
 
-| Trigger | Where |
+| Trigger | Where the reset happens — and therefore where the relabel is owed |
 |---|---|
 | `NOT SATISFIED` verdict lands | this file, verdict tally |
 | Review-fix commit pushed | this file, verdict tally |
 | CI-fix commit pushed | `stage-2-ci.md` |
 | Copilot-item fix pushed | Stage 2a preconditions, above |
 | Conflict-resolving rebase | `stage-3-merge.md` |
-| Any other PR-content change on the head branch — formatter/bot commit, manual push | reconcile, Loop control |
+| Re-adoption refresh detects changed content | `pr-adoption.md` step 3 (and step 4's label call, which must `--remove-label gauntlet-accepted`, never merely add) |
+| Any other PR-content change on the head branch — formatter/bot commit, manual push | **Loop control step 1's ledger refresh** — the wake that *detects* it resets the gate, so it relabels there |
+
+**Every row names a place where `reviews_ok` is written to 0 — never "the reconcile pass".** The
+label-reconcile in Loop control is the backstop that *heals* a missed swap; naming it as the mechanism
+for any trigger would defeat this rule. If you add a new site that resets the gate, it goes in this
+table with the relabel attached, and the search that proves this table complete is for **writes of
+`reviews_ok`**, not for any particular phrasing.
 
 **Exception — a clean base-only rebase** (PR diff unchanged) carries `reviews_ok` forward and therefore
 **keeps** `gauntlet-accepted`; it only sets `ci = pending`. The gate did not reset, so the label does
