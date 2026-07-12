@@ -23,9 +23,19 @@ substitute inline work in the main loop for a dispatch the skill specifies.
 
 ## Dogfood the branch's behavior — but NEVER let it gate itself
 
-The harness loads skills from the **installed** plugin cache
-(`~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`), not from the working tree. So a branch's
-changes do **not** take effect just because they are checked out. Split the two roles deliberately:
+The harness loads skill content under `plugins/**` (SKILL.md, `references/`, `scripts/`) from the
+**installed** plugin cache (`~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`), not from the
+working tree. So a branch's changes to *those* do **not** take effect just because they are checked out.
+
+**This file is the exception.** Root `CLAUDE.md` is **worktree-loaded**: it is read from the checkout
+into every session in this repo. An edit to it is **live in the very session that makes it** — and in
+the session that reviews it. Therefore a change to `CLAUDE.md` is **PR content, never gate authority**.
+It MUST NOT be treated as the rule governing its own review; it is judged by the **installed** gate and
+by the user, exactly like any other PR content. **NEVER put a gate-DECIDING rule into `CLAUDE.md` and
+then rely on it while gating the PR that introduces it** — that is a branch acting as its own gate
+authority, the exact hazard this section forbids.
+
+Split the two roles deliberately:
 
 | Role | Which copy | Why |
 |------|-----------|-----|
