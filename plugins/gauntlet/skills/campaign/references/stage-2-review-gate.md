@@ -166,13 +166,33 @@ the tool and is shown only to document its shape. The fourth (`pass_identity`) i
 ```
 
 **`pass_identity` is the pass's attempt id and its dispatch clock.** The orchestrator writes it as the
-**first line** of `review-<pr>-<n>.progress.jsonl` **before** launching the reviewer process, so the
-progress file exists from dispatch onward. Three rules depend on it: a late verdict is ignored unless
-its attempt id (`pr` + `pass` + `head_sha`) still matches the active pass; `dispatched_at` is the clock
-the launch check below measures against; and `launch_attempt` (`1`, then `2` on a relaunch) is how a
-*later wake* — possibly a fresh agent — knows whether this pass has already been relaunched once. A
-progress file holding **only** this line is therefore evidence that the reviewer has produced nothing —
-not evidence of a missing file.
+**first line** of the launch attempt's progress file **before** launching the reviewer process, so that
+file exists from dispatch onward. Three rules depend on it: a late verdict is ignored unless its attempt
+id still matches the active pass; `dispatched_at` is the clock the launch check below measures against;
+and `launch_attempt` (`1`, then `2` on a relaunch) is how a *later wake* — possibly a fresh agent —
+knows whether this pass has already been relaunched once. A progress file holding **only** this line is
+therefore evidence that the reviewer has produced nothing — not evidence of a missing file.
+
+**The attempt id is `pr` + `pass` + `head_sha` + `launch_attempt` — all four.** A relaunch keeps the
+first three, so without `launch_attempt` the two launch attempts of one pass are indistinguishable and
+a killed-but-not-dead attempt could be mistaken for the live one.
+
+**Each launch attempt owns its own artifacts — a relaunch NEVER reuses the dead attempt's files.**
+A process that survived its kill still writes to the paths it was given, so reusing them would let a
+zombie attempt 1 append `started`/`done` into attempt 2's progress file (falsely satisfying attempt 2's
+launch check) or land a stale verdict in the shared output file. Path isolation, not the kill, is what
+makes that impossible:
+
+| Launch attempt | Progress file | Output (verdict) file |
+|---|---|---|
+| `1` | `review-<pr>-<n>.progress.jsonl` | `review-<pr>-<n>.txt` |
+| `k ≥ 2` | `review-<pr>-<n>.a<k>.progress.jsonl` | `review-<pr>-<n>.a<k>.txt` |
+
+The plan (`review-<pr>-<n>.plan.jsonl`) is per-pass, not per-attempt — a relaunch reuses it unchanged.
+The orchestrator substitutes the **active attempt's** paths into the review prompt (`-o` and the emit
+tool's `--file`), and **reads only those paths**: progress events and a verdict are counted **only**
+from the artifacts of the attempt named in the active `pass_identity`. A dead attempt's files are inert
+— left on disk for forensics, never read, never counted.
 
 Reviewers do NOT hand-write the unit-progress events (`started`/`done`) — ever; the emit tool is the
 only way those are produced. (The `plan_amendment_request` line is the exception: the tool does not
@@ -198,12 +218,15 @@ rule is sized for a reviewer working slowly, not one that never woke up. Gate ev
   only "did the process boot and can it write?", so it is deliberately weaker than meaningful progress
   (which ignores `started`).
 - **Zero reviewer events past the deadline → the pass never started.** Do NOT wait out the 15-min
-  stale path. Kill the task and re-dispatch the pass **once**: rewrite the progress file with a fresh
-  `pass_identity` carrying `launch_attempt: 2` and a new `dispatched_at`, then launch again. If the
-  relaunch (`launch_attempt: 2`) also produces nothing by its own deadline → treat it as a reviewer
-  system failure and take the fresh-subagent fallback (same path as a verdict-less external reviewer,
-  above). Reading the retry count off the file, not off memory, is what makes this survive a killed
-  session: a fresh agent adopting the run sees `launch_attempt: 2` and falls back instead of
+  stale path. Kill the task and re-dispatch the pass **once**, into **fresh, attempt-scoped artifacts**
+  (`review-<pr>-<n>.a2.*`, per the table above — never the dead attempt's files): write a new
+  `pass_identity` carrying `launch_attempt: 2` and a new `dispatched_at` as that file's first line, then
+  launch with the `a2` paths substituted into the prompt. From that moment the `a2` artifacts are the
+  only ones read, so anything the killed attempt 1 still writes is inert. If the relaunch also produces
+  nothing by its own deadline → treat it as a reviewer system failure and take the fresh-subagent
+  fallback (same path as a verdict-less external reviewer, above). Reading the retry count off the file,
+  not off memory, is what makes this survive a killed session: a fresh agent adopting the run finds the
+  highest-numbered attempt's `pass_identity`, sees `launch_attempt: 2`, and falls back instead of
   relaunching forever.
 - Before re-dispatching, **re-check the command** for the known launch faults — most of all the
   `< /dev/null` stdin redirect on every `codex exec` (see below). A relaunch of the same hanging

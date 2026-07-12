@@ -10,9 +10,10 @@ files from colliding — see "Run identity and concurrency".
 | `pr-<pr>.json` | `gh pr view` snapshot captured at adoption (PR facts the ledger row is built from) |
 | `prs.json` | Batched `gh pr list` snapshot of this run's PRs — the per-wake reconcile input (Loop control) |
 | `lease.json` | This run's active-driver lease (`{agent, updated}`; see "Run lease") |
-| `review-<pr>-<n>.txt` | The reviewer's PR review output, round `n` |
-| `review-<pr>-<n>.plan.jsonl` | Orchestrator-authored review work units for round `n` |
-| `review-<pr>-<n>.progress.jsonl` | Reviewer progress events against the plan for round `n` |
+| `review-<pr>-<n>.txt` | The reviewer's PR review output, round `n` (launch attempt 1) |
+| `review-<pr>-<n>.plan.jsonl` | Orchestrator-authored review work units for round `n` (per-pass — a relaunch reuses it) |
+| `review-<pr>-<n>.progress.jsonl` | Reviewer progress events against the plan for round `n` (launch attempt 1) |
+| `review-<pr>-<n>.a<k>.txt` / `.a<k>.progress.jsonl` | Same two artifacts for **launch attempt `k ≥ 2`** — a relaunched pass writes here, never over attempt 1's files, so a killed-but-alive attempt can't corrupt the live one. Only the attempt named in the active `pass_identity` is read or counted (see `stage-2-review-gate.md`) |
 | `ci-<pr>.txt` | Latest `gh pr checks` snapshot for a PR (re-polled after the watch, not the watch stream) |
 | `abort-<id>.md` | Detailed log for an aborted PR-task |
 

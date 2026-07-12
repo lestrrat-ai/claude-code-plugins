@@ -85,8 +85,10 @@ blocks; each completion is its own wake.
    `gauntlet-accepted` if its current HEAD holds `required(tier)` SATISFIED verdicts, else
    `gauntlet-reviewing`; add the status label if it has none. **Never touch another run's PRs.**
 2. **Fold in completions.** For any background task that finished (CI watch → `ci-<pr>.txt`; review →
-   `review-<pr>-<n>.txt`, with `review-<pr>-<n>.progress.jsonl` as its liveness evidence; CI/review
-   fix), record the result against the SHA it ran on and act per Stage 2.
+   the **active launch attempt's** output file, with its progress file as liveness evidence — attempt 1
+   writes `review-<pr>-<n>.txt` / `.progress.jsonl`, a relaunch writes `review-<pr>-<n>.a<k>.*`, and
+   only the attempt named in the current `pass_identity` is read or counted (Stage 2a); CI/review fix),
+   record the result against the SHA it ran on and act per Stage 2.
 3. **Dispatch due work — non-blocking, idempotent, bounded, work-conserving.** Scan the whole run,
    not just the PR/job that woke you. Launch every due action that fits a free slot before returning.
    Launch only what is actually due *and not already in flight* (check ground truth first, never the
@@ -115,13 +117,15 @@ blocks; each completion is its own wake.
      task (one at a time per PR — the second, when the tier requires two, only after the first is
      SATISFIED; Stage 2a). If a precondition is dirty, clear it first (address Copilot items / fix CI /
      rebase) instead of spending a review;
-   - a review pass is in flight but its `review-<pr>-<n>.progress.jsonl` holds **no reviewer event**
+   - a review pass is in flight but the **active attempt's** progress file holds **no reviewer event**
      past its **~5-min launch deadline** (measured from that file's `pass_identity.dispatched_at`) →
      it **never started** (Stage 2a launch check — a reviewer hung on stdin, a bad path, a sandbox
      denial). Kill the task, re-check the command for the known launch faults (above all `< /dev/null`
-     on `codex exec`), and re-dispatch the pass once (fresh `pass_identity`, `launch_attempt: 2`); a
-     dead `launch_attempt: 2` → fresh-subagent fallback. A failed launch yields no verdict: it never
-     touches `reviews_ok` and never bumps the row's `attempts`;
+     on `codex exec`), and re-dispatch the pass once into **attempt-scoped artifacts**
+     (`review-<pr>-<n>.a2.*`, fresh `pass_identity` with `launch_attempt: 2` — never the dead attempt's
+     files, which a surviving process could still write to); a dead `launch_attempt: 2` →
+     fresh-subagent fallback. A failed launch yields no verdict: it never touches `reviews_ok` and
+     never bumps the row's `attempts`;
    - CI red and no CI-fix subagent is already in flight for that PR/SHA → dispatch a scoped fix
      subagent (Stage 2b); different PRs may fix CI concurrently within the cap.
    - CI snapshot reads `pending` for a PR whose watch task has already exited → **relaunch the watch
