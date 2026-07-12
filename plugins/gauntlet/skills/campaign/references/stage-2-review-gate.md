@@ -361,12 +361,14 @@ As each verdict lands, tally it for the SHA it ran on:
   second review was spent on this broken commit.)
 
   **Run the review-fix on the session model — do NOT downgrade it** (`SKILL.md`, "Subagent Dispatch").
-  Unlike a CI fix, a weak review fix is not self-detecting: it produces a plausible-looking commit that
-  a *full* review pass must then judge, and when that pass returns `NOT SATISFIED` the gate resets and
-  the whole diff is re-reviewed. A cheap wrong fix is therefore paid for twice, and it is the expensive
-  half that pays. **Scope it** instead — hand it the worktree path and the concrete issue list, and tell
-  it NOT to re-derive the whole diff or read beyond the files those issues name; that is where the
-  savings are, not in the model tier.
+  A CI fix has a cheap net under it (a fix that does not work leaves CI red); a review fix has **no
+  cheap net at all** — its only judge is another full review pass. A weak review fix produces a
+  plausible-looking commit, the next pass returns `NOT SATISFIED`, the gate resets, and the whole diff
+  is re-reviewed. A cheap wrong fix is therefore paid for twice, and it is the expensive half that pays.
+  **Scope it** instead — hand it the worktree path and the concrete issue list, and tell it NOT to
+  re-derive the whole diff or read beyond the files those issues name; that is where the savings are,
+  not in the model tier. **Scope by defect, not by guess:** name every file the defect actually touches,
+  or the fixer will faithfully leave the sites you forgot to list.
 - **SATISFIED** → record it (bump `reviews_ok` via `ledger.py … set --pr <N> --reviews_ok <count>`, by
   field name). The gate is met once this SHA holds `required(tier)` SATISFIED verdicts
   (2, or 1 for TRIVIAL). If the tally is still short of the target — e.g. the **first** SATISFIED on a
