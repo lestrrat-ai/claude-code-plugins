@@ -1,7 +1,8 @@
 # claude-code-plugins
 
-This repo's contents **are** the agent instructions the agent is running. Editing `plugins/**` edits
-the skill that may be driving the current session. Two consequences, both non-obvious:
+This repo **authors** the agent instructions: `plugins/**` defines the skills that may be driving the
+current session. The skills actually running in a session are the **installed** copies, not the working
+tree. Two consequences, both non-obvious:
 
 ## Follow the procedure the running skill specifies
 
@@ -22,8 +23,8 @@ changes do **not** take effect just because they are checked out. Split the two 
 
 | Role | Which copy | Why |
 |------|-----------|-----|
-| **Behavior under development** (a new rule, a new dispatch procedure, a model tier) | the **branch** — read it from the worktree and follow it | It is the thing being tested. Exercising it is the only way to learn whether it works. |
-| **The gate** (verdict counting, `required(tier)`, merge preconditions, the review contract) | the **installed** known-good version | The check must be an independent authority. |
+| **Behavior under development** (a new rule, a new dispatch procedure, a subagent's model choice) | the **branch** — read it from the worktree and follow it | It is the thing being tested. Exercising it is the only way to learn whether it works. |
+| **The gate** (review-tier triage and `required(tier)`, the review contract, verdict counting, merge preconditions) | the **installed** known-good version | The check must be an independent authority. |
 
 **NEVER use an in-development gate to approve the change that alters it.** A bug in the branch would
 corrupt the very check meant to catch that bug — a branch that accidentally set `required(tier) = 1`
