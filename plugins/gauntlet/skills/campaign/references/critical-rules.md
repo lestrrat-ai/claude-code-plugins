@@ -75,9 +75,12 @@
   reuses it); reviewers append progress events against planned units to the **active launch attempt's**
   progress file (`review-<pr>-<n>.progress.jsonl` for attempt 1, `review-<pr>-<n>.a<k>.progress.jsonl`
   for a relaunch — only the attempt named in the active `pass_identity` is read or counted). Meaningful
-  progress = planned unit `done` or accepted plan amendment, not vague "still working" output. No
-  progress event at all within ~5 min of dispatch → the pass never started → kill + relaunch per the
-  Stage 2a launch check. Stale meaningful progress → suspicious review → retry/fallback per Stage 2a.
+  progress = planned unit `done` or accepted plan amendment, not vague "still working" output. Two
+  distinct bars, never collapsed: **launch evidence** = ANY reviewer-written line after `pass_identity`
+  (a `started`/`done` `progress` event *or* a `plan_amendment_request`) — none within ~5 min of dispatch
+  → the pass never started → kill + relaunch into attempt-scoped artifacts per the Stage 2a launch
+  check. **Meaningful progress** is the stronger bar (`done`/accepted amendment) — stale for ~15 min →
+  suspicious review → retry/fallback per Stage 2a.
 - Reviewers do not own the plan but must not treat it as presumptively complete: critically evaluate
   its coverage first, and raise any omitted dimension or materially wrong unit via a
   `plan_amendment_request` event rather than silently reviewing only the listed units. Never rewrite

@@ -64,7 +64,9 @@ a subagent pass is a fresh, context-isolated re-roll that counts toward the revi
 external pass.
 
 A reviewer that **never starts** is a distinct failure — it produces not even a partial result — and
-has its own guard: the Stage 2a **launch check** kills any pass that has emitted no progress event
-within ~5 min of dispatch, re-dispatches it once, and falls back to a fresh subagent if the relaunch is
-also dead on arrival. A dropped `< /dev/null` is the most common cause, so re-check the command before
-relaunching: an identical relaunch hangs identically.
+has its own guard: the Stage 2a **launch check** kills any pass that has written **no launch evidence**
+within ~5 min of dispatch (launch evidence = any reviewer-written line after `pass_identity`, including
+a `plan_amendment_request`, not just a `progress` event), re-dispatches it once into attempt-scoped
+artifacts, and falls back to a fresh subagent if the relaunch is also dead on arrival. A dropped
+`< /dev/null` is the most common cause, so re-check the command before relaunching: an identical
+relaunch hangs identically.

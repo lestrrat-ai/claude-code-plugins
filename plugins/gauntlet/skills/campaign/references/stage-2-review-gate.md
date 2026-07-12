@@ -213,11 +213,19 @@ a bad binary/`-C` path, or a sandbox/auth denial that never reaches the model. S
 rule is sized for a reviewer working slowly, not one that never woke up. Gate every review pass on a
 **first-event deadline**:
 
-- **Deadline = ~5 min from the pass's `pass_identity.dispatched_at`.** By then the progress file MUST
-  hold at least one reviewer-written `progress` event. A `started` event **counts** — this check asks
-  only "did the process boot and can it write?", so it is deliberately weaker than meaningful progress
-  (which ignores `started`).
-- **Zero reviewer events past the deadline → the pass never started.** Do NOT wait out the 15-min
+- **Launch evidence = ANY reviewer-written line appended after the orchestrator's `pass_identity`.**
+  A `progress` event (`started` **or** `done`) counts, and so does a `plan_amendment_request` — the
+  protocol lets a reviewer open by flagging a plan gap, and such a reviewer is demonstrably alive. The
+  question this check asks is only **"did the process boot and can it write?"**, so **every** line the
+  reviewer authors answers it. Requiring specifically a `progress` event would kill a live reviewer
+  whose first act was a legitimate amendment request.
+- **Deadline = ~5 min from the pass's `pass_identity.dispatched_at`.** By then the active attempt's
+  progress file MUST hold at least one line of launch evidence.
+- **Launch evidence and meaningful progress are two different bars, deliberately.** Launch evidence is
+  the weaker one (any reviewer-written line, ~5 min, "is it alive?"); meaningful progress is the
+  stronger one (a planned unit `done` or an accepted amendment, ~15 min, "is it getting anywhere?").
+  A `started` event is launch evidence but is **not** meaningful progress. Never collapse the two.
+- **Zero launch evidence past the deadline → the pass never started.** Do NOT wait out the 15-min
   stale path. Kill the task and re-dispatch the pass **once**, into **fresh, attempt-scoped artifacts**
   (`review-<pr>-<n>.a2.*`, per the table above — never the dead attempt's files): write a new
   `pass_identity` carrying `launch_attempt: 2` and a new `dispatched_at` as that file's first line, then
