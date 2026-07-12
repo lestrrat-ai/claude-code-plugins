@@ -20,11 +20,12 @@ row by column position:
   adoption/pre-review per `pr-adoption.md`; the ledger-recorded `<worktree>` path — default
   `.worktrees/<headRefName>` when campaign creates it, else a reused existing checkout).
 
-  **Dispatch it on the session model** — set the model explicitly, and do NOT downgrade it
-  (`SKILL.md`, "Subagent Dispatch"). Its output is **code that gets merged**, and nothing downstream
-  validates it: a wrong fix can turn CI **green** — by weakening the check, or by being plain wrong in
-  product code no check covers — and the review gate is a miss-catcher, not a proof of correctness. A
-  green check means the check passed, never that the fix is right. NEVER claim CI catches a bad fix.
+  **Classify the failure first** (see "Total-oracle classification" below). Not whitelisted →
+  **dispatch on the session model** — set the model explicitly, and do NOT downgrade it (`SKILL.md`,
+  "Subagent Dispatch"). Its output is **code that gets merged**, and nothing downstream validates it: a
+  wrong fix can turn CI **green** — by weakening the check, or by being plain wrong in product code no
+  check covers — and the review gate is a miss-catcher, not a proof of correctness. A green check means
+  the check passed, never that the fix is right. NEVER claim CI catches a bad fix.
 
   **Scope it**: give it the failing check's logs, the specific failing file(s), and the worktree path,
   and tell it NOT to re-derive the whole diff or read beyond what the failure touches.
@@ -41,6 +42,45 @@ row by column position:
   gauntlet-reviewing`) — the gate and its label move together, never one without the other
   (`stage-2-review-gate.md`, "Status labels mirror the review gate"). Then relaunch the watch
   immediately and re-enter 2a.
+
+#### Total-oracle classification
+
+Before dispatching anything, decide whether the failing check is a **total oracle** for its fix:
+re-running that same check *fully decides* correctness, leaving no judgment over (`SKILL.md`, "The one
+exception"). All three MUST hold:
+
+- (a) the failing check fully verifies its own fix on re-run; AND
+- (b) the fix is confined to what the check itself defines — **no product behavior changes**; AND
+- (c) the resulting diff touches **no check definition, config, or test** (the no-weakening prohibition
+  above, now doing double duty as a guard).
+
+Key it on the **check / linter rule IDENTITY** from the failing check's output — `gofmt`, `goimports`,
+`golangci-lint` rules (`modernize`, `gci`, `whitespace`, …) — NEVER on a judgment that the failure
+"looks mechanical". **Default is NOT whitelisted. Unknown check → session model.** A failing product
+test is NEVER whitelisted: making a test pass is not the same as fixing the bug. Compile errors in real
+logic are NEVER whitelisted.
+
+Then, in order:
+
+1. **Tier 0 — no subagent (prefer this always).** Whitelisted check with a deterministic autofixer →
+   run the **tool** in `<worktree>`: `golangci-lint run --fix`, `gofmt -w`, `goimports -w`,
+   `ruff --fix`, `prettier --write`, etc. Re-run the exact failing check. Passes → commit + push, no
+   model spend at all. Dispatching a model to hand-edit a formatting violation is both the most
+   expensive and the LEAST reliable way to do it.
+2. **Tier 1 — cheap model, verified.** Whitelisted check with no autofixer, or an autofixer that ran but
+   left residue → dispatch the scoped CI-fix subagent on `haiku` (pure mechanical rewrite) or `sonnet`
+   (needs any reasoning). Set the model explicitly. **Verify before accepting**: re-run the exact
+   failing check in `<worktree>` AND inspect the diff. ACCEPT only if the check now **passes** AND the
+   diff touches **no check definition, config, or test** and changes no product behavior.
+3. **Discard and escalate.** Verification fails on any point (check still red, diff touches a check/
+   config/test, behavior moved) → **discard the work** (`git checkout -- .` / reset the worktree to the
+   PR head) and re-dispatch the same failure on the **session model**. NEVER patch up a Tier-1 fix in
+   place; NEVER commit an unverified Tier-1 diff.
+4. **Everything else → session model**, per the red-CI dispatch above.
+
+The review gate still reads the whole diff for every commit a tier produces. The whitelist lowers
+**cost**, never the gate. An autofixer or `modernize`-class rewrite CAN in rare cases change behavior —
+the gate is what catches that; this is not a guarantee of correctness.
 
 Every CI failure must be handled; never merge over a red or pending check, and never infer green from
 the watch's exit code alone — always confirm against the re-polled snapshot.

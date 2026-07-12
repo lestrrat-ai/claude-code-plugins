@@ -134,13 +134,23 @@
   current `<base>`; for anything uncertain, list it and ask the user before deleting. Never silently
   prune an entry you're unsure about.
 - **Set the model explicitly on EVERY subagent dispatch** (`SKILL.md`, "Subagent Dispatch"). An unset
-  model silently inherits the session model — a cost decision taken by default. **NO class is
-  downgraded**: review passes and the subagent-fallback review *are* the gate; CI-fix and review-fix write
+  model silently inherits the session model — a cost decision taken by default. **NO class is downgraded
+  BY DEFAULT**: review passes and the subagent-fallback review *are* the gate; CI-fix and review-fix write
   **code that gets merged**; the root-cause **mapper** feeds an expensive fix. Nothing downstream
   *guarantees* a bad result is caught — CI misses a wrong-but-green fix, and the review gate is a
   miss-catcher, not a proof of correctness — so no class's mistakes are reliably absorbed. NEVER claim CI
   catches a bad fix. NEVER downgrade the mapper on the grounds that it is "read-only": read-only is not
   low-judgment, and an under-map is invisible.
+- **The only sanctioned downgrade: a total-oracle CI check** (`SKILL.md`, "The one exception";
+  `stage-2-ci.md`). Allowed IFF (a) re-running the failing check **fully verifies** its own fix
+  (`gofmt`, `goimports`, `golangci-lint` rules), AND (b) the fix changes **no product behavior**, AND (c)
+  the diff touches **no check definition, config, or test**. **Tier 0 — run the autofixer tool, no
+  subagent at all** (`golangci-lint run --fix`, `gofmt -w`, `prettier --write`, …); **Tier 1** — no
+  autofixer → cheap model (`haiku`/`sonnet`), ACCEPT only if the exact failing check now passes and the
+  diff touches no check/config/test, else **discard and re-dispatch on the session model**. Keyed on
+  **check/linter rule IDENTITY**, NEVER on a failure "looking mechanical". Default is NOT whitelisted;
+  unknown check → session model. Failing product tests are NEVER whitelisted. The review gate still reads
+  the whole diff — the whitelist lowers cost, not the gate.
 - A CI-fix subagent MUST be dispatched under the no-weakening prohibition (`stage-2-ci.md`): fix the
   cause, NEVER gut an assertion, add `skip`/`xfail`, disable a lint rule, or raise a timeout to force
   green.
