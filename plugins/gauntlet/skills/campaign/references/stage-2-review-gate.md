@@ -447,7 +447,7 @@ that drop `reviews_ok` to 0):
 | CI-fix commit pushed | `stage-2-ci.md` |
 | Copilot-item fix pushed | Stage 2a preconditions, above |
 | Conflict-resolving rebase | `stage-3-merge.md` |
-| Re-adoption refresh detects changed content | `pr-adoption.md` step 3 (and step 4's label call, which must `--remove-label gauntlet-accepted`, never merely add) |
+| Re-adoption refresh detects changed content | `pr-adoption.md` step 3 (step 4 then sets the status label from the **live** gate — `gauntlet-reviewing` here, but `gauntlet-accepted` for a re-adoption whose content did **not** change and whose verdicts step 3 preserved; either way it removes the other label) |
 | Any other PR-content change on the head branch — formatter/bot commit, manual push | **Loop control step 1's ledger refresh** — the wake that *detects* it resets the gate, so it relabels there |
 
 **Every row names a place where `reviews_ok` is written to 0 — never "the reconcile pass".** The
