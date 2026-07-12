@@ -162,7 +162,11 @@ flowchart TD
   codex") or record it as your preferred reviewer (memory or `CLAUDE.md`). If an external reviewer
   can't return a verdict because of a system problem — quota or rate limits, auth, a timeout — it
   retries once and then falls back to its own subagents, so a transient outage slows a run down but
-  doesn't stall it.
+  doesn't stall it. A reviewer that never gets going at all — hung on input, a bad path, a sandbox
+  denial — is caught the same way: every review pass has to write *something* to its progress file
+  within about five minutes of being dispatched, and one that writes nothing at all is killed and
+  relaunched rather than left hanging. The bar there is just "is it alive", so anything the reviewer
+  writes clears it; a review that is merely slow is judged by a separate, longer timer.
 - It works through GitHub PRs via the `gh` CLI, so the repo needs a GitHub remote.
 - Before it spends a review on a PR, it first clears anything that would waste one: it addresses any
   GitHub Copilot review comments, fixes failing CI, and rebases a PR that has fallen into conflict

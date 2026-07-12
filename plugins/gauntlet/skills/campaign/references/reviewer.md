@@ -29,8 +29,10 @@ complete, valid reviewer.
 ### Running the default reviewer — Claude subagents
 
 The reviewer's only job is the **Stage 2a per-PR review pass**: spawn a **fresh** subagent to review
-the whole `origin/<base>...HEAD` diff with an adversarial pass, using the same `review-<pr>-<n>.plan.jsonl` /
-`review-<pr>-<n>.progress.jsonl` protocol — planned units, then the unstructured adversarial sweep —
+the whole `origin/<base>...HEAD` diff with an adversarial pass, using the same plan / progress protocol
+— the per-pass `review-<pr>-<n>.plan.jsonl` and the **active launch attempt's** progress file
+(`review-<pr>-<n>.progress.jsonl`, or `review-<pr>-<n>.a<k>.progress.jsonl` after a relaunch;
+`stage-2-review-gate.md`) — planned units, then the unstructured adversarial sweep —
 and, on SATISFIED, the same `RESIDUAL-RISK: <area> — <why>` line immediately above exactly one final
 `VERDICT: SATISFIED` / `VERDICT: NOT SATISFIED` line. Each pass is a fresh, context-isolated subagent,
 so the review gate holds: for a two-pass tier, launch review 2 only after review 1 is SATISFIED, one
@@ -39,9 +41,16 @@ at a time per PR (see Stage 2a-triage for the per-tier pass count).
 ### Running an external reviewer (e.g. Codex CLI)
 
 When the selected reviewer is an external command like `codex exec`, invoke it as the stage refs show
-(`codex exec --sandbox workspace-write …`, output to the run's file). NEVER pass destructive
+(`codex exec --sandbox workspace-write … < /dev/null`, output to the run's file — the full command is
+in `stage-2-review-gate.md`; build it from there, never from this abbreviation). NEVER pass destructive
 instructions (delete, force-push, reset) to an external reviewer command, and NEVER use
 `--dangerously-bypass-approvals-and-sandbox`.
+
+**ALWAYS redirect stdin from `/dev/null` (`< /dev/null`) on every `codex exec` dispatch.** `codex exec`
+reads stdin and appends it as a `<stdin>` block when a prompt is also passed as an argument; in a
+background / non-interactive context stdin never reaches EOF, so codex **blocks forever waiting for
+input** and the pass emits nothing at all. `< /dev/null` gives it an immediate EOF. (Omit it only when
+deliberately piping the prompt in on stdin.)
 
 An external reviewer can fail in a way that yields **no usable verdict**: quota/rate-limit
 exhaustion, auth failures, timeouts, or other system errors. Distinguish this from a real review — a
@@ -53,3 +62,11 @@ default Claude subagents** (the per-PR procedure above) rather than stalling, lo
 gate — then note in the final report which passes ran on the subagent fallback. The gate is unchanged:
 a subagent pass is a fresh, context-isolated re-roll that counts toward the review gate exactly like an
 external pass.
+
+A reviewer that **never starts** is a distinct failure — it produces not even a partial result — and
+has its own guard: the Stage 2a **launch check** kills any pass that has written **no launch evidence**
+within ~5 min of dispatch (launch evidence = any reviewer-written line after `pass_identity`, including
+a `plan_amendment_request`, not just a `progress` event), re-dispatches it once into attempt-scoped
+artifacts, and falls back to a fresh subagent if the relaunch is also dead on arrival. A dropped
+`< /dev/null` is the most common cause, so re-check the command before relaunching: an identical
+relaunch hangs identically.

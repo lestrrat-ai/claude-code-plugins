@@ -71,10 +71,19 @@
   stochastic reviewer to catch a missed defect — the two are NOT statistically independent (the same
   diff, task, and protocol correlate them; same-reviewer passes also share model/prompt), so the gate
   is a miss-catcher, not a proof of correctness.
-- Before each review, write an orchestrator-owned `review-<pr>-<n>.plan.jsonl`; reviewers append
-  `review-<pr>-<n>.progress.jsonl` events against planned units. Meaningful progress = planned unit
-  `done` or accepted plan amendment, not vague "still working" output. Stale meaningful progress →
-  suspicious review → retry/fallback per Stage 2a.
+- Before each review, write an orchestrator-owned `review-<pr>-<n>.plan.jsonl` (per-pass — a relaunch
+  reuses it); reviewers append progress events against planned units to the **active launch attempt's**
+  progress file (`review-<pr>-<n>.progress.jsonl` for attempt 1, `review-<pr>-<n>.a<k>.progress.jsonl`
+  for a relaunch — only the attempt named in the active `pass_identity` is read or counted). Meaningful
+  progress = planned unit `done` or accepted plan amendment, not vague "still working" output. Two
+  distinct bars, never collapsed: **launch evidence** = ANY reviewer-written line after `pass_identity`
+  (a `started`/`done` `progress` event *or* a `plan_amendment_request`) — none within ~5 min of dispatch
+  → the pass never started → kill + relaunch into attempt-scoped artifacts per the Stage 2a launch
+  check. **Meaningful progress** is the stronger bar (`done`/accepted amendment) — stale for ~15 min →
+  suspicious review → retry/fallback per Stage 2a. Both bars judge a **live** process. A pass whose
+  task is **dead** with no verdict (killed session) ignores launch evidence entirely and dispatches on
+  `launch_attempt` alone: `1` → relaunch once; `2` → fresh-subagent fallback. Never leave a dead pass
+  on neither branch.
 - Reviewers do not own the plan but must not treat it as presumptively complete: critically evaluate
   its coverage first, and raise any omitted dimension or materially wrong unit via a
   `plan_amendment_request` event rather than silently reviewing only the listed units. Never rewrite

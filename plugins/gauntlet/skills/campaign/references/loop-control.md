@@ -25,8 +25,14 @@ blocks; each completion is its own wake.
    Three cases:
 
    - **This run has live work → resume.** **Reconcile against ground truth** (do NOT redo *completed*
-     work — a review/CI task whose output file is missing may be re-launched, since in-flight tasks die
-     with their session):
+     work — a CI task whose output file is missing may be re-launched, since in-flight tasks die with
+     their session. A **review** whose output file is missing is NOT simply re-launched: resolve its
+     **active launch attempt** first (Stage 2a) — read the highest-numbered attempt's `pass_identity`
+     and dispatch on `launch_attempt` **alone**: `1` → relaunch once (as attempt `2`); `2` → the
+     relaunch is spent, so take the **fresh-subagent fallback**. **Launch evidence is irrelevant on
+     this path** — the task is already dead, so whether it managed to write a `started` line before
+     dying says nothing about whether it will ever produce a verdict. A missing output file must never
+     re-arm the relaunch budget, and a dead attempt `2` must never be left un-dispatched):
      for each of this run's branches/PRs read the live SHA, CI status, and verdict files, and refresh
      the ledger — write every ledger update through `scripts/ledger.py … set/header set` **by field
      name** (`files-and-ledger.md`), never by hand-editing rows by column position. Do the PR scan as
@@ -85,8 +91,10 @@ blocks; each completion is its own wake.
    `gauntlet-accepted` if its current HEAD holds `required(tier)` SATISFIED verdicts, else
    `gauntlet-reviewing`; add the status label if it has none. **Never touch another run's PRs.**
 2. **Fold in completions.** For any background task that finished (CI watch → `ci-<pr>.txt`; review →
-   `review-<pr>-<n>.txt`, with `review-<pr>-<n>.progress.jsonl` as its liveness evidence; CI/review
-   fix), record the result against the SHA it ran on and act per Stage 2.
+   the **active launch attempt's** output file, with its progress file as liveness evidence — attempt 1
+   writes `review-<pr>-<n>.txt` / `.progress.jsonl`, a relaunch writes `review-<pr>-<n>.a<k>.*`, and
+   only the attempt named in the current `pass_identity` is read or counted (Stage 2a); CI/review fix),
+   record the result against the SHA it ran on and act per Stage 2.
 3. **Dispatch due work — non-blocking, idempotent, bounded, work-conserving.** Scan the whole run,
    not just the PR/job that woke you. Launch every due action that fits a free slot before returning.
    Launch only what is actually due *and not already in flight* (check ground truth first, never the
@@ -115,6 +123,17 @@ blocks; each completion is its own wake.
      task (one at a time per PR — the second, when the tier requires two, only after the first is
      SATISFIED; Stage 2a). If a precondition is dirty, clear it first (address Copilot items / fix CI /
      rebase) instead of spending a review;
+   - a review pass is in flight but the **active attempt's** progress file holds **no launch evidence**
+     — no reviewer-written line of ANY kind after `pass_identity` (a `progress` `started`/`done` event
+     *or* a `plan_amendment_request` all count) — past its **~5-min launch deadline** (measured from
+     that file's `pass_identity.dispatched_at`) →
+     it **never started** (Stage 2a launch check — a reviewer hung on stdin, a bad path, a sandbox
+     denial). Kill the task, re-check the command for the known launch faults (above all `< /dev/null`
+     on `codex exec`), and re-dispatch the pass once into **attempt-scoped artifacts**
+     (`review-<pr>-<n>.a2.*`, fresh `pass_identity` with `launch_attempt: 2` — never the dead attempt's
+     files, which a surviving process could still write to); a dead `launch_attempt: 2` →
+     fresh-subagent fallback. A failed launch yields no verdict: it never touches `reviews_ok` and
+     never bumps the row's `attempts`;
    - CI red and no CI-fix subagent is already in flight for that PR/SHA → dispatch a scoped fix
      subagent (Stage 2b); different PRs may fix CI concurrently within the cap.
    - CI snapshot reads `pending` for a PR whose watch task has already exited → **relaunch the watch
@@ -147,10 +166,13 @@ blocks; each completion is its own wake.
      first, so the heartbeat forces a wake in the cases **no completion ever arrives** — a background
      task that **hangs** (e.g. a reviewer stuck on input) and never completes, or a **killed/orphaned
      session** whose in-flight tasks died with it, so a later self-wake reconciles and resumes/adopts
-     the run (see "Resume after a killed session"). Size the delay to the stall it guards, **~15 min**,
-     matching the Stage 2a meaningful-progress threshold: nothing can declare a review stalled before
-     then, so a shorter interval only re-reconciles git/gh with no new signal (and pays a fresh-context
-     cost per wake). ALWAYS schedule it whenever non-terminal work remains — skipping it means a hung
+     the run (see "Resume after a killed session"). **Size the delay to the nearest stall it guards:**
+     **~5 min** while any dispatched review pass is still awaiting its first line of **launch evidence**
+     — its Stage 2a launch deadline is then the soonest thing that can fire, and a hung launch must not
+     sit undetected for a full heartbeat — otherwise **~15 min**, matching the Stage 2a meaningful-progress
+     threshold: with no launch deadline pending, nothing can declare a review stalled before then, so a
+     shorter interval only re-reconciles git/gh with no new signal (and pays a fresh-context cost per
+     wake). ALWAYS schedule a heartbeat whenever non-terminal work remains — skipping it means a hung
      or orphaned run wakes no one. Return.
    - All this run's PRs `merged` or `aborted` → **distill the run into the carryover ledger** (write
      this run's block to its own file `.gauntlet/history/<run-id>.md` — merged PRs, aborted
@@ -173,8 +195,21 @@ in-flight tasks do.
 
 **Resume after a killed session — including by a different agent instance:** in-flight background
 tasks die with the session, but nothing authoritative is lost. A new invocation reconciles against
-git/gh and continues — completed work is never redone (existing PRs, landed verdict files); only a
-review/CI task whose output file is missing re-launches. It binds to the run via
+git/gh and continues — completed work is never redone (existing PRs, landed verdict files); a CI task
+whose output file is missing re-launches, and a **review** with no verdict and no live task goes through
+**Stage 2a active-attempt resolution** rather than a blind re-launch: read the highest-numbered launch
+attempt's `pass_identity` and dispatch on `launch_attempt` alone — `1` → relaunch once as attempt `2`;
+`2` → fresh-subagent fallback. **The relaunch budget lives on disk, not in the session**, so it survives
+the death of the agent that spent it — otherwise each new instance would rediscover a missing output
+file, relaunch the same hung reviewer, die, and repeat forever.
+
+**Every dead pass must land on exactly one of those two branches.** Do NOT gate the resume path on
+launch evidence: a dead attempt `2` that *did* write a `started` line before its session died would
+then satisfy neither "relaunch" (budget spent) nor "fall back" (evidence present) — no rule would fire
+and the PR would stall forever, which is the very failure this feature exists to prevent. Launch
+evidence answers "is this **live** process working?" and is meaningful **only** for the in-flight
+~5-min launch check; once the task is gone, the only question is how much relaunch budget remains. It
+binds to the run via
 `--run <id>` (what every self-wake carries, so a fresh instance adopting an orphaned run's heartbeat
 just works) or, for a bare re-invocation, by discovering live runs and adopting the sole **orphaned**
 one (asking among several). Adoption is gated on the **run lease**: an agent takes over only a run

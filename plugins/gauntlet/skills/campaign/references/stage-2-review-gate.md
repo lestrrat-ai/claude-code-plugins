@@ -155,13 +155,44 @@ the tool-only rule.
 The block below shows the canonical event shapes the parser accepts. The two unit-progress lines
 (`started`/`done`) are exactly what the tool emits — shown for reference and as the parser's contract,
 NOT a template for you to write by hand. The third line (`plan_amendment_request`) is NOT produced by
-the tool and is shown only to document its shape:
+the tool and is shown only to document its shape. The fourth (`pass_identity`) is written by the
+**orchestrator** at dispatch, never by the reviewer:
 
 ```
 {"type":"progress","unit":"u01","status":"started"}
 {"type":"progress","unit":"u01","status":"done","evidence":"validate_idc.go:42 `canonicalizeValue`; edge case tested at validate_idc_test.go:88"}
 {"type":"plan_amendment_request","ts":"2026-07-06T00:05:00Z","reason":"diff changes generated docs; add doc consistency unit","proposed_unit":{"id":"u99","kind":"docs","target":"docs/generated.md","checks":["sync with API behavior"]}}
+{"type":"pass_identity","pr":"41","pass":"1","head_sha":"a3f29c1b","launch_attempt":"1","dispatched_at":"2026-07-06T00:00:00Z"}
 ```
+
+**`pass_identity` is the pass's attempt id and its dispatch clock.** The orchestrator writes it as the
+**first line** of the launch attempt's progress file **before** launching the reviewer process, so that
+file exists from dispatch onward. Three rules depend on it: a late verdict is ignored unless its attempt
+id still matches the active pass; `dispatched_at` is the clock the launch check below measures against;
+and `launch_attempt` (`1`, then `2` on a relaunch) is how a *later wake* — possibly a fresh agent —
+knows whether this pass has already been relaunched once. A progress file holding **only** this line is
+therefore evidence that the reviewer has produced nothing — not evidence of a missing file.
+
+**The attempt id is `pr` + `pass` + `head_sha` + `launch_attempt` — all four.** A relaunch keeps the
+first three, so without `launch_attempt` the two launch attempts of one pass are indistinguishable and
+a killed-but-not-dead attempt could be mistaken for the live one.
+
+**Each launch attempt owns its own artifacts — a relaunch NEVER reuses the dead attempt's files.**
+A process that survived its kill still writes to the paths it was given, so reusing them would let a
+zombie attempt 1 append `started`/`done` into attempt 2's progress file (falsely satisfying attempt 2's
+launch check) or land a stale verdict in the shared output file. Path isolation, not the kill, is what
+makes that impossible:
+
+| Launch attempt | Progress file | Output (verdict) file |
+|---|---|---|
+| `1` | `review-<pr>-<n>.progress.jsonl` | `review-<pr>-<n>.txt` |
+| `k ≥ 2` | `review-<pr>-<n>.a<k>.progress.jsonl` | `review-<pr>-<n>.a<k>.txt` |
+
+The plan (`review-<pr>-<n>.plan.jsonl`) is per-pass, not per-attempt — a relaunch reuses it unchanged.
+The orchestrator substitutes the **active attempt's** paths into the review prompt (`-o` and the emit
+tool's `--file`), and **reads only those paths**: progress events and a verdict are counted **only**
+from the artifacts of the attempt named in the active `pass_identity`. A dead attempt's files are inert
+— left on disk for forensics, never read, never counted.
 
 Reviewers do NOT hand-write the unit-progress events (`started`/`done`) — ever; the emit tool is the
 only way those are produced. (The `plan_amendment_request` line is the exception: the tool does not
@@ -174,6 +205,54 @@ the `<SCRIPT>` placeholder in the review prompt — in the SAME way it substitut
 absolute path; it also ensures the `<rundir>` is a reviewer-writable root (via `--add-dir`) so the
 reviewer can append. The reviewer MUST call that script to emit each event, which writes the canonical
 shape by construction; a non-zero exit means the inputs were rejected and must be fixed and re-run.
+
+**Launch check — prove the reviewer actually started.** A dispatch can fail in a way that produces
+**no events at all**: an external reviewer blocked reading stdin (`codex exec` without `< /dev/null`),
+a bad binary/`-C` path, or a sandbox/auth denial that never reaches the model. Such a process is
+*alive* but has never begun, so the meaningful-progress rule below does not catch it quickly — that
+rule is sized for a reviewer working slowly, not one that never woke up. Gate every review pass on a
+**first-event deadline**:
+
+- **Launch evidence = ANY reviewer-written line appended after the orchestrator's `pass_identity`.**
+  A `progress` event (`started` **or** `done`) counts, and so does a `plan_amendment_request` — the
+  protocol lets a reviewer open by flagging a plan gap, and such a reviewer is demonstrably alive. The
+  question this check asks is only **"did the process boot and can it write?"**, so **every** line the
+  reviewer authors answers it. Requiring specifically a `progress` event would kill a live reviewer
+  whose first act was a legitimate amendment request.
+- **Deadline = ~5 min from the pass's `pass_identity.dispatched_at`.** By then the active attempt's
+  progress file MUST hold at least one line of launch evidence.
+- **Launch evidence and meaningful progress are two different bars, deliberately.** Launch evidence is
+  the weaker one (any reviewer-written line, ~5 min, "is it alive?"); meaningful progress is the
+  stronger one (a planned unit `done` or an accepted amendment, ~15 min, "is it getting anywhere?").
+  A `started` event is launch evidence but is **not** meaningful progress. Never collapse the two.
+- **Zero launch evidence past the deadline → the pass never started.** Do NOT wait out the 15-min
+  stale path. Kill the task and re-dispatch the pass **once**, into **fresh, attempt-scoped artifacts**
+  (`review-<pr>-<n>.a2.*`, per the table above — never the dead attempt's files): write a new
+  `pass_identity` carrying `launch_attempt: 2` and a new `dispatched_at` as that file's first line, then
+  launch with the `a2` paths substituted into the prompt. From that moment the `a2` artifacts are the
+  only ones read, so anything the killed attempt 1 still writes is inert. If the relaunch also produces
+  nothing by its own deadline → treat it as a reviewer system failure and take the fresh-subagent
+  fallback (same path as a verdict-less external reviewer, above). Reading the retry count off the file,
+  not off memory, is what makes this survive a killed session: a fresh agent adopting the run finds the
+  highest-numbered attempt's `pass_identity`, sees `launch_attempt: 2`, and falls back instead of
+  relaunching forever.
+- **This deadline test applies ONLY to a pass whose process is still alive.** It asks "this thing is
+  running — has it started?", and launch evidence is the answer. A pass whose task is **gone** (the
+  session died with it) is a different question entirely, and launch evidence is **irrelevant** to it:
+  a dead process will never produce a verdict no matter what it wrote before dying. Recovery there
+  dispatches on `launch_attempt` **alone** — `1` → relaunch once as attempt `2`; `2` → the budget is
+  spent, take the fresh-subagent fallback (Loop control step 1 / "Resume after a killed session").
+  **Every dead pass lands on exactly one of those two branches**; gating that path on launch evidence
+  too would strand a dead attempt `2` that had written a `started` line — neither relaunchable nor
+  fallback-eligible — and the PR would hang forever.
+- Before re-dispatching, **re-check the command** for the known launch faults — most of all the
+  `< /dev/null` stdin redirect on every `codex exec` (see below). A relaunch of the same hanging
+  command hangs identically.
+- **A failed launch is a dispatch fault, not a review outcome.** It yields no verdict — it never
+  counts SATISFIED or NOT SATISFIED, never touches `reviews_ok`, and never escalates the tier. It is
+  also **not** a PR-task attempt: do **NOT** bump the ledger's `attempts` for it. That column drives
+  the PR-level retry-once bailout, and charging a reviewer's failure to launch against it could abort
+  a perfectly good PR for a fault that was never in its diff.
 
 Meaningful progress = a `done` event for a planned unit, or an accepted plan amendment. `started`
 events and vague "still working" lines prove only process liveness and MUST NOT reset the meaningful
@@ -188,9 +267,22 @@ The reviewer runs the following review contract (shown as the external-reviewer 
 default Claude-subagent path gives a fresh subagent the same instructions and output file):
 
 **Orchestrator:** before dispatching this command, substitute EVERY placeholder with its resolved
-value — `<rundir>`, `<pr>`, `<n>`, `<base>`, `<worktree>`, and `<SCRIPT>` (the resolved absolute path
-`<skill-dir>/scripts/emit-progress.py`). The reviewer must receive a concrete runnable path, never a
-literal `<SCRIPT>`.
+value — `<rundir>`, `<pr>`, `<n>`, `<base>`, `<worktree>`, `<SCRIPT>` (the resolved absolute path
+`<skill-dir>/scripts/emit-progress.py`), and the two **attempt-scoped artifact** placeholders. The
+reviewer must receive concrete runnable paths, never a literal `<SCRIPT>`/`<review-output>`/`<progress-file>`.
+
+`<review-output>` and `<progress-file>` resolve to the **active launch attempt's** files (per the
+attempt-artifact table above) — NOT to fixed names:
+
+| Launch attempt | `<review-output>` | `<progress-file>` |
+|---|---|---|
+| `1` | `review-<pr>-<n>.txt` | `review-<pr>-<n>.progress.jsonl` |
+| `k ≥ 2` (relaunch) | `review-<pr>-<n>.a<k>.txt` | `review-<pr>-<n>.a<k>.progress.jsonl` |
+
+Substituting attempt-1 names into a **relaunch** is a silent self-defeat: the relaunched reviewer would
+write its progress into the *dead* attempt's file, leaving the active `.a<k>.progress.jsonl` holding
+only `pass_identity` — so the launch check would read the live relaunch as dead and fall back. The
+placeholders exist so the dispatch command and the attempt-isolation rule can never drift apart.
 
 **Note:** the review runs in `<worktree>` — the PR row's ledger `worktree` column value, the single
 source of truth for this PR's checkout path (created at adoption/pre-review per `pr-adoption.md`; the
@@ -215,7 +307,7 @@ review launches. All review diffs then use `origin/<base>...HEAD`.
 ```
 codex exec --sandbox workspace-write -c "sandbox_workspace_write.network_access=true" -C <worktree> \
   --add-dir $PROJECT/<rundir> \
-  -o $PROJECT/<rundir>/review-<pr>-<n>.txt \
+  -o $PROJECT/<rundir>/<review-output> \
   "Review the changes on this branch vs origin/<base> (the whole git diff origin/<base>...HEAD). \
    First read $PROJECT/<rundir>/review-<pr>-<n>.plan.jsonl, then critically assess whether its units \
    cover the review dimensions this change actually needs — the plan is the orchestrator's starting \
@@ -227,7 +319,7 @@ codex exec --sandbox workspace-write -c "sandbox_workspace_write.network_access=
    it. That emit-only rule covers ONLY started/done unit-progress; the emit tool does not emit \
    plan_amendment_request, so append that event directly to the progress JSONL (it is exempt from the \
    emit-only rule). Run \
-   'python3 <SCRIPT> --file $PROJECT/<rundir>/review-<pr>-<n>.progress.jsonl --unit <plan unit id> \
+   'python3 <SCRIPT> --file $PROJECT/<rundir>/<progress-file> --unit <plan unit id> \
    --status started' when a planned unit begins, and the same command with \
    '--status done --evidence \"<concrete citation: a file:line, a backticked span, or a filename>\"' \
    when it finishes. The tool appends the canonical progress event; a non-zero exit means your inputs \
