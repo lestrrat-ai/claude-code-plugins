@@ -236,6 +236,15 @@ rule is sized for a reviewer working slowly, not one that never woke up. Gate ev
   not off memory, is what makes this survive a killed session: a fresh agent adopting the run finds the
   highest-numbered attempt's `pass_identity`, sees `launch_attempt: 2`, and falls back instead of
   relaunching forever.
+- **This deadline test applies ONLY to a pass whose process is still alive.** It asks "this thing is
+  running — has it started?", and launch evidence is the answer. A pass whose task is **gone** (the
+  session died with it) is a different question entirely, and launch evidence is **irrelevant** to it:
+  a dead process will never produce a verdict no matter what it wrote before dying. Recovery there
+  dispatches on `launch_attempt` **alone** — `1` → relaunch once as attempt `2`; `2` → the budget is
+  spent, take the fresh-subagent fallback (Loop control step 1 / "Resume after a killed session").
+  **Every dead pass lands on exactly one of those two branches**; gating that path on launch evidence
+  too would strand a dead attempt `2` that had written a `started` line — neither relaunchable nor
+  fallback-eligible — and the PR would hang forever.
 - Before re-dispatching, **re-check the command** for the known launch faults — most of all the
   `< /dev/null` stdin redirect on every `codex exec` (see below). A relaunch of the same hanging
   command hangs identically.

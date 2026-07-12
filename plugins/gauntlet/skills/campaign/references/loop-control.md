@@ -27,11 +27,12 @@ blocks; each completion is its own wake.
    - **This run has live work → resume.** **Reconcile against ground truth** (do NOT redo *completed*
      work — a CI task whose output file is missing may be re-launched, since in-flight tasks die with
      their session. A **review** whose output file is missing is NOT simply re-launched: resolve its
-     **active launch attempt** first (Stage 2a) — read the highest-numbered attempt's `pass_identity`,
-     and relaunch only if that attempt is `launch_attempt: 1`; an attempt already at `2` with no launch
-     evidence has spent its relaunch and takes the **fresh-subagent fallback**. A missing output file
-     alone must never re-arm the relaunch budget, or a run that keeps dying would relaunch the same
-     hanging reviewer forever across sessions):
+     **active launch attempt** first (Stage 2a) — read the highest-numbered attempt's `pass_identity`
+     and dispatch on `launch_attempt` **alone**: `1` → relaunch once (as attempt `2`); `2` → the
+     relaunch is spent, so take the **fresh-subagent fallback**. **Launch evidence is irrelevant on
+     this path** — the task is already dead, so whether it managed to write a `started` line before
+     dying says nothing about whether it will ever produce a verdict. A missing output file must never
+     re-arm the relaunch budget, and a dead attempt `2` must never be left un-dispatched):
      for each of this run's branches/PRs read the live SHA, CI status, and verdict files, and refresh
      the ledger — write every ledger update through `scripts/ledger.py … set/header set` **by field
      name** (`files-and-ledger.md`), never by hand-editing rows by column position. Do the PR scan as
@@ -195,12 +196,20 @@ in-flight tasks do.
 **Resume after a killed session — including by a different agent instance:** in-flight background
 tasks die with the session, but nothing authoritative is lost. A new invocation reconciles against
 git/gh and continues — completed work is never redone (existing PRs, landed verdict files); a CI task
-whose output file is missing re-launches, and a **review** whose output file is missing goes through
+whose output file is missing re-launches, and a **review** with no verdict and no live task goes through
 **Stage 2a active-attempt resolution** rather than a blind re-launch: read the highest-numbered launch
-attempt's `pass_identity`, relaunch only from `launch_attempt: 1`, and take the fresh-subagent fallback
-when attempt `2` has no launch evidence. **The relaunch budget lives on disk, not in the session**, so
-it survives the death of the agent that spent it — otherwise each new instance would rediscover a
-missing output file, relaunch the same hung reviewer, die, and repeat forever. It binds to the run via
+attempt's `pass_identity` and dispatch on `launch_attempt` alone — `1` → relaunch once as attempt `2`;
+`2` → fresh-subagent fallback. **The relaunch budget lives on disk, not in the session**, so it survives
+the death of the agent that spent it — otherwise each new instance would rediscover a missing output
+file, relaunch the same hung reviewer, die, and repeat forever.
+
+**Every dead pass must land on exactly one of those two branches.** Do NOT gate the resume path on
+launch evidence: a dead attempt `2` that *did* write a `started` line before its session died would
+then satisfy neither "relaunch" (budget spent) nor "fall back" (evidence present) — no rule would fire
+and the PR would stall forever, which is the very failure this feature exists to prevent. Launch
+evidence answers "is this **live** process working?" and is meaningful **only** for the in-flight
+~5-min launch check; once the task is gone, the only question is how much relaunch budget remains. It
+binds to the run via
 `--run <id>` (what every self-wake carries, so a fresh instance adopting an orphaned run's heartbeat
 just works) or, for a bare re-invocation, by discovering live runs and adopting the sole **orphaned**
 one (asking among several). Adoption is gated on the **run lease**: an agent takes over only a run
