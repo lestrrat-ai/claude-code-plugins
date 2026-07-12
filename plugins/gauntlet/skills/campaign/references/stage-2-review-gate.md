@@ -250,9 +250,22 @@ The reviewer runs the following review contract (shown as the external-reviewer 
 default Claude-subagent path gives a fresh subagent the same instructions and output file):
 
 **Orchestrator:** before dispatching this command, substitute EVERY placeholder with its resolved
-value — `<rundir>`, `<pr>`, `<n>`, `<base>`, `<worktree>`, and `<SCRIPT>` (the resolved absolute path
-`<skill-dir>/scripts/emit-progress.py`). The reviewer must receive a concrete runnable path, never a
-literal `<SCRIPT>`.
+value — `<rundir>`, `<pr>`, `<n>`, `<base>`, `<worktree>`, `<SCRIPT>` (the resolved absolute path
+`<skill-dir>/scripts/emit-progress.py`), and the two **attempt-scoped artifact** placeholders. The
+reviewer must receive concrete runnable paths, never a literal `<SCRIPT>`/`<review-output>`/`<progress-file>`.
+
+`<review-output>` and `<progress-file>` resolve to the **active launch attempt's** files (per the
+attempt-artifact table above) — NOT to fixed names:
+
+| Launch attempt | `<review-output>` | `<progress-file>` |
+|---|---|---|
+| `1` | `review-<pr>-<n>.txt` | `review-<pr>-<n>.progress.jsonl` |
+| `k ≥ 2` (relaunch) | `review-<pr>-<n>.a<k>.txt` | `review-<pr>-<n>.a<k>.progress.jsonl` |
+
+Substituting attempt-1 names into a **relaunch** is a silent self-defeat: the relaunched reviewer would
+write its progress into the *dead* attempt's file, leaving the active `.a<k>.progress.jsonl` holding
+only `pass_identity` — so the launch check would read the live relaunch as dead and fall back. The
+placeholders exist so the dispatch command and the attempt-isolation rule can never drift apart.
 
 **Note:** the review runs in `<worktree>` — the PR row's ledger `worktree` column value, the single
 source of truth for this PR's checkout path (created at adoption/pre-review per `pr-adoption.md`; the
@@ -277,7 +290,7 @@ review launches. All review diffs then use `origin/<base>...HEAD`.
 ```
 codex exec --sandbox workspace-write -c "sandbox_workspace_write.network_access=true" -C <worktree> \
   --add-dir $PROJECT/<rundir> \
-  -o $PROJECT/<rundir>/review-<pr>-<n>.txt \
+  -o $PROJECT/<rundir>/<review-output> \
   "Review the changes on this branch vs origin/<base> (the whole git diff origin/<base>...HEAD). \
    First read $PROJECT/<rundir>/review-<pr>-<n>.plan.jsonl, then critically assess whether its units \
    cover the review dimensions this change actually needs — the plan is the orchestrator's starting \
@@ -289,7 +302,7 @@ codex exec --sandbox workspace-write -c "sandbox_workspace_write.network_access=
    it. That emit-only rule covers ONLY started/done unit-progress; the emit tool does not emit \
    plan_amendment_request, so append that event directly to the progress JSONL (it is exempt from the \
    emit-only rule). Run \
-   'python3 <SCRIPT> --file $PROJECT/<rundir>/review-<pr>-<n>.progress.jsonl --unit <plan unit id> \
+   'python3 <SCRIPT> --file $PROJECT/<rundir>/<progress-file> --unit <plan unit id> \
    --status started' when a planned unit begins, and the same command with \
    '--status done --evidence \"<concrete citation: a file:line, a backticked span, or a filename>\"' \
    when it finishes. The tool appends the canonical progress event; a non-zero exit means your inputs \

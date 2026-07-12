@@ -42,7 +42,10 @@ file. Everything else stays ephemeral under the per-run `<rundir>`. See "Fresh r
 One row per adopted PR. It is a **cache**, not the authoritative state — **ground truth is
 GitHub via `gh`, plus local worktrees** (`gh pr list/view` for PRs and merged/open state, each PR's
 `headRefOid` from `gh` — keyed by PR number — for the live head SHA, `gh pr checks` for live CI, and
-the `review-<pr>-<n>.txt` files for which verdicts exist on which SHA). `git rev-parse HEAD` is used
+the **active launch attempt's** review output files for which verdicts exist on which SHA —
+`review-<pr>-<n>.txt` for attempt 1, `review-<pr>-<n>.a<k>.txt` after a relaunch, counting only the
+attempt named in that pass's `pass_identity`, so a relaunch's verdict is never missed and a dead
+attempt's is never counted). `git rev-parse HEAD` is used
 ONLY to validate/read an existing worktree when one is checked out — never as the primary source of a
 PR's live head (an adopted PR may have no local branch/worktree at all). Every wake re-derives what's
 due from those, then refreshes this file. So a stale or half-written ledger is self-healing — never
