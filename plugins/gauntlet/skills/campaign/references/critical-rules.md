@@ -141,16 +141,24 @@
   miss-catcher, not a proof of correctness — so no class's mistakes are reliably absorbed. NEVER claim CI
   catches a bad fix. NEVER downgrade the mapper on the grounds that it is "read-only": read-only is not
   low-judgment, and an under-map is invisible.
-- **The only sanctioned downgrade: a total-oracle CI check** (`SKILL.md`, "The one exception";
-  `stage-2-ci.md`). Allowed IFF (a) re-running the failing check **fully verifies** its own fix
-  (`gofmt`, `goimports`, `golangci-lint` rules), AND (b) the fix changes **no product behavior**, AND (c)
-  the diff touches **no check definition, config, or test**. **Tier 0 — run the autofixer tool, no
-  subagent at all** (`golangci-lint run --fix`, `gofmt -w`, `prettier --write`, …); **Tier 1** — no
-  autofixer → cheap model (`haiku`/`sonnet`), ACCEPT only if the exact failing check now passes and the
-  diff touches no check/config/test, else **discard and re-dispatch on the session model**. Keyed on
-  **check/linter rule IDENTITY**, NEVER on a failure "looking mechanical". Default is NOT whitelisted;
-  unknown check → session model. Failing product tests are NEVER whitelisted. The review gate still reads
-  the whole diff — the whitelist lowers cost, not the gate.
+- **The only sanctioned downgrade: a CI check whose fixer is a semantics-preserving formatter**
+  (`SKILL.md`, "The one exception"; `stage-2-ci.md`). Such a check is a total oracle **only because its
+  fixer cannot change program meaning at all** — the guarantee comes from the TOOL's construction, NEVER
+  from the review gate noticing. **IN**: `gofmt`, `gofumpt`, `goimports` (import block only), `gci`,
+  `whitespace`, `prettier`, `ruff format`. **OUT**: `modernize` and every other semantic rewriter (a
+  `modernize` rewrite can pass its own rule while changing behavior), plus blanket
+  `golangci-lint run --fix` and blanket `ruff --fix` — a whitelisted run MUST invoke only the formatter,
+  NEVER a catch-all `--fix`. Failing product tests, compile errors, and any rule that rewrites logic are
+  NEVER whitelisted. Keyed on **check/fixer IDENTITY**, NEVER on a failure "looking mechanical". Default
+  is NOT whitelisted; unknown check → session model. **Tier 0 — run the formatter tool, no subagent at
+  all**; **Tier 1** — no usable fixer → cheap model (`haiku`/`sonnet`).
+  **Acceptance criteria (Tier 0 and Tier 1 alike).** ACCEPT the fix **only if all three hold**: (a)
+  re-running the **exact** failing check now **passes**; AND (b) the diff touches **no check definition,
+  config, or test**; AND (c) the diff is **formatting-only** — whitespace, indentation, line breaks, and
+  import-block ordering/insertion/removal — and touches **NOTHING else**: no expression, call, argument,
+  control flow, or literal. Any point fails → **discard the work** (reset the worktree to the PR head)
+  and **re-dispatch the same failure on the session model**. NEVER patch a whitelisted fix in place;
+  NEVER commit an unverified one; NEVER accept a "formatting" fix whose diff edits code.
 - A CI-fix subagent MUST be dispatched under the no-weakening prohibition (`stage-2-ci.md`): fix the
   cause, NEVER gut an assertion, add `skip`/`xfail`, disable a lint rule, or raise a timeout to force
   green.

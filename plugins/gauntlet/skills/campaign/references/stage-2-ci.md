@@ -20,7 +20,7 @@ row by column position:
   adoption/pre-review per `pr-adoption.md`; the ledger-recorded `<worktree>` path — default
   `.worktrees/<headRefName>` when campaign creates it, else a reused existing checkout).
 
-  **Classify the failure first** (see "Total-oracle classification" below). Not whitelisted →
+  **Classify the failure first** (see "Whitelist classification" below). Not whitelisted →
   **dispatch on the session model** — set the model explicitly, and do NOT downgrade it (`SKILL.md`,
   "Subagent Dispatch"). Its output is **code that gets merged**, and nothing downstream validates it: a
   wrong fix can turn CI **green** — by weakening the check, or by being plain wrong in product code no
@@ -43,44 +43,60 @@ row by column position:
   (`stage-2-review-gate.md`, "Status labels mirror the review gate"). Then relaunch the watch
   immediately and re-enter 2a.
 
-#### Total-oracle classification
+#### Whitelist classification — semantics-preserving formatters only
 
-Before dispatching anything, decide whether the failing check is a **total oracle** for its fix:
-re-running that same check *fully decides* correctness, leaving no judgment over (`SKILL.md`, "The one
-exception"). All three MUST hold:
+Before dispatching anything, decide whether the failing check is **whitelisted**. A check qualifies as a
+**total oracle** — re-running it *fully decides* correctness, leaving no judgment over — **only because
+its fixer is semantics-preserving BY CONSTRUCTION**: it rewrites LAYOUT and cannot change program meaning
+at all (`SKILL.md`, "The one exception"). The guarantee comes from the **tool's construction**, never
+from a hope that a reviewer will notice. "A lint rule passed" is a strictly weaker claim and is NOT
+sufficient.
 
-- (a) the failing check fully verifies its own fix on re-run; AND
-- (b) the fix is confined to what the check itself defines — **no product behavior changes**; AND
-- (c) the resulting diff touches **no check definition, config, or test** (the no-weakening prohibition
-  above, now doing double duty as a guard).
+- **IN** — pure formatting / import ordering: `gofmt`, `gofumpt`, `goimports` (import block only), `gci`,
+  `whitespace`, `prettier`, `ruff format`.
+- **OUT** — every **semantic rewriter**, including `modernize` and any rule that rewrites logic. A
+  `modernize` rewrite can PASS its own rule while CHANGING BEHAVIOR (e.g. `sort.Slice` → `slices.SortFunc`
+  with a reversed or non-equivalent comparator): lint-clean, semantics changed. The check does NOT fully
+  verify its own fix, so it is NOT a total oracle.
+- **OUT** — blanket `golangci-lint run --fix` and blanket `ruff --fix`: they apply semantic autofixes
+  too. A whitelisted run MUST invoke **only the formatter**, NEVER a catch-all `--fix`.
+- **NEVER whitelisted**: a failing product test (making a test pass is not the same as fixing the bug), a
+  compile error, and any rule that rewrites logic.
 
-Key it on the **check / linter rule IDENTITY** from the failing check's output — `gofmt`, `goimports`,
-`golangci-lint` rules (`modernize`, `gci`, `whitespace`, …) — NEVER on a judgment that the failure
-"looks mechanical". **Default is NOT whitelisted. Unknown check → session model.** A failing product
-test is NEVER whitelisted: making a test pass is not the same as fixing the bug. Compile errors in real
-logic are NEVER whitelisted.
+Key it on the **check / fixer IDENTITY** from the failing check's output — NEVER on a judgment that the
+failure "looks mechanical". **Default is NOT whitelisted. Unknown check → session model.**
 
 Then, in order:
 
-1. **Tier 0 — no subagent (prefer this always).** Whitelisted check with a deterministic autofixer →
-   run the **tool** in `<worktree>`: `golangci-lint run --fix`, `gofmt -w`, `goimports -w`,
-   `ruff --fix`, `prettier --write`, etc. Re-run the exact failing check. Passes → commit + push, no
-   model spend at all. Dispatching a model to hand-edit a formatting violation is both the most
-   expensive and the LEAST reliable way to do it.
-2. **Tier 1 — cheap model, verified.** Whitelisted check with no autofixer, or an autofixer that ran but
-   left residue → dispatch the scoped CI-fix subagent on `haiku` (pure mechanical rewrite) or `sonnet`
-   (needs any reasoning). Set the model explicitly. **Verify before accepting**: re-run the exact
-   failing check in `<worktree>` AND inspect the diff. ACCEPT only if the check now **passes** AND the
-   diff touches **no check definition, config, or test** and changes no product behavior.
-3. **Discard and escalate.** Verification fails on any point (check still red, diff touches a check/
-   config/test, behavior moved) → **discard the work** (`git checkout -- .` / reset the worktree to the
-   PR head) and re-dispatch the same failure on the **session model**. NEVER patch up a Tier-1 fix in
-   place; NEVER commit an unverified Tier-1 diff.
-4. **Everything else → session model**, per the red-CI dispatch above.
+1. **Tier 0 — no subagent (prefer this always).** Whitelisted formatter with a deterministic fixer → run
+   the **tool** in `<worktree>`: `gofmt -w`, `gofumpt -w`, `goimports -w`, `gci write`,
+   `prettier --write`, `ruff format`. NEVER a catch-all `--fix`. Then apply the acceptance criteria
+   below. Passes → commit + push, no model spend at all. Dispatching a model to hand-edit a formatting
+   violation is both the most expensive and the LEAST reliable way to do it.
+2. **Tier 1 — cheap model, verified.** Whitelisted formatter with no usable fixer, or a fixer that ran
+   but left residue → dispatch the scoped CI-fix subagent on `haiku` (pure mechanical rewrite) or
+   `sonnet` (needs any reasoning). Set the model explicitly. Then apply the acceptance criteria below.
+3. **Everything else → session model**, per the red-CI dispatch above.
 
-The review gate still reads the whole diff for every commit a tier produces. The whitelist lowers
-**cost**, never the gate. An autofixer or `modernize`-class rewrite CAN in rare cases change behavior —
-the gate is what catches that; this is not a guarantee of correctness.
+**Acceptance criteria (Tier 0 and Tier 1 alike).** ACCEPT the fix **only if all three hold**:
+
+- (a) re-running the **exact** failing check now **passes**; AND
+- (b) the diff touches **no check definition, config, or test**; AND
+- (c) the diff is **formatting-only** — whitespace, indentation, line breaks, and import-block
+  ordering/insertion/removal — and touches **NOTHING else**: no expression, call, argument, control flow,
+  or literal.
+
+Any point fails → **discard the work** (reset the worktree to the PR head) and **re-dispatch the same
+failure on the session model**. NEVER patch a whitelisted fix in place; NEVER commit an unverified one;
+NEVER accept a "formatting" fix whose diff edits code.
+
+(c) is the mechanical guard that makes "changes no product behavior" **checkable rather than promised**:
+with the whitelist narrowed to formatters, a formatting-only diff cannot move behavior.
+
+**Residual risk, stated honestly:** it is small and specific — reordering imports could in principle
+change init side-effect order (blank/`_` imports). That is the whole of it. Do NOT widen the whitelist
+past it, and NEVER re-derive its safety from the review gate: the whitelist stands on the fixer being
+incapable of changing semantics, or it does not stand at all.
 
 Every CI failure must be handled; never merge over a red or pending check, and never infer green from
 the watch's exit code alone — always confirm against the re-polled snapshot.

@@ -37,8 +37,8 @@ say so: it is the change that most reduces token spend, not the model tier of an
 subagent fallback for a failed external reviewer, the pass runs on the **session model** — it *is* the
 gate, and a weaker verdict is simply a worse gate (`SKILL.md`, "Subagent Dispatch"). No other class is
 downgraded by default either: the fix subagents write code that gets merged, and nothing downstream
-guarantees a bad fix is caught. The **only** exception is a CI failure whose check is a total oracle
-(`SKILL.md`, "The one exception"; `stage-2-ci.md`) — never a review pass. Save tokens by moving review
+guarantees a bad fix is caught. The **only** exception is a CI failure whose fixer is a
+semantics-preserving formatter (`SKILL.md`, "The one exception"; `stage-2-ci.md`) — never a review pass. Save tokens by moving review
 passes to an external reviewer and by scoping every fix subagent — never by cheapening a model on a
 judgment call.
 
