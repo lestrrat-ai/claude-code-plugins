@@ -90,6 +90,12 @@ blocks; each completion is its own wake.
    it carries `gauntlet-run-<run-id>`, and set its status label to match its **live** gate state —
    `gauntlet-accepted` if its current HEAD holds `required(tier)` SATISFIED verdicts, else
    `gauntlet-reviewing`; add the status label if it has none. **Never touch another run's PRs.**
+
+   This reconcile is a **backstop, not the mechanism**. The relabel is owed at the moment the gate
+   resets, in the same step that writes `reviews_ok = 0` (`stage-2-review-gate.md`, "Status labels
+   mirror the review gate"); this pass only *self-heals* a swap that was somehow missed. A PR that
+   reaches this point still wearing a stale `gauntlet-accepted` means some reset site skipped its
+   relabel — fix the label here, and treat it as a bug in that site, not as normal operation.
 2. **Fold in completions.** For any background task that finished (CI watch → `ci-<pr>.txt`; review →
    the **active launch attempt's** output file, with its progress file as liveness evidence — attempt 1
    writes `review-<pr>-<n>.txt` / `.progress.jsonl`, a relaunch writes `review-<pr>-<n>.a<k>.*`, and

@@ -40,8 +40,9 @@ the row by column position). Default to **STANDARD** whenever you are unsure. `r
 **Preconditions — clear Copilot items, CI, and conflicts before reviewing.** A review pass is
 expensive and is invalidated by any PR-content change, so never spend one on a PR whose current tip
 still has review-blocking issues. Before launching a pass, check three things and clear any that are
-dirty. Each fix changes PR content, so `reviews_ok` resets to 0 and the review re-starts on the clean
-tip:
+dirty. Each fix changes PR content, so `reviews_ok` resets to 0 **and the status label is restored to
+`gauntlet-reviewing` in that same step** if the PR was `gauntlet-accepted` ("Status labels mirror the
+review gate"), and the review re-starts on the clean tip:
 
 - **GitHub Copilot review items.** If the PR has any unresolved Copilot review comments, address them
   with `/gauntlet:copilot-address-reviews <pr>` before reviewing (that skill verifies each item against source
@@ -349,10 +350,15 @@ NEVER use `--dangerously-bypass-approvals-and-sandbox` — always `--sandbox wor
 
 As each verdict lands, tally it for the SHA it ran on:
 
-- **NOT SATISFIED** → dispatch a scoped fix subagent into `<worktree>` (the PR row's ledger
-  `worktree` column value) with the issue list; it
-  commits + pushes → HEAD advances → the SHA's tally is void. A later wake starts a fresh review on
-  the new tip. (Because reviews are sequential, no second review was spent on this broken commit.)
+- **NOT SATISFIED** → the SHA's tally is void: set `reviews_ok = 0` **and, in the same step, restore
+  `gauntlet-reviewing` if the PR carries `gauntlet-accepted`** (`gh pr edit <pr> --remove-label
+  gauntlet-accepted --add-label gauntlet-reviewing` — "Status labels mirror the review gate"). This
+  applies the moment the verdict lands, *before* any fix is written: a PR whose latest verdict says
+  NOT SATISFIED must never still read `gauntlet-accepted` on GitHub. Then dispatch a scoped fix
+  subagent into `<worktree>` (the PR row's ledger `worktree` column value) with the issue list; it
+  commits + pushes → HEAD advances (a second gate reset — relabel again if the first was somehow
+  skipped). A later wake starts a fresh review on the new tip. (Because reviews are sequential, no
+  second review was spent on this broken commit.)
 - **SATISFIED** → record it (bump `reviews_ok` via `ledger.py … set --pr <N> --reviews_ok <count>`, by
   field name). The gate is met once this SHA holds `required(tier)` SATISFIED verdicts
   (2, or 1 for TRIVIAL). If the tally is still short of the target — e.g. the **first** SATISFIED on a
@@ -411,10 +417,42 @@ not burning reviews merely because another PR merged cleanly. A `NOT SATISFIED` 
 content's tally even before a fix lands. The `required(tier)` SATISFIED verdicts and green CI must all
 describe the same live PR content; CI must still be green for the current HEAD SHA.
 
-**Status labels mirror the review gate.** A PR carries `gauntlet-reviewing` until its current HEAD
-holds `required(tier)` SATISFIED verdicts for the same live PR content, then `gauntlet-accepted`. Because any
-PR-content change resets the gate, if an accepted PR's content later changes — a CI fix,
-conflict-resolving rebase, formatter/bot commit, etc. — swap the label back
-(`--remove-label gauntlet-accepted --add-label gauntlet-reviewing`). A clean base-only rebase with
-unchanged PR diff keeps the review label state but sets `ci = pending`. Reconcile labels against the
-live gate state each wake so they never lie.
+### Status labels mirror the review gate — relabel is part of the reset, not a later chore
+
+A PR carries `gauntlet-reviewing` until its current HEAD holds `required(tier)` SATISFIED verdicts for
+the same live PR content, then `gauntlet-accepted`. The label is a **projection of `reviews_ok`**, so it
+is only ever as true as the moment it was last written.
+
+**THE RULE — the gate and the label move together, in the same step.** Any action that takes
+`reviews_ok` to `0` (or otherwise voids the tally) MUST, in that same step, restore
+`gauntlet-reviewing` on a PR that currently carries `gauntlet-accepted`:
+
+```
+gh pr edit <pr> --remove-label gauntlet-accepted --add-label gauntlet-reviewing
+```
+
+Never write the ledger reset and defer the label to "the next wake". A `gauntlet-accepted` label on a
+PR whose live content no longer holds `required(tier)` verdicts is a **false public claim that the PR
+passed its gauntlet** — the label is what a human reads on GitHub, and it is the one part of this
+run's state that is visible to people who will never see the ledger. Between the reset and the next
+reconcile it is simply wrong; if the session dies in that window it stays wrong indefinitely.
+
+**Every trigger that resets the gate must relabel** (this is the exhaustive list — the same events
+that drop `reviews_ok` to 0):
+
+| Trigger | Where |
+|---|---|
+| `NOT SATISFIED` verdict lands | this file, verdict tally |
+| Review-fix commit pushed | this file, verdict tally |
+| CI-fix commit pushed | `stage-2-ci.md` |
+| Copilot-item fix pushed | Stage 2a preconditions, above |
+| Conflict-resolving rebase | `stage-3-merge.md` |
+| Any other PR-content change on the head branch — formatter/bot commit, manual push | reconcile, Loop control |
+
+**Exception — a clean base-only rebase** (PR diff unchanged) carries `reviews_ok` forward and therefore
+**keeps** `gauntlet-accepted`; it only sets `ci = pending`. The gate did not reset, so the label does
+not move. Gate and label stay in lockstep in both directions.
+
+**Reconcile is the backstop, not the mechanism.** Loop control re-derives every label from the live
+gate each wake so a missed swap self-heals, exactly as the CI-watch heartbeat backstops a missed watch.
+Relying on it as the primary path is the bug this rule exists to prevent.
