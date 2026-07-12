@@ -57,11 +57,12 @@ a silent cost decision, taken by default, on every subagent this skill launches.
 | Fresh-subagent fallback review | **session model** | Same job as a review pass; counts toward the gate identically. |
 | Review-fix (after `NOT SATISFIED`) | **session model** | Authors code that a full review pass must then judge. A cheap bad fix burns a whole review pass and a gate reset — it *costs* more than the tier saves. |
 | Root-cause **mapper** | **session model** | Read-only, but NOT low-judgment: it enumerates a full matrix and confirms each gap with a repro. A weaker model **under-maps**, which is the exact failure the mapper exists to prevent (`root-cause-pass.md`). "Read-only" is not a licence to downgrade. |
-| **CI-fix** | **`sonnet`** | The one safe downgrade. Failure is **self-detecting**: a bad CI fix leaves CI red, which campaign re-dispatches, and a red check blocks the review pass anyway — so it cannot silently corrupt the gate. |
+| **CI-fix** | **`sonnet`** | The one safe downgrade — because **both** its failure modes are caught, by two different nets. *Fix didn't work* → CI stays red → re-dispatch. *Fix weakened the check* (gutted assertion, `skip`/`xfail`, disabled lint rule, raised timeout) → CI turns **green**, so CI does **not** catch it — the **review gate** does, reading the whole diff. Hence it is dispatched under an explicit no-weakening prohibition (`stage-2-ci.md`). |
 
 **The rule behind the table: downgrade only where a bad result is caught by something else.** CI-fix is
-caught by CI. Every other class either *is* the check (review passes) or feeds work into an expensive
-check (fixes, mapping), where a cheap wrong answer is paid for twice.
+caught by CI *and* the review gate — CI alone is not enough, and never claim it is. Every other class
+either *is* the check (review passes) or feeds work into an expensive check (fixes, mapping), where a
+cheap wrong answer is paid for twice.
 
 **The biggest lever is not the model — it is the reviewer.** Review passes re-read the whole PR diff,
 `required(tier)` times per SHA, and re-run from scratch on every gate reset, so they dominate campaign's

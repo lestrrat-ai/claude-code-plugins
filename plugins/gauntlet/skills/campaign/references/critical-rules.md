@@ -135,8 +135,12 @@
   prune an entry you're unsure about.
 - **Set the model explicitly on EVERY subagent dispatch** (`SKILL.md`, "Subagent Dispatch"). An unset
   model silently inherits the session model — a cost decision taken by default. Only **CI-fix** is
-  downgraded (**`sonnet`**), because its failure is self-detecting: bad fix → CI stays red → re-dispatch,
-  and a red check blocks the review pass anyway. Review passes, the subagent-fallback review, review-fixes,
+  downgraded (**`sonnet`**), because both its failure modes are caught, by two different nets: *fix didn't
+  work* → CI stays red → re-dispatch; *fix weakened the check* → CI turns **green**, so CI misses it and
+  the **review gate** catches it on the full diff. NEVER claim CI catches everything. A CI-fix subagent
+  MUST be dispatched under the no-weakening prohibition (`stage-2-ci.md`): fix the cause, NEVER gut an
+  assertion, add `skip`/`xfail`, disable a lint rule, or raise a timeout to force green.
+  Review passes, the subagent-fallback review, review-fixes,
   and the root-cause **mapper** all stay on the **session model** — the first two *are* the gate, and the
   last two feed an expensive check, so a cheap wrong answer is paid for twice. NEVER downgrade the mapper
   on the grounds that it is "read-only": read-only is not low-judgment, and an under-map is invisible.

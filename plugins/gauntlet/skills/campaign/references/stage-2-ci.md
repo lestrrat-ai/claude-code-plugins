@@ -21,11 +21,24 @@ row by column position:
   `.worktrees/<headRefName>` when campaign creates it, else a reused existing checkout).
 
   **Dispatch it on `sonnet`** (`model: "sonnet"`), not the session model — the one sanctioned
-  downgrade in this skill (`SKILL.md`, "Subagent Dispatch"). It is safe here *because the failure is
-  self-detecting*: a bad CI fix leaves CI red, campaign re-dispatches, and a red check blocks the
-  review pass regardless — so a weaker fix can never silently reach the gate. **Scope it**: give it
-  the failing check's logs, the specific failing file(s), and the worktree path, and tell it NOT to
-  re-derive the whole diff or read beyond what the failure touches.
+  downgrade in this skill (`SKILL.md`, "Subagent Dispatch"). It is safe because **both** of its
+  failure modes are caught — but by two different mechanisms, not by CI alone:
+  - *fix didn't work* → CI stays red → campaign re-dispatches, and a red check blocks the review pass
+    regardless. CI catches this one.
+  - *fix weakened the check* (gutted assertion, `skip`/`xfail`, disabled lint rule, raised timeout) →
+    **CI turns green, so CI does NOT catch it.** It is caught by the **review gate**, which reads the
+    whole `origin/<base>...HEAD` diff and sees the weakened check as the code change it is.
+
+  Never claim "CI catches everything" — it does not. Both nets must stay in place.
+
+  **Scope it**: give it the failing check's logs, the specific failing file(s), and the worktree path,
+  and tell it NOT to re-derive the whole diff or read beyond what the failure touches.
+
+  **Tell it, verbatim in its prompt**: it MUST fix the *cause* of the failure. It MUST NEVER make CI
+  pass by weakening the check — NEVER delete or loosen an assertion, NEVER add `skip`/`xfail`, NEVER
+  disable or downgrade a lint rule, NEVER raise a timeout — UNLESS the check itself is demonstrably
+  wrong, in which case it MUST say so explicitly and name the change in its output so the review gate
+  can judge it.
 
   Its fix commits + pushes to the PR's **own head branch**
   → code changed → **reset `reviews_ok` to 0 AND, in that same step, restore `gauntlet-reviewing` if
