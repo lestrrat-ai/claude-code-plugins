@@ -115,6 +115,13 @@ blocks; each completion is its own wake.
      task (one at a time per PR — the second, when the tier requires two, only after the first is
      SATISFIED; Stage 2a). If a precondition is dirty, clear it first (address Copilot items / fix CI /
      rebase) instead of spending a review;
+   - a review pass is in flight but its `review-<pr>-<n>.progress.jsonl` holds **no reviewer event**
+     past its **~5-min launch deadline** (measured from that file's `pass_identity.dispatched_at`) →
+     it **never started** (Stage 2a launch check — a reviewer hung on stdin, a bad path, a sandbox
+     denial). Kill the task, re-check the command for the known launch faults (above all `< /dev/null`
+     on `codex exec`), and re-dispatch the pass once (fresh `pass_identity`, `launch_attempt: 2`); a
+     dead `launch_attempt: 2` → fresh-subagent fallback. A failed launch yields no verdict: it never
+     touches `reviews_ok` and never bumps the row's `attempts`;
    - CI red and no CI-fix subagent is already in flight for that PR/SHA → dispatch a scoped fix
      subagent (Stage 2b); different PRs may fix CI concurrently within the cap.
    - CI snapshot reads `pending` for a PR whose watch task has already exited → **relaunch the watch
@@ -147,10 +154,13 @@ blocks; each completion is its own wake.
      first, so the heartbeat forces a wake in the cases **no completion ever arrives** — a background
      task that **hangs** (e.g. a reviewer stuck on input) and never completes, or a **killed/orphaned
      session** whose in-flight tasks died with it, so a later self-wake reconciles and resumes/adopts
-     the run (see "Resume after a killed session"). Size the delay to the stall it guards, **~15 min**,
-     matching the Stage 2a meaningful-progress threshold: nothing can declare a review stalled before
-     then, so a shorter interval only re-reconciles git/gh with no new signal (and pays a fresh-context
-     cost per wake). ALWAYS schedule it whenever non-terminal work remains — skipping it means a hung
+     the run (see "Resume after a killed session"). **Size the delay to the nearest stall it guards:**
+     **~5 min** while any dispatched review pass is still awaiting its first progress event — its Stage
+     2a launch deadline is then the soonest thing that can fire, and a hung launch must not sit
+     undetected for a full heartbeat — otherwise **~15 min**, matching the Stage 2a meaningful-progress
+     threshold: with no launch deadline pending, nothing can declare a review stalled before then, so a
+     shorter interval only re-reconciles git/gh with no new signal (and pays a fresh-context cost per
+     wake). ALWAYS schedule a heartbeat whenever non-terminal work remains — skipping it means a hung
      or orphaned run wakes no one. Return.
    - All this run's PRs `merged` or `aborted` → **distill the run into the carryover ledger** (write
      this run's block to its own file `.gauntlet/history/<run-id>.md` — merged PRs, aborted

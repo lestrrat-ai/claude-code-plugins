@@ -155,13 +155,24 @@ the tool-only rule.
 The block below shows the canonical event shapes the parser accepts. The two unit-progress lines
 (`started`/`done`) are exactly what the tool emits — shown for reference and as the parser's contract,
 NOT a template for you to write by hand. The third line (`plan_amendment_request`) is NOT produced by
-the tool and is shown only to document its shape:
+the tool and is shown only to document its shape. The fourth (`pass_identity`) is written by the
+**orchestrator** at dispatch, never by the reviewer:
 
 ```
 {"type":"progress","unit":"u01","status":"started"}
 {"type":"progress","unit":"u01","status":"done","evidence":"validate_idc.go:42 `canonicalizeValue`; edge case tested at validate_idc_test.go:88"}
 {"type":"plan_amendment_request","ts":"2026-07-06T00:05:00Z","reason":"diff changes generated docs; add doc consistency unit","proposed_unit":{"id":"u99","kind":"docs","target":"docs/generated.md","checks":["sync with API behavior"]}}
+{"type":"pass_identity","pr":"41","pass":"1","head_sha":"a3f29c1b","launch_attempt":"1","dispatched_at":"2026-07-06T00:00:00Z"}
 ```
+
+**`pass_identity` is the pass's attempt id and its dispatch clock.** The orchestrator writes it as the
+**first line** of `review-<pr>-<n>.progress.jsonl` **before** launching the reviewer process, so the
+progress file exists from dispatch onward. Three rules depend on it: a late verdict is ignored unless
+its attempt id (`pr` + `pass` + `head_sha`) still matches the active pass; `dispatched_at` is the clock
+the launch check below measures against; and `launch_attempt` (`1`, then `2` on a relaunch) is how a
+*later wake* — possibly a fresh agent — knows whether this pass has already been relaunched once. A
+progress file holding **only** this line is therefore evidence that the reviewer has produced nothing —
+not evidence of a missing file.
 
 Reviewers do NOT hand-write the unit-progress events (`started`/`done`) — ever; the emit tool is the
 only way those are produced. (The `plan_amendment_request` line is the exception: the tool does not
@@ -174,6 +185,34 @@ the `<SCRIPT>` placeholder in the review prompt — in the SAME way it substitut
 absolute path; it also ensures the `<rundir>` is a reviewer-writable root (via `--add-dir`) so the
 reviewer can append. The reviewer MUST call that script to emit each event, which writes the canonical
 shape by construction; a non-zero exit means the inputs were rejected and must be fixed and re-run.
+
+**Launch check — prove the reviewer actually started.** A dispatch can fail in a way that produces
+**no events at all**: an external reviewer blocked reading stdin (`codex exec` without `< /dev/null`),
+a bad binary/`-C` path, or a sandbox/auth denial that never reaches the model. Such a process is
+*alive* but has never begun, so the meaningful-progress rule below does not catch it quickly — that
+rule is sized for a reviewer working slowly, not one that never woke up. Gate every review pass on a
+**first-event deadline**:
+
+- **Deadline = ~5 min from the pass's `pass_identity.dispatched_at`.** By then the progress file MUST
+  hold at least one reviewer-written `progress` event. A `started` event **counts** — this check asks
+  only "did the process boot and can it write?", so it is deliberately weaker than meaningful progress
+  (which ignores `started`).
+- **Zero reviewer events past the deadline → the pass never started.** Do NOT wait out the 15-min
+  stale path. Kill the task and re-dispatch the pass **once**: rewrite the progress file with a fresh
+  `pass_identity` carrying `launch_attempt: 2` and a new `dispatched_at`, then launch again. If the
+  relaunch (`launch_attempt: 2`) also produces nothing by its own deadline → treat it as a reviewer
+  system failure and take the fresh-subagent fallback (same path as a verdict-less external reviewer,
+  above). Reading the retry count off the file, not off memory, is what makes this survive a killed
+  session: a fresh agent adopting the run sees `launch_attempt: 2` and falls back instead of
+  relaunching forever.
+- Before re-dispatching, **re-check the command** for the known launch faults — most of all the
+  `< /dev/null` stdin redirect on every `codex exec` (see below). A relaunch of the same hanging
+  command hangs identically.
+- **A failed launch is a dispatch fault, not a review outcome.** It yields no verdict — it never
+  counts SATISFIED or NOT SATISFIED, never touches `reviews_ok`, and never escalates the tier. It is
+  also **not** a PR-task attempt: do **NOT** bump the ledger's `attempts` for it. That column drives
+  the PR-level retry-once bailout, and charging a reviewer's failure to launch against it could abort
+  a perfectly good PR for a fault that was never in its diff.
 
 Meaningful progress = a `done` event for a planned unit, or an accepted plan amendment. `started`
 events and vague "still working" lines prove only process liveness and MUST NOT reset the meaningful
