@@ -134,36 +134,37 @@
   current `<base>`; for anything uncertain, list it and ask the user before deleting. Never silently
   prune an entry you're unsure about.
 - **Set the model explicitly on EVERY subagent dispatch** (`SKILL.md`, "Subagent Dispatch"). An unset
-  model silently inherits the session model — a cost decision taken by default. **NO class is downgraded
-  BY DEFAULT**: review passes and the subagent-fallback review *are* the gate; CI-fix and review-fix write
-  **code that gets merged**; the root-cause **mapper** feeds an expensive fix. Nothing downstream
-  *guarantees* a bad result is caught — CI misses a wrong-but-green fix, and the review gate is a
-  miss-catcher, not a proof of correctness — so no class's mistakes are reliably absorbed. NEVER claim CI
+  model silently inherits the session model — a cost decision taken by default. **NO SUBAGENT IS EVER RUN
+  ON A DOWNGRADED MODEL**: review passes and the subagent-fallback review *are* the gate; CI-fix and
+  review-fix write **code that gets merged**; the root-cause **mapper** feeds an expensive fix. Nothing
+  downstream *guarantees* a bad result is caught — CI misses a wrong-but-green fix, and the review gate is
+  a miss-catcher, not a proof of correctness — so no class's mistakes are reliably absorbed. NEVER claim CI
   catches a bad fix. NEVER downgrade the mapper on the grounds that it is "read-only": read-only is not
   low-judgment, and an under-map is invisible.
-- **The only sanctioned downgrade: a CI check whose fixer is a semantics-preserving formatter**
-  (`SKILL.md`, "The one exception"; `stage-2-ci.md`). Such a check is a total oracle **only because its
-  fixer cannot change program meaning at all** — the guarantee comes from the TOOL's construction, NEVER
-  from the review gate noticing. **IN**: `gofmt`, `gofumpt`, `goimports` (import block only), `gci`,
-  `whitespace`, `prettier`, `ruff format`. **OUT**: `modernize` and every other semantic rewriter (a
-  `modernize` rewrite can pass its own rule while changing behavior), plus blanket
-  `golangci-lint run --fix` and blanket `ruff --fix` — a whitelisted run MUST invoke only the formatter,
-  NEVER a catch-all `--fix`. Failing product tests, compile errors, and any rule that rewrites logic are
-  NEVER whitelisted. Keyed on **check/fixer IDENTITY**, NEVER on a failure "looking mechanical". Default
-  is NOT whitelisted; unknown check → session model. **Tier 0 — run the formatter tool, no subagent at
-  all**; **Tier 1** — no usable fixer → cheap model (`haiku`/`sonnet`).
-  **Acceptance criteria (Tier 0 and Tier 1 alike).** ACCEPT the fix **only if all three hold**: (a)
-  re-running the **exact** failing check now **passes**; AND (b) the diff touches **no check definition,
-  config, or test**; AND (c) the diff is **formatting-only** — whitespace, indentation, line breaks, and
-  import-block ordering/insertion/removal — and touches **NOTHING else**: no expression, call, argument,
-  control flow, or literal. Any point fails → **discard the work** (reset the worktree to the PR head)
-  and **re-dispatch the same failure on the session model**. NEVER patch a whitelisted fix in place;
-  NEVER commit an unverified one; NEVER accept a "formatting" fix whose diff edits code.
+- **The only cheap path: a whitelisted CI check whose fixer is a semantics-preserving formatter — run the
+  TOOL, no model at all** (`SKILL.md`, "The only cheap path"; `stage-2-ci.md`). The safety comes from the
+  TOOL's construction: its output cannot change program meaning. That guarantee does **NOT** transfer to a
+  model hand-editing the same file — a diff that *looks* like formatting is NOT a proof of semantic
+  equivalence (a pure-indentation edit can move behavior in a whitespace-significant language and still be
+  formatter-clean), so there is no diff-shape guard that would make a cheap model's edit safe to accept.
+  **IN**: `gofmt`, `gofumpt`, `goimports` (import block only), `gci`, `whitespace`, `prettier`,
+  `ruff format`. **OUT**: `modernize` and every other semantic rewriter (a `modernize` rewrite can pass its
+  own rule while changing behavior), plus blanket `golangci-lint run --fix` and blanket `ruff --fix` — a
+  whitelisted run MUST invoke only the formatter, NEVER a catch-all `--fix`. Failing product tests, compile
+  errors, and any rule that rewrites logic are NEVER whitelisted. Keyed on **check/fixer IDENTITY**, NEVER
+  on a failure "looking mechanical". Default is NOT whitelisted; unknown check → session model. ACCEPT the
+  tool's run **only if both hold**: (a) re-running the **exact** failing check now **passes**; AND (b) the
+  diff touches **no check definition, config, or test**. Either fails → **discard the work** (reset the
+  worktree to the PR head) and **re-dispatch the same failure on the session model**. NEVER patch a
+  formatter run in place; NEVER commit an unverified one; NEVER hand the failure to a cheap model instead.
+- **Everything the tool does not fix → the scoped CI-fix subagent on the session model**, set explicitly:
+  tool left residue, check not whitelisted, or the failure needs any judgment.
 - A CI-fix subagent MUST be dispatched under the no-weakening prohibition (`stage-2-ci.md`): fix the
   cause, NEVER gut an assertion, add `skip`/`xfail`, disable a lint rule, or raise a timeout to force
   green.
 - Scope every fix subagent to its worktree + concrete issue list; tell it NOT to re-derive the whole diff.
-  That, not the model tier, is where fix-subagent savings live.
+  That — with the tool-only formatter path and an external reviewer taking review passes off the subagent
+  pool — is where savings live. Never a downgraded model.
 - Default reviewer is Claude's own subagents; no external tool is required. Use the user's preferred
   reviewer when one is set (explicit invocation, or a preference in memory/`CLAUDE.md`/carryover). A
   different-model reviewer (e.g. Codex) is recommended for diversity but never required. See

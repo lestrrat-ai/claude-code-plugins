@@ -360,9 +360,9 @@ As each verdict lands, tally it for the SHA it ran on:
   skipped). A later wake starts a fresh review on the new tip. (Because reviews are sequential, no
   second review was spent on this broken commit.)
 
-  **Run the review-fix on the session model — do NOT downgrade it** (`SKILL.md`, "Subagent Dispatch").
-  A review defect is a judgment call, never a formatting-only fix, so the one CI-fix exception
-  (`stage-2-ci.md`) does NOT apply here. Its output is **code that gets merged**, and its only
+  **Run the review-fix on the session model — no subagent is ever run on a downgraded model**
+  (`SKILL.md`, "Subagent Dispatch"). The one cheap path — running a whitelisted formatter **tool** with no
+  model at all (`stage-2-ci.md`) — cannot fix a review defect. Its output is **code that gets merged**, and its only
   judge is another full review pass — which is a miss-catcher, not a proof of correctness. Best case, a
   weak fix produces a plausible-looking commit, the next pass returns `NOT SATISFIED`, the gate resets,
   and the whole diff is re-reviewed: the cheap wrong fix is paid for twice, and it is the expensive half

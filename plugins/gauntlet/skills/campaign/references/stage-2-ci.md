@@ -43,21 +43,21 @@ row by column position:
   (`stage-2-review-gate.md`, "Status labels mirror the review gate"). Then relaunch the watch
   immediately and re-enter 2a.
 
-#### Whitelist classification — semantics-preserving formatters only
+#### Whitelist classification — run the formatter TOOL, or the session model
 
-Before dispatching anything, decide whether the failing check is **whitelisted**. A check qualifies as a
-**total oracle** — re-running it *fully decides* correctness, leaving no judgment over — **only because
-its fixer is semantics-preserving BY CONSTRUCTION**: it rewrites LAYOUT and cannot change program meaning
-at all (`SKILL.md`, "The one exception"). The guarantee comes from the **tool's construction**, never
-from a hope that a reviewer will notice. "A lint rule passed" is a strictly weaker claim and is NOT
-sufficient.
+Before dispatching anything, decide whether the failing check is **whitelisted**. A check is whitelisted
+**only because its fixer is semantics-preserving BY CONSTRUCTION**: it rewrites LAYOUT and cannot change
+program meaning at all (`SKILL.md`, "The only cheap path"). That guarantee belongs to **the tool's
+output** and to nothing else — a model hand-editing the same file does NOT inherit it, however
+formatting-like its diff looks. A pure-indentation edit can move behavior in a whitespace-significant
+language and still be formatter-clean, so there is no diff-shape guard that makes a cheap model's edit
+safe to accept. **NO SUBAGENT IS EVER RUN ON A DOWNGRADED MODEL.**
 
 - **IN** — pure formatting / import ordering: `gofmt`, `gofumpt`, `goimports` (import block only), `gci`,
   `whitespace`, `prettier`, `ruff format`.
 - **OUT** — every **semantic rewriter**, including `modernize` and any rule that rewrites logic. A
   `modernize` rewrite can PASS its own rule while CHANGING BEHAVIOR (e.g. `sort.Slice` → `slices.SortFunc`
-  with a reversed or non-equivalent comparator): lint-clean, semantics changed. The check does NOT fully
-  verify its own fix, so it is NOT a total oracle.
+  with a reversed or non-equivalent comparator): lint-clean, semantics changed.
 - **OUT** — blanket `golangci-lint run --fix` and blanket `ruff --fix`: they apply semantic autofixes
   too. A whitelisted run MUST invoke **only the formatter**, NEVER a catch-all `--fix`.
 - **NEVER whitelisted**: a failing product test (making a test pass is not the same as fixing the bug), a
@@ -68,30 +68,17 @@ failure "looks mechanical". **Default is NOT whitelisted. Unknown check → sess
 
 Then, in order:
 
-1. **Tier 0 — no subagent (prefer this always).** Whitelisted formatter with a deterministic fixer → run
-   the **tool** in `<worktree>`: `gofmt -w`, `gofumpt -w`, `goimports -w`, `gci write`,
-   `prettier --write`, `ruff format`. NEVER a catch-all `--fix`. Then apply the acceptance criteria
-   below. Passes → commit + push, no model spend at all. Dispatching a model to hand-edit a formatting
-   violation is both the most expensive and the LEAST reliable way to do it.
-2. **Tier 1 — cheap model, verified.** Whitelisted formatter with no usable fixer, or a fixer that ran
-   but left residue → dispatch the scoped CI-fix subagent on `haiku` (pure mechanical rewrite) or
-   `sonnet` (needs any reasoning). Set the model explicitly. Then apply the acceptance criteria below.
-3. **Everything else → session model**, per the red-CI dispatch above.
+1. **Whitelisted formatter → run the TOOL, no model (prefer this always).** In `<worktree>`: `gofmt -w`,
+   `gofumpt -w`, `goimports -w`, `gci write`, `prettier --write`, `ruff format`. NEVER a catch-all
+   `--fix`. ACCEPT only if **both** hold: re-running the **exact** failing check now **passes**, AND the
+   diff touches **no check definition, config, or test**. Then commit + push — **zero model spend**.
+2. **Everything else → the scoped CI-fix subagent on the session model**, set explicitly, per the red-CI
+   dispatch above. Covers: the tool did not fix it, the tool left residue, the check is not whitelisted,
+   or the failure needs any judgment.
 
-**Acceptance criteria (Tier 0 and Tier 1 alike).** ACCEPT the fix **only if all three hold**:
-
-- (a) re-running the **exact** failing check now **passes**; AND
-- (b) the diff touches **no check definition, config, or test**; AND
-- (c) the diff is **formatting-only** — whitespace, indentation, line breaks, and import-block
-  ordering/insertion/removal — and touches **NOTHING else**: no expression, call, argument, control flow,
-  or literal.
-
-Any point fails → **discard the work** (reset the worktree to the PR head) and **re-dispatch the same
-failure on the session model**. NEVER patch a whitelisted fix in place; NEVER commit an unverified one;
-NEVER accept a "formatting" fix whose diff edits code.
-
-(c) is the mechanical guard that makes "changes no product behavior" **checkable rather than promised**:
-with the whitelist narrowed to formatters, a formatting-only diff cannot move behavior.
+If the tool's run fails either acceptance point → **discard the work** (reset the worktree to the PR
+head) and **re-dispatch the same failure on the session model**. NEVER patch a formatter run in place;
+NEVER commit an unverified one; NEVER hand the failure to a cheap model instead.
 
 **Residual risk, stated honestly:** it is small and specific — reordering imports could in principle
 change init side-effect order (blank/`_` imports). That is the whole of it. Do NOT widen the whitelist

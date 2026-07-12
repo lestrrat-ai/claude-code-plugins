@@ -56,23 +56,27 @@ a silent cost decision, taken by default, on every subagent this skill launches.
 | Review pass (default reviewer) | **session model** | It *is* the gate. A weaker verdict is a worse gate — the one thing never worth cheapening. |
 | Fresh-subagent fallback review | **session model** | Same job as a review pass; counts toward the gate identically. |
 | Review-fix (after `NOT SATISFIED`) | **session model** | Authors code that gets merged, judged only by another full review pass. A cheap bad fix burns a whole review pass and a gate reset — it *costs* more than the tier saves. |
-| **CI-fix** | **session model** — except the formatter whitelist below | Also authors code that gets merged. CI does **not** validate it: a wrong fix can turn CI green — by weakening a check, or by being plain wrong in product code that no check covers. Dispatched under an explicit no-weakening prohibition (`stage-2-ci.md`), which constrains the fixer but proves nothing about the fix. |
+| **CI-fix** | **session model** | Also authors code that gets merged. CI does **not** validate it: a wrong fix can turn CI green — by weakening a check, or by being plain wrong in product code that no check covers. Dispatched under an explicit no-weakening prohibition (`stage-2-ci.md`), which constrains the fixer but proves nothing about the fix. |
 | Root-cause **mapper** | **session model** | Read-only, but NOT low-judgment: it enumerates a full matrix and confirms each gap with a repro. A weaker model **under-maps**, which is the exact failure the mapper exists to prevent (`root-cause-pass.md`). "Read-only" is not a licence to downgrade. |
 
-**No class is downgraded BY DEFAULT, and the reason is uniform.** Every subagent here either *is* the
-gate (review passes), writes **code that gets merged** (CI-fix, review-fix), or produces the enumeration
-an expensive fix depends on (mapper). Nothing downstream *guarantees* a bad result is caught: CI misses a
-wrong-but-green fix, and the review gate is a miss-catcher, not a proof of correctness
-(`stage-2-review-gate.md`). So no class's mistakes are reliably absorbed. NEVER justify a downgrade by
-claiming something downstream will catch it.
+**NO SUBAGENT IS EVER RUN ON A DOWNGRADED MODEL**, and the reason is uniform. Every subagent here either
+*is* the gate (review passes), writes **code that gets merged** (CI-fix, review-fix), or produces the
+enumeration an expensive fix depends on (mapper). Nothing downstream *guarantees* a bad result is caught:
+CI misses a wrong-but-green fix, and the review gate is a miss-catcher, not a proof of correctness
+(`stage-2-review-gate.md`). And there is **no mechanical guard** that makes a weak model's edits safe to
+accept: a diff that *looks* like formatting is **not** a proof of semantic equivalence (see below). NEVER
+justify a downgrade by claiming something downstream will catch it.
 
-### The one exception — semantics-preserving formatters
+### The only cheap path — run the formatter TOOL, no model at all
 
-A cheaper path is allowed **only** when the failing check is a **total oracle** for the fix: re-running
-that same check *fully decides* whether the fix is correct, leaving no judgment over. A check is a total
-oracle **only because its fixer is semantics-preserving BY CONSTRUCTION** — it rewrites LAYOUT and cannot
-change program meaning at all. The guarantee comes from the **tool's construction**, never from a hope
-that a reviewer will notice. "A lint rule passed" is a strictly weaker claim and is NOT sufficient.
+Some CI failures need **no subagent**. A whitelisted check has a fixer that is semantics-preserving **BY
+CONSTRUCTION** — it rewrites LAYOUT and cannot change program meaning. Run **the tool**; commit its
+output. Zero model tokens, zero model risk. The safety comes from the **tool's construction** — and from
+**nothing else**. It does **not** transfer to a model that hand-edits the same file: only the tool's own
+output is semantics-preserving. A hand-written diff that merely LOOKS like formatting is not. In a
+whitespace-significant language it can move behavior while staying formatter-clean — indenting
+`result.append("always")` under an `if` is a pure-indentation edit that turns `["always"]` into `[]`, and
+`ruff format` is perfectly happy with it.
 
 **The whitelist (exhaustive in kind):**
 
@@ -80,40 +84,25 @@ that a reviewer will notice. "A lint rule passed" is a strictly weaker claim and
   `whitespace`, `prettier`, `ruff format`.
 - **OUT** — every **semantic rewriter**, including `modernize` and any rule that rewrites logic. A
   `modernize` rewrite can PASS its own rule while CHANGING BEHAVIOR (e.g. `sort.Slice` → `slices.SortFunc`
-  with a reversed or non-equivalent comparator): lint-clean, semantics changed. So the check does **not**
-  fully verify its own fix, and it is NOT a total oracle.
+  with a reversed or non-equivalent comparator): lint-clean, semantics changed.
 - **OUT** — blanket `golangci-lint run --fix` and blanket `ruff --fix`: they apply semantic autofixes too.
   A whitelisted run MUST invoke **only the formatter**, NEVER a catch-all `--fix`.
-- **NEVER whitelisted**, under any tier: a failing product test (making a test pass is not the same as
-  fixing the bug), a compile error, and any rule that rewrites logic.
+- **NEVER whitelisted**: a failing product test (making a test pass is not the same as fixing the bug), a
+  compile error, and any rule that rewrites logic.
 
 Eligibility is keyed on **check / fixer IDENTITY** — NEVER on an impression that a failure "looks
 mechanical". A vibes-based whitelist is the same unsound reasoning in a new hat. **Default is NOT
 whitelisted; unknown check → session model.**
 
-| Tier | When | Action |
-|---|---|---|
-| **0 — no subagent** (prefer always) | Whitelisted formatter has a deterministic fixer | Run the **tool**, not a model: `gofmt -w`, `gofumpt -w`, `goimports -w`, `gci write`, `prettier --write`, `ruff format`. NEVER a catch-all `--fix`. Re-run the failing check, apply the acceptance criteria, commit. Zero tokens, zero model risk. |
-| **1 — cheap model, verified** | Whitelisted formatter, no usable fixer (or the fixer leaves residue) | Dispatch on `haiku` (pure mechanical rewrite) or `sonnet` (needs any reasoning). Apply the acceptance criteria below. |
-| **session model** | Everything else | Any failure whose oracle is judgment: failing product tests, compile errors, semantic lint rules, review-fixes, mapper, review passes. |
+| When | Action |
+|---|---|
+| **Whitelisted formatter** (prefer always) | Run the **tool** in `<worktree>` — `gofmt -w`, `gofumpt -w`, `goimports -w`, `gci write`, `prettier --write`, `ruff format`. NEVER a catch-all `--fix`. Re-run the **exact** failing check; it must pass and the diff must touch **no check definition, config, or test**. Then commit. **No model at all.** |
+| **Everything else** | Dispatch the scoped CI-fix subagent on the **session model**, set explicitly. Covers: the tool did not fix it, the tool left residue, the check is not whitelisted, or the failure needs any judgment (product tests, compile errors, semantic lint rules, logic). |
 
-Sending a model to hand-edit a formatting violation is both the most expensive and the least reliable
-way to do it — Tier 0 first, always.
-
-**Acceptance criteria (Tier 0 and Tier 1 alike).** ACCEPT the fix **only if all three hold**:
-
-- (a) re-running the **exact** failing check now **passes**; AND
-- (b) the diff touches **no check definition, config, or test**; AND
-- (c) the diff is **formatting-only** — whitespace, indentation, line breaks, and import-block
-  ordering/insertion/removal — and touches **NOTHING else**: no expression, call, argument, control flow,
-  or literal.
-
-Any point fails → **discard the work** (reset the worktree to the PR head) and **re-dispatch the same
-failure on the session model**. NEVER patch a whitelisted fix in place; NEVER commit an unverified one;
-NEVER accept a "formatting" fix whose diff edits code.
-
-(c) is the mechanical guard that makes "changes no product behavior" **checkable rather than promised**:
-with the whitelist narrowed to formatters, a formatting-only diff cannot move behavior.
+If the tool's output does not clear the failing check, or it touched a check definition, config, or test
+→ **discard the work** (reset the worktree to the PR head) and **re-dispatch the same failure on the
+session model**. NEVER commit an unverified formatter run. NEVER hand a "formatting" failure to a cheap
+model instead.
 
 **Residual risk, stated honestly:** it is small and specific — reordering imports could in principle
 change init side-effect order (blank/`_` imports). That is the whole of it. Do NOT widen the whitelist
