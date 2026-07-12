@@ -32,19 +32,26 @@ changes do **not** take effect just because they are checked out. Split the two 
 | **Non-gate behavior under development** — it touches nothing that decides whether a PR may merge (e.g. a new worktree/commit convention, a fix subagent's dispatch procedure or model choice, report formatting) | the **branch** — read it from the worktree and follow it | It is the thing being tested. Exercising it is the only way to learn whether it works. |
 | **The gate** — *every surface that decides whether a PR may merge*, i.e. the acceptance machinery as a whole | the **installed** known-good version | The check must be an independent authority. |
 
-The gate is defined by that property, **not** by a list of files or steps. Non-exhaustive examples:
-risk-tier triage and `required(tier)`; review dispatch and reviewer selection (which reviewer, which
-model, how it is isolated); the review contract and verdict counting; reviewer progress and emit
-accounting; CI status derivation and watch handling; gate resets and the status labels; API approval;
-merge preconditions and merge execution.
+The gate is the machinery that **decides** acceptance: whatever renders the verdict, counts it, or
+enforces it. It is defined by that property, **not** by a list of files or steps. Non-exhaustive
+examples: the acceptance decision and the gate contract (risk-tier triage, `required(tier)`, the review
+contract); verdict and progress accounting (emit/tally, gate resets); CI status derivation, watch
+handling and the status labels; reviewer selection and isolation (which reviewer, which model, how it is
+context-isolated); API approval; merge preconditions and merge execution.
 
-The first row **NEVER** overrides the second. If a branch change affects acceptance in **any** way it is
-gate machinery and the **installed** copy wins — being "the behavior under development" is not an
-exemption, and a change can be both.
+Everything else only **feeds** the gate, and stays **branch**-owned and dogfoodable: fix generation (a
+fix subagent's dispatch, scoping, model choice), report formatting, worktree and commit conventions. A
+better or worse fix obviously changes whether the PR eventually passes — that does **not** make it gate
+machinery. Producing something the gate judges is **NOT** the same as being the gate.
 
-**When it is unclear whether something is gate machinery, it IS gate machinery — use the installed
-copy.** The ambiguous case MUST resolve toward the installed copy, never toward the branch: guessing
-wrong in the other direction lets a branch approve itself.
+The first row **NEVER** overrides the second. If a branch change **decides** acceptance it is gate
+machinery and the **installed** copy wins — being "the behavior under development" is not an exemption,
+and a change can be both.
+
+**When it is unclear whether something decides acceptance, treat it as gate machinery — use the
+installed copy.** The ambiguous case MUST resolve toward the installed copy, never toward the branch:
+guessing wrong in the other direction lets a branch approve itself. This fail-safe covers **decides**;
+it MUST NEVER be stretched to "anything that influences the result", which would swallow the first row.
 
 **NEVER use an in-development gate to approve the change that alters it.** A bug in the branch would
 corrupt the very check meant to catch that bug — a branch that accidentally set `required(tier) = 1`
