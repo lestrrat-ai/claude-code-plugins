@@ -24,11 +24,21 @@ changes do **not** take effect just because they are checked out. Split the two 
 | Role | Which copy | Why |
 |------|-----------|-----|
 | **Behavior under development** (a new rule, a new dispatch procedure, a subagent's model choice) | the **branch** — read it from the worktree and follow it | It is the thing being tested. Exercising it is the only way to learn whether it works. |
-| **The gate** (review-tier triage and `required(tier)`, the review contract, verdict counting, merge preconditions) | the **installed** known-good version | The check must be an independent authority. |
+| **The gate** — *every surface that decides whether a PR may merge*, i.e. the acceptance machinery as a whole | the **installed** known-good version | The check must be an independent authority. |
+
+The gate is defined by that property, **not** by a list of files or steps. Non-exhaustive examples:
+risk-tier triage and `required(tier)`; the review contract and verdict counting; reviewer progress and
+emit accounting; CI status derivation and watch handling; gate resets and the status labels; API
+approval; merge preconditions and merge execution.
+
+**When it is unclear whether something is gate machinery, it IS gate machinery — use the installed
+copy.** The ambiguous case MUST resolve toward the installed copy, never toward the branch: guessing
+wrong in the other direction lets a branch approve itself.
 
 **NEVER use an in-development gate to approve the change that alters it.** A bug in the branch would
 corrupt the very check meant to catch that bug — a branch that accidentally set `required(tier) = 1`
-would, used as its own gate, merge itself on a single verdict. Keep a trusted stage-0.
+would, used as its own gate, merge itself on a single verdict; a branch that weakened CI status
+derivation would feed itself a false `ci=green`. Keep a trusted stage-0.
 
 ## Version is the plugin cache key
 
