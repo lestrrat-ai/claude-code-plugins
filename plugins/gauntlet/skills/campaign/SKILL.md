@@ -77,9 +77,19 @@ The ONE exception to a model dispatch: a whitelisted **formatting** failure is f
   the semantics: `gofmt -w -r 'true -> false'` rewrites `return true` into `return false` — same known
   binary, no shell metacharacters, a pure rewrite engine. Letting config choose flags hands back exactly
   the freedom the criterion exists to remove. An entry carrying `command`/`args`/`argv`/flags is **REFUSED**.
-- **Config picks only WHICH tool and over WHICH files.** A `.gauntlet.yml` entry carries **only `id` +
-  `files`**, and `files` MUST NOT be able to reach a **check definition, config, or test** path. A glob
-  that can → **REFUSED**.
+- **The SKILL resolves the binary — OUTSIDE the repo.** The tool runs in the PR's worktree, and the PR is
+  **untrusted content**. Resolve `argv[0]` to an **absolute** path via a `PATH` stripped of `.`, empty
+  entries, relative entries, the worktree and the repo root; the resolved executable **MUST live outside
+  the repo tree**. Resolves inside, or not at all → **REFUSE → session model**. A bare name resolved from a
+  `PATH` the PR can influence is arbitrary code execution on the no-model path.
+- **Config picks only WHICH tool and (optionally) a NARROWER file glob.** A `.gauntlet.yml` entry carries
+  **only `id` + optional `files`**; `files` may only narrow the tool's **default glob** in the table, never
+  widen it. Missing config → the table's defaults.
+- **The SKILL owns a non-overridable EXCLUSION FILTER**, applied to the file set **after** the glob, every
+  time: no tests, no check definitions, no CI or tool config (`**/*_test.go`, `.github/**`, `.golangci.yml`,
+  `pyproject.toml`, `.gauntlet.yml`, …). **Config CANNOT widen it.** So `files: "**/*.go"` is correct — the
+  glob selects, the filter protects. NEVER make the user's glob carry the exclusions: a user-written
+  exclusion list **will** omit something.
 - **The CRITERION is the skill's and is NEVER configurable**: a tool is whitelisted ONLY IF it guarantees
   its output is SEMANTICALLY EQUIVALENT to its input, on the burden of the tool's **documented behaviour**.
   There is NO blanket "formatters are safe" rule. The guarantee is the **TOOL's** — it NEVER transfers to
@@ -88,13 +98,13 @@ The ONE exception to a model dispatch: a whitelisted **formatting** failure is f
 - **Base branch only.** Read `.gauntlet.yml` from the base branch (`git show origin/<base>:.gauntlet.yml`),
   NEVER from the PR's worktree or head — a PR must NEVER widen the whitelist that governs its own campaign.
 - **A tool commit resets the gate** exactly like a subagent commit (`stage-2-ci.md`).
-- **Default deny.** Unknown or unlisted tool, refused entry, missing/unparseable config, the tool did not
-  fix it, the tool left residue, or the failure needs any judgment → **session model**, set explicitly.
-  NEVER hand it to a cheap model instead.
+- **Default deny.** Unknown or unlisted tool, refused entry, unparseable config, unresolvable binary, the
+  tool did not fix it, the tool left residue, or the failure needs any judgment → **session model**, set
+  explicitly. NEVER hand it to a cheap model instead.
 
-Full known-tools table (each tool's **exact skill-owned argv**, guarantee, precondition), the
-`.gauntlet.yml` schema and validation, the non-overridable denylist, and the honest trust model →
-**`references/stage-2-ci.md`**.
+Full known-tools table (each tool's **exact skill-owned argv**, default glob, guarantee, precondition), the
+executable-resolution rule, the exclusion filter, the `.gauntlet.yml` schema and validation, the
+non-overridable denylist, and the honest trust model → **`references/stage-2-ci.md`**.
 
 **The biggest lever is not the model — it is the reviewer.** Review passes re-read the whole PR diff,
 `required(tier)` times per SHA, and re-run from scratch on every gate reset, so they dominate campaign's

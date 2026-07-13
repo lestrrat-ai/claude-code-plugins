@@ -158,13 +158,30 @@
   identity alone is NOT sufficient. A `.gauntlet.yml` entry that supplies `command`/`args`/`argv`/flags is
   **REFUSED**. NEVER append a flag to a table argv. Adding a tool, or changing an argv, is a **SKILL change**,
   NEVER a config change.
-- **`.gauntlet.yml` entries carry EXACTLY `id` + `files`** — which known tool, and the glob it may touch.
-  `files` MUST NOT be able to reach a **check definition, config, or test** path (`.golangci.yml`,
-  `.github/**`, `**/*_test.go`, `test/**`, `tests/**`, `conftest.py`, `pyproject.toml`, `ruff.toml`,
-  `.gauntlet.yml`, a repo-sweeping `**`) → REFUSE. That is the no-weakening prohibition enforced at the
-  config layer. Entries **remove** built-ins by omission; `formatters: []` disables the cheap path entirely.
-  They **NEVER introduce a binary outside the known-tools table**. **Any entry failing any rule is REFUSED**
-  — log it, ignore it, route that failure to the **session model**. NEVER silently honour a refused entry.
+- **RESOLVE `argv[0]` TO A TRUSTED ABSOLUTE EXECUTABLE OUTSIDE THE REPO** (`stage-2-ci.md`). The tool runs
+  in the PR's worktree and **the PR under review is untrusted content**: a bare name resolved from a `PATH`
+  the PR can influence lets it ship its own `gofmt` and earns it **arbitrary code execution on the path that
+  runs with no model and no review**. Before every run, resolve `argv[0]` to an **absolute** path using a
+  `PATH` stripped of `.`, `..`, empty entries, **all relative entries**, the worktree, the repo root, and any
+  directory inside them; the resolved executable (symlinks followed) **MUST live OUTSIDE the repo/worktree
+  tree**. Resolves inside, or does not resolve → **REFUSE → session model**. NEVER run the tool with the
+  worktree on `PATH` or as the lookup base. NEVER execute a binary the PR could have supplied.
+- **THE SKILL OWNS A NON-OVERRIDABLE EXCLUSION FILTER, applied AFTER the glob, EVERY time** — no tests
+  (`**/*_test.go`, `test/**`, `tests/**`, `**/testdata/**`, `conftest.py`, …), no check definitions
+  (`.github/**`, …), no CI/tool/build config (`.golangci.yml`, `ruff.toml`, `pyproject.toml`,
+  `.gauntlet.yml`, …). **Config CANNOT widen it**, and config NEVER carries the exclusions itself: a
+  user-written exclusion list **will** omit something. The glob SELECTS; the FILTER protects. `files:
+  "**/*.go"` is therefore VALID — the filter drops the test files. The **filter is the guarantee**; a
+  refusal is only a signal.
+- **`.gauntlet.yml` entries carry EXACTLY `id` + OPTIONAL `files`** — which known tool, and at most a
+  **NARROWER** glob. Every known tool has a **default glob** in the table (`gofmt` → `**/*.go`, `ruff
+  format` → `**/*.py`, …), so a **missing config has a fully defined file set: the table's defaults,
+  filtered**. `files` may only NARROW that default → a widening glob is REFUSED; so is an **obviously
+  hostile** one that directly targets a check def, config, or test (`files: ".golangci.yml"`), or a
+  repo-sweeping bare `**`/`.`. Entries **remove** built-ins by omission; `formatters: []` disables the cheap
+  path entirely. They **NEVER introduce a binary outside the known-tools table**. **Any entry failing any
+  rule is REFUSED** — log it, ignore it, route that failure to the **session model**. NEVER silently honour
+  a refused entry.
 - **A tool's guarantee can be CONDITIONAL on its CONFIGURATION**: `ruff format` verifies AST equivalence
   **only while the repo's Ruff config does NOT enable `format.docstring-code-format`** (that setting
   reformats Python code inside docstrings — rewrites string contents → NOT AST-equivalent). Campaign MUST
@@ -191,8 +208,9 @@
   malicious committer**. NEVER present them as one. What the base-branch rule DOES buy is real and MUST be
   kept: **a PR under review cannot widen the whitelist that governs its own campaign.**
 - **Default deny, everywhere.** Keyed on the **tool's IDENTITY and documented guarantee**, NEVER on a
-  failure "looking mechanical" or on the category "formatter". Unknown check, unlisted tool, missing or
-  unparseable config, or a refused entry → session model. The cheap path is opt-in per tool, never inferred.
+  failure "looking mechanical" or on the category "formatter". Unknown check, unlisted tool, **unparseable**
+  config, an unresolvable binary, or a refused entry → session model (a **missing** config is not one of
+  these: it means the table's defaults). The cheap path is keyed to the table, never inferred.
   ACCEPT the tool's run **only if both hold**: (a) re-running the **exact** failing check now **passes**;
   AND (b) the diff touches **no check definition, config, or test**. Either fails → **discard the work**
   (reset the worktree to the PR head) and **re-dispatch the same failure on the session model**. NEVER patch

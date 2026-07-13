@@ -191,19 +191,33 @@ flowchart TD
   ```yaml
   formatters:
     - id: gofmt          # which known tool
-      files: "**/*.go"   # which files it may touch
+      files: "**/*.go"   # optional: a narrower glob than the tool's default
   ```
 
-  That is the whole schema: **`id` and `files`, nothing else.** You do **not** supply a command, flags, or
-  an argv — campaign owns the exact command line for each tool it knows (`gofmt -w`, `goimports -w`,
-  `gci write`, `ruff format`, …), and an entry that tries to supply one is refused. The reason is that flags
-  are not cosmetic: `gofmt -w -r 'true -> false'` is still `gofmt`, but the `-r` flag turns it into a rewrite
-  engine that changes `return true` into `return false`. Checking *which tool* runs is not enough if you also
-  get to pick *how* it runs, so campaign doesn't let you pick.
+  That is the whole schema: **`id`, and optionally `files`, nothing else.** You do **not** supply a command,
+  flags, or an argv — campaign owns the exact command line for each tool it knows (`gofmt -w`,
+  `goimports -w`, `gci write`, `ruff format`, …), and an entry that tries to supply one is refused. The
+  reason is that flags are not cosmetic: `gofmt -w -r 'true -> false'` is still `gofmt`, but the `-r` flag
+  turns it into a rewrite engine that changes `return true` into `return false`. Checking *which tool* runs
+  is not enough if you also get to pick *how* it runs, so campaign doesn't let you pick.
 
-  `files` is also constrained: a glob that could reach a check definition, a config file, or a test
-  (`.github/**`, `.golangci.yml`, `**/*_test.go`, `pyproject.toml`, …) is refused. Campaign commits this
-  tool's output without a review pass, so it must never be able to weaken the checks that gate it.
+  Campaign also picks the **binary**, not just the command line. The tool runs inside the pull request's own
+  worktree, so it resolves the executable to an absolute path outside your repo before running it — a pull
+  request that ships a file called `gofmt` never gets executed. If the real tool can't be found outside the
+  repo, campaign refuses the shortcut and uses a model instead.
+
+  Every known tool has a default glob (`gofmt` → `**/*.go`, `ruff format` → `**/*.py`), so you can leave
+  `files` out entirely, and a repo with no `.gauntlet.yml` at all still has a well-defined file set. When you
+  do give a `files` glob it may only **narrow** the default, never widen it.
+
+  You don't have to write exclusions into that glob, and you shouldn't: campaign applies its **own**
+  exclusion filter to the file set afterwards, every time, and your config cannot widen it. Tests, check
+  definitions, CI workflows, and tool config (`**/*_test.go`, `.github/**`, `.golangci.yml`,
+  `pyproject.toml`, `.gauntlet.yml`, …) are removed no matter what your glob says. That is why `**/*.go` is
+  the right thing to write: the glob picks the candidates, campaign's filter protects the files that gate
+  the review. An exclusion list *you* maintain would eventually miss one, and campaign commits this tool's
+  output without a review pass — it must never be able to weaken the checks that gate it. (A glob that
+  *directly* names a protected path, like `files: ".golangci.yml"`, is still refused outright.)
 
   You can drop built-in tools by omitting them, or set `formatters: []` to turn the whole shortcut off (then
   every CI failure goes to a full-strength model — always a safe choice). Teaching campaign a genuinely new

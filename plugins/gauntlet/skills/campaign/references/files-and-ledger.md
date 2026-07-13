@@ -46,21 +46,27 @@ file. Everything else stays ephemeral under the per-run `<rundir>`. See "Fresh r
 
 `.gauntlet.yml` sits at the **repo root**, NOT inside `.gauntlet/` — it is repo configuration, not run
 state, and it is the only gauntlet file that belongs in git. It selects **which of the skill's KNOWN tools
-run, over which files**, on the cheap CI path (built-in defaults, re-scoped or removed by repo entries;
-`formatters: []` disables the path). **The SKILL owns each tool's exact argv; config NEVER supplies a
-command, flags, or argv** — flags carry semantics (`gofmt -w -r 'true -> false'` is a rewrite engine).
-Config can NEVER relax the whitelisting **criterion**, widen the denylist, or **introduce a binary outside
-the skill's known-tools table**.
+run, and at most a NARROWER file glob**, on the cheap CI path (built-in defaults, narrowed or removed by
+repo entries; `formatters: []` disables the path; **missing file → the table's defaults**). **The SKILL
+owns each tool's exact argv, its default glob, and the binary it resolves; config NEVER supplies a command,
+flags, or argv** — flags carry semantics (`gofmt -w -r 'true -> false'` is a rewrite engine). Config can
+NEVER relax the whitelisting **criterion**, widen the denylist, widen the **exclusion filter**, or
+**introduce a binary outside the skill's known-tools table**.
 
-Schema — each entry carries **EXACTLY these two fields**:
+Schema — each entry carries **EXACTLY these fields**:
 
 | field | rule |
 |---|---|
-| `id` | the known tool's id (`gofmt`, `gofumpt`, `goimports`, `gci`, `ruff format`). Not in the table → REFUSE. |
-| `files` | glob scoping the run. MUST NOT be able to match a **check definition, config, or test** path (`.golangci.yml`, `.github/**`, `**/*_test.go`, `test/**`, `tests/**`, `conftest.py`, `pyproject.toml`, `ruff.toml`, `.gauntlet.yml`, or a repo-sweeping `**`) → REFUSE. |
+| `id` | **required**. The known tool's id (`gofmt`, `gofumpt`, `goimports`, `gci`, `ruff format`). Not in the table → REFUSE. |
+| `files` | **optional**. May only **NARROW** the tool's default glob in the known-tools table (`gofmt` → `**/*.go`, `ruff format` → `**/*.py`, …); a widening glob → REFUSE. Omitted → the default. An **obviously hostile** glob directly targeting a check def, config, or test (`.golangci.yml`, `.github/**`, `**/*_test.go`), or a repo-sweeping bare `**`/`.` → REFUSE. |
 
 **Any other key — `command`, `args`, `argv`, `flags`, `guarantee` — REFUSES the entry.** The guarantee and
 the argv are the skill's, in the known-tools table (`stage-2-ci.md`), not the repo's to state or choose.
+
+**The glob NEVER carries the exclusions.** The skill applies a **non-overridable exclusion filter** to the
+file set *after* the glob — every time, config or no config — dropping tests, check definitions, and CI/tool
+config (`stage-2-ci.md`). So `files: "**/*.go"` is valid and correct: the glob selects, the filter protects.
+**Config CANNOT widen the filter.**
 
 **Any entry failing any of these is REFUSED** — logged, ignored, failure routed to the session model.
 
