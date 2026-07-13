@@ -53,7 +53,8 @@
   slot. Refill the slot with the next due review.
 - Reconcile from ONE batched `gh pr list --label gauntlet-run-<run-id> --json …` snapshot per wake
   (`<rundir>/prs.json`); per-PR `gh` calls only where the snapshot falls short. Merge-gate CI truth
-  stays the re-polled `gh pr checks` snapshot.
+  stays the **both-family** check state pinned to `head_sha` (Stage 2b) — never an unpinned
+  `gh pr checks` snapshot.
 - Carryover pruning NEVER blocks a fresh-run start: keep uncertain entries, adopt the run's PRs
   immediately, ask the user asynchronously, and fold the answer in as its own wake.
 - Public API surface/behavior changes need user confirmation by default (see Constraints). The
@@ -250,8 +251,67 @@
   error — *not* a real finding list / `VERDICT:` line), retry once, then do the equivalent work with
   your own subagents: a fresh, context-isolated subagent review pass in
   Stage 2a. The gate is unchanged — note any fallback pass in the report. See "The reviewer".
-- CI status comes from a re-polled `gh pr checks` snapshot with **zero fail AND zero pending lines** —
-  never from the `--watch` exit code (it can exit 0 on pending/unregistered checks). No green, no merge.
+- **CI status covers BOTH CHECK FAMILIES, pinned to `head_sha`.** GitHub reports CI through **two**
+  independent APIs — **Checks** (check runs) and **legacy commit statuses** (Jenkins, CircleCI, many bots).
+  **A failing commit status is INVISIBLE to the check-runs endpoint**, so a check-runs-only snapshot reads
+  nonempty and all-success while a Jenkins status is red → false green. Derive `ci` from a source covering
+  **both**: `gh pr view <pr> --json headRefOid,statusCheckRollup` returns both families **and** the head
+  SHA in ONE payload (`__typename` = `CheckRun` → `.name`/`.status`/`.conclusion`; `StatusContext` →
+  `.context`/`.state`, values `SUCCESS`/`FAILURE`/`PENDING`/`ERROR` — **no `.conclusion`; `ERROR` is a
+  failure**). **NEVER** use the *combined* status `.state`: it reads `pending` when there are **zero**
+  statuses, so pending is its only safe reading — enumerate the individual contexts. Fetch **ATOMICALLY**
+  (temp file **inside `<rundir>`** — `mv` is an atomic rename only *within* a filesystem — promoted onto
+  the **SHA-scoped** `ci-<pr>-<head_sha>.txt` only if **every** fetch exits 0, with `# sha: <head_sha>` as
+  its first line, emitted by the same query as the rows; NEVER redirect a fetch straight onto the parsed
+  snapshot). Green needs **≥1 row, every check run `COMPLETED`+`SUCCESS`, every status `SUCCESS`, AND
+  every DECLARED required check present (name **and** producer) and successful** (see the next rules; zero
+  rows is NOT green) — never from the `--watch` exit code (it can exit 0 on pending/unregistered checks).
+  **The artifact is pinned too, not just the query:** **VERIFY the snapshot's `# sha:` equals
+  the ledger's current `head_sha` BEFORE parsing it** — a watch launched for an older SHA can finish
+  after the head advanced, and its checks say nothing about the current head. Absent, partial, mismatched,
+  or a rollup at its context cap (a truncated window is a partial fetch) → `ci = pending`, relaunch the
+  watch, **NEVER green** (a superseded snapshot is expected; discard it). **`--paginate` stays REQUIRED on
+  every REST fetch.** **SIX questions, SIX sources:** the **families queried** say whether a whole class of
+  failure could even appear; the **fetches' exit status** says whether the snapshot is complete enough to
+  parse at all (a partial fetch is NOT evidence → `ci = pending`, never green); the **`# sha:` stamp** says
+  whether it is about this commit; the **required-set read's outcome** says whether we even KNOW what to
+  expect; the **declared required-check set** says whether everything expected is THERE and from the right
+  producer; the **file's contents** say green/red/pending. No green, no merge. See `stage-2-ci.md`.
+- **PROVE THE EXPECTED CHECKS REGISTERED, FROM THE RIGHT PRODUCER — "all registered runs passed" is NOT
+  "all expected checks passed", and the right NAME is NOT the right PRODUCER.** Checks register
+  **asynchronously**: a fast lint can complete before a slower workflow — or a GitHub App check — even
+  exists, and that snapshot is nonempty and all-success. Read the declared required checks from **BOTH**
+  classic branch protection **and rulesets** (a repo can use either or both; neither endpoint sees the
+  other's declarations) and take the **UNION**. **Green REQUIRES every required check PRESENT in the
+  snapshot and successful**; one that has not registered → `ci = pending`, relaunch the watch, **NEVER
+  green**. **Where the declaration BINDS AN APP** (`app_id` / `integration_id`), the presence test MUST
+  match the **producer** too — the check run's `.app.id`, from the SHA-pinned check-runs fetch (the rollup
+  does not carry it) — because a same-named check from **another** app satisfying a name-only test is a
+  false green from the **wrong producer**. **Where the declaration binds NO app, ANY producer of that name
+  satisfies it** — do not over-tighten that, or CI wedges at `pending` forever.
+- **THREE STATES, NEVER TWO — DECLARED / NONE DECLARED / CANNOT READ. "I cannot see any" is NOT "there are
+  none."** `branches/<base>/protection/required_status_checks` **404s BOTH** when the branch is unprotected
+  **AND** when the token lacks **Administration: read**. **DECLARED** (union of protection + rulesets is
+  non-empty) → green requires every required check present (with producer identity) and successful.
+  **NONE DECLARED** — provable **only** when the required-set read **SUCCEEDED and came back EMPTY** →
+  registration completeness **CANNOT BE PROVEN** (not by campaign, not by the check-runs API, not by
+  `mergeStateStatus` — GitHub cannot block on a check it does not know about either); `ci = green` then
+  means only *"every check that had registered by the time we looked had passed"*. **Say that plainly as a
+  residual risk; NEVER claim it is closed.** **CANNOT READ** (404/403 without Administration: read, any
+  error on either endpoint) → **UNKNOWN, and UNKNOWN IS NOT "NONE DECLARED"** — do **NOT** silently fall
+  through to the weaker rule; **record the uncertainty, never claim registration completeness, and never
+  state or imply "no required checks are declared"** — a required check may exist and be missing, and
+  campaign cannot tell. **Prefer the rulesets endpoint: it needs NO admin, and the classic endpoint cannot
+  see rulesets at all.** **NEVER infer the ABSENCE of a requirement from an ERROR that also means "you may
+  not look."** The real remedy is the user declaring required checks (`stage-2-ci.md`, "The registration
+  gap").
+- **NEVER MERGE WITHOUT GITHUB'S OWN VERDICT: `gh pr view <pr> --json mergeable,mergeStateStatus` MUST
+  read `MERGEABLE` + `mergeStateStatus == CLEAN`.** It is a load-bearing precondition, not a sanity check:
+  GitHub computes it knowing the repo's required-check set, which campaign's snapshot does not. `BLOCKED` =
+  a required check missing or failing → back to Stage 2, never merge; `UNSTABLE` = a non-required check
+  failing → handle as red, never merge; `BEHIND`/`DIRTY`/`CONFLICTING` → refresh the PR. **Anything but
+  `CLEAN` → NEVER merge.** It still does **NOT** prove unregistered checks don't exist — GitHub cannot block
+  on a check it does not know about either. Require it; never overclaim it (`stage-3-merge.md`).
 - The run targets a **base branch** (`base_branch` in the ledger header), which is **not assumed to
   be `main`** — it is the `baseRefName` of the adopted PRs (must agree across them, else prompt).
   Reviews diff `origin/<base>...HEAD` and PRs merge into `<base>`; a fix worktree branches off the PR's OWN

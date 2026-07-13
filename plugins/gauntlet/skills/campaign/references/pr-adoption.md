@@ -207,10 +207,47 @@ For each `#PR` to adopt:
    settles; immediately after, **re-poll a fresh snapshot** — that snapshot, not the watch, is what you
    read:
 
+   The re-poll MUST cover **BOTH CHECK FAMILIES** — check runs **and** legacy commit statuses. Polling
+   `/commits/<sha>/check-runs` alone leaves the **entire commit-status family unread**, so a failing
+   Jenkins/CircleCI status is **invisible** and the snapshot reads nonempty and all-success
+   (`stage-2-ci.md`, "Two check families").
+
+   It MUST also be **ATOMIC** and **SHA-SCOPED**: fetch to a temp file **inside `<rundir>`** and
+   promote it to `ci-<pr>-<head_sha>.txt` — SHA-stamped in its first line — **only if every fetch
+   succeeded**. A fetch writes as it goes, so redirecting it straight onto the parsed
+   snapshot leaves the rows that arrived on disk when it dies partway — a nonempty, all-success
+   **partial** snapshot the parser would read as green (`stage-2-ci.md`, "SIX questions, SIX sources").
+   A failed fetch is **NOT EVIDENCE**: `ci = pending`, relaunch the watch, **NEVER** green. Nor is a
+   snapshot missing a **declared required check** — checks register asynchronously, so the consumer must
+   also prove every required check is PRESENT, **from the producer the declaration binds it to**, before
+   reading it as green (`stage-2-ci.md`).
+
    ```
-   # run in background. ';' (not '&&') so the re-poll ALWAYS runs, even when --watch exits non-zero on failure
-   gh pr checks <pr> --watch ; gh pr checks <pr> > <rundir>/ci-<pr>.txt
+   # run in background. ';' (not '&&') so the pinned re-poll ALWAYS runs, even when --watch exits non-zero
+   tmp="$(mktemp -p <rundir>)"   # temp INSIDE <rundir>: mv is an atomic rename only WITHIN a filesystem
+   # BOTH families + the head SHA out of ONE payload: CheckRun rows and StatusContext rows.
+   gh pr checks <pr> --watch ; if gh pr view <pr> --json headRefOid,statusCheckRollup --jq '
+          "# sha: \(.headRefOid)",
+          (.statusCheckRollup[] |
+            if .__typename == "CheckRun"
+            then "checkrun\t\(.name)\t\(.status)\t\(.conclusion)"
+            else "status\t\(.context)\t\(.state)" end)' > "$tmp"; then
+     mv "$tmp" <rundir>/ci-<pr>-<head_sha>.txt   # complete, SHA-stamped — safe to parse
+   else
+     rm -f "$tmp"                     # partial/failed fetch — NOT evidence of anything
+   fi
    ```
+
+   When a declared required check **binds an app** (`app_id` / `integration_id`), also append the
+   producer-bearing rows — `gh api --paginate repos/<owner>/<repo>/commits/<head_sha>/check-runs --jq
+   '.check_runs[] | "app\t\(.name)\t\(.app.id)"' >> "$tmp"` — inside the same `if`, so both fetches are
+   promoted by the same atomic `mv`; the rollup does not carry `.app.id` (`stage-2-ci.md`, "Right name is
+   not right producer").
+
+   `<head_sha>` is the SHA this watch was launched for — the artifact is named and stamped for **that**
+   commit, never for "the PR". The head may have advanced by the time the watch returns; the consumer
+   verifies the stamp against the ledger's current `head_sha` and **discards a superseded snapshot**
+   (`stage-2-ci.md`). That is **expected, not an error**.
 
    Don't launch a duplicate watch for a PR that already has a live one (Loop control tracks in-flight
    watches).

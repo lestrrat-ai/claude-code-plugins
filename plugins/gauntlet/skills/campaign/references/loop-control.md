@@ -51,7 +51,7 @@ blocks; each completion is its own wake.
      **one batched snapshot per wake** —
      `gh pr list --label gauntlet-run-<run-id> --json number,headRefName,headRefOid,state,mergeable,mergeStateStatus,labels > <rundir>/prs.json`
      — and drive reconcile from that file; fall back to per-PR `gh pr view` only where the snapshot
-     isn't enough (merge-gate CI truth stays the re-polled `gh pr checks` snapshot, Stage 2b). Wake
+     isn't enough (merge-gate CI truth stays the check runs pinned to `head_sha`, Stage 2b). Wake
      turnaround is throughput: every serial `gh` call in reconcile delays every dispatch behind it. Re-read `run_id`, `base_branch`, `api_changes`, and `reviewer` from the ledger
      header — they govern namespacing, the merge/diff target, API-change handling, and which reviewer runs
      the review passes, and must be
@@ -125,11 +125,48 @@ blocks; each completion is its own wake.
    reaches this point wearing a stale `gauntlet-accepted` — or both labels at once — means some reset
    site skipped its relabel: fix the label here, and treat it as a bug in that site, not as normal
    operation.
-2. **Fold in completions.** For any background task that finished (CI watch → `ci-<pr>.txt`; review →
+2. **Fold in completions.** For any background task that finished (CI watch → `ci-<pr>-<sha>.txt`;
+   review →
    the **active launch attempt's** output file, with its progress file as liveness evidence — attempt 1
    writes `review-<pr>-<n>.txt` / `.progress.jsonl`, a relaunch writes `review-<pr>-<n>.a<k>.*`, and
    only the attempt named in the current `pass_identity` is read or counted (Stage 2a); CI/review fix),
    record the result against the SHA it ran on and act per Stage 2.
+
+   **For a CI watch, PROVE THE SNAPSHOT BELONGS TO THE CURRENT HEAD BEFORE PARSING IT.** Read the
+   ledger's current `head_sha`, open `<rundir>/ci-<pr>-<head_sha>.txt`, and confirm its `# sha:` line
+   equals that `head_sha`. **Absent, partial, or mismatched → `ci = pending`, relaunch the watch,
+   NEVER green** — a missing/partial file means the fetch did not complete; a mismatched one describes a
+   **superseded commit** and says nothing about the current head. **NEVER parse a snapshot you cannot
+   prove is about the SHA in the ledger.** A watch finishing for a SHA the PR has already moved past is
+   **expected, not an error** (campaign pushes fixes constantly, and every commit advances the head): its
+   result is **discarded**, and the relaunched watch observes the new head (`stage-2-ci.md`).
+
+   **The snapshot MUST cover BOTH CHECK FAMILIES** — check runs **and** legacy commit statuses. A failing
+   Jenkins/CircleCI **commit status is invisible** to `/commits/<sha>/check-runs`, so a check-runs-only
+   snapshot reads nonempty and all-success while the build is red. Derive it from
+   `gh pr view <pr> --json headRefOid,statusCheckRollup`, which returns both families **and** the head SHA
+   in one payload; a `StatusContext` has `.state` (not `.conclusion`), and `ERROR` is a **failure**
+   (`stage-2-ci.md`).
+
+   **Then PROVE THE EXPECTED CHECKS REGISTERED, FROM THE RIGHT PRODUCER.** An all-success snapshot proves
+   only that every **registered** run passed — checks register asynchronously, so a slow workflow or a
+   GitHub App check may not have appeared yet. Read the repo's **declared required checks** for `<base>`
+   from **BOTH** classic branch protection **and rulesets**, and take the **UNION** — neither endpoint sees
+   the other's declarations: **every declared required check MUST be PRESENT in the snapshot and
+   successful**, else `ci = pending`, relaunch the watch, **NEVER green**. **Where the declaration binds an
+   app** (`app_id` / `integration_id`), match the check run's **`.app.id`** too — a same-named check from
+   another producer does **NOT** satisfy it; **where it binds no app, any producer of that name does.**
+
+   **THREE STATES, NEVER TWO — and "I cannot see any" is NOT "there are none."** The classic
+   `protection/required_status_checks` endpoint **404s both** when the branch is unprotected **and** when
+   the token lacks **Administration: read**. **NONE DECLARED** is provable **only** when the required-set
+   read **SUCCEEDED and came back EMPTY** — registration completeness then **cannot be proven**, and green
+   means only *"every check registered by the time we looked had passed"*, a residual risk closed only by
+   the user declaring required checks. **CANNOT READ** (404/403 without admin, any error on either
+   endpoint) is **UNKNOWN — NOT "none declared"**: do **not** fall through to the weaker rule, **record the
+   uncertainty on the PR row and in the report**, and never claim registration completeness. **Prefer the
+   rulesets endpoint — it needs no admin, and the classic endpoint cannot see rulesets at all**
+   (`stage-2-ci.md`, "The registration gap").
 3. **Dispatch due work — non-blocking, idempotent, bounded, work-conserving.** Scan the whole run,
    not just the PR/job that woke you. Launch every due action that fits a free slot before returning.
    Launch only what is actually due *and not already in flight* (check ground truth first, never the
@@ -226,7 +263,9 @@ blocks; each completion is its own wake.
      conflict-resolving rebase) while a review is in flight on that PR → **stop that review task
      first** (its verdict can only describe a SHA the fix is about to replace); the freed slot goes
      to the next due review.
-   - mergeable **and not parked** → queue for serialized merge drain.
+   - mergeable **and not parked** — live `head_sha` matches, `reviews_ok >= required(tier)`,
+     `ci == green`, **and GitHub reports `MERGEABLE` + `mergeStateStatus == CLEAN`** (anything else,
+     `BLOCKED`/`UNSTABLE` included, is NOT mergeable — Stage 3) → queue for serialized merge drain.
    Treat ~8 as a **rolling concurrency cap**, not a wave size: keep up to ~8 CI-fix subagents and ~8
    review processes in flight, refilling each free slot immediately; queue the rest. **Launch, do not
    wait — never barrier on a group of PRs before dispatching the next.**

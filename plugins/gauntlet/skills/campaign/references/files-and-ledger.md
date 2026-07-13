@@ -14,7 +14,7 @@ files from colliding — see "Run identity and concurrency".
 | `review-<pr>-<n>.plan.jsonl` | Orchestrator-authored review work units for round `n` (per-pass — a relaunch reuses it) |
 | `review-<pr>-<n>.progress.jsonl` | Reviewer progress events against the plan for round `n` (launch attempt 1) |
 | `review-<pr>-<n>.a<k>.txt` / `.a<k>.progress.jsonl` | Same two artifacts for **launch attempt `k ≥ 2`** — a relaunched pass writes here, never over attempt 1's files, so a killed-but-alive attempt can't corrupt the live one. Only the attempt named in the active `pass_identity` is read or counted (see `stage-2-review-gate.md`) |
-| `ci-<pr>.txt` | Latest `gh pr checks` snapshot for a PR (re-polled after the watch, not the watch stream) |
+| `ci-<pr>-<sha>.txt` | The PR's check state at **`<sha>`**, covering **BOTH check families** — check runs **and** legacy commit statuses (`gh pr view <pr> --json headRefOid,statusCheckRollup`, re-polled after the watch — never the watch stream, never an unpinned `gh pr checks` snapshot, and **never `/check-runs` alone**, which cannot see a failing Jenkins/CircleCI **commit status**). Rows are `checkrun\t<name>\t<status>\t<conclusion>` and `status\t<context>\t<state>`, plus `app\t<name>\t<app.id>` rows from the SHA-pinned `--paginate` check-runs fetch when a required check **binds an app**. **SHA-SCOPED in the FILENAME and stamped in its FIRST LINE** (`# sha: <full sha>`, emitted by the same query as the rows, so stamp and rows can never describe different commits). Written **ATOMICALLY**: fetches go to a temp file **inside `<rundir>`** (same filesystem → `mv` is an atomic rename) and are promoted here only if **every** fetch exits 0, so this file is **always a COMPLETE snapshot**. **Before parsing, the consumer MUST verify `# sha:` equals the ledger's current `head_sha`** — absent, partial, mismatched, or a rollup at its context cap (truncated = partial) → `ci = pending`, relaunch the watch, **NEVER green**. A snapshot for a superseded SHA is expected (the head advances under a running watch) and is simply discarded. It lists only the checks that had **REGISTERED** when it was taken, so it is **NOT** self-evidently the whole set: every **declared** required check must be present in it — **matched on producer where the declaration binds an app** — and successful before it may be read as green (`stage-2-ci.md`) |
 | `audit-<pr>-<n>.md` | The orchestrator's audit of round `n`'s findings — CONFIRMED / ADJUSTED / REFUTED, each with evidence. A REFUTED finding's reasoning is recorded here **and** written into the tree as an inline comment at the site, committed like any other change (`stage-2-review-gate.md`, "Audit every finding before you fix it") |
 | `abort-<id>.md` | Detailed log for an aborted PR-task |
 
@@ -47,7 +47,8 @@ git-ignored driver bookkeeping, and that is the extent of campaign's on-disk foo
 
 One row per adopted PR. It is a **cache**, not the authoritative state — **ground truth is
 GitHub via `gh`, plus local worktrees** (`gh pr list/view` for PRs and merged/open state, each PR's
-`headRefOid` from `gh` — keyed by PR number — for the live head SHA, `gh pr checks` for live CI, and
+`headRefOid` from `gh` — keyed by PR number — for the live head SHA, **both check families** (check runs
+**and** commit statuses) pinned to that SHA for live CI, and
 the **active launch attempt's** review output files for which verdicts exist on which SHA —
 `review-<pr>-<n>.txt` for attempt 1, `review-<pr>-<n>.a<k>.txt` after a relaunch, counting only the
 attempt named in that pass's `pass_identity`, so a relaunch's verdict is never missed and a dead
@@ -117,7 +118,21 @@ Header field notes (the header fields above; per-row fields follow):
   tiers").
 - `tier` — the adaptive review tier derived from `head_sha`: `TRIVIAL` | `STANDARD` | `HIGH`. Re-derived
   every wake and re-triaged on any content change; drives `required(tier)` and the review depth.
-- `ci` — `green` / `red` / `pending` / `none` for `head_sha`.
+- `ci` — `green` / `red` / `pending` / `none` for `head_sha`. `green` requires a complete, SHA-verified
+  snapshot **covering BOTH check families** (check runs **and** commit statuses — a check-runs-only
+  snapshot cannot see a failing Jenkins status) with **≥1 row, every check run `COMPLETED`+`SUCCESS`, every
+  commit status `SUCCESS`** (`ERROR` is a **failure**), **AND every DECLARED required check present in it
+  and successful — matched on the check run's `.app.id` wherever the declaration binds an app** (a
+  same-named check from another producer does **not** satisfy it; where no app is bound, any producer of
+  that name does). A declared required check that has not registered → `pending`, never `green`.
+  **The required-set read has THREE outcomes, never two:** where it **SUCCEEDED and came back EMPTY**
+  (**NONE DECLARED**), `green` means only *"every check that had registered by the time we looked had
+  passed"* — registration completeness is unprovable there; where it **CANNOT BE READ** (404/403 without
+  **Administration: read**, any error on either the protection or the rulesets endpoint), the expected set
+  is **UNKNOWN — which is NOT "none declared"**: record the uncertainty on the row, never claim
+  registration completeness, and never imply no required checks exist (`stage-2-ci.md`, "The registration
+  gap"). `ci = green` alone **never** authorizes a merge: Stage 3 also requires GitHub's `MERGEABLE` +
+  `mergeStateStatus == CLEAN`.
 - `attempts` — task attempts so far (for the retry-once bailout).
 - `started` — wall-clock start of the current attempt (for the 1-hour cap).
 - `api_approval` — durable record of the user's decision on this PR's API-changing fix: `-`

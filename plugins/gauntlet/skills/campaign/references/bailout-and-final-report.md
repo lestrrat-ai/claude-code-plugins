@@ -45,6 +45,19 @@ When the loop exits, summarize:
   least-certain area it named — `required(tier)` lines, so two for a STANDARD/HIGH PR and one for a
   TRIVIAL PR), and a flag when two accepting passes name the same area. This is non-actionable,
   non-gating calibration metadata — a place a human might look, never a reopened finding (Stage 2a).
+- **CI verification gap** — state which of the three required-set states the run was in (`stage-2-ci.md`,
+  "Three states, never two"), because it changes what `ci = green` was allowed to mean:
+  - **DECLARED** → campaign verified every required check registered (and, where the declaration binds an
+    app, that it came from that app) and passed.
+  - **NONE DECLARED** (the required-set read **succeeded and was empty**) → registration completeness is
+    **unprovable**; green means only *"every check that had registered by the time we looked had passed"*.
+    Report it as a **residual risk** and name the remedy: declare the checks required.
+  - **CANNOT READ** (404/403 without **Administration: read**, or any error on the protection **or**
+    rulesets endpoint) → the expected set was **UNKNOWN**. **Say so explicitly. NEVER report it as "no
+    required checks are declared"** — that asserts something the run never observed. State that a required
+    check may have existed and been missing, that campaign could not tell, and that the merge gate rested
+    on GitHub's own `mergeStateStatus == CLEAN` — **GitHub** verified the required set; **campaign did
+    not**.
 - **Aborted** — PR number + slug, why, pointer to `abort-<id>.md`.
 - **Skipped (API-declined)** — any PR whose API-changing fix the user was asked about and declined,
   with the change each would have needed.

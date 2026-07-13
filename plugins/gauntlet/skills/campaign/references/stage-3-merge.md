@@ -2,9 +2,10 @@
 
 A PR is mergeable when it is **NOT parked** AND the **live PR head SHA** —
 `gh pr view <pr> --json headRefOid --jq .headRefOid`, keyed by the PR number from the ledger row —
-equals the ledger `head_sha` AND `reviews_ok >= required(tier)` AND `ci == green` — i.e.
-`required(tier)` SATISFIED verdicts (1 if `tier == TRIVIAL`, else 2) and green CI all recorded
-against the live tip. (An adopted PR may have no local worktree checked out, so use the PR's own head
+equals the ledger `head_sha` AND `reviews_ok >= required(tier)` AND `ci == green` **AND GitHub's own
+verdict is `mergeable == MERGEABLE` and `mergeStateStatus == CLEAN`** — i.e. `required(tier)` SATISFIED
+verdicts (1 if `tier == TRIVIAL`, else 2) and green CI all recorded against the live tip, **and GitHub
+agrees the tip is clean**. (An adopted PR may have no local worktree checked out, so use the PR's own head
 via `gh`, never a local `git rev-parse HEAD`.)
 
 **The parked-status guard binds the merge (`loop-control.md` step 3).** A PR whose `status` is
@@ -14,14 +15,41 @@ not lower `reviews_ok`, so a rule that reads only the counters would merge a PR 
 or API change the user has not yet ruled on. Only the user's answer unparks it (`status` back to
 `in_review`); until then it is skipped, never merged.
 
+**GITHUB'S VERDICT IS A HARD MERGE PRECONDITION — NEVER MERGE WITHOUT IT.**
+`gh pr view <pr> --json mergeable,mergeStateStatus` MUST read **`MERGEABLE`** + **`CLEAN`**. It is
+**load-bearing**, not a sanity check: GitHub computes it **knowing the repo's required-check set**, which
+our own snapshot does not.
+
+- **`BLOCKED`** → a **required check is missing or failing**, or a required review is absent. **NEVER
+  merge.** Treat as `ci = pending`: relaunch the watch, re-enter Stage 2.
+- **`UNSTABLE`** → a **non-required check is failing**. **NEVER merge** — campaign requires **all** checks
+  green, not just required ones. Handle it as a red check (Stage 2b).
+- **`BEHIND` / `DIRTY` / `CONFLICTING`** → refresh the PR per step 6 instead of merging it.
+- **Anything other than `CLEAN`** → **NEVER merge.** There is no "close enough" state.
+
+**STATE ITS LIMIT HONESTLY — `CLEAN` does NOT prove that every expected check REGISTERED.** GitHub cannot
+block on a check it does not know about, so where the repo declares **no** required checks, `CLEAN` proves
+only that **nothing GitHub knows about is failing or pending**. It catches a registered check that is
+failing or still running; it does not close the registration gap (`stage-2-ci.md`, "The registration
+gap"). **Require it anyway — and NEVER claim it proves more than it does.**
+
+**When campaign COULD NOT READ the required-check set** (the classic protection endpoint 404s **both** on
+an unprotected branch **and** without **Administration: read** — `stage-2-ci.md`, "Three states, never
+two"), this precondition is doing **more** of the work, not less: GitHub **does** know the required set and
+will report `BLOCKED` if one is missing or failing, even though campaign cannot enumerate it. **That does
+NOT license treating the unreadable set as empty**, and it does **NOT** relax anything here — `MERGEABLE` +
+`CLEAN` was already mandatory. Say plainly in the report which one verified the required set: **GitHub
+did; campaign could not.** **NEVER report "no required checks are declared" off a read that failed.**
+
 1. **Serialize merge operations, not wakes.** A wake may merge multiple PRs, but only one at a time.
    Before each merge, re-confirm the PR is still **not parked** and that both gates still hold against the live PR head SHA
    (`gh pr view <pr> --json headRefOid --jq .headRefOid`, PR number from the ledger row) — a late push
    may have moved the tip past the recorded `head_sha` and reset the gates —
    **and re-fetch `origin/<base>` and re-check
-   `gh pr view <pr> --json mergeable,mergeStateStatus`** — a concurrent run sharing this base may
-   have advanced it since the PR was last reviewed. If it now reads `BEHIND`/`DIRTY`/`CONFLICTING`,
-   refresh the PR per step 6 instead of merging it.
+   `gh pr view <pr> --json mergeable,mergeStateStatus`, which MUST read `MERGEABLE` + `CLEAN`** — a
+   concurrent run sharing this base may have advanced it since the PR was last reviewed, and a check may
+   have registered or failed since the snapshot was taken. Anything other than `CLEAN` → do NOT merge:
+   `BEHIND`/`DIRTY`/`CONFLICTING` → refresh the PR per step 6; `BLOCKED`/`UNSTABLE` → back to Stage 2.
 2. Push guard: `gh pr view <pr> --json state --jq .state` (PR number from the ledger row) must be
    `OPEN`.
 3. Merge — always `gh pr merge <pr> --squash` (use the repo's prevailing merge method if not squash),
@@ -122,9 +150,9 @@ or API change the user has not yet ruled on. Only the user's answer unparks it (
      --remove-label gauntlet-accepted --add-label gauntlet-reviewing`) — the gate and its label move
      together (`stage-2-review-gate.md`, "Status labels mirror the review gate"). Then relaunch the CI
      watch and re-enter Stage 2.
-   - Still open, **not parked**, mergeable, not behind/dirty/conflicting, same live `head_sha`,
+   - Still open, **not parked**, `mergeable == MERGEABLE` with `mergeStateStatus == CLEAN`, same live `head_sha`,
      `reviews_ok >= required(tier)`, and `ci == green` → still immediately mergeable; return to step 1
-     in the same wake.
+     in the same wake. Any other `mergeStateStatus` → NOT mergeable.
 
 Stop the merge loop only when no remaining PR is immediately mergeable after the latest base refresh.
 
