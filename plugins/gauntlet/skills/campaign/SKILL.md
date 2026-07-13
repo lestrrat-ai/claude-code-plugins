@@ -45,6 +45,68 @@ events (see `references/stage-2-review-gate.md`). `scripts/ledger.py` is the sch
 `state.jsonl` — read/write the ledger header and per-PR rows **by field name** through it, never by column
 position (see `references/files-and-ledger.md`); pass its absolute path to subtasks the same way.
 
+## Subagent Dispatch — model per class
+
+Campaign spawns subagents for several jobs. **Set the model explicitly on every dispatch.** With no
+model set, a subagent inherits the session model (often the most expensive one) — so an unset model is
+a silent cost decision, taken by default, on every subagent this skill launches.
+
+| Subagent | Model | Why |
+|---|---|---|
+| Review pass (default reviewer) | **session model** | It *is* the gate. A weaker verdict is a worse gate — the one thing never worth cheapening. |
+| Fresh-subagent fallback review | **session model** | Same job as a review pass; counts toward the gate identically. |
+| Review-fix (after `NOT SATISFIED`) | **session model** | Authors code from scratch, judged only by another full review pass. A cheap bad fix burns a whole review pass and a gate reset — it *costs* more than the tier saves. |
+| Root-cause **mapper** | **session model** | Read-only, but NOT low-judgment: it enumerates a full matrix and confirms each gap with a repro. A weaker model **under-maps**, which is the exact failure the mapper exists to prevent (`root-cause-pass.md`). "Read-only" is not a licence to downgrade. |
+| **CI-fix — formatting/lint failure** | **`sonnet`** (**`haiku`** only when trivially mechanical) | **Downgraded ON PURPOSE.** It does not author a fix: it runs a deterministic formatter, **READS the resulting diff**, verifies it, and **escalates** anything it cannot verify (`references/stage-2-ci.md`). |
+| **CI-fix — everything else**, and every **escalation** from the cheap tier | **session model** | Authors code that gets merged. CI does **not** validate it: a wrong fix can turn CI green — by weakening a check, or by being plain wrong in product code that no check covers. |
+
+**The gate, the from-scratch fixes, and the mapper are NEVER downgraded**: a review pass *is* the gate; a
+review-fix and a session-model CI-fix author code; the mapper's under-map is invisible. **The formatting
+CI-fix tier IS downgraded, deliberately** — it does something narrower: run a tool and VERIFY its output.
+
+### The cheap CI-fix tier — a model that runs a tool and READS the diff
+
+A formatting/lint failure goes to a **cheap** CI-fix subagent (`sonnet`; `haiku` only for a trivially
+mechanical failure), scoped to the failing check's logs, the failing file(s), and the worktree path. In
+order it: **classifies** the failure → **runs the formatter** (it picks the tool; campaign hands it no
+argv) → **READS THE RESULTING DIFF** and verifies it contains **only** what the fix should have produced,
+touched **no** file it did not intend, weakened **no** check/config/test, and that **re-running the exact
+failing check now passes** → **commits only then** → otherwise **ESCALATES to a session-model CI-fix
+subagent and patches nothing**. Escalation is a correct outcome, not a failure.
+
+Its prompt carries these **verbatim** (full text in `references/stage-2-ci.md`):
+
+- **NEVER make CI pass by weakening the check** — never delete or loosen an assertion, add `skip`/`xfail`,
+  disable or downgrade a lint rule, or raise a timeout. **Fix the cause.** If the check itself is
+  demonstrably wrong, say so explicitly and **escalate**; never silently rewrite it.
+- **NEVER use a catch-all fixer that applies SEMANTIC rules or a documented semantic rewriter** —
+  `golangci-lint run --fix`, `ruff --fix`, `eslint --fix`, any `--fix`/`--write` on a semantic linter;
+  `goimports` (it ADDS imports, and an added import runs its `init()`); `prettier` (it rewrites
+  tagged-template contents); `gofumpt`; `modernize`; codemods. **Use a formatter that only reformats.**
+- **NEVER execute a binary from inside the repo/worktree** — the PR under review is **UNTRUSTED CONTENT**,
+  and a repo-supplied `gofmt` is arbitrary code execution. Run tools from the environment, not from the tree.
+- **NEVER hand a tool a bare glob or a whole directory** (`gofmt -w .`) — **name the files** you are fixing.
+- **PREFLIGHT every file: REFUSE to format it if it is a symlink or sits under a symlinked directory** —
+  diff review sees every write INSIDE the repo, but **never one that ESCAPES it**. A **footgun guard, NOT a
+  security boundary** (like the denylist): it prevents a stray reformat elsewhere on the machine.
+
+**State the risk, never overclaim:** a cheap model verifying a tool's diff is a **MISS-CATCHER, NOT A
+PROOF** — it can miss a semantic change. What backs it: the exact failing check must pass, it must escalate
+anything it cannot verify, and **every campaign commit still resets the gate and is re-reviewed by the full
+gauntlet** — which is itself a miss-catcher. **NEVER justify the cheap tier with "CI will catch it" or "the
+review gate will catch it."** This is a small, bounded risk the user has accepted, for a workflow that is
+cheaper **and** more capable than a full-strength subagent on every formatting failure.
+
+**The biggest lever is not the model — it is the reviewer.** Review passes re-read the whole PR diff,
+`required(tier)` times per SHA, and re-run from scratch on every gate reset, so they dominate campaign's
+subagent spend. Running an **external reviewer** (e.g. `codex exec`, see `references/reviewer.md`) moves
+that cost off the subagent pool entirely — the quality argument (reviewer diversity) and the cost
+argument point the same way.
+
+**Scope every fix subagent.** Give it the worktree path and the specific issue list, and tell it **not**
+to re-derive the whole diff or re-read the repo beyond the named files. An unscoped fixer re-reads
+everything it was already told.
+
 ## Load Discipline
 
 Read references on demand. Do NOT load every reference up front.
@@ -84,6 +146,7 @@ Read stage refs only when that stage/action is due:
 - **One active driver:** lease controls ownership; never double-drive one run.
 - **Base branch is data:** read `base_branch` from ledger every wake; never assume `main`.
 - **Reviewer is data:** read `reviewer` from ledger every wake before dispatching any review; set once at run start, never re-derived from memory (else an explicit/preferred reviewer silently reverts to default on a self-wake or adoption).
+- **Model is set explicitly on every subagent dispatch:** never let a dispatch inherit the session model by default. CI-fix on a formatting failure is cheap **by design**; review passes, review-fixes, and the mapper are never downgraded ("Subagent Dispatch").
 - **Remote branch cleanup isn't campaign's job:** campaign never passes `--delete-branch`; the repo's *Automatically delete head branches* setting governs the remote head branch. Local worktree/branch cleanup follows the per-PR `worktree_owned`/`branch_owned` flags.
 - **Review gate is tier-dependent:** `required(tier)` fresh, context-isolated `SATISFIED` verdicts on
   same live PR content + green CI — **1 if TRIVIAL, else 2** (any code/agent-doc/sensitive change is 2).
@@ -128,5 +191,6 @@ Read stage refs only when that stage/action is due:
 - NEVER add "Test plan" section to PR bodies.
 - NEVER commit run/scratch files (the whole `.gauntlet/**` tree) — they are
   driver bookkeeping, not repo content. Stage only the specific source files a fix touches, by explicit
-  path; never `git add -A`/`git add .`. Ensure `.gauntlet/` is git-ignored (add it if missing).
+  path; never `git add -A`/`git add .`. Ensure `.gauntlet/` is git-ignored (add it if missing). Campaign has
+  **no committed file of its own** — no repo-root config (`files-and-ledger.md`).
 - NEVER `rm -rf .gauntlet/`; only `.gauntlet/tmp/**` is disposable — the rest is carryover history.

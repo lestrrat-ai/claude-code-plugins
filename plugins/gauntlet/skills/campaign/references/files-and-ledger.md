@@ -37,6 +37,11 @@ carryover history with it. Scratch cleanup targets `.gauntlet/tmp/**` and nothin
 The history tree keeps **one file per run** (`<run-id>.md`) so concurrent runs never clobber a shared
 file. Everything else stays ephemeral under the per-run `<rundir>`. See "Fresh runs and carryover".
 
+### Campaign commits NO file of its own
+
+**Campaign has NO committed file — no repo-root config, nothing.** The whole `.gauntlet/**` tree is
+git-ignored driver bookkeeping, and that is the extent of campaign's on-disk footprint.
+
 ### The ledger — `state.jsonl`
 
 One row per adopted PR. It is a **cache**, not the authoritative state — **ground truth is
@@ -58,7 +63,7 @@ following line is one adopted PR's row record (`{"type": "row", …}`). Every re
 — fields are keyed by NAME, never by column position:
 
 ```
-{"type": "header", "run_id": "g260704-0915-a3f29c1b", "base_branch": "main", "api_changes": "ask", "reviewer": "default"}
+{"type": "header", "run_id": "g260704-0915-a3f29c1b", "base_branch": "main", "api_changes": "ask", "reviewer": "codex"}
 {"type": "row", "id": "pr41", "slug": "fix-null-deref", "branch": "fix-null-deref", "worktree": ".worktrees/fix-null-deref", "worktree_owned": "yes", "branch_owned": "yes", "pr": "41", "head_sha": "a3f29c1b", "reviews_ok": "2", "ci": "green", "tier": "STANDARD", "attempts": "1", "started": "2026-07-04T09:15:00Z", "api_approval": "-", "status": "mergeable"}
 {"type": "row", "id": "pr52", "slug": "add-retry-flag", "branch": "add-retry-flag", "worktree": ".worktrees/add-retry-flag", "worktree_owned": "no", "branch_owned": "no", "pr": "52", "head_sha": "b1c2d3e4", "reviews_ok": "0", "ci": "pending", "tier": "HIGH", "attempts": "0", "started": "-", "api_approval": "-", "status": "in_review"}
 ```

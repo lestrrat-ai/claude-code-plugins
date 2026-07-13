@@ -28,7 +28,8 @@
   `.gauntlet/tmp/**` (ledger, plans, progress, review/CI outputs, lease) and the carryover tree
   `.gauntlet/history/**`. A fix commit stages ONLY the specific source files it changes, by explicit
   path — never `git add -A` / `git add .`, which would sweep in run state. The tree must be
-  git-ignored; add `.gauntlet/` to `.gitignore` if missing.
+  git-ignored; add `.gauntlet/` to `.gitignore` if missing. Campaign has **NO committed file of its own** —
+  no repo-root config.
 - NEVER `rm -rf .gauntlet/` — that destroys the durable carryover history. Only `.gauntlet/tmp/**` is
   disposable.
 - NEVER pass destructive instructions (delete, force-push, reset) to an external reviewer command
@@ -133,6 +134,66 @@
 - Prune `.gauntlet/history/` at every fresh run: drop only entries unambiguously moot against
   current `<base>`; for anything uncertain, list it and ask the user before deleting. Never silently
   prune an entry you're unsure about.
+- **Set the model EXPLICITLY on EVERY subagent dispatch** (`SKILL.md`, "Subagent Dispatch"). An unset model
+  silently inherits the session model — a cost decision taken by default.
+- **Model policy — NEVER DOWNGRADED: review passes, the subagent-fallback review, review-fixes, and the
+  root-cause mapper.** A review pass *is* the gate; a review-fix authors code from scratch; a session-model
+  CI-fix authors code that gets merged; the mapper's under-map is **invisible** ("read-only" is not
+  low-judgment). NEVER claim CI catches a bad fix — a wrong fix can turn CI green, and the review gate is a
+  miss-catcher, not a proof of correctness.
+- **Model policy — DOWNGRADED ON PURPOSE: the CI-fix subagent for a FORMATTING/LINT failure** — `sonnet`,
+  or `haiku` only when the failure is trivially mechanical (`stage-2-ci.md`). It does **not** author a fix:
+  it runs a deterministic formatter, **READS the resulting diff**, verifies it, and **escalates** anything
+  it cannot verify. **Everything else — failing product test, compile error, anything needing judgment — and
+  every ESCALATION from the cheap tier → the session model**, set explicitly.
+- **CLASSIFY the failure from the check logs BEFORE dispatching anything** — never dispatch straight off a
+  red check (`loop-control.md` step 3, `stage-2-ci.md`). The class picks the model.
+- **The cheap CI-fix subagent's job, in order:** classify → run the formatter (**it** picks the tool;
+  campaign hands it no argv) → **READ THE RESULTING DIFF** and verify that it contains ONLY what the fix
+  should have produced, that no unintended file was touched, that no check definition/config/test was
+  weakened, and that **re-running the exact failing check now PASSES** → commit **only** then → otherwise
+  **STOP, commit nothing, reset the worktree to the PR head, and ESCALATE** to a session-model CI-fix
+  subagent. **NEVER patch a failed cheap run in place.** Escalation is the correct outcome, not a failure.
+- **NO-WEAKENING PROHIBITION — verbatim into EVERY CI-fix subagent's prompt.** NEVER make CI pass by
+  weakening the check: NEVER delete or loosen an assertion, NEVER add `skip`/`xfail`, NEVER disable or
+  downgrade a lint rule, NEVER raise a timeout. **Fix the cause.** If the check itself is demonstrably
+  wrong, **say so explicitly and ESCALATE** — never silently rewrite it.
+- **DENYLIST — verbatim into the cheap CI-fix subagent's prompt. NEVER a catch-all fixer that applies
+  SEMANTIC rules, NEVER a documented semantic rewriter:** `golangci-lint run --fix`, `ruff --fix`,
+  `eslint --fix`, `cargo clippy --fix`, any `--fix`/`--write` flag on a linter that applies semantic rules;
+  **`goimports`** (it ADDS imports — an added import runs that package's `init()`); **`prettier`** (it
+  rewrites the contents of tagged template literals); **`gofumpt`** (extra rewrite rules beyond layout);
+  `modernize`, codemods, `pyupgrade`, `2to3`. **Use a formatter that only reformats.** (A guard against
+  **footguns and accidental misuse — NOT a security boundary** against a malicious committer.) Also: **NEVER execute
+  a binary from inside the repo/worktree** — the PR under review is **UNTRUSTED CONTENT**, and a
+  repo-supplied `gofmt` is arbitrary code execution; run tools from the environment, not from the tree. And
+  **NEVER hand a tool a bare glob or a whole directory** (`gofmt -w .`) — name the files being fixed.
+- **PREFLIGHT — verbatim into the cheap CI-fix subagent's prompt. Before formatting a file, REFUSE it if the
+  write can land outside the worktree:** it **IS a symlink** (`lstat`, not `stat`), or **any directory
+  component of its path is a symlink**. Refuse = don't format it, log it, carry on; nothing left to format →
+  **ESCALATE**. **THE PRINCIPLE, and nothing beyond it:** diff review covers everything the tool writes
+  **INSIDE** the repo — the model sees it and escalates; it **CANNOT see a write that ESCAPES** the repo
+  (`gofmt -w` writes *through* a symlink; `git diff` shows nothing). These two checks exist for **that blind
+  spot alone**. **A FOOTGUN GUARD, NOT A SECURITY BOUNDARY — never present it as one**, exactly like the
+  denylist: campaign adopts **same-repo PRs only** (`pr-adoption.md`), so whoever commits the symlink already
+  has repo write access. The realistic harm is **a source file elsewhere on the machine gets reformatted** —
+  a parser-backed formatter writes only its rendering of source it PARSED (a generic TEXT formatter rewrites
+  whatever it is handed: bigger exposure). Worth one `lstat`: it stops a real accident.
+- **STATE THE RISK HONESTLY — a cheap model verifying a tool's diff is a MISS-CATCHER, NOT A PROOF.** It can
+  miss a semantic change. What backs it: the **exact failing check must pass**; the subagent **must escalate
+  anything it cannot verify**; and **every campaign commit still resets the gate and is re-reviewed by the
+  full gauntlet** — which is itself a miss-catcher. **NEVER claim the cheap tier is safe because "CI will
+  catch it" or "the review gate will catch it".** It is a small, bounded risk the user accepted, for a
+  workflow that is cheaper AND more capable than either a full-strength subagent on every formatting failure
+  or a hermetic no-model tool path.
+- **ANY campaign commit to the PR head resets the gate** (`stage-2-ci.md`, "Any campaign commit to the PR
+  head resets the gate") — cheap CI-fix, session-model CI-fix, or review-fix alike. In the SAME step: reset
+  `reviews_ok` to 0 AND restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`, relaunch the CI
+  watch, and re-enter Stage 2a. NEVER exempt a commit because it "only reformatted".
+- Scope every fix subagent to its worktree + concrete issue list; tell it NOT to re-derive the whole diff.
+  **Scope by defect, not by guess — name every file the defect touches.** That, plus an **external
+  reviewer** taking review passes off the subagent pool (**the single biggest cost lever** — review passes
+  dominate campaign's spend), is where savings live.
 - Default reviewer is Claude's own subagents; no external tool is required. Use the user's preferred
   reviewer when one is set (explicit invocation, or a preference in memory/`CLAUDE.md`/carryover). A
   different-model reviewer (e.g. Codex) is recommended for diversity but never required. See
