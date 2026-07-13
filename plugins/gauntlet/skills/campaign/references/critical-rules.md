@@ -111,15 +111,21 @@
   (`status = awaiting-user`), surface finding + refutation + evidence + the reviewer's counter, let the
   USER adjudicate, and keep driving the other PRs. `awaiting-user` is **standoff-only** — a REFUTED
   finding does NOT park by itself (`stage-2-review-gate.md`, "Audit every finding before you fix it").
-- **A PARKED PR DISPATCHES NOTHING.** `status = awaiting-user` (standoff) or `awaiting-api` (API
-  approval) means the PR waits on a **HUMAN**: **NEVER** launch a review pass, a CI fix, a review fix,
-  or a merge for it — skip it and keep driving the run's other PRs. The park does **not** raise
-  `reviews_ok`, so a dispatch or merge rule that reads only `reviews_ok`/`ci`/`mergeable` would
-  re-review a parked PR and let a `SATISFIED` verdict merge it **without the user's ruling** — the guard
-  MUST be enforced where work is **DISPATCHED** (`loop-control.md` step 3) and at the **MERGE**
-  (`stage-3-merge.md`), not merely recorded in the ledger. Only the user's answer unparks it (`status`
-  → `in_review`; a declined API change → `aborted`). **Keep the CI watch running** while parked
-  (observation, not work-dispatch) — but dispatch no CI fix.
+- **A PARKED PR IS FROZEN — TAKE NO ACTION THAT MUTATES IT.** `status = awaiting-user` (standoff) or
+  `awaiting-api` (API approval) means the PR waits on a **HUMAN**. The test is **"does this MUTATE the
+  PR?"** — **not** "is this action named in a list", because an enumeration will miss a site (it did:
+  the guard once named four dispatch sites and missed `stage-3-merge.md` step 6's post-merge rebase).
+  **NEVER** launch a review pass, a CI fix, a review fix, or a merge for it; **NEVER** rebase it,
+  refresh its base, push to it, relabel it, or change its content in any other way — **and nothing
+  absent from that list either**. Skip it and keep driving the run's other PRs. The park does **not**
+  raise `reviews_ok`, so a dispatch or merge rule that reads only `reviews_ok`/`ci`/`mergeable` would
+  re-review a parked PR and let a `SATISFIED` verdict merge it **without the user's ruling** — and a
+  post-merge rebase would change the very content the user is adjudicating. The guard MUST be enforced
+  at **every dispatch and mutation site** — `loop-control.md` step 3 (the canonical statement), the
+  **merge** and the **post-merge reconcile** (`stage-3-merge.md`) — not merely recorded in the ledger.
+  Only the user's answer unparks it (`status` → `in_review`; a declined API change → `aborted`); a
+  parked PR that fell behind its base stays behind until then. **Keep the CI watch running** while
+  parked — observing a PR is not mutating it — but dispatch no CI fix.
 - Reviews are fresh, context-isolated re-rolls: a separate reviewer invocation each pass (Claude
   subagent by default, or the user's preferred reviewer), no shared context. A second pass re-rolls a
   stochastic reviewer to catch a missed defect — the two are NOT statistically independent (the same

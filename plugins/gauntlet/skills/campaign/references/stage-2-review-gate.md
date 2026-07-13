@@ -38,8 +38,10 @@ the row by column position). Default to **STANDARD** whenever you are unsure. `r
 ### 2a. The review gauntlet
 
 **A PARKED PR IS NOT REVIEWABLE — check `status` FIRST.** If `status` is `awaiting-user` or
-`awaiting-api`, dispatch **NOTHING** for that PR: no review pass, no precondition fix, no CI fix, no
-review fix, no merge (`loop-control.md` step 3, "parked-status guard"). The park leaves
+`awaiting-api` the PR is **FROZEN**: take no action that **MUTATES** it — no review pass, no
+precondition fix (including the conflict rebase below), no CI fix, no review fix, no merge, and nothing
+else that changes it (`loop-control.md` step 3, "parked-status guard" — the governing property; these
+are only examples). The park leaves
 `reviews_ok < required(tier)`, so the review-launch rule MUST read `status` too — otherwise the next
 wake re-reviews a PR that is waiting on a HUMAN and a `SATISFIED` verdict merges it **without the
 user's ruling**. Its CI watch keeps running; everything else waits for the user's answer.

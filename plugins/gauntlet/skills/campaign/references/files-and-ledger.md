@@ -128,12 +128,14 @@ Header field notes (the header fields above; per-row fields follow):
   gate flow, `declined` with a terminal `aborted`. A one-off approval lands here only; it never flips
   the run-wide `api_changes` header.
 - `status` — `in_review` → `mergeable` → `merged`, or `aborted`; plus two **user-parked** (non-terminal)
-  statuses. **BOTH parked statuses BLOCK ALL DISPATCH for that PR until the user answers**: while
-  `status` is `awaiting-api` or `awaiting-user`, NEVER launch a review pass, a CI fix, a review fix, or
-  a merge for it (`loop-control.md` step 3, "parked-status guard"; `stage-3-merge.md`). The park does
+  statuses. **BOTH parked statuses FREEZE that PR until the user answers**: while `status` is
+  `awaiting-api` or `awaiting-user`, take **no action that MUTATES the PR** — never launch a review
+  pass, a CI fix, a review fix, or a merge for it, and never rebase it, refresh its base, push to it, or
+  relabel it (`loop-control.md` step 3, "parked-status guard" — the property, of which those are only
+  examples; `stage-3-merge.md` binds both the merge and the post-merge reconcile). The park does
   not raise `reviews_ok`, so the guard reads **`status`** — never `reviews_ok`/`ci`/`mergeable` alone,
   which would re-review a parked PR and merge it without the ruling. The PR's **CI watch keeps running**
-  (observation, not work-dispatch). The other PRs keep being driven; the user's answer sets `status`
+  (observing is not mutating). The other PRs keep being driven; the user's answer sets `status`
   back to `in_review` and normal dispatch resumes on the next wake.
   - `awaiting-api` — parked for the user to approve an API-changing fix. Resolves via `api_approval`:
     `approved` returns the PR to the normal flow, `declined` makes it `aborted` (terminal).

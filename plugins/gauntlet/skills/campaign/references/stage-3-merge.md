@@ -98,7 +98,19 @@ or API change the user has not yet ruled on. Only the user's answer unparks it (
    merge cannot be confirmed — treat that as a bailout condition, not a cleanup.
 6. After each merge+sync+cleanup, reconcile other open PRs (write any `reviews_ok`/`head_sha`/`ci`
    change below through `scripts/ledger.py … set --pr <N> --<field> <val>` by field name, never by
-   hand-editing the row by column position). **Base advancement alone does NOT
+   hand-editing the row by column position).
+
+   **SKIP PARKED PRs FIRST — before any base refresh, rebase, or conflict handling.** A PR whose
+   `status` is `awaiting-user` or `awaiting-api` is **FROZEN** (`loop-control.md` step 3,
+   "parked-status guard"): this reconcile MUTATES a PR, so it is exactly what the guard forbids. A clean
+   rebase would move its `head_sha` and set `ci = pending`; a conflict-resolving rebase would reset
+   `reviews_ok`, relabel, and relaunch work — and would **change the PR's content**, which can invalidate
+   the very refutation or API change the user was parked to adjudicate. **A parked PR that has fallen
+   behind simply STAYS behind** until the user answers; it is re-reconciled normally on the wake after it
+   unparks. **Do NOT drop its row** — it stays in the run, and **keeps its CI watch** (observation, not
+   mutation), so an exited watch on a parked pending PR is still relaunched.
+
+   For each **non-parked** open PR: **base advancement alone does NOT
    invalidate gauntlet reviews.** Rebase only if GitHub flags the PR behind/conflicting:
    - Clean rebase (no conflicts) → verify the PR's own diff/content is unchanged → keep `reviews_ok`,
      **keep its status label as-is** (the gate did not reset, so an accepted PR stays

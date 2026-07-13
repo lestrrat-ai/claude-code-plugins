@@ -98,8 +98,10 @@ this again", always "here's why this can't happen". Campaign gets **one** refuta
 next reviewer accepts it, the PR moves on; if it pushes back on the evidence, that's a real standoff, and
 it comes to **you** to settle — with the finding, the refutation, the evidence, and the reviewer's
 counter. It parks that PR while it waits and keeps driving the others. A parked PR is genuinely frozen:
-campaign runs nothing on it — no review, no fix, no merge — until you answer (it keeps watching CI, so
-the status stays current). The same freeze applies to a PR parked for your approval of an API change.
+campaign changes nothing about it — no review, no fix, no merge, and no rebase, even if another PR
+merges and leaves it behind the base — until you answer. It stays behind rather than let a rebase
+rewrite the very content you're being asked to rule on. It does keep watching CI, so the status stays
+current. The same freeze applies to a PR parked for your approval of an API change.
 
 It also doesn't wait around. Everything long-running — reviews, CI watches, fix subagents — happens
 in the background across all the adopted PRs at once, so at any moment it's doing all the work that's

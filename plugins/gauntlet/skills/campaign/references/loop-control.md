@@ -135,25 +135,44 @@ blocks; each completion is its own wake.
    Launch only what is actually due *and not already in flight* (check ground truth first, never the
    ledger alone).
 
-   **PARKED-STATUS GUARD — apply this BEFORE every bullet below.** A PR whose `status` is
-   **`awaiting-user`** or **`awaiting-api`** is **PARKED: dispatch NOTHING for it** — NEVER a review
-   pass, NEVER a CI fix, NEVER a review fix, NEVER a merge. It is waiting on a **HUMAN**, and no amount
-   of machine work can resolve it. **Skip it and keep driving the run's other PRs** — the run stays
-   live and the park NEVER blocks the loop (`run-identity-and-lease.md`, "Never hold the run hostage
-   on a user prompt").
+   **PARKED-STATUS GUARD — a PROPERTY, not a list. Apply it BEFORE every bullet below, and before
+   every other action this skill takes on a PR.** While a PR's `status` is **`awaiting-user`** or
+   **`awaiting-api`** the PR is **FROZEN: take NO action that MUTATES it.** It is waiting on a
+   **HUMAN**, and no amount of machine work can resolve it. **Skip it and keep driving the run's other
+   PRs** — the run stays live and the park NEVER blocks the loop (`run-identity-and-lease.md`, "Never
+   hold the run hostage on a user prompt").
+
+   **The test is "does this MUTATE the PR?" — NOT "is this action named in a list?"** *Mutate* = change
+   the PR or dispatch work that will: its content, its head commit, its base, its labels, its
+   open/merged state. Non-exhaustively: no review pass, no CI fix, no review fix, no copilot-address, no
+   precondition fix, no merge, no base refresh, no rebase (clean **or** conflict-resolving), no push, no
+   relabel, no gate reset, no content change of any kind — **and nothing absent from this list either.**
+   The list is **illustrative; the property governs.** An enumeration of dispatch sites WILL miss one —
+   it already did: this guard once listed four (review, CI fix, review fix, merge) and missed
+   `stage-3-merge.md` step 6, whose post-merge rebase of PRs that fell behind would have moved a parked
+   PR's `head_sha`, reset its gate, and **changed the very PR content the user was parked to
+   adjudicate**. Any site the skill grows later is covered the moment it would mutate a parked PR, with
+   no edit to this list. When unsure whether an action mutates, treat it as mutating and skip it.
+   - **The ONE exception is the CI watch: OBSERVING a PR is not mutating it.** A parked PR **keeps its
+     watch**, and an exited watch on a parked PR whose CI reads pending is **relaunched as usual**, so
+     its CI state is current the moment the user answers. But do **NOT** dispatch a CI *fix*.
+   - **Recording ground truth is not mutating either.** Reconcile still READS a parked PR (live SHA, CI,
+     labels) and writes what it read to the ledger — including a `reviews_ok` reset, and its label
+     mirror, when **someone else** pushed to the PR (step 1). Recording a change campaign did not make is
+     not making one. What is frozen is **campaign's own action on the PR**; a park never licenses a
+     lying label or a stale row.
    - **Only the user's answer unparks a PR.** On the answer: record it (`api_approval` for the API
      park; the audit record for the standoff ruling), set `status` back to `in_review` via
-     `ledger.py … set --pr <N> --status in_review`, and resume normal dispatch from the next wake.
-     (A declined API change goes terminal `aborted` instead.)
-   - **Keep the PR's CI watch running while parked** — a watch is *observation*, not work-dispatch, and
-     CI state must stay fresh for the unpark. Relaunch an exited watch on a parked pending PR as usual.
-     But do **NOT** dispatch a CI *fix*.
+     `ledger.py … set --pr <N> --status in_review`, and resume normal dispatch — including any rebase or
+     base refresh the PR has been owed while frozen — from the next wake. (A declined API change goes
+     terminal `aborted` instead.) A parked PR that has fallen **behind** its base simply **stays
+     behind** until then; it is not dropped from the run, just frozen.
    - **Why the guard must live HERE, at the dispatch site:** `reviews_ok < required(tier)` is TRUE for a
      parked PR (the park does not raise it), so a dispatch rule that looks only at `reviews_ok` will
      happily re-review a PR that is waiting on a human — and a `SATISFIED` verdict would then carry it
      to `mergeable` and **merge it WITHOUT the user's ruling**, which is exactly the hole the standoff
-     park exists to close. **The park MUST be enforced where work is DISPATCHED, not merely recorded in
-     the ledger.**
+     park exists to close. **The park MUST be enforced wherever the PR is ACTED ON — every dispatch site
+     and every mutation site — not merely recorded in the ledger.**
 
    Then, for each **non-parked** PR:
    - any newly-adopted PR whose ledger row lacks a `tier`, or any PR whose `head_sha` changed since it
