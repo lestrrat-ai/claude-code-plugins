@@ -284,7 +284,8 @@ wrong question. Reason on record: **symlinked directory component / excluded aft
    ANY component that is a symlink → DROP the candidate. Check 4 only tests the LAST component, so a
    symlinked directory slips a candidate past it — and past the exclusion filter, which was matched on the
    SPELLED path. A source file that must be formatted **never** sits under a symlinked directory. This check
-   is the cheap explicit tripwire; **the resolved-path exclusion filter is the guarantee** — run BOTH.
+   is load-bearing: it bounds **what we write**. Matching the exclusion filter on the resolved path too is
+   **defence in depth, NOT the guarantee** ("THE SKILL-OWNED EXCLUSION FILTER" below) — run BOTH anyway.
 
 **The exclusion filter runs on the ORIGINAL and on the RESOLVED path; checks 3–7 run AFTER it and BEFORE the
 argv is built** — the filter decides which candidates survive; these decide which surviving candidates are
@@ -318,8 +319,9 @@ Nothing below is ever admitted to the table, and the formatter list may NEVER na
 - a **catch-all fixer** — `golangci-lint run --fix`, `ruff --fix`, `eslint --fix`, `cargo clippy --fix`, or
   any `--fix`/`--write` flag on a linter that applies semantic rules. A whitelisted run invokes **only the
   table's argv**, NEVER a catch-all `--fix`.
-- any run that can touch a **check definition, config, or test** — the no-weakening prohibition, a hard
-  rule, not a preference. Enforced by the skill's **exclusion filter** below, NEVER by trusting a glob.
+- any run that can make a **SEMANTIC** change — this is the criterion from the other side. A tool that can
+  change meaning can WEAKEN a check, and no path filter fixes that. **NEVER admit a tool on the strength of
+  the exclusion filter** ("WHAT MAKES THE NO-MODEL PATH SAFE" below): the filter is not the guarantee.
 - **NEVER whitelisted**: a failing product test (making a test pass is not the same as fixing the bug), a
   compile error, and any rule that rewrites logic.
 
@@ -328,21 +330,49 @@ Key it on the **tool's IDENTITY and its CITED documented guarantee** — NEVER o
 unresolvable binary, or a refused id → session model.** (An **unset** `formatters` header is not a
 refusal: it means the known-tools table's defaults.)
 
-#### THE SKILL-OWNED EXCLUSION FILTER — applied to the RESOLVED path, EVERY time
+#### WHAT MAKES THE NO-MODEL PATH SAFE — the CRITERION and the OPERAND CHECKS
 
-**MATCH THE FILTER AGAINST WHAT THE PATH RESOLVES TO, NOT AGAINST HOW IT IS SPELLED.** For every candidate,
-`realpath` it (every symlink followed, `..` collapsed), take that real path **relative to the resolved
-worktree root**, and match the patterns below against **BOTH** the original path AND the resolved one.
-**EITHER matches → REFUSE.** A filter matched only on the spelling is defeated by one symlinked directory
-(`safe/gh -> .github`; the fourth repro above), which hands a **check definition** to the tool with every
-other check passing. **A NAME IS NOT A LOCATION.**
+Two things. Both mechanical. Neither is a list of paths.
 
-**The glob SELECTS candidates. The FILTER decides what is touched.** After expanding the tool's file set
-(its default glob, narrowed by any validated per-id glob) and resolving each candidate, campaign **REMOVES**
-every path below — always, regardless of what the glob said. **NOTHING widens this filter, and the formatter
-list NEVER carries the exclusions itself.**
+1. **The CRITERION bounds WHAT THE TOOL CAN DO.** A tool is admitted ONLY on a documented
+   semantic-equivalence guarantee, quoted from its own source (the known-tools table above). `gofmt`
+   re-prints the program without changing its meaning. **So whatever it touches, it CANNOT change the
+   meaning of.** A reformatted test asserts exactly what it asserted before. A reformatted check definition
+   checks exactly what it checked before. **Weakening a check requires a SEMANTIC change, and the
+   skill-owned argv CANNOT make one.**
+2. **The OPERAND CHECKS bound WHAT WE WRITE.** Resolve the path; refuse `-`-leading names, symlinks (last
+   component AND any directory component), a real path outside the worktree, non-regular files, `nlink > 1`;
+   pass `--`; NEVER a glob; NEVER an empty operand set ("NORMALIZE THE FILE ARGV" above).
 
-Excluded — never handed to a tool, never in a tool commit:
+**That is the whole guarantee, and it depends on NO list being complete.** NEVER re-derive the safety of
+this path from the exclusion filter below.
+
+**The no-weakening prohibition belongs to the SESSION-MODEL CI-fix subagent** — it CAN make semantic
+changes, so it CAN weaken a check, so the prohibition is load-bearing there and goes verbatim into its
+prompt ("red" above). **The TOOL path does not need it: the tool cannot weaken what it cannot change.**
+
+#### THE SKILL-OWNED EXCLUSION FILTER — defence in depth, NOT the guarantee
+
+**It is an enumerated PATTERN LIST. It is NOT complete and CANNOT BE.** A repo-specific check implemented as
+ordinary source — a Go checker at `tools/ci/check.go` — matches `**/*.go`, matches **NONE** of the patterns
+below, passes every operand check, and **IS handed to the tool and committed with no model.** That is the
+honest state of it. **NEVER describe this filter as complete, exhaustive, or as the thing that makes the
+no-model path safe.** The path is safe for the reason above, not because of this list.
+
+**Its purpose is BLAST RADIUS: keep the tool's diff small and off files a reviewer expects untouched.** It
+is NOT what prevents weakening — weakening is already impossible for a semantics-preserving tool.
+
+**Skill-owned. Config may NARROW it, NEVER widen it, and the formatter list NEVER carries the exclusions
+itself** — a user-written exclusion list omits more, and rots per-repo. So `gofmt:**/*.go` is VALID: the
+glob SELECTS, the filter TRIMS.
+
+**Match it against BOTH the original path AND the RESOLVED one — EITHER matches → REFUSE.** `realpath` each
+candidate (symlinks followed, `..` collapsed), take that real path relative to the resolved worktree root.
+A filter matched only on the spelling is defeated by one symlinked directory (`safe/gh -> .github`; the
+fourth repro above): if we apply the filter at all, apply it to the location and not the name. **A NAME IS
+NOT A LOCATION.**
+
+Excluded — dropped from the tool's file set:
 
 - **tests**: `**/*_test.go`, `test/**`, `tests/**`, `**/testdata/**`, `**/__tests__/**`, `conftest.py`,
   `**/test_*.py`, `**/*_test.py`, `**/*.spec.*`, `**/*.test.*`
@@ -350,27 +380,15 @@ Excluded — never handed to a tool, never in a tool commit:
 - **tool / lint / build config**: `.golangci.yml`/`.golangci.yaml`, `ruff.toml`/`.ruff.toml`,
   `pyproject.toml`, `setup.cfg`, `tox.ini`, `.editorconfig`, `.pre-commit-config.yaml`
 - **campaign's own run state**: the git-ignored `.gauntlet/**`
-- anything else that **defines, configures, or is** a check
-
-**WHY the filter and not the glob:** an exclusion list a **USER** writes will omit something — one forgotten
-pattern and a tool commit lands on a check definition with no model and no review. The skill owns the list,
-so it is complete and it cannot rot per-repo. **A repo-relative filter is the guarantee; a refusal is not.**
-
-Therefore a `gofmt:**/*.go` narrowing is **VALID and CORRECT**: the glob selects the Go files, the filter
-drops `**/*_test.go` and everything else it must not touch. The user never enumerates an exclusion.
 
 **Still REFUSE an OBVIOUSLY HOSTILE glob** — one that targets an excluded path **DIRECTLY**
-(`gofmt:.golangci.yml`, `gofmt:.github/**`, `gofmt:**/*_test.go`): it is an attempt to weaken the checks
-that gate the review, and it MUST be logged and refused rather than silently emptied by the filter. But the
-refusal is a **signal**, NEVER the guarantee — the filter is what makes the run safe.
+(`gofmt:.golangci.yml`, `gofmt:.github/**`, `gofmt:**/*_test.go`): LOG it and REFUSE it rather than let the
+filter silently empty it. It catches **intent**, which is worth catching even where the tool could do no
+harm.
 
-**AFTER the filter, the file argv is still PR data**: of every surviving candidate, refuse the `-`-leading
-names, the **symlinks**, anything with a **symlink in any directory component**, anything whose **real path
-escapes the worktree** or is **not a regular file**, and anything with **`nlink > 1`**; normalize what is left
-("NORMALIZE THE FILE ARGV" above — all **seven** checks). The filter decides *which* candidates survive; the
-normalization decides that what is handed to the tool is read as a **file** and not a flag, that it is a
-**real file INSIDE the tree** and not a link out of it, that no directory on the way to it is a link, and that
-its **INODE is not aliased outside the tree**. All of it, every run.
+**AFTER the filter, the file argv is still PR data**: run all **seven** operand checks on every surviving
+candidate ("NORMALIZE THE FILE ARGV" above). The filter only decides *which* candidates survive; the operand
+checks are what bound the write. Every run.
 
 **Empty file set after filtering (or after refusals) → run NOTHING for that id** and route the failure to
 the session model. **NEVER invoke the tool with zero operands** — `gofmt` with no operands reads **stdin**.
@@ -443,8 +461,8 @@ skill's and not the user's.
 3. **The glob, if present, only NARROWS the tool's default glob** — it MUST NOT match anything outside it.
    Widening → REFUSE. And REFUSE an **obviously hostile** glob that directly targets a check definition,
    config, or test (`.golangci.yml`, `.github/**`, `**/*_test.go`, …), or a repo-sweeping bare `**`/`.`.
-   The **exclusion filter still applies to every accepted id** — the refusal catches intent, the filter is
-   the guarantee.
+   The **exclusion filter still applies to every accepted id** — but it is NOT the guarantee: the refusal
+   catches intent, the **criterion + the operand checks** are what make the run safe.
 
 **REFUSING means: log the id and why, IGNORE it, and route that failure to the session model. NEVER
 silently honour a refused id.** Refusing one id does not invalidate the others.

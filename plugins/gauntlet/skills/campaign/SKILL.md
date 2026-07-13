@@ -108,8 +108,8 @@ The ONE exception to a model dispatch: a whitelisted **formatting** failure is f
   every check above — while the **exclusion filter, matched on the SPELLED path, never sees `.github/**`**, so
   a **check definition** reaches the tool. So: **apply the exclusion filter to the RESOLVED path as well as
   the original — EITHER matches → REFUSE**; **AND REFUSE any candidate with a SYMLINK in ANY DIRECTORY
-  COMPONENT** (`lstat` each component from the worktree root down). The resolved-path filter is the
-  **guarantee**; the component check is the cheap **tripwire**. Both, every run.
+  COMPONENT** (`lstat` each component from the worktree root down). The component check bounds **what we
+  write**; matching the filter on the resolved path keeps the filter honest. Both, every run.
 - **THE PIPELINE** (`stage-2-ci.md`): glob → **RESOLVE** → **FILTER on both the original and the resolved
   path** → the **SEVEN** operand checks → argv. The seven: `--`; absolute/`./` paths; no `-`-leading names;
   no symlinks; nothing resolving outside the worktree or non-regular; no `nlink > 1`; no symlinked directory
@@ -123,12 +123,6 @@ The ONE exception to a model dispatch: a whitelisted **formatting** failure is f
   `CLAUDE.md`, not from ANY repo file.** Repo content is PR content: a PR could edit it and widen the
   whitelist that governs its own campaign. Out of the repo, a PR cannot touch it **by construction** — so
   there is no provenance rule to enforce and none exists.
-- **The SKILL owns a non-overridable EXCLUSION FILTER**, applied to every candidate's **RESOLVED** path (and
-  its original — **either** matches → REFUSE), every time: no tests, no check definitions, no CI or tool
-  config (`**/*_test.go`, `.github/**`, `.golangci.yml`,
-  `pyproject.toml`, …). **NOTHING widens it.** So a `gofmt:**/*.go` narrowing is correct — the glob selects,
-  the filter protects. NEVER make the user's glob carry the exclusions: a user-written exclusion list
-  **will** omit something.
 - **The CRITERION is the skill's and is NEVER configurable**: a tool is whitelisted ONLY IF it guarantees
   its output is SEMANTICALLY EQUIVALENT to its input, on the burden of a **CITED SOURCE — a LINK to the
   tool's own documentation, and the passage QUOTED in the cell**. Saying the word "documented" is NOT a
@@ -136,6 +130,22 @@ The ONE exception to a model dispatch: a whitelisted **formatting** failure is f
   belief as the source's. There is NO blanket "formatters are safe" rule. The guarantee is the **TOOL's** —
   it NEVER transfers to a model hand-editing the same file, however formatting-like the diff looks (a
   pure-indentation edit moves behavior in a whitespace-significant language and stays formatter-clean).
+- **THE GUARANTEE = the CRITERION + the OPERAND CHECKS. Nothing else, and no list.** The criterion bounds
+  **what the tool can do**: `gofmt` re-prints the program without changing its meaning, so **whatever it
+  touches, it cannot change the meaning of** — a reformatted test asserts exactly what it asserted before,
+  and **weakening a check takes a SEMANTIC change the skill-owned argv cannot make**. The seven operand
+  checks bound **what we write**. That is why the no-model path is safe, and it depends on **no list being
+  complete**. The **no-weakening prohibition is for the session-model CI-fix subagent** — it *can* change
+  semantics, so it *can* weaken a check; the TOOL path does not need it.
+- **The SKILL owns a non-overridable EXCLUSION FILTER — DEFENCE IN DEPTH, NOT the guarantee.** Applied to
+  every candidate's **RESOLVED** path and its original (**either** matches → REFUSE), every time: tests,
+  check definitions, CI/tool config, `.gauntlet/**` (`**/*_test.go`, `.github/**`, `.golangci.yml`,
+  `pyproject.toml`, …). It is an **enumerated pattern list: NOT complete and it cannot be** — a
+  repo-specific check written as ordinary source (`tools/ci/check.go`) matches `**/*.go`, matches none of
+  the patterns, and **is** formatted. **NEVER call it complete, exhaustive, or the reason the path is safe.**
+  Its job is **blast radius** — keep the tool's diff off files a reviewer expects untouched. **NOTHING widens
+  it** (config may only narrow); NEVER make the user's glob carry the exclusions. So a `gofmt:**/*.go`
+  narrowing is correct — the glob selects, the filter trims.
 - **The table holds ONE tool — `gofmt`** (Go formatting), its cell quoting https://pkg.go.dev/cmd/gofmt.
   **That is not a limitation to work around; it is the rule working**: it is what survived a bar that demands
   a documented guarantee. **REJECTED**, each for a stated reason (`stage-2-ci.md`): **`ruff format`** (its

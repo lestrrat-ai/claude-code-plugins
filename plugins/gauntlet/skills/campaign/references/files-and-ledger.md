@@ -96,7 +96,8 @@ reason as `reviewer`). **NEVER derived from any repo file** (see "Campaign commi
 An id not in the known-tools table, a widening glob, or a glob directly targeting a check def/config/test
 is REFUSED (`stage-2-ci.md`); the skill still owns each tool's exact argv, its binary resolution, the
 non-overridable exclusion filter — applied to each candidate's **RESOLVED** path as well as its original,
-**either** match → refuse — and the seven file-operand checks (`--` + absolute/`./` paths; refuse
+**either** match → refuse; **defence in depth, NOT the guarantee — an incomplete pattern list, never
+described as complete** (`stage-2-ci.md`) — and the seven file-operand checks (`--` + absolute/`./` paths; refuse
 `-`-leading names, symlinks, symlinked directory components, paths resolving outside the worktree or
 non-regular files, and files with `nlink > 1` (hardlinks); NEVER invoke the tool with an empty operand set).
 

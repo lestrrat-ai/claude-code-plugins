@@ -152,6 +152,12 @@
   guarantee is the TOOL's and does **NOT** transfer to a model hand-editing the same file — a diff that
   *looks* like formatting is NOT a proof of semantic equivalence (a pure-indentation edit can move behavior
   in a whitespace-significant language and stay formatter-clean).
+- **THE GUARANTEE = THE CRITERION + THE OPERAND CHECKS — no list is part of it.** The criterion bounds
+  **what the tool can do**: `gofmt` re-prints the program without changing its meaning, so **whatever it
+  touches, it CANNOT change the meaning of** — a reformatted test asserts exactly what it asserted before,
+  and **weakening a check requires a SEMANTIC change the skill-owned argv cannot make**. The **seven operand
+  checks** bound **what we write**. Together they are what make the no-model path safe, and they depend on
+  **NO list being complete**. NEVER re-derive that safety from the exclusion filter.
 - **THE SKILL OWNS THE EXACT ARGV; NOTHING ELSE SUPPLIES A COMMAND.** The known-tools table
   (`stage-2-ci.md`) fixes each tool's precise argv (today: `gofmt -w --` over that id's normalized files).
   **Flags carry the semantics** — `gofmt -w -r 'true -> false'`
@@ -227,9 +233,9 @@
   RESOLVED path as well as the original — EITHER matches → REFUSE**; **AND the seventh check: REFUSE any
   candidate with a SYMLINK in ANY DIRECTORY COMPONENT** (walk the components from the resolved worktree root
   down, `lstat` each; any symlink → **DROP** + **LOG**, reason `symlinked directory component` /
-  `excluded after resolution`). The resolved-path filter is the **guarantee**; the component check is the
-  cheap explicit **tripwire**. Run **BOTH**. **THE PIPELINE:** glob → **RESOLVE** → **FILTER both spellings**
-  → the **seven** checks → argv.
+  `excluded after resolution`). The component check bounds **what we write**; matching the filter on the
+  resolved path keeps the filter honest (it is **defence in depth**, never the guarantee). Run **BOTH**.
+  **THE PIPELINE:** glob → **RESOLVE** → **FILTER both spellings** → the **seven** checks → argv.
 - **RESOLVE `argv[0]` TO A TRUSTED ABSOLUTE EXECUTABLE OUTSIDE THE REPO** (`stage-2-ci.md`). The tool runs
   in the PR's worktree and **the PR under review is untrusted content**: a bare name resolved from a `PATH`
   the PR can influence lets it ship its own `gofmt` and earns it **arbitrary code execution on the path that
@@ -238,16 +244,19 @@
   directory inside them; the resolved executable (symlinks followed) **MUST live OUTSIDE the repo/worktree
   tree**. Resolves inside, or does not resolve → **REFUSE → session model**. NEVER run the tool with the
   worktree on `PATH` or as the lookup base. NEVER execute a binary the PR could have supplied.
-- **THE SKILL OWNS A NON-OVERRIDABLE EXCLUSION FILTER, applied to the RESOLVED path, EVERY time** — no tests
-  (`**/*_test.go`, `test/**`, `tests/**`, `**/testdata/**`, `conftest.py`, …), no check definitions
-  (`.github/**`, …), no CI/tool/build config (`.golangci.yml`, `ruff.toml`, `pyproject.toml`, …).
-  **Match the patterns against BOTH the candidate's original path AND its `realpath` taken relative to the
-  resolved worktree root — EITHER matches → REFUSE** (a filter matched on the spelling alone is defeated by a
-  symlinked directory; see the resolved-path rule above). **NOTHING widens it**, and the whitelist NEVER
-  carries the exclusions itself: a user-written exclusion
-  list **will** omit something. The glob SELECTS; the FILTER protects. A `gofmt:**/*.go` narrowing is
-  therefore VALID — the filter drops the test files. The **filter is the guarantee**; a refusal is only a
-  signal.
+- **THE SKILL OWNS A NON-OVERRIDABLE EXCLUSION FILTER — DEFENCE IN DEPTH, NOT THE GUARANTEE.** Applied to
+  the RESOLVED path **and** the original, EVERY time (**either** matches → REFUSE; a filter matched on the
+  spelling alone is defeated by a symlinked directory — see the resolved-path rule above). It drops tests
+  (`**/*_test.go`, `test/**`, `tests/**`, `**/testdata/**`, `conftest.py`, …), check definitions
+  (`.github/**`, …), CI/tool/build config (`.golangci.yml`, `ruff.toml`, `pyproject.toml`, …), and
+  `.gauntlet/**`. **It is an enumerated PATTERN LIST: NOT complete, and it CANNOT be** — a repo-specific
+  check written as ordinary source (`tools/ci/check.go`) matches `**/*.go`, matches **none** of the
+  patterns, passes every operand check, and **is** handed to the tool. **NEVER call it complete, exhaustive,
+  or the thing that makes the no-model path safe** (that is the criterion + the operand checks, above). Its
+  job is **BLAST RADIUS**: keep the tool's diff off files a reviewer expects untouched. **NOTHING widens it**
+  — config may only NARROW — and the whitelist NEVER carries the exclusions itself: a user-written exclusion
+  list omits more and rots per-repo. The glob SELECTS; the filter TRIMS. A `gofmt:**/*.go` narrowing is
+  therefore VALID. A refusal of an obviously hostile glob catches **intent**, not weakening.
 - **THE FORMATTER WHITELIST LIVES IN THE LEDGER HEADER (`formatters`), NEVER IN A REPO FILE.** Resolved
   **once at run start** from the **user** — explicit invocation, else a preference in memory, else the
   known-tools table's built-in defaults (`default`). **The DISABLING SENTINEL is `-`, NEVER the word
@@ -305,7 +314,8 @@
   tool left residue, check not whitelisted, or the failure needs any judgment.
 - A CI-fix subagent MUST be dispatched under the no-weakening prohibition (`stage-2-ci.md`): fix the
   cause, NEVER gut an assertion, add `skip`/`xfail`, disable a lint rule, or raise a timeout to force
-  green.
+  green. **The prohibition is load-bearing THERE** — a session-model fixer *can* change semantics, so it
+  *can* weaken a check. **The TOOL path does not need it: the tool cannot weaken what it cannot change.**
 - Scope every fix subagent to its worktree + concrete issue list; tell it NOT to re-derive the whole diff.
   That — with the tool-only formatter path and an external reviewer taking review passes off the subagent
   pool — is where savings live. Never a downgraded model.

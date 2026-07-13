@@ -250,7 +250,7 @@ flowchart TD
   One layer further down, the same lesson generalises: **a name is not a location.** A pull request can add a
   symlinked *directory* — `safe/gh` pointing at `.github`. The candidate `safe/gh/actions/main.go` isn't a
   symlink itself, its real path is inside the worktree, it's a regular file with one link, and its name is
-  clean: it passes all six checks. But campaign's exclusion filter (below) protects `.github/**`, and
+  clean: it passes all six checks. But campaign's exclusion filter (below) lists `.github/**`, and
   `safe/gh/...` doesn't *look* like `.github/...` — so a **CI check definition** would be handed to the tool,
   with no model and no review. The fix is the general one: **every check that reasons about a path reasons
   about the path it resolves to.** The exclusion filter is matched against the resolved path as well as the
@@ -266,10 +266,18 @@ flowchart TD
   never widen it — and you should not try to write exclusions into it. Campaign applies its **own** exclusion
   filter afterwards, every time, and nothing widens it: tests, check definitions, CI workflows, and tool
   config (`**/*_test.go`, `.github/**`, `.golangci.yml`, `pyproject.toml`, …) are removed no matter what
-  your glob says — and matched against what each candidate **resolves to**, not just how it is spelled. The glob picks the candidates; campaign's filter protects the files that gate the review.
-  An exclusion list *you* maintain would eventually miss one, and campaign commits this tool's output without
-  a review pass — it must never be able to weaken the checks that gate it. (A glob that *directly* names a
-  protected path is refused outright.)
+  your glob says — and matched against what each candidate **resolves to**, not just how it is spelled.
+  (A glob that *directly* names a protected path is refused outright.)
+
+  That filter is a pattern list, and a pattern list is **not complete** — it can't be. A repo-specific check
+  written as ordinary source, say a Go checker at `tools/ci/check.go`, matches `**/*.go`, matches none of
+  those patterns, and does get formatted. That is fine, and it is worth being exact about why. What makes
+  this shortcut safe is **not** the list. It is that the tool is admitted only on a documented guarantee that
+  its output *means the same thing* as its input — so whatever it touches, it cannot change the meaning of.
+  A reformatted test asserts exactly what it asserted before; weakening a check takes a semantic change, and
+  the command campaign runs can't make one. (That is also why campaign is so strict about the command line
+  and the filenames: those are the parts that decide *what gets written*.) The filter is there to keep the
+  diff small and off the files a reviewer expects untouched — defence in depth, not the guarantee.
 
   Teaching campaign a genuinely new tool is a change to the skill — reviewed and gated like any other code
   change. And to be clear about what all this buys: the tool list comes from *you*, so the denylist and the
