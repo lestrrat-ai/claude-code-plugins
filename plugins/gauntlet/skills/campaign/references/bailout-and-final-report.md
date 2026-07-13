@@ -5,7 +5,12 @@
   key it off recorded row state, not a running subtraction of durations nothing stores: **do not fire
   the cap on a wake where the row is blocked on an external wait** — `status == awaiting-api` (parked
   for user approval) or `status == awaiting-user` (parked for the user to adjudicate a review-finding
-  standoff), or `ci == pending` for the current `head_sha` (CI still running). Only a wake
+  standoff or a settled-but-not-green CI), or `ci == pending` **and CI is still MOVING** — a
+  still-RUNNING row, or a fingerprint that changed since the last derivation (`stage-2-ci.md`,
+  "SETTLED"). **`pending` alone is NOT an external wait.** A pending PR that has SETTLED is waiting on
+  **nothing**, and treating it as an external wait is what let a wedged PR sit forever with the cap
+  disabled and no one told; it is the `settled_strikes` escalation that ends it, and the park it produces
+  is then an external wait on its own terms. Only a wake
   where `started` is over an hour old *and* the row is agent-controlled (in none of those waits) trips it.
   When it trips, abort cleanly and **retry once against the SAME adopted PR** (`attempts` += 1, reset
   `started`). The PR is user/externally owned — campaign never closes it and opens a replacement of

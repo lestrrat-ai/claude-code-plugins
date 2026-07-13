@@ -235,9 +235,13 @@ blocks; each completion is its own wake.
      resulting commit **resets the gate** (Stage 2b, "Any campaign commit to the PR head resets the gate").
      The subagent's job order, the no-weakening prohibition, and the denylist live in `stage-2-ci.md` —
      follow them there; do NOT restate them here. Different PRs may fix CI concurrently within the cap.
-   - CI snapshot reads `pending` for a PR whose watch task has already exited → **relaunch the watch
-     in this same wake**. A pending PR must never sit unwatched until the heartbeat; the heartbeat is
-     a fallback, not the mechanism.
+   - CI snapshot holds a **still-RUNNING** evidence row for a PR whose watch task has already exited →
+     **relaunch the watch in this same wake**. A PR with a row that can still move must never sit
+     unwatched until the heartbeat; the heartbeat is a fallback, not the mechanism. **But NEVER relaunch
+     it merely because `ci == pending`** — once CI has SETTLED nothing can move, `gh pr checks --watch`
+     exits in about a second, and its completion is itself a wake: that is a wake per second, forever
+     (Stage 2b, "WATCH ONLY WHAT CAN MOVE"). A settled PR is resolved by the `settled_strikes`
+     escalation, not by watching it harder.
    - about to dispatch content-changing work on a PR (review fix, CI fix, copilot-address,
      conflict-resolving rebase) while a review is in flight on that PR → **stop that review task
      first** (its verdict can only describe a SHA the fix is about to replace); the freed slot goes

@@ -158,21 +158,27 @@ subagent at a check that is merely **still running**.
    `reviews_ok`, relabel, and relaunch work — and would **change the PR's content**, which can invalidate
    the very refutation or API change the user was parked to adjudicate. **A parked PR that has fallen
    behind simply STAYS behind** until the user answers; it is re-reconciled normally on the wake after it
-   unparks. **Do NOT drop its row** — it stays in the run, and **keeps its CI watch** (observation, not
-   mutation), so an exited watch on a parked pending PR is still relaunched.
+   unparks. **Do NOT drop its row** — it stays in the run, and the park **does not change its CI watch
+   either way** (observation, not mutation): the watch follows the normal policy (`stage-2-ci.md`, "WATCH
+   ONLY WHAT CAN MOVE") — relaunched while a row is still RUNNING, **not** relaunched once CI has settled.
 
    For each **non-parked** open PR: **base advancement alone does NOT
    invalidate gauntlet reviews.** Rebase only if GitHub flags the PR behind/conflicting:
    - Clean rebase (no conflicts) → verify the PR's own diff/content is unchanged → keep `reviews_ok`,
      **keep its status label as-is** (the gate did not reset, so an accepted PR stays
-     `gauntlet-accepted`), update `head_sha` to the new tip, set `ci = pending`, **and relaunch its CI
-     watch in the same wake** — the rebased PR must not sit unwatched until the heartbeat; CI must
-     return green before merging.
+     `gauntlet-accepted`), update `head_sha` to the new tip, set `ci = pending`, reset `ci_fingerprint`
+     and `settled_strikes` (new commit, new evidence — `stage-2-ci.md`, "SETTLED"), **and re-derive CI
+     from a snapshot of the new tip in the same wake, launching a watch only if that snapshot holds a
+     still-RUNNING row** ("WATCH ONLY WHAT CAN MOVE"). A rebased PR must not sit unwatched until the
+     heartbeat while its checks are running — but it must not be watched when **nothing** is running
+     either, which right after a push is the common case (no check has registered yet). CI must return
+     green before merging.
    - Rebase requiring conflict resolution → PR content changed → **reset `reviews_ok` to 0 AND, in that
      same step, restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`** (`gh pr edit <pr>
      --remove-label gauntlet-accepted --add-label gauntlet-reviewing`) — the gate and its label move
-     together (`stage-2-review-gate.md`, "Status labels mirror the review gate"). Then relaunch the CI
-     watch and re-enter Stage 2.
+     together (`stage-2-review-gate.md`, "Status labels mirror the review gate"). Then re-derive CI for
+     the new tip — watching it only if a row can still move ("WATCH ONLY WHAT CAN MOVE") — and re-enter
+     Stage 2.
    - Still open, **not parked**, mergeable, not behind/dirty/conflicting, same live `head_sha`,
      `reviews_ok >= required(tier)`, and `ci == green` → still immediately mergeable; return to step 1
      in the same wake.

@@ -495,8 +495,10 @@ ever re-ordered again.
 
   **If the PR is PARKED** (`status` = `awaiting-user` / `awaiting-api`), record `ci = red` and
   **dispatch NO fix** — a parked PR dispatches nothing until the user answers (`loop-control.md` step 3).
-  The **watch keeps running** either way: watching is observation, not work-dispatch, so a parked PR's CI
-  state stays fresh. Otherwise → any failing row → **stop any review pass in flight on that PR first** (Loop control
+  **The park does not change the watch either way** — watching is observation, not work-dispatch, so the
+  watch follows the normal policy below ("WATCH ONLY WHAT CAN MOVE"): alive while a row can still move,
+  and **not** relaunched once nothing can. Parking never stops a warranted watch and never starts an
+  unwarranted one. Otherwise → any failing row → **stop any review pass in flight on that PR first** (Loop control
   step 3 — the fix will replace its SHA, so the verdict is already void; free the slot), then
   **CLASSIFY the failure** from the check logs ("Classify, then set the model" below) **before
   dispatching anything**, and dispatch a **scoped CI-fix subagent** into `<worktree>` — the PR row's
@@ -519,16 +521,111 @@ ever re-ordered again.
   - **An unknown value parks the PR AS SOON AS no `FAIL` outranks it** — on this derivation if there is
     no `FAIL`, otherwise on the next one, once the CI fix has cleared the failure. **It is deferred, never
     dropped**, and it outranks `pending`: a still-running row does **not** postpone the park.
-- **pending** → any evidence row classifies `RUNNING` → leave `ci = pending` and, if the watch task has
-  exited, **relaunch it in this same wake** — a pending PR must never sit unwatched waiting for the
-  heartbeat.
+- **pending** → any evidence row classifies `RUNNING` → leave `ci = pending`. **This is the ONLY outcome
+  that warrants a watch** ("WATCH ONLY WHAT CAN MOVE" below): a row can still move on its own, so if the
+  watch task has exited, **relaunch it in this same wake** — a PR with a still-RUNNING row must never sit
+  unwatched waiting for the heartbeat.
 - **pending (nothing registered)** → the snapshot lists **zero evidence rows**. **Zero evidence rows is NOT
-  green** — it means nothing has registered yet.
+  green** — it means nothing has registered yet. **Do NOT watch it**: there is no row that could move, so
+  there is nothing to block on. If nothing ever registers, SETTLED below escalates it instead of letting it
+  spin.
 - **green** → **all three `source` markers are present and hold** (VERIFY above — otherwise you do not know
   what you did not read); **≥1 evidence row**; **every** evidence row classifies `PASS`; and containment
   holds **on a usable identity** (every `witness` `.id` non-null and unique). This bullet is subject to the
   **registration gap** above: it proves only that **what had registered** passed, **never** that the
   required set is complete.
+
+#### `pending` MUST NOT BE AN ABSORBING STATE — SETTLED, then ESCALATE
+
+**THE INVARIANT — every non-green state MUST declare (a) what event would leave it, and (b) what happens
+if that event NEVER COMES. A rule with no answer to (b) is FORBIDDEN. Apply this to every rule you add
+to this file, before you write it down.**
+
+The failure this prevents is subtle and it has already happened: hardening a rule set against a false
+*green* — one "→ pending, NEVER green" clause at a time, each one correct on its own — produces a
+machine that in common configurations can **never go green at all**. Many rules enter `pending`; nothing
+leaves it except CI itself changing; and the bailout is **disabled while `ci == pending`**. So the PR
+sits there forever and **no one is ever told**. A wedge is not safer than a false green — it is just a
+failure that never files a report.
+
+The missing concept is **"CI has STOPPED MOVING and the rule is STILL unsatisfied."** `ci = pending`
+cannot express it, because `pending` conflates *still running* with *stuck*.
+
+**The FINGERPRINT is computed over the VERIFIED snapshot's EVIDENCE ROWS — the JSONL the FETCH above
+emits, nothing else.** Serialize each `checkrun` and `status` row into one canonical line, sort those
+lines bytewise, prefix the ledger's `head_sha`, and hash:
+
+```
+checkrun  ->  "checkrun\t<name>\t<app_id>\t<status>\t<conclusion>"
+status    ->  "status\t<context>\t<state>"
+
+fingerprint = sha256( head_sha + "\n" + <those lines, sorted bytewise, one per line> )
+```
+
+- **Only the VERDICT-BEARING fields go in.** These are exactly the fields CLASSIFY reads (`.status` +
+  `.conclusion` on a `checkrun`, `.state` on a `status`) plus the identity that says **which** row they
+  belong to. A fingerprint built from anything CLASSIFY does not read would call a PR "moving" when
+  nothing that decides `ci` had changed.
+- **`header`, `source` and `witness` rows are EXCLUDED** — they carry **no verdict** (they are never
+  classified, see CLASSIFY above), so they can never be the thing that is or is not moving. A `source`
+  marker's `count` is a **restatement** of the evidence rows it counts (VERIFY enforces exactly that), so
+  including it would add nothing and could only double-count.
+- **The row's `sha` is EXCLUDED** — VERIFY has already proved every evidence row's `sha` equals the
+  ledger's `head_sha`, and `head_sha` is hashed in **once**, at the front. **The `id`/`details_url` is
+  EXCLUDED too**: it is a cross-source **identity** for containment, not a verdict, and a re-run that
+  produces the same result under a new job id is **not** CI moving toward green.
+- **A snapshot that is not VERIFIED has NO fingerprint.** `UNUSABLE` never yields one — its rows were
+  never trusted. It is handled by its own line in the watch table below (bounded refetch, then escalate),
+  never by a strike counted against evidence we rejected.
+
+```
+SETTLED  ==  NO evidence row classifies RUNNING       # nothing left that could move on its own
+         AND fingerprint == ledger.ci_fingerprint     # and it did not move since the last derivation
+```
+
+`RUNNING` here is **the CLASSIFY bucket above, verbatim** — a `checkrun` whose `.status` is
+`QUEUED`/`IN_PROGRESS`/`WAITING`/`PENDING`/`REQUESTED`, or a `status` row whose `.state` is
+`PENDING`/`EXPECTED`. Do **not** re-derive it from `ci`: `red` outranks `pending` in DECIDE, so a snapshot
+recorded `red` can still hold a **RUNNING** row, and that PR is still moving.
+
+Per derivation, in this order:
+
+```
+head_sha changed          -> ci_fingerprint = fp ; settled_strikes = 0     # new commit, new evidence
+fp != ci_fingerprint      -> ci_fingerprint = fp ; settled_strikes = 0     # still MOVING — be patient
+SETTLED and ci != green   -> settled_strikes += 1
+settled_strikes >= 2      -> ESCALATE
+```
+
+**ESCALATE** = park the PR (`status = awaiting-user`, `ci_reason` = the blocker **named**: which check
+never registered, which value was unrecognized, which read was denied), and tell the user. It does **not**
+abort the run or close the PR — the run's other PRs keep going. `ci_reason` is **the DECIDE reason for
+this snapshot** — the bullet that matched and the row that made it match — never a bare restatement of
+`ci`. A park that cannot name its blocker is not actionable.
+
+`settled_strikes` and `ci_fingerprint` live **in the ledger, not in the driver's head**: a wake may be a
+fresh agent instance, and a strike count that dies with the context is a strike count that never reaches
+its cap. Write them through `scripts/ledger.py … set --pr <N>` **by field name**, like every other field
+(`files-and-ledger.md`).
+
+#### WATCH ONLY WHAT CAN MOVE — the relaunch is not free
+
+The watch is warranted by **a row that can still move**, never by the `ci` value:
+
+| DECIDE outcome | Watch? |
+|---|---|
+| **pending** — an evidence row classifies `RUNNING` | **YES** — ensure a watch task is alive; relaunch it in this same wake if it has exited. |
+| **pending (nothing registered)** — zero evidence rows | **NO.** Nothing to block on. SETTLED escalates it. |
+| **red** — but some row still `RUNNING` | **YES** — that row can still move; the CI fix runs regardless. |
+| **red** — every row terminal | **NO.** The CI fix moves it, not the watch. |
+| **UNKNOWN_VALUE** | **NO.** The park is the resolution. |
+| **UNUSABLE** | **NO.** Refetch with backoff, **bounded** — then ESCALATE. |
+| **green** | **NO.** |
+
+**NEVER relaunch the watch merely because `ci == pending`.** On a settled PR `gh pr checks --watch`
+**exits in about a second** — there is nothing left to block on — and a task completion is **itself a
+wake**. So "pending → relaunch the watch" on a settled-but-not-green PR burns a **fresh-context wake
+every second or two, forever**, doing nothing. Watch only when at least one row can still move.
 
 #### Any campaign commit to the PR head resets the gate
 
@@ -541,7 +638,12 @@ Every one of them MUST, in the same step:
   (`gh pr edit <pr> --remove-label gauntlet-accepted --add-label gauntlet-reviewing`) — the gate and its
   label move together, never one without the other (`stage-2-review-gate.md`, "Status labels mirror the
   review gate");
-- **relaunch the CI watch immediately**;
+- **re-derive `ci` from a fresh snapshot for the NEW `head_sha`, and launch a watch if — and only if —
+  that snapshot holds a row that can still move** ("WATCH ONLY WHAT CAN MOVE" above). The new commit
+  resets `ci_fingerprint` and `settled_strikes` (SETTLED above), so the PR gets a clean liveness budget.
+  **NEVER launch the watch unconditionally on the push**: at that instant the checks may not have
+  registered yet, the snapshot holds **zero evidence rows**, and `gh pr checks --watch` would exit in
+  about a second — a wake per second, forever, on a PR nothing is watching *for*;
 - **re-enter Stage 2a.**
 
 The verdicts on the old SHA describe content that no longer exists, and a `gauntlet-accepted` label on

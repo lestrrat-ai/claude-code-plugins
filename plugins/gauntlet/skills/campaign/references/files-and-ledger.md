@@ -101,8 +101,8 @@ following line is one adopted PR's row record (`{"type": "row", …}`). Every re
 
 ```
 {"type": "header", "run_id": "g260704-0915-a3f29c1b", "base_branch": "main", "api_changes": "ask", "reviewer": "codex"}
-{"type": "row", "id": "pr41", "slug": "fix-null-deref", "branch": "fix-null-deref", "worktree": ".worktrees/fix-null-deref", "worktree_owned": "yes", "branch_owned": "yes", "pr": "41", "head_sha": "a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c", "reviews_ok": "2", "ci": "green", "tier": "STANDARD", "attempts": "1", "started": "2026-07-04T09:15:00Z", "api_approval": "-", "status": "in_review"}
-{"type": "row", "id": "pr52", "slug": "add-retry-flag", "branch": "add-retry-flag", "worktree": ".worktrees/add-retry-flag", "worktree_owned": "no", "branch_owned": "no", "pr": "52", "head_sha": "b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7089a1b", "reviews_ok": "0", "ci": "pending", "tier": "HIGH", "attempts": "0", "started": "-", "api_approval": "-", "status": "in_review"}
+{"type": "row", "id": "pr41", "slug": "fix-null-deref", "branch": "fix-null-deref", "worktree": ".worktrees/fix-null-deref", "worktree_owned": "yes", "branch_owned": "yes", "pr": "41", "head_sha": "a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c", "reviews_ok": "2", "ci": "green", "tier": "STANDARD", "attempts": "1", "started": "2026-07-04T09:15:00Z", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:9f2c\u2026", "settled_strikes": "0", "ci_reason": "-"}
+{"type": "row", "id": "pr52", "slug": "add-retry-flag", "branch": "add-retry-flag", "worktree": ".worktrees/add-retry-flag", "worktree_owned": "no", "branch_owned": "no", "pr": "52", "head_sha": "b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7089a1b", "reviews_ok": "0", "ci": "pending", "tier": "HIGH", "attempts": "0", "started": "-", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:4a71\u2026", "settled_strikes": "1", "ci_reason": "required check absent: integration-tests"}
 ```
 
 **`head_sha` is ALWAYS the full 40-char `headRefOid` — never an abbreviation.** The examples above spell
@@ -158,7 +158,21 @@ Header field notes (the header fields above; per-row fields follow):
   current content. Target = `required(tier)`: **1 if `tier == TRIVIAL`, else 2** (Stage **2a-triage**).
 - `tier` — the adaptive review tier derived from `head_sha`: `TRIVIAL` | `STANDARD` | `HIGH`. Re-derived
   every wake and re-triaged on any content change; drives `required(tier)` and the review depth.
-- `ci` — `green` / `red` / `pending` / `none` for `head_sha`.
+- `ci` — `green` / `red` / `pending` for `head_sha`. (**There is no `none`.** It was documented but no
+  procedure could ever write it.)
+- `ci_fingerprint` — digest of the last **verified** CI snapshot, over its **evidence rows only**
+  (`checkrun` + `status`) and only the fields CLASSIFY reads:
+  `sha256(head_sha + the canonicalized evidence lines, sorted)`. `stage-2-ci.md`, "SETTLED", is the
+  **definition** — never restate the serialization here. **UNCHANGED + nothing RUNNING == SETTLED.**
+- `settled_strikes` — consecutive derivations seen **SETTLED but not green**. At **2**, escalate: park
+  `awaiting-user` naming the blocker. Reset to `0` on any `head_sha` change or fingerprint change.
+- `ci_reason` — **why** `ci` is not green, in a form a human can act on: the DECIDE bullet that matched
+  and the row that made it match (which check never registered, which enum value was unrecognized, which
+  read was denied). This is what the escalation reports; a park that cannot name its blocker is not
+  actionable.
+
+  These three live **on disk, not in the driver's head**: a wake may be a fresh agent instance, and a
+  strike count that dies with the context never reaches its cap.
 - `attempts` — task attempts so far (for the retry-once bailout).
 - `started` — wall-clock start of the current attempt (for the 1-hour cap).
 - `api_approval` — durable record of the user's decision on this PR's API-changing fix: `-`
@@ -175,15 +189,25 @@ Header field notes (the header fields above; per-row fields follow):
   relabel it (`loop-control.md` step 3, "parked-status guard" — the property, of which those are only
   examples; `stage-3-merge.md` binds both the merge and the post-merge reconcile). The park does
   not raise `reviews_ok`, so the guard reads **`status`** — never `reviews_ok`/`ci`/`mergeable` alone,
-  which would re-review a parked PR and merge it without the ruling. The PR's **CI watch keeps running**
-  (observing is not mutating). The other PRs keep being driven; the user's answer sets `status`
-  back to `in_review` and normal dispatch resumes on the next wake.
+  which would re-review a parked PR and merge it without the ruling. **The park does not change the watch
+  policy either way** (observing is not mutating): the watch follows `stage-2-ci.md`, "WATCH ONLY WHAT CAN
+  MOVE" — alive while a row is still `RUNNING`, **not** relaunched once CI has settled. Parking never
+  stops a warranted watch, and never starts an unwarranted one. The other PRs keep being driven; the
+  user's answer sets `status` back to `in_review` and normal dispatch resumes on the next wake.
   - `awaiting-api` — parked for the user to approve an API-changing fix. Resolves via `api_approval`:
     `approved` returns the PR to the normal flow, `declined` makes it `aborted` (terminal).
-  - `awaiting-user` — **standoff only**: parked for the user to adjudicate a finding the orchestrator
-    REFUTED in the tree and a **fresh reviewer re-raised anyway** (`stage-2-review-gate.md`, "Audit every
-    finding before you fix it"). A REFUTED finding does **NOT** park by itself — it is committed as an
-    inline refutation and the next reviewer judges it; only the re-raise parks. Same park mechanics as
+  - `awaiting-user` — parked for the user to adjudicate. **Two causes**:
+    1. **A review standoff** — a finding the orchestrator REFUTED in the tree and a **fresh reviewer
+       re-raised anyway** (`stage-2-review-gate.md`, "Audit every finding before you fix it"). A REFUTED
+       finding does **NOT** park by itself — it is committed as an inline refutation and the next
+       reviewer judges it; only the re-raise parks.
+    2. **CI has SETTLED and is still not green** (`settled_strikes` hit its cap), or a check carried an
+       **unrecognized enum value**, or the merge is `BLOCKED` for a cause campaign cannot enumerate
+       (`stage-2-ci.md`, "SETTLED"; `stage-3-merge.md`, "The merge precondition"). `ci_reason` names the
+       blocker. **This is the exit from `pending`** — without it, a stuck PR spins forever and no one is
+       ever told.
+
+    Same park mechanics as
     `awaiting-api`: `reviews_ok` stays 0, no review pass is launched for this PR, the other PRs keep
     being driven, and the answer folds in as its own wake. The user ruling the finding **invalid**
     returns the PR to the normal flow; ruling it **valid** returns it to the normal flow with that

@@ -213,10 +213,13 @@ For each `#PR` to adopt:
    source files changed (explicit paths, never `git add -A`). Fix commits are pushed back to the PR's
    head branch on `origin`.
 
-6. **Ensure a live CI watch when `ci = pending`.** Every adopted PR whose CI state is unknown gets a
-   background watch so a settling run wakes the driver. **The backgrounded command is the watch and
-   NOTHING ELSE** — its **ONLY** job is to **block** until the run settles, so that **its completion
-   becomes a wake**:
+6. **Ensure a live CI watch when — and ONLY when — a check can still move.** The warrant for a watch is a
+   **still-RUNNING evidence row** in the PR's snapshot, **never the `ci` value** (Stage 2b, `stage-2-ci.md`
+   — "WATCH ONLY WHAT CAN MOVE"): a PR whose CI has **SETTLED** gets **no watch**, because
+   `gh pr checks --watch` on it exits in about a second and its completion is itself a wake — a wake per
+   second, forever, observing nothing. A watch on a run that is still moving wakes the driver when it
+   settles. **The backgrounded command is the watch and NOTHING ELSE** — its **ONLY** job is to **block**
+   until the run settles, so that **its completion becomes a wake**:
 
    ```
    # run in background. This is the WHOLE command: it BLOCKS, and that is all it does.

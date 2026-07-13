@@ -146,8 +146,9 @@ Read stage refs only when that stage/action is due:
 - **Work-conserving:** every wake reconciles, folds completions, launches all due work up to caps,
   drains still-ready PRs serially, then reschedules only when no useful action remains launchable.
 - **Driver never blocks:** reviews and CI watches run as background tasks — completions are wakes.
-  A pending-CI PR always has a live watch; a review doomed by a pending content change is stopped,
-  not awaited.
+  A PR with a **still-RUNNING** check always has a live watch — but a PR whose CI has **SETTLED** does
+  **not** (watching it burns a wake per second and observes nothing: `references/stage-2-ci.md`, "WATCH
+  ONLY WHAT CAN MOVE"). A review doomed by a pending content change is stopped, not awaited.
 - **Run isolation:** touch only this run's `<rundir>`, ledger, labels, branches, PRs, and worktrees.
 - **One active driver:** lease controls ownership; never double-drive one run.
 - **Base branch is data:** read `base_branch` from ledger every wake; never assume `main`.
@@ -174,7 +175,8 @@ Read stage refs only when that stage/action is due:
   waits on a HUMAN. The test is "does this mutate the PR?", **not** "is it on a list": never review,
   CI-fix, review-fix, merge, rebase, base-refresh, push to, or relabel it — nor anything else that
   changes it (a park does NOT lower `reviews_ok`, so guard on `status` at every dispatch AND mutation
-  site). Sole exception: its CI watch keeps running — observing is not mutating. Keep driving the other
+  site). Sole exception: the park does not change the CI watch either way — observing is not mutating, so
+  the watch follows the normal policy (alive only while a check can still move). Keep driving the other
   PRs; unpark only on the user's answer (`references/loop-control.md`, "parked-status guard").
 - **No green by watch exit:** derive CI from a **SHA-pinned** snapshot of **both** check families
   (`check-runs` **and** commit `status`), verified against `head_sha` before parsing. **NEVER from `gh pr
@@ -191,7 +193,8 @@ Read stage refs only when that stage/action is due:
 3. **Fold completed review / CI / fix tasks** against the SHA each ran on.
 4. **Triage tier per PR, then launch due gate work up to caps — skipping PARKED PRs entirely** (`status`
    `awaiting-user` / `awaiting-api`: FROZEN, no action that mutates the PR — no review, CI fix, review
-   fix, merge, rebase, base refresh, or relabel, and nothing else that changes it; CI watch stays).
+   fix, merge, rebase, base refresh, or relabel, and nothing else that changes it; the CI watch is
+   unaffected by the park and follows the normal policy).
    Re-derive each non-parked PR's tier from its
    `head_sha` (deterministic file-class triage), then launch reviews up to `required(tier)`, CI
    watches/fixes, precondition clearing (Copilot items / red CI / base conflict), and base refresh;
@@ -200,8 +203,10 @@ Read stage refs only when that stage/action is due:
    after base refresh.
 6. **Launch audit + heartbeat — before sleeping, verify every due launch actually happened.** Re-run
    step 4's dispatch scan across both concurrency pools (CI-fix subagents and review passes each have
-   their own cap): confirm every due review pass was launched, a CI watch is live for every pending-CI
-   PR, and — whenever any non-terminal work remains — a `ScheduleWakeup` heartbeat is actually
+   their own cap): confirm every due review pass was launched, a CI watch is live for every PR with a
+   **still-RUNNING** check (**not** for one whose CI has settled — that is the hot-spin bug), that every
+   PR at its `settled_strikes` cap was **escalated** rather than left spinning, and — whenever any
+   non-terminal work remains — a `ScheduleWakeup` heartbeat is actually
    scheduled. If any due launch or the heartbeat is missing, launch it and re-audit. NEVER sleep with
    due work un-launched or the heartbeat unscheduled.
 7. **Terminal -> carryover/report;** otherwise refresh lease, show the user where the run stands

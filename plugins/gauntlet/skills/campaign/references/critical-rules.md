@@ -45,9 +45,14 @@
 - Work-conserving dispatch is mandatory: every wake scans all PRs and launches every due
   action that fits a free slot before returning. Waiting is allowed only when no useful action is
   launchable anywhere in the run.
-- A pending-CI PR must ALWAYS have a live watch: if the CI snapshot reads pending and the watch task
-  has exited (including after any rebase/push), relaunch the watch in the same wake — never wait for
-  the heartbeat.
+- A PR with a **still-RUNNING** check must ALWAYS have a live watch: if any row is not yet terminal and
+  the watch task has exited (including after any rebase/push), relaunch the watch in the same wake —
+  never wait for the heartbeat.
+- **But NEVER relaunch a watch merely because `ci == pending`.** Once CI has **SETTLED** (no row can
+  still move) there is nothing to block on: `gh pr checks --watch` returns in about **a second**, and a
+  task completion is **itself a wake** — so a settled-but-not-green PR would burn a fresh-context wake
+  **every second, forever**, and observe nothing. A settled PR is resolved by the **`settled_strikes`
+  escalation** (`stage-2-ci.md`, "SETTLED"), not by watching it harder.
 - Stop a PR's in-flight review before dispatching content-changing work on it (review fix, CI fix,
   copilot-address, conflict-resolving rebase): a verdict on a doomed SHA wastes tokens and a review
   slot. Refill the slot with the next due review.
@@ -121,8 +126,8 @@
   Write the refutation as an **inline comment at the site** (plus `<rundir>/audit-<pr>-<n>.md`) and
   **commit it**. A refutation is a COMMIT, a commit is PR CONTENT, and PR content **RESETS THE GATE** and
   is **REVIEWED** — route it through the same "any campaign commit resets the gate" rule (`reviews_ok` →
-  0, restore `gauntlet-reviewing`, relaunch the CI watch, re-enter Stage 2a); never invent a second
-  mechanism. Nothing is slipped past the reviewer: the argument is IN the diff, so a bogus refutation is
+  0, restore `gauntlet-reviewing`, re-derive CI for the new tip and watch it only if a row can still move,
+  re-enter Stage 2a); never invent a second mechanism. Nothing is slipped past the reviewer: the argument is IN the diff, so a bogus refutation is
   a defect the next reviewer flags. The comment MUST be a **falsifiable claim with evidence** ("git has
   no hardlink mode — a PR cannot create one; verified: checkout recreates separate inodes"), NEVER an
   instruction to the reviewer ("ignore this", "do not re-raise", "already dismissed") — argue why the

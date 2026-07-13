@@ -36,11 +36,18 @@ ROW_FIELDS = (
     "id", "slug", "branch", "worktree", "worktree_owned", "branch_owned", "pr",
     "head_sha", "reviews_ok", "ci", "tier", "attempts", "started",
     "api_approval", "status",
+    # Liveness (stage-2-ci.md, "SETTLED"). A non-green `ci` is not enough to know whether CI is still
+    # MOVING or has STOPPED — these three carry that, and they must survive a context loss (a wake may
+    # be a fresh agent instance), so they live on disk and not in the driver's head.
+    "ci_fingerprint",     # digest of the last CI snapshot; UNCHANGED + nothing running == SETTLED
+    "settled_strikes",    # consecutive derivations seen SETTLED-but-not-green; at the cap -> escalate
+    "ci_reason",          # why `ci` is not green, in a form a human can act on
 )
 ROW_DEFAULTS = {
     "id": "-", "slug": "-", "branch": "-", "worktree": "-", "worktree_owned": "-",
     "branch_owned": "-", "pr": "-", "head_sha": "-", "reviews_ok": "0", "ci": "pending",
     "tier": "-", "attempts": "0", "started": "-", "api_approval": "-", "status": "pending",
+    "ci_fingerprint": "-", "settled_strikes": "0", "ci_reason": "-",
 }
 
 
