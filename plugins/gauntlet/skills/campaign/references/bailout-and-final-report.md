@@ -45,19 +45,24 @@ When the loop exits, summarize:
   least-certain area it named — `required(tier)` lines, so two for a STANDARD/HIGH PR and one for a
   TRIVIAL PR), and a flag when two accepting passes name the same area. This is non-actionable,
   non-gating calibration metadata — a place a human might look, never a reopened finding (Stage 2a).
-- **CI verification gap** — state which of the three required-set states the run was in (`stage-2-ci.md`,
-  "Three states, never two"), because it changes what `ci = green` was allowed to mean:
-  - **DECLARED** → campaign verified every required check registered (and, where the declaration binds an
+- **CI verification gap** — state, **per merged PR**, which of the three required-set states it was in,
+  **READ FROM THE LEDGER ROW's `required_set` FIELD — never from memory** (`ledger.py --file <state.jsonl>
+  get --pr <N> --field required_set`; `files-and-ledger.md`). A run can span context losses and driver
+  handovers, so the field is the **only** durable record; an unwritten field reads `unknown`, which is the
+  correct fail-safe. The state changes what `ci = green` was allowed to mean (`stage-2-ci.md`, "Three
+  states, never two"):
+  - **`declared`** → campaign verified every required check registered (and, where the declaration binds an
     app, that it came from that app) and passed.
-  - **NONE DECLARED** (the required-set read **succeeded and was empty**) → registration completeness is
+  - **`none`** (**BOTH** required-set reads **succeeded and came back empty** — a classic 404 only counts
+    when `.permissions.admin == true` proved the token could read it) → registration completeness is
     **unprovable**; green means only *"every check that had registered by the time we looked had passed"*.
     Report it as a **residual risk** and name the remedy: declare the checks required.
-  - **CANNOT READ** (404/403 without **Administration: read**, or any error on the protection **or**
-    rulesets endpoint) → the expected set was **UNKNOWN**. **Say so explicitly. NEVER report it as "no
-    required checks are declared"** — that asserts something the run never observed. State that a required
-    check may have existed and been missing, that campaign could not tell, and that the merge gate rested
-    on GitHub's own `mergeStateStatus == CLEAN` — **GitHub** verified the required set; **campaign did
-    not**.
+  - **`unknown`** (**CANNOT READ** — an undisambiguated 404/403, any error on the protection **or**
+    rulesets endpoint, or a read that never ran) → the expected set was **UNKNOWN**. **Say so explicitly.
+    NEVER report it as "no required checks are declared"** — that asserts something the run never observed.
+    State that a required check may have existed and been missing, that campaign could not tell, and that
+    the merge gate rested on GitHub's own `mergeStateStatus == CLEAN` — **GitHub** verified the required
+    set; **campaign did not**.
 - **Aborted** — PR number + slug, why, pointer to `abort-<id>.md`.
 - **Skipped (API-declined)** — any PR whose API-changing fix the user was asked about and declined,
   with the change each would have needed.

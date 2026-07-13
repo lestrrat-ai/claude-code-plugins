@@ -33,9 +33,10 @@ only that **nothing GitHub knows about is failing or pending**. It catches a reg
 failing or still running; it does not close the registration gap (`stage-2-ci.md`, "The registration
 gap"). **Require it anyway — and NEVER claim it proves more than it does.**
 
-**When campaign COULD NOT READ the required-check set** (the classic protection endpoint 404s **both** on
-an unprotected branch **and** without **Administration: read** — `stage-2-ci.md`, "Three states, never
-two"), this precondition is doing **more** of the work, not less: GitHub **does** know the required set and
+**When campaign COULD NOT READ the required-check set** (`required_set = unknown` on the PR row — the
+classic protection endpoint 404s **both** on an unprotected branch **and** without **Administration:
+read**, and the rulesets endpoint answering proves nothing about that 404 — `stage-2-ci.md`, "Three states,
+never two"), this precondition is doing **more** of the work, not less: GitHub **does** know the required set and
 will report `BLOCKED` if one is missing or failing, even though campaign cannot enumerate it. **That does
 NOT license treating the unreadable set as empty**, and it does **NOT** relax anything here — `MERGEABLE` +
 `CLEAN` was already mandatory. Say plainly in the report which one verified the required set: **GitHub

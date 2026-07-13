@@ -133,8 +133,9 @@ blocks; each completion is its own wake.
    record the result against the SHA it ran on and act per Stage 2.
 
    **For a CI watch, PROVE THE SNAPSHOT BELONGS TO THE CURRENT HEAD BEFORE PARSING IT.** Read the
-   ledger's current `head_sha`, open `<rundir>/ci-<pr>-<head_sha>.txt`, and confirm its `# sha:` line
-   equals that `head_sha`. **Absent, partial, or mismatched → `ci = pending`, relaunch the watch,
+   ledger's current `head_sha`, open `<rundir>/ci-<pr>-<head_sha>.txt`, and confirm **every SHA in it** —
+   the `# sha:` line **and** every `checkrun` row's `<head_sha>` field — equals that `head_sha`.
+   **Absent, partial, or mismatched → `ci = pending`, relaunch the watch,
    NEVER green** — a missing/partial file means the fetch did not complete; a mismatched one describes a
    **superseded commit** and says nothing about the current head. **NEVER parse a snapshot you cannot
    prove is about the SHA in the ledger.** A watch finishing for a SHA the PR has already moved past is
@@ -143,10 +144,19 @@ blocks; each completion is its own wake.
 
    **The snapshot MUST cover BOTH CHECK FAMILIES** — check runs **and** legacy commit statuses. A failing
    Jenkins/CircleCI **commit status is invisible** to `/commits/<sha>/check-runs`, so a check-runs-only
-   snapshot reads nonempty and all-success while the build is red. Derive it from
-   `gh pr view <pr> --json headRefOid,statusCheckRollup`, which returns both families **and** the head SHA
-   in one payload; a `StatusContext` has `.state` (not `.conclusion`), and `ERROR` is a **failure**
-   (`stage-2-ci.md`).
+   snapshot reads nonempty and all-success while the build is red. It takes **TWO fetches**, and **each
+   family is judged ONLY from the fetch that carries both its IDENTITY and its RESULT**: check-run verdicts
+   come **exclusively** from the SHA-pinned `--paginate` REST check-runs rows (commit + `name` + `app.id` +
+   `status` + `conclusion`, all in ONE row); commit-status verdicts come from the rollup's `StatusContext`
+   rows (`gh pr view <pr> --json headRefOid,statusCheckRollup`), which has `.state` (not `.conclusion`),
+   where `ERROR` is a **failure** (`stage-2-ci.md`).
+
+   **NEVER JOIN ROWS ACROSS FETCHES TO REACH A VERDICT** — identity from one fetch plus a result from
+   another is a **MIXED-TIME ARTIFACT** and manufactures a false green. **The two fetches are still taken
+   at DIFFERENT TIMES: make their DISAGREEMENT the signal.** If they do not agree on the head SHA, or on
+   the **set of check runs** (a run present in one and absent from the other — the rollup's
+   `rollup-checkrun` rows are witnesses for exactly this test, never verdicts), the check state was still
+   **MOVING** → `ci = pending`, refetch, **NEVER green** (`stage-2-ci.md`, "The same-observation rule").
 
    **Then PROVE THE EXPECTED CHECKS REGISTERED, FROM THE RIGHT PRODUCER.** An all-success snapshot proves
    only that every **registered** run passed — checks register asynchronously, so a slow workflow or a
@@ -159,14 +169,25 @@ blocks; each completion is its own wake.
 
    **THREE STATES, NEVER TWO — and "I cannot see any" is NOT "there are none."** The classic
    `protection/required_status_checks` endpoint **404s both** when the branch is unprotected **and** when
-   the token lacks **Administration: read**. **NONE DECLARED** is provable **only** when the required-set
-   read **SUCCEEDED and came back EMPTY** — registration completeness then **cannot be proven**, and green
+   the token lacks **Administration: read**. **NONE DECLARED** is provable **only** when **BOTH** reads
+   **SUCCEEDED and came back EMPTY** — and a classic **404 counts as succeeded-and-empty ONLY if
+   `gh api repos/<owner>/<repo> --jq '.permissions.admin'` returns `true`**, proving the token really may
+   look. **The rulesets read succeeding proves NOTHING about it: rulesets need only Metadata: read, the
+   classic endpoint needs Administration: read — NEVER let the permissive endpoint's success vouch for the
+   restricted one's error.** Under NONE DECLARED, registration completeness **cannot be proven**, and green
    means only *"every check registered by the time we looked had passed"*, a residual risk closed only by
-   the user declaring required checks. **CANNOT READ** (404/403 without admin, any error on either
-   endpoint) is **UNKNOWN — NOT "none declared"**: do **not** fall through to the weaker rule, **record the
-   uncertainty on the PR row and in the report**, and never claim registration completeness. **Prefer the
+   the user declaring required checks. **CANNOT READ** (an undisambiguated 404/403, any error on either
+   endpoint, or an admin probe that did not return `true`) is **UNKNOWN — NOT "none declared"**: do **not**
+   fall through to the weaker rule, and never claim registration completeness. **Prefer the
    rulesets endpoint — it needs no admin, and the classic endpoint cannot see rulesets at all**
    (`stage-2-ci.md`, "The registration gap").
+
+   **PERSIST THE STATE — `required_set` on the PR row, or it does not exist.** Write the outcome of every
+   required-set read through `scripts/ledger.py … set --pr <N> --required-set declared|none|unknown`
+   (`files-and-ledger.md`). A state kept only in this wake's head is **gone** at the next context loss or
+   driver resume, and CANNOT READ then becomes indistinguishable from NONE DECLARED — the three states
+   collapsing back to two. **`unknown` is the DEFAULT**: a row whose read never succeeded is `unknown`,
+   never `none`. The final report reads **this field**, not a memory (`bailout-and-final-report.md`).
 3. **Dispatch due work — non-blocking, idempotent, bounded, work-conserving.** Scan the whole run,
    not just the PR/job that woke you. Launch every due action that fits a free slot before returning.
    Launch only what is actually due *and not already in flight* (check ground truth first, never the

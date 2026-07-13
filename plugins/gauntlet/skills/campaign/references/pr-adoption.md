@@ -210,13 +210,17 @@ For each `#PR` to adopt:
    The re-poll MUST cover **BOTH CHECK FAMILIES** — check runs **and** legacy commit statuses. Polling
    `/commits/<sha>/check-runs` alone leaves the **entire commit-status family unread**, so a failing
    Jenkins/CircleCI status is **invisible** and the snapshot reads nonempty and all-success
-   (`stage-2-ci.md`, "Two check families").
+   (`stage-2-ci.md`, "Two check families"). It takes **TWO fetches**, and **each family is judged ONLY
+   from the fetch that carries both its IDENTITY and its RESULT** — check runs from the SHA-pinned
+   `--paginate` REST fetch (commit + name + `app.id` + status + conclusion in **one row**), commit statuses
+   from the rollup. **NEVER join rows across fetches to reach a verdict** (`stage-2-ci.md`, "The
+   same-observation rule").
 
    It MUST also be **ATOMIC** and **SHA-SCOPED**: fetch to a temp file **inside `<rundir>`** and
-   promote it to `ci-<pr>-<head_sha>.txt` — SHA-stamped in its first line — **only if every fetch
-   succeeded**. A fetch writes as it goes, so redirecting it straight onto the parsed
+   promote it to `ci-<pr>-<head_sha>.txt` — SHA-stamped in its first line **and on every `checkrun` row** —
+   **only if every fetch succeeded**. A fetch writes as it goes, so redirecting it straight onto the parsed
    snapshot leaves the rows that arrived on disk when it dies partway — a nonempty, all-success
-   **partial** snapshot the parser would read as green (`stage-2-ci.md`, "SIX questions, SIX sources").
+   **partial** snapshot the parser would read as green (`stage-2-ci.md`, "SEVEN questions, SEVEN sources").
    A failed fetch is **NOT EVIDENCE**: `ci = pending`, relaunch the watch, **NEVER** green. Nor is a
    snapshot missing a **declared required check** — checks register asynchronously, so the consumer must
    also prove every required check is PRESENT, **from the producer the declaration binds it to**, before
@@ -225,24 +229,30 @@ For each `#PR` to adopt:
    ```
    # run in background. ';' (not '&&') so the pinned re-poll ALWAYS runs, even when --watch exits non-zero
    tmp="$(mktemp -p <rundir>)"   # temp INSIDE <rundir>: mv is an atomic rename only WITHIN a filesystem
-   # BOTH families + the head SHA out of ONE payload: CheckRun rows and StatusContext rows.
+   # (1) ROLLUP — the commit-status family (2) cannot see, + the head SHA ('# sha:' first line), +
+   #     `rollup-checkrun` WITNESS rows (name only) used ONLY for the cross-fetch agreement test below,
+   #     NEVER as a verdict (the rollup carries no app.id, so it cannot identify a run).
+   # (2) CHECK RUNS — the ONLY source of a check-run verdict: one row = commit + identity + result.
    gh pr checks <pr> --watch ; if gh pr view <pr> --json headRefOid,statusCheckRollup --jq '
           "# sha: \(.headRefOid)",
           (.statusCheckRollup[] |
             if .__typename == "CheckRun"
-            then "checkrun\t\(.name)\t\(.status)\t\(.conclusion)"
-            else "status\t\(.context)\t\(.state)" end)' > "$tmp"; then
-     mv "$tmp" <rundir>/ci-<pr>-<head_sha>.txt   # complete, SHA-stamped — safe to parse
+            then "rollup-checkrun\t\(.name)"
+            else "status\t\(.context)\t\(.state)" end)' > "$tmp" \
+     && gh api --paginate repos/<owner>/<repo>/commits/<head_sha>/check-runs --jq '
+          .check_runs[] |
+          "checkrun\t\(.head_sha)\t\(.name)\t\(.app.id // "-")\t\(.status|ascii_upcase)\t\((.conclusion // "null")|ascii_upcase)"
+       ' >> "$tmp"; then
+     mv "$tmp" <rundir>/ci-<pr>-<head_sha>.txt   # BOTH fetches exited 0 — complete, SHA-stamped, safe to parse
    else
      rm -f "$tmp"                     # partial/failed fetch — NOT evidence of anything
    fi
    ```
 
-   When a declared required check **binds an app** (`app_id` / `integration_id`), also append the
-   producer-bearing rows — `gh api --paginate repos/<owner>/<repo>/commits/<head_sha>/check-runs --jq
-   '.check_runs[] | "app\t\(.name)\t\(.app.id)"' >> "$tmp"` — inside the same `if`, so both fetches are
-   promoted by the same atomic `mv`; the rollup does not carry `.app.id` (`stage-2-ci.md`, "Right name is
-   not right producer").
+   **The two fetches are taken at DIFFERENT TIMES.** They MUST agree — same head SHA everywhere, same set
+   of check-run names across the `checkrun` and `rollup-checkrun` rows. **A run present in one and absent
+   from the other means the check state was still MOVING → `ci = pending`, refetch, NEVER green**
+   (`stage-2-ci.md`, "The two fetches are still taken at different times").
 
    `<head_sha>` is the SHA this watch was launched for — the artifact is named and stamped for **that**
    commit, never for "the PR". The head may have advanced by the time the watch returns; the consumer

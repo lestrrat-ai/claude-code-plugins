@@ -31,13 +31,18 @@ HEADER_DEFAULTS = {
 
 ROW_FIELDS = (
     "id", "slug", "branch", "worktree", "worktree_owned", "branch_owned", "pr",
-    "head_sha", "reviews_ok", "ci", "tier", "attempts", "started",
+    "head_sha", "reviews_ok", "ci", "required_set", "tier", "attempts", "started",
     "api_approval", "status",
 )
+# `required_set` records the outcome of the required-check-set read (declared | none |
+# unknown). It DEFAULTS TO `unknown`: a row that has never had a successful read must not
+# read as "no required checks are declared" — the fail-safe is uncertainty, never a claim
+# of completeness (`references/stage-2-ci.md`, "Three states, never two").
 ROW_DEFAULTS = {
     "id": "-", "slug": "-", "branch": "-", "worktree": "-", "worktree_owned": "-",
     "branch_owned": "-", "pr": "-", "head_sha": "-", "reviews_ok": "0", "ci": "pending",
-    "tier": "-", "attempts": "0", "started": "-", "api_approval": "-", "status": "pending",
+    "required_set": "unknown", "tier": "-", "attempts": "0", "started": "-",
+    "api_approval": "-", "status": "pending",
 }
 
 
