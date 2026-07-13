@@ -13,7 +13,10 @@ row by column position:
 - **pending** → any line still pending, or the expected checks haven't appeared yet → not green;
   leave `ci = pending` and, if the watch task has exited, **relaunch it in this same wake** — a
   pending PR must never sit unwatched waiting for the heartbeat.
-- **red** → any failing line → **stop any review pass in flight on that PR first** (Loop control
+- **red** → **if the PR is PARKED** (`status` = `awaiting-user` / `awaiting-api`), record `ci = red` and
+  **dispatch NO fix** — a parked PR dispatches nothing until the user answers (`loop-control.md` step 3).
+  The **watch keeps running** either way: watching is observation, not work-dispatch, so a parked PR's CI
+  state stays fresh. Otherwise → any failing line → **stop any review pass in flight on that PR first** (Loop control
   step 3 — the fix will replace its SHA, so the verdict is already void; free the slot), then
   **CLASSIFY the failure** from the check logs ("Classify, then set the model" below) **before
   dispatching anything**, and dispatch a **scoped CI-fix subagent** into `<worktree>` — the PR row's
@@ -25,8 +28,9 @@ row by column position:
 #### Any campaign commit to the PR head resets the gate
 
 **THE RULE — every commit campaign pushes to a PR's head branch is a PR-content change, whatever wrote
-it: a cheap CI-fix subagent, a session-model CI-fix subagent, or a review-fix subagent.** Every one of
-them MUST, in the same step:
+it: a cheap CI-fix subagent, a session-model CI-fix subagent, a review-fix subagent, or an inline
+REFUTATION of a review finding (`stage-2-review-gate.md`, "Audit every finding before you fix it").**
+Every one of them MUST, in the same step:
 
 - **reset `reviews_ok` to 0 AND restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`**
   (`gh pr edit <pr> --remove-label gauntlet-accepted --add-label gauntlet-reviewing`) — the gate and its

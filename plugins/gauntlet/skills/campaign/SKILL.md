@@ -154,6 +154,22 @@ Read stage refs only when that stage/action is due:
   only one).
 - **Progress ledger:** reviewer progress means planned unit `done` or accepted amendment, not vague
   output.
+- **Findings are claims, not facts:** on every `NOT SATISFIED`, audit each finding (CONFIRMED /
+  ADJUSTED / REFUTED, with evidence, into `audit-<pr>-<n>.md`) BEFORE dispatching a fix; only
+  CONFIRMED + ADJUSTED get fixed. The reachability test asks whether the **mechanism can occur**, not
+  where the trigger comes from; **unsure → CONFIRMED, never REFUTED**. A refutation NEVER clears the
+  gate — `reviews_ok` stays 0 — and is **written into the tree** as an inline comment at the site and
+  **committed**: a commit is PR content, so it resets the gate and the next reviewer REVIEWS the
+  argument. The comment MUST be a falsifiable claim with evidence, NEVER an instruction to the reviewer;
+  reviewers verify such comments, and a wrong claim is a finding. Refute a finding **once** — if the
+  fresh reviewer re-raises it, that is a standoff → park `awaiting-user` for the USER to adjudicate
+  (`references/stage-2-review-gate.md`).
+- **A parked PR is FROZEN — take no action that MUTATES it.** `status = awaiting-user` / `awaiting-api`
+  waits on a HUMAN. The test is "does this mutate the PR?", **not** "is it on a list": never review,
+  CI-fix, review-fix, merge, rebase, base-refresh, push to, or relabel it — nor anything else that
+  changes it (a park does NOT lower `reviews_ok`, so guard on `status` at every dispatch AND mutation
+  site). Sole exception: its CI watch keeps running — observing is not mutating. Keep driving the other
+  PRs; unpark only on the user's answer (`references/loop-control.md`, "parked-status guard").
 - **No green by watch exit:** derive CI from re-polled `gh pr checks` snapshot.
 - **Public API changes require user confirmation** unless the ledger's `api_changes` field is `allowed`.
 
@@ -165,11 +181,15 @@ Read stage refs only when that stage/action is due:
    every PR carrying this run's `gauntlet-run-<run-id>` label from a batched snapshot. Treat `state.jsonl`
    as cache.
 3. **Fold completed review / CI / fix tasks** against the SHA each ran on.
-4. **Triage tier per PR, then launch due gate work up to caps.** Re-derive each PR's tier from its
+4. **Triage tier per PR, then launch due gate work up to caps — skipping PARKED PRs entirely** (`status`
+   `awaiting-user` / `awaiting-api`: FROZEN, no action that mutates the PR — no review, CI fix, review
+   fix, merge, rebase, base refresh, or relabel, and nothing else that changes it; CI watch stays).
+   Re-derive each non-parked PR's tier from its
    `head_sha` (deterministic file-class triage), then launch reviews up to `required(tier)`, CI
    watches/fixes, precondition clearing (Copilot items / red CI / base conflict), and base refresh;
    stop in-flight reviews doomed by a content change.
-5. **Merge ready PRs** one at a time until no candidate remains immediately ready after base refresh.
+5. **Merge ready PRs** (never a parked one) one at a time until no candidate remains immediately ready
+   after base refresh.
 6. **Launch audit + heartbeat — before sleeping, verify every due launch actually happened.** Re-run
    step 4's dispatch scan across both concurrency pools (CI-fix subagents and review passes each have
    their own cap): confirm every due review pass was launched, a CI watch is live for every pending-CI

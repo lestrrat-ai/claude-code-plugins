@@ -4,8 +4,9 @@
   *stuck* task, not a slow external system, and the ledger records no separately-metered work time — so
   key it off recorded row state, not a running subtraction of durations nothing stores: **do not fire
   the cap on a wake where the row is blocked on an external wait** — `status == awaiting-api` (parked
-  for user approval), or `ci == pending` for the current `head_sha` (CI still running). Only a wake
-  where `started` is over an hour old *and* the row is agent-controlled (not in either wait) trips it.
+  for user approval) or `status == awaiting-user` (parked for the user to adjudicate a review-finding
+  standoff), or `ci == pending` for the current `head_sha` (CI still running). Only a wake
+  where `started` is over an hour old *and* the row is agent-controlled (in none of those waits) trips it.
   When it trips, abort cleanly and **retry once against the SAME adopted PR** (`attempts` += 1, reset
   `started`). The PR is user/externally owned — campaign never closes it and opens a replacement of
   its own. Instead, **rebuild the worktree from the PR's head branch** so the retry runs with fresh
