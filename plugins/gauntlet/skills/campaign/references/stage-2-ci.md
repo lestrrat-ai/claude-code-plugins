@@ -7,6 +7,21 @@ code** — then writes the `ci`/`reviews_ok` result through `scripts/ledger.py �
 [--reviews_ok 0]` **by field name** (`files-and-ledger.md`), never by hand-editing the row by column
 position.
 
+#### WHO DOES WHAT — the background task ONLY WATCHES; the WAKE fetches. This section is the DEFINITION.
+
+**This split is normative, and every other file defers to it** (`pr-adoption.md`, `loop-control.md`):
+
+| Actor | Does | Does NOT |
+|---|---|---|
+| **The background task** | **BLOCKS on `gh pr checks <pr> --watch`, and NOTHING else.** Its **ONLY** job is to block, so that **its completion becomes a wake**. | It **NEVER** fetches, **NEVER** writes `ci-<pr>-<head_sha>.txt`, and **NEVER** produces evidence of any kind. |
+| **The wake** | **FETCHES** (SHA-pinned, both families), **PROMOTES** atomically, **VERIFIES** the stamp, **PARSES**, and **DECIDES** `ci`. | — |
+
+**WHY the fetch cannot live in the background task:** the fetch must be pinned to the `head_sha` **the
+LEDGER currently holds**, and **only the wake knows that**. A background task that fetched at its own
+completion time would pin to whatever SHA *it* saw and could **promote an artifact for a SHA the ledger has
+already moved past** — the exact false-green this section exists to prevent, smuggled back in through the
+producer. **A watch completion yields a WAKE, never an artifact.**
+
 **NEVER derive CI from `gh pr checks`.** Its output **carries no SHA at all** (`--json headSha` →
 *Unknown JSON field*), so you can never prove which commit it describes — right after a push it can
 report the **previous** commit's passing checks, and the ledger records a **green for code the PR no
@@ -152,13 +167,36 @@ change replaces **where the evidence comes from**, not **what it means** — it 
 regresses nor improves the classification. The total classification over the real enum lands in the
 **next PR in this series**. **NEVER read these bullets as complete.**
 
+**KNOWN GAP — THE REGISTRATION GAP: `green` here does NOT mean the required set passed.** `main`'s green
+rule also demanded that "**the expected checks are actually present**". This change does **NOT** carry that
+requirement forward, and that omission is a **deliberate, disclosed** one — not an oversight, and **not** a
+claim that the risk is gone:
+
+- **Why it is dropped: `main`'s version was UNIMPLEMENTABLE.** `main` names **no mechanism** for knowing
+  what checks are *expected* — it demands a comparison against a set it never defines. The rule below is an
+  **honest restatement of what the evidence can actually deliver**, not a weakening dressed up as one.
+- **THE RISK IS REAL AND IT IS NAMED.** Where required checks exist but have **not registered yet** on the
+  `head_sha`, a snapshot holding **one** registered, successful check derives **green** — and campaign can
+  merge over a required check it **never saw**. `green` here means **ONLY**: *"every check that had
+  registered by the time we looked had passed."* It does **NOT** mean the required set passed, and it does
+  **NOT** mean the required set is complete.
+- **NEVER claim more than the registration gap allows when reporting a green.** Not in the ledger, not in
+  the report, not to the user. `green` is a statement about **what was observed**, never about what was
+  **expected**.
+- **The mechanism that closes it lands in the `required-set` PR later in this series** — it reads the base
+  branch's required checks from **branch protection + rulesets**, records `required_set` as
+  DECLARED / NONE DECLARED / CANNOT READ, and makes `green` require **every declared required check to be
+  present AND passing**. Until that lands, this gap is **open**.
+
 Read verdicts from the JSON fields: `.status` and `.conclusion` on `checkrun` rows, `.state` on `status`
 rows. The `header` and `witness` rows hold **no verdict** and are never consulted here. "Rows" below means
 **evidence rows** — `checkrun` + `status`; the `header` row does not count toward any of them.
 
 - **green** → the snapshot lists **≥1 evidence row**; **every** `checkrun` row has `.status` `COMPLETED`
   and `.conclusion` `SUCCESS`; **every** `status` row has `.state` `SUCCESS`; and containment holds.
-  **Zero evidence rows is NOT green** — it means nothing has registered yet.
+  **Zero evidence rows is NOT green** — it means nothing has registered yet. This bullet is subject to the
+  **registration gap** above: it proves only that **what had registered** passed, **never** that the
+  required set is complete.
 - **pending** → no usable snapshot (any fetch failed, the file is absent, a line does not parse as JSON, a
   `.sha` does not match, or containment fails), zero evidence rows, or any `checkrun` row whose `.status`
   is not yet `COMPLETED` / any `status` row whose `.state` is `PENDING` → leave `ci = pending` and, if the

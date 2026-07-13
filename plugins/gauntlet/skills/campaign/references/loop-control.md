@@ -136,10 +136,12 @@ blocks; each completion is its own wake.
    reaches this point wearing a stale `gauntlet-accepted` — or both labels at once — means some reset
    site skipped its relabel: fix the label here, and treat it as a bug in that site, not as normal
    operation.
-2. **Fold in completions.** For any background task that finished (CI watch → a **fresh SHA-pinned
-   snapshot** `ci-<pr>-<head_sha>.txt`, which is **never parsed until its stamp is verified against the
-   ledger's `head_sha`** and is **never** decided from the watch's exit code — Stage 2b, "VERIFY THE
-   STAMP BEFORE PARSING"; review →
+2. **Fold in completions.** For any background task that finished (CI watch → **a WAKE, not an artifact**:
+   the watch **only blocks** and produces **nothing**, so **this wake** performs the SHA-pinned fetch of
+   both check families, **promotes** it atomically to `ci-<pr>-<head_sha>.txt` and **verifies** its stamp
+   against the ledger's **current** `head_sha` before parsing a single line of it — the CI state is
+   **never** decided from the watch's exit code (Stage 2b, "WHO DOES WHAT" and "VERIFY THE STAMP BEFORE
+   PARSING"); review →
    the **active launch attempt's** output file, with its progress file as liveness evidence — attempt 1
    writes `review-<pr>-<n>.txt` / `.progress.jsonl`, a relaunch writes `review-<pr>-<n>.a<k>.*`, and
    only the attempt named in the current `pass_identity` is read or counted (Stage 2a); CI/review fix),

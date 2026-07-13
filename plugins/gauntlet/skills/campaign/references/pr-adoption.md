@@ -212,18 +212,22 @@ For each `#PR` to adopt:
    head branch on `origin`.
 
 6. **Ensure a live CI watch when `ci = pending`.** Every adopted PR whose CI state is unknown gets a
-   background watch so a settling run wakes the driver. The `--watch` only **blocks** until the run
-   settles; immediately after, **re-poll a fresh snapshot** — that snapshot, not the watch, is what you
-   read:
+   background watch so a settling run wakes the driver. **The backgrounded command is the watch and
+   NOTHING ELSE** — its **ONLY** job is to **block** until the run settles, so that **its completion
+   becomes a wake**:
 
    ```
-   # run in background. ';' (not '&&') so the FETCH ALWAYS runs, even when --watch exits non-zero on failure.
-   # The watch only BLOCKS — it is never evidence. The evidence is the SHA-pinned fetch of BOTH check
-   # families, promoted atomically and stamped with the head_sha it describes: see stage-2-ci.md,
-   # "FETCH — pinned to the SHA, paginated, and BOTH check families". NEVER derive CI from `gh pr checks`:
-   # its output carries NO SHA, so it can report the PREVIOUS commit's passing checks.
-   gh pr checks <pr> --watch ; <SHA-pinned fetch of both families -> <rundir>/ci-<pr>-<head_sha>.txt>
+   # run in background. This is the WHOLE command: it BLOCKS, and that is all it does.
+   gh pr checks <pr> --watch
    ```
+
+   **The background task does NOT fetch, and does NOT write `<rundir>/ci-<pr>-<head_sha>.txt`.** The watch
+   only **blocks** — it is **never evidence**, and its exit code is **never** a CI verdict. The evidence is
+   the SHA-pinned fetch of **both** check families, which the **WAKE** performs, promotes atomically, and
+   verifies against the ledger's current `head_sha` before parsing (Stage 2b, `stage-2-ci.md` — "WHO DOES
+   WHAT" and "FETCH — pinned to the SHA"). Only the wake knows the SHA the ledger currently holds, so only
+   the wake can pin the fetch to it. **NEVER derive CI from `gh pr checks`:** its output carries **NO SHA**,
+   so it can report the **previous** commit's passing checks.
 
    Don't launch a duplicate watch for a PR that already has a live one (Loop control tracks in-flight
    watches).
