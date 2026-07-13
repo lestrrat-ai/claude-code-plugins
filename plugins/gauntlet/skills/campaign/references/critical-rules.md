@@ -58,7 +58,7 @@
   `--label gauntlet-run-<run-id>` or `--limit 1000`**: without `--label` the snapshot escapes the run's
   scope and reconcile would act on **other runs' PRs**, and without `--limit` `gh pr list` silently caps
   at **30**. Per-PR `gh` calls only where the snapshot falls short. Merge-gate CI truth stays the
-  re-polled `gh pr checks` snapshot.
+  SHA-pinned, SHA-verified snapshot of **both** check families (Stage 2b).
 - Carryover pruning NEVER blocks a fresh-run start: keep uncertain entries, adopt the run's PRs
   immediately, ask the user asynchronously, and fold the answer in as its own wake.
 - Public API surface/behavior changes need user confirmation by default (see Constraints). The
@@ -255,8 +255,20 @@
   error — *not* a real finding list / `VERDICT:` line), retry once, then do the equivalent work with
   your own subagents: a fresh, context-isolated subagent review pass in
   Stage 2a. The gate is unchanged — note any fallback pass in the report. See "The reviewer".
-- CI status comes from a re-polled `gh pr checks` snapshot with **zero fail AND zero pending lines** —
-  never from the `--watch` exit code (it can exit 0 on pending/unregistered checks). No green, no merge.
+- CI status comes from a **SHA-pinned** snapshot of **BOTH** check families (`commits/<head_sha>/check-runs`
+  **and** `commits/<head_sha>/status`), `--paginate`d, promoted atomically, and **SHA-verified before
+  parsing**. **NEVER from `gh pr checks`** — its output carries **no SHA**, so it can report the
+  **previous** commit's passing checks. **NEVER from the `--watch` exit code** — it can exit 0 with
+  checks unregistered. No green, no merge.
+  **The DECIDE rule in `stage-2-ci.md` ("DECIDE from the verified file's contents") is THE definition of
+  green — do not restate it, read it.** What a summary must never lose: green needs **≥1 registered
+  evidence row** — **zero rows is NOT green** (nothing has registered yet), and **every** observed row
+  must pass **under the current DECIDE rules** — which is **NOT** the same, weaker test as "no failing
+  and no pending row". Two gaps are **open and disclosed** in `stage-2-ci.md`, and a green claim must
+  respect both: the **REGISTRATION GAP** — green proves only that *what had registered* passed, **never**
+  that the required set is complete; and the **CLASSIFICATION GAP** — the conclusion set the rules map is
+  **not exhaustive** (`SKIPPED` / `NEUTRAL` / `STARTUP_FAILURE` / `STALE` match no rule). **NEVER claim
+  more from a green than those rules and gaps allow.**
 - The run targets a **base branch** (`base_branch` in the ledger header), which is **not assumed to
   be `main`** — it is the `baseRefName` of the adopted PRs (must agree across them, else prompt).
   Reviews diff `origin/<base>...HEAD` and PRs merge into `<base>`; a fix worktree branches off the PR's OWN

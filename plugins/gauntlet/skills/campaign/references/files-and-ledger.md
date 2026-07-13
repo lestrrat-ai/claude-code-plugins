@@ -14,7 +14,7 @@ files from colliding — see "Run identity and concurrency".
 | `review-<pr>-<n>.plan.jsonl` | Orchestrator-authored review work units for round `n` (per-pass — a relaunch reuses it) |
 | `review-<pr>-<n>.progress.jsonl` | Reviewer progress events against the plan for round `n` (launch attempt 1) |
 | `review-<pr>-<n>.a<k>.txt` / `.a<k>.progress.jsonl` | Same two artifacts for **launch attempt `k ≥ 2`** — a relaunched pass writes here, never over attempt 1's files, so a killed-but-alive attempt can't corrupt the live one. Only the attempt named in the active `pass_identity` is read or counted (see `stage-2-review-gate.md`) |
-| `ci-<pr>.txt` | Latest `gh pr checks` snapshot for a PR (re-polled after the watch, not the watch stream) |
+| `ci-<pr>-<head_sha>.txt` | Latest **SHA-pinned** CI snapshot for a PR — check runs **AND** commit statuses, fetched **BY THE WAKE** after the watch completes (**the watch never writes it**), promoted atomically, and **stamped with the `head_sha` it describes** (verify the stamp before parsing). Never the watch stream, and never `gh pr checks` — its output carries **no SHA** |
 | `audit-<pr>-<n>.md` | The orchestrator's audit of round `n`'s findings — CONFIRMED / ADJUSTED / REFUTED, each with evidence. A REFUTED finding's reasoning is recorded here **and** written into the tree as an inline comment at the site, committed like any other change (`stage-2-review-gate.md`, "Audit every finding before you fix it") |
 | `abort-<id>.md` | Detailed log for an aborted PR-task |
 
@@ -82,7 +82,8 @@ git-ignored driver bookkeeping, and that is the extent of campaign's on-disk foo
 
 One row per adopted PR. It is a **cache**, not the authoritative state — **ground truth is
 GitHub via `gh`, plus local worktrees** (`gh pr list/view` for PRs and merged/open state, each PR's
-`headRefOid` from `gh` — keyed by PR number — for the live head SHA, `gh pr checks` for live CI, and
+`headRefOid` from `gh` — keyed by PR number — for the live head SHA, a **SHA-pinned** `check-runs` +
+commit-`status` fetch for live CI, and
 the **active launch attempt's** review output files for which verdicts exist on which SHA —
 `review-<pr>-<n>.txt` for attempt 1, `review-<pr>-<n>.a<k>.txt` after a relaunch, counting only the
 attempt named in that pass's `pass_identity`, so a relaunch's verdict is never missed and a dead

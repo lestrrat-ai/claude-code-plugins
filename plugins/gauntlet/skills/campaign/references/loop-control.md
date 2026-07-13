@@ -61,7 +61,8 @@ blocks; each completion is its own wake.
      ```
 
      — and drive reconcile from that file; fall back to per-PR `gh pr view` only where the snapshot
-     isn't enough (merge-gate CI truth stays the re-polled `gh pr checks` snapshot, Stage 2b). Wake
+     isn't enough (merge-gate CI truth stays the SHA-pinned, SHA-verified snapshot of **both** check
+     families, Stage 2b). Wake
      turnaround is throughput: every serial `gh` call in reconcile delays every dispatch behind it. Re-read `run_id`, `base_branch`, `api_changes`, and `reviewer` from the ledger
      header — they govern namespacing, the merge/diff target, API-change handling, and which reviewer runs
      the review passes, and must be
@@ -135,7 +136,12 @@ blocks; each completion is its own wake.
    reaches this point wearing a stale `gauntlet-accepted` — or both labels at once — means some reset
    site skipped its relabel: fix the label here, and treat it as a bug in that site, not as normal
    operation.
-2. **Fold in completions.** For any background task that finished (CI watch → `ci-<pr>.txt`; review →
+2. **Fold in completions.** For any background task that finished (CI watch → **a WAKE, not an artifact**:
+   the watch **only blocks** and produces **nothing**, so **this wake** performs the SHA-pinned fetch of
+   both check families, **promotes** it atomically to `ci-<pr>-<head_sha>.txt` and **verifies** its stamp
+   against the ledger's **current** `head_sha` before parsing a single line of it — the CI state is
+   **never** decided from the watch's exit code (Stage 2b, "WHO DOES WHAT" and "VERIFY THE STAMP BEFORE
+   PARSING"); review →
    the **active launch attempt's** output file, with its progress file as liveness evidence — attempt 1
    writes `review-<pr>-<n>.txt` / `.progress.jsonl`, a relaunch writes `review-<pr>-<n>.a<k>.*`, and
    only the attempt named in the current `pass_identity` is read or counted (Stage 2a); CI/review fix),
