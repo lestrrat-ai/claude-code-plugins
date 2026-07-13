@@ -69,6 +69,30 @@ corrupt the very check meant to catch that bug — a branch that accidentally se
 would, used as its own gate, merge itself on a single verdict; a branch that weakened CI status
 derivation would feed itself a false `ci=green`. Keep a trusted stage-0.
 
+## Your OWN diagnosis is a claim too — reproduce the failure before you "fix" it
+
+The campaign gate already knows that **a reviewer's finding is a CLAIM, not a fact**, and must be audited
+CONFIRMED / ADJUSTED / REFUTED before any fix is dispatched (`critical-rules.md`). **That rule applies to
+your own diagnoses with exactly the same force, and it is the one place it kept getting skipped.**
+
+**If you cannot demonstrate the failure, you do not get to change the code.**
+
+Before you "fix" existing behavior, produce the reproduction: the command that fails, the input that
+breaks it, the line that cannot be reached. Walk the causal chain of the bug you *believe* is there and
+check every link. If you cannot make it fail, **it is not broken** — and what you are about to write is
+not a fix, it is a regression with good intentions.
+
+**Why this rule exists:** a PR in this repo changed `--state open` to `--state all` to fix terminal-PR
+reconciliation. The reconciliation was **never broken** — `main` already handled it via **absence** (with
+`--state open` a merged PR simply drops out of the snapshot, and the existing rule reads that absence as
+the signal). The "bug" was a misreading. The change then broke adoption (it resurrected merged PRs as
+active work), and the next three review rounds were spent patching the consequences of an invented
+problem — the exact death-spiral this repo has already suffered once. It took a human's call to stop it.
+
+The tell is unmistakable in hindsight, and it generalises: **when each fix creates the next finding, you
+are not converging on a bug — you are patching your own invention.** Stop and re-derive whether the
+original thing was ever broken.
+
 ## Version is the plugin cache key
 
 `plugin.json`'s `version` decides whether an installed copy refreshes. Changing skill content **without**

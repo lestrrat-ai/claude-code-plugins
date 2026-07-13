@@ -83,6 +83,14 @@
   unchanged PR diff does NOT reset the gate, so it correctly KEEPS `gauntlet-accepted` (it only sets
   `ci = pending`). Per-wake label reconcile is the self-healing backstop, never the mechanism
   (`stage-2-review-gate.md`, "Status labels mirror the review gate").
+- **YOUR OWN diagnosis is a claim too — REPRODUCE the failure before you "fix" working code.** The rule
+  below audits a *reviewer's* finding. It binds **your own** with equal force, and that is where it keeps
+  getting skipped: campaign never writes fixes from scratch, but it *does* decide that existing behavior
+  is broken — and a fix subagent dispatched on an **invented** bug lands a regression that CI and the
+  review gate will happily pass, because nothing downstream knows the bug was never real. **If you cannot
+  make it fail, it is not broken.** Walk the causal chain and check every link, exactly as you would for a
+  reviewer's claim. **The tell that you have invented one: each fix creates the next finding.** When that
+  happens, stop patching and re-derive whether the original thing was ever broken.
 - **A reviewer's finding is a CLAIM, not a fact — AUDIT it before you fix it.** On every `NOT
   SATISFIED`, verdict each finding against the source *before* dispatching a fix — NEVER dispatch a fix
   for an unaudited finding: **CONFIRMED** (real, and its mechanism can occur → fix), **ADJUSTED** (a real
