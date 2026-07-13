@@ -19,19 +19,21 @@ A source you never queried reports nothing, and "nothing" parses as "nothing wro
 
 ```sh
 # (1) CHECK RUNS — pinned to <head_sha> BY THE URL, and the only source of a check-run verdict.
-#     ONE row carries the commit, the IDENTITY (name + app.id) AND the RESULT (status + conclusion),
-#     so no check-run judgment is ever joined across two fetches. REST is lowercase -> upcased.
+#     ONE row carries the commit, the IDENTITY (name + app.id + details_url) AND the RESULT (status +
+#     conclusion), so no check-run judgment is ever joined across two fetches. `details_url` is the
+#     CROSS-SOURCE identity the containment test below compares on — REST `.details_url` and rollup
+#     `.detailsUrl` are the SAME VALUE. REST is lowercase -> upcased.
 gh api --paginate "repos/<owner>/<repo>/commits/<head_sha>/check-runs" \
-  --jq ".check_runs[] | \"checkrun <head_sha> \(.name) \(.app.id // \"-\") \(.status|ascii_upcase) \(.conclusion // \"-\"|ascii_upcase)\""
+  --jq ".check_runs[] | \"checkrun <head_sha> \(.name) \(.app.id // \"-\") \(.status|ascii_upcase) \(.conclusion // \"-\"|ascii_upcase) \(.details_url // \"-\")\""
 
 # (2) COMMIT STATUSES — the legacy family, which (1) CANNOT SEE.
 gh api --paginate "repos/<owner>/<repo>/commits/<head_sha>/status" \
   --jq ".statuses[] | \"status <head_sha> \(.context) \(.state|ascii_upcase)\""
 
-# (3) ROLLUP — WITNESSES ONLY (names, no verdict). Used ONLY for the containment test below.
+# (3) ROLLUP — WITNESSES ONLY (identity, no verdict). Used ONLY for the containment test below.
 #     The rollup carries no app.id and no commit oid, so it can NEVER be read as a verdict.
 gh pr view <pr> --json statusCheckRollup \
-  --jq '.statusCheckRollup[]? | select(.__typename=="CheckRun") | "witness \(.name)"'
+  --jq '.statusCheckRollup[]? | select(.__typename=="CheckRun") | "witness \(.name) \(.detailsUrl)"'
 ```
 
 - **`--paginate` is MANDATORY** — `/check-runs` pages at **30**; without it you parse page one and call
@@ -60,16 +62,20 @@ The artifact's row format — **every EVIDENCE row (`checkrun`, `status`) carrie
 
 ```
 # sha: <head_sha>
-checkrun <head_sha> <name> <app.id|-> <STATUS> <CONCLUSION|->
+checkrun <head_sha> <name> <app.id|-> <STATUS> <CONCLUSION|-> <details_url|->
 status   <head_sha> <context> <STATE>
-witness  <name>
+witness  <name> <detailsUrl>
 ```
 
 **`witness` rows are IDENTITY-ONLY, SHA-LESS, and NEVER a verdict.** They exist for **one** purpose: the
-REST ⊇ rollup-witnesses containment test below. **NEVER write a SHA onto a witness row** — the rollup
-**carries no commit oid at all**, so any SHA on that row would be one *we* invented, not one the API
-vouched for: **fabricated evidence**. Their SHA-lessness is exactly **WHY** they can never be read as
-evidence about a commit, and why they are exempt from the verify rule instead of being patched into it.
+containment test below. **NEVER write a SHA onto a witness row** — the rollup **carries no commit oid at
+all**, so any SHA on that row would be one *we* invented, not one the API vouched for: **fabricated
+evidence**. Their SHA-lessness is exactly **WHY** they can never be read as evidence about a commit, and
+why they are exempt from the verify rule instead of being patched into it.
+
+The `detailsUrl` on a witness row is **not** a SHA and not a verdict: it is the **cross-source identity**
+the containment test counts on. It is safe to carry precisely because it is inert — nothing reads a
+result off it.
 
 **If ANY fetch fails, the snapshot is NOT EVIDENCE.** `--paginate` leaves **partial output on disk** when
 it dies mid-run, and an error body lands in the redirect target. A failed or partial fetch → `ci =
@@ -85,15 +91,32 @@ pending`, refetch. **NEVER** green off it, and never "fix up" the mismatch.
 **The ledger write is GATED ON the parsed contents.** A guard that runs *beside* the write is not a
 guard.
 
-#### CROSS-FETCH AGREEMENT — containment, NOT equality
+#### CROSS-FETCH AGREEMENT — MULTISET containment on `details_url`, NOT equality
 
 The fetches are taken at different times, so they can disagree. But the correct test is **containment**,
-not equality:
+not equality — and it is compared on the **identity**, **counting occurrences**:
 
-> **REST ⊇ rollup-witnesses.** A `witness` name **absent** from the `checkrun` rows → the REST read is
-> missing something → `ci = pending`, refetch. A **REST-only** name is **FINE** — it can only *add*
+> **REST ⊇ rollup-witnesses, as MULTISETS over `details_url`.** The identity of a check run is its
+> **`details_url`** (REST `.details_url` ≡ rollup `.detailsUrl` — the **same value**, carrying the Actions
+> job id). For **every** identity, require `count_REST(identity) >= count_rollup(identity)`. If **any**
+> rollup identity appears **FEWER** times in the `checkrun` rows than in the `witness` rows → the REST read
+> is **missing evidence** → `ci = pending`, refetch. A **REST-only** row is **FINE** — it can only *add*
 > evidence and cannot hide a failure, because the REST row carries **identity AND verdict in the same
 > row**.
+
+**NEVER compare on NAME, and NEVER compare as a SET — CHECK-RUN NAMES ARE NOT UNIQUE.** Matrix jobs and
+reusable workflows routinely emit many runs sharing one name: a live `Homebrew/homebrew-core` commit
+(`1f672559`) carries **16** check runs named `status-check`, **15** named `merge`, and **7** named
+`comment`. A set-of-names test **cannot see a missing duplicate**: if the rollup holds 7 rows named
+`comment` and the REST read returned only 1, `{comment} ⊆ {comment}` **PASSES** while REST is silently
+short **6** runs — **any of which could be the failing one**. That run then never reaches the DECIDE rules
+and the snapshot **greens on incomplete evidence** — the exact defect this whole section exists to
+prevent, reproduced inside the guard meant to catch it. **Counting is what closes it.**
+
+**Count occurrences — do NOT assume the identity is a key.** `details_url` is not *guaranteed* unique for
+non-Actions apps, which is **why** the rule compares multiplicities rather than treating the identity as a
+primary key. The multiset test is correct **either way**: if the identity is unique the counts are all 1
+and it degrades to the set test; if it is not, it still detects the missing duplicate.
 
 **NEVER require the two sets to be EQUAL — that never terminates.** GitHub's rollup **omits
 `dynamic`-event check suites BY DESIGN**: on `microsoft/vscode` PR #325532, REST returns **37** runs
