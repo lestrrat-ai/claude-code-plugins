@@ -364,15 +364,71 @@ motion**, so "sets differ → pending, refetch" spins forever — which is preci
 is **FINE**. This repo ships `gauntlet:copilot-address-reviews`, so its users are exactly the affected
 ones.
 
-#### DECIDE from the verified file's contents
+#### CLASSIFY every row — a TOTAL function over the REAL enum
 
-**KNOWN GAP — these three bullets are NOT an exhaustive mapping.** The conclusion set below is **carried
-over unchanged from `main`** and is **known to be incomplete**: `SKIPPED`, `NEUTRAL`, `STARTUP_FAILURE`
-and `STALE` are real `CheckConclusionState` values (live `completed`/`skipped` runs exist on
-`nodejs/node`) and a `COMPLETED` check run holding one of them matches **none** of the three rules. This
-change replaces **where the evidence comes from**, not **what it means** — it deliberately neither
-regresses nor improves the classification. The total classification over the real enum lands in the
-**next PR in this series**. **NEVER read these bullets as complete.**
+**THE RULE — classify over the WHOLE enum, and give every unlisted value somewhere to go.** A rule that
+names only the values you happened to think of leaves **holes**, and a value that falls in a hole matches
+**no** branch: it is not green, not red, not pending — so it can never resolve, and the PR **wedges
+forever**. Enumerate from the schema, never from memory.
+
+Classification reads **only** the JSON verdict fields: `.status` and `.conclusion` on `checkrun` rows,
+`.state` on `status` rows. The `header`, `source` and `witness` rows hold **no verdict** and are **never**
+classified. "Rows" below means **evidence rows** — `checkrun` + `status`; the `header` and `source` rows do
+not count toward any of them.
+
+The enums below are **introspected from GitHub's GraphQL schema**, not recalled:
+
+```
+CheckStatusState      REQUESTED QUEUED IN_PROGRESS COMPLETED WAITING PENDING
+CheckConclusionState  SUCCESS FAILURE TIMED_OUT CANCELLED ACTION_REQUIRED NEUTRAL SKIPPED
+                      STARTUP_FAILURE STALE
+StatusState           SUCCESS PENDING EXPECTED FAILURE ERROR
+```
+
+**`checkrun` rows** — classify on `.status`, then `.conclusion`:
+
+```
+.status != COMPLETED                       -> RUNNING    # QUEUED IN_PROGRESS WAITING PENDING REQUESTED
+.conclusion SUCCESS | SKIPPED | NEUTRAL    -> PASS
+.conclusion FAILURE | TIMED_OUT | CANCELLED | ACTION_REQUIRED | STARTUP_FAILURE | STALE
+                                           -> FAIL
+ANY OTHER VALUE (either field)             -> UNKNOWN_VALUE
+```
+
+The catch-all is what makes this **total**, and it is **not decoration**: `.conclusion` is `"-"` when the
+field is **absent**, and `"-"` is **not a `CheckConclusionState`**. On a row that is still running that is
+harmless — the first line already classified it `RUNNING`. But a row that is `COMPLETED` while carrying
+`.conclusion "-"` has **no verdict at all**, and it falls to `UNKNOWN_VALUE` exactly like an enum value
+GitHub added tomorrow. **That is the catch-all doing its job — never "read through" the `-` to a guess.**
+
+**`status` rows** — classify on `.state`:
+
+```
+SUCCESS                                    -> PASS
+PENDING | EXPECTED                         -> RUNNING    # EXPECTED = declared but not yet posted
+FAILURE | ERROR                            -> FAIL       # ERROR IS A FAILURE — never shrug it off
+ANY OTHER VALUE                            -> UNKNOWN_VALUE
+```
+
+**`SKIPPED` is a PASS — and this is the difference between a campaign that can go green and one that
+cannot.** GitHub itself rolls it up that way: `cli/cli` PR #13856 carries **6 × `SKIPPED` + 1 ×
+`SUCCESS`** and its `statusCheckRollup.state` is **`SUCCESS`**. Treating `SKIPPED` as anything else is
+not a conservative choice — it is a **wedge**: a skipped run is `COMPLETED` (so not pending), is not
+`SUCCESS` (so not green), and is not a failure (so not red), and it therefore matches **no rule at all**.
+Skipped runs are **routine, not exotic** — path filters, conditional jobs and excluded matrix legs produce
+them in bulk (illustrative, and expected to drift: **188 of 310** check runs observed on `cli/cli` trunk on
+2026-07-13 were `skipped`; the **CLAIM** is permanent, never the counts). A rule set without it can **never
+go green** on `cli/cli`, `grafana`, `vscode`, or `next.js`.
+
+**`STARTUP_FAILURE` and `STALE` are FAILURES.** A rule set that omits them from the red list calls them
+not-a-failure and merges over them — a **false green**.
+
+**`NEUTRAL → PASS` is the one mapping here that is DOCS-BASED, NOT EXECUTED.** It shares GitHub's
+non-failure bucket with `SKIPPED` (which *is* verified above), but no live `NEUTRAL` run was found to
+confirm it. **Say so; do not launder it into a verified claim.** If a `NEUTRAL` run ever turns out to
+block a merge, this is the line that was wrong.
+
+#### DECIDE — first match wins
 
 **KNOWN GAP — THE REGISTRATION GAP: `green` here does NOT mean the required set passed.** `main`'s green
 rule also demanded that "**the expected checks are actually present**". This change does **NOT** carry that
@@ -395,33 +451,17 @@ claim that the risk is gone:
   DECLARED / NONE DECLARED / CANNOT READ, and makes `green` require **every declared required check to be
   present AND passing**. Until that lands, this gap is **open**.
 
-Read verdicts from the JSON fields: `.status` and `.conclusion` on `checkrun` rows, `.state` on `status`
-rows. The `header`, `source` and `witness` rows hold **no verdict** and are never consulted here. "Rows"
-below means **evidence rows** — `checkrun` + `status`; the `header` and `source` rows do not count toward
-any of them.
+Evaluate the bullets **in this order — first match wins.**
 
-- **green** → **all three `source` markers are present and hold** (VERIFY above — otherwise you do not know
-  what you did not read); the snapshot lists **≥1 evidence row**; **every** `checkrun` row has `.status`
-  `COMPLETED` and `.conclusion` `SUCCESS`; **every** `status` row has `.state` `SUCCESS`; and containment
-  holds **on a usable identity** (every `witness` `.id` non-null and unique).
-  **Zero evidence rows is NOT green** — it means nothing has registered yet. This bullet is subject to the
-  **registration gap** above: it proves only that **what had registered** passed, **never** that the
-  required set is complete.
-- **pending** → no usable snapshot (any fetch failed, the file is absent, it **fails ANY rule in VERIFY
-  above** — misnamed, header not first or not alone, a line that does not parse as JSON, an unknown row
-  type, a missing or unexpected field, a field whose **value is not a string**, a `.sha` that does not
-  match, **a mandatory `source` marker missing, duplicated, mis-counted, or carrying a sha that is not
-  GitHub's** — or containment **cannot be
-  established**: it fails, **or** a `witness` `.id` is null/duplicated so the test proves nothing), zero
-  evidence rows, or any `checkrun` row whose `.status`
-  is not yet `COMPLETED` / any `status` row whose `.state` is `PENDING` or `EXPECTED` (**`EXPECTED` is a
-  required status that has not been posted yet** — it can still move, so it is **NOT** a green) → leave
-  `ci = pending` and, if the
-  watch task has exited, **relaunch it in this same wake** — a pending PR must never sit unwatched waiting
-  for the heartbeat.
-- **red** → any `checkrun` row whose `.conclusion` is `FAILURE` / `TIMED_OUT` / `CANCELLED` /
-  `ACTION_REQUIRED`, or any `status` row whose `.state` is `FAILURE` or `ERROR` (**`ERROR` is a failure** —
-  never shrug it off as a glitch).
+- **UNUSABLE → `ci = pending`, refetch** → no usable snapshot: any fetch failed, the file is absent, or it
+  **fails ANY rule in VERIFY above** — misnamed, header not first or not alone, a line that does not parse
+  as JSON, an unknown row type, a missing or unexpected field, a field whose **value is not a string**, a
+  `.sha` (the `header` row's, **any** evidence row's, or the filename's) that does not match the ledger's
+  `head_sha`, **a mandatory `source` marker missing, duplicated, mis-counted, or carrying a sha that is not
+  GitHub's** — or containment **cannot be established**: it fails, **or** a `witness` `.id` is
+  null/duplicated so the test proves nothing.
+- **red** → **any** evidence row classifies `FAIL`. Other rows still `RUNNING` does **not** change this —
+  a failure is actionable now.
 
   **If the PR is PARKED** (`status` = `awaiting-user` / `awaiting-api`), record `ci = red` and
   **dispatch NO fix** — a parked PR dispatches nothing until the user answers (`loop-control.md` step 3).
@@ -434,6 +474,21 @@ any of them.
   adoption/pre-review per `pr-adoption.md`; default `.worktrees/<headRefName>` when campaign creates
   it, else a reused existing checkout). Its fix commits + pushes to the PR's **own head branch** →
   **apply the gate reset** below.
+- **UNKNOWN_VALUE → escalate, NEVER guess** → an evidence row carries a value not in the enums above
+  (GitHub added one, or a `COMPLETED` `checkrun` row carries no `.conclusion`). **Do NOT** map it to green,
+  red, or pending: park the PR (`status = awaiting-user`) naming the offending value and the row it came
+  from. A value nobody has classified is not evidence of anything — and silently bucketing it is exactly
+  how a hole becomes a wedge or a false green.
+- **pending** → any evidence row classifies `RUNNING` → leave `ci = pending` and, if the watch task has
+  exited, **relaunch it in this same wake** — a pending PR must never sit unwatched waiting for the
+  heartbeat.
+- **pending (nothing registered)** → the snapshot lists **zero evidence rows**. **Zero evidence rows is NOT
+  green** — it means nothing has registered yet.
+- **green** → **all three `source` markers are present and hold** (VERIFY above — otherwise you do not know
+  what you did not read); **≥1 evidence row**; **every** evidence row classifies `PASS`; and containment
+  holds **on a usable identity** (every `witness` `.id` non-null and unique). This bullet is subject to the
+  **registration gap** above: it proves only that **what had registered** passed, **never** that the
+  required set is complete.
 
 #### Any campaign commit to the PR head resets the gate
 
