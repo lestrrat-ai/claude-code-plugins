@@ -10,7 +10,7 @@ Two entry paths feed it (see "Run identity and concurrency" for the full grammar
 
   ```
   # THE canonical run snapshot — the SAME command loop-control step 2 runs. ONE path, ONE schema.
-  gh pr list --label gauntlet-run-<run-id> --state all \
+  gh pr list --label gauntlet-run-<run-id> --state all --limit 1000 \
     --json number,headRefName,headRefOid,title,baseRefName,state,mergeable,mergeStateStatus,labels \
     > <rundir>/prs.json
   ```
@@ -23,6 +23,9 @@ Two entry paths feed it (see "Run identity and concurrency" for the full grammar
   cannot be carried out: the PR that vanished from an `open`-only listing is **exactly** the one whose row
   needs reconciling to a terminal status, and an absent row is indistinguishable from a PR that was never
   adopted.
+
+  **`--limit` is NOT optional** — `gh pr list` silently caps at **30** items without it, and a truncated
+  snapshot loses rows exactly as an `open`-only listing does (`files-and-ledger.md`, `prs.json`).
 
 `base_branch` for the run = the adopted PR's `baseRefName`. When several PRs are adopted at once they
 **must agree** on `baseRefName`; if they disagree, stop and prompt the user (one run targets one base).

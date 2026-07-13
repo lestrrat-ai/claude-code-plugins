@@ -8,7 +8,7 @@ files from colliding — see "Run identity and concurrency".
 |------|----------|
 | `state.jsonl` | Live per-PR ledger — a **cache/hint**, not the source of truth (see below) |
 | `pr-<pr>.json` | `gh pr view` snapshot captured at adoption (PR facts the ledger row is built from) |
-| `prs.json` | Batched `gh pr list` snapshot of this run's PRs — the per-wake reconcile input, and the adoption/discovery input. **ONE path, ONE schema, ONE command**, written identically by `pr-adoption.md` and `loop-control.md` step 2: `--state all --json number,headRefName,headRefOid,title,baseRefName,state,mergeable,mergeStateStatus,labels`. **Two writers with different `--json` field sets would silently hand the reader a file missing the fields it reads** — adopt via one path and reconcile finds no `labels`/`mergeable` at all |
+| `prs.json` | Batched `gh pr list` snapshot of this run's PRs — the per-wake reconcile input, and the adoption/discovery input. **ONE path, ONE schema, ONE command**, written identically by `pr-adoption.md` and `loop-control.md` step 2: `--state all --limit 1000 --json number,headRefName,headRefOid,title,baseRefName,state,mergeable,mergeStateStatus,labels`. **Two writers with different `--json` field sets would silently hand the reader a file missing the fields it reads** — adopt via one path and reconcile finds no `labels`/`mergeable` at all. **`--limit` is mandatory, and it bounds rather than proves the snapshot** (see below) |
 | `lease.json` | This run's active-driver lease (`{agent, updated}`; see "Run lease") |
 | `review-<pr>-<n>.txt` | The reviewer's PR review output, round `n` (launch attempt 1) |
 | `review-<pr>-<n>.plan.jsonl` | Orchestrator-authored review work units for round `n` (per-pass — a relaunch reuses it) |
@@ -17,6 +17,15 @@ files from colliding — see "Run identity and concurrency".
 | `ci-<pr>.txt` | Latest `gh pr checks` snapshot for a PR (re-polled after the watch, not the watch stream) |
 | `audit-<pr>-<n>.md` | The orchestrator's audit of round `n`'s findings — CONFIRMED / ADJUSTED / REFUTED, each with evidence. A REFUTED finding's reasoning is recorded here **and** written into the tree as an inline comment at the site, committed like any other change (`stage-2-review-gate.md`, "Audit every finding before you fix it") |
 | `abort-<id>.md` | Detailed log for an aborted PR-task |
+
+**`prs.json` is a BOUNDED snapshot, not a proof of completeness.** `gh pr list` fetches **30** items by
+default, so the canonical command passes `--limit 1000` — without it a run with more than 30 labelled PRs
+writes a silently truncated file that reconcile then reads as the complete run snapshot. That matters
+because **an absent PR is indistinguishable from a PR that was never adopted**: a dropped row does not
+error, it just quietly stops being reconciled. `--limit 1000` defeats the default-30 truncation; it does
+**not** make the snapshot provably complete — a run with more than 1000 labelled PRs would still
+truncate. Treat "every labelled PR is in `prs.json`" as an assumption bounded by that cap, never as a
+guarantee.
 
 Store ALL reviewer and `gh` output under `<rundir>` first, then Read/Grep it. NEVER `/tmp/`.
 

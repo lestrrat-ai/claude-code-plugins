@@ -53,7 +53,7 @@ blocks; each completion is its own wake.
      `prs.json` ends up with fields that are not there):
 
      ```
-     gh pr list --label gauntlet-run-<run-id> --state all \
+     gh pr list --label gauntlet-run-<run-id> --state all --limit 1000 \
        --json number,headRefName,headRefOid,title,baseRefName,state,mergeable,mergeStateStatus,labels \
        > <rundir>/prs.json
      ```
