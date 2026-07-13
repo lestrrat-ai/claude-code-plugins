@@ -37,10 +37,17 @@ the row by column position). Default to **STANDARD** whenever you are unsure. `r
 
 ### 2a. The review gauntlet
 
+**A PARKED PR IS NOT REVIEWABLE — check `status` FIRST.** If `status` is `awaiting-user` or
+`awaiting-api`, dispatch **NOTHING** for that PR: no review pass, no precondition fix, no CI fix, no
+review fix, no merge (`loop-control.md` step 3, "parked-status guard"). The park leaves
+`reviews_ok < required(tier)`, so the review-launch rule MUST read `status` too — otherwise the next
+wake re-reviews a PR that is waiting on a HUMAN and a `SATISFIED` verdict merges it **without the
+user's ruling**. Its CI watch keeps running; everything else waits for the user's answer.
+
 **Preconditions — clear Copilot items, CI, and conflicts before reviewing.** A review pass is
 expensive and is invalidated by any PR-content change, so never spend one on a PR whose current tip
-still has review-blocking issues. Before launching a pass, check three things and clear any that are
-dirty. Each fix changes PR content, so `reviews_ok` resets to 0 **and the status label is restored to
+still has review-blocking issues. Before launching a pass on a **non-parked** PR, check three things
+and clear any that are dirty. Each fix changes PR content, so `reviews_ok` resets to 0 **and the status label is restored to
 `gauntlet-reviewing` in that same step** if the PR was `gauntlet-accepted` ("Status labels mirror the
 review gate"), and the review re-starts on the clean tip:
 
@@ -497,9 +504,12 @@ reviewer and a `codex exec` reviewer both receive it.
   **Park the PR** — `status = awaiting-user` — exactly like the `awaiting-api` park (`ledger.py … set
   --pr <N> --status awaiting-user`) and ask the user to adjudicate, presenting the finding, the
   refutation, the evidence, and the reviewer's counter. Keep driving the other PRs; NEVER block the loop
-  on the answer. `reviews_ok` stays 0 and the PR does not advance while parked. The user ruling the
-  finding **invalid** → drop it and return to the normal flow; **valid** → fix it exactly like a
-  CONFIRMED finding.
+  on the answer. **The park is ENFORCED AT DISPATCH, not merely recorded:** while parked, NEVER launch a
+  review pass, a CI fix, a review fix, or a merge for that PR (`loop-control.md` step 3;
+  `stage-3-merge.md`) — `reviews_ok` stays 0, so a re-review would let a `SATISFIED` verdict merge the PR
+  with the disputed finding never adjudicated. Only the user's answer unparks it (`status` →
+  `in_review`): ruling the finding **invalid** → drop it and return to the normal flow; **valid** → fix
+  it exactly like a CONFIRMED finding.
 - **NEVER refute the same finding twice on your own authority.** One refutation, then the reviewer rules;
   if it re-raises, the user rules. `awaiting-user` is the **standoff-only** park — a REFUTED finding does
   **NOT** park by itself.

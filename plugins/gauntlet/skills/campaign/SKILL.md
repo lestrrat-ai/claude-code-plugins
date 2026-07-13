@@ -164,6 +164,9 @@ Read stage refs only when that stage/action is due:
   reviewers verify such comments, and a wrong claim is a finding. Refute a finding **once** — if the
   fresh reviewer re-raises it, that is a standoff → park `awaiting-user` for the USER to adjudicate
   (`references/stage-2-review-gate.md`).
+- **A parked PR dispatches nothing:** `status = awaiting-user` / `awaiting-api` waits on a HUMAN — never
+  review, CI-fix, review-fix, or merge it (a park does NOT lower `reviews_ok`, so guard on `status` at
+  dispatch AND merge); keep its CI watch, keep driving the other PRs, unpark only on the user's answer.
 - **No green by watch exit:** derive CI from re-polled `gh pr checks` snapshot.
 - **Public API changes require user confirmation** unless the ledger's `api_changes` field is `allowed`.
 
@@ -175,11 +178,14 @@ Read stage refs only when that stage/action is due:
    every PR carrying this run's `gauntlet-run-<run-id>` label from a batched snapshot. Treat `state.jsonl`
    as cache.
 3. **Fold completed review / CI / fix tasks** against the SHA each ran on.
-4. **Triage tier per PR, then launch due gate work up to caps.** Re-derive each PR's tier from its
+4. **Triage tier per PR, then launch due gate work up to caps — skipping PARKED PRs entirely** (`status`
+   `awaiting-user` / `awaiting-api`: no review, no CI fix, no review fix, no merge; CI watch stays).
+   Re-derive each non-parked PR's tier from its
    `head_sha` (deterministic file-class triage), then launch reviews up to `required(tier)`, CI
    watches/fixes, precondition clearing (Copilot items / red CI / base conflict), and base refresh;
    stop in-flight reviews doomed by a content change.
-5. **Merge ready PRs** one at a time until no candidate remains immediately ready after base refresh.
+5. **Merge ready PRs** (never a parked one) one at a time until no candidate remains immediately ready
+   after base refresh.
 6. **Launch audit + heartbeat — before sleeping, verify every due launch actually happened.** Re-run
    step 4's dispatch scan across both concurrency pools (CI-fix subagents and review passes each have
    their own cap): confirm every due review pass was launched, a CI watch is live for every pending-CI

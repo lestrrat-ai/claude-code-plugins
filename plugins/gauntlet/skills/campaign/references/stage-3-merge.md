@@ -1,14 +1,21 @@
 ## Stage 3 — Merge (serialized, auto)
 
-A PR is mergeable when the **live PR head SHA** —
+A PR is mergeable when it is **NOT parked** AND the **live PR head SHA** —
 `gh pr view <pr> --json headRefOid --jq .headRefOid`, keyed by the PR number from the ledger row —
 equals the ledger `head_sha` AND `reviews_ok >= required(tier)` AND `ci == green` — i.e.
 `required(tier)` SATISFIED verdicts (1 if `tier == TRIVIAL`, else 2) and green CI all recorded
 against the live tip. (An adopted PR may have no local worktree checked out, so use the PR's own head
 via `gh`, never a local `git rev-parse HEAD`.)
 
+**The parked-status guard binds the merge (`loop-control.md` step 3).** A PR whose `status` is
+`awaiting-user` or `awaiting-api` is parked on a HUMAN: **NEVER merge it**, whatever `reviews_ok` /
+`ci` / `mergeable` say. Merge eligibility is **not** derived from the gate counters alone — a park does
+not lower `reviews_ok`, so a rule that reads only the counters would merge a PR whose disputed finding
+or API change the user has not yet ruled on. Only the user's answer unparks it (`status` back to
+`in_review`); until then it is skipped, never merged.
+
 1. **Serialize merge operations, not wakes.** A wake may merge multiple PRs, but only one at a time.
-   Before each merge, re-confirm both gates still hold against the live PR head SHA
+   Before each merge, re-confirm the PR is still **not parked** and that both gates still hold against the live PR head SHA
    (`gh pr view <pr> --json headRefOid --jq .headRefOid`, PR number from the ledger row) — a late push
    may have moved the tip past the recorded `head_sha` and reset the gates —
    **and re-fetch `origin/<base>` and re-check
@@ -103,7 +110,7 @@ via `gh`, never a local `git rev-parse HEAD`.)
      --remove-label gauntlet-accepted --add-label gauntlet-reviewing`) — the gate and its label move
      together (`stage-2-review-gate.md`, "Status labels mirror the review gate"). Then relaunch the CI
      watch and re-enter Stage 2.
-   - Still open, mergeable, not behind/dirty/conflicting, same live `head_sha`,
+   - Still open, **not parked**, mergeable, not behind/dirty/conflicting, same live `head_sha`,
      `reviews_ok >= required(tier)`, and `ci == green` → still immediately mergeable; return to step 1
      in the same wake.
 

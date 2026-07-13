@@ -133,7 +133,29 @@ blocks; each completion is its own wake.
 3. **Dispatch due work — non-blocking, idempotent, bounded, work-conserving.** Scan the whole run,
    not just the PR/job that woke you. Launch every due action that fits a free slot before returning.
    Launch only what is actually due *and not already in flight* (check ground truth first, never the
-   ledger alone):
+   ledger alone).
+
+   **PARKED-STATUS GUARD — apply this BEFORE every bullet below.** A PR whose `status` is
+   **`awaiting-user`** or **`awaiting-api`** is **PARKED: dispatch NOTHING for it** — NEVER a review
+   pass, NEVER a CI fix, NEVER a review fix, NEVER a merge. It is waiting on a **HUMAN**, and no amount
+   of machine work can resolve it. **Skip it and keep driving the run's other PRs** — the run stays
+   live and the park NEVER blocks the loop (`run-identity-and-lease.md`, "Never hold the run hostage
+   on a user prompt").
+   - **Only the user's answer unparks a PR.** On the answer: record it (`api_approval` for the API
+     park; the audit record for the standoff ruling), set `status` back to `in_review` via
+     `ledger.py … set --pr <N> --status in_review`, and resume normal dispatch from the next wake.
+     (A declined API change goes terminal `aborted` instead.)
+   - **Keep the PR's CI watch running while parked** — a watch is *observation*, not work-dispatch, and
+     CI state must stay fresh for the unpark. Relaunch an exited watch on a parked pending PR as usual.
+     But do **NOT** dispatch a CI *fix*.
+   - **Why the guard must live HERE, at the dispatch site:** `reviews_ok < required(tier)` is TRUE for a
+     parked PR (the park does not raise it), so a dispatch rule that looks only at `reviews_ok` will
+     happily re-review a PR that is waiting on a human — and a `SATISFIED` verdict would then carry it
+     to `mergeable` and **merge it WITHOUT the user's ruling**, which is exactly the hole the standoff
+     park exists to close. **The park MUST be enforced where work is DISPATCHED, not merely recorded in
+     the ledger.**
+
+   Then, for each **non-parked** PR:
    - any newly-adopted PR whose ledger row lacks a `tier`, or any PR whose `head_sha` changed since it
      was last triaged → **re-triage its tier** (deterministic file-class classification of the changed
      files at that `head_sha`; agent-docs = code; default STANDARD on uncertainty — see the tiers
@@ -185,16 +207,18 @@ blocks; each completion is its own wake.
      conflict-resolving rebase) while a review is in flight on that PR → **stop that review task
      first** (its verdict can only describe a SHA the fix is about to replace); the freed slot goes
      to the next due review.
-   - mergeable → queue for serialized merge drain.
+   - mergeable **and not parked** → queue for serialized merge drain.
    Treat ~8 as a **rolling concurrency cap**, not a wave size: keep up to ~8 CI-fix subagents and ~8
    review processes in flight, refilling each free slot immediately; queue the rest. **Launch, do not
    wait — never barrier on a group of PRs before dispatching the next.**
    Allowed idle state is narrow and explicit: no PR can start a review, no CI/precondition fix is due,
    no exited watch needs relaunching, no PR is mergeable, and every remaining wait is external
-   (background review/CI), user/API approval, or a genuinely full cap. If the run has **no PR at all**
+   (background review/CI), a **parked** PR awaiting the user (`awaiting-user` / `awaiting-api` — idle on
+   that PR is the CORRECT state, never a stall to "fix" by dispatching work), or a genuinely full cap. If the run has **no PR at all**
    and none is in flight (no-arg idle), do not spin: **PROMPT** "No PRs under a campaign. Run
    gauntlet:review to find issues, or pass PR numbers to gate."
-4. **Merge** queued PRs as a serialized drain: re-confirm one candidate against the live SHA, merge
+4. **Merge** queued PRs as a serialized drain: re-confirm one candidate against the live SHA **and
+   re-check it is not parked** (the parked-status guard binds the merge too — Stage 3), merge
    it, sync `<base>`, reconcile remaining candidates, and repeat while another PR is immediately
    mergeable (Stage 3).
 5. **Reschedule or exit.**

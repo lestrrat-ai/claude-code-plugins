@@ -111,6 +111,15 @@
   (`status = awaiting-user`), surface finding + refutation + evidence + the reviewer's counter, let the
   USER adjudicate, and keep driving the other PRs. `awaiting-user` is **standoff-only** — a REFUTED
   finding does NOT park by itself (`stage-2-review-gate.md`, "Audit every finding before you fix it").
+- **A PARKED PR DISPATCHES NOTHING.** `status = awaiting-user` (standoff) or `awaiting-api` (API
+  approval) means the PR waits on a **HUMAN**: **NEVER** launch a review pass, a CI fix, a review fix,
+  or a merge for it — skip it and keep driving the run's other PRs. The park does **not** raise
+  `reviews_ok`, so a dispatch or merge rule that reads only `reviews_ok`/`ci`/`mergeable` would
+  re-review a parked PR and let a `SATISFIED` verdict merge it **without the user's ruling** — the guard
+  MUST be enforced where work is **DISPATCHED** (`loop-control.md` step 3) and at the **MERGE**
+  (`stage-3-merge.md`), not merely recorded in the ledger. Only the user's answer unparks it (`status`
+  → `in_review`; a declined API change → `aborted`). **Keep the CI watch running** while parked
+  (observation, not work-dispatch) — but dispatch no CI fix.
 - Reviews are fresh, context-isolated re-rolls: a separate reviewer invocation each pass (Claude
   subagent by default, or the user's preferred reviewer), no shared context. A second pass re-rolls a
   stochastic reviewer to catch a missed defect — the two are NOT statistically independent (the same

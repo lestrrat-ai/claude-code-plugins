@@ -13,7 +13,10 @@ row by column position:
 - **pending** → any line still pending, or the expected checks haven't appeared yet → not green;
   leave `ci = pending` and, if the watch task has exited, **relaunch it in this same wake** — a
   pending PR must never sit unwatched waiting for the heartbeat.
-- **red** → any failing line → **stop any review pass in flight on that PR first** (Loop control
+- **red** → **if the PR is PARKED** (`status` = `awaiting-user` / `awaiting-api`), record `ci = red` and
+  **dispatch NO fix** — a parked PR dispatches nothing until the user answers (`loop-control.md` step 3).
+  The **watch keeps running** either way: watching is observation, not work-dispatch, so a parked PR's CI
+  state stays fresh. Otherwise → any failing line → **stop any review pass in flight on that PR first** (Loop control
   step 3 — the fix will replace its SHA, so the verdict is already void; free the slot), then
   **CLASSIFY the failure** from the check logs ("Classify, then set the model" below) **before
   dispatching anything**, and dispatch a **scoped CI-fix subagent** into `<worktree>` — the PR row's
