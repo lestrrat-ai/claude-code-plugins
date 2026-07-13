@@ -103,9 +103,14 @@ subagent spend. Running an **external reviewer** (e.g. `codex exec`, see `refere
 that cost off the subagent pool entirely — the quality argument (reviewer diversity) and the cost
 argument point the same way.
 
-**Scope every fix subagent.** Give it the worktree path and the specific issue list, and tell it **not**
-to re-derive the whole diff or re-read the repo beyond the named files. An unscoped fixer re-reads
-everything it was already told.
+**Every fix subagent — CI or review — is dispatched under one contract**, and
+`references/fix-subagent-contract.md` is its complete definition. Two halves, both mandatory:
+**SCOPE** the reading (worktree path + the specific issue list; **not** the whole diff, **not** the repo
+beyond the named files — an unscoped fixer re-reads everything it was already told), and **SWEEP** the
+writing (a fix that changes a definition or a fact is not done until every site that RESTATES it is
+correct — the contract's sweep-and-report block goes into the prompt **verbatim**). Read narrowly to
+UNDERSTAND, grep widely to FINISH. Read the contract before dispatching a fixer; do not reconstruct it
+from this summary.
 
 ## Load Discipline
 
@@ -127,6 +132,7 @@ Read stage refs only when that stage/action is due:
 | Selecting the reviewer; external-reviewer failure/fallback | `references/reviewer.md` |
 | Adopting PRs into a run (worktree/labels/ledger row) | `references/pr-adoption.md` |
 | PR review gauntlet / progress ledger | `references/stage-2-review-gate.md` |
+| Dispatching ANY fix subagent (CI-fix or review-fix) | `references/fix-subagent-contract.md` |
 | Repeated sibling findings / shared root cause | `references/root-cause-pass.md` |
 | CI watch, check polling, CI fix | `references/stage-2-ci.md` |
 | Merge candidate / base refresh / cleanup | `references/stage-3-merge.md` |
