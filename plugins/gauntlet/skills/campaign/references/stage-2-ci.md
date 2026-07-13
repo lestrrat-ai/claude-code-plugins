@@ -56,7 +56,7 @@ printf '# sha: %s\n' "<head_sha>" > "$tmp"
 mv "$tmp" "<rundir>/ci-<pr>-<head_sha>.txt"
 ```
 
-The artifact's row format — every row carries the SHA it is about:
+The artifact's row format — **every EVIDENCE row (`checkrun`, `status`) carries the SHA it is about**:
 
 ```
 # sha: <head_sha>
@@ -65,15 +65,22 @@ status   <head_sha> <context> <STATE>
 witness  <name>
 ```
 
+**`witness` rows are IDENTITY-ONLY, SHA-LESS, and NEVER a verdict.** They exist for **one** purpose: the
+REST ⊇ rollup-witnesses containment test below. **NEVER write a SHA onto a witness row** — the rollup
+**carries no commit oid at all**, so any SHA on that row would be one *we* invented, not one the API
+vouched for: **fabricated evidence**. Their SHA-lessness is exactly **WHY** they can never be read as
+evidence about a commit, and why they are exempt from the verify rule instead of being patched into it.
+
 **If ANY fetch fails, the snapshot is NOT EVIDENCE.** `--paginate` leaves **partial output on disk** when
 it dies mid-run, and an error body lands in the redirect target. A failed or partial fetch → `ci =
 pending`, refetch — **NEVER** parse it, and **NEVER** promote it.
 
 #### VERIFY THE STAMP BEFORE PARSING
 
-Parse the file **only** if the `# sha:` header, **every** row's SHA, **and** the filename all equal the
-ledger's current `head_sha`. Any mismatch means the snapshot describes a **superseded commit** → discard
-it, `ci = pending`, refetch. **NEVER** green off it, and never "fix up" the mismatch.
+Parse the file **only** if the `# sha:` header, **every `checkrun` and `status` row's SHA**, **and** the
+filename all equal the ledger's current `head_sha`. **`witness` rows are EXEMPT** — they carry no SHA and
+no verdict. Any mismatch means the snapshot describes a **superseded commit** → discard it, `ci =
+pending`, refetch. **NEVER** green off it, and never "fix up" the mismatch.
 
 **The ledger write is GATED ON the parsed contents.** A guard that runs *beside* the write is not a
 guard.
@@ -95,6 +102,14 @@ refetches**. That is a by-design asymmetry, **not motion**, so "sets differ → 
 forever. This repo ships `gauntlet:copilot-address-reviews`, so its users are exactly the affected ones.
 
 #### DECIDE from the verified file's contents
+
+**KNOWN GAP — these three bullets are NOT an exhaustive mapping.** The conclusion set below is **carried
+over unchanged from `main`** and is **known to be incomplete**: `SKIPPED`, `NEUTRAL`, `STARTUP_FAILURE`
+and `STALE` are real `CheckConclusionState` values (live `completed`/`skipped` runs exist on
+`nodejs/node`) and a `COMPLETED` check run holding one of them matches **none** of the three rules. This
+change replaces **where the evidence comes from**, not **what it means** — it deliberately neither
+regresses nor improves the classification. The total classification over the real enum lands in the
+**next PR in this series**. **NEVER read these bullets as complete.**
 
 - **green** → the snapshot lists **≥1 row**; **every** `checkrun` row is `COMPLETED` + `SUCCESS`; **every**
   `status` row is `SUCCESS`; and containment holds. **Zero rows is NOT green** — it means nothing has
