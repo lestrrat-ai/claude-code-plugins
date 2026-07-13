@@ -177,6 +177,26 @@ flowchart TD
 - Before it spends a review on a PR, it first clears anything that would waste one: it addresses any
   GitHub Copilot review comments, fixes failing CI, and rebases a PR that has fallen into conflict
   with the base branch — then reviews the clean result.
+- Some CI failures — pure formatting ones — it fixes by running the **formatter itself**, with no model
+  involved at all. A tool only qualifies if its own documentation guarantees the output is *semantically
+  equivalent* to the input (an AST-preserving pretty-printer, not a text munger); anything else, including
+  every `--fix`-style linter and every code rewriter, goes to a full-strength fix subagent. Out of the box
+  it knows the Go and Python formatters (`gofmt`, `gofumpt`, `goimports`, `gci`, `ruff format`). To teach
+  it your repo's formatter, add a committed `.gauntlet.yml` at the repo root:
+
+  ```yaml
+  formatters:
+    - id: gofmt
+      command: gofmt -w
+      files: "**/*.go"
+      guarantee: "AST-preserving pretty-printer; never alters string-literal contents (go/printer)."
+  ```
+
+  Every entry needs a `guarantee` — a pointer to where the tool *documents* that it preserves meaning. An
+  entry without one is refused and that failure just goes to the model instead. You can add tools, drop
+  built-in ones, or set `formatters: []` to turn the whole shortcut off. Two things you cannot do: relax
+  the guarantee rule, and have a config change apply to its own pull request — campaign reads
+  `.gauntlet.yml` from the **base branch**, so an edit to it only takes effect once that PR has merged.
 - It keeps a small `.gauntlet/history/` at the repo root (git-ignored, one file per run) to remember what past
   runs learned. That's the memory a fresh run carries over. Each fresh run also tidies that file,
   dropping entries that no longer apply to the current code — and when it isn't sure an entry is

@@ -28,7 +28,9 @@
   `.gauntlet/tmp/**` (ledger, plans, progress, review/CI outputs, lease) and the carryover tree
   `.gauntlet/history/**`. A fix commit stages ONLY the specific source files it changes, by explicit
   path — never `git add -A` / `git add .`, which would sweep in run state. The tree must be
-  git-ignored; add `.gauntlet/` to `.gitignore` if missing.
+  git-ignored; add `.gauntlet/` to `.gitignore` if missing. The repo-root `.gauntlet.yml` is NOT in that
+  tree — it is COMMITTED repo config (the formatter whitelist), read from the **base** branch, never from a
+  PR head.
 - NEVER `rm -rf .gauntlet/` — that destroys the durable carryover history. Only `.gauntlet/tmp/**` is
   disposable.
 - NEVER pass destructive instructions (delete, force-push, reset) to an external reviewer command
@@ -150,23 +152,38 @@
   proof of semantic equivalence (a pure-indentation edit can move behavior in a whitespace-significant
   language and still be formatter-clean), so there is no diff-shape guard that would make a cheap model's
   edit safe to accept.
-  **IN**: `gofmt`, `gofumpt` (AST-preserving Go pretty-printers; never touch string-literal contents),
-  `goimports` (import block only), `gci` (import grouping/ordering only — Go init order is by dependency,
-  not by import order), golangci-lint `whitespace` (Go: leading/trailing newlines inside function bodies),
-  `ruff format` (verifies AST equivalence of its output).
-  **OUT**: `prettier` — it reformats the contents of tagged template literals (`` gql`…` ``, `` css`…` ``),
-  changing the runtime string the tag receives; any generic/unscoped "whitespace" or "trailing-whitespace"
-  fixer that can touch string literals, heredocs, or Markdown; `modernize` and every other semantic
-  rewriter (a `modernize` rewrite can pass its own rule while changing behavior); plus blanket
-  `golangci-lint run --fix` and blanket `ruff --fix` — a whitelisted run MUST invoke only the whitelisted
-  formatter, NEVER a catch-all `--fix`. Failing product tests, compile errors, and any rule that rewrites
-  logic are NEVER whitelisted. Keyed on the **tool's IDENTITY and documented guarantee**, NEVER on a
-  failure "looking mechanical" or on the category "formatter". Default is NOT whitelisted; unknown check or
-  unlisted tool → session model. ACCEPT the tool's run **only if both hold**: (a) re-running the **exact**
-  failing check now **passes**; AND (b) the diff touches **no check definition, config, or test**. Either
-  fails → **discard the work** (reset the worktree to the PR head) and **re-dispatch the same failure on
-  the session model**. NEVER patch a formatter run in place; NEVER commit an unverified one; NEVER hand the
-  failure to a cheap model instead.
+  **The LIST is repo-configurable; the CRITERION is NOT.** Whitelist = built-in **defaults** merged with the
+  repo's `.gauntlet.yml`, never a fixed list (a fixed list is meaningless in a Rust/Java/Ruby repo).
+  **Built-in defaults (IN)**: `gofmt`, `gofumpt` (AST-preserving Go pretty-printers; never touch
+  string-literal contents), `goimports` (import block only), `gci` (import grouping/ordering only — Go init
+  order is by dependency, not by import order), golangci-lint `whitespace` (Go: leading/trailing newlines
+  inside function bodies), `ruff format` (verifies AST equivalence of its output).
+  **NON-OVERRIDABLE DENYLIST — config CANNOT widen it**: `prettier` — it reformats the contents of tagged
+  template literals (`` gql`…` ``, `` css`…` ``), changing the runtime string the tag receives; any
+  generic/unscoped "whitespace" or "trailing-whitespace" fixer that can touch string literals, heredocs, or
+  Markdown; every **semantic rewriter** — `modernize`, codemods, `pyupgrade`, `2to3` (a `modernize` rewrite
+  can pass its own rule while changing behavior); every **catch-all fixer** — `golangci-lint run --fix`,
+  `ruff --fix`, `eslint --fix`, `cargo clippy --fix`, any `--fix`/`--write` flag on a linter that applies
+  semantic rules (a whitelisted run MUST invoke only the whitelisted formatter); and anything whose command
+  can touch a **check definition, config, or test** (the no-weakening prohibition — a hard rule). Failing
+  product tests, compile errors, and any rule that rewrites logic are NEVER whitelisted.
+- **`.gauntlet.yml` (repo root, COMMITTED — NOT under the git-ignored `.gauntlet/` tree) is read from the
+  BASE branch, NEVER from the PR's worktree/head** (`git show origin/<base>:.gauntlet.yml`; `stage-2-ci.md`).
+  Reading it from the PR would let a PR **widen the whitelist that governs its own campaign** — a semantic
+  rewriter admitted by the PR under review, earning an unreviewed tool commit on its own head. That is
+  self-gating in config form. A PR that edits `.gauntlet.yml` takes effect only **after it merges**.
+  Entries may **append** tools or **remove** built-ins; `formatters: []` disables the cheap path entirely.
+  Every entry MUST carry `id`, `command`, `files`, and **`guarantee`** — a concrete pointer to the tool's
+  DOCUMENTED semantic-equivalence behaviour. "It's just formatting" is NOT a guarantee. **An entry with no
+  real guarantee, or one hitting the denylist, is REFUSED** — log it, ignore it, route that failure to the
+  session model. NEVER silently honour a denied entry.
+- **Default deny, everywhere.** Keyed on the **tool's IDENTITY and documented guarantee**, NEVER on a
+  failure "looking mechanical" or on the category "formatter". Unknown check, unlisted tool, missing or
+  unparseable config, or a refused entry → session model. The cheap path is opt-in per tool, never inferred.
+  ACCEPT the tool's run **only if both hold**: (a) re-running the **exact** failing check now **passes**;
+  AND (b) the diff touches **no check definition, config, or test**. Either fails → **discard the work**
+  (reset the worktree to the PR head) and **re-dispatch the same failure on the session model**. NEVER patch
+  a formatter run in place; NEVER commit an unverified one; NEVER hand the failure to a cheap model instead.
 - **A whitelisted TOOL's commit resets the gate exactly like a subagent's** (`stage-2-ci.md`, "Any campaign
   commit to the PR head resets the gate"). Every commit campaign pushes to a PR head — CI-fix subagent,
   review-fix subagent, or tool run with no model — MUST in the same step reset `reviews_ok` to 0 AND

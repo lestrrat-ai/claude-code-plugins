@@ -37,6 +37,22 @@ carryover history with it. Scratch cleanup targets `.gauntlet/tmp/**` and nothin
 The history tree keeps **one file per run** (`<run-id>.md`) so concurrent runs never clobber a shared
 file. Everything else stays ephemeral under the per-run `<rundir>`. See "Fresh runs and carryover".
 
+### `.gauntlet.yml` — the one COMMITTED file
+
+| Path | Committed? | What |
+|------|-----------|------|
+| `.gauntlet/**` | **NO** — git-ignored driver bookkeeping | run scratch + carryover history (above) |
+| `.gauntlet.yml` | **YES** — repo content, reviewed like any other file | the repo's formatter whitelist (`stage-2-ci.md`) |
+
+`.gauntlet.yml` sits at the **repo root**, NOT inside `.gauntlet/` — it is repo configuration, not run
+state, and it is the only gauntlet file that belongs in git. It configures the **list** of whitelisted
+formatter tools for the cheap CI path (built-in defaults + repo entries; `formatters: []` disables the
+path). It can NEVER relax the whitelisting **criterion** or widen the denylist.
+
+**ALWAYS read it from the BASE branch — `git show origin/<base>:.gauntlet.yml` — NEVER from a PR's
+worktree or head.** A PR that could supply its own whitelist would be widening the gate that governs it.
+Schema, validation, and merge semantics: `stage-2-ci.md`.
+
 ### The ledger — `state.jsonl`
 
 One row per adopted PR. It is a **cache**, not the authoritative state — **ground truth is
