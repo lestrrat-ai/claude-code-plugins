@@ -82,16 +82,20 @@ once, see "Base branch"), `api_changes` (`ask` | `allowed`, run-wide; set once f
 `reviewer` (`default` (Claude subagents) | `codex` | `<other>` — the selected reviewer; set once, see
 "The reviewer"), `formatters` (the cheap CI path's tool whitelist; set once, see below and `stage-2-ci.md`).
 
-`formatters` — the ONLY source of the formatter whitelist. A **scalar**: comma-separated known-tool ids
-(`gofmt,gci`), each id optionally suffixed `:<glob>` to **narrow** that tool's default glob
-(`gofmt:internal/**/*.go`); `default` = the known-tools table's built-in default set; `-` = **none**, the
-cheap path is OFF and every CI failure goes to the session model. Resolved **once at run start** — explicit
+`formatters` — the ONLY source of the formatter whitelist. A **scalar** with exactly three shapes:
+comma-separated known-tool ids (`gofmt,gci`), each id optionally suffixed `:<glob>` to **narrow** that
+tool's default glob (`gofmt:internal/**/*.go`); `default` = the known-tools table's built-in default set
+(also `ledger.py`'s default when the field was never written); `-` = the **DISABLING SENTINEL** — the cheap
+path is OFF and every CI failure goes to the session model. **The sentinel is `-`; the word `none` is NEVER
+written to this field** (a user asking for "no formatters"/"none" gets `-`). `default` and `-` are NEVER
+interchangeable. Resolved **once at run start** — explicit
 invocation, else a user preference from memory, else `default` — and **re-read from this header every
 wake**, never re-derived from memory mid-run (a wake may be a fresh agent instance; same rule and same
 reason as `reviewer`). **NEVER derived from any repo file** (see "Campaign commits NO file of its own").
 An id not in the known-tools table, a widening glob, or a glob directly targeting a check def/config/test
-is REFUSED (`stage-2-ci.md`); the skill still owns each tool's exact argv, its binary resolution, and the
-non-overridable exclusion filter.
+is REFUSED (`stage-2-ci.md`); the skill still owns each tool's exact argv, its binary resolution, the
+non-overridable exclusion filter, and the file-operand rules (`--` + absolute paths; refuse `-`-leading
+names, symlinks, non-regular files, and paths resolving outside the worktree).
 
 Header field notes (the header fields above; per-row fields follow):
 

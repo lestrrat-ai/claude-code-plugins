@@ -195,8 +195,10 @@ flowchart TD
   You don't configure that list in a file. **Name the formatters when you invoke campaign** ("use gofmt and
   gci", or "no formatters" to switch the shortcut off entirely), or **record a preference in memory**
   and campaign will pick it up on later runs. Say nothing and you get the built-in default set. Whatever it
-  resolves to is fixed once, at the start of the run, and written into the run's ledger — so a later wake,
-  or a fresh agent that picks the run up, uses the same list rather than quietly reverting to the default.
+  resolves to is fixed once, at the start of the run, and written into the run's ledger `formatters` field —
+  `default` for the built-in set, `-` for the shortcut switched off, otherwise the tool ids you named — so a
+  later wake, or a fresh agent that picks the run up, uses the same list rather than quietly reverting to the
+  default.
 
   There is deliberately **no config file for this, and campaign will not read one from your repo** — not a
   file at the repo root, not `CLAUDE.md`, not anything else in the tree. Files in your repo are things a pull
@@ -224,6 +226,13 @@ flowchart TD
   names, and drops any candidate file whose name starts with `-` (it logs it and carries on with the rest).
   Campaign owns the *shape* of the command; the filenames in it are pull-request data, and get treated as
   data.
+
+  Spelling a path safely is not the same as knowing where it *leads*. A pull request can also add `link.go` —
+  a **symlink** whose target sits outside the worktree entirely. The name looks fine, but `gofmt -w -- link.go`
+  follows it and rewrites the file it points at. So campaign checks what each candidate resolves to, not just
+  how it is written: it drops symlinks, drops anything that isn't a plain regular file, and drops anything
+  whose fully-resolved real path lands outside the worktree. Each drop is logged; the rest of the run
+  continues.
 
   Every known tool has a default glob (`gofmt` → `**/*.go`, `ruff format` → `**/*.py`), so you normally name
   nothing but the tool. If you do narrow one to a subdirectory, the glob may only **narrow** the default,

@@ -27,11 +27,13 @@ HEADER_DEFAULTS = {
     "base_branch": "-",
     "api_changes": "ask",
     "reviewer": "default",
-    # Cheap-CI-path formatter whitelist. "default" = the known-tools table's built-in
-    # set; "-" = none (cheap path off); else comma-separated known-tool ids, each
-    # optionally suffixed ":<glob>" to narrow that tool's default glob. Resolved once at
-    # run start from the user (invocation, else memory preference) — NEVER from repo
-    # content, which is PR content.
+    # Cheap-CI-path formatter whitelist. Exactly three shapes: "default" = the known-tools
+    # table's built-in set (this default, i.e. the field was never written); "-" = the
+    # DISABLING SENTINEL, cheap path off (never the word "none"); else comma-separated
+    # known-tool ids, each optionally suffixed ":<glob>" to narrow that tool's default
+    # glob. "default" and "-" are never interchangeable. Resolved once at run start from
+    # the user (invocation, else memory preference) — NEVER from repo content, which is
+    # PR content.
     "formatters": "default",
 }
 
