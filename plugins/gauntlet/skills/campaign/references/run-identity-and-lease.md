@@ -118,8 +118,11 @@ Each run has `<rundir>/lease.json`:
      `auth`) is not a scope any more — treat it like the no-arg idle case below and prompt.
    - **No arg at all** (`/gauntlet:campaign`) → resume-oriented: **discover runs** and bucket by lease —
      the distinct `gauntlet-run-*` ids present on open PRs — list PRs **with their labels** and extract
-     the ids, since no id is known yet to query by (`gh pr list --state open --json number,labels`, then
-     pick labels matching `gauntlet-run-*`) ∪ run-ids with a `<rundir>/` (its `state.jsonl` or
+     the ids, since no id is known yet to query by (`gh pr list --state open --limit 1000 --json
+     number,labels`, then pick labels matching `gauntlet-run-*`; **`--limit` is mandatory** — `gh pr list`
+     silently caps at **30** without it, and a run missed by the scan reads exactly like a run that does
+     not exist, so the driver would start a duplicate or fail to resume an orphan. Like `prs.json`, the
+     cap **bounds** the scan rather than proving it complete) ∪ run-ids with a `<rundir>/` (its `state.jsonl` or
      `lease.json`), each **actively-driven** (fresh lease),
      **orphaned** (non-terminal, lease absent/stale), or **finished** (terminal, no open PR):
      - exactly one **orphaned** → adopt and resume it ("pick up where the previous instance left off"),

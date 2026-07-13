@@ -48,8 +48,18 @@ blocks; each completion is its own wake.
      diff unchanged does not reset the gate, so it keeps `gauntlet-accepted`.)
 
      Do the PR scan as
-     **one batched snapshot per wake** —
-     `gh pr list --label gauntlet-run-<run-id> --json number,headRefName,headRefOid,state,mergeable,mergeStateStatus,labels > <rundir>/prs.json`
+     **one batched snapshot per wake** — the **same canonical command** `pr-adoption.md` runs, writing the
+     **same path with the same schema** (they are the same scan; two spellings of it is how a reader of
+     `prs.json` ends up with fields that are not there, or a snapshot scoped to the wrong PRs). Its owning
+     definition is the block **"The canonical `prs.json` command"** in `files-and-ledger.md`; copy it
+     whole, never a variant:
+
+     ```
+     gh pr list --label gauntlet-run-<run-id> --state open --limit 1000 \
+       --json number,headRefName,headRefOid,title,baseRefName,state,mergeable,mergeStateStatus,labels \
+       > <rundir>/prs.json
+     ```
+
      — and drive reconcile from that file; fall back to per-PR `gh pr view` only where the snapshot
      isn't enough (merge-gate CI truth stays the re-polled `gh pr checks` snapshot, Stage 2b). Wake
      turnaround is throughput: every serial `gh` call in reconcile delays every dispatch behind it. Re-read `run_id`, `base_branch`, `api_changes`, and `reviewer` from the ledger

@@ -9,12 +9,21 @@ Two entry paths feed it (see "Run identity and concurrency" for the full grammar
 - **no-arg discovery** (`/gauntlet:campaign`, resume) — reconcile the PRs already labelled for this run:
 
   ```
-  gh pr list --label gauntlet-run-<run-id> --state open --json number,headRefName,headRefOid,title,baseRefName > <rundir>/prs.json
+  # THE canonical run snapshot — the SAME command loop-control's per-wake PR scan (the `prs.json`
+  # block in step 1) runs. ONE path, ONE schema.
+  # Owning definition: "The canonical `prs.json` command" in files-and-ledger.md. Copy it whole;
+  # never spell a variant.
+  gh pr list --label gauntlet-run-<run-id> --state open --limit 1000 \
+    --json number,headRefName,headRefOid,title,baseRefName,state,mergeable,mergeStateStatus,labels \
+    > <rundir>/prs.json
   ```
 
   Every open PR carrying this run's owner label is already ours — refresh its row from that snapshot.
   A PR with the label but no row is a re-adoption after an amnesiac wake; a row whose PR is gone
   (merged/closed) reconciles to its terminal status.
+
+  **`--limit` is NOT optional** — `gh pr list` silently caps at **30** items without it, and a truncated
+  snapshot loses rows silently (`files-and-ledger.md`, `prs.json`).
 
 `base_branch` for the run = the adopted PR's `baseRefName`. When several PRs are adopted at once they
 **must agree** on `baseRefName`; if they disagree, stop and prompt the user (one run targets one base).

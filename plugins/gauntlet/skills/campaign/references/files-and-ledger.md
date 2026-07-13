@@ -8,7 +8,7 @@ files from colliding — see "Run identity and concurrency".
 |------|----------|
 | `state.jsonl` | Live per-PR ledger — a **cache/hint**, not the source of truth (see below) |
 | `pr-<pr>.json` | `gh pr view` snapshot captured at adoption (PR facts the ledger row is built from) |
-| `prs.json` | Batched `gh pr list` snapshot of this run's PRs — the per-wake reconcile input (Loop control) |
+| `prs.json` | Batched `gh pr list` snapshot of this run's PRs — the per-wake reconcile input, and the adoption/discovery input. **ONE path, ONE schema, ONE command**: the canonical command is spelled in full in **"The canonical `prs.json` command"**, the command block directly below this table, and that block is its ONLY definition |
 | `lease.json` | This run's active-driver lease (`{agent, updated}`; see "Run lease") |
 | `review-<pr>-<n>.txt` | The reviewer's PR review output, round `n` (launch attempt 1) |
 | `review-<pr>-<n>.plan.jsonl` | Orchestrator-authored review work units for round `n` (per-pass — a relaunch reuses it) |
@@ -17,6 +17,41 @@ files from colliding — see "Run identity and concurrency".
 | `ci-<pr>.txt` | Latest `gh pr checks` snapshot for a PR (re-polled after the watch, not the watch stream) |
 | `audit-<pr>-<n>.md` | The orchestrator's audit of round `n`'s findings — CONFIRMED / ADJUSTED / REFUTED, each with evidence. A REFUTED finding's reasoning is recorded here **and** written into the tree as an inline comment at the site, committed like any other change (`stage-2-review-gate.md`, "Audit every finding before you fix it") |
 | `abort-<id>.md` | Detailed log for an aborted PR-task |
+
+**The canonical `prs.json` command — this block is THE definition.** Every other site defers to it, and
+**NO site may spell a variant of it** — differing spellings are how a reader of `prs.json` ends up with
+a file that is scoped wrong or missing the fields it reads. Copy it whole, including the `--label`
+filter and the output path:
+
+```
+gh pr list --label gauntlet-run-<run-id> --state open --limit 1000 \
+  --json number,headRefName,headRefOid,title,baseRefName,state,mergeable,mergeStateStatus,labels \
+  > <rundir>/prs.json
+```
+
+`pr-adoption.md` (discovery) and `loop-control.md`'s per-wake PR scan (the `prs.json` block in step 1)
+each run this command
+inline, **identically** — same label, same flags, same `--json` field set, same path. That is intended:
+they are the same scan. What is forbidden is a **different** spelling anywhere.
+
+Every part is load-bearing:
+
+- **Without `--label gauntlet-run-<run-id>`** the snapshot escapes the run's scope: the listing returns
+  **every PR in the repo** instead of this run's, and reconcile would then act on — adopt, relabel,
+  even merge — **other runs' PRs**. That is a **run-isolation violation**, and run isolation is the
+  property that lets concurrent runs coexist in one repo.
+- **Without `--limit`** `gh pr list` silently caps at **30** items, writing a truncated file that
+  reconcile reads as the complete run snapshot.
+- **Without `--json <the field set above>`** the reader finds no `labels`/`mergeable`/`headRefOid` —
+  two writers with different field sets silently hand the reader a file missing the fields it reads.
+- **Without `> <rundir>/prs.json`** the snapshot lands somewhere nobody reads, and reconcile reads a
+  file nobody wrote.
+
+**`prs.json` is a BOUNDED snapshot, not a proof of completeness.** `--limit 1000` defeats the default-30
+truncation; it does **not** make the snapshot provably complete — a run with more than 1000 labelled PRs
+would still truncate. That matters because **an absent PR is indistinguishable from a PR that was never
+adopted**: a dropped row does not error, it just quietly stops being reconciled. Treat "every labelled PR
+is in `prs.json`" as an assumption bounded by that cap, never as a guarantee.
 
 Store ALL reviewer and `gh` output under `<rundir>` first, then Read/Grep it. NEVER `/tmp/`.
 
