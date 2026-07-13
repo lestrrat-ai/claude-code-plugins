@@ -45,13 +45,27 @@ file. Everything else stays ephemeral under the per-run `<rundir>`. See "Fresh r
 | `.gauntlet.yml` | **YES** — repo content, reviewed like any other file | the repo's formatter whitelist (`stage-2-ci.md`) |
 
 `.gauntlet.yml` sits at the **repo root**, NOT inside `.gauntlet/` — it is repo configuration, not run
-state, and it is the only gauntlet file that belongs in git. It configures the **list** of whitelisted
-formatter tools for the cheap CI path (built-in defaults + repo entries; `formatters: []` disables the
-path). It can NEVER relax the whitelisting **criterion** or widen the denylist.
+state, and it is the only gauntlet file that belongs in git. It configures **which of the skill's KNOWN
+tools run, with which flags, over which files**, on the cheap CI path (built-in defaults, re-configured or
+removed by repo entries; `formatters: []` disables the path). It can NEVER relax the whitelisting
+**criterion**, widen the denylist, or **introduce a binary outside the skill's known-tools table**.
+
+Schema — each entry MUST carry:
+
+| field | rule |
+|---|---|
+| `id` | the known tool's id (`gofmt`, `gofumpt`, `goimports`, `gci`, `ruff format`) |
+| `command` | an **argv LIST**, e.g. `["gofmt", "-w"]` — **run WITHOUT a shell**. NEVER a shell string, NEVER `sh -c`/`bash -c`. **No shell metacharacters** (`&&`, `||`, `;`, `|`, `>`, `<`, `$(`, backticks, newlines). **`argv[0]` MUST be a bare tool name from the known-tools table** — never a path, wrapper script, or alias. |
+| `files` | glob scoping the run |
+| `guarantee` | concrete pointer to the tool's DOCUMENTED semantic-equivalence behaviour **and the conditions under which it holds** — which campaign MUST verify in this repo |
+
+**Any entry failing any of these is REFUSED** — logged, ignored, failure routed to the session model.
 
 **ALWAYS read it from the BASE branch — `git show origin/<base>:.gauntlet.yml` — NEVER from a PR's
 worktree or head.** A PR that could supply its own whitelist would be widening the gate that governs it.
-Schema, validation, and merge semantics: `stage-2-ci.md`.
+Because it is base-branch content, its author already has repo write access: these rules are a **footgun
+guard, NOT a security boundary** against a malicious committer. Full validation and merge semantics:
+`stage-2-ci.md`.
 
 ### The ledger — `state.jsonl`
 

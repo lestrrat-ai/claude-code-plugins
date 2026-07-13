@@ -181,22 +181,37 @@ flowchart TD
   involved at all. A tool only qualifies if its own documentation guarantees the output is *semantically
   equivalent* to the input (an AST-preserving pretty-printer, not a text munger); anything else, including
   every `--fix`-style linter and every code rewriter, goes to a full-strength fix subagent. Out of the box
-  it knows the Go and Python formatters (`gofmt`, `gofumpt`, `goimports`, `gci`, `ruff format`). To teach
-  it your repo's formatter, add a committed `.gauntlet.yml` at the repo root:
+  it knows a small table of tools: `gofmt`, `gofumpt`, `goimports`, `gci`, and `ruff format`. (`ruff
+  format` only counts if your Ruff config leaves `format.docstring-code-format` off — with it on, Ruff
+  reformats Python code *inside docstrings*, which changes what your strings contain. A tool's guarantee can
+  depend on how it's configured, so campaign checks your config before trusting it.) To configure how those
+  tools are run in your repo, add a committed `.gauntlet.yml` at the repo root:
 
   ```yaml
   formatters:
     - id: gofmt
-      command: gofmt -w
+      command: ["gofmt", "-w"]      # an argv list, not a shell command line
       files: "**/*.go"
-      guarantee: "AST-preserving pretty-printer; never alters string-literal contents (go/printer)."
+      guarantee: "AST-preserving pretty-printer; never alters string-literal contents (go/printer). Holds unconditionally."
   ```
 
-  Every entry needs a `guarantee` — a pointer to where the tool *documents* that it preserves meaning. An
-  entry without one is refused and that failure just goes to the model instead. You can add tools, drop
-  built-in ones, or set `formatters: []` to turn the whole shortcut off. Two things you cannot do: relax
-  the guarantee rule, and have a config change apply to its own pull request — campaign reads
-  `.gauntlet.yml` from the **base branch**, so an edit to it only takes effect once that PR has merged.
+  `command` is an **argv list** and is run **without a shell**. The first element must be one of the tool
+  names campaign already knows — not a path, not a wrapper script (`./scripts/fmt.sh`), not a shell string
+  (`sh -c "…"`), and no `&&`, `|`, `;`, `>` or `$(…)` anywhere. You can configure a known tool's *flags and
+  files*; you cannot point campaign at an arbitrary binary, because campaign commits that tool's output
+  without review. Teaching campaign a genuinely new tool is a change to the skill, not to your config.
+
+  Every entry also needs a `guarantee` — a pointer to where the tool *documents* that it preserves meaning,
+  including any conditions that guarantee depends on. An entry without one, or one campaign can't verify, is
+  refused and that failure just goes to the model instead. You can drop built-in tools, or set
+  `formatters: []` to turn the whole shortcut off. Two things you cannot do: relax the guarantee rule, and
+  have a config change apply to its own pull request — campaign reads `.gauntlet.yml` from the **base
+  branch**, so an edit to it only takes effect once that PR has merged.
+
+  To be clear about what this buys: `.gauntlet.yml` lives in your repo, so anyone who can edit it can
+  already edit your CI workflows. These rules are a **guard against footguns**, not a security boundary
+  against someone with write access. What the base-branch rule genuinely prevents is a pull request widening
+  the rules that govern its own review.
 - It keeps a small `.gauntlet/history/` at the repo root (git-ignored, one file per run) to remember what past
   runs learned. That's the memory a fresh run carries over. Each fresh run also tidies that file,
   dropping entries that no longer apply to the current code — and when it isn't sure an entry is

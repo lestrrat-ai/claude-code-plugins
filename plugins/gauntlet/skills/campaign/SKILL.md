@@ -84,18 +84,32 @@ semantics-preserving. In a whitespace-significant language it can move behavior 
 formatter-clean — indenting `result.append("always")` under an `if` is a pure-indentation edit that turns
 `["always"]` into `[]`, and `ruff format` is perfectly happy with it.
 
-**The LIST is configurable. The CRITERION is NOT.** The whitelist = the skill's **built-in defaults**,
-plus what the repo's `.gauntlet.yml` adds or removes. A hardcoded list is meaningless in a Rust/Java/Ruby
-repo; the criterion above is the safety property and is **NEVER overridable by config**.
+**The LIST is configurable. The CRITERION is NOT.** The whitelist = the skill's **built-in defaults**, as
+the repo's `.gauntlet.yml` re-configures or removes them. A hardcoded set of *flags* is meaningless in a
+Rust/Java/Ruby repo; the criterion above is the safety property and is **NEVER overridable by config**.
+Config tunes **which known tools run, with which flags, over which files** — it can **NEVER introduce a
+binary outside the known-tools table** below.
 
-**Built-in defaults — IN:**
+**Built-in defaults — the KNOWN-TOOLS TABLE.** These are the ONLY binaries campaign may execute on the
+no-model path. Adding a tool here is a **SKILL change**, NEVER a config change (`stage-2-ci.md`).
 
-- `gofmt`, `gofumpt`: AST-preserving Go pretty-printers; they re-print layout and never touch
-  string-literal contents.
-- `goimports`: import block only. `gci`: import grouping/ordering only — Go package init order is by
-  **dependency**, not by import order in a file.
-- golangci-lint `whitespace`: Go-only, leading/trailing newlines **inside function bodies**.
-- `ruff format`: verifies its output is AST-equivalent to the input.
+| `id` | `argv[0]` | guarantee | precondition |
+|---|---|---|---|
+| `gofmt` | `gofmt` | AST-preserving Go pretty-printer; never touches string-literal contents | none |
+| `gofumpt` | `gofumpt` | same, stricter layout; never touches string-literal contents | none |
+| `goimports` | `goimports` | import block only | none |
+| `gci` | `gci` | import grouping/ordering only — Go init order is by **dependency**, not by import order | none |
+| `ruff format` | `ruff` | verifies its output is AST-equivalent to the input | repo's Ruff config does **NOT** enable `format.docstring-code-format` |
+
+**golangci-lint `whitespace` is NOT a default**: it has **no safe fixer** — its only fix path is the
+catch-all `golangci-lint run --fix`, which the denylist forbids. NEVER invent a command for it.
+
+**A tool's guarantee can be CONDITIONAL on its CONFIGURATION.** `ruff format` with
+`format.docstring-code-format` enabled reformats Python code **inside docstrings** — it rewrites string
+contents, so its output is NOT AST-equivalent. Therefore: every `guarantee` MUST state the **conditions
+under which it holds**, and campaign MUST **verify those conditions hold in this repo** (read the tool's
+config from the **base** branch) before taking the no-model path. Condition violated, or undeterminable →
+**NOT whitelisted for this repo → session model.**
 
 **The DENYLIST — the skill's own, and config CANNOT widen past it. Refuse any entry that is:**
 
@@ -116,17 +130,37 @@ repo; the criterion above is the safety property and is **NEVER overridable by c
   compile error, and any rule that rewrites logic.
 
 **Repo config — `.gauntlet.yml` at the repo root** (COMMITTED, unlike the git-ignored `.gauntlet/` tree).
-It may **append** formatter entries and **remove** built-ins; `formatters: []` disables the cheap path
-entirely (everything goes to the session model — always a safe choice). Every entry MUST carry `id`,
-`command`, `files`, and **`guarantee`** — a concrete pointer to the tool's *documented*
-semantic-equivalence behaviour. **An entry without a real guarantee is REFUSED, not silently accepted**;
-"it's just formatting" is NOT a guarantee. Schema, validation, and merge order: `stage-2-ci.md`.
+It **re-configures the flags and files of KNOWN tools** and **removes** built-ins; `formatters: []`
+disables the cheap path entirely (everything goes to the session model — always a safe choice). It can
+**NEVER introduce a binary that is not in the known-tools table.**
+
+**The command's SHAPE is constrained, not just the tool's category** — the attack is command
+*construction*: an entry can cite `gofmt`'s guarantee while executing `./scripts/fmt.sh`. So every entry
+MUST carry `id`, `command`, `files`, `guarantee`, and:
+
+- **`command` is an argv LIST** — `command: ["gofmt", "-w"]`. **Executed WITHOUT a shell.** NEVER `sh -c`,
+  NEVER `bash -c`, NEVER a shell string.
+- **REFUSE any shell metacharacter** in the argv — `&&`, `||`, `;`, `|`, `>`, `<`, `$(`, backticks,
+  newlines. No legitimate formatter entry needs them.
+- **`argv[0]` MUST be a bare tool name in the known-tools table** — NOT a path (`./x`, `/usr/local/bin/x`),
+  NOT a wrapper script, NOT an alias, NOT `sh`/`env`/`xargs`.
+- **`guarantee` MUST state the conditions under which it holds**, and those conditions MUST **verify in
+  this repo**. Undeterminable → REFUSE. "It's just formatting" is NOT a guarantee.
+
+**Any entry failing ANY of these is REFUSED** — logged, ignored, and that failure routes to the **session
+model**. Full schema, validation, and merge order: `stage-2-ci.md`.
 
 **NEVER read `.gauntlet.yml` from the PR's worktree or head — ALWAYS from the BASE branch**
 (`git show origin/<base>:.gauntlet.yml`). If campaign read the whitelist from the PR under review, a PR
 could **widen the whitelist that governs its own campaign** — adding a semantic rewriter and earning an
 unreviewed tool commit on its own head. That is self-gating in config form. A PR that edits `.gauntlet.yml`
 therefore takes effect only **after it merges**, gated like any other change.
+
+**Trust model, stated honestly.** `.gauntlet.yml` comes from the base branch, so its author already has
+**write access to the repo** — the same access that can rewrite `.github/workflows`. The denylist and the
+command-shape rules are a **guard against footguns and accidental misuse, NOT a security boundary against a
+malicious committer**. NEVER claim otherwise. What the base-branch rule DOES buy is real and MUST be kept:
+**a PR under review cannot widen the whitelist that governs its own campaign.**
 
 Eligibility is keyed on the **tool's IDENTITY and its documented guarantee** — NEVER on an impression that
 a failure "looks mechanical", and NEVER on the *category* "formatter". A vibes-based whitelist is the same
@@ -135,8 +169,8 @@ unparseable config, or a refused entry → session model.** The cheap path is op
 
 | When | Action |
 |---|---|
-| **Whitelisted tool** (prefer always) | Run the **tool** in `<worktree>` — the built-in default (`gofmt -w`, `gofumpt -w`, `goimports -w`, `gci write`, `ruff format`) or the validated `command` from base-branch `.gauntlet.yml`. NEVER a catch-all `--fix`. Re-run the **exact** failing check; it must pass and the diff must touch **no check definition, config, or test**. Then commit + push — and **reset the gate exactly as any other PR-content change does** (`stage-2-ci.md`). **No model at all.** |
-| **Everything else** | Dispatch the scoped CI-fix subagent on the **session model**, set explicitly. Covers: the tool did not fix it, the tool left residue, the tool/check is not whitelisted, a config entry was **refused**, the config is missing/unparseable, or the failure needs any judgment (product tests, compile errors, semantic lint rules, logic). |
+| **Whitelisted tool** (prefer always) | Run the **tool** in `<worktree>`, **WITHOUT a shell**, from its validated **argv** — the built-in default (`["gofmt","-w"]`, `["gofumpt","-w"]`, `["goimports","-w"]`, `["gci","write"]`, `["ruff","format"]`) or the validated `command` from base-branch `.gauntlet.yml`. NEVER a catch-all `--fix`. Re-run the **exact** failing check; it must pass and the diff must touch **no check definition, config, or test**. Then commit + push — and **reset the gate exactly as any other PR-content change does** (`stage-2-ci.md`). **No model at all.** |
+| **Everything else** | Dispatch the scoped CI-fix subagent on the **session model**, set explicitly. Covers: the tool did not fix it, the tool left residue, the tool/check is not whitelisted, a config entry was **refused** (bad shape, unknown `argv[0]`, unverifiable guarantee condition), the config is missing/unparseable, or the failure needs any judgment (product tests, compile errors, semantic lint rules, logic). |
 
 If the tool's output does not clear the failing check, or it touched a check definition, config, or test
 → **discard the work** (reset the worktree to the PR head) and **re-dispatch the same failure on the
