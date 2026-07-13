@@ -4,12 +4,26 @@
 CI-fix, the session-model CI-fix, and the review-fix — is dispatched under it. If you are dispatching a
 fixer, read this.
 
-**Other files carry NON-AUTHORITATIVE summaries of the rules below** — `SKILL.md`, `critical-rules.md`,
-`stage-2-ci.md`, `stage-2-review-gate.md` — so each dispatch site reads on its own. Every one of them is
-a **pointer with a reminder attached, never a substitute**: **a summary may never be relied on, extended,
-or treated as complete, and if any of them disagrees with this file, THIS FILE WINS.** Never dispatch a
-fixer from a summary; never reconstruct the contract from one. Correcting this file means sweeping those
-sites too — a summary that has drifted from its definition is worse than no summary.
+**Other files carry NON-AUTHORITATIVE summaries of the rules below**, so each dispatch site reads on its
+own. Every one of them is a **pointer with a reminder attached, never a substitute**: **a summary may
+never be relied on, extended, or treated as complete, and if any of them disagrees with this file, THIS
+FILE WINS.** Never dispatch a fixer from a summary; never reconstruct the contract from one. Correcting
+this file means sweeping those sites too — a summary that has drifted from its definition is worse than
+no summary.
+
+**When you correct this contract, GREP for the restatements — do NOT expect a list of them here.** There
+is deliberately none, and that is not an omission: **a list of restatement sites is ITSELF a restatement,
+and it rots exactly like every other one.** This file once enumerated four sites; six existed the day it
+was written — **the list went stale inside the commit that created it**, and a reader trusting it would
+have swept four and never looked for the rest. That is the whole reason you must grep instead. Search for
+the *shape* of the rules — a recipe does not go stale, a list of files does:
+
+- the **scope** rule — `SCOPE`, "scope … fix subagent", "re-derive", "whole diff", "beyond the named"
+- the **sweep** rule — `SWEEP`, "RESTATES", "sweep-and-report", "stale restatement", "fix only the instance"
+- **pointers at this file** — `fix-subagent-contract`
+
+Then read each hit and decide: it is a summary of this contract, or it is not. Do not stop when the count
+matches something you were told.
 
 The contract has two halves that pull in opposite directions **on purpose**. Ship both, or the fixer
 optimizes the one you gave it:

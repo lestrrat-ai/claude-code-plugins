@@ -75,7 +75,7 @@ a fix changes a definition or a fact, it greps the tree for every other place th
 corrects those too, in the same pull request, and tells you which sites it touched and which it left
 alone: a definition left with a stale restatement is a definition that lies. That's the same
 [fix-subagent contract](../campaign/references/fix-subagent-contract.md) campaign holds its own fixers
-to.
+to — that file is the definition and this paragraph is only a non-authoritative summary of it.
 
 So the usual progression is **review to find and confirm, then campaign to gate and merge** — but the
 review half never crosses into changing anything until you explicitly say yes.

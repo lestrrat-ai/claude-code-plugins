@@ -398,8 +398,10 @@ or **Adjusted** finding only (skip Refuted and Uncertain), in its own branch off
    `grep` the tree for every place that RESTATES it — summaries, quick-reference bullets, cross-references,
    table rows, worked examples — and correct each one **in this same PR**: a definition left with a stale
    restatement is a definition that lies, and that sweep is part of the fix, not a drive-by. Report every
-   site you found and its disposition, including any you deliberately left alone. (Same contract campaign
-   puts in every fix subagent's prompt: `${CLAUDE_PLUGIN_ROOT}/skills/campaign/references/fix-subagent-contract.md`.)
+   site you found and its disposition, including any you deliberately left alone. (This paragraph is a
+   **non-authoritative summary** of the same contract campaign puts in every fix subagent's prompt —
+   `${CLAUDE_PLUGIN_ROOT}/skills/campaign/references/fix-subagent-contract.md` is the complete DEFINITION
+   and **wins over this** wherever they differ; read it, never reconstruct it from this summary.)
 2. `git commit` the fix, then `git push` the branch.
 3. `gh pr create` one PR for that finding. Title from the finding; body cites the finding ID,
    trigger, impact, and fix. Do **NOT** apply any `gauntlet-run-*` owner label — review does not know
