@@ -60,7 +60,8 @@ Its job, in order:
 
 1. **CLASSIFY** the failure from the check logs.
 2. **FIX IT.** For a formatting/lint failure, that is running the standard formatter for that language.
-   It **chooses the tool** — campaign does not hand it a command line — subject to the hard rules below.
+   It **chooses the tool** — campaign does not hand it a command line — subject to the hard rules below,
+   and it **PREFLIGHTS every file** before formatting it (hard rules: symlink / symlinked parent / `nlink > 1`).
 3. **READ THE RESULTING DIFF.** This step is not optional and is not a formality. Verify **all** of:
    - the diff contains **ONLY** what the fix should have produced (a formatting fix produces formatting);
    - **no file it did not intend to touch** was touched;
@@ -87,6 +88,20 @@ Its job, in order:
   a repo-supplied `gofmt` is arbitrary code execution. Run tools from the **environment**, never from the
   tree.
 - **NEVER hand a tool a bare glob or a whole directory** (`gofmt -w .`). **Name the files you are fixing.**
+- **PREFLIGHT EVERY FILE BEFORE FORMATTING IT — refuse any file that can write outside the repo:**
+  - it **IS a symlink** (`lstat`, never `stat`);
+  - **ANY directory component of its path is a symlink**;
+  - it has **more than one hard link** (`nlink > 1`).
+
+  Refuse = **do not format that file**; log it; carry on with the rest. If nothing is left to format,
+  **ESCALATE**. The PR under review is **UNTRUSTED CONTENT** and these aliases are **attacker-placeable**
+  — same reason you never execute a binary from inside the repo.
+
+  **THE PRINCIPLE — do not generalise it into anything more.** Diff review covers everything the tool
+  writes **INSIDE** the repo: the model SEES it and escalates (an injected `-cpuprofile=prof.go` writes
+  `prof.go` in the tree — visible). It **CANNOT see a write that ESCAPES the repo**: `gofmt -w` writes
+  **through** a symlink or a hardlinked inode, the bytes land outside the worktree, and `git diff` shows
+  **NOTHING**. These three checks exist for **exactly that blind spot, and for nothing else.**
 - **A failing product test, a compile error, and any change to product logic are NEVER yours.** Escalate.
 
 #### The risk, stated honestly
