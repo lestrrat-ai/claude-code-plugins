@@ -13,28 +13,34 @@ report the **previous** commit's passing checks, and the ledger records a **gree
 longer contains**. This produced a false green on a live run in this repo, found by dogfooding rather
 than by review. Use `gh pr checks --watch` to **wait**; never to decide.
 
-#### FETCH — pinned to the SHA, paginated, and BOTH check families
+#### FETCH — pinned to the SHA, paginated, BOTH check families, and emitted as JSONL
 
 A source you never queried reports nothing, and "nothing" parses as "nothing wrong". Read **both**:
 
 ```sh
 # (1) CHECK RUNS — pinned to <head_sha> BY THE URL, and the only source of a check-run verdict.
-#     ONE row carries the commit, the IDENTITY (name + app.id + details_url) AND the RESULT (status +
-#     conclusion), so no check-run judgment is ever joined across two fetches. `details_url` is the
+#     ONE object carries the commit, the IDENTITY (name + app_id + id) AND the RESULT (status +
+#     conclusion), so no check-run judgment is ever joined across two fetches. `id` is `details_url`, the
 #     CROSS-SOURCE identity the containment test below compares on — REST `.details_url` and rollup
-#     `.detailsUrl` are the SAME VALUE. REST is lowercase -> upcased.
+#     `.detailsUrl` are the SAME VALUE. REST status/conclusion are lowercase -> upcased.
 gh api --paginate "repos/<owner>/<repo>/commits/<head_sha>/check-runs" \
-  --jq ".check_runs[] | \"checkrun <head_sha> \(.name) \(.app.id // \"-\") \(.status|ascii_upcase) \(.conclusion // \"-\"|ascii_upcase) \(.details_url // \"-\")\""
+  --jq '.check_runs[] | {row:"checkrun", sha:"<head_sha>", name:.name, app_id:(.app.id|tostring),
+                         status:(.status|ascii_upcase),
+                         conclusion:((.conclusion // "-")|ascii_upcase),
+                         id:(.details_url // "-")}'
 
 # (2) COMMIT STATUSES — the legacy family, which (1) CANNOT SEE.
 gh api --paginate "repos/<owner>/<repo>/commits/<head_sha>/status" \
-  --jq ".statuses[] | \"status <head_sha> \(.context) \(.state|ascii_upcase)\""
+  --jq '.statuses[] | {row:"status", sha:"<head_sha>", context:.context, state:(.state|ascii_upcase)}'
 
 # (3) ROLLUP — WITNESSES ONLY (identity, no verdict). Used ONLY for the containment test below.
 #     The rollup carries no app.id and no commit oid, so it can NEVER be read as a verdict.
 gh pr view <pr> --json statusCheckRollup \
-  --jq '.statusCheckRollup[]? | select(.__typename=="CheckRun") | "witness \(.name) \(.detailsUrl)"'
+  --jq '.statusCheckRollup[]? | select(.__typename=="CheckRun") | {row:"witness", name:.name, id:.detailsUrl}'
 ```
+
+Each `--jq` above emits **one compact JSON object per line** — the artifact is **JSONL**, the same
+machine-read convention as `state.jsonl` and the review plan/progress files (`files-and-ledger.md`).
 
 - **`--paginate` is MANDATORY** — `/check-runs` pages at **30**; without it you parse page one and call
   it the whole set.
@@ -53,19 +59,29 @@ Write to a temp file **inside `<rundir>`** (same filesystem ⇒ `mv` is an atomi
 
 ```sh
 tmp="<rundir>/.ci-<pr>.$$"      # INSIDE <rundir>, so the mv below cannot cross a filesystem
-printf '# sha: %s\n' "<head_sha>" > "$tmp"
+printf '{"row":"header","sha":"%s"}\n' "<head_sha>" > "$tmp"
 #   ... append the three fetches above ...
 mv "$tmp" "<rundir>/ci-<pr>-<head_sha>.txt"
 ```
 
-The artifact's row format — **every EVIDENCE row (`checkrun`, `status`) carries the SHA it is about**:
+The artifact is **JSONL: EVERY line is one JSON object, with NO exceptions** — the header included. There
+is no comment line, no plain-text line, and nothing to special-case: read the file line by line and parse
+each line as JSON. Four `row` types, distinguished by the `row` field — and **every EVIDENCE row
+(`checkrun`, `status`) carries the SHA it is about**:
 
-```
-# sha: <head_sha>
-checkrun <head_sha> <name> <app.id|-> <STATUS> <CONCLUSION|-> <details_url|->
-status   <head_sha> <context> <STATE>
-witness  <name> <detailsUrl>
-```
+| `row` | Fields | Meaning |
+|---|---|---|
+| `header` | `sha` | The `head_sha` the whole file describes. Exactly one, first line. |
+| `checkrun` | `sha`, `name`, `app_id`, `status`, `conclusion`, `id` | Check-run **identity AND verdict**. `conclusion` is `"-"` when absent; `id` is `details_url` (`"-"` when absent). |
+| `status` | `sha`, `context`, `state` | Commit-status **verdict**. |
+| `witness` | `name`, `id` | Rollup **identity only** — **no `sha`, no verdict**. `id` is `detailsUrl`. |
+
+**WHY JSONL, and NOT a space-delimited row: CHECK-RUN NAMES AND STATUS CONTEXTS CONTAIN SPACES.** This
+repo's own two checks are named **`Lint scripts`** and **`Validate plugins`**. A positional parser handed
+`checkrun <sha> Lint scripts 15368 COMPLETED SUCCESS <url>` cannot tell where the name ends and the next
+field begins — it reads name=`Lint`, app_id=`scripts`, and **every** rule below (SHA verification,
+containment, DECIDE) then reads garbage out of shifted fields. In JSON a value containing spaces is just a
+string. **A machine-read artifact must NEVER require guessing where a field ends.**
 
 **`witness` rows are IDENTITY-ONLY, SHA-LESS, and NEVER a verdict.** They exist for **one** purpose: the
 containment test below. **NEVER write a SHA onto a witness row** — the rollup **carries no commit oid at
@@ -73,9 +89,9 @@ all**, so any SHA on that row would be one *we* invented, not one the API vouche
 evidence**. Their SHA-lessness is exactly **WHY** they can never be read as evidence about a commit, and
 why they are exempt from the verify rule instead of being patched into it.
 
-The `detailsUrl` on a witness row is **not** a SHA and not a verdict: it is the **cross-source identity**
-the containment test counts on. It is safe to carry precisely because it is inert — nothing reads a
-result off it.
+The `id` on a witness row (the rollup's `detailsUrl`) is **not** a SHA and not a verdict: it is the
+**cross-source identity** the containment test counts on. It is safe to carry precisely because it is
+inert — nothing reads a result off it.
 
 **If ANY fetch fails, the snapshot is NOT EVIDENCE.** `--paginate` leaves **partial output on disk** when
 it dies mid-run, and an error body lands in the redirect target. A failed or partial fetch → `ci =
@@ -83,26 +99,28 @@ pending`, refetch — **NEVER** parse it, and **NEVER** promote it.
 
 #### VERIFY THE STAMP BEFORE PARSING
 
-Parse the file **only** if the `# sha:` header, **every `checkrun` and `status` row's SHA**, **and** the
-filename all equal the ledger's current `head_sha`. **`witness` rows are EXEMPT** — they carry no SHA and
-no verdict. Any mismatch means the snapshot describes a **superseded commit** → discard it, `ci =
-pending`, refetch. **NEVER** green off it, and never "fix up" the mismatch.
+Parse the file **only** if the `header` row's `.sha`, **every `checkrun` and `status` row's `.sha`**,
+**and** the filename all equal the ledger's current `head_sha`. **`witness` rows are EXEMPT** — they carry
+**no `sha` field at all** and no verdict. Any mismatch means the snapshot describes a **superseded commit**
+→ discard it, `ci = pending`, refetch. **NEVER** green off it, and never "fix up" the mismatch. A line that
+**does not parse as JSON** is a corrupt snapshot — treat it exactly like a failed fetch: `ci = pending`,
+refetch.
 
 **The ledger write is GATED ON the parsed contents.** A guard that runs *beside* the write is not a
 guard.
 
-#### CROSS-FETCH AGREEMENT — MULTISET containment on `details_url`, NOT equality
+#### CROSS-FETCH AGREEMENT — MULTISET containment on `.id`, NOT equality
 
 The fetches are taken at different times, so they can disagree. But the correct test is **containment**,
 not equality — and it is compared on the **identity**, **counting occurrences**:
 
-> **REST ⊇ rollup-witnesses, as MULTISETS over `details_url`.** The identity of a check run is its
-> **`details_url`** (REST `.details_url` ≡ rollup `.detailsUrl` — the **same value**, carrying the Actions
-> job id). For **every** identity, require `count_REST(identity) >= count_rollup(identity)`. If **any**
-> rollup identity appears **FEWER** times in the `checkrun` rows than in the `witness` rows → the REST read
-> is **missing evidence** → `ci = pending`, refetch. A **REST-only** row is **FINE** — it can only *add*
-> evidence and cannot hide a failure, because the REST row carries **identity AND verdict in the same
-> row**.
+> **REST ⊇ rollup-witnesses, as MULTISETS over the `.id` field.** The identity of a check run is its
+> **`details_url`**, carried as `.id` on **both** row types (REST `.details_url` ≡ rollup `.detailsUrl` —
+> the **same value**, carrying the Actions job id). For **every** identity, require
+> `count_checkrun(id) >= count_witness(id)`. If **any** `witness` row's `.id` appears **FEWER** times among
+> the `checkrun` rows than among the `witness` rows → the REST read is **missing evidence** → `ci =
+> pending`, refetch. A **REST-only** row is **FINE** — it can only *add* evidence and cannot hide a
+> failure, because the `checkrun` row carries **identity AND verdict in the same row**.
 
 **NEVER compare on NAME, and NEVER compare as a SET — CHECK-RUN NAMES ARE NOT UNIQUE.** Matrix jobs and
 reusable workflows routinely emit many runs sharing one name: a live `Homebrew/homebrew-core` commit
@@ -134,15 +152,20 @@ change replaces **where the evidence comes from**, not **what it means** — it 
 regresses nor improves the classification. The total classification over the real enum lands in the
 **next PR in this series**. **NEVER read these bullets as complete.**
 
-- **green** → the snapshot lists **≥1 row**; **every** `checkrun` row is `COMPLETED` + `SUCCESS`; **every**
-  `status` row is `SUCCESS`; and containment holds. **Zero rows is NOT green** — it means nothing has
-  registered yet.
-- **pending** → no usable snapshot (any fetch failed, the file is absent, a SHA does not match, or
-  containment fails), zero rows, or any `checkrun` row not yet `COMPLETED` / any `status` row `PENDING`
-  → leave `ci = pending` and, if the watch task has exited, **relaunch it in this same wake** — a
-  pending PR must never sit unwatched waiting for the heartbeat.
-- **red** → any `checkrun` row whose conclusion is `FAILURE` / `TIMED_OUT` / `CANCELLED` /
-  `ACTION_REQUIRED`, or any `status` row whose state is `FAILURE` or `ERROR` (**`ERROR` is a failure** —
+Read verdicts from the JSON fields: `.status` and `.conclusion` on `checkrun` rows, `.state` on `status`
+rows. The `header` and `witness` rows hold **no verdict** and are never consulted here. "Rows" below means
+**evidence rows** — `checkrun` + `status`; the `header` row does not count toward any of them.
+
+- **green** → the snapshot lists **≥1 evidence row**; **every** `checkrun` row has `.status` `COMPLETED`
+  and `.conclusion` `SUCCESS`; **every** `status` row has `.state` `SUCCESS`; and containment holds.
+  **Zero evidence rows is NOT green** — it means nothing has registered yet.
+- **pending** → no usable snapshot (any fetch failed, the file is absent, a line does not parse as JSON, a
+  `.sha` does not match, or containment fails), zero evidence rows, or any `checkrun` row whose `.status`
+  is not yet `COMPLETED` / any `status` row whose `.state` is `PENDING` → leave `ci = pending` and, if the
+  watch task has exited, **relaunch it in this same wake** — a pending PR must never sit unwatched waiting
+  for the heartbeat.
+- **red** → any `checkrun` row whose `.conclusion` is `FAILURE` / `TIMED_OUT` / `CANCELLED` /
+  `ACTION_REQUIRED`, or any `status` row whose `.state` is `FAILURE` or `ERROR` (**`ERROR` is a failure** —
   never shrug it off as a glitch).
 
   **If the PR is PARKED** (`status` = `awaiting-user` / `awaiting-api`), record `ci = red` and
