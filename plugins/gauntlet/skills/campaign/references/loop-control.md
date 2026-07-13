@@ -50,7 +50,9 @@ blocks; each completion is its own wake.
      Do the PR scan as
      **one batched snapshot per wake** — the **same canonical command** `pr-adoption.md` runs, writing the
      **same path with the same schema** (they are the same scan; two spellings of it is how a reader of
-     `prs.json` ends up with fields that are not there):
+     `prs.json` ends up with fields that are not there, or a snapshot scoped to the wrong PRs). Its owning
+     definition is the block **"The canonical `prs.json` command"** in `files-and-ledger.md`; copy it
+     whole, never a variant:
 
      ```
      gh pr list --label gauntlet-run-<run-id> --state all --limit 1000 \

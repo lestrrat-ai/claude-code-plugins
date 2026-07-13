@@ -10,6 +10,8 @@ Two entry paths feed it (see "Run identity and concurrency" for the full grammar
 
   ```
   # THE canonical run snapshot — the SAME command loop-control step 2 runs. ONE path, ONE schema.
+  # Owning definition: "The canonical `prs.json` command" in files-and-ledger.md. Copy it whole;
+  # never spell a variant.
   gh pr list --label gauntlet-run-<run-id> --state all --limit 1000 \
     --json number,headRefName,headRefOid,title,baseRefName,state,mergeable,mergeStateStatus,labels \
     > <rundir>/prs.json

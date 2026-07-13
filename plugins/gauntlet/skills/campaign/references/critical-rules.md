@@ -52,9 +52,11 @@
   copilot-address, conflict-resolving rebase): a verdict on a doomed SHA wastes tokens and a review
   slot. Refill the slot with the next due review.
 - Reconcile from ONE batched `gh pr list` snapshot per wake (`<rundir>/prs.json`), written with the
-  **canonical `prs.json` command — the single owning definition is the `prs.json` row in
-  `files-and-ledger.md`** (**ONE path, ONE schema, ONE command**). Never spell a variant of it here or
-  anywhere else, and **NEVER drop `--state all --limit 1000`**: without `--state all` the snapshot omits
+  **canonical `prs.json` command — the single owning definition is the block "The canonical `prs.json`
+  command" in `files-and-ledger.md`**, which spells it in full, label and output path included (**ONE
+  path, ONE schema, ONE command**). Never spell a variant of it here or anywhere else, and **NEVER drop
+  `--label gauntlet-run-<run-id>`, `--state all`, or `--limit 1000`**: without `--label` the snapshot
+  escapes the run's scope and reconcile would act on **other runs' PRs**, without `--state all` it omits
   merged/closed PRs, and without `--limit` `gh pr list` silently caps at **30**. Per-PR `gh` calls only
   where the snapshot falls short. Merge-gate CI truth stays the re-polled `gh pr checks` snapshot.
 - Carryover pruning NEVER blocks a fresh-run start: keep uncertain entries, adopt the run's PRs
