@@ -68,12 +68,13 @@ same file does NOT inherit it, however formatting-like its diff looks. A pure-in
 behavior in a whitespace-significant language and still be formatter-clean, so there is no diff-shape
 guard that makes a cheap model's edit safe to accept. **NO SUBAGENT IS EVER RUN ON A DOWNGRADED MODEL.**
 
-**The SKILL owns the exact argv. Config does NOT supply a command.** The known-tools table below fixes,
-per tool, the precise argv campaign may execute. The repo's `.gauntlet.yml` selects **only which of those
-tools run, over which files**. The **CRITERION** is the skill's and is **NEVER configurable** — no config
-key relaxes it.
+**The SKILL owns the exact argv. NOTHING else supplies a command.** The known-tools table below fixes,
+per tool, the precise argv campaign may execute. The run's **`formatters` ledger header field** selects
+**only which of those tools run, over which files** ("The formatter list" below). The **CRITERION** is the
+skill's and is **NEVER configurable**.
 
-**WHY config gets no flags — the flags carry the semantics.** Tool identity is NOT sufficient:
+**WHY nothing outside the skill gets flags — the flags carry the semantics.** Tool identity is NOT
+sufficient:
 
 ```
 gofmt -w -r 'true -> false'     # argv[0] is gofmt. A known tool. No shell metacharacters.
@@ -81,15 +82,15 @@ gofmt -w -r 'true -> false'     # argv[0] is gofmt. A known tool. No shell metac
 
 `-r` turns `gofmt` from a pretty-printer into a **rewrite engine**: it rewrites `return true` into
 `return false`. It would pass every identity check, every metacharacter check, and every denylist check.
-So campaign REMOVES the degree of freedom instead of trying to police it: a config entry that supplies
-`command`, `args`, `argv`, or any flag is **REFUSED**.
+So campaign REMOVES the degree of freedom instead of trying to police it: the formatter list carries
+**ids and globs only** — it can NEVER name a `command`, `args`, `argv`, or a flag.
 
 #### The KNOWN-TOOLS TABLE — the skill's, argv and all
 
 The ONLY binaries campaign may execute on the no-model path, in the ONLY form it may execute them.
-`<files>` = the tool's **default glob**, optionally NARROWED by the entry's validated `files`, with the
-skill's **exclusion filter** applied afterwards — always (both below). Adding a tool, changing an argv, or
-changing a default glob is a **SKILL change** (gated, reviewed), NEVER a config change.
+`<files>` = the tool's **default glob**, optionally NARROWED by a validated per-id glob from the
+`formatters` header field, with the skill's **exclusion filter** applied afterwards — always (both below).
+Adding a tool, changing an argv, or changing a default glob is a **SKILL change** (gated, reviewed).
 
 | `id` | argv — **skill-owned, exact** | default `files` glob | guarantee | precondition — MUST hold in THIS repo |
 |---|---|---|---|---|
@@ -99,8 +100,8 @@ changing a default glob is a **SKILL change** (gated, reviewed), NEVER a config 
 | `gci` | `["gci", "write", <files>]` | `**/*.go` | import grouping/ordering **only** — Go package init order is by **dependency**, not by import order in a file | none |
 | `ruff format` | `["ruff", "format", <files>]` | `**/*.py` | verifies its output is **AST-equivalent** to the input | the repo's Ruff config does **NOT** enable `format.docstring-code-format` |
 
-Every tool has a default glob, so a **missing `.gauntlet.yml` has a fully defined file set**: the table's
-defaults, filtered. NEVER invent a default glob for a tool; NEVER widen one.
+Every tool has a default glob, so an **unnarrowed formatter list has a fully defined file set**: the
+table's defaults, filtered. NEVER invent a default glob for a tool; NEVER widen one.
 
 **NEVER append a flag to a table argv.** NEVER `-r`, NEVER `-s`, NEVER a catch-all `--fix`, NEVER anything
 the table does not list. Execute it **WITHOUT a shell** — never `sh -c`, `bash -c`, `os.system`, or any
@@ -144,14 +145,16 @@ AST-equivalent. The AST-equivalence guarantee holds **only while that setting is
 - The table states the **conditions under which each guarantee holds**. A guarantee with unstated
   conditions is not a guarantee.
 - Campaign MUST **verify those conditions hold in THIS repo** before taking the no-model path — read the
-  repo's tool config (for Ruff: `pyproject.toml` `[tool.ruff.format]`, `ruff.toml`/`.ruff.toml`) on the
-  **base branch**, the same provenance rule as `.gauntlet.yml`.
+  repo's tool config **in the worktree the tool will run in** (for Ruff: `pyproject.toml`
+  `[tool.ruff.format]`, `ruff.toml`/`.ruff.toml`). That is the config the tool will actually obey, so it is
+  the one that must be checked. A PR that switches the condition ON does not widen anything — it **loses**
+  the cheap path and goes to the session model.
 - Condition enabled, OR **cannot be determined** → the tool is **NOT whitelisted for this repo** →
   session model. Default deny; NEVER assume a default.
 
-#### NON-OVERRIDABLE DENYLIST — the skill's; `.gauntlet.yml` CANNOT widen past it
+#### NON-OVERRIDABLE DENYLIST — the skill's; NOTHING widens past it
 
-Nothing below is ever admitted to the table, and no config entry may name it:
+Nothing below is ever admitted to the table, and the formatter list may NEVER name it:
 
 - **`prettier`**: it reformats the **contents** of tagged template literals (`` gql`…` ``, `` css`…` ``),
   changing the runtime string the tag function receives — a semantic change made by the tool itself.
@@ -169,16 +172,16 @@ Nothing below is ever admitted to the table, and no config entry may name it:
   compile error, and any rule that rewrites logic.
 
 Key it on the **tool's IDENTITY and its documented guarantee** — NEVER on a judgment that the failure
-"looks mechanical", NEVER on the category "formatter". **Default deny. Unknown check, unlisted tool,
-UNPARSEABLE config, an unresolvable binary, or a refused entry → session model.** (A **missing** config is
-not a refusal: it means the known-tools table's defaults.)
+"looks mechanical", NEVER on the category "formatter". **Default deny. Unknown check, unlisted tool, an
+unresolvable binary, or a refused id → session model.** (An **unset** `formatters` header is not a
+refusal: it means the known-tools table's defaults.)
 
 #### THE SKILL-OWNED EXCLUSION FILTER — applied AFTER the glob, EVERY time
 
 **The glob SELECTS candidates. The FILTER decides what is touched.** After expanding the tool's file set
-(its default glob, narrowed by any validated `files`), campaign **REMOVES** every path below — always,
-regardless of what the glob said, whether or not a config exists. **Config CANNOT widen this filter, and
-NEVER carries the exclusions itself.**
+(its default glob, narrowed by any validated per-id glob), campaign **REMOVES** every path below — always,
+regardless of what the glob said. **NOTHING widens this filter, and the formatter list NEVER carries the
+exclusions itself.**
 
 Excluded — never handed to a tool, never in a tool commit:
 
@@ -187,107 +190,106 @@ Excluded — never handed to a tool, never in a tool commit:
 - **check definitions / CI**: `.github/**`, `.gitlab-ci.yml`, `Makefile`, `**/*.mk`, any CI workflow file
 - **tool / lint / build config**: `.golangci.yml`/`.golangci.yaml`, `ruff.toml`/`.ruff.toml`,
   `pyproject.toml`, `setup.cfg`, `tox.ini`, `.editorconfig`, `.pre-commit-config.yaml`
-- **campaign's own config**: `.gauntlet.yml`, and the git-ignored `.gauntlet/**`
+- **campaign's own run state**: the git-ignored `.gauntlet/**`
 - anything else that **defines, configures, or is** a check
 
 **WHY the filter and not the glob:** an exclusion list a **USER** writes will omit something — one forgotten
 pattern and a tool commit lands on a check definition with no model and no review. The skill owns the list,
 so it is complete and it cannot rot per-repo. **A repo-relative filter is the guarantee; a refusal is not.**
 
-Therefore `files: "**/*.go"` is **VALID and CORRECT**: the glob selects the Go files, the filter drops
-`**/*_test.go` and everything else it must not touch. The user never enumerates an exclusion.
+Therefore a `gofmt:**/*.go` narrowing is **VALID and CORRECT**: the glob selects the Go files, the filter
+drops `**/*_test.go` and everything else it must not touch. The user never enumerates an exclusion.
 
-**Still REFUSE an OBVIOUSLY HOSTILE glob** — one that targets an excluded path **DIRECTLY** (`files:
-".golangci.yml"`, `files: ".github/**"`, `files: "**/*_test.go"`): it is a config trying to weaken the
-checks that gate it, and it MUST be logged and refused rather than silently emptied by the filter. But the
+**Still REFUSE an OBVIOUSLY HOSTILE glob** — one that targets an excluded path **DIRECTLY**
+(`gofmt:.golangci.yml`, `gofmt:.github/**`, `gofmt:**/*_test.go`): it is an attempt to weaken the checks
+that gate the review, and it MUST be logged and refused rather than silently emptied by the filter. But the
 refusal is a **signal**, NEVER the guarantee — the filter is what makes the run safe.
 
-**Empty file set after filtering → run NOTHING for that entry** and route the failure to the session model.
+**Empty file set after filtering → run NOTHING for that id** and route the failure to the session model.
 
-#### Repo config — `.gauntlet.yml`, read from the BASE branch
+#### The formatter list — resolved at run start, stored in the ledger, NEVER in repo content
 
-A hardcoded tool list is meaningless in a Rust/Java/Ruby repo, so the **selection** is repo-configurable —
-the argv is not. The file lives at the **repo root** and is **COMMITTED** — it is NOT under the git-ignored
-`.gauntlet/` tree (`files-and-ledger.md`).
+A hardcoded tool list is meaningless in a Rust/Java/Ruby repo, so the **selection** is configurable — the
+argv is not. **The selection comes from the USER, and it is NEVER read from any file in the repo.**
 
-**Each entry carries EXACTLY: `id` (required) and `files` (optional). Nothing else.**
+**Resolve ONCE at run start**, then record it in the ledger header field `formatters`
+(`files-and-ledger.md`) — the same resolve-once / record-in-the-header pattern the `reviewer` field
+follows ("The reviewer", `reviewer.md`). Priority order:
 
-```yaml
-formatters:
-  - id: gofmt              # MUST be an id in the known-tools table; the skill owns its argv
-    files: "**/*.go"       # OPTIONAL — may only NARROW the tool's default glob; omit to take the default
-```
+1. **Explicit invocation.** The user named formatters for this run → use them.
+2. **User preference from memory.** A recorded preference (a memory entry, or a prior run's carryover)
+   naming preferred formatters → use it. Do NOT invent a preference; use one only when it actually exists.
+3. **Built-in defaults.** No preference → the known-tools table's default set, each with its default glob.
 
-**`files` may only NARROW the tool's default glob, NEVER widen it.** A `files` glob that matches paths the
-default does not (e.g. `**/*` for `gofmt`, whose default is `**/*.go`) → **REFUSE**. Omitted `files` → the
-table's default. Either way the exclusion filter applies.
+The user may also name **`none`** → the cheap path is **OFF** for this run; every CI failure goes to the
+session model. Always a safe choice.
 
-**Read it from the BASE branch, NEVER from the PR's worktree or head:**
+**Re-read `formatters` from the ledger header on EVERY wake, before any tool run. NEVER re-derive it from
+memory mid-run** — a wake may be a fresh agent instance, and re-deriving would silently revert an explicit
+choice (identical rule, identical reason, to `reviewer`).
 
-```
-git show origin/<base>:.gauntlet.yml
-```
+**NEVER take the formatter list from repo content — NOT from a repo-root config file, NOT from
+`CLAUDE.md`, NOT from ANY file in the repo.** Repo content **is PR content**: a PR can edit it. A whitelist
+a PR can edit is a whitelist a PR can **widen to govern its own campaign** — selecting a tool and a glob and
+earning an unreviewed tool commit on its own head. That is the self-gating hazard, and it is why the list
+lives in the ledger (git-ignored run state, `files-and-ledger.md`) and comes from the user. `CLAUDE.md` is
+NOT an exception: it is worktree-loaded repo content, so a PR can edit it too.
 
-**NEVER read `.gauntlet.yml` from the PR under review.** If campaign took the whitelist from the PR's own
-head, a PR could **widen the whitelist that governs its own campaign** — selecting a tool and a glob and
-earning an unreviewed tool commit on its own head. That is the self-gating hazard in config form. A PR that
-edits `.gauntlet.yml` therefore takes effect only **after it merges**, gated like any other change.
+Because the list can never come from the repo, **a PR cannot touch it BY CONSTRUCTION.** No provenance rule
+is needed, and none exists — do NOT reintroduce one.
 
 #### TRUST MODEL — say it plainly
 
-`.gauntlet.yml` is read from the **base branch**, so it is authored by people with **write access to the
-repo** — the same people who can already edit `.github/workflows` and make CI do anything. The denylist and
-the schema rules are therefore a **guard against footguns and accidental misuse, NOT a security boundary
-against a malicious committer.** NEVER present them as one.
+The formatter list is the **user's**, given at invocation or from their own memory — not repo content, so
+there is no "malicious committer" to defend against here. The denylist, the criterion, and the id-only
+shape are a **guard against footguns and accidental misuse**, NOT a security boundary. NEVER present them
+as one.
 
-What the base-branch rule DOES buy is real, and MUST be kept: **a PR under review cannot widen the
-whitelist that governs its own campaign.** That is the property being defended.
+What IS a security boundary: **the tool runs on UNTRUSTED PR CONTENT, inside the PR's worktree.** That is
+why `argv[0]` is resolved to a trusted absolute executable **outside the repo** ("RESOLVE argv[0]" above),
+and why the exclusion filter is the skill's and not the user's.
 
-#### VALIDATION — an entry is ACCEPTED only if ALL of these hold
+#### VALIDATION — an id in the `formatters` list is ACCEPTED only if ALL of these hold
 
-1. **`id` present; `files` optional. NOTHING else.**
-2. **NO `command`, `args`, `argv`, `flags`, or any other key** — any of them → **REFUSE**. The skill owns
-   the argv; config that supplies one is trying to re-open the `gofmt -r` hole. A shell string anywhere →
-   REFUSE, and campaign never runs a shell regardless.
-3. **`id` is in the known-tools table.** Not in the table → REFUSE. Config NEVER introduces a binary; it
-   selects one. The binary is resolved to a **trusted absolute executable outside the repo** ("RESOLVE
+1. **The value carries EXACTLY an `id`, and OPTIONALLY a narrowing glob. NOTHING else.** No `command`, no
+   `args`/`argv`, no flags — the skill owns the argv, and anything supplying one re-opens the `gofmt -r`
+   hole. Campaign never runs a shell regardless.
+2. **The `id` is in the known-tools table.** Not in the table → REFUSE. The list NEVER introduces a binary;
+   it selects one. The binary is resolved to a **trusted absolute executable outside the repo** ("RESOLVE
    argv[0]" above) — NEVER from a `PATH` the repo or the PR can influence. Unresolvable, or resolving
    inside the repo/worktree → REFUSE.
-4. **`files`, if present, only NARROWS the tool's default glob** — it MUST NOT match anything outside it.
+3. **The glob, if present, only NARROWS the tool's default glob** — it MUST NOT match anything outside it.
    Widening → REFUSE. And REFUSE an **obviously hostile** glob that directly targets a check definition,
    config, or test (`.golangci.yml`, `.github/**`, `**/*_test.go`, …), or a repo-sweeping bare `**`/`.`.
-   The **exclusion filter still applies to every accepted entry** — the refusal catches intent, the filter
-   is the guarantee.
-5. **The table's precondition for that `id` VERIFIES in this repo** (see "conditional on its
+   The **exclusion filter still applies to every accepted id** — the refusal catches intent, the filter is
+   the guarantee.
+4. **The table's precondition for that `id` VERIFIES in this repo** (see "conditional on its
    configuration"). Cannot verify → REFUSE.
 
-**REFUSING means: log the entry and why, IGNORE it, and route that failure to the session model. NEVER
-silently honour a refused entry.** Refusing one entry does not invalidate the others.
+**REFUSING means: log the id and why, IGNORE it, and route that failure to the session model. NEVER
+silently honour a refused id.** Refusing one id does not invalidate the others.
 
-**Merge semantics:** start from the built-in defaults (**the known-tools table's ids, each with its default
-glob**); the repo's `formatters:` list **replaces** them by `id` — an entry NARROWS the `files` of a known
-tool of the same `id`, and a built-in the repo omits while listing others is **removed** for that repo (e.g.
-a repo that does not want `gci` simply lists the ones it wants). An entry whose `id` is not a known tool is
-REFUSED, not appended. `formatters: []` **disables the cheap path entirely** — every failure goes to the
-session model, always a safe choice. **Missing file → the table's built-in defaults, each with its default
-glob, exclusion filter applied as always** — NEVER an invented or broadened default. **Unparseable file →
-cheap path OFF for this run** (default deny; never guess at a half-parsed whitelist).
+**Resolution semantics:** an explicit or preferred list **replaces** the built-in defaults — a known tool
+the user omits while naming others is **not run** (a user who does not want `gci` simply names the ones
+they want). An id that is not a known tool is REFUSED, not appended. `none` **disables the cheap path
+entirely**. No explicit list and no preference → the table's built-in defaults, each with its default glob,
+exclusion filter applied as always — NEVER an invented or broadened default.
 
 Then, in order:
 
 1. **Whitelisted tool → run the TOOL, no model (prefer this always).** In `<worktree>`, run the
    **table's exact argv** for that `id` with `argv[0]` **resolved to a trusted absolute executable outside
    the repo**, **WITHOUT a shell**, over the tool's file set (default glob, narrowed by any validated
-   `files`, **exclusion filter applied**). NEVER add a flag; NEVER a catch-all `--fix`. ACCEPT only if
+   glob, **exclusion filter applied**). NEVER add a flag; NEVER a catch-all `--fix`. ACCEPT only if
    **both** hold: re-running the **exact** failing check now **passes**, AND the diff touches **no check
    definition, config, or test**. Then commit + push — **zero model spend** — and **apply the gate reset**
    above ("Any campaign commit to the PR head resets the gate"): `reviews_ok` to 0 + relabel, relaunch the
    watch, re-enter 2a. A tool commit gates exactly like a subagent commit.
 2. **Everything else → the scoped CI-fix subagent on the session model**, set explicitly, per the red-CI
    dispatch above. Covers: the tool did not fix it, the tool left residue, the tool/check is not
-   whitelisted, the config entry was refused, the config is **unparseable**, the binary **cannot be
-   resolved to a trusted executable outside the repo**, the filtered file set is **empty**, or the failure
-   needs any judgment. (A **missing** config is NOT in this list — it means the table's defaults.)
+   whitelisted, the id was refused, `formatters` is `none`, the binary **cannot be resolved to a trusted
+   executable outside the repo**, the filtered file set is **empty**, or the failure needs any judgment.
+   (An **unset** `formatters` header is NOT in this list — it means the table's defaults.)
 
 If the tool's run fails either acceptance point → **discard the work** (reset the worktree to the PR
 head) and **re-dispatch the same failure on the session model**. NEVER patch a formatter run in place;

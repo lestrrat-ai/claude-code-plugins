@@ -184,51 +184,48 @@ flowchart TD
   it knows a small table of tools: `gofmt`, `gofumpt`, `goimports`, `gci`, and `ruff format`. (`ruff
   format` only counts if your Ruff config leaves `format.docstring-code-format` off — with it on, Ruff
   reformats Python code *inside docstrings*, which changes what your strings contain. A tool's guarantee can
-  depend on how it's configured, so campaign checks your config before trusting it.) To choose which of
-  those tools campaign runs in your repo, and over which files, add a committed `.gauntlet.yml` at the repo
-  root:
+  depend on how it's configured, so campaign checks your config before trusting it.)
 
-  ```yaml
-  formatters:
-    - id: gofmt          # which known tool
-      files: "**/*.go"   # optional: a narrower glob than the tool's default
-  ```
+  You don't configure that list in a file. **Name the formatters when you invoke campaign** ("use gofmt and
+  goimports", or "no formatters" to switch the shortcut off entirely), or **record a preference in memory**
+  and campaign will pick it up on later runs. Say nothing and you get the built-in default set. Whatever it
+  resolves to is fixed once, at the start of the run, and written into the run's ledger — so a later wake,
+  or a fresh agent that picks the run up, uses the same list rather than quietly reverting to the default.
 
-  That is the whole schema: **`id`, and optionally `files`, nothing else.** You do **not** supply a command,
-  flags, or an argv — campaign owns the exact command line for each tool it knows (`gofmt -w`,
-  `goimports -w`, `gci write`, `ruff format`, …), and an entry that tries to supply one is refused. The
-  reason is that flags are not cosmetic: `gofmt -w -r 'true -> false'` is still `gofmt`, but the `-r` flag
-  turns it into a rewrite engine that changes `return true` into `return false`. Checking *which tool* runs
-  is not enough if you also get to pick *how* it runs, so campaign doesn't let you pick.
+  There is deliberately **no config file for this, and campaign will not read one from your repo** — not a
+  file at the repo root, not `CLAUDE.md`, not anything else in the tree. Files in your repo are things a pull
+  request can edit, and this list is what decides whether a change gets committed to that same pull request
+  *without a review pass*. If it lived in the repo, a pull request could widen the rules that govern its own
+  review. Keeping it out of the repo makes that impossible by construction, rather than something campaign
+  has to defend against.
+
+  Naming a tool is all you get to do. You do **not** supply a command, flags, or an argv — campaign owns the
+  exact command line for each tool it knows (`gofmt -w`, `goimports -w`, `gci write`, `ruff format`, …).
+  Flags are not cosmetic: `gofmt -w -r 'true -> false'` is still `gofmt`, but the `-r` flag turns it into a
+  rewrite engine that changes `return true` into `return false`. Checking *which tool* runs is not enough if
+  you also get to pick *how* it runs, so campaign doesn't let you pick.
 
   Campaign also picks the **binary**, not just the command line. The tool runs inside the pull request's own
-  worktree, so it resolves the executable to an absolute path outside your repo before running it — a pull
-  request that ships a file called `gofmt` never gets executed. If the real tool can't be found outside the
-  repo, campaign refuses the shortcut and uses a model instead.
+  worktree, and that pull request is untrusted content, so campaign resolves the executable to an absolute
+  path outside your repo before running it — a pull request that ships a file called `gofmt` never gets
+  executed. If the real tool can't be found outside the repo, campaign refuses the shortcut and uses a model
+  instead.
 
-  Every known tool has a default glob (`gofmt` → `**/*.go`, `ruff format` → `**/*.py`), so you can leave
-  `files` out entirely, and a repo with no `.gauntlet.yml` at all still has a well-defined file set. When you
-  do give a `files` glob it may only **narrow** the default, never widen it.
+  Every known tool has a default glob (`gofmt` → `**/*.go`, `ruff format` → `**/*.py`), so you normally name
+  nothing but the tool. If you do narrow one to a subdirectory, the glob may only **narrow** the default,
+  never widen it — and you should not try to write exclusions into it. Campaign applies its **own** exclusion
+  filter afterwards, every time, and nothing widens it: tests, check definitions, CI workflows, and tool
+  config (`**/*_test.go`, `.github/**`, `.golangci.yml`, `pyproject.toml`, …) are removed no matter what
+  your glob says. The glob picks the candidates; campaign's filter protects the files that gate the review.
+  An exclusion list *you* maintain would eventually miss one, and campaign commits this tool's output without
+  a review pass — it must never be able to weaken the checks that gate it. (A glob that *directly* names a
+  protected path is refused outright.)
 
-  You don't have to write exclusions into that glob, and you shouldn't: campaign applies its **own**
-  exclusion filter to the file set afterwards, every time, and your config cannot widen it. Tests, check
-  definitions, CI workflows, and tool config (`**/*_test.go`, `.github/**`, `.golangci.yml`,
-  `pyproject.toml`, `.gauntlet.yml`, …) are removed no matter what your glob says. That is why `**/*.go` is
-  the right thing to write: the glob picks the candidates, campaign's filter protects the files that gate
-  the review. An exclusion list *you* maintain would eventually miss one, and campaign commits this tool's
-  output without a review pass — it must never be able to weaken the checks that gate it. (A glob that
-  *directly* names a protected path, like `files: ".golangci.yml"`, is still refused outright.)
-
-  You can drop built-in tools by omitting them, or set `formatters: []` to turn the whole shortcut off (then
-  every CI failure goes to a full-strength model — always a safe choice). Teaching campaign a genuinely new
-  tool is a change to the skill, not to your config. And a config change never applies to its own pull
-  request: campaign reads `.gauntlet.yml` from the **base branch**, so an edit to it only takes effect once
-  that PR has merged.
-
-  To be clear about what this buys: `.gauntlet.yml` lives in your repo, so anyone who can edit it can
-  already edit your CI workflows. These rules are a **guard against footguns**, not a security boundary
-  against someone with write access. What the base-branch rule genuinely prevents is a pull request widening
-  the rules that govern its own review.
+  Teaching campaign a genuinely new tool is a change to the skill — reviewed and gated like any other code
+  change. And to be clear about what all this buys: the tool list comes from *you*, so the denylist and the
+  narrow shape of the list are a **guard against footguns**, not a security boundary against yourself. The
+  real boundary is that the tool runs on untrusted pull-request content, which is why campaign resolves the
+  binary outside your repo and owns the exclusion filter itself.
 - It keeps a small `.gauntlet/history/` at the repo root (git-ignored, one file per run) to remember what past
   runs learned. That's the memory a fresh run carries over. Each fresh run also tidies that file,
   dropping entries that no longer apply to the current code — and when it isn't sure an entry is

@@ -21,12 +21,18 @@ from typing import NoReturn
 
 # --- schema (owned here, once) ------------------------------------------------
 
-HEADER_FIELDS = ("run_id", "base_branch", "api_changes", "reviewer")
+HEADER_FIELDS = ("run_id", "base_branch", "api_changes", "reviewer", "formatters")
 HEADER_DEFAULTS = {
     "run_id": "-",
     "base_branch": "-",
     "api_changes": "ask",
     "reviewer": "default",
+    # Cheap-CI-path formatter whitelist. "default" = the known-tools table's built-in
+    # set; "-" = none (cheap path off); else comma-separated known-tool ids, each
+    # optionally suffixed ":<glob>" to narrow that tool's default glob. Resolved once at
+    # run start from the user (invocation, else memory preference) — NEVER from repo
+    # content, which is PR content.
+    "formatters": "default",
 }
 
 ROW_FIELDS = (
