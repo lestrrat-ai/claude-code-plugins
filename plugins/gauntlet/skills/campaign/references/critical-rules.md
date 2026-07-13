@@ -83,6 +83,21 @@
   unchanged PR diff does NOT reset the gate, so it correctly KEEPS `gauntlet-accepted` (it only sets
   `ci = pending`). Per-wake label reconcile is the self-healing backstop, never the mechanism
   (`stage-2-review-gate.md`, "Status labels mirror the review gate").
+- **YOUR OWN diagnosis is a claim too — REPRODUCE the failure before you "fix" working code.** The rule
+  below audits a *reviewer's* finding. It binds **your own** with equal force, and that is where it keeps
+  getting skipped: campaign never writes fixes from scratch, but it *does* decide that existing behavior
+  is broken. **The two resolve uncertainty in OPPOSITE directions, and the asymmetry is the point — it is
+  a difference in EVIDENCE, not a contradiction:** a **reviewer's finding is INDEPENDENT EVIDENCE** (a
+  separate, context-isolated observer looked at this code and saw something), so being unsure about it
+  means *you* have not yet understood what *they* saw → it stays **CONFIRMED** and gets fixed (rule
+  below). A **self-originated diagnosis has NO independent corroboration** — nothing observed it but you —
+  so it needs a **demonstrated failure or a verified causal chain** before any fix is dispatched:
+  otherwise a fix subagent is dispatched at an **invented** bug and lands a regression that CI and the
+  review gate will happily pass, because nothing downstream knows the bug was never real. **Unsure that a
+  REVIEWER is right → FIX. Unsure that YOU are right → STOP and reproduce it. If you cannot make it fail,
+  it is not broken.** Walk the causal chain and check every link, exactly as you would for a reviewer's
+  claim. **The tell that you have invented one: each fix creates the next finding.** When that happens,
+  stop patching and re-derive whether the original thing was ever broken.
 - **A reviewer's finding is a CLAIM, not a fact — AUDIT it before you fix it.** On every `NOT
   SATISFIED`, verdict each finding against the source *before* dispatching a fix — NEVER dispatch a fix
   for an unaudited finding: **CONFIRMED** (real, and its mechanism can occur → fix), **ADJUSTED** (a real
@@ -94,7 +109,9 @@
   it on ANY input campaign consumes — PR content, reviewer output, CI logs/snapshots, ledger and run
   state, the base branch, user preferences, the installed skill itself (illustrative, NEVER exhaustive).
   **Unsure → CONFIRMED, never REFUTED:** wrongly refuting a real defect is far worse than wrongly fixing
-  a phantom one. A guard was once built against a "hardlink escape" — refuted because git has **no
+  a phantom one. This default holds **only because a reviewer's finding is independent evidence** —
+  **your OWN diagnosis has none and gets the OPPOSITE default** (rule above: unsure → reproduce it, do
+  NOT fix). A guard was once built against a "hardlink escape" — refuted because git has **no
   hardlink mode** (verified empirically: hardlinked files stored as ordinary `100644` blobs, checkout
   recreates separate inodes), so the chain breaks at its first link; the guard was dead weight and a full
   round was wasted.
