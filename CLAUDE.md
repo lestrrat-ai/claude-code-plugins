@@ -82,12 +82,30 @@ breaks it, the line that cannot be reached. Walk the causal chain of the bug you
 check every link. If you cannot make it fail, **it is not broken** — and what you are about to write is
 not a fix, it is a regression with good intentions.
 
+**Name the asymmetry, or you will misread this as contradicting the rule beside it.** `critical-rules.md`
+also says **"unsure → CONFIRMED, never REFUTED"**: for a *reviewer's* finding, uncertainty means **fix
+it**. Here, for your *own* diagnosis, inability to reproduce means **do NOT fix it**. Both are correct,
+because the **evidence differs** — that, not the verdict, is what to reason from:
+
+- A **reviewer's finding is INDEPENDENT EVIDENCE.** A separate, context-isolated observer looked at the
+  code and saw something. Being unsure about it means *you* have not yet understood what *they* saw — so
+  it stays **CONFIRMED** and gets fixed: wrongly refuting a real defect is far worse than wrongly fixing
+  a phantom one.
+- A **self-originated diagnosis has NO independent corroboration.** Nothing observed it but you. So it
+  needs a **demonstrated failure or a verified causal chain** before any fix is dispatched — otherwise a
+  fix subagent is dispatched at an **invented** bug and lands a regression that CI and the review gate
+  will happily pass, because nothing downstream knows the bug was never real.
+
+**Unsure that a REVIEWER is right → FIX. Unsure that YOU are right → STOP and reproduce it.** The two
+rules never conflict once that is named — and they always appear to, as long as it is not.
+
 **Why this rule exists:** a PR in this repo changed `--state open` to `--state all` to fix terminal-PR
 reconciliation. The reconciliation was **never broken** — `main` already handled it via **absence** (with
 `--state open` a merged PR simply drops out of the snapshot, and the existing rule reads that absence as
 the signal). The "bug" was a misreading. The change then broke adoption (it resurrected merged PRs as
-active work), and the next three review rounds were spent patching the consequences of an invented
-problem — the exact death-spiral this repo has already suffered once. It took a human's call to stop it.
+active work), and several subsequent review rounds were then spent patching the consequences of an
+invented problem, round after round — the exact death-spiral this repo has already suffered before. It
+took a human's call to stop it.
 
 The tell is unmistakable in hindsight, and it generalises: **when each fix creates the next finding, you
 are not converging on a bug — you are patching your own invention.** Stop and re-derive whether the
