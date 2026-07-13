@@ -217,8 +217,12 @@ For each `#PR` to adopt:
    read:
 
    ```
-   # run in background. ';' (not '&&') so the re-poll ALWAYS runs, even when --watch exits non-zero on failure
-   gh pr checks <pr> --watch ; gh pr checks <pr> > <rundir>/ci-<pr>.txt
+   # run in background. ';' (not '&&') so the FETCH ALWAYS runs, even when --watch exits non-zero on failure.
+   # The watch only BLOCKS — it is never evidence. The evidence is the SHA-pinned fetch of BOTH check
+   # families, promoted atomically and stamped with the head_sha it describes: see stage-2-ci.md,
+   # "FETCH — pinned to the SHA, paginated, and BOTH check families". NEVER derive CI from `gh pr checks`:
+   # its output carries NO SHA, so it can report the PREVIOUS commit's passing checks.
+   gh pr checks <pr> --watch ; <SHA-pinned fetch of both families -> <rundir>/ci-<pr>-<head_sha>.txt>
    ```
 
    Don't launch a duplicate watch for a PR that already has a live one (Loop control tracks in-flight

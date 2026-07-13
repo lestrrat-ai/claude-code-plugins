@@ -1,22 +1,116 @@
 ### 2b. CI (event-driven)
 
-Each PR has a background task that waits on `gh pr checks --watch`, then **re-polls** `gh pr checks
-<pr>` into `ci-<pr>.txt`. The watch only blocks; the re-polled snapshot is the source of truth. When
-the task completes, a wake reads the file and decides `ci` **from the file's contents — never from
-the watch exit code** — and writes the `ci`/`reviews_ok` result through `scripts/ledger.py … set --pr
-<N> --ci <state> [--reviews_ok 0]` **by field name** (`files-and-ledger.md`), never by hand-editing the
-row by column position:
+Each PR has a background task that waits on `gh pr checks --watch`. **The watch only BLOCKS — it is
+never evidence.** When the task completes, a wake **fetches a fresh snapshot pinned to the PR's current
+`head_sha`**, verifies it, and decides `ci` **from the snapshot's contents — NEVER from the watch's exit
+code** — then writes the `ci`/`reviews_ok` result through `scripts/ledger.py … set --pr <N> --ci <state>
+[--reviews_ok 0]` **by field name** (`files-and-ledger.md`), never by hand-editing the row by column
+position.
 
-- **green** → ONLY if the snapshot shows **zero failing lines AND zero pending lines** and the
-  expected checks are actually present. `gh pr checks --watch` can exit 0 while checks are still
-  pending or have not yet registered, so a clean exit is not evidence of green.
-- **pending** → any line still pending, or the expected checks haven't appeared yet → not green;
-  leave `ci = pending` and, if the watch task has exited, **relaunch it in this same wake** — a
+**NEVER derive CI from `gh pr checks`.** Its output **carries no SHA at all** (`--json headSha` →
+*Unknown JSON field*), so you can never prove which commit it describes — right after a push it can
+report the **previous** commit's passing checks, and the ledger records a **green for code the PR no
+longer contains**. This produced a false green on a live run in this repo, found by dogfooding rather
+than by review. Use `gh pr checks --watch` to **wait**; never to decide.
+
+#### FETCH — pinned to the SHA, paginated, and BOTH check families
+
+A source you never queried reports nothing, and "nothing" parses as "nothing wrong". Read **both**:
+
+```sh
+# (1) CHECK RUNS — pinned to <head_sha> BY THE URL, and the only source of a check-run verdict.
+#     ONE row carries the commit, the IDENTITY (name + app.id) AND the RESULT (status + conclusion),
+#     so no check-run judgment is ever joined across two fetches. REST is lowercase -> upcased.
+gh api --paginate "repos/<owner>/<repo>/commits/<head_sha>/check-runs" \
+  --jq ".check_runs[] | \"checkrun <head_sha> \(.name) \(.app.id // \"-\") \(.status|ascii_upcase) \(.conclusion // \"-\"|ascii_upcase)\""
+
+# (2) COMMIT STATUSES — the legacy family, which (1) CANNOT SEE.
+gh api --paginate "repos/<owner>/<repo>/commits/<head_sha>/status" \
+  --jq ".statuses[] | \"status <head_sha> \(.context) \(.state|ascii_upcase)\""
+
+# (3) ROLLUP — WITNESSES ONLY (names, no verdict). Used ONLY for the containment test below.
+#     The rollup carries no app.id and no commit oid, so it can NEVER be read as a verdict.
+gh pr view <pr> --json statusCheckRollup \
+  --jq '.statusCheckRollup[]? | select(.__typename=="CheckRun") | "witness \(.name)"'
+```
+
+- **`--paginate` is MANDATORY** — `/check-runs` pages at **30**; without it you parse page one and call
+  it the whole set.
+- **BOTH families are MANDATORY.** A failing Jenkins/CircleCI **commit status is genuinely invisible** to
+  `/check-runs`: a Kubernetes commit carrying **2 live statuses** reports `check_runs.total_count = 0`.
+- **NEVER read the combined status `.state` as a verdict.** It reports **`pending` at ZERO statuses**
+  (`repos/cli/cli/commits/trunk/status` → `{"state":"pending","total_count":0}`) — an absence, read as a
+  verdict, is a lie in both directions.
+- **Honest limit, not a proof:** `/check-runs` is capped at the **1000 most recent check suites**.
+  `--paginate` defeats page-size truncation; it does **not** prove completeness at extreme scale. Say
+  that, and never claim more.
+
+#### PROMOTE it atomically, STAMP it with the SHA it describes
+
+Write to a temp file **inside `<rundir>`** (same filesystem ⇒ `mv` is an atomic rename), then promote:
+
+```sh
+tmp="<rundir>/.ci-<pr>.$$"      # INSIDE <rundir>, so the mv below cannot cross a filesystem
+printf '# sha: %s\n' "<head_sha>" > "$tmp"
+#   ... append the three fetches above ...
+mv "$tmp" "<rundir>/ci-<pr>-<head_sha>.txt"
+```
+
+The artifact's row format — every row carries the SHA it is about:
+
+```
+# sha: <head_sha>
+checkrun <head_sha> <name> <app.id|-> <STATUS> <CONCLUSION|->
+status   <head_sha> <context> <STATE>
+witness  <name>
+```
+
+**If ANY fetch fails, the snapshot is NOT EVIDENCE.** `--paginate` leaves **partial output on disk** when
+it dies mid-run, and an error body lands in the redirect target. A failed or partial fetch → `ci =
+pending`, refetch — **NEVER** parse it, and **NEVER** promote it.
+
+#### VERIFY THE STAMP BEFORE PARSING
+
+Parse the file **only** if the `# sha:` header, **every** row's SHA, **and** the filename all equal the
+ledger's current `head_sha`. Any mismatch means the snapshot describes a **superseded commit** → discard
+it, `ci = pending`, refetch. **NEVER** green off it, and never "fix up" the mismatch.
+
+**The ledger write is GATED ON the parsed contents.** A guard that runs *beside* the write is not a
+guard.
+
+#### CROSS-FETCH AGREEMENT — containment, NOT equality
+
+The fetches are taken at different times, so they can disagree. But the correct test is **containment**,
+not equality:
+
+> **REST ⊇ rollup-witnesses.** A `witness` name **absent** from the `checkrun` rows → the REST read is
+> missing something → `ci = pending`, refetch. A **REST-only** name is **FINE** — it can only *add*
+> evidence and cannot hide a failure, because the REST row carries **identity AND verdict in the same
+> row**.
+
+**NEVER require the two sets to be EQUAL — that never terminates.** GitHub's rollup **omits
+`dynamic`-event check suites BY DESIGN**: on `microsoft/vscode` PR #325532, REST returns **37** runs
+including `copilot-pull-request-reviewer` and the rollup returns **36**, omitting it — **stably, across
+refetches**. That is a by-design asymmetry, **not motion**, so "sets differ → pending, refetch" spins
+forever. This repo ships `gauntlet:copilot-address-reviews`, so its users are exactly the affected ones.
+
+#### DECIDE from the verified file's contents
+
+- **green** → the snapshot lists **≥1 row**; **every** `checkrun` row is `COMPLETED` + `SUCCESS`; **every**
+  `status` row is `SUCCESS`; and containment holds. **Zero rows is NOT green** — it means nothing has
+  registered yet.
+- **pending** → no usable snapshot (any fetch failed, the file is absent, a SHA does not match, or
+  containment fails), zero rows, or any `checkrun` row not yet `COMPLETED` / any `status` row `PENDING`
+  → leave `ci = pending` and, if the watch task has exited, **relaunch it in this same wake** — a
   pending PR must never sit unwatched waiting for the heartbeat.
-- **red** → **if the PR is PARKED** (`status` = `awaiting-user` / `awaiting-api`), record `ci = red` and
+- **red** → any `checkrun` row whose conclusion is `FAILURE` / `TIMED_OUT` / `CANCELLED` /
+  `ACTION_REQUIRED`, or any `status` row whose state is `FAILURE` or `ERROR` (**`ERROR` is a failure** —
+  never shrug it off as a glitch).
+
+  **If the PR is PARKED** (`status` = `awaiting-user` / `awaiting-api`), record `ci = red` and
   **dispatch NO fix** — a parked PR dispatches nothing until the user answers (`loop-control.md` step 3).
   The **watch keeps running** either way: watching is observation, not work-dispatch, so a parked PR's CI
-  state stays fresh. Otherwise → any failing line → **stop any review pass in flight on that PR first** (Loop control
+  state stays fresh. Otherwise → any failing row → **stop any review pass in flight on that PR first** (Loop control
   step 3 — the fix will replace its SHA, so the verdict is already void; free the slot), then
   **CLASSIFY the failure** from the check logs ("Classify, then set the model" below) **before
   dispatching anything**, and dispatch a **scoped CI-fix subagent** into `<worktree>` — the PR row's
@@ -138,7 +232,8 @@ correctness (`stage-2-review-gate.md`). Say that plainly whenever the question c
 ---
 
 Every CI failure must be handled; never merge over a red or pending check, and never infer green from
-the watch's exit code alone — always confirm against the re-polled snapshot.
+the watch's exit code — always confirm against a **SHA-pinned, SHA-verified** snapshot of **both** check
+families.
 
 CI fixes serialize only within one PR/SHA. Different PRs with red CI may run scoped CI-fix subagents
 concurrently within the dispatcher cap.

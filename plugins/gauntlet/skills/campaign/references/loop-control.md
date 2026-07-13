@@ -61,7 +61,8 @@ blocks; each completion is its own wake.
      ```
 
      — and drive reconcile from that file; fall back to per-PR `gh pr view` only where the snapshot
-     isn't enough (merge-gate CI truth stays the re-polled `gh pr checks` snapshot, Stage 2b). Wake
+     isn't enough (merge-gate CI truth stays the SHA-pinned, SHA-verified snapshot of **both** check
+     families, Stage 2b). Wake
      turnaround is throughput: every serial `gh` call in reconcile delays every dispatch behind it. Re-read `run_id`, `base_branch`, `api_changes`, and `reviewer` from the ledger
      header — they govern namespacing, the merge/diff target, API-change handling, and which reviewer runs
      the review passes, and must be

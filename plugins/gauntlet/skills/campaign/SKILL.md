@@ -170,7 +170,9 @@ Read stage refs only when that stage/action is due:
   changes it (a park does NOT lower `reviews_ok`, so guard on `status` at every dispatch AND mutation
   site). Sole exception: its CI watch keeps running — observing is not mutating. Keep driving the other
   PRs; unpark only on the user's answer (`references/loop-control.md`, "parked-status guard").
-- **No green by watch exit:** derive CI from re-polled `gh pr checks` snapshot.
+- **No green by watch exit:** derive CI from a **SHA-pinned** snapshot of **both** check families
+  (`check-runs` **and** commit `status`), verified against `head_sha` before parsing. **NEVER from `gh pr
+  checks`** — its output carries **no SHA** (`references/stage-2-ci.md`).
 - **Public API changes require user confirmation** unless the ledger's `api_changes` field is `allowed`.
 
 ## Wake Skeleton
