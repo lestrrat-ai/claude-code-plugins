@@ -180,20 +180,25 @@ flowchart TD
 - Some CI failures — pure formatting ones — it fixes by running the **formatter itself**, with no model
   involved at all. A tool only qualifies if its own documentation guarantees the output is *semantically
   equivalent* to the input (an AST-preserving pretty-printer, not a text munger); anything else, including
-  every `--fix`-style linter and every code rewriter, goes to a full-strength fix subagent. The table is
-  deliberately **short** — three tools: `gofmt`, `gci`, and `ruff format`. (`ruff format` only counts if your
-  Ruff config leaves `format.docstring-code-format` off — with it on, Ruff reformats Python code *inside
-  docstrings*, which changes what your strings contain. A tool's guarantee can depend on how it's configured,
-  so campaign checks your config before trusting it.)
+  every `--fix`-style linter and every code rewriter, goes to a full-strength fix subagent.
 
-  Tools you might expect and won't find: **`goimports`**, because it *adds* missing imports and *removes*
-  unreferenced ones — adding an import runs that package's `init()`, and a guessed import can be the wrong
-  package; and **`gofumpt`**, because it applies extra rewrite rules on top of gofmt's layout and documents
-  them as a rule list, not as semantics-preserving. Both are formatters in the colloquial sense and neither
-  meets the bar, which is the point: the bar is the tool's own documentation, not the vibe of its diff.
+  The table holds exactly **one tool: `gofmt`**. That is small on purpose — it is what survived a rule that
+  demands a *documented* guarantee, quoted from the source. Everything else, **including all Python, JS and
+  other-language formatting**, goes to the session model, which is the safe default and is what happened
+  before this shortcut existed. It is not a limitation to work around: it is the rule working.
 
-  You don't configure that list in a file. **Name the formatters when you invoke campaign** ("use gofmt and
-  gci", or "no formatters" to switch the shortcut off entirely), or **record a preference in memory**
+  Tools you might expect and won't find: **`ruff format`**, because the formatter docs we cite don't actually
+  state the AST-equivalence guarantee we'd be relying on; **`gci`**, because its docs describe import
+  ordering and grouping but never say it neither adds nor removes an import; **`goimports`**, because it
+  *adds* missing imports and *removes* unreferenced ones — adding an import runs that package's `init()`, and
+  a guessed import can be the wrong package; and **`gofumpt`**, because it applies extra rewrite rules on top
+  of gofmt's layout and documents them as a rule list, not as semantics-preserving. All four are formatters
+  in the colloquial sense and none meets the bar, which is the point: the bar is a *source that states the
+  guarantee*, not the tool's reputation or the vibe of its diff. Adding a tool is a change to the skill
+  itself, and it needs that source quoted in the table.
+
+  You don't configure that list in a file. **Name the formatters when you invoke campaign** ("use gofmt", or
+  "no formatters" to switch the shortcut off entirely), or **record a preference in memory**
   and campaign will pick it up on later runs. Say nothing and you get the built-in default set. Whatever it
   resolves to is fixed once, at the start of the run, and written into the run's ledger `formatters` field —
   `default` for the built-in set, `-` for the shortcut switched off, otherwise the tool ids you named — so a
@@ -208,7 +213,7 @@ flowchart TD
   has to defend against.
 
   Naming a tool is all you get to do. You do **not** supply a command, flags, or an argv — campaign owns the
-  exact command line for each tool it knows (`gofmt -w --`, `gci write --`, `ruff format --`).
+  exact command line for each tool it knows (`gofmt -w --`).
   Flags are not cosmetic: `gofmt -w -r 'true -> false'` is still `gofmt`, but the `-r` flag turns it into a
   rewrite engine that changes `return true` into `return false`. Checking *which tool* runs is not enough if
   you also get to pick *how* it runs, so campaign doesn't let you pick.
@@ -234,7 +239,7 @@ flowchart TD
   whose fully-resolved real path lands outside the worktree. Each drop is logged; the rest of the run
   continues.
 
-  Every known tool has a default glob (`gofmt` → `**/*.go`, `ruff format` → `**/*.py`), so you normally name
+  Every known tool has a default glob (`gofmt` → `**/*.go`), so you normally name
   nothing but the tool. If you do narrow one to a subdirectory, the glob may only **narrow** the default,
   never widen it — and you should not try to write exclusions into it. Campaign applies its **own** exclusion
   filter afterwards, every time, and nothing widens it: tests, check definitions, CI workflows, and tool

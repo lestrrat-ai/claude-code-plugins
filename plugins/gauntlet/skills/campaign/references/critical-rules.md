@@ -146,31 +146,36 @@
   (`SKILL.md`, "The only cheap path"; full table/schema/validation in `stage-2-ci.md`). **A tool is
   whitelisted ONLY IF it guarantees its output is SEMANTICALLY EQUIVALENT to its input** — an AST-preserving
   pretty-printer, not a text munger — on the burden of a **CITED SOURCE: a LINK to the tool's own
-  documentation and the passage it rests on. The word "documented" is NOT a citation.** Cannot point to a
-  source → NOT whitelisted → session model. There is **NO blanket "formatters are safe" rule**. The
+  documentation and the passage it rests on, QUOTED. The word "documented" is NOT a citation, and a citation
+  that does NOT SUPPORT its claim is WORSE than none** — it launders our own belief as the source's. Cannot
+  point to a source → NOT whitelisted → session model. There is **NO blanket "formatters are safe" rule**. The
   guarantee is the TOOL's and does **NOT** transfer to a model hand-editing the same file — a diff that
   *looks* like formatting is NOT a proof of semantic equivalence (a pure-indentation edit can move behavior
   in a whitespace-significant language and stay formatter-clean).
 - **THE SKILL OWNS THE EXACT ARGV; NOTHING ELSE SUPPLIES A COMMAND.** The known-tools table
-  (`stage-2-ci.md`) fixes each tool's precise argv (`gofmt -w --`, `gci write --`, `ruff format --`, each
-  over that id's normalized files). **Flags carry the semantics** — `gofmt -w -r 'true -> false'`
+  (`stage-2-ci.md`) fixes each tool's precise argv (today: `gofmt -w --` over that id's normalized files).
+  **Flags carry the semantics** — `gofmt -w -r 'true -> false'`
   rewrites `return true` into `return false` with a known `argv[0]` and no shell metacharacters, so tool
   identity alone is NOT sufficient. The whitelist therefore carries **ids and globs only** — it can NEVER
   name a `command`/`args`/`argv`/flag. NEVER append a flag to a table argv. Adding a tool, or changing an
   argv, is a **SKILL change**.
-- **THE TABLE IS SMALL, AND THE CRITERION IS APPLIED HONESTLY — `gofmt`, `gci`, `ruff format`.** Each
-  `guarantee` cell MUST carry a **LINK to the tool's own doc** plus what that doc says — `gofmt`
-  (https://pkg.go.dev/cmd/gofmt: `go/printer` layout; the non-preserving flags are `-r` and `-s`, and
-  **neither is in the skill-owned argv**), `gci` (https://github.com/daixiang0/gci: sorts/groups EXISTING
-  imports; adds none, removes none), `ruff format` (https://docs.astral.sh/ruff/formatter/: verifies its
-  output is **AST-equivalent**, conditional on `format.docstring-code-format` being off —
-  https://docs.astral.sh/ruff/settings/#format_docstring-code-format). **An unsourced "documented as …" is
-  NOT a citation** — a claim that cannot be tied to a source means the tool comes **OUT of the table**.
-  **REJECTED, and re-adding one is a SKILL change that must first defeat the reason**: `goimports`
+- **THE TABLE HOLDS ONE TOOL — `gofmt`. The criterion was applied TO OURSELVES.** Its cell quotes
+  https://pkg.go.dev/cmd/gofmt (*"Gofmt formats Go programs. It uses tabs for indentation and blanks for
+  alignment"*; the two flags that make it do more are **`-r`** and **`-s`**, and **neither is in the
+  skill-owned argv**). Each `guarantee` cell MUST carry a **LINK to the tool's own doc and the passage
+  QUOTED**; **FOLLOW the link before trusting the cell** — a claim that cannot be tied to a source means the
+  tool comes **OUT of the table**. **The cheap path therefore covers Go formatting and NOTHING else; every
+  other CI failure — ALL Python/JS/etc formatting included — goes to the SESSION MODEL.** That is the safe
+  default, not a regression, and the small table is **the rule working — NEVER a limitation to route
+  around**. **REJECTED, and re-adding one is a SKILL change that must first defeat the reason** — the bar is
+  **a source that STATES the guarantee, quoted in the cell**; "it is a formatter" / "probably fine" /
+  "widely used" are NOT admissible: **`ruff format`** (https://docs.astral.sh/ruff/formatter/ — the cited
+  docs state **no AST-equivalence guarantee**); **`gci`** (https://github.com/daixiang0/gci — the cited docs
+  describe import ordering/grouping and **never state** it neither adds nor removes an import); `goimports`
   (https://pkg.go.dev/golang.org/x/tools/cmd/goimports) — **ADDS missing imports and REMOVES unreferenced
   ones**; an added import runs that package's `init()` and a guessed import can be the **wrong package** →
   not semantics-preserving. `gofumpt` (https://github.com/mvdan/gofumpt) — **extra rewrite rules beyond
-  `go/printer` layout**, stated as a rule list, **never** as semantics-preserving; "it is basically
+  gofmt's layout**, stated as a rule list, **never** as semantics-preserving; "it is basically
   gofmt" is NOT an argument. Fewer tools that provably hold beats more that mostly do.
 - **NORMALIZE THE FILE ARGV — FILENAMES ARE PR-CONTROLLED DATA** (`stage-2-ci.md`). The skill owns the argv
   **SHAPE**, not the operands: `<files>` is globbed from the **PR's worktree**, so every filename is
@@ -220,20 +225,13 @@
   on its own head (self-gating). Out of the repo, a PR cannot touch it **by construction**: there is no
   provenance rule to enforce, and none exists — do NOT reintroduce one.
 - **The whitelist carries EXACTLY known-tool ids + an OPTIONAL NARROWER glob** (`gofmt:internal/**/*.go`).
-  Every known tool has a **default glob** in the table (`gofmt` → `**/*.go`, `ruff format` → `**/*.py`, …),
+  Every known tool has a **default glob** in the table (`gofmt` → `**/*.go`),
   so an **unset `formatters` has a fully defined file set: the table's defaults, filtered**. A glob may only
   NARROW that default → a widening glob is REFUSED; so is an **obviously hostile** one that directly targets
   a check def, config, or test (`gofmt:.golangci.yml`), or a repo-sweeping bare `**`/`.`. A named list
   **replaces** the built-ins — an omitted known tool is not run. It **NEVER introduces a binary outside the
   known-tools table**. **Any id failing any rule is REFUSED** — log it, ignore it, route that failure to the
   **session model**. NEVER silently honour a refused id.
-- **A tool's guarantee can be CONDITIONAL on its CONFIGURATION**: `ruff format` verifies AST equivalence
-  **only while the repo's Ruff config does NOT enable `format.docstring-code-format`** (that setting
-  reformats Python code inside docstrings — rewrites string contents → NOT AST-equivalent). Campaign MUST
-  **verify each precondition holds in THIS repo** — read the tool's config **in the worktree the tool will
-  run in**, since that is the config the tool will obey — before taking the no-model path. Violated or
-  **undeterminable** → NOT whitelisted for this repo → session model. A PR that switches the condition ON
-  widens nothing: it **loses** the cheap path.
 - **golangci-lint `whitespace` is NOT in the table**: no safe fixer — its only fix path is the denylisted
   catch-all `golangci-lint run --fix`. NEVER invent a command for it.
 - **NON-OVERRIDABLE DENYLIST — NOTHING widens it**: `prettier` — it reformats the contents of tagged

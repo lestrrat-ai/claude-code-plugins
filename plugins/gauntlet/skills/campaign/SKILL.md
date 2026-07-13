@@ -111,22 +111,26 @@ The ONE exception to a model dispatch: a whitelisted **formatting** failure is f
   **will** omit something.
 - **The CRITERION is the skill's and is NEVER configurable**: a tool is whitelisted ONLY IF it guarantees
   its output is SEMANTICALLY EQUIVALENT to its input, on the burden of a **CITED SOURCE — a LINK to the
-  tool's own documentation**. Saying the word "documented" is NOT a citation. There is NO blanket
-  "formatters are safe" rule. The guarantee is the **TOOL's** — it NEVER transfers to a model hand-editing
-  the same file, however formatting-like the diff looks (a pure-indentation edit moves behavior in a
-  whitespace-significant language and stays formatter-clean).
-- **The table is SMALL on purpose — `gofmt`, `gci`, `ruff format`**, each cell carrying the doc LINK its
-  guarantee rests on (a claim with no source → the tool leaves the table). Fewer tools that provably hold
-  beats more that mostly do. `goimports` is **REJECTED** (it ADDS/REMOVES imports; an added import runs that
-  package's `init()`, and a guessed one can be the wrong package) and `gofumpt` is **REJECTED** (extra
-  rewrite rules beyond layout, documented as a rule list, never as semantics-preserving). NEVER re-add a
-  tool because it "is basically a formatter" — that reasoning is what put both of them here.
+  tool's own documentation, and the passage QUOTED in the cell**. Saying the word "documented" is NOT a
+  citation, and **a citation that does not SUPPORT its claim is WORSE than none** — it launders our own
+  belief as the source's. There is NO blanket "formatters are safe" rule. The guarantee is the **TOOL's** —
+  it NEVER transfers to a model hand-editing the same file, however formatting-like the diff looks (a
+  pure-indentation edit moves behavior in a whitespace-significant language and stays formatter-clean).
+- **The table holds ONE tool — `gofmt`** (Go formatting), its cell quoting https://pkg.go.dev/cmd/gofmt.
+  **That is not a limitation to work around; it is the rule working**: it is what survived a bar that demands
+  a documented guarantee. **REJECTED**, each for a stated reason (`stage-2-ci.md`): **`ruff format`** (its
+  cited formatter docs state no AST-equivalence guarantee), **`gci`** (its cited docs never say it neither
+  adds nor removes an import), **`goimports`** (ADDS/REMOVES imports), **`gofumpt`** (extra rewrite rules,
+  documented as a rule list). **Every other CI failure — including ALL Python/JS/etc formatting — goes to
+  the SESSION MODEL**, which is the safe default and is what happened before this path existed. Adding a
+  tool is a **SKILL change** and the bar is **a source that STATES the guarantee, quoted**; "it's a
+  formatter", "it's probably fine", "it's widely used" are **NOT admissible**.
 - **A tool commit resets the gate** exactly like a subagent commit (`stage-2-ci.md`).
 - **Default deny.** Unknown or unlisted tool, refused id, unresolvable binary, the tool did not fix it, the
   tool left residue, or the failure needs any judgment → **session model**, set explicitly. NEVER hand it to
   a cheap model instead.
 
-Full known-tools table (each tool's **exact skill-owned argv**, default glob, guarantee, precondition), the
+Full known-tools table (the tool's **exact skill-owned argv**, default glob, quoted guarantee), the
 executable-resolution rule, the exclusion filter, the `formatters` resolution and validation, the
 non-overridable denylist, and the honest trust model → **`references/stage-2-ci.md`**.
 
