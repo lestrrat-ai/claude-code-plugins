@@ -1,9 +1,15 @@
 ## The fix-subagent contract — SCOPE the reading, SWEEP the writing
 
 **This file is the DEFINITION, and it is COMPLETE.** Every fix subagent campaign dispatches — the cheap
-CI-fix, the session-model CI-fix, and the review-fix — is dispatched under it. `stage-2-ci.md` and
-`stage-2-review-gate.md` name the inputs their path hands over and the model it runs on; **neither
-restates the rules below, and neither may contradict them.** If you are dispatching a fixer, read this.
+CI-fix, the session-model CI-fix, and the review-fix — is dispatched under it. If you are dispatching a
+fixer, read this.
+
+**Other files carry NON-AUTHORITATIVE summaries of the rules below** — `SKILL.md`, `critical-rules.md`,
+`stage-2-ci.md`, `stage-2-review-gate.md` — so each dispatch site reads on its own. Every one of them is
+a **pointer with a reminder attached, never a substitute**: **a summary may never be relied on, extended,
+or treated as complete, and if any of them disagrees with this file, THIS FILE WINS.** Never dispatch a
+fixer from a summary; never reconstruct the contract from one. Correcting this file means sweeping those
+sites too — a summary that has drifted from its definition is worse than no summary.
 
 The contract has two halves that pull in opposite directions **on purpose**. Ship both, or the fixer
 optimizes the one you gave it:
