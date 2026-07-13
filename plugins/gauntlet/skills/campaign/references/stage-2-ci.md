@@ -152,6 +152,15 @@ Parse the file **only** if the `header` row's `.sha`, **every `checkrun` and `st
 **does not parse as JSON** is a corrupt snapshot — treat it exactly like a failed fetch: `ci = pending`,
 refetch.
 
+**EVERY line must be READ, and a line you cannot read is NOT a line you may SKIP.** The four `row` types
+above are the **whole** vocabulary. A **blank** line, a row of a type **not** in that table, or a row
+**missing a field its type requires** (a `checkrun` with no `status`, a `status` with no `state`, a
+`witness` with no `id`) makes the snapshot **UNUSABLE** → `ci = pending`, refetch. **NEVER skip past it.**
+Skipping is how the false green gets back in: an unrecognised row is not *nothing*, it is something you
+**failed to understand** — and if it happened to carry a **FAILURE**, ignoring it turns a red commit green
+while every other rule in this section passes. **Evidence that is present but not counted parses as
+"nothing wrong."**
+
 The `header` and the filename are **ours**, so checking them catches only a *misfiled* artifact (a stale
 file left in `<rundir>`). The **evidence rows** are what catch a **wrong-commit fetch** — they are the
 part of this rule that can actually fail. **If you ever find yourself writing the ledger's `head_sha` onto

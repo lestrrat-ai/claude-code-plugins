@@ -11,6 +11,16 @@ prose anyway, and every one of them would have died instantly against a round-tr
   * containment compared check-run NAMES as a set, and names are not unique, so a snapshot missing
     a failing run still passed.
 
+And then THIS file shipped two of its own, both of the same family — evidence that is present but not
+counted parses as "nothing wrong":
+
+  * `parse()` SKIPPED blank lines and admitted ANY object with a `row` key, so a row of an unknown type
+    was silently DISCARDED — including a FAILING one. A passing check run plus a FAILING row the tool
+    did not recognise verified GREEN;
+  * the VERIFY rule requires the header AND every evidence row's sha AND **the FILENAME** to equal the
+    ledger's head_sha. Only the first two were checked, so green bytes MISFILED under a superseded
+    commit's name verified green.
+
 So this file is not a description of the rules. It is the rules, executed, with fixtures that FAIL
 when the rules are wrong. `--self-test` is the handoff: give it to a reviewer or a fix subagent and
 it answers "does the contract still hold?" without anyone re-reading a paragraph.
@@ -25,7 +35,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
+import tempfile
 from collections import Counter
 from pathlib import Path
 from typing import NoReturn
@@ -64,23 +76,69 @@ class SnapshotError(Exception):
     """The artifact is not evidence."""
 
 
+# The FOUR row types stage-2-ci.md defines, and the fields each one MUST carry. There is no fifth type,
+# and a row of a type we do not recognise is NOT nothing — it is something we FAILED TO UNDERSTAND, and
+# failing to understand a row is never grounds to ignore it. An ignored row is invisible to `verify_sha`
+# and to `decide`, so a FAILING one parses as "nothing wrong" — which is the exact false-green this whole
+# file exists to kill, reproduced inside the tool meant to prevent it. So: reject, never skip.
+ROW_FIELDS = {
+    "header": ("sha",),
+    "checkrun": ("sha", "name", "app_id", "status", "conclusion", "id"),
+    "status": ("sha", "context", "state"),
+    "witness": ("name", "id"),  # SHA-LESS by design — see verify_sha
+}
+
+
 def parse(path: Path) -> list[dict]:
     """JSONL: EVERY line is one JSON object, header included. No comment line, nothing to special-case.
 
-    A line that does not parse is a corrupt snapshot — not something to skip past.
+    A line that does not parse is a corrupt snapshot — not something to skip past. Neither is a BLANK
+    line: "every line is one JSON object, with NO exceptions" means a blank one is a defect in the
+    producer, and a producer we cannot trust to write the file we specified is not a producer whose
+    output we can green off.
+
+    A row is admitted ONLY if its type is one of the four and it carries every field that type requires.
+    A malformed row is not evidence either: a `checkrun` with no `status` cannot be judged, and a rule
+    that cannot judge a row must never conclude it is fine.
     """
     rows = []
     for n, line in enumerate(path.read_text().splitlines(), 1):
         if not line.strip():
-            continue
+            raise SnapshotError(f"line {n} is blank — the artifact is JSONL, every line is one object")
         try:
             row = json.loads(line)
         except json.JSONDecodeError as exc:
             raise SnapshotError(f"line {n} is not JSON: {exc}") from exc
         if not isinstance(row, dict) or "row" not in row:
             raise SnapshotError(f"line {n} is not a row object")
+        kind = row["row"]
+        if kind not in ROW_FIELDS:
+            raise SnapshotError(
+                f"line {n} is an UNRECOGNISED row type {kind!r} — the contract defines only "
+                f"{', '.join(sorted(ROW_FIELDS))}. A row we cannot read is NOT a row we may ignore."
+            )
+        missing = [f for f in ROW_FIELDS[kind] if row.get(f) is None]
+        if missing:
+            raise SnapshotError(f"line {n}: {kind} row is missing required field(s) {', '.join(missing)}")
         rows.append(row)
     return rows
+
+
+def verify_filename(path: Path, expected_sha: str) -> None:
+    """The FILENAME must carry the expected head_sha too — the artifact is `ci-<pr>-<head_sha>.txt`.
+
+    stage-2-ci.md's VERIFY rule names THREE things that must equal the ledger's head_sha: the header, every
+    evidence row's sha, AND the filename. The filename is OURS, like the header, so it cannot catch a
+    wrong-commit FETCH — what it catches is a MISFILED artifact: a stale `ci-<pr>-<old_sha>.txt` still
+    sitting in the rundir, read as if it described the current head. Verifying the bytes of a file while
+    never checking WHICH file you read is a hole big enough to green a superseded commit through.
+    """
+    if expected_sha not in path.stem.split("-"):
+        raise SnapshotError(
+            f"filename {path.name!r} does not carry the expected head_sha {expected_sha!r} — "
+            f"the artifact is named ci-<pr>-<head_sha>.txt; this one describes another commit "
+            f"(or is misfiled)"
+        )
 
 
 def verify_sha(rows: list[dict], expected_sha: str) -> None:
@@ -176,8 +234,14 @@ def decide(rows: list[dict]) -> tuple[str, str]:
     return GREEN, f"{len(evidence)} evidence rows, all passing, containment holds"
 
 
-def evaluate(path: Path, expected_sha: str) -> tuple[str, str]:
+def evaluate(path: Path, expected_sha: str, *, expect_filename_sha: bool = True) -> tuple[str, str]:
+    """`expect_filename_sha` is OFF only for the fixtures, which are named by the PROPERTY they pin
+    (`green.jsonl`, `wrong-sha.jsonl`, …) rather than by a SHA — their names are documentation. It is ON
+    for every real artifact, and `self-test` proves the check still fires (FILENAME_CASES below).
+    """
     try:
+        if expect_filename_sha:
+            verify_filename(path, expected_sha)
         rows = parse(path)
         verify_sha(rows, expected_sha)
         check_containment(rows)
@@ -203,6 +267,9 @@ EXPECTED = {
     "zero-rows.jsonl": (PENDING, "zero rows is NOT green"),
     "red-status-only.jsonl": (RED, "a commit-status failure invisible to /check-runs — why BOTH families are read"),
     "known-gap-skipped.jsonl": (UNCLASSIFIED, "SKIPPED matches no rule — the disclosed gap, made executable"),
+    "unknown-row-type.jsonl": (UNUSABLE, "a FAILING row of an unknown type — skipping it greened a red commit"),
+    "blank-line.jsonl": (UNUSABLE, "JSONL has NO blank lines — a producer we cannot trust is not evidence"),
+    "malformed-checkrun.jsonl": (UNUSABLE, "a checkrun with no status/conclusion cannot be judged — never 'fine'"),
     # NEGATIVE CONTROL. Same wrong-commit data as wrong-sha.jsonl, but stamped the OLD way: the sha
     # interpolated from our own literal onto every row instead of taken from GitHub. It comes back
     # GREEN — which is the POINT. It is the proof that the old verification could not fail, and the
@@ -227,18 +294,47 @@ def self_test(fixtures: Path) -> int:
             print(f"MISSING  {name}")
             failures += 1
             continue
-        got, reason = evaluate(path, FIXTURE_SHA)
+        # The fixtures are named by PROPERTY, not by SHA, so the filename rule is exercised separately.
+        got, reason = evaluate(path, FIXTURE_SHA, expect_filename_sha=False)
         if got == want:
             print(f"ok       {name:28} -> {got:14} ({why})")
         else:
             print(f"FAIL     {name:28} -> {got:14} expected {want}\n         reason: {reason}")
             failures += 1
+
+    failures += filename_test(fixtures)
     print()
     if failures:
-        print(f"{failures} fixture(s) FAILED — the CI-snapshot contract is broken.")
+        print(f"{failures} check(s) FAILED — the CI-snapshot contract is broken.")
         return 1
-    print(f"all {len(EXPECTED)} fixtures hold — the CI-snapshot contract is intact.")
+    print(f"all {len(EXPECTED)} fixtures + {len(FILENAME_CASES)} filename cases hold — the contract is intact.")
     return 0
+
+
+# The filename rule, both ways. A check that cannot FAIL is not a check — `wrong-sha.jsonl` exists because
+# the SHA verification once could not fail, and the filename rule was, until now, not checked AT ALL.
+# Both cases hold the SAME green bytes: only the NAME differs, so the name is the only thing under test.
+FILENAME_CASES = [
+    (f"ci-35-{FIXTURE_SHA}.txt", GREEN, "named for the head_sha it describes — the real artifact's shape"),
+    (f"ci-35-{SUPERSEDED_SHA}.txt", UNUSABLE, "green bytes MISFILED under a superseded sha — caught by the NAME alone"),
+    ("green.jsonl", UNUSABLE, "a name carrying no sha at all proves nothing about which commit it is"),
+]
+
+
+def filename_test(fixtures: Path) -> int:
+    """Copy `green.jsonl` under each name and evaluate WITH the filename rule on."""
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        for name, want, why in FILENAME_CASES:
+            path = Path(tmp) / name
+            shutil.copyfile(fixtures / "green.jsonl", path)
+            got, reason = evaluate(path, FIXTURE_SHA, expect_filename_sha=True)
+            if got == want:
+                print(f"ok       {name:28} -> {got:14} ({why})")
+            else:
+                print(f"FAIL     {name:28} -> {got:14} expected {want}\n         reason: {reason}")
+                failures += 1
+    return failures
 
 
 def fail(msg: str) -> NoReturn:
@@ -253,6 +349,16 @@ def main() -> int:
     v = sub.add_parser("verify", help="verify a snapshot against an expected head_sha")
     v.add_argument("--file", required=True, type=Path)
     v.add_argument("--head-sha", required=True)
+    v.add_argument(
+        "--expect-filename-sha",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "require the FILENAME to carry the expected head_sha (the artifact is ci-<pr>-<head_sha>.txt). "
+            "ON by default: a real snapshot is always named for the commit it describes. Turn it off ONLY "
+            "for a file deliberately named by property, e.g. the fixtures."
+        ),
+    )
 
     s = sub.add_parser("self-test", help="run every fixture and assert its expected verdict")
     s.add_argument("--fixtures", type=Path, default=Path(__file__).parent / "fixtures" / "ci-snapshot")
@@ -264,7 +370,7 @@ def main() -> int:
 
     if not args.file.exists():
         fail(f"no such snapshot: {args.file}")
-    verdict, reason = evaluate(args.file, args.head_sha)
+    verdict, reason = evaluate(args.file, args.head_sha, expect_filename_sha=args.expect_filename_sha)
     print(f"{verdict}: {reason}")
     # green is the ONLY exit-0 verdict. Everything else — including UNCLASSIFIED — is not a green.
     return 0 if verdict == GREEN else 1
