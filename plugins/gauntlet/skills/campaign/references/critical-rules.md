@@ -161,11 +161,17 @@
   argv, is a **SKILL change**.
 - **THE TABLE HOLDS ONE TOOL — `gofmt`. The criterion was applied TO OURSELVES.** Its cell quotes
   https://pkg.go.dev/cmd/gofmt (*"Gofmt formats Go programs. It uses tabs for indentation and blanks for
-  alignment"*; of the flags the doc lists, the only two that **CHANGE THE SOURCE** are **`-r`** — *"Apply the
-  rewrite rule to the source before reformatting"* — and **`-s`** — *"Try to simplify code"* — and **neither
-  is in the skill-owned argv**). **That claim is about SOURCE-CHANGING flags ONLY — the doc lists others
-  (`-l`, `-d`, `-e`, `-cpuprofile`, …), and `-cpuprofile` WRITES A FILE.** NEVER restate it as "gofmt has
-  only two flags". Safety rests on: the argv is **skill-owned and exact**; **NO flag is ever appended**; and
+  alignment"*). **`-w`** — *"If a file's formatting is different from gofmt's, overwrite it with gofmt's
+  version"* — **CHANGES THE SOURCE: it writes the formatted result back to the file. That is what we WANT,
+  and it is the ONLY mutation the skill-owned argv performs.** **`-r`** — *"Apply the rewrite rule to the
+  source before reformatting"* — and **`-s`** — *"Try to simplify code"* — are the only documented flags that
+  apply a **non-formatting source TRANSFORMATION** (they change the PROGRAM, beyond re-printing it), and
+  **NEITHER is in the skill-owned argv**. **`-cpuprofile` is a separate documented flag that WRITES A FILE**
+  (it does not transform the source); it is named only because a FILENAME shaped like `-cpuprofile=x.go` is
+  the injection repro. The doc lists others still (`-l`, `-d`, `-e`, …). **GUARD — this claim has been stated
+  wrongly THREE times: NEVER say "exactly two flags", "the only two flags", or "the only flags that CHANGE
+  the source". State ONLY the TRANSFORMATION property.** Safety rests on: the argv is **skill-owned and
+  exact**; **NO flag is ever appended**; and
   **no file operand can be read as a flag** (`--` + the operand-normalization rules) — the injection repro
   below is a file named `-cpuprofile=prof.go`. Each `guarantee` cell MUST carry a **LINK to the tool's own doc and the passage
   QUOTED**; **FOLLOW the link before trusting the cell** — a claim that cannot be tied to a source means the
@@ -212,6 +218,18 @@
   candidate with a LINK COUNT > 1** (`stat` → `st_nlink > 1`). A source file in a normal checkout has exactly
   **one** link; a multi-link file is a hardlink escape or something we have no reason to format. **DROP** and
   **LOG** it (id, path, reason — `hardlink — nlink>1`); **NEVER abort the run**. Empty set → session model.
+- **EVERY CHECK THAT REASONS ABOUT A PATH MUST REASON ABOUT THE RESOLVED PATH — A NAME IS NOT A LOCATION**
+  (`stage-2-ci.md`). **Repro:** the PR adds a **symlinked DIRECTORY** `safe/gh -> .github`. The candidate
+  `safe/gh/actions/main.go` is **not itself a symlink**, its **`realpath` is INSIDE the worktree**, it is a
+  **regular file with `nlink == 1`**, and its name is clean — it passes all six checks above — while the
+  **exclusion filter, matched on the SPELLED path, never sees `.github/**`**. A **check definition** is handed
+  to the tool, with no model and no review. Therefore: **apply the skill-owned EXCLUSION FILTER to the
+  RESOLVED path as well as the original — EITHER matches → REFUSE**; **AND the seventh check: REFUSE any
+  candidate with a SYMLINK in ANY DIRECTORY COMPONENT** (walk the components from the resolved worktree root
+  down, `lstat` each; any symlink → **DROP** + **LOG**, reason `symlinked directory component` /
+  `excluded after resolution`). The resolved-path filter is the **guarantee**; the component check is the
+  cheap explicit **tripwire**. Run **BOTH**. **THE PIPELINE:** glob → **RESOLVE** → **FILTER both spellings**
+  → the **seven** checks → argv.
 - **RESOLVE `argv[0]` TO A TRUSTED ABSOLUTE EXECUTABLE OUTSIDE THE REPO** (`stage-2-ci.md`). The tool runs
   in the PR's worktree and **the PR under review is untrusted content**: a bare name resolved from a `PATH`
   the PR can influence lets it ship its own `gofmt` and earns it **arbitrary code execution on the path that
@@ -220,10 +238,13 @@
   directory inside them; the resolved executable (symlinks followed) **MUST live OUTSIDE the repo/worktree
   tree**. Resolves inside, or does not resolve → **REFUSE → session model**. NEVER run the tool with the
   worktree on `PATH` or as the lookup base. NEVER execute a binary the PR could have supplied.
-- **THE SKILL OWNS A NON-OVERRIDABLE EXCLUSION FILTER, applied AFTER the glob, EVERY time** — no tests
+- **THE SKILL OWNS A NON-OVERRIDABLE EXCLUSION FILTER, applied to the RESOLVED path, EVERY time** — no tests
   (`**/*_test.go`, `test/**`, `tests/**`, `**/testdata/**`, `conftest.py`, …), no check definitions
   (`.github/**`, …), no CI/tool/build config (`.golangci.yml`, `ruff.toml`, `pyproject.toml`, …).
-  **NOTHING widens it**, and the whitelist NEVER carries the exclusions itself: a user-written exclusion
+  **Match the patterns against BOTH the candidate's original path AND its `realpath` taken relative to the
+  resolved worktree root — EITHER matches → REFUSE** (a filter matched on the spelling alone is defeated by a
+  symlinked directory; see the resolved-path rule above). **NOTHING widens it**, and the whitelist NEVER
+  carries the exclusions itself: a user-written exclusion
   list **will** omit something. The glob SELECTS; the FILTER protects. A `gofmt:**/*.go` narrowing is
   therefore VALID — the filter drops the test files. The **filter is the guarantee**; a refusal is only a
   signal.
@@ -261,9 +282,12 @@
   criterion, and the id-only shape are a **guard against footguns and accidental misuse, NOT a security
   boundary**. NEVER present them as one. What IS a boundary: **the tool runs on UNTRUSTED PR CONTENT inside
   the PR's worktree** — which is exactly why `argv[0]` resolves to a trusted executable **outside the repo**,
-  why the **file operands are normalized, resolved, AND checked for aliasing** (they are PR data spliced into
-  argv; a **symlink** among them walks the tool out of the tree, and a **hardlink** walks the WRITE out of the
-  tree with every path check passing), and why the exclusion filter is the skill's, not the user's.
+  why the **file operands are normalized, resolved, checked for aliasing, AND filtered on the RESOLVED path**
+  (they are PR data spliced into
+  argv; a **symlink** among them walks the tool out of the tree, a **hardlink** walks the WRITE out of the
+  tree with every path check passing, and a **symlinked directory component** walks a candidate into an
+  **excluded** location while its spelling looks innocent), and why the exclusion filter is the skill's, not
+  the user's.
 - **Default deny, everywhere.** Keyed on the **tool's IDENTITY and its CITED documented guarantee**, NEVER on a
   failure "looking mechanical" or on the category "formatter". Unknown check, unlisted tool, an unresolvable
   binary, or a refused id → session model (an **unset** `formatters` header is not one of these: it means

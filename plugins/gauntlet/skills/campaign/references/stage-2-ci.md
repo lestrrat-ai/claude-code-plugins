@@ -14,13 +14,15 @@ row by column position:
   leave `ci = pending` and, if the watch task has exited, **relaunch it in this same wake** — a
   pending PR must never sit unwatched waiting for the heartbeat.
 - **red** → any failing line → **stop any review pass in flight on that PR first** (Loop control
-  step 3 — the fix will replace its SHA, so the verdict is already void; free the slot), then
-  diagnose from the check logs and dispatch a scoped CI-fix subagent into `<worktree>` — the PR row's
+  step 3 — the fix will replace its SHA, so the verdict is already void; free the slot), then diagnose
+  from the check logs and **CLASSIFY the failure** ("Whitelist classification" below) **before dispatching
+  anything**. Whitelisted formatting failure → run the **TOOL, no model**. Everything else → a scoped
+  CI-fix subagent into `<worktree>` — the PR row's
   ledger `worktree` column value, the single source of truth for this PR's checkout path (created at
   adoption/pre-review per `pr-adoption.md`; the ledger-recorded `<worktree>` path — default
   `.worktrees/<headRefName>` when campaign creates it, else a reused existing checkout).
 
-  **Classify the failure first** (see "Whitelist classification" below). Not whitelisted →
+  Not whitelisted →
   **dispatch on the session model** — set the model explicitly, and do NOT downgrade it (`SKILL.md`,
   "Subagent Dispatch"). Its output is **code that gets merged**, and nothing downstream validates it: a
   wrong fix can turn CI **green** — by weakening the check, or by being plain wrong in product code no
@@ -95,16 +97,26 @@ Adding a tool, changing an argv, or changing a default glob is a **SKILL change*
 
 | `id` | argv — **skill-owned, exact** | default `files` glob | guarantee — the SOURCE, then what it says |
 |---|---|---|---|
-| `gofmt` | `["gofmt", "-w", "--", <files>]` | `**/*.go` | **`cmd/gofmt` — https://pkg.go.dev/cmd/gofmt**. The doc defines the behaviour: *"Gofmt formats Go programs. It uses tabs for indentation and blanks for alignment."* Of the flags it documents, **exactly two CHANGE THE SOURCE**: **`-r`** — *"Apply the rewrite rule to the source before reformatting"* — and **`-s`** — *"Try to simplify code"* (it lists the source transformations `-s` performs). **NEITHER is in the skill-owned argv**, and nothing may append one |
+| `gofmt` | `["gofmt", "-w", "--", <files>]` | `**/*.go` | **`cmd/gofmt` — https://pkg.go.dev/cmd/gofmt**. The doc defines the behaviour: *"Gofmt formats Go programs. It uses tabs for indentation and blanks for alignment."* **`-w`** — *"If a file's formatting is different from gofmt's, overwrite it with gofmt's version"* — **writes the formatted result back to the file. That is what we WANT: it is the ONLY mutation the skill-owned argv performs.** **`-r`** — *"Apply the rewrite rule to the source before reformatting"* — and **`-s`** — *"Try to simplify code"* — are the only documented flags that apply a **non-formatting source TRANSFORMATION**: they change the PROGRAM, beyond re-printing it. **NEITHER is in the skill-owned argv**, and nothing may append one |
 
-**Read that cell for EXACTLY what it says.** It says `-r` and `-s` are the only documented flags that
-**rewrite the source**. It does **NOT** say they are the only documented flags: the doc lists others (`-l`,
-`-d`, `-e`, `-cpuprofile`, …), and **`-cpuprofile` WRITES A FILE**. NEVER restate the claim as "gofmt has
-only two flags" — that is broader than the source, and it is false. The safety of this cell rests on
-**three** things, all of them ours: the argv is **skill-owned and exact** (`["gofmt","-w","--",<files>]`);
-**NO flag may ever be appended** to it; and **no file operand can be read as a flag** (`--`, plus the
-operand-normalization rules below). That last one is not theoretical — the injection repro below is a file
-literally named `-cpuprofile=prof.go`.
+**Read that cell for EXACTLY what it says — and state ONLY the TRANSFORMATION property.** `-r` and `-s` are
+the only documented flags that **transform the source beyond re-printing it**. That is the whole claim.
+
+- **`-w` CHANGES THE SOURCE** — it overwrites the file with gofmt's result. It is in our argv on purpose;
+  it is the only mutation the argv performs. NEVER write a sentence that implies `-w` leaves the source
+  alone.
+- **`-cpuprofile` is a separate documented flag that WRITES A FILE** — it does not transform the source. It
+  is named here only because a FILENAME shaped like `-cpuprofile=x.go` is the injection repro below.
+- The doc lists others still (`-l`, `-d`, `-e`, …).
+
+**GUARD — this claim has been stated wrongly THREE times.** NEVER say "exactly two flags", "the only two
+flags", or "the only flags that CHANGE the source". All three are false. The property is
+**source-TRANSFORMING**, and nothing broader.
+
+The safety of this cell rests on **three** things, all of them ours: the argv is **skill-owned and exact**
+(`["gofmt","-w","--",<files>]`); **NO flag may ever be appended** to it; and **no file operand can be read as
+a flag** (`--`, plus the operand-normalization rules below). That last one is not theoretical — the injection
+repro below is a file literally named `-cpuprofile=prof.go`.
 
 **ONE tool. That is the whole table**, and it is small **on purpose**: it is what survived a rule that
 demands a **documented** guarantee, quoted from the source. Every tool has a default glob, so an
@@ -224,7 +236,27 @@ containment of the **DATA**. A hardlink is a regular file whose path is inside t
 is shared with a path outside it: it defeats the symlink check (it is not a link) and the containment check
 (its real path is inside). Reason on record: **hardlink — nlink>1**.
 
-**EVERY tool, EVERY run, ALL SIX — no exceptions:**
+**The fourth repro — a SYMLINKED DIRECTORY COMPONENT, which defeats the EXCLUSION FILTER** (the filter was
+applied to the SPELLING, not to the LOCATION):
+
+```
+# The PR adds a symlink DIRECTORY:  safe/gh  ->  .github
+# Candidate: safe/gh/actions/main.go
+#   - not itself a symlink (lstat says regular file)   - realpath is INSIDE the worktree (.github/… is in-tree)
+#   - a regular file, nlink == 1                       - name has no leading `-`
+#   - and `safe/gh/**` does NOT match the filter's `.github/**`
+gofmt -w -- /wt/safe/gh/actions/main.go   # a CHECK DEFINITION, handed to the tool. Every earlier check passed.
+```
+
+**THE PRINCIPLE — the generalisation of every round above: EVERY check that reasons about a path MUST reason
+about the RESOLVED path. A NAME IS NOT A LOCATION.** The exclusion filter is a check about a path, so it too
+must run on what the path RESOLVES TO — matching `safe/gh/actions/main.go` against `.github/**` asks the
+wrong question. Reason on record: **symlinked directory component / excluded after resolution**.
+
+**THE PIPELINE, in this order, every tool, every run:** expand the glob → **RESOLVE** each candidate →
+**FILTER on BOTH the original and the resolved path** → run the **seven** operand checks → build the argv.
+
+**EVERY tool, EVERY run, ALL SEVEN — no exceptions:**
 
 1. **END-OF-OPTIONS.** Pass `--` immediately before the file list. Every tool in the table accepts it
    (`gofmt`, via Go's `flag` package), and the table's argv already carries it. Nothing after `--` can be
@@ -247,11 +279,18 @@ is shared with a path outside it: it defeats the symlink check (it is not a link
    `st_nlink > 1` → DROP it. A source file in a normal checkout has **exactly one link**. A multi-link file
    is either a **hardlink escape** (the inode is aliased outside the tree, and `gofmt -w` rewrites the
    INODE) or something we have **no reason to format** — either way it does not get handed to the tool.
+7. **REFUSE a candidate with a SYMLINK in ANY DIRECTORY COMPONENT of its path.** Walk the components from
+   the resolved worktree root down (`wt/safe`, `wt/safe/gh`, `wt/safe/gh/actions`, …) and `lstat` **each**;
+   ANY component that is a symlink → DROP the candidate. Check 4 only tests the LAST component, so a
+   symlinked directory slips a candidate past it — and past the exclusion filter, which was matched on the
+   SPELLED path. A source file that must be formatted **never** sits under a symlinked directory. This check
+   is the cheap explicit tripwire; **the resolved-path exclusion filter is the guarantee** — run BOTH.
 
-**Checks 3–6 run AFTER the exclusion filter and BEFORE the argv is built** — the filter decides which
-candidates survive; these decide which surviving candidates are handed to the tool at all. Every refusal:
-**DROP that file from the set — do NOT abort the run** — and **LOG it**: the id, the refused path, and the
-reason (`-`-leading name / symlink / escapes the worktree / not a regular file / hardlink — nlink>1).
+**The exclusion filter runs on the ORIGINAL and on the RESOLVED path; checks 3–7 run AFTER it and BEFORE the
+argv is built** — the filter decides which candidates survive; these decide which surviving candidates are
+handed to the tool at all. Every refusal: **DROP that file from the set — do NOT abort the run** — and **LOG
+it**: the id, the refused path, and the reason (`-`-leading name / symlink / escapes the worktree / not a
+regular file / hardlink — nlink>1 / symlinked directory component / excluded after resolution).
 
 Refusing files can empty the set → then run NOTHING for that id and route the failure to the session model
 ("Empty file set after filtering" below). Refusing a file NEVER widens anything and NEVER fails the PR.
@@ -289,12 +328,19 @@ Key it on the **tool's IDENTITY and its CITED documented guarantee** — NEVER o
 unresolvable binary, or a refused id → session model.** (An **unset** `formatters` header is not a
 refusal: it means the known-tools table's defaults.)
 
-#### THE SKILL-OWNED EXCLUSION FILTER — applied AFTER the glob, EVERY time
+#### THE SKILL-OWNED EXCLUSION FILTER — applied to the RESOLVED path, EVERY time
+
+**MATCH THE FILTER AGAINST WHAT THE PATH RESOLVES TO, NOT AGAINST HOW IT IS SPELLED.** For every candidate,
+`realpath` it (every symlink followed, `..` collapsed), take that real path **relative to the resolved
+worktree root**, and match the patterns below against **BOTH** the original path AND the resolved one.
+**EITHER matches → REFUSE.** A filter matched only on the spelling is defeated by one symlinked directory
+(`safe/gh -> .github`; the fourth repro above), which hands a **check definition** to the tool with every
+other check passing. **A NAME IS NOT A LOCATION.**
 
 **The glob SELECTS candidates. The FILTER decides what is touched.** After expanding the tool's file set
-(its default glob, narrowed by any validated per-id glob), campaign **REMOVES** every path below — always,
-regardless of what the glob said. **NOTHING widens this filter, and the formatter list NEVER carries the
-exclusions itself.**
+(its default glob, narrowed by any validated per-id glob) and resolving each candidate, campaign **REMOVES**
+every path below — always, regardless of what the glob said. **NOTHING widens this filter, and the formatter
+list NEVER carries the exclusions itself.**
 
 Excluded — never handed to a tool, never in a tool commit:
 
@@ -319,11 +365,12 @@ that gate the review, and it MUST be logged and refused rather than silently emp
 refusal is a **signal**, NEVER the guarantee — the filter is what makes the run safe.
 
 **AFTER the filter, the file argv is still PR data**: of every surviving candidate, refuse the `-`-leading
-names, the **symlinks**, anything whose **real path escapes the worktree** or is **not a regular file**, and
-anything with **`nlink > 1`**; normalize what is left ("NORMALIZE THE FILE ARGV" above). The filter decides
-*which* candidates survive; the normalization decides that what is handed to the tool is read as a **file**
-and not a flag, that it is a **real file INSIDE the tree** and not a link out of it, and that its **INODE is
-not aliased outside the tree**. All of it, every run.
+names, the **symlinks**, anything with a **symlink in any directory component**, anything whose **real path
+escapes the worktree** or is **not a regular file**, and anything with **`nlink > 1`**; normalize what is left
+("NORMALIZE THE FILE ARGV" above — all **seven** checks). The filter decides *which* candidates survive; the
+normalization decides that what is handed to the tool is read as a **file** and not a flag, that it is a
+**real file INSIDE the tree** and not a link out of it, that no directory on the way to it is a link, and that
+its **INODE is not aliased outside the tree**. All of it, every run.
 
 **Empty file set after filtering (or after refusals) → run NOTHING for that id** and route the failure to
 the session model. **NEVER invoke the tool with zero operands** — `gofmt` with no operands reads **stdin**.
@@ -377,10 +424,12 @@ as one.
 
 What IS a security boundary: **the tool runs on UNTRUSTED PR CONTENT, inside the PR's worktree.** That is
 why `argv[0]` is resolved to a trusted absolute executable **outside the repo** ("RESOLVE argv[0]" above),
-why the **file operands are normalized, resolved, AND checked for aliasing** — they come from the PR's tree,
-so they are attacker-controlled data spliced into argv; a symlink among them makes the tool write **outside
-the worktree**, and a **hardlink** makes it write outside the worktree while every path check passes
-("NORMALIZE THE FILE ARGV" above) — and why the exclusion filter is the skill's and not the user's.
+why the **file operands are normalized, resolved, checked for aliasing, AND filtered on the RESOLVED path** —
+they come from the PR's tree, so they are attacker-controlled data spliced into argv; a symlink among them
+makes the tool write **outside the worktree**, a **hardlink** makes it write outside the worktree while every
+path check passes, and a **symlinked directory component** walks a candidate into an **excluded** location
+while the spelled path looks innocent ("NORMALIZE THE FILE ARGV" above) — and why the exclusion filter is the
+skill's and not the user's.
 
 #### VALIDATION — an id in the `formatters` list is ACCEPTED only if ALL of these hold
 
@@ -413,7 +462,8 @@ Then, in order:
 1. **Whitelisted tool → run the TOOL, no model (prefer this always).** In `<worktree>`, run the
    **table's exact argv** for that `id` with `argv[0]` **resolved to a trusted absolute executable outside
    the repo**, **WITHOUT a shell**, over the tool's file set (default glob, narrowed by any validated
-   glob, **exclusion filter applied**, then **`-`-leading names, symlinks, non-regular files, paths whose
+   glob, each candidate **RESOLVED**, the **exclusion filter applied to BOTH its original and its resolved
+   path**, then **`-`-leading names, symlinks, symlinked directory components, non-regular files, paths whose
    real path escapes the worktree, and files with `nlink > 1` all refused, and the operands normalized —
    `--` + absolute/`./` paths**). **NEVER run the tool with an EMPTY operand set** (`gofmt` with no operands
    reads stdin) — empty → session model. NEVER add a flag; NEVER a catch-all `--fix`. ACCEPT only if

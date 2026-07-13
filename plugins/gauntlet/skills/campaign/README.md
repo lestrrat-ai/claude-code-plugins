@@ -247,6 +247,16 @@ flowchart TD
   anything with more is either a hardlink escape or something there is no reason to format. Logged, dropped,
   run continues.
 
+  One layer further down, the same lesson generalises: **a name is not a location.** A pull request can add a
+  symlinked *directory* — `safe/gh` pointing at `.github`. The candidate `safe/gh/actions/main.go` isn't a
+  symlink itself, its real path is inside the worktree, it's a regular file with one link, and its name is
+  clean: it passes all six checks. But campaign's exclusion filter (below) protects `.github/**`, and
+  `safe/gh/...` doesn't *look* like `.github/...` — so a **CI check definition** would be handed to the tool,
+  with no model and no review. The fix is the general one: **every check that reasons about a path reasons
+  about the path it resolves to.** The exclusion filter is matched against the resolved path as well as the
+  written one — either one matching is a refusal — and, as a seventh check and an explicit tripwire, campaign
+  drops any candidate with a **symlink anywhere in its directory path**.
+
   If the refusals empty the file set, campaign runs **nothing** for that tool and sends the failure to a
   model. It never invokes the tool with no files: `gofmt` with no file operands reads standard input, which
   is not the run anyone asked for.
@@ -256,7 +266,7 @@ flowchart TD
   never widen it — and you should not try to write exclusions into it. Campaign applies its **own** exclusion
   filter afterwards, every time, and nothing widens it: tests, check definitions, CI workflows, and tool
   config (`**/*_test.go`, `.github/**`, `.golangci.yml`, `pyproject.toml`, …) are removed no matter what
-  your glob says. The glob picks the candidates; campaign's filter protects the files that gate the review.
+  your glob says — and matched against what each candidate **resolves to**, not just how it is spelled. The glob picks the candidates; campaign's filter protects the files that gate the review.
   An exclusion list *you* maintain would eventually miss one, and campaign commits this tool's output without
   a review pass — it must never be able to weaken the checks that gate it. (A glob that *directly* names a
   protected path is refused outright.)

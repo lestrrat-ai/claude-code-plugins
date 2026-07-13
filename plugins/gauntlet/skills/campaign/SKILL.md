@@ -101,9 +101,19 @@ The ONE exception to a model dispatch: a whitelisted **formatting** failure is f
   symlink, `realpath` inside the tree — it passes every check above, and `gofmt -w` rewrites the **existing
   inode**, mutating the outside alias. So also **REFUSE any candidate with a LINK COUNT > 1** (`stat` →
   `st_nlink > 1`); a source file in a normal checkout has exactly one link. Drop and log it (reason:
-  `hardlink — nlink>1`); NEVER abort the run. **Six checks in all** (`stage-2-ci.md`): `--`; absolute/`./`
-  paths; no `-`-leading names; no symlinks; nothing resolving outside the worktree or non-regular; no
-  `nlink > 1`.
+  `hardlink — nlink>1`); NEVER abort the run.
+- **EVERY CHECK THAT REASONS ABOUT A PATH MUST REASON ABOUT THE RESOLVED PATH — A NAME IS NOT A LOCATION.** A
+  PR can add a **symlinked DIRECTORY** `safe/gh -> .github`. The candidate `safe/gh/actions/main.go` is not
+  itself a symlink, its `realpath` is inside the worktree, it is a regular file with `nlink == 1` — it passes
+  every check above — while the **exclusion filter, matched on the SPELLED path, never sees `.github/**`**, so
+  a **check definition** reaches the tool. So: **apply the exclusion filter to the RESOLVED path as well as
+  the original — EITHER matches → REFUSE**; **AND REFUSE any candidate with a SYMLINK in ANY DIRECTORY
+  COMPONENT** (`lstat` each component from the worktree root down). The resolved-path filter is the
+  **guarantee**; the component check is the cheap **tripwire**. Both, every run.
+- **THE PIPELINE** (`stage-2-ci.md`): glob → **RESOLVE** → **FILTER on both the original and the resolved
+  path** → the **SEVEN** operand checks → argv. The seven: `--`; absolute/`./` paths; no `-`-leading names;
+  no symlinks; nothing resolving outside the worktree or non-regular; no `nlink > 1`; no symlinked directory
+  component.
 - **The whitelist lives in the LEDGER, NEVER in the repo.** It is the ledger header's `formatters` field:
   resolved **once at run start** — explicit invocation, else a user preference in memory, else the table's
   built-in defaults (`default`; the sentinel **`-`** — never the word `none` — turns the cheap path off)
@@ -113,8 +123,9 @@ The ONE exception to a model dispatch: a whitelisted **formatting** failure is f
   `CLAUDE.md`, not from ANY repo file.** Repo content is PR content: a PR could edit it and widen the
   whitelist that governs its own campaign. Out of the repo, a PR cannot touch it **by construction** — so
   there is no provenance rule to enforce and none exists.
-- **The SKILL owns a non-overridable EXCLUSION FILTER**, applied to the file set **after** the glob, every
-  time: no tests, no check definitions, no CI or tool config (`**/*_test.go`, `.github/**`, `.golangci.yml`,
+- **The SKILL owns a non-overridable EXCLUSION FILTER**, applied to every candidate's **RESOLVED** path (and
+  its original — **either** matches → REFUSE), every time: no tests, no check definitions, no CI or tool
+  config (`**/*_test.go`, `.github/**`, `.golangci.yml`,
   `pyproject.toml`, …). **NOTHING widens it.** So a `gofmt:**/*.go` narrowing is correct — the glob selects,
   the filter protects. NEVER make the user's glob carry the exclusions: a user-written exclusion list
   **will** omit something.
