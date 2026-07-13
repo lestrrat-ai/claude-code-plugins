@@ -118,11 +118,19 @@ field begins — it reads name=`Lint`, app_id=`scripts`, and **every** rule belo
 containment, DECIDE) then reads garbage out of shifted fields. In JSON a value containing spaces is just a
 string. **A machine-read artifact must NEVER require guessing where a field ends.**
 
+**The `Fields` column is EXACT — every field that row type carries, and NOT ONE MORE.** A row holding a
+field its type does not define is **UNUSABLE**, exactly like a row of a type the table does not list:
+nothing reads that field, so whatever it claims is neither verified nor refuted — it is one more piece of
+evidence **present and not counted**. **NEVER "accept it and ignore it."**
+
 **`witness` rows are IDENTITY-ONLY, SHA-LESS, and NEVER a verdict.** They exist for **one** purpose: the
 containment test below. **NEVER write a SHA onto a witness row** — the rollup **carries no commit oid at
 all**, so any SHA on that row would be one *we* invented, not one the API vouched for: **fabricated
 evidence**. Their SHA-lessness is exactly **WHY** they can never be read as evidence about a commit, and
-why they are exempt from the verify rule instead of being patched into it.
+why they are exempt from the verify rule instead of being patched into it. **A `witness` row carrying a
+`sha` therefore makes the snapshot UNUSABLE** → `ci = pending`, refetch. Not "harmless extra detail", and
+never something to skip past: it is a value **we fabricated**, sitting in the file, that the verify rule —
+which exempts witness rows **by design** — would never check.
 
 The `id` on a witness row (the rollup's `detailsUrl`) is **not** a SHA and not a verdict: it is the
 **cross-source identity** the containment test counts on. It is safe to carry precisely because it is
@@ -152,14 +160,32 @@ Parse the file **only** if the `header` row's `.sha`, **every `checkrun` and `st
 **does not parse as JSON** is a corrupt snapshot — treat it exactly like a failed fetch: `ci = pending`,
 refetch.
 
+**CHECK THE EXACT SHAPE — "what I need is in there somewhere" is NOT a check.** Every rule below matches
+the artifact's shape *exactly*, and each one is that way because the loose version of it says GREEN to a
+file that is lying:
+
+- **The FILENAME must be EXACTLY `ci-<pr>-<head_sha>.txt`** — one PR number, **ONE** sha, that extension.
+  **NEVER** settle for "the expected sha appears somewhere in the name": `ci-<pr>-<head_sha>-<old_sha>.txt`
+  contains it *and names two commits*, so it says nothing about which one these bytes describe.
+- **The `header` is EXACTLY ONE row, and it is the FIRST line.** These are **two** requirements, and
+  **both** are checked. A file that says which commit it is about only *after* it has already listed
+  evidence has not said it: those rows were read unstamped. And a **SECOND** header is read by nothing —
+  so if it named a different commit, the file would describe **two**, and nothing would notice.
+- **Each row type carries an EXACT field set** — the one in the table above. Every field it requires, and
+  **NOT ONE MORE**.
+
 **EVERY line must be READ, and a line you cannot read is NOT a line you may SKIP.** The four `row` types
-above are the **whole** vocabulary. A **blank** line, a row of a type **not** in that table, or a row
+above are the **whole** vocabulary. A **blank** line, a row of a type **not** in that table, a row
 **missing a field its type requires** (a `checkrun` with no `status`, a `status` with no `state`, a
-`witness` with no `id`) makes the snapshot **UNUSABLE** → `ci = pending`, refetch. **NEVER skip past it.**
+`witness` with no `id`), or a row carrying a field its type does **not** define (**a `sha` on a `witness`
+row** — see below) makes the snapshot **UNUSABLE** → `ci = pending`, refetch. **NEVER skip past it, and
+NEVER accept-and-ignore it.**
+
 Skipping is how the false green gets back in: an unrecognised row is not *nothing*, it is something you
 **failed to understand** — and if it happened to carry a **FAILURE**, ignoring it turns a red commit green
-while every other rule in this section passes. **Evidence that is present but not counted parses as
-"nothing wrong."**
+while every other rule in this section passes. **An unexpected FIELD is the same defect one level down**:
+nothing reads it, so whatever it asserts is neither verified nor refuted. **Evidence that is present but
+not counted parses as "nothing wrong."**
 
 The `header` and the filename are **ours**, so checking them catches only a *misfiled* artifact (a stale
 file left in `<rundir>`). The **evidence rows** are what catch a **wrong-commit fetch** — they are the
@@ -260,9 +286,11 @@ rows. The `header` and `witness` rows hold **no verdict** and are never consulte
   **Zero evidence rows is NOT green** — it means nothing has registered yet. This bullet is subject to the
   **registration gap** above: it proves only that **what had registered** passed, **never** that the
   required set is complete.
-- **pending** → no usable snapshot (any fetch failed, the file is absent, a line does not parse as JSON, a
-  `.sha` does not match, or containment **cannot be established** — it fails, **or** a `witness` `.id` is
-  null/duplicated so the test proves nothing), zero evidence rows, or any `checkrun` row whose `.status`
+- **pending** → no usable snapshot (any fetch failed, the file is absent, it **fails ANY rule in VERIFY
+  above** — misnamed, header not first or not alone, a line that does not parse as JSON, an unknown row
+  type, a missing or unexpected field, a `.sha` that does not match — or containment **cannot be
+  established**: it fails, **or** a `witness` `.id` is null/duplicated so the test proves nothing), zero
+  evidence rows, or any `checkrun` row whose `.status`
   is not yet `COMPLETED` / any `status` row whose `.state` is `PENDING` → leave `ci = pending` and, if the
   watch task has exited, **relaunch it in this same wake** — a pending PR must never sit unwatched waiting
   for the heartbeat.
