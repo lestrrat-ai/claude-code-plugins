@@ -88,13 +88,22 @@ The ONE exception to a model dispatch: a whitelisted **formatting** failure is f
   a.go` **parses it as a FLAG** — exit 0, CPU profile written. So, every tool, every run: pass **`--`** before
   the file list (end of options); pass each file as an **ABSOLUTE** (or `./`-prefixed) path, **NEVER a bare
   relative name**; and **REFUSE any candidate name starting with `-`** after the filter — drop that file,
-  log it, do **NOT** abort the run. NEVER hand the glob itself to the tool.
+  log it, do **NOT** abort the run. NEVER hand the glob itself to the tool. **NEVER invoke the tool with an
+  EMPTY operand set — `gofmt` with no operands READS STDIN**; empty → run nothing for that id → session model.
 - **A PATH RESOLVES — normalizing its SPELLING is not enough.** A PR can add `link.go` → a symlink out of the
   tree; the name is clean, and `gofmt -w -- link.go` **follows it and rewrites the target OUTSIDE the
   worktree**. So, after the exclusion filter and before the argv is built: **REFUSE any candidate that is a
   SYMLINK** (`lstat`, never `stat`), **REFUSE any whose fully-resolved real path (`realpath`) is not
   CONTAINED under the resolved worktree root**, and **REFUSE any that is not a REGULAR FILE**. Drop and log
   each; do NOT abort. Empty set after refusals → session model.
+- **A PATH CHECK BOUNDS WHERE WE LOOK, NOT WHAT WE WRITE — the INODE can be aliased outside the tree.** A PR
+  can add `alias.go`, a **HARDLINK** sharing an inode with a file outside the worktree: a regular file, not a
+  symlink, `realpath` inside the tree — it passes every check above, and `gofmt -w` rewrites the **existing
+  inode**, mutating the outside alias. So also **REFUSE any candidate with a LINK COUNT > 1** (`stat` →
+  `st_nlink > 1`); a source file in a normal checkout has exactly one link. Drop and log it (reason:
+  `hardlink — nlink>1`); NEVER abort the run. **Six checks in all** (`stage-2-ci.md`): `--`; absolute/`./`
+  paths; no `-`-leading names; no symlinks; nothing resolving outside the worktree or non-regular; no
+  `nlink > 1`.
 - **The whitelist lives in the LEDGER, NEVER in the repo.** It is the ledger header's `formatters` field:
   resolved **once at run start** — explicit invocation, else a user preference in memory, else the table's
   built-in defaults (`default`; the sentinel **`-`** — never the word `none` — turns the cheap path off)

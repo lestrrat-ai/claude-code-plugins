@@ -161,8 +161,13 @@
   argv, is a **SKILL change**.
 - **THE TABLE HOLDS ONE TOOL — `gofmt`. The criterion was applied TO OURSELVES.** Its cell quotes
   https://pkg.go.dev/cmd/gofmt (*"Gofmt formats Go programs. It uses tabs for indentation and blanks for
-  alignment"*; the two flags that make it do more are **`-r`** and **`-s`**, and **neither is in the
-  skill-owned argv**). Each `guarantee` cell MUST carry a **LINK to the tool's own doc and the passage
+  alignment"*; of the flags the doc lists, the only two that **CHANGE THE SOURCE** are **`-r`** — *"Apply the
+  rewrite rule to the source before reformatting"* — and **`-s`** — *"Try to simplify code"* — and **neither
+  is in the skill-owned argv**). **That claim is about SOURCE-CHANGING flags ONLY — the doc lists others
+  (`-l`, `-d`, `-e`, `-cpuprofile`, …), and `-cpuprofile` WRITES A FILE.** NEVER restate it as "gofmt has
+  only two flags". Safety rests on: the argv is **skill-owned and exact**; **NO flag is ever appended**; and
+  **no file operand can be read as a flag** (`--` + the operand-normalization rules) — the injection repro
+  below is a file named `-cpuprofile=prof.go`. Each `guarantee` cell MUST carry a **LINK to the tool's own doc and the passage
   QUOTED**; **FOLLOW the link before trusting the cell** — a claim that cannot be tied to a source means the
   tool comes **OUT of the table**. **The cheap path therefore covers Go formatting and NOTHING else; every
   other CI failure — ALL Python/JS/etc formatting included — goes to the SESSION MODEL.** That is the safe
@@ -187,7 +192,8 @@
   (b) pass every file as an **ABSOLUTE** (or `./`-prefixed) path — **NEVER a bare relative name**, which is
   belt-and-braces even if `--` fails; (c) **REFUSE any candidate name starting with `-`** — **DROP that file**
   and log it; do **NOT** abort the run. NEVER pass the glob itself to the tool.
-  Empty set after refusals → run nothing for that id → session model.
+  **NEVER invoke the tool with an EMPTY operand set — `gofmt` with no operands READS STDIN.** Empty set after
+  refusals → run nothing for that id → session model.
 - **A PATH IS DATA THAT RESOLVES — NORMALIZING ITS SPELLING IS NOT ENOUGH** (`stage-2-ci.md`). **Repro:** the
   PR adds `link.go`, a **symlink** pointing outside the worktree. It matches `**/*.go`, survives the exclusion
   filter, and its name is clean — and `gofmt -w -- link.go` **FOLLOWS it and rewrites the target OUTSIDE the
@@ -198,6 +204,14 @@
   (compare on a path-component boundary — `/wt-evil` is not under `/wt`); and **REFUSE a candidate that is not
   a REGULAR FILE** (directory, device, fifo, socket). **DROP** each and **LOG** it (id, path, reason —
   symlink escape / escapes the worktree / not a regular file); do NOT abort. Empty set → session model.
+- **A PATH CHECK BOUNDS WHERE WE LOOK; IT DOES NOT BOUND WHAT WE WRITE — THE INODE CAN BE ALIASED OUTSIDE THE
+  TREE** (`stage-2-ci.md`). **Repro:** the PR adds `alias.go`, a **HARDLINK** sharing an INODE with a file
+  outside the worktree. It is a **regular file**, it is **not a symlink** (`lstat` says regular), and its
+  **`realpath` is INSIDE the worktree** — it passes every check above. `gofmt -w` truncates and rewrites the
+  **EXISTING INODE**, so formatting it **MUTATES THE OUTSIDE ALIAS**. Therefore, the sixth check: **REFUSE any
+  candidate with a LINK COUNT > 1** (`stat` → `st_nlink > 1`). A source file in a normal checkout has exactly
+  **one** link; a multi-link file is a hardlink escape or something we have no reason to format. **DROP** and
+  **LOG** it (id, path, reason — `hardlink — nlink>1`); **NEVER abort the run**. Empty set → session model.
 - **RESOLVE `argv[0]` TO A TRUSTED ABSOLUTE EXECUTABLE OUTSIDE THE REPO** (`stage-2-ci.md`). The tool runs
   in the PR's worktree and **the PR under review is untrusted content**: a bare name resolved from a `PATH`
   the PR can influence lets it ship its own `gofmt` and earns it **arbitrary code execution on the path that
@@ -247,8 +261,9 @@
   criterion, and the id-only shape are a **guard against footguns and accidental misuse, NOT a security
   boundary**. NEVER present them as one. What IS a boundary: **the tool runs on UNTRUSTED PR CONTENT inside
   the PR's worktree** — which is exactly why `argv[0]` resolves to a trusted executable **outside the repo**,
-  why the **file operands are normalized AND resolved** (they are PR data spliced into argv, and a symlink
-  among them walks the tool out of the tree), and why the exclusion filter is the skill's, not the user's.
+  why the **file operands are normalized, resolved, AND checked for aliasing** (they are PR data spliced into
+  argv; a **symlink** among them walks the tool out of the tree, and a **hardlink** walks the WRITE out of the
+  tree with every path check passing), and why the exclusion filter is the skill's, not the user's.
 - **Default deny, everywhere.** Keyed on the **tool's IDENTITY and its CITED documented guarantee**, NEVER on a
   failure "looking mechanical" or on the category "formatter". Unknown check, unlisted tool, an unresolvable
   binary, or a refused id → session model (an **unset** `formatters` header is not one of these: it means

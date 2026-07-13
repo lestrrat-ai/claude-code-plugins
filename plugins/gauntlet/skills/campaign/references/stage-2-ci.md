@@ -95,7 +95,16 @@ Adding a tool, changing an argv, or changing a default glob is a **SKILL change*
 
 | `id` | argv — **skill-owned, exact** | default `files` glob | guarantee — the SOURCE, then what it says |
 |---|---|---|---|
-| `gofmt` | `["gofmt", "-w", "--", <files>]` | `**/*.go` | **`cmd/gofmt` — https://pkg.go.dev/cmd/gofmt**. The doc defines the behaviour: *"Gofmt formats Go programs. It uses tabs for indentation and blanks for alignment."* It documents exactly two flags that make gofmt do MORE than format: **`-r`** — *"Apply the rewrite rule to the source before reformatting"* — and **`-s`** — *"Try to simplify code"* (it lists the source transformations `-s` performs). **NEITHER is in the skill-owned argv**, and nothing may append one |
+| `gofmt` | `["gofmt", "-w", "--", <files>]` | `**/*.go` | **`cmd/gofmt` — https://pkg.go.dev/cmd/gofmt**. The doc defines the behaviour: *"Gofmt formats Go programs. It uses tabs for indentation and blanks for alignment."* Of the flags it documents, **exactly two CHANGE THE SOURCE**: **`-r`** — *"Apply the rewrite rule to the source before reformatting"* — and **`-s`** — *"Try to simplify code"* (it lists the source transformations `-s` performs). **NEITHER is in the skill-owned argv**, and nothing may append one |
+
+**Read that cell for EXACTLY what it says.** It says `-r` and `-s` are the only documented flags that
+**rewrite the source**. It does **NOT** say they are the only documented flags: the doc lists others (`-l`,
+`-d`, `-e`, `-cpuprofile`, …), and **`-cpuprofile` WRITES A FILE**. NEVER restate the claim as "gofmt has
+only two flags" — that is broader than the source, and it is false. The safety of this cell rests on
+**three** things, all of them ours: the argv is **skill-owned and exact** (`["gofmt","-w","--",<files>]`);
+**NO flag may ever be appended** to it; and **no file operand can be read as a flag** (`--`, plus the
+operand-normalization rules below). That last one is not theoretical — the injection repro below is a file
+literally named `-cpuprofile=prof.go`.
 
 **ONE tool. That is the whole table**, and it is small **on purpose**: it is what survived a rule that
 demands a **documented** guarantee, quoted from the source. Every tool has a default glob, so an
@@ -201,7 +210,21 @@ gofmt -w -- /wt/link.go                  # gofmt FOLLOWED the symlink and rewrot
 absolute path, no leading `-`) says nothing about what the kernel opens. So campaign checks what each
 candidate RESOLVES TO, not just how it is spelled. Reason on record: **symlink escape**.
 
-**EVERY tool, EVERY run, ALL FIVE — no exceptions:**
+**The third repro — a HARDLINK, which passes both checks above** (this is the layer BELOW `realpath`):
+
+```
+# The PR adds a hardlink:  alias.go  →  same INODE as /home/user/other-repo/x.go
+# It is a REGULAR file. It is NOT a symlink (lstat says regular). Its realpath is INSIDE the worktree.
+gofmt -w -- /wt/alias.go                 # gofmt rewrote the INODE — the outside alias changed too
+```
+
+**A path check bounds where we LOOK; it does NOT bound what we WRITE — the inode can be aliased outside the
+tree.** `gofmt -w` truncates and rewrites the **EXISTING INODE**, so containment of the **PATH** is not
+containment of the **DATA**. A hardlink is a regular file whose path is inside the worktree and whose data
+is shared with a path outside it: it defeats the symlink check (it is not a link) and the containment check
+(its real path is inside). Reason on record: **hardlink — nlink>1**.
+
+**EVERY tool, EVERY run, ALL SIX — no exceptions:**
 
 1. **END-OF-OPTIONS.** Pass `--` immediately before the file list. Every tool in the table accepts it
    (`gofmt`, via Go's `flag` package), and the table's argv already carries it. Nothing after `--` can be
@@ -220,14 +243,23 @@ candidate RESOLVES TO, not just how it is spelled. Reason on record: **symlink e
    path-component boundary, never a bare prefix match (`/wt-evil` is not under `/wt`); and (b) the resolved
    target is a **REGULAR FILE** — a directory, device, fifo, or socket is REFUSED. Escapes the tree, or is
    not a regular file → DROP it.
+6. **REFUSE a candidate whose LINK COUNT is greater than 1.** `stat` the candidate and read `st_nlink`;
+   `st_nlink > 1` → DROP it. A source file in a normal checkout has **exactly one link**. A multi-link file
+   is either a **hardlink escape** (the inode is aliased outside the tree, and `gofmt -w` rewrites the
+   INODE) or something we have **no reason to format** — either way it does not get handed to the tool.
 
-**Checks 3–5 run AFTER the exclusion filter and BEFORE the argv is built** — the filter decides which
+**Checks 3–6 run AFTER the exclusion filter and BEFORE the argv is built** — the filter decides which
 candidates survive; these decide which surviving candidates are handed to the tool at all. Every refusal:
 **DROP that file from the set — do NOT abort the run** — and **LOG it**: the id, the refused path, and the
-reason (`-`-leading name / symlink / escapes the worktree / not a regular file).
+reason (`-`-leading name / symlink / escapes the worktree / not a regular file / hardlink — nlink>1).
 
 Refusing files can empty the set → then run NOTHING for that id and route the failure to the session model
 ("Empty file set after filtering" below). Refusing a file NEVER widens anything and NEVER fails the PR.
+
+**NEVER INVOKE THE TOOL WITH AN EMPTY OPERAND SET.** `gofmt` with no file operands **reads stdin** and
+writes the formatted result to stdout — a run that is not the run we intended, on input we did not choose.
+An empty set is NOT "a no-op run": it is **run NOTHING for that id**, and route the failure to the session
+model. Check the set is non-empty **immediately before building the argv**, every time.
 
 **NEVER pass the glob itself to the tool** (`gofmt -w .`, `gofmt -w '**/*.go'`) — that hands file selection
 to the tool and bypasses the exclusion filter AND this normalization. Campaign expands, filters, refuses,
@@ -287,13 +319,14 @@ that gate the review, and it MUST be logged and refused rather than silently emp
 refusal is a **signal**, NEVER the guarantee — the filter is what makes the run safe.
 
 **AFTER the filter, the file argv is still PR data**: of every surviving candidate, refuse the `-`-leading
-names, the **symlinks**, and anything whose **real path escapes the worktree** or is **not a regular file**;
-normalize what is left ("NORMALIZE THE FILE ARGV" above). The filter decides *which* candidates survive; the
-normalization decides that what is handed to the tool is read as a **file** and not a flag, and that it is a
-**real file INSIDE the tree** and not a link out of it. Both, every run.
+names, the **symlinks**, anything whose **real path escapes the worktree** or is **not a regular file**, and
+anything with **`nlink > 1`**; normalize what is left ("NORMALIZE THE FILE ARGV" above). The filter decides
+*which* candidates survive; the normalization decides that what is handed to the tool is read as a **file**
+and not a flag, that it is a **real file INSIDE the tree** and not a link out of it, and that its **INODE is
+not aliased outside the tree**. All of it, every run.
 
 **Empty file set after filtering (or after refusals) → run NOTHING for that id** and route the failure to
-the session model.
+the session model. **NEVER invoke the tool with zero operands** — `gofmt` with no operands reads **stdin**.
 
 #### The formatter list — resolved at run start, stored in the ledger, NEVER in repo content
 
@@ -344,10 +377,10 @@ as one.
 
 What IS a security boundary: **the tool runs on UNTRUSTED PR CONTENT, inside the PR's worktree.** That is
 why `argv[0]` is resolved to a trusted absolute executable **outside the repo** ("RESOLVE argv[0]" above),
-why the **file operands are normalized AND resolved** — they come from the PR's tree, so they are
-attacker-controlled data spliced into argv, and a symlink among them makes the tool write **outside the
-worktree** ("NORMALIZE THE FILE ARGV" above) — and why the exclusion filter is the skill's and not the
-user's.
+why the **file operands are normalized, resolved, AND checked for aliasing** — they come from the PR's tree,
+so they are attacker-controlled data spliced into argv; a symlink among them makes the tool write **outside
+the worktree**, and a **hardlink** makes it write outside the worktree while every path check passes
+("NORMALIZE THE FILE ARGV" above) — and why the exclusion filter is the skill's and not the user's.
 
 #### VALIDATION — an id in the `formatters` list is ACCEPTED only if ALL of these hold
 
@@ -380,9 +413,10 @@ Then, in order:
 1. **Whitelisted tool → run the TOOL, no model (prefer this always).** In `<worktree>`, run the
    **table's exact argv** for that `id` with `argv[0]` **resolved to a trusted absolute executable outside
    the repo**, **WITHOUT a shell**, over the tool's file set (default glob, narrowed by any validated
-   glob, **exclusion filter applied**, then **`-`-leading names, symlinks, non-regular files, and paths whose
-   real path escapes the worktree all refused, and the operands normalized — `--` + absolute/`./` paths**).
-   NEVER add a flag; NEVER a catch-all `--fix`. ACCEPT only if
+   glob, **exclusion filter applied**, then **`-`-leading names, symlinks, non-regular files, paths whose
+   real path escapes the worktree, and files with `nlink > 1` all refused, and the operands normalized —
+   `--` + absolute/`./` paths**). **NEVER run the tool with an EMPTY operand set** (`gofmt` with no operands
+   reads stdin) — empty → session model. NEVER add a flag; NEVER a catch-all `--fix`. ACCEPT only if
    **both** hold: re-running the **exact** failing check now **passes**, AND the diff touches **no check
    definition, config, or test**. Then commit + push — **zero model spend** — and **apply the gate reset**
    above ("Any campaign commit to the PR head resets the gate"): `reviews_ok` to 0 + relabel, relaunch the

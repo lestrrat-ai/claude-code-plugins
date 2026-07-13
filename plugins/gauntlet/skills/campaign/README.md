@@ -239,6 +239,18 @@ flowchart TD
   whose fully-resolved real path lands outside the worktree. Each drop is logged; the rest of the run
   continues.
 
+  And below even that: a path check bounds where campaign *looks*, not what it *writes*. A **hardlink** is a
+  perfectly ordinary regular file, it is not a symlink, and its real path really is inside the worktree — but
+  it shares an *inode* with a file outside the tree, and `gofmt -w` rewrites the existing inode, so formatting
+  it changes the outside file too. It passes every check above. So campaign adds a sixth: it drops any
+  candidate whose **link count is greater than one**. A source file in a normal checkout has exactly one link;
+  anything with more is either a hardlink escape or something there is no reason to format. Logged, dropped,
+  run continues.
+
+  If the refusals empty the file set, campaign runs **nothing** for that tool and sends the failure to a
+  model. It never invokes the tool with no files: `gofmt` with no file operands reads standard input, which
+  is not the run anyone asked for.
+
   Every known tool has a default glob (`gofmt` → `**/*.go`), so you normally name
   nothing but the tool. If you do narrow one to a subdirectory, the glob may only **narrow** the default,
   never widen it — and you should not try to write exclusions into it. Campaign applies its **own** exclusion
