@@ -68,7 +68,7 @@ review gate"), and the review re-starts on the clean tip:
   (`gh pr view <pr> --json mergeable,mergeStateStatus` → `CONFLICTING` / `DIRTY` / `BEHIND`), rebase
   it onto `<base>` before reviewing. Clean rebase with the PR diff unchanged keeps `reviews_ok` but
   sets `ci = pending`; conflict-resolving rebase changes PR content, so it resets the gate (Stage 3
-  step 5).
+  step 6).
 
 Only launch a review pass once all three are clear for the current tip.
 

@@ -19,6 +19,10 @@ once. A per-run file records what that run's PRs came to:
   still present).
 - **skipped (API-declined)** — a PR whose API-changing fix the user was asked about and declined, with
   the change it would have needed.
+- **pruned** — what this run dropped from the carryover ledger, and **what the user asked to keep**, with
+  the run-id that decided it. "Pruning the ledger" below says to note the decision **so it is auditable
+  next run** — this is the slot it goes in. Without it that instruction has nowhere to write, the decision
+  survives nowhere, and the next run re-asks the question the user already answered.
 
 If `.gauntlet/history/` doesn't exist, create it (and add `.gauntlet/` to the repo's `.gitignore` if
 it's not already ignored). When the directory is empty, a fresh run is just a normal first run.

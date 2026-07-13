@@ -21,7 +21,7 @@ blocks; each completion is its own wake.
    exists — and scope **every** git/gh scan to this run's `gauntlet-run-<run-id>` label so another run's
    PRs are never mistaken for your own (adopted PRs keep their OWN head branch, so ownership is the
    LABEL only — never a branch prefix). Live work (this run) = any open PR carrying this run's label,
-   **OR** any non-terminal row in this run's `state.jsonl` (`in_review` / `mergeable` / `awaiting-api` /
+   **OR** any non-terminal row in this run's `state.jsonl` (`in_review` / `awaiting-api` /
    `awaiting-user`).
    Three cases:
 
