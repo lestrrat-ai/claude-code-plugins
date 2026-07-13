@@ -21,7 +21,8 @@ blocks; each completion is its own wake.
    exists — and scope **every** git/gh scan to this run's `gauntlet-run-<run-id>` label so another run's
    PRs are never mistaken for your own (adopted PRs keep their OWN head branch, so ownership is the
    LABEL only — never a branch prefix). Live work (this run) = any open PR carrying this run's label,
-   **OR** any non-terminal row in this run's `state.jsonl` (`in_review` / `mergeable` / `awaiting-api`).
+   **OR** any non-terminal row in this run's `state.jsonl` (`in_review` / `mergeable` / `awaiting-api` /
+   `awaiting-user`).
    Three cases:
 
    - **This run has live work → resume.** **Reconcile against ground truth** (do NOT redo *completed*
@@ -197,7 +198,8 @@ blocks; each completion is its own wake.
    it, sync `<base>`, reconcile remaining candidates, and repeat while another PR is immediately
    mergeable (Stage 3).
 5. **Reschedule or exit.**
-   - Any non-terminal PR remains (in review, pending CI, or awaiting API/precondition) →
+   - Any non-terminal PR remains (in review, pending CI, or awaiting a user ruling on a review-finding
+     standoff / API approval / precondition) →
      refresh this run's lease, then set a `ScheduleWakeup` heartbeat
      (`prompt: "/gauntlet:campaign --run <run-id> --token <agent-token>"` — exactly those two flags:
      `--run` rebinds the wake to this run and `--token` re-proves ownership of its lease). A self-wake

@@ -15,6 +15,7 @@ files from colliding — see "Run identity and concurrency".
 | `review-<pr>-<n>.progress.jsonl` | Reviewer progress events against the plan for round `n` (launch attempt 1) |
 | `review-<pr>-<n>.a<k>.txt` / `.a<k>.progress.jsonl` | Same two artifacts for **launch attempt `k ≥ 2`** — a relaunched pass writes here, never over attempt 1's files, so a killed-but-alive attempt can't corrupt the live one. Only the attempt named in the active `pass_identity` is read or counted (see `stage-2-review-gate.md`) |
 | `ci-<pr>.txt` | Latest `gh pr checks` snapshot for a PR (re-polled after the watch, not the watch stream) |
+| `audit-<pr>-<n>.md` | The orchestrator's audit of round `n`'s findings — CONFIRMED / ADJUSTED / REFUTED, each with evidence. A REFUTED finding's reasoning is recorded here **and** written into the tree as an inline comment at the site, committed like any other change (`stage-2-review-gate.md`, "Audit every finding before you fix it") |
 | `abort-<id>.md` | Detailed log for an aborted PR-task |
 
 Store ALL reviewer and `gh` output under `<rundir>` first, then Read/Grep it. NEVER `/tmp/`.
@@ -126,9 +127,18 @@ Header field notes (the header fields above; per-row fields follow):
   live position, so the two never contradict: `approved` pairs with the PR back in normal
   gate flow, `declined` with a terminal `aborted`. A one-off approval lands here only; it never flips
   the run-wide `api_changes` header.
-- `status` — `in_review` → `mergeable` → `merged`, or `aborted`; plus `awaiting-api`
-  while parked for the user to approve an API-changing fix. That park resolves via `api_approval`:
-  `approved` returns the PR to the normal flow, `declined` makes it `aborted` (terminal).
+- `status` — `in_review` → `mergeable` → `merged`, or `aborted`; plus two **user-parked** (non-terminal)
+  statuses:
+  - `awaiting-api` — parked for the user to approve an API-changing fix. Resolves via `api_approval`:
+    `approved` returns the PR to the normal flow, `declined` makes it `aborted` (terminal).
+  - `awaiting-user` — **standoff only**: parked for the user to adjudicate a finding the orchestrator
+    REFUTED in the tree and a **fresh reviewer re-raised anyway** (`stage-2-review-gate.md`, "Audit every
+    finding before you fix it"). A REFUTED finding does **NOT** park by itself — it is committed as an
+    inline refutation and the next reviewer judges it; only the re-raise parks. Same park mechanics as
+    `awaiting-api`: `reviews_ok` stays 0, no review pass is launched for this PR, the other PRs keep
+    being driven, and the answer folds in as its own wake. The user ruling the finding **invalid**
+    returns the PR to the normal flow; ruling it **valid** returns it to the normal flow with that
+    finding fixed like a CONFIRMED one. NEVER park without surfacing the question.
 
 ### Editing the ledger — use `scripts/ledger.py`
 

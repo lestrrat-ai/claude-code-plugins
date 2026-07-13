@@ -25,8 +25,9 @@ row by column position:
 #### Any campaign commit to the PR head resets the gate
 
 **THE RULE — every commit campaign pushes to a PR's head branch is a PR-content change, whatever wrote
-it: a cheap CI-fix subagent, a session-model CI-fix subagent, or a review-fix subagent.** Every one of
-them MUST, in the same step:
+it: a cheap CI-fix subagent, a session-model CI-fix subagent, a review-fix subagent, or an inline
+REFUTATION of a review finding (`stage-2-review-gate.md`, "Audit every finding before you fix it").**
+Every one of them MUST, in the same step:
 
 - **reset `reviews_ok` to 0 AND restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`**
   (`gh pr edit <pr> --remove-label gauntlet-accepted --add-label gauntlet-reviewing`) — the gate and its

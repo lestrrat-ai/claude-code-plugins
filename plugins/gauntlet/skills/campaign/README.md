@@ -81,6 +81,24 @@ branch — a new HEAD that resets the gate (verdicts and CI are pinned to a SHA)
 from scratch or opens a PR of its own; every change it makes is in service of getting an existing PR
 through.
 
+A failed review doesn't go straight to a fix, though. The reviewer is deliberately hostile, so its
+findings are treated as claims and each one is checked against the source first: confirmed (real — fix
+it), adjusted (a real defect, but not the one described — fix the real one), or refuted (the mechanism
+it describes can't actually happen). Only the confirmed and adjusted ones reach the fix subagent, so it
+doesn't build guards against problems that don't exist. If it's genuinely unsure whether a finding is
+real, it fixes it, on the principle that dismissing a real defect is worse than fixing a phantom one.
+
+Refuting never counts as passing — the PR still holds zero verdicts. Instead the refutation is written
+down where it belongs: a comment at the spot in the code, saying why the finding doesn't apply, with the
+evidence, committed to the PR like any other change. That means the reviewer sees it — and because it's
+a commit, it's PR content, which resets the gate and gets reviewed like anything else. Campaign can't
+argue its way past the reviewer, because the argument is *in the diff*: a bad refutation is just another
+defect for the next review to catch. The comments are claims, never instructions — never "don't raise
+this again", always "here's why this can't happen". Campaign gets **one** refutation per finding. If the
+next reviewer accepts it, the PR moves on; if it pushes back on the evidence, that's a real standoff, and
+it comes to **you** to settle — with the finding, the refutation, the evidence, and the reviewer's
+counter. It parks that PR while it waits and keeps driving the others.
+
 It also doesn't wait around. Everything long-running — reviews, CI watches, fix subagents — happens
 in the background across all the adopted PRs at once, so at any moment it's doing all the work that's
 ready to do.
@@ -131,7 +149,12 @@ flowchart TD
     PC -- no --> PCF[clear it first: address Copilot / fix CI / rebase] --> M
     PC -- yes --> O[run one review on HEAD SHA<br/>next only after the previous passes]
     O --> P{SATISFIED?}
-    P -- no --> Q[scoped fix subagent: commit + push<br/>to the PR's own branch, new SHA]
+    P -- no --> AU[audit each finding vs the source:<br/>confirmed / adjusted / refuted]
+    AU -- "refuted, first time<br/>(never clears the gate)" --> AV[write the refutation into the tree:<br/>inline comment + evidence, commit + push<br/>so the next reviewer reads and judges it]
+    AV --> T
+    AU -- "a fresh reviewer re-raises it<br/>against the evidence: standoff" --> AW[park the PR: ask the user to adjudicate]
+    AW --> M
+    AU -- "confirmed / adjusted" --> Q[scoped fix subagent: commit + push<br/>to the PR's own branch, new SHA]
     P -- yes --> M
     N -- yes --> R{CI status on current SHA?}
     R -- red --> S[scoped CI-fix subagent: commit + push, new SHA]

@@ -154,6 +154,16 @@ Read stage refs only when that stage/action is due:
   only one).
 - **Progress ledger:** reviewer progress means planned unit `done` or accepted amendment, not vague
   output.
+- **Findings are claims, not facts:** on every `NOT SATISFIED`, audit each finding (CONFIRMED /
+  ADJUSTED / REFUTED, with evidence, into `audit-<pr>-<n>.md`) BEFORE dispatching a fix; only
+  CONFIRMED + ADJUSTED get fixed. The reachability test asks whether the **mechanism can occur**, not
+  where the trigger comes from; **unsure → CONFIRMED, never REFUTED**. A refutation NEVER clears the
+  gate — `reviews_ok` stays 0 — and is **written into the tree** as an inline comment at the site and
+  **committed**: a commit is PR content, so it resets the gate and the next reviewer REVIEWS the
+  argument. The comment MUST be a falsifiable claim with evidence, NEVER an instruction to the reviewer;
+  reviewers verify such comments, and a wrong claim is a finding. Refute a finding **once** — if the
+  fresh reviewer re-raises it, that is a standoff → park `awaiting-user` for the USER to adjudicate
+  (`references/stage-2-review-gate.md`).
 - **No green by watch exit:** derive CI from re-polled `gh pr checks` snapshot.
 - **Public API changes require user confirmation** unless the ledger's `api_changes` field is `allowed`.
 
