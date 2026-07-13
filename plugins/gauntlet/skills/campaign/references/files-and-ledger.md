@@ -71,7 +71,7 @@ following line is one adopted PR's row record (`{"type": "row", …}`). Every re
 — fields are keyed by NAME, never by column position:
 
 ```
-{"type": "header", "run_id": "g260704-0915-a3f29c1b", "base_branch": "main", "api_changes": "ask", "reviewer": "codex", "formatters": "gofmt,goimports"}
+{"type": "header", "run_id": "g260704-0915-a3f29c1b", "base_branch": "main", "api_changes": "ask", "reviewer": "codex", "formatters": "gofmt,gci"}
 {"type": "row", "id": "pr41", "slug": "fix-null-deref", "branch": "fix-null-deref", "worktree": ".worktrees/fix-null-deref", "worktree_owned": "yes", "branch_owned": "yes", "pr": "41", "head_sha": "a3f29c1b", "reviews_ok": "2", "ci": "green", "tier": "STANDARD", "attempts": "1", "started": "2026-07-04T09:15:00Z", "api_approval": "-", "status": "mergeable"}
 {"type": "row", "id": "pr52", "slug": "add-retry-flag", "branch": "add-retry-flag", "worktree": ".worktrees/add-retry-flag", "worktree_owned": "no", "branch_owned": "no", "pr": "52", "head_sha": "b1c2d3e4", "reviews_ok": "0", "ci": "pending", "tier": "HIGH", "attempts": "0", "started": "-", "api_approval": "-", "status": "in_review"}
 ```
@@ -83,7 +83,7 @@ once, see "Base branch"), `api_changes` (`ask` | `allowed`, run-wide; set once f
 "The reviewer"), `formatters` (the cheap CI path's tool whitelist; set once, see below and `stage-2-ci.md`).
 
 `formatters` — the ONLY source of the formatter whitelist. A **scalar**: comma-separated known-tool ids
-(`gofmt,goimports`), each id optionally suffixed `:<glob>` to **narrow** that tool's default glob
+(`gofmt,gci`), each id optionally suffixed `:<glob>` to **narrow** that tool's default glob
 (`gofmt:internal/**/*.go`); `default` = the known-tools table's built-in default set; `-` = **none**, the
 cheap path is OFF and every CI failure goes to the session model. Resolved **once at run start** — explicit
 invocation, else a user preference from memory, else `default` — and **re-read from this header every

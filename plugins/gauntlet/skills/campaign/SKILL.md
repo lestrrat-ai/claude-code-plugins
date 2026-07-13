@@ -81,6 +81,14 @@ The ONE exception to a model dispatch: a whitelisted **formatting** failure is f
   entries, relative entries, the worktree and the repo root; the resolved executable **MUST live outside
   the repo tree**. Resolves inside, or not at all → **REFUSE → session model**. A bare name resolved from a
   `PATH` the PR can influence is arbitrary code execution on the no-model path.
+- **NORMALIZE THE FILE ARGV — filenames are PR-CONTROLLED DATA.** The skill owns the argv **SHAPE**; the
+  file operands are globbed from the **PR's worktree**, so they are **attacker-controlled data spliced into
+  argv** and MUST be normalized like any injection boundary. A PR that adds a file named
+  `-cpuprofile=prof.go` matches `**/*.go`, survives the exclusion filter, and `gofmt -w '-cpuprofile=prof.go'
+  a.go` **parses it as a FLAG** — exit 0, CPU profile written. So, every tool, every run: pass **`--`** before
+  the file list (end of options); pass each file as an **ABSOLUTE** (or `./`-prefixed) path, **NEVER a bare
+  relative name**; and **REFUSE any candidate name starting with `-`** after the filter — drop that file,
+  log it, do **NOT** abort the run. NEVER hand the glob itself to the tool.
 - **The whitelist lives in the LEDGER, NEVER in the repo.** It is the ledger header's `formatters` field:
   resolved **once at run start** — explicit invocation, else a user preference in memory, else the table's
   built-in defaults (`none` turns the cheap path off) — and **re-read from the header every wake**, never
@@ -99,6 +107,11 @@ The ONE exception to a model dispatch: a whitelisted **formatting** failure is f
   There is NO blanket "formatters are safe" rule. The guarantee is the **TOOL's** — it NEVER transfers to
   a model hand-editing the same file, however formatting-like the diff looks (a pure-indentation edit moves
   behavior in a whitespace-significant language and stays formatter-clean).
+- **The table is SMALL on purpose — `gofmt`, `gci`, `ruff format`.** Fewer tools that provably hold beats
+  more that mostly do. `goimports` is **REJECTED** (it ADDS/REMOVES imports; an added import runs that
+  package's `init()`, and a guessed one can be the wrong package) and `gofumpt` is **REJECTED** (extra
+  rewrite rules beyond layout, documented as a rule list, never as semantics-preserving). NEVER re-add a
+  tool because it "is basically a formatter" — that reasoning is what put both of them here.
 - **A tool commit resets the gate** exactly like a subagent commit (`stage-2-ci.md`).
 - **Default deny.** Unknown or unlisted tool, refused id, unresolvable binary, the tool did not fix it, the
   tool left residue, or the failure needs any judgment → **session model**, set explicitly. NEVER hand it to

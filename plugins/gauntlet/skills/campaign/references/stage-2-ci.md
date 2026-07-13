@@ -92,24 +92,36 @@ The ONLY binaries campaign may execute on the no-model path, in the ONLY form it
 `formatters` header field, with the skill's **exclusion filter** applied afterwards — always (both below).
 Adding a tool, changing an argv, or changing a default glob is a **SKILL change** (gated, reviewed).
 
-| `id` | argv — **skill-owned, exact** | default `files` glob | guarantee | precondition — MUST hold in THIS repo |
+| `id` | argv — **skill-owned, exact** | default `files` glob | guarantee — what the tool DOCUMENTS | precondition — MUST hold in THIS repo |
 |---|---|---|---|---|
-| `gofmt` | `["gofmt", "-w", <files>]` | `**/*.go` | AST-preserving Go pretty-printer (`go/printer`); never alters string-literal contents | none |
-| `gofumpt` | `["gofumpt", "-w", <files>]` | `**/*.go` | same printer, stricter layout rules; never alters string-literal contents | none |
-| `goimports` | `["goimports", "-w", <files>]` | `**/*.go` | rewrites the **import block only** | none |
-| `gci` | `["gci", "write", <files>]` | `**/*.go` | import grouping/ordering **only** — Go package init order is by **dependency**, not by import order in a file | none |
-| `ruff format` | `["ruff", "format", <files>]` | `**/*.py` | verifies its output is **AST-equivalent** to the input | the repo's Ruff config does **NOT** enable `format.docstring-code-format` |
+| `gofmt` | `["gofmt", "-w", "--", <files>]` | `**/*.go` | documented as a pretty-printer: it parses the file and re-prints the AST with `go/printer` (tabs to indent, blanks to align). With no `-r` and no `-s` it applies **no rewrite rule**; comments and string-literal contents are reproduced verbatim | none |
+| `gci` | `["gci", "write", "--", <files>]` | `**/*.go` | documented as controlling **import ORDER and GROUPING** and nothing else: it sorts existing imports into sections. It does **NOT add** an import and does **NOT remove** one, so no `init()` set changes; Go's package init order is by **dependency**, not by import position in a file | none |
+| `ruff format` | `["ruff", "format", "--", <files>]` | `**/*.py` | documented to **verify its own output is AST-equivalent** to the input (it compares the parsed trees and refuses a formatting that would change them) | the repo's Ruff config does **NOT** enable `format.docstring-code-format` |
 
 Every tool has a default glob, so an **unnarrowed formatter list has a fully defined file set**: the
 table's defaults, filtered. NEVER invent a default glob for a tool; NEVER widen one.
+
+**A `guarantee` cell MUST cite what the tool DOCUMENTS.** "It is a formatter", "the diff looks
+mechanical", "it feels safe" are NOT guarantees and have repeatedly been wrong. No citable documented
+guarantee → the tool does NOT go in the table.
 
 **NEVER append a flag to a table argv.** NEVER `-r`, NEVER `-s`, NEVER a catch-all `--fix`, NEVER anything
 the table does not list. Execute it **WITHOUT a shell** — never `sh -c`, `bash -c`, `os.system`, or any
 shell string.
 
-**REMOVED — golangci-lint `whitespace`**: no safe fixer exists for it. Its only fix path is the catch-all
-`golangci-lint run --fix`, which the denylist forbids. NEVER invent a command for it; a `whitespace`
-failure goes to the session model.
+**REMOVED — tools that FAIL the criterion.** They are not "not configured"; they are **rejected**, and
+re-adding one is a SKILL change that must first defeat the reason below:
+
+- **`goimports`** — documented to **ADD missing imports and REMOVE unreferenced ones**. Adding an import
+  runs that package's `init()`; a guessed import can resolve to the **wrong package**. Changing the set of
+  imports is not semantics-preserving. NOT a formatter for this purpose.
+- **`gofumpt`** — a stricter gofmt that applies **EXTRA rewrite rules** beyond `go/printer` layout, and its
+  rules are documented as a rule LIST, **not** as semantics-preserving. It edits source constructs, not just
+  whitespace. It does not meet the criterion; being "gofmt-like" is not an argument. NEVER re-add it on the
+  grounds that it "is basically a formatter".
+- **golangci-lint `whitespace`** — no safe fixer exists. Its only fix path is the catch-all
+  `golangci-lint run --fix`, which the denylist forbids. NEVER invent a command for it; a `whitespace`
+  failure goes to the session model.
 
 #### RESOLVE argv[0] TO A TRUSTED ABSOLUTE EXECUTABLE — OUTSIDE THE REPO
 
@@ -132,7 +144,45 @@ Before execution, EVERY time:
 
 Run the tool with the **worktree as CWD** but **NEVER with the worktree on `PATH`** and NEVER with the
 worktree as the lookup base. Pass the **resolved absolute path** as `argv[0]`; the rest of the argv is the
-table's, unchanged.
+table's, unchanged — with the file operands NORMALIZED per the next rule.
+
+#### NORMALIZE THE FILE ARGV — filenames are PR-CONTROLLED DATA
+
+The skill owns the argv **SHAPE**. It does **NOT** own the file operands: `<files>` comes from globbing the
+**PR's worktree**, so every filename in it is **attacker-controlled data spliced into argv**. Data spliced
+into argv MUST be normalized — exactly like any other injection boundary. Owning the shape is NOT owning
+the argv.
+
+**The repro — a filename that is an OPTION** (this is why the rule exists, do NOT delete it):
+
+```
+# The PR adds a file literally named:  -cpuprofile=prof.go
+# It matches **/*.go. It survives the exclusion filter. It is passed as a file operand:
+gofmt -w '-cpuprofile=prof.go' a.go     # exit 0 — gofmt parsed it as a FLAG, and wrote a CPU profile
+```
+
+argv[0] was the trusted binary, the argv was the table's, no shell was involved, no model ran — and PR
+content still changed what the command **did** and what it **touched**. A bare relative filename is not a
+path; it is a token the tool is free to parse as an option.
+
+**EVERY tool, EVERY run, ALL THREE — no exceptions:**
+
+1. **END-OF-OPTIONS.** Pass `--` immediately before the file list. Every tool in the table accepts it
+   (`gofmt`/Go `flag`, `gci`/pflag, `ruff`/clap), and the table's argv already carries it. Nothing after
+   `--` can be read as a flag. A tool that has no `--` NEVER enters the table.
+2. **NEVER PASS A BARE RELATIVE NAME.** Pass each file as a path that **cannot be mistaken for an option**:
+   an **ABSOLUTE** path (worktree root joined to the relative path) — or, if a tool needs relative paths, a
+   **`./`-prefixed** one. Belt-and-braces: this holds even for a tool whose `--` handling is broken.
+3. **REFUSE a candidate whose basename or path starts with `-`** (checked AFTER the exclusion filter). A
+   legitimate source file is NEVER named that way. **DROP that file from the set — do NOT abort the run**,
+   and **LOG it**: the id, the refused filename, and why.
+
+Refusing files can empty the set → then run NOTHING for that id and route the failure to the session model
+("Empty file set after filtering" below). Refusing a file NEVER widens anything and NEVER fails the PR.
+
+**NEVER pass the glob itself to the tool** (`gofmt -w .`, `gofmt -w '**/*.go'`) — that hands file selection
+to the tool and bypasses the exclusion filter AND this normalization. Campaign expands, filters, refuses,
+normalizes, and passes the resulting **explicit path list**.
 
 #### A tool's guarantee can be CONDITIONAL on its configuration
 
@@ -205,7 +255,12 @@ drops `**/*_test.go` and everything else it must not touch. The user never enume
 that gate the review, and it MUST be logged and refused rather than silently emptied by the filter. But the
 refusal is a **signal**, NEVER the guarantee — the filter is what makes the run safe.
 
-**Empty file set after filtering → run NOTHING for that id** and route the failure to the session model.
+**AFTER the filter, the file argv is still PR data**: refuse every surviving `-`-leading name and normalize
+the rest ("NORMALIZE THE FILE ARGV" above). The filter decides *which* files are touched; the normalization
+decides that they are read as **files at all** and not as flags. Both, every run.
+
+**Empty file set after filtering (or after refusals) → run NOTHING for that id** and route the failure to
+the session model.
 
 #### The formatter list — resolved at run start, stored in the ledger, NEVER in repo content
 
@@ -247,7 +302,9 @@ as one.
 
 What IS a security boundary: **the tool runs on UNTRUSTED PR CONTENT, inside the PR's worktree.** That is
 why `argv[0]` is resolved to a trusted absolute executable **outside the repo** ("RESOLVE argv[0]" above),
-and why the exclusion filter is the skill's and not the user's.
+why the **file operands are normalized** — they come from the PR's tree, so they are attacker-controlled
+data spliced into argv ("NORMALIZE THE FILE ARGV" above) — and why the exclusion filter is the skill's and
+not the user's.
 
 #### VALIDATION — an id in the `formatters` list is ACCEPTED only if ALL of these hold
 
@@ -280,7 +337,8 @@ Then, in order:
 1. **Whitelisted tool → run the TOOL, no model (prefer this always).** In `<worktree>`, run the
    **table's exact argv** for that `id` with `argv[0]` **resolved to a trusted absolute executable outside
    the repo**, **WITHOUT a shell**, over the tool's file set (default glob, narrowed by any validated
-   glob, **exclusion filter applied**). NEVER add a flag; NEVER a catch-all `--fix`. ACCEPT only if
+   glob, **exclusion filter applied**, then **`-`-leading names refused and the operands normalized —
+   `--` + absolute/`./` paths**). NEVER add a flag; NEVER a catch-all `--fix`. ACCEPT only if
    **both** hold: re-running the **exact** failing check now **passes**, AND the diff touches **no check
    definition, config, or test**. Then commit + push — **zero model spend** — and **apply the gate reset**
    above ("Any campaign commit to the PR head resets the gate"): `reviews_ok` to 0 + relabel, relaunch the

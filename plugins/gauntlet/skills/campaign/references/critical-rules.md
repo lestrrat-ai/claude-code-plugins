@@ -151,12 +151,30 @@
   *looks* like formatting is NOT a proof of semantic equivalence (a pure-indentation edit can move behavior
   in a whitespace-significant language and stay formatter-clean).
 - **THE SKILL OWNS THE EXACT ARGV; NOTHING ELSE SUPPLIES A COMMAND.** The known-tools table
-  (`stage-2-ci.md`) fixes each tool's precise argv (`gofmt -w`, `gofumpt -w`, `goimports -w`, `gci write`,
-  `ruff format`, each over that id's files). **Flags carry the semantics** — `gofmt -w -r 'true -> false'`
+  (`stage-2-ci.md`) fixes each tool's precise argv (`gofmt -w --`, `gci write --`, `ruff format --`, each
+  over that id's normalized files). **Flags carry the semantics** — `gofmt -w -r 'true -> false'`
   rewrites `return true` into `return false` with a known `argv[0]` and no shell metacharacters, so tool
   identity alone is NOT sufficient. The whitelist therefore carries **ids and globs only** — it can NEVER
   name a `command`/`args`/`argv`/flag. NEVER append a flag to a table argv. Adding a tool, or changing an
   argv, is a **SKILL change**.
+- **THE TABLE IS SMALL, AND THE CRITERION IS APPLIED HONESTLY — `gofmt`, `gci`, `ruff format`.** Each
+  `guarantee` MUST cite what the tool **DOCUMENTS**, never a paraphrase of "it's a formatter". **REJECTED,
+  and re-adding one is a SKILL change that must first defeat the reason**: `goimports` — documented to **ADD
+  missing imports and REMOVE unreferenced ones**; an added import runs that package's `init()` and a guessed
+  import can be the **wrong package** → not semantics-preserving. `gofumpt` — **extra rewrite rules beyond
+  `go/printer` layout**, documented as a rule list, **never** as semantics-preserving; "it is basically
+  gofmt" is NOT an argument. Fewer tools that provably hold beats more that mostly do.
+- **NORMALIZE THE FILE ARGV — FILENAMES ARE PR-CONTROLLED DATA** (`stage-2-ci.md`). The skill owns the argv
+  **SHAPE**, not the operands: `<files>` is globbed from the **PR's worktree**, so every filename is
+  attacker-controlled data spliced into argv, and MUST be normalized like any injection boundary. **Repro:**
+  a PR adds a file named `-cpuprofile=prof.go`; it matches `**/*.go`, survives the exclusion filter, and
+  `gofmt -w '-cpuprofile=prof.go' a.go` exits 0 having parsed it as a **FLAG** and written a CPU profile —
+  trusted binary, skill-owned argv, no shell, no model, and PR content still steered the command. Therefore,
+  EVERY tool, EVERY run: (a) pass **`--`** before the file list — a tool without `--` NEVER enters the table;
+  (b) pass every file as an **ABSOLUTE** (or `./`-prefixed) path — **NEVER a bare relative name**, which is
+  belt-and-braces even if `--` fails; (c) **REFUSE any candidate name starting with `-`** after the exclusion
+  filter — **DROP that file** and log it; do **NOT** abort the run. NEVER pass the glob itself to the tool.
+  Empty set after refusals → run nothing for that id → session model.
 - **RESOLVE `argv[0]` TO A TRUSTED ABSOLUTE EXECUTABLE OUTSIDE THE REPO** (`stage-2-ci.md`). The tool runs
   in the PR's worktree and **the PR under review is untrusted content**: a bare name resolved from a `PATH`
   the PR can influence lets it ship its own `gofmt` and earns it **arbitrary code execution on the path that
@@ -210,8 +228,9 @@
   memory), not repo content, so there is no malicious-committer threat model here at all: the denylist, the
   criterion, and the id-only shape are a **guard against footguns and accidental misuse, NOT a security
   boundary**. NEVER present them as one. What IS a boundary: **the tool runs on UNTRUSTED PR CONTENT inside
-  the PR's worktree** — which is exactly why `argv[0]` resolves to a trusted executable **outside the repo**
-  and why the exclusion filter is the skill's, not the user's.
+  the PR's worktree** — which is exactly why `argv[0]` resolves to a trusted executable **outside the repo**,
+  why the **file operands are normalized** (they are PR data spliced into argv), and why the exclusion filter
+  is the skill's, not the user's.
 - **Default deny, everywhere.** Keyed on the **tool's IDENTITY and documented guarantee**, NEVER on a
   failure "looking mechanical" or on the category "formatter". Unknown check, unlisted tool, an unresolvable
   binary, or a refused id → session model (an **unset** `formatters` header is not one of these: it means

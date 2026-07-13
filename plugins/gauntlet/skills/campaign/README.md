@@ -180,14 +180,20 @@ flowchart TD
 - Some CI failures — pure formatting ones — it fixes by running the **formatter itself**, with no model
   involved at all. A tool only qualifies if its own documentation guarantees the output is *semantically
   equivalent* to the input (an AST-preserving pretty-printer, not a text munger); anything else, including
-  every `--fix`-style linter and every code rewriter, goes to a full-strength fix subagent. Out of the box
-  it knows a small table of tools: `gofmt`, `gofumpt`, `goimports`, `gci`, and `ruff format`. (`ruff
-  format` only counts if your Ruff config leaves `format.docstring-code-format` off — with it on, Ruff
-  reformats Python code *inside docstrings*, which changes what your strings contain. A tool's guarantee can
-  depend on how it's configured, so campaign checks your config before trusting it.)
+  every `--fix`-style linter and every code rewriter, goes to a full-strength fix subagent. The table is
+  deliberately **short** — three tools: `gofmt`, `gci`, and `ruff format`. (`ruff format` only counts if your
+  Ruff config leaves `format.docstring-code-format` off — with it on, Ruff reformats Python code *inside
+  docstrings*, which changes what your strings contain. A tool's guarantee can depend on how it's configured,
+  so campaign checks your config before trusting it.)
+
+  Tools you might expect and won't find: **`goimports`**, because it *adds* missing imports and *removes*
+  unreferenced ones — adding an import runs that package's `init()`, and a guessed import can be the wrong
+  package; and **`gofumpt`**, because it applies extra rewrite rules on top of gofmt's layout and documents
+  them as a rule list, not as semantics-preserving. Both are formatters in the colloquial sense and neither
+  meets the bar, which is the point: the bar is the tool's own documentation, not the vibe of its diff.
 
   You don't configure that list in a file. **Name the formatters when you invoke campaign** ("use gofmt and
-  goimports", or "no formatters" to switch the shortcut off entirely), or **record a preference in memory**
+  gci", or "no formatters" to switch the shortcut off entirely), or **record a preference in memory**
   and campaign will pick it up on later runs. Say nothing and you get the built-in default set. Whatever it
   resolves to is fixed once, at the start of the run, and written into the run's ledger — so a later wake,
   or a fresh agent that picks the run up, uses the same list rather than quietly reverting to the default.
@@ -200,7 +206,7 @@ flowchart TD
   has to defend against.
 
   Naming a tool is all you get to do. You do **not** supply a command, flags, or an argv — campaign owns the
-  exact command line for each tool it knows (`gofmt -w`, `goimports -w`, `gci write`, `ruff format`, …).
+  exact command line for each tool it knows (`gofmt -w --`, `gci write --`, `ruff format --`).
   Flags are not cosmetic: `gofmt -w -r 'true -> false'` is still `gofmt`, but the `-r` flag turns it into a
   rewrite engine that changes `return true` into `return false`. Checking *which tool* runs is not enough if
   you also get to pick *how* it runs, so campaign doesn't let you pick.
@@ -210,6 +216,14 @@ flowchart TD
   path outside your repo before running it — a pull request that ships a file called `gofmt` never gets
   executed. If the real tool can't be found outside the repo, campaign refuses the shortcut and uses a model
   instead.
+
+  And it is careful about the **filenames** it hands the tool, because those come out of the pull request
+  too. A pull request can add a file called `-cpuprofile=prof.go`; it is a perfectly good match for `**/*.go`,
+  and `gofmt -w '-cpuprofile=prof.go' a.go` doesn't format it — it reads it as a *flag* and writes a CPU
+  profile. So campaign always passes `--` before the file list, always passes absolute paths rather than bare
+  names, and drops any candidate file whose name starts with `-` (it logs it and carries on with the rest).
+  Campaign owns the *shape* of the command; the filenames in it are pull-request data, and get treated as
+  data.
 
   Every known tool has a default glob (`gofmt` → `**/*.go`, `ruff format` → `**/*.py`), so you normally name
   nothing but the tool. If you do narrow one to a subdirectory, the glob may only **narrow** the default,
