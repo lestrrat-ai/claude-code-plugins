@@ -30,11 +30,20 @@ but NOT COUNTED parses as "nothing wrong":
     parser let it through by only ever asking whether the REQUIRED fields were there, never whether an
     UNEXPECTED one was. An unexpected field is as much "present but not counted" as an unknown row type.
 
-The lesson is one lesson, not five: check the EXACT shape. "The thing I need is in there somewhere" is
+  * the FILENAME rule accepted `ci-35-1499C72…C971.txt` — an UPPERCASE sha, which no producer of ours can
+    emit — because the pattern said `[0-9a-fA-F]` and the comparison case-folded. "Close enough" is the
+    substring bug one level down;
+  * and a malformed row did not always get a VERDICT at all: `{"row":{"kind":"status"}}` reached a HASH
+    lookup and raised `TypeError: unhashable type: 'dict'`. An unhandled exception is the tool FAILING TO
+    HAVE AN OPINION — not `unusable`, not anything. A CRASH IS NOT A VERDICT, and "malformed input yields
+    a verdict" is not a property you get one `isinstance` at a time: the type check belongs at the
+    boundary, once, as a CLASS.
+
+The lesson is one lesson, not seven: check the EXACT shape. "The thing I need is in there somewhere" is
 not a check — it is the absence of one, and every defect above is that same absence wearing a new hat.
 
 So this file is not a description of the rules. It is the rules, executed, with fixtures that FAIL
-when the rules are wrong. `--self-test` is the handoff: give it to a reviewer or a fix subagent and
+when the rules are wrong. `self-test` is the handoff: give it to a reviewer or a fix subagent and
 it answers "does the contract still hold?" without anyone re-reading a paragraph.
 
 EVERY fixture must fail for ITS OWN reason. A fixture that would still go red after its rule was
@@ -44,8 +53,19 @@ SKIPPED the malformed row left an unmatched witness behind, so CONTAINMENT faile
 passing while the rule it existed to pin was broken. Each fixture is now built so that DELETING its
 rule makes it come back GREEN — the loudest possible failure.
 
+And that claim is CHECKED, not asserted. `self-test` passing means every fixture returns its verdict; it
+CANNOT see the failure mode that matters most — a RULE THAT NOTHING TESTS, whose deletion leaves the suite
+green while the tool has quietly stopped checking. Two rules here were exactly that (the generic
+unexpected-field rejection; the RUNNING/PENDING mapping) while a hand-written matrix swore all 17 were
+covered. So every rule now MARKS itself — `# MUTATE:<id>:<weakening>` above the statement that enforces
+it — and `mutate-ci-snapshot.py` removes each one in turn, re-runs the fixtures, names the fixture that
+notices, and FAILS if none does. Both run in CI. "Which rules are unpinned?" is a question the SUITE
+answers, not one a reviewer has to discover. ADD A RULE, MARK IT, AND GIVE IT A FIXTURE.
+
   verify    parse a snapshot, verify it against an expected head_sha, and print the verdict
-  self-test run every fixture and assert its expected verdict
+  self-test run every fixture and assert its expected verdict (and its REASON — the reason is the only
+            thing that says WHICH rule fired, and a fixture that fails for someone else's reason pins
+            nothing)
 
 The verdict vocabulary intentionally includes UNCLASSIFIED — see KNOWN GAP below.
 """
@@ -121,7 +141,17 @@ ROW_KEYS = {kind: {"row", *fields} for kind, fields in ROW_FIELDS.items()}
 # SHAPE — one PR number, ONE sha, that extension — is the whole point. Asking only whether the expected sha
 # appears SOMEWHERE in the name is not a check: `ci-35-<head_sha>-<old_sha>.txt` names TWO commits and
 # would sail through it, the second sha present and uncounted.
-FILENAME_RE = re.compile(r"^ci-(?P<pr>\d+)-(?P<sha>[0-9a-fA-F]{40})\.txt$")
+#
+# LOWERCASE, because a git object id IS lowercase — `[0-9a-fA-F]` admitted `ci-35-1499C72…C971.txt`, a name
+# NO producer of ours can emit, so a file wearing it was written by something we do not know. And the
+# captured sha is compared to the expected one EXACTLY (never case-folded): case-folding is the same
+# "close enough" reasoning as the substring search, one level down.
+FILENAME_RE = re.compile(r"^ci-(?P<pr>\d+)-(?P<sha>[0-9a-f]{40})\.txt$")
+
+# A git object id, as GitHub returns it. The verdicts below only mean anything against a sha of this shape;
+# an operator who passes anything else gets a LOUD error (exit 2), never a verdict computed from a
+# comparison that could not have succeeded.
+SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 def parse(path: Path) -> list[dict]:
@@ -141,34 +171,74 @@ def parse(path: Path) -> list[dict]:
     Structure is part of the shape: the header is "Exactly one, first line" (stage-2-ci.md). A file whose
     header is not the first row, or which carries a SECOND header, is rejected here — a later header is a
     row nothing reads, and if it named a different commit, the file would describe two.
+
+    TYPE is part of the shape too, and it is the same rule wearing its third hat. Every field the table
+    defines is a STRING; a value of any other type is a value we cannot read — and a value we cannot read
+    is not one we may hand to a comparison and hope. Handing it on does not produce a lenient verdict, it
+    produces NO verdict: `{"row":{"kind":"status"}}` used to reach `kind not in ROW_FIELDS` and raise
+    `TypeError: unhashable type: 'dict'`, and an unhandled exception is the tool FAILING TO HAVE AN
+    OPINION — the one outcome the contract has no word for. Same for a `conclusion` or an `id` holding an
+    object: `in FAIL_CONCLUSIONS` and `Counter(...)` hash their input. So the type check lives HERE, once,
+    at the boundary, as a CLASS — never as a patch at each site that would otherwise blow up.
     """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        # MUTATE:unreadable:text = path.read_bytes().decode("utf-8", errors="replace")
+        raise SnapshotError(
+            f"the snapshot cannot be read as UTF-8 text ({exc}) — bytes we cannot decode are not evidence, "
+            f"and decoding them LENIENTLY would silently rewrite what the file says."
+        ) from exc
+
     rows = []
-    for n, line in enumerate(path.read_text().splitlines(), 1):
+    for n, line in enumerate(text.splitlines(), 1):
         if not line.strip():
+            # MUTATE:blank-line:continue
             raise SnapshotError(f"line {n} is blank — the artifact is JSONL, every line is one object")
         try:
             row = json.loads(line)
         except json.JSONDecodeError as exc:
+            # MUTATE:not-json:continue
             raise SnapshotError(f"line {n} is not JSON: {exc}") from exc
         if not isinstance(row, dict) or "row" not in row:
-            raise SnapshotError(f"line {n} is not a row object")
+            # MUTATE:not-a-row:continue
+            raise SnapshotError(f"line {n} is not a row object — every line is an object with a `row` key")
         kind = row["row"]
+        if not isinstance(kind, str):
+            # MUTATE:row-kind-type:continue
+            raise SnapshotError(
+                f"line {n}: the `row` field is a {type(kind).__name__}, not a string — a row type we cannot "
+                f"even read is not a row we may ignore, and asking whether it is one of the four (a HASH "
+                f"lookup) on a value like this used to CRASH instead of returning a verdict."
+            )
         if kind not in ROW_FIELDS:
+            # MUTATE:unknown-row:continue
             raise SnapshotError(
                 f"line {n} is an UNRECOGNISED row type {kind!r} — the contract defines only "
                 f"{', '.join(sorted(ROW_FIELDS))}. A row we cannot read is NOT a row we may ignore."
             )
         missing = [f for f in ROW_FIELDS[kind] if row.get(f) is None]
         if missing:
+            # MUTATE:missing-field:continue
             raise SnapshotError(f"line {n}: {kind} row is missing required field(s) {', '.join(missing)}")
+        untyped = [f for f in ROW_FIELDS[kind] if not isinstance(row[f], str)]
+        if untyped:
+            # MUTATE:field-type:continue
+            raise SnapshotError(
+                f"line {n}: {kind} row carries non-string value(s) for {', '.join(untyped)} — every field in "
+                f"the contract's table is a STRING. A nested object or a number there is a value nothing can "
+                f"compare, and it used to reach a set/Counter lookup and CRASH the tool."
+            )
         extra = sorted(set(row) - ROW_KEYS[kind])
         if kind == "witness" and "sha" in extra:
+            # MUTATE:witness-sha:pass
             raise SnapshotError(
                 f"line {n}: a witness row carries a sha. The rollup returns NO commit oid, so that value "
                 f"is one WE INVENTED — fabricated evidence, which is worse than none. witness rows are "
                 f"SHA-LESS by contract; a sha on one is never 'harmless extra detail'."
             )
         if extra:
+            # MUTATE:unexpected-field:pass
             raise SnapshotError(
                 f"line {n}: {kind} row carries unexpected field(s) {', '.join(extra)} — the contract gives "
                 f"each row type an EXACT field set. Nothing reads an unexpected field, so it is evidence "
@@ -176,21 +246,26 @@ def parse(path: Path) -> list[dict]:
             )
         rows.append(row)
 
-    if not rows:
-        raise SnapshotError("the artifact is empty — an empty file is not a snapshot, it is no snapshot")
-
     # "Exactly one, first line" is TWO independent rules, and they are checked as two ON PURPOSE. Folded
     # into one ("no header after row 0") they would OVERLAP: a header-second file would trip the duplicate
     # rule, and the header-FIRST rule could then be deleted with no fixture noticing. Each rule must be
     # the ONLY thing standing between its fixture and a green.
+    #
+    # An EMPTY file lands here too, as "found 0" — and it lands here INSTEAD of under a rule of its own on
+    # purpose. A separate `if not rows` raise would be a rule no fixture could ever pin: delete it and an
+    # empty file is STILL unusable, caught by this one. `mutate-ci-snapshot.py` reports exactly that shape
+    # of rule as unpinned, and the honest fix for an unpinnable rule is to not have it.
     headers = [n for n, r in enumerate(rows, 1) if r["row"] == "header"]
+    where = f"line(s) {headers}" if rows else "the file has no rows at all"
     if len(headers) != 1:
+        # MUTATE:one-header:pass
         raise SnapshotError(
-            f"expected EXACTLY ONE header row, found {len(headers)} (line(s) {headers}) — only the first "
+            f"expected EXACTLY ONE header row, found {len(headers)} ({where}) — only the first "
             f"is ever read, so any other is present and NOT COUNTED: if it named a different commit, this "
             f"file would describe two."
         )
     if rows[0]["row"] != "header":
+        # MUTATE:header-first:pass
         raise SnapshotError(
             f"the first row is a {rows[0]['row']!r}, not the header — the contract says the header is "
             f"'Exactly one, FIRST line'. A file that states which commit it is about only AFTER it has "
@@ -215,12 +290,15 @@ def verify_filename(path: Path, expected_sha: str) -> None:
     """
     m = FILENAME_RE.match(path.name)
     if not m:
+        # MUTATE:filename-shape:return
         raise SnapshotError(
             f"filename {path.name!r} is not the artifact's shape — it must be EXACTLY "
-            f"ci-<pr>-<head_sha>.txt (one PR number, ONE 40-hex sha). A name that carries no sha, or more "
-            f"than one, cannot say which commit these bytes describe."
+            f"ci-<pr>-<head_sha>.txt (one PR number, ONE LOWERCASE 40-hex sha). A name that carries no sha, "
+            f"more than one, or a sha in a case no producer of ours emits, cannot say which commit these "
+            f"bytes describe."
         )
-    if m.group("sha").lower() != expected_sha.lower():
+    if m.group("sha") != expected_sha:
+        # MUTATE:filename-sha:pass
         raise SnapshotError(
             f"filename {path.name!r} names head_sha {m.group('sha')!r}, not the expected "
             f"{expected_sha!r} — this artifact describes another commit (or is misfiled)"
@@ -241,6 +319,7 @@ def verify_sha(rows: list[dict], expected_sha: str) -> None:
     """
     header = rows[0]
     if header.get("sha") != expected_sha:
+        # MUTATE:header-sha:pass
         raise SnapshotError(
             f"header sha {header.get('sha')!r} does not match the expected head_sha {expected_sha!r} — "
             f"this file was fetched for another commit"
@@ -250,6 +329,7 @@ def verify_sha(rows: list[dict], expected_sha: str) -> None:
         if r["row"] not in ("checkrun", "status"):
             continue  # witness rows carry no sha, by design
         if r.get("sha") != expected_sha:
+            # MUTATE:evidence-sha:pass
             raise SnapshotError(
                 f"{r['row']} row {r.get('name') or r.get('context')!r} describes "
                 f"{r.get('sha')!r}, not the expected {expected_sha!r} — superseded commit"
@@ -273,14 +353,17 @@ def check_containment(rows: list[dict]) -> None:
     ids = [w.get("id") for w in witnesses]
 
     if any(i in (None, "", "-") for i in ids):
+        # MUTATE:witness-identity:pass
         raise Unverifiable("a witness carries no identity — containment cannot be proven")
     dupes = [i for i, c in Counter(ids).items() if c > 1]
     if dupes:
+        # MUTATE:witness-unique:pass
         raise Unverifiable(f"witness identity is not unique ({dupes[0]}) — containment cannot be proven")
 
     rest = Counter(r.get("id") for r in rows if r["row"] == "checkrun")
     for ident, want in Counter(ids).items():
         if rest[ident] < want:
+            # MUTATE:rest-containment:pass
             raise SnapshotError(f"REST is missing a witnessed run ({ident}) — evidence incomplete")
 
 
@@ -295,30 +378,37 @@ def decide(rows: list[dict]) -> tuple[str, str]:
     evidence = runs + statuses
 
     if not evidence:
+        # MUTATE:zero-evidence:pass
         return PENDING, "zero evidence rows — nothing has registered yet (NOT green)"
 
     for r in runs:
         c = r.get("conclusion")
         if r.get("status") == TERMINAL_STATUS and c in FAIL_CONCLUSIONS:
+            # MUTATE:checkrun-red:pass
             return RED, f"{r['name']} concluded {c}"
     for s in statuses:
         if s.get("state") in STATUS_FAIL:
+            # MUTATE:status-red:pass
             return RED, f"commit status {s['context']} is {s['state']}"
 
     for r in runs:
         if r.get("status") != TERMINAL_STATUS:
+            # MUTATE:checkrun-pending:pass
             return PENDING, f"{r['name']} is {r.get('status')} — still running"
     for s in statuses:
         if s.get("state") in STATUS_RUNNING:
-            return PENDING, f"commit status {s['context']} is {s['state']}"
+            # MUTATE:status-pending:pass
+            return PENDING, f"commit status {s['context']} is {s['state']} — still running"
 
     # Every remaining row is terminal. Anything not explicitly mapped falls HERE, not into green.
     for r in runs:
         c = r.get("conclusion")
         if c not in PASS_CONCLUSIONS:
+            # MUTATE:checkrun-unclassified:pass
             return UNCLASSIFIED, f"{r['name']} concluded {c} — no rule maps it (KNOWN GAP)"
     for s in statuses:
         if s.get("state") not in STATUS_PASS:
+            # MUTATE:status-unclassified:pass
             return UNCLASSIFIED, f"commit status {s['context']} is {s['state']} — no rule maps it"
 
     return GREEN, f"{len(evidence)} evidence rows, all passing, containment holds"
@@ -357,27 +447,51 @@ SUPERSEDED_SHA = "e846cd76a783aa1087e221cc0684b84136419404"
 # the defect kept out of every other rule's way — most importantly, a defective row is never the only
 # source of a witness's containment partner (which is precisely how `malformed-checkrun.jsonl` used to
 # pass for the wrong reason: skipping the bad row broke CONTAINMENT, not the missing-field rule).
+#
+# "Delete the rule and the fixture comes back green" is a CLAIM, and a claim nobody runs is a claim nobody
+# checks — a hand-written matrix asserting it was WRONG about two rules (the generic unexpected-field
+# rejection and the RUNNING/PENDING mapping were pinned by NOTHING, and a reviewer, not the suite, found
+# that out). So the claim is now MACHINE-CHECKED: `mutate-ci-snapshot.py` weakens every rule in this file
+# in turn and FAILS if no fixture notices. "Which rules are unpinned?" is a question the SUITE answers.
+#
+# Each entry is (verdict, needle, why): the fixture must produce that verdict AND a reason containing that
+# needle. The needle is not decoration — it is what pins a rule whose ONLY contribution is its MESSAGE.
+# `witness-sha` is exactly that rule: delete it and the generic unexpected-field rule still says UNUSABLE,
+# so no VERDICT can pin it, and the specific message ("INVENTED") is the whole thing it adds.
 EXPECTED = {
-    "green.jsonl": (GREEN, "names contain SPACES and survive the round-trip"),
-    "wrong-sha.jsonl": (UNUSABLE, "evidence describes a superseded commit — the check that could not fail before"),
-    "header-sha-mismatch.jsonl": (UNUSABLE, "the header names a commit the evidence does not — a misfiled artifact"),
-    "duplicate-witness-id.jsonl": (UNVERIFIABLE, "colliding identity cannot prove containment — fail CLOSED"),
-    "missing-witness.jsonl": (UNUSABLE, "REST is missing a run the rollup saw"),
-    "zero-rows.jsonl": (PENDING, "zero rows is NOT green"),
-    "red-status-only.jsonl": (RED, "a commit-status failure invisible to /check-runs — why BOTH families are read"),
-    "known-gap-skipped.jsonl": (UNCLASSIFIED, "SKIPPED matches no rule — the disclosed gap, made executable"),
-    "unknown-row-type.jsonl": (UNUSABLE, "a FAILING row of an unknown type — skipping it greened a red commit"),
-    "blank-line.jsonl": (UNUSABLE, "JSONL has NO blank lines — a producer we cannot trust is not evidence"),
-    "malformed-checkrun.jsonl": (UNUSABLE, "a REST-ONLY checkrun with no status cannot be judged — SKIPPING it would go GREEN"),
-    "witness-sha.jsonl": (UNUSABLE, "a sha on a witness row is one WE invented — accepted-and-ignored is fabricated evidence"),
-    "header-not-first.jsonl": (UNUSABLE, "the header is 'Exactly one, FIRST line' — evidence before it is unstamped"),
-    "duplicate-header.jsonl": (UNUSABLE, "a SECOND header naming another commit — read by nothing, so present and NOT COUNTED"),
+    "green.jsonl": (GREEN, "all passing", "names contain SPACES and survive the round-trip"),
+    "wrong-sha.jsonl": (UNUSABLE, "superseded commit", "evidence describes a superseded commit — the check that could not fail before"),
+    "header-sha-mismatch.jsonl": (UNUSABLE, "fetched for another commit", "the header names a commit the evidence does not — a misfiled artifact"),
+    "duplicate-witness-id.jsonl": (UNVERIFIABLE, "not unique", "colliding identity cannot prove containment — fail CLOSED"),
+    "witness-no-identity.jsonl": (UNVERIFIABLE, "carries no identity", "a run with no details_url on BOTH sides — '-' cannot tell two runs apart, so it proves nothing"),
+    "missing-witness.jsonl": (UNUSABLE, "missing a witnessed run", "REST is missing a run the rollup saw"),
+    "zero-rows.jsonl": (PENDING, "zero evidence rows", "zero rows is NOT green"),
+    "red-status-only.jsonl": (RED, "commit status", "a commit-status failure invisible to /check-runs — why BOTH families are read"),
+    "red-checkrun.jsonl": (RED, "concluded FAILURE", "a FAILED check run is RED — the rule that decides the whole point of the artifact"),
+    "running-checkrun.jsonl": (PENDING, "still running", "a check run that is not COMPLETED can still move — it is NOT a green"),
+    "pending-status.jsonl": (PENDING, "still running", "a PENDING commit status can still move — it is NOT a green"),
+    "expected-status.jsonl": (PENDING, "still running", "EXPECTED = a required status NOT POSTED YET — the registration gap, visible in the evidence for once"),
+    "known-gap-skipped.jsonl": (UNCLASSIFIED, "no rule maps it (KNOWN GAP)", "SKIPPED matches no rule — the disclosed gap, made executable"),
+    "unclassified-status.jsonl": (UNCLASSIFIED, "no rule maps it", "a commit-status state outside the mapped set — the catch-all is what keeps it OUT of green"),
+    "unknown-row-type.jsonl": (UNUSABLE, "UNRECOGNISED row type", "a FAILING row of an unknown type — skipping it greened a red commit"),
+    "not-a-row.jsonl": (UNUSABLE, "not a row object", "a line that is not an object with a `row` key is not a row we may skip past"),
+    "row-kind-not-string.jsonl": (UNUSABLE, "not a string", "a `row` holding an OBJECT — it used to CRASH the tool (TypeError), and a crash is not a verdict"),
+    "field-not-string.jsonl": (UNUSABLE, "non-string value(s)", "a conclusion holding an OBJECT — it used to CRASH on `in FAIL_CONCLUSIONS`; a nested FAILURE, uncounted"),
+    "not-json.jsonl": (UNUSABLE, "is not JSON", "a corrupt line is a corrupt snapshot — treat it like a failed fetch, never skip it"),
+    "not-utf8.jsonl": (UNUSABLE, "UTF-8", "bytes we cannot decode are not evidence — and decoding them LENIENTLY rewrites what the file says"),
+    "empty.jsonl": (UNUSABLE, "no rows at all", "an empty file is no snapshot — caught by the header rule, which is why it gets no rule of its own"),
+    "blank-line.jsonl": (UNUSABLE, "is blank", "JSONL has NO blank lines — a producer we cannot trust is not evidence"),
+    "malformed-checkrun.jsonl": (UNUSABLE, "missing required field", "a REST-ONLY checkrun with no status cannot be judged — SKIPPING it would go GREEN"),
+    "witness-sha.jsonl": (UNUSABLE, "INVENTED", "a sha on a witness row is one WE invented — accepted-and-ignored is fabricated evidence"),
+    "unexpected-field.jsonl": (UNUSABLE, "unexpected field(s)", "a checkrun carrying a field nothing reads — present and NOT COUNTED, one level down from an unknown row"),
+    "header-not-first.jsonl": (UNUSABLE, "FIRST line", "the header is 'Exactly one, FIRST line' — evidence before it is unstamped"),
+    "duplicate-header.jsonl": (UNUSABLE, "EXACTLY ONE header", "a SECOND header naming another commit — read by nothing, so present and NOT COUNTED"),
     # NEGATIVE CONTROL. Same wrong-commit data as wrong-sha.jsonl, but stamped the OLD way: the sha
     # interpolated from our own literal onto every row instead of taken from GitHub. It comes back
     # GREEN — which is the POINT. It is the proof that the old verification could not fail, and the
     # reason `verify_sha` is worth anything at all. If this fixture ever stops returning green, the
     # bug it memorialises has been reintroduced somewhere else.
-    "negative-control-circular-sha.jsonl": (GREEN, "PROVES the old self-stamped check was VACUOUS — it passes data from the WRONG COMMIT"),
+    "negative-control-circular-sha.jsonl": (GREEN, "all passing", "PROVES the old self-stamped check was VACUOUS — it passes data from the WRONG COMMIT"),
 }
 
 
@@ -390,7 +504,7 @@ def self_test(fixtures: Path) -> int:
     CLEAN. Here it must come back UNUSABLE.
     """
     failures = 0
-    for name, (want, why) in sorted(EXPECTED.items()):
+    for name, (want, needle, why) in sorted(EXPECTED.items()):
         path = fixtures / name
         if not path.exists():
             print(f"MISSING  {name}")
@@ -398,10 +512,17 @@ def self_test(fixtures: Path) -> int:
             continue
         # The fixtures are named by PROPERTY, not by SHA, so the filename rule is exercised separately.
         got, reason = evaluate(path, FIXTURE_SHA, expect_filename_sha=False)
-        if got == want:
+        if got == want and needle in reason:
             print(f"ok       {name:28} -> {got:14} ({why})")
-        else:
+        elif got != want:
             print(f"FAIL     {name:28} -> {got:14} expected {want}\n         reason: {reason}")
+            failures += 1
+        else:
+            # Right verdict, WRONG rule. The reason is the only thing that says WHICH rule fired, and a
+            # fixture that goes UNUSABLE for someone else's reason pins nothing — that is the exact
+            # wrong-reason pass this file was written against.
+            print(f"FAIL     {name:28} -> {got:14} but the reason does not mention {needle!r}"
+                  f"\n         reason: {reason}")
             failures += 1
 
     failures += filename_test(fixtures)
@@ -410,6 +531,7 @@ def self_test(fixtures: Path) -> int:
         print(f"{failures} check(s) FAILED — the CI-snapshot contract is broken.")
         return 1
     print(f"all {len(EXPECTED)} fixtures + {len(FILENAME_CASES)} filename cases hold — the contract is intact.")
+    print("`mutate-ci-snapshot.py` is what proves each of them pins its OWN rule. Run it too.")
     return 0
 
 
@@ -417,13 +539,17 @@ def self_test(fixtures: Path) -> int:
 # the SHA verification once could not fail, and the filename rule was, until now, not checked AT ALL.
 # Every case holds the SAME green bytes: only the NAME differs, so the name is the only thing under test.
 FILENAME_CASES = [
-    (f"ci-35-{FIXTURE_SHA}.txt", GREEN, "named for the head_sha it describes — the real artifact's shape"),
-    (f"ci-35-{SUPERSEDED_SHA}.txt", UNUSABLE, "green bytes MISFILED under a superseded sha — caught by the NAME alone"),
-    ("green.jsonl", UNUSABLE, "a name carrying no sha at all proves nothing about which commit it is"),
+    (f"ci-35-{FIXTURE_SHA}.txt", GREEN, "all passing", "named for the head_sha it describes — the real artifact's shape"),
+    (f"ci-35-{SUPERSEDED_SHA}.txt", UNUSABLE, "names head_sha", "green bytes MISFILED under a superseded sha — caught by the NAME alone"),
+    ("green.jsonl", UNUSABLE, "not the artifact's shape", "a name carrying no sha at all proves nothing about which commit it is"),
     # The SHAPE case. The expected sha IS in this name — and the name still names TWO commits, so it says
     # nothing about which one these bytes describe. A check that asked "does the sha appear somewhere?"
     # passed it. The rule is the EXACT shape, never a substring search.
-    (f"ci-35-{FIXTURE_SHA}-{SUPERSEDED_SHA}.txt", UNUSABLE, "an EXTRA sha in the name — the sha is present, and the name is still a lie"),
+    (f"ci-35-{FIXTURE_SHA}-{SUPERSEDED_SHA}.txt", UNUSABLE, "not the artifact's shape", "an EXTRA sha in the name — the sha is present, and the name is still a lie"),
+    # The CASE case. Same 40 hex digits, UPPERCASED. A git object id is lowercase and every producer of
+    # ours emits it lowercase, so this name came from something we do not know — and `[0-9a-fA-F]` plus a
+    # case-folded comparison waved it through as GREEN. "Close enough" is the substring bug in a new hat.
+    (f"ci-35-{FIXTURE_SHA.upper()}.txt", UNUSABLE, "not the artifact's shape", "an UPPERCASE sha — no producer of ours writes one, so this name is not ours"),
 ]
 
 
@@ -431,14 +557,18 @@ def filename_test(fixtures: Path) -> int:
     """Copy `green.jsonl` under each name and evaluate WITH the filename rule on."""
     failures = 0
     with tempfile.TemporaryDirectory() as tmp:
-        for name, want, why in FILENAME_CASES:
+        for name, want, needle, why in FILENAME_CASES:
             path = Path(tmp) / name
             shutil.copyfile(fixtures / "green.jsonl", path)
             got, reason = evaluate(path, FIXTURE_SHA, expect_filename_sha=True)
-            if got == want:
+            if got == want and needle in reason:
                 print(f"ok       {name:28} -> {got:14} ({why})")
-            else:
+            elif got != want:
                 print(f"FAIL     {name:28} -> {got:14} expected {want}\n         reason: {reason}")
+                failures += 1
+            else:
+                print(f"FAIL     {name:28} -> {got:14} but the reason does not mention {needle!r}"
+                      f"\n         reason: {reason}")
                 failures += 1
     return failures
 
@@ -474,6 +604,12 @@ def main() -> int:
     if args.cmd == "self-test":
         return self_test(args.fixtures)
 
+    # An operator error is NOT a snapshot verdict. A `--head-sha` that is not a git object id makes every
+    # comparison below unfalsifiable-by-construction (the filename rule compares EXACTLY, so an uppercase
+    # or truncated sha would report the EVIDENCE as unusable — blaming the file for the caller's mistake).
+    # Say so, loudly, and exit 2: no verdict at all beats a verdict about the wrong question.
+    if not SHA_RE.match(args.head_sha):
+        fail(f"--head-sha {args.head_sha!r} is not a git object id (40 LOWERCASE hex) — refusing to verify")
     if not args.file.exists():
         fail(f"no such snapshot: {args.file}")
     verdict, reason = evaluate(args.file, args.head_sha, expect_filename_sha=args.expect_filename_sha)

@@ -164,22 +164,34 @@ refetch.
 the artifact's shape *exactly*, and each one is that way because the loose version of it says GREEN to a
 file that is lying:
 
-- **The FILENAME must be EXACTLY `ci-<pr>-<head_sha>.txt`** — one PR number, **ONE** sha, that extension.
-  **NEVER** settle for "the expected sha appears somewhere in the name": `ci-<pr>-<head_sha>-<old_sha>.txt`
-  contains it *and names two commits*, so it says nothing about which one these bytes describe.
+- **The FILENAME must be EXACTLY `ci-<pr>-<head_sha>.txt`** — one PR number, **ONE** sha in **LOWERCASE**
+  40-hex (a git object id **is** lowercase, and every producer of ours writes it that way), that
+  extension. **NEVER** settle for "the expected sha appears somewhere in the name":
+  `ci-<pr>-<head_sha>-<old_sha>.txt` contains it *and names two commits*, so it says nothing about which
+  one these bytes describe. And **NEVER case-fold the comparison**: `ci-<pr>-<HEAD_SHA>.txt` is a name no
+  producer of ours can emit, so a file wearing it came from something we do not know. "Close enough" is
+  the substring bug wearing a new hat.
 - **The `header` is EXACTLY ONE row, and it is the FIRST line.** These are **two** requirements, and
   **both** are checked. A file that says which commit it is about only *after* it has already listed
   evidence has not said it: those rows were read unstamped. And a **SECOND** header is read by nothing —
-  so if it named a different commit, the file would describe **two**, and nothing would notice.
+  so if it named a different commit, the file would describe **two**, and nothing would notice. (An
+  **empty** file lands here too, as "zero headers" — it is **no snapshot**.)
 - **Each row type carries an EXACT field set** — the one in the table above. Every field it requires, and
   **NOT ONE MORE**.
+- **Every field value is a STRING**, and a value of any other type — a nested object, a number, a list —
+  makes the snapshot **UNUSABLE**. This is the *same* rule one level down, and skipping it does not
+  produce a lenient verdict, it produces **NO verdict**: a `{"row":{...}}` or a `"conclusion":{...}` is a
+  value you cannot compare, and a comparison you cannot make is not a comparison you may assume the
+  result of. **A CRASH IS NOT A VERDICT** — the tool failing to have an opinion is the one outcome this
+  vocabulary has no word for.
 
 **EVERY line must be READ, and a line you cannot read is NOT a line you may SKIP.** The four `row` types
-above are the **whole** vocabulary. A **blank** line, a row of a type **not** in that table, a row
+above are the **whole** vocabulary. A **blank** line, bytes that are **not valid UTF-8** (**never** decode
+them leniently — that silently rewrites what the file says), a row of a type **not** in that table, a row
 **missing a field its type requires** (a `checkrun` with no `status`, a `status` with no `state`, a
-`witness` with no `id`), or a row carrying a field its type does **not** define (**a `sha` on a `witness`
-row** — see below) makes the snapshot **UNUSABLE** → `ci = pending`, refetch. **NEVER skip past it, and
-NEVER accept-and-ignore it.**
+`witness` with no `id`), a row whose value has the **wrong TYPE**, or a row carrying a field its type does
+**not** define (**a `sha` on a `witness` row** — see below) makes the snapshot **UNUSABLE** → `ci =
+pending`, refetch. **NEVER skip past it, and NEVER accept-and-ignore it.**
 
 Skipping is how the false green gets back in: an unrecognised row is not *nothing*, it is something you
 **failed to understand** — and if it happened to carry a **FAILURE**, ignoring it turns a red commit green
@@ -194,6 +206,16 @@ an evidence row, you have deleted the verification**, not implemented it.
 
 **The ledger write is GATED ON the parsed contents.** A guard that runs *beside* the write is not a
 guard.
+
+**EVERY RULE ABOVE IS EXECUTED, AND EVERY ONE IS PINNED BY A FIXTURE THAT FAILS WHEN IT IS GONE.** Prose
+cannot be run, and three defects shipped in *this prose* — so the rules also exist as
+`scripts/ci-snapshot.py` (`self-test` runs the fixtures) and `scripts/mutate-ci-snapshot.py`, which
+**removes each rule in turn and FAILS if no fixture notices**. Both run in CI. That second script exists
+because a fixture suite cannot see its own worst failure — a rule that **nothing** tests, whose deletion
+leaves the suite green — and a hand-written matrix claiming otherwise was **wrong about two rules**.
+**"Which rules are unpinned?" is a question the SUITE answers, never one a reviewer has to discover.** If
+you change a rule here, change it there; if you add one, mark it (`# MUTATE:<id>:<weakening>`) and give it
+a fixture that goes **GREEN** when it is deleted.
 
 #### CROSS-FETCH AGREEMENT — containment on a USABLE `.id`, NOT equality
 
@@ -288,10 +310,13 @@ rows. The `header` and `witness` rows hold **no verdict** and are never consulte
   required set is complete.
 - **pending** → no usable snapshot (any fetch failed, the file is absent, it **fails ANY rule in VERIFY
   above** — misnamed, header not first or not alone, a line that does not parse as JSON, an unknown row
-  type, a missing or unexpected field, a `.sha` that does not match — or containment **cannot be
+  type, a missing or unexpected field, a field whose **value is not a string**, a `.sha` that does not
+  match — or containment **cannot be
   established**: it fails, **or** a `witness` `.id` is null/duplicated so the test proves nothing), zero
   evidence rows, or any `checkrun` row whose `.status`
-  is not yet `COMPLETED` / any `status` row whose `.state` is `PENDING` → leave `ci = pending` and, if the
+  is not yet `COMPLETED` / any `status` row whose `.state` is `PENDING` or `EXPECTED` (**`EXPECTED` is a
+  required status that has not been posted yet** — it can still move, so it is **NOT** a green) → leave
+  `ci = pending` and, if the
   watch task has exited, **relaunch it in this same wake** — a pending PR must never sit unwatched waiting
   for the heartbeat.
 - **red** → any `checkrun` row whose `.conclusion` is `FAILURE` / `TIMED_OUT` / `CANCELLED` /
