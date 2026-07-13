@@ -305,6 +305,21 @@ check logs FIRST; the class picks the model:
 file(s), and the worktree path. Tell it **NOT** to re-derive the whole diff or read beyond what the
 failure touches.
 
+**But scoping the fix is NOT licence to fix only the INSTANCE.** Every fix subagent — CI or review —
+gets this instruction **verbatim**, because a scoped fixer is exactly the thing that will patch the one
+line it was pointed at and leave the class intact:
+
+> **When your fix changes a DEFINITION (a rule, a command, a schema, a format) or a FACT (a count, a
+> name, an API behavior), you are NOT done until every place that RESTATES it is also correct.** `grep`
+> for the old value, the old spelling, the old command, the old number — across the whole tree, not just
+> the file you were sent to. Restatements hide in **summaries**, **quick-reference bullets**,
+> **cross-references**, **table rows**, **worked examples**, and **other copies of the same command**. A
+> summary that has drifted from its definition is **worse than no summary** — it is the version people
+> actually read. **Report every site you found and its disposition, including the ones you deliberately
+> left alone and why.** If your fix is genuinely local and restates nothing, say so explicitly.
+
+This is a **report** requirement, not just a search requirement: a sweep nobody can audit did not happen.
+
 #### The cheap CI-fix subagent — run the tool, READ the diff, ESCALATE
 
 The point of putting a model here is that **something LOOKS at what happened before it is committed**.
