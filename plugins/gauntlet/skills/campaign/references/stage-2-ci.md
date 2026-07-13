@@ -15,14 +15,14 @@ row by column position:
   pending PR must never sit unwatched waiting for the heartbeat.
 - **red** → any failing line → **stop any review pass in flight on that PR first** (Loop control
   step 3 — the fix will replace its SHA, so the verdict is already void; free the slot), then diagnose
-  from the check logs and **CLASSIFY the failure** ("Whitelist classification" below) **before dispatching
-  anything**. Whitelisted formatting failure → run the **TOOL, no model**. Everything else → a scoped
-  CI-fix subagent into `<worktree>` — the PR row's
+  from the check logs and **CLASSIFY the failure** ("Tool classification" below) **before dispatching
+  anything**. A failure whose fixer is a known tool **the user ENABLED for this run** → run the **TOOL, no
+  model**. Everything else → a scoped CI-fix subagent into `<worktree>` — the PR row's
   ledger `worktree` column value, the single source of truth for this PR's checkout path (created at
   adoption/pre-review per `pr-adoption.md`; the ledger-recorded `<worktree>` path — default
   `.worktrees/<headRefName>` when campaign creates it, else a reused existing checkout).
 
-  Not whitelisted →
+  No enabled known tool for it (the default state — **campaign ships with NO tool enabled**) →
   **dispatch on the session model** — set the model explicitly, and do NOT downgrade it (`SKILL.md`,
   "Subagent Dispatch"). Its output is **code that gets merged**, and nothing downstream validates it: a
   wrong fix can turn CI **green** — by weakening the check, or by being plain wrong in product code no
@@ -44,7 +44,7 @@ row by column position:
 #### Any campaign commit to the PR head resets the gate
 
 **THE RULE — every commit campaign pushes to a PR's head branch is a PR-content change, whatever wrote
-it: a CI-fix subagent, a review-fix subagent, or a whitelisted TOOL run with no model at all.** Every one
+it: a CI-fix subagent, a review-fix subagent, or an enabled TOOL run with no model at all.** Every one
 of them MUST, in the same step:
 
 - **reset `reviews_ok` to 0 AND restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`**
@@ -57,24 +57,35 @@ of them MUST, in the same step:
 NEVER treat a tool-written commit as exempt: the verdicts on the old SHA describe content that no longer
 exists, and a `gauntlet-accepted` label on it is a false public claim.
 
-#### Whitelist classification — run the skill-owned TOOL, or the session model
+#### Tool classification — run an ENABLED KNOWN tool, or the session model
 
-Before dispatching anything, decide whether the failing check's fixer is a **whitelisted tool**. **A tool
-is whitelisted ONLY IF it guarantees its output is SEMANTICALLY EQUIVALENT to its input** — an
-AST-preserving pretty-printer, not a text munger — and the burden is a **CITED SOURCE: a LINK to the tool's
-own documentation and the passage it rests on.** Saying the word "documented" is NOT a citation.
-**Cannot point to a source → NOT whitelisted → session model.** There is NO blanket "formatters are
-safe" rule.
+**THE SKILL SHIPS WITH ZERO TOOLS ENABLED. `formatters` defaults to `-`.** Out of the box campaign runs
+**no tool at all** and **every** CI failure goes to the session model. Enabling a tool is an explicit
+**USER** act ("The tool list" below).
 
-That guarantee belongs to the whitelisted **tool's output** and to nothing else — a model hand-editing the
-same file does NOT inherit it, however formatting-like its diff looks. A pure-indentation edit can move
-behavior in a whitespace-significant language and still be formatter-clean, so there is no diff-shape
-guard that makes a cheap model's edit safe to accept. **NO SUBAGENT IS EVER RUN ON A DOWNGRADED MODEL.**
+**The skill makes NO safety claim about ANY tool.** It supplies the **MECHANISM** (the exact argv, the
+binary resolution, the seven operand checks, the exclusion filter, the gate reset) and the **EVIDENCE**
+(what each tool's own doc does and does not say). **The USER decides which tools to trust, and accepts that
+risk.** State it plainly, every time it comes up: **the skill guarantees HOW a tool is run — NEVER WHAT the
+tool does.**
+
+Before dispatching anything, decide whether the failing check's fixer is a **KNOWN tool that this run's
+`formatters` header ENABLES**. Not enabled, not known, or `formatters` is `-` → **session model**. Default
+deny; there is no blanket "formatters are safe" rule, and campaign NEVER infers a tool from the failure
+"looking mechanical".
+
+**"KNOWN" MEANS THE SKILL KNOWS HOW TO RUN IT SAFELY — IT DOES NOT MEAN "SAFE TO ENABLE".** The skill owns
+that tool's exact argv, its operand checks, and its resolution rules. It does **NOT** vouch for the tool.
+**NEVER present a known-tools row as blessed, trusted, whitelisted, or recommended by the skill.**
+
+Whatever a tool does, it does NOT transfer to a model hand-editing the same file — a pure-indentation edit
+can move behavior in a whitespace-significant language and still be formatter-clean, so there is no
+diff-shape guard that makes a cheap model's edit safe to accept. **NO SUBAGENT IS EVER RUN ON A DOWNGRADED
+MODEL.**
 
 **The SKILL owns the exact argv. NOTHING else supplies a command.** The known-tools table below fixes,
 per tool, the precise argv campaign may execute. The run's **`formatters` ledger header field** selects
-**only which of those tools run, over which files** ("The formatter list" below). The **CRITERION** is the
-skill's and is **NEVER configurable**.
+**only which of those tools run, over which files** ("The tool list" below).
 
 **WHY nothing outside the skill gets flags — the flags carry the semantics.** Tool identity is NOT
 sufficient:
@@ -85,88 +96,50 @@ gofmt -w -r 'true -> false'     # argv[0] is gofmt. A known tool. No shell metac
 
 `-r` turns `gofmt` from a pretty-printer into a **rewrite engine**: it rewrites `return true` into
 `return false`. It would pass every identity check, every metacharacter check, and every denylist check.
-So campaign REMOVES the degree of freedom instead of trying to police it: the formatter list carries
+So campaign REMOVES the degree of freedom instead of trying to police it: the tool list carries
 **ids and globs only** — it can NEVER name a `command`, `args`, `argv`, or a flag.
 
-#### The KNOWN-TOOLS TABLE — the skill's, argv and all
+#### The KNOWN-TOOLS TABLE — what the SKILL guarantees, and what is NOT proven
 
-The ONLY binaries campaign may execute on the no-model path, in the ONLY form it may execute them.
-`<files>` = the tool's **default glob**, optionally NARROWED by a validated per-id glob from the
-`formatters` header field, with the skill's **exclusion filter** applied afterwards — always (both below).
-Adding a tool, changing an argv, or changing a default glob is a **SKILL change** (gated, reviewed).
+**A row is NOT an endorsement.** These are the ONLY binaries campaign may execute on the no-model path, in
+the ONLY form it may execute them — **and ONLY when the user has enabled them.** `<files>` = the tool's
+**default glob**, optionally NARROWED by a validated per-id glob from the `formatters` header field, with
+the skill's **exclusion filter** applied afterwards — always (both below). Adding a tool, changing an argv,
+or changing a default glob is a **SKILL change** (gated, reviewed).
 
-| `id` | argv — **skill-owned, exact** | default `files` glob | guarantee — the SOURCE, then what it says |
-|---|---|---|---|
-| `gofmt` | `["gofmt", "-w", "--", <files>]` | `**/*.go` | **`cmd/gofmt` — https://pkg.go.dev/cmd/gofmt**. The doc defines the behaviour: *"Gofmt formats Go programs. It uses tabs for indentation and blanks for alignment."* **`-w`** — *"If a file's formatting is different from gofmt's, overwrite it with gofmt's version"* — **writes the formatted result back to the file. That is what we WANT: it is the ONLY mutation the skill-owned argv performs.** **`-r`** — *"Apply the rewrite rule to the source before reformatting"* — and **`-s`** — *"Try to simplify code"* — are the only documented flags that apply a **non-formatting source TRANSFORMATION**: they change the PROGRAM, beyond re-printing it. **NEITHER is in the skill-owned argv**, and nothing may append one |
+Every row's **"what the skill guarantees"** is the same mechanical set, and it is ALL the skill guarantees:
+the argv is **skill-owned and exact**; **NO flag is ever appended**; `argv[0]` is resolved to a **trusted
+absolute executable OUTSIDE the repo** via a sanitized `PATH`; the **seven operand checks** run on every
+candidate; **resolve-then-filter** (the exclusion filter matches the original AND the resolved path); the
+tool is run **without a shell**, **never with a glob**, **never with an empty operand set**; and **any commit
+it makes RESETS the gate**.
 
-**Read that cell for EXACTLY what it says — and state ONLY the TRANSFORMATION property.** `-r` and `-s` are
-the only documented flags that **transform the source beyond re-printing it**. That is the whole claim.
+| `id` | argv — **skill-owned, exact** | default `files` glob | what the skill guarantees (mechanical, OURS) | what is NOT proven (about the TOOL) |
+|---|---|---|---|---|
+| `gofmt` | `["gofmt", "-w", "--", <files>]` | `**/*.go` | Exactly the argv on the left, over checked operands. `-w` (*"If a file's formatting is different from gofmt's, overwrite it with gofmt's version"*) is the ONLY mutation it performs. `-r` (*"Apply the rewrite rule to the source before reformatting"*) and `-s` (*"Try to simplify code"*) are the documented flags that TRANSFORM the source beyond re-printing it — **neither is in the argv, and nothing may append one** | **The cited doc (https://pkg.go.dev/cmd/gofmt) documents formatting behaviour and flags. It NEVER states a semantic-equivalence guarantee.** Our reading — a pretty-printer that parses and re-prints cannot change program meaning — is an **INFERENCE, not a documented guarantee**. **Enabling `gofmt` means accepting that inference.** |
+| `gci` | `["gci", "write", "--", <files>]` | `**/*.go` | Exactly the argv on the left, over checked operands. `write` is the ONLY subcommand; no section/custom-order flag is ever appended | **The cited docs (https://github.com/daixiang0/gci) describe import ORDERING and GROUPING. They NEVER state that gci neither adds nor removes an import**, and never state semantic equivalence. The Go init-order argument (imports drive `init()`; reordering them does not) is **OURS, an INFERENCE**. **Enabling `gci` means accepting it.** |
+| `ruff format` | `["ruff", "format", "--", <files>]` | `**/*.py` | Exactly the argv on the left, over checked operands. No `--fix`, no `--select`, no config flag is ever appended; the repo's own Ruff config governs | **The cited docs (https://docs.astral.sh/ruff/formatter/) describe formatting behaviour. They do NOT state an AST/semantic-equivalence guarantee** we can rely on. Separately, `format.docstring-code-format` (https://docs.astral.sh/ruff/settings/#format_docstring-code-format) reformats code **inside docstrings** — i.e. rewrites string CONTENTS — and it is the **repo's config**, not ours, that decides whether it is on. **Enabling `ruff format` means accepting both.** |
 
-- **`-w` CHANGES THE SOURCE** — it overwrites the file with gofmt's result. It is in our argv on purpose;
-  it is the only mutation the argv performs. NEVER write a sentence that implies `-w` leaves the source
-  alone.
-- **`-cpuprofile` is a separate documented flag that WRITES A FILE** — it does not transform the source. It
-  is named here only because a FILENAME shaped like `-cpuprofile=x.go` is the injection repro below.
-- The doc lists others still (`-l`, `-d`, `-e`, …).
+**THE ASYMMETRY — say it, do not soften it:** the skill **REFUSES what is documented to be unsafe**; it
+**does NOT bless what is merely undocumented — that call is the USER's.** A tool whose docs say it CHANGES
+the program is **denied and cannot be enabled** ("NON-OVERRIDABLE DENYLIST" below) — that is a documented
+fact, so the skill can and does refuse it. A tool whose docs say nothing either way sits in the table above:
+the skill will run it correctly **if you enable it**, and it makes **no claim** that doing so is safe.
 
-**GUARD — this claim has been stated wrongly THREE times.** NEVER say "exactly two flags", "the only two
-flags", or "the only flags that CHANGE the source". All three are false. The property is
-**source-TRANSFORMING**, and nothing broader.
-
-The safety of this cell rests on **three** things, all of them ours: the argv is **skill-owned and exact**
-(`["gofmt","-w","--",<files>]`); **NO flag may ever be appended** to it; and **no file operand can be read as
-a flag** (`--`, plus the operand-normalization rules below). That last one is not theoretical — the injection
-repro below is a file literally named `-cpuprofile=prof.go`.
-
-**ONE tool. That is the whole table**, and it is small **on purpose**: it is what survived a rule that
-demands a **documented** guarantee, quoted from the source. Every tool has a default glob, so an
-**unnarrowed formatter list has a fully defined file set**: the table's defaults, filtered. NEVER invent a
-default glob for a tool; NEVER widen one.
-
-**The cheap path therefore covers Go formatting and NOTHING else.** Every other CI failure — **including
-ALL Python/JS/other-language formatting** — goes to the **session model**. That is the safe default, and it
-is **NOT a regression**: it is what happened before this path existed. NEVER treat the table's size as a
-limitation to route around — it is the rule working.
-
-**Adding a tool is a SKILL change (gated, reviewed), and the bar is a SOURCE THAT STATES THE GUARANTEE,
-QUOTED IN THE CELL.** "It is a formatter", "it is probably fine", "it is widely used", "the diff looks
-mechanical" are **NOT admissible**.
-
-**A `guarantee` cell MUST carry a LINK to the tool's own documentation AND the passage it rests on,
-QUOTED.** The WORD "documented" is not evidence — an unsourced "documented as a pretty-printer" is the same
-category-assertion that this table exists to kill. **FOLLOW the link before you trust the cell: a citation
-that does not SUPPORT the claim is WORSE than no citation** — it launders our own reasoning as the source's.
-**A claim that cannot be tied to a source → the tool comes OUT of the table.** No exception, including for
-tools already in it — `ruff format` and `gci` were removed by exactly this rule (below).
+**A "what is NOT proven" cell MUST carry a LINK to the tool's own documentation and say exactly what that
+doc does and does NOT state. NEVER upgrade an inference into a guarantee.** The word "documented" is not
+evidence, and **a citation that does not SUPPORT its claim is WORSE than none** — it launders our belief as
+the source's. **FOLLOW the link before you trust a cell.** `gofmt`, `gci` and `ruff format` were once
+presented as *proven* semantics-preserving on exactly such citations; none of the three docs says so, and
+the honest table says so instead of removing the tools and pretending the question was settled.
 
 **NEVER append a flag to a table argv.** NEVER `-r`, NEVER `-s`, NEVER a catch-all `--fix`, NEVER anything
 the table does not list. Execute it **WITHOUT a shell** — never `sh -c`, `bash -c`, `os.system`, or any
 shell string.
 
-**REMOVED — tools that FAIL the criterion.** They are not "not configured"; they are **rejected**, and
-re-adding one is a SKILL change that must first defeat the reason below:
-
-- **`ruff format`** — **REJECTED for now.** Its formatter docs, **as cited**
-  (https://docs.astral.sh/ruff/formatter/), do **NOT state an AST-equivalence guarantee**. The tool may well
-  be safe; the whitelist admits tools on **DOCUMENTED** guarantees, never on reputation or on our belief.
-  A citation that does not support its claim is **WORSE than no citation** — the claim was laundered through
-  the link. Re-admitting it requires **a source that ACTUALLY STATES the guarantee, QUOTED in the cell** — a
-  SKILL change.
-- **`gci`** — **REJECTED for now.** The cited project docs (https://github.com/daixiang0/gci) describe import
-  **ordering/grouping** but do **NOT state** that gci never adds and never removes an import. The Go
-  init-order argument previously in that cell was **ours**, presented as the source's. Same rule: find a
-  source that states the guarantee and quote it, or gci stays out.
-- **`goimports`** (https://pkg.go.dev/golang.org/x/tools/cmd/goimports) — its own doc says it updates the
-  import lines: it **ADDS missing imports and REMOVES unreferenced ones**. Adding an import runs that
-  package's `init()`; a guessed import can resolve to the **wrong package**. Changing the set of imports is
-  not semantics-preserving. NOT a formatter for this purpose.
-- **`gofumpt`** (https://github.com/mvdan/gofumpt) — a stricter gofmt that applies **EXTRA rewrite rules**
-  beyond `go/printer` layout, and its README states them as a rule LIST, **never** as a semantics-preserving
-  guarantee. It edits source constructs, not just whitespace. It does not meet the criterion; being
-  "gofmt-like" is not an argument. NEVER re-add it on the grounds that it "is basically a formatter".
-- **golangci-lint `whitespace`** — no safe fixer exists. Its only fix path is the catch-all
-  `golangci-lint run --fix`, which the denylist forbids. NEVER invent a command for it; a `whitespace`
-  failure goes to the session model.
+**golangci-lint `whitespace` is NOT a known tool** — no safe fixer exists: its only fix path is the
+catch-all `golangci-lint run --fix`, which the denylist forbids. NEVER invent a command for it; a
+`whitespace` failure goes to the session model.
 
 #### RESOLVE argv[0] TO A TRUSTED ABSOLUTE EXECUTABLE — OUTSIDE THE REPO
 
@@ -285,7 +258,8 @@ wrong question. Reason on record: **symlinked directory component / excluded aft
    symlinked directory slips a candidate past it — and past the exclusion filter, which was matched on the
    SPELLED path. A source file that must be formatted **never** sits under a symlinked directory. This check
    is load-bearing: it bounds **what we write**. Matching the exclusion filter on the resolved path too is
-   **defence in depth, NOT the guarantee** ("THE SKILL-OWNED EXCLUSION FILTER" below) — run BOTH anyway.
+   **defence in depth, NEVER a substitute for this check** ("THE SKILL-OWNED EXCLUSION FILTER" below) — run
+   BOTH anyway.
 
 **The exclusion filter runs on the ORIGINAL and on the RESOLVED path; checks 3–7 run AFTER it and BEFORE the
 argv is built** — the filter decides which candidates survive; these decide which surviving candidates are
@@ -305,64 +279,68 @@ model. Check the set is non-empty **immediately before building the argv**, ever
 to the tool and bypasses the exclusion filter AND this normalization. Campaign expands, filters, refuses,
 normalizes, and passes the resulting **explicit path list**.
 
-#### NON-OVERRIDABLE DENYLIST — the skill's; NOTHING widens past it
+#### NON-OVERRIDABLE DENYLIST — the ONE thing the skill REFUSES
 
-Nothing below is ever admitted to the table, and the formatter list may NEVER name it:
+**These are KNOWN-BAD: their own docs say they CHANGE the program. That is a documented FACT, not an
+inference — so the skill refuses them, and NO config can enable one.** Nothing below is ever admitted to
+the known-tools table, and the tool list may NEVER name it:
 
+- **`goimports`** (https://pkg.go.dev/golang.org/x/tools/cmd/goimports): its doc says it **ADDS missing
+  imports and REMOVES unreferenced ones**. An added import runs that package's `init()`; a guessed import
+  can resolve to the **wrong package**. Documented to change the program.
 - **`prettier`**: it reformats the **contents** of tagged template literals (`` gql`…` ``, `` css`…` ``),
-  changing the runtime string the tag function receives — a semantic change made by the tool itself.
+  changing the runtime string the tag function receives — documented, and a semantic change.
+- **`gofumpt`** (https://github.com/mvdan/gofumpt): applies **EXTRA rewrite rules** beyond gofmt's layout,
+  documented as a rule LIST of source-construct edits. "It is basically gofmt" is NOT an argument.
 - any **generic or unscoped** "whitespace" / "trailing-whitespace" fixer that can rewrite content inside
   string literals, heredocs, or Markdown (e.g. trailing double-space hard breaks).
 - a **semantic rewriter** — `modernize`, codemods, `pyupgrade`, `2to3`, any rule that rewrites logic. A
   `modernize` rewrite can PASS its own rule while CHANGING BEHAVIOR (e.g. `sort.Slice` → `slices.SortFunc`
   with a reversed or non-equivalent comparator): lint-clean, semantics changed.
-- a **catch-all fixer** — `golangci-lint run --fix`, `ruff --fix`, `eslint --fix`, `cargo clippy --fix`, or
-  any `--fix`/`--write` flag on a linter that applies semantic rules. A whitelisted run invokes **only the
-  table's argv**, NEVER a catch-all `--fix`.
-- any run that can make a **SEMANTIC** change — this is the criterion from the other side. A tool that can
-  change meaning can WEAKEN a check, and no path filter fixes that. **NEVER admit a tool on the strength of
-  the exclusion filter** ("WHAT MAKES THE NO-MODEL PATH SAFE" below): the filter is not the guarantee.
-- **NEVER whitelisted**: a failing product test (making a test pass is not the same as fixing the bug), a
+- every **catch-all fixer** — `golangci-lint run --fix`, `ruff --fix`, `eslint --fix`, `cargo clippy --fix`,
+  or **any `--fix`/`--write` flag** on a linter that applies semantic rules. An enabled run invokes **only
+  the table's argv**, NEVER a catch-all `--fix`.
+- **NEVER a fixer at all**: a failing product test (making a test pass is not the same as fixing the bug), a
   compile error, and any rule that rewrites logic.
 
-Key it on the **tool's IDENTITY and its CITED documented guarantee** — NEVER on a judgment that the failure
-"looks mechanical", NEVER on the category "formatter". **Default deny. Unknown check, unlisted tool, an
-unresolvable binary, or a refused id → session model.** (An **unset** `formatters` header is not a
-refusal: it means the known-tools table's defaults.)
+**THE ASYMMETRY IS THE POINT: the skill refuses what is DOCUMENTED to be unsafe; it does NOT bless what is
+merely UNDOCUMENTED — that call is the user's** (the known-tools table above). Key the denial on the tool's
+**IDENTITY and its own documentation** — NEVER on a judgment that a failure "looks mechanical", NEVER on the
+category "formatter". **Default deny: unknown check, tool not in the table, tool not enabled, `formatters`
+= `-` (the default), an unresolvable binary, or a refused id → session model.**
 
-#### WHAT MAKES THE NO-MODEL PATH SAFE — the CRITERION and the OPERAND CHECKS
+#### WHAT THE NO-MODEL PATH ACTUALLY RESTS ON — say it honestly
 
-Two things. Both mechanical. Neither is a list of paths.
+Two things, and only one of them is ours.
 
-1. **The CRITERION bounds WHAT THE TOOL CAN DO.** A tool is admitted ONLY on a documented
-   semantic-equivalence guarantee, quoted from its own source (the known-tools table above). `gofmt`
-   re-prints the program without changing its meaning. **So whatever it touches, it CANNOT change the
-   meaning of.** A reformatted test asserts exactly what it asserted before. A reformatted check definition
-   checks exactly what it checked before. **Weakening a check requires a SEMANTIC change, and the
-   skill-owned argv CANNOT make one.**
-2. **The OPERAND CHECKS bound WHAT WE WRITE.** Resolve the path; refuse `-`-leading names, symlinks (last
-   component AND any directory component), a real path outside the worktree, non-regular files, `nlink > 1`;
-   pass `--`; NEVER a glob; NEVER an empty operand set ("NORMALIZE THE FILE ARGV" above).
+1. **OURS — the MECHANISM.** The skill-owned exact argv (no flag ever appended), `argv[0]` resolved to a
+   trusted absolute executable **outside the repo**, the **seven operand checks**, resolve-then-filter, no
+   shell, no glob, no empty operand set, and the **gate reset on any commit**. This bounds **WHAT WE
+   RUN and WHAT WE WRITE**, mechanically, every run.
+2. **THE USER'S — the TOOL's behaviour.** Whether the tool preserves the meaning of what it touches is
+   **NOT proven by any doc we can cite** (the table above). The user enabled it; the user accepted that
+   inference. **NEVER restate it as a guarantee of the skill's, and NEVER re-derive it from the exclusion
+   filter below.**
 
-**That is the whole guarantee, and it depends on NO list being complete.** NEVER re-derive the safety of
-this path from the exclusion filter below.
+So: **a reformatted check definition is only as safe as the tool the user trusted.** That is exactly why the
+exclusion filter keeps tests, check definitions and CI config out of the tool's file set — **defence in
+depth**, and admittedly incomplete.
 
-**The no-weakening prohibition belongs to the SESSION-MODEL CI-fix subagent** — it CAN make semantic
-changes, so it CAN weaken a check, so the prohibition is load-bearing there and goes verbatim into its
-prompt ("red" above). **The TOOL path does not need it: the tool cannot weaken what it cannot change.**
+**The no-weakening prohibition belongs to the SESSION-MODEL CI-fix subagent** — it is a model, it can make
+any change, so the prohibition is load-bearing there and goes verbatim into its prompt ("red" above). It is
+not a substitute for the mechanism on the tool path, and the mechanism is not a substitute for it.
 
-#### THE SKILL-OWNED EXCLUSION FILTER — defence in depth, NOT the guarantee
+#### THE SKILL-OWNED EXCLUSION FILTER — defence in depth, admittedly INCOMPLETE
 
 **It is an enumerated PATTERN LIST. It is NOT complete and CANNOT BE.** A repo-specific check implemented as
 ordinary source — a Go checker at `tools/ci/check.go` — matches `**/*.go`, matches **NONE** of the patterns
 below, passes every operand check, and **IS handed to the tool and committed with no model.** That is the
-honest state of it. **NEVER describe this filter as complete, exhaustive, or as the thing that makes the
-no-model path safe.** The path is safe for the reason above, not because of this list.
+honest state of it. **NEVER describe this filter as complete or exhaustive.**
 
 **Its purpose is BLAST RADIUS: keep the tool's diff small and off files a reviewer expects untouched.** It
-is NOT what prevents weakening — weakening is already impossible for a semantics-preserving tool.
+is a mitigation, not a proof — and it is not a reason to enable a tool.
 
-**Skill-owned. Config may NARROW it, NEVER widen it, and the formatter list NEVER carries the exclusions
+**Skill-owned. Config may NARROW it, NEVER widen it, and the tool list NEVER carries the exclusions
 itself** — a user-written exclusion list omits more, and rots per-repo. So `gofmt:**/*.go` is VALID: the
 glob SELECTS, the filter TRIMS.
 
@@ -393,39 +371,47 @@ checks are what bound the write. Every run.
 **Empty file set after filtering (or after refusals) → run NOTHING for that id** and route the failure to
 the session model. **NEVER invoke the tool with zero operands** — `gofmt` with no operands reads **stdin**.
 
-#### The formatter list — resolved at run start, stored in the ledger, NEVER in repo content
+#### The tool list — EMPTY by default, resolved at run start, stored in the ledger, NEVER in repo content
 
-A hardcoded tool list is meaningless in a Rust/Java/Ruby repo, so the **selection** is configurable — the
-argv is not. **The selection comes from the USER, and it is NEVER read from any file in the repo.**
+**The default is EMPTY. Nothing is enabled unless the USER enables it.** A hardcoded tool list is
+meaningless in a Rust/Java/Ruby repo — and, more to the point, **the skill is not the one who gets to decide
+a tool is safe.** The selection comes from the USER; the argv never does. **It is NEVER read from any file
+in the repo.**
 
 **Resolve ONCE at run start**, then record it in the ledger header field `formatters`
 (`files-and-ledger.md`) — the same resolve-once / record-in-the-header pattern the `reviewer` field
 follows ("The reviewer", `reviewer.md`). Priority order:
 
-1. **Explicit invocation.** The user named formatters for this run → use them.
+1. **Explicit invocation.** The user named tools for this run → use them.
 2. **User preference from memory.** A recorded preference (a memory entry, or a prior run's carryover)
-   naming preferred formatters → use it. Do NOT invent a preference; use one only when it actually exists.
-3. **Built-in defaults.** No preference → the known-tools table's default set, each with its default glob.
+   naming preferred tools → use it. Do NOT invent a preference; use one only when it actually exists.
+3. **EMPTY — `-`.** No explicit list and no preference → **no tool runs; the cheap path is OFF; every CI
+   failure goes to the session model.** This is the default and it is NEVER "the table's tools". There is
+   **NO built-in set** — do NOT invent one.
 
-**The header field has exactly three shapes — NEVER any other spelling:**
+**The header field has exactly two shapes — NEVER any other spelling:**
 
-- `default` — the known-tools table's **built-in set**, each with its default glob. Also `ledger.py`'s
-  default when the field was never written.
-- `-` — the **DISABLING SENTINEL**: the cheap path is **OFF** for this run; every CI failure goes to the
-  session model. Always a safe choice. **The sentinel is `-` — NEVER the word `none`.** A user who says
-  "no formatters" / "none" is asking for this; campaign writes **`-`** into the header.
+- `-` — **EMPTY: no tool enabled, cheap path OFF.** The **default**, and `ledger.py`'s value when the field
+  was never written. **The sentinel is `-` — NEVER the word `none`, NEVER the word `default`.** A user who
+  says "no formatters" / "none" is asking for this; campaign writes **`-`**.
 - a comma-separated list of known-tool ids, each optionally `:<glob>`-suffixed (`gofmt:internal/**/*.go`).
 
-`default` (built-ins ON) and `-` (cheap path OFF) are **NEVER interchangeable**. An **unset/absent** field
-means `default`, NOT `-`.
+An **unset/absent** field means `-`. **There is no `default` value any more; if you see one, treat it as
+`-`** and rewrite the header.
+
+**Enabling a tool is a RISK ACCEPTANCE by the user.** When the user names one, campaign runs it exactly as
+the table says — and makes **no claim** that the tool preserves meaning. Every commit it makes still resets
+the gate, so it is re-reviewed like any other content change. If the user asks whether a tool is safe: point
+at that tool's **"what is NOT proven"** cell and let them decide. **NEVER answer "yes, the skill guarantees
+it".**
 
 **Re-read `formatters` from the ledger header on EVERY wake, before any tool run. NEVER re-derive it from
 memory mid-run** — a wake may be a fresh agent instance, and re-deriving would silently revert an explicit
 choice (identical rule, identical reason, to `reviewer`).
 
-**NEVER take the formatter list from repo content — NOT from a repo-root config file, NOT from
-`CLAUDE.md`, NOT from ANY file in the repo.** Repo content **is PR content**: a PR can edit it. A whitelist
-a PR can edit is a whitelist a PR can **widen to govern its own campaign** — selecting a tool and a glob and
+**NEVER take the tool list from repo content — NOT from a repo-root config file, NOT from
+`CLAUDE.md`, NOT from ANY file in the repo.** Repo content **is PR content**: a PR can edit it. A tool list
+a PR can edit is a list a PR can **widen to govern its own campaign** — selecting a tool and a glob and
 earning an unreviewed tool commit on its own head. That is the self-gating hazard, and it is why the list
 lives in the ledger (git-ignored run state, `files-and-ledger.md`) and comes from the user. `CLAUDE.md` is
 NOT an exception: it is worktree-loaded repo content, so a PR can edit it too.
@@ -435,8 +421,12 @@ is needed, and none exists — do NOT reintroduce one.
 
 #### TRUST MODEL — say it plainly
 
-The formatter list is the **user's**, given at invocation or from their own memory — not repo content, so
-there is no "malicious committer" to defend against here. The denylist, the criterion, and the id-only
+**The skill trusts NO tool. It ships with none enabled and vouches for none.** What it owns is **HOW** a
+tool is run, never **WHAT** the tool does. The user enables tools and thereby accepts the risk; the skill's
+denylist refuses only what a tool's own doc says is unsafe.
+
+The tool list is the **user's**, given at invocation or from their own memory — not repo content, so
+there is no "malicious committer" to defend against there. The denylist and the id-only
 shape are a **guard against footguns and accidental misuse**, NOT a security boundary. NEVER present them
 as one.
 
@@ -455,29 +445,27 @@ skill's and not the user's.
    `args`/`argv`, no flags — the skill owns the argv, and anything supplying one re-opens the `gofmt -r`
    hole. Campaign never runs a shell regardless.
 2. **The `id` is in the known-tools table.** Not in the table → REFUSE. The list NEVER introduces a binary;
-   it selects one. The binary is resolved to a **trusted absolute executable outside the repo** ("RESOLVE
-   argv[0]" above) — NEVER from a `PATH` the repo or the PR can influence. Unresolvable, or resolving
-   inside the repo/worktree → REFUSE.
+   it selects one. **A denylisted id (`goimports`, `prettier`, `gofumpt`, any catch-all `--fix`, …) is
+   REFUSED no matter who names it** — config cannot enable it. The binary is resolved to a **trusted
+   absolute executable outside the repo** ("RESOLVE argv[0]" above) — NEVER from a `PATH` the repo or the PR
+   can influence. Unresolvable, or resolving inside the repo/worktree → REFUSE.
 3. **The glob, if present, only NARROWS the tool's default glob** — it MUST NOT match anything outside it.
    Widening → REFUSE. And REFUSE an **obviously hostile** glob that directly targets a check definition,
    config, or test (`.golangci.yml`, `.github/**`, `**/*_test.go`, …), or a repo-sweeping bare `**`/`.`.
-   The **exclusion filter still applies to every accepted id** — but it is NOT the guarantee: the refusal
-   catches intent, the **criterion + the operand checks** are what make the run safe.
+   The **exclusion filter still applies to every accepted id** — defence in depth, never a reason to trust
+   the tool.
 
 **REFUSING means: log the id and why, IGNORE it, and route that failure to the session model. NEVER
 silently honour a refused id.** Refusing one id does not invalidate the others.
 
-**Resolution semantics:** an explicit or preferred list **replaces** the built-in defaults — a known tool
-the user omits while naming others is **not run**. An id that is not a known tool (anything but `gofmt`
-today — `ruff format`, `gci`, `goimports`, `gofumpt`, …) is **REFUSED**, not appended: that failure goes to
-the session model. **`-`** (the disabling sentinel)
-**disables the cheap path entirely**. No explicit list and no preference → `default`: the table's built-in
-defaults, each with its default glob, exclusion filter applied as always — NEVER an invented or broadened
-default.
+**Resolution semantics:** the user's list is the WHOLE list — there are **no built-ins to replace**. A known
+tool the user does not name is **not run**. An id that is not a known tool, or is denylisted, is **REFUSED**,
+not appended: that failure goes to the session model. **`-`** (the default, and an unset field) means **no
+tool runs at all**.
 
 Then, in order:
 
-1. **Whitelisted tool → run the TOOL, no model (prefer this always).** In `<worktree>`, run the
+1. **An ENABLED known tool for this failure → run the TOOL, no model.** In `<worktree>`, run the
    **table's exact argv** for that `id` with `argv[0]` **resolved to a trusted absolute executable outside
    the repo**, **WITHOUT a shell**, over the tool's file set (default glob, narrowed by any validated
    glob, each candidate **RESOLVED**, the **exclusion filter applied to BOTH its original and its resolved
@@ -490,22 +478,22 @@ Then, in order:
    above ("Any campaign commit to the PR head resets the gate"): `reviews_ok` to 0 + relabel, relaunch the
    watch, re-enter 2a. A tool commit gates exactly like a subagent commit.
 2. **Everything else → the scoped CI-fix subagent on the session model**, set explicitly, per the red-CI
-   dispatch above. Covers: the tool did not fix it, the tool left residue, the tool/check is not
-   whitelisted, the id was refused, `formatters` is **`-`** (cheap path off), the binary **cannot be
-   resolved to a trusted executable outside the repo**, the filtered file set is **empty**, or the failure
-   needs any judgment. (An **unset** `formatters` header, or `default`, is NOT in this list — it means the
-   table's defaults.)
+   dispatch above. Covers: **`formatters` is `-` — the DEFAULT, so this is the DEFAULT ROUTE for every CI
+   failure**; the tool is known but **not enabled**; the tool did not fix it; the tool left residue; the
+   tool/check is not in the table; the id was refused; the binary **cannot be resolved to a trusted
+   executable outside the repo**; the filtered file set is **empty**; or the failure needs any judgment.
 
 If the tool's run fails either acceptance point → **discard the work** (reset the worktree to the PR
-head) and **re-dispatch the same failure on the session model**. NEVER patch a formatter run in place;
+head) and **re-dispatch the same failure on the session model**. NEVER patch a tool run in place;
 NEVER commit an unverified one; NEVER hand the failure to a cheap model instead.
 
-**Residual risk, stated honestly:** the whitelist stands on the binary actually BEING the tool (what the
-outside-the-repo resolution buys) and on each tool's documented guarantee — a tool bug, or a repo
-config/plugin that switches on non-formatting rules, is the rest of the exposure.
-Run whitelisted tools with the project's own config and no extra rule sets, and NEVER re-derive the
-whitelist's safety from the review gate: it stands on the TOOL being incapable of changing semantics, or it
-does not stand at all.
+**Residual risk, stated honestly:** on this path campaign guarantees the **mechanism** — the binary really is
+the tool (what the outside-the-repo resolution buys), the argv is the table's, the operands are checked. It
+does **NOT** guarantee the tool preserves meaning: **no cited doc states that, the user accepted that
+inference when enabling the tool**, and a tool bug or a repo config/plugin that switches on non-formatting
+rules is the rest of the exposure. Run enabled tools with the project's own config and no extra rule sets.
+**NEVER re-derive this path's safety from the review gate, and NEVER upgrade the user's risk acceptance into
+a claim of the skill's.**
 
 Every CI failure must be handled; never merge over a red or pending check, and never infer green from
 the watch's exit code alone — always confirm against the re-polled snapshot.

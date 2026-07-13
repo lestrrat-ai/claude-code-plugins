@@ -27,14 +27,14 @@ HEADER_DEFAULTS = {
     "base_branch": "-",
     "api_changes": "ask",
     "reviewer": "default",
-    # Cheap-CI-path formatter whitelist. Exactly three shapes: "default" = the known-tools
-    # table's built-in set (this default, i.e. the field was never written); "-" = the
-    # DISABLING SENTINEL, cheap path off (never the word "none"); else comma-separated
-    # known-tool ids, each optionally suffixed ":<glob>" to narrow that tool's default
-    # glob. "default" and "-" are never interchangeable. Resolved once at run start from
-    # the user (invocation, else memory preference) — NEVER from repo content, which is
-    # PR content.
-    "formatters": "default",
+    # Cheap-CI-path tool list. The skill ships with ZERO tools enabled and vouches for
+    # none: the default is "-" = EMPTY, cheap path OFF, every CI failure to the session
+    # model (never the word "none", and there is no "default" value / built-in set).
+    # The only other shape: comma-separated known-tool ids, each optionally suffixed
+    # ":<glob>" to narrow that tool's default glob. Enabling a tool is an explicit USER
+    # act and an explicit risk acceptance. Resolved once at run start from the user
+    # (invocation, else memory preference) — NEVER from repo content, which is PR content.
+    "formatters": "-",
 }
 
 ROW_FIELDS = (

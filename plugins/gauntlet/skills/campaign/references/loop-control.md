@@ -53,9 +53,9 @@ blocks; each completion is its own wake.
      isn't enough (merge-gate CI truth stays the re-polled `gh pr checks` snapshot, Stage 2b). Wake
      turnaround is throughput: every serial `gh` call in reconcile delays every dispatch behind it. Re-read `run_id`, `base_branch`, `api_changes`, `reviewer`, and `formatters` from the ledger
      header — they govern namespacing, the merge/diff target, API-change handling, which reviewer runs
-     the review passes, and which formatter tools the cheap CI path may run, and must be
+     the review passes, and which tools (if any — none by default) the cheap CI path may run, and must be
      consulted fresh each wake, never from memory (a wake may be a fresh agent instance that just
-     adopted the run, so an explicit/preferred reviewer or formatter list would otherwise
+     adopted the run, so an explicit/preferred reviewer or tool list would otherwise
      be lost and silently revert to the default; Constraints, Base branch, "The reviewer",
      `stage-2-ci.md`, "PR adoption"). Refresh
      the lease. This is the path every `--run` self-wake takes.
@@ -169,8 +169,9 @@ blocks; each completion is its own wake.
      fresh-subagent fallback. A failed launch yields no verdict: it never touches `reviews_ok` and
      never bumps the row's `attempts`;
    - CI red and no fix is already in flight for that PR/SHA → **CLASSIFY the failure first (Stage 2b,
-     "Whitelist classification") — never dispatch a subagent straight off a red check.** A **whitelisted
-     formatting** failure runs the **TOOL, with no model at all**; **everything else** gets a scoped CI-fix
+     "Tool classification") — never dispatch a subagent straight off a red check.** A failure whose fixer is a
+     known tool the **user ENABLED** runs the **TOOL, with no model at all**; **everything else** — including
+     the default state, in which **no tool is enabled** — gets a scoped CI-fix
      subagent on the **session model**, set explicitly and NEVER downgraded. Either way the resulting commit
      **resets the gate** (Stage 2b, "Any campaign commit to the PR head resets the gate"). The table, the
      skill-owned argv, the exclusion filter, and the file-operand checks live in `stage-2-ci.md` — follow

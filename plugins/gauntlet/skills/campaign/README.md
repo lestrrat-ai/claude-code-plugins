@@ -177,33 +177,44 @@ flowchart TD
 - Before it spends a review on a PR, it first clears anything that would waste one: it addresses any
   GitHub Copilot review comments, fixes failing CI, and rebases a PR that has fallen into conflict
   with the base branch — then reviews the clean result.
-- Some CI failures — pure formatting ones — it fixes by running the **formatter itself**, with no model
-  involved at all. A tool only qualifies if its own documentation guarantees the output is *semantically
-  equivalent* to the input (an AST-preserving pretty-printer, not a text munger); anything else, including
-  every `--fix`-style linter and every code rewriter, goes to a full-strength fix subagent.
+- Some CI failures — formatting ones — can be fixed by running the **formatter itself**, with no model
+  involved at all. **Campaign ships with no tool enabled and it vouches for none.** Out of the box every CI
+  failure, formatting included, goes to a full-strength fix subagent. If you want the shortcut, **you** turn a
+  tool on, and that is a decision you are making about a tool you trust — not one campaign made for you.
 
-  The table holds exactly **one tool: `gofmt`**. That is small on purpose — it is what survived a rule that
-  demands a *documented* guarantee, quoted from the source. Everything else, **including all Python, JS and
-  other-language formatting**, goes to the session model, which is the safe default and is what happened
-  before this shortcut existed. It is not a limitation to work around: it is the rule working.
+  Here is the honest version, because the alternative is a safety claim nobody can back. What campaign
+  guarantees is **how** a tool is run, never **what** the tool does:
 
-  Tools you might expect and won't find: **`ruff format`**, because the formatter docs we cite don't actually
-  state the AST-equivalence guarantee we'd be relying on; **`gci`**, because its docs describe import
-  ordering and grouping but never say it neither adds nor removes an import; **`goimports`**, because it
-  *adds* missing imports and *removes* unreferenced ones — adding an import runs that package's `init()`, and
-  a guessed import can be the wrong package; and **`gofumpt`**, because it applies extra rewrite rules on top
-  of gofmt's layout and documents them as a rule list, not as semantics-preserving. All four are formatters
-  in the colloquial sense and none meets the bar, which is the point: the bar is a *source that states the
-  guarantee*, not the tool's reputation or the vibe of its diff. Adding a tool is a change to the skill
-  itself, and it needs that source quoted in the table.
+  - it owns the exact command line (`gofmt -w --`, `gci write --`, `ruff format --`) and never appends a flag;
+  - it resolves the binary to a trusted absolute path outside your repo;
+  - it checks every filename it passes (details below);
+  - and any commit the tool makes **resets the review gate**, so the result is reviewed like any other change.
 
-  You don't configure that list in a file. **Name the formatters when you invoke campaign** ("use gofmt", or
-  "no formatters" to switch the shortcut off entirely), or **record a preference in memory**
-  and campaign will pick it up on later runs. Say nothing and you get the built-in default set. Whatever it
-  resolves to is fixed once, at the start of the run, and written into the run's ledger `formatters` field —
-  `default` for the built-in set, `-` for the shortcut switched off, otherwise the tool ids you named — so a
-  later wake, or a fresh agent that picks the run up, uses the same list rather than quietly reverting to the
-  default.
+  What it does **not** guarantee is that the tool preserves the meaning of your program. Take `gofmt`: its
+  documentation (https://pkg.go.dev/cmd/gofmt) describes formatting behaviour and flags — it never actually
+  *states* a semantic-equivalence guarantee. "A pretty-printer that parses and re-prints your code can't
+  change what it means" is a reasonable inference, and it is **an inference, not a documented promise**. The
+  same is true of `gci` (its docs describe import ordering and grouping; they never say it neither adds nor
+  removes an import) and of `ruff format` (its formatter docs don't state the AST-equivalence guarantee you'd
+  be relying on — and your own Ruff config can turn on `format.docstring-code-format`, which rewrites code
+  inside docstrings). Enabling one of these means you have read that and accepted the risk.
+
+  There is one thing campaign **does** refuse, and the asymmetry is deliberate: **it refuses what is
+  documented to be unsafe; it does not bless what is merely undocumented.** `goimports` *adds* missing imports
+  and *removes* unreferenced ones — an added import runs that package's `init()`, and a guessed import can be
+  the wrong package. `prettier` rewrites the contents of tagged template literals. `gofumpt` applies extra
+  rewrite rules on top of gofmt's layout. Code rewriters (`modernize`, codemods) and every catch-all
+  `--fix`/`--write` linter flag change your program by design. Those are **documented facts**, so campaign
+  denies them outright — you cannot switch them on. Where the docs are simply silent, the call is yours.
+
+  **How to decide:** read the tool's own documentation, decide whether you accept the inference above, and
+  only then enable it. Whatever you enable, campaign still gates every commit the tool makes.
+
+  **Name the tools when you invoke campaign** ("use gofmt"), or **record a preference in memory** and campaign
+  will pick it up on later runs. There is no file to configure. Whatever it resolves to is fixed once, at the
+  start of the run, and written into the run's ledger `formatters` field — `-` when nothing is enabled (the
+  default), otherwise the tool ids you named — so a later wake, or a fresh agent that picks the run up, uses
+  the same list rather than quietly changing its mind.
 
   There is deliberately **no config file for this, and campaign will not read one from your repo** — not a
   file at the repo root, not `CLAUDE.md`, not anything else in the tree. Files in your repo are things a pull
@@ -213,7 +224,7 @@ flowchart TD
   has to defend against.
 
   Naming a tool is all you get to do. You do **not** supply a command, flags, or an argv — campaign owns the
-  exact command line for each tool it knows (`gofmt -w --`).
+  exact command line for each tool it knows.
   Flags are not cosmetic: `gofmt -w -r 'true -> false'` is still `gofmt`, but the `-r` flag turns it into a
   rewrite engine that changes `return true` into `return false`. Checking *which tool* runs is not enough if
   you also get to pick *how* it runs, so campaign doesn't let you pick.
@@ -261,8 +272,8 @@ flowchart TD
   model. It never invokes the tool with no files: `gofmt` with no file operands reads standard input, which
   is not the run anyone asked for.
 
-  Every known tool has a default glob (`gofmt` → `**/*.go`), so you normally name
-  nothing but the tool. If you do narrow one to a subdirectory, the glob may only **narrow** the default,
+  Every known tool has a default glob (`gofmt`/`gci` → `**/*.go`, `ruff format` → `**/*.py`), so you normally
+  name nothing but the tool. If you do narrow one to a subdirectory, the glob may only **narrow** the default,
   never widen it — and you should not try to write exclusions into it. Campaign applies its **own** exclusion
   filter afterwards, every time, and nothing widens it: tests, check definitions, CI workflows, and tool
   config (`**/*_test.go`, `.github/**`, `.golangci.yml`, `pyproject.toml`, …) are removed no matter what
@@ -271,13 +282,9 @@ flowchart TD
 
   That filter is a pattern list, and a pattern list is **not complete** — it can't be. A repo-specific check
   written as ordinary source, say a Go checker at `tools/ci/check.go`, matches `**/*.go`, matches none of
-  those patterns, and does get formatted. That is fine, and it is worth being exact about why. What makes
-  this shortcut safe is **not** the list. It is that the tool is admitted only on a documented guarantee that
-  its output *means the same thing* as its input — so whatever it touches, it cannot change the meaning of.
-  A reformatted test asserts exactly what it asserted before; weakening a check takes a semantic change, and
-  the command campaign runs can't make one. (That is also why campaign is so strict about the command line
-  and the filenames: those are the parts that decide *what gets written*.) The filter is there to keep the
-  diff small and off the files a reviewer expects untouched — defence in depth, not the guarantee.
+  those patterns, and does get formatted by a tool you enabled. So be exact about what the filter is: it keeps
+  the tool's diff small and off the files a reviewer expects untouched — **defence in depth, and admittedly
+  incomplete**. It is not a reason to trust a tool, and campaign never presents it as one.
 
   Teaching campaign a genuinely new tool is a change to the skill — reviewed and gated like any other code
   change. And to be clear about what all this buys: the tool list comes from *you*, so the denylist and the
