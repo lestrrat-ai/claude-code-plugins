@@ -55,38 +55,52 @@ of them MUST, in the same step:
 NEVER treat a tool-written commit as exempt: the verdicts on the old SHA describe content that no longer
 exists, and a `gauntlet-accepted` label on it is a false public claim.
 
-#### Whitelist classification — run the whitelisted TOOL, or the session model
+#### Whitelist classification — run the skill-owned TOOL, or the session model
 
 Before dispatching anything, decide whether the failing check's fixer is a **whitelisted tool**. **A tool
 is whitelisted ONLY IF it guarantees its output is SEMANTICALLY EQUIVALENT to its input** — an
-AST-preserving pretty-printer, not a text munger — and the burden is the tool's **documented behaviour**
-(`SKILL.md`, "The only cheap path"). **Cannot point to that guarantee → NOT whitelisted → session
-model.** There is NO blanket "formatters are safe" rule.
+AST-preserving pretty-printer, not a text munger — and the burden is the tool's **documented behaviour**.
+**Cannot point to that guarantee → NOT whitelisted → session model.** There is NO blanket "formatters are
+safe" rule.
 
 That guarantee belongs to the whitelisted **tool's output** and to nothing else — a model hand-editing the
 same file does NOT inherit it, however formatting-like its diff looks. A pure-indentation edit can move
 behavior in a whitespace-significant language and still be formatter-clean, so there is no diff-shape
 guard that makes a cheap model's edit safe to accept. **NO SUBAGENT IS EVER RUN ON A DOWNGRADED MODEL.**
 
-The **LIST** of whitelisted tools is the skill's **built-in defaults**, as the repo's `.gauntlet.yml`
-re-configures (flags, files) or removes them. The **CRITERION** above is the skill's and is **NEVER
-configurable** — no config key relaxes it. Config **NEVER introduces a binary outside the known-tools
-table** below.
+**The SKILL owns the exact argv. Config does NOT supply a command.** The known-tools table below fixes,
+per tool, the precise argv campaign may execute. The repo's `.gauntlet.yml` selects **only which of those
+tools run, over which files**. The **CRITERION** is the skill's and is **NEVER configurable** — no config
+key relaxes it.
 
-#### The KNOWN-TOOLS TABLE — the built-in defaults
+**WHY config gets no flags — the flags carry the semantics.** Tool identity is NOT sufficient:
 
-This table is the **skill's**. It is the ONLY set of binaries campaign may execute on the no-model path.
-A repo may configure a known tool's **flags and files**; it may **NEVER introduce a binary that is not in
-this table**. Adding a genuinely new tool here is a **SKILL change** (gated, reviewed), NEVER a config
-change.
+```
+gofmt -w -r 'true -> false'     # argv[0] is gofmt. A known tool. No shell metacharacters.
+```
 
-| `id` | `argv[0]` | guarantee | precondition — MUST hold in THIS repo |
+`-r` turns `gofmt` from a pretty-printer into a **rewrite engine**: it rewrites `return true` into
+`return false`. It would pass every identity check, every metacharacter check, and every denylist check.
+So campaign REMOVES the degree of freedom instead of trying to police it: a config entry that supplies
+`command`, `args`, `argv`, or any flag is **REFUSED**.
+
+#### The KNOWN-TOOLS TABLE — the skill's, argv and all
+
+The ONLY binaries campaign may execute on the no-model path, in the ONLY form it may execute them.
+`<files>` = the paths matched by the entry's validated `files` glob. Adding a tool, or changing an argv,
+is a **SKILL change** (gated, reviewed), NEVER a config change.
+
+| `id` | argv — **skill-owned, exact** | guarantee | precondition — MUST hold in THIS repo |
 |---|---|---|---|
-| `gofmt` | `gofmt` | AST-preserving Go pretty-printer (`go/printer`); never alters string-literal contents | none |
-| `gofumpt` | `gofumpt` | same printer, stricter layout rules; never alters string-literal contents | none |
-| `goimports` | `goimports` | rewrites the **import block only** | none |
-| `gci` | `gci` | import grouping/ordering **only** — Go package init order is by **dependency**, not by import order in a file | none |
-| `ruff format` | `ruff` | verifies its output is **AST-equivalent** to the input | the repo's Ruff config does **NOT** enable `format.docstring-code-format` |
+| `gofmt` | `["gofmt", "-w", <files>]` | AST-preserving Go pretty-printer (`go/printer`); never alters string-literal contents | none |
+| `gofumpt` | `["gofumpt", "-w", <files>]` | same printer, stricter layout rules; never alters string-literal contents | none |
+| `goimports` | `["goimports", "-w", <files>]` | rewrites the **import block only** | none |
+| `gci` | `["gci", "write", <files>]` | import grouping/ordering **only** — Go package init order is by **dependency**, not by import order in a file | none |
+| `ruff format` | `["ruff", "format", <files>]` | verifies its output is **AST-equivalent** to the input | the repo's Ruff config does **NOT** enable `format.docstring-code-format` |
+
+**NEVER append a flag to a table argv.** NEVER `-r`, NEVER `-s`, NEVER a catch-all `--fix`, NEVER anything
+the table does not list. Execute it **WITHOUT a shell** — never `sh -c`, `bash -c`, `os.system`, or any
+shell string.
 
 **REMOVED — golangci-lint `whitespace`**: no safe fixer exists for it. Its only fix path is the catch-all
 `golangci-lint run --fix`, which the denylist forbids. NEVER invent a command for it; a `whitespace`
@@ -100,15 +114,17 @@ AST-equivalent. The AST-equivalence guarantee holds **only while that setting is
 
 **The general rule:**
 
-- A `guarantee` MUST state **the conditions under which it holds**. A guarantee with unstated conditions
-  is not a guarantee → REFUSE the entry.
+- The table states the **conditions under which each guarantee holds**. A guarantee with unstated
+  conditions is not a guarantee.
 - Campaign MUST **verify those conditions hold in THIS repo** before taking the no-model path — read the
   repo's tool config (for Ruff: `pyproject.toml` `[tool.ruff.format]`, `ruff.toml`/`.ruff.toml`) on the
   **base branch**, the same provenance rule as `.gauntlet.yml`.
 - Condition enabled, OR **cannot be determined** → the tool is **NOT whitelisted for this repo** →
   session model. Default deny; NEVER assume a default.
 
-**NON-OVERRIDABLE DENYLIST — the skill's; `.gauntlet.yml` CANNOT widen past it. REFUSE any entry that is:**
+#### NON-OVERRIDABLE DENYLIST — the skill's; `.gauntlet.yml` CANNOT widen past it
+
+Nothing below is ever admitted to the table, and no config entry may name it:
 
 - **`prettier`**: it reformats the **contents** of tagged template literals (`` gql`…` ``, `` css`…` ``),
   changing the runtime string the tag function receives — a semantic change made by the tool itself.
@@ -118,10 +134,10 @@ AST-equivalent. The AST-equivalence guarantee holds **only while that setting is
   `modernize` rewrite can PASS its own rule while CHANGING BEHAVIOR (e.g. `sort.Slice` → `slices.SortFunc`
   with a reversed or non-equivalent comparator): lint-clean, semantics changed.
 - a **catch-all fixer** — `golangci-lint run --fix`, `ruff --fix`, `eslint --fix`, `cargo clippy --fix`, or
-  any `--fix`/`--write` flag on a linter that applies semantic rules. A whitelisted run MUST invoke **only
-  the whitelisted formatter**, NEVER a catch-all `--fix`.
-- anything whose command can touch a **check definition, config, or test** — the no-weakening prohibition,
-  a hard rule, not a preference.
+  any `--fix`/`--write` flag on a linter that applies semantic rules. A whitelisted run invokes **only the
+  table's argv**, NEVER a catch-all `--fix`.
+- any run that can touch a **check definition, config, or test** — the no-weakening prohibition, a hard
+  rule, not a preference. Enforced at the config layer by the `files` constraint below.
 - **NEVER whitelisted**: a failing product test (making a test pass is not the same as fixing the bug), a
   compile error, and any rule that rewrites logic.
 
@@ -131,18 +147,16 @@ missing/unparseable config, or a refused entry → session model.**
 
 #### Repo config — `.gauntlet.yml`, read from the BASE branch
 
-A hardcoded list is meaningless in a Rust/Java/Ruby repo, so the LIST is repo-configurable. The file lives
-at the **repo root** and is **COMMITTED** — it is NOT under the git-ignored `.gauntlet/` tree
-(`files-and-ledger.md`).
+A hardcoded tool list is meaningless in a Rust/Java/Ruby repo, so the **selection** is repo-configurable —
+the argv is not. The file lives at the **repo root** and is **COMMITTED** — it is NOT under the git-ignored
+`.gauntlet/` tree (`files-and-ledger.md`).
 
-`command` is an **argv LIST**, never a shell string:
+**Each entry carries EXACTLY two fields: `id` and `files`. Nothing else.**
 
 ```yaml
 formatters:
-  - id: gofmt
-    command: ["gofmt", "-w"]           # argv list — argv[0] MUST be a known tool
-    files: "**/*.go"
-    guarantee: "AST-preserving pretty-printer; never alters string-literal contents (go/printer). Holds unconditionally."
+  - id: gofmt              # MUST be an id in the known-tools table; the skill owns its argv
+    files: "**/*.go"       # glob this tool may touch — MUST NOT reach a check def, config, or test
 ```
 
 **Read it from the BASE branch, NEVER from the PR's worktree or head:**
@@ -152,67 +166,57 @@ git show origin/<base>:.gauntlet.yml
 ```
 
 **NEVER read `.gauntlet.yml` from the PR under review.** If campaign took the whitelist from the PR's own
-head, a PR could **widen the whitelist that governs its own campaign** — add a semantic rewriter and earn
-an unreviewed tool commit on its own head. That is the self-gating hazard in config form. A PR that edits
-`.gauntlet.yml` therefore takes effect only **after it merges**, gated like any other change.
+head, a PR could **widen the whitelist that governs its own campaign** — selecting a tool and a glob and
+earning an unreviewed tool commit on its own head. That is the self-gating hazard in config form. A PR that
+edits `.gauntlet.yml` therefore takes effect only **after it merges**, gated like any other change.
 
 #### TRUST MODEL — say it plainly
 
 `.gauntlet.yml` is read from the **base branch**, so it is authored by people with **write access to the
 repo** — the same people who can already edit `.github/workflows` and make CI do anything. The denylist and
-the command-shape rules are therefore a **guard against footguns and accidental misuse, NOT a security
-boundary against a malicious committer.** NEVER present them as one.
+the schema rules are therefore a **guard against footguns and accidental misuse, NOT a security boundary
+against a malicious committer.** NEVER present them as one.
 
 What the base-branch rule DOES buy is real, and MUST be kept: **a PR under review cannot widen the
 whitelist that governs its own campaign.** That is the property being defended.
 
-#### VALIDATION — the command's SHAPE, not just the tool's category
+#### VALIDATION — an entry is ACCEPTED only if ALL of these hold
 
-The attack is **command construction**, not tool category: an entry can cite `gofmt`'s guarantee while
-executing a wrapper that rewrites product code. Validating the `guarantee` text and the denylist alone
-does NOT stop that. **Constrain the shape of the command.**
-
-**An entry is ACCEPTED only if ALL of these hold:**
-
-1. **All four fields present** — `id`, `command`, `files`, `guarantee`.
-2. **`command` is an argv LIST** — `["gofmt", "-w"]`. A **shell string is REFUSED**. It is executed
-   **WITHOUT a shell**: NEVER via `sh -c`, `bash -c`, `os.system`, or any shell string.
-3. **NO shell metacharacters anywhere in the argv** — `&&`, `||`, `;`, `|`, `>`, `<`, `$(`, backticks,
-   newlines. **No legitimate formatter entry needs them.** Any occurrence → REFUSE.
-4. **`argv[0]` is a BARE TOOL NAME in the known-tools table** above. NOT a path (`./scripts/fmt.sh`,
-   `/usr/local/bin/gofmt`, `../x`), NOT a wrapper script, NOT an alias, NOT `sh`/`bash`/`env`/`xargs`.
-   Contains `/` → REFUSE. Not in the table → REFUSE. A repo configures the **flags and files** of a known
-   tool; it NEVER introduces an arbitrary binary. Resolve it from `PATH` at run time and NEVER honour a
-   PATH entry the repo's own config injected.
-5. **`guarantee` is a concrete pointer to the tool's DOCUMENTED semantic-equivalence behaviour** (which
-   printer/AST check, what it is documented never to touch) **AND states the conditions under which it
-   holds**. "It's just formatting", "safe", "we always run it" are **NOT** guarantees → REFUSE.
-6. **The stated conditions VERIFY in this repo** (see "conditional on its configuration" above).
-   Cannot verify → REFUSE.
-7. **`command` hits nothing on the denylist** below — no catch-all `--fix`/`--write`, no semantic rewriter,
-   nothing that can touch a check definition, config, or test.
+1. **EXACTLY the fields `id` and `files`.** Both present.
+2. **NO `command`, `args`, `argv`, `flags`, or any other key** — any of them → **REFUSE**. The skill owns
+   the argv; config that supplies one is trying to re-open the `gofmt -r` hole. A shell string anywhere →
+   REFUSE, and campaign never runs a shell regardless.
+3. **`id` is in the known-tools table.** Not in the table → REFUSE. Config NEVER introduces a binary; it
+   selects one. Resolve the binary from `PATH` at run time and NEVER honour a `PATH` entry the repo's own
+   config injected.
+4. **`files` is a glob that CANNOT match a check definition, config, or test path.** REFUSE any glob that
+   can reach `.golangci.yml`, `.github/**`, `**/*_test.go`, `test/**`, `tests/**`, `conftest.py`,
+   `pyproject.toml`, `ruff.toml`/`.ruff.toml`, `.gauntlet.yml`, or any other check/config/test path. A
+   bare `**` or `.` that sweeps the repo → REFUSE. This is the no-weakening prohibition, enforced at the
+   config layer instead of trusted to the tool.
+5. **The table's precondition for that `id` VERIFIES in this repo** (see "conditional on its
+   configuration"). Cannot verify → REFUSE.
 
 **REFUSING means: log the entry and why, IGNORE it, and route that failure to the session model. NEVER
-silently honour a denied entry.** Refusing one entry does not invalidate the others.
+silently honour a refused entry.** Refusing one entry does not invalidate the others.
 
 **Merge semantics:** start from the built-in defaults; the repo's `formatters:` list **replaces** them by
-`id` — an entry re-configures the flags/files of a known tool of the same `id`, and a built-in the repo
-omits while listing others is **removed** for that repo (e.g. a repo that does not want `gci` simply lists
-the ones it wants). An entry whose `argv[0]` is not a known tool is REFUSED, not appended.
-`formatters: []` **disables the cheap path entirely** — every failure goes to the session model, always a
-safe choice. **Missing file → built-in defaults only. Unparseable file → cheap path OFF for this run**
-(default deny; never guess at a half-parsed whitelist).
+`id` — an entry re-scopes the `files` of a known tool of the same `id`, and a built-in the repo omits while
+listing others is **removed** for that repo (e.g. a repo that does not want `gci` simply lists the ones it
+wants). An entry whose `id` is not a known tool is REFUSED, not appended. `formatters: []` **disables the
+cheap path entirely** — every failure goes to the session model, always a safe choice. **Missing file →
+built-in defaults only. Unparseable file → cheap path OFF for this run** (default deny; never guess at a
+half-parsed whitelist).
 
 Then, in order:
 
-1. **Whitelisted tool → run the TOOL, no model (prefer this always).** In `<worktree>`, run the entry's
-   validated **argv** — built-in (`["gofmt","-w"]`, `["gofumpt","-w"]`, `["goimports","-w"]`,
-   `["gci","write"]`, `["ruff","format"]`) or the validated `command` from base-branch `.gauntlet.yml` —
-   **executed WITHOUT a shell**, scoped to its `files` glob. NEVER a catch-all `--fix`. ACCEPT only if
-   **both** hold: re-running the **exact** failing check now **passes**, AND the
-   diff touches **no check definition, config, or test**. Then commit + push — **zero model spend** — and
-   **apply the gate reset** above ("Any campaign commit to the PR head resets the gate"): `reviews_ok` to 0
-   + relabel, relaunch the watch, re-enter 2a. A tool commit gates exactly like a subagent commit.
+1. **Whitelisted tool → run the TOOL, no model (prefer this always).** In `<worktree>`, run the
+   **table's exact argv** for that `id`, **WITHOUT a shell**, over the paths its validated `files` glob
+   matches. NEVER add a flag; NEVER a catch-all `--fix`. ACCEPT only if **both** hold: re-running the
+   **exact** failing check now **passes**, AND the diff touches **no check definition, config, or test**.
+   Then commit + push — **zero model spend** — and **apply the gate reset** above ("Any campaign commit to
+   the PR head resets the gate"): `reviews_ok` to 0 + relabel, relaunch the watch, re-enter 2a. A tool
+   commit gates exactly like a subagent commit.
 2. **Everything else → the scoped CI-fix subagent on the session model**, set explicitly, per the red-CI
    dispatch above. Covers: the tool did not fix it, the tool left residue, the tool/check is not
    whitelisted, the config entry was refused, the config is missing/unparseable, or the failure needs any
@@ -223,10 +227,10 @@ head) and **re-dispatch the same failure on the session model**. NEVER patch a f
 NEVER commit an unverified one; NEVER hand the failure to a cheap model instead.
 
 **Residual risk, stated honestly:** the whitelist is only as strong as each tool's documented guarantee —
-a tool bug, or a config/plugin that switches on non-formatting rules, is the whole of the exposure. Run
-whitelisted tools with the project's own config and no extra rule sets. Do NOT admit a `.gauntlet.yml`
-entry past a guarantee you can point to, and NEVER re-derive its safety from the review gate: the
-whitelist stands on the TOOL being incapable of changing semantics, or it does not stand at all.
+a tool bug, or a repo config/plugin that switches on non-formatting rules, is the whole of the exposure.
+Run whitelisted tools with the project's own config and no extra rule sets, and NEVER re-derive the
+whitelist's safety from the review gate: it stands on the TOOL being incapable of changing semantics, or it
+does not stand at all.
 
 Every CI failure must be handled; never merge over a red or pending check, and never infer green from
 the watch's exit code alone — always confirm against the re-polled snapshot.

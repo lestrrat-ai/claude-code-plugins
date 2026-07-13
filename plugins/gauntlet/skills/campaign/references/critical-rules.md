@@ -144,70 +144,52 @@
   catches a bad fix. NEVER downgrade the mapper on the grounds that it is "read-only": read-only is not
   low-judgment, and an under-map is invisible.
 - **The only cheap path: a CI check whose fixer is a WHITELISTED TOOL — run the TOOL, no model at all**
-  (`SKILL.md`, "The only cheap path"; `stage-2-ci.md`). **A tool is whitelisted ONLY IF it guarantees its
-  output is SEMANTICALLY EQUIVALENT to its input** — an AST-preserving pretty-printer, not a text munger —
-  and the burden is the tool's **documented behaviour**. Cannot point to that guarantee → NOT whitelisted →
-  session model. There is **NO blanket "formatters are safe" rule**. The guarantee is the TOOL's, and does
-  **NOT** transfer to a model hand-editing the same file — a diff that *looks* like formatting is NOT a
-  proof of semantic equivalence (a pure-indentation edit can move behavior in a whitespace-significant
-  language and still be formatter-clean), so there is no diff-shape guard that would make a cheap model's
-  edit safe to accept.
-  **The LIST is repo-configurable; the CRITERION is NOT.** Whitelist = built-in **defaults**, as the repo's
-  `.gauntlet.yml` re-configures (flags, files) or removes them — a fixed set of flags is meaningless in a
-  Rust/Java/Ruby repo.
-  **Built-in defaults — the KNOWN-TOOLS TABLE, the ONLY binaries campaign may run on the no-model path**:
-  `gofmt`, `gofumpt` (AST-preserving Go pretty-printers; never touch string-literal contents), `goimports`
-  (import block only), `gci` (import grouping/ordering only — Go init order is by dependency, not by import
-  order), `ruff format` (verifies AST equivalence of its output) — **only while the repo's Ruff config does
-  NOT enable `format.docstring-code-format`** (that setting reformats Python code inside docstrings, i.e.
-  rewrites string contents → NOT AST-equivalent). **Adding a tool to this table is a SKILL change, NEVER a
-  config change.**
-  **golangci-lint `whitespace` is REMOVED from the defaults**: no safe fixer — its only fix path is the
-  denylisted catch-all `golangci-lint run --fix`. NEVER invent a command for it.
-- **A tool's guarantee can be CONDITIONAL on its CONFIGURATION** (`ruff format`, above). Therefore: every
-  `guarantee` MUST **state the conditions under which it holds**, and campaign MUST **verify those
-  conditions hold in THIS repo** (read the tool's config from the **base** branch) before taking the
-  no-model path. Condition enabled/violated, or **undeterminable** → NOT whitelisted for this repo →
-  session model. Default deny; NEVER assume a default.
+  (`SKILL.md`, "The only cheap path"; full table/schema/validation in `stage-2-ci.md`). **A tool is
+  whitelisted ONLY IF it guarantees its output is SEMANTICALLY EQUIVALENT to its input** — an AST-preserving
+  pretty-printer, not a text munger — on the burden of the tool's **documented behaviour**. Cannot point to
+  that guarantee → NOT whitelisted → session model. There is **NO blanket "formatters are safe" rule**. The
+  guarantee is the TOOL's and does **NOT** transfer to a model hand-editing the same file — a diff that
+  *looks* like formatting is NOT a proof of semantic equivalence (a pure-indentation edit can move behavior
+  in a whitespace-significant language and stay formatter-clean).
+- **THE SKILL OWNS THE EXACT ARGV; CONFIG NEVER SUPPLIES A COMMAND.** The known-tools table
+  (`stage-2-ci.md`) fixes each tool's precise argv (`gofmt -w`, `gofumpt -w`, `goimports -w`, `gci write`,
+  `ruff format`, each over the entry's files). **Flags carry the semantics** — `gofmt -w -r 'true -> false'`
+  rewrites `return true` into `return false` with a known `argv[0]` and no shell metacharacters, so tool
+  identity alone is NOT sufficient. A `.gauntlet.yml` entry that supplies `command`/`args`/`argv`/flags is
+  **REFUSED**. NEVER append a flag to a table argv. Adding a tool, or changing an argv, is a **SKILL change**,
+  NEVER a config change.
+- **`.gauntlet.yml` entries carry EXACTLY `id` + `files`** — which known tool, and the glob it may touch.
+  `files` MUST NOT be able to reach a **check definition, config, or test** path (`.golangci.yml`,
+  `.github/**`, `**/*_test.go`, `test/**`, `tests/**`, `conftest.py`, `pyproject.toml`, `ruff.toml`,
+  `.gauntlet.yml`, a repo-sweeping `**`) → REFUSE. That is the no-weakening prohibition enforced at the
+  config layer. Entries **remove** built-ins by omission; `formatters: []` disables the cheap path entirely.
+  They **NEVER introduce a binary outside the known-tools table**. **Any entry failing any rule is REFUSED**
+  — log it, ignore it, route that failure to the **session model**. NEVER silently honour a refused entry.
+- **A tool's guarantee can be CONDITIONAL on its CONFIGURATION**: `ruff format` verifies AST equivalence
+  **only while the repo's Ruff config does NOT enable `format.docstring-code-format`** (that setting
+  reformats Python code inside docstrings — rewrites string contents → NOT AST-equivalent). Campaign MUST
+  **verify each precondition holds in THIS repo** (read the tool's config from the **base** branch) before
+  taking the no-model path. Violated or **undeterminable** → NOT whitelisted for this repo → session model.
+- **golangci-lint `whitespace` is NOT in the table**: no safe fixer — its only fix path is the denylisted
+  catch-all `golangci-lint run --fix`. NEVER invent a command for it.
 - **NON-OVERRIDABLE DENYLIST — config CANNOT widen it**: `prettier` — it reformats the contents of tagged
   template literals (`` gql`…` ``, `` css`…` ``), changing the runtime string the tag receives; any
   generic/unscoped "whitespace" or "trailing-whitespace" fixer that can touch string literals, heredocs, or
   Markdown; every **semantic rewriter** — `modernize`, codemods, `pyupgrade`, `2to3` (a `modernize` rewrite
   can pass its own rule while changing behavior); every **catch-all fixer** — `golangci-lint run --fix`,
   `ruff --fix`, `eslint --fix`, `cargo clippy --fix`, any `--fix`/`--write` flag on a linter that applies
-  semantic rules (a whitelisted run MUST invoke only the whitelisted formatter); and anything whose command
-  can touch a **check definition, config, or test** (the no-weakening prohibition — a hard rule). Failing
-  product tests, compile errors, and any rule that rewrites logic are NEVER whitelisted.
+  semantic rules (a whitelisted run invokes ONLY the table's argv). Failing product tests, compile errors,
+  and any rule that rewrites logic are NEVER whitelisted.
 - **`.gauntlet.yml` (repo root, COMMITTED — NOT under the git-ignored `.gauntlet/` tree) is read from the
   BASE branch, NEVER from the PR's worktree/head** (`git show origin/<base>:.gauntlet.yml`; `stage-2-ci.md`).
-  Reading it from the PR would let a PR **widen the whitelist that governs its own campaign** — a semantic
-  rewriter admitted by the PR under review, earning an unreviewed tool commit on its own head. That is
-  self-gating in config form. A PR that edits `.gauntlet.yml` takes effect only **after it merges**.
-  Entries may **re-configure the flags/files of a KNOWN tool** or **remove** built-ins; `formatters: []`
-  disables the cheap path entirely. They may **NEVER introduce a binary outside the known-tools table**.
-- **CONSTRAIN THE COMMAND'S SHAPE, not just the tool's category** — the attack is command *construction*:
-  an entry can cite `gofmt`'s guarantee while executing `./scripts/fmt.sh` (a wrapper that rewrites product
-  code), `sh -c "gofmt -w . && ruff --fix ."`, or a PATH-shadowed `gofmt`. Checking fields, `guarantee`
-  text, and tool *categories* does NOT stop that. Every entry MUST carry `id`, `command`, `files`,
-  `guarantee`, AND:
-  - **`command` is an argv LIST** — `["gofmt", "-w"]` — **executed WITHOUT a shell**. NEVER `sh -c`, NEVER
-    `bash -c`, NEVER a shell string.
-  - **REFUSE any shell metacharacter** in the argv: `&&`, `||`, `;`, `|`, `>`, `<`, `$(`, backticks,
-    newlines. No legitimate formatter entry needs them.
-  - **`argv[0]` MUST be a BARE TOOL NAME from the known-tools table** — NOT a path (`./x`,
-    `/usr/local/bin/x`), NOT a wrapper script, NOT an alias, NOT `sh`/`bash`/`env`/`xargs`. Contains `/` →
-    REFUSE. Not in the table → REFUSE.
-  - **`guarantee`** is a concrete pointer to the tool's DOCUMENTED semantic-equivalence behaviour AND
-    **states the conditions under which it holds**, and those conditions **verify in this repo**. "It's just
-    formatting" is NOT a guarantee.
-
-  **Any entry failing ANY of the above, or hitting the denylist, is REFUSED** — log it, ignore it, route
-  that failure to the **session model**. NEVER silently honour a denied entry.
-- **TRUST MODEL — do NOT overclaim.** `.gauntlet.yml` is read from the base branch, so its author already
-  has **write access to the repo** — the same access that can rewrite `.github/workflows`. The denylist and
-  the command-shape rules are a **guard against footguns and accidental misuse, NOT a security boundary
-  against a malicious committer**. NEVER present them as one. What the base-branch rule DOES buy is real and
-  MUST be kept: **a PR under review cannot widen the whitelist that governs its own campaign.**
+  Reading it from the PR would let a PR **widen the whitelist that governs its own campaign**, earning an
+  unreviewed tool commit on its own head — self-gating in config form. A PR that edits `.gauntlet.yml` takes
+  effect only **after it merges**.
+- **TRUST MODEL — do NOT overclaim.** `.gauntlet.yml` is base-branch content, so its author already has
+  **write access to the repo** — the same access that can rewrite `.github/workflows`. The denylist and the
+  schema rules are a **guard against footguns and accidental misuse, NOT a security boundary against a
+  malicious committer**. NEVER present them as one. What the base-branch rule DOES buy is real and MUST be
+  kept: **a PR under review cannot widen the whitelist that governs its own campaign.**
 - **Default deny, everywhere.** Keyed on the **tool's IDENTITY and documented guarantee**, NEVER on a
   failure "looking mechanical" or on the category "formatter". Unknown check, unlisted tool, missing or
   unparseable config, or a refused entry → session model. The cheap path is opt-in per tool, never inferred.

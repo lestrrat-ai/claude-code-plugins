@@ -184,29 +184,32 @@ flowchart TD
   it knows a small table of tools: `gofmt`, `gofumpt`, `goimports`, `gci`, and `ruff format`. (`ruff
   format` only counts if your Ruff config leaves `format.docstring-code-format` off — with it on, Ruff
   reformats Python code *inside docstrings*, which changes what your strings contain. A tool's guarantee can
-  depend on how it's configured, so campaign checks your config before trusting it.) To configure how those
-  tools are run in your repo, add a committed `.gauntlet.yml` at the repo root:
+  depend on how it's configured, so campaign checks your config before trusting it.) To choose which of
+  those tools campaign runs in your repo, and over which files, add a committed `.gauntlet.yml` at the repo
+  root:
 
   ```yaml
   formatters:
-    - id: gofmt
-      command: ["gofmt", "-w"]      # an argv list, not a shell command line
-      files: "**/*.go"
-      guarantee: "AST-preserving pretty-printer; never alters string-literal contents (go/printer). Holds unconditionally."
+    - id: gofmt          # which known tool
+      files: "**/*.go"   # which files it may touch
   ```
 
-  `command` is an **argv list** and is run **without a shell**. The first element must be one of the tool
-  names campaign already knows — not a path, not a wrapper script (`./scripts/fmt.sh`), not a shell string
-  (`sh -c "…"`), and no `&&`, `|`, `;`, `>` or `$(…)` anywhere. You can configure a known tool's *flags and
-  files*; you cannot point campaign at an arbitrary binary, because campaign commits that tool's output
-  without review. Teaching campaign a genuinely new tool is a change to the skill, not to your config.
+  That is the whole schema: **`id` and `files`, nothing else.** You do **not** supply a command, flags, or
+  an argv — campaign owns the exact command line for each tool it knows (`gofmt -w`, `goimports -w`,
+  `gci write`, `ruff format`, …), and an entry that tries to supply one is refused. The reason is that flags
+  are not cosmetic: `gofmt -w -r 'true -> false'` is still `gofmt`, but the `-r` flag turns it into a rewrite
+  engine that changes `return true` into `return false`. Checking *which tool* runs is not enough if you also
+  get to pick *how* it runs, so campaign doesn't let you pick.
 
-  Every entry also needs a `guarantee` — a pointer to where the tool *documents* that it preserves meaning,
-  including any conditions that guarantee depends on. An entry without one, or one campaign can't verify, is
-  refused and that failure just goes to the model instead. You can drop built-in tools, or set
-  `formatters: []` to turn the whole shortcut off. Two things you cannot do: relax the guarantee rule, and
-  have a config change apply to its own pull request — campaign reads `.gauntlet.yml` from the **base
-  branch**, so an edit to it only takes effect once that PR has merged.
+  `files` is also constrained: a glob that could reach a check definition, a config file, or a test
+  (`.github/**`, `.golangci.yml`, `**/*_test.go`, `pyproject.toml`, …) is refused. Campaign commits this
+  tool's output without a review pass, so it must never be able to weaken the checks that gate it.
+
+  You can drop built-in tools by omitting them, or set `formatters: []` to turn the whole shortcut off (then
+  every CI failure goes to a full-strength model — always a safe choice). Teaching campaign a genuinely new
+  tool is a change to the skill, not to your config. And a config change never applies to its own pull
+  request: campaign reads `.gauntlet.yml` from the **base branch**, so an edit to it only takes effect once
+  that PR has merged.
 
   To be clear about what this buys: `.gauntlet.yml` lives in your repo, so anyone who can edit it can
   already edit your CI workflows. These rules are a **guard against footguns**, not a security boundary

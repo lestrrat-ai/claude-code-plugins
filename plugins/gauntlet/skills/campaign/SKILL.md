@@ -67,121 +67,34 @@ CI misses a wrong-but-green fix, and the review gate is a miss-catcher, not a pr
 accept: a diff that *looks* like formatting is **not** a proof of semantic equivalence (see below). NEVER
 justify a downgrade by claiming something downstream will catch it.
 
-### The only cheap path — run the formatter TOOL, no model at all
+### The only cheap path — run a skill-owned formatter TOOL, no model at all
 
-Some CI failures need **no subagent**: run the fixer **tool** and commit its output. Zero model tokens,
-zero model risk.
+The ONE exception to a model dispatch: a whitelisted **formatting** failure is fixed by running the
+**tool** and committing its output. Zero model tokens, zero model risk. Top-level invariants:
 
-**THE CRITERION — a tool is whitelisted ONLY IF it guarantees its output is SEMANTICALLY EQUIVALENT to
-its input**: an AST-preserving pretty-printer, not a text munger. Whitelisting is **per-TOOL**, and the
-burden is the **tool's documented behaviour**. **If you cannot point to that guarantee, the tool is NOT
-whitelisted — use the session model.** There is NO blanket "formatters are safe" rule: a tool that looks
-like a formatter can still rewrite meaning (see `prettier`, below).
+- **The SKILL owns the exact argv.** The known-tools table in `references/stage-2-ci.md` fixes, per tool,
+  the precise argv campaign may execute. **Config NEVER supplies a command, flags, or argv.** Flags carry
+  the semantics: `gofmt -w -r 'true -> false'` rewrites `return true` into `return false` — same known
+  binary, no shell metacharacters, a pure rewrite engine. Letting config choose flags hands back exactly
+  the freedom the criterion exists to remove. An entry carrying `command`/`args`/`argv`/flags is **REFUSED**.
+- **Config picks only WHICH tool and over WHICH files.** A `.gauntlet.yml` entry carries **only `id` +
+  `files`**, and `files` MUST NOT be able to reach a **check definition, config, or test** path. A glob
+  that can → **REFUSED**.
+- **The CRITERION is the skill's and is NEVER configurable**: a tool is whitelisted ONLY IF it guarantees
+  its output is SEMANTICALLY EQUIVALENT to its input, on the burden of the tool's **documented behaviour**.
+  There is NO blanket "formatters are safe" rule. The guarantee is the **TOOL's** — it NEVER transfers to
+  a model hand-editing the same file, however formatting-like the diff looks (a pure-indentation edit moves
+  behavior in a whitespace-significant language and stays formatter-clean).
+- **Base branch only.** Read `.gauntlet.yml` from the base branch (`git show origin/<base>:.gauntlet.yml`),
+  NEVER from the PR's worktree or head — a PR must NEVER widen the whitelist that governs its own campaign.
+- **A tool commit resets the gate** exactly like a subagent commit (`stage-2-ci.md`).
+- **Default deny.** Unknown or unlisted tool, refused entry, missing/unparseable config, the tool did not
+  fix it, the tool left residue, or the failure needs any judgment → **session model**, set explicitly.
+  NEVER hand it to a cheap model instead.
 
-The guarantee belongs to the whitelisted **tool's output** and to **nothing else**. It does **not**
-transfer to a model that hand-edits the same file: a diff that merely LOOKS like formatting is not
-semantics-preserving. In a whitespace-significant language it can move behavior while staying
-formatter-clean — indenting `result.append("always")` under an `if` is a pure-indentation edit that turns
-`["always"]` into `[]`, and `ruff format` is perfectly happy with it.
-
-**The LIST is configurable. The CRITERION is NOT.** The whitelist = the skill's **built-in defaults**, as
-the repo's `.gauntlet.yml` re-configures or removes them. A hardcoded set of *flags* is meaningless in a
-Rust/Java/Ruby repo; the criterion above is the safety property and is **NEVER overridable by config**.
-Config tunes **which known tools run, with which flags, over which files** — it can **NEVER introduce a
-binary outside the known-tools table** below.
-
-**Built-in defaults — the KNOWN-TOOLS TABLE.** These are the ONLY binaries campaign may execute on the
-no-model path. Adding a tool here is a **SKILL change**, NEVER a config change (`stage-2-ci.md`).
-
-| `id` | `argv[0]` | guarantee | precondition |
-|---|---|---|---|
-| `gofmt` | `gofmt` | AST-preserving Go pretty-printer; never touches string-literal contents | none |
-| `gofumpt` | `gofumpt` | same, stricter layout; never touches string-literal contents | none |
-| `goimports` | `goimports` | import block only | none |
-| `gci` | `gci` | import grouping/ordering only — Go init order is by **dependency**, not by import order | none |
-| `ruff format` | `ruff` | verifies its output is AST-equivalent to the input | repo's Ruff config does **NOT** enable `format.docstring-code-format` |
-
-**golangci-lint `whitespace` is NOT a default**: it has **no safe fixer** — its only fix path is the
-catch-all `golangci-lint run --fix`, which the denylist forbids. NEVER invent a command for it.
-
-**A tool's guarantee can be CONDITIONAL on its CONFIGURATION.** `ruff format` with
-`format.docstring-code-format` enabled reformats Python code **inside docstrings** — it rewrites string
-contents, so its output is NOT AST-equivalent. Therefore: every `guarantee` MUST state the **conditions
-under which it holds**, and campaign MUST **verify those conditions hold in this repo** (read the tool's
-config from the **base** branch) before taking the no-model path. Condition violated, or undeterminable →
-**NOT whitelisted for this repo → session model.**
-
-**The DENYLIST — the skill's own, and config CANNOT widen past it. Refuse any entry that is:**
-
-- **`prettier`**: it reformats the **contents** of tagged template literals (`` gql`…` ``, `` css`…` ``),
-  changing the runtime string the tag function receives. That is a semantic change made by the tool itself.
-- any **generic or unscoped** "whitespace" / "trailing-whitespace" fixer, which can rewrite content inside
-  string literals, heredocs, or Markdown (e.g. trailing double-space hard breaks). A tool that cannot
-  promise it leaves literal content alone is NOT whitelisted.
-- every **semantic rewriter** — `modernize`, codemods, `pyupgrade`, `2to3`, any rule that rewrites logic. A
-  `modernize` rewrite can PASS its own rule while CHANGING BEHAVIOR (e.g. `sort.Slice` → `slices.SortFunc`
-  with a reversed or non-equivalent comparator): lint-clean, semantics changed.
-- every **catch-all fixer** — `golangci-lint run --fix`, `ruff --fix`, `eslint --fix`, `cargo clippy --fix`,
-  or any `--fix`/`--write` flag on a linter that applies semantic rules. A whitelisted run MUST invoke
-  **only the whitelisted formatter**, NEVER a catch-all `--fix`.
-- anything whose command can touch a **check definition, config, or test** (the no-weakening prohibition —
-  a hard rule, not a preference).
-- **NEVER whitelisted**: a failing product test (making a test pass is not the same as fixing the bug), a
-  compile error, and any rule that rewrites logic.
-
-**Repo config — `.gauntlet.yml` at the repo root** (COMMITTED, unlike the git-ignored `.gauntlet/` tree).
-It **re-configures the flags and files of KNOWN tools** and **removes** built-ins; `formatters: []`
-disables the cheap path entirely (everything goes to the session model — always a safe choice). It can
-**NEVER introduce a binary that is not in the known-tools table.**
-
-**The command's SHAPE is constrained, not just the tool's category** — the attack is command
-*construction*: an entry can cite `gofmt`'s guarantee while executing `./scripts/fmt.sh`. So every entry
-MUST carry `id`, `command`, `files`, `guarantee`, and:
-
-- **`command` is an argv LIST** — `command: ["gofmt", "-w"]`. **Executed WITHOUT a shell.** NEVER `sh -c`,
-  NEVER `bash -c`, NEVER a shell string.
-- **REFUSE any shell metacharacter** in the argv — `&&`, `||`, `;`, `|`, `>`, `<`, `$(`, backticks,
-  newlines. No legitimate formatter entry needs them.
-- **`argv[0]` MUST be a bare tool name in the known-tools table** — NOT a path (`./x`, `/usr/local/bin/x`),
-  NOT a wrapper script, NOT an alias, NOT `sh`/`env`/`xargs`.
-- **`guarantee` MUST state the conditions under which it holds**, and those conditions MUST **verify in
-  this repo**. Undeterminable → REFUSE. "It's just formatting" is NOT a guarantee.
-
-**Any entry failing ANY of these is REFUSED** — logged, ignored, and that failure routes to the **session
-model**. Full schema, validation, and merge order: `stage-2-ci.md`.
-
-**NEVER read `.gauntlet.yml` from the PR's worktree or head — ALWAYS from the BASE branch**
-(`git show origin/<base>:.gauntlet.yml`). If campaign read the whitelist from the PR under review, a PR
-could **widen the whitelist that governs its own campaign** — adding a semantic rewriter and earning an
-unreviewed tool commit on its own head. That is self-gating in config form. A PR that edits `.gauntlet.yml`
-therefore takes effect only **after it merges**, gated like any other change.
-
-**Trust model, stated honestly.** `.gauntlet.yml` comes from the base branch, so its author already has
-**write access to the repo** — the same access that can rewrite `.github/workflows`. The denylist and the
-command-shape rules are a **guard against footguns and accidental misuse, NOT a security boundary against a
-malicious committer**. NEVER claim otherwise. What the base-branch rule DOES buy is real and MUST be kept:
-**a PR under review cannot widen the whitelist that governs its own campaign.**
-
-Eligibility is keyed on the **tool's IDENTITY and its documented guarantee** — NEVER on an impression that
-a failure "looks mechanical", and NEVER on the *category* "formatter". A vibes-based whitelist is the same
-unsound reasoning in a new hat. **Default deny, everywhere: unknown tool, unlisted tool, missing or
-unparseable config, or a refused entry → session model.** The cheap path is opt-in per tool, never inferred.
-
-| When | Action |
-|---|---|
-| **Whitelisted tool** (prefer always) | Run the **tool** in `<worktree>`, **WITHOUT a shell**, from its validated **argv** — the built-in default (`["gofmt","-w"]`, `["gofumpt","-w"]`, `["goimports","-w"]`, `["gci","write"]`, `["ruff","format"]`) or the validated `command` from base-branch `.gauntlet.yml`. NEVER a catch-all `--fix`. Re-run the **exact** failing check; it must pass and the diff must touch **no check definition, config, or test**. Then commit + push — and **reset the gate exactly as any other PR-content change does** (`stage-2-ci.md`). **No model at all.** |
-| **Everything else** | Dispatch the scoped CI-fix subagent on the **session model**, set explicitly. Covers: the tool did not fix it, the tool left residue, the tool/check is not whitelisted, a config entry was **refused** (bad shape, unknown `argv[0]`, unverifiable guarantee condition), the config is missing/unparseable, or the failure needs any judgment (product tests, compile errors, semantic lint rules, logic). |
-
-If the tool's output does not clear the failing check, or it touched a check definition, config, or test
-→ **discard the work** (reset the worktree to the PR head) and **re-dispatch the same failure on the
-session model**. NEVER commit an unverified formatter run. NEVER hand a "formatting" failure to a cheap
-model instead.
-
-**Residual risk, stated honestly:** the whitelist is only as strong as each tool's documented guarantee —
-a tool bug, or a config/plugin that switches on non-formatting rules, is the whole of the exposure. Run
-whitelisted tools with the project's own config and no extra rule sets. Do NOT admit a `.gauntlet.yml`
-entry past a guarantee you can point to, and NEVER re-derive its safety from the review gate: the
-whitelist stands on the TOOL being incapable of changing semantics, or it does not stand at all.
+Full known-tools table (each tool's **exact skill-owned argv**, guarantee, precondition), the
+`.gauntlet.yml` schema and validation, the non-overridable denylist, and the honest trust model →
+**`references/stage-2-ci.md`**.
 
 **The biggest lever is not the model — it is the reviewer.** Review passes re-read the whole PR diff,
 `required(tier)` times per SHA, and re-run from scratch on every gate reset, so they dominate campaign's
