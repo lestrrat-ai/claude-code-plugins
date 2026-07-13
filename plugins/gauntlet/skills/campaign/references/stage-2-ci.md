@@ -64,10 +64,14 @@ machine-read convention as `state.jsonl` and the review plan/progress files (`fi
 - **`--paginate` is MANDATORY** — `/check-runs` pages at **30**; without it you parse page one and call
   it the whole set.
 - **BOTH families are MANDATORY.** A failing Jenkins/CircleCI **commit status is genuinely invisible** to
-  `/check-runs`: a Kubernetes commit carrying **2 live statuses** reports `check_runs.total_count = 0`.
-- **NEVER read the combined status `.state` as a verdict.** It reports **`pending` at ZERO statuses**
-  (`repos/cli/cli/commits/trunk/status` → `{"state":"pending","total_count":0}`) — an absence, read as a
-  verdict, is a lie in both directions.
+  `/check-runs`: a commit can carry **live commit statuses** while `/check-runs` reports
+  `check_runs.total_count = 0` for that very commit. Read only one family and the other's failures are
+  simply **absent** from your evidence — and an absence parses as "nothing wrong".
+- **NEVER read the combined status `.state` as a verdict.** A commit carrying **ZERO** statuses reports
+  `{"state":"pending","total_count":0}` — an absence, read as a verdict, is a lie in both directions.
+  (Illustrative, and expected to drift: observed on 2026-07-13 on
+  `repos/cli/cli/commits/trunk/status`. Whether *that* commit still carries zero statuses is a **live
+  fact that changes**; the API's behavior **at zero** is the permanent point.)
 - **Honest limit, not a proof:** `/check-runs` is capped at the **1000 most recent check suites**.
   `--paginate` defeats page-size truncation; it does **not** prove completeness at extreme scale. Say
   that, and never claim more.
@@ -197,10 +201,14 @@ exists to prevent, reproduced inside the guard meant to catch it. **Comparing on
 what closes it** — and the null/duplicate guard above is what keeps that identity meaningful.
 
 **NEVER require the two sets to be EQUAL — that never terminates.** GitHub's rollup **omits
-`dynamic`-event check suites BY DESIGN**: on `microsoft/vscode` PR #325532, REST returns **37** runs
-including `copilot-pull-request-reviewer` and the rollup returns **36**, omitting it — **stably, across
-refetches**. That is a by-design asymmetry, **not motion**, so "sets differ → pending, refetch" spins
-forever. This repo ships `gauntlet:copilot-address-reviews`, so its users are exactly the affected ones.
+`dynamic`-event check suites BY DESIGN**: REST can legitimately return a check run — a
+`copilot-pull-request-reviewer` run is one — that the rollup **does not list at all**, and it stays that
+way **across refetches**. (Illustrative, and expected to drift: observed on 2026-07-13 on
+`microsoft/vscode` PR #325532, where the REST read held exactly that run and the rollup did not. The
+**CLAIM** is what is permanent, never the counts on either side.) That asymmetry is **by design, NOT
+motion**, so "sets differ → pending, refetch" spins forever — which is precisely why a **REST-only** row
+is **FINE**. This repo ships `gauntlet:copilot-address-reviews`, so its users are exactly the affected
+ones.
 
 #### DECIDE from the verified file's contents
 
