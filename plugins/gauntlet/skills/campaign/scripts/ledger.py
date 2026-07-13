@@ -21,20 +21,12 @@ from typing import NoReturn
 
 # --- schema (owned here, once) ------------------------------------------------
 
-HEADER_FIELDS = ("run_id", "base_branch", "api_changes", "reviewer", "formatters")
+HEADER_FIELDS = ("run_id", "base_branch", "api_changes", "reviewer")
 HEADER_DEFAULTS = {
     "run_id": "-",
     "base_branch": "-",
     "api_changes": "ask",
     "reviewer": "default",
-    # Cheap-CI-path tool list. The skill ships with ZERO tools enabled and vouches for
-    # none: the default is "-" = EMPTY, cheap path OFF, every CI failure to the session
-    # model (never the word "none", and there is no "default" value / built-in set).
-    # The only other shape: comma-separated known-tool ids, each optionally suffixed
-    # ":<glob>" to narrow that tool's default glob. Enabling a tool is an explicit USER
-    # act and an explicit risk acceptance. Resolved once at run start from the user
-    # (invocation, else memory preference) — NEVER from repo content, which is PR content.
-    "formatters": "-",
 }
 
 ROW_FIELDS = (

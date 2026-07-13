@@ -55,120 +55,44 @@ a silent cost decision, taken by default, on every subagent this skill launches.
 |---|---|---|
 | Review pass (default reviewer) | **session model** | It *is* the gate. A weaker verdict is a worse gate — the one thing never worth cheapening. |
 | Fresh-subagent fallback review | **session model** | Same job as a review pass; counts toward the gate identically. |
-| Review-fix (after `NOT SATISFIED`) | **session model** | Authors code that gets merged, judged only by another full review pass. A cheap bad fix burns a whole review pass and a gate reset — it *costs* more than the tier saves. |
-| **CI-fix** | **session model** | Also authors code that gets merged. CI does **not** validate it: a wrong fix can turn CI green — by weakening a check, or by being plain wrong in product code that no check covers. Dispatched under an explicit no-weakening prohibition (`stage-2-ci.md`), which constrains the fixer but proves nothing about the fix. |
+| Review-fix (after `NOT SATISFIED`) | **session model** | Authors code from scratch, judged only by another full review pass. A cheap bad fix burns a whole review pass and a gate reset — it *costs* more than the tier saves. |
 | Root-cause **mapper** | **session model** | Read-only, but NOT low-judgment: it enumerates a full matrix and confirms each gap with a repro. A weaker model **under-maps**, which is the exact failure the mapper exists to prevent (`root-cause-pass.md`). "Read-only" is not a licence to downgrade. |
+| **CI-fix — formatting/lint failure** | **`sonnet`** (**`haiku`** only when trivially mechanical) | **Downgraded ON PURPOSE.** It does not author a fix: it runs a deterministic formatter, **READS the resulting diff**, verifies it, and **escalates** anything it cannot verify (`references/stage-2-ci.md`). |
+| **CI-fix — everything else**, and every **escalation** from the cheap tier | **session model** | Authors code that gets merged. CI does **not** validate it: a wrong fix can turn CI green — by weakening a check, or by being plain wrong in product code that no check covers. |
 
-**NO SUBAGENT IS EVER RUN ON A DOWNGRADED MODEL**, and the reason is uniform. Every subagent here either
-*is* the gate (review passes), writes **code that gets merged** (CI-fix, review-fix), or produces the
-enumeration an expensive fix depends on (mapper). Nothing downstream *guarantees* a bad result is caught:
-CI misses a wrong-but-green fix, and the review gate is a miss-catcher, not a proof of correctness
-(`stage-2-review-gate.md`). And there is **no mechanical guard** that makes a weak model's edits safe to
-accept: a diff that *looks* like formatting is **not** a proof of semantic equivalence (see below). NEVER
-justify a downgrade by claiming something downstream will catch it.
+**The gate, the from-scratch fixes, and the mapper are NEVER downgraded**: a review pass *is* the gate; a
+review-fix and a session-model CI-fix author code; the mapper's under-map is invisible. **The formatting
+CI-fix tier IS downgraded, deliberately** — it does something narrower: run a tool and VERIFY its output.
 
-### The only cheap path — run a USER-ENABLED tool, no model at all
+### The cheap CI-fix tier — a model that runs a tool and READS the diff
 
-The ONE exception to a model dispatch: a failure whose fixer is a **known tool the USER enabled** is fixed by
-running the **tool** and committing its output. Zero model tokens.
+A formatting/lint failure goes to a **cheap** CI-fix subagent (`sonnet`; `haiku` only for a trivially
+mechanical failure), scoped to the failing check's logs, the failing file(s), and the worktree path. In
+order it: **classifies** the failure → **runs the formatter** (it picks the tool; campaign hands it no
+argv) → **READS THE RESULTING DIFF** and verifies it contains **only** what the fix should have produced,
+touched **no** file it did not intend, weakened **no** check/config/test, and that **re-running the exact
+failing check now passes** → **commits only then** → otherwise **ESCALATES to a session-model CI-fix
+subagent and patches nothing**. Escalation is a correct outcome, not a failure.
 
-**THE SKILL SHIPS WITH ZERO TOOLS ENABLED (`formatters` defaults to `-`), AND IT VOUCHES FOR NO TOOL.** Out
-of the box campaign runs **no tool** and **every** CI failure goes to the session model. The skill supplies
-the **MECHANISM** (below) and the **EVIDENCE** (what each tool's doc does and does not say); **the USER
-decides which tools to trust, enables them explicitly, and accepts that risk.** **The skill guarantees HOW a
-tool is run — NEVER WHAT the tool does.** Top-level invariants:
+Its prompt carries these **verbatim** (full text in `references/stage-2-ci.md`):
 
-- **The SKILL owns the exact argv.** The known-tools table in `references/stage-2-ci.md` fixes, per tool,
-  the precise argv campaign may execute. **NOTHING outside the skill supplies a command, flags, or argv.**
-  Flags carry the semantics: `gofmt -w -r 'true -> false'` rewrites `return true` into `return false` — same
-  known binary, no shell metacharacters, a pure rewrite engine. The tool list names **ids and globs only**.
-- **The SKILL resolves the binary — OUTSIDE the repo.** The tool runs in the PR's worktree, and the PR is
-  **untrusted content**. Resolve `argv[0]` to an **absolute** path via a `PATH` stripped of `.`, empty
-  entries, relative entries, the worktree and the repo root; the resolved executable **MUST live outside
-  the repo tree**. Resolves inside, or not at all → **REFUSE → session model**. A bare name resolved from a
-  `PATH` the PR can influence is arbitrary code execution on the no-model path.
-- **NORMALIZE THE FILE ARGV — filenames are PR-CONTROLLED DATA.** The skill owns the argv **SHAPE**; the
-  file operands are globbed from the **PR's worktree**, so they are **attacker-controlled data spliced into
-  argv** and MUST be normalized like any injection boundary. A PR that adds a file named
-  `-cpuprofile=prof.go` matches `**/*.go`, survives the exclusion filter, and `gofmt -w '-cpuprofile=prof.go'
-  a.go` **parses it as a FLAG** — exit 0, CPU profile written. So, every tool, every run: pass **`--`** before
-  the file list (end of options); pass each file as an **ABSOLUTE** (or `./`-prefixed) path, **NEVER a bare
-  relative name**; and **REFUSE any candidate name starting with `-`** after the filter — drop that file,
-  log it, do **NOT** abort the run. NEVER hand the glob itself to the tool. **NEVER invoke the tool with an
-  EMPTY operand set — `gofmt` with no operands READS STDIN**; empty → run nothing for that id → session model.
-- **A PATH RESOLVES — normalizing its SPELLING is not enough.** A PR can add `link.go` → a symlink out of the
-  tree; the name is clean, and `gofmt -w -- link.go` **follows it and rewrites the target OUTSIDE the
-  worktree**. So, after the exclusion filter and before the argv is built: **REFUSE any candidate that is a
-  SYMLINK** (`lstat`, never `stat`), **REFUSE any whose fully-resolved real path (`realpath`) is not
-  CONTAINED under the resolved worktree root**, and **REFUSE any that is not a REGULAR FILE**. Drop and log
-  each; do NOT abort. Empty set after refusals → session model.
-- **A PATH CHECK BOUNDS WHERE WE LOOK, NOT WHAT WE WRITE — the INODE can be aliased outside the tree.** A PR
-  can add `alias.go`, a **HARDLINK** sharing an inode with a file outside the worktree: a regular file, not a
-  symlink, `realpath` inside the tree — it passes every check above, and `gofmt -w` rewrites the **existing
-  inode**, mutating the outside alias. So also **REFUSE any candidate with a LINK COUNT > 1** (`stat` →
-  `st_nlink > 1`); a source file in a normal checkout has exactly one link. Drop and log it (reason:
-  `hardlink — nlink>1`); NEVER abort the run.
-- **EVERY CHECK THAT REASONS ABOUT A PATH MUST REASON ABOUT THE RESOLVED PATH — A NAME IS NOT A LOCATION.** A
-  PR can add a **symlinked DIRECTORY** `safe/gh -> .github`. The candidate `safe/gh/actions/main.go` is not
-  itself a symlink, its `realpath` is inside the worktree, it is a regular file with `nlink == 1` — it passes
-  every check above — while the **exclusion filter, matched on the SPELLED path, never sees `.github/**`**, so
-  a **check definition** reaches the tool. So: **apply the exclusion filter to the RESOLVED path as well as
-  the original — EITHER matches → REFUSE**; **AND REFUSE any candidate with a SYMLINK in ANY DIRECTORY
-  COMPONENT** (`lstat` each component from the worktree root down). The component check bounds **what we
-  write**; matching the filter on the resolved path keeps the filter honest. Both, every run.
-- **THE PIPELINE** (`stage-2-ci.md`): glob → **RESOLVE** → **FILTER on both the original and the resolved
-  path** → the **SEVEN** operand checks → argv. The seven: `--`; absolute/`./` paths; no `-`-leading names;
-  no symlinks; nothing resolving outside the worktree or non-regular; no `nlink > 1`; no symlinked directory
-  component.
-- **The tool list lives in the LEDGER, NEVER in the repo, and it is EMPTY by default.** It is the ledger
-  header's `formatters` field: resolved **once at run start** — explicit invocation, else a user preference
-  in memory, else **`-` (EMPTY: no tool, cheap path OFF)** — and **re-read from the header every wake**,
-  never re-derived from memory mid-run (same rule as `reviewer`). Two shapes only: **`-`** (the default;
-  never the word `none`, and there is **NO `default` value and no built-in set**) or known-tool ids each with
-  an optional **NARROWER** glob. **NEVER read it from repo content — not from a repo config file, not from
-  `CLAUDE.md`, not from ANY repo file.** Repo content is PR content: a PR could edit it and enable a tool to
-  govern its own campaign. Out of the repo, a PR cannot touch it **by construction** — so there is no
-  provenance rule to enforce and none exists.
-- **"KNOWN" ≠ "TRUSTED". The skill vouches for NO tool.** A known-tools row means the skill knows how to run
-  that tool **safely** — it owns the argv, the resolution, the operand checks. It does **NOT** mean the tool
-  is safe to enable. **NEVER present a row as blessed, trusted, or recommended.** For each row `stage-2-ci.md`
-  states, separately: **what the skill guarantees** (mechanical, ours) and **what is NOT proven** (about the
-  tool). `gofmt`: the cited doc (https://pkg.go.dev/cmd/gofmt) documents formatting behaviour and the flags
-  `-w`/`-r`/`-s`; it **NEVER states a semantic-equivalence guarantee**. Our reading — a pretty-printer that
-  parses and re-prints cannot change meaning — is an **INFERENCE**. Same for `gci` and `ruff format`: neither
-  doc states the guarantee either. **Enabling a tool means accepting that inference.**
-- **Enabling a tool is an explicit USER act and an explicit RISK ACCEPTANCE.** The skill does not decide a
-  tool is safe — **the user does**. If asked whether a tool is safe, point at its "what is NOT proven" cell;
-  **NEVER answer "the skill guarantees it".**
-- **THE ASYMMETRY: the skill REFUSES what is DOCUMENTED to be unsafe; it does NOT bless what is merely
-  UNDOCUMENTED.** The **non-overridable DENYLIST** (config can NEVER enable one) holds tools whose own docs
-  say they change the program: **`goimports`** (ADDS/REMOVES imports — an added import runs its `init()`),
-  **`prettier`** (rewrites tagged-template contents), **`gofumpt`** (extra rewrite rules), semantic rewriters
-  (`modernize`, codemods), and **every catch-all `--fix`/`--write`**. That is a documented fact, so the skill
-  refuses it. Where no doc states a guarantee either way, the call is the **user's** (`stage-2-ci.md`).
-- **What the no-model path actually rests on:** **OURS** — the mechanism (exact argv, no flag appended,
-  trusted binary outside the repo, the seven operand checks, resolve-then-filter, no shell/glob/empty operand
-  set, gate reset on every commit); **THE USER'S** — the tool's behaviour, which no cited doc proves. NEVER
-  restate the second as a guarantee of the skill's. The **no-weakening prohibition is for the session-model
-  CI-fix subagent** — a model can change anything.
-- **The SKILL owns a non-overridable EXCLUSION FILTER — DEFENCE IN DEPTH, admittedly INCOMPLETE.** Applied to
-  every candidate's **RESOLVED** path and its original (**either** matches → REFUSE), every time: tests,
-  check definitions, CI/tool config, `.gauntlet/**` (`**/*_test.go`, `.github/**`, `.golangci.yml`,
-  `pyproject.toml`, …). It is an **enumerated pattern list: NOT complete and it cannot be** — a
-  repo-specific check written as ordinary source (`tools/ci/check.go`) matches `**/*.go`, matches none of
-  the patterns, and **is** formatted. **NEVER call it complete, exhaustive, or a reason to enable a tool.**
-  Its job is **blast radius** — keep the tool's diff off files a reviewer expects untouched. **NOTHING widens
-  it** (config may only narrow); NEVER make the user's glob carry the exclusions. So a `gofmt:**/*.go`
-  narrowing is correct — the glob selects, the filter trims.
-- **A tool commit resets the gate** exactly like a subagent commit (`stage-2-ci.md`) — so even an enabled
-  tool's output is re-reviewed on the new SHA.
-- **Default deny — and the default IS deny.** `formatters` = `-`, tool not enabled, tool not in the table,
-  denylisted id, refused id, unresolvable binary, the tool did not fix it, the tool left residue, or the
-  failure needs any judgment → **session model**, set explicitly. NEVER hand it to a cheap model instead.
+- **NEVER make CI pass by weakening the check** — never delete or loosen an assertion, add `skip`/`xfail`,
+  disable or downgrade a lint rule, or raise a timeout. **Fix the cause.** If the check itself is
+  demonstrably wrong, say so explicitly and **escalate**; never silently rewrite it.
+- **NEVER use a catch-all fixer that applies SEMANTIC rules or a documented semantic rewriter** —
+  `golangci-lint run --fix`, `ruff --fix`, `eslint --fix`, any `--fix`/`--write` on a semantic linter;
+  `goimports` (it ADDS imports, and an added import runs its `init()`); `prettier` (it rewrites
+  tagged-template contents); `gofumpt`; `modernize`; codemods. **Use a formatter that only reformats.**
+- **NEVER execute a binary from inside the repo/worktree** — the PR under review is **UNTRUSTED CONTENT**,
+  and a repo-supplied `gofmt` is arbitrary code execution. Run tools from the environment, not from the tree.
+- **NEVER hand a tool a bare glob or a whole directory** (`gofmt -w .`) — **name the files** you are fixing.
 
-Full known-tools table (**exact skill-owned argv**, default glob, what the skill guarantees, what is NOT
-proven), the executable-resolution rule, the exclusion filter, the `formatters` resolution and validation,
-the non-overridable denylist, and the honest trust model → **`references/stage-2-ci.md`**.
+**State the risk, never overclaim:** a cheap model verifying a tool's diff is a **MISS-CATCHER, NOT A
+PROOF** — it can miss a semantic change. What backs it: the exact failing check must pass, it must escalate
+anything it cannot verify, and **every campaign commit still resets the gate and is re-reviewed by the full
+gauntlet** — which is itself a miss-catcher. **NEVER justify the cheap tier with "CI will catch it" or "the
+review gate will catch it."** This is a small, bounded risk the user has accepted, for a workflow that is
+cheaper **and** more capable than a full-strength subagent on every formatting failure.
 
 **The biggest lever is not the model — it is the reviewer.** Review passes re-read the whole PR diff,
 `required(tier)` times per SHA, and re-run from scratch on every gate reset, so they dominate campaign's
@@ -219,7 +143,7 @@ Read stage refs only when that stage/action is due:
 - **One active driver:** lease controls ownership; never double-drive one run.
 - **Base branch is data:** read `base_branch` from ledger every wake; never assume `main`.
 - **Reviewer is data:** read `reviewer` from ledger every wake before dispatching any review; set once at run start, never re-derived from memory (else an explicit/preferred reviewer silently reverts to default on a self-wake or adoption).
-- **Tool list is data, and it is EMPTY by default:** read `formatters` from the ledger header every wake before running any tool; set once at run start from the **user** (invocation, else memory preference, else **`-`** — no tool enabled). NEVER from a repo file — repo content is PR content.
+- **Model is set explicitly on every subagent dispatch:** never let a dispatch inherit the session model by default. CI-fix on a formatting failure is cheap **by design**; review passes, review-fixes, and the mapper are never downgraded ("Subagent Dispatch").
 - **Remote branch cleanup isn't campaign's job:** campaign never passes `--delete-branch`; the repo's *Automatically delete head branches* setting governs the remote head branch. Local worktree/branch cleanup follows the per-PR `worktree_owned`/`branch_owned` flags.
 - **Review gate is tier-dependent:** `required(tier)` fresh, context-isolated `SATISFIED` verdicts on
   same live PR content + green CI — **1 if TRIVIAL, else 2** (any code/agent-doc/sensitive change is 2).
@@ -265,6 +189,5 @@ Read stage refs only when that stage/action is due:
 - NEVER commit run/scratch files (the whole `.gauntlet/**` tree) — they are
   driver bookkeeping, not repo content. Stage only the specific source files a fix touches, by explicit
   path; never `git add -A`/`git add .`. Ensure `.gauntlet/` is git-ignored (add it if missing). Campaign has
-  **no committed file of its own** — no repo-root config, and the tool list is a ledger header
-  field, never a repo file (`files-and-ledger.md`, `stage-2-ci.md`).
+  **no committed file of its own** — no repo-root config (`files-and-ledger.md`).
 - NEVER `rm -rf .gauntlet/`; only `.gauntlet/tmp/**` is disposable — the rest is carryover history.

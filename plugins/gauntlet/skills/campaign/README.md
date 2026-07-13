@@ -177,120 +177,38 @@ flowchart TD
 - Before it spends a review on a PR, it first clears anything that would waste one: it addresses any
   GitHub Copilot review comments, fixes failing CI, and rebases a PR that has fallen into conflict
   with the base branch — then reviews the clean result.
-- Some CI failures — formatting ones — can be fixed by running the **formatter itself**, with no model
-  involved at all. **Campaign ships with no tool enabled and it vouches for none.** Out of the box every CI
-  failure, formatting included, goes to a full-strength fix subagent. If you want the shortcut, **you** turn a
-  tool on, and that is a decision you are making about a tool you trust — not one campaign made for you.
+- Not every CI failure needs a full-strength model. A **formatting or lint failure** — the kind a standard
+  formatter fixes — goes to a deliberately **cheap** fix subagent (Sonnet; Haiku when the failure is
+  trivially mechanical). Its job is narrow and it is *in the loop*, not bypassed: work out what failed, run
+  the formatter, **read the diff that formatter produced**, and check it — that the diff contains only the
+  change it was supposed to produce, that no file it didn't mean to touch was touched, that no test, check,
+  or config was weakened, and that the exact check that failed now passes. Only then does it commit. If any
+  of that doesn't hold — the check is still red, the diff contains something it can't explain, the real fix
+  turns out to be a change to your program's logic — it **stops and hands the failure to a full-strength fix
+  subagent**. Escalating is the expected outcome, not a failure.
 
-  Here is the honest version, because the alternative is a safety claim nobody can back. What campaign
-  guarantees is **how** a tool is run, never **what** the tool does:
+  Two rules it always gets, word for word. It may **never make CI pass by weakening the check**: no deleted
+  or loosened assertions, no `skip`/`xfail`, no disabled lint rules, no raised timeouts. It fixes the cause —
+  and if the check itself is genuinely wrong, it says so out loud and escalates rather than quietly
+  rewriting it. And it may **never reach for a catch-all `--fix`** (`golangci-lint run --fix`, `ruff --fix`,
+  `eslint --fix`) or a tool documented to rewrite your code — `goimports` *adds* imports, and an added import
+  runs that package's `init()`; `prettier` rewrites the contents of tagged template literals; `gofumpt`
+  applies extra rewrite rules on top of layout. A formatter that only reformats, nothing more. It also never
+  runs a binary out of the pull request's own tree (that's untrusted content), and never points a tool at a
+  bare glob or a whole directory — it names the files it is fixing.
 
-  - it owns the exact command line (`gofmt -w --`, `gci write --`, `ruff format --`) and never appends a flag;
-  - it resolves the binary to a trusted absolute path outside your repo;
-  - it checks every filename it passes (details below);
-  - and any commit the tool makes **resets the review gate**, so the result is reviewed like any other change.
+  **The honest version of the trade:** a cheap model reading a tool's diff is a good miss-catcher, not a
+  proof. It can miss a semantic change. What backs it up is that the failing check has to pass, that the
+  subagent has to escalate anything it cannot verify, and that **every commit campaign makes still resets the
+  review gate** — the pull request is re-reviewed from scratch, by the full gauntlet, on the new commit. That
+  gate is a miss-catcher too, and campaign will not pretend otherwise: it will never tell you the cheap path
+  is safe because "CI will catch it". This is a small, bounded risk, taken deliberately, for a loop that is
+  cheaper *and* more capable than either running a full-strength model on every stray formatting failure or
+  running the tool blind with nothing looking at what it did.
 
-  What it does **not** guarantee is that the tool preserves the meaning of your program. Take `gofmt`: its
-  documentation (https://pkg.go.dev/cmd/gofmt) describes formatting behaviour and flags — it never actually
-  *states* a semantic-equivalence guarantee. "A pretty-printer that parses and re-prints your code can't
-  change what it means" is a reasonable inference, and it is **an inference, not a documented promise**. The
-  same is true of `gci` (its docs describe import ordering and grouping; they never say it neither adds nor
-  removes an import) and of `ruff format` (its formatter docs don't state the AST-equivalence guarantee you'd
-  be relying on — and your own Ruff config can turn on `format.docstring-code-format`, which rewrites code
-  inside docstrings). Enabling one of these means you have read that and accepted the risk.
-
-  There is one thing campaign **does** refuse, and the asymmetry is deliberate: **it refuses what is
-  documented to be unsafe; it does not bless what is merely undocumented.** `goimports` *adds* missing imports
-  and *removes* unreferenced ones — an added import runs that package's `init()`, and a guessed import can be
-  the wrong package. `prettier` rewrites the contents of tagged template literals. `gofumpt` applies extra
-  rewrite rules on top of gofmt's layout. Code rewriters (`modernize`, codemods) and every catch-all
-  `--fix`/`--write` linter flag change your program by design. Those are **documented facts**, so campaign
-  denies them outright — you cannot switch them on. Where the docs are simply silent, the call is yours.
-
-  **How to decide:** read the tool's own documentation, decide whether you accept the inference above, and
-  only then enable it. Whatever you enable, campaign still gates every commit the tool makes.
-
-  **Name the tools when you invoke campaign** ("use gofmt"), or **record a preference in memory** and campaign
-  will pick it up on later runs. There is no file to configure. Whatever it resolves to is fixed once, at the
-  start of the run, and written into the run's ledger `formatters` field — `-` when nothing is enabled (the
-  default), otherwise the tool ids you named — so a later wake, or a fresh agent that picks the run up, uses
-  the same list rather than quietly changing its mind.
-
-  There is deliberately **no config file for this, and campaign will not read one from your repo** — not a
-  file at the repo root, not `CLAUDE.md`, not anything else in the tree. Files in your repo are things a pull
-  request can edit, and this list is what decides whether a change gets committed to that same pull request
-  *without a review pass*. If it lived in the repo, a pull request could widen the rules that govern its own
-  review. Keeping it out of the repo makes that impossible by construction, rather than something campaign
-  has to defend against.
-
-  Naming a tool is all you get to do. You do **not** supply a command, flags, or an argv — campaign owns the
-  exact command line for each tool it knows.
-  Flags are not cosmetic: `gofmt -w -r 'true -> false'` is still `gofmt`, but the `-r` flag turns it into a
-  rewrite engine that changes `return true` into `return false`. Checking *which tool* runs is not enough if
-  you also get to pick *how* it runs, so campaign doesn't let you pick.
-
-  Campaign also picks the **binary**, not just the command line. The tool runs inside the pull request's own
-  worktree, and that pull request is untrusted content, so campaign resolves the executable to an absolute
-  path outside your repo before running it — a pull request that ships a file called `gofmt` never gets
-  executed. If the real tool can't be found outside the repo, campaign refuses the shortcut and uses a model
-  instead.
-
-  And it is careful about the **filenames** it hands the tool, because those come out of the pull request
-  too. A pull request can add a file called `-cpuprofile=prof.go`; it is a perfectly good match for `**/*.go`,
-  and `gofmt -w '-cpuprofile=prof.go' a.go` doesn't format it — it reads it as a *flag* and writes a CPU
-  profile. So campaign always passes `--` before the file list, always passes absolute paths rather than bare
-  names, and drops any candidate file whose name starts with `-` (it logs it and carries on with the rest).
-  Campaign owns the *shape* of the command; the filenames in it are pull-request data, and get treated as
-  data.
-
-  Spelling a path safely is not the same as knowing where it *leads*. A pull request can also add `link.go` —
-  a **symlink** whose target sits outside the worktree entirely. The name looks fine, but `gofmt -w -- link.go`
-  follows it and rewrites the file it points at. So campaign checks what each candidate resolves to, not just
-  how it is written: it drops symlinks, drops anything that isn't a plain regular file, and drops anything
-  whose fully-resolved real path lands outside the worktree. Each drop is logged; the rest of the run
-  continues.
-
-  And below even that: a path check bounds where campaign *looks*, not what it *writes*. A **hardlink** is a
-  perfectly ordinary regular file, it is not a symlink, and its real path really is inside the worktree — but
-  it shares an *inode* with a file outside the tree, and `gofmt -w` rewrites the existing inode, so formatting
-  it changes the outside file too. It passes every check above. So campaign adds a sixth: it drops any
-  candidate whose **link count is greater than one**. A source file in a normal checkout has exactly one link;
-  anything with more is either a hardlink escape or something there is no reason to format. Logged, dropped,
-  run continues.
-
-  One layer further down, the same lesson generalises: **a name is not a location.** A pull request can add a
-  symlinked *directory* — `safe/gh` pointing at `.github`. The candidate `safe/gh/actions/main.go` isn't a
-  symlink itself, its real path is inside the worktree, it's a regular file with one link, and its name is
-  clean: it passes all six checks. But campaign's exclusion filter (below) lists `.github/**`, and
-  `safe/gh/...` doesn't *look* like `.github/...` — so a **CI check definition** would be handed to the tool,
-  with no model and no review. The fix is the general one: **every check that reasons about a path reasons
-  about the path it resolves to.** The exclusion filter is matched against the resolved path as well as the
-  written one — either one matching is a refusal — and, as a seventh check and an explicit tripwire, campaign
-  drops any candidate with a **symlink anywhere in its directory path**.
-
-  If the refusals empty the file set, campaign runs **nothing** for that tool and sends the failure to a
-  model. It never invokes the tool with no files: `gofmt` with no file operands reads standard input, which
-  is not the run anyone asked for.
-
-  Every known tool has a default glob (`gofmt`/`gci` → `**/*.go`, `ruff format` → `**/*.py`), so you normally
-  name nothing but the tool. If you do narrow one to a subdirectory, the glob may only **narrow** the default,
-  never widen it — and you should not try to write exclusions into it. Campaign applies its **own** exclusion
-  filter afterwards, every time, and nothing widens it: tests, check definitions, CI workflows, and tool
-  config (`**/*_test.go`, `.github/**`, `.golangci.yml`, `pyproject.toml`, …) are removed no matter what
-  your glob says — and matched against what each candidate **resolves to**, not just how it is spelled.
-  (A glob that *directly* names a protected path is refused outright.)
-
-  That filter is a pattern list, and a pattern list is **not complete** — it can't be. A repo-specific check
-  written as ordinary source, say a Go checker at `tools/ci/check.go`, matches `**/*.go`, matches none of
-  those patterns, and does get formatted by a tool you enabled. So be exact about what the filter is: it keeps
-  the tool's diff small and off the files a reviewer expects untouched — **defence in depth, and admittedly
-  incomplete**. It is not a reason to trust a tool, and campaign never presents it as one.
-
-  Teaching campaign a genuinely new tool is a change to the skill — reviewed and gated like any other code
-  change. And to be clear about what all this buys: the tool list comes from *you*, so the denylist and the
-  narrow shape of the list are a **guard against footguns**, not a security boundary against yourself. The
-  real boundary is that the tool runs on untrusted pull-request content, which is why campaign resolves the
-  binary outside your repo and owns the exclusion filter itself.
+  Everything else — a failing test, a compile error, anything needing judgment — goes to a full-strength fix
+  subagent, as does every escalation from the cheap one. Review passes are never cheapened: a review pass
+  *is* the gate.
 - It keeps a small `.gauntlet/history/` at the repo root (git-ignored, one file per run) to remember what past
   runs learned. That's the memory a fresh run carries over. Each fresh run also tidies that file,
   dropping entries that no longer apply to the current code — and when it isn't sure an entry is

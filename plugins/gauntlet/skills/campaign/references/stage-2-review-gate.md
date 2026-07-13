@@ -360,9 +360,10 @@ As each verdict lands, tally it for the SHA it ran on:
   skipped). A later wake starts a fresh review on the new tip. (Because reviews are sequential, no
   second review was spent on this broken commit.)
 
-  **Run the review-fix on the session model — no subagent is ever run on a downgraded model**
-  (`SKILL.md`, "Subagent Dispatch"). The one cheap path — running a user-enabled **tool** with no
-  model at all (`stage-2-ci.md`) — cannot fix a review defect. Its output is **code that gets merged**, and its only
+  **Run the review-fix on the session model — NEVER downgraded** (`SKILL.md`, "Subagent Dispatch"). The one
+  deliberate downgrade in this skill is the CI-fix subagent for a **formatting/lint** failure, which runs a
+  formatter and verifies its diff (`stage-2-ci.md`); a review defect is **authored code**, and this subagent
+  writes it from scratch. Its output is **code that gets merged**, and its only
   judge is another full review pass — which is a miss-catcher, not a proof of correctness. Best case, a
   weak fix produces a plausible-looking commit, the next pass returns `NOT SATISFIED`, the gate resets,
   and the whole diff is re-reviewed: the cheap wrong fix is paid for twice, and it is the expensive half
@@ -456,7 +457,7 @@ that drop `reviews_ok` to 0):
 |---|---|
 | `NOT SATISFIED` verdict lands | this file, verdict tally |
 | Review-fix commit pushed | this file, verdict tally |
-| CI-fix commit pushed — by the subagent **or** by an enabled-tool run with no model | `stage-2-ci.md`, "Any campaign commit to the PR head resets the gate" |
+| CI-fix commit pushed — cheap tier **or** session-model tier | `stage-2-ci.md`, "Any campaign commit to the PR head resets the gate" |
 | Copilot-item fix pushed | Stage 2a preconditions, above |
 | Conflict-resolving rebase | `stage-3-merge.md` |
 | Re-adoption refresh detects changed content | `pr-adoption.md` step 3 (step 4 then sets the status label from the **live** gate — `gauntlet-reviewing` here, but `gauntlet-accepted` for a re-adoption whose content did **not** change and whose verdicts step 3 preserved; either way it removes the other label) |

@@ -51,13 +51,13 @@ blocks; each completion is its own wake.
      `gh pr list --label gauntlet-run-<run-id> --json number,headRefName,headRefOid,state,mergeable,mergeStateStatus,labels > <rundir>/prs.json`
      — and drive reconcile from that file; fall back to per-PR `gh pr view` only where the snapshot
      isn't enough (merge-gate CI truth stays the re-polled `gh pr checks` snapshot, Stage 2b). Wake
-     turnaround is throughput: every serial `gh` call in reconcile delays every dispatch behind it. Re-read `run_id`, `base_branch`, `api_changes`, `reviewer`, and `formatters` from the ledger
-     header — they govern namespacing, the merge/diff target, API-change handling, which reviewer runs
-     the review passes, and which tools (if any — none by default) the cheap CI path may run, and must be
+     turnaround is throughput: every serial `gh` call in reconcile delays every dispatch behind it. Re-read `run_id`, `base_branch`, `api_changes`, and `reviewer` from the ledger
+     header — they govern namespacing, the merge/diff target, API-change handling, and which reviewer runs
+     the review passes, and must be
      consulted fresh each wake, never from memory (a wake may be a fresh agent instance that just
-     adopted the run, so an explicit/preferred reviewer or tool list would otherwise
+     adopted the run, so an explicit/preferred reviewer would otherwise
      be lost and silently revert to the default; Constraints, Base branch, "The reviewer",
-     `stage-2-ci.md`, "PR adoption"). Refresh
+     "PR adoption"). Refresh
      the lease. This is the path every `--run` self-wake takes.
    - **No run bound and none live (no `gauntlet-run-*` PR, no non-terminal `<rundir>`) → first run.**
      **Check there is something to adopt BEFORE creating any run state.** If the invocation carries no
@@ -168,14 +168,15 @@ blocks; each completion is its own wake.
      files, which a surviving process could still write to); a dead `launch_attempt: 2` →
      fresh-subagent fallback. A failed launch yields no verdict: it never touches `reviews_ok` and
      never bumps the row's `attempts`;
-   - CI red and no fix is already in flight for that PR/SHA → **CLASSIFY the failure first (Stage 2b,
-     "Tool classification") — never dispatch a subagent straight off a red check.** A failure whose fixer is a
-     known tool the **user ENABLED** runs the **TOOL, with no model at all**; **everything else** — including
-     the default state, in which **no tool is enabled** — gets a scoped CI-fix
-     subagent on the **session model**, set explicitly and NEVER downgraded. Either way the resulting commit
-     **resets the gate** (Stage 2b, "Any campaign commit to the PR head resets the gate"). The table, the
-     skill-owned argv, the exclusion filter, and the file-operand checks live in `stage-2-ci.md` — follow
-     them there; do NOT restate them here. Different PRs may fix CI concurrently within the cap.
+   - CI red and no fix is already in flight for that PR/SHA → **CLASSIFY the failure from the check logs
+     first (Stage 2b, "Classify, then set the model") — never dispatch a subagent straight off a red
+     check.** The class picks the model, set **explicitly**: a **formatting/lint** failure → a scoped CI-fix
+     subagent on a **cheap** model (`sonnet`; `haiku` only when trivially mechanical), which runs a
+     formatter, **reads the resulting diff**, and **escalates** anything it cannot verify; **everything
+     else** — and every **escalation** — → a scoped CI-fix subagent on the **session model**. Either way the
+     resulting commit **resets the gate** (Stage 2b, "Any campaign commit to the PR head resets the gate").
+     The subagent's job order, the no-weakening prohibition, and the denylist live in `stage-2-ci.md` —
+     follow them there; do NOT restate them here. Different PRs may fix CI concurrently within the cap.
    - CI snapshot reads `pending` for a PR whose watch task has already exited → **relaunch the watch
      in this same wake**. A pending PR must never sit unwatched until the heartbeat; the heartbeat is
      a fallback, not the mechanism.
