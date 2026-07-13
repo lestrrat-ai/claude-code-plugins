@@ -24,7 +24,7 @@ a file that is scoped wrong or missing the fields it reads. Copy it whole, inclu
 filter and the output path:
 
 ```
-gh pr list --label gauntlet-run-<run-id> --state all --limit 1000 \
+gh pr list --label gauntlet-run-<run-id> --state open --limit 1000 \
   --json number,headRefName,headRefOid,title,baseRefName,state,mergeable,mergeStateStatus,labels \
   > <rundir>/prs.json
 ```
@@ -39,9 +39,6 @@ Every part is load-bearing:
   **every PR in the repo** instead of this run's, and reconcile would then act on — adopt, relabel,
   even merge — **other runs' PRs**. That is a **run-isolation violation**, and run isolation is the
   property that lets concurrent runs coexist in one repo.
-- **Without `--state all`** (i.e. an `open`-only listing) merged and closed PRs vanish from the snapshot,
-  and their rows can never be reconciled to a terminal status — the PR that dropped out is **exactly**
-  the one whose row needed the update.
 - **Without `--limit`** `gh pr list` silently caps at **30** items, writing a truncated file that
   reconcile reads as the complete run snapshot.
 - **Without `--json <the field set above>`** the reader finds no `labels`/`mergeable`/`headRefOid` —

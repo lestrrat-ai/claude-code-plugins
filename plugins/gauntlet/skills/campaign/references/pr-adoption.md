@@ -12,45 +12,17 @@ Two entry paths feed it (see "Run identity and concurrency" for the full grammar
   # THE canonical run snapshot — the SAME command loop-control step 2 runs. ONE path, ONE schema.
   # Owning definition: "The canonical `prs.json` command" in files-and-ledger.md. Copy it whole;
   # never spell a variant.
-  gh pr list --label gauntlet-run-<run-id> --state all --limit 1000 \
+  gh pr list --label gauntlet-run-<run-id> --state open --limit 1000 \
     --json number,headRefName,headRefOid,title,baseRefName,state,mergeable,mergeStateStatus,labels \
     > <rundir>/prs.json
   ```
 
-  Every PR carrying this run's owner label is already ours — refresh its row from that snapshot.
-  A PR with the label but no row is a re-adoption after an amnesiac wake. A **merged or closed** PR —
-  **whether it has a row or not** — reconciles to its **terminal** status and is never re-adopted as
-  active work (the hard rule below governs both cases).
-
-  **`--state all`, NOT `--state open`.** A merged or closed PR must still appear, or the sentence above
-  cannot be carried out: the PR that vanished from an `open`-only listing is **exactly** the one whose row
-  needs reconciling to a terminal status, and an absent row is indistinguishable from a PR that was never
-  adopted.
+  Every open PR carrying this run's owner label is already ours — refresh its row from that snapshot.
+  A PR with the label but no row is a re-adoption after an amnesiac wake; a row whose PR is gone
+  (merged/closed) reconciles to its terminal status.
 
   **`--limit` is NOT optional** — `gh pr list` silently caps at **30** items without it, and a truncated
-  snapshot loses rows exactly as an `open`-only listing does (`files-and-ledger.md`, `prs.json`).
-
-**Branch on `state` BEFORE any adoption work — a terminal PR is RECONCILED, never RESURRECTED.**
-`--state all` exists so a merged or closed PR can be **reconciled to its terminal status**; it is **NOT**
-an instruction to bring a terminal PR back to life. The `state` field is in the canonical `--json` set
-(and in the `gh pr view` read of step 1 on the explicit-`#PR` path), so read it and dispatch on it:
-
-- **`OPEN`** → adopt / refresh normally: the whole procedure below, unchanged.
-- **`MERGED`** → the PR has landed. Record its row **terminal** — `status` = `merged` — creating the row
-  if it has none (the amnesiac-wake case: a labelled, merged PR with no row; that row is born
-  **terminal**, **NEVER** `in_review`), else refreshing the existing row in place. Then **STOP**: create
-  **no** worktree (step 5), launch **no** CI watch (step 6), dispatch **no** review, and do **NOT** apply
-  `gauntlet-reviewing` (step 4's status labels do not run — a landed PR is not under review).
-- **`CLOSED`** (closed without merging) → terminal as well. Record the row `status` = `aborted`, creating
-  it if absent, and **STOP** on exactly the same terms — no worktree, no CI watch, no review, no status
-  label.
-
-**Both** the missing-row case and the existing-row case go through this branch. The missing-row case is
-the one that must never re-enter the gate: initializing a new row `status = in_review` (step 3) for a PR
-that is already merged or closed would give it `ci = pending`, a worktree, a CI watch, and review passes
-for work that is over. The existing-row case is the reconcile the `--state all` snapshot was widened for:
-a row still reading `in_review` whose PR has since merged or closed goes terminal here, rather than
-staying live forever.
+  snapshot loses rows silently (`files-and-ledger.md`, `prs.json`).
 
 `base_branch` for the run = the adopted PR's `baseRefName`. When several PRs are adopted at once they
 **must agree** on `baseRefName`; if they disagree, stop and prompt the user (one run targets one base).
@@ -129,9 +101,7 @@ For each `#PR` to adopt:
      `pr` = `<N>`; `head_sha` = `headRefOid`.
    - **On a NEW row only, initialize:** `reviews_ok` = `0` (no verdicts yet); `ci` = `pending`;
      `tier` = triage per `head_sha` ("Adaptive review tiers"); `attempts` = `1`; `started` = now;
-     `api_approval` = `-`; `status` = `in_review` — **`in_review` only when `state` is `OPEN`**. A
-     `MERGED`/`CLOSED` PR's new row is born terminal (`merged`/`aborted`) per the `state` branch above,
-     and adoption stops at this step for it.
+     `api_approval` = `-`; `status` = `in_review`.
    - **On a REFRESH of an existing row, PRESERVE the durable/live fields** — `api_approval`, `attempts`,
      `started`, `status`, `reviews_ok`, and `tier` — do **NOT** reset them (that would violate the
      durable API-decision contract, `files-and-ledger.md` / `scope-and-constraints.md`, and could re-ask
