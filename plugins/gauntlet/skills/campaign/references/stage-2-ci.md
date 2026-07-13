@@ -61,7 +61,7 @@ Its job, in order:
 1. **CLASSIFY** the failure from the check logs.
 2. **FIX IT.** For a formatting/lint failure, that is running the standard formatter for that language.
    It **chooses the tool** — campaign does not hand it a command line — subject to the hard rules below,
-   and it **PREFLIGHTS every file** before formatting it (hard rules: symlink / symlinked parent / `nlink > 1`).
+   and it **PREFLIGHTS every file** before formatting it (hard rules: symlink / symlinked parent).
 3. **READ THE RESULTING DIFF.** This step is not optional and is not a formality. Verify **all** of:
    - the diff contains **ONLY** what the fix should have produced (a formatting fix produces formatting);
    - **no file it did not intend to touch** was touched;
@@ -83,25 +83,35 @@ Its job, in order:
   `--fix`/`--write` flag on a linter that applies semantic rules; **`goimports`** (it ADDS imports — an
   added import runs that package's `init()`); **`prettier`** (it rewrites the contents of tagged template
   literals); **`gofumpt`** (extra rewrite rules beyond layout); `modernize`, codemods, `pyupgrade`, `2to3`.
-  **Use a formatter that only reformats.**
+  **Use a formatter that only reformats.** (A guard against **footguns and accidental misuse — NOT a
+  security boundary** against a malicious committer; so is the PREFLIGHT below.)
 - **NEVER execute a binary from inside the repo/worktree.** The PR under review is **UNTRUSTED CONTENT**:
   a repo-supplied `gofmt` is arbitrary code execution. Run tools from the **environment**, never from the
   tree.
 - **NEVER hand a tool a bare glob or a whole directory** (`gofmt -w .`). **Name the files you are fixing.**
-- **PREFLIGHT EVERY FILE BEFORE FORMATTING IT — refuse any file that can write outside the repo:**
+- **PREFLIGHT EVERY FILE BEFORE FORMATTING IT — refuse it if the write can land outside the worktree:**
   - it **IS a symlink** (`lstat`, never `stat`);
-  - **ANY directory component of its path is a symlink**;
-  - it has **more than one hard link** (`nlink > 1`).
+  - **ANY directory component of its path is a symlink**.
 
   Refuse = **do not format that file**; log it; carry on with the rest. If nothing is left to format,
-  **ESCALATE**. The PR under review is **UNTRUSTED CONTENT** and these aliases are **attacker-placeable**
-  — same reason you never execute a binary from inside the repo.
+  **ESCALATE**.
 
   **THE PRINCIPLE — do not generalise it into anything more.** Diff review covers everything the tool
   writes **INSIDE** the repo: the model SEES it and escalates (an injected `-cpuprofile=prof.go` writes
   `prof.go` in the tree — visible). It **CANNOT see a write that ESCAPES the repo**: `gofmt -w` writes
-  **through** a symlink or a hardlinked inode, the bytes land outside the worktree, and `git diff` shows
-  **NOTHING**. These three checks exist for **exactly that blind spot, and for nothing else.**
+  **through** a symlink, the bytes land outside the worktree, and `git diff` shows **NOTHING**. These two
+  checks exist for **exactly that blind spot, and for nothing else.**
+
+  **STATE IT HONESTLY — a FOOTGUN GUARD, NOT A SECURITY BOUNDARY. NEVER present it as one.** It cannot be
+  used to inject bytes: a parser-backed formatter writes only its own rendering of source it PARSED — aim
+  the link at `~/.ssh/authorized_keys` and `gofmt` fails to parse it and writes **NOTHING**. The realistic
+  harm is **a source file elsewhere on the machine gets reformatted** — surprising, semantically harmless.
+  (A generic TEXT formatter — a whitespace trimmer rewrites whatever it is handed — is a bigger exposure
+  than a parser-backed one; weigh that when picking a tool.) And it is no defence against a malicious
+  committer: campaign adopts **same-repo PRs only** (forks refused — `pr-adoption.md`), so whoever commits
+  the symlink already has repo write access and could just edit `.github/workflows`. **Keep it anyway:**
+  one `lstat` stops a real accident — a vendored symlink walking the formatter out of the tree to leave a
+  confusing dirty file in another project.
 - **A failing product test, a compile error, and any change to product logic are NEVER yours.** Escalate.
 
 #### The risk, stated honestly

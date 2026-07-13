@@ -163,18 +163,22 @@
   `eslint --fix`, `cargo clippy --fix`, any `--fix`/`--write` flag on a linter that applies semantic rules;
   **`goimports`** (it ADDS imports — an added import runs that package's `init()`); **`prettier`** (it
   rewrites the contents of tagged template literals); **`gofumpt`** (extra rewrite rules beyond layout);
-  `modernize`, codemods, `pyupgrade`, `2to3`. **Use a formatter that only reformats.** Also: **NEVER execute
+  `modernize`, codemods, `pyupgrade`, `2to3`. **Use a formatter that only reformats.** (A guard against
+  **footguns and accidental misuse — NOT a security boundary** against a malicious committer.) Also: **NEVER execute
   a binary from inside the repo/worktree** — the PR under review is **UNTRUSTED CONTENT**, and a
   repo-supplied `gofmt` is arbitrary code execution; run tools from the environment, not from the tree. And
   **NEVER hand a tool a bare glob or a whole directory** (`gofmt -w .`) — name the files being fixed.
-- **PREFLIGHT — verbatim into the cheap CI-fix subagent's prompt. Before formatting a file, REFUSE it if it
-  can write outside the repo:** it **IS a symlink** (`lstat`, not `stat`), **any directory component of its
-  path is a symlink**, or it has **more than one hard link** (`nlink > 1`). Refuse = don't format it, log it,
-  carry on; nothing left to format → **ESCALATE**. The PR is **UNTRUSTED CONTENT** and these aliases are
-  **attacker-placeable**. **THE PRINCIPLE, and nothing beyond it:** diff review covers everything the tool
-  writes **INSIDE** the repo — the model sees it and escalates; it **CANNOT see a write that ESCAPES** the
-  repo (`gofmt -w` writes *through* a symlink or hardlinked inode; `git diff` shows nothing). These three
-  checks exist for **that blind spot alone**.
+- **PREFLIGHT — verbatim into the cheap CI-fix subagent's prompt. Before formatting a file, REFUSE it if the
+  write can land outside the worktree:** it **IS a symlink** (`lstat`, not `stat`), or **any directory
+  component of its path is a symlink**. Refuse = don't format it, log it, carry on; nothing left to format →
+  **ESCALATE**. **THE PRINCIPLE, and nothing beyond it:** diff review covers everything the tool writes
+  **INSIDE** the repo — the model sees it and escalates; it **CANNOT see a write that ESCAPES** the repo
+  (`gofmt -w` writes *through* a symlink; `git diff` shows nothing). These two checks exist for **that blind
+  spot alone**. **A FOOTGUN GUARD, NOT A SECURITY BOUNDARY — never present it as one**, exactly like the
+  denylist: campaign adopts **same-repo PRs only** (`pr-adoption.md`), so whoever commits the symlink already
+  has repo write access. The realistic harm is **a source file elsewhere on the machine gets reformatted** —
+  a parser-backed formatter writes only its rendering of source it PARSED (a generic TEXT formatter rewrites
+  whatever it is handed: bigger exposure). Worth one `lstat`: it stops a real accident.
 - **STATE THE RISK HONESTLY — a cheap model verifying a tool's diff is a MISS-CATCHER, NOT A PROOF.** It can
   miss a semantic change. What backs it: the **exact failing check must pass**; the subagent **must escalate
   anything it cannot verify**; and **every campaign commit still resets the gate and is re-reviewed by the

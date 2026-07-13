@@ -196,9 +196,11 @@ flowchart TD
   applies extra rewrite rules on top of layout. A formatter that only reformats, nothing more. It also never
   runs a binary out of the pull request's own tree (that's untrusted content), and never points a tool at a
   bare glob or a whole directory — it names the files it is fixing. And because reading the diff can only
-  show writes that land *inside* the repo, it refuses to format a file that could write outside it — a
-  symlink, a file under a symlinked directory, or a file sharing an inode with something else (a formatter
-  writes straight through those, and `git diff` shows nothing at all).
+  show writes that land *inside* the repo, it refuses to format a symlink or a file under a symlinked
+  directory: a formatter writes straight through those and `git diff` shows nothing at all. That last one is
+  a guard against a footgun, not a security boundary — campaign only ever gates same-repo pull requests, so
+  what it really prevents is a stray symlink sending the formatter off to reformat some unrelated file
+  elsewhere on your machine.
 
   **The honest version of the trade:** a cheap model reading a tool's diff is a good miss-catcher, not a
   proof. It can miss a semantic change. What backs it up is that the failing check has to pass, that the
