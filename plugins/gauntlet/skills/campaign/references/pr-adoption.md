@@ -9,7 +9,8 @@ Two entry paths feed it (see "Run identity and concurrency" for the full grammar
 - **no-arg discovery** (`/gauntlet:campaign`, resume) — reconcile the PRs already labelled for this run:
 
   ```
-  # THE canonical run snapshot — the SAME command loop-control step 2 runs. ONE path, ONE schema.
+  # THE canonical run snapshot — the SAME command loop-control's per-wake PR scan (the `prs.json`
+  # block in step 1) runs. ONE path, ONE schema.
   # Owning definition: "The canonical `prs.json` command" in files-and-ledger.md. Copy it whole;
   # never spell a variant.
   gh pr list --label gauntlet-run-<run-id> --state open --limit 1000 \

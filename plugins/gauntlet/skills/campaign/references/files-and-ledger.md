@@ -29,7 +29,8 @@ gh pr list --label gauntlet-run-<run-id> --state open --limit 1000 \
   > <rundir>/prs.json
 ```
 
-`pr-adoption.md` (discovery) and `loop-control.md` step 2 (per-wake reconcile) each run this command
+`pr-adoption.md` (discovery) and `loop-control.md`'s per-wake PR scan (the `prs.json` block in step 1)
+each run this command
 inline, **identically** — same label, same flags, same `--json` field set, same path. That is intended:
 they are the same scan. What is forbidden is a **different** spelling anywhere.
 
