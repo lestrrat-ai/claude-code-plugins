@@ -70,6 +70,12 @@ blocks; each completion is its own wake.
      be lost and silently revert to the default; Constraints, Base branch, "The reviewer",
      "PR adoption"). Refresh
      the lease. This is the path every `--run` self-wake takes.
+
+     **The snapshot is `--state all`, so branch on each PR's `state` — reconcile a terminal PR, NEVER
+     resurrect it** (`pr-adoption.md`, "Branch on `state` BEFORE any adoption work"). A PR whose `state`
+     is `MERGED` or `CLOSED` goes **terminal** in the ledger — `status` = `merged` / `aborted`, creating
+     the row if this wake found none — and then takes **no** further action: no gate reset, no relabel, no
+     worktree, no CI watch, and no dispatch in step 3. Only an **`OPEN`** PR is live work.
    - **No run bound and none live (no `gauntlet-run-*` PR, no non-terminal `<rundir>`) → first run.**
      **Check there is something to adopt BEFORE creating any run state.** If the invocation carries no
      `#PR` args (a bare or non-`#PR` invocation that found no live run to resume — likewise `--new`
