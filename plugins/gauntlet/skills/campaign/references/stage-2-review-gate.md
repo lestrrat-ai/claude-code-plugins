@@ -359,6 +359,19 @@ As each verdict lands, tally it for the SHA it ran on:
   commits + pushes → HEAD advances (a second gate reset — relabel again if the first was somehow
   skipped). A later wake starts a fresh review on the new tip. (Because reviews are sequential, no
   second review was spent on this broken commit.)
+
+  **Run the review-fix on the session model — NEVER downgraded** (`SKILL.md`, "Subagent Dispatch"). The one
+  deliberate downgrade in this skill is the CI-fix subagent for a **formatting/lint** failure, which runs a
+  formatter and verifies its diff (`stage-2-ci.md`); a review defect is **authored code**, and this subagent
+  writes it from scratch. Its output is **code that gets merged**, and its only
+  judge is another full review pass — which is a miss-catcher, not a proof of correctness. Best case, a
+  weak fix produces a plausible-looking commit, the next pass returns `NOT SATISFIED`, the gate resets,
+  and the whole diff is re-reviewed: the cheap wrong fix is paid for twice, and it is the expensive half
+  that pays. Worst case the pass misses it and the defect merges.
+  **Scope it** instead — hand it the worktree path and the concrete issue list, and tell it NOT to
+  re-derive the whole diff or read beyond the files those issues name; that is where the savings are,
+  not in the model tier. **Scope by defect, not by guess:** name every file the defect actually touches,
+  or the fixer will faithfully leave the sites you forgot to list.
 - **SATISFIED** → record it (bump `reviews_ok` via `ledger.py … set --pr <N> --reviews_ok <count>`, by
   field name). The gate is met once this SHA holds `required(tier)` SATISFIED verdicts
   (2, or 1 for TRIVIAL). If the tally is still short of the target — e.g. the **first** SATISFIED on a
@@ -444,7 +457,7 @@ that drop `reviews_ok` to 0):
 |---|---|
 | `NOT SATISFIED` verdict lands | this file, verdict tally |
 | Review-fix commit pushed | this file, verdict tally |
-| CI-fix commit pushed | `stage-2-ci.md` |
+| CI-fix commit pushed — cheap tier **or** session-model tier | `stage-2-ci.md`, "Any campaign commit to the PR head resets the gate" |
 | Copilot-item fix pushed | Stage 2a preconditions, above |
 | Conflict-resolving rebase | `stage-3-merge.md` |
 | Re-adoption refresh detects changed content | `pr-adoption.md` step 3 (step 4 then sets the status label from the **live** gate — `gauntlet-reviewing` here, but `gauntlet-accepted` for a re-adoption whose content did **not** change and whose verdicts step 3 preserved; either way it removes the other label) |

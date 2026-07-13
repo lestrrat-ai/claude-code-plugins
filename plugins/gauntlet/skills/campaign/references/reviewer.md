@@ -26,6 +26,21 @@ same-model re-roll can miss — recommend it to the user for a stronger gauntlet
 user has set it as their preference. It is never mandatory: the default Claude-subagent path is a
 complete, valid reviewer.
 
+**An external reviewer is also the single biggest cost lever — the quality and cost arguments agree.**
+Review passes dominate campaign's subagent spend: each one re-reads the **whole** `origin/<base>...HEAD`
+diff, runs `required(tier)` times per SHA, and re-runs **from scratch** on every gate reset (a content
+change voids the tally). A PR that takes several fix rounds can therefore spend many full-diff passes.
+An external reviewer moves all of that off the subagent pool. When recommending Codex for diversity,
+say so: it is the change that most reduces token spend, not the model tier of any individual subagent.
+
+**A REVIEW PASS IS NEVER RUN ON A DOWNGRADED MODEL.** Whether the reviewer is a Claude subagent or the
+subagent fallback for a failed external reviewer, the pass runs on the **session model** — it *is* the
+gate, and a weaker verdict is simply a worse gate (`SKILL.md`, "Subagent Dispatch"). The **one** deliberate
+downgrade in this skill is the CI-fix subagent for a **formatting/lint** failure (`stage-2-ci.md`), which
+runs a formatter and **verifies its diff** rather than authoring a fix — never a review pass. Save tokens on
+review by moving passes to an external reviewer and by scoping every fix subagent — never by cheapening a
+verdict.
+
 ### Running the default reviewer — Claude subagents
 
 The reviewer's only job is the **Stage 2a per-PR review pass**: spawn a **fresh** subagent to review

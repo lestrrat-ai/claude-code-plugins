@@ -177,6 +177,43 @@ flowchart TD
 - Before it spends a review on a PR, it first clears anything that would waste one: it addresses any
   GitHub Copilot review comments, fixes failing CI, and rebases a PR that has fallen into conflict
   with the base branch — then reviews the clean result.
+- Not every CI failure needs a full-strength model. A **formatting or lint failure** — the kind a standard
+  formatter fixes — goes to a deliberately **cheap** fix subagent (Sonnet; Haiku when the failure is
+  trivially mechanical). Its job is narrow and it is *in the loop*, not bypassed: work out what failed, run
+  the formatter, **read the diff that formatter produced**, and check it — that the diff contains only the
+  change it was supposed to produce, that no file it didn't mean to touch was touched, that no test, check,
+  or config was weakened, and that the exact check that failed now passes. Only then does it commit. If any
+  of that doesn't hold — the check is still red, the diff contains something it can't explain, the real fix
+  turns out to be a change to your program's logic — it **stops and hands the failure to a full-strength fix
+  subagent**. Escalating is the expected outcome, not a failure.
+
+  Two rules it always gets, word for word. It may **never make CI pass by weakening the check**: no deleted
+  or loosened assertions, no `skip`/`xfail`, no disabled lint rules, no raised timeouts. It fixes the cause —
+  and if the check itself is genuinely wrong, it says so out loud and escalates rather than quietly
+  rewriting it. And it may **never reach for a catch-all `--fix`** (`golangci-lint run --fix`, `ruff --fix`,
+  `eslint --fix`) or a tool documented to rewrite your code — `goimports` *adds* imports, and an added import
+  runs that package's `init()`; `prettier` rewrites the contents of tagged template literals; `gofumpt`
+  applies extra rewrite rules on top of layout. A formatter that only reformats, nothing more. It also never
+  runs a binary out of the pull request's own tree (that's untrusted content), and never points a tool at a
+  bare glob or a whole directory — it names the files it is fixing. And because reading the diff can only
+  show writes that land *inside* the repo, it refuses to format a symlink or a file under a symlinked
+  directory: a formatter writes straight through those and `git diff` shows nothing at all. That last one is
+  a guard against a footgun, not a security boundary — campaign only ever gates same-repo pull requests, so
+  what it really prevents is a stray symlink sending the formatter off to reformat some unrelated file
+  elsewhere on your machine.
+
+  **The honest version of the trade:** a cheap model reading a tool's diff is a good miss-catcher, not a
+  proof. It can miss a semantic change. What backs it up is that the failing check has to pass, that the
+  subagent has to escalate anything it cannot verify, and that **every commit campaign makes still resets the
+  review gate** — the pull request is re-reviewed from scratch, by the full gauntlet, on the new commit. That
+  gate is a miss-catcher too, and campaign will not pretend otherwise: it will never tell you the cheap path
+  is safe because "CI will catch it". This is a small, bounded risk, taken deliberately, for a loop that is
+  cheaper *and* more capable than either running a full-strength model on every stray formatting failure or
+  running the tool blind with nothing looking at what it did.
+
+  Everything else — a failing test, a compile error, anything needing judgment — goes to a full-strength fix
+  subagent, as does every escalation from the cheap one. Review passes are never cheapened: a review pass
+  *is* the gate.
 - It keeps a small `.gauntlet/history/` at the repo root (git-ignored, one file per run) to remember what past
   runs learned. That's the memory a fresh run carries over. Each fresh run also tidies that file,
   dropping entries that no longer apply to the current code — and when it isn't sure an entry is

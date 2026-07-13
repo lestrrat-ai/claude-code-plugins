@@ -168,8 +168,15 @@ blocks; each completion is its own wake.
      files, which a surviving process could still write to); a dead `launch_attempt: 2` →
      fresh-subagent fallback. A failed launch yields no verdict: it never touches `reviews_ok` and
      never bumps the row's `attempts`;
-   - CI red and no CI-fix subagent is already in flight for that PR/SHA → dispatch a scoped fix
-     subagent (Stage 2b); different PRs may fix CI concurrently within the cap.
+   - CI red and no fix is already in flight for that PR/SHA → **CLASSIFY the failure from the check logs
+     first (Stage 2b, "Classify, then set the model") — never dispatch a subagent straight off a red
+     check.** The class picks the model, set **explicitly**: a **formatting/lint** failure → a scoped CI-fix
+     subagent on a **cheap** model (`sonnet`; `haiku` only when trivially mechanical), which runs a
+     formatter, **reads the resulting diff**, and **escalates** anything it cannot verify; **everything
+     else** — and every **escalation** — → a scoped CI-fix subagent on the **session model**. Either way the
+     resulting commit **resets the gate** (Stage 2b, "Any campaign commit to the PR head resets the gate").
+     The subagent's job order, the no-weakening prohibition, and the denylist live in `stage-2-ci.md` —
+     follow them there; do NOT restate them here. Different PRs may fix CI concurrently within the cap.
    - CI snapshot reads `pending` for a PR whose watch task has already exited → **relaunch the watch
      in this same wake**. A pending PR must never sit unwatched until the heartbeat; the heartbeat is
      a fallback, not the mechanism.
