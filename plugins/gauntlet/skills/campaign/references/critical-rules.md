@@ -51,9 +51,12 @@
 - Stop a PR's in-flight review before dispatching content-changing work on it (review fix, CI fix,
   copilot-address, conflict-resolving rebase): a verdict on a doomed SHA wastes tokens and a review
   slot. Refill the slot with the next due review.
-- Reconcile from ONE batched `gh pr list --label gauntlet-run-<run-id> --json …` snapshot per wake
-  (`<rundir>/prs.json`); per-PR `gh` calls only where the snapshot falls short. Merge-gate CI truth
-  stays the re-polled `gh pr checks` snapshot.
+- Reconcile from ONE batched `gh pr list` snapshot per wake (`<rundir>/prs.json`), written with the
+  **canonical `prs.json` command — the single owning definition is the `prs.json` row in
+  `files-and-ledger.md`** (**ONE path, ONE schema, ONE command**). Never spell a variant of it here or
+  anywhere else, and **NEVER drop `--state all --limit 1000`**: without `--state all` the snapshot omits
+  merged/closed PRs, and without `--limit` `gh pr list` silently caps at **30**. Per-PR `gh` calls only
+  where the snapshot falls short. Merge-gate CI truth stays the re-polled `gh pr checks` snapshot.
 - Carryover pruning NEVER blocks a fresh-run start: keep uncertain entries, adopt the run's PRs
   immediately, ask the user asynchronously, and fold the answer in as its own wake.
 - Public API surface/behavior changes need user confirmation by default (see Constraints). The
