@@ -9,12 +9,20 @@ Two entry paths feed it (see "Run identity and concurrency" for the full grammar
 - **no-arg discovery** (`/gauntlet:campaign`, resume) — reconcile the PRs already labelled for this run:
 
   ```
-  gh pr list --label gauntlet-run-<run-id> --state open --json number,headRefName,headRefOid,title,baseRefName > <rundir>/prs.json
+  # THE canonical run snapshot — the SAME command loop-control step 2 runs. ONE path, ONE schema.
+  gh pr list --label gauntlet-run-<run-id> --state all \
+    --json number,headRefName,headRefOid,title,baseRefName,state,mergeable,mergeStateStatus,labels \
+    > <rundir>/prs.json
   ```
 
-  Every open PR carrying this run's owner label is already ours — refresh its row from that snapshot.
+  Every PR carrying this run's owner label is already ours — refresh its row from that snapshot.
   A PR with the label but no row is a re-adoption after an amnesiac wake; a row whose PR is gone
   (merged/closed) reconciles to its terminal status.
+
+  **`--state all`, NOT `--state open`.** A merged or closed PR must still appear, or the sentence above
+  cannot be carried out: the PR that vanished from an `open`-only listing is **exactly** the one whose row
+  needs reconciling to a terminal status, and an absent row is indistinguishable from a PR that was never
+  adopted.
 
 `base_branch` for the run = the adopted PR's `baseRefName`. When several PRs are adopted at once they
 **must agree** on `baseRefName`; if they disagree, stop and prompt the user (one run targets one base).

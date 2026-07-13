@@ -8,7 +8,7 @@ files from colliding — see "Run identity and concurrency".
 |------|----------|
 | `state.jsonl` | Live per-PR ledger — a **cache/hint**, not the source of truth (see below) |
 | `pr-<pr>.json` | `gh pr view` snapshot captured at adoption (PR facts the ledger row is built from) |
-| `prs.json` | Batched `gh pr list` snapshot of this run's PRs — the per-wake reconcile input (Loop control) |
+| `prs.json` | Batched `gh pr list` snapshot of this run's PRs — the per-wake reconcile input, and the adoption/discovery input. **ONE path, ONE schema, ONE command**, written identically by `pr-adoption.md` and `loop-control.md` step 2: `--state all --json number,headRefName,headRefOid,title,baseRefName,state,mergeable,mergeStateStatus,labels`. **Two writers with different `--json` field sets would silently hand the reader a file missing the fields it reads** — adopt via one path and reconcile finds no `labels`/`mergeable` at all |
 | `lease.json` | This run's active-driver lease (`{agent, updated}`; see "Run lease") |
 | `review-<pr>-<n>.txt` | The reviewer's PR review output, round `n` (launch attempt 1) |
 | `review-<pr>-<n>.plan.jsonl` | Orchestrator-authored review work units for round `n` (per-pass — a relaunch reuses it) |
