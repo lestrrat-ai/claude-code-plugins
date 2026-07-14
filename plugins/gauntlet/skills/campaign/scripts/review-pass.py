@@ -654,11 +654,22 @@ def parse_intent(text: str, path: Path) -> "dict[str, list[str]]":
     each followed by `- ` bullets. Nothing else about the file is read — a human may put whatever prose
     they like around it, and often should.
 
-    **ALL THREE HEADINGS ARE REQUIRED, AND `## Purpose` MUST HAVE AT LEAST ONE BULLET.** An intent whose
-    purpose is empty is a guard whose input is absent: every finding would anchor to `-` by force, the
-    `## Threat model` would be the only thing left holding the gate, and the reviewer's own judgment about
-    who can write an input would silently become the whole of the rule. A section that can be empty is a
-    section that will be.
+    **ALL THREE HEADINGS ARE REQUIRED, AND `## Purpose` AND `## Threat model` MUST EACH HAVE AT LEAST ONE
+    BULLET.** They are the intent's two ANCHORS, and a finding gates by naming one of them: a `## Purpose`
+    line quoted verbatim, or an actor from the `## Threat model` who can really write the bad input. Empty
+    either one and the guard on that side has no input — and a guard whose input can be ABSENT never fires.
+    An empty `## Purpose` forces every finding to anchor to `-`. An empty `## Threat model` names NO actor,
+    so nothing a reviewer finds can be anchored to one, and REAL, REACHABLE defects are then discharged as
+    non-gating: the exact failure this intent block exists to prevent, running backwards. A section that can
+    be empty is a section that will be.
+
+    **`## Non-goals` MAY be empty, and that is not an oversight — it is the one section where empty MEANS
+    something.** "We exclude nothing" is a complete, honest answer, and it is the DEFAULT answer: it makes
+    the reviewer's job strictly harder (nothing is off-limits), so nobody can weaken a review by leaving it
+    blank. An empty threat model is not the analogous statement — "no actor can write any input this code
+    reads" is not a scope decision, it is a section nobody filled in — and unlike the other two it is not a
+    claim a reviewer would ever WRITE. So the rule is drawn where the risk is: the two anchors must say
+    something; the exclusions may say nothing.
     """
     sections: dict[str, list[str]] = {}
     current: "str | None" = None
@@ -692,6 +703,15 @@ def parse_intent(text: str, path: Path) -> "dict[str, list[str]]":
             f"{path.name}: `{PURPOSE_H}` has no bullets — every finding would then anchor to {NO_PURPOSE!r} "
             f"by force, and a guard whose input can be ABSENT never fires. State at least one line the PR "
             f"must do"
+        )
+    if not sections[THREAT_H]:
+        # MUTATE:intent-empty-threat-model:pass
+        raise Defect(
+            f"{path.name}: `{THREAT_H}` has no bullets — it NAMES THE ACTORS a finding may anchor to, so an "
+            f"empty one names none, and a finding that cannot reach an actor is discharged as NON-GATING. "
+            f"That turns the guard INSIDE OUT: real, reachable defects would be waved through, which is the "
+            f"failure this block exists to prevent. State who can write the inputs this code reads — and who "
+            f"cannot"
         )
     return sections
 

@@ -472,6 +472,24 @@ class Tables:
                 NS, UNUSABLE, "no bullets",
                 "`## Purpose` with no lines: every finding would then anchor to `-` BY FORCE, and a guard "
                 "whose input can be ABSENT never fires"),
+            "intent-empty-threat-model": (
+                PLAN, WORKED, [R43_11],
+                "## Purpose\n- never emit a false green\n\n## Non-goals\n- nothing\n\n## Threat model\n",
+                NS, UNUSABLE, "no bullets",
+                "**THE GUARD, INSIDE OUT.** `## Threat model` with the heading present and NOT ONE ACTOR "
+                "under it. A finding gates by naming an actor who can really write the bad input — so with "
+                "no actor named, NOTHING can anchor to one, and REAL, REACHABLE defects get discharged as "
+                "non-gating. It is the mirror image of the bug this whole block exists to fix, and a guard "
+                "whose input can be EMPTY never fires"),
+            "intent-empty-non-goals-is-fine": (
+                PLAN, WORKED, [R43_11],
+                "## Purpose\n- never emit a false green\n\n## Non-goals\n\n## Threat model\n"
+                "- Who can write the inputs this code reads: GitHub's API over the network\n",
+                NS, OK, "1 gating finding(s)",
+                "…and `## Non-goals` with NO bullets is ACCEPTED, deliberately. 'We exclude nothing' is a "
+                "complete answer and the one that makes the review HARDEST — nothing is off-limits — so an "
+                "empty one can never weaken a pass. The two ANCHORS must say something; the exclusions may "
+                "say nothing"),
             "intent-two-purposes": (
                 PLAN, WORKED, [R43_11],
                 INTENT + "\n## Purpose\n- something else entirely\n", NS, UNUSABLE, "appears TWICE",

@@ -38,6 +38,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
 import sys
 import tempfile
 from contextlib import redirect_stderr, redirect_stdout
@@ -1163,6 +1164,77 @@ def t_counter_refuses_a_corrupt_value(L: ModuleType, tmp: Path) -> None:
         check("not a count" in err, f"[{value!r}] refused for the wrong reason: {err!r}")
 
 
+def t_write_is_atomic(L: ModuleType, tmp: Path) -> None:
+    """**A LEDGER WRITE IS ALL OR NOTHING.** No crash, no full disk, may leave a store torn in half.
+
+    `dump()` used to end in `path.write_text(...)` — a TRUNCATE-then-write. Die between the two and the
+    ledger on disk is empty or cut short, and `load()` (correctly) refuses a headerless file: the run's
+    only memory is gone, and nothing can tell that from a run that never started. `verdict` is what made
+    it acute — it moves `review_rounds`, `reviews_ok` and `ns_streak` in ONE write, and those three mean
+    something only TOGETHER.
+
+    THE CRASH IS SIMULATED WHERE IT IS FATAL: `os.replace` — the last step, with the new bytes already
+    written — is made to raise. Everything the atomic write promises is then checked against what is
+    actually on disk: the old ledger is BYTE-IDENTICAL, the temp file was beside it (a rename across
+    filesystems is a copy, and a copy tears exactly like the truncate did), the bytes were `fsync`ed
+    before anything pointed at them, and nothing was left behind.
+    """
+    path = write_lines(tmp / "atomic.jsonl", header_line(L), row_line(L, pr="1", head_sha=SHA_A))
+    before = path.read_bytes()
+
+    fsyncs = 0
+    src: "Path | None" = None
+    dst: "Path | None" = None
+    real_fsync, real_replace = os.fsync, os.replace
+
+    def spy_fsync(fd: int) -> None:
+        nonlocal fsyncs
+        fsyncs += 1
+        real_fsync(fd)
+
+    def dying_replace(a: str, b: str) -> None:
+        nonlocal src, dst
+        src, dst = Path(a), Path(b)
+        raise OSError("the machine died between the write and the rename")
+
+    raised = False
+    # `L.os` IS the os module, so this is a real interception of the call `dump()` makes. Restored in
+    # `finally` — a fixture that leaves a broken `os.replace` behind would take every later fixture with it.
+    L.os.fsync, L.os.replace = spy_fsync, dying_replace
+    try:
+        cli(L, ["--file", str(path), "verdict", "--pr", "1", "--head-sha", SHA_A, "--verdict", "satisfied"])
+    except OSError:
+        raised = True
+    finally:
+        L.os.fsync, L.os.replace = real_fsync, real_replace
+
+    check(raised, "the write never reached `os.replace` — a truncate-then-write CANNOT be atomic, and the "
+                  "one that is being pinned here is the rename")
+    check(path.read_bytes() == before,
+          "a write that DIED before the rename still CHANGED the ledger — the store tore, which is the whole "
+          f"defect:\n  was: {before!r}\n  now: {path.read_bytes()!r}")
+    check(src is not None and src.parent == path.parent,
+          f"the new bytes were staged in {src.parent if src else None}, not in the ledger's own directory — "
+          f"`os.replace` is atomic only WITHIN a filesystem, and across one it degrades to a copy")
+    check(dst == path, f"the rename targeted {dst}, not the ledger at {path}")
+    check(fsyncs >= 1,
+          "the temp file was never `fsync`ed — the rename would then publish a name whose CONTENT is still "
+          "only in the kernel's cache, and a power cut leaves an intact pointer to an empty file")
+    left = sorted(p.name for p in path.parent.iterdir() if p != path)
+    check(not left, f"the failed write left {left} behind — a half-written temp beside the store is debris "
+                    f"the next reader can mistake for one")
+
+    # …and with nothing sabotaged, the same write LANDS: the point is atomicity, not refusal.
+    code, _, err = cli(L, ["--file", str(path), "verdict", "--pr", "1",
+                           "--head-sha", SHA_A, "--verdict", "satisfied"])
+    check(code == 0, f"the unsabotaged verdict exited {code}: {err!r}")
+    code, out, _ = cli(L, ["--file", str(path), "get", "--pr", "1", "--field", "review_rounds"])
+    check((code, out) == (0, "1\n"), f"the verdict did not land: review_rounds is {out!r}")
+    left = sorted(p.name for p in path.parent.iterdir() if p != path)
+    check(not left, f"a SUCCESSFUL write left {left} behind — the temp file must become the ledger, not "
+                    f"accumulate beside it")
+
+
 def t_skill_version_is_recorded(L: ModuleType, tmp: Path) -> None:
     """`skill_version` is a header field, it defaults to `unknown`, and the table SHOWS it.
 
@@ -1220,6 +1292,7 @@ CASES = [
     ("verdict-head-pinned", "a verdict for a SUPERSEDED sha is refused — it describes content that is gone", t_verdict_refuses_a_moved_head),
     ("verdict-domain", "`verdict` needs a real row and one of exactly two verdicts", t_verdict_needs_a_row_and_a_known_verdict),
     ("counter-corrupt", "a counter field that is not a count is refused, never handed to int()", t_counter_refuses_a_corrupt_value),
+    ("write-atomic", "a write that dies mid-way leaves the OLD ledger intact — temp + fsync + os.replace", t_write_is_atomic),
     ("skill-version", "the header records WHICH VERSION of the rules governed the run; default `unknown`", t_skill_version_is_recorded),
 ]
 

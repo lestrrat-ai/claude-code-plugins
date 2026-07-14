@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import re
 import sys
 import tempfile
@@ -235,11 +236,50 @@ def load(path: Path) -> "tuple[dict, list[dict]]":
 
 
 def dump(path: Path, header: dict, rows: list[dict]) -> None:
+    """Write the WHOLE store — ATOMICALLY. The ledger is never partly written, ever.
+
+    This used to be `path.write_text(...)`, which is a TRUNCATE-then-write: the target is emptied first and
+    the bytes go in after. Interrupt it — a crash, a full disk, a killed wake — and what is left on disk is
+    a ledger that is empty or cut in half, and `load()` (correctly) refuses a headerless file. The run's
+    ONLY memory would be gone, and nothing could tell that from a run that had never started.
+
+    It matters more now than it did: `verdict` bumps `review_rounds`, moves `ns_streak` and applies
+    `reviews_ok` in ONE write, and those three are only coherent TOGETHER — `review_rounds` is documented
+    as monotone and reset by nothing. A torn write there does not lose a number, it corrupts the gate's
+    memory of how many rounds this PR has already burned, which is the one counter that can see a loop.
+
+    The write is therefore: a temp file in the SAME DIRECTORY (a rename is only atomic WITHIN a
+    filesystem — a temp in `/tmp` would be a copy, and a copy can tear exactly like the truncate did),
+    flushed and `fsync`ed so the bytes are on the platter BEFORE anything points at them, then
+    `os.replace()` onto the target, which is atomic: a reader sees the whole old file or the whole new one,
+    and never a byte of anything else. A failure at any point leaves the ORIGINAL untouched and takes the
+    temp file with it.
+    """
     out = [json.dumps({"type": "header", **{f: header.get(f, HEADER_DEFAULTS[f]) for f in HEADER_FIELDS}})]
     for row in rows:
         out.append(json.dumps({"type": "row", **{f: str(row.get(f, ROW_DEFAULTS[f])) for f in ROW_FIELDS}}))
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(out) + "\n")
+    # `mkstemp` creates the file 0600. That is the right default for a TEMP file and the wrong one for the
+    # store it is about to become: the ledger is `cat`-able bookkeeping, and making it atomic must not
+    # quietly re-permission it. So the mode a plain create would have produced is restored below. Reading
+    # the umask means setting it, so it is read here — once, before anything exists to leak — and set back
+    # on the same breath.
+    mask = os.umask(0)
+    os.umask(mask)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:  # fdopen OWNS the descriptor: `with` closes it
+            fh.write("\n".join(out) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())  # the bytes are DURABLE before the rename makes them the ledger
+        os.chmod(tmp, 0o644 & ~mask)
+        os.replace(tmp, path)      # atomic within the filesystem: the swap is all-or-nothing
+    except BaseException:
+        # Nothing was replaced, so the ledger on disk is still the last COMPLETE one. Do not leave the
+        # half-written temp behind to be mistaken for a store.
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def find_row(rows: list[dict], pr: str) -> "dict | None":

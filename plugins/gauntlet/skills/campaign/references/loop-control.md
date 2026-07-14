@@ -154,7 +154,8 @@ blocks; each completion is its own wake.
    **never** decided from the watch's exit code (Stage 2b, "WHO DOES WHAT" and "VERIFY THE STAMP BEFORE
    PARSING"); review →
    the **active launch attempt's** output file, with its progress file as liveness evidence — attempt 1
-   writes `review-<pr>-<n>.txt` / `.progress.jsonl`, a relaunch writes `review-<pr>-<n>.a<k>.*`, and
+   writes `review-<pr>-<n>.txt` / `.progress.jsonl` / `.findings.jsonl`, a relaunch writes
+   `review-<pr>-<n>.a<k>.*`, and
    only the attempt named in the current `pass_identity` is read or counted (Stage 2a). **Before a
    review verdict is counted, the pass's artifacts must verify** — `scripts/review-pass.py verify --verdict
    <what the report's VERDICT line says>`, never
