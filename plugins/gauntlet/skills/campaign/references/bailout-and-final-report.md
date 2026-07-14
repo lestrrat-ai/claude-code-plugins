@@ -54,7 +54,8 @@
   bound is never aborted out from under it: the bound either resolves, or it reaches the human. This cap's
   job is the **agent-controlled** row — the task stuck in campaign's own work (a hung review, a red PR
   whose fix never lands), where nothing else is counting. Only a wake where
-  `started` is over an hour old *and* the row is agent-controlled (in **neither** bounded wait) trips it.
+  `started` is over an hour old *and* the row is agent-controlled (**NO** bound of the owner's set is live
+  for it — never a count of them, which rots the moment the set gains a member) trips it.
   When it trips, abort cleanly and **retry once against the SAME adopted PR** (`attempts` += 1, reset
   `started`). The PR is user/externally owned — campaign never closes it and opens a replacement of
   its own. Instead, **rebuild the worktree from the PR's head branch** so the retry runs with fresh

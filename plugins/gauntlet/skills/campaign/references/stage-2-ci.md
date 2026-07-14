@@ -609,8 +609,8 @@ strike, and never escalates — `pending` is **absorbing** for it, and half (b) 
 recorded `red` can still hold a **RUNNING** row, and that PR is still moving.
 
 Per derivation **on a VERIFIED snapshot** (an `UNUSABLE` one has no `fp` at all — it is handled entirely
-by "UNUSABLE — the refetch is BOUNDED" below, and never touches `settled_strikes` or `ci_stalled_since`),
-in this order:
+by "UNUSABLE — the refetch is BOUNDED" below, and touches **no liveness counter but its own**), in this
+order:
 
 ```
 head_sha changed          -> reset the LIVENESS COUNTERS (below) ; then ci_fingerprint = fp   # new evidence
@@ -743,21 +743,29 @@ used to stand here.** A wake may be a fresh agent instance, so: **if a LATER der
 prompt, or the unpark has to read it, it is a LEDGER FIELD.** The durable set is therefore **the ledger row
 schema itself** — `files-and-ledger.md`'s row-field definitions, and the `ROW_FIELDS`/`ROW_DEFAULTS` in
 `scripts/ledger.py` that own it — and a field added there is durable **with no edit to this section**. A
-list retyped here rots the next time one is added: this one did, and the field it dropped was `ci_reason`,
-the very thing the park asks the user about. Write every one of them through `scripts/ledger.py … set --pr
-<N>` **by field name**, like every other field (`files-and-ledger.md`).
+list retyped here rots the next time one is added, and the one that stood here rotted **twice**: it first
+dropped `ci_reason`, the very thing the park asks the user about, and its replacement dropped
+`ci_fingerprint`, without which every wake sees CI as having moved and **no bound ever fires at all**.
+There is no third attempt: **the members are not retyped here, in any form, marked or not.** Write every
+one of them through `scripts/ledger.py … set --pr <N>` **by field name**, like every other field
+(`files-and-ledger.md`).
 
-Each dies with the context in its own way, which is why none of them may:
+**HOW state dies with the context is a CLASS, and it is stated as one — never per field**, so a field
+added to the schema tomorrow is already covered here:
 
-- **A COUNTER that dies never reaches its cap** — `settled_strikes` and `unusable_refetches` count
-  *derivations*, and a fresh instance restarts the count from zero, so the bound never fires.
-- **A CLOCK is worse**: it does not merely lose the elapsed time, it **silently restarts** it.
-  `ci_stalled_since` is a **timestamp on disk**, so **any** wake computes `now - ci_stalled_since` from the
-  ledger alone, remembering nothing.
-- **A REASON that dies leaves the park UNANSWERABLE** — `ci_reason` **is** the blocker the human is being
-  asked to rule on, and the prompt above is built from it. A fresh agent that lost it cannot even ask the
-  question, so the park has no exit: it is durable for exactly the reason the counters are.
-- **A RULING that dies gets re-asked** — `blocker_ruling` ("THE RULING IS CONSUMED EXACTLY ONCE" below).
+- **A COUNTER that dies never reaches its cap.** A fresh instance restarts the count from zero, so the
+  bound never fires.
+- **A CLOCK is worse**: it does not merely lose the elapsed time, it **silently restarts** it. Every clock
+  is therefore a **timestamp on disk**, so that **any** wake computes the elapsed time from the ledger
+  alone, remembering nothing.
+- **EVIDENCE OF WHAT CI LOOKED LIKE LAST TIME is worse still, because losing it looks like SUCCESS.** The
+  derivation decides that CI **moved** by comparing this snapshot against what the row says it saw before;
+  with that gone, **every** wake sees motion, **every** wake resets the counters and the clock, and the
+  bounds never fire — the wedge this whole section exists to close, reopened silently and with no error.
+- **A REASON that dies leaves the park UNANSWERABLE.** The escalation prompt above is built from the
+  blocker the human is being asked to rule on; a fresh agent that lost it cannot even ask the question, so
+  the park has no exit.
+- **A RULING that dies gets re-asked** ("THE RULING IS CONSUMED EXACTLY ONCE" below).
 
 **THE RULING IS CONSUMED EXACTLY ONCE — a durable answer that is never spent is a park that unparks
 itself.** `blocker_ruling` must be **DURABLE** (it survives a context loss) **AND spent EXACTLY ONCE** (it
@@ -800,7 +808,9 @@ Each ends by itself — in a bounded number of derivations, or a bounded amount 
 the **same** place: **ESCALATE** (above), the park a human answers. That is what makes every one of them a
 BOUNDED wait rather than a wedge.
 
-**Reset them TOGETHER** (`-`, `0`, `0`, `-`) at exactly two kinds of site:
+**Reset them TOGETHER — EVERY member of the set, each back to its `ROW_DEFAULTS` value** (`scripts/ledger.py`
+owns those defaults; **never retype them here**, or the reset rots the next time the set gains a member) — at
+exactly two kinds of site:
 
 1. **Any `head_sha` change — whether or not the gate resets with it.** The new head is new evidence, so
    the old head's liveness says nothing about it. **THE TRIGGER IS THE PROPERTY — "this site wrote a new
@@ -919,10 +929,11 @@ unusable_refetches >= 3                 -> ESCALATE (above)  # 3 == THE REFETCH 
 ```
 
 - **The counter counts FETCH ATTEMPTS, never evidence.** It stays consistent with "an UNUSABLE snapshot
-  yields no fingerprint": nothing rejected is hashed, nothing rejected is judged. The three bounds answer
-  three different questions — `settled_strikes`: "trusted evidence stopped moving, and nothing can move
-  it"; `ci_stalled_since`: "a row still SAYS it can move, and it has not"; `unusable_refetches`: "we never
-  obtained trusted evidence at all."
+  yields no fingerprint": nothing rejected is hashed, nothing rejected is judged. **Every bound answers a
+  DIFFERENT question — which is why no two of them may ever share a dial** — and this one's is *"we never
+  obtained trusted evidence at all"*, not *"trusted evidence stopped moving"*. Each bound's own question is
+  stated at its own defining site, and the owner's table ("THE LIVENESS COUNTERS" above) maps every member
+  to that site: **read them there, never restated here.**
 - **The REFETCH CAP is HIGHER than the STRIKE CAP, on purpose.** UNUSABLE is dominated by **transient**
   causes — a `gh` call failed, the check set changed mid-fetch so a `source` count no longer matches, the
   snapshot raced a push — and a fresh fetch usually clears them; a SETTLED-but-not-green snapshot is,
