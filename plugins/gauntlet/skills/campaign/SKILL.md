@@ -178,8 +178,11 @@ Read stage refs only when that stage/action is due:
   site). Sole exception: the park does not change the CI watch either way — observing is not mutating, so
   the watch follows the normal policy (alive only while a check can still move). Keep driving the other
   PRs; unpark only on the user's answer — **recorded DURABLY, per park class** (`api_approval`; the
-  standoff's audit record; `blocker_ruling` = `retry`/`abort` for a machine blocker, which clears the
-  liveness counters on `retry`). **Every park names the event that leaves it** (`references/loop-control.md`,
+  standoff's audit record; `blocker_ruling` = `retry`/`abort` for a machine blocker, where `retry` clears
+  the liveness counters and is **SPENT** — a ruling is durable **and consumed exactly once**, cleared on
+  park entry and on consumption, so a previous park's answer can never unpark a later one;
+  `references/stage-2-ci.md`, "THE RULING IS CONSUMED EXACTLY ONCE"). **Every park names the event that
+  leaves it** (`references/loop-control.md`,
   "parked-status guard" and "Only the user's answer unparks a PR").
 - **No green by watch exit:** derive CI from a **SHA-pinned** snapshot of **both** check families
   (`check-runs` **and** commit `status`), verified against `head_sha` before parsing. **NEVER from `gh pr

@@ -509,8 +509,10 @@ ever re-ordered again.
 - **UNKNOWN_VALUE → escalate, NEVER guess** → **no evidence row classifies `FAIL`** (else `red` above
   already won) and an evidence row carries a value not in the enums above (GitHub added one, or a
   `COMPLETED` `checkrun` row carries no `.conclusion`). **Do NOT** map it to green or pending, and do
-  **NOT** invent a red for it: park the PR (`status = awaiting-user`) naming the offending value and the
-  row it came from. A value nobody has classified is not evidence of anything, and guessing a bucket for
+  **NOT** invent a red for it: **ESCALATE** it — park the PR (`status = awaiting-user`) naming the
+  offending value and the row it came from, through the **ESCALATE** definition below ("`pending` MUST NOT
+  BE AN ABSORBING STATE"), which is the one place park entry is defined: it writes `ci_reason` and clears
+  `blocker_ruling`. A value nobody has classified is not evidence of anything, and guessing a bucket for
   it is how a hole becomes a wedge or a false green.
 
   **State the invariant EXACTLY, because the `red`-first order narrows it.** It is **NOT** "an unknown
@@ -629,7 +631,9 @@ next derivations → it parks like any other settled PR. The gate suppresses a s
 actually coming**, never merely because the PR is red.
 
 **ESCALATE** = park the PR (`status = awaiting-user`, `ci_reason` = the blocker **named**: which check
-never registered, which value was unrecognized, which read was denied), and tell the user. It does **not**
+never registered, which value was unrecognized, which read was denied), **and `blocker_ruling` = `-` in
+that same `ledger.py … set` call** ("THE RULING IS CONSUMED EXACTLY ONCE" below — a ruling already on the
+row answers the **previous** park, never this one), and tell the user. It does **not**
 abort the run or close the PR — the run's other PRs keep going. `ci_reason` is **the DECIDE reason for
 this snapshot** — the bullet that matched and the row that made it match — never a bare restatement of
 `ci`. A park that cannot name its blocker is not actionable.
@@ -656,13 +660,58 @@ in the driver's head**: a wake may be a fresh agent instance, and a counter that
 a counter that never reaches its cap. Write them through `scripts/ledger.py … set --pr <N>` **by field
 name**, like every other field (`files-and-ledger.md`).
 
+**THE RULING IS CONSUMED EXACTLY ONCE — a durable answer that is never spent is a park that unparks
+itself.** `blocker_ruling` must be **DURABLE** (it survives a context loss) **AND spent EXACTLY ONCE** (it
+answers the park it was written for, and no other). Both halves, or neither holds:
+
+- **ENTERING a machine-blocker park sets `blocker_ruling` = `-`** (ESCALATE above), in the **same**
+  `ledger.py … set` call that writes `status = awaiting-user` — one atomic row write, so no wake can ever
+  observe a freshly parked row still carrying the previous park's answer.
+- **CONSUMING a `retry` sets it back to `-`** in the same call that unparks the PR (`loop-control.md`
+  step 3).
+- **`abort@<iso>` is NEVER cleared.** It unparks into terminal `aborted`; a terminal row is never re-parked
+  and never re-consulted, so the ruling stays as the durable record of **why** the PR stopped
+  (`bailout-and-final-report.md`).
+
+**This is what SCOPES the ruling to its park**, and it is why the clear at park **entry** is the
+load-bearing one: a ruling present on a parked row can only have been written **while THAT park was
+open**. The consume-clear alone would not hold — a crash between the unpark and the next park would leave
+a spent `retry` on the row, and the next park would read it as its own answer. (A ruling keyed to
+`head_sha` instead would **not** work: a `retry` that fails to move CI re-parks the PR at the **same**
+`head_sha` (`loop-control.md` step 3), so a `head_sha`-scoped ruling would satisfy that re-park with no
+fresh user answer — the exact failure this rule exists to prevent.)
+
 **THE LIVENESS COUNTERS — one name for the set, so a new counter never leaves a stale restatement.** They
 are `ci_fingerprint`, `settled_strikes`, and `unusable_refetches`. **Reset them TOGETHER** (`-`, `0`, `0`)
-at exactly two kinds of site: **any `head_sha` change** (new commit, new evidence — every gate-reset site
-below, plus a clean rebase in `stage-3-merge.md`), and an **unpark by `retry`** (`loop-control.md` step 3).
-Any rule that says "reset the liveness counters" means **these**, and a counter added here is inherited by
-every one of those sites with no edit to them. `ci_reason` and `blocker_ruling` are **records, not
-counters** — they are overwritten by the next derivation / the next ruling, never blanket-reset.
+at exactly two kinds of site:
+
+1. **Any `head_sha` change — whether or not the gate resets with it.** The new head is new evidence, so
+   the old head's liveness says nothing about it. Every site that writes a new `head_sha` resets them, and
+   they are all of these: **"Any campaign commit to the PR head resets the gate"** (below — CI-fix,
+   review-fix, copilot-item fix, refutation commit); **`stage-3-merge.md`, step 6's reconcile** (BOTH
+   branches — a clean base-only rebase, which does **not** reset the gate, and a conflict-resolving
+   rebase, which does); **`loop-control.md` step 1's ledger refresh** and **`pr-adoption.md` step 3's row
+   refresh** (a formatter/bot commit, a manual push, any content change this run did not dispatch).
+2. **An unpark by `retry`** (`loop-control.md` step 3) — no new head, but the user changed something
+   **outside** the PR, so the strikes that measured the old attempt are void.
+
+**The DECIDE loop's own `head_sha changed -> reset` line ("SETTLED", above) is NOT a substitute for the
+site doing it.** That line fires only for a derivation that can still SEE the change — and the sites above
+**write the new `head_sha` to the row**, so by the time CI is re-derived the ledger already reads the new
+head and there is no change left to detect. The reset belongs **at the site that moves `head_sha`**; the
+derivation's line covers only a head that moved under a derivation that had not yet recorded it.
+
+**A gate reset is NOT the trigger — a `head_sha` change is.** The two are not the same set and never map
+onto each other: a `NOT SATISFIED` verdict resets the gate with **no** new head (the counters stay — CI
+did not move), and a clean base-only rebase moves the head **without** resetting the gate (the counters
+reset — CI must be re-derived). Anything that reads "reset on every gate reset" is wrong in both
+directions.
+
+Any rule that says "reset the liveness counters" means **these three**, and a counter added to this set is
+inherited by every one of those sites with no edit to them. `ci_reason` is a **record, not a counter** — it
+is overwritten by the next derivation, never blanket-reset. `blocker_ruling` is a record too, but it is
+**not** free-floating: it is cleared at its own park boundaries ("THE RULING IS CONSUMED EXACTLY ONCE"
+above), never by a counter reset.
 
 #### UNUSABLE — the refetch is BOUNDED: `unusable_refetches`, cap 3
 
@@ -822,9 +871,9 @@ A cheap model verifying a tool's diff is a **MISS-CATCHER, NOT A PROOF.** It can
 
 What backs it: the **exact failing check must pass**; the subagent **must escalate anything it cannot
 verify**; and **every commit campaign pushes is still gated by the full review gauntlet** — any campaign
-commit to the PR head resets `reviews_ok` to 0, restores `gauntlet-reviewing`, re-derives CI for the new
-tip and watches it **only if a row can still move** ("WATCH ONLY WHAT CAN MOVE"), and re-enters Stage 2a
-on the session model.
+commit to the PR head resets `reviews_ok` to 0, restores `gauntlet-reviewing`, resets the liveness
+counters ("THE LIVENESS COUNTERS"), re-derives CI for the new tip and watches it **only if a row can still
+move** ("WATCH ONLY WHAT CAN MOVE"), and re-enters Stage 2a on the session model.
 
 This trades a **small, bounded risk** for a workflow that is **cheaper AND more capable** than either a
 full-strength subagent on every formatting failure or a hermetic no-model tool path. **The user accepts

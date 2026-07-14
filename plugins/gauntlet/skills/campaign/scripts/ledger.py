@@ -44,7 +44,11 @@ ROW_FIELDS = (
     "settled_strikes",    # consecutive derivations seen SETTLED-but-not-green; at the cap -> escalate
     "unusable_refetches", # consecutive UNUSABLE snapshots (they have NO fingerprint); at the cap -> escalate
     "ci_reason",          # why `ci` is not green, in a form a human can act on
-    "blocker_ruling",     # durable answer to a machine-blocker park: - | retry@<iso> | abort@<iso>
+    # Durable answer to a machine-blocker park: - | retry@<iso> | abort@<iso>. Durable AND spent exactly
+    # once: set back to `-` on park ENTRY and on consuming a `retry`, so a ruling can only ever answer the
+    # park it was written for (`abort` is terminal and is never cleared). stage-2-ci.md, "THE RULING IS
+    # CONSUMED EXACTLY ONCE".
+    "blocker_ruling",
 )
 ROW_DEFAULTS = {
     "id": "-", "slug": "-", "branch": "-", "worktree": "-", "worktree_owned": "-",

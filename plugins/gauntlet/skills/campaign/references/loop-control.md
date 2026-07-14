@@ -47,6 +47,13 @@ blocks; each completion is its own wake.
      site that defers to it is the exact bug this rule forbids. (A clean base-only advance with the PR
      diff unchanged does not reset the gate, so it keeps `gauntlet-accepted`.)
 
+     **And whenever this refresh writes a NEW `head_sha` — gate reset or not — RESET THE LIVENESS
+     COUNTERS** (`stage-2-ci.md`, "THE LIVENESS COUNTERS"), in the same `ledger.py … set` call. This
+     covers **both** cases above: the content change that resets the gate, **and** the clean base-only
+     advance that does not. The new head is new evidence, so the old head's `settled_strikes` /
+     `unusable_refetches` describe nothing — carried forward, they park a healthy PR early, on strikes
+     it never earned at this SHA.
+
      Do the PR scan as
      **one batched snapshot per wake** — the **same canonical command** `pr-adoption.md` runs, writing the
      **same path with the same schema** (they are the same scan; two spellings of it is how a reader of
@@ -191,7 +198,7 @@ blocks; each completion is its own wake.
      |---|---|---|
      | **`awaiting-api`** — an API-changing fix | `api_approval` = `approved@<iso>` / `declined@<iso>` | `approved` → `in_review`; `declined` → terminal `aborted` |
      | **`awaiting-user`, review standoff** — a REFUTED finding the fresh reviewer re-raised | the ruling in `<rundir>/audit-<pr>-<n>.md` | `in_review`; ruled **valid** → the finding is fixed like a CONFIRMED one, ruled **invalid** → normal flow |
-     | **`awaiting-user`, machine blocker** — CI SETTLED-not-green, an UNUSABLE snapshot at its cap, an unrecognized CI enum value, a `BLOCKED`/unrecognized `mergeStateStatus`, a draft PR (`ci_reason` names it) | `blocker_ruling` = `retry@<iso>` / `abort@<iso>` | `retry` → `in_review` **and RESET THE LIVENESS COUNTERS** (`stage-2-ci.md`, "THE LIVENESS COUNTERS"), then re-derive CI on the next wake; `abort` → terminal `aborted` |
+     | **`awaiting-user`, machine blocker** — CI SETTLED-not-green, an UNUSABLE snapshot at its cap, an unrecognized CI enum value, a `BLOCKED`/unrecognized `mergeStateStatus`, a draft PR (`ci_reason` names it) | `blocker_ruling` = `retry@<iso>` / `abort@<iso>` | `retry` → `in_review`, **RESET THE LIVENESS COUNTERS**, and **SPEND the ruling: `blocker_ruling` = `-`** (`stage-2-ci.md`, "THE LIVENESS COUNTERS" / "THE RULING IS CONSUMED EXACTLY ONCE"), then re-derive CI on the next wake; `abort` → terminal `aborted` (the ruling **stays** — it is the record of why) |
 
      **A `retry` that clears nothing re-escalates on its first derivation** — the strikes are still at
      the cap — so the counter reset is **part of the unpark, not an optimization**. It buys the PR a
@@ -199,6 +206,17 @@ blocks; each completion is its own wake.
      reporting that the retry did not move CI (`stage-2-ci.md`, "SETTLED" / "UNUSABLE — the refetch is
      BOUNDED"). The loop is bounded by the **human**: campaign never re-asks unprompted, and every park
      is a fresh question backed by a fresh snapshot.
+
+     **A `retry` is SPENT when it is consumed — one ruling answers exactly ONE park.** Write `status =
+     in_review`, the counter reset, and `blocker_ruling` = `-` in the **same** `ledger.py … set --pr <N>`
+     call. That re-park above is precisely the case that proves it: the PR comes back to the **same**
+     machine blocker, and a ruling left on the row would answer the new park with the **old** answer —
+     the blocker would silently self-clear with no fresh user answer, which is the one thing the durable
+     record exists to prevent. Park **entry** clears it too (`stage-2-ci.md`, ESCALATE), so a crash
+     between the unpark and the next park cannot resurrect a spent ruling; the two clears are belt and
+     braces on the same invariant, and the entry clear is the one that survives a lost context.
+     **`abort` is different and is NOT cleared:** it goes **terminal** (`aborted`), and a terminal row is
+     never re-parked, so nothing can ever re-consume it.
    - **Why the guard must live HERE, at the dispatch site:** `reviews_ok < required(tier)` is TRUE for a
      parked PR (the park does not raise it), so a dispatch rule that looks only at `reviews_ok` will
      happily re-review a PR that is waiting on a human — and a `SATISFIED` verdict would then make it

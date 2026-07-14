@@ -56,7 +56,9 @@ catch-all and parks a PR that nothing was wrong with.
 
 **EVERY `awaiting-user` park in this table is a MACHINE-BLOCKER park, and it MUST declare its exit** — a
 park whose exit event never comes is the same wedge it was meant to prevent. So, in the same step: write
-`ci_reason` **naming the blocker** (the draft state, `BLOCKED`, or the unrecognized value verbatim), and
+`ci_reason` **naming the blocker** (the draft state, `BLOCKED`, or the unrecognized value verbatim),
+**clear `blocker_ruling` to `-`** (park entry spends nothing and answers nothing — a ruling already on the
+row belongs to a **previous** park; `stage-2-ci.md`, "THE RULING IS CONSUMED EXACTLY ONCE"), and
 resolve it through `blocker_ruling` = `retry` / `abort` — the user marks the PR ready, clears the
 protection, or gives up, and answers. The record and the unpark are defined once, in `files-and-ledger.md`
 (`status`) and `loop-control.md` step 3, "Only the user's answer unparks a PR"; never invent a second
@@ -184,7 +186,10 @@ subagent at a check that is merely **still running**.
    - Rebase requiring conflict resolution → PR content changed → **reset `reviews_ok` to 0 AND, in that
      same step, restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`** (`gh pr edit <pr>
      --remove-label gauntlet-accepted --add-label gauntlet-reviewing`) — the gate and its label move
-     together (`stage-2-review-gate.md`, "Status labels mirror the review gate"). Then re-derive CI for
+     together (`stage-2-review-gate.md`, "Status labels mirror the review gate"). Update `head_sha` to the
+     new tip and **reset the liveness counters** (a new head is new evidence — `stage-2-ci.md`, "THE
+     LIVENESS COUNTERS"; the clean-rebase branch above does the same, and this branch is no different in
+     that respect). Then re-derive CI for
      the new tip — watching it only if a row can still move ("WATCH ONLY WHAT CAN MOVE") — and re-enter
      Stage 2.
    - Still open, **not parked**, mergeable, not behind/dirty/conflicting, same live `head_sha`,

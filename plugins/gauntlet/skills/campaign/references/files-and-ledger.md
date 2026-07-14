@@ -184,6 +184,14 @@ Header field notes (the header fields above; per-row fields follow):
   unparks with the liveness counters cleared; `abort` goes terminal `aborted`. The unpark is
   `loop-control.md` step 3, "Only the user's answer unparks a PR".
 
+  **DURABLE *and* SPENT EXACTLY ONCE — one ruling answers exactly ONE park.** It is set back to `-` when a
+  machine-blocker park is **ENTERED** and when a `retry` is **CONSUMED** (`stage-2-ci.md`, "THE RULING IS
+  CONSUMED EXACTLY ONCE" — that is the owning definition). That is what **scopes** a ruling to its park: a
+  ruling sitting on a **parked** row can only have been written while **that** park was open, so a stale
+  `retry` can never unpark a **later** blocker with no fresh user answer. `abort@<iso>` is **never**
+  cleared — it goes terminal, and a terminal row is never re-parked, so it stays as the record of why.
+  A **counter reset never touches it**: it is not one of the liveness counters.
+
   These live **on disk, not in the driver's head**: a wake may be a fresh agent instance, and a counter —
   or a ruling — that dies with the context never reaches its cap.
 - `attempts` — task attempts so far (for the retry-once bailout).
@@ -226,7 +234,10 @@ Header field notes (the header fields above; per-row fields follow):
        the refetch is BOUNDED"; `stage-3-merge.md`, "The merge precondition"). **This is the exit from
        `pending`** — without it, a stuck PR spins forever and no one is ever told. **Answered into**
        `blocker_ruling`: `retry@<iso>` → back to `in_review` **with the liveness counters cleared** (else
-       it re-escalates on its first derivation), `abort@<iso>` → terminal `aborted`.
+       it re-escalates on its first derivation) **and the ruling itself SPENT back to `-`** (a ruling is
+       consumed exactly once — `stage-2-ci.md`, "THE RULING IS CONSUMED EXACTLY ONCE"; entering this park
+       clears it too, so it can never be answered by a **previous** park's ruling), `abort@<iso>` →
+       terminal `aborted` (not cleared — terminal rows are never re-parked).
 
     Same park mechanics as
     `awaiting-api` for both: `reviews_ok` stays 0, no review pass is launched for this PR, the other PRs

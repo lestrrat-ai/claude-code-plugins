@@ -109,7 +109,12 @@ For each `#PR` to adopt:
      `blocker_ruling`, `attempts`, `started`, `status`, `reviews_ok`, and `tier` — do **NOT** reset them
      (that would violate the durable-decision contract for **both** user answers, `files-and-ledger.md` /
      `scope-and-constraints.md`, and could re-ask the user about a PR already ruled on, or revive an
-     already-declined/aborted PR). Only re-read `head_sha`/`ci` from ground truth; reset
+     already-declined/aborted PR). **Preserving `blocker_ruling` here is safe because it is cleared at its
+     own park boundaries** — at park **entry** and when a `retry` is **consumed** (`stage-2-ci.md`, "THE
+     RULING IS CONSUMED EXACTLY ONCE") — so a ruling this refresh can see is either still **awaiting its
+     park's exit** (preserving it is the whole point: a wake may be a fresh agent instance) or the
+     **terminal** record of an `abort`. A **spent** ruling is never on the row for this step to resurrect.
+     Only re-read `head_sha`/`ci` from ground truth; reset
      `reviews_ok` to `0` and re-triage `tier` **only if** reconciliation detects a PR-content change
      since the recorded `head_sha` (per the gate's SHA-pinning rules). **That reset is a gate-reset
      site: in the same step, restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`**
@@ -117,6 +122,12 @@ For each `#PR` to adopt:
      `stage-2-review-gate.md`, "Status labels mirror the review gate"). Step 4's `--add-label
      gauntlet-reviewing` alone is NOT sufficient: it would leave the stale `gauntlet-accepted` in
      place, so the PR would carry **both** status labels and still publicly claim it passed.
+   - **Whenever this refresh writes a NEW `head_sha`, RESET THE LIVENESS COUNTERS** (`stage-2-ci.md`,
+     "THE LIVENESS COUNTERS") in the same `ledger.py … set` call — **whether or not the gate reset with
+     it**: a clean base-only advance moves the head without touching `reviews_ok`, and it still means the
+     old head's `settled_strikes` / `unusable_refetches` describe evidence that no longer exists. Carried
+     onto the new head they park a healthy PR early. (The counters are **not** in the PRESERVE list above:
+     they are pinned to `head_sha`, not to the user.)
 
    The ownership marker for an adopted PR is the **label**, not the branch name (its branch won't match
    the `fix-<run-id>-` prefix) — so labelling in step 4 is what makes the PR ours.

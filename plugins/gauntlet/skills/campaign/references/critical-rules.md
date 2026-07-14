@@ -72,7 +72,9 @@
 - Before queueing a review pass on a PR, clear its preconditions on the current tip: address any
   GitHub Copilot review items (`/gauntlet:copilot-address-reviews <pr>`), fix any CI failures (one at a time,
   prefer a scoped subagent), and rebase away any conflict with `<base>`. PR-content changes reset
-  verdicts. Clean base-only rebase with unchanged PR diff keeps `reviews_ok` and sets `ci = pending`.
+  verdicts. Clean base-only rebase with unchanged PR diff keeps `reviews_ok`, sets `ci = pending`, and —
+  because the head still moved — **resets the liveness counters** (`stage-2-ci.md`, "THE LIVENESS
+  COUNTERS").
   Never spend a review over open Copilot items, a red check, or a conflicting PR (Stage 2a).
 - The review gate is **tier-dependent**: `required(tier)` fresh, context-isolated `SATISFIED` verdicts
   on the same live PR content — **one if TRIVIAL, two otherwise** (any code / agent-doc / sensitive
@@ -207,7 +209,8 @@
 - Verdicts are pinned to reviewed PR content: any PR-content change (review fix / CI fix /
   conflict-resolving rebase / bot or manual PR-branch commit) makes prior verdicts stale. Base
   advancement with no conflict and unchanged PR diff does NOT invalidate verdicts; carry `reviews_ok`
-  forward, update `head_sha`, and require fresh CI.
+  forward, update `head_sha`, **reset the liveness counters** (the head moved, so the old head's evidence
+  is gone — `stage-2-ci.md`, "THE LIVENESS COUNTERS"), and require fresh CI.
 - Resume vs. fresh run is decided by **liveness**, not by `state.jsonl` existing: live work → resume;
   a finished prior run → ask the user before a fresh run; `--new` → fresh run with
   carryover (Loop control step 1). A finished run must never silently exit "all done" or silently
@@ -272,10 +275,23 @@
   or a hermetic no-model tool path.
 - **ANY campaign commit to the PR head resets the gate** (`stage-2-ci.md`, "Any campaign commit to the PR
   head resets the gate") — cheap CI-fix, session-model CI-fix, review-fix, or **refutation commit** alike. In the SAME step: reset
-  `reviews_ok` to 0 AND restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`, re-derive CI
+  `reviews_ok` to 0 AND restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`, **reset the
+  liveness counters** (`stage-2-ci.md`, "THE LIVENESS COUNTERS" — the new head is new evidence), re-derive CI
   for the new tip and watch it **only if a row can still move** (`stage-2-ci.md`, "WATCH ONLY WHAT CAN
   MOVE" — a watch launched on a tip whose checks have not registered yet has nothing to block on and
   exits in about a second), and re-enter Stage 2a. NEVER exempt a commit because it "only reformatted".
+- **THE LIVENESS COUNTERS reset on EVERY `head_sha` change — gate reset or not** (`stage-2-ci.md`, "THE
+  LIVENESS COUNTERS", which names every site). A `head_sha` change and a gate reset are **not** the same
+  event: a `NOT SATISFIED` verdict resets the gate with no new head (the counters stay — CI did not move),
+  and a **clean base-only rebase** moves the head without resetting the gate (the counters reset — the old
+  head's evidence is gone). Stale `settled_strikes` / `unusable_refetches` carried onto a new head park a
+  **healthy** PR early, on strikes it never earned there.
+- **A `blocker_ruling` is DURABLE *and* SPENT EXACTLY ONCE** (`stage-2-ci.md`, "THE RULING IS CONSUMED
+  EXACTLY ONCE"): set to `-` when a machine-blocker park is **ENTERED** and when a `retry` is **CONSUMED**,
+  each in the same `ledger.py … set` call as the `status` write. A ruling left on the row answers the
+  **next** park too — the blocker silently self-clears with **no fresh user answer**, which is exactly what
+  the durable record exists to prevent. `abort` is never cleared: it is terminal, and a terminal row is
+  never re-parked.
 - **EVERY fix subagent — CI-fix (both tiers) and review-fix — is dispatched under the fix-subagent contract
   (`fix-subagent-contract.md`, the complete DEFINITION; read it before dispatching, never reconstruct it
   from a summary).** Both halves are mandatory: **SCOPE** the reading — worktree + concrete issue list, NOT
