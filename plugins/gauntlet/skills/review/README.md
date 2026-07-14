@@ -71,7 +71,7 @@ each one through the reviews its tier requires plus CI, and merges. Refuted and 
 are left alone.
 
 "No other defects" bounds *which problems* it fixes — not *how many places* one fix has to touch. When
-a fix changes a definition or a fact, it greps the tree for every other place that restates it and
+a fix changes a definition or a fact, it sweeps the tree for every other place that restates it and
 corrects those too, in the same pull request, and tells you which sites it touched and which it left
 alone: a definition left with a stale restatement is a definition that lies. That's the same
 [fix-subagent contract](../campaign/references/fix-subagent-contract.md) campaign holds its own fixers

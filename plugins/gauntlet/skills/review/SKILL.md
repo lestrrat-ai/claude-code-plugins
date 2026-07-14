@@ -395,10 +395,11 @@ or **Adjusted** finding only (skip Refuted and Uncertain), in its own branch off
 1. Implement the fix — exactly the change in the finding's `Fix:`, nothing more; no drive-by edits.
    **"Nothing more" bounds the DEFECTS you fix, not the SITES one fix touches.** If the change alters a
    DEFINITION (a rule, a command, a schema, a format) or a FACT (a count, a name, an API behavior), then
-   `grep` the tree for every place that RESTATES it — summaries, quick-reference bullets, cross-references,
-   table rows, worked examples — and correct each one **in this same PR**: a definition left with a stale
-   restatement is a definition that lies, and that sweep is part of the fix, not a drive-by. Report every
-   site you found and its disposition, including any you deliberately left alone. (This paragraph is a
+   SWEEP the tree for every place that RESTATES it and correct each one **in this same PR**: a definition
+   left with a stale restatement is a definition that lies, and that sweep is part of the fix, not a
+   drive-by. Report every site you found and its disposition, including any you deliberately left alone.
+   **Sweep the way the contract says** — `grep` alone finds only what a *changed* definition invalidated;
+   it cannot find a stale restatement of a rule you just INTRODUCED. (This paragraph is a
    **non-authoritative summary** of the same contract campaign puts in every fix subagent's prompt —
    `${CLAUDE_PLUGIN_ROOT}/skills/campaign/references/fix-subagent-contract.md` is the complete DEFINITION
    and **wins over this** wherever they differ; read it, never reconstruct it from this summary.)

@@ -266,7 +266,8 @@
   the whole diff, NOT beyond the named files; **scope by defect, not by guess — name every file the defect
   touches**. **SWEEP** the writing — the contract's sweep-and-report block goes into the prompt **verbatim**:
   a fix that changes a DEFINITION or a FACT is not done until every site that RESTATES it is correct, and
-  every site found is reported. Read narrowly to UNDERSTAND, grep widely to FINISH; neither half excuses
+  every site found is reported. Read narrowly to UNDERSTAND, sweep widely to FINISH — the contract, not
+  this bullet, defines how to sweep (`grep` alone does not find them all); neither half excuses
   skipping the other. Scoping (not a cheaper model), plus an **external reviewer** taking review passes off
   the subagent pool (**the single biggest cost lever** — review passes dominate campaign's spend), is where
   savings live.

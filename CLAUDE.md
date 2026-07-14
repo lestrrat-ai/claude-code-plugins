@@ -122,6 +122,19 @@ every place that RESTATES it is correct.**
 - `grep` for the old value, the old spelling, the old command, the old number — not just the file you
   edited. Restatements hide in **summaries**, **quick-reference bullets**, **cross-references**, **table
   rows**, **worked examples**, and **other copies of the same command**.
+- **`grep` finds a CHANGED definition. It cannot find a NEW one.** A rule you just INTRODUCED has no old
+  string to hunt, and a stale restatement of it shares no keyword with it — *"it only sets `ci =
+  pending`"* restates a counter-reset rule and contains not one word of it. Searching for the new rule's
+  NAME finds only the sites you already fixed: it reports success every time and is wrong every time. So
+  sweep **semantically** — enumerate every site that **does the thing the rule governs** (writes the
+  field, enters the state, performs the reset, states the cap) and check each one.
+- **A pointer with a gloss is still a restatement.** A site that points at the owner and then "just
+  briefly" restates it — *"reset the liveness counters (`settled_strikes`, `unusable_refetches`)"* — has
+  copied the definition into the gloss. The pointer stays right while the gloss silently goes wrong, and
+  the gloss is the part people read. **Name the set; do not unpack it.** This survives every sweep that
+  asks "does this site point at the owner?", because it does.
+- **Prefer a mechanical check to an exhortation.** "Sweep thoroughly" cannot fail. "`rg -Un '<value>'`
+  returns exactly one hit, and here is every hit accounted for" can — reconcile the output out loud.
 - A **summary that has drifted from its definition is worse than no summary**: it is the version people
   actually read, and it will be believed. A one-line "green means zero failing and zero pending" outlived
   three rewrites of the rule it summarised, and silently discarded both of that rule's disclosed caveats.
