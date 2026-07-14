@@ -875,6 +875,18 @@ content. It is **not** saying "never ask who can write the input" — that is th
 `writer` field answers it, and it decides whether the finding is worth a round at all. **Truth first is
 backwards here: a finding must MATTER before anyone spends an audit on whether it is true.**
 
+**When the audit turns up something real that is NOT the finding — record it as a FOLLOW-UP before you
+move on** (a pre-existing defect at the same site; a wider class an ADJUSTED finding only clipped the edge
+of). It goes into the durable store via `scripts/followups.py`, never into the driver's prose, which dies
+with the driver's context (`followups.md`).
+
+**A follow-up is NOT a fourth verdict, and recording one NEVER discharges a finding.** It cannot subtract
+from the fix list: a CONFIRMED finding is **fixed**, always. *"I'll file a follow-up instead"* is
+**REFUTING BY DEFERRAL** — precisely what "Refuting is NOT declining" (below) forbids, wearing a different
+hat. A follow-up records what the audit found **beside** the finding, never the finding it declined to
+fix. And it is a **CANDIDATE, not an issue**: it stays local, and nothing in that store is published
+without the user's agreement on that specific item.
+
 #### The reachability test — CAN THE MECHANISM THE FINDING DESCRIBES ACTUALLY OCCUR?
 
 The test is **NOT** about where the trigger comes from. Provenance is the wrong question **for THIS

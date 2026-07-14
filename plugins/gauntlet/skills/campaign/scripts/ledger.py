@@ -794,7 +794,7 @@ def escape_cell(value: str) -> str:
     return text
 
 
-def hidden_notice(n: int) -> str:
+def hidden_notice(n: int, hidden: "tuple[str, ...]" = TABLE_HIDDEN_STATUSES) -> str:
     """The line that makes the omission LOUD — printed whenever the default view drops a row.
 
     A FILTERED VIEW THAT DOES NOT SAY WHAT IT HID IS A LIE BY OMISSION, and it is the same lie as a
@@ -803,12 +803,47 @@ def hidden_notice(n: int) -> str:
     that reveals the rest — a reader can always get from the filtered view to the whole ledger without
     knowing this file exists.
 
-    The wording is DERIVED from `TABLE_HIDDEN_STATUSES`, never spelled beside it: change what the default
+    The wording is DERIVED from the set of hidden states, never spelled beside it: change what the default
     hides and this line follows by construction, instead of becoming a stale restatement of the rule it
-    is supposed to summarise.
+    is supposed to summarise. `hidden` defaults to this store's own `TABLE_HIDDEN_STATUSES`; the sibling
+    store (`followups.py`) passes ITS set and gets the same derivation, so neither can drift.
     """
-    what = "/".join(TABLE_HIDDEN_STATUSES)
+    what = "/".join(hidden)
     return f"# {n} {what} row{'' if n == 1 else 's'} hidden — pass --all to show every row"
+
+
+def config_lines(pairs: "list[tuple[str, str]]") -> "list[str]":
+    """The `# <name>: <value>` block printed ABOVE a grid.
+
+    The `#` prefix and the blank line after the block are what keep these lines from reading as table
+    columns — and the values are free text, so they are escaped on exactly the same terms as a cell: an
+    un-escaped newline here would inject lines that read as part of the grid. Shared with `followups.py`
+    so the reserved `#` namespace has ONE definition, not one per store.
+    """
+    return [f"# {name}: {escape_cell(value)}" for name, value in pairs]
+
+
+def grid_lines(fields: "tuple[str, ...]", rows: "list[list[str]]") -> "list[str]":
+    """Render RAW cell values as the aligned grid: column-header line, rule line, then one line per row.
+
+    THE LAYOUT IS OWNED HERE, ONCE, for every table the campaign's scripts print (`followups.py` renders
+    through this function too). A second copy of the ` | ` separator, the width arithmetic and the
+    `rstrip()` would be a second definition of the very syntax `escape_cell()` exists to protect — and the
+    day one copy changed, its store's escaping would still be defending the OTHER one's grid.
+
+    Cells arrive RAW and are escaped here (`escape_cell()` owns HOW), so a caller can never render an
+    unescaped value by forgetting to. Widths are measured on the ESCAPED text — i.e. on exactly the bytes
+    that get printed; measure the raw value and every escape makes its cell wider than the column reserved
+    for it. Any display-only truncation is the CALLER's job and must happen on the raw value BEFORE it is
+    handed over, so a cut can never land inside an escape sequence.
+    """
+    cells = [tuple(escape_cell(v) for v in row) for row in rows]
+    widths = [max(len(f), *(len(c[i]) for c in cells)) if cells else len(f)
+              for i, f in enumerate(fields)]
+    out = [" | ".join(f.ljust(w) for f, w in zip(fields, widths)).rstrip(),
+           "-+-".join("-" * w for w in widths)]
+    out += [" | ".join(v.ljust(w) for v, w in zip(c, widths)).rstrip() for c in cells]
+    return out
 
 
 def cmd_table(path: Path, args) -> int:
@@ -824,31 +859,20 @@ def cmd_table(path: Path, args) -> int:
     # other.
     shown = rows if args.show_all else [r for r in rows if r["status"] not in TABLE_HIDDEN_STATUSES]
     hidden = len(rows) - len(shown)
-    # '#' + blank line keep the run-config lines from reading as table columns.
-    # Header values are free text too, so they are escaped on the same terms: an
-    # un-escaped newline here would inject lines that read as part of the grid.
-    for f in HEADER_FIELDS:
-        print(f"# {f}: {escape_cell(header[f])}")
+    for line in config_lines([(f, header[f]) for f in HEADER_FIELDS]):
+        print(line)
     print()
-    cells = []
     # ONLY the rows that are actually printed become cells. That is not merely an optimization: it is what
     # keeps a hidden row from reaching the VISIBLE output at all. Build cells from every row and the widths
-    # below would still be measured over the hidden ones, so a merged PR with a 200-char slug would silently
+    # would still be measured over the hidden ones, so a merged PR with a 200-char slug would silently
     # blow out the columns of a table it does not even appear in — a value nobody printed, changing what
     # the reader sees.
-    for row in shown:
-        # truncate the RAW sha, then escape — so a cut never splits an escape
-        cells.append(tuple(
-            escape_cell(row[f][:TABLE_SHA_WIDTH] if f == "head_sha" else row[f])
-            for f in fields
-        ))
-    # widths measure the ESCAPED cells — i.e. exactly the text that gets printed
-    widths = [max(len(f), *(len(c[i]) for c in cells)) if cells else len(f)
-              for i, f in enumerate(fields)]
-    print(" | ".join(f.ljust(w) for f, w in zip(fields, widths)).rstrip())
-    print("-+-".join("-" * w for w in widths))
-    for c in cells:
-        print(" | ".join(v.ljust(w) for v, w in zip(c, widths)).rstrip())
+    #
+    # The sha is truncated HERE, on the RAW value, before `grid_lines()` escapes it — so a cut never
+    # splits an escape sequence in half and leaves a dangling backslash behind.
+    cells = [[row[f][:TABLE_SHA_WIDTH] if f == "head_sha" else row[f] for f in fields] for row in shown]
+    for line in grid_lines(fields, cells):
+        print(line)
     if not cells:
         # An empty grid is now AMBIGUOUS — nothing adopted, or everything finished — so say WHICH.
         # Both markers live in the '#' namespace: no cell can render a line that impersonates either.

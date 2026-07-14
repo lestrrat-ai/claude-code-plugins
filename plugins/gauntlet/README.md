@@ -71,8 +71,9 @@ sample to copy into your `CLAUDE.md` and edit.
 Both skills keep working state under `.gauntlet/` at the repo root, which is git-ignored. Run scratch
 lives in `.gauntlet/tmp/` and is mostly safe to delete — a just-finished run's dir is kept so campaign
 can still offer to gate more PRs, but deleting it only loses that prompt, not your history.
-`.gauntlet/history/` holds the durable carryover between campaign runs, so don't remove `.gauntlet/`
-wholesale.
+Everything else under `.gauntlet/` is durable, so don't remove `.gauntlet/` wholesale: `history/` holds
+the carryover between campaign runs, and `followups.jsonl` is campaign's local ledger of work it found
+but deliberately did not do — candidates it will never publish without your say-so.
 
 ## License
 
