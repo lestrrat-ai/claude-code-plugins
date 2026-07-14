@@ -47,8 +47,8 @@ sounds like what you want to read.
 Worth understanding before you adopt or drop any of them — several look like style nits and are not.
 
 **"End every update with an action item or 'Nothing needed from you.'"** The single highest-value rule
-for an unattended run. It makes *blocked-on-you* impossible to miss and impossible to fake. Without it,
-a run that needs your decision reads exactly like a run that is making progress.
+for an unattended run. It makes *blocked-on-you* impossible to miss and impossible to fake — the agent
+must commit to one or the other, every time, and cannot trail off ambiguously.
 
 **"No new info → no update."** Removes the heartbeat noise that trains you to stop reading. If every
 wake produces prose, none of it is a signal.
