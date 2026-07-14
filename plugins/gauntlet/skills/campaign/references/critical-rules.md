@@ -288,8 +288,12 @@
   needs **≥1 registered evidence row** — **zero rows is NOT green** (nothing has registered yet), and
   **every** observed row must classify `PASS` **under the current CLASSIFY rules** — which is **NOT** the
   same, weaker test as "no failing and no pending row". Classification is **TOTAL** over the real enums,
-  with an **escalating catch-all**: a value nobody has classified **parks the PR**, and is **NEVER**
-  bucketed into green, red, or pending. One gap remains **open and disclosed** in `stage-2-ci.md`, and a
+  with an **escalating catch-all**: a value nobody has classified **parks the PR** — it **NEVER** yields
+  `green` (green needs **every** row to classify `PASS`, and an unknown value never does), and it is
+  **never guessed into a bucket**. **The ORDER is `red` BEFORE the catch-all, on purpose:** a snapshot
+  carrying **both** a `FAIL` and an unknown value is `red`, gets its CI fix, and **parks on the unknown
+  value at the next derivation** once the failure clears — deferred, never dropped, and never merged
+  (`red` cannot merge). One gap remains **open and disclosed** in `stage-2-ci.md`, and a
   green claim must respect it: the **REGISTRATION GAP** — green proves only that *what had registered*
   passed, **never** that the required set is complete. **NEVER claim more from a green than those rules
   and that gap allow.**

@@ -462,6 +462,27 @@ claim that the risk is gone:
 
 Evaluate the bullets **in this order — first match wins.**
 
+**THE ORDER IS PART OF THE RULE — and `red` OUTRANKS `UNKNOWN_VALUE` DELIBERATELY.** When a snapshot
+carries **both** a `FAIL` row and an `UNKNOWN_VALUE` row, `red` wins and the PR gets its CI fix. That is
+the intended behavior, and it costs nothing:
+
+- **A known failure is actionable NOW, and it BLOCKS THE MERGE regardless.** `red` never merges (Stage 3
+  merges only on `ci == green`), so deciding `red` first can never wave the unknown value through.
+- **The unknown value is DEFERRED, NOT DISCARDED.** The fix lands, the head moves, and the **next**
+  derivation re-reads a fresh snapshot for the new `head_sha`. With no `FAIL` left to outrank it, the
+  unknown value falls to `UNKNOWN_VALUE` and the PR **parks** exactly as it must. Nothing is skipped —
+  only sequenced.
+- **Parking first would be strictly worse:** a PR with a real, fixable failure would sit on a human for a
+  value that could not have merged it anyway.
+
+**Why NO ORDER here can produce a false green:** `green` is the **last** bullet and demands that **EVERY**
+evidence row classify `PASS`. An `UNKNOWN_VALUE` row is **not** `PASS`, so **while any unknown value is in
+the snapshot the `green` bullet cannot match — no matter which bullet is evaluated first.** Every earlier
+bullet (`UNUSABLE`, `red`, `UNKNOWN_VALUE`, `pending`) is a **non-merging** outcome. So the ordering can
+only decide *which non-green state* is recorded and *how fast the PR moves*; it can **never** decide
+*green*. That is what makes `red`-first safe, and it is the property to preserve if these bullets are
+ever re-ordered again.
+
 - **UNUSABLE → `ci = pending`, refetch** → no usable snapshot: any fetch failed, the file is absent, or it
   **fails ANY rule in VERIFY above** — misnamed, header not first or not alone, a line that does not parse
   as JSON, an unknown row type, a missing or unexpected field, a field whose **value is not a string**, a
@@ -483,11 +504,21 @@ Evaluate the bullets **in this order — first match wins.**
   adoption/pre-review per `pr-adoption.md`; default `.worktrees/<headRefName>` when campaign creates
   it, else a reused existing checkout). Its fix commits + pushes to the PR's **own head branch** →
   **apply the gate reset** below.
-- **UNKNOWN_VALUE → escalate, NEVER guess** → an evidence row carries a value not in the enums above
-  (GitHub added one, or a `COMPLETED` `checkrun` row carries no `.conclusion`). **Do NOT** map it to green,
-  red, or pending: park the PR (`status = awaiting-user`) naming the offending value and the row it came
-  from. A value nobody has classified is not evidence of anything — and silently bucketing it is exactly
-  how a hole becomes a wedge or a false green.
+- **UNKNOWN_VALUE → escalate, NEVER guess** → **no evidence row classifies `FAIL`** (else `red` above
+  already won) and an evidence row carries a value not in the enums above (GitHub added one, or a
+  `COMPLETED` `checkrun` row carries no `.conclusion`). **Do NOT** map it to green or pending, and do
+  **NOT** invent a red for it: park the PR (`status = awaiting-user`) naming the offending value and the
+  row it came from. A value nobody has classified is not evidence of anything, and guessing a bucket for
+  it is how a hole becomes a wedge or a false green.
+
+  **State the invariant EXACTLY, because the `red`-first order narrows it.** It is **NOT** "an unknown
+  value is never bucketed" — a snapshot that also holds a `FAIL` is recorded `red`, and that is correct
+  (above). What holds without exception is:
+  - **An unknown value NEVER produces `green`.** The `green` bullet requires **every** evidence row to
+    classify `PASS`, and an `UNKNOWN_VALUE` row never does. It cannot merge, on any ordering.
+  - **An unknown value parks the PR AS SOON AS no `FAIL` outranks it** — on this derivation if there is
+    no `FAIL`, otherwise on the next one, once the CI fix has cleared the failure. **It is deferred, never
+    dropped**, and it outranks `pending`: a still-running row does **not** postpone the park.
 - **pending** → any evidence row classifies `RUNNING` → leave `ci = pending` and, if the watch task has
   exited, **relaunch it in this same wake** — a pending PR must never sit unwatched waiting for the
   heartbeat.
