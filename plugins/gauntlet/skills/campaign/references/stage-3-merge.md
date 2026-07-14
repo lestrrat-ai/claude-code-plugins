@@ -14,14 +14,65 @@ not lower `reviews_ok`, so a rule that reads only the counters would merge a PR 
 or API change the user has not yet ruled on. Only the user's answer unparks it (`status` back to
 `in_review`); until then it is skipped, never merged.
 
+### The merge precondition — TWO enums, and NEITHER of them is a CI signal
+
+**`mergeStateStatus` NEVER feeds `ci`.** It is a **merge precondition**, read at Stage 3 and nowhere
+else. Campaign's own SHA-pinned snapshot (`stage-2-ci.md`) is the **only** source of `ci`. Crossing these
+two wires is what turns a blocked merge into an infinite CI watch.
+
+`gh pr view <pr> --json mergeable,mergeStateStatus,isDraft` returns **two different enums** — say which
+field a value came from, and map **every** value of each (introspected from the schema, not recalled):
+
+```
+MergeableState (.mergeable)       MERGEABLE CONFLICTING UNKNOWN
+MergeStateStatus (.mergeStateStatus)  DIRTY UNKNOWN BLOCKED BEHIND UNSTABLE HAS_HOOKS CLEAN
+```
+
+**The two enums answer DIFFERENT questions, and `.mergeable` NEVER answers the merge question.**
+`.mergeable` says whether the branches **can be combined at all**; `.mergeStateStatus` says whether the
+merge is **permitted right now**. So `MERGEABLE` is **NECESSARY BUT NOT SUFFICIENT** — a `MERGEABLE` PR
+is routinely `BLOCKED`, `BEHIND` or `UNSTABLE`, and merging on `.mergeable` alone would merge straight
+over a blocked, stale, or non-passing PR. **`MERGEABLE` does NOT mean "merge it"; only the
+`.mergeStateStatus` rows below decide that.** The two are read together, never one instead of the other.
+
+The table maps **BOTH enums TOTALLY** — every value of each has its own row, so the catch-all fires
+**only** on a value GitHub has genuinely added since. A value with no row is a **wedge**: it falls to the
+catch-all and parks a PR that nothing was wrong with.
+
+| Field / value | Meaning | Do |
+|---|---|---|
+| `.isDraft = true` | a **draft** PR — GitHub blocks the merge regardless of CI | **NEVER merge.** Park `awaiting-user`. |
+| `.mergeable = MERGEABLE` | the branches **can** be combined — **the ONLY non-blocking `.mergeable` value, and the one EVERY healthy PR carries** | **NOT a licence to merge.** The `.mergeable` precondition is satisfied and **nothing else is decided**: fall through to the `.mergeStateStatus` rows below, which decide whether the merge may actually run. |
+| `.mergeable = CONFLICTING` | conflicts with the base | refresh the PR per step 6 |
+| `.mergeable = UNKNOWN` | **not computed yet** (GitHub computes mergeability lazily) | **re-poll with backoff**, bounded; **never** read as a verdict |
+| `.mergeStateStatus = CLEAN` | mergeable, everything green | **merge** |
+| `.mergeStateStatus = HAS_HOOKS` | mergeable; the repo has pre-receive hooks | **merge** |
+| `.mergeStateStatus = BEHIND` | base has moved ahead | refresh the PR per step 6 → gate reset |
+| `.mergeStateStatus = DIRTY` | conflicts | refresh the PR per step 6 |
+| `.mergeStateStatus = UNSTABLE` | a check is **non-passing** — which **INCLUDES STILL RUNNING** | **do not merge.** Do **NOT** touch `ci` and do **NOT** dispatch a CI-fix — campaign's own snapshot decides that. |
+| `.mergeStateStatus = BLOCKED` | the merge is blocked — **cause NOT enumerable** | **do not merge.** Park `awaiting-user`. **NEVER** map it to `ci = pending`. |
+| `.mergeStateStatus = UNKNOWN` | not computed yet | re-poll with backoff, bounded |
+| **any other value** | GitHub added one | **park `awaiting-user`**, naming the value. Never guess. |
+
+**`BLOCKED` does NOT mean "a required check is missing or failing."** It means the merge is blocked **for
+any reason** — including a **draft** PR, or one **awaiting a human approving review**, or a ruleset
+campaign cannot read. Verified: `cli/cli` PR #13856 reads `BLOCKED` with `mergeable = MERGEABLE` **and a
+fully `SUCCESS` rollup**, purely because it is a draft. Mapping `BLOCKED` → `ci = pending` → "relaunch the
+CI watch" therefore **LIVELOCKS**: the CI is already green, no CI event will ever fire, campaign never
+approves PRs and never asks the user to — so it watches a settled PR forever. **Park it and name the
+blocker instead.**
+
+**`UNSTABLE` means non-*passing*, which includes *pending*.** Treating it as red would dispatch a CI-fix
+subagent at a check that is merely **still running**.
+
 1. **Serialize merge operations, not wakes.** A wake may merge multiple PRs, but only one at a time.
    Before each merge, re-confirm the PR is still **not parked** and that both gates still hold against the live PR head SHA
    (`gh pr view <pr> --json headRefOid --jq .headRefOid`, PR number from the ledger row) — a late push
    may have moved the tip past the recorded `head_sha` and reset the gates —
    **and re-fetch `origin/<base>` and re-check
-   `gh pr view <pr> --json mergeable,mergeStateStatus`** — a concurrent run sharing this base may
-   have advanced it since the PR was last reviewed. If it now reads `BEHIND`/`DIRTY`/`CONFLICTING`,
-   refresh the PR per step 6 instead of merging it.
+   `gh pr view <pr> --json mergeable,mergeStateStatus,isDraft`** — a concurrent run sharing this base may
+   have advanced it since the PR was last reviewed. Read the result through **"The merge precondition"**
+   below, which maps **every** value of both enums.
 2. Push guard: `gh pr view <pr> --json state --jq .state` (PR number from the ledger row) must be
    `OPEN`.
 3. Merge — always `gh pr merge <pr> --squash` (use the repo's prevailing merge method if not squash),

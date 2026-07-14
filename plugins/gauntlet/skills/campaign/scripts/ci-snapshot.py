@@ -86,7 +86,11 @@ answers, not one a reviewer has to discover. ADD A RULE, MARK IT, AND GIVE IT A 
             thing that says WHICH rule fired, and a fixture that fails for someone else's reason pins
             nothing)
 
-The verdict vocabulary intentionally includes UNCLASSIFIED — see KNOWN GAP below.
+CLASSIFICATION IS TOTAL over the real enums (see the constants below): every CheckStatusState,
+CheckConclusionState and StatusState value lands in exactly one bucket. UNCLASSIFIED is the ESCALATION for a
+value GitHub has ADDED SINCE — the one thing left that no rule can map. It is not a gap; it is the branch
+that keeps a hole from becoming a wedge (a value that resolves to nothing, so the PR never moves) or a false
+green (a value silently bucketed as "probably fine").
 """
 
 from __future__ import annotations
@@ -102,18 +106,51 @@ from pathlib import Path
 from typing import NoReturn
 
 # --- the contract (stage-2-ci.md) ---------------------------------------------------------------
+#
+# CLASSIFICATION IS TOTAL OVER THE REAL ENUMS. The sets below are ENUMERATED FROM GitHub's GraphQL schema,
+# never from memory, and every value of every enum lands in exactly one of them. A rule that names only the
+# values you happened to think of leaves HOLES, and a value that falls in a hole matches NO branch: not
+# green, not red, not pending — it can never resolve, and the PR WEDGES FOREVER.
+#
+#   CheckStatusState      REQUESTED QUEUED IN_PROGRESS COMPLETED WAITING PENDING
+#   CheckConclusionState  SUCCESS FAILURE TIMED_OUT CANCELLED ACTION_REQUIRED NEUTRAL SKIPPED
+#                         STARTUP_FAILURE STALE
+#   StatusState           SUCCESS PENDING EXPECTED FAILURE ERROR
+#
+# The catch-all (UNCLASSIFIED) is therefore reachable ONLY by a value GitHub has ADDED SINCE — which is
+# exactly what it is for.
 
-# A check run that is not COMPLETED can still move on its own.
+# A check run that is COMPLETED is done; it cannot move on its own.
 TERMINAL_STATUS = "COMPLETED"
 
-# Conclusions the rules currently map. This set is KNOWN INCOMPLETE — see UNCLASSIFIED below.
-PASS_CONCLUSIONS = {"SUCCESS"}
-FAIL_CONCLUSIONS = {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED"}
+# The NON-terminal statuses, NAMED. **NEVER write this rule as `.status != COMPLETED`.** A NEGATED TEST IS A
+# CATCH-ALL WEARING A DISGUISE: `!= COMPLETED` matches every value we have never heard of and maps it onto a
+# verdict CHOSEN IN ADVANCE, so a CheckStatusState GitHub adds tomorrow would classify RUNNING, the driver
+# would wait for it to finish, and it would NEVER REACH the UNCLASSIFIED escalation — the fail-closed rule,
+# dead for `.status`, silently. Only an EXPLICIT MEMBERSHIP TEST leaves a hole for the catch-all to catch.
+RUNNING_STATUSES = {"QUEUED", "IN_PROGRESS", "WAITING", "PENDING", "REQUESTED"}
+
+# SKIPPED and NEUTRAL are PASSES. GitHub itself rolls SKIPPED up that way (a rollup of 6 x SKIPPED + 1 x
+# SUCCESS reports state SUCCESS), and skipped runs are ROUTINE, not exotic — path filters, conditional jobs
+# and excluded matrix legs produce them in bulk. Calling SKIPPED anything else is not conservatism, it is a
+# WEDGE: it is COMPLETED (so not pending), not SUCCESS (so not green), not a failure (so not red) — it would
+# match no rule at all, and such a repo could never go green.
+#
+# NEUTRAL -> PASS is the one mapping here that is DOCS-BASED, NOT EXECUTED: it shares GitHub's non-failure
+# bucket with SKIPPED, but no live NEUTRAL run was found to confirm it. Say so; do not launder it into a
+# verified claim.
+PASS_CONCLUSIONS = {"SUCCESS", "SKIPPED", "NEUTRAL"}
+
+# STARTUP_FAILURE and STALE are FAILURES. Omit them from the red list and the tool calls them
+# not-a-failure and merges over them — a FALSE GREEN.
+FAIL_CONCLUSIONS = {
+    "FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE",
+}
 
 # Commit-status states (`StatusContext` has .state and no .conclusion).
 STATUS_PASS = {"SUCCESS"}
 STATUS_FAIL = {"FAILURE", "ERROR"}  # ERROR IS a failure — never shrug it off as a glitch.
-STATUS_RUNNING = {"PENDING", "EXPECTED"}
+STATUS_RUNNING = {"PENDING", "EXPECTED"}  # EXPECTED = declared but not yet posted.
 
 # Verdicts.
 GREEN = "green"
@@ -121,14 +158,7 @@ RED = "red"
 PENDING = "pending"
 UNUSABLE = "unusable"  # the evidence is defective; refetch
 UNVERIFIABLE = "unverifiable"  # containment cannot be decided; fail CLOSED
-UNCLASSIFIED = "unclassified"  # a conclusion no rule maps — the KNOWN GAP, made executable
-
-# KNOWN GAP (disclosed in stage-2-ci.md, closed by the total-classification PR):
-# SKIPPED / NEUTRAL / STARTUP_FAILURE / STALE are real CheckConclusionState values. A COMPLETED run
-# holding one of them is not pending (it is COMPLETED), not green (not SUCCESS), and not red (absent
-# from FAIL_CONCLUSIONS) — it matches NO rule. Rather than silently bucket it (which is how a hole
-# becomes a false green), this returns UNCLASSIFIED, and `fixtures/known-gap-skipped.jsonl` asserts
-# it. When the total classification lands, that fixture's expectation changes and this comment goes.
+UNCLASSIFIED = "unclassified"  # a value NO rule maps — escalate to a human; NEVER guess a bucket for it
 
 
 class SnapshotError(Exception):
@@ -558,15 +588,28 @@ class Unverifiable(Exception):
 
 
 def decide(rows: list[dict]) -> tuple[str, str]:
-    """Decide from the verified file's contents. Returns (verdict, reason)."""
+    """Decide from the verified file's contents — FIRST MATCH WINS. Returns (verdict, reason).
+
+    THE ORDER IS PART OF THE RULE, and `red` OUTRANKS `UNCLASSIFIED` DELIBERATELY. A snapshot carrying BOTH
+    a failing row and an unknown value is RED: the known failure is actionable NOW and blocks the merge
+    regardless, and the unknown value is DEFERRED, NOT DISCARDED — the fix lands, the head moves, and the
+    next derivation re-reads a fresh snapshot where, with no failure left to outrank it, the unknown value
+    escalates and the PR parks exactly as it must. Parking first would be strictly worse: a PR with a real,
+    fixable failure would sit on a human for a value that could not have merged it anyway.
+
+    NO ORDER HERE CAN PRODUCE A FALSE GREEN, and that is the property to preserve if these are ever
+    re-ordered: `green` is LAST and demands that EVERY evidence row pass, so while any unknown value is in
+    the snapshot the green branch cannot be reached — whichever branch is tested first. Every earlier branch
+    is a non-merging outcome, so the ordering can only decide WHICH non-green verdict is recorded and how
+    fast the PR moves. It can never decide green.
+
+    UNCLASSIFIED outranks `pending`, though: a still-running row does NOT postpone the escalation.
+    """
     runs = [r for r in rows if r["row"] == "checkrun"]
     statuses = [r for r in rows if r["row"] == "status"]
     evidence = runs + statuses
 
-    if not evidence:
-        # MUTATE:zero-evidence:pass
-        return PENDING, "zero evidence rows — nothing has registered yet (NOT green)"
-
+    # --- red: any evidence row FAILS. Other rows still running does not change this.
     for r in runs:
         c = r.get("conclusion")
         if r.get("status") == TERMINAL_STATUS and c in FAIL_CONCLUSIONS:
@@ -577,8 +620,32 @@ def decide(rows: list[dict]) -> tuple[str, str]:
             # MUTATE:status-red:pass
             return RED, f"commit status {s['context']} is {s['state']}"
 
+    # --- UNCLASSIFIED: a value NO rule maps. ESCALATE — never guess a bucket for it.
+    #
+    # This is what makes the classification TOTAL, and it is NOT decoration. Two things reach it:
+    # a value GitHub has ADDED SINCE (either field), and a COMPLETED run carrying NO conclusion at all
+    # (`.conclusion` is "-" when the field is absent, and "-" is not a CheckConclusionState). On a row that
+    # is still RUNNING the "-" is harmless — `.status` already classified it. But a COMPLETED row holding it
+    # has NO VERDICT AT ALL, and it falls here exactly like tomorrow's enum value. That is the catch-all
+    # doing its job: NEVER "read through" the "-" to a guess.
     for r in runs:
-        if r.get("status") != TERMINAL_STATUS:
+        st, c = r.get("status"), r.get("conclusion")
+        if st != TERMINAL_STATUS and st not in RUNNING_STATUSES:
+            # MUTATE:checkrun-unknown-status:pass
+            return UNCLASSIFIED, f"{r['name']} has status {st} — no rule maps it; NOT assumed to be running"
+        if st == TERMINAL_STATUS and c not in PASS_CONCLUSIONS:
+            # A FAIL conclusion already returned RED above, so this is a conclusion in NEITHER set.
+            # MUTATE:checkrun-unclassified:pass
+            return UNCLASSIFIED, f"{r['name']} concluded {c} — no rule maps it"
+    for s in statuses:
+        if s.get("state") not in STATUS_PASS | STATUS_RUNNING:
+            # STATUS_FAIL already returned RED above, so this is a state in NONE of the three sets.
+            # MUTATE:status-unclassified:pass
+            return UNCLASSIFIED, f"commit status {s['context']} is {s['state']} — no rule maps it"
+
+    # --- pending: any evidence row is still RUNNING.
+    for r in runs:
+        if r.get("status") in RUNNING_STATUSES:
             # MUTATE:checkrun-pending:pass
             return PENDING, f"{r['name']} is {r.get('status')} — still running"
     for s in statuses:
@@ -586,17 +653,13 @@ def decide(rows: list[dict]) -> tuple[str, str]:
             # MUTATE:status-pending:pass
             return PENDING, f"commit status {s['context']} is {s['state']} — still running"
 
-    # Every remaining row is terminal. Anything not explicitly mapped falls HERE, not into green.
-    for r in runs:
-        c = r.get("conclusion")
-        if c not in PASS_CONCLUSIONS:
-            # MUTATE:checkrun-unclassified:pass
-            return UNCLASSIFIED, f"{r['name']} concluded {c} — no rule maps it (KNOWN GAP)"
-    for s in statuses:
-        if s.get("state") not in STATUS_PASS:
-            # MUTATE:status-unclassified:pass
-            return UNCLASSIFIED, f"commit status {s['context']} is {s['state']} — no rule maps it"
+    # --- pending: nothing has registered yet. Disjoint from every branch above (they all quantify over
+    # rows that do not exist here), so its position among them is immaterial — but it MUST precede green.
+    if not evidence:
+        # MUTATE:zero-evidence:pass
+        return PENDING, "zero evidence rows — nothing has registered yet (NOT green)"
 
+    # Every evidence row classified PASS. Nothing else can reach this line.
     return GREEN, f"{len(evidence)} evidence rows, all passing, containment holds"
 
 
@@ -670,7 +733,15 @@ EXPECTED = {
     "running-checkrun.jsonl": (PENDING, "still running", "a check run that is not COMPLETED can still move — it is NOT a green"),
     "pending-status.jsonl": (PENDING, "still running", "a PENDING commit status can still move — it is NOT a green"),
     "expected-status.jsonl": (PENDING, "still running", "EXPECTED = a required status NOT POSTED YET — the registration gap, visible in the evidence for once"),
-    "known-gap-skipped.jsonl": (UNCLASSIFIED, "no rule maps it (KNOWN GAP)", "SKIPPED matches no rule — the disclosed gap, made executable"),
+    "skipped-is-pass.jsonl": (GREEN, "all passing", "SKIPPED is a PASS — GitHub rolls it up that way, and a rule set without it can NEVER go green on a repo with path filters"),
+    # THE CATCH-ALL, and it is now reachable ONLY by a value GitHub has ADDED SINCE — which is exactly what
+    # it is for. Both values below are INVENTED: no CheckStatusState is `AWAITING_APPROVAL`, no
+    # CheckConclusionState is `FLAKED_OUT`, and no StatusState is `BLOCKED`. That is the point — the real
+    # enums are now TOTALLY classified, so nothing real can pin these rules, and a fixture that used a real
+    # value would silently stop pinning anything the moment the value got classified. (`known-gap-skipped`
+    # was exactly that fixture: SKIPPED pinned the check-run catch-all until SKIPPED became a PASS.)
+    "unknown-status.jsonl": (UNCLASSIFIED, "no rule maps it", "a `.status` value GitHub added since — the rule that CANNOT be written as `!= COMPLETED`: a negated test would call this RUNNING and wait for it FOREVER"),
+    "unknown-conclusion.jsonl": (UNCLASSIFIED, "no rule maps it", "a COMPLETED run holding a `.conclusion` in NEITHER set — not green, not red, and never guessed into a bucket"),
     "unclassified-status.jsonl": (UNCLASSIFIED, "no rule maps it", "a commit-status state outside the mapped set — the catch-all is what keeps it OUT of green"),
     "unknown-row-type.jsonl": (UNUSABLE, "UNRECOGNISED row type", "a FAILING row of an unknown type — skipping it greened a red commit"),
     "not-a-row.jsonl": (UNUSABLE, "not a row object", "a line that is not an object with a `row` key is not a row we may skip past"),
