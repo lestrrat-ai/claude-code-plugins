@@ -53,6 +53,23 @@ reviewer can't return a verdict because of a system problem (quota, auth, timeou
 retries once and then falls back to its own subagents, so an outage slows a run rather than stalling
 it.
 
+### Optional — tell it how to report to you
+
+The plugin deliberately does **not** set how Claude talks to you. That is your environment's business
+(`CLAUDE.md`, an output style), not a plugin's, and a skill that dictated tone would just fight whatever
+you had already configured.
+
+It is worth setting *something*, though, and a campaign is the case that makes it obvious. The run is
+unattended and long: it wakes on every review verdict, CI completion and fix, and each wake reports. Those
+summaries are the whole surface you experience the run through — you are reading updates, not watching
+tool calls. With no reporting contract you get dozens of them, and the one that says *this needs your
+decision* looks exactly like the twenty that say *still working*.
+
+If you don't already have a style you like, [`docs/reporting-style.md`](docs/reporting-style.md) is a
+sample to copy into your `CLAUDE.md` and edit. The rule to steal even if you take nothing else: **end
+every update with an explicit action item, or with "Nothing needed from you."** It makes "blocked on you"
+impossible to miss in a run you aren't watching.
+
 ## Scratch files
 
 Both skills keep working state under `.gauntlet/` at the repo root, which is git-ignored. Run scratch
