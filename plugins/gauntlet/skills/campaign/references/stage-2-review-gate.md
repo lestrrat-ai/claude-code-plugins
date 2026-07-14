@@ -127,9 +127,9 @@ The hand-written artifacts are what this replaces, and each had already failed: 
 `pass_identity` put a **TRUNCATED SHA** into real state; the emit tool accepted a `done` for a unit that
 **was never planned** (the rule was prose, enforced by nobody); and the tally was re-derived by eye with
 an ad-hoc parser written fresh each wake — the same "read it by eye, write down the answer" that produced
-a false `ci = green`. `verify` refuses a short sha, an unplanned unit, an evidence-free `done`, a
-`pass_identity` that names another commit or another launch attempt, and any hand-written line that is not
-the exact shape below — **whether or not the write tool was used**.
+a false `ci = green`. `verify` refuses a short sha, an unplanned unit, an evidence-free `done`, a `done`
+that no `started` precedes, a `pass_identity` that names another commit or another launch attempt, and any
+hand-written line that is not the exact shape below — **whether or not the write tool was used**.
 
 **Review work-plan ledger — orchestrator-owned, target-generic.** Before launching each review pass,
 write `<rundir>/review-<pr>-<n>.plan.jsonl` (through `review-pass.py plan-add` — one unit per call, each
@@ -183,8 +183,18 @@ always `progress`; the only allowed `status` values are `started` and `done`. Th
 `status="done"`) AND a required `evidence` field carrying a concrete citation (a `file:line`, a
 backticked span, or a filename). Do NOT rename to `unit_done`/`unit_id`/`id`/`no_findings` or invent
 other event types for unit progress. Unit-progress events carry ONLY the exact required keys above
-(no extra keys such as `ts`); each event's required keys must be present and named exactly. The
-`plan_amendment_request` event keeps its existing shape.
+(no extra keys such as `ts`); each event's required keys must be present and named exactly.
+
+**A `done` REQUIRES an earlier `started` for the same unit — enforced by ORDER, at both doors.** A unit
+that was never begun cannot have been finished, so a `done` standing alone, or standing *above* its
+`started` in this append-only file, makes the pass `unusable`. This is not bookkeeping: a progress file
+carrying a valid `pass_identity` and a `done` for every planned unit — and not one `started` — is a
+review that demonstrably did not happen, and the tool exists to say so. `emit` refuses to write such a
+`done` and `verify` refuses to read one.
+
+The `plan_amendment_request` event keeps its existing shape; its `ts` must be a real UTC ISO-8601
+timestamp (the same clock rule `pass_identity.dispatched_at` obeys) and its `reason` must be non-empty —
+an amendment holds a pass back, so it must say something the orchestrator can rule on.
 
 **Calling `emit-progress.py` is the ONLY sanctioned way to record a unit-progress event
 (`started`/`done`).** The reviewer MUST NOT ever write those unit-progress events into the progress
@@ -220,7 +230,9 @@ own name**, so the identity and the file it sits in can never disagree; the only
 head SHA (refused unless it is 40 lowercase hex — **a short SHA has escaped into this repo's real state
 twice**, once through exactly this line) and `dispatched_at` (refused unless it is a UTC ISO-8601
 timestamp — it is the launch deadline's clock, and a deadline measured from a time nobody can parse never
-fires). Three rules depend on it: a late verdict is ignored unless its attempt
+fires — **and unless it PARSES as a real moment**: `2026-99-99T99:99:99Z` has the exact right shape, and
+a month 99 is not a month; the deadline is arithmetic on this value, so a shape check alone cannot protect
+it). Three rules depend on it: a late verdict is ignored unless its attempt
 id still matches the active pass; `dispatched_at` is the clock the launch check below measures against;
 and `launch_attempt` (`1`, then `2` on a relaunch) is how a *later wake* — possibly a fresh agent —
 knows whether this pass has already been relaunched once. A progress file holding **only** this line is
@@ -383,12 +395,13 @@ codex exec --sandbox workspace-write -c "sandbox_workspace_write.network_access=
    --status started' when a planned unit begins, and the same command with \
    '--status done --evidence \"<concrete citation: a file:line, a backticked span, or a filename>\"' \
    when it finishes. The tool appends the canonical progress event; a non-zero exit means your inputs \
-   were rejected — fix them and re-run. Progress counts only when it references a PLANNED unit and its \
-   done event includes concrete evidence, and the tool ENFORCES both: it REFUSES a unit that is not in \
-   the plan (raise a plan_amendment_request instead — never self-grant a unit) and a done with no \
-   evidence. Hand-writing the event to get around a refusal does not work and destroys the pass: it is \
-   read back under the same rules, and one line the tool would have rejected makes the whole pass \
-   unusable. \
+   were rejected — fix them and re-run. Progress counts only when it references a PLANNED unit, was \
+   ANNOUNCED with a started event before its done event, and its done event includes concrete evidence; \
+   the tool ENFORCES all three: it REFUSES a unit that is not in the plan (raise a plan_amendment_request \
+   instead — never self-grant a unit), a done for a unit you never marked started (emit started when the \
+   unit BEGINS — do not batch both at the end), and a done with no evidence. Hand-writing the event to \
+   get around a refusal does not work and destroys the pass: it is read back under the same rules, and \
+   one line the tool would have rejected makes the whole pass unusable. \
    After every planned unit is done, do a brief UNSTRUCTURED ADVERSARIAL SWEEP: deliberately hunt for \
    defects no plan unit would naturally catch — cross-unit interactions, unstated assumptions, edge \
    cases, and whole categories the plan did not enumerate. This complements the plan, never replaces \

@@ -27,8 +27,8 @@ So this file is the review pass's artifacts, executed:
 WHAT `verify` DOES NOT DO — AND THE LINE IS DELIBERATE. It never opens `review-<pr>-<n>.txt`, never
 parses the reviewer's prose, and CANNOT SAY `SATISFIED`. Its whole answer is about the pass's MECHANICS:
 is there an identity, does it name the commit the pass actually ran on, is every `done` for a unit that
-was really planned, does every `done` carry evidence, were amendments raised. The VERDICT is the
-reviewer's JUDGMENT and stays theirs.
+was really planned, did every `done` FOLLOW a `started` for that same unit, does every `done` carry
+evidence, were amendments raised. The VERDICT is the reviewer's JUDGMENT and stays theirs.
 
 That line is what keeps this tool from BECOMING the gate. `verify` can only ever SUBTRACT a pass — refuse
 one that is defective. It can never ADD a SATISFIED verdict, never raise `reviews_ok`, and never merge
@@ -69,6 +69,7 @@ import tempfile
 import types
 from collections import Counter
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime
 from pathlib import Path
 from typing import NoReturn
 
@@ -126,6 +127,24 @@ NUM_RE = re.compile(r"^(0|[1-9][0-9]*)$")
 # value that cannot be parsed as a time silently DISABLES that deadline: the guard's input is absent, so
 # the guard never fires, and a reviewer that never started is waited on forever. UTC ISO-8601, `Z`.
 TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+
+def real_utc(value: str) -> bool:
+    """Does this timestamp name a MOMENT — not merely look like one?
+
+    `TS_RE` is a SHAPE check, and shape is not meaning: `2026-99-99T99:99:99Z` matches it exactly, and a
+    month-99 date is not a date. A regex that accepts month 99 is a guard that CANNOT FIRE on the case
+    that matters — the deadline measured from an impossible time is a deadline whose arithmetic cannot be
+    done, which is the very failure the shape check was written to stop. So after the shape holds, the
+    value is PARSED, and what does not parse is refused: `strptime` is the arbiter of what a date is, not
+    ten digits in the right places. (`%Y-%m-%dT%H:%M:%SZ` — the `Z` is a literal, so this is UTC by
+    construction; a value carrying any other offset never reaches here, `TS_RE` having refused it.)
+    """
+    try:
+        datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return False
+    return True
 
 # The artifact's EXACT name (`files-and-ledger.md`; the attempt table in stage-2-review-gate.md):
 # attempt 1 is `review-<pr>-<n>.progress.jsonl`, a relaunch is `review-<pr>-<n>.a<k>.progress.jsonl`.
@@ -340,6 +359,25 @@ def check_event(rec: dict, where: str) -> None:
                 f"we may hand to a comparison and hope (it used to CRASH the tool)"
             )
     if kind == AMENDMENT:
+        # The amendment is the ONE event a reviewer really does hand-write (it is exempt from the
+        # emit-only rule), so it is the one whose fields nothing upstream has already shaped. Its `ts` had
+        # NO check at all beyond "is a string" — the identity's clock was guarded and this one, the same
+        # kind of value, was not. It is what says WHEN the reviewer said the plan was wrong, and the
+        # orchestrator rules on amendments in order; a `ts` that is not a time cannot be ordered.
+        if not TS_RE.match(rec["ts"]) or not real_utc(rec["ts"]):
+            # MUTATE:amendment-ts:pass
+            raise Defect(
+                f"{where}: `ts` is {rec['ts']!r}, not a real UTC ISO-8601 time (YYYY-MM-DDThh:mm:ssZ) — "
+                f"the same clock rule the `pass_identity` obeys, and for the same reason: a value that is "
+                f"not a moment cannot be compared to one"
+            )
+        if not rec["reason"].strip():
+            # MUTATE:amendment-blank-reason:pass
+            raise Defect(
+                f"{where}: `reason` is blank — an amendment is a CLAIM that the plan misses a dimension, "
+                f"and the orchestrator must RULE on it. A ruling needs something to rule on; blank `reason` "
+                f"is the evidence-free `done` of the amendment world"
+            )
         check_unit(rec["proposed_unit"], f"{where} proposed_unit")
     if kind == PROGRESS and status == DONE and not rec["evidence"].strip():
         # MUTATE:empty-evidence:pass
@@ -381,6 +419,14 @@ def check_identity_shape(ident: dict, where: str) -> None:
             f"{where}: `dispatched_at` is {ident['dispatched_at']!r}, not a UTC ISO-8601 timestamp "
             f"(YYYY-MM-DDThh:mm:ssZ) — it is the LAUNCH DEADLINE's clock, and a deadline measured from a "
             f"time nobody can parse never fires"
+        )
+    if not real_utc(ident["dispatched_at"]):
+        # MUTATE:identity-dispatched-at-real:pass
+        raise Defect(
+            f"{where}: `dispatched_at` is {ident['dispatched_at']!r} — the right SHAPE, and not a real UTC "
+            f"time. A month 99 is not a month. The shape check alone could not fire on this, and the "
+            f"deadline it exists to protect is measured by ARITHMETIC on this value: a moment that does "
+            f"not exist is one no clock ever passes"
         )
 
 
@@ -430,7 +476,23 @@ def check_identity(events: "list[dict]", pr: str, npass: str, attempt: str, head
 # --- the verdict ---------------------------------------------------------------------------------
 
 def decide(events: "list[dict]", units: "dict[str, dict]", ruled: int) -> "tuple[str, str]":
-    """Given SOUND artifacts: does this pass COUNT? (Its report is still not read. That is the point.)"""
+    """Given SOUND artifacts: does this pass COUNT? (Its report is still not read. That is the point.)
+
+    A `done` REQUIRES an earlier `started` for the same unit, and this walk enforces it BY ORDER, not by
+    presence: `announced` only ever holds units a line ALREADY READ announced, so a `started` that appears
+    BELOW its `done` cannot satisfy it. Presence alone would be the weaker rule and the wrong one — the
+    file is APPEND-ONLY, so its order IS the order the events happened in, and a forger who has to also
+    fabricate the `started` FIRST has to fabricate the whole sequence, which is precisely the thing the
+    file is evidence of. "u01 finished, then u01 began" is not a review; it is a file with the right lines
+    in it.
+
+    **This is the rule that was PROSE and enforced by NOBODY, and it is the one the tool most needed.** A
+    progress file with a valid identity and a `done` for EVERY planned unit — and NOT ONE `started` —
+    verified `ok`: the tool that exists to prove a review HAPPENED accepted a review that demonstrably did
+    not. Skip straight to "done" for every unit and the gate was satisfied on zero evidence of work. A
+    `done` with no `started` is not progress, exactly as an empty plan is not a plan.
+    """
+    announced: set[str] = set()
     done: dict[str, str] = {}
     for n, rec in enumerate(events, start=1):
         if rec["type"] != PROGRESS:
@@ -444,7 +506,17 @@ def decide(events: "list[dict]", units: "dict[str, dict]", ruled: int) -> "tuple
                 f"PLANNED unit. Planned: {sorted(units)}"
             )
         if rec["status"] != DONE:
+            announced.add(unit)
             continue
+        if unit not in announced:
+            # MUTATE:done-without-started:pass
+            raise Defect(
+                f"line {n}: {DONE!r} for unit {unit!r} with no earlier {STARTED!r} for it — a unit that "
+                f"was never begun cannot have been finished. The reviewer emits {STARTED!r} when a unit "
+                f"BEGINS and {DONE!r} when it ends, so a `{DONE}` standing alone (or standing ABOVE its "
+                f"`{STARTED}` in this append-only file) is not the record of a review that happened; it is "
+                f"a file with the right lines in it"
+            )
         if unit in done:
             # MUTATE:duplicate-done:pass
             raise Defect(
@@ -531,12 +603,26 @@ def append(path: Path, rec: dict) -> str:
     return line
 
 
+def announced_units(path: Path) -> "set[str]":
+    """The units this progress file has ALREADY announced a `started` for — read from the BYTES on disk.
+
+    The write door cannot ask its own process what it emitted: a reviewer is many `emit` invocations, each
+    a fresh process, and the only thing that survives between them is the file. So the file is the memory,
+    and reading it is how `emit` knows whether the `done` it was just handed follows a `started`.
+    """
+    out: set[str] = set()
+    for e in read_lines(path, "progress file"):
+        if e.get("type") == PROGRESS and e.get("status") == STARTED and isinstance(e.get("unit"), str):
+            out.add(e["unit"])
+    return out
+
+
 def cmd_emit(args) -> int:
     """Append one unit-progress event — the ONLY sanctioned way a reviewer records one.
 
     It refuses an unplanned unit HERE TOO, and not only in `verify`: the reviewer gets a non-zero exit and
     a message it can act on, at the moment it makes the mistake, instead of a pass silently thrown away
-    fifteen minutes later.
+    fifteen minutes later. Same for a `done` that no `started` precedes.
     """
     path = Path(args.file)
     pr, npass, _attempt = parse_name(path)
@@ -564,6 +650,16 @@ def cmd_emit(args) -> int:
         raise Defect(
             f"unit {unit!r} is NOT IN THE PLAN — you may not self-grant a unit. Planned: {sorted(units)}. "
             f"If the plan is missing a dimension, raise a plan_amendment_request instead"
+        )
+    # LAST, deliberately: an unplanned `done` must still be refused as UNPLANNED. Were this check first, a
+    # reviewer self-granting a unit would be told "no earlier started" — true, and the wrong lesson.
+    if args.status == DONE and unit not in announced_units(path):
+        # MUTATE:emit-done-without-started:pass
+        raise Defect(
+            f"unit {unit!r} has no earlier `{STARTED}` event in {path.name} — emit `--status {STARTED}` "
+            f"when the unit BEGINS, and `--status {DONE}` when it ends. A unit that was never begun cannot "
+            f"be finished, and `verify` reads this back under the same rule: a `{DONE}` with no `{STARTED}` "
+            f"makes the whole pass unusable, so writing one here would only lose the pass later"
         )
     sys.stdout.write(append(path, rec))
     return 0
@@ -720,6 +816,12 @@ CASES = {
                        "a `done` for a unit nobody planned. The rule was PROSE and enforced by NOBODY: the write tool accepted it and the read side never looked"),
     "unplanned-started": (PLAN, [ident(), started("u99")], UNUSABLE, "NOT IN THE PLAN",
                           "…and a `started` for one, which is what a reviewer inventing a unit does FIRST"),
+    "done-without-started": (PLAN, [ident(), done("u01"), done("u02", evidence="stage-2:161")], UNUSABLE,
+                             "no earlier 'started'",
+                             "THE FORGED PASS: a valid identity and a `done` for EVERY planned unit, with NOT ONE `started`. It verified `ok` — the tool that exists to prove a review HAPPENED accepted one that demonstrably did not, on zero evidence of any work"),
+    "done-before-started": (PLAN, [ident(), done("u01"), started("u01"), started("u02"), done("u02")], UNUSABLE,
+                            "no earlier 'started'",
+                            "…and the ORDER of it: every `started` a real pass would have, but one lands BELOW its `done`. The file is append-only, so its order IS the sequence; 'u01 finished, then u01 began' is not a review"),
     "done-no-evidence": (PLAN, [ident(), done("u01", evidence=DROP)], UNUSABLE, "carries EXACTLY",
                          "a `done` with no evidence key at all — a claim with nothing behind it"),
     "done-blank-evidence": (PLAN, [ident(), done("u01", evidence="   ")], UNUSABLE, "CONCRETE evidence",
@@ -762,6 +864,9 @@ CASES = {
                             "an attempt number that cannot be COMPARED to the one in the filename"),
     "identity-bad-ts": (PLAN, [ident(dispatched_at="just now"), done("u01")], UNUSABLE, "LAUNCH DEADLINE's clock",
                         "a dispatched_at nobody can parse — the ~5-min deadline measured from it NEVER FIRES"),
+    "identity-impossible-ts": (PLAN, [ident(dispatched_at="2026-99-99T99:99:99Z"), started("u01"), done("u01"),
+                                      started("u02"), done("u02")], UNUSABLE, "not a real UTC time",
+                               "A DATE THAT CANNOT EXIST, in the right SHAPE. The regex matched it and the whole pass verified `ok` — month 99, hour 99. The shape check could not fire on the one input that defeats the deadline it protects"),
     "identity-missing-key": (PLAN, [ident(dispatched_at=DROP), done("u01")], UNUSABLE, "carries EXACTLY",
                              "a pass_identity with no dispatch clock at all"),
 
@@ -788,13 +893,20 @@ CASES = {
                  "bytes we cannot decode are not evidence — and decoding them LENIENTLY rewrites what the file says"),
 
     # Amendments, completeness, and the verdicts that are not refusals.
-    "amendment-unruled": (PLAN, [ident(), done("u01"), amendment(), done("u02")], AMENDED, "not yet ruled on",
+    "amendment-unruled": (PLAN, [ident(), started("u01"), done("u01"), amendment(), started("u02"), done("u02")],
+                          AMENDED, "not yet ruled on",
                           "the reviewer says the plan is missing a dimension. It is a VERDICT, never a footnote printed beside `ok`"),
     "amendment-bad-unit": (PLAN, [ident(), amendment(proposed_unit={"id": "u99"})], UNUSABLE, "carries EXACTLY",
                            "a hand-written amendment (they are EXEMPT from the emit-only rule, so this is the one event a reviewer really does write) whose proposed unit is malformed"),
+    "amendment-impossible-ts": (PLAN, [ident(), amendment(ts="2026-99-99T99:99:99Z")], UNUSABLE,
+                                "not a real UTC ISO-8601 time",
+                                "the amendment's `ts` had NO check at all beyond 'is a string' — the identity's clock was guarded and this one, the same kind of value, was not. The orchestrator rules on amendments; a `ts` that is not a moment cannot be ordered against one"),
+    "amendment-blank-reason": (PLAN, [ident(), amendment(reason="   ")], UNUSABLE, "an amendment is a CLAIM",
+                               "an amendment with a blank reason: it FORCES the `amended` verdict — a pass held back — while saying nothing the orchestrator can rule on. The evidence-free `done` of the amendment world"),
     "incomplete": (PLAN, [ident(), started("u01"), done("u01"), started("u02")], INCOMPLETE, "has not covered its plan",
                    "u02 was started and never finished — `started` is liveness, NEVER completion"),
-    "duplicate-done": (PLAN, [ident(), done("u01"), done("u01", evidence="somewhere else"), done("u02")],
+    "duplicate-done": (PLAN, [ident(), started("u01"), done("u01"), done("u01", evidence="somewhere else"),
+                              started("u02"), done("u02")],
                        UNUSABLE, "SECOND", "two accounts of one unit, and nothing says which was read"),
     "identity-only": (PLAN, [ident()], INCOMPLETE, "0/2",
                       "the file the orchestrator leaves at dispatch: the reviewer has produced NOTHING, and this is not an error — it is a pass that has not covered its plan yet"),
@@ -819,11 +931,15 @@ NAME_CASES = [
 # still under test. The default seed is an EMPTY progress file: what the orchestrator has in hand when it
 # writes `pass_identity`, and what `emit` appends to thereafter.
 EMPTY: "list[str]" = []
+BEGUN = [ident(), started("u01")]  # the file a reviewer has in hand once it has ANNOUNCED u01
 CLI_CASES = [
     (["emit", "--unit", "u01", "--status", "started"], EMPTY, 0, '"status":"started"', "the call every reviewer prompt makes"),
-    (["emit", "--unit", "u01", "--status", "done", "--evidence", "f.py:1"], EMPTY, 0, '"evidence":"f.py:1"', "…and its done form"),
+    (["emit", "--unit", "u01", "--status", "done", "--evidence", "f.py:1"], BEGUN, 0, '"evidence":"f.py:1"',
+     "…and its done form, on the file that HAS the matching `started` — the only file the done form was ever meant to be run against"),
+    (["emit", "--unit", "u02", "--status", "done", "--evidence", "f.py:1"], BEGUN, 1, "no earlier `started`",
+     "HEADLINE, WRITE DOOR: a `done` for a unit that was never begun. The write door refuses it at the moment the reviewer makes the mistake, instead of the pass being thrown away by `verify` fifteen minutes later"),
     (["emit", "--unit", "u99", "--status", "done", "--evidence", "f.py:1"], EMPTY, 1, "NOT IN THE PLAN",
-     "HEADLINE, WRITE DOOR: the tool accepted a self-granted unit. It no longer does"),
+     "HEADLINE, WRITE DOOR: the tool accepted a self-granted unit. It no longer does — and it says UNPLANNED, not 'no started': an unplanned unit's real defect is that nobody planned it"),
     (["emit", "--unit", "u99", "--status", "started"], EMPTY, 1, "NOT IN THE PLAN", "…and refuses to START one"),
     (["emit", "--unit", "u01", "--status", "done"], EMPTY, 1, "--evidence is required", "a done with no evidence"),
     (["emit", "--unit", "u01", "--status", "done", "--evidence", "  "], EMPTY, 1, "--evidence is required", "…or blank evidence"),
@@ -837,6 +953,8 @@ CLI_CASES = [
      "an UPPERCASE sha: no producer of ours emits one, so it did not come from `git rev-parse`"),
     (["identity", "--head-sha", SHA, "--dispatched-at", "just now"], EMPTY, 1, "LAUNCH DEADLINE's clock",
      "a dispatch clock the launch deadline cannot be measured from — the write door runs the READ side's shape rules, so it cannot write one `verify` would reject"),
+    (["identity", "--head-sha", SHA, "--dispatched-at", "2026-99-99T99:99:99Z"], EMPTY, 1, "not a real UTC time",
+     "…and the one the SHAPE rule cannot see: an impossible date in the right shape. Both doors parse it now, so neither can produce a `dispatched_at` no clock ever passes"),
     (["identity", "--head-sha", OTHER_SHA, "--dispatched-at", TS], [ident()], 1, "already holds events",
      "a SECOND identity into a live pass's file. `pass_identity` is the FIRST line, written before dispatch — a relaunch gets its OWN file, and appending here is how one pass ends up describing two commits"),
     (["verify", "--head-sha", SHA[:7]], EMPTY, 2, "No verdict beats a wrong one",

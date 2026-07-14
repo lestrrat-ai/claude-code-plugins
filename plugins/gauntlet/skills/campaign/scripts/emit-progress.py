@@ -17,6 +17,13 @@ The rule you are most likely to meet: **a unit that is NOT IN THE PLAN is refuse
 when it references a planned unit" was stated in prose and enforced by nobody — this tool used to accept a
 `done` for a unit that was never planned, and the read side never looked. It holds at both doors now. If
 the plan is genuinely missing a dimension, raise a `plan_amendment_request`; never self-grant a unit.
+
+The rule you are most likely to meet SECOND, and the one that CHANGES what this CLI accepts: **a `done`
+for a unit with no earlier `started` is refused.** Emit `--status started` when a unit BEGINS and
+`--status done` when it ends — do not batch both at the end, and never emit only the `done`. The flags are
+unchanged; what is no longer accepted is a `done` that no `started` precedes. That is deliberate: a
+progress file holding a `done` for every planned unit and NOT ONE `started` used to verify `ok`, which
+made the tool that exists to prove a review HAPPENED accept one that demonstrably did not.
 """
 
 from __future__ import annotations
