@@ -229,6 +229,17 @@ TABLE_DEFAULT_FIELDS = ("pr", "slug", "tier", "reviews_ok", "ci", "attempts", "s
 # value stays on disk and in `get`; the table is a projection, not a source.
 TABLE_SHA_WIDTH = 8
 
+# The empty-ledger marker, printed WHERE A ROW WOULD GO — so unlike every other piece of the layout it
+# sits in the one region a value also occupies, and position alone cannot tell them apart. It is therefore
+# made unforgeable BY CONSTRUCTION rather than by escaping it after the fact: it lives in the `#`
+# namespace, which `escape_cell()` already proves no cell can enter (a leading `#` is escaped, and a body
+# line always opens with its first cell — or with that cell's padding). A bare `(no rows)` was forgeable:
+# a row whose only shown field held that literal string rendered a body byte-identical to an empty
+# ledger's. That is the SAME CLASS as the header forgery `escape_cell()` exists to kill — an out-of-band
+# marker an in-band value can impersonate — so it gets the same answer: put the marker somewhere values
+# provably cannot reach.
+TABLE_EMPTY_MARKER = "# (no rows)"
+
 
 def escape_cell(value: str) -> str:
     r"""Make a value safe to render inside the grid — no value may forge the layout.
@@ -307,7 +318,7 @@ def cmd_table(path: Path, args) -> int:
     for c in cells:
         print(" | ".join(v.ljust(w) for v, w in zip(c, widths)).rstrip())
     if not cells:
-        print("(no rows)")
+        print(TABLE_EMPTY_MARKER)  # in the '#' namespace: no cell can render a line that impersonates it
     return 0
 
 
@@ -349,6 +360,9 @@ HOSTILE = {
     "row-forge": "x\n1 | pwned | | | | | |",
     "config-forge": "main\n# run_id: forged",
     "column-forge": "a | b | c",
+    "empty-marker": "(no rows)",              # forge the EMPTY-LEDGER marker (the old, un-namespaced one)
+    "empty-marker-hash": "# (no rows)",       # …and the marker as it is spelled TODAY
+    "rule-forge": "--------",                 # spelled like the rule line
     "empty": "",
     "spaces": "   ",
 }
@@ -398,7 +412,8 @@ def grid(out: str, fields: "tuple[str, ...]") -> "tuple[list[str], list[int], li
     Three properties, all checked here because all three are what a hostile value attacks:
 
       * the run config is EXACTLY len(HEADER_FIELDS) lines, each opening `# <field>: `, and NO grid line
-        opens with `#` — so no value can forge a config line;
+        opens with `#` — except the ONE line that is allowed to, `TABLE_EMPTY_MARKER`, and only as the
+        sole body row — so no value can forge a config line and no value can forge the empty marker;
       * every grid line splits into EXACTLY the number of columns the rule line declares, each at the
         declared width — so no value can forge a column;
       * the grid has exactly the lines it should — so no value can forge a row.
@@ -418,10 +433,13 @@ def grid(out: str, fields: "tuple[str, ...]") -> "tuple[list[str], list[int], li
         check(line.startswith(f"# {f}: "), f"run-config line for {f!r} is {line!r}")
     check(lines[0] == "", f"a blank line must separate the run config from the grid; got {lines[0]!r}")
     body = lines[1:]
-    for line in body:
-        check(not line.startswith("#"), f"a GRID line opens with '#' — it reads as a run-config line: {line!r}")
     check(len(body) >= 3, f"the grid needs a column-header line, a rule line and a body: {body!r}")
     colhead, rule, rows = body[0], body[1], body[2:]
+    # The ONLY line below the config block that may open with '#' is the empty marker, and only when it
+    # IS the body — a '#' anywhere else means a cell reached the namespace escape_cell() reserves.
+    empty = rows == [TABLE_EMPTY_MARKER]
+    for line in body if not empty else body[:2]:
+        check(not line.startswith("#"), f"a GRID line opens with '#' — it reads as out-of-band text: {line!r}")
 
     runs = rule.split("-+-")
     check(len(runs) == len(fields), f"the rule line declares {len(runs)} columns, not {len(fields)}: {rule!r}")
@@ -441,7 +459,7 @@ def grid(out: str, fields: "tuple[str, ...]") -> "tuple[list[str], list[int], li
 
     check(split(colhead) == [f.ljust(w) for f, w in zip(fields, widths)],
           f"the column-header line does not name the fields: {colhead!r}")
-    if rows == ["(no rows)"]:
+    if empty:
         return config, widths, []
     return config, widths, [split(r) for r in rows]
 
@@ -566,6 +584,19 @@ def t_grid_integrity(tmp: Path) -> None:
         check(code == 0, f"[{name}] table exited {code}: {err!r}")
         grid(out, ("slug", "pr"))
 
+    # …and once more in a ONE-COLUMN table — the narrowest grid there is, where the cell has the whole
+    # line to ITSELF and every other line of the table is something it could try to be. This is the shape
+    # the empty-marker forgery lived in, so every hostile value is run through it: the grid must still
+    # parse back to EXACTLY ONE row, never to an empty ledger and never to a fabricated second one.
+    for name, hostile in HOSTILE.items():
+        path = tmp / f"one-{name}.jsonl"
+        write_lines(path, header_line(), row_line(pr="1", slug=hostile))
+        code, out, err = run(["--file", str(path), "table", "--fields", "slug"])
+        check(code == 0, f"[{name}] table exited {code}: {err!r}")
+        _, widths, cells = grid(out, ("slug",))
+        check(cells == [[escape_cell(hostile).ljust(widths[0])]],
+              f"[{name}] a one-column grid did not print exactly the one escaped row: {cells!r}\n{out}")
+
 
 def t_widths_from_escaped(tmp: Path) -> None:
     """Column widths are computed from the ESCAPED text — i.e. from what is actually PRINTED.
@@ -645,7 +676,8 @@ def t_table_missing_file(tmp: Path) -> None:
     check(code == 0, f"table on a missing file exited {code}: {err!r}")
     config, _, cells = grid(out, TABLE_DEFAULT_FIELDS)
     check(cells == [], f"a missing file produced rows: {cells!r}")
-    check("(no rows)" in out, "a missing file must still say '(no rows)'")
+    check(out.rstrip().endswith(TABLE_EMPTY_MARKER),
+          f"a missing file must still say {TABLE_EMPTY_MARKER!r}: {out!r}")
     check(config[0] == "# run_id: -", f"a missing file must fall back to the defaults; got {config[0]!r}")
 
 
@@ -656,7 +688,56 @@ def t_table_no_rows(tmp: Path) -> None:
     check(code == 0, f"table exited {code}: {err!r}")
     _, _, cells = grid(out, TABLE_DEFAULT_FIELDS)
     check(cells == [], f"a header-only ledger produced rows: {cells!r}")
-    check(out.rstrip().endswith("(no rows)"), f"a header-only ledger must say '(no rows)': {out!r}")
+    check(out.rstrip().endswith(TABLE_EMPTY_MARKER),
+          f"a header-only ledger must say {TABLE_EMPTY_MARKER!r}: {out!r}")
+
+
+def t_empty_marker_not_forgeable(tmp: Path) -> None:
+    """A REAL row can NEVER render a body that reads as an EMPTY ledger.
+
+    The marker is the one piece of out-of-band text `table` prints WHERE A ROW WOULD GO, so position
+    cannot distinguish it from a value — only the `#` namespace can, and `escape_cell()` is what keeps
+    values out of it. The attack is a one-column table (`--fields <f>`, the narrowest grid there is,
+    where a cell has the whole line to itself) holding the marker's own text: with an un-namespaced
+    marker the body came out BYTE-IDENTICAL to an empty ledger's, and a reader — human or parser — was
+    told the run had no PRs at all while a PR sat right there in the store.
+
+    Pins TWO rules at once, and goes red if EITHER is weakened: the marker must live in the `#`
+    namespace (drop the `#` and the `(no rows)` case below forges it), and `escape_cell()` must escape a
+    leading `#` (drop that branch and the `# (no rows)` case forges it instead).
+    """
+    empty = write_lines(tmp / "empty.jsonl", header_line(run_id="r1"))
+    for name, forgery in (
+        ("old-marker", "(no rows)"),
+        ("marker", TABLE_EMPTY_MARKER),
+        ("marker-no-space", TABLE_EMPTY_MARKER.replace("# ", "#")),
+        ("marker-padded", TABLE_EMPTY_MARKER + "   "),
+    ):
+        for field in ("reviews_ok", "slug", "pr"):
+            path = write_lines(tmp / f"{name}-{field}.jsonl", header_line(run_id="r1"),
+                               row_line(**{"pr": "1", field: forgery}))
+            code, out, err = run(["--file", str(path), "table", "--fields", field])
+            check(code == 0, f"[{name}/{field}] table exited {code}: {err!r}")
+
+            code, blank, _ = run(["--file", str(empty), "table", "--fields", field])
+            check(code == 0, "table on a header-only ledger must succeed")
+            check(out != blank,
+                  f"[{name}/{field}] a row holding {forgery!r} renders EXACTLY what an EMPTY ledger "
+                  f"renders — the marker is forgeable:\n{out}")
+
+            # …and mechanically: the grid must parse back to ONE row, not to an empty ledger.
+            _, widths, cells = grid(out, (field,))
+            check(len(cells) == 1,
+                  f"[{name}/{field}] a row holding {forgery!r} parsed back as an EMPTY ledger "
+                  f"({len(cells)} rows) — the marker is forgeable:\n{out}")
+            check(cells[0] == [escape_cell(forgery).ljust(widths[0])],
+                  f"[{name}/{field}] the printed row is not the escaped row: {cells[0]!r}\n{out}")
+            # …and no LINE of a non-empty table IS the marker. (The escaped cell may well CONTAIN the
+            # marker's text — `\# (no rows)` does — but it can never BE that line: the `\` is in front of
+            # it, which is the whole point of the namespace.)
+            body = out.split("\n\n", 1)[1].split("\n")
+            check(TABLE_EMPTY_MARKER not in body,
+                  f"[{name}/{field}] a line of a NON-EMPTY table is the empty marker:\n{out}")
 
 
 def t_fields_rejected(tmp: Path) -> None:
@@ -781,8 +862,9 @@ CASES = [
     ("widths-from-escaped", "column widths measure the ESCAPED text — what is printed", t_widths_from_escaped),
     ("config-not-forgeable", "a hostile header value cannot inject a `# <field>:` line", t_config_cannot_be_forged),
     ("truncation-display-only", "table truncates head_sha; disk and `get` keep all 40 — and the cut precedes the escape", t_truncation_is_display_only),
-    ("table-missing-file", "a missing ledger is a fresh start: defaults, (no rows)", t_table_missing_file),
-    ("table-no-rows", "a header-only ledger says (no rows)", t_table_no_rows),
+    ("table-missing-file", "a missing ledger is a fresh start: defaults, `# (no rows)`", t_table_missing_file),
+    ("table-no-rows", "a header-only ledger says `# (no rows)`", t_table_no_rows),
+    ("empty-marker-safe", "no ROW can forge the empty-ledger marker — it lives where no cell can reach", t_empty_marker_not_forgeable),
     ("fields-rejected", "--fields is checked; an EMPTY --fields is malformed, not omitted", t_fields_rejected),
     ("fields-duplicate", "a field named twice prints twice, and the grid still parses", t_fields_duplicate),
     ("unknown-record-type", "an unrecognised record type is REJECTED, never skipped", t_unknown_record_type),

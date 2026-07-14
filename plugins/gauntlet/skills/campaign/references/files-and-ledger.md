@@ -221,15 +221,25 @@ to waiting (`loop-control.md`, "Reschedule or exit"). It renders state and decid
 logic, no derived values.
 
 **`table` is a PROJECTION — NEVER a source to read a value back out of.** Its output is *formatted for a
-human*, and the formatting is lossy in two ways:
+human*, and the formatting is lossy in three ways:
 
+- **It shows only SOME fields.** The default view is a **SUBSET** of the row fields listed above — as of
+  this writing `pr`, `slug`, `tier`, `reviews_ok`, `ci`, `attempts`, `status`, `head_sha`. Every other row
+  field (`branch`, `worktree`, `worktree_owned`, `branch_owned`, `started`, `api_approval`, `id`) is
+  **hidden unless you ask for it** with `--fields <f>,<f>,…`. So **a missing COLUMN is not a missing
+  VALUE** — the field is in the store, the default projection just does not print it. The list itself is
+  owned by `TABLE_DEFAULT_FIELDS` in `scripts/ledger.py` and printed **live** by `ledger.py table --help`
+  (it names the defaults); when this paragraph and that output disagree, **the script is right**.
 - **It shortens the SHA.** `table` prints `head_sha` truncated to its first **8 characters**. This is a
   **display-only** truncation and applies to **`table` alone** — nothing else in campaign ever shortens a
   SHA. The stored value, and the one every other subcommand returns, stays the full 40-char `headRefOid`:
   `ledger.py … get --pr N --field head_sha` prints all 40.
 - **It escapes cell values.** A value carrying a `|`, a newline, or a leading `#` would otherwise forge a
-  column, a row, or a header line, so `table` backslash-escapes those before printing. The escaped text is
-  what you see; the raw value is what is stored.
+  column, a row, or a run-config/marker line, so `table` backslash-escapes those before printing. The
+  escaped text is what you see; the raw value is what is stored. That escaping is also what reserves the
+  leading-`#` namespace for the table's own out-of-band lines — the `# <field>: …` run-config block and
+  the `# (no rows)` empty-ledger marker — so **no row can ever forge one**: an empty grid means the ledger
+  really is empty.
 
 So **read the ledger by FIELD NAME through `ledger.py get`** (or `list`) — **never by parsing the table**.
 A SHA (or any value) recovered from `table`'s grid is a truncated, escaped rendering, and feeding one back
