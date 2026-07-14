@@ -212,6 +212,16 @@ kind is not, `-` is not (it is what an **unset** field holds), and neither is a 
 nothing — a zero-width space, a soft hyphen, a BOM. The accessor asks the Unicode category, not a list of
 codepoints, so evidence nobody can see is refused at every door, including the ACT conditions.
 
+**Every value the CLI takes is that value — the timestamps too.** The rule is not "evidence is checked";
+it is that **nothing** enters the store without passing the one blank predicate, and that is enforced by
+construction rather than by each door remembering to ask: the flags a write door offers are generated from
+one intake table, and the accessor validates whatever that table declares. A stamp (`--at`, `--found`) may
+be **omitted** — it then defaults to now — but a stamp that is **supplied** and shows nothing is refused
+like anything else. It has to be: a blank `--at` on the user's ruling writes an `accepted` entry that was
+never ruled on, which is a history `load()` calls illegal, and **the whole store then stops opening** — and
+these follow-ups have no other copy anywhere. A write that would leave the store unreadable is refused at
+the write, with the file on disk untouched.
+
 **The claim's `evidence` and the investigation's `finding` are DIFFERENT FIELDS, and both matter.** One is
 why the driver **raised** it; the other is what happened when somebody actually **looked**. A finding never
 overwrites the claim, and a second investigation never overwrites the first — it **appends**. The driver

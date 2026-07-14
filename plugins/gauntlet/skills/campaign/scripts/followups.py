@@ -251,18 +251,33 @@ WRITES = {
     "publish":         ("published",),
 }
 
+def flag_of(field: str) -> str:
+    """The flag that carries a field whose flag IS its name (`deferred_why` -> `--deferred-why`)."""
+    return "--" + field.replace("_", "-")
+
+
 # The flag that carries each evidence field in. `decided` is the one that may be OMITTED — a timestamp
 # defaults to now; EVIDENCE never defaults to anything.
 FLAG = {"finding": "--finding", "published": "--ref", "decided": "--at", "pr": "--pr",
-        **{f: "--" + f.replace("_", "-") for f in ACT_FLAGS}}
+        **{f: flag_of(f) for f in ACT_FLAGS}}
 OPTIONAL = ("decided",)
 
-# Why a blank value is refused, per field. An evidence field that may be blank is not evidence.
+# Why a blank value is refused, per field. A field that may be blank is not a value — and for a WITNESS it
+# is worse than that: `load()` reads a blank witness as a history no legal path produces, so the store STOPS
+# OPENING. One reason per INTAKE field, and the fixture pins that: a new writable field with no reason here
+# is a field somebody was about to let through with a shrug.
 BLANK_WHY = {
     "finding": "an investigation that shows no work is a rumor about a rumor",
     "published": "a published follow-up must name WHERE it was published",
     "pr": "the PR is the DURABLE RECORD this entry's deletion will rest on — an entry that says one is "
           "addressing it must name WHICH",
+    "decided": "the USER's ruling is stamped with WHEN it was made — a stamp that shows nothing is no "
+               "stamp, and `load()` then reads the entry as one the user never ruled on: an illegal "
+               "history, and the WHOLE STORE stops opening. Omit --at and it stamps now",
+    "found": "a follow-up records WHEN it was found — omit --found and it stamps now",
+    "found_run": "--run names the RUN that found it — omit it and the entry simply carries no run",
+    **{f: "a follow-up without it is a rumor — and this one the store may already have VOUCHED for"
+       for f in REQUIRED},
     **{w: f"ACT condition '{c}' was ASSERTED but not EVIDENCED — that is not a condition, it is a bypass"
        for c, w, _ in ACT_CONDITIONS if w in ACT_FLAGS},
 }
@@ -303,6 +318,49 @@ EVIDENCE_FIELDS = tuple(dict.fromkeys(f for w in WRITES.values() for f in w))
 # every EVIDENCE_FIELD (see above), and `id`/`found*`, which are records of what happened, not opinions to
 # revise. What is left is the PROSE of the original claim, which a later run may legitimately sharpen.
 EDITABLE = ("title", "evidence", "deferred_why")
+
+# --- intake: EVERY value the CLI takes IN (owned here, once) -------------------
+#
+# Per WRITE subcommand, the store field each caller-supplied flag lands in. THIS TABLE IS THE CHOKE POINT'S
+# SCHEMA: `build_parser()` wires the flags from it (with `dest` = THE FIELD), and `taken()` — the ONE door
+# every caller value enters the store through — loops over it and refuses a blank with `is_blank()`. So a
+# value is validated BECAUSE IT IS IN THE SCHEMA, never because a door remembered to ask.
+#
+# THIS IS WHAT `--at` ESCAPED, and it is the shape of every one of them: the flag whose `dest` was NOT its
+# field's name (`args.at` -> `decided`), read by hand at the site, checked by nobody. `accept --at -` exited
+# 0 and wrote an `accepted` entry with a blank `decided` — a history `load()` refuses, so the WHOLE STORE
+# stopped opening, through the ordinary CLI, with these follow-ups' only copy in it. `--run` (-> `found_run`)
+# and `--found` were the same shape for the same reason. Hand-checking each door is what kept leaving one
+# unchecked, so no door checks anymore: they read `taken()`.
+#
+# A NEW WRITABLE FIELD CANNOT QUIETLY SKIP THE PREDICATE. Add a flag to a write door without registering it
+# here and `t_every_value_the_cli_takes_is_validated` goes RED (it reads the flags back off the parser and
+# demands each one be in this table); register it and `taken()` validates it with no further edit. The
+# derived rows below carry that further: a field added to REQUIRED, EDITABLE or WRITES is intake on the day
+# it is added, with no edit here at all.
+INTAKE = {
+    "add": {**{f: flag_of(f) for f in REQUIRED},
+            "found_run": "--run",     # the run-id that found it — an ordinary value, and so an ordinary
+            "found": "--found"},      # blank check: the two that were read by hand, next to the one that was
+    "set": {f: flag_of(f) for f in EDITABLE},
+    # Every transition takes `--at` (it stamps `decided` where the edge writes one, and the finding record
+    # otherwise), plus whatever evidence the edge must leave behind.
+    **{cmd: {**{f: FLAG[f] for f in WRITES[cmd]}, "decided": FLAG["decided"]} for cmd in TRANSITIONS},
+}
+
+# Every door that WRITES. Derived — a subcommand is a write door because it takes values in, not because a
+# list here says so, so a new one is covered by the fixtures the day it is added.
+WRITE_CMDS = tuple(INTAKE)
+
+# What each intake flag is FOR, printed live by `<cmd> --help`. The evidence fields' help IS their
+# definition (`FLAG_HELP`, quoted from ACT_CONDITIONS); the rest is spelled once here.
+INTAKE_HELP = {
+    **FLAG_HELP,
+    **{f: f"'{f}' — required on `add`, editable after, NEVER blankable: {BLANK_WHY[f]}" for f in REQUIRED},
+    "decided": "ISO timestamp of this step (default: now)",
+    "found": "ISO timestamp it was found (default: now)",
+    "found_run": "the run-id that found it",
+}
 
 
 def witness_alternatives() -> "dict[str, tuple[frozenset, ...]]":
@@ -459,6 +517,22 @@ def illegal_history(entry: dict) -> "str | None":
     )
 
 
+def entry_error(entry: dict) -> "str | None":
+    """Why this entry CANNOT BE IN THE STORE — or None. The one definition of a legal record.
+
+    Asked on the way IN (`read_store`, of every line on disk) and on the way OUT (`dump`, of every entry it
+    is about to write). That second call is the FAIL-SAFE, and it is field-agnostic on purpose: whatever a
+    door forgets to check, the store still cannot be left in a state its own accessor refuses to open — the
+    write FAILS instead, loudly, with the old file untouched, rather than bricking the only copy of the work.
+    """
+    if not ID_RE.match(entry["id"]):
+        return f"malformed id {entry['id']!r} (expected fu<N>)"
+    if entry["state"] not in STATES:
+        return f"unknown state {entry['state']!r}; valid: {', '.join(STATES)}"
+    why = illegal_history(entry)
+    return None if why is None else f"{entry['id']} is {why}"
+
+
 def read_store(path: Path) -> "tuple[list[dict], int]":
     """Return the entries AND the id high-water mark. A missing file is an EMPTY store — not an error.
 
@@ -511,15 +585,11 @@ def read_store(path: Path) -> "tuple[list[dict], int]":
         if rec.get("type") != ENTRY_TYPE:
             fail(f"line {n}: missing or unknown record type {rec.get('type')!r}")
         entry = {f: str(rec.get(f, DEFAULTS[f])) for f in FIELDS}
-        if not ID_RE.match(entry["id"]):
-            fail(f"line {n}: malformed id {entry['id']!r} (expected fu<N>)")
-        if entry["state"] not in STATES:
-            fail(f"line {n}: unknown state {entry['state']!r}; valid: {', '.join(STATES)}")
+        why = entry_error(entry)  # ONE definition of a legal record — `dump()` asks it too, before writing
+        if why is not None:
+            fail(f"line {n}: {why}")
         if entry["id"] in seen:
             fail(f"line {n}: duplicate entry for {entry['id']}")
-        why = illegal_history(entry)
-        if why is not None:
-            fail(f"line {n}: {entry['id']} is {why}")
         seen.add(entry["id"])
         entries.append(entry)
     return entries, high_water(entries, high)
@@ -549,14 +619,27 @@ def dump(path: Path, entries: "list[dict]", high: int) -> None:
 
     The high-water mark rides in the same atomic write, so a crash can never leave the store holding an id
     the mark has forgotten (which is how a deletion would hand that id out again).
+
+    AND NOTHING GOES OUT THAT WILL NOT COME BACK IN. Every entry is put to `entry_error()` — the SAME
+    question `read_store()` asks of every line on disk — and a write that would produce a store this tool
+    then REFUSES TO OPEN is refused instead, with the old file untouched. This is the fail-safe under the
+    intake predicate rather than a second copy of it: `taken()` stops a blank at the door it came in by,
+    field by field; this stops the CONSEQUENCE — a bricked store — for any field, any door, any future
+    edge, including one whose author forgets there was a predicate to call. The store has NO OTHER COPY;
+    it must never be possible to leave it unreadable, and "we checked at every door we remembered" is not
+    the same guarantee.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+    records = [{f: str(e.get(f, DEFAULTS[f])) for f in FIELDS} for e in entries]
+    for record in records:
+        why = entry_error(record)
+        if why is not None:
+            fail(f"REFUSING TO WRITE a store that will not load back: {why} Nothing was written — the "
+                 f"store on disk is untouched. This is a BUG in whatever door produced this entry: every "
+                 f"value it takes from a caller must pass `is_blank()` (see `taken()`).")
     high = high_water(entries, high)
     body = json.dumps({"type": SEQ_TYPE, "high": high}) + "\n" if high else ""
-    body += "".join(
-        json.dumps({"type": ENTRY_TYPE, **{f: str(e.get(f, DEFAULTS[f])) for f in FIELDS}}) + "\n"
-        for e in entries
-    )
+    body += "".join(json.dumps({"type": ENTRY_TYPE, **record}) + "\n" for record in records)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".followups-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as fh:
@@ -628,19 +711,44 @@ def check_field(name: str, valid: "tuple[str, ...]") -> None:
 
 # --- subcommands --------------------------------------------------------------
 
+def taken(cmd: str, args) -> "dict[str, str]":
+    """EVERY value the caller supplied, VALIDATED — THE ONE DOOR into the store, for every write command.
+
+    No write door reads a caller's value any other way. That is the whole design, and it is the answer to a
+    bug this file has now had SIX TIMES in one shape: the predicate was right, and one door did not call it.
+    `--at` was the sixth (`accept --at -` wrote a blank `decided` — an illegal history, and the store would
+    not open again). Every one of them was a door checking its own fields by hand, so hand-checking is gone:
+    a value is validated because it is in `INTAKE`, and it is in `INTAKE` because the parser cannot offer a
+    flag that is not (`t_every_value_the_cli_takes_is_validated` reads the flags back off the parser and
+    fails on any that this table does not know).
+
+    So the property is enforced BY CONSTRUCTION: add a writable field tomorrow and forget about blanks, and
+    there is nothing to forget — it is intake, so it is checked. Forget to REGISTER it and the suite goes
+    red at the day it is added. It cannot become a seventh door.
+
+    A flag not passed is absent from the result: the field keeps its default (`-`, or a stamp of `now`).
+    That is UNSET, which is not the same thing as a caller handing in something that carries nothing.
+    """
+    values: "dict[str, str]" = {}
+    for field, flag in INTAKE[cmd].items():
+        value = getattr(args, field, None)
+        if value is None:
+            continue
+        if is_blank(value):  # THE one predicate — see `is_blank()`. Called HERE, once, for every door.
+            fail(f"{flag} must not be empty — {BLANK_WHY[field]}")
+        values[field] = value
+    return values
+
+
 def cmd_add(path: Path, args) -> int:
+    values = taken("add", args)  # THE one door — every caller value, validated (see `taken()`)
     with locked(path):
         entries, high = read_store(path)
-        entry = dict(DEFAULTS)
-        for f in REQUIRED:
-            value = getattr(args, f)
-            if is_blank(value):  # THE one predicate — `-` is what an UNSET field holds, so it is not a value
-                fail(f"--{f.replace('_', '-')} must not be empty — a follow-up without it is a rumor")
-            entry[f] = value
-        entry["id"] = next_id(high)   # assigned here; never caller-set, never reused — not even after a
-        entry["state"] = "candidate"  # DELETION took the highest id out of the store (see `read_store`)
-        entry["found_run"] = args.run or "-"
-        entry["found"] = args.found or now_iso()
+        # The store's own facts LAST: the id is assigned here, never caller-set and never reused — not even
+        # after a DELETION took the highest id out of the store (see `read_store`) — and a new follow-up is
+        # a CANDIDATE, whatever anybody passed.
+        entry = {**DEFAULTS, "found": now_iso(), **values,
+                 "id": next_id(high), "state": "candidate"}
         entries.append(entry)
         dump(path, entries, high)  # `dump` raises the mark to the id just handed out
     print(json.dumps(entry))
@@ -655,21 +763,19 @@ def cmd_set(path: Path, args) -> int:
     hour later: what is left is the same RUMOR the store exists to refuse — except this one the store has
     already vouched for, because it was checked once, at a door it is no longer standing at.
 
-    The check is DERIVED from REQUIRED. Hand-listing the fields here is how it rots: the next field added
-    to REQUIRED would be pinned at `add` and blankable through this door on the day it is added.
+    The check is not HERE at all, and that is the point: this door reads its values through `taken()`, like
+    every other, so the predicate cannot be forgotten at it. Hand-listing the fields to check is how the rule
+    rotted six times — the next field added to EDITABLE would be pinned at `add` and blankable through this
+    door on the day it was added.
     """
+    updates = taken("set", args)  # THE one door — every caller value, validated (see `taken()`)
     with locked(path):
         entries, high = read_store(path)
         entry = find(entries, args.id)
         if entry is None:
             fail(f"no follow-up {args.id}")
-        updates = {f: getattr(args, f) for f in EDITABLE if getattr(args, f) is not None}
         if not updates:
             fail(f"set requires at least one --<field> <value>; editable: {', '.join(EDITABLE)}")
-        for f in REQUIRED:  # DERIVED from REQUIRED — never a list of field names retyped here
-            if f in updates and is_blank(updates[f]):
-                fail(f"--{f.replace('_', '-')} must not be EMPTIED — a follow-up without it is a rumor, "
-                     f"and this one the store already vouched for")
         entry.update(updates)  # by NAME — never by position. `state` is NOT here: see EDITABLE.
         dump(path, entries, high)
     print(json.dumps(entry))
@@ -707,7 +813,8 @@ def cmd_transition(path: Path, args) -> int:
     """
     cmd = args.cmd
     frm, to = TRANSITIONS[cmd]
-    with locked(path):
+    values = taken(cmd, args)  # THE one door — every caller value, validated (see `taken()`). `--at` is one
+    with locked(path):         # of them NOW: it was read by hand here, and a blank one BRICKED the store.
         entries, high = read_store(path)
         entry = find(entries, args.id)
         if entry is None:
@@ -718,17 +825,15 @@ def cmd_transition(path: Path, args) -> int:
                 f"A follow-up reaches '{to}' only along the transition graph; nothing else moves `state`."
             )
         # The user's ruling is DURABLE DATA, exactly like the ledger's `api_approval`: a later run — or a
-        # fresh agent that never saw the conversation — reads it and does not re-ask.
-        stamp = getattr(args, "at", None) or now_iso()
+        # fresh agent that never saw the conversation — reads it and does not re-ask. OMITTED, the stamp
+        # defaults to now; SUPPLIED, it is a value like any other and `taken()` has already refused a blank.
+        stamp = values.get("decided") or now_iso()
         for field in WRITES[cmd]:
             if field in OPTIONAL:
                 entry[field] = stamp
                 continue
-            value = getattr(args, field)
-            if is_blank(value):  # THE one predicate — see `is_blank()`. A `-` witness writes an ILLEGAL
-                fail(f"{FLAG[field]} must not be empty — {BLANK_WHY[field]}")  # history the store cannot open
-            entry[field] = (append_finding(entry[field], to, stamp, value) if field == "finding"
-                            else value)
+            entry[field] = (append_finding(entry[field], to, stamp, values[field]) if field == "finding"
+                            else values[field])
         if to == DELETED:
             if not deletable(entry):
                 fail(f"{args.id} names no durable record ({', '.join(DURABLE_RECORD)}) — deleting it would "
@@ -869,6 +974,37 @@ INVISIBLES = (
 # fixture that loops over BLANKS picked the invisible family up the day it was added, with no edit.
 BLANKS = ("", "   ", "\t", PLACEHOLDER, *INVISIBLES,
           f"​{PLACEHOLDER}​", f" {PLACEHOLDER}﻿")
+
+
+def subcommands(parser: argparse.ArgumentParser) -> "dict[str, argparse.ArgumentParser]":
+    """The parser of each subcommand, read back OFF the parser — the flags the CLI ACTUALLY offers.
+
+    Derived from the built parser, never from a list: that is what lets a fixture ask the question that
+    matters — "is every flag a write door takes registered as INTAKE, and therefore validated?" — of the
+    real CLI rather than of a restatement of it. argparse exposes no public accessor for this.
+    """
+    for action in parser._actions:  # noqa: SLF001
+        if isinstance(action, argparse._SubParsersAction):  # noqa: SLF001
+            return action.choices
+    raise SelfTestFailure("the parser has no subcommands — the CLI is not what this file thinks it is")
+
+
+def write_argv(cmd: str, fid: str, field: str, value: str) -> "list[str]":
+    """The argv for a WRITE door with ONE field set to `value` and every other value LEGAL.
+
+    Derived from INTAKE (which flags the door takes) and WRITES/REQUIRED (which of them it cannot be
+    without), so a fixture that loops over the write doors covers a new door, or a new field on an old
+    one, the day it is added — with no edit here.
+    """
+    argv = [cmd] + ([] if cmd == "add" else ["--id", fid])
+    for f, flag in INTAKE[cmd].items():
+        if f == field:
+            argv += [flag, value]
+        elif cmd == "add" and f in REQUIRED:
+            argv += [flag, f"add:{f}"]                      # the door cannot be without these
+        elif cmd in TRANSITIONS and f in WRITES[cmd] and f not in OPTIONAL:
+            argv += [flag, f"{cmd}:{f}"]                    # nor these — the edge's own witnesses
+    return argv
 
 
 def write_lines(path: Path, *lines: str) -> Path:
@@ -1283,6 +1419,90 @@ def t_no_door_writes_a_store_that_will_not_load(tmp: Path) -> None:
         code, _, err = run(["--file", str(path), "add", "--title", "t", "--evidence", "e",
                             "--deferred-why", "w"])
         check(code == 0, f"after a LEGAL `{cmd}` the store can no longer be ADDED to: {err!r}")
+
+
+def t_every_value_the_cli_takes_is_validated(tmp: Path) -> None:
+    """EVERY VALUE THE CLI TAKES IN PASSES `is_blank()` — AT EVERY DOOR, FOR EVERY FIELD, BY CONSTRUCTION.
+
+    THE SIXTH TIME this file shipped a rule that was right and a door that did not call it, the door was
+    `--at`: `accept --id fu1 --at -` exited 0, wrote `state=accepted` with `decided` blank, and the STORE
+    STOPPED LOADING — every later `list`, `get`, `table`, `add` and transition exits 1 on an illegal
+    history, and these follow-ups have no other copy anywhere. `--run` and `--found` were the same shape.
+    Patching the door a reviewer happened to find leaves the next one; so the doors do not check anymore.
+
+    THE STRUCTURE IS THE FIX, and this fixture is what makes a FORGOTTEN FIELD FAIL instead of opening a
+    seventh door. Three checks, all of them derived — none of them a list of what exists today:
+
+      1. THE PARSER IS READ BACK. Every value-taking flag of every write door must be registered in
+         `INTAKE`, with `dest` = the field it writes. `INTAKE` is what `taken()` loops over, so REGISTERED
+         IS VALIDATED — and a flag added to a write door tomorrow and not registered goes RED here, on the
+         day it is added, before it can take a blank. It is the closest thing to a build error a stdlib
+         script has.
+      2. EVERY INTAKE FIELD IS A REAL FIELD, and has a REASON a blank is refused (`BLANK_WHY`) — the reason
+         is what the caller is told, and a field nobody could write a reason for is one nobody thought about.
+      3. THE BEHAVIOR, end to end: every write door × every field it takes × every spelling of BLANKS is
+         REFUSED (exit 1), and after every one of them THE STORE STILL LOADS. That second assertion is the
+         one that matters: the failure this rule exists to prevent is not a bad field, it is a store its own
+         accessor cannot open.
+
+    Remove the blank check from `taken()` and this goes red on `add --title ''` — and, in the half that
+    counts, on `accept --at -` leaving a store that will not load.
+    """
+    subs = subcommands(build_parser())
+    for cmd in WRITE_CMDS:
+        check(cmd in subs, f"`{cmd}` is a WRITE door with no subcommand — INTAKE and the CLI disagree")
+        for action in subs[cmd]._actions:  # noqa: SLF001 — the flags the door ACTUALLY offers
+            if not action.option_strings or action.dest in ("help", "id"):
+                continue  # `--id` names an entry; it never becomes a value IN one
+            check(action.dest in INTAKE[cmd],
+                  f"`{cmd} {'/'.join(action.option_strings)}` takes a value into the store and is NOT in "
+                  f"INTAKE — so it is not read through `taken()`, so NOTHING checks it for a blank. This "
+                  f"is the SEVENTH DOOR: register it in INTAKE and it is validated by construction")
+            check(action.option_strings == [INTAKE[cmd][action.dest]],
+                  f"`{cmd}` offers {action.option_strings!r} for {action.dest!r}, but INTAKE says "
+                  f"{INTAKE[cmd][action.dest]!r} — the schema and the CLI have drifted")
+
+    for cmd, table in INTAKE.items():
+        for field in table:
+            check(field in FIELDS, f"INTAKE[{cmd!r}] takes {field!r}, which is not a FIELD of the store")
+            check(field in BLANK_WHY,
+                  f"{field!r} is taken in by `{cmd}` with no BLANK_WHY — a field whose refusal nobody can "
+                  f"explain is a field nobody decided to check")
+
+    for cmd in WRITE_CMDS:
+        for field in INTAKE[cmd]:
+            path = tmp / f"{cmd}-{field}.jsonl"
+            (fid,) = seed(path)
+            if cmd in TRANSITIONS:
+                drive_to(path, fid, TRANSITIONS[cmd][0][0])
+            before = json.loads(run(["--file", str(path), "get", "--id", fid])[1])
+            for blank in BLANKS:
+                code, out, err = run(["--file", str(path), *write_argv(cmd, fid, field, blank)])
+                check(code == 1,
+                      f"`{cmd}` with a BLANK {INTAKE[cmd][field]} ({blank!r}) was ACCEPTED (exit {code}) — "
+                      f"a value that renders as nothing is not a value:\n{out}")
+                # THE POINT. Had that write landed, the store would be UNREADABLE — and unrecoverable.
+                code, _, err = run(["--file", str(path), "list"])
+                check(code == 0,
+                      f"after `{cmd} {INTAKE[cmd][field]} {blank!r}` the STORE ITSELF NO LONGER LOADS (exit "
+                      f"{code}) — a write door wrote what `load()` refuses, and there is no other copy of "
+                      f"these follow-ups anywhere: {err!r}")
+                now = json.loads(run(["--file", str(path), "get", "--id", fid])[1])
+                check(now == before, f"a REFUSED `{cmd} {INTAKE[cmd][field]} {blank!r}` changed the entry "
+                                     f"anyway: {now!r}")
+            check(len(load(path)) == 1, f"a REFUSED `{cmd}` added or removed an entry")
+
+    # …and the doors still WORK: an omitted optional stamp defaults, and a real one is kept. A door that
+    # refused everything would pass every check above.
+    path = tmp / "legal.jsonl"
+    (fid,) = seed(path)
+    code, out, err = run(["--file", str(path), "accept", "--id", fid])
+    check(code == 0, f"`accept` with no --at was refused: {err!r}")
+    check(not is_blank(json.loads(out)["decided"]), f"`accept` left no stamp at all: {out!r}")
+    (fid,) = seed(path)
+    code, out, err = run(["--file", str(path), "accept", "--id", fid, "--at", "2026-01-01T00:00:00Z"])
+    check(code == 0, f"`accept --at <stamp>` was refused: {err!r}")
+    check(json.loads(out)["decided"] == "2026-01-01T00:00:00Z", f"the stamp was not written: {out!r}")
 
 
 def t_investigation_shows_its_work(tmp: Path) -> None:
@@ -2124,8 +2344,13 @@ def t_the_harness_reports_a_fatal_fixture(tmp: Path) -> None:
     # these shared corpora (BLANKS, the hostile values, the graph). Empty one and its loop body never
     # executes: the fixture passes without testing anything, and the suite is louder about nothing.
     for corpus, label in ((BLANKS, "BLANKS"), (ledger.HOSTILE, "ledger.HOSTILE"),
-                          (TRANSITIONS, "TRANSITIONS"), (STATES, "STATES"), (FIELDS, "FIELDS")):
+                          (TRANSITIONS, "TRANSITIONS"), (STATES, "STATES"), (FIELDS, "FIELDS"),
+                          (INTAKE, "INTAKE"), (WRITE_CMDS, "WRITE_CMDS")):
         check(len(corpus) > 0, f"{label} is EMPTY — every fixture that loops over it passes vacuously")
+    # …and an INTAKE row that is empty is the same lie one level down: the door is looped over, every field
+    # of it is not, and the blank fixture reports a door it never actually knocked on.
+    for cmd, table in INTAKE.items():
+        check(len(table) > 0, f"INTAKE[{cmd!r}] is EMPTY — `{cmd}` is 'covered' by a loop over no fields")
 
 
 CASES = [
@@ -2147,6 +2372,7 @@ CASES = [
     ("evidence-required", "a follow-up with no evidence is a RUMOR — `add` refuses it, for EVERY required field", t_evidence_is_required),
     ("required-not-editable-away", "a REQUIRED field cannot be BLANKED through `set` — the rule holds where an entry CHANGES, not only where it was made", t_required_cannot_be_edited_away),
     ("no-unreadable-store", "no write door can write a store `load()` refuses — every door shares ONE blank predicate", t_no_door_writes_a_store_that_will_not_load),
+    ("every-value-validated", "EVERY value the CLI takes, at EVERY write door, passes the blank predicate — a flag that skips it cannot exist", t_every_value_the_cli_takes_is_validated),
     ("ids-never-reused", "ids are assigned by the store, sequential, and NEVER reused", t_ids_are_assigned_and_never_reused),
     ("store-validated", "a corrupt store is rejected, never silently repaired; a missing one is empty", t_store_is_validated),
     ("defaults-backfill", "an entry written before a field existed reads back complete — as a CANDIDATE", t_defaults_backfill),
@@ -2237,30 +2463,31 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--file", help="path to the store (.gauntlet/followups.jsonl)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
+    # EVERY WRITE DOOR'S FLAGS COME FROM `INTAKE`, and every one carries `dest` = THE FIELD IT WRITES. Both
+    # halves are load-bearing: the flag EXISTS because the table declares it (so it cannot exist without
+    # being validated — `taken()` loops over that same table), and its `dest` IS the field (so no door has to
+    # translate `args.at` into `decided` by hand, which is precisely how `--at` came to be checked by
+    # nobody). A required value is one the store cannot be without; a blank one is refused wherever it comes
+    # from.
     a = sub.add_parser("add", help="raise a new follow-up CANDIDATE (the only way in)")
-    for f in REQUIRED:
-        a.add_argument(f"--{f.replace('_', '-')}", dest=f, required=True,
-                       help=f"'{f}' (required — a follow-up without it is a rumor)")
-    a.add_argument("--run", help="the run-id that found it")
-    a.add_argument("--found", help="ISO timestamp it was found (default: now)")
+    for field, flag in INTAKE["add"].items():
+        a.add_argument(flag, dest=field, required=field in REQUIRED, help=INTAKE_HELP[field])
 
     s = sub.add_parser("set", help=f"edit an existing follow-up's prose ({', '.join(EDITABLE)})")
     s.add_argument("--id", required=True)
-    for f in EDITABLE:  # `state` is NOT here, and that is the point: see EDITABLE.
-        s.add_argument(f"--{f.replace('_', '-')}", dest=f, help=f"field '{f}'")
+    for field, flag in INTAKE["set"].items():  # `state` is NOT here, and that is the point: see EDITABLE.
+        s.add_argument(flag, dest=field, help=INTAKE_HELP[field])
 
     # The transitions — the ONLY things that move `state`. Each validates the state it comes FROM, so the
-    # user's ruling cannot be routed around. Their FLAGS are derived from `WRITES`: every evidence field a
-    # transition must leave behind is a REQUIRED flag, so an edge cannot be added that writes a witness the
-    # CLI never asks for (and that `load()` would then reject as an illegal history).
+    # user's ruling cannot be routed around. Their FLAGS are derived from `WRITES` (through `INTAKE`): every
+    # evidence field a transition must leave behind is a REQUIRED flag, so an edge cannot be added that
+    # writes a witness the CLI never asks for (and that `load()` would then reject as an illegal history).
+    # The one OPTIONAL field is the timestamp: a stamp may default to now; EVIDENCE never defaults.
     for cmd, (frm, to) in TRANSITIONS.items():
         t = sub.add_parser(cmd, help=f"{role(cmd)}: {'/'.join(frm)} -> {to}")
         t.add_argument("--id", required=True)
-        t.add_argument("--at", help="ISO timestamp of this step (default: now)")
-        for field in WRITES[cmd]:
-            if field in OPTIONAL:
-                continue  # a TIMESTAMP may default; evidence never may
-            t.add_argument(FLAG[field], dest=field, required=True, help=FLAG_HELP[field])
+        for field, flag in INTAKE[cmd].items():
+            t.add_argument(flag, dest=field, required=field not in OPTIONAL, help=INTAKE_HELP[field])
 
     g = sub.add_parser("get", help="print a follow-up as JSON, or one field")
     g.add_argument("--id", required=True)

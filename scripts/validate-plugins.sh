@@ -104,6 +104,9 @@ echo "==> bundled script invocations"
 # Prose that merely NAMES the tool (`scripts/ledger.py` is the accessor; `ledger.py … set`) is
 # shorthand, not an invocation, and is left alone.
 bare_invocations=$(
+  # shellcheck disable=SC2016  # `\$\{CLAUDE_PLUGIN_ROOT\}` is REGEX TEXT matched in the docs, not an
+  # expansion: single quotes are what keeps it a pattern. Double quotes would expand it (to empty) here and
+  # the check would silently stop matching that whole form.
   grep -rnE '(^|[^a-zA-Z0-9_/.-])((\./|<skill-dir>/|\$\{CLAUDE_PLUGIN_ROOT\}[^ `]*/)scripts/)[A-Za-z0-9_-]+\.(py|sh)[[:space:]]+[^`]' \
     plugins --include='*.md' |
     grep -vE '(python3|bash)[[:space:]]+[^`]*scripts/' || true
