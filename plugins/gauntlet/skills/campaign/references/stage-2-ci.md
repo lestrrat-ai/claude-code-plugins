@@ -301,9 +301,16 @@ check logs FIRST; the class picks the model:
 | **Formatting / lint** — the fix is exactly what a standard formatter or autofixer produces | **`sonnet`** (**`haiku`** only when the failure is trivially mechanical) | It does NOT author a fix from scratch: it runs a deterministic tool, **READS the resulting diff**, verifies it, and **escalates** anything it cannot verify. Downgraded **on purpose**. |
 | **Everything else** — failing product test, compile error, flake, anything needing judgment — **and every escalation from the cheap subagent** | **session model** | It authors code that gets merged, and nothing downstream validates it. |
 
-**Scope every CI-fix subagent, both tiers:** give it the failing check's logs, the specific failing
-file(s), and the worktree path. Tell it **NOT** to re-derive the whole diff or read beyond what the
-failure touches.
+**Dispatch both tiers under the fix-subagent contract** (`fix-subagent-contract.md` — the complete
+DEFINITION for every fix subagent, CI or review; **read it before dispatching**). The CI-specific inputs
+it asks for are the failing check's logs, the specific failing file(s), and the worktree path.
+
+*Non-authoritative summary of the contract — the contract is the definition and wins over this; never
+dispatch from this summary:* **SCOPE** the reading — read narrowly: **NOT** the whole diff, **NOT**
+beyond what the failure touches. And because scoping the reading is not licence to fix only the
+**instance**, **SWEEP** the writing — the contract's **sweep-and-report block goes into the prompt
+verbatim**: a fix that changes a definition or a fact is not done until every site that restates it is
+correct, and every site found is reported.
 
 #### The cheap CI-fix subagent — run the tool, READ the diff, ESCALATE
 

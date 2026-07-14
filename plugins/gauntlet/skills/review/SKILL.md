@@ -393,6 +393,15 @@ default branch or **ask the user** (never branch off an unresolved base). Then, 
 or **Adjusted** finding only (skip Refuted and Uncertain), in its own branch off that resolved base:
 
 1. Implement the fix — exactly the change in the finding's `Fix:`, nothing more; no drive-by edits.
+   **"Nothing more" bounds the DEFECTS you fix, not the SITES one fix touches.** If the change alters a
+   DEFINITION (a rule, a command, a schema, a format) or a FACT (a count, a name, an API behavior), then
+   `grep` the tree for every place that RESTATES it — summaries, quick-reference bullets, cross-references,
+   table rows, worked examples — and correct each one **in this same PR**: a definition left with a stale
+   restatement is a definition that lies, and that sweep is part of the fix, not a drive-by. Report every
+   site you found and its disposition, including any you deliberately left alone. (This paragraph is a
+   **non-authoritative summary** of the same contract campaign puts in every fix subagent's prompt —
+   `${CLAUDE_PLUGIN_ROOT}/skills/campaign/references/fix-subagent-contract.md` is the complete DEFINITION
+   and **wins over this** wherever they differ; read it, never reconstruct it from this summary.)
 2. `git commit` the fix, then `git push` the branch.
 3. `gh pr create` one PR for that finding. Title from the finding; body cites the finding ID,
    trigger, impact, and fix. Do **NOT** apply any `gauntlet-run-*` owner label — review does not know

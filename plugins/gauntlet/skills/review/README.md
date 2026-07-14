@@ -64,11 +64,18 @@ After it delivers the report, it asks once — and only once — whether to open
 confirmed fix and run them through the gauntlet.
 
 Say **no** (or say nothing) and it stops there: report-only, no side effects. Say **yes** and it
-implements each Confirmed or Adjusted fix — exactly the change the finding describes, nothing more —
+implements each Confirmed or Adjusted fix — the change that finding describes and no other defects —
 on its own branch, opens one pull request per finding, and hands those PRs to
 [`/gauntlet:campaign`](../campaign/README.md). Campaign takes it from there: it adopts the PRs, gates
 each one through the reviews its tier requires plus CI, and merges. Refuted and Uncertain findings
 are left alone.
+
+"No other defects" bounds *which problems* it fixes — not *how many places* one fix has to touch. When
+a fix changes a definition or a fact, it greps the tree for every other place that restates it and
+corrects those too, in the same pull request, and tells you which sites it touched and which it left
+alone: a definition left with a stale restatement is a definition that lies. That's the same
+[fix-subagent contract](../campaign/references/fix-subagent-contract.md) campaign holds its own fixers
+to — that file is the definition and this paragraph is only a non-authoritative summary of it.
 
 So the usual progression is **review to find and confirm, then campaign to gate and merge** — but the
 review half never crosses into changing anything until you explicitly say yes.

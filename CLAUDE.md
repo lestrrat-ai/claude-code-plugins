@@ -111,6 +111,32 @@ The tell is unmistakable in hindsight, and it generalises: **when each fix creat
 are not converging on a bug — you are patching your own invention.** Stop and re-derive whether the
 original thing was ever broken.
 
+## Fix the CLASS, not the instance — a definition with one stale restatement is a definition that lies
+
+When you change a **definition** (a rule, a command, a schema, a format) or a **fact** (a count, a name,
+an API behavior), the change is not done when the thing you were looking at is correct. **It is done when
+every place that RESTATES it is correct.**
+
+**Sweep for restatements. Every time. Before you call it fixed.**
+
+- `grep` for the old value, the old spelling, the old command, the old number — not just the file you
+  edited. Restatements hide in **summaries**, **quick-reference bullets**, **cross-references**, **table
+  rows**, **worked examples**, and **other copies of the same command**.
+- A **summary that has drifted from its definition is worse than no summary**: it is the version people
+  actually read, and it will be believed. A one-line "green means zero failing and zero pending" outlived
+  three rewrites of the rule it summarised, and silently discarded both of that rule's disclosed caveats.
+- Prefer **one owner + pointers** over N copies. But then the owner must be **complete** — a pointer to a
+  partial definition is how a reader reconstructs a command with the run-scoping `--label` missing. And a
+  pointer must name the **block**, not the **step number**: numbers move.
+- Distinguish **volatile facts** from **stable constants**. A live count from a real repo (`16 runs named
+  X`) rots — cite the permanent **claim** and mark any number as a dated illustration. A documented API
+  constant (a page size of 30, a 1000-item cap) is the **point** — keep it exact, never hedge it.
+
+**Why this rule exists:** across one PR series, the review gate had to say *"you have two more"* about
+missed propagation sites, a fourth copy of a canonical command, a stale summary, and volatile counts in
+three separate places. Each time, the instance was fixed and the class survived. **The reviewer
+generalised; the author did not.** That is a defect in how the work was done, not in any one line.
+
 ## Version is the plugin cache key
 
 `plugin.json`'s `version` decides whether an installed copy refreshes. Changing skill content **without**

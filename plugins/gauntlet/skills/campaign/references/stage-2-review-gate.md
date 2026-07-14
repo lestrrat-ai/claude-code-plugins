@@ -394,10 +394,16 @@ As each verdict lands, tally it for the SHA it ran on:
   weak fix produces a plausible-looking commit, the next pass returns `NOT SATISFIED`, the gate resets,
   and the whole diff is re-reviewed: the cheap wrong fix is paid for twice, and it is the expensive half
   that pays. Worst case the pass misses it and the defect merges.
-  **Scope it** instead — hand it the worktree path and the concrete issue list, and tell it NOT to
-  re-derive the whole diff or read beyond the files those issues name; that is where the savings are,
-  not in the model tier. **Scope by defect, not by guess:** name every file the defect actually touches,
-  or the fixer will faithfully leave the sites you forgot to list.
+  **Dispatch it under the fix-subagent contract** (`fix-subagent-contract.md` — the complete DEFINITION
+  for every fix subagent, CI or review; **read it before dispatching**). The review-specific inputs it
+  asks for are the worktree path and the concrete issue list (CONFIRMED + ADJUSTED only).
+
+  *Non-authoritative summary of the contract — the contract is the definition and wins over this; never
+  dispatch from this summary:* **SCOPE** it — tell it NOT to re-derive the whole diff or read beyond the
+  files those issues name; that is where the savings are, not in the model tier. And **SWEEP** — put the
+  contract's **sweep-and-report block into the prompt verbatim** — a review defect whose fix changes a
+  definition or a fact is not done until every site that restates it is correct, and every site found is
+  reported. Scope bounds the READING; the sweep bounds the WRITING; the fixer owes you both.
 - **SATISFIED** → record it (bump `reviews_ok` via `ledger.py … set --pr <N> --reviews_ok <count>`, by
   field name). The gate is met once this SHA holds `required(tier)` SATISFIED verdicts
   (2, or 1 for TRIVIAL). If the tally is still short of the target — e.g. the **first** SATISFIED on a

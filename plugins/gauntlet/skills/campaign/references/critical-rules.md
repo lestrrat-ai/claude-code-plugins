@@ -260,10 +260,16 @@
   head resets the gate") — cheap CI-fix, session-model CI-fix, review-fix, or **refutation commit** alike. In the SAME step: reset
   `reviews_ok` to 0 AND restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`, relaunch the CI
   watch, and re-enter Stage 2a. NEVER exempt a commit because it "only reformatted".
-- Scope every fix subagent to its worktree + concrete issue list; tell it NOT to re-derive the whole diff.
-  **Scope by defect, not by guess — name every file the defect touches.** That, plus an **external
-  reviewer** taking review passes off the subagent pool (**the single biggest cost lever** — review passes
-  dominate campaign's spend), is where savings live.
+- **EVERY fix subagent — CI-fix (both tiers) and review-fix — is dispatched under the fix-subagent contract
+  (`fix-subagent-contract.md`, the complete DEFINITION; read it before dispatching, never reconstruct it
+  from a summary).** Both halves are mandatory: **SCOPE** the reading — worktree + concrete issue list, NOT
+  the whole diff, NOT beyond the named files; **scope by defect, not by guess — name every file the defect
+  touches**. **SWEEP** the writing — the contract's sweep-and-report block goes into the prompt **verbatim**:
+  a fix that changes a DEFINITION or a FACT is not done until every site that RESTATES it is correct, and
+  every site found is reported. Read narrowly to UNDERSTAND, grep widely to FINISH; neither half excuses
+  skipping the other. Scoping (not a cheaper model), plus an **external reviewer** taking review passes off
+  the subagent pool (**the single biggest cost lever** — review passes dominate campaign's spend), is where
+  savings live.
 - Default reviewer is Claude's own subagents; no external tool is required. Use the user's preferred
   reviewer when one is set (explicit invocation, or a preference in memory/`CLAUDE.md`/carryover). A
   different-model reviewer (e.g. Codex) is recommended for diversity but never required. See
