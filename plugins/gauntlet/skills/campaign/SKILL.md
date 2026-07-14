@@ -221,8 +221,9 @@ Read stage refs only when that stage/action is due:
 - **Verdicts go through `ledger.py verdict` — NEVER set `reviews_ok` by hand.** It bumps `review_rounds`
   (**monotone, never reset — the loop's only memory across fresh-context wakes**), applies the tally, and
   moves `ns_streak`, atomically. `set` cannot RAISE the tally and no door can write the counters at all.
-- **Findings are claims, not facts:** on every `NOT SATISFIED`, audit each **gating** finding (CONFIRMED /
-  ADJUSTED / REFUTED, with evidence, into `audit-<pr>-<n>.md`) BEFORE dispatching a fix; only
+- **Findings are claims, not facts:** on every `NOT SATISFIED`, a **dispatched context-isolated audit
+  subagent** (not the orchestrator inline) verdicts each **gating** finding (CONFIRMED /
+  ADJUSTED / REFUTED, with evidence, into `audit-<pr>-<n>.md`) BEFORE any fix is dispatched; only
   CONFIRMED + ADJUSTED get fixed. That asks **is it TRUE?**; the gating rule above asks **does it MATTER?**
   — both must pass, and a finding must matter before anyone spends an audit on whether it is true. The
   reachability test asks whether the **mechanism can occur**, not
