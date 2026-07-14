@@ -184,14 +184,29 @@ file that is lying:
   value you cannot compare, and a comparison you cannot make is not a comparison you may assume the
   result of. **A CRASH IS NOT A VERDICT** — the tool failing to have an opinion is the one outcome this
   vocabulary has no word for.
+- **A REPEATED member name makes the snapshot UNUSABLE** — in **any** object on the line, nested ones
+  included. Never *"last one wins"*, never *"first one wins"*: a field given **two** values means the file
+  does not say **one thing**, and evidence that does not say one thing is **not evidence**. This rule
+  belongs **at the DECODER**, because that is the last place the duplicate is still **visible**: a JSON
+  decoder resolves a repeated key by keeping **one** value and **silently discarding** the other, and every
+  rule above only ever sees what survived. So `{"row":"header","sha":"<old>","sha":"<head>"}` verified
+  **GREEN** with a **stale commit** sitting in the bytes, and `{"row":"status_context","row":"checkrun",…}`
+  verified **GREEN** with the row type the contract **rejects** silently gone. **Present in the bytes,
+  reaching NO rule** — the defect this entire section is about, one level *below* every rule written to
+  catch it. Parse with a **duplicate-key-rejecting hook** (Python: `object_pairs_hook`); a decoder that
+  picks a winner for you has **decided a question that was yours**.
+- **A line the decoder cannot decode WITHOUT CRASHING is UNUSABLE too** — a line nested thousands of levels
+  deep exhausts the decoder's stack and **raises**, and a raise where a verdict was owed is the tool having
+  **no opinion**, not a lenient one. Catch it and call the artifact unusable: a row of the shape this
+  contract defines is a **flat object of strings**, so nothing legitimate is ever anywhere near that depth.
 
 **EVERY line must be READ, and a line you cannot read is NOT a line you may SKIP.** The four `row` types
 above are the **whole** vocabulary. A **blank** line, bytes that are **not valid UTF-8** (**never** decode
 them leniently — that silently rewrites what the file says), a row of a type **not** in that table, a row
 **missing a field its type requires** (a `checkrun` with no `status`, a `status` with no `state`, a
-`witness` with no `id`), a row whose value has the **wrong TYPE**, or a row carrying a field its type does
-**not** define (**a `sha` on a `witness` row** — see below) makes the snapshot **UNUSABLE** → `ci =
-pending`, refetch. **NEVER skip past it, and NEVER accept-and-ignore it.**
+`witness` with no `id`), a row whose value has the **wrong TYPE**, a row that **names a member twice**, or
+a row carrying a field its type does **not** define (**a `sha` on a `witness` row** — see below) makes the
+snapshot **UNUSABLE** → `ci = pending`, refetch. **NEVER skip past it, and NEVER accept-and-ignore it.**
 
 Skipping is how the false green gets back in: an unrecognised row is not *nothing*, it is something you
 **failed to understand** — and if it happened to carry a **FAILURE**, ignoring it turns a red commit green

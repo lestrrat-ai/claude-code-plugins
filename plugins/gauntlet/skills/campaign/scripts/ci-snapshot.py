@@ -39,6 +39,15 @@ but NOT COUNTED parses as "nothing wrong":
     a verdict" is not a property you get one `isinstance` at a time: the type check belongs at the
     boundary, once, as a CLASS.
 
+  * and then the rules were defeated ONE LEVEL BELOW themselves, by the DECODER. `json.loads` keeps the
+    LAST value of a REPEATED member name and silently DISCARDS the earlier one, so the discarded value
+    never reached a single rule above: `{"row":"header","sha":"<old>","sha":"<head>"}` verified GREEN with
+    a stale commit sitting in the bytes, and `{"row":"status_context","row":"checkrun",…}` verified GREEN
+    with the REJECTED row type vanished. Every rule in this file checks the EXACT shape of a dict it was
+    handed — and none of them can check what the decoder threw away before they ran;
+  * and a line nested thousands of levels deep raised `RecursionError` straight out of `json.loads` —
+    a CRASH, again, where a verdict was owed.
+
 The lesson is one lesson, not seven: check the EXACT shape. "The thing I need is in there somewhere" is
 not a check — it is the absence of one, and every defect above is that same absence wearing a new hat.
 
@@ -180,7 +189,35 @@ def parse(path: Path) -> list[dict]:
     OPINION — the one outcome the contract has no word for. Same for a `conclusion` or an `id` holding an
     object: `in FAIL_CONCLUSIONS` and `Counter(...)` hash their input. So the type check lives HERE, once,
     at the boundary, as a CLASS — never as a patch at each site that would otherwise blow up.
+
+    And every rule above checks the shape of the dict the DECODER handed it — so the decoder is part of the
+    boundary too, and it was the weakest part of it. `json.loads` resolves a REPEATED member name by keeping
+    the LAST and DISCARDING the earlier one, without a word; the discarded value is then present in the
+    artifact's bytes and visible to NO rule here. That is this file's one bug, again, one level down. It is
+    rejected below, at the decoder, where the duplicate is still visible — nowhere later can see it.
     """
+    def strict_object(n: int):
+        """`object_pairs_hook` that rejects a REPEATED member name — in ANY object on the line, nested ones
+        included, because a nested object is bytes in the artifact just the same.
+
+        A duplicate key makes the artifact UNUSABLE. Never "last one wins", never "first one wins": two
+        values for one field means the file does not say ONE thing, and a file that does not say one thing
+        is not evidence. Picking one is how the STALE sha in `{"sha":"<old>","sha":"<head>"}` and the
+        REJECTED type in `{"row":"status_context","row":"checkrun"}` both went GREEN.
+        """
+        def hook(pairs: list[tuple[str, object]]) -> dict:
+            dupes = sorted({k for k, c in Counter(k for k, _ in pairs).items() if c > 1})
+            if dupes:
+                # MUTATE:duplicate-key:pass
+                raise SnapshotError(
+                    f"line {n}: duplicate member name(s) {', '.join(dupes)} — the decoder keeps only ONE "
+                    f"value for a repeated key and silently discards the other, so the discarded one is "
+                    f"present in the bytes and reaches NO rule. A field given two values says nothing."
+                )
+            return dict(pairs)
+
+        return hook
+
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
@@ -196,10 +233,17 @@ def parse(path: Path) -> list[dict]:
             # MUTATE:blank-line:continue
             raise SnapshotError(f"line {n} is blank — the artifact is JSONL, every line is one object")
         try:
-            row = json.loads(line)
+            row = json.loads(line, object_pairs_hook=strict_object(n))
         except json.JSONDecodeError as exc:
             # MUTATE:not-json:continue
             raise SnapshotError(f"line {n} is not JSON: {exc}") from exc
+        except RecursionError as exc:
+            # MUTATE:too-deep:continue
+            raise SnapshotError(
+                f"line {n} is nested too deeply to decode ({exc}) — the decoder ran out of stack and RAISED "
+                f"where a verdict was owed, and a crash is not a verdict. A row of the shape this contract "
+                f"defines is a flat object of strings; nothing legitimate goes anywhere near this depth."
+            ) from exc
         if not isinstance(row, dict) or "row" not in row:
             # MUTATE:not-a-row:continue
             raise SnapshotError(f"line {n} is not a row object — every line is an object with a `row` key")
@@ -486,6 +530,8 @@ EXPECTED = {
     "unexpected-field.jsonl": (UNUSABLE, "unexpected field(s)", "a checkrun carrying a field nothing reads — present and NOT COUNTED, one level down from an unknown row"),
     "header-not-first.jsonl": (UNUSABLE, "FIRST line", "the header is 'Exactly one, FIRST line' — evidence before it is unstamped"),
     "duplicate-header.jsonl": (UNUSABLE, "EXACTLY ONE header", "a SECOND header naming another commit — read by nothing, so present and NOT COUNTED"),
+    "duplicate-key.jsonl": (UNUSABLE, "duplicate member name(s)", "a header carrying a STALE sha AND the expected one — the decoder DISCARDED the stale one, so no rule above ever saw it, and the file verified GREEN"),
+    "deeply-nested.jsonl": (UNUSABLE, "nested too deeply", "a line the decoder cannot decode without running out of stack — it RAISED where a verdict was owed, and a crash is not a verdict"),
     # NEGATIVE CONTROL. Same wrong-commit data as wrong-sha.jsonl, but stamped the OLD way: the sha
     # interpolated from our own literal onto every row instead of taken from GitHub. It comes back
     # GREEN — which is the POINT. It is the proof that the old verification could not fail, and the
