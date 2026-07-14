@@ -1,11 +1,12 @@
 {
-  "why": "GITHUB'S OWN COUNT IS ABSENT, so the completeness test CANNOT BE MADE \u2014 and a fail-closed rule that cannot fire is not a rule, it is a hole with a comment above it. The tool used to read `total_count` off page one; it now asks EVERY page, and this response's only page states none. An absent count is NOT a count of zero: 'we cannot tell whether the read was short' has exactly one safe answer, and it is not green. Same reasoning as a rollup response with no headRefOid",
+  "why": "A LATER PAGE'S total_count IS A STRING. Same hole, same green: the type check was asked of page 1 only. A count we cannot READ is refused wherever it sits \u2014 a value of a type nobody has classified is not a benign value, in any field, from any source, on ANY PAGE",
   "required_set": "none",
   "pr": "35",
   "api": {
     "check-runs": {
       "response": [
         {
+          "total_count": 2,
           "check_runs": [
             {
               "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
@@ -16,6 +17,21 @@
               "status": "completed",
               "conclusion": "success",
               "details_url": "https://github.com/o/r/actions/runs/29318959841/job/1"
+            }
+          ]
+        },
+        {
+          "total_count": "many",
+          "check_runs": [
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "Validate plugins",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/29318959841/job/2"
             }
           ]
         }
@@ -41,6 +57,13 @@
             "status": "COMPLETED",
             "conclusion": "SUCCESS",
             "detailsUrl": "https://github.com/o/r/actions/runs/29318959841/job/1"
+          },
+          {
+            "__typename": "CheckRun",
+            "name": "Validate plugins",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "detailsUrl": "https://github.com/o/r/actions/runs/29318959841/job/2"
           }
         ]
       }
@@ -49,7 +72,7 @@
   "expect": {
     "verdict": "unusable",
     "ci": "pending",
-    "needle": "carry no readable total_count",
+    "needle": "check-runs: page(s) 2 of 2 carry no readable total_count",
     "promoted": false
   }
 }

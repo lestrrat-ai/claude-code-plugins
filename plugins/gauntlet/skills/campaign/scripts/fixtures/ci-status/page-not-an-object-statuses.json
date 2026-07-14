@@ -1,11 +1,12 @@
 {
-  "why": "GITHUB'S OWN COUNT IS ABSENT, so the completeness test CANNOT BE MADE \u2014 and a fail-closed rule that cannot fire is not a rule, it is a hole with a comment above it. The tool used to read `total_count` off page one; it now asks EVERY page, and this response's only page states none. An absent count is NOT a count of zero: 'we cannot tell whether the read was short' has exactly one safe answer, and it is not green. Same reasoning as a rollup response with no headRefOid",
+  "why": "A LATER STATUS PAGE IS NOT AN OBJECT \u2014 the crash-where-a-verdict-was-owed, on the other family. Its own marker rule cannot save it: the refusal has to happen while the pages are being READ",
   "required_set": "none",
   "pr": "35",
   "api": {
     "check-runs": {
       "response": [
         {
+          "total_count": 1,
           "check_runs": [
             {
               "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
@@ -25,10 +26,16 @@
       "response": [
         {
           "sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
-          "state": "pending",
-          "total_count": 0,
-          "statuses": []
-        }
+          "state": "success",
+          "total_count": 2,
+          "statuses": [
+            {
+              "context": "ci/jenkins/pr-head",
+              "state": "success"
+            }
+          ]
+        },
+        "rate limited"
       ]
     },
     "rollup": {
@@ -41,6 +48,16 @@
             "status": "COMPLETED",
             "conclusion": "SUCCESS",
             "detailsUrl": "https://github.com/o/r/actions/runs/29318959841/job/1"
+          },
+          {
+            "__typename": "StatusContext",
+            "context": "ci/jenkins/pr-head",
+            "state": "SUCCESS"
+          },
+          {
+            "__typename": "StatusContext",
+            "context": "ci/circleci",
+            "state": "SUCCESS"
           }
         ]
       }
@@ -49,7 +66,7 @@
   "expect": {
     "verdict": "unusable",
     "ci": "pending",
-    "needle": "carry no readable total_count",
+    "needle": "status: page(s) 2 of 2 are not objects",
     "promoted": false
   }
 }

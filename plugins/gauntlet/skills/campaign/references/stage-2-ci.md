@@ -104,14 +104,23 @@ the **slurped** pages — so a marker cannot exist for a fetch that did not run:
 #     repeated on every page, so the SLURPED rows are checked against it and a SHORT READ is a HARD ERROR —
 #     never a green with a footnote. A count we cannot READ is refused too: a rule that cannot fire is not
 #     a rule. Same test, same reason, in (2).
+#     AND IT IS ASKED OF **EVERY PAGE, NOT OF PAGE ONE** — see "THE PAGES OF ONE RESPONSE MUST AGREE", below.
+#     Reading `.[0].total_count` was a FALSE GREEN: page one can say the read is complete while page two, of
+#     the SAME response, says rows are missing. Every page must STATE the fact and every page must state the
+#     SAME fact; a page that omits it is a page we cannot read, never a page that agrees.
 gh api --paginate --slurp "repos/<owner>/<repo>/commits/<head_sha>/check-runs" | jq -c '
-  [.[].check_runs[]] as $r | (.[0].total_count) as $total
-  | if ($total|type) != "number" or ($total|floor) != $total
-    then error("check-runs: the response carries no integer total_count — that is the count GitHub itself
-      reports for this commit, and it is the ONLY thing we can check our read against. We cannot tell a
-      complete read from a truncated one, and cannot-tell is not a green.")
-    elif $total != ($r|length)
-    then error("check-runs: total_count=\($total) but the slurped read collected \($r|length) row(s) —
+  [.[].check_runs[]] as $r | [.[].total_count] as $totals
+  | if ($totals|length) == 0 or ([$totals[] | select((type) == "number") | select((floor) == .)]|length) != ($totals|length)
+    then error("check-runs: a PAGE carries no integer total_count — that is the count GitHub itself
+      reports for this commit, on EVERY page, and it is the ONLY thing we can check our read against. A page
+      that does not state it is a page we cannot read: we cannot tell a complete read from a truncated one,
+      and cannot-tell is not a green.")
+    elif ($totals|unique|length) != 1
+    then error("check-runs: THE PAGES DISAGREE about total_count (\($totals|tostring)) — one response, one
+      commit, and it contradicts ITSELF. Believing page one is the bug: it said the read was complete while
+      another page said rows were missing, and the missing row could be the FAILING one.")
+    elif $totals[0] != ($r|length)
+    then error("check-runs: total_count=\($totals[0]) but the slurped read collected \($r|length) row(s) —
       EVIDENCE IS MISSING. A row GitHub holds for this commit is not in our hands, and it could be the
       FAILING one. No verdict is derived from a read we KNOW is short.")
     else . end
@@ -122,22 +131,34 @@ gh api --paginate --slurp "repos/<owner>/<repo>/commits/<head_sha>/check-runs" |
     {row:"source", source:"check-runs", sha:(($r[0].head_sha) // "-"), count:($r|length|tostring)}'
 
 # (2) COMMIT STATUSES — the legacy family, which (1) CANNOT SEE.
-#     The response carries the commit ONCE, at the TOP LEVEL (`.sha`) — not on each status — and carries it
-#     EVEN WHEN `.statuses` IS EMPTY. That is what makes the marker below able to PROVE a zero-status
-#     commit: {"source":"status","sha":"<GITHUB'S>","count":"0"} says "we asked this commit, and it has
-#     none". Again GITHUB'S value, NEVER a literal we substitute in.
+#     The response carries the commit ONCE PER PAGE, at the TOP LEVEL (`.sha`) — not on each status — and
+#     carries it EVEN WHEN `.statuses` IS EMPTY. That is what makes the marker below able to PROVE a
+#     zero-status commit: {"source":"status","sha":"<GITHUB'S>","count":"0"} says "we asked this commit, and
+#     it has none". Again GITHUB'S value, NEVER a literal we substitute in.
+#     AND `.sha` IS THE SECOND FACT EVERY PAGE REPEATS, so it is reconciled ACROSS the pages exactly like
+#     `total_count`. Taking `.[0].sha` and stamping it on every row was FABRICATION: a page whose own `.sha`
+#     said its rows belong to ANOTHER commit had them relabelled with the head we asked for, and the
+#     superseded-response rule (VERIFY, below) can only ever catch that on page one.
 #     THIS is the family that carries the failing Jenkins status, so a short read HERE is precisely the
 #     evidence gap this section exists to refuse. It gets the SAME completeness test as (1), and the test
 #     is APPLIED PER FAMILY: one family checked and the other not is one family short-read in silence.
 gh api --paginate --slurp "repos/<owner>/<repo>/commits/<head_sha>/status" | jq -c '
-  [.[].statuses[]] as $s | (.[0].sha) as $sha | (.[0].total_count) as $total
-  | if ($total|type) != "number" or ($total|floor) != $total
-    then error("status: the response carries no integer total_count — see (1): we cannot tell a complete
-      read from a truncated one, and cannot-tell is not a green.")
-    elif $total != ($s|length)
-    then error("status: total_count=\($total) but the slurped read collected \($s|length) row(s) —
+  [.[].statuses[]] as $s | [.[].sha] as $shas | [.[].total_count] as $totals
+  | if ($totals|length) == 0 or ([$totals[] | select((type) == "number") | select((floor) == .)]|length) != ($totals|length)
+    then error("status: a PAGE carries no integer total_count — see (1): a page that does not state it is a
+      page we cannot read, and we cannot tell a complete read from a truncated one.")
+    elif ([$shas[] | select((type) == "string") | select((length) > 0)]|length) != ($shas|length)
+    then error("status: a PAGE carries no sha — GitHub names the commit on EVERY page, even at zero
+      statuses, and a page that does not name it cannot say which commit its rows are about.")
+    elif ($shas|unique|length) != 1 or ($totals|unique|length) != 1
+    then error("status: THE PAGES DISAGREE about the commit or the count (sha \($shas|tostring), total
+      \($totals|tostring)) — one response contradicting ITSELF. Believing page one is the bug: its value got
+      STAMPED on rows another page said belong to a different commit.")
+    elif $totals[0] != ($s|length)
+    then error("status: total_count=\($totals[0]) but the slurped read collected \($s|length) row(s) —
       EVIDENCE IS MISSING, and the status we did not get could be the FAILING Jenkins one.")
     else . end
+  | ($shas[0]) as $sha
   | ($s[] | {row:"status", sha:$sha, context:.context, state:(.state|ascii_upcase)}),
     {row:"source", source:"status", sha:($sha // "-"), count:($s|length|tostring)}'
 
@@ -246,6 +267,19 @@ machine-read convention as `state.jsonl` and the review plan/progress files (`fi
   wearing a footnote. **A note beside a green is not a disclosure, it is a trapdoor** — the tool used to
   print exactly that, and it shipped a green anyway. **And a count we cannot READ is refused too** (absent,
   or not an integer): a fail-closed rule that cannot fire is not a rule.
+- **THE PAGES OF ONE RESPONSE MUST AGREE — ASK EVERY PAGE, NEVER PAGE ONE.** The rule above is worthless if
+  it is asked of `.[0]` alone, and that is exactly how it was written. **A response can contradict ITSELF**:
+  page one reporting `total_count` equal to the rows collected while **page two of the same response reports
+  more**. Both families derived **`green`** from that — page two's own metadata said the read was **short**,
+  and nothing looked at it. So **every** per-commit fact GitHub repeats on **every** page is reconciled
+  across them: `total_count` in both families, and **the status family's `.sha`** (taking page one's and
+  stamping it on every row **fabricated the provenance** of rows a later page said belonged to a *different
+  commit* — the superseded-response rule under VERIFY can only ever see page one). A page that **omits** the
+  fact is a page we **cannot read**, never a page that agrees; an absent count is **not** a count of zero.
+  **This is the same defect as "the two sources must AGREE", one level in** — two things that state the same
+  fact, and the tool believing whichever one it happened to read first. `ci-status.py` reconciles them at a
+  single seam (`read_pages`/`agreed`), which every paginated fetch must pass through, so a fetcher **cannot**
+  parse a page itself and therefore cannot forget.
 - **Honest limits, and they are NOT closed by the above.** Say them, and never claim more:
   - `/check-runs` is capped at the **1000 most recent check suites**. `--paginate` defeats page-size
     truncation and the `total_count` test defeats a short read — **neither proves completeness at that

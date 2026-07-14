@@ -1,11 +1,12 @@
 {
-  "why": "GITHUB'S OWN COUNT IS ABSENT, so the completeness test CANNOT BE MADE \u2014 and a fail-closed rule that cannot fire is not a rule, it is a hole with a comment above it. The tool used to read `total_count` off page one; it now asks EVERY page, and this response's only page states none. An absent count is NOT a count of zero: 'we cannot tell whether the read was short' has exactly one safe answer, and it is not green. Same reasoning as a rollup response with no headRefOid",
+  "why": "A LATER PAGE IS NOT AN OBJECT. GitHub returns one object per page; anything else is a response we cannot read. It used to reach `.get` and raise AttributeError \u2014 a CRASH, which is NOT a refusal and NOT a verdict: the tool had no opinion where one was owed, and a caller reading only the exit status learns nothing. Refused now, and never SKIPPED: skipping the page is how a page saying 'there are more rows' stops being read",
   "required_set": "none",
   "pr": "35",
   "api": {
     "check-runs": {
       "response": [
         {
+          "total_count": 2,
           "check_runs": [
             {
               "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
@@ -18,7 +19,8 @@
               "details_url": "https://github.com/o/r/actions/runs/29318959841/job/1"
             }
           ]
-        }
+        },
+        "rate limited"
       ]
     },
     "status": {
@@ -41,6 +43,13 @@
             "status": "COMPLETED",
             "conclusion": "SUCCESS",
             "detailsUrl": "https://github.com/o/r/actions/runs/29318959841/job/1"
+          },
+          {
+            "__typename": "CheckRun",
+            "name": "Validate plugins",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "detailsUrl": "https://github.com/o/r/actions/runs/29318959841/job/2"
           }
         ]
       }
@@ -49,7 +58,7 @@
   "expect": {
     "verdict": "unusable",
     "ci": "pending",
-    "needle": "carry no readable total_count",
+    "needle": "check-runs: page(s) 2 of 2 are not objects",
     "promoted": false
   }
 }

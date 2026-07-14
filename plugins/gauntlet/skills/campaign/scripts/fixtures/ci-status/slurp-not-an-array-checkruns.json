@@ -1,5 +1,5 @@
 {
-  "why": "THE RESPONSE IS NOT THE SHAPE WE ASKED FOR. `--slurp` yields an ARRAY of pages; this one is a bare OBJECT — the answer a fetch gives when --slurp was dropped. The row loop would iterate the object's KEYS and crash on the first `.get`, and a crash is NOT a verdict. Refuse the response instead. This guard was real and PINNED BY NOTHING: deleting it left every fixture green",
+  "why": "THE RESPONSE IS NOT THE SHAPE WE ASKED FOR. `--slurp` yields an ARRAY of pages; this one is a bare OBJECT \u2014 the answer a fetch gives when --slurp was dropped. The row loop would iterate the object's KEYS and crash on the first `.get`, and a crash is NOT a verdict. Refuse the response instead. This guard was real and PINNED BY NOTHING: deleting it left every fixture green",
   "required_set": "none",
   "pr": "35",
   "api": {
@@ -48,7 +48,7 @@
   "expect": {
     "verdict": "unusable",
     "ci": "pending",
-    "needle": "check-runs: expected an array of pages",
+    "needle": "check-runs: expected a NON-EMPTY array of pages",
     "promoted": false
   }
 }

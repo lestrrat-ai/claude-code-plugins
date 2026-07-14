@@ -58,10 +58,21 @@ GitHub ITSELF told us was short, called green". Two places could produce it, and
   * **A SHORT READ.** Both REST families return GitHub's OWN `total_count` for the commit — the number of
     rows it holds, ACROSS PAGES (verified: 27 check runs at `per_page=5`, six pages, every page reporting
     `total_count=27`). If the paginated read collected FEWER, a row GitHub holds is NOT IN OUR HANDS, and
-    the row that is missing could be the FAILING one. `require_complete()` refuses. It used to write a NOTE
+    the row that is missing could be the FAILING one. `read_pages()` refuses. It used to write a NOTE
     and return green — a green computed from evidence the tool KNEW had a hole in it, with the hole
     politely printed beside it. A count we cannot READ (`total_count` absent, or not an integer) is refused
     for the same reason `headRefOid` is: a fail-closed rule that cannot fire is not a rule.
+
+  * **AND A RESPONSE THAT CONTRADICTS *ITSELF* ACROSS ITS PAGES.** The rule above was asked of `pages[0]`
+    ALONE, which is not the same rule at all: page one can say the read is COMPLETE while page two — of the
+    same response, from the same GitHub — says rows are MISSING. A reviewer built exactly that, in both
+    families, and `derive()` returned GREEN with the short read printed in the evidence it had just fetched.
+    Every per-commit fact GitHub repeats on every page (`total_count`; the status family's `.sha`) is now
+    reconciled ACROSS the pages by `agreed()`, and every paginated read goes through the ONE door that does
+    it (`read_pages`) — a fetcher cannot parse pages itself, so it cannot forget. **THIS IS THE SAME BUG AS
+    THE ONE BELOW, and that is the whole lesson: the tool reconciled REST against the rollup and did not
+    reconcile a response against ITSELF.** An absent count is not a count of zero; a page one did not read is
+    not a page that agreed.
   * **A ROLLUP `StatusContext`.** The rollup returns two entry types; this tool kept `CheckRun` and DROPPED
     the rest ON THE FLOOR. A `StatusContext` in state `EXPECTED` is *a REQUIRED status check that has not
     been posted yet* — and no VERDICT source can see it: the REST commit-status API has no `EXPECTED` state,
@@ -377,8 +388,8 @@ RULES = {
     "rollup-status-covered": "a rollup `StatusContext` the REST status family CANNOT SEE fails closed — the two sources DISAGREE about what exists (NOT the registration gap's closure: see `required-set-is-passed`)",
     # EXISTENCE IS NOT AGREEMENT, and the rule above only ever asked about existence. THE THREE BELOW ARE THE
     # OTHER HALF: the two sources report the same check, and they say DIFFERENT THINGS ABOUT ITS STATE. One
-    # rule BODY (`agree_or_refuse`) and TWO APPLICATIONS, marked separately for the reason `checkruns-complete`
-    # and `status-complete` are — a body no family calls is not a rule, and one marker over two call sites
+    # rule BODY (`agree_or_refuse`) and TWO APPLICATIONS, marked separately for the reason the two
+    # `*-through-the-seam` rules are — a body no family calls is not a rule, and one marker over two call sites
     # reports a rule PINNED while half of what it guards is unguarded.
     "sources-agree": "two sources that CONTRADICT each other about one check's state FAIL CLOSED — untrustworthy evidence is not green, and the conflict is NEVER resolved by preferring the source we happened to read first",
     "status-agrees": "the commit-status family IS SUBJECT to that test — rollup `FAILURE` beside REST `success` for one context was GREEN",
@@ -389,7 +400,28 @@ RULES = {
     "head-moved-is-not-evidence": "a MOVED head FAILS CLOSED — evidence about a commit that is not the head is not evidence about the PR",
     "fetch-failure-is-not-evidence": "a `gh` call that FAILS yields NO verdict from evidence, and promotes NOTHING",
     "verdict-from-snapshot": "the verdict comes from ci-snapshot.evaluate() over the PROMOTED BYTES — never from what we think we fetched",
-    "evidence-count-known": "GitHub's own total_count MUST be readable — a completeness rule that cannot fire is not a rule",
+    # --- THE PAGES OF ONE RESPONSE ARE TWO SOURCES, AND THEY MUST AGREE (`read_pages` / `agreed`) ---------
+    # The FIFTH false green, and the same shape as the other four: two sources that disagree about a fact,
+    # and the tool trusts one of them. Here they are two PAGES of one response. Page one said `total_count`
+    # matched the rows collected, page two said GitHub held more, and `derive()` returned GREEN — in both
+    # families, and again when page two's count was ABSENT, and again when it was a STRING.
+    #
+    # **THESE FOUR REPLACE FIVE OLDER NAMES, AND NOTHING THEY PINNED HAS BEEN GIVEN UP** — say that out loud,
+    # because a rule that vanishes from this dict looks exactly like a rule that was dropped:
+    #   * `evidence-count-known` -> `page-fact-known`, which asks it of EVERY page instead of page one, and of
+    #     the status `.sha` as well as the count (the sha was read off page one and STAMPED on every row);
+    #   * `checkruns-pages-are-an-array` + `status-pages-are-an-array` -> `pages-are-an-array` (ONE body now,
+    #     because there is ONE page-reader) + `page-is-an-object`, which is new: a non-object page used to
+    #     reach `.get` and CRASH, and a crash is not a refusal;
+    #   * `checkruns-complete` + `status-complete` -> `checkruns-through-the-seam` + `status-through-the-seam`.
+    #     The per-family application is still ITS OWN RULE with ITS OWN MARKER and ITS OWN FIXTURES — that
+    #     lesson (a body no family CALLS is not a rule; two call sites must never share one marker) is not
+    #     weakened but STRENGTHENED: each weakening now bypasses the whole page-reader for that family, which
+    #     is the code this file actually shipped, and that family's fixtures must catch it alone.
+    "pages-are-an-array": "a `--slurp` that did not yield a NON-EMPTY ARRAY is a fetch we cannot read — never rows to iterate, and never zero pages to quantify over vacuously",
+    "page-is-an-object": "EVERY page is an OBJECT — a page we cannot read used to reach `.get` and CRASH, and a crash is not a refusal: no verdict was reached at all",
+    "page-fact-known": "EVERY page must STATE the facts GitHub repeats on all of them (`total_count`; the status `.sha`) — a page that does not is not a page that agrees, and an absent count is NOT a count of zero",
+    "pages-agree": "the PAGES OF ONE RESPONSE must not CONTRADICT each other — page 1 saying the read is complete while page 2 says rows are missing was GREEN, and the tool that reconciles REST against the rollup was not reconciling a response against ITSELF",
     "evidence-is-complete": "a read SHORTER than GitHub's own total_count FAILS CLOSED — the row we did not get could be the failing one",
     # THE RULE BODY AND ITS APPLICATION ARE TWO RULES, and the two below are the second kind. A guard is not
     # enforced by EXISTING; it is enforced by being CALLED, once per family — and a call site nothing pins is
@@ -397,12 +429,8 @@ RULES = {
     # removed and NOTHING went red, because the body's own markers were killed by the OTHER family's fixture.
     # Never let two applications of one rule share one marker: the harness cannot tell them apart, and it
     # will report a rule PINNED while half of what it guards is unguarded.
-    "checkruns-complete": "the check-run family IS SUBJECT to the completeness test — a body nobody calls is not a rule",
-    "status-complete": "the commit-status family IS SUBJECT to it TOO — this is the family that carries the failing Jenkins status",
-    # A RESPONSE OF THE WRONG SHAPE IS A RESPONSE WE CANNOT READ. Each of these three was pinned by NOTHING
-    # until the audit below deleted it alone and watched the suite stay green.
-    "checkruns-pages-are-an-array": "a `--slurp` that did not yield an ARRAY is a fetch we cannot read — never rows to iterate",
-    "status-pages-are-an-array": "the same, for the family /check-runs cannot see",
+    "checkruns-through-the-seam": "the check-run family reads its pages THROUGH `read_pages` — the weakening is the raw response, page one believed and the rest unread, which is the code that shipped",
+    "status-through-the-seam": "the commit-status family goes through the SAME door — and this is the family that carries the failing Jenkins status",
     "rollup-is-an-object": "`gh pr view --json` returns an OBJECT — anything else is a response we cannot read",
     # ANYTHING THIS TOOL ACCEPTS, IT MUST USE OR REFUSE. `--repo` was accepted and honoured by TWO of the
     # three fetchers: the REST pair put it in the URL, and the rollup ran `gh pr view <pr>` — which resolves
@@ -619,43 +647,142 @@ def s(value: object) -> object:
     return str(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else value
 
 
-def require_complete(source: str, pages: object, collected: int) -> None:
-    """GITHUB TELLS US HOW MANY ROWS IT HOLDS. If we collected fewer, WE KNOW our evidence has a hole in it —
-    and the row that is not in our hands could be the FAILING one. That is not a green, and it is not a
-    footnote beside one: it is a fetch we cannot use.
+# --- A PAGINATED RESPONSE IS A SOURCE THAT CAN CONTRADICT *ITSELF*, AND IT DID -----------------------
+#
+# **THE FIFTH FALSE GREEN IN THIS FILE, AND THE FIFTH TIME IT WAS THE SAME SHAPE: TWO SOURCES THAT DISAGREE
+# ABOUT A FACT, AND THE TOOL TRUSTS ONE OF THEM.** The other four were across sources — REST vs the rollup,
+# a family never read, a head that moved. This one is INSIDE one response: `--slurp` hands us an ARRAY OF
+# PAGES, GitHub repeats the per-commit facts on EVERY page, and the tool read them off `pages[0]` and never
+# looked at the rest. A reviewer put `total_count: 2` on page one (matching the rows collected) and
+# `total_count: 7` on page two, and `derive()` returned **GREEN** — with page two's own metadata saying five
+# rows GitHub holds were not in our hands. It did it again with a page-two `total_count` that was ABSENT, and
+# again with one that was a STRING. Both REST families. The tool that reconciles REST against the rollup was
+# not reconciling a response against ITSELF.
+#
+# AND `total_count` WAS NOT THE ONLY FACT REPEATED ON EVERY PAGE. The status response carries the COMMIT
+# (`.sha`) at the top level of every page, and `fetch_statuses` took page one's and STAMPED IT ON EVERY ROW.
+# Put the SUPERSEDED sha on page two and its rows — rows GitHub says belong to ANOTHER COMMIT — went into the
+# artifact wearing the head sha we asked for. That is not a short read; it is FABRICATED EVIDENCE, and it is
+# the `status-sha-from-response` rule (and `superseded-status-response.json` with it) defeated by moving the
+# bad value one page along.
+#
+# **SO THE RECONCILIATION MOVES TO THE SEAM, WHERE IT CANNOT BE FORGOTTEN.** `read_pages()` is now the ONLY
+# way rows enter this tool from a paginated read — the same move `repo_scoped()` made for the repository. A
+# fetcher does not get to parse pages itself, so it cannot forget to check them; it declares WHICH per-commit
+# facts its response repeats (`PAGE_FACTS`) and the seam proves, for every one of them, that EVERY page
+# states it, readably, and that all the pages SAY THE SAME THING. A new paginated fetcher gets the rule by
+# existing.
+#
+# `total_count` is the count for the WHOLE COMMIT, not for the page — every page repeats it (verified live:
+# a commit with 27 check runs read at `per_page=5` returns six pages, each saying `total_count=27`), which is
+# what makes both halves meaningful: the pages must agree, and the agreed value must equal the rows collected
+# across ALL pages, which is exactly what `--slurp` gives us.
 
-    This rule REPLACES a note. The tool used to record `total_count=3 but collected 2` in a `notes` list and
-    return GREEN anyway — a verdict computed from evidence it had just finished proving incomplete, with the
-    proof printed politely underneath. Disclosure is not a substitute for refusal. **The only honest thing to
-    do with evidence you KNOW is missing a row is to REFUSE TO DERIVE A VERDICT FROM IT.**
+# The per-commit facts each REST family's response repeats on EVERY page: (field, the type it must be).
+# **A FACT LISTED HERE IS RECONCILED; A FACT NOT LISTED IS NOT READ AT ALL.** The status response's top-level
+# `.state` is deliberately absent: this tool never reads it (a commit with zero statuses reports
+# `{"state":"pending"}` — an absence read as a verdict), and reconciling a value nothing consumes would be a
+# rule that can only ever wedge an honest PR. Add a field here the moment anything starts READING it.
+PAGE_FACTS = {
+    "check-runs": (("total_count", int),),
+    "status": (("total_count", int), ("sha", str)),
+}
 
-    `total_count` is the count for the WHOLE COMMIT, not for the page — every page repeats it (verified live:
-    a commit with 27 check runs read at `per_page=5` returns six pages, each saying `total_count=27`), so the
-    comparison is against the rows collected across ALL pages, which is exactly what `--slurp` gives us.
 
-    AND A COUNT WE CANNOT READ IS ITSELF A REFUSAL. If `total_count` is absent or not an integer, the
-    comparison below CANNOT BE MADE — and a fail-closed rule that cannot fire is not a rule, it is a hole
-    with a comment above it. Same reasoning, exactly, as a rollup response with no `headRefOid`.
+def agreed(source: str, pages: list[dict], field: str, kind: type) -> object:
+    """THE ONE PLACE A FACT REPEATED ACROSS PAGES IS RECONCILED. Every page must STATE it, readably, and every
+    page must state THE SAME ONE.
+
+    A PAGE THAT DOES NOT STATE IT IS NOT A PAGE THAT AGREES WITH US. An absent value is not a benign value —
+    this file already knows that about `headRefOid` and about a rollup `state`, and the knowledge simply never
+    reached page two. Skipping the pages that "have nothing to say" is how a truncated read reports a complete
+    one: the page that would have told you rows were missing is exactly the page you skipped.
+
+    AND TWO PAGES THAT DISAGREE ARE TWO SOURCES THAT DISAGREE. It does not matter that they arrived in one
+    response — one of them is wrong, we cannot tell which, and evidence we cannot reconcile is not evidence.
+    The conflict is NOT resolved by taking the first page (which is what the bug did), nor the last, nor the
+    largest: the same rule, and the same reason, as `agree_or_refuse`.
     """
-    page = pages[0] if isinstance(pages, list) and pages and isinstance(pages[0], dict) else {}
-    total = page.get("total_count")
-    # MUTATE:evidence-count-known:total = collected
-    if isinstance(total, bool) or not isinstance(total, int):
+    stated = [page.get(field) for page in pages]
+    # MUTATE:page-fact-known:stated = [v for v in stated if isinstance(v, kind) and not isinstance(v, bool)] or stated
+    if any(isinstance(v, bool) or not isinstance(v, kind) for v in stated):
         raise FetchError(
-            f"{source}: the response carries no integer total_count ({total!r}) — that is GitHub's own count "
-            f"of what it holds for this commit, and it is the ONLY thing we can check our read against. "
-            f"Without it we cannot tell a complete read from a truncated one, and 'we cannot tell' is not a "
-            f"green."
+            f"{source}: page(s) "
+            + ", ".join(str(i + 1) for i, v in enumerate(stated)
+                        if isinstance(v, bool) or not isinstance(v, kind))
+            + f" of {len(pages)} carry no readable {field} ({', '.join(repr(v) for v in stated)}) — GitHub "
+            f"repeats it on EVERY page, so a page that does not state it is a page we cannot read. An absent "
+            f"count is NOT a count of zero and an absent sha is NOT this commit: a fail-closed rule that "
+            f"cannot fire is not a rule, and the page we waved through is the one that would have told us."
         )
-    # MUTATE:evidence-is-complete:pass
-    if total != collected:
+    # MUTATE:pages-agree:stated = stated[:1]
+    if len(set(stated)) != 1:
         raise FetchError(
-            f"{source}: GitHub reported total_count={total} but the paginated read collected {collected} "
-            f"row(s) — EVIDENCE IS MISSING. A row GitHub holds for this commit is not in our hands, and it "
-            f"could be the FAILING one. No verdict is derived from a read we KNOW is short. "
+            f"{source}: THE PAGES OF ONE RESPONSE DISAGREE ABOUT {field} — {', '.join(f'page {i + 1} says {v!r}' for i, v in enumerate(stated))}. "
+            f"GitHub repeats this fact on every page, so the pages cannot both be right, and a response that "
+            f"contradicts ITSELF is not evidence about this PR. It is NOT resolved by believing page one: "
+            f"that is precisely the bug — page one said the read was complete while page two said rows were "
+            f"missing, and the missing row could be the FAILING one."
+        )
+    return stated[0]
+
+
+def read_pages(fetch: Fetch, source: str, argv: list[str], rows_key: str) -> tuple[list[dict], dict]:
+    """**EVERY PAGINATED READ IN THIS TOOL ENTERS HERE, AND THERE IS NO OTHER DOOR.**
+
+    A fetcher gets its rows from this function or it gets no rows at all — which is what makes the page rules
+    impossible to forget rather than merely easy to remember. It returns the rows collected across ALL pages,
+    and the per-commit facts (`PAGE_FACTS`) every page agreed on.
+
+    THE COMPLETENESS TEST LIVES HERE TOO, and it REPLACED A NOTE. The tool used to record `total_count=3 but
+    collected 2` in a `notes` list and return GREEN anyway — a verdict computed from evidence it had just
+    finished proving incomplete, with the proof printed politely underneath. Disclosure is not a substitute
+    for refusal. **The only honest thing to do with evidence you KNOW is missing a row is to REFUSE TO DERIVE
+    A VERDICT FROM IT.**
+    """
+    pages = fetch(source, argv)
+    # A `--slurp` that did not yield an ARRAY is a response we cannot read — and the row loop below would
+    # then iterate an object's KEYS and blow up on the first `.get`, which is a CRASH where a verdict was
+    # owed. An EMPTY array is refused for the same reason a missing `total_count` is: `--paginate --slurp`
+    # over a real commit returns at least one page, so zero pages is a response we do not understand, and it
+    # would leave every page rule below quantifying over the empty set — vacuously true, which is the shape
+    # of every defect in this file.
+    # MUTATE:pages-are-an-array:pass
+    if not isinstance(pages, list) or not pages:
+        raise FetchError(
+            f"{source}: expected a NON-EMPTY array of pages from --slurp, got "
+            f"{type(pages).__name__}{'(empty)' if isinstance(pages, list) else ''} — a response we cannot "
+            f"read is not a response with nothing in it."
+        )
+    # AND EVERY PAGE IS AN OBJECT. A page that is not one used to reach `.get` and raise AttributeError — a
+    # CRASH, which is not a refusal and not a verdict: the tool simply had no opinion where one was owed.
+    # MUTATE:page-is-an-object:pass
+    if not all(isinstance(page, dict) for page in pages):
+        raise FetchError(
+            f"{source}: page(s) "
+            + ", ".join(str(i + 1) for i, p in enumerate(pages) if not isinstance(p, dict))
+            + f" of {len(pages)} are not objects — GitHub returns one object per page, and a page we cannot "
+            f"read carries facts we cannot check. It is refused, never skipped: skipping it is how a page "
+            f"that says 'there are more rows' stops being read."
+        )
+
+    rows = [row for page in pages for row in page.get(rows_key) or []]
+    facts = {field: agreed(source, pages, field, kind) for field, kind in PAGE_FACTS[source]}
+
+    # WHAT WE COLLECTED MUST BE WHAT GITHUB SAYS IT HOLDS — across every page, now that every page has been
+    # made to say the same number. A short read is a hole we KNOW about, and a hole we know about is never
+    # green. (This is not the marker's `count` rule, which asks a DIFFERENT question, downstream: "did every
+    # row this fetch produced survive into the file?")
+    # MUTATE:evidence-is-complete:pass
+    if facts["total_count"] != len(rows):
+        raise FetchError(
+            f"{source}: GitHub reported total_count={facts['total_count']} but the paginated read collected "
+            f"{len(rows)} row(s) — EVIDENCE IS MISSING. A row GitHub holds for this commit is not in our "
+            f"hands, and it could be the FAILING one. No verdict is derived from a read we KNOW is short. "
             f"(/check-runs is also capped at the 1000 most recent check suites; --paginate defeats page-size "
             f"truncation, and this count defeats a short read — neither proves completeness at that scale.)"
         )
+    return rows, facts
 
 
 def fetch_check_runs(fetch: Fetch, head_sha: str) -> tuple[list[dict], dict]:
@@ -665,17 +792,17 @@ def fetch_check_runs(fetch: Fetch, head_sha: str) -> tuple[list[dict], dict]:
     which is what lets the marker's `count` be the total ACROSS pages rather than the last page's.
 
     THE REPOSITORY IS `REPO_SLOT`, NOT AN ARGUMENT — see `repo_scoped`. No fetcher is trusted to remember it.
+
+    AND THE PAGES ARE NOT PARSED HERE EITHER — see `read_pages`, the one door a paginated read comes through.
+    The weakening on the call below is this family going back OUT of that door: the raw response, flattened,
+    with page one believed and every other page unread. That is the code this file shipped, verbatim, and it
+    is a false green on every page rule at once — which is why the marker sits on the CALL and not only on the
+    rules it reaches. A body no family invokes is not a rule (`truncated-checkruns.json` learned that here).
     """
-    pages = fetch("check-runs", [
+    # MUTATE:checkruns-through-the-seam:runs = [r for page in fetch("check-runs", ["gh", "api", "--paginate", "--slurp", f"repos/{REPO_SLOT}/commits/{head_sha}/check-runs"]) for r in (page or {}).get("check_runs", [])]
+    runs, _facts = read_pages(fetch, "check-runs", [
         "gh", "api", "--paginate", "--slurp", f"repos/{REPO_SLOT}/commits/{head_sha}/check-runs",
-    ])
-    # A `--slurp` that did not yield an ARRAY is a response we cannot read — and the row loop below would
-    # then iterate an object's KEYS and blow up on the first `.get`, which is a CRASH where a verdict was
-    # owed. Pinned by `slurp-not-an-array-checkruns.json`; it was pinned by nothing.
-    # MUTATE:checkruns-pages-are-an-array:pass
-    if not isinstance(pages, list):
-        raise FetchError(f"check-runs: expected an array of pages from --slurp, got {type(pages).__name__}")
-    runs = [r for page in pages for r in (page or {}).get("check_runs", [])]
+    ], "check_runs")
 
     rows = []
     for r in runs:
@@ -704,21 +831,6 @@ def fetch_check_runs(fetch: Fetch, head_sha: str) -> tuple[list[dict], dict]:
     marker_sha = s(runs[0].get("head_sha")) if runs else NO_OID
     marker = {"row": "source", "source": "check-runs", "sha": marker_sha, "count": str(len(rows))}
 
-    # WHAT WE COLLECTED MUST BE WHAT GITHUB SAYS IT HOLDS. A short read is a hole we KNOW about, and a hole
-    # we know about is never green — see `require_complete`. (This is not the marker's `count` rule, which
-    # asks a DIFFERENT question, downstream: "did every row this fetch produced survive into the file?")
-    #
-    # **THE CALL IS ITS OWN RULE, MARKED SEPARATELY FROM THE ONE IT CALLS — and here is why.** The rule
-    # BODY lives in `require_complete` and is marked there (`evidence-count-known`, `evidence-is-complete`).
-    # But a body no family CALLS is a rule that does not run, and the two call sites were INDISTINGUISHABLE
-    # to the mutation harness: delete THIS one and the body's markers still died on the OTHER family's
-    # fixture, so the matrix stayed green while this family had quietly stopped being checked. That is the
-    # false green of this whole file, committed by its own test harness. One marker per call site, one
-    # fixture per call site: `truncated-checkruns.json` kills this one, `truncated-statuses.json` kills the
-    # other, and NEITHER can stand in for the other.
-    # MUTATE:checkruns-complete:pass
-    require_complete("check-runs", pages, len(rows))
-
     # The FAMILY IS READ, and what it returned is what goes in the artifact. A family never read reports
     # NOTHING, and "nothing" parses as "nothing wrong" — the weakening below is that family going dark.
     # MUTATE:both-families-checkruns:return [], {"row": "source", "source": "check-runs", "sha": NO_OID, "count": "0"}
@@ -731,26 +843,39 @@ def fetch_statuses(fetch: Fetch, head_sha: str) -> tuple[list[dict], dict]:
     A failing Jenkins/CircleCI commit status is genuinely INVISIBLE to `/check-runs`. Read only one family
     and the other's failures are simply ABSENT from the evidence — and an absence parses as "nothing wrong".
 
-    The response carries the commit ONCE, at the TOP LEVEL, and carries it EVEN WHEN `.statuses` IS EMPTY.
-    That is what lets the marker PROVE a zero-status commit: `{"source":"status","sha":"<GitHub's>",
+    The response carries the commit ONCE PER PAGE, at the TOP LEVEL, and carries it EVEN WHEN `.statuses` IS
+    EMPTY. That is what lets the marker PROVE a zero-status commit: `{"source":"status","sha":"<GitHub's>",
     "count":"0"}` says *we asked THIS COMMIT, and it has none* — a FACT, where an absent section says
     nothing at all.
 
+    **AND IT IS THE COMMIT *EVERY* PAGE NAMES, WHICH IS WHY THE SHA COMES OUT OF `read_pages` AND NOT OUT OF
+    PAGE ONE.** It used to be read off `pages[0]` and stamped onto every row — so a page whose own `.sha` said
+    its rows belonged to a DIFFERENT commit had them relabelled with the head we asked for, and the artifact
+    then carried evidence we had FABRICATED the provenance of. `superseded-status-response.json` catches that
+    on page one and could never have caught it on page two; `agreed()` is what makes the pages say it once.
+
     **NEVER read this response's own `.state` as a verdict.** A commit carrying ZERO statuses reports
     `{"state":"pending","total_count":0}` — verified live against this repo on a commit whose checks had all
-    passed. An absence read as a verdict is a lie in both directions, so `.state` is not read here at all.
-    """
-    pages = fetch("status", [
-        "gh", "api", "--paginate", "--slurp", f"repos/{REPO_SLOT}/commits/{head_sha}/status",
-    ])
-    # Same rule, same reason, on the family that carries the failing Jenkins status.
-    # MUTATE:status-pages-are-an-array:pass
-    if not isinstance(pages, list):
-        raise FetchError(f"status: expected an array of pages from --slurp, got {type(pages).__name__}")
-    statuses = [st for page in pages for st in (page or {}).get("statuses", [])]
+    passed. An absence read as a verdict is a lie in both directions, so `.state` is not read here at all
+    (and so it is NOT in `PAGE_FACTS`: reconciling a value nothing consumes could only wedge an honest PR).
 
+    The weakening on the call below is this family going back OUT of the one door — page one believed, every
+    other page unread, exactly as it shipped. A REVIEWER deleted this family's completeness call ALONE and
+    both the self-test AND the mutation matrix stayed GREEN, because the rule BODY's markers were killed by
+    the OTHER family's fixture. One marker per call site, one fixture per call site: `truncated-statuses.json`
+    and the `pages-*-statuses` fixtures kill this one, the check-run ones kill the other, and NEITHER can
+    stand in for the other.
+    """
+    # MUTATE:status-through-the-seam:pages = fetch("status", ["gh", "api", "--paginate", "--slurp", f"repos/{REPO_SLOT}/commits/{head_sha}/status"]); statuses, facts = [st for page in pages for st in (page or {}).get("statuses", [])], {"sha": s(pages[0].get("sha")) if pages and isinstance(pages[0], dict) else None}
+    statuses, facts = read_pages(fetch, "status", [
+        "gh", "api", "--paginate", "--slurp", f"repos/{REPO_SLOT}/commits/{head_sha}/status",
+    ], "statuses")
+
+    # GITHUB'S OWN, AGREED ACROSS EVERY PAGE — never the sha we asked for. The whole force of the verify rule
+    # downstream comes from the two being INDEPENDENT: the header carries ours, the rows carry GitHub's, so
+    # they CAN disagree, and on a response fetched for a superseded commit they WILL.
     # MUTATE:status-sha-from-response:sha = head_sha
-    sha = s(pages[0].get("sha")) if pages and isinstance(pages[0], dict) else None
+    sha = s(facts["sha"])
     rows = [
         {"row": "status", "sha": sha, "context": s(st.get("context")), "state": up(st.get("state"))}
         for st in statuses
@@ -758,18 +883,7 @@ def fetch_statuses(fetch: Fetch, head_sha: str) -> tuple[list[dict], dict]:
     # ALWAYS GitHub's, never `-`: a `-` here did not come from the response, and a marker whose sha is not
     # GitHub's cannot disagree with the ledger — so it could never fail. That is a rubber stamp.
     # MUTATE:status-marker-sha:marker_sha = NO_OID
-    marker_sha = sha if sha is not None else NO_OID
-
-    # This family gets the SAME completeness proof as the other one. It is the family that carries the
-    # FAILING JENKINS STATUS, so a short read here is the exact evidence gap this file was written about.
-    #
-    # AND IT IS MARKED AS ITS OWN RULE — see the twin call in `fetch_check_runs`. A REVIEWER deleted THIS
-    # LINE ALONE and both the self-test AND the mutation matrix stayed GREEN: the completeness rule was real,
-    # and NOTHING TESTED that this family was subject to it. A rule that can be deleted with no test going
-    # red is a rule that reports a safety it does not provide — the exact thesis of this file, turned on the
-    # file itself. `truncated-statuses.json` is what fails now.
-    # MUTATE:status-complete:pass
-    require_complete("status", pages, len(rows))
+    marker_sha = sha
 
     # THE FAMILY /check-runs CANNOT SEE. The weakening below is this family never being read — and it is
     # SELF-STAMPED on purpose, so that what kills it is the MISSING JENKINS FAILURE and not the marker rule.
@@ -1111,7 +1225,7 @@ def build_snapshot(fetch: Fetch, repo: str, pr: str, head_sha: str) -> tuple[lis
 
 def agree_or_refuse(kind: str, conflicts: list[tuple]) -> None:
     """THE RULE BODY. Called ONCE PER FAMILY, and each CALL carries its own marker — see
-    `checkruns-complete` / `status-complete`, which learned this the hard way: a body no family invokes is
+    `checkruns-through-the-seam` / `status-through-the-seam`, which learned this the hard way: a body no family invokes is
     not a rule, and one marker over two call sites reports a rule PINNED while half of what it guards is
     unguarded. `rollup-status-conflict.json` kills one application, `rollup-checkrun-conflict.json` the
     other, and NEITHER can stand in for the other.
@@ -1208,7 +1322,7 @@ def derive(fetch: Fetch, repo: str, pr: str, head_sha: str, rundir: Path, requir
     # HANDING THE SET OVER IS ITSELF A RULE, distinct from "the verdict comes from the bytes" below: the
     # bytes-rule can be perfectly intact while this file quietly passes a PERMISSIVE STAND-IN, and every
     # fixture would still pass, and every required check could then be missing. (Same reasoning as
-    # `checkruns-complete` / `status-complete`: a rule BODY that no caller invokes is not a rule. The harness
+    # `checkruns-through-the-seam` / `status-through-the-seam`: a rule BODY no caller invokes is not a rule. The harness
     # cannot mutate half a call, so the application gets its own line and its own marker.)
     # MUTATE:required-set-is-passed:decided_under = SNAP.RequiredSet(SNAP.NONE_DECLARED)
     decided_under = required
@@ -1287,7 +1401,7 @@ def result(pr: str, head_sha: str, verdict: str, reason: str, path: Path | None,
         "required_set": required.state,
         # THERE IS NO `notes` FIELD, and its absence is a RULE, not an oversight. It used to carry "the
         # evidence may be incomplete" NEXT TO A GREEN VERDICT — a disclosure nobody read, attached to the
-        # one answer it contradicted. Every gap we can DETECT is now a REFUSAL (`require_complete`, the
+        # one answer it contradicted. Every gap we can DETECT is now a REFUSAL (`read_pages`, the
         # rollup coverage rule, the moved head), so nothing is left to footnote; and what we CANNOT detect
         # belongs in `stage-2-ci.md`, stated once, not re-emitted as reassurance beside each verdict.
         # NEVER re-add a channel that can print a caveat beside a green: fail closed instead.

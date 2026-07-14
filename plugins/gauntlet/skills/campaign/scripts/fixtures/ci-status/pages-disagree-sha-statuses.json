@@ -1,0 +1,82 @@
+{
+  "why": "NOT A SHORT READ \u2014 FABRICATED PROVENANCE, and it is the SECOND fact every page of this response repeats. Page 1 names THIS commit; page 2 names a SUPERSEDED one. The producer took page 1's `.sha` and STAMPED IT ON EVERY ROW, so `ci/circleci` \u2014 a row GitHub says belongs to another commit \u2014 entered the artifact wearing the head sha we asked for, and the snapshot verified GREEN. `superseded-status-response.json` pins this on page 1 and COULD NEVER have caught it on page 2: the check that compares the row's sha against the header was being fed a sha we had invented for it",
+  "required_set": "none",
+  "pr": "35",
+  "api": {
+    "check-runs": {
+      "response": [
+        {
+          "total_count": 1,
+          "check_runs": [
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "Lint scripts",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/29318959841/job/1"
+            }
+          ]
+        }
+      ]
+    },
+    "status": {
+      "response": [
+        {
+          "sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+          "state": "success",
+          "total_count": 2,
+          "statuses": [
+            {
+              "context": "ci/jenkins/pr-head",
+              "state": "success"
+            }
+          ]
+        },
+        {
+          "sha": "e846cd76a783aa1087e221cc0684b84136419404",
+          "state": "success",
+          "total_count": 2,
+          "statuses": [
+            {
+              "context": "ci/circleci",
+              "state": "success"
+            }
+          ]
+        }
+      ]
+    },
+    "rollup": {
+      "response": {
+        "headRefOid": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+        "statusCheckRollup": [
+          {
+            "__typename": "CheckRun",
+            "name": "Lint scripts",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "detailsUrl": "https://github.com/o/r/actions/runs/29318959841/job/1"
+          },
+          {
+            "__typename": "StatusContext",
+            "context": "ci/jenkins/pr-head",
+            "state": "SUCCESS"
+          },
+          {
+            "__typename": "StatusContext",
+            "context": "ci/circleci",
+            "state": "SUCCESS"
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "verdict": "unusable",
+    "ci": "pending",
+    "needle": "status: THE PAGES OF ONE RESPONSE DISAGREE ABOUT sha",
+    "promoted": false
+  }
+}
