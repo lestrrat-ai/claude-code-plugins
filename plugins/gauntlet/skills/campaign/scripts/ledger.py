@@ -49,7 +49,12 @@ ROW_FIELDS = (
     # CI — so a derivation count would park a healthy 40-minute build on a busy run. Only elapsed TIME
     # tells them apart. On disk so `now - ci_stalled_since` needs nothing but the ledger.
     "ci_stalled_since",   # UTC ISO-8601 of the first derivation that saw this stall; at the cap -> escalate
-    "ci_reason",          # why `ci` is not green, in a form a human can act on
+    # The MACHINE-BLOCKER reason: what campaign cannot get past without a human, in a form they can act
+    # on -- the question `blocker_ruling` answers. NOT merely "why `ci` is not green": that is one class
+    # of it. The merge-precondition parks (stage-3-merge.md: a draft PR, BLOCKED, an unrecognized
+    # mergeStateStatus) write it with `ci` GREEN. The `ci_` prefix understates it; files-and-ledger.md
+    # owns the definition.
+    "ci_reason",
     # Durable answer to a machine-blocker park: - | retry@<iso> | abort@<iso>. Durable AND spent exactly
     # once: set back to `-` on park ENTRY and on consuming a `retry`, so a ruling can only ever answer the
     # park it was written for (`abort` is terminal and is never cleared). stage-2-ci.md, "THE RULING IS

@@ -110,11 +110,17 @@ For each `#PR` to adopt:
      `attempts` counts attempts **so far**, and seeding it at `1` silently spends half the retry-once
      budget before any work is dispatched); `started` = now;
      `api_approval` = `-`; `blocker_ruling` = `-`; `status` = `in_review`.
-   - **On a REFRESH of an existing row, PRESERVE the durable/live fields** — `api_approval`,
-     `blocker_ruling`, `attempts`, `started`, `status`, `reviews_ok`, and `tier` — do **NOT** reset them
-     (that would violate the durable-decision contract for **both** user answers, `files-and-ledger.md` /
-     `scope-and-constraints.md`, and could re-ask the user about a PR already ruled on, or revive an
-     already-declined/aborted PR). **Preserving `blocker_ruling` here is safe because it is cleared at its
+   - **On a REFRESH of an existing row, PRESERVE EVERY FIELD THIS STEP DOES NOT EXPLICITLY RECOMPUTE.**
+     That is a **property, not a list** — and deliberately so, because the list that stood here was one:
+     `ledger.py … set` writes only the fields it **NAMES**, so preservation is the **default**, and this
+     step's job is to name nothing it must not clobber. Everything a previous wake wrote and a later one
+     still needs therefore survives untouched — non-exhaustively, the user's answers (`api_approval`,
+     `blocker_ruling`), the live position (`status`, `attempts`, `started`, `reviews_ok`, `tier`), the
+     open park's `ci_reason`, **and any field added to the schema after this line was written**. Resetting
+     one would violate the durable-decision contract for **both** user answers (`files-and-ledger.md` /
+     `scope-and-constraints.md`): it could re-ask the user about a PR already ruled on, revive an
+     already-declined/aborted PR, or blank the blocker an open park is waiting on an answer about.
+     **Preserving `blocker_ruling` here is safe because it is cleared at its
      own park boundaries** — at park **entry** and when a `retry` is **consumed** (`stage-2-ci.md`, "THE
      RULING IS CONSUMED EXACTLY ONCE") — so a ruling this refresh can see is either still **awaiting its
      park's exit** (preserving it is the whole point: a wake may be a fresh agent instance) or the
@@ -132,8 +138,9 @@ For each `#PR` to adopt:
      it**: a clean base-only advance moves the head without touching `reviews_ok`, and it still means the
      old head's strikes, stall clock and refetch count describe evidence that no longer exists. Carried
      onto the new head they park a healthy PR early. **Reset the SET, never a list retyped here** — a
-     counter added to it is inherited by this site with no edit. (The counters are **not** in the PRESERVE
-     list above: they are pinned to `head_sha`, not to the user.)
+     counter added to it is inherited by this site with no edit. (This is one of the **explicit
+     recomputes** the preserve-by-default rule above defers to: the counters are pinned to `head_sha`, not
+     to the user, so a new head voids them.)
 
    The ownership marker for an adopted PR is the **label**, not the branch name (its branch won't match
    the `fix-<run-id>-` prefix) — so labelling in step 4 is what makes the PR ours.

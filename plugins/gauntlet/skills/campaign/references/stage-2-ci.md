@@ -715,9 +715,11 @@ never registered, **which check has been `RUNNING` since when without the check 
 was unrecognized, which read was denied), **and `blocker_ruling` = `-` in
 that same `ledger.py … set` call** ("THE RULING IS CONSUMED EXACTLY ONCE" below — a ruling already on the
 row answers the **previous** park, never this one), and tell the user. It does **not**
-abort the run or close the PR — the run's other PRs keep going. `ci_reason` is **the DECIDE reason for
-this snapshot** — the bullet that matched and the row that made it match — never a bare restatement of
-`ci`. A park that cannot name its blocker is not actionable.
+abort the run or close the PR — the run's other PRs keep going. At **this** park — a CI one — `ci_reason` is
+**the DECIDE reason for this snapshot**: the bullet that matched and the row that made it match, never a
+bare restatement of `ci`. (The field itself is **wider than CI**: it is the durable machine-blocker reason,
+and `stage-3-merge.md`'s merge-precondition parks write it with `ci` **green**. `files-and-ledger.md` owns
+that definition.) A park that cannot name its blocker is not actionable.
 
 **THE PARK MUST DECLARE ITS OWN EXIT — the invariant at the top of this section binds `awaiting-user`
 too.** A park whose exit event never comes is the same wedge, one level up. So the escalation:
@@ -736,13 +738,26 @@ too.** A park whose exit event never comes is the same wedge, one level up. So t
   derivation. A wake may be a fresh agent instance: an answer that lives only in the driver's head is an
   answer that gets re-asked.
 
-`settled_strikes`, `ci_fingerprint`, `unusable_refetches`, `ci_stalled_since`, and `blocker_ruling` live
-**in the ledger, not in the driver's head**: a wake may be a fresh agent instance, and a counter that dies
-with the context is a counter that never reaches its cap — and a **clock** that lives in the driver's head
-is worse still, because a fresh instance does not merely lose the elapsed time, it silently restarts it
-from zero. `ci_stalled_since` is a **timestamp on disk**, so **any** wake computes `now -
-ci_stalled_since` from the ledger alone, remembering nothing. Write them through `scripts/ledger.py … set
---pr <N>` **by field name**, like every other field (`files-and-ledger.md`).
+**NOTHING THIS SECTION RELIES ON LIVES IN THE DRIVER'S HEAD — and that is a PROPERTY, not the list that
+used to stand here.** A wake may be a fresh agent instance, so: **if a LATER derivation, the escalation
+prompt, or the unpark has to read it, it is a LEDGER FIELD.** The durable set is therefore **the ledger row
+schema itself** — `files-and-ledger.md`'s row-field definitions, and the `ROW_FIELDS`/`ROW_DEFAULTS` in
+`scripts/ledger.py` that own it — and a field added there is durable **with no edit to this section**. A
+list retyped here rots the next time one is added: this one did, and the field it dropped was `ci_reason`,
+the very thing the park asks the user about. Write every one of them through `scripts/ledger.py … set --pr
+<N>` **by field name**, like every other field (`files-and-ledger.md`).
+
+Each dies with the context in its own way, which is why none of them may:
+
+- **A COUNTER that dies never reaches its cap** — `settled_strikes` and `unusable_refetches` count
+  *derivations*, and a fresh instance restarts the count from zero, so the bound never fires.
+- **A CLOCK is worse**: it does not merely lose the elapsed time, it **silently restarts** it.
+  `ci_stalled_since` is a **timestamp on disk**, so **any** wake computes `now - ci_stalled_since` from the
+  ledger alone, remembering nothing.
+- **A REASON that dies leaves the park UNANSWERABLE** — `ci_reason` **is** the blocker the human is being
+  asked to rule on, and the prompt above is built from it. A fresh agent that lost it cannot even ask the
+  question, so the park has no exit: it is durable for exactly the reason the counters are.
+- **A RULING that dies gets re-asked** — `blocker_ruling` ("THE RULING IS CONSUMED EXACTLY ONCE" below).
 
 **THE RULING IS CONSUMED EXACTLY ONCE — a durable answer that is never spent is a park that unparks
 itself.** `blocker_ruling` must be **DURABLE** (it survives a context loss) **AND spent EXACTLY ONCE** (it

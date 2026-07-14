@@ -191,10 +191,26 @@ Header field notes (the header fields above; per-row fields follow):
   **The three caps above are NAMED here, never numbered.** The **STRIKE CAP**, the **CI STALL CAP** and the
   **REFETCH CAP** each carry their value at exactly ONE defining site, and `stage-2-ci.md`, "THE LIVENESS
   COUNTERS", is the one table that maps each counter to its cap and to that site. Never retype a value here.
-- `ci_reason` — **why** `ci` is not green, in a form a human can act on: the DECIDE bullet that matched
-  and the row that made it match (which check never registered, which enum value was unrecognized, which
-  read was denied, which VERIFY rule the snapshot failed). This is what the escalation reports; a park
-  that cannot name its blocker is not actionable.
+- `ci_reason` — the durable **MACHINE-BLOCKER REASON**: what campaign cannot get past without a human, in
+  a form that human can act on. It is the **question** `blocker_ruling` **answers**, and the escalation
+  prompt is built from it — so, like every park field, it lives on disk: a fresh agent instance that lost
+  it cannot even ask. A park that cannot name its blocker is not actionable.
+
+  **"`ci` is not green because X" is ONE CLASS of it, not the whole of it.** The `ci_` prefix is
+  historical and **understates** the field: it is also written at machine-blocker parks where **`ci` is
+  `green`**. The name is kept — renaming it would churn the schema and every write site for cosmetics —
+  so the definition, not the name, is what binds. Its write sites, both classes:
+  - **CI blockers** (`stage-2-ci.md`, "ESCALATE" — `ci` is `red` or `pending`): the DECIDE bullet that
+    matched and the row that made it match — which required check never registered, which check has been
+    `RUNNING` since when without the check set moving, which enum value was unrecognized, which VERIFY
+    rule the snapshot failed, which read was denied.
+  - **MERGE-PRECONDITION blockers** (`stage-3-merge.md`, "The merge precondition" — reached only with
+    **`ci = green`**): the PR is a **draft**, `mergeStateStatus` = `BLOCKED`, or an **unrecognized**
+    `mergeStateStatus` — the offending value named **verbatim**.
+
+  Those two are the write sites that exist today, **not a bound on the set**: the class is the
+  **property** — *campaign cannot move this PR without a human* (`status`, below, `awaiting-user` class
+  2) — so **any** future park with that property writes its reason here, with no edit to this bullet.
 - `blocker_ruling` — durable record of the user's answer to a **machine-blocker park** (the `status`
   taxonomy below): `-` (none yet) | `retry@<iso>` | `abort@<iso>`. It is the **answer** to the question
   `ci_reason` **asks**, and it exists for the same reason `api_approval` does: a wake may be a fresh
