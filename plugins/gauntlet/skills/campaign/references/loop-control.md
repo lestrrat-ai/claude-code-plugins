@@ -277,7 +277,11 @@ blocks; each completion is its own wake.
      wake). ALWAYS schedule a heartbeat whenever non-terminal work remains — skipping it means a hung
      or orphaned run wakes no one. Then **end the turn showing the user where the run stands**: run
      `ledger.py --file <state.jsonl> table` and include its output verbatim, fenced, in the end-of-turn
-     message, followed by one line per remaining wait naming what it waits on (review in flight, CI
+     message. **Verbatim means WHOLE** — including every `#` line it prints below the grid. The default
+     view is a **filtered** one and those lines are what disclose the filtering
+     (`files-and-ledger.md`, "`table` is a PROJECTION"); drop them and the user is shown a subset
+     presented as the whole ledger. Never re-type, trim, or re-align it. Then one line per remaining
+     wait naming what it waits on (review in flight, CI
      watch, parked on the user's answer). Render it after every ledger write of the wake — the ledger
      was reconciled this wake, so the table is the state the next wake resumes from. Return.
    - All this run's PRs `merged` or `aborted` → **distill the run into the carryover ledger** (write

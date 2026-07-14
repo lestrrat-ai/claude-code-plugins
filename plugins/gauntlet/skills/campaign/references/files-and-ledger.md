@@ -213,7 +213,7 @@ ledger.py --file <state.jsonl> add-row --pr N [--<field> <val> …] # register a
 ledger.py --file <state.jsonl> set --pr N --<field> <val> [--<field> <val> …]  # update named fields on the row for PR N
 ledger.py --file <state.jsonl> get --pr N [--field <f>]           # print the row as JSON, or one field
 ledger.py --file <state.jsonl> list [--where <field>=<val>]       # print matching rows' pr numbers (all if no filter)
-ledger.py --file <state.jsonl> table [--fields <f>,<f>,…]         # print run header + all rows as an aligned table (read-only)
+ledger.py --file <state.jsonl> table [--all] [--fields <f>,<f>,…] # print run header + the live rows as an aligned table (read-only)
 ```
 
 `table` is the user-facing status view: the end-of-wake report renders it whenever the run goes back
@@ -221,8 +221,18 @@ to waiting (`loop-control.md`, "Reschedule or exit"). It renders state and decid
 logic, no derived values.
 
 **`table` is a PROJECTION — NEVER a source to read a value back out of.** Its output is *formatted for a
-human*, and the formatting is lossy in three ways:
+human*, and the formatting is lossy in four ways:
 
+- **It shows only SOME ROWS.** The default view **hides finished work** — a row that reached the run's
+  *successful* terminal state and needs nothing further from anyone. It is **not** "terminal rows": an
+  `aborted` PR is terminal too and it **stays visible**, because it is the run's *unfinished business* —
+  left open for its owner, with an `abort-<id>.md` a human is meant to read. Everything still in play,
+  parked included, always shows. **The omission is NEVER silent**: whenever the view drops a row, `table`
+  prints an out-of-band line stating **how many** rows it hid and the flag that reveals them, and **`--all`
+  shows every row** (it composes with `--fields` — one picks the rows, the other the columns). So **a
+  missing ROW is not a missing PR**, exactly as a missing column is not a missing value. Which statuses the
+  default hides is owned by `TABLE_HIDDEN_STATUSES` in `scripts/ledger.py` and named **live** in `ledger.py
+  table --help`; when this paragraph and that output disagree, **the script is right**.
 - **It shows only SOME fields.** The default view is a **SUBSET** of the row fields listed above — as of
   this writing `pr`, `slug`, `tier`, `reviews_ok`, `ci`, `attempts`, `status`, `head_sha`. Every other row
   field (`branch`, `worktree`, `worktree_owned`, `branch_owned`, `started`, `api_approval`, `id`) is
@@ -242,9 +252,11 @@ human*, and the formatting is lossy in three ways:
   fixtures pin it** — that function is the definition, and this page deliberately does not restate it (a
   list here goes stale the moment one is added). What you may rely on: the rendering is **injective** — two
   different values NEVER print as the same cell, so one row can never be read as another — and it reserves
-  the leading-`#` namespace for the table's own out-of-band lines, the `# <field>: …` run-config block and
-  the `# (no rows)` empty-ledger marker, so **no row can ever forge one**: an empty grid means the ledger
-  really is empty.
+  the leading-`#` namespace for **every** out-of-band line the table prints (the `# <field>: …` run-config
+  block, the empty-grid markers, the hidden-count line), so **no row can ever forge one**. That is what
+  makes the omission notice trustworthy, and it is why an empty grid always **says which empty it is** —
+  a ledger that holds nothing and a ledger whose every row is hidden print **different** markers, so an
+  end-of-run table where everything merged can never be misread as a campaign that adopted no PRs.
 
 So **read the ledger by FIELD NAME through `ledger.py get`** (or `list`) — **never by parsing the table**.
 A SHA (or any value) recovered from `table`'s grid is a truncated, escaped rendering, and feeding one back
