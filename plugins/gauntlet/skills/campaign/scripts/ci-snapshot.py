@@ -48,7 +48,17 @@ but NOT COUNTED parses as "nothing wrong":
   * and a line nested thousands of levels deep raised `RecursionError` straight out of `json.loads` —
     a CRASH, again, where a verdict was owed.
 
-The lesson is one lesson, not seven: check the EXACT shape. "The thing I need is in there somewhere" is
+  * and then the SAME defect turned up one level ABOVE every rule here, in the ARTIFACT'S OWN SHAPE. The
+    contract opens with "BOTH families are MANDATORY. A source you never queried reports nothing, and
+    'nothing' parses as 'nothing wrong'" — and the artifact could not express that rule. "The commit-status
+    fetch RAN and this commit has zero statuses" and "the commit-status fetch was SKIPPED, or died before
+    appending anything" produced the BYTE-IDENTICAL file: no `status` rows. So a check-runs-only snapshot
+    of all-passing rows verified GREEN while a MANDATORY source had never been queried, with a failing
+    Jenkins status — INVISIBLE to /check-runs by design — sitting on the commit, unread. The file's own
+    founding principle, unenforced by its own artifact. `source` rows (below) are what make an ABSENCE
+    say "we do not know" instead of "nothing wrong".
+
+The lesson is one lesson, not eight: check the EXACT shape. "The thing I need is in there somewhere" is
 not a check — it is the absence of one, and every defect above is that same absence wearing a new hat.
 
 So this file is not a description of the rules. It is the rules, executed, with fixtures that FAIL
@@ -125,7 +135,7 @@ class SnapshotError(Exception):
     """The artifact is not evidence."""
 
 
-# The FOUR row types stage-2-ci.md defines, and the EXACT field set each one carries. There is no fifth
+# The FIVE row types stage-2-ci.md defines, and the EXACT field set each one carries. There is no sixth
 # type, and a row of a type we do not recognise is NOT nothing — it is something we FAILED TO UNDERSTAND,
 # and failing to understand a row is never grounds to ignore it. An ignored row is invisible to
 # `verify_sha` and to `decide`, so a FAILING one parses as "nothing wrong" — which is the exact false-green
@@ -138,6 +148,7 @@ class SnapshotError(Exception):
 # the old "required fields present" test waved it straight through and then ignored it.
 ROW_FIELDS = {
     "header": ("sha",),
+    "source": ("source", "sha", "count"),  # ONE per mandatory source, written only by a fetch that RAN
     "checkrun": ("sha", "name", "app_id", "status", "conclusion", "id"),
     "status": ("sha", "context", "state"),
     "witness": ("name", "id"),  # SHA-LESS by design — see verify_sha
@@ -145,6 +156,35 @@ ROW_FIELDS = {
 
 # The exact key set a row of each type may carry: `row` plus that type's fields. Nothing else.
 ROW_KEYS = {kind: {"row", *fields} for kind, fields in ROW_FIELDS.items()}
+
+# THE MANDATORY SOURCES, and the row type each one PRODUCES. This file's founding rule is that a source
+# you never queried reports nothing, and "nothing" parses as "nothing wrong" — and until the `source` row
+# existed the artifact COULD NOT EXPRESS THAT RULE. "The commit-status fetch RAN and this commit carries
+# zero statuses" and "the commit-status fetch was SKIPPED, or died before appending anything" produced the
+# BYTE-IDENTICAL file: no `status` rows. So a check-runs-only artifact of all-passing rows verified GREEN
+# while a MANDATORY evidence source had never been queried — and a failing Jenkins commit status, which
+# `/check-runs` CANNOT SEE by design, would have been sitting on that commit, unread. The false green this
+# whole file exists to kill, one level ABOVE every rule written to catch it.
+SOURCE_ROWS = {"check-runs": "checkrun", "status": "status", "rollup": "witness"}
+
+# Does that source's RESPONSE carry a commit oid we can stamp on its marker — and WHEN?
+#
+#   "always"  the status response carries `.sha` at the TOP LEVEL, so it is there even when the commit
+#             carries ZERO statuses. A `-` on that marker therefore did NOT come from the response.
+#   "rows"    the check-runs response carries `.head_sha` on EACH ROW and nowhere else, so it has a commit
+#             oid only when it RETURNED a row. Zero check runs => genuinely no oid => `-`, and inventing
+#             one would be the fabrication this contract forbids.
+#   "never"   the rollup carries NO commit oid at all (same reason `witness` rows are SHA-LESS). A sha on
+#             that marker is a value WE made up.
+SOURCE_OID = {"check-runs": "rows", "status": "always", "rollup": "never"}
+
+# "this source's response carried no commit oid" — never "some sha we did not bother to write down".
+NO_OID = "-"
+
+# A count is a decimal integer, no sign, no leading zeros, no whitespace. A count we cannot COMPARE to the
+# rows present cannot show the artifact is whole, and a comparison we cannot make is not one whose result
+# we may assume. (`int()` would also accept `" 2 "`, `"+2"` and `"２"` — and then CRASH on `"two"`.)
+COUNT_RE = re.compile(r"^(0|[1-9][0-9]*)$")
 
 # The artifact's EXACT name, from stage-2-ci.md's PROMOTE step: `ci-<pr>-<head_sha>.txt`. Matching the
 # SHAPE — one PR number, ONE sha, that extension — is the whole point. Asking only whether the expected sha
@@ -171,7 +211,7 @@ def parse(path: Path) -> list[dict]:
     producer, and a producer we cannot trust to write the file we specified is not a producer whose
     output we can green off.
 
-    A row is admitted ONLY if its type is one of the four and it carries EXACTLY that type's fields —
+    A row is admitted ONLY if its type is one of the five and it carries EXACTLY that type's fields —
     every one it requires, and NOT ONE MORE. A malformed row is not evidence: a `checkrun` with no
     `status` cannot be judged, and a rule that cannot judge a row must never conclude it is fine. A row
     with an EXTRA field is not evidence either, for the mirror-image reason: nothing reads that field, so
@@ -252,7 +292,7 @@ def parse(path: Path) -> list[dict]:
             # MUTATE:row-kind-type:continue
             raise SnapshotError(
                 f"line {n}: the `row` field is a {type(kind).__name__}, not a string — a row type we cannot "
-                f"even read is not a row we may ignore, and asking whether it is one of the four (a HASH "
+                f"even read is not a row we may ignore, and asking whether it is one of the five (a HASH "
                 f"lookup) on a value like this used to CRASH instead of returning a verdict."
             )
         if kind not in ROW_FIELDS:
@@ -371,12 +411,114 @@ def verify_sha(rows: list[dict], expected_sha: str) -> None:
 
     for r in rows:
         if r["row"] not in ("checkrun", "status"):
-            continue  # witness rows carry no sha, by design
+            continue  # witness rows carry no sha; a `source` marker's sha is verified by verify_sources
         if r.get("sha") != expected_sha:
             # MUTATE:evidence-sha:pass
             raise SnapshotError(
                 f"{r['row']} row {r.get('name') or r.get('context')!r} describes "
                 f"{r.get('sha')!r}, not the expected {expected_sha!r} — superseded commit"
+            )
+
+
+def verify_sources(rows: list[dict], expected_sha: str) -> None:
+    """EXACTLY ONE completion marker per MANDATORY source — proof each one was ACTUALLY QUERIED.
+
+    A missing marker means a mandatory source's failures CANNOT be shown to be in this artifact, so the
+    artifact is UNUSABLE. Never green. That is the whole point: an absence must stop reading as "nothing
+    wrong" and start reading as "we do not know".
+
+    A MARKER CANNOT BE A RUBBER STAMP, and that is not a promise — it is three properties, each of which
+    only a fetch that RAN could satisfy:
+
+      * **It cannot exist without its fetch.** The marker is emitted by the SAME `jq` filter, in the SAME
+        command, as the rows it describes (stage-2-ci.md, PROMOTE), and only after `--paginate --slurp` has
+        collected every page. A fetch that fails writes NEITHER its rows nor its marker, and the snapshot is
+        never promoted. There is no way to write a marker for a fetch that did not happen.
+      * **`count` must EQUAL the rows of that source actually present.** A marker claiming 5 where 3 are in
+        the file means the artifact is TRUNCATED — rows the fetch emitted did not survive promotion, and a
+        missing row could be the FAILING one. A marker that does not match the file it sits in describes
+        some other file.
+      * **`sha` must be GITHUB'S**, exactly like the evidence rows, and it is compared against the ledger's
+        `head_sha`, which is OURS. Two independent sources, so they CAN disagree — which is the only reason
+        the comparison can tell you anything. (The bug this file memorialises is a check built out of its
+        own input; a marker stamped from our own literal would rebuild it.)
+
+    And the sha may be ABSENT only where GitHub genuinely gave none — `SOURCE_OID` above says exactly where.
+    That asymmetry is what makes a ZERO-row source PROVABLE rather than merely empty:
+
+        {"row":"source","source":"status","sha":"<GITHUB'S OWN>","count":"0"}
+
+    says, carrying GitHub's own commit oid: *we asked this commit for its statuses, and it has none.* That
+    is a FACT, and it is exactly what an all-passing check-runs-only artifact could not state. An absent
+    `status` section states nothing at all.
+    """
+    markers = [r for r in rows if r["row"] == "source"]
+    seen = Counter(m["source"] for m in markers)
+    if seen != Counter(list(SOURCE_ROWS)):  # `Counter(dict)` would read the VALUES as counts
+        found = " ".join(f"{s}={seen.get(s, 0)}" for s in sorted(set(SOURCE_ROWS) | set(seen)))
+        # MUTATE:source-set:pass
+        raise SnapshotError(
+            f"the artifact must carry EXACTLY ONE source marker for each MANDATORY source "
+            f"({', '.join(SOURCE_ROWS)}), and no others — found: {found}. A source you never queried "
+            f"reports NOTHING, and 'nothing' parses as 'nothing wrong': with no marker for it, a mandatory "
+            f"source's failures cannot be shown to be in this artifact, so this artifact cannot be green."
+        )
+
+    by_source = {m["source"]: m for m in markers}
+    for src, row_kind in SOURCE_ROWS.items():
+        marker = by_source.get(src)
+        if marker is None:
+            # Unreachable while `source-set` stands. It is here so that MUTATING `source-set` away leaves
+            # its fixtures with a clean FALSE GREEN — the loudest kill — instead of a KeyError crash, which
+            # would pin the rule for the wrong reason.
+            continue
+        actual = sum(1 for r in rows if r["row"] == row_kind)
+
+        if not COUNT_RE.match(marker["count"]):
+            # MUTATE:source-count-shape:continue
+            raise SnapshotError(
+                f"the {src} marker's count {marker['count']!r} is not a count (a decimal integer) — a "
+                f"marker whose count cannot be COMPARED to the rows present cannot show this artifact is "
+                f"whole, and a comparison we cannot make is not one we may assume the result of."
+            )
+        if int(marker["count"]) != actual:
+            # MUTATE:source-count:pass
+            raise SnapshotError(
+                f"the {src} marker says count={marker['count']} but the artifact carries {actual} "
+                f"{row_kind} row(s) — TRUNCATED. Rows this fetch emitted are NOT IN THE FILE, and a row "
+                f"that is not in the file could be the FAILING one. A marker that does not match the rows "
+                f"present is a rubber stamp: it proves the fetch ran and nothing about what survived."
+            )
+
+        oid = SOURCE_OID[src]
+        has_sha = marker["sha"] != NO_OID
+        want_sha = oid == "always" or (oid == "rows" and actual > 0)
+        if has_sha != want_sha:
+            # MUTATE:source-oid:pass
+            raise SnapshotError(
+                (
+                    f"the {src} marker carries a sha ({marker['sha']!r}), but that source's response holds "
+                    f"NO commit oid AT ALL — so that value is one WE INVENTED. Fabricated evidence, the "
+                    f"same defect as a sha on a witness row, and worse than none."
+                )
+                if has_sha
+                else (
+                    f"the {src} marker carries NO sha ('-'), but its response DOES carry one "
+                    + (
+                        "(the top-level `.sha`, present even when the commit has ZERO statuses)"
+                        if oid == "always"
+                        else f"(`.head_sha`, on each of the {actual} row(s) it returned)"
+                    )
+                    + " — a '-' there did not come from GitHub. A marker whose sha is not GITHUB'S cannot "
+                    "disagree with the ledger, so it could never fail: a rubber stamp."
+                )
+            )
+        if has_sha and marker["sha"] != expected_sha:
+            # MUTATE:source-sha:pass
+            raise SnapshotError(
+                f"the {src} marker describes {marker['sha']!r}, not the expected head_sha "
+                f"{expected_sha!r} — GitHub answered about ANOTHER commit, so every row this source "
+                f"contributed is about that commit, whatever the rows themselves say."
             )
 
 
@@ -468,6 +610,7 @@ def evaluate(path: Path, expected_sha: str, *, expect_filename_sha: bool = True)
             verify_filename(path, expected_sha)
         rows = parse(path)
         verify_sha(rows, expected_sha)
+        verify_sources(rows, expected_sha)
         check_containment(rows)
     except Unverifiable as exc:
         return UNVERIFIABLE, str(exc)
@@ -502,6 +645,18 @@ SUPERSEDED_SHA = "e846cd76a783aa1087e221cc0684b84136419404"
 # needle. The needle is not decoration — it is what pins a rule whose ONLY contribution is its MESSAGE.
 # `witness-sha` is exactly that rule: delete it and the generic unexpected-field rule still says UNUSABLE,
 # so no VERDICT can pin it, and the specific message ("INVENTED") is the whole thing it adds.
+#
+# TWO CONSTRUCTION NOTES, both in service of "delete the rule and this fixture comes back GREEN":
+#
+#  * The `source` markers in a fixture describe the rows that SURVIVE its own rule's weakening, which is
+#    not always the rows in the bytes. `malformed-checkrun.jsonl` and `field-not-string.jsonl` each carry a
+#    SECOND, defective `checkrun` line and a check-runs marker that says `count:"1"` — because the mutant
+#    for their rule SKIPS that line, and a marker counting it would then fire `source-count` instead, and
+#    the fixture would pin the wrong rule. The BASELINE never reaches the count rule at all: `parse()`
+#    raises on the defective row first, which is precisely what the fixture exists to prove.
+#  * `wrong-sha.jsonl` and `source-sha-mismatch.jsonl` are deliberate MIRRORS. A real wrong-commit fetch
+#    puts the superseded sha in BOTH the evidence rows and the source marker, and EITHER rule alone would
+#    catch it — so each fixture puts it in exactly ONE place, and each therefore pins exactly one rule.
 EXPECTED = {
     "green.jsonl": (GREEN, "all passing", "names contain SPACES and survive the round-trip"),
     "wrong-sha.jsonl": (UNUSABLE, "superseded commit", "evidence describes a superseded commit — the check that could not fail before"),
@@ -532,12 +687,31 @@ EXPECTED = {
     "duplicate-header.jsonl": (UNUSABLE, "EXACTLY ONE header", "a SECOND header naming another commit — read by nothing, so present and NOT COUNTED"),
     "duplicate-key.jsonl": (UNUSABLE, "duplicate member name(s)", "a header carrying a STALE sha AND the expected one — the decoder DISCARDED the stale one, so no rule above ever saw it, and the file verified GREEN"),
     "deeply-nested.jsonl": (UNUSABLE, "nested too deeply", "a line the decoder cannot decode without running out of stack — it RAISED where a verdict was owed, and a crash is not a verdict"),
+    # THE PER-SOURCE COMPLETION MARKERS — "was this source ever QUERIED?", a question the artifact could
+    # not previously be asked. A missing marker is never green: it means a MANDATORY source's failures
+    # cannot be shown to be in this file.
+    "missing-checkruns-marker.jsonl": (UNUSABLE, "check-runs=0", "the check-runs fetch left no marker — 'it ran and found nothing' is indistinguishable from 'it never ran'"),
+    "missing-status-marker.jsonl": (UNUSABLE, "status=0", "THE ONE THAT MATTERS: all-passing check runs, and the commit-status family — which /check-runs CANNOT SEE — never queried. This used to be GREEN"),
+    "missing-rollup-marker.jsonl": (UNUSABLE, "rollup=0", "no rollup marker: zero witnesses could mean 'the rollup had none' or 'the fetch never ran', and containment then passes TRIVIALLY"),
+    "duplicate-source-marker.jsonl": (UNUSABLE, "check-runs=2", "TWO markers for one source — if they disagreed, the file would claim two things and nothing would notice"),
+    "unknown-source-marker.jsonl": (UNUSABLE, "rollup-v2=1", "a marker for a source the contract does not define — nothing reads it, so it is present and NOT COUNTED"),
+    "source-count-mismatch.jsonl": (UNUSABLE, "TRUNCATED", "the marker says 3, the file holds 2 — a row the fetch emitted is MISSING, and it could be the failing one"),
+    "source-count-not-a-number.jsonl": (UNUSABLE, "is not a count", "a count that cannot be COMPARED proves nothing — and `int()` would have CRASHED on it"),
+    "source-sha-mismatch.jsonl": (UNUSABLE, "marker describes", "GitHub answered about ANOTHER commit for this source — the mirror of wrong-sha.jsonl"),
+    "rollup-marker-sha.jsonl": (UNUSABLE, "INVENTED", "a sha on the ROLLUP marker: the rollup has no commit oid at all, so that value is fabricated — exactly like a sha on a witness row"),
+    "status-marker-no-sha.jsonl": (UNUSABLE, "carries NO sha", "the status response ALWAYS carries `.sha`, zero statuses or not — a '-' there did NOT come from GitHub, so the marker is a rubber stamp"),
+    "checkruns-marker-no-sha.jsonl": (UNUSABLE, "carries NO sha", "check runs were returned, so GitHub DID give a `.head_sha` — a '-' means the marker was not built from the response"),
     # NEGATIVE CONTROL. Same wrong-commit data as wrong-sha.jsonl, but stamped the OLD way: the sha
     # interpolated from our own literal onto every row instead of taken from GitHub. It comes back
     # GREEN — which is the POINT. It is the proof that the old verification could not fail, and the
     # reason `verify_sha` is worth anything at all. If this fixture ever stops returning green, the
     # bug it memorialises has been reintroduced somewhere else.
-    "negative-control-circular-sha.jsonl": (GREEN, "all passing", "PROVES the old self-stamped check was VACUOUS — it passes data from the WRONG COMMIT"),
+    #
+    # Its `source` markers are stamped the SAME self-referential way, and that PRESERVES what it
+    # memorialises rather than diluting it: a sha we copied from our own literal agrees with our own
+    # literal WHEREVER we write it — on an evidence row, on a marker, anywhere. Adding a place to write
+    # it does not make a circular check fall over. Only taking the value from GITHUB does.
+    "negative-control-circular-sha.jsonl": (GREEN, "all passing", "PROVES the old self-stamped check was VACUOUS — it passes data from the WRONG COMMIT, markers and all"),
 }
 
 

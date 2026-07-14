@@ -71,7 +71,7 @@ MARKER_RE = re.compile(r"^(?P<indent>[ ]*)# MUTATE:(?P<rule>[a-z0-9-]+):(?P<weak
 
 # The functions that ENFORCE the contract. Every enforcement point inside them must carry a marker.
 # `evaluate` is not one: it MAPS an exception to a verdict, it does not decide anything.
-RULE_FUNCTIONS = ("parse", "verify_filename", "verify_sha", "check_containment", "decide")
+RULE_FUNCTIONS = ("parse", "verify_filename", "verify_sha", "verify_sources", "check_containment", "decide")
 
 # What "enforcement" looks like in those functions.
 ENFORCING_EXCEPTIONS = ("SnapshotError", "Unverifiable")
