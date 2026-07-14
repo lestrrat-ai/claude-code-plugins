@@ -181,7 +181,7 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
-from typing import Callable, NoReturn
+from typing import Callable, NamedTuple, NoReturn
 
 HERE = Path(__file__).resolve().parent
 SNAPSHOT_PY = HERE / "ci-snapshot.py"
@@ -428,7 +428,14 @@ RULES = {
     # is named by an AST scan and the suite goes RED.
     "rows-are-a-list": "EVERY page carries its rows as a LIST — a page MISSING the key is NOT a page with an EMPTY one, and `or []` said it was: an otherwise-green response with its `statuses` member deleted returned GREEN",
     "field-shape-declared": "a field whose DECLARED shape the response does not have is REFUSED — absent, null, or the wrong type, and NEVER defaulted to the benign-looking value the caller forgot to think about",
-    "field-reads-through-the-seam": "a fetcher CANNOT read a field any other way — a raw `.get()`, a raw subscript, or a `field()` call with no shape is caught by an AST scan of the code that RUNS, because a door with a way around it is not a door",
+    # AND THE SCAN THAT PROVES THE DOOR HAS NO WAY AROUND IT — which SHIPPED WITH TWO WAYS AROUND IT. It saw
+    # only STRING-LITERAL subscripts (so `pages[0][rows_key]` walked past it) and it EXEMPTED an object by the
+    # NAME of the local holding it (so `facts = {}` in a reader was exempt). Both left the suite GREEN. The
+    # exemption is DELETED, not narrowed, and the check is TOTAL: every subscript, every dict-reading method,
+    # in every reader the code DERIVES from `build_snapshot` — no exempt key, no exempt object, no exempt
+    # fetcher. Zero exemptions is the only number that cannot be spoofed.
+    "field-reads-through-the-seam": "a reader CANNOT read a field any other way — a raw `.get()` (or any dict-reading method), ANY raw subscript (literal key, variable key, computed key, on ANY object), a `field()` call with no shape, or a fetch inlined into `build_snapshot` is caught by an AST scan of the code that RUNS, because a door with a way around it is not a door",
+    "field-scan-has-a-subject": "the scan DERIVES its readers from the fetch seam, and a source in which NOTHING is handed that seam FAILS — an empty reader set would pass every source on Earth, and a check that finds nothing must never report health",
     "pages-are-an-array": "a `--slurp` that did not yield a NON-EMPTY ARRAY is a fetch we cannot read — never rows to iterate, and never zero pages to quantify over vacuously",
     "page-is-an-object": "EVERY page is an OBJECT — a page we cannot read used to reach `.get` and CRASH, and a crash is not a refusal: no verdict was reached at all",
     "page-fact-known": "EVERY page must STATE the facts GitHub repeats on all of them (`total_count`; the status `.sha`) — a page that does not is not a page that agrees, and an absent count is NOT a count of zero",
@@ -567,20 +574,53 @@ Fetch = Callable[[str, "list[str]"], object]
 REPO_SLOT = "{repo}"
 
 
+def adjacent(argv: list[str]):
+    """Every (flag, the word after it) pair in an argv, WITHOUT INDEXING IT.
+
+    `argv[i + 1]` would be a raw subscript inside a function the field-shape scan reaches, and that scan now
+    refuses EVERY subscript in EVERY reader it scans — no exempt key, no exempt object (see
+    `check_field_shapes`). The rule is blunt on purpose, and this is the price: two lines, no indexing, and
+    one less way for a raw read to hide behind a "but this one is fine".
+    """
+    after = iter(argv)
+    next(after, None)
+    return zip(argv, after)
+
+
+def is_endpoint(repo: str, arg: str) -> bool:
+    """Is this argument the ENDPOINT of a `gh api` call about `repo`? A PATH, or the full URL of one.
+
+    It is only ever asked of a command that IS `gh api` — see `require_repo_scoped`. On its own it is still
+    a substring test, and a substring test is exactly what was spoofable.
+    """
+    return (arg.startswith(f"repos/{repo}/") or arg.startswith(f"/repos/{repo}/")
+            or f"//api.github.com/repos/{repo}/" in arg)
+
+
 def require_repo_scoped(source: str, repo: str, argv: list[str]) -> list[str]:
     """EVERY GitHub call NAMES THE REPOSITORY IT IS ABOUT, in one of the only two ways `gh` has of saying it:
 
-      * `gh api` — the repository is a PATH SEGMENT (`repos/<owner>/<name>/…`);
-      * every other subcommand — the repository is `--repo <owner>/<name>`.
+      * `gh api` — the repository is the ENDPOINT (`repos/<owner>/<name>/…`, or the full URL of it);
+      * every other subcommand — the repository is the value of `--repo`, i.e. the word RIGHT AFTER it.
+
+    **AND WHICH OF THE TWO IS LEGAL IS DECIDED BY THE SUBCOMMAND, NOT BY WHERE A STRING TURNS UP.** This
+    guard used to ask whether the repo's name appeared ANYWHERE in the argv, and the audit that followed the
+    field-shape scan's two bypasses found the same shape here: `gh pr view 35 --template repos/o/r/x`
+    SATISFIED it. The repository was named — in a flag that scopes NOTHING — and the command still resolved
+    against whatever checkout the process was standing in. **A GUARD THAT ACCEPTS A STRING WHERE IT MEANS A
+    POSITION CAN BE FED THE STRING**, which is the same sentence as "an exemption by name is a guard asking
+    to be spoofed", one file over.
 
     Anything else is a command that will resolve against THE CURRENT CHECKOUT, which is not a repository the
     caller ever named. That is not a fetch about this PR; it is a fetch about wherever this process happens
-    to be running, and the answer it brings back is about the wrong repository (or, as here, about no PR at
-    all). Refused — the caller asked about `repo`, and a fetch that cannot ask about `repo` derives nothing.
+    to be running, and the answer it brings back is about the wrong repository (or, as the rollup's old argv
+    did, about no PR at all). Refused — the caller asked about `repo`, and a fetch that cannot ask about
+    `repo` derives nothing.
     """
-    flag = argv.index("--repo") + 1 if "--repo" in argv else 0
+    is_api = next(iter(adjacent(argv)), None) == ("gh", "api")
     # MUTATE:every-fetch-is-repo-scoped:return argv
-    if not (any(f"repos/{repo}/" in a for a in argv) or argv[flag:flag + 1] == [repo]):
+    if not ((is_api and any(is_endpoint(repo, a) for a in argv))
+            or any(flag == "--repo" and name == repo for flag, name in adjacent(argv))):
         raise FetchError(
             f"{source}: `{' '.join(argv)}` is NOT scoped to {repo!r} — it would resolve against whatever "
             f"checkout this process is standing in, which is not the repository the caller named. A `gh api` "
@@ -744,62 +784,191 @@ def field(source: str, obj: object, key: str, *shape: object, why: str = "") -> 
     return obj.get(key) if isinstance(obj, dict) else None
 
 
-# The functions that read a GITHUB RESPONSE. Every field read inside one of them goes through `field()`, and
-# `check_field_shapes` PROVES it. (`build_snapshot` is NOT here: the dicts IT reads are the rows THIS FILE
-# built, not GitHub's.)
-FIELD_READERS = ("readable", "agreed", "read_pages", "fetch_check_runs", "fetch_statuses", "fetch_rollup")
+# --- THE SCAN THAT PROVES IT, AND THE TWO HOLES IT SHIPPED WITH -----------------------------------
+#
+# **A CURE THAT IS AN INSTANCE OF THE DISEASE IT WAS WRITTEN TO CURE — FOR THE SECOND TIME ON THIS BRANCH.**
+# The scan below was added to make "a field read that declares nothing" IMPOSSIBLE. It had TWO WAYS AROUND
+# IT, and a reviewer drove both straight through:
+#
+#   * IT ONLY SAW ONE SYNTACTIC FORM OF A SUBSCRIPT. It flagged `page["statuses"]` — a STRING LITERAL key —
+#     and was BLIND to every other spelling of the same read. `pages[0][rows_key]` inside `read_pages`: the
+#     suite stayed GREEN. The key was a variable, so the guard never looked.
+#   * AND ITS EXEMPTION WAS BY NAME. One dict a reader may read raw (the seam's own `facts`) was exempted by
+#     the NAME of the local holding it — so `facts = {}` followed by `facts["statuses"]`, ANYWHERE in a
+#     scanned reader, was exempt. The suite stayed GREEN for that too. **AN EXEMPTION BY NAME IS A GUARD
+#     ASKING TO BE SPOOFED**: the thing it trusts is the one thing the forgetful edit can freely choose.
+#
+# So the exemption is not narrowed, it is DELETED, and the check is not extended to one more spelling, it is
+# made TOTAL: **EVERY subscript in a scanned reader is refused — literal key, variable key, computed key,
+# on any object whatsoever — and so is every dict-reading method call.** The seam-owned dict that needed the
+# exemption is GONE (`read_pages` returns a typed `Facts`, read by ATTRIBUTE), the one list index a fetcher
+# needed is `next(iter(…))`, and the scanned region therefore needs NO exemption at all. **ZERO is the only
+# number of exemptions that cannot be spoofed.**
+#
+# AND THE SUBJECT OF THE SCAN IS DERIVED, NOT LISTED. It used to scan a hand-written tuple of function
+# names, so a NEW fetcher nobody added to it was not scanned AT ALL — the hole was disclosed, which is not
+# the same as being closed. The reader set is now the CALL-GRAPH CLOSURE of the functions `build_snapshot`
+# hands the `fetch` seam to. A fetcher added tomorrow is scanned the day it is added, because the seam is
+# how a response gets in, and taking the seam is what makes you a reader.
 
-# The one dict a fetcher reads that this FILE built: `read_pages` returns `facts`, keyed by `PAGE_FACTS`, so
-# every key is present BY CONSTRUCTION. Reading it is not a field read off a response. Keep this list at one
-# name; every addition is a hole in the scan.
-SEAM_OWNED = ("facts",)
+# THE DOOR. The one function that may touch a response raw — and the ONLY name the scan does not scan.
+#
+# **THIS IS NOT THE `facts` EXEMPTION UNDER A NEW NAME, and the difference is the whole lesson.** That one
+# exempted a LOCAL VARIABLE's name, which any edit inside a reader could choose for itself — spoofable in
+# one line. This exempts a FUNCTION DEFINITION: no edit inside a fetcher can make ITS read exempt, because
+# the read would still be in the fetcher's body, which is scanned. The raw access has to physically live
+# somewhere, and this is where — behind the shape declaration, which is the only reason it is safe.
+#
+# `shape_problem` is NOT named here and must never be: nothing but `field` calls it, so it never enters the
+# closure. And the day a reader calls it directly, it DOES enter — and its raw reads FAIL THE SCAN. Read the
+# response through the door, or do not read it.
+DOOR = "field"
+
+# The parameter every reader takes the response through. It is what makes "a reader" a question the CODE can
+# answer (`scanned_readers`) instead of a list somebody has to remember to update.
+SEAM = "fetch"
+
+# **A RAW READ IS NOT ONLY `x[k]` AND `x.get(k)`.** `x.items()`, `x.values()`, `x.pop(k)` reach the same
+# value and declare exactly the same nothing. A guard that knows ONE spelling of what it forbids is the
+# guard that gets bypassed by moving the read one character sideways — which is precisely what happened
+# here. So the CLASS is refused, in every spelling a reader would plausibly reach for.
+RAW_READS = ("get", "items", "keys", "values", "pop", "popitem", "setdefault", "__getitem__")
+
+
+def scanned_readers(tree: ast.Module) -> dict[str, ast.FunctionDef]:
+    """WHICH FUNCTIONS READ A GITHUB RESPONSE — DERIVED FROM THE CODE, never a list somebody maintains.
+
+    The ROOTS are the functions `build_snapshot` hands the `fetch` seam to (that is how a response enters
+    this tool at all), and the reader set is their TRANSITIVE CALLEES. So a fetcher added to
+    `build_snapshot` tomorrow is scanned the moment it exists — the limit the old hand-written tuple had
+    (`a NEW fetcher nobody added is not scanned`) is not disclosed, it is gone.
+
+    Two things are deliberately NOT in the set, and neither is an exemption a forgetful read can hide in:
+
+      * `build_snapshot` itself — it is the ROOT, and it reads only the rows THIS FILE built, never a
+        response. It is not merely skipped: it is also checked (below) for calling the seam DIRECTLY, which
+        is the one way a response could be read there.
+      * the DOOR, and whatever only the DOOR calls — see `DOOR`.
+
+    Only TOP-LEVEL defs resolve a call: a nested `def fetch(...)` (the fixtures have one) must never be
+    mistaken for the seam, and a nested def inside a reader is scanned anyway, as part of that reader's body.
+    """
+    funcs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    root = funcs.get("build_snapshot")
+    if root is None:
+        raise FetchError(
+            "the field-shape scan cannot find `build_snapshot` — it is where the fetch seam is handed out, "
+            "and therefore where the set of readers is DERIVED from. A scan that cannot find its subject "
+            "must never report health it did not measure."
+        )
+    readers: dict[str, ast.FunctionDef] = {}
+    queue = [call.func.id for call in ast.walk(root)
+             if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id in funcs
+             and any(isinstance(arg, ast.Name) and arg.id == SEAM for arg in call.args)]
+    # MUTATE:field-scan-has-a-subject:pass
+    if not queue:
+        raise FetchError(
+            f"the field-shape scan found NO FETCHER — nothing in `build_snapshot` is handed the `{SEAM}` "
+            f"seam, so the reader set is EMPTY and this scan has NOTHING TO SCAN. It would then pass every "
+            f"source on Earth, including one that reads every field raw. A check with no subject FAILS."
+        )
+    while queue:
+        name = queue.pop()
+        if name in readers or name == DOOR:
+            continue
+        readers[name] = funcs[name]
+        queue += [call.func.id for call in ast.walk(funcs[name])
+                  if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id in funcs]
+    return readers
+
+
+def executable(fn: ast.FunctionDef) -> list[ast.AST]:
+    """Every node in a function's EXECUTABLE code. **AN ANNOTATION IS NOT CODE.**
+
+    `list[str]` and `tuple[list[dict], Facts]` are `ast.Subscript` nodes, and a scan that refuses EVERY
+    subscript would refuse the TYPE HINTS — condemning correct text, which is how a guard gets deleted by
+    the next person in a hurry. They read nothing, they run nothing (`from __future__ import annotations`
+    leaves them strings), and they are excluded HERE, once, by IDENTITY — never by pattern-matching what an
+    annotation "looks like", which would be one more thing a forgetful read could dress up as.
+    """
+    skip: set[int] = set()
+    for node in ast.walk(fn):
+        if isinstance(node, ast.FunctionDef):
+            args = node.args
+            for arg in [*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg]:
+                if arg is not None and arg.annotation is not None:
+                    skip.update(id(n) for n in ast.walk(arg.annotation))
+            if node.returns is not None:
+                skip.update(id(n) for n in ast.walk(node.returns))
+        elif isinstance(node, ast.AnnAssign):
+            skip.update(id(n) for n in ast.walk(node.annotation))
+    return [node for node in ast.walk(fn) if id(node) not in skip]
 
 
 def check_field_shapes(source: str | None = None) -> str:
-    """EVERY FIELD READ IN EVERY FETCHER DECLARES ITS SHAPE — asserted over the AST of the code that RUNS.
+    """EVERY FIELD READ IN EVERY READER DECLARES ITS SHAPE — asserted over the AST of the code that RUNS.
 
     This is the half `field()` cannot do. A door only helps if there is no way around it, and the way around
-    it is one character long: `page.get(rows_key)`. So the source is SCANNED, and a fetcher that reads a
-    field any other way is named and the suite goes RED:
+    it is one character long: `page.get(rows_key)`. So the source is SCANNED, and a reader that reads a
+    field any other way is NAMED and the suite goes RED:
 
       * a raw `.get(…)` — declares no shape, and turns MISSING into None (then `or []` turns it into empty);
-      * a raw `obj["k"]` subscript — declares no shape either, and a KeyError is a CRASH where a verdict was
-        owed (this file already refuses that reasoning for pages, see `page-is-an-object`);
-      * a `field()` call with NO SHAPE — the read went through the door and still said nothing.
+      * ANY raw subscript, and the word ANY is the fix: `page["statuses"]`, `pages[0][rows_key]`,
+        `facts[k]` — a literal key, a variable key, a computed key, on ANY object. The version that read
+        only STRING-LITERAL keys was bypassed by a variable one, and the version that exempted an object by
+        the NAME of the local holding it was bypassed by spoofing that name. There is no exempt key and
+        there is no exempt object;
+      * any other dict-reading method (`RAW_READS`) — the same read, one synonym along;
+      * a `field()` call with NO SHAPE — the read went through the door and still said nothing;
+      * and `build_snapshot` CALLING THE SEAM ITSELF — a fetch inlined there would read a response in the
+        one function the reader set does not contain.
 
-    Its honest limit, stated rather than implied: it scans the functions in `FIELD_READERS`. A NEW fetcher
-    that is not added to that tuple is not scanned — the same limit `code_argv` has, and the reason both are
-    derived from the running code rather than a hand-written list wherever that is possible.
+    The honest limit, stated rather than implied: a static scan sees the code as WRITTEN. It catches every
+    ordinary spelling of a forgetful read — which is what a forgetful read IS — and it is not a sandbox
+    against a deliberately obfuscated one (`getattr(page, "g" + "et")`). What it makes impossible is
+    committing the mistake QUIETLY, which is how all six of them shipped.
     """
     tree = ast.parse(source if source is not None else Path(__file__).read_text(encoding="utf-8"))
-    bad: list[str] = []
-    for node in ast.walk(tree):
-        if not (isinstance(node, ast.FunctionDef) and node.name in FIELD_READERS):
-            continue
-        for sub in ast.walk(node):
-            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute) and sub.func.attr == "get":
-                bad.append(f"{node.name}:{sub.lineno} reads a field with a raw `.get(…)` — it DECLARES NO "
-                           f"SHAPE, so an ABSENT value becomes None, and `or []` then makes it EMPTY")
-            elif (isinstance(sub, ast.Subscript) and isinstance(sub.slice, ast.Constant)
-                  and isinstance(sub.slice.value, str)
-                  and not (isinstance(sub.value, ast.Name) and sub.value.id in SEAM_OWNED)):
-                bad.append(f"{node.name}:{sub.lineno} reads {sub.slice.value!r} with a raw subscript — it "
-                           f"DECLARES NO SHAPE, and a KeyError is a crash, not a refusal")
-            elif (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name) and sub.func.id == "field"
+    readers = scanned_readers(tree)
+    bad: list[tuple[int, str]] = []
+    for name, node in readers.items():
+        for sub in executable(node):
+            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute) and sub.func.attr in RAW_READS:
+                bad.append((sub.lineno, f"{name}:{sub.lineno} reads a field with a raw `.{sub.func.attr}(…)` "
+                                        f"— it DECLARES NO SHAPE, so an ABSENT value becomes None, and "
+                                        f"`or []` then makes it EMPTY"))
+            elif isinstance(sub, ast.Subscript):
+                bad.append((sub.lineno, f"{name}:{sub.lineno} reads `{ast.unparse(sub)}` with a raw "
+                                        f"SUBSCRIPT — it DECLARES NO SHAPE, and a KeyError is a crash, not a "
+                                        f"refusal. EVERY subscript is refused here: a literal key, a "
+                                        f"variable key, a computed key, on ANY object. An exemption is a "
+                                        f"guard asking to be spoofed."))
+            elif (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name) and sub.func.id == DOOR
                   and len(sub.args) < 4):
-                bad.append(f"{node.name}:{sub.lineno} calls field() with NO SHAPE — it went through the door "
-                           f"and still did not say what it expects")
+                bad.append((sub.lineno, f"{name}:{sub.lineno} calls {DOOR}() with NO SHAPE — it went through "
+                                        f"the door and still did not say what it expects"))
+    # AND THE ROOT ITSELF. `build_snapshot` is not a reader — it reads only the rows this file built — but it
+    # HOLDS the seam, so a fetch inlined there would read a raw response in the one function the reader set
+    # cannot contain. It hands the seam to a fetcher; it never calls it. (`scanned_readers` has already
+    # refused a source with no `build_snapshot`, so this `next` cannot fail.)
+    root = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "build_snapshot")
+    for call in executable(root):
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id == SEAM:
+            bad.append((call.lineno, f"build_snapshot:{call.lineno} calls the `{SEAM}` seam DIRECTLY — a "
+                                     f"response read there is read OUTSIDE every scanned reader, in the one "
+                                     f"function the reader set cannot contain. A fetch belongs in a FETCHER."))
     # MUTATE:field-reads-through-the-seam:pass
     if bad:
         raise FetchError(
-            "A FIELD READ THAT FORGETS ITS SHAPE: " + "; ".join(bad) + ". Every field of a GitHub response "
+            "A FIELD READ THAT FORGETS ITS SHAPE: "
+            + "; ".join(msg for _, msg in sorted(bad)) + ". Every field of a GitHub response "
             "is read through `field(source, obj, key, <shape>)`, which REFUSES anything the caller did not "
             "declare. A read that declares nothing cannot refuse anything — and the last one to ship "
             "(`page.get(rows_key) or []`) turned a response that was MISSING its row array into a page with "
             "NO rows, and returned GREEN."
         )
-    return (f"every field read declares its shape and goes through field(): "
-            f"{', '.join(sorted(FIELD_READERS))}")
+    return (f"every field read declares its shape and goes through {DOOR}(), in every reader the code "
+            f"DERIVES from build_snapshot: {', '.join(sorted(readers))}")
 
 
 # --- A PAGINATED RESPONSE IS A SOURCE THAT CAN CONTRADICT *ITSELF*, AND IT DID -----------------------
@@ -824,7 +993,8 @@ def check_field_shapes(source: str | None = None) -> str:
 # **SO THE RECONCILIATION MOVES TO THE SEAM, WHERE IT CANNOT BE FORGOTTEN.** `read_pages()` is now the ONLY
 # way rows enter this tool from a paginated read — the same move `repo_scoped()` made for the repository. A
 # fetcher does not get to parse pages itself, so it cannot forget to check them; it declares WHICH per-commit
-# facts its response repeats (`PAGE_FACTS`) and the seam proves, for every one of them, that EVERY page
+# facts its response repeats (`CHECKRUN_PAGE_FACTS` / `STATUS_PAGE_FACTS`) and the seam proves, for every
+# one of them, that EVERY page
 # states it, readably, and that all the pages SAY THE SAME THING. A new paginated fetcher gets the rule by
 # existing.
 #
@@ -838,10 +1008,29 @@ def check_field_shapes(source: str | None = None) -> str:
 # `.state` is deliberately absent: this tool never reads it (a commit with zero statuses reports
 # `{"state":"pending"}` — an absence read as a verdict), and reconciling a value nothing consumes would be a
 # rule that can only ever wedge an honest PR. Add a field here the moment anything starts READING it.
-PAGE_FACTS = {
-    "check-runs": (("total_count", int),),
-    "status": (("total_count", int), ("sha", str)),
-}
+#
+# EACH FAMILY HANDS ITS OWN SPEC TO `read_pages`, rather than the seam looking one up by source name: the
+# lookup would be a raw subscript inside a scanned reader, and there is no longer any such thing (see
+# `check_field_shapes`). Declaring it AT THE CALL is the same rule with nothing to key on.
+CHECKRUN_PAGE_FACTS = (("total_count", int),)
+STATUS_PAGE_FACTS = (("total_count", int), ("sha", str))
+
+
+class Facts(NamedTuple):
+    """The per-commit facts EVERY page of one response agreed on — and the reason the `facts` EXEMPTION in
+    the field-shape scan is GONE rather than narrowed.
+
+    It used to be a plain dict, so `read_pages` and `fetch_statuses` read it with a raw subscript
+    (`facts["sha"]`) — and the scan had to EXEMPT it. The exemption was BY NAME, so any local a reader chose
+    to call `facts` was exempt too, and a reviewer read a GitHub response through it with the suite still
+    green. A field a reader may read raw is a hole in the door, whoever owns the dict.
+
+    So the seam does not hand back a dict at all. These are ATTRIBUTES — `facts.total_count`, `facts.sha` —
+    which are not field reads, cannot be a raw subscript, and need no exemption to be legal. `sha` is None
+    for the check-run family, whose response carries the commit on the ROWS and not at the top level.
+    """
+    total_count: int
+    sha: object = None
 
 
 def readable(source: str, pages: list[dict], fact: str, kind: type) -> list[object]:
@@ -852,20 +1041,26 @@ def readable(source: str, pages: list[dict], fact: str, kind: type) -> list[obje
     reached page two. Skipping the pages that "have nothing to say" is how a truncated read reports a complete
     one: the page that would have told you rows were missing is exactly the page you skipped.
 
-    The shape check is `shape_problem` — the same one `field()` refuses with — asked of EVERY page before ANY
-    value is taken, so the refusal can NAME the pages instead of dying on the first of them.
+    EVERY page is asked THROUGH THE DOOR (`field`), and every refusal is collected before any is raised — so
+    the message can NAME the pages instead of dying on the first of them. It used to ask `shape_problem`
+    directly, which is the door's own helper: a reader that reaches past `field()` into the door's internals
+    is a reader the scan then has to scan, and its raw reads would (correctly) fail. One door, one caller.
     """
-    problems = [shape_problem(source, page, fact, (kind,)) for page in pages]
-    bad = [i for i, problem in enumerate(problems) if problem]
-    if bad:
+    values, problems = [], []
+    for i, page in enumerate(pages):
+        try:
+            values.append(field(source, page, fact, kind))
+        except FetchError as exc:
+            problems.append((i, str(exc)))
+    if problems:
         raise FetchError(
-            f"{source}: page(s) " + ", ".join(str(i + 1) for i in bad)
-            + f" of {len(pages)} carry no readable {fact} ({'; '.join(problems[i] for i in bad)}) — GitHub "
+            f"{source}: page(s) " + ", ".join(str(i + 1) for i, _ in problems)
+            + f" of {len(pages)} carry no readable {fact} ({'; '.join(p for _, p in problems)}) — GitHub "
             f"repeats it on EVERY page, so a page that does not state it is a page we cannot read. An absent "
             f"count is NOT a count of zero and an absent sha is NOT this commit: a fail-closed rule that "
             f"cannot fire is not a rule, and the page we waved through is the one that would have told us."
         )
-    return [field(source, page, fact, kind) for page in pages]
+    return values
 
 
 def agreed(source: str, pages: list[dict], fact: str, kind: type) -> object:
@@ -891,15 +1086,20 @@ def agreed(source: str, pages: list[dict], fact: str, kind: type) -> object:
             f"that is precisely the bug — page one said the read was complete while page two said rows were "
             f"missing, and the missing row could be the FAILING one."
         )
-    return stated[0]
+    # `next(iter(…))`, never `stated[0]` — EVERY subscript in a scanned reader is refused, and this is one of
+    # the two places that cost (the other is `fetch_check_runs`'s marker row). The pages have just been proven
+    # to say ONE thing; which of them we hand back is arbitrary, and it is not a field read at all.
+    return next(iter(stated))
 
 
-def read_pages(fetch: Fetch, source: str, argv: list[str], rows_key: str) -> tuple[list[dict], dict]:
+def read_pages(fetch: Fetch, source: str, argv: list[str], rows_key: str,
+               page_facts: tuple) -> tuple[list[dict], Facts]:
     """**EVERY PAGINATED READ IN THIS TOOL ENTERS HERE, AND THERE IS NO OTHER DOOR.**
 
     A fetcher gets its rows from this function or it gets no rows at all — which is what makes the page rules
     impossible to forget rather than merely easy to remember. It returns the rows collected across ALL pages,
-    and the per-commit facts (`PAGE_FACTS`) every page agreed on.
+    and the per-commit facts every page agreed on, as a typed `Facts` (the caller declares WHICH — see
+    `CHECKRUN_PAGE_FACTS` / `STATUS_PAGE_FACTS`).
 
     THE COMPLETENESS TEST LIVES HERE TOO, and it REPLACED A NOTE. The tool used to record `total_count=3 but
     collected 2` in a `notes` list and return GREEN anyway — a verdict computed from evidence it had just
@@ -946,16 +1146,19 @@ def read_pages(fetch: Fetch, source: str, argv: list[str], rows_key: str) -> tup
     rows = [row for page in pages for row in field(source, page, rows_key, list, why=(
         f"Every page of this response carries its rows under {rows_key!r}; a page that does not is not a "
         f"page with NO rows, and the row it is hiding could be the FAILING one."))]
-    facts = {fact: agreed(source, pages, fact, kind) for fact, kind in PAGE_FACTS[source]}
+    # A TYPED VALUE, NOT A DICT — read by ATTRIBUTE downstream, so no reader has to subscript it and the scan
+    # needs no exemption for it. The spec comes from the FETCHER (`page_facts`); a lookup keyed by `source`
+    # would itself be a raw subscript in here.
+    facts = Facts(**{fact: agreed(source, pages, fact, kind) for fact, kind in page_facts})
 
     # WHAT WE COLLECTED MUST BE WHAT GITHUB SAYS IT HOLDS — across every page, now that every page has been
     # made to say the same number. A short read is a hole we KNOW about, and a hole we know about is never
     # green. (This is not the marker's `count` rule, which asks a DIFFERENT question, downstream: "did every
     # row this fetch produced survive into the file?")
     # MUTATE:evidence-is-complete:pass
-    if facts["total_count"] != len(rows):
+    if facts.total_count != len(rows):
         raise FetchError(
-            f"{source}: GitHub reported total_count={facts['total_count']} but the paginated read collected "
+            f"{source}: GitHub reported total_count={facts.total_count} but the paginated read collected "
             f"{len(rows)} row(s) — EVIDENCE IS MISSING. A row GitHub holds for this commit is not in our "
             f"hands, and it could be the FAILING one. No verdict is derived from a read we KNOW is short. "
             f"(/check-runs is also capped at the 1000 most recent check suites; --paginate defeats page-size "
@@ -981,7 +1184,7 @@ def fetch_check_runs(fetch: Fetch, head_sha: str) -> tuple[list[dict], dict]:
     # MUTATE:checkruns-through-the-seam:runs = [r for page in fetch("check-runs", ["gh", "api", "--paginate", "--slurp", f"repos/{REPO_SLOT}/commits/{head_sha}/check-runs"]) for r in (page or {}).get("check_runs", [])]
     runs, _facts = read_pages(fetch, "check-runs", [
         "gh", "api", "--paginate", "--slurp", f"repos/{REPO_SLOT}/commits/{head_sha}/check-runs",
-    ], "check_runs")
+    ], "check_runs", CHECKRUN_PAGE_FACTS)
 
     rows = []
     for r in runs:
@@ -1011,8 +1214,10 @@ def fetch_check_runs(fetch: Fetch, head_sha: str) -> tuple[list[dict], dict]:
 
     # The commit oid lives ONLY on the rows here, so a fetch that returned ZERO rows has NO oid to carry and
     # its marker's sha is `-`. Inventing one would be the fabrication the contract forbids outright.
+    # (`next(iter(runs))`, never `runs[0]`: the field-shape scan refuses EVERY subscript in a reader, and
+    # taking the first of a list is not a field read — it does not get to LOOK like one.)
     # MUTATE:checkruns-marker-sha:marker_sha = head_sha
-    marker_sha = field("check-runs", runs[0], "head_sha", str) if runs else NO_OID
+    marker_sha = field("check-runs", next(iter(runs)), "head_sha", str) if runs else NO_OID
     marker = {"row": "source", "source": "check-runs", "sha": marker_sha, "count": str(len(rows))}
 
     # The FAMILY IS READ, and what it returned is what goes in the artifact. A family never read reports
@@ -1041,7 +1246,8 @@ def fetch_statuses(fetch: Fetch, head_sha: str) -> tuple[list[dict], dict]:
     **NEVER read this response's own `.state` as a verdict.** A commit carrying ZERO statuses reports
     `{"state":"pending","total_count":0}` — verified live against this repo on a commit whose checks had all
     passed. An absence read as a verdict is a lie in both directions, so `.state` is not read here at all
-    (and so it is NOT in `PAGE_FACTS`: reconciling a value nothing consumes could only wedge an honest PR).
+    (and so it is NOT in `STATUS_PAGE_FACTS`: reconciling a value nothing consumes could only wedge an
+    honest PR).
 
     The weakening on the call below is this family going back OUT of the one door — page one believed, every
     other page unread, exactly as it shipped. A REVIEWER deleted this family's completeness call ALONE and
@@ -1050,16 +1256,21 @@ def fetch_statuses(fetch: Fetch, head_sha: str) -> tuple[list[dict], dict]:
     and the `pages-*-statuses` fixtures kill this one, the check-run ones kill the other, and NEITHER can
     stand in for the other.
     """
-    # MUTATE:status-through-the-seam:pages = fetch("status", ["gh", "api", "--paginate", "--slurp", f"repos/{REPO_SLOT}/commits/{head_sha}/status"]); statuses, facts = [st for page in pages for st in (page or {}).get("statuses", [])], {"sha": s(pages[0].get("sha")) if pages and isinstance(pages[0], dict) else None}
+    # MUTATE:status-through-the-seam:pages = fetch("status", ["gh", "api", "--paginate", "--slurp", f"repos/{REPO_SLOT}/commits/{head_sha}/status"]); statuses, facts = [st for page in pages for st in (page or {}).get("statuses", [])], Facts(0, pages[0].get("sha") if pages and isinstance(pages[0], dict) else None)
     statuses, facts = read_pages(fetch, "status", [
         "gh", "api", "--paginate", "--slurp", f"repos/{REPO_SLOT}/commits/{head_sha}/status",
-    ], "statuses")
+    ], "statuses", STATUS_PAGE_FACTS)
 
     # GITHUB'S OWN, AGREED ACROSS EVERY PAGE — never the sha we asked for. The whole force of the verify rule
     # downstream comes from the two being INDEPENDENT: the header carries ours, the rows carry GitHub's, so
     # they CAN disagree, and on a response fetched for a superseded commit they WILL.
+    #
+    # AN ATTRIBUTE, NOT `facts["sha"]` — and that is not a style note, it is the FIX. This read was a raw
+    # subscript, so the field-shape scan had to EXEMPT the name `facts`, and the exemption was BY NAME: a
+    # reviewer wrote `facts = {}` in this very function and read a GitHub response through it, exempt, with
+    # the whole suite still GREEN. The dict is now a TYPED `Facts` and there is nothing to exempt.
     # MUTATE:status-sha-from-response:sha = head_sha
-    sha = s(facts["sha"])
+    sha = s(facts.sha)
     rows = [
         {"row": "status", "sha": sha,
          "context": field("status", st, "context", str), "state": up(field("status", st, "state", str))}
@@ -1909,7 +2120,14 @@ def check_gh_invocations(text: str, argv: dict[str, list[str]]) -> list[str]:
     """
     problems: list[str] = []
     json_fields = argv["rollup"][argv["rollup"].index("--json") + 1]
-    for line in text.splitlines():
+    # **A COMMAND IS NOT A LINE, AND THIS GUARD USED TO THINK IT WAS.** A shell invocation WRAPS with a
+    # trailing `\`, and every test below is a substring test on one line — so a rollup fetch written across
+    # two lines had `--json statusCheckRollup` on the first and its flags on the second, and NONE of the
+    # tests fired. A doc copy that dropped `--repo` that way was accepted, silently: the same shape as the
+    # field-shape scan seeing one spelling of a subscript. Continuations are JOINED first, so the subject of
+    # the test is the COMMAND. (`check_derive_copies` already reads its subject to the end of the PARAGRAPH,
+    # for exactly this reason — this is that lesson, applied to the guard that had not learned it.)
+    for line in re.sub(r"\\\n\s*", " ", text).splitlines():
         line = line.strip()
         if line.startswith("gh api") and ("/check-runs" in line or "/status" in line):
             for flag in ("--paginate", "--slurp"):
@@ -2303,31 +2521,109 @@ SEAM_EXPECT = {
     # defect, reconstructed — must be REFUSED by the seam, not merely absent from a list.
     "[argv] every GitHub call is repo-scoped": ("accepted", "every GitHub call names the repo"),
     "[argv] a fetcher that forgets the repo": ("refused", "is NOT scoped to"),
+    # AND THE SPOOF, which the audit of the field-shape scan's two bypasses turned up in THIS guard: it asked
+    # whether the repo's name appeared ANYWHERE in the argv, so a repository named in a flag that SCOPES
+    # NOTHING satisfied it — and the command still resolved against the current checkout. A guard that
+    # accepts a STRING where it means a POSITION can be fed the string.
+    "[argv] the repo named in a flag that scopes nothing": ("refused", "is NOT scoped to"),
     # **THE SAME TWO QUESTIONS, ABOUT FIELD READS.** The argv pair above proves a fetcher cannot ask the
-    # WRONG REPOSITORY; this pair proves it cannot read a field WITHOUT SAYING WHAT IT EXPECTS — the defect
-    # that shipped `page.get(rows_key) or []`, which read a MISSING row array as an EMPTY one and returned
-    # GREEN. The first case is the INVENTORY, over the code that RUNS (`check_field_shapes` AST-scans this
-    # file). The second is the DECISIVE one: a fetcher that FORGETS, reconstructed — and it must be REFUSED
-    # BY NAME, not merely absent from a list. The bad source is INVENTED and lives only in this string: a
-    # forgetful read written into the tree is a read somebody copies.
+    # WRONG REPOSITORY; the cases below prove it cannot read a field WITHOUT SAYING WHAT IT EXPECTS — the
+    # defect that shipped `page.get(rows_key) or []`, which read a MISSING row array as an EMPTY one and
+    # returned GREEN. The first is the INVENTORY, over the code that RUNS (`check_field_shapes` AST-scans
+    # this file). The rest are the DECISIVE ones: a reader that FORGETS, reconstructed in every spelling the
+    # hole has ever had — and each must be REFUSED BY NAME, not merely absent from a list.
+    #
+    # **THE LAST THREE ARE REGRESSION CASES FOR THE TWO BYPASSES A REVIEWER DROVE THROUGH THE FIRST VERSION
+    # OF THIS SCAN, AND FOR THE HOLE IT DISCLOSED INSTEAD OF CLOSING.** They are not hypothetical: with the
+    # scan as it shipped one round ago, `pages[0][rows_key]` in `read_pages` and `facts = {}` /
+    # `facts["statuses"]` in `fetch_statuses` BOTH left the entire suite GREEN, and a brand-new fetcher was
+    # not scanned at all. Delete one of these cases and that bypass is legal again.
     "[shape] every field read declares its shape": ("accepted", "every field read declares its shape"),
-    "[shape] a fetcher that forgets its shape": ("refused", "FORGETS ITS SHAPE"),
+    "[shape] a raw .get() in a reader": ("refused", "raw `.get(…)`"),
+    "[shape] a subscript with a LITERAL key": ("refused", "`page['check_runs']` with a raw SUBSCRIPT"),
+    "[shape] a subscript with a VARIABLE key": ("refused", "`pages[0][rows_key]` with a raw SUBSCRIPT"),
+    "[shape] a subscript on a SPOOFED local": ("refused", "`facts['statuses']` with a raw SUBSCRIPT"),
+    "[shape] a field() call with NO shape": ("refused", "calls field() with NO SHAPE"),
+    "[shape] a NEW fetcher that declares nothing": ("refused", "fetch_deployments"),
+    "[shape] build_snapshot reads a response itself": ("refused", "calls the `fetch` seam DIRECTLY"),
+    "[shape] a source in which NOTHING fetches": ("refused", "found NO FETCHER"),
     # And the RUN-TIME backstop behind the scan: a read that reaches `field()` with no shape at all refuses
-    # there too. The scan is static and covers `FIELD_READERS`; this covers the call itself, wherever it is.
+    # there too. The scan is static and covers the readers it DERIVES; this covers the call itself, wherever
+    # it is — including a caller the scan does not reach at all.
     "[shape] a field read that declares NO shape": ("refused", "DECLARES NO SHAPE"),
 }
 
-# A fetcher that forgets — the defect itself, in the three ways it can be written. INVENTED source: it is
-# parsed, never executed, and it exists NOWHERE in this tree, so a sweeper who greps for it lands here and
-# nowhere else.
-FORGETFUL_FETCHER = """
+# THE READER THAT FORGETS — the defect itself, in every spelling it has ever been written in, and the last
+# three are the ones that BEAT the first version of this scan.
+#
+# **INVENTED SOURCE, ALL OF IT.** These strings are parsed, never executed, and they exist NOWHERE ELSE in
+# this tree — so a sweeper who greps for one lands here and nowhere else, and never on a live line.
+#
+# Each is a whole (tiny) module, because the scan DERIVES its subject from `build_snapshot`: the reader set
+# is what that function hands the `fetch` seam to. That is what makes the NEW-FETCHER case catchable at all
+# — under the hand-written reader list it replaced, `fetch_deployments` was simply not scanned.
+def forgetful(body: str, drives: str = "fetch_check_runs(fetch, head_sha)") -> str:
+    return f"def build_snapshot(fetch, repo, pr, head_sha):\n    return {drives}\n\n{body}"
+
+
+FORGETFUL_READERS = {
+    "[shape] a raw .get() in a reader": forgetful("""
 def fetch_check_runs(fetch, head_sha):
     pages = fetch("check-runs", [])
-    rows = [row for page in pages for row in page.get("check_runs") or []]
-    total = pages[0]["total_count"]
-    name = field("check-runs", rows[0], "name")
-    return rows, total, name
-"""
+    return [row for page in pages for row in page.get("check_runs") or []]
+"""),
+    "[shape] a subscript with a LITERAL key": forgetful("""
+def fetch_check_runs(fetch, head_sha):
+    pages = fetch("check-runs", [])
+    return [row for page in pages for row in page["check_runs"]]
+"""),
+    # BYPASS ONE, verbatim: the key is a VARIABLE, so the scan that only knew string literals never looked.
+    "[shape] a subscript with a VARIABLE key": forgetful("""
+def fetch_check_runs(fetch, head_sha):
+    return read_pages(fetch, "check-runs", [], "check_runs")
+
+def read_pages(fetch, source, argv, rows_key):
+    pages = fetch(source, argv)
+    return pages[0][rows_key]
+"""),
+    # BYPASS TWO, verbatim: a local named `facts` was EXEMPT, whatever it actually held.
+    "[shape] a subscript on a SPOOFED local": forgetful("""
+def fetch_statuses(fetch, head_sha):
+    facts = fetch("status", [])
+    return facts["statuses"]
+""", drives="fetch_statuses(fetch, head_sha)"),
+    "[shape] a field() call with NO shape": forgetful("""
+def fetch_check_runs(fetch, head_sha):
+    page = fetch("check-runs", [])
+    return field("check-runs", page, "check_runs")
+"""),
+    # THE HOLE THE OLD SCAN DISCLOSED INSTEAD OF CLOSING: a fetcher nobody added to the list was not scanned.
+    # The reader set is DERIVED now, so this one is scanned the moment `build_snapshot` drives it.
+    "[shape] a NEW fetcher that declares nothing": forgetful("""
+def fetch_deployments(fetch, head_sha):
+    data = fetch("deployments", [])
+    return data["deployments"]
+""", drives="fetch_deployments(fetch, head_sha)"),
+    # AND THE ROOT ITSELF: inline a fetch into `build_snapshot` and no reader is involved at all. Its fetcher
+    # is IMPECCABLE here — it reads through the door, with a shape — so the ONLY thing wrong with this source
+    # is the response `build_snapshot` reads itself, in the one function the reader set cannot contain.
+    "[shape] build_snapshot reads a response itself": """
+def build_snapshot(fetch, repo, pr, head_sha):
+    rows = fetch_check_runs(fetch, head_sha)
+    data = fetch("check-runs", [])
+    return rows, data.get("check_runs")
+
+def fetch_check_runs(fetch, head_sha):
+    pages = fetch("check-runs", [])
+    return [row for page in pages for row in field("check-runs", page, "check_runs", list)]
+""",
+    # A SOURCE IN WHICH NOTHING FETCHES: the reader set is EMPTY, so the scan has nothing to scan — and a
+    # scan with no subject would otherwise pass every source on Earth, including the five above.
+    "[shape] a source in which NOTHING fetches": """
+def build_snapshot(fetch, repo, pr, head_sha):
+    return [], {}
+""",
+}
 
 
 def seam_cases(tmp: Path) -> dict[str, tuple[str, str]]:
@@ -2368,9 +2664,18 @@ def seam_cases(tmp: Path) -> dict[str, tuple[str, str]]:
     case("[argv] a fetcher that forgets the repo",
          lambda: repo_scoped(lambda _s, argv: argv, "o/r")(
              "a-new-fetcher", ["gh", "pr", "view", "35", "--json", "statusCheckRollup,headRefOid"]))
-    # THE FIELD-READ SEAM: the inventory over the code that RUNS, and the fetcher that forgets.
+    # THE SPOOF: the repository IS in the argv — in a `--template`, where it scopes nothing. The command
+    # still resolves in the current checkout. Named as a POSITION, not a substring, this is refused.
+    case("[argv] the repo named in a flag that scopes nothing",
+         lambda: repo_scoped(lambda _s, argv: argv, "o/r")(
+             "a-new-fetcher", ["gh", "pr", "view", "35", "--json", "statusCheckRollup,headRefOid",
+                               "--template", "repos/o/r/x"]))
+    # THE FIELD-READ SEAM: the inventory over the code that RUNS, and then the reader that forgets — in
+    # every spelling, INCLUDING the two that beat the first version of this scan (a variable-key subscript,
+    # and a local spoofing the name the scan used to exempt).
     case("[shape] every field read declares its shape", check_field_shapes)
-    case("[shape] a fetcher that forgets its shape", lambda: check_field_shapes(FORGETFUL_FETCHER))
+    for shape_case, forgetful_source in FORGETFUL_READERS.items():
+        case(shape_case, lambda src=forgetful_source: check_field_shapes(src))
     case("[shape] a field read that declares NO shape",
          lambda: field("check-runs", {"check_runs": []}, "check_runs"))
     doc_cases(tmp, case)  # the alarm's OWN guards — see DOC_EXPECT
@@ -2402,6 +2707,7 @@ DOC_EXPECT = {
     "[doc] a FETCH command is MISSING": ("refused", "check-runs"),
     "[doc] TWO fetch commands for one source": ("refused", "TWO fetch commands"),
     "[doc] the rollup fetch drops --repo": ("refused", "names NO REPOSITORY"),
+    "[doc] a WRAPPED rollup fetch drops --repo": ("refused", "names NO REPOSITORY"),
     "[doc] a derive copy drops --required-set": ("refused", "WITHOUT `--required-set`"),
     "[doc] NO copy of the derive command": ("refused", "ZERO copies"),
     # The one class of rule `doc-check` CANNOT execute against the doc, so the doc's own PROSE is the
@@ -2465,6 +2771,13 @@ def doc_cases(tmp: Path, case: Callable[[str, Callable[[], object]], None]) -> N
 
     case("[doc] the rollup fetch drops --repo",
          lambda: invocations(text.replace(" --repo <owner>/<repo>", "")))
+    # THE SAME BAD COPY, WRAPPED OVER TWO LINES — which is how a reader actually writes a long `gh` command,
+    # and how this guard was escaped: every test in it is a substring test, and the flags had moved to the
+    # continuation line. The command is the subject, not the line.
+    case("[doc] a WRAPPED rollup fetch drops --repo",
+         lambda: invocations(text.replace(
+             "gh pr view <pr> --repo <owner>/<repo> --json statusCheckRollup,headRefOid",
+             "gh pr view <pr> \\\n     --json statusCheckRollup,headRefOid")))
 
     # THE DERIVE-COMMAND SWEEP, against a doc tree built HERE — the real one is correct, so nothing else can
     # ever execute these two guards. The bad copy is INVENTED and lives only in `tmp`: a stale command
@@ -2491,9 +2804,26 @@ def doc_cases(tmp: Path, case: Callable[[str, Callable[[], object]], None]) -> N
 
 
 def check_seams(tmp: Path) -> list[str]:
+    """Every case RAN and every case is EXPECTED — reconciled BOTH ways.
+
+    A case with no expectation is a case nobody asserts anything about: it runs, it can return whatever it
+    likes, and the suite reports health it never measured. That is the SAME defect this file keeps finding
+    (the audit that followed the field-shape scan's two bypasses found it here), so the reconciliation is
+    mechanical, not a habit. It is HARNESS scaffolding — it guards the SUITE, not a PR — which is why it
+    carries no `# MUTATE` marker, for the reason `RULES` names for `run_fixture`'s refusals.
+    """
     bad = []
     got = seam_cases(tmp)
-    for name, (want, needle) in {**SEAM_EXPECT, **DOC_EXPECT}.items():
+    expected = {**SEAM_EXPECT, **DOC_EXPECT}
+    for name in sorted(set(got) - set(expected)):
+        bad.append(f"{name}: this case RAN and NOTHING EXPECTS it — a case no table asserts on is a case "
+                   f"that cannot fail, and a suite that runs it reports health it never measured")
+    for name in sorted(set(expected) - set(got)):
+        bad.append(f"{name}: this case is EXPECTED and never RAN — an expectation with no case is an "
+                   f"assertion about nothing")
+    for name, (want, needle) in expected.items():
+        if name not in got:
+            continue
         verdict, detail = got[name]
         if verdict != want:
             bad.append(f"{name}: {verdict!r}, expected {want!r} — {detail}")
