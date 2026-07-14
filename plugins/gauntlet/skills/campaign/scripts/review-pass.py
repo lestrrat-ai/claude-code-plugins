@@ -60,6 +60,7 @@ so. Absent that, the guard fires: the DEFAULT is that nothing has been ruled on.
 from __future__ import annotations
 
 import argparse
+import ast
 import io
 import json
 import re
@@ -96,7 +97,7 @@ STATUSES = (STARTED, DONE)
 # is PRESENT AND NOT COUNTED: a `done` with a `ts` nobody parses, a `pass_identity` with a second sha. The
 # progress events are keyed by (type, status) because a `started` carrying `evidence` is exactly as wrong
 # as a `done` without it — the evidence rule and the no-evidence rule are ONE rule, stated once.
-EVENT_KEYS = {
+EVENT_KEYS: "dict[tuple[str, str | None], set[str]]" = {
     (IDENTITY, None): {"type", "pr", "pass", "head_sha", "launch_attempt", "dispatched_at"},
     (PROGRESS, STARTED): {"type", "unit", "status"},
     (PROGRESS, DONE): {"type", "unit", "status", "evidence"},
@@ -226,8 +227,19 @@ def read_lines(path: Path, what: str) -> "list[dict]":
 
 # --- the plan ------------------------------------------------------------------------------------
 
-def check_unit(unit: dict, where: str) -> None:
-    """A plan unit, whether it sits in the plan or inside a `plan_amendment_request`. ONE definition."""
+def check_unit(unit: object, where: str) -> None:
+    """A plan unit, whether it sits in the plan or inside a `plan_amendment_request`. ONE definition.
+
+    **`unit: object` — NOT `dict` — and that is load-bearing, not pedantry.** This is handed values
+    straight out of `json.loads`, and a JSON value is whatever the file says it is: an amendment's
+    `proposed_unit` can arrive as a STRING (`"proposed_unit": "u99"`), and a reviewer hand-writes that
+    event — it is the one event type the emit-only rule exempts. Annotating the parameter `dict` would be
+    a promise no caller can keep, and a type checker reading that promise concludes the `isinstance` guard
+    below can never fire and the `raise` is UNREACHABLE. It is not: it fires, on that exact input, and the
+    fixture `amendment-unit-not-object` drives it. Believe the annotation and delete the "dead" guard, and
+    a string reaches `set(unit)` — which CRASHES, and a crash is not a verdict. Say what the caller can
+    actually promise, and the guard the tool needs is the guard the type checker asks for.
+    """
     if not isinstance(unit, dict):
         # MUTATE:unit-not-object:return
         raise Defect(f"{where}: the unit is not a JSON object")
@@ -646,44 +658,50 @@ OTHER_SHA = "b" * 40
 TS = "2026-07-06T00:00:00Z"
 
 
-def ident(**over) -> str:
-    rec = {"type": IDENTITY, "pr": "41", "pass": "1", "head_sha": SHA,
-           "launch_attempt": "1", "dispatched_at": TS}
-    rec.update(over)
-    return json.dumps({k: v for k, v in rec.items() if v is not DROP})
-
-
-def unit(uid: str = "u01", **over) -> str:
-    rec = {"type": UNIT, "id": uid, "kind": "file", "target": "scripts/review-pass.py",
-           "checks": ["the read side refuses what the write side refuses"]}
-    rec.update(over)
-    return json.dumps({k: v for k, v in rec.items() if v is not DROP})
-
-
-def started(uid: str = "u01", **over) -> str:
-    rec = {"type": PROGRESS, "unit": uid, "status": STARTED}
-    rec.update(over)
-    return json.dumps({k: v for k, v in rec.items() if v is not DROP})
-
-
-def done(uid: str = "u01", evidence: str = "review-pass.py:42 `check_event`", **over) -> str:
-    rec = {"type": PROGRESS, "unit": uid, "status": DONE, "evidence": evidence}
-    rec.update(over)
-    return json.dumps({k: v for k, v in rec.items() if v is not DROP})
-
-
-def amendment(**over) -> str:
-    rec = {"type": AMENDMENT, "ts": TS, "reason": "no unit covers the mutation harness",
-           "proposed_unit": json.loads(unit("u99"))}
-    rec.update(over)
-    return json.dumps({k: v for k, v in rec.items() if v is not DROP})
-
-
 class _Drop:
-    """A sentinel that REMOVES a key from a fixture record — so a fixture can omit a REQUIRED field."""
+    """The sentinel that REMOVES a key from a fixture record, so a fixture can OMIT a required field.
+
+    It is not `None`: `null` is a legal JSON value, so a fixture must stay free to write
+    `"evidence": null` and watch the tool refuse it. "Absent" and "present and null" are different bytes
+    and different defects — collapse them onto one sentinel and one of the two becomes untestable.
+    """
 
 
 DROP = _Drop()
+
+# A fixture record's values are typed `object`, and that IS the type: these builders exist to write what
+# the schema FORBIDS — an `evidence` that is a list, a `proposed_unit` that is a string, a key that is not
+# there at all. Declaring them `str` would be a promise the fixtures are written to break, and a type
+# checker believing it would reject the very cases the read side must catch.
+Value = object
+
+
+def _rec(fields: "dict[str, Value]", over: "dict[str, Value]") -> str:
+    rec = {**fields, **over}
+    return json.dumps({k: v for k, v in rec.items() if v is not DROP})
+
+
+def ident(**over: Value) -> str:
+    return _rec({"type": IDENTITY, "pr": "41", "pass": "1", "head_sha": SHA,
+                 "launch_attempt": "1", "dispatched_at": TS}, over)
+
+
+def unit(uid: str = "u01", **over: Value) -> str:
+    return _rec({"type": UNIT, "id": uid, "kind": "file", "target": "scripts/review-pass.py",
+                 "checks": ["the read side refuses what the write side refuses"]}, over)
+
+
+def started(uid: str = "u01", **over: Value) -> str:
+    return _rec({"type": PROGRESS, "unit": uid, "status": STARTED}, over)
+
+
+def done(uid: str = "u01", evidence: Value = "review-pass.py:42 `check_event`", **over: Value) -> str:
+    return _rec({"type": PROGRESS, "unit": uid, "status": DONE, "evidence": evidence}, over)
+
+
+def amendment(**over: Value) -> str:
+    return _rec({"type": AMENDMENT, "ts": TS, "reason": "no unit covers the mutation harness",
+                 "proposed_unit": json.loads(unit("u99"))}, over)
 
 PLAN = [unit("u01"), unit("u02", target="stage-2-review-gate.md", checks=["the docs match the tool"])]
 WORKED = [ident(), started("u01"), done("u01"), started("u02"), done("u02", evidence="stage-2:161")]
@@ -929,7 +947,10 @@ RULE_FUNCTIONS = (
     "check_identity", "decide", "parse_name", "cmd_emit", "cmd_identity", "cmd_plan_add", "cmd_verify",
 )
 ENFORCING_EXCEPTIONS = ("Defect", "OperatorError")
-ENFORCING_VERDICTS = (INCOMPLETE, AMENDED, UNUSABLE)  # `return OK` is the ABSENCE of a rule
+# The NAMES as they are spelled in the source, because that is what the AST holds — `return UNUSABLE, …`
+# parses to an `ast.Name` whose `id` is "UNUSABLE", never to the string "unusable" it evaluates to.
+# `return OK` is the ABSENCE of a rule, so it is not here.
+ENFORCING_VERDICT_NAMES = ("INCOMPLETE", "AMENDED", "UNUSABLE")
 
 FALSE_PASS, VERDICT_KILL, MESSAGE_KILL, CRASH_KILL = "FALSE-PASS", "VERDICT", "MESSAGE", "CRASH"
 
@@ -943,13 +964,15 @@ def markers(source: str) -> "list[tuple[str, str, int]]":
     return out
 
 
-def marked_statements(source: str) -> "dict[str, tuple[str, object]]":
-    """rule id -> (weakening, the statement the marker sits directly above)."""
-    import ast
+def marked_statements(source: str) -> "dict[str, tuple[str, ast.stmt]]":
+    """rule id -> (weakening, the statement the marker sits directly above).
 
+    `ast.stmt`, never `ast.AST`: only a statement has a `lineno`/`end_lineno`, and those two are the whole
+    reason this is collected — they are the span `mutate()` replaces.
+    """
     tree = ast.parse(source)
     stmts = {node.lineno: node for node in ast.walk(tree) if isinstance(node, ast.stmt)}
-    out: dict = {}
+    out: dict[str, tuple[str, ast.stmt]] = {}
     for rule, weakening, line in markers(source):
         stmt = stmts.get(line + 1)
         if stmt is None:
@@ -962,31 +985,38 @@ def marked_statements(source: str) -> "dict[str, tuple[str, object]]":
     return out
 
 
-def unmarked(source: str, marked: dict) -> "list[str]":
+def unmarked(source: str, marked: "dict[str, tuple[str, ast.stmt]]") -> "list[str]":
     """EVERY refusal and every non-OK return in a rule function must sit under a marker.
 
     This is the half of the question fixtures can NEVER answer. A rule added without a marker is never
     mutated, so nothing ever asks whether a fixture would notice its absence — it is reported "pinned" by
     nobody having looked. THE COUNT IS A CLAIM, and this is what makes the claim checkable: the inventory
     is DERIVED from the source, never typed into a report.
-    """
-    import ast
 
+    Every node is NARROWED to the concrete statement type before its `lineno` is read. `ast.AST` does not
+    declare one — reaching through the base class for it is how this walk would silently start reading the
+    line number of something that has none.
+    """
     lines = {stmt.lineno for _w, stmt in marked.values()}
-    problems = []
+    problems: list[str] = []
     for fn in ast.walk(ast.parse(source)):
         if not isinstance(fn, ast.FunctionDef) or fn.name not in RULE_FUNCTIONS:
             continue
         for node in ast.walk(fn):
-            enforcing = False
-            if isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call):
-                enforcing = getattr(node.exc.func, "id", None) in ENFORCING_EXCEPTIONS
-            elif isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple) and node.value.elts:
-                first = node.value.elts[0]
-                enforcing = isinstance(first, ast.Name) and first.id in (
-                    "INCOMPLETE", "AMENDED", "UNUSABLE")
+            if isinstance(node, ast.Raise):
+                exc = node.exc
+                enforcing = (isinstance(exc, ast.Call) and isinstance(exc.func, ast.Name)
+                             and exc.func.id in ENFORCING_EXCEPTIONS)
+                what = "raise"
+            elif isinstance(node, ast.Return):
+                val = node.value
+                enforcing = (isinstance(val, ast.Tuple) and bool(val.elts)
+                             and isinstance(val.elts[0], ast.Name)
+                             and val.elts[0].id in ENFORCING_VERDICT_NAMES)
+                what = "return"
+            else:
+                continue  # `node` is now an ast.stmt, so `lineno` below is one it really has
             if enforcing and node.lineno not in lines:
-                what = "raise" if isinstance(node, ast.Raise) else "return"
                 problems.append(
                     f"review-pass.py:{node.lineno}: {fn.name}() enforces a rule ({what}) with NO "
                     f"# MUTATE marker — an unmarked rule is never mutated, so nothing can report it unpinned"
@@ -994,7 +1024,7 @@ def unmarked(source: str, marked: dict) -> "list[str]":
     return problems
 
 
-def mutate(source: str, rule: str, weakening: str, stmt) -> str:
+def mutate(source: str, rule: str, weakening: str, stmt: ast.stmt) -> str:
     lines = source.splitlines()
     body = [f"{' ' * stmt.col_offset}{weakening}  # MUTANT:{rule}"]
     return "\n".join(lines[: stmt.lineno - 1] + body + lines[stmt.end_lineno:]) + "\n"
