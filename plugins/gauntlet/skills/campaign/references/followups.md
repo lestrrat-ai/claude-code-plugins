@@ -309,15 +309,34 @@ fix blocked the shapes its author had thought of, and the next shape walked stra
   could be **published as an issue**;
 - `null` — JSON's own word for *there is no value here* — used to load as the five characters `"None"`, and
   **was published as an issue**;
-- and a **number** used to load as its **digits**: `{"evidence": 123}` read back as `"123"`, which is not
+- a **number** used to load as its **digits**: `{"evidence": 123}` read back as `"123"`, which is not
   blank, so it was accepted and **published**. Digits are not evidence. This one is worth naming twice,
   because the fix that came before it **declared a finite number legal** in the same breath as writing down
-  the rule that forbids it.
+  the rule that forbids it;
+- and a **surrogate code point** loaded, and survived `list`, and then **killed `table` and `get --field`
+  with a `UnicodeEncodeError` — half a row already printed**. `json.dumps` escapes a lone `\ud800` happily,
+  so it reaches disk; it is not text, it **cannot be encoded**, and a value the store can hold but can never
+  **show** is not a value it can hold. It reaches the **write** door too: `argv` is *bytes*, and Python
+  decodes an undecodable one as a surrogate, so `add --title $'\xff'` really did store one.
 
-**A crash is not a refusal, either.** A hand-written file can carry things Python's own parser chokes on —
-a 10,000-digit integer, 100,000 nested arrays — and those used to end in a **traceback**, which tells the
-caller nothing about whether the store is corrupt or the tool is broken. Every door now **refuses cleanly**,
-with the file untouched: a bad line, a bad value, a bad byte, a bad *parse*.
+**Absence is a MISSING KEY — `null` is not one.** Only a line that **omits** a key is absent, and only an
+absent *optional* field backfills (which is what lets the schema grow without migrating a store that cannot
+be rebuilt). A key that is **present** carrying `null` is a **value the writer put there**, and the write
+door emits `-` for an unset optional and can **never** emit `null` — so `null` is outside the accept-set and
+is refused, in a required field and an optional one alike. Reading it as absence is the same coercion in
+JSON's own vocabulary, and it did what all of them do: `{"found_run": null}` loaded, and the next
+`set --title` **rewrote the line with a `-` the store had invented**.
+
+**A crash is not a refusal, either — and a HANG is worse than a crash.** A hand-written file can carry things
+Python's own parser chokes on — a 10,000-digit integer, 100,000 nested arrays — and those used to end in a
+**traceback**, which tells the caller nothing about whether the store is corrupt or the tool is broken. **The
+environment is hostile too, not just the lines:** `--file` pointed at a **directory**, an **unreadable** path,
+or a store in an **unwritable** directory each used to end in a traceback out of the plumbing; and `--file` at
+a **FIFO** did not even crash — it **blocked forever**, holding the lock, with nothing downstream ever
+learning why. The accept-set is the same class rule one level up: the accessor writes a **regular file**, so a
+regular file — or **nothing at all**, since a missing store is an empty one — is everything a write door could
+have produced. Every door now **refuses cleanly**, with the file untouched: a bad line, a bad value, a bad
+byte, a bad *parse*, a bad *path*.
 
 This is also why the store is **never hand-edited** — a hand-written entry is, at best, one the accessor
 will reject, and it will now reject it **loudly and without touching the file**, instead of quietly

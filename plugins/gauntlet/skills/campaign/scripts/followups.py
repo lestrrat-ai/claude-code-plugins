@@ -60,9 +60,16 @@ never CRASHED on. (The high-water mark, `followup-seq.high`, is the ONE declared
 it is an `int`.) The rule is stated and enforced in `project()`; it is NOT a list of blocked shapes, because
 a list is what this file shipped seven times — each fix blocking the shapes its author had thought of, while
 an unknown key loaded and was SILENTLY DELETED by the next write, `NaN` loaded as the TEXT "nan", `null`
-loaded as `"None"`, and `123` loaded as `"123"` and was PUBLISHED AS AN ISSUE. And a line the PARSER ITSELF
-chokes on — a 10,000-digit integer, 100,000 nested arrays — is a REFUSAL too, not a traceback: a tool that
-falls over has told the caller nothing about whether the store is corrupt or the tool is broken.
+loaded as `"None"`, and `123` loaded as `"123"` and was PUBLISHED AS AN ISSUE. ABSENCE IS A MISSING KEY, and
+`null` is NOT one: it is a value, present, that no door can write (`dump()` emits `-` for an unset optional),
+so it is refused like any other — reading it as absence was that same coercion in JSON's own vocabulary.
+
+AND A CRASH IS NOT A REFUSAL — NOR IS A HANG. A line the PARSER ITSELF chokes on (a 10,000-digit integer,
+100,000 nested arrays), a value that CANNOT BE ENCODED (a surrogate, which loads and then kills every door
+that RENDERS it), and the hostile WORLD the store lives in (`--file` at a directory, at an unreadable path,
+at a FIFO — which does not even crash, it BLOCKS FOREVER holding the lock) are ALL refusals, cleanly, with
+the file untouched: a tool that falls over has told the caller nothing about whether the store is corrupt or
+the tool is broken, and one that hangs has not even told them that.
 
 THE STORE IS A WORK QUEUE, NOT AN ARCHIVE — and THE PRINCIPLE OF ITS LIFETIME IS: DELETE ONCE A DURABLE
 RECORD EXISTS ELSEWHERE; KEEP WHAT PREVENTS REPEATED WORK. It is LOCAL and GIT-IGNORED — it does not
@@ -95,6 +102,7 @@ import io
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 import unicodedata
@@ -185,9 +193,17 @@ DURABLE_RECORD = ("pr", "published")
 # about to write. Add a field here and it is required at BOTH doors the day it is added.
 REQUIRED = ("title", "evidence", "deferred_why")
 
-# What an ABSENT field on disk reads as. A field OUTSIDE `REQUIRED` is genuinely optional, so it has a
-# DEFAULT: that backfill is what lets the schema grow without migrating a store that cannot be rebuilt (an
-# entry raised before `finding` existed still loads, as the `candidate` it was).
+# What an ABSENT field on disk reads as — AND ABSENT MEANS THE KEY IS NOT THERE. That is the whole of it:
+# a field OUTSIDE `REQUIRED` is genuinely optional, so a line that OMITS its key gets a DEFAULT, and that
+# backfill is what lets the schema grow without migrating a store that cannot be rebuilt (an entry raised
+# before `finding` existed still loads, as the `candidate` it was).
+#
+# A KEY THAT IS PRESENT CARRYING `null` IS NOT ABSENT — IT IS A VALUE, AND IT IS NOT ONE A DOOR CAN WRITE.
+# `project()` owns that, and it is the ONE place absence is decided; `DEFAULTS` is only what absence READS
+# AS. (An earlier fix on this branch declared `null` to BE absence and defaulted it. That is the coercion
+# this store has now been burned by five times, wearing JSON's own vocabulary: `{"found_run": null}` loaded,
+# and the next `set --title` REWROTE the line with `"-"` in it — a value the store invented, on disk, in the
+# one file nothing can rebuild.)
 #
 # A REQUIRED FIELD HAS NO DEFAULT, AND THAT ABSENCE IS THE POINT. `DEFAULTS` used to cover every field, so
 # a hand-written line carrying only `id`/`state`/`title` was BACKFILLED into an entry whose `evidence` and
@@ -293,19 +309,23 @@ def project(rec: "dict", where: str = "") -> "dict[str, str]":
     thing one fix later, because that fix DECLARED a finite number legal ("it reads as its digits") while
     stating the very rule that forbids it. Digits are not evidence. So the TYPE is the rule:
 
-      * `null` IS ABSENCE, and JSON says so. It reads as the field's DEFAULT — which a REQUIRED field does
-        not have, so it is MISSING, so it is blank, so `entry_error()` refuses it. Absent, null and blank are
-        ONE case, at ONE door: that is the whole point of this store having one validator.
+      * ABSENCE IS A MISSING KEY — AND `null` IS NOT ONE. Only a line that OMITS a key is absent, and only
+        an absent OPTIONAL field defaults. A key PRESENT carrying `null` is a VALUE the writer put there,
+        and it is NOT WRITABLE: the write door emits `-` for an unset optional and NEVER emits `null` (see
+        `dump()`), so `null` is outside the accept-set, in a required field and an optional one alike, and
+        it is REFUSED as the non-string it is. The rule this replaces — "`null` IS ABSENCE, it defaults" —
+        was this same coercion wearing JSON's own vocabulary, and it did what every one of them does:
+        `{"found_run": null}` LOADED, and the next `set --title` silently REWROTE the line with a `"-"` the
+        store had INVENTED. A door that translates is a door that lies about what is on disk.
       * A STRING is itself, and it is the ONLY thing that is. A NUMBER — finite or not, `int` or `float` —
         IS NOT WRITABLE, so it is not loadable: `123`, `0`, `-1`, `1.5`, and `1e400` (ordinary JSON that
         never touches `parse_constant` and overflows to `inf`) are all refused RIGHT HERE, as non-strings.
         The `NaN`/`Infinity` SPELLINGS are refused one door earlier, by `no_constants()`, which is why that
         hook still earns its place: it names them as tokens JSON does not have, before any field exists.
-      * A NUL IS NOT TEXT SOMEBODY TYPED. `execve` cannot carry one in `argv`, so no write door can produce a
-        field containing it — it can only have come from a hand-edit, and a NUL silently truncates this
-        plaintext store for every C-based reader (`grep`, `cut`, the shell) that a `.jsonl` exists to be read
-        by. (Other control characters STAY legal: a door really does produce them — `finding` is newline-
-        joined by `append_finding()` — so refusing them would refuse this store's own output.)
+      * A STRING THE STORE CANNOT HOLD IS STILL REFUSED — a NUL, a surrogate. `unholdable()` is the predicate
+        and it owns WHY; both doors ask it from right here. (Other control characters STAY legal: a door
+        really does produce them — `finding` is newline-joined by `append_finding()` — so refusing the class
+        would refuse this store's own output.)
       * ANYTHING ELSE — a list, an object, a bool — is likewise not a value a field can hold. It is refused
         LOUDLY, never quietly turned into the text of its own repr.
     """
@@ -318,20 +338,22 @@ def project(rec: "dict", where: str = "") -> "dict[str, str]":
              f"Nothing was touched. Valid: {', '.join(sorted(RECORD_KEYS))}.")
     entry: "dict[str, str]" = {}
     for f in FIELDS:
-        raw = rec.get(f)
-        if raw is None:  # ABSENT, or an explicit JSON `null` — the same thing, and JSON already says which
+        if f not in rec:  # ABSENT — a MISSING KEY, which is the ONLY absence there is. NOT an explicit `null`
             raw = DEFAULTS.get(f, MISSING)  # …and a REQUIRED field has NO default: it is MISSING, i.e. blank
+        else:
+            raw = rec[f]  # PRESENT — whatever the writer put there, and it now answers for itself, `null` too
         if not isinstance(raw, str):  # THE RULE, and the WHOLE rule — see above. Not a list of shapes.
             fail(f"{where}{f} is {raw!r} — EVERY value in a follow-up is a STRING, and this is not one. A "
-                 f"string is the ONLY thing a write door can produce (argparse has nothing else to hand it), "
-                 f"so a number, a boolean, a list or an object on this line came from a hand-edit, and it is "
-                 f"NOT quietly turned into the text of its own repr: that is how `null` became five "
-                 f"characters of 'evidence' and got PUBLISHED, and how `123` became three more.")
+                 f"string is the ONLY thing a write door can produce (argparse has nothing else to hand it, "
+                 f"and `dump()` writes `{PLACEHOLDER}` for an unset optional — never `null`), so a `null`, a "
+                 f"number, a boolean, a list or an object on this line came from a hand-edit. It is NOT "
+                 f"quietly turned into the text of its own repr, and it is NOT read as ABSENCE: a key that "
+                 f"is THERE is a value. To leave {f} unset, OMIT THE KEY — that is what absence is.")
         held = unholdable(raw)
         if held is not None:  # THE one predicate — see `unholdable()`. Called HERE, so BOTH doors ask it.
             fail(f"{where}{f} carries {held} — no write door here can produce that (a door is fed by "
-                 f"`argv`, which cannot hold it), so this line was hand-edited, and it truncates this "
-                 f"plaintext store for every reader that is not this script.")
+                 f"`argv`, and what `argv` cannot carry, or this store cannot encode, cannot have come from "
+                 f"one), so this line was hand-edited, and this store cannot hold it.")
         entry[f] = raw
     return entry
 
@@ -622,24 +644,54 @@ def visible(value: str) -> str:
     return "".join(c for c in value if unicodedata.category(c) not in INVISIBLE_CATEGORIES)
 
 
+# The Unicode category of a character that IS NOT TEXT AT ALL: `Cs`, the SURROGATES (U+D800-U+DFFF). They
+# are the halves of a UTF-16 pair and mean nothing on their own — `"…".encode()` REFUSES them, so a string
+# carrying one CANNOT BE ENCODED, and a value that cannot be encoded cannot be WRITTEN, PRINTED or held.
+#
+# THE CATEGORY IS THE RULE, exactly as it is for `INVISIBLE_CATEGORIES` — never a codepoint range spelled by
+# hand. `unicodedata` carries the Unicode version Python was built against.
+UNHOLDABLE_CATEGORIES = ("Cs",)
+
+
 def unholdable(value: str) -> "str | None":
     """Why NO FIELD OF THIS STORE CAN HOLD this text — or None. The other half of `is_blank()`.
 
     `is_blank()` asks whether a value carries NOTHING. This asks whether it is a value THIS STORE CAN HOLD
-    AT ALL — and the test is the class rule: could a WRITE DOOR have produced it? A write door is fed by
-    `argv`, and `execve` cannot put a NUL in an `argv` element, so a field containing one did not come from
-    any door here. It came from a hand-edit. And a NUL is not inert: this store is plaintext JSONL, meant to
-    be `cat`/`grep`/`jq`-able, and a NUL truncates the line for every C-based reader that is not this script.
+    AT ALL — and the test is the class rule, in the one form that does not decay into a list of blocked
+    shapes: COULD A WRITE DOOR HAVE PRODUCED IT, AND CAN THE STORE ACTUALLY HOLD IT? Two clauses answer that,
+    and each one is a thing `argv` and `json.dumps` between them CANNOT hand this store:
+
+      * A NUL IS NOT TEXT SOMEBODY TYPED. `execve` cannot put a NUL in an `argv` element, so no write door
+        can produce a field containing one — it came from a hand-edit. And it is not inert: this store is
+        plaintext JSONL, meant to be `cat`/`grep`/`jq`-able, and a NUL truncates the line for every C-based
+        reader that is not this script.
+      * A SURROGATE IS NOT TEXT AT ALL, AND A VALUE THAT CANNOT BE ENCODED CANNOT BE WRITTEN. `UNHOLDABLE_
+        CATEGORIES` is the rule; the consequence is that the store could hold a value it could never SHOW.
+        `json.dumps` escapes a lone `\\ud800` happily, so it reaches DISK — and then every door that RENDERS
+        it (`table`, `get --field`) died with a `UnicodeEncodeError` mid-row, a TRACEBACK, having already
+        printed half a table. A CRASH IS NOT A REFUSAL: the caller cannot tell a corrupt store from a broken
+        tool, and half a table is worse than no table. It is refused AT THE DOOR instead — where every other
+        unwritable value is refused — so no render can ever be asked to show one.
+        It reaches the WRITE door too, and that is not hypothetical: Linux `argv` is bytes, and Python
+        decodes an undecodable one with `surrogateescape`, so `add --title $'\\xff'` really did hand a write
+        door a `\\udcff` and really did store it. Same predicate, same refusal, no second rule.
 
     OTHER CONTROL CHARACTERS STAY LEGAL, and that is not an oversight: a door really does produce them.
     `append_finding()` joins an investigation's records with a NEWLINE, so a `finding` with a newline in it
     is this store's OWN OUTPUT. Refusing the class would refuse what the write door writes — which is the
     same bug as accepting what it cannot write, pointed the other way.
 
-    ONE PREDICATE, asked by `project()` (so both doors refuse it) and by the fixtures (so a hostile value the
-    store cannot hold is not rendered into a table that could never have been asked to hold it).
+    ONE PREDICATE, asked by `project()` (so BOTH doors refuse it, with no door checking for itself) and by
+    the fixtures (so a hostile value the store cannot hold is not rendered into a table that could never have
+    been asked to hold it).
     """
-    return "a NUL (U+0000)" if "\x00" in value else None
+    if "\x00" in value:
+        return "a NUL (U+0000)"
+    bad = next((c for c in value if unicodedata.category(c) in UNHOLDABLE_CATEGORIES), None)
+    if bad is not None:
+        return (f"a surrogate code point (U+{ord(bad):04X}) — it is half of a UTF-16 pair, it is not text, "
+                f"and it CANNOT BE ENCODED, so this store could hold it but could never print it")
+    return None
 
 
 def is_blank(value: str) -> bool:
@@ -770,6 +822,60 @@ def entry_error(entry: dict) -> "str | None":
     return None if why is None else f"{entry['id']} is {why}"
 
 
+@contextmanager
+def clean_io(what: str, path: Path) -> "Iterator[None]":
+    """Turn ANY `OSError` into a REFUSAL. A CRASH IS NOT A REFUSAL — and the environment is hostile too.
+
+    Every rule in this file is about what a hostile LINE can carry. This is the same rule about the hostile
+    WORLD the file lives in: the store is a path an operator hands in, and a path can be unreadable, on a
+    full disk, in a directory nobody may write, or simply gone between one syscall and the next. None of
+    those is a bug in this tool and none of them is a corrupt store — but every one of them used to come out
+    as a TRACEBACK, which is indistinguishable from both. `--file .tmp` (a directory) raised
+    `IsADirectoryError` at exit 1 with a stack trace; a store in a read-only directory raised
+    `PermissionError` from the LOCK, before a single line was even read.
+
+    So every syscall this file makes is wrapped in THIS, once, at the three places it touches the disk
+    (`read_store`, `locked`, `dump`) — not by each of them checking for itself, which is how the doors of
+    this store came to disagree five times over.
+    """
+    try:
+        yield
+    except OSError as e:
+        fail(f"cannot {what} {str(path)!r}: {e.strerror or e}. Nothing was touched.")
+
+
+def unusable_store(path: Path) -> "str | None":
+    """Why this path cannot BE the store — or None. THE CLASS RULE, APPLIED TO THE FILE ITSELF.
+
+    The load door accepts only what a write door could have produced. That is a rule about the LINES, and it
+    is exactly as true of the FILE: `dump()` writes a REGULAR FILE (`mkstemp` + `os.replace`), so a regular
+    file — or NOTHING AT ALL, since a missing store is an empty one — is the whole accept-set. A directory, a
+    FIFO, a socket, a device: no write door here made any of them, and each one breaks a different way.
+
+    THE FIFO IS WHY THIS CANNOT BE LEFT TO THE `OSError` HANDLER, and it is the worst of them. Opening a FIFO
+    with no writer does not raise — IT BLOCKS, FOREVER. No traceback, no exit, no refusal: the campaign
+    driver simply stops, holding the lock, and nothing downstream ever learns why. A refusal has to be made
+    BEFORE the open, and only `stat` can make it.
+
+    `os.stat` FOLLOWS symlinks, deliberately: a symlink to a regular file IS a regular store, and a BROKEN
+    one is a `FileNotFoundError` — which is a missing store, which is an EMPTY store, which is not an error.
+    """
+    try:
+        st = os.stat(path)  # follows the link: what the store IS is what it points AT
+    except FileNotFoundError:
+        return None  # a MISSING store is an EMPTY store — the first follow-up must not need a bootstrap step
+    except OSError as e:
+        return f"cannot read {str(path)!r}: {e.strerror or e}"
+    if stat.S_ISDIR(st.st_mode):
+        return f"{str(path)!r} is a DIRECTORY, not the store"
+    if not stat.S_ISREG(st.st_mode):
+        return (f"{str(path)!r} is not a regular file — this accessor writes the store with `os.replace()`, "
+                f"so a regular file is the only thing it can ever have produced. Reading a FIFO would BLOCK "
+                f"FOREVER holding the lock, which is worse than any crash: nothing downstream would learn "
+                f"why the run stopped.")
+    return None
+
+
 def read_store(path: Path) -> "tuple[list[dict], int]":
     """Return the entries AND the id high-water mark. A missing file is an EMPTY store — not an error.
 
@@ -807,15 +913,19 @@ def read_store(path: Path) -> "tuple[list[dict], int]":
     """
     entries: list[dict] = []
     high = 0
-    if not path.exists():
+    why = unusable_store(path)  # the class rule, applied to the FILE — a directory, a FIFO, an unreadable path
+    if why is not None:
+        fail(why)
+    if not path.exists():  # …and a MISSING store is an EMPTY one (a broken symlink included: it points at none)
         return entries, high
     seen: set[str] = set()
     marked = False
-    try:  # …not `read_text()`: an undecodable byte raised UnicodeDecodeError and CRASHED with a traceback.
-        text = path.read_bytes().decode("utf-8")  # A corrupt store is REFUSED, and a refusal is not a crash.
-    except UnicodeDecodeError as e:
-        fail(f"the store is not valid UTF-8 ({e}) — this accessor writes UTF-8 and nothing else, so the "
-             f"file was written by something that is not this accessor. Nothing was touched.")
+    with clean_io("read the store at", path):  # it can still vanish, or be unreadable, between stat and open
+        try:  # …not `read_text()`: an undecodable byte raised UnicodeDecodeError and CRASHED with a traceback.
+            text = path.read_bytes().decode("utf-8")  # A corrupt store is REFUSED, and a refusal is not a crash
+        except UnicodeDecodeError as e:
+            fail(f"the store is not valid UTF-8 ({e}) — this accessor writes UTF-8 and nothing else, so the "
+                 f"file was written by something that is not this accessor. Nothing was touched.")
     for n, line in enumerate(text.splitlines(), start=1):
         if not line.strip():
             continue
@@ -907,7 +1017,6 @@ def dump(path: Path, entries: "list[dict]", high: int) -> None:
     it must never be possible to leave it unreadable, and "we checked at every door we remembered" is not
     the same guarantee.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
     records = [project(e) for e in entries]  # the SAME projection `read_store()` applies to a line on disk
     for record in records:
         why = entry_error(record)  # …and the SAME validator. Not a second one that agrees: the same function
@@ -918,16 +1027,20 @@ def dump(path: Path, entries: "list[dict]", high: int) -> None:
     high = high_water(entries, high)
     body = json.dumps({"type": SEQ_TYPE, "high": high}) + "\n" if high else ""
     body += "".join(json.dumps({"type": ENTRY_TYPE, **record}) + "\n" for record in records)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".followups-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as fh:
-            fh.write(body)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
+    # AND A DISK THAT REFUSES THE WRITE IS A REFUSAL TOO, not a traceback: an unwritable directory, a full
+    # disk, a target that is not a file. `clean_io` OUTSIDE the cleanup, so the temp file is still removed.
+    with clean_io("write the store to", path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".followups-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as fh:
+                fh.write(body)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, path)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
 
 
 @contextmanager
@@ -939,10 +1052,16 @@ def locked(path: Path):
     8-entry one leave 8 entries, not 9 — one follow-up silently gone, with no error, no reconcile, and no
     other copy anywhere. `flock` on a sidecar lock file makes the whole cycle exclusive; the lock file is
     kept (not unlinked) so two processes cannot end up holding flocks on two different inodes.
+
+    THIS IS THE FIRST THING A WRITE COMMAND TOUCHES, so it is the first thing a hostile ENVIRONMENT breaks:
+    a store in a read-only directory raised `PermissionError` HERE, before a single line was read — a
+    traceback out of the locking machinery, which reads exactly like a bug in the lock. It is a refusal.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
     lock = path.with_name(path.name + ".lock")
-    with open(lock, "a+") as fh:
+    with clean_io("lock the store at", lock):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(lock, "a+")  # noqa: SIM115 — closed below; `with` cannot span the yield and the cleanup
+    with fh:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
         try:
             yield
@@ -1006,14 +1125,24 @@ def taken(cmd: str, args) -> "dict[str, str]":
 
     A flag not passed is absent from the result: the field keeps its default (`-`, or a stamp of `now`).
     That is UNSET, which is not the same thing as a caller handing in something that carries nothing.
+
+    BOTH OF THE STORE'S PREDICATES ARE ASKED HERE, and the second one is not redundant with `project()`.
+    `project()` catches an unholdable value on the way to DISK — but a DELETING edge never reaches disk: the
+    entry is REMOVED, so `dump()` never projects it, and `publish --ref $'\x00'` sailed through the write
+    door untouched and PRINTED the NUL back. A value is validated because it is INTAKE, at the moment it is
+    taken in; what happens to the entry afterwards is not the predicate's business.
     """
     values: "dict[str, str]" = {}
     for field, flag in INTAKE[cmd].items():
         value = getattr(args, field, None)
         if value is None:
             continue
-        if is_blank(value):  # THE one predicate — see `is_blank()`. Called HERE, once, for every door.
+        if is_blank(value):  # THE one blank predicate — see `is_blank()`. Called HERE, once, for every door.
             fail(f"{flag} must not be empty — {BLANK_WHY[field]}")
+        held = unholdable(value)  # …and THE one holdability predicate. Both, or a deleting edge escapes both.
+        if held is not None:
+            fail(f"{flag} carries {held}. `argv` is BYTES — an undecodable one arrives here as a surrogate — "
+                 f"and this store must be able to WRITE and PRINT every value it takes.")
         values[field] = value
     return values
 
@@ -1200,13 +1329,28 @@ def run(argv: "list[str]") -> "tuple[int, str, str]":
     return code, out.getvalue(), err.getvalue()
 
 
+class _Drop:
+    """The sentinel that REMOVES a key from a line, so a fixture can write a store that OMITS a field.
+
+    IT IS NOT `None`, AND THAT DISTINCTION IS THE WHOLE OF FINDING 1. `null` is a legal JSON value a
+    hand-edit really can put on a line, so a fixture must stay free to write `"found_run": null` AND WATCH
+    THE TOOL REFUSE IT. Absence is a MISSING KEY. Collapse the two onto one sentinel — which is exactly what
+    the code did, with `rec.get(f) is None` — and one of them becomes untestable, which is how a `null`
+    LOADED and a later `set` REWROTE it as `-`.
+    """
+
+
+DROP = _Drop()
+
+
 def entry_line(**over: object) -> str:  # `object`: a fixture may put a JSON NUMBER on disk on purpose
     """A raw store line for a LEGAL entry in some state — everything the store demands of one, filled in.
 
     Two derivations, and neither is a list: the evidence its STATE requires (from `WITNESS`, so a fixture
     asking for a `self-accepted` entry gets a legal one without restating what a self-acceptance must carry)
     and every REQUIRED field (from `REQUIRED`, so a field added there tomorrow is filled here that day). A
-    fixture that wants an ILLEGAL entry blanks one on purpose — that is what `**over` is for.
+    fixture that wants an ILLEGAL entry blanks one on purpose — that is what `**over` is for, and `DROP`
+    OMITS a key outright, which is the only thing ABSENCE means.
 
     IT MUST DERIVE BOTH, OR IT SILENTLY STOPS TESTING. Every fixture that hand-writes a store builds its
     lines here, so a helper that emitted a REQUIRED field as the placeholder would make each of them a store
@@ -1215,8 +1359,9 @@ def entry_line(**over: object) -> str:  # `object`: a fixture may put a JSON NUM
     """
     state = str(over.get("state", DEFAULTS["state"]))
     witness = min(WITNESS[state], key=len) if WITNESS.get(state) else frozenset()
-    return json.dumps({"type": "followup", **DEFAULTS, **{f: f"<{f}>" for f in REQUIRED},
-                       **{f: f"<{f}>" for f in witness}, **over})
+    rec = {"type": "followup", **DEFAULTS, **{f: f"<{f}>" for f in REQUIRED},
+           **{f: f"<{f}>" for f in witness}, **over}
+    return json.dumps({k: v for k, v in rec.items() if not isinstance(v, _Drop)})
 
 
 def transition_args(cmd: str) -> "list[str]":
@@ -1261,6 +1406,24 @@ BLANKS = ("", "   ", "\t", PLACEHOLDER, *INVISIBLES,
           f"​{PLACEHOLDER}​", f" {PLACEHOLDER}﻿")
 
 
+# EVERY SPELLING OF "NO FIELD OF THIS STORE CAN HOLD IT" that `unholdable()` recognises — the OTHER
+# vocabulary every door must refuse, and the exact counterpart of `BLANKS`. SAMPLES of a rule, never the rule:
+# the predicate answers with a NUL test and `unicodedata.category`, so these are what the fixtures TYPE, not
+# what the code KNOWS. The surrogates are spelled from `UNHOLDABLE_CATEGORIES`' own codepoints, and a fixture
+# PINS that every category the predicate refuses has a sample here — so a REASON added to the predicate
+# tomorrow and never sampled goes RED, instead of being quietly untested.
+#
+# NONE OF THEM IS BLANK, and that is load-bearing: each wraps the unholdable character in visible ones, so a
+# door that refuses one is refusing it for THIS rule and not accidentally for the blank rule. A sample that
+# was ALSO blank would let `unholdable()` be deleted outright with every fixture still green.
+#
+# U+DCFF is not decoration either. It is what `argv` REALLY hands a write door: Linux paths and arguments are
+# BYTES, and Python decodes an undecodable one with `surrogateescape` — so `add --title $'\xff'` produced a
+# `\udcff` and this store WROTE IT, then died rendering it. The other two are the ends of the range, which
+# only a hand-edit can reach.
+UNHOLDABLE_VALUES = ("a\x00b", *[f"a{chr(cp)}b" for cp in (0xD800, 0xDCFF, 0xDFFF)])
+
+
 # EVERY SHAPE A HAND-WRITTEN LINE CAN PUT IN A FIELD THAT NO WRITE DOOR COULD EVER PRODUCE — as RAW JSON
 # TEXT, because most of them cannot be spelled through an encoder at all (`json.dumps` emits no `NaN`, and
 # `argparse` hands a door nothing but a `str`, which is the entire point).
@@ -1277,9 +1440,17 @@ BLANKS = ("", "   ", "\t", PLACEHOLDER, *INVISIBLES,
 # `int` and `float`, positive, negative and zero, are all just numbers. There is ONE number in this whole
 # store — `followup-seq.high` — and it is not a follow-up field (`read_store()` owns it).
 #
-# What is NOT in this list is as deliberate as what is: `null` is absent — JSON's own word for ABSENCE, so it
-# DEFAULTS in an optional field and reads as MISSING (hence blank, hence refused) in a REQUIRED one. Both
-# halves are pinned by `defaults-backfill` and `same-validator`, which is where that rule is owned.
+# `null` IS IN IT, and that is the entry that was got wrong the SECOND time — by a fix on this very branch,
+# which declared `null` to BE absence and DEFAULTED it. The write door emits `-` for an unset optional and
+# has NO WAY WHATEVER to emit `null`, so `null` is not in the accept-set, and translating it was the same
+# coercion in JSON's own vocabulary: `{"found_run": null}` loaded, and the next `set --title` REWROTE the
+# line with a `"-"` the store had invented. ABSENCE IS A MISSING KEY (`project()`), and a missing key cannot
+# appear in this table at all — there is no VALUE to splice in. `defaults-backfill` owns that half.
+#
+# A SURROGATE IS IN IT for the reason `unholdable()` gives: `json.dumps` escapes a lone `\ud800` happily, so
+# it reaches DISK, loads, survives `list` — and then KILLS `table` and `get --field` with a
+# `UnicodeEncodeError`, mid-row, half a table already printed. A value the store can hold but can never SHOW
+# is not a value it can hold.
 #
 # `1e400` earns its place the hard way: it is ORDINARY JSON, it never touches `parse_constant`, and it
 # overflows to `inf` — so it is the shape that proves the refusal cannot live at the parse door alone. It is
@@ -1310,7 +1481,13 @@ UNWRITABLE = (
     ("-Infinity", "-Infinity", "not JSON"),
     ("1e400 (ordinary JSON — it OVERFLOWS to inf)", "1e400", NAMES_THE_FIELD),
     ("-1e400 (overflows to -inf)", "-1e400", NAMES_THE_FIELD),
+    ("null (JSON's own word for it — and NOT absence: absence is a MISSING KEY)", "null", NAMES_THE_FIELD),
     ("a string carrying a NUL", '"a\\u0000b"', NAMES_THE_FIELD),
+    # …and the values the store could HOLD but could never SHOW. `json.dumps` writes a lone surrogate to disk
+    # without complaint; every door that RENDERS one then dies with a `UnicodeEncodeError`, mid-row.
+    *[(f"a string carrying a surrogate ({s})", json.dumps("a" + c + "b"), NAMES_THE_FIELD)
+      for s, c in (("U+D800, the first", "\ud800"), ("U+DFFF, the last", "\udfff"),
+                   ("U+DCFF — what `argv` REALLY hands a door for an undecodable byte", "\udcff"))],
 )
 
 
@@ -1360,8 +1537,9 @@ def t_the_load_door_takes_only_what_a_write_door_can_produce(tmp: Path) -> None:
          nesting (`RecursionError`), an undecodable byte and a `high` of `Infinity` all used to end in a
          TRACEBACK, which is not a refusal, it is a tool that fell over.
       3. AND THE CONVERSE, or a load door that refused EVERYTHING would pass every check above: the legal
-         store still loads, a string still reads as itself, and a `null` in an optional field is still
-         ABSENCE.
+         store still loads, a string still reads as itself, and an OMITTED optional key is still ABSENCE —
+         which is what absence IS. (An explicit `null` is not: it is a VALUE, it is in `UNWRITABLE` above,
+         and it is refused by (1) in every field. That is the correction; see `project()`.)
     """
     # 1. EVERY FIELD × EVERY UNWRITABLE SHAPE.
     for field in FIELDS:
@@ -1449,10 +1627,14 @@ def t_the_load_door_takes_only_what_a_write_door_can_produce(tmp: Path) -> None:
     check(code == 0, f"a LEGAL store did not load (exit {code}): {err!r}")
     check(json.loads(out)["found_run"] == "260714",
           f"a STRING no longer reads as itself — the load door now refuses its own output: {out!r}")
-    path = write_lines(tmp / "null.jsonl", raw_line("found_run", "null", id="fu1"))
+    # ABSENCE IS A MISSING KEY — and it STILL backfills. That is the converse to the `null` row in
+    # `UNWRITABLE` above: the fix must refuse a `null` WITHOUT refusing the absence it was confused with, or
+    # every entry raised before a field existed stops loading and this store cannot be rebuilt.
+    path = write_lines(tmp / "absent.jsonl", entry_line(id="fu1", found_run=DROP))
     code, out, err = run(["--file", str(path), "get", "--id", "fu1", "--field", "found_run"])
     check((code, out) == (0, PLACEHOLDER + "\n"),
-          f"a JSON `null` in an OPTIONAL field is no longer ABSENCE (exit {code}): {out!r} {err!r}")
+          f"an OMITTED optional key is no longer ABSENCE (exit {code}): {out!r} {err!r} — the `null` fix "
+          f"took the BACKFILL down with it, and every pre-schema entry has just stopped loading")
 
 
 def subcommands(parser: argparse.ArgumentParser) -> "dict[str, argparse.ArgumentParser]":
@@ -2134,11 +2316,15 @@ def t_both_doors_run_one_validator(tmp: Path) -> None:
     # — JSON's own word for "there is no value here" — LOADED, was ACCEPTED, and was PUBLISHED AS AN ISSUE
     # carrying five characters of the word "None" as its evidence. Same defect, one dress further along.
     #
-    # WHAT THIS LOOP OWNS is the `str()`-INVENTION and the split that `null` makes: ABSENCE in an optional
-    # field, MISSING (hence blank, hence refused) in a REQUIRED one. It is NOT the corpus of unwritable
-    # shapes — `UNWRITABLE` is, and `load-takes-only-writable` applies it to EVERY field. Do not grow this
-    # tuple into a second copy of that list: two corpora of one rule is how this store shipped the same bug
-    # five times.
+    # WHAT THIS LOOP OWNS is the `str()`-INVENTION, and the LINE BETWEEN A KEY THAT IS THERE AND A KEY THAT
+    # IS NOT. `null` sits ON that line and is what fell off it: it is a VALUE, PRESENT, and no door can write
+    # one (`dump()` emits `-` for an unset optional), so it is refused in an OPTIONAL field exactly as in a
+    # REQUIRED one. ABSENCE IS A MISSING KEY (`DROP`), and only THAT backfills. Both halves are asserted
+    # here, side by side, because the bug was reading one as the other.
+    #
+    # It is NOT the corpus of unwritable shapes — `UNWRITABLE` is, and `load-takes-only-writable` applies it
+    # to EVERY field. Do not grow this tuple into a second copy of that list: two corpora of one rule is how
+    # this store shipped the same bug five times.
     for raw in (None, [], {}, True, ["x"], {"a": 1}):
         for field in REQUIRED:
             path = write_lines(tmp / f"j-{field}-{type(raw).__name__}.jsonl",
@@ -2148,16 +2334,26 @@ def t_both_doors_run_one_validator(tmp: Path) -> None:
                   f"the LOAD door ACCEPTED a raw JSON {raw!r} as {field!r} (exit {code}) — it turned a value "
                   f"that is not text into the text of its own repr, and a follow-up with NO {field} is now "
                   f"indistinguishable from one that has it:\n{out}")
-        # …and in an OPTIONAL field, `null` is ABSENCE (it defaults), while a list/object/bool is CORRUPT.
+        # …and in an OPTIONAL field TOO. A `null` there is not absence, it is a value nothing could have
+        # written: it LOADED, and the next `set --title` rewrote the line with an INVENTED `-` in it.
         path = write_lines(tmp / f"opt-{type(raw).__name__}.jsonl", entry_line(id="fu1", found_run=raw))
         code, out, err = run(["--file", str(path), "get", "--id", "fu1", "--field", "found_run"])
-        if raw is None:
-            check((code, out) == (0, PLACEHOLDER + "\n"),
-                  f"a JSON `null` in an OPTIONAL field did not read as UNSET (exit {code}): {out!r} {err!r}")
-        else:
-            check(code == 1,
-                  f"a raw JSON {raw!r} in an OPTIONAL field was ACCEPTED (exit {code}) — a field holds TEXT, "
-                  f"and the repr of a list is not text somebody wrote:\n{out}")
+        check(code == 1,
+              f"a raw JSON {raw!r} in an OPTIONAL field was ACCEPTED (exit {code}) — a field holds TEXT, the "
+              f"repr of a list is not text somebody wrote, and `null` is not ABSENCE: absence is a key that "
+              f"IS NOT THERE, and this one is:\n{out}")
+
+    # …AND THE CONVERSE, WHICH THE `null` FIX MUST NOT TAKE DOWN WITH IT: a key that really is MISSING still
+    # backfills, in every optional field, derived from `FIELDS - REQUIRED`. Refuse THAT and every entry raised
+    # before a field existed stops loading — in the one store that cannot be rebuilt.
+    for field in FIELDS:
+        if field in REQUIRED or field == "id":  # `id` has no default worth the name: `-` is a malformed id
+            continue
+        path = write_lines(tmp / f"absent-{field}.jsonl", entry_line(id="fu1", **{field: DROP}))
+        code, out, err = run(["--file", str(path), "get", "--id", "fu1", "--field", field])
+        check((code, out) == (0, DEFAULTS[field] + "\n"),
+              f"an OMITTED {field!r} no longer reads as its default (exit {code}): {out!r} {err!r} — the "
+              f"`null` refusal has swallowed ABSENCE, which is the one thing that must keep loading")
 
     # 3. THE CONVERSE. A store that refused everything would satisfy every check above.
     path = tmp / "accepted.jsonl"
@@ -2192,9 +2388,15 @@ def t_every_value_the_cli_takes_is_validated(tmp: Path) -> None:
          REFUSED (exit 1), and after every one of them THE STORE STILL LOADS. That second assertion is the
          one that matters: the failure this rule exists to prevent is not a bad field, it is a store its own
          accessor cannot open.
+      4. AND THE SAME DOORS, AGAINST THE STORE'S OTHER PREDICATE. `is_blank()` asks whether a value carries
+         NOTHING; `unholdable()` asks whether the store CAN HOLD IT AT ALL (a NUL, a surrogate), and a door
+         must ask BOTH. `argv` is BYTES, so `add --title $'\xff'` handed this door a `\udcff` — which it
+         WROTE, and which then killed `table` with a `UnicodeEncodeError` half a row in. So the assertion
+         that counts here is not the exit code but the one after it: THE STORE STILL RENDERS.
 
     Remove the blank check from `taken()` and this goes red on `add --title ''` — and, in the half that
-    counts, on `accept --at -` leaving a store that will not load.
+    counts, on `accept --at -` leaving a store that will not load. Remove the surrogate clause from
+    `unholdable()` and it goes red on `add --title $'\xff'` leaving a store that will not PRINT.
     """
     subs = subcommands(build_parser())
     for cmd in WRITE_CMDS:
@@ -2239,6 +2441,52 @@ def t_every_value_the_cli_takes_is_validated(tmp: Path) -> None:
                 check(now == before, f"a REFUSED `{cmd} {INTAKE[cmd][field]} {blank!r}` changed the entry "
                                      f"anyway: {now!r}")
             check(len(load(path)) == 1, f"a REFUSED `{cmd}` added or removed an entry")
+
+    # 4. …AND THE SECOND PREDICATE, AT THE SAME DOORS. `is_blank()` asks whether a value carries NOTHING;
+    # `unholdable()` asks whether this store CAN HOLD IT AT ALL, and a door must ask BOTH or it takes in a
+    # value the store cannot keep. This is not a hypothetical hand-edit: `argv` is BYTES, Python decodes an
+    # undecodable one with `surrogateescape`, and `add --title $'\xff'` really did hand this door a `\udcff`,
+    # which it really did WRITE — and `table` then died with a `UnicodeEncodeError`, half a row printed. A
+    # value the store can hold but can NEVER SHOW is not a value it can hold.
+    #
+    # Same derivation as the blank loop above (`WRITE_CMDS` × `INTAKE[cmd]` × the vocabulary), so a field or
+    # a door added tomorrow is covered against BOTH predicates on the day it is added, with no edit here.
+    for value in UNHOLDABLE_VALUES:  # the vocabulary and the predicate must not drift apart
+        check(unholdable(value) is not None,
+              f"UNHOLDABLE_VALUES carries {value!r}, which `unholdable()` says the store CAN hold — the "
+              f"fixtures' vocabulary and the predicate have come apart, and this loop proves nothing")
+        check(not is_blank(value),
+              f"UNHOLDABLE_VALUES carries {value!r}, which is ALSO BLANK — every refusal below could then be "
+              f"the blank rule's doing, and `unholdable()` could be deleted with this fixture still green")
+    for category in UNHOLDABLE_CATEGORIES:  # …and every REASON the predicate has is really sampled
+        check(any(any(unicodedata.category(c) == category for c in v) for v in UNHOLDABLE_VALUES),
+              f"`unholdable()` refuses the Unicode category {category!r} and NOTHING in UNHOLDABLE_VALUES "
+              f"carries one — that reason is enforced by the code and tested by nothing")
+
+    for cmd in WRITE_CMDS:
+        for field in INTAKE[cmd]:
+            path = tmp / f"u-{cmd}-{field}.jsonl"
+            (fid,) = seed(path)
+            if cmd in TRANSITIONS:
+                drive_to(path, fid, TRANSITIONS[cmd][0][0])
+            before = json.loads(run(["--file", str(path), "get", "--id", fid])[1])
+            for value in UNHOLDABLE_VALUES:
+                code, out, err = run(["--file", str(path), *write_argv(cmd, fid, field, value)])
+                check(code == 1,
+                      f"`{cmd}` with an UNHOLDABLE {INTAKE[cmd][field]} ({value!r}) was ACCEPTED (exit "
+                      f"{code}) — {unholdable(value)}, so this store cannot hold it, and it was just "
+                      f"WRITTEN into it:\n{out}")
+                # THE POINT, and it is not the exit code: had that write landed, every RENDER of the store
+                # would then crash — `table` and `get --field` die on a surrogate, mid-row.
+                for argv in (["list"], ["table"], ["get", "--id", fid, "--field", field]):
+                    code, _, err = run(["--file", str(path), *argv])
+                    check(code == 0 and "Traceback" not in err,
+                          f"after `{cmd} {INTAKE[cmd][field]} {value!r}` the store no longer RENDERS "
+                          f"(`{argv[0]}` exit {code}) — a write door took in a value that CANNOT BE "
+                          f"ENCODED, and every reader of the store now falls over on it:\n{err}")
+                now = json.loads(run(["--file", str(path), "get", "--id", fid])[1])
+                check(now == before, f"a REFUSED `{cmd} {INTAKE[cmd][field]} {value!r}` changed the entry "
+                                     f"anyway: {now!r}")
 
     # …and the doors still WORK: an omitted optional stamp defaults, and a real one is kept. A door that
     # refused everything would pass every check above.
@@ -2938,12 +3186,20 @@ def t_defaults_backfill(tmp: Path) -> None:
     FILED IT AS AN ISSUE, with no evidence and no reason it was ever deferred. The write door refused those
     very blanks at the same moment; the load door invented them.
 
-    So the two halves are pinned TOGETHER, and both are derived — the optional fields from `FIELDS - REQUIRED`
-    and the refusal from `REQUIRED`, so a field moved between them tomorrow changes which half it lands in and
-    nothing else:
+    AND ABSENCE IS A MISSING KEY — `null` IS NOT ONE. That is the third half, and it is the one a fix on this
+    branch got backwards: it declared `null` to BE absence and DEFAULTED it, so `{"found_run": null}` loaded
+    and the next `set --title` REWROTE the line with a `-` the store had invented. The write door emits `-`
+    for an unset optional and cannot emit `null` at all, so `null` is not in its accept-set and the load door
+    refuses it — in an optional field exactly as in a required one. Only an OMITTED KEY defaults. Both facts
+    live HERE, in one fixture, because the defect was reading either one as the other.
+
+    So the halves are pinned TOGETHER, and all of them are derived — the optional fields from
+    `FIELDS - REQUIRED` and the refusal from `REQUIRED`, so a field moved between them tomorrow changes which
+    half it lands in and nothing else:
 
       * an entry missing every OPTIONAL field loads, and reads back complete;
-      * an entry missing ANY REQUIRED field does NOT load — and the store it is in does not open.
+      * an entry missing ANY REQUIRED field does NOT load — and the store it is in does not open;
+      * an entry carrying an explicit `null` does NOT load, in ANY field — and nothing rewrites it.
     """
     # An entry from before the optional fields existed: it carries the REQUIRED fields (it always had to —
     # `add` demanded them) and NOTHING else. It must still load, and read back complete.
@@ -2977,6 +3233,27 @@ def t_defaults_backfill(tmp: Path) -> None:
               f"REQUIRED field the write door refuses, and manufactured a follow-up out of a fragment:\n{out}")
         check(absent in err and "carries no" in err,
               f"the refusal does not name the missing field {absent!r}: {err!r}")
+
+    # …AND THE THIRD HALF: `null` IS NOT ABSENCE. Every field, derived from `FIELDS` — and THE REPRODUCTION,
+    # which is not the load but the WRITE that follows it: `{"found_run": null}` LOADED, and `set --title`
+    # then rewrote the line with a `-` NOTHING had put there. That is the store inventing a value on disk, in
+    # the one file that cannot be rebuilt. (The load door's refusal of `null` in every field is pinned field ×
+    # shape by `load-takes-only-writable`; what is pinned HERE is that it is not read as ABSENCE, and that the
+    # rewrite it used to license is gone.)
+    for field in FIELDS:
+        p = write_lines(tmp / f"null-{field}.jsonl", raw_line(field, "null", id="fu1"))
+        before = p.read_text()
+        code, out, err = run(["--file", str(p), "list"])
+        check(code == 1,
+              f"an explicit `null` in {field!r} LOADED (exit {code}) — `null` is a VALUE, PRESENT on the "
+              f"line, and no write door can produce one (`dump()` writes {PLACEHOLDER!r} for an unset "
+              f"optional). Absence is a MISSING KEY, and this key is THERE:\n{out}")
+        check(field in err, f"the refusal of a `null` {field!r} does not name the field: {err!r}")
+        code, _, _ = run(["--file", str(p), "set", "--id", "fu1", "--title", "new"])
+        check(p.read_text() == before,
+              f"a `null` {field!r} was REWRITTEN by the next write — the store invented a value ({PLACEHOLDER!r}) "
+              f"and put it on disk. THIS is the damage the coercion did, and it is why `null` is refused at "
+              f"the door instead of translated at it.")
 
 
 def t_every_value_is_a_string(tmp: Path) -> None:
@@ -3195,6 +3472,149 @@ def t_table_grid_integrity(tmp: Path) -> None:
                   f"[{name}] a VISIBLE row forged an out-of-band line: {ledger.notices(out)!r}\n{out}")
 
 
+def t_a_hostile_environment_is_refused_not_crashed_on(tmp: Path) -> None:
+    """A CRASH IS NOT A REFUSAL — AND THE WORLD IS HOSTILE TOO, not just the lines in the file.
+
+    Every other fixture here asks what a hostile LINE can carry. This asks what a hostile ENVIRONMENT can do
+    to the same doors, and the answer used to be: TAKE THEM DOWN WITH A TRACEBACK. `--file .tmp` (a
+    directory) raised `IsADirectoryError`; a store in a read-only directory raised `PermissionError` out of
+    the LOCK, before a single line was read. A traceback tells the caller NOTHING about whether the store is
+    corrupt, the path is wrong, or the tool is broken — and this store's whole contract is that every door
+    refuses cleanly, with the file untouched.
+
+    AND A HANG IS WORSE THAN A CRASH. Opening a FIFO with no writer does not raise, IT BLOCKS FOREVER: the
+    campaign driver just stops, holding the lock, and NOTHING downstream ever learns why. That one cannot be
+    caught after the fact — it has to be refused BEFORE the open, which is what `unusable_store()` is for and
+    the only reason it exists rather than a bare `except OSError`.
+
+    THE ACCEPT-SET IS THE SAME CLASS RULE, ONE LEVEL UP: `dump()` writes a REGULAR FILE, so a regular file —
+    or nothing at all, since a missing store is an EMPTY store — is everything a write door could have
+    produced. Every other kind of thing on that path is refused, by construction, rather than by a list of
+    the ways it happens to break.
+
+    Driven against EVERY subcommand the parser offers (`self-test` reads no store), so a door added tomorrow
+    is covered on the day it is added. The three assertions are always the same three: it EXITS, it exits
+    NON-ZERO, and it does NOT crash.
+    """
+    import subprocess
+
+    root_can_read_anything = os.geteuid() == 0  # a permission fixture proves nothing when run as root
+
+    def store_cmds() -> "list[str]":
+        return [c for c in subcommands(build_parser()) if c != "self-test"]
+
+    # 1. EVERY UNUSABLE PATH × EVERY DOOR. It refuses; it never crashes.
+    adir = tmp / "adir"
+    adir.mkdir()
+    plain = tmp / "plain"
+    plain.write_text("not the store\n")
+    unreadable = tmp / "unreadable.jsonl"
+    write_lines(unreadable, entry_line(id="fu1"))
+    os.chmod(unreadable, 0o000)
+
+    hostile: "list[tuple[str, Path, str]]" = [
+        ("a DIRECTORY", adir, "DIRECTORY"),
+        ("a path whose PARENT IS A FILE", plain / "x.jsonl", "cannot read"),
+    ]
+    if not root_can_read_anything:
+        hostile.append(("an UNREADABLE file", unreadable, "cannot read"))
+
+    for name, path, needle in hostile:
+        for cmd in store_cmds():
+            argv = probe_argv(cmd, ABSENT_ID, "", None)
+            code, out, err = run(["--file", str(path), *argv])
+            check(code != 0,
+                  f"[{name}] `{cmd}` ACCEPTED it (exit {code}) — that path is not a store and never was:\n"
+                  f"{out}")
+            check("Traceback" not in err,
+                  f"[{name}] `{cmd}` CRASHED instead of refusing — a traceback tells the caller nothing "
+                  f"about whether the store is corrupt, the path is wrong, or the tool is broken:\n{err}")
+            check(needle in err, f"[{name}] `{cmd}` refused for the wrong reason: {err!r}")
+    os.chmod(unreadable, 0o644)
+
+    # 2. THE FIFO — and it gets a REAL process with a TIMEOUT, because the failure it pins is a HANG, and an
+    # in-process `run()` would take the whole suite down with it rather than going red.
+    fifo = tmp / "fifo.jsonl"
+    os.mkfifo(fifo)
+    for cmd in store_cmds():
+        argv = probe_argv(cmd, ABSENT_ID, "", None)
+        try:
+            p = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--file", str(fifo), *argv],
+                               capture_output=True, text=True, timeout=30)
+        except subprocess.TimeoutExpired:
+            raise SelfTestFailure(  # noqa: TRY003
+                f"`{cmd}` on a FIFO BLOCKED FOREVER — it never opened, never refused and never exited. That "
+                f"is worse than any crash: the driver stops, holding the lock, and nothing downstream ever "
+                f"learns why. It must be refused BEFORE the open (`unusable_store()`), never after it."
+            ) from None
+        check(p.returncode != 0, f"`{cmd}` ACCEPTED a FIFO as the store (exit {p.returncode}): {p.stdout}")
+        check("Traceback" not in p.stderr, f"`{cmd}` CRASHED on a FIFO instead of refusing:\n{p.stderr}")
+        check("regular file" in p.stderr, f"`{cmd}` refused a FIFO for the wrong reason: {p.stderr!r}")
+
+    # 3. AN UNWRITABLE TARGET. The read doors are fine (the file is readable); it is the WRITE that cannot
+    # land — and it used to blow up in the LOCK, before anything had even been read.
+    if not root_can_read_anything:
+        ro = tmp / "ro"
+        ro.mkdir()
+        store = ro / "s.jsonl"
+        write_lines(store, entry_line(id="fu1"))
+        os.chmod(ro, 0o555)
+        try:
+            before = store.read_text()
+            for cmd in ("add", "set"):
+                argv = (add_argv() if cmd == "add"
+                        else ["set", "--id", "fu1", "--title", "rewritten"])
+                code, out, err = run(["--file", str(store), *argv])
+                check(code == 1,
+                      f"`{cmd}` reported SUCCESS (exit {code}) writing into a read-only directory — it "
+                      f"wrote nowhere, and told the caller it had:\n{out}")
+                check("Traceback" not in err,
+                      f"`{cmd}` CRASHED on an unwritable store instead of refusing it:\n{err}")
+                check("cannot" in err, f"`{cmd}` refused for the wrong reason: {err!r}")
+            check(store.read_text() == before, "a refused write changed the store anyway")
+            # …and READING it still works: only the write is impossible, and the tool must not confuse the two.
+            code, out, err = run(["--file", str(store), "list"])
+            check((code, out) == (0, "fu1\n"), f"a READ of a store in a read-only dir was refused: {err!r}")
+        finally:
+            os.chmod(ro, 0o755)
+
+    # 4. A `--file` PATH THIS TOOL CANNOT PRINT. `argv` is BYTES: an undecodable one arrives as a surrogate,
+    # and `table` NAMES the store's path in its `store:` line — so it died there, half a table printed,
+    # wherever stdout is strict. Same predicate as every value in the store (`unholdable()`), same refusal.
+    for value in UNHOLDABLE_VALUES:
+        if "\x00" in value:
+            continue  # `execve` cannot carry a NUL in an argv element, so no caller can hand one to `--file`
+        code, out, err = run(["--file", value, "table"])
+        check(code == 1, f"`--file {value!r}` was ACCEPTED (exit {code}) — the store's path is PRINTED, so a "
+                         f"path that cannot be encoded is a store this tool cannot serve:\n{out}")
+        check("Traceback" not in err, f"`--file {value!r}` CRASHED instead of refusing:\n{err}")
+
+    # 5. THE CONVERSE, or a tool that refused every path would pass all of the above. A store that is NOT
+    # THERE is an EMPTY store — including a symlink pointing at nothing, which is a path with no file at the
+    # end of it and nothing more sinister than that. The first follow-up must not need a bootstrap step.
+    broken = tmp / "broken.jsonl"
+    broken.symlink_to(tmp / "nowhere.jsonl")
+    code, out, err = run(["--file", str(broken), "list"])
+    check((code, out) == (0, ""),
+          f"a BROKEN SYMLINK is not an empty store (exit {code}): {out!r} {err!r} — it points at no file, "
+          f"which is exactly what a missing store is")
+    code, _, err = run(["--file", str(broken), *add_argv()])
+    check(code == 0, f"`add` could not create the store through a broken symlink: {err!r}")
+    code, out, _ = run(["--file", str(broken), "list"])
+    check(out == "fu1\n", f"the store created through a broken symlink does not read back: {out!r}")
+
+    # …and a REGULAR FILE, through a symlink, is a REGULAR STORE: `unusable_store()` stats through the link
+    # on purpose, so a store reached by a symlink is not refused for being one.
+    real = tmp / "real.jsonl"
+    write_lines(real, entry_line(id="fu1"))
+    link = tmp / "link.jsonl"
+    link.symlink_to(real)
+    code, out, err = run(["--file", str(link), "list"])
+    check((code, out) == (0, "fu1\n"),
+          f"a symlink TO A REGULAR FILE was refused (exit {code}): {out!r} {err!r} — what the store IS is "
+          f"what the link points AT")
+
+
 def t_fields_and_lookup(tmp: Path) -> None:
     """Read BY FIELD NAME: `get --field`, `list --where`. An unknown or EMPTY field is REJECTED.
 
@@ -3358,7 +3778,7 @@ CASES = [
     ("same-validator", "the WRITE door and the LOAD door are ONE function — what either refuses, both refuse, for EVERY required field and EVERY spelling of blank", t_both_doors_run_one_validator),
     ("load-takes-only-writable", "the LOAD door accepts ONLY what a write door could have produced — every other JSON shape, in EVERY field, is REFUSED and never silently dropped", t_the_load_door_takes_only_what_a_write_door_can_produce),
     ("no-unreadable-store", "no write door can write a store `load()` refuses — every door shares ONE blank predicate", t_no_door_writes_a_store_that_will_not_load),
-    ("every-value-validated", "EVERY value the CLI takes, at EVERY write door, passes the blank predicate — a flag that skips it cannot exist", t_every_value_the_cli_takes_is_validated),
+    ("every-value-validated", "EVERY value the CLI takes, at EVERY write door, passes BOTH of the store's predicates — a value that carries nothing, and one the store cannot hold at all, are refused; a flag that skips either cannot exist", t_every_value_the_cli_takes_is_validated),
     ("nothing-accepted-is-dropped", "EVERY flag of EVERY subcommand is USED — a value the CLI accepts and discards cannot exist", t_no_door_takes_a_value_it_does_not_use),
     ("ids-never-reused", "ids are assigned by the store, sequential, and NEVER reused", t_ids_are_assigned_and_never_reused),
     ("store-validated", "a corrupt store is rejected, never silently repaired; a missing one is empty", t_store_is_validated),
@@ -3368,6 +3788,7 @@ CASES = [
     ("table-hides-closed", "the default view hides only CLOSED entries; a candidate always shows", t_table_hides_closed),
     ("table-omission-loud", "the omission is never silent, and an all-closed store never reads as empty", t_table_omission_is_never_silent),
     ("table-grid-integrity", "no hostile title/evidence forges a column, an entry, or an out-of-band line", t_table_grid_integrity),
+    ("hostile-environment", "a hostile ENVIRONMENT is REFUSED, never crashed on and never HUNG on — a directory, a FIFO, an unreadable path, an unwritable one, a path this tool cannot even print", t_a_hostile_environment_is_refused_not_crashed_on),
     ("fields-and-lookup", "read by FIELD NAME; an unknown or empty field is rejected", t_fields_and_lookup),
     ("harness-holds", "THE HARNESS ITSELF: a fixture the ACCESSOR KILLS is reported and the NEXT one still runs; and the INTAKE rows the suite's loops trust really are the parser's doors", t_the_harness_reports_a_fatal_fixture),
 ]
@@ -3510,7 +3931,24 @@ def main(argv: "list[str]") -> int:
         return self_test()
     if args.file is None:
         parser.error("the following arguments are required: --file")
+    # THE STORE'S PATH IS A VALUE THIS TOOL MUST BE ABLE TO PRINT — `table` names it in its `store:` line. So
+    # it answers to the SAME predicate every value in the store answers to, for the same reason and by the
+    # same function: Linux paths are BYTES, Python decodes an undecodable one with `surrogateescape`, and
+    # `table` then died with a `UnicodeEncodeError` HALF A TABLE IN, wherever stdout is strict (`PYTHONIO
+    # ENCODING=utf-8`, as CI commonly sets). A path this tool cannot show is a store it cannot serve.
+    held = unholdable(args.file)
+    if held is not None:
+        fail(f"--file carries {held}. The store's path is printed (`table` names it), so a path that cannot "
+             f"be encoded is one this tool cannot serve. Nothing was touched.")
     path = Path(args.file)
+    # …AND THE PATH MUST BE ABLE TO *BE* THE STORE — asked HERE, before any command runs, because a WRITE
+    # command takes the LOCK before it reads anything, and the lock is what a hostile path breaks FIRST: a
+    # store whose parent is a plain file blew up inside `locked()` with a `FileExistsError` out of `mkdir`,
+    # which reads like a bug in the locking, not like a bad `--file`. `read_store()` asks the SAME function
+    # (it is the load door, and a door does not trust its caller) — one predicate, both places.
+    why = unusable_store(path)
+    if why is not None:
+        fail(f"{why}. Nothing was touched.")
     if args.cmd in TRANSITIONS:
         return cmd_transition(path, args)
     handlers = {"add": cmd_add, "set": cmd_set, "get": cmd_get, "list": cmd_list, "table": cmd_table}
