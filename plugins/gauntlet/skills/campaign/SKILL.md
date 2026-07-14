@@ -211,8 +211,10 @@ Read stage refs only when that stage/action is due:
    step 4's dispatch scan across both concurrency pools (CI-fix subagents and review passes each have
    their own cap): confirm every due review pass was launched, a CI watch is live for every PR with a
    **still-RUNNING** check (**not** for one whose CI has settled — that is the hot-spin bug), that every
-   PR at a liveness cap (`settled_strikes` / `unusable_refetches`) was **escalated** rather than left
-   spinning, and — whenever any
+   PR at **any liveness cap** was **escalated** rather than left spinning — the caps are named in ONE
+   place (`references/stage-2-ci.md`, "THE LIVENESS COUNTERS"; a PR whose check has been `RUNNING` with an
+   unchanged fingerprint past the CI STALL CAP is at a cap too, and its watch will never wake anyone) —
+   and — whenever any
    non-terminal work remains — a `ScheduleWakeup` heartbeat is actually
    scheduled. If any due launch or the heartbeat is missing, launch it and re-audit. NEVER sleep with
    due work un-launched or the heartbeat unscheduled.

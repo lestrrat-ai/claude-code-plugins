@@ -198,7 +198,7 @@ blocks; each completion is its own wake.
      |---|---|---|
      | **`awaiting-api`** — an API-changing fix | `api_approval` = `approved@<iso>` / `declined@<iso>` | `approved` → `in_review`; `declined` → terminal `aborted` |
      | **`awaiting-user`, review standoff** — a REFUTED finding the fresh reviewer re-raised | the ruling in `<rundir>/audit-<pr>-<n>.md` | `in_review`; ruled **valid** → the finding is fixed like a CONFIRMED one, ruled **invalid** → normal flow |
-     | **`awaiting-user`, machine blocker** — CI SETTLED-not-green, an UNUSABLE snapshot at its cap, an unrecognized CI enum value, a `BLOCKED`/unrecognized `mergeStateStatus`, a draft PR (`ci_reason` names it) | `blocker_ruling` = `retry@<iso>` / `abort@<iso>` | `retry` → `in_review`, **RESET THE LIVENESS COUNTERS**, and **SPEND the ruling: `blocker_ruling` = `-`** (`stage-2-ci.md`, "THE LIVENESS COUNTERS" / "THE RULING IS CONSUMED EXACTLY ONCE"), then re-derive CI on the next wake; `abort` → terminal `aborted` (the ruling **stays** — it is the record of why) |
+     | **`awaiting-user`, machine blocker** — CI SETTLED-not-green, a check stuck `RUNNING` past the CI STALL CAP (`stage-2-ci.md`, "RUNNING-STALL"), an UNUSABLE snapshot at its cap, an unrecognized CI enum value, a `BLOCKED`/unrecognized `mergeStateStatus`, a draft PR (`ci_reason` names it) | `blocker_ruling` = `retry@<iso>` / `abort@<iso>` | `retry` → `in_review`, **RESET THE LIVENESS COUNTERS**, and **SPEND the ruling: `blocker_ruling` = `-`** (`stage-2-ci.md`, "THE LIVENESS COUNTERS" / "THE RULING IS CONSUMED EXACTLY ONCE"), then re-derive CI on the next wake; `abort` → terminal `aborted` (the ruling **stays** — it is the record of why) |
 
      **A `retry` that clears nothing re-escalates on its first derivation** — the strikes are still at
      the cap — so the counter reset is **part of the unpark, not an optimization**. It buys the PR a
@@ -269,13 +269,17 @@ blocks; each completion is its own wake.
      resulting commit **resets the gate** (Stage 2b, "Any campaign commit to the PR head resets the gate").
      The subagent's job order, the no-weakening prohibition, and the denylist live in `stage-2-ci.md` —
      follow them there; do NOT restate them here. Different PRs may fix CI concurrently within the cap.
-   - CI snapshot holds a **still-RUNNING** evidence row for a PR whose watch task has already exited →
+   - CI snapshot holds a **still-RUNNING** evidence row (an evidence row that classifies `RUNNING` under
+     Stage 2b CLASSIFY — never "a row that is not terminal") for a PR whose watch task has already exited →
      **relaunch the watch in this same wake**. A PR with a row that can still move must never sit
      unwatched until the heartbeat; the heartbeat is a fallback, not the mechanism. **But NEVER relaunch
      it merely because `ci == pending`** — once CI has SETTLED nothing can move, `gh pr checks --watch`
      exits in about a second, and its completion is itself a wake: that is a wake per second, forever
      (Stage 2b, "WATCH ONLY WHAT CAN MOVE"). A settled PR is resolved by the `settled_strikes`
-     escalation, not by watching it harder.
+     escalation, not by watching it harder. **And a row that never leaves `RUNNING` is resolved by
+     RUNNING-STALL** (Stage 2b): its watch blocks forever and completes never, so the escalation lands on
+     **this heartbeat wake**, once `ci_stalled_since` has stood at the same fingerprint for the CI STALL
+     CAP. **A watch is never a bound.**
    - about to dispatch content-changing work on a PR (review fix, CI fix, copilot-address,
      conflict-resolving rebase) while a review is in flight on that PR → **stop that review task
      first** (its verdict can only describe a SHA the fix is about to replace); the freed slot goes

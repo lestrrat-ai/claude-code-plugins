@@ -45,14 +45,24 @@
 - Work-conserving dispatch is mandatory: every wake scans all PRs and launches every due
   action that fits a free slot before returning. Waiting is allowed only when no useful action is
   launchable anywhere in the run.
-- A PR with a **still-RUNNING** check must ALWAYS have a live watch: if any row is not yet terminal and
-  the watch task has exited (including after any rebase/push), relaunch the watch in the same wake —
-  never wait for the heartbeat.
+- A PR with a **still-RUNNING** check must ALWAYS have a live watch: if **any evidence row classifies
+  `RUNNING` under CLASSIFY** (`stage-2-ci.md`, "CLASSIFY every row" — an EXPLICIT membership test, and
+  **NEVER** "any row is not yet terminal" / `.status != COMPLETED`, which is a negated test: it sweeps up
+  every value GitHub adds tomorrow and silently watches it instead of letting it fall to the
+  `UNKNOWN_VALUE` escalation) and the watch task has exited (including after any rebase/push), relaunch
+  the watch in the same wake — never wait for the heartbeat.
 - **But NEVER relaunch a watch merely because `ci == pending`.** Once CI has **SETTLED** (no row can
   still move) there is nothing to block on: `gh pr checks --watch` returns in about **a second**, and a
   task completion is **itself a wake** — so a settled-but-not-green PR would burn a fresh-context wake
   **every second, forever**, and observe nothing. A settled PR is resolved by the **`settled_strikes`
   escalation** (`stage-2-ci.md`, "SETTLED"), not by watching it harder.
+- **And the watch is NEVER the bound.** A row that stays `RUNNING` forever (a hung runner, a dead
+  reporter) keeps `gh pr checks --watch` blocked forever, so the watch wakes no one and `pending` would
+  absorb the PR — the exact wedge. **RUNNING-STALL** ends it: a `RUNNING` row plus a fingerprint that has
+  not changed for the **CI STALL CAP** escalates on the heartbeat, timed by `ci_stalled_since` **on disk**
+  (`stage-2-ci.md`, "RUNNING-STALL"). It bounds **TIME**, not derivations, because a derivation count
+  tracks the run's load and would park a healthy slow build; and it does not park one, because **any**
+  motion anywhere in the check set moves the fingerprint and resets the clock.
 - Stop a PR's in-flight review before dispatching content-changing work on it (review fix, CI fix,
   copilot-address, conflict-resolving rebase): a verdict on a doomed SHA wastes tokens and a review
   slot. Refill the slot with the next due review.
@@ -87,8 +97,9 @@
   content change on the head branch) MUST also run `gh pr edit <pr> --remove-label gauntlet-accepted
   --add-label gauntlet-reviewing`. Never defer the swap to the next wake — that leaves the label lying
   until reconcile, and lying forever if the session dies first. A **clean base-only rebase** with an
-  unchanged PR diff does NOT reset the gate, so it correctly KEEPS `gauntlet-accepted` (it only sets
-  `ci = pending`). Per-wake label reconcile is the self-healing backstop, never the mechanism
+  unchanged PR diff does NOT reset the gate, so it correctly KEEPS `gauntlet-accepted` — it sets
+  `ci = pending` and, because the head still **moved**, **resets the liveness counters** (`stage-2-ci.md`,
+  "THE LIVENESS COUNTERS"). Per-wake label reconcile is the self-healing backstop, never the mechanism
   (`stage-2-review-gate.md`, "Status labels mirror the review gate").
 - **YOUR OWN diagnosis is a claim too — REPRODUCE the failure before you "fix" working code.** The rule
   below audits a *reviewer's* finding. It binds **your own** with equal force, and that is where it keeps
@@ -141,9 +152,10 @@
   USER adjudicate, and keep driving the other PRs. A REFUTED finding does **NOT** park by itself — only
   the **re-raise** parks (`stage-2-review-gate.md`, "Audit every finding before you fix it"). The standoff
   is **one of TWO `awaiting-user` classes**, and each has its own durable answer record: the standoff is
-  answered into `audit-<pr>-<n>.md`; a **machine blocker** (CI SETTLED-not-green, an UNUSABLE snapshot at
-  its cap, an unrecognized enum value, a `BLOCKED`/unrecognized `mergeStateStatus`, a draft PR — `ci_reason`
-  names it) is answered into `blocker_ruling` = `retry`/`abort` (`files-and-ledger.md`, `status`;
+  answered into `audit-<pr>-<n>.md`; a **machine blocker** (CI SETTLED-not-green, a check stuck `RUNNING`
+  past the CI STALL CAP, an UNUSABLE snapshot at its cap, an unrecognized enum value, a
+  `BLOCKED`/unrecognized `mergeStateStatus`, a draft PR — `ci_reason` names it) is answered into
+  `blocker_ruling` = `retry`/`abort` (`files-and-ledger.md`, `status`;
   `loop-control.md` step 3, "Only the user's answer unparks a PR"). **NEVER park into a state whose exit
   is undefined.**
 - **A PARKED PR IS FROZEN — TAKE NO ACTION THAT MUTATES IT.** `status = awaiting-user` (standoff) or
@@ -284,8 +296,10 @@
   LIVENESS COUNTERS", which names every site). A `head_sha` change and a gate reset are **not** the same
   event: a `NOT SATISFIED` verdict resets the gate with no new head (the counters stay — CI did not move),
   and a **clean base-only rebase** moves the head without resetting the gate (the counters reset — the old
-  head's evidence is gone). Stale `settled_strikes` / `unusable_refetches` carried onto a new head park a
-  **healthy** PR early, on strikes it never earned there.
+  head's evidence is gone). Carried onto a new head, the old head's counters park a **healthy** PR early,
+  on strikes and stalled time it never earned there. **Never retype the set's membership here** — it is
+  named in one place, and a counter added there (as `ci_stalled_since` was) is inherited by every reset
+  site with no edit.
 - **A `blocker_ruling` is DURABLE *and* SPENT EXACTLY ONCE** (`stage-2-ci.md`, "THE RULING IS CONSUMED
   EXACTLY ONCE"): set to `-` when a machine-blocker park is **ENTERED** and when a `retry` is **CONSUMED**,
   each in the same `ledger.py … set` call as the `status` write. A ruling left on the row answers the

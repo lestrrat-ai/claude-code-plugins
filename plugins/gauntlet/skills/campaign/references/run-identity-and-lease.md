@@ -92,7 +92,8 @@ Each run has `<rundir>/lease.json`:
   that freezes the heartbeat and could let the run be declared stale mid-drive. Park the PR
   (`awaiting-api` for an API-changing fix; `awaiting-user` for a **review standoff** — a refutation the
   fresh reviewer re-raised — **or a machine blocker** campaign cannot clear without a human: CI SETTLED
-  and not green, a snapshot that stayed UNUSABLE, an unrecognized enum value, a `BLOCKED`/unrecognized
+  and not green, a check stuck `RUNNING` past the CI STALL CAP, a snapshot that stayed UNUSABLE, an
+  unrecognized enum value, a `BLOCKED`/unrecognized
   `mergeStateStatus`, a draft PR), surface the question, keep driving the other PRs, reschedule, and fold
   the answer in when it lands as its own wake. Each class names the **durable record** it is answered into
   and the **unpark** it triggers (`files-and-ledger.md`, `status`; `loop-control.md` step 3, "Only the

@@ -5,13 +5,19 @@
   key it off recorded row state, not a running subtraction of durations nothing stores: **do not fire
   the cap on a wake where the row is blocked on an external wait** — `status == awaiting-api` (parked
   for user approval) or `status == awaiting-user` (parked for the user to adjudicate a **review standoff**
-  or a **machine blocker** — `files-and-ledger.md`, `status`), or `ci == pending` **and CI is still
-  MOVING** — a
-  still-RUNNING row, or a fingerprint that changed since the last derivation (`stage-2-ci.md`,
-  "SETTLED"). **`pending` alone is NOT an external wait.** A pending PR that has SETTLED is waiting on
-  **nothing**, and treating it as an external wait is what let a wedged PR sit forever with the cap
-  disabled and no one told; it is the `settled_strikes` escalation that ends it, and the park it produces
-  is then an external wait on its own terms. Only a wake
+  or a **machine blocker** — `files-and-ledger.md`, `status`), or `ci == pending` **while that pending is
+  still BOUNDED**, which is exactly one of two things (`stage-2-ci.md`, "SETTLED" / "RUNNING-STALL"):
+  the fingerprint **CHANGED** since the last derivation (CI is genuinely moving), **or** a `RUNNING` row
+  is stalled and its **`ci_stalled_since` clock has not yet reached the CI STALL CAP** (the wait is
+  timed, and it ends by itself).
+  **`pending` alone is NOT an external wait, and a still-RUNNING row is NOT one either.** A pending PR
+  that has SETTLED is waiting on **nothing**. And a row that is still `RUNNING` is not evidence that
+  anything is coming — **a hung runner keeps a row `RUNNING` forever**; blessing that as "an external wait
+  on its own terms" is what let a PR sit **forever** with the cap disabled and no one told. **An external
+  wait must be a BOUNDED wait, or it is a wedge with a nicer name.** What ends each: `settled_strikes` for
+  a settled PR, the **RUNNING-STALL clock** for a stalled `RUNNING` row, `unusable_refetches` for a
+  snapshot that never verifies — and the park **each of them produces** is then an external wait on its own
+  terms, because a park has a **declared exit** (the user's `retry`/`abort` ruling). Only a wake
   where `started` is over an hour old *and* the row is agent-controlled (in none of those waits) trips it.
   When it trips, abort cleanly and **retry once against the SAME adopted PR** (`attempts` += 1, reset
   `started`). The PR is user/externally owned — campaign never closes it and opens a replacement of

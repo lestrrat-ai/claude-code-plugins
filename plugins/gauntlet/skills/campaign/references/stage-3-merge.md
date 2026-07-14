@@ -164,7 +164,8 @@ subagent at a check that is merely **still running**.
    **SKIP PARKED PRs FIRST — before any base refresh, rebase, or conflict handling.** A PR whose
    `status` is `awaiting-user` or `awaiting-api` is **FROZEN** (`loop-control.md` step 3,
    "parked-status guard"): this reconcile MUTATES a PR, so it is exactly what the guard forbids. A clean
-   rebase would move its `head_sha` and set `ci = pending`; a conflict-resolving rebase would reset
+   rebase would move its `head_sha`, set `ci = pending` and reset its liveness counters (`stage-2-ci.md`,
+   "THE LIVENESS COUNTERS"); a conflict-resolving rebase would reset
    `reviews_ok`, relabel, and relaunch work — and would **change the PR's content**, which can invalidate
    the very refutation or API change the user was parked to adjudicate. **A parked PR that has fallen
    behind simply STAYS behind** until the user answers; it is re-reconciled normally on the wake after it

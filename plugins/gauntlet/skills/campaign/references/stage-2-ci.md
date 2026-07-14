@@ -526,7 +526,9 @@ ever re-ordered again.
 - **pending** → any evidence row classifies `RUNNING` → leave `ci = pending`. **This is the ONLY outcome
   that warrants a watch** ("WATCH ONLY WHAT CAN MOVE" below): a row can still move on its own, so if the
   watch task has exited, **relaunch it in this same wake** — a PR with a still-RUNNING row must never sit
-  unwatched waiting for the heartbeat.
+  unwatched waiting for the heartbeat. **It is also BOUNDED**: "a row can still move" is a claim the row
+  makes, not a promise it keeps, so if the whole check set then sits unchanged for the CI STALL CAP, the
+  PR escalates ("RUNNING-STALL", below). `pending` is not a place a PR may live forever.
 - **pending (nothing registered)** → the snapshot lists **zero evidence rows**. **Zero evidence rows is NOT
   green** — it means nothing has registered yet. **Do NOT watch it**: there is no row that could move, so
   there is nothing to block on. If nothing ever registers, SETTLED below escalates it instead of letting it
@@ -583,31 +585,68 @@ fingerprint = sha256( head_sha + "\n" + <those lines, sorted bytewise, one per l
   persisted counter and its **own** bound: "UNUSABLE — the refetch is BOUNDED" below.
 
 ```
-SETTLED  ==  NO evidence row classifies RUNNING       # nothing left that could move on its own
-         AND fingerprint == ledger.ci_fingerprint     # and it did not move since the last derivation
+SETTLED        ==  NO evidence row classifies RUNNING     # nothing left that could move on its own
+               AND fingerprint == ledger.ci_fingerprint   # and it did not move since the last derivation
+
+RUNNING-STALL  ==  ≥1 evidence row classifies RUNNING     # something still CLAIMS it can move
+               AND fingerprint == ledger.ci_fingerprint   # but NOTHING in the check set actually moved
 ```
 
-`RUNNING` here is **the CLASSIFY bucket above, verbatim** — a `checkrun` whose `.status` is
+**These two are EXHAUSTIVE over an unchanged fingerprint, and that is the whole point of stating the
+second one.** A derivation whose `fp` equals the ledger's is **either** SETTLED **or** RUNNING-STALL —
+never neither. `SETTLED` alone left a hole exactly the size of the wedge this section exists to close: a
+check that **registers and then runs forever** (a hung runner, a job whose reporter died, a required check
+that queues and never starts) keeps a `RUNNING` row forever, so it is **never SETTLED**, never accrues a
+strike, and never escalates — `pending` is **absorbing** for it, and half (b) of the invariant above is
+**unanswered**. `RUNNING-STALL` is the rule that answers it. It is bounded in **TIME** — see "RUNNING-STALL
+— a row that never finishes is bounded in TIME" below, which is where the bound and its rationale live.
+
+`RUNNING` in both definitions is **the CLASSIFY bucket above, verbatim** — a `checkrun` whose `.status` is
 `QUEUED`/`IN_PROGRESS`/`WAITING`/`PENDING`/`REQUESTED`, or a `status` row whose `.state` is
 `PENDING`/`EXPECTED`. Do **not** re-derive it from `ci`: `red` outranks `pending` in DECIDE, so a snapshot
 recorded `red` can still hold a **RUNNING** row, and that PR is still moving.
 
 Per derivation **on a VERIFIED snapshot** (an `UNUSABLE` one has no `fp` at all — it is handled entirely
-by "UNUSABLE — the refetch is BOUNDED" below, and never touches `settled_strikes`), in this order:
+by "UNUSABLE — the refetch is BOUNDED" below, and never touches `settled_strikes` or `ci_stalled_since`),
+in this order:
 
 ```
 head_sha changed          -> reset the LIVENESS COUNTERS (below) ; then ci_fingerprint = fp   # new evidence
-fp != ci_fingerprint      -> ci_fingerprint = fp ; settled_strikes = 0     # still MOVING — be patient
-SETTLED and ci != green
-  and NO MACHINE ACTION due or in flight
-  for this PR at this head_sha      -> settled_strikes += 1                # nobody is coming — count it
+fp != ci_fingerprint      -> ci_fingerprint = fp ; settled_strikes = 0 ; ci_stalled_since = -
+                                                                          # still MOVING — be patient
+# --- Everything below this line runs ONLY when fp == ci_fingerprint: NOTHING in the check set moved. ---
+MACHINE ACTION due or in flight
+  for this PR at this head_sha      -> ci_stalled_since = - ; STOP        # a new head IS coming: neither
+                                                                          # bound applies this derivation
+                                                                          # (settled_strikes: unchanged).
+                                                                          # STOP = evaluate NOTHING below.
+SETTLED and ci in {red, pending}    -> settled_strikes += 1                # nobody is coming — count it
 settled_strikes >= 2                -> ESCALATE
+RUNNING-STALL and ci_stalled_since == "-"
+                                    -> ci_stalled_since = <now, UTC ISO-8601>   # start the clock
+RUNNING-STALL and now - ci_stalled_since >= CI STALL CAP (6h)
+                                    -> ESCALATE                           # not SLOW — DEAD
 ```
 
-**A STRIKE MEANS "NOBODY IS COMING" — NEVER PARK A PR THE DRIVER IS ALREADY REPAIRING.** `SETTLED` is
-about **CI**, not about **campaign**: a **red** PR whose rows are all terminal is SETTLED on the **first**
-derivation, and a CI-fix subagent in flight does **not** change `head_sha` until it pushes — so an
-ungated strike rule would park, after two wakes, the exact PR the driver is actively fixing.
+**`STOP` on the MACHINE ACTION line is load-bearing, and it is the only early exit here.** Without it a
+reader falls through to the strike rule and counts a strike against the very PR a fix is about to move —
+the failure the gate exists to prevent, reintroduced by reading the gate as a note instead of a branch.
+The remaining lines are evaluated **in order and all of them**: SETTLED and RUNNING-STALL are mutually
+exclusive (above), so at most one bound can fire on any derivation.
+
+**The MACHINE ACTION gate is hoisted, and it now gates BOTH bounds** — it used to sit inside the strike
+rule alone. Same fact, same definition (below), one site: a PR the driver is actively repairing is neither
+struck **nor** timed, because a fix that pushes will replace this `head_sha` and every row on it. **`ci in
+{red, pending}` is an explicit membership test, not `ci != green`** — `ci` is `green`/`red`/`pending` and
+nothing else (`files-and-ledger.md`), and a negated test over an enum is the catch-all-in-disguise this
+file kills on sight (CLASSIFY, above).
+
+**A STRIKE — AND A STALL CLOCK — MEAN "NOBODY IS COMING". NEVER PARK A PR THE DRIVER IS ALREADY
+REPAIRING.** `SETTLED` and `RUNNING-STALL` are about **CI**, not about **campaign**: a **red** PR whose
+rows are all terminal is SETTLED on the **first** derivation, and a CI-fix subagent in flight does **not**
+change `head_sha` until it pushes — so an ungated strike rule would park, after two wakes, the exact PR
+the driver is actively fixing, and an ungated stall clock would start timing a `RUNNING` row the driver is
+about to make irrelevant.
 
 **MACHINE ACTION** = work **campaign dispatches** that can produce a **new `head_sha`** on this PR: a
 CI-fix subagent (either tier, including an escalation from the cheap one), a review-fix subagent, a
@@ -615,23 +654,24 @@ copilot-address fix, a refutation commit, or a conflict-resolving rebase.
 
 - **In flight** = dispatched for this PR at this `head_sha` and not yet completed — **the same in-flight
   test `loop-control.md` step 3 already applies** to suppress a duplicate dispatch ("CI red and no fix is
-  already in flight for that PR/SHA"). The strike rule reads that same fact; it does not invent a second
-  one.
+  already in flight for that PR/SHA"). The strike rule and the stall clock read that same fact; they do
+  not invent a second one.
 - **Due** = that step-3 dispatch scan **would launch one on this wake** — it is not in flight and nothing
   but a free concurrency slot is missing.
 - **The CI watch is NOT a machine action, and neither is a review pass.** Neither pushes a commit, so
-  neither can move CI: a settled PR under review is still settled, and suppressing its strike would wedge
-  it exactly as before.
+  neither can move CI: a settled PR under review is still settled, a stalled one is still stalled, and
+  suppressing either bound would wedge it exactly as before.
 
 **IT STILL TERMINATES — a liveness rule that can be suppressed forever is not a liveness rule.** Machine
 actions on one PR are **bounded**: a stuck task is retried **once** and then aborted permanently, and "CI
 fails identically after a fix attempt" is itself a stop condition (`bailout-and-final-report.md`). So a
-**red** PR whose CI-fix budget is **spent** has no action due and none in flight → strikes accrue on the
-next derivations → it parks like any other settled PR. The gate suppresses a strike **only while a fix is
-actually coming**, never merely because the PR is red.
+**red** PR whose CI-fix budget is **spent** has no action due and none in flight → strikes accrue (or the
+stall clock runs) on the next derivations → it parks like any other settled or stalled PR. The gate
+suppresses a bound **only while a fix is actually coming**, never merely because the PR is red.
 
 **ESCALATE** = park the PR (`status = awaiting-user`, `ci_reason` = the blocker **named**: which check
-never registered, which value was unrecognized, which read was denied), **and `blocker_ruling` = `-` in
+never registered, **which check has been `RUNNING` since when without the check set moving**, which value
+was unrecognized, which read was denied), **and `blocker_ruling` = `-` in
 that same `ledger.py … set` call** ("THE RULING IS CONSUMED EXACTLY ONCE" below — a ruling already on the
 row answers the **previous** park, never this one), and tell the user. It does **not**
 abort the run or close the PR — the run's other PRs keep going. `ci_reason` is **the DECIDE reason for
@@ -642,9 +682,9 @@ this snapshot** — the bullet that matched and the row that made it match — n
 too.** A park whose exit event never comes is the same wedge, one level up. So the escalation:
 
 - **PROMPTS with the blocker and what campaign already spent on it** — the PR, its `ci_reason`, the
-  evidence (the fingerprint that did not change; the row, value, or VERIFY rule that made the bullet
-  match), and what was already tried (CI-fix attempts, strikes, refetches). **Never a bare "CI is
-  stuck".**
+  evidence (the fingerprint that did not change; **how long it has not changed** (`ci_stalled_since` →
+  now) when a `RUNNING` row is what stalled; the row, value, or VERIFY rule that made the bullet match),
+  and what was already tried (CI-fix attempts, strikes, refetches). **Never a bare "CI is stuck".**
 - **Asks for exactly ONE of two answers, and names them:**
   - **`retry`** — "I changed something **outside** the PR (re-ran the workflow, registered the missing
     check, fixed the repo/branch setting); derive again."
@@ -655,10 +695,13 @@ too.** A park whose exit event never comes is the same wedge, one level up. So t
   derivation. A wake may be a fresh agent instance: an answer that lives only in the driver's head is an
   answer that gets re-asked.
 
-`settled_strikes`, `ci_fingerprint`, `unusable_refetches`, and `blocker_ruling` live **in the ledger, not
-in the driver's head**: a wake may be a fresh agent instance, and a counter that dies with the context is
-a counter that never reaches its cap. Write them through `scripts/ledger.py … set --pr <N>` **by field
-name**, like every other field (`files-and-ledger.md`).
+`settled_strikes`, `ci_fingerprint`, `unusable_refetches`, `ci_stalled_since`, and `blocker_ruling` live
+**in the ledger, not in the driver's head**: a wake may be a fresh agent instance, and a counter that dies
+with the context is a counter that never reaches its cap — and a **clock** that lives in the driver's head
+is worse still, because a fresh instance does not merely lose the elapsed time, it silently restarts it
+from zero. `ci_stalled_since` is a **timestamp on disk**, so **any** wake computes `now -
+ci_stalled_since` from the ledger alone, remembering nothing. Write them through `scripts/ledger.py … set
+--pr <N>` **by field name**, like every other field (`files-and-ledger.md`).
 
 **THE RULING IS CONSUMED EXACTLY ONCE — a durable answer that is never spent is a park that unparks
 itself.** `blocker_ruling` must be **DURABLE** (it survives a context loss) **AND spent EXACTLY ONCE** (it
@@ -682,8 +725,8 @@ a spent `retry` on the row, and the next park would read it as its own answer. (
 fresh user answer — the exact failure this rule exists to prevent.)
 
 **THE LIVENESS COUNTERS — one name for the set, so a new counter never leaves a stale restatement.** They
-are `ci_fingerprint`, `settled_strikes`, and `unusable_refetches`. **Reset them TOGETHER** (`-`, `0`, `0`)
-at exactly two kinds of site:
+are `ci_fingerprint`, `settled_strikes`, `unusable_refetches`, and `ci_stalled_since`. **Reset them
+TOGETHER** (`-`, `0`, `0`, `-`) at exactly two kinds of site:
 
 1. **Any `head_sha` change — whether or not the gate resets with it.** The new head is new evidence, so
    the old head's liveness says nothing about it. Every site that writes a new `head_sha` resets them, and
@@ -693,7 +736,8 @@ at exactly two kinds of site:
    rebase, which does); **`loop-control.md` step 1's ledger refresh** and **`pr-adoption.md` step 3's row
    refresh** (a formatter/bot commit, a manual push, any content change this run did not dispatch).
 2. **An unpark by `retry`** (`loop-control.md` step 3) — no new head, but the user changed something
-   **outside** the PR, so the strikes that measured the old attempt are void.
+   **outside** the PR (they re-ran the workflow, killed the hung runner, registered the missing check), so
+   the strikes and the stall clock that measured the old attempt are void.
 
 **The DECIDE loop's own `head_sha changed -> reset` line ("SETTLED", above) is NOT a substitute for the
 site doing it.** That line fires only for a derivation that can still SEE the change — and the sites above
@@ -707,11 +751,70 @@ did not move), and a clean base-only rebase moves the head **without** resetting
 reset — CI must be re-derived). Anything that reads "reset on every gate reset" is wrong in both
 directions.
 
-Any rule that says "reset the liveness counters" means **these three**, and a counter added to this set is
-inherited by every one of those sites with no edit to them. `ci_reason` is a **record, not a counter** — it
-is overwritten by the next derivation, never blanket-reset. `blocker_ruling` is a record too, but it is
-**not** free-floating: it is cleared at its own park boundaries ("THE RULING IS CONSUMED EXACTLY ONCE"
-above), never by a counter reset.
+Any rule that says "reset the liveness counters" means **the set NAMED above** — never a number, and never
+a list retyped somewhere else. That is what the name is **for**: a counter added to the set (as
+`ci_stalled_since` was) is inherited by **every** one of those sites with **no edit to them**, and the
+sites are unchanged by its addition. `ci_stalled_since` is a **clock, not a tally**, and it belongs to the
+set anyway — it measures the same thing the strikes do (**how much budget this head has spent without CI
+moving**), and it is void for exactly the same reasons, at exactly the same sites. `ci_reason` is a
+**record, not a counter** — it is overwritten by the next derivation, never blanket-reset. `blocker_ruling`
+is a record too, but it is **not** free-floating: it is cleared at its own park boundaries ("THE RULING IS
+CONSUMED EXACTLY ONCE" above), never by a counter reset.
+
+#### RUNNING-STALL — a row that never finishes is bounded in TIME: `ci_stalled_since`, cap 6h
+
+`RUNNING-STALL` (defined above) is the other half of `SETTLED`, and it is the harder half, because the
+rule must tell **NOT MOVING** apart from **SLOW** — and on a fingerprint they look **identical**. A
+legitimately slow build (a 40-minute integration suite) has an **unchanged fingerprint across derivations**
+in exactly the way a hung runner does. **So a naive "fingerprint unchanged for K derivations → park" parks
+the healthy build**, and a rule that parks healthy PRs gets turned off, which leaves the wedge.
+
+**THE BOUND IS A DURATION, NOT A DERIVATION COUNT. This is a deliberate choice and it is the crux.**
+
+- **A derivation count measures the RUN'S LOAD, not this PR's CI.** Derivations are driven by **wakes**,
+  and a wake is the heartbeat (**~5–15 min**, `loop-control.md` step 5) **or any background task, on ANY
+  PR, completing**. So on a busy run three derivations can land within seconds of one another — a
+  derivation bound would park a 40-minute build that had barely started, for no reason but that **other**
+  PRs were finishing work. On a quiet one-PR run the same bound is worth an hour or more. **The same
+  number means a different amount of waiting on every run**, and none of it is a property of the check
+  that is or is not moving. `unusable_refetches` can be a count precisely because it counts **its own
+  attempts**; nothing here is counting attempts.
+- **SLOW and DEAD differ in exactly one observable: how long the check set has gone without ANY motion.**
+  So that is what the bound measures. `settled_strikes` gets away with counting derivations only because a
+  SETTLED PR has **nothing that could move** — there is no slow-vs-dead question to answer.
+- **It is computed FROM DISK, never from the driver's memory of when it last looked.** `ci_stalled_since`
+  is a UTC ISO-8601 timestamp in the **ledger**; `now - ci_stalled_since` is a subtraction any fresh agent
+  instance can do on its first wake. A duration accumulated in context is a duration that resets to zero
+  every time the session dies — which is the failure that made these counters durable in the first place.
+
+**WHY IT DOES NOT PARK A HEALTHY SLOW CHECK.** The clock is **not** "how long the build has been running".
+It is **"how long NOT ONE row in the whole check set has changed state"** — the fingerprint covers every
+evidence row's verdict fields, so **any** motion **anywhere** resets it: a queued job starting
+(`QUEUED`→`IN_PROGRESS`), any other check completing, a matrix leg finishing, a new check registering (a
+new row), the slow suite itself finally concluding. A 40-minute suite therefore has to be the **only**
+thing in the check set, and emit **no** transition, for a full **6 hours** before it is timed out — and
+40 minutes is not 6 hours. The clock also starts at the **first derivation that observes no motion**, not
+at the moment the check began, so it errs **later** still.
+
+**THE HONEST LIMIT — the cap is a DECLARED CONSTANT, not a proof.** A **GitHub-hosted** job cannot sit
+`IN_PROGRESS` past **6 hours**: that is GitHub's documented per-job execution limit, and when it trips
+GitHub **terminates the job**, which writes a `COMPLETED` row — motion, and therefore a reset, not a park.
+A **self-hosted** runner or an **external** CI posting commit statuses (Jenkins, CircleCI) has **no such
+limit**, so a repo *can* have a check that legitimately sits unchanged past the cap. If one does, this
+rule **parks it** — and that is survivable **only** because ESCALATE is a **park that ASKS THE USER**
+(`retry` / `abort`), never an abort: a false park costs **one prompt**, and `retry` resumes with a fresh
+budget. A wedge costs the run, silently, forever. **NEVER claim the cap proves the check is dead** — it
+proves campaign has waited 6 hours for a check set that did not move once, and is now telling a human
+instead of waiting forever.
+
+**The cap is 6h in exactly ONE place — this line.** A repo whose legitimate checks can outlast it raises
+it **here**, and every rule that reads "the CI STALL CAP" follows. Never restate the number elsewhere.
+
+**Where the wake comes from while a stalled row is watched.** A hung `RUNNING` row keeps `gh pr checks
+--watch` **blocked forever**, so the watch never completes and never wakes anyone — the escalation is
+therefore evaluated on the **heartbeat** wake like any other derivation, which is exactly why the
+heartbeat is scheduled while any non-terminal PR remains (`loop-control.md` step 5). **A bound that could
+only be reached by the event it is waiting for would not be a bound at all.**
 
 #### UNUSABLE — the refetch is BOUNDED: `unusable_refetches`, cap 3
 
@@ -727,9 +830,10 @@ unusable_refetches >= 3                 -> ESCALATE (above)
 ```
 
 - **The counter counts FETCH ATTEMPTS, never evidence.** It stays consistent with "an UNUSABLE snapshot
-  yields no fingerprint": nothing rejected is hashed, nothing rejected is judged. The two counters answer
-  two different questions — `settled_strikes`: "trusted evidence stopped moving"; `unusable_refetches`:
-  "we never obtained trusted evidence at all."
+  yields no fingerprint": nothing rejected is hashed, nothing rejected is judged. The three bounds answer
+  three different questions — `settled_strikes`: "trusted evidence stopped moving, and nothing can move
+  it"; `ci_stalled_since`: "a row still SAYS it can move, and it has not"; `unusable_refetches`: "we never
+  obtained trusted evidence at all."
 - **The bound is 3, not 2** (the strike cap), **on purpose.** UNUSABLE is dominated by **transient**
   causes — a `gh` call failed, the check set changed mid-fetch so a `source` count no longer matches, the
   snapshot raced a push — and a fresh fetch usually clears them; a SETTLED-but-not-green snapshot is,
@@ -747,7 +851,7 @@ The watch is warranted by **a row that can still move**, never by the `ci` value
 
 | DECIDE outcome | Watch? |
 |---|---|
-| **pending** — an evidence row classifies `RUNNING` | **YES** — ensure a watch task is alive; relaunch it in this same wake if it has exited. |
+| **pending** — an evidence row classifies `RUNNING` | **YES** — ensure a watch task is alive; relaunch it in this same wake if it has exited. **The watch is not the bound**: if that row never finishes, the watch blocks forever and RUNNING-STALL is what ends it, on the heartbeat. |
 | **pending (nothing registered)** — zero evidence rows | **NO.** Nothing to block on. SETTLED escalates it. |
 | **red** — but some row still `RUNNING` | **YES** — that row can still move; the CI fix runs regardless. |
 | **red** — every row terminal | **NO.** The CI fix moves it, not the watch. |

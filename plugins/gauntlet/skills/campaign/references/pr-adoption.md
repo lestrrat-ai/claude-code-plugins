@@ -125,9 +125,10 @@ For each `#PR` to adopt:
    - **Whenever this refresh writes a NEW `head_sha`, RESET THE LIVENESS COUNTERS** (`stage-2-ci.md`,
      "THE LIVENESS COUNTERS") in the same `ledger.py … set` call — **whether or not the gate reset with
      it**: a clean base-only advance moves the head without touching `reviews_ok`, and it still means the
-     old head's `settled_strikes` / `unusable_refetches` describe evidence that no longer exists. Carried
-     onto the new head they park a healthy PR early. (The counters are **not** in the PRESERVE list above:
-     they are pinned to `head_sha`, not to the user.)
+     old head's strikes, stall clock and refetch count describe evidence that no longer exists. Carried
+     onto the new head they park a healthy PR early. **Reset the SET, never a list retyped here** — a
+     counter added to it is inherited by this site with no edit. (The counters are **not** in the PRESERVE
+     list above: they are pinned to `head_sha`, not to the user.)
 
    The ownership marker for an adopted PR is the **label**, not the branch name (its branch won't match
    the `fix-<run-id>-` prefix) — so labelling in step 4 is what makes the PR ours.

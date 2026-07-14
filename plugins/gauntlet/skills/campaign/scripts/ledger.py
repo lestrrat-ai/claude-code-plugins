@@ -43,6 +43,12 @@ ROW_FIELDS = (
     "ci_fingerprint",     # digest of the last VERIFIED CI snapshot; UNCHANGED + nothing running == SETTLED
     "settled_strikes",    # consecutive derivations seen SETTLED-but-not-green; at the cap -> escalate
     "unusable_refetches", # consecutive UNUSABLE snapshots (they have NO fingerprint); at the cap -> escalate
+    # UNCHANGED + a row still RUNNING == RUNNING-STALL: something CLAIMS it can still move, and nothing in
+    # the check set has. A TIMESTAMP, not a tally, and that is the point: SLOW and DEAD look identical on a
+    # fingerprint, and derivations are driven by wakes whose cadence tracks the RUN'S LOAD, not this PR's
+    # CI — so a derivation count would park a healthy 40-minute build on a busy run. Only elapsed TIME
+    # tells them apart. On disk so `now - ci_stalled_since` needs nothing but the ledger.
+    "ci_stalled_since",   # UTC ISO-8601 of the first derivation that saw this stall; at the cap -> escalate
     "ci_reason",          # why `ci` is not green, in a form a human can act on
     # Durable answer to a machine-blocker park: - | retry@<iso> | abort@<iso>. Durable AND spent exactly
     # once: set back to `-` on park ENTRY and on consuming a `retry`, so a ruling can only ever answer the
@@ -55,7 +61,7 @@ ROW_DEFAULTS = {
     "branch_owned": "-", "pr": "-", "head_sha": "-", "reviews_ok": "0", "ci": "pending",
     "tier": "-", "attempts": "0", "started": "-", "api_approval": "-", "status": "pending",
     "ci_fingerprint": "-", "settled_strikes": "0", "unusable_refetches": "0",
-    "ci_reason": "-", "blocker_ruling": "-",
+    "ci_stalled_since": "-", "ci_reason": "-", "blocker_ruling": "-",
 }
 
 

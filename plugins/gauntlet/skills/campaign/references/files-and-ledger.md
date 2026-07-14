@@ -101,8 +101,8 @@ following line is one adopted PR's row record (`{"type": "row", …}`). Every re
 
 ```
 {"type": "header", "run_id": "g260704-0915-a3f29c1b", "base_branch": "main", "api_changes": "ask", "reviewer": "codex"}
-{"type": "row", "id": "pr41", "slug": "fix-null-deref", "branch": "fix-null-deref", "worktree": ".worktrees/fix-null-deref", "worktree_owned": "yes", "branch_owned": "yes", "pr": "41", "head_sha": "a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c", "reviews_ok": "2", "ci": "green", "tier": "STANDARD", "attempts": "1", "started": "2026-07-04T09:15:00Z", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:9f2c\u2026", "settled_strikes": "0", "unusable_refetches": "0", "ci_reason": "-", "blocker_ruling": "-"}
-{"type": "row", "id": "pr52", "slug": "add-retry-flag", "branch": "add-retry-flag", "worktree": ".worktrees/add-retry-flag", "worktree_owned": "no", "branch_owned": "no", "pr": "52", "head_sha": "b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7089a1b", "reviews_ok": "0", "ci": "pending", "tier": "HIGH", "attempts": "0", "started": "-", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:4a71\u2026", "settled_strikes": "1", "unusable_refetches": "0", "ci_reason": "required check absent: integration-tests", "blocker_ruling": "-"}
+{"type": "row", "id": "pr41", "slug": "fix-null-deref", "branch": "fix-null-deref", "worktree": ".worktrees/fix-null-deref", "worktree_owned": "yes", "branch_owned": "yes", "pr": "41", "head_sha": "a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c", "reviews_ok": "2", "ci": "green", "tier": "STANDARD", "attempts": "1", "started": "2026-07-04T09:15:00Z", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:9f2c\u2026", "settled_strikes": "0", "unusable_refetches": "0", "ci_stalled_since": "-", "ci_reason": "-", "blocker_ruling": "-"}
+{"type": "row", "id": "pr52", "slug": "add-retry-flag", "branch": "add-retry-flag", "worktree": ".worktrees/add-retry-flag", "worktree_owned": "no", "branch_owned": "no", "pr": "52", "head_sha": "b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7089a1b", "reviews_ok": "0", "ci": "pending", "tier": "HIGH", "attempts": "0", "started": "-", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:4a71\u2026", "settled_strikes": "1", "unusable_refetches": "0", "ci_stalled_since": "-", "ci_reason": "required check absent: integration-tests", "blocker_ruling": "-"}
 ```
 
 **`head_sha` is ALWAYS the full 40-char `headRefOid` — never an abbreviation.** The examples above spell
@@ -153,7 +153,10 @@ Header field notes (the header fields above; per-row fields follow):
   and `tier` describe. `ci`
   and `tier` are pinned to this exact SHA (re-triage on any content change). `reviews_ok` is pinned to
   this SHA **unless** the only change is a clean base-only rebase/merge with the PR diff unchanged;
-  then carry `reviews_ok` forward to the new `head_sha` and set `ci = pending`.
+  then carry `reviews_ok` forward to the new `head_sha`, set `ci = pending`, and — because the head
+  **moved** — **reset the liveness counters** (`stage-2-ci.md`, "THE LIVENESS COUNTERS"). A clean rebase
+  does not reset the *gate*, but it **is** a `head_sha` change, and **every** `head_sha` change resets
+  those counters: the old head's strikes and stall clock measured evidence that no longer exists.
 - `reviews_ok` — number of fresh, context-isolated SATISFIED verdicts recorded against this PR's
   current content. Target = `required(tier)`: **1 if `tier == TRIVIAL`, else 2** (Stage **2a-triage**).
 - `tier` — the adaptive review tier derived from `head_sha`: `TRIVIAL` | `STANDARD` | `HIGH`. Re-derived
@@ -173,6 +176,17 @@ Header field notes (the header fields above; per-row fields follow):
   `settled_strike`: it gets its own counter. At **3**, escalate the same way. Reset to `0` on any
   `head_sha` change and on any **VERIFIED** snapshot (`stage-2-ci.md`, "UNUSABLE — the refetch is
   BOUNDED").
+- `ci_stalled_since` — `-`, or the **UTC ISO-8601 timestamp** of the first derivation that saw the check
+  set **RUNNING-STALLED** at this fingerprint: an evidence row still classifies `RUNNING` **and** the
+  fingerprint did **not** change (`stage-2-ci.md`, "RUNNING-STALL" — the definition; the cap lives there
+  and nowhere else). A **clock, not a tally**, and that is deliberate: a `RUNNING` row that is merely
+  **SLOW** and one that is **DEAD** are indistinguishable on a fingerprint, and derivations are driven by
+  wakes whose cadence depends on the run's load — so only elapsed **TIME** separates them. It is on disk
+  precisely so `now - ci_stalled_since` is computable by a fresh agent instance that remembers nothing.
+  Cleared (`-`) on any fingerprint change, on any `head_sha` change, and whenever a **machine action** is
+  due or in flight for this PR at this `head_sha` (a fix that pushes will replace these rows). At the cap,
+  escalate: park `awaiting-user`, `ci_reason` naming the check that never finished and how long the check
+  set sat unchanged.
 - `ci_reason` — **why** `ci` is not green, in a form a human can act on: the DECIDE bullet that matched
   and the row that made it match (which check never registered, which enum value was unrecognized, which
   read was denied, which VERIFY rule the snapshot failed). This is what the escalation reports; a park
@@ -227,12 +241,15 @@ Header field notes (the header fields above; per-row fields follow):
        **invalid** → back to the normal flow; ruled **valid** → back to the normal flow with that finding
        fixed like a CONFIRMED one.
     2. **A MACHINE BLOCKER — campaign cannot move this PR without a human.** `ci_reason` **names** it.
-       Non-exhaustively: **CI has SETTLED and is still not green** (`settled_strikes` at its cap), a
+       Non-exhaustively: **CI has SETTLED and is still not green** (`settled_strikes` at its cap), a check
+       that **never stopped `RUNNING`** while nothing in the check set moved (`ci_stalled_since` at the CI
+       STALL CAP — a hung runner, a dead reporter, a required check that queues and never starts), a
        snapshot that stayed **UNUSABLE** (`unusable_refetches` at its cap), a check carrying an
        **unrecognized enum value**, a merge `BLOCKED` for a cause campaign cannot enumerate, an
-       **unrecognized `mergeStateStatus`**, or a **draft** PR (`stage-2-ci.md`, "SETTLED" and "UNUSABLE —
-       the refetch is BOUNDED"; `stage-3-merge.md`, "The merge precondition"). **This is the exit from
-       `pending`** — without it, a stuck PR spins forever and no one is ever told. **Answered into**
+       **unrecognized `mergeStateStatus`**, or a **draft** PR (`stage-2-ci.md`, "SETTLED", "RUNNING-STALL"
+       and "UNUSABLE — the refetch is BOUNDED"; `stage-3-merge.md`, "The merge precondition"). **This is
+       the exit from `pending` — in BOTH of its shapes**, the settled one and the forever-`RUNNING` one;
+       without it, a stuck PR spins forever and no one is ever told. **Answered into**
        `blocker_ruling`: `retry@<iso>` → back to `in_review` **with the liveness counters cleared** (else
        it re-escalates on its first derivation) **and the ruling itself SPENT back to `-`** (a ruling is
        consumed exactly once — `stage-2-ci.md`, "THE RULING IS CONSUMED EXACTLY ONCE"; entering this park
