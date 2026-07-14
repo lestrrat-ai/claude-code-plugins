@@ -123,6 +123,31 @@ def marked_statements(source: str) -> dict[str, tuple[str, ast.stmt]]:
     return out
 
 
+def bare_name(node: ast.expr | None) -> str | None:
+    """The identifier this expression IS, or None if it is not a bare name.
+
+    `ast.expr` declares no `id` — only `ast.Name` does. Asking for `.id` through the base class (or through
+    a `getattr`) reads as "any expression might be a name", which is false, and it silently answers None for
+    an expression whose shape was never considered. This asks the question the node type can actually
+    answer, and every caller below has to handle the None.
+    """
+    return node.id if isinstance(node, ast.Name) else None
+
+
+def is_enforcing_raise(node: ast.Raise) -> bool:
+    """`raise SnapshotError(...)` / `raise Unverifiable(...)` — a rule REJECTING the evidence."""
+    return isinstance(node.exc, ast.Call) and bare_name(node.exc.func) in ENFORCING_EXCEPTIONS
+
+
+def is_enforcing_return(node: ast.Return) -> bool:
+    """`return RED/PENDING/UNCLASSIFIED, ...` — a rule DECIDING a non-green verdict."""
+    return (
+        isinstance(node.value, ast.Tuple)
+        and bool(node.value.elts)
+        and bare_name(node.value.elts[0]) in ENFORCING_VERDICTS
+    )
+
+
 def check_coverage(source: str, marked: dict[str, tuple[str, ast.stmt]]) -> list[str]:
     """EVERY enforcement point in a rule function must sit under a marker.
 
@@ -137,13 +162,17 @@ def check_coverage(source: str, marked: dict[str, tuple[str, ast.stmt]]) -> list
         if not isinstance(fn, ast.FunctionDef) or fn.name not in RULE_FUNCTIONS:
             continue
         for node in ast.walk(fn):
-            enforcing = False
-            if isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call):
-                enforcing = getattr(node.exc.func, "id", None) in ENFORCING_EXCEPTIONS
-            elif isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple) and node.value.elts:
-                enforcing = getattr(node.value.elts[0], "id", None) in ENFORCING_VERDICTS
+            # `ast.walk` yields `ast.AST`, and `AST` carries NO position — `lineno` lives on the concrete
+            # node types. So the enforcement point is narrowed to the two node types it can actually BE,
+            # and the line number is read off THOSE. That narrowing is the whole point: it is what makes
+            # `what` follow from the node's type instead of being re-derived from it afterwards.
+            if isinstance(node, ast.Raise):
+                what, enforcing = "raise", is_enforcing_raise(node)
+            elif isinstance(node, ast.Return):
+                what, enforcing = "return", is_enforcing_return(node)
+            else:
+                continue
             if enforcing and node.lineno not in marked_lines:
-                what = "raise" if isinstance(node, ast.Raise) else "return"
                 problems.append(
                     f"{SCRIPT.name}:{node.lineno}: {fn.name}() enforces a rule ({what}) with NO "
                     f"# MUTATE marker — an unmarked rule is never mutated, so nothing can report it unpinned"
@@ -181,7 +210,9 @@ def run_cases(mod: types.ModuleType) -> dict[str, tuple[str, str]]:
         except Exception as exc:  # noqa: BLE001 - a crash IS the result here
             out[name] = (f"crash:{type(exc).__name__}", str(exc))
     with tempfile.TemporaryDirectory() as tmp:
-        for name, _want, _needle, _why in mod.FILENAME_CASES:
+        # Only the NAME is an input here — the verdict a case expects is what `expectations()` reads, and it
+        # unpacks the row in full, so the row's shape stays pinned there.
+        for name, *_ in mod.FILENAME_CASES:
             path = Path(tmp) / name
             shutil.copyfile(FIXTURES / "green.jsonl", path)
             try:
@@ -192,7 +223,7 @@ def run_cases(mod: types.ModuleType) -> dict[str, tuple[str, str]]:
                 out[f"[name] {name}"] = (f"crash:{type(exc).__name__}", str(exc))
     # The required-set rule is the ONE rule whose input is not in the file. Its cases must run against the
     # mutant too, or removing it would be pinned by nobody — the failure mode this harness exists for.
-    for name, spec, _want, _needle, _why in mod.REQUIRED_CASES:
+    for name, spec, *_ in mod.REQUIRED_CASES:
         case = required_case_id(name, spec)
         try:
             out[case] = mod.evaluate(
@@ -206,11 +237,11 @@ def run_cases(mod: types.ModuleType) -> dict[str, tuple[str, str]]:
 
 def expectations(mod: types.ModuleType) -> dict[str, tuple[str, str]]:
     """case -> (expected verdict, needle the reason must contain)."""
-    out = {name: (want, needle) for name, (want, needle, _why) in mod.EXPECTED.items()}
-    out.update({f"[name] {n}": (want, needle) for n, want, needle, _why in mod.FILENAME_CASES})
+    out = {name: (want, needle) for name, (want, needle, _) in mod.EXPECTED.items()}
+    out.update({f"[name] {n}": (want, needle) for n, want, needle, _ in mod.FILENAME_CASES})
     out.update({
         required_case_id(n, spec): (want, needle)
-        for n, spec, want, needle, _why in mod.REQUIRED_CASES
+        for n, spec, want, needle, _ in mod.REQUIRED_CASES
     })
     return out
 
@@ -247,7 +278,7 @@ def bogus(expect: dict[str, tuple[str, str]], got: dict[str, tuple[str, str]], g
     """Removing a rule can never make a GREEN fixture stop being green. If it did, the mutation is wrong."""
     return [
         f"{case} expected {green} but the mutant returned {got[case][0]}"
-        for case, (want, _needle) in expect.items()
+        for case, (want, _) in expect.items()
         if want == green and got[case][0] != green
     ]
 

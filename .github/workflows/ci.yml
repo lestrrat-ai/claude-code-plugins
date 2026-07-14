@@ -40,6 +40,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
       - name: Shellcheck
         run: |
           mapfile -t files < <(find . -name '*.sh' -not -path './.git/*')
@@ -51,6 +55,35 @@ jobs:
           mapfile -t files < <(find . -name '*.py' -not -path './.git/*')
           printf 'checking %s\n' "${files[@]}"
           python3 -m py_compile "${files[@]}"
+
+      # `py_compile` above proves the file PARSES. It says nothing about whether the code is TYPE-correct,
+      # and the gap between those two is where a real defect already hid: an accessor reached for `.lineno`
+      # through `ast.AST`, which does not declare it — code that compiles, runs, and is a lie about what the
+      # walk yields.
+      #
+      # DELIBERATELY FILE-SCOPED, not repo-wide. The other scripts here are not type-clean yet, and a
+      # repo-wide gate would fail builds for reasons that have nothing to do with the change under review —
+      # a gate that is red for everyone is a gate nobody can use. Add each file to this list as it is fixed;
+      # the list is the record of what is CLEAN, and nothing may fall back out of it.
+      #
+      # The `filesAnalyzed` assertion is the load-bearing half of this step, not a flourish. Pyright analyses
+      # ZERO files IN SILENCE when a path matches nothing it will look at — it prints "0 errors" and exits 0.
+      # A step that trusted the exit code alone would keep reporting success after a rename, while checking
+      # nothing whatsoever. So the count is asserted: this step can only pass by actually having looked.
+      - name: Pyright (the type-clean scripts)
+        run: |
+          set -o pipefail
+          npx --yes pyright@1.1.410 --outputjson \
+            plugins/gauntlet/skills/campaign/scripts/ledger.py \
+            plugins/gauntlet/skills/campaign/scripts/mutate-ci-snapshot.py | tee pyright.json
+          analyzed=$(jq '.summary.filesAnalyzed' pyright.json)
+          echo "filesAnalyzed=${analyzed}"
+          if [ "${analyzed}" != "2" ]; then
+            echo "::error::pyright analysed ${analyzed} file(s), not the 2 it was pointed at — it checked" \
+                 "nothing and said so quietly. Fix the paths above; a silent no-op is not a passing gate."
+            exit 1
+          fi
+          rm -f pyright.json
 
       # The CI-snapshot contract, executed. The rules it pins are prose in stage-2-ci.md, and prose
       # cannot be run — three defects shipped in that prose, each of which dies instantly against a

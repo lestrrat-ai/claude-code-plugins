@@ -666,8 +666,13 @@ def grid(out: str, fields: "tuple[str, ...]") -> "tuple[list[str], list[int], li
 
 
 # --- the fixtures -------------------------------------------------------------
+#
+# Every fixture takes the same argument — its own scratch directory, handed to it by `self_test()`. A
+# fixture that asserts on a PURE function needs no file, so it names that argument `_tmp`: the signature is
+# fixed by the CASES table, and the leading underscore is how a parameter says it is deliberately unused
+# rather than forgotten.
 
-def t_escape_injective(tmp: Path) -> None:
+def t_escape_injective(_tmp: Path) -> None:
     """Two DIFFERENT values NEVER render as the same cell.
 
     A non-injective escaping is a NEW LIE inside the code written to stop lies: `a|b` and `a\\|b` are
@@ -752,7 +757,7 @@ def bare(cell: str) -> "list[str]":
     return out
 
 
-def t_escape_invariant(tmp: Path) -> None:
+def t_escape_invariant(_tmp: Path) -> None:
     """The escaped cell holds NO BARE grid metacharacter: no unescaped `|`, no line break, no control
     char — and it never opens with `#`. This is what makes the ` | ` separator and the `# ` config prefix
     mean ONE thing wherever they appear.
@@ -783,7 +788,7 @@ def t_escape_invariant(tmp: Path) -> None:
               f"invisible, and rstrip() eats it")
 
 
-def t_escape_mapping(tmp: Path) -> None:
+def t_escape_mapping(_tmp: Path) -> None:
     r"""The escape TABLE itself, character by character — and ordinary text left BYTE-IDENTICAL.
 
     The invariant above is satisfied by more than one escaping (drop the `\n` branch and a newline still
@@ -882,7 +887,7 @@ def t_widths_from_escaped(tmp: Path) -> None:
     path = write_lines(tmp / "w.jsonl", header_line(), row_line(pr="1", slug=raw))
     code, out, err = run(["--file", str(path), "table", "--fields", "slug,pr"])
     check(code == 0, f"table exited {code}: {err!r}")
-    _, widths, cells = grid(out, ("slug", "pr"))
+    _, widths, _ = grid(out, ("slug", "pr"))
     check(widths[0] == len(escaped),
           f"the slug column is {widths[0]} wide but prints {len(escaped)} chars ({escaped!r}) — the width "
           f"was measured on the RAW value ({len(raw)}), not the printed one")
