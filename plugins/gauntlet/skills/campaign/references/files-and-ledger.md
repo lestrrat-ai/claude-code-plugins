@@ -149,8 +149,7 @@ Header field notes (the header fields above; per-row fields follow):
   this SHA **unless** the only change is a clean base-only rebase/merge with the PR diff unchanged;
   then carry `reviews_ok` forward to the new `head_sha` and set `ci = pending`.
 - `reviews_ok` — number of fresh, context-isolated SATISFIED verdicts recorded against this PR's
-  current content. Target = `required(tier)`: **1 if `tier == TRIVIAL`, else 2** ("Adaptive review
-  tiers").
+  current content. Target = `required(tier)`: **1 if `tier == TRIVIAL`, else 2** (Stage **2a-triage**).
 - `tier` — the adaptive review tier derived from `head_sha`: `TRIVIAL` | `STANDARD` | `HIGH`. Re-derived
   every wake and re-triaged on any content change; drives `required(tier)` and the review depth.
 - `ci` — `green` / `red` / `pending` / `none` for `head_sha`.

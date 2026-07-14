@@ -45,6 +45,9 @@ user asks. The goal is to drop entries that **no longer apply to the current cod
 - **skipped (API-declined)** whose referenced surface no longer exists, or that has since shipped —
   moot.
 - **merged** entries are historical record and cheap; keep them unless the user wants them condensed.
+- **pruned** entries are the audit trail of what earlier runs already dropped and what the user asked
+  to keep — **never prune them**. They are the one slot whose whole purpose is to survive to the next
+  run; dropping them re-opens the question the user already answered.
 
 **Confirm before deleting when unsure — this is the load-bearing rule.** Delete outright *only*
 entries that are unambiguously moot: the exact cited site is gone. For anything you're not certain

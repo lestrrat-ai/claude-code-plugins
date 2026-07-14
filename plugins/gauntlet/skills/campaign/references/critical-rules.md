@@ -198,9 +198,10 @@
   a finished prior run → ask the user before a fresh run; `--new` → fresh run with
   carryover (Loop control step 1). A finished run must never silently exit "all done" or silently
   restart.
-- A fresh run carries over prior knowledge from `.gauntlet/history/` (merged/aborted PR record, to
-  dedup and inform) but still judges every adopted PR fresh — carryover is advisory, never
-  auto-accept/reject.
+- A fresh run carries over prior knowledge from `.gauntlet/history/` — the prior runs' recorded
+  outcomes, whose slots `carryover.md` owns ("The carryover ledger"); it is read to dedup and inform,
+  and this is NOT a listing of them. A fresh run still judges every adopted PR fresh — carryover is
+  advisory, never auto-accept/reject.
 - Prune `.gauntlet/history/` at every fresh run: drop only entries unambiguously moot against
   current `<base>`; for anything uncertain, list it and ask the user before deleting. Never silently
   prune an entry you're unsure about.
