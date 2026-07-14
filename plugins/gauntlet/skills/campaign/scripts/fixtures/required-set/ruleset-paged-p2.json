@@ -1,0 +1,15 @@
+[
+  {
+    "type": "required_status_checks",
+    "ruleset_source_type": "Repository",
+    "ruleset_id": 2,
+    "parameters": {
+      "strict_required_status_checks_policy": false,
+      "do_not_enforce_on_create": false,
+      "required_status_checks": [
+        { "context": "Lint scripts", "integration_id": 15368 },
+        { "context": "Validate plugins", "integration_id": null }
+      ]
+    }
+  }
+]

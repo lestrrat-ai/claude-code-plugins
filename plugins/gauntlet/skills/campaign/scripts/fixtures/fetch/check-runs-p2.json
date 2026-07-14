@@ -1,0 +1,24 @@
+{
+  "_fixture": "PAGE 2. `\"app\": null` is the shape the doc's `((.app.id // \"-\")|tostring)` exists for: a check run need NOT come from a GitHub App. Written `((.app.id|tostring) // \"-\")` the default never fires and `app_id` carries the four letters `null`. `\"conclusion\": null` on the still-running row is the same trap on the same line's neighbour.",
+  "total_count": 3,
+  "check_runs": [
+    {
+      "id": 86862842710,
+      "name": "Validate plugins",
+      "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+      "status": "completed",
+      "conclusion": "success",
+      "details_url": "https://github.com/lestrrat-ai/claude-code-plugins/actions/runs/29263565055/job/86862842710",
+      "app": null
+    },
+    {
+      "id": 86862842999,
+      "name": "Deploy",
+      "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+      "status": "in_progress",
+      "conclusion": null,
+      "details_url": "https://github.com/lestrrat-ai/claude-code-plugins/actions/runs/29263565055/job/86862842999",
+      "app": null
+    }
+  ]
+}

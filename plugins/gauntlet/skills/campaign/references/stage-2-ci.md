@@ -89,8 +89,11 @@ machine-read convention as `state.jsonl` and the review plan/progress files (`fi
   see** — which is the failure this file's own SETTLED rule exists to prevent, arriving by the back
   door. `cli/cli`'s `trunk` returns `app_id: null` for **every** one of its required checks, so this
   is the **common** configuration, not an exotic one. `ci-snapshot.py`'s `producer_test` **extracts
-  these filters from this file and runs them** against recorded payloads that carry null bindings —
-  write the order backwards and it goes red.
+  EVERY jq filter this file prescribes — all five reads, (1)(2)(3) here and (a)(b) below — and RUNS
+  them** against recorded API payloads that carry null bindings and span MULTIPLE PAGES: write the order
+  backwards in **any** of them, or drop a `--paginate`, and it goes red. **A filter this file prescribes
+  that no test EXECUTES is a filter that can rot** — (1)'s `.app.id` default was fixed once and pinned by
+  nothing, and could have been reverted forever without a single test noticing.
 - **BOTH families are MANDATORY, AND THE ARTIFACT MUST PROVE BOTH WERE READ.** A failing Jenkins/CircleCI
   **commit status is genuinely invisible** to `/check-runs`: a commit can carry **live commit statuses**
   while `/check-runs` reports `check_runs.total_count = 0` for that very commit. Read only one family and
@@ -602,11 +605,23 @@ gh api "repos/<owner>/<repo>/branches/<base>" --jq '
 
 # (b) RULESETS — the rules actually in force on the branch. The CLASSIC endpoint CANNOT SEE THESE.
 #     Needs `Metadata: read`.
-gh api "repos/<owner>/<repo>/rules/branches/<base>" --jq '
-  [.[] | select(.type=="required_status_checks")
-       | .parameters.required_status_checks[]
-       | {context: .context, app: ((.integration_id // "-") | tostring)}]'
+#     `--paginate` IS MANDATORY HERE: this endpoint returns a PAGED LIST of rules (`page`/`per_page`,
+#     default 30 — GitHub REST docs, "Get rules for a branch"), and a repo can carry more rules than that.
+#     Read page one only and a `required_status_checks` rule sitting on page two is NEVER SEEN — the
+#     required set is recorded as if that check were not required, and a snapshot MISSING it goes GREEN.
+#     That is the exact false green this whole section exists to close, reintroduced by a missing flag.
+#     `--slurp` hands jq ONE array OF PAGES (and is mutually exclusive with gh's own `--jq`, hence the
+#     pipe) — so the filter flattens with `.[][]`: pages, then rules.
+gh api --paginate --slurp "repos/<owner>/<repo>/rules/branches/<base>" | jq -c '
+  [.[][] | select(.type=="required_status_checks")
+         | .parameters.required_status_checks[]
+         | {context: .context, app: ((.integration_id // "-") | tostring)}]'
 ```
+
+**Read (a) is NOT paginated, and that is not an oversight** — `GET /repos/{o}/{r}/branches/{b}` returns a
+**single branch object**, not a list: it takes no `page`/`per_page`, and its
+`.protection.required_status_checks.checks` array arrives whole. `--paginate` belongs on **every read that
+returns a LIST** and on no other; read (b) is one, read (a) is not.
 
 **A 404 from `/branches/<b>/protection` means THREE different things** — genuinely unprotected, *you may
 not look*, **or protected by a RULESET the classic endpoint cannot see**. Reproduced on **this repo** (a

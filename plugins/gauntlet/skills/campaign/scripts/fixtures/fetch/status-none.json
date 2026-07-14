@@ -1,0 +1,7 @@
+{
+  "_fixture": "A commit with ZERO statuses. `state` reads `pending` with `total_count: 0` — an ABSENCE, which read as a verdict is a lie in both directions, and which is why the doc reads `.statuses[]`, never `.state`. The top-level `.sha` is present ANYWAY, and that is what lets the marker PROVE `we asked this commit, and it has none` — {\"source\":\"status\",\"sha\":\"<GitHub's>\",\"count\":\"0\"} — instead of leaving a silence that parses as `nothing wrong`.",
+  "state": "pending",
+  "sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+  "total_count": 0,
+  "statuses": []
+}

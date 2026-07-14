@@ -1,0 +1,9 @@
+{
+  "_fixture": "GET /repos/{owner}/{repo}/commits/{sha}/status — the LEGACY family, invisible to /check-runs. The commit oid is carried ONCE, at the TOP LEVEL, never on the individual statuses; the rows and the marker must both take it from there. A status carries NO producer field at all, which is why an app-bound required check can never be proven by one.",
+  "state": "success",
+  "sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+  "total_count": 1,
+  "statuses": [
+    { "context": "ci/jenkins", "state": "success", "description": "build succeeded" }
+  ]
+}

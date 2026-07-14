@@ -1,0 +1,18 @@
+{
+  "_fixture": "`gh pr view <pr> --json statusCheckRollup`. WITNESSES ONLY: the rollup carries no app id and NO COMMIT OID, so it can never be read as a verdict — hence its marker's sha is `-`, ALWAYS, and a sha there would be one WE invented. The StatusContext entry is here to pin the `select(.__typename==\"CheckRun\")`: it must NOT become a witness, because the containment test compares check-run identities and a status has no `detailsUrl` to compare.",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "name": "Lint scripts",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/lestrrat-ai/claude-code-plugins/actions/runs/29263565055/job/86862842667"
+    },
+    {
+      "__typename": "StatusContext",
+      "context": "ci/jenkins",
+      "state": "SUCCESS",
+      "targetUrl": "https://jenkins.example.com/job/42"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "_fixture": "PAGE 1 of GET /repos/{owner}/{repo}/commits/{sha}/check-runs. `/check-runs` pages at 30; the page boundary here is forced so that a fixture need not depend on a commit carrying 31 checks. Page 2 (`check-runs-p2.json`) carries the runs with a NULL `.app` — read page one only and `count` says 1 while the commit has 3.",
+  "total_count": 3,
+  "check_runs": [
+    {
+      "id": 86862842667,
+      "name": "Lint scripts",
+      "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+      "status": "completed",
+      "conclusion": "success",
+      "details_url": "https://github.com/lestrrat-ai/claude-code-plugins/actions/runs/29263565055/job/86862842667",
+      "app": { "id": 15368, "slug": "github-actions" }
+    }
+  ]
+}
