@@ -11,8 +11,8 @@ files from colliding — see "Run identity and concurrency".
 | `prs.json` | Batched `gh pr list` snapshot of this run's PRs — the per-wake reconcile input, and the adoption/discovery input. **ONE path, ONE schema, ONE command**: the canonical command is spelled in full in **"The canonical `prs.json` command"**, the command block directly below this table, and that block is its ONLY definition |
 | `lease.json` | This run's active-driver lease (`{agent, updated}`; see "Run lease") |
 | `review-<pr>-<n>.txt` | The reviewer's PR review output, round `n` (launch attempt 1) |
-| `review-<pr>-<n>.plan.jsonl` | Orchestrator-authored review work units for round `n` (per-pass — a relaunch reuses it) |
-| `review-<pr>-<n>.progress.jsonl` | Reviewer progress events against the plan for round `n` (launch attempt 1) |
+| `review-<pr>-<n>.plan.jsonl` | Orchestrator-authored review work units for round `n` (per-pass — a relaunch reuses it). Written through `scripts/review-pass.py plan-add`, never a heredoc |
+| `review-<pr>-<n>.progress.jsonl` | Reviewer progress events against the plan for round `n` (launch attempt 1), opened by the orchestrator's `pass_identity` line. Every line of it is written and read through `scripts/review-pass.py` — see "Review-pass artifacts" below |
 | `review-<pr>-<n>.a<k>.txt` / `.a<k>.progress.jsonl` | Same two artifacts for **launch attempt `k ≥ 2`** — a relaunched pass writes here, never over attempt 1's files, so a killed-but-alive attempt can't corrupt the live one. Only the attempt named in the active `pass_identity` is read or counted (see `stage-2-review-gate.md`) |
 | `ci-<pr>-<head_sha>.txt` | Latest **SHA-pinned** CI snapshot for a PR — check runs **AND** commit statuses, fetched **BY THE WAKE** after the watch completes (**the watch never writes it**), promoted atomically, and **stamped with the `head_sha` it describes** (verify the stamp before parsing). Carries a **`source` completion marker per mandatory source**, so a source that was **never queried** is `unusable`, not a silent green (`stage-2-ci.md`). Never the watch stream, and never `gh pr checks` — its output carries **no SHA** |
 | `audit-<pr>-<n>.md` | The orchestrator's audit of round `n`'s findings — CONFIRMED / ADJUSTED / REFUTED, each with evidence. A REFUTED finding's reasoning is recorded here **and** written into the tree as an inline comment at the site, committed like any other change (`stage-2-review-gate.md`, "Audit every finding before you fix it") |
@@ -294,6 +294,17 @@ Header field notes (the header fields above; per-row fields follow):
     keep being driven, and the answer folds in as its own wake (`loop-control.md` step 3, "Only the
     user's answer unparks a PR" — the owning definition of the record + unpark for **every** park class).
     NEVER park without surfacing the question, and NEVER park into a state whose exit is undefined.
+
+### Review-pass artifacts — use `scripts/review-pass.py`
+
+The plan, the `pass_identity`, the progress events and the read that decides **whether a pass counts** are
+one artifact set with one owner. `scripts/review-pass.py` writes and reads all of it; the reviewer's
+`emit-progress.py` (CLI unchanged) is a door into the same owner. **Never hand-write one of those files,
+and never hand-parse one** — the hand-written `pass_identity` is how a truncated SHA reached real state,
+and the hand-rolled tally is the same "read it by eye and write down the answer" that produced a false
+`ci = green`. `stage-2-review-gate.md` owns the rules, the subcommands, and the four verdicts `verify`
+returns; resolve the script at `<skill-dir>/scripts/review-pass.py` and pass that path to subtasks, exactly
+as with `ledger.py` below.
 
 ### Editing the ledger — use `scripts/ledger.py`
 

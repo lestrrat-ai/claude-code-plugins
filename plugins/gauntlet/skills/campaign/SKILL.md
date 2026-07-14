@@ -39,9 +39,12 @@ resumes and takes no `#PR`/`--new`; `#PR` args alone start/adopt into a run. Inv
 
 Bundled scripts live in `scripts/`, resolved relative to the directory holding this `SKILL.md` (not
 the current working directory) — installed as `${CLAUDE_PLUGIN_ROOT}/skills/campaign/scripts/`, or in
-the repo at `plugins/gauntlet/skills/campaign/scripts/`. Pass their absolute paths to subtasks. The
-review gauntlet's `scripts/emit-progress.py` (already present there) emits canonical reviewer progress
-events (see `references/stage-2-review-gate.md`). `scripts/ledger.py` is the schema-owning accessor for
+the repo at `plugins/gauntlet/skills/campaign/scripts/`. Pass their absolute paths to subtasks.
+`scripts/review-pass.py` is the schema-owning accessor for a review pass's artifacts — the plan, the
+`pass_identity`, the progress events, and the READ that answers "does this pass COUNT?" (see
+`references/stage-2-review-gate.md`); never hand-write or hand-parse one of those files.
+`scripts/emit-progress.py` is the reviewer's door into it — **its CLI is unchanged**, and it is the only
+sanctioned way to record a unit-progress event. `scripts/ledger.py` is the schema-owning accessor for
 `state.jsonl` — read/write the ledger header and per-PR rows **by field name** through it, never by column
 position (see `references/files-and-ledger.md`); pass its absolute path to subtasks the same way.
 

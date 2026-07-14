@@ -104,8 +104,36 @@ subagent fallback pass counts toward the review gate exactly like an external pa
 it's another fresh, context-isolated re-roll in its own context. (When the reviewer is already Claude
 subagents, this *is* the normal path, not a fallback.)
 
+**A REVIEW PASS'S ARTIFACTS HAVE A TOOL — `scripts/review-pass.py`. NEVER hand-write one, and never
+hand-parse one.** The plan, the `pass_identity`, every progress event, and the read that decides whether a
+pass COUNTS all go through it. It is the schema owner for the review-pass artifact set exactly as
+`ledger.py` is for `state.jsonl`, and it enforces every rule below at **both doors** — where the commands
+enter *and* where the data enters, because a rule enforced only on write is not enforced: the progress
+file is a plaintext file in a directory the reviewer can write to.
+
+```
+review-pass.py plan-add --file <rundir>/review-<pr>-<n>.plan.jsonl \
+    --id u01 --kind file --target <concrete target> --check "<check>" [--check "<check>" …]  # one unit
+review-pass.py identity --file <rundir>/<progress-file> --head-sha $(git rev-parse HEAD) \
+    --dispatched-at <UTC ISO-8601>          # pr/pass/launch_attempt are read FROM THE FILENAME
+review-pass.py emit --file <rundir>/<progress-file> --unit <planned unit> --status started|done \
+    [--evidence "<citation>"]               # what the reviewer's `emit-progress.py` call runs
+review-pass.py verify --file <rundir>/<progress-file> --head-sha <the PR's LIVE head> \
+    [--amendments-ruled N]                  # DOES THIS PASS COUNT?
+review-pass.py self-test                    # the fixtures, and the proof each rule is pinned by one
+```
+
+The hand-written artifacts are what this replaces, and each had already failed: a `printf`-ed
+`pass_identity` put a **TRUNCATED SHA** into real state; the emit tool accepted a `done` for a unit that
+**was never planned** (the rule was prose, enforced by nobody); and the tally was re-derived by eye with
+an ad-hoc parser written fresh each wake — the same "read it by eye, write down the answer" that produced
+a false `ci = green`. `verify` refuses a short sha, an unplanned unit, an evidence-free `done`, a
+`pass_identity` that names another commit or another launch attempt, and any hand-written line that is not
+the exact shape below — **whether or not the write tool was used**.
+
 **Review work-plan ledger — orchestrator-owned, target-generic.** Before launching each review pass,
-write `<rundir>/review-<pr>-<n>.plan.jsonl`. The orchestrator owns the plan; the reviewer reports
+write `<rundir>/review-<pr>-<n>.plan.jsonl` (through `review-pass.py plan-add` — one unit per call, each
+validated as it lands; a shell heredoc has no schema and no validation). The orchestrator owns the plan; the reviewer reports
 progress against it but does NOT redefine it. The reviewer is nonetheless expected to critically
 evaluate the plan for completeness before executing it, and to flag any omitted dimension via the
 amendment mechanism below rather than silently accepting the supplied decomposition as exhaustive.
@@ -161,7 +189,11 @@ other event types for unit progress. Unit-progress events carry ONLY the exact r
 **Calling `emit-progress.py` is the ONLY sanctioned way to record a unit-progress event
 (`started`/`done`).** The reviewer MUST NOT ever write those unit-progress events into the progress
 file directly — no hand-written JSON, no `echo`/`printf`/redirection into it, no editor append. Every
-unit-progress event reaches the file through the tool and no other path. This emit-only rule applies
+unit-progress event reaches the file through the tool and no other path. **Its CLI is unchanged**
+(`--file --unit --status --evidence`); it now forwards to `review-pass.py emit`, which **REFUSES a unit
+that is not in the plan** and a `done` with no concrete evidence. And the emit-only rule is no longer
+enforced by good faith: `verify` re-derives every rule from the bytes, so a hand-written line that the
+tool would have refused is caught on **READ** — the pass goes `unusable` rather than counting. This emit-only rule applies
 ONLY to the `started`/`done` unit-progress events: the tool does not produce any other event type.
 `plan_amendment_request` events are NOT emitted by the tool — the reviewer raises them through the
 amendment mechanism above — and `pass_identity` is written by the orchestrator; both are EXEMPT from
@@ -180,9 +212,15 @@ the tool and is shown only to document its shape. The fourth (`pass_identity`) i
 {"type":"pass_identity","pr":"41","pass":"1","head_sha":"a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c","launch_attempt":"1","dispatched_at":"2026-07-06T00:00:00Z"}
 ```
 
-**`pass_identity` is the pass's attempt id and its dispatch clock.** The orchestrator writes it as the
+**`pass_identity` is the pass's attempt id and its dispatch clock.** The orchestrator writes it — with
+`review-pass.py identity`, **never** a `printf` — as the
 **first line** of the launch attempt's progress file **before** launching the reviewer process, so that
-file exists from dispatch onward. Three rules depend on it: a late verdict is ignored unless its attempt
+file exists from dispatch onward. `pr`, `pass` and `launch_attempt` are taken **from the progress file's
+own name**, so the identity and the file it sits in can never disagree; the only values passed in are the
+head SHA (refused unless it is 40 lowercase hex — **a short SHA has escaped into this repo's real state
+twice**, once through exactly this line) and `dispatched_at` (refused unless it is a UTC ISO-8601
+timestamp — it is the launch deadline's clock, and a deadline measured from a time nobody can parse never
+fires). Three rules depend on it: a late verdict is ignored unless its attempt
 id still matches the active pass; `dispatched_at` is the clock the launch check below measures against;
 and `launch_attempt` (`1`, then `2` on a relaunch) is how a *later wake* — possibly a fresh agent —
 knows whether this pass has already been relaunched once. A progress file holding **only** this line is
@@ -345,8 +383,12 @@ codex exec --sandbox workspace-write -c "sandbox_workspace_write.network_access=
    --status started' when a planned unit begins, and the same command with \
    '--status done --evidence \"<concrete citation: a file:line, a backticked span, or a filename>\"' \
    when it finishes. The tool appends the canonical progress event; a non-zero exit means your inputs \
-   were rejected — fix them and re-run. progress counts only when it references a planned unit and its \
-   done event includes concrete evidence. \
+   were rejected — fix them and re-run. Progress counts only when it references a PLANNED unit and its \
+   done event includes concrete evidence, and the tool ENFORCES both: it REFUSES a unit that is not in \
+   the plan (raise a plan_amendment_request instead — never self-grant a unit) and a done with no \
+   evidence. Hand-writing the event to get around a refusal does not work and destroys the pass: it is \
+   read back under the same rules, and one line the tool would have rejected makes the whole pass \
+   unusable. \
    After every planned unit is done, do a brief UNSTRUCTURED ADVERSARIAL SWEEP: deliberately hunt for \
    defects no plan unit would naturally catch — cross-unit interactions, unstated assumptions, edge \
    cases, and whole categories the plan did not enumerate. This complements the plan, never replaces \
@@ -374,7 +416,35 @@ immediate EOF. Keep it on every review dispatch (omit only if you ever deliberat
 prompt). Also: NEVER pass destructive instructions (delete, force-push, reset) to `codex exec`, and
 NEVER use `--dangerously-bypass-approvals-and-sandbox` — always `--sandbox workspace-write`.
 
-As each verdict lands, tally it for the SHA it ran on:
+### Does this pass COUNT? — ASK THE TOOL, never the eye
+
+**Before a verdict is tallied at all, verify the pass's artifacts.** A verdict is only worth as much as
+the pass that produced it, and "was this pass real?" was, until now, decided by reading three files by eye
+with a parser written fresh each wake. That is precisely how a driver read `gh pr checks` by eye and wrote
+`ci = green` on zero evidence — the same hole, one layer up.
+
+```
+review-pass.py verify --file <rundir>/<active attempt's progress file> --head-sha <the PR's LIVE head>
+```
+
+It answers with exactly one verdict, and there is **no "counts, but…"** — a disclosure printed beside a
+pass is a trapdoor, not a disclosure:
+
+| verdict | exit | what it means | what to do |
+|---|---|---|---|
+| `ok` | 0 | the artifacts are sound: a `pass_identity` naming **this** PR, **this** pass, **this** launch attempt and **the live head SHA**; every planned unit `done` with concrete evidence; every `done` for a unit that is **actually in the plan**; no unruled amendment | **now** read the report's `VERDICT:` line and tally it |
+| `incomplete` | 1 | sound, but a planned unit has no `done` — the pass has not covered its plan | it is still working (or it stopped early — the meaningful-progress rule decides which). **Never tally a verdict from it** |
+| `amended` | 1 | sound, but the reviewer raised a `plan_amendment_request` nobody has ruled on | fold it into the plan and restart the pass, or ignore it with a note — then re-run with `--amendments-ruled N` |
+| `unusable` | 1 | the artifacts are **defective** — a short SHA, a `done` for an unplanned unit, an evidence-free `done`, a hand-written line of the wrong shape, an identity naming another commit or another attempt | the pass **CANNOT count, whatever its report says.** Treat it as a reviewer system failure (retry / fresh-subagent fallback), never as a verdict |
+
+**`ok` IS NOT `SATISFIED`, and the tool will never say `SATISFIED`.** It does not open
+`review-<pr>-<n>.txt` and does not parse the reviewer's prose — the VERDICT is the reviewer's **judgment**
+and stays theirs; `verify` only checks the pass's **mechanics**. That line is what keeps the tool from
+*becoming* the gate: it can only ever **subtract** a pass (refuse a defective one), never **add** a
+SATISFIED verdict, never raise `reviews_ok`, and never merge anything. A bug in a tool that can only
+refuse costs a re-review; a bug in a tool that could accept would merge a PR nobody reviewed.
+
+Once `verify` says `ok`, tally the report's verdict for the SHA it ran on:
 
 - **NOT SATISFIED** → the SHA's tally is void: set `reviews_ok = 0` **and, in the same step, restore
   `gauntlet-reviewing` if the PR carries `gauntlet-accepted`** (`gh pr edit <pr> --remove-label

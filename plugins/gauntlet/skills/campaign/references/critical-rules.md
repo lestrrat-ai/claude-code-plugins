@@ -182,8 +182,15 @@
   stochastic reviewer to catch a missed defect — the two are NOT statistically independent (the same
   diff, task, and protocol correlate them; same-reviewer passes also share model/prompt), so the gate
   is a miss-catcher, not a proof of correctness.
+- **A review pass's artifacts have a TOOL — `scripts/review-pass.py`. NEVER hand-write one, NEVER
+  hand-parse one** (Stage 2a). It owns the plan, the `pass_identity`, the progress events, and the read
+  that answers **does this pass COUNT?** — `verify`. **A verdict from a pass that does not verify `ok` is
+  NEVER tallied**: a short SHA, a `done` for a unit that was never planned, an evidence-free `done`, a
+  hand-written line of the wrong shape, or an identity naming another commit or attempt all make the pass
+  `unusable`, whatever its report says. `ok` is **not** `SATISFIED` — the tool never reads the report and
+  never says SATISFIED; it can only ever *refuse* a pass, never accept one.
 - Before each review, write an orchestrator-owned `review-<pr>-<n>.plan.jsonl` (per-pass — a relaunch
-  reuses it); reviewers append progress events against planned units to the **active launch attempt's**
+  reuses it; written through the tool above, never a heredoc); reviewers append progress events against planned units to the **active launch attempt's**
   progress file (`review-<pr>-<n>.progress.jsonl` for attempt 1, `review-<pr>-<n>.a<k>.progress.jsonl`
   for a relaunch — only the attempt named in the active `pass_identity` is read or counted). Meaningful
   progress = planned unit `done` or accepted plan amendment, not vague "still working" output. Two
