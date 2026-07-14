@@ -153,9 +153,9 @@
   the **re-raise** parks (`stage-2-review-gate.md`, "Audit every finding before you fix it"). The standoff
   is **one of TWO `awaiting-user` classes**, and each has its own durable answer record: the standoff is
   answered into `audit-<pr>-<n>.md`; a **machine blocker** — campaign cannot move the PR without a human,
-  which is the **property** that defines the class, its members today being CI SETTLED-not-green, a check
-  stuck `RUNNING` past the CI STALL CAP, an UNUSABLE snapshot at its cap, an unrecognized enum value, a
-  `BLOCKED`/unrecognized `mergeStateStatus`, a draft PR (`ci_reason` names it, whatever it is) — is answered into
+  which is the **property** that defines the class and the whole of it, **never a list of cases** (one
+  illustration: CI has SETTLED and is still not green; `ci_reason` names the blocker, whatever it is, and
+  `files-and-ledger.md`, `status`, `awaiting-user` class 2, **owns** the class) — is answered into
   `blocker_ruling` = `retry`/`abort` (`files-and-ledger.md`, `status`;
   `loop-control.md` step 3, "Only the user's answer unparks a PR"). **NEVER park into a state whose exit
   is undefined.**

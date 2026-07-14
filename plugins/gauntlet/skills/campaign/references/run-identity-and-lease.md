@@ -91,10 +91,10 @@ Each run has `<rundir>/lease.json`:
 - **Never hold the run hostage on a user prompt.** Do NOT block the loop waiting on a user answer —
   that freezes the heartbeat and could let the run be declared stale mid-drive. Park the PR
   (`awaiting-api` for an API-changing fix; `awaiting-user` for a **review standoff** — a refutation the
-  fresh reviewer re-raised — **or a machine blocker** campaign cannot clear without a human: CI SETTLED
-  and not green, a check stuck `RUNNING` past the CI STALL CAP, a snapshot that stayed UNUSABLE, an
-  unrecognized enum value, a `BLOCKED`/unrecognized
-  `mergeStateStatus`, a draft PR), surface the question, keep driving the other PRs, reschedule, and fold
+  fresh reviewer re-raised — **or a machine blocker**, which is a **property**, not a list of cases:
+  *campaign cannot move this PR without a human*, with `ci_reason` naming whatever it was. This file
+  deliberately enumerates **no** blocker cases — `files-and-ledger.md`, `status`, `awaiting-user` class
+  2, owns the class), surface the question, keep driving the other PRs, reschedule, and fold
   the answer in when it lands as its own wake. Each class names the **durable record** it is answered into
   and the **unpark** it triggers (`files-and-ledger.md`, `status`; `loop-control.md` step 3, "Only the
   user's answer unparks a PR") — a park with no defined exit is the wedge one level up (Constraints;
