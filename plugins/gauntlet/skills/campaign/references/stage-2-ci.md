@@ -388,16 +388,25 @@ StatusState           SUCCESS PENDING EXPECTED FAILURE ERROR
 **`checkrun` rows** — classify on `.status`, then `.conclusion`:
 
 ```
-.status != COMPLETED                       -> RUNNING    # QUEUED IN_PROGRESS WAITING PENDING REQUESTED
-.conclusion SUCCESS | SKIPPED | NEUTRAL    -> PASS
+.status QUEUED | IN_PROGRESS | WAITING | PENDING | REQUESTED   -> RUNNING
+.status COMPLETED                                              -> classify on .conclusion, below
+.conclusion SUCCESS | SKIPPED | NEUTRAL                        -> PASS
 .conclusion FAILURE | TIMED_OUT | CANCELLED | ACTION_REQUIRED | STARTUP_FAILURE | STALE
-                                           -> FAIL
-ANY OTHER VALUE (either field)             -> UNKNOWN_VALUE
+                                                               -> FAIL
+ANY OTHER VALUE (either field)                                 -> UNKNOWN_VALUE
 ```
+
+**NEVER write that first line as `.status != COMPLETED -> RUNNING`. A NEGATED TEST IS A CATCH-ALL WEARING
+A DISGUISE** — and it is the very defect this section exists to kill, so do not reintroduce it here. `!=
+COMPLETED` matches **every value you have never heard of** and maps it onto a verdict **chosen in
+advance**: a `CheckStatusState` GitHub adds tomorrow would classify `RUNNING`, the driver would wait for
+it to finish, and it would **never reach** the `UNKNOWN_VALUE` escalation below — the fail-closed rule
+would be dead for `.status`, silently. **Only an EXPLICIT MEMBERSHIP TEST leaves a hole for the catch-all
+to catch.** The same holds for every rule here: name the values, never negate them.
 
 The catch-all is what makes this **total**, and it is **not decoration**: `.conclusion` is `"-"` when the
 field is **absent**, and `"-"` is **not a `CheckConclusionState`**. On a row that is still running that is
-harmless — the first line already classified it `RUNNING`. But a row that is `COMPLETED` while carrying
+harmless — its `.status` already classified it `RUNNING`. But a row that is `COMPLETED` while carrying
 `.conclusion "-"` has **no verdict at all**, and it falls to `UNKNOWN_VALUE` exactly like an enum value
 GitHub added tomorrow. **That is the catch-all doing its job — never "read through" the `-` to a guess.**
 
