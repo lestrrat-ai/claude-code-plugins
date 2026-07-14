@@ -278,10 +278,7 @@ blocks; each completion is its own wake.
      or orphaned run wakes no one. Return.
    - All this run's PRs `merged` or `aborted` → **distill the run into the carryover ledger** (write
      this run's block to its own file `.gauntlet/history/<run-id>.md` — merged PRs, aborted
-     PRs + why, declined-API PRs, and this run's **pruned** decisions: what it dropped from the
-     carryover ledger and **what the user asked to keep**, with the run-id that decided it (the
-     prune record "Pruning the ledger" tells this run to leave auditable — write it here or it is
-     lost and the next run re-asks a question the user already answered); per-run files never
+     PRs + why, and declined-API PRs; per-run files never
      contend, see "Fresh runs and carryover"), **release the run** (delete this run's
      `gauntlet-run-<run-id>` owner label via `gh label delete gauntlet-run-<run-id> --yes`, and delete
      `<rundir>/lease.json`; the shared status labels stay), emit the final report, and **do not

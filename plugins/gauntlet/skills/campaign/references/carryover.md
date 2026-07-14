@@ -19,10 +19,6 @@ once. A per-run file records what that run's PRs came to:
   still present).
 - **skipped (API-declined)** — a PR whose API-changing fix the user was asked about and declined, with
   the change it would have needed.
-- **pruned** — what this run dropped from the carryover ledger, and **what the user asked to keep**, with
-  the run-id that decided it. "Pruning the ledger" below says to note the decision **so it is auditable
-  next run** — this is the slot it goes in. Without it that instruction has nowhere to write, the decision
-  survives nowhere, and the next run re-asks the question the user already answered.
 
 If `.gauntlet/history/` doesn't exist, create it (and add `.gauntlet/` to the repo's `.gitignore` if
 it's not already ignored). When the directory is empty, a fresh run is just a normal first run.
@@ -45,9 +41,6 @@ user asks. The goal is to drop entries that **no longer apply to the current cod
 - **skipped (API-declined)** whose referenced surface no longer exists, or that has since shipped —
   moot.
 - **merged** entries are historical record and cheap; keep them unless the user wants them condensed.
-- **pruned** entries are the audit trail of what earlier runs already dropped and what the user asked
-  to keep — **never prune them**. They are the one slot whose whole purpose is to survive to the next
-  run; dropping them re-opens the question the user already answered.
 
 **Confirm before deleting when unsure — this is the load-bearing rule.** Delete outright *only*
 entries that are unambiguously moot: the exact cited site is gone. For anything you're not certain
@@ -58,23 +51,13 @@ remove. Never silently drop an entry you're uncertain about.
 **The question must not stall the run.** Keep every uncertain entry in place and start the run's work
 immediately — surface the candidate list to the user in the same message and fold the answer in when
 it lands as its own wake (prune then). Same principle as "never hold the run hostage on a user prompt"
-(Run lease). Note what was pruned (and what the user kept) so the decision is auditable next run; like
-every other slot it reaches the ledger when this run distills on exit, not at the moment it is decided
-(see the write-at-exit note below).
+(Run lease). Note what was pruned (and what the user kept) so the decision is auditable next run.
 
 A run is distilled into the ledger **exactly once**, on its **normal exit** (all its PRs terminal) —
 Loop control step 5 writes that run's own `.gauntlet/history/<run-id>.md`. The finished-run
 "ask the user → yes" path reuses *that* file; it does not re-distill. `--new` never pre-empts other
 runs — each run is isolated and always distills itself on its own exit — so there is no mid-flight
 snapshot path.
-
-**Write-at-exit is a property of the whole file, not of any one slot.** A run killed mid-flight writes
-**none** of it: `merged`, `aborted`, `skipped` and `pruned` are lost equally, and each is decided well
-before the exit that records it — pruning at startup (step 3) is only the earliest of them. So a prune
-decision lost to a mid-run death is **not** a `pruned`-specific gap; it is this property. If that is to
-change it must change for the **whole file at once**. Making a single slot durable at decision time while
-the rest stay exit-only leaves a half-written file whose slots disagree about what a death means — worse
-than losing all of them together, which at least keeps the record self-consistent.
 
 ### Starting a fresh run
 
