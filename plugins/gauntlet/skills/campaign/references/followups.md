@@ -204,13 +204,23 @@ the deleted entry is really gone and its id is still spent forever. That mark is
 store that is not a follow-up; it is the accessor's, and like everything else there it is never
 hand-edited.
 
-**The required fields are required at EVERY door an entry can pass through** — `add` refuses to create a
-follow-up without them, and `set` refuses to **empty** one that has them. A rule enforced only where an
-entry is CREATED is not enforced: `set --evidence '   '` an hour later leaves the same rumor, except this
-one the store has already vouched for. **A value that SHOWS nothing is not a value**: whitespace of any
-kind is not, `-` is not (it is what an **unset** field holds), and neither is a character that RENDERS as
-nothing — a zero-width space, a soft hyphen, a BOM. The accessor asks the Unicode category, not a list of
-codepoints, so evidence nobody can see is refused at every door, including the ACT conditions.
+**The required fields are required at EVERY door an entry can pass through — INCLUDING THE ONE THE STORE
+OPENS BY.** `add` refuses to create a follow-up without them and `set` refuses to **empty** one that has
+them; and **`load()` refuses one that arrived carrying nothing**, however it arrived. All three ask the
+**same function** (`entry_error()` in `followups.py`, which owns what a legal record is) — not three checks
+that agree, one check. That is the whole rule, and the reason it is stated this way: this store has shipped
+the same defect five times, and it was **two doors disagreeing about what a value is** every single time. A
+rule enforced only where an entry is CREATED is not enforced — `set --evidence '   '` an hour later leaves
+the same rumor, except this one the store has already vouched for — and a rule enforced only at the doors
+the CLI offers is not enforced either: a hand-written line with no `evidence` was read back with the field
+**defaulted**, then accepted, then **published as an issue**.
+
+**A value that SHOWS nothing is not a value**: whitespace of any kind is not, `-` is not (it is what an
+**unset** field holds), and neither is a character that RENDERS as nothing — a zero-width space, a soft
+hyphen, a BOM. The accessor asks the Unicode category, not a list of codepoints, so evidence nobody can see
+is refused at every door, including the ACT conditions. **Nor is a field a required follow-up simply lacks:
+absence is not a value either**, so it is never defaulted into one — only a genuinely optional field
+backfills, which is what lets the schema grow without migrating a store that cannot be rebuilt.
 
 **Every value the CLI takes is that value — the timestamps too.** The rule is not "evidence is checked";
 it is that **nothing** enters the store without passing the one blank predicate, and that is enforced by
@@ -271,11 +281,15 @@ And a third, which is what makes DELETION safe (`delete-needs-a-record`):
 
 **AND THE INVARIANT IS ENFORCED WHERE THE DATA ENTERS, NOT ONLY WHERE THE COMMANDS DO.** A transition
 checking the state it comes **from** guards nothing against a driver that hand-writes `"state":
-"accepted"` into the JSONL — **and that is the driver this store defends against**. So `load()` refuses any
-entry no legal history could have produced: an `accepted` with no user ruling stamped, an `in-pr` naming no
-PR, a `self-accepted` missing any ACT condition's evidence. Such an entry is not argued with; **it does not
-load at all**. This is also why the store is **never hand-edited** — a hand-written entry is, at best, one
-the accessor will reject.
+"accepted"` into the JSONL — **and that is the driver this store defends against**. So the door the store
+opens by asks exactly what the write doors ask, of every line on disk: **is this a legal record?** An entry
+that could not have been produced by any legal sequence of transitions is refused, and so is one that is
+missing what a follow-up cannot be without. Such an entry is not argued with; **it does not load at all**,
+and neither does the store holding it. `entry_error()` owns both halves of that question — do not restate
+the checks here; a summary of them that drifts is worse than none, because it is the version people read.
+
+This is also why the store is **never hand-edited** — a hand-written entry is, at best, one the accessor
+will reject.
 
 **State the limit honestly: the script cannot verify that the user really agreed.** No local file can.
 `accept` is a promise the driver makes, and what the graph buys is that **skipping the user is a

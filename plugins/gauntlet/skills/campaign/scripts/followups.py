@@ -45,9 +45,11 @@ what is STRUCTURAL about them, and the enforcement is the graph:
 WHAT THIS CANNOT DO is verify that the user really agreed (no local file can): `accept` is a promise the
 driver makes. It makes skipping the user a DELIBERATE LIE rather than an oversight — a footgun guard, NOT
 a security boundary. But the guard must hold against a driver that writes the JSONL BY HAND, because THAT
-IS THE DRIVER IT DEFENDS AGAINST: so the invariants are checked where the DATA enters (`load()`), not only
-where the COMMANDS do. An entry no legal sequence of transitions could have produced is CORRUPT, and it is
-refused — loudly, never silently repaired and never skipped.
+IS THE DRIVER IT DEFENDS AGAINST: so the invariants are checked where the DATA enters, not only where the
+COMMANDS do — AND BY THE SAME FUNCTION (`entry_error()`, which owns what a legal record is; the load door
+and every write door ask IT, so they cannot come to disagree). An entry that is CORRUPT — one no legal
+sequence of transitions could have produced, or one missing what a follow-up cannot be WITHOUT — is refused,
+loudly, never silently repaired, never skipped, and never DEFAULTED into looking complete.
 
 THE STORE IS A WORK QUEUE, NOT AN ARCHIVE — and THE PRINCIPLE OF ITS LIFETIME IS: DELETE ONCE A DURABLE
 RECORD EXISTS ELSEWHERE; KEEP WHAT PREVENTS REPEATED WORK. It is LOCAL and GIT-IGNORED — it does not
@@ -151,7 +153,6 @@ FIELDS = (
     "id", "title", "evidence", "deferred_why", "finding", *ACT_FLAGS,
     "state", "found_run", "found", "decided", "pr", "published",
 )
-DEFAULTS = {**{f: PLACEHOLDER for f in FIELDS}, "state": "candidate"}
 
 # The fields that name a record OUTSIDE this store — the PR that addresses it, or the issue it was
 # published as. THEY ARE WHAT MAKES DELETION SAFE, and the rule is enforced, not assumed: an entry is
@@ -164,7 +165,61 @@ DURABLE_RECORD = ("pr", "published")
 # Fields a follow-up cannot be WITHOUT. A follow-up with no evidence is a RUMOR — a claim nobody can
 # check, which is the one thing this store must never accumulate; and one with no `deferred_why` makes
 # the next run re-litigate a scoping decision it cannot see.
+#
+# REQUIRED MEANS REQUIRED AT EVERY DOOR, AND `entry_error()` IS WHERE THAT IS SPELLED — once, derived from
+# this tuple, asked by `read_store()` of every line on disk and by `dump()` of every entry any door is
+# about to write. Add a field here and it is required at BOTH doors the day it is added.
 REQUIRED = ("title", "evidence", "deferred_why")
+
+# What an ABSENT field on disk reads as. A field OUTSIDE `REQUIRED` is genuinely optional, so it has a
+# DEFAULT: that backfill is what lets the schema grow without migrating a store that cannot be rebuilt (an
+# entry raised before `finding` existed still loads, as the `candidate` it was).
+#
+# A REQUIRED FIELD HAS NO DEFAULT, AND THAT ABSENCE IS THE POINT. `DEFAULTS` used to cover every field, so
+# a hand-written line carrying only `id`/`state`/`title` was BACKFILLED into an entry whose `evidence` and
+# `deferred_why` read as the placeholder — and `-` is what an unset field holds, so it looked like a value
+# to nothing and like an entry to everything: `list` loaded it, `accept` took it, `publish` filed it. The
+# store MANUFACTURED a complete-looking follow-up out of an incomplete one. So a required field is not
+# defaulted, it is MISSING, and a missing one reads as blank — which is the same thing `is_blank()` says of
+# a blank one, and so the same thing `entry_error()` REFUSES. Absent and blank are one case, at one door.
+MISSING = ""
+DEFAULTS = {**{f: PLACEHOLDER for f in FIELDS if f not in REQUIRED}, "state": "candidate"}
+
+
+def project(rec: "dict", where: str = "") -> "dict[str, str]":
+    """A record — off disk, or out of a door — as THE FIELDS, every value a `str`.
+
+    ONE definition of how a record becomes an entry, used on the way IN (`read_store`) and on the way OUT
+    (`dump`). Two copies of this is how the doors came to disagree: the load door invented a `-` for a
+    REQUIRED field the write door would have refused outright. So the absence of a required field is not
+    filled in here either — it reads as `MISSING`, which `is_blank()` calls blank and `entry_error()` then
+    refuses, at whichever door asked.
+
+    AND `str()` IS NOT A COERCION, IT IS AN INVENTION — the same bug wearing JSON's clothes. The write door
+    can only ever hand over a `str`: argparse has nothing else to give. The LOAD door reads raw JSON, and a
+    blind `str()` MANUFACTURES a value out of anything at all — `str(None)` is `"None"`, `str([])` is `"[]"`,
+    and BOTH ARE NON-BLANK. `{"evidence": null}` — JSON's own word for THERE IS NO VALUE HERE — loaded as
+    five visible characters of evidence and PUBLISHED AS AN ISSUE. So the type is the rule:
+
+      * `null` IS ABSENCE, and JSON says so. It reads as the field's DEFAULT — which a REQUIRED field does
+        not have, so it is MISSING, so it is blank, so `entry_error()` refuses it. Absent, null and blank are
+        ONE case, at ONE door: that is the whole point of this store having one validator.
+      * a STRING is itself, and a NUMBER is its digits — an on-disk `"found_run": 260714` must compare as the
+        string key the rest of the accessor uses (`t_values_are_strings`).
+      * ANYTHING ELSE — a list, an object, a bool — is not a value a field can hold. It is a CORRUPT record,
+        and it is refused LOUDLY, never quietly turned into the text of its own repr.
+    """
+    entry: "dict[str, str]" = {}
+    for f in FIELDS:
+        raw = rec.get(f)
+        if raw is None:  # ABSENT, or an explicit JSON `null` — the same thing, and JSON already says which
+            raw = DEFAULTS.get(f, MISSING)  # …and a REQUIRED field has NO default: it is MISSING, i.e. blank
+        if isinstance(raw, bool) or not isinstance(raw, (str, int, float)):
+            fail(f"{where}{f} is {raw!r} — a follow-up's fields are TEXT. A list, an object or a boolean is "
+                 f"not a value one can hold, and it is NOT quietly turned into the text of its own repr: "
+                 f"that is how `null` became five characters of 'evidence' and got PUBLISHED.")
+        entry[f] = raw if isinstance(raw, str) else str(raw)
+    return entry
 
 # --- the lifecycle (owned here, once) -----------------------------------------
 #
@@ -541,17 +596,35 @@ def illegal_history(entry: dict) -> "str | None":
 
 
 def entry_error(entry: dict) -> "str | None":
-    """Why this entry CANNOT BE IN THE STORE — or None. The one definition of a legal record.
+    """Why this entry CANNOT BE IN THE STORE — or None. THE ONE DEFINITION OF A LEGAL RECORD, AT BOTH DOORS.
 
-    Asked on the way IN (`read_store`, of every line on disk) and on the way OUT (`dump`, of every entry it
-    is about to write). That second call is the FAIL-SAFE, and it is field-agnostic on purpose: whatever a
-    door forgets to check, the store still cannot be left in a state its own accessor refuses to open — the
-    write FAILS instead, loudly, with the old file untouched, rather than bricking the only copy of the work.
+    Asked on the way IN (`read_store`, of every line on disk) and on the way OUT (`dump`, of every entry any
+    write door is about to write). NOT two validators that agree today — ONE function, called by both. That
+    is the whole point of it, and it is the shape of the bug this store has now shipped FIVE TIMES: two doors
+    with two ideas of what a value is. The lifecycle enforced on the commands but not on load; the blank rule
+    pinned for one field; `add` refusing what `set` blanked straight back; the two doors spelling `blank`
+    differently and BRICKING the store; and, last, a write door refusing a blank REQUIRED field while the load
+    door DEFAULTED it to `-` and waved the entry through to `publish`. A door that checks for itself is a
+    door that will one day check differently. So the doors do not check for themselves: they ask THIS.
+
+    What it demands, in order: an addressable `id`; a `state` the graph knows; every REQUIRED field actually
+    CARRYING SOMETHING (derived from `REQUIRED`, never hand-listed — a field added there tomorrow is enforced
+    at both doors that day, with no edit here); and a history that could have produced the state it claims.
     """
     if not ID_RE.match(entry["id"]):
         return f"malformed id {entry['id']!r} (expected fu<N>)"
     if entry["state"] not in STATES:
         return f"unknown state {entry['state']!r}; valid: {', '.join(STATES)}"
+    # A REQUIRED field that is blank — or absent, which reads the same (`project`) — is a RUMOR. The write
+    # doors refuse one by flag (`taken()`); this is what refuses it wherever it came from, INCLUDING a line
+    # somebody wrote by hand. Derived from REQUIRED; the reason is `BLANK_WHY`, which is where it is owned.
+    empty = [f for f in REQUIRED if is_blank(entry[f])]
+    if empty:
+        return (
+            f"{entry['id']} carries no {', '.join(empty)} — {BLANK_WHY[empty[0]]}. A REQUIRED field is "
+            f"required WHEREVER an entry comes from: `add` refuses a blank one, and so does the store. It "
+            f"was hand-written, or written by something that is not this accessor."
+        )
     why = illegal_history(entry)
     return None if why is None else f"{entry['id']} is {why}"
 
@@ -561,13 +634,17 @@ def read_store(path: Path) -> "tuple[list[dict], int]":
 
     Every record must be `{"type": "followup", …}` or the ONE meta record (`{"type": "followup-seq"}`, the
     high-water mark below); an unknown type is REJECTED, never skipped (a silently dropped entry is exactly
-    the loss this store exists to prevent). Values are coerced to `str`, so an on-disk JSON number compares
-    as the string key the rest of the accessor uses. `id` and `state` are validated: a malformed id could
-    never be addressed again, and an unrecognised state would sit in the table as something no transition
-    can move — which is also what refuses a `DELETED` tombstone, since deletion leaves no entry at all.
+    the loss this store exists to prevent).
 
-    And the STATE ITSELF IS VALIDATED AGAINST ITS OWN HISTORY (`illegal_history()`) — the transitions
-    cannot be the only guard, because they only ever see entries this accessor wrote.
+    THEN EVERY LINE IS PUT TO `entry_error()` — the ONE definition of a legal record, and the SAME function
+    `dump()` asks of every entry a write door is about to write. What makes a record legal is spelled THERE,
+    once, and is not restated here: this door has no opinions of its own, because a door with its own
+    opinions is how the two doors of this store came to disagree five times. The projection is shared too
+    (`project()`): a REQUIRED field this line does not carry is NOT invented here — it is missing, which is
+    blank, which `entry_error()` refuses.
+
+    The transitions cannot be the only guard: they only ever see entries this accessor wrote, and the driver
+    this store defends against is the one that writes the JSONL BY HAND.
 
     THE HIGH-WATER MARK IS WHY DELETION DOES NOT REUSE AN ID. `next_id()` counts past the highest id EVER
     HANDED OUT, and once entries can be DELETED the surviving entries no longer remember what that was:
@@ -576,8 +653,8 @@ def read_store(path: Path) -> "tuple[list[dict], int]":
     note) at a different follow-up. So the mark is persisted, ONE line, not one per deletion: the deleted
     entry is really gone, and its id is still never reused.
 
-    A store with no mark (one written before it existed — the live 7-entry store is exactly that) is not
-    corrupt: the mark is BACKFILLED from the highest id present, which is what it would have been.
+    A store with no mark (one written before the mark existed) is not corrupt: the mark is BACKFILLED from
+    the highest id present, which is what it would have been.
     """
     entries: list[dict] = []
     high = 0
@@ -607,7 +684,7 @@ def read_store(path: Path) -> "tuple[list[dict], int]":
             continue
         if rec.get("type") != ENTRY_TYPE:
             fail(f"line {n}: missing or unknown record type {rec.get('type')!r}")
-        entry = {f: str(rec.get(f, DEFAULTS[f])) for f in FIELDS}
+        entry = project(rec, f"line {n}: ")  # ONE projection — a REQUIRED field is NOT invented (`project`)
         why = entry_error(entry)  # ONE definition of a legal record — `dump()` asks it too, before writing
         if why is not None:
             fail(f"line {n}: {why}")
@@ -653,9 +730,9 @@ def dump(path: Path, entries: "list[dict]", high: int) -> None:
     the same guarantee.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    records = [{f: str(e.get(f, DEFAULTS[f])) for f in FIELDS} for e in entries]
+    records = [project(e) for e in entries]  # the SAME projection `read_store()` applies to a line on disk
     for record in records:
-        why = entry_error(record)
+        why = entry_error(record)  # …and the SAME validator. Not a second one that agrees: the same function
         if why is not None:
             fail(f"REFUSING TO WRITE a store that will not load back: {why} Nothing was written — the "
                  f"store on disk is untouched. This is a BUG in whatever door produced this entry: every "
@@ -945,17 +1022,22 @@ def run(argv: "list[str]") -> "tuple[int, str, str]":
     return code, out.getvalue(), err.getvalue()
 
 
-def entry_line(**over: str) -> str:
-    """A raw store line for an entry in some state — with the evidence that state REQUIRES filled in.
+def entry_line(**over: object) -> str:  # `object`: a fixture may put a JSON NUMBER on disk on purpose
+    """A raw store line for a LEGAL entry in some state — everything the store demands of one, filled in.
 
-    Derived from `WITNESS`, so a fixture asking for a `self-accepted` entry gets a LEGAL one without
-    restating what a self-acceptance must carry (and a fixture that wants an ILLEGAL one blanks a witness
-    on purpose — see `t_load_rejects_an_illegal_history`). A new state, or a new witness on an existing
-    one, is filled here the day the graph gains it, with no fixture edit.
+    Two derivations, and neither is a list: the evidence its STATE requires (from `WITNESS`, so a fixture
+    asking for a `self-accepted` entry gets a legal one without restating what a self-acceptance must carry)
+    and every REQUIRED field (from `REQUIRED`, so a field added there tomorrow is filled here that day). A
+    fixture that wants an ILLEGAL entry blanks one on purpose — that is what `**over` is for.
+
+    IT MUST DERIVE BOTH, OR IT SILENTLY STOPS TESTING. Every fixture that hand-writes a store builds its
+    lines here, so a helper that emitted a REQUIRED field as the placeholder would make each of them a store
+    the accessor now refuses at line 1 — and each fixture would then be 'passing' on a refusal it never
+    meant to provoke.
     """
-    state = over.get("state", DEFAULTS["state"])
+    state = str(over.get("state", DEFAULTS["state"]))
     witness = min(WITNESS[state], key=len) if WITNESS.get(state) else frozenset()
-    return json.dumps({"type": "followup", **DEFAULTS,
+    return json.dumps({"type": "followup", **DEFAULTS, **{f: f"<{f}>" for f in REQUIRED},
                        **{f: f"<{f}>" for f in witness}, **over})
 
 
@@ -1140,11 +1222,31 @@ def drive_to(path: Path, fid: str, target: str) -> None:
         check(code == 0, f"driving to {target!r}: `{cmd}` exited {code}: {err!r}")
 
 
+def seeded(field: str, i: int = 0) -> str:
+    """The value `seed()` puts in `field`. ONE convention — a fixture that RETYPED it would go red the day
+    the convention changed, and worse, one that hard-codes `'e0'` silently stops checking the field it names
+    if `seed()` ever writes something else."""
+    return f"{field}-{i}"
+
+
+def add_argv(i: int = 0) -> "list[str]":
+    """A LEGAL `add` — every REQUIRED field, carrying something. Derived from `REQUIRED`, never retyped.
+
+    So a field added to REQUIRED tomorrow is passed by every fixture that makes an entry, with no edit: the
+    suite goes on testing the RULES instead of going red because it no longer knows how to build a follow-up.
+
+    THE FLAG COMES FROM `INTAKE`, NOT FROM `flag_of()`. Most fields' flag IS their name, and assuming that is
+    how a fixture ends up typing a flag the CLI does not offer: `found_run` is taken by `--run`. `INTAKE` is
+    where a door's flags are DECLARED, and it is what `build_parser()` wires them from, so it is the only
+    place that knows.
+    """
+    return ["add", *(a for f in REQUIRED for a in (INTAKE["add"][f], seeded(f, i)))]
+
+
 def seed(path: Path, n: int = 1) -> "list[str]":
     ids = []
     for i in range(n):
-        code, out, err = run(["--file", str(path), "add", "--title", f"t{i}",
-                              "--evidence", f"e{i}", "--deferred-why", f"w{i}"])
+        code, out, err = run(["--file", str(path), *add_argv(i)])
         check(code == 0, f"add exited {code}: {err!r}")
         ids.append(json.loads(out)["id"])
     return ids
@@ -1417,14 +1519,14 @@ def t_evidence_is_required(tmp: Path) -> None:
         argv = ["--file", str(path), "add"]
         for f in REQUIRED:
             if f != missing:
-                argv += [f"--{f.replace('_', '-')}", "x"]
+                argv += [INTAKE["add"][f], "x"]
         code, _, err = run(argv)
         check(code == 2, f"add without --{missing} was ACCEPTED (exit {code}): {err!r}")
     for blanked in REQUIRED:
         for blank in BLANKS:
             argv = ["--file", str(path), "add"]
             for f in REQUIRED:
-                argv += [f"--{f.replace('_', '-')}", blank if f == blanked else "x"]
+                argv += [INTAKE["add"][f], blank if f == blanked else "x"]
             code, _, err = run(argv)
             check(code == 1,
                   f"add with a BLANK --{blanked} ({blank!r}) was ACCEPTED (exit {code}) — the field is "
@@ -1451,7 +1553,7 @@ def t_required_cannot_be_edited_away(tmp: Path) -> None:
     for field in REQUIRED:
         if field not in EDITABLE:
             continue  # not settable at all — a different door, pinned by `state-not-settable`
-        flag = f"--{field.replace('_', '-')}"
+        flag = INTAKE["set"][field]
         for blank in BLANKS:
             code, _, err = run(["--file", str(path), "set", "--id", fid, flag, blank])
             check(code == 1,
@@ -1520,9 +1622,173 @@ def t_no_door_writes_a_store_that_will_not_load(tmp: Path) -> None:
         check(code == 0,
               f"after a LEGAL `{cmd}` the STORE ITSELF NO LONGER LOADS (exit {code}) — the door wrote "
               f"something its own `load()` refuses, and these follow-ups have no other copy: {err!r}")
-        code, _, err = run(["--file", str(path), "add", "--title", "t", "--evidence", "e",
-                            "--deferred-why", "w"])
+        code, _, err = run(["--file", str(path), *add_argv()])
         check(code == 0, f"after a LEGAL `{cmd}` the store can no longer be ADDED to: {err!r}")
+
+
+@contextmanager
+def validator(fn: "Callable[[dict], str | None]"):
+    """Swap the module's `entry_error` for `fn` — and put the real one back, whatever happens.
+
+    The ONLY way to ask the question that matters: not "do the two doors AGREE?" but "are they RUNNING THE
+    SAME FUNCTION?". Agreement is what this store had five times, and it is what kept quietly ending. A door
+    that resolves `entry_error` from the module globals cannot drift from one that does the same; a door that
+    grew a private copy of the rule would sail straight through the swap below, and go red.
+    """
+    real = globals()["entry_error"]
+    globals()["entry_error"] = fn
+    try:
+        yield
+    finally:
+        globals()["entry_error"] = real
+
+
+def t_both_doors_run_one_validator(tmp: Path) -> None:
+    """THE WRITE DOOR AND THE LOAD DOOR ARE THE SAME VALIDATOR — one function, `entry_error()`, called by both.
+
+    THE DEFECT THIS STORE HAS SHIPPED FIVE TIMES IS ONE DEFECT: TWO DOORS THAT DISAGREE ABOUT WHAT A VALUE IS.
+    The lifecycle enforced on the commands but not on load. The blank rule pinned for one field. `add` refusing
+    what `set` blanked straight back. The two doors spelling `blank` differently — and BRICKING the store. And
+    the fifth: the write door refusing a blank REQUIRED field while the load door DEFAULTED it to `-`, so a
+    hand-written `{id, state, title}` was loaded, accepted, and PUBLISHED AS AN ISSUE with no evidence and no
+    reason for its deferral. Every one of those was fixed at the instance. The CLASS is: a rule that exists
+    twice will one day be true once.
+
+    So the rule exists ONCE, and this is what says so. Three checks, and the FIRST is the one the other four
+    fixes never had:
+
+      1. IDENTITY, NOT AGREEMENT. Swap `entry_error` for a sentinel and BOTH doors must speak with its voice —
+         `read_store()` (every line off disk) and `dump()` (every entry any write door is about to write).
+         Then swap in one that permits EVERYTHING, and the load door must permit everything: that is what
+         proves the refusal below is `entry_error`'s and not some private check standing in for it. A door
+         that re-implements the rule passes any test of agreement and fails both halves of this.
+      2. EVERY REQUIRED FIELD × EVERY SPELLING OF BLANK: what one door refuses, the other refuses. Derived
+         from `REQUIRED` and from `BLANKS` (the vocabulary `is_blank()` knows — empty, whitespace, the
+         PLACEHOLDER an unset field holds, and the invisibles, including the U+200B that already walked past
+         a guard in this store). A field added to REQUIRED tomorrow is covered at BOTH doors that day, in
+         every spelling, with no edit here. THAT is the class being closed; a hand-written list here would be
+         the sixth instance waiting to happen.
+      3. AND THE CONVERSE, or a store that refused everything would pass: what one door ACCEPTS, the other
+         accepts — a real value goes in through `add` and comes back out of `load`.
+    """
+    # The loops below are only as good as what they range over. A REQUIRED field the CLI cannot even supply,
+    # or one a transition also writes, would be a field this fixture LOOPS OVER AND NEVER REACHES.
+    check(set(REQUIRED) <= set(FIELDS), f"REQUIRED names a field the store has no column for: "
+                                        f"{sorted(set(REQUIRED) - set(FIELDS))}")
+    check(set(REQUIRED) <= set(INTAKE["add"]),
+          f"{sorted(set(REQUIRED) - set(INTAKE['add']))} is REQUIRED and `add` cannot take it — the write "
+          f"door cannot be knocked on for it, so no fixture can prove the two doors agree about it")
+    check(not (set(REQUIRED) & set(EVIDENCE_FIELDS)),
+          f"{sorted(set(REQUIRED) & set(EVIDENCE_FIELDS))} is BOTH required and written by a transition — "
+          f"the witness fixtures blank it deliberately, and would now be refused for the wrong reason")
+    # A REQUIRED FIELD HAS NO DEFAULT — pinned HERE, not left to a coincidence. `entry_error()` would refuse
+    # a backfilled one today anyway, because the placeholder happens to read as blank — so restoring the
+    # backfill is INVISIBLE to every other check in this file. That coincidence is one edit from ending: give
+    # PLACEHOLDER a visible spelling and the fifth bug is back, load-bearing and unpinned. The rule is not
+    # "the backfill is harmless", it is "the load door does not INVENT a required field".
+    check(not (set(DEFAULTS) & set(REQUIRED)),
+          f"{sorted(set(DEFAULTS) & set(REQUIRED))} is REQUIRED and has a DEFAULT — the load door would "
+          f"BACKFILL what the write door refuses to leave blank, and manufacture a complete-looking entry "
+          f"out of a fragment. That is the bug this fixture exists for, and it shipped.")
+    for blank in BLANKS:
+        check(is_blank(blank), f"BLANKS carries {blank!r}, which `is_blank()` does not call blank — the "
+                               f"fixtures' vocabulary and the predicate's have come apart")
+
+    legal = tmp / "legal.jsonl"
+    write_lines(legal, entry_line(id="fu1"))
+
+    # 1. IDENTITY. A sentinel that refuses everything — BOTH doors must fail with ITS words.
+    doom = "SENTINEL: this validator was called"
+    with validator(lambda entry: doom):
+        code, _, err = run(["--file", str(legal), "list"])
+        check(code == 1 and doom in err,
+              f"the LOAD door did not run `entry_error` (exit {code}): {err!r} — it validates a line on disk "
+              f"with something else, so what it calls a legal record can drift from what the write door does")
+        fresh = tmp / "fresh.jsonl"  # MISSING, so `read_store` returns early and only `dump` can refuse
+        code, _, err = run(["--file", str(fresh), *add_argv()])
+        check(code == 1 and doom in err,
+              f"the WRITE door did not run `entry_error` (exit {code}): {err!r} — it can write an entry the "
+              f"load door has never been asked about, which is how this store gets BRICKED")
+        check(not fresh.exists(), "the refused `add` created the store anyway")
+
+    # …and the other way: a validator that permits EVERYTHING must make the load door permit everything. So
+    # the refusals in (2) are `entry_error`'s doing — not a private check that merely happens to agree today.
+    with validator(lambda entry: None):
+        permissive = write_lines(tmp / "permissive.jsonl", entry_line(id="fu1", evidence=PLACEHOLDER))
+        code, out, _ = run(["--file", str(permissive), "list"])
+        check((code, out) == (0, "fu1\n"),
+              f"with `entry_error` PERMITTING everything the load door still refused (exit {code}) — it "
+              f"holds a rule of its own, and a rule that exists twice will one day be true once")
+
+    # 2. EVERY REQUIRED FIELD × EVERY SPELLING OF BLANK: refused at the WRITE door, refused at the LOAD door.
+    for field in REQUIRED:
+        for blank in BLANKS:
+            entry = {**DEFAULTS, "id": "fu1", **{f: f"<{f}>" for f in REQUIRED}, field: blank}
+            check(entry_error(entry) is not None,
+                  f"THE VALIDATOR ITSELF admits {field}={blank!r} — every door that asks it is now open")
+
+            # the WRITE door, through the real CLI…
+            path = tmp / f"w-{field}-{BLANKS.index(blank)}.jsonl"
+            flag = INTAKE["add"][field]  # the flag the door DECLARES — `found_run` is taken by `--run`
+            code, _, err = run(["--file", str(path), *add_argv(), flag, blank])
+            check(code == 1, f"`add {flag} {blank!r}` was ACCEPTED (exit {code}) — the WRITE door "
+                             f"takes a value the LOAD door will not read back")
+            check(not path.exists() or find(load(path), "fu1") is None,
+                  f"a REFUSED `add {flag} {blank!r}` wrote the entry anyway")
+
+            # …and the LOAD door, on the same value, hand-written straight into the store.
+            path = write_lines(tmp / f"r-{field}-{BLANKS.index(blank)}.jsonl",
+                               entry_line(id="fu1", **{field: blank}))
+            code, out, err = run(["--file", str(path), "list"])
+            check(code == 1,
+                  f"the LOAD door ACCEPTED {field}={blank!r} (exit {code}) — the WRITE door refuses that very "
+                  f"value, so a HAND-WRITTEN entry now carries what the tool would not let anyone type:\n"
+                  f"{out}")
+            check(field in err, f"the refusal does not name {field!r}: {err!r}")
+
+            # THE REPRODUCTION, END TO END: the entry the load door invented could be walked to `publish` —
+            # accepted and FILED AS AN ISSUE with no evidence and no reason it was deferred. Every step of
+            # that walk must now be unreachable, because the STORE it starts from does not open.
+            for argv in (["accept", "--id", "fu1"], ["publish", "--id", "fu1", "--ref", "#202"]):
+                code, out, _ = run(["--file", str(path), *argv])
+                check(code == 1,
+                      f"`{argv[0]}` ran on a store whose {field!r} is {blank!r} (exit {code}) — a follow-up "
+                      f"with no {field} was walked to the user's ruling and past it:\n{out}")
+
+    # 2b. …AND THE SPELLINGS THE WRITE DOOR CANNOT EVEN TYPE. `BLANKS` is every blank a caller could HAND IN,
+    # and argparse can hand in nothing but a `str` — so the LOAD door, which reads raw JSON, has a whole
+    # vocabulary of its own that no write-door fixture can ever reach. `str()` on it is not a coercion, it is
+    # an INVENTION: `str(None)` is `"None"` and `str([])` is `"[]"`, both NON-BLANK, and `{"evidence": null}`
+    # — JSON's own word for "there is no value here" — LOADED, was ACCEPTED, and was PUBLISHED AS AN ISSUE
+    # carrying five characters of the word "None" as its evidence. Same defect, one dress further along.
+    for raw in (None, [], {}, True, ["x"], {"a": 1}):
+        for field in REQUIRED:
+            path = write_lines(tmp / f"j-{field}-{type(raw).__name__}.jsonl",
+                               entry_line(id="fu1", **{field: raw}))
+            code, out, err = run(["--file", str(path), "list"])
+            check(code == 1,
+                  f"the LOAD door ACCEPTED a raw JSON {raw!r} as {field!r} (exit {code}) — it turned a value "
+                  f"that is not text into the text of its own repr, and a follow-up with NO {field} is now "
+                  f"indistinguishable from one that has it:\n{out}")
+        # …and in an OPTIONAL field, `null` is ABSENCE (it defaults), while a list/object/bool is CORRUPT.
+        path = write_lines(tmp / f"opt-{type(raw).__name__}.jsonl", entry_line(id="fu1", found_run=raw))
+        code, out, err = run(["--file", str(path), "get", "--id", "fu1", "--field", "found_run"])
+        if raw is None:
+            check((code, out) == (0, PLACEHOLDER + "\n"),
+                  f"a JSON `null` in an OPTIONAL field did not read as UNSET (exit {code}): {out!r} {err!r}")
+        else:
+            check(code == 1,
+                  f"a raw JSON {raw!r} in an OPTIONAL field was ACCEPTED (exit {code}) — a field holds TEXT, "
+                  f"and the repr of a list is not text somebody wrote:\n{out}")
+
+    # 3. THE CONVERSE. A store that refused everything would satisfy every check above.
+    path = tmp / "accepted.jsonl"
+    (fid,) = seed(path)
+    entry = find(load(path), fid)
+    check(entry is not None, "an entry the WRITE door accepted does not come back out of the LOAD door")
+    for field in REQUIRED:
+        check(not is_blank(entry[field]),
+              f"the {field!r} `add` accepted came back BLANK — the doors disagree in the other direction")
 
 
 def t_every_value_the_cli_takes_is_validated(tmp: Path) -> None:
@@ -1731,7 +1997,7 @@ def t_investigation_shows_its_work(tmp: Path) -> None:
     check("no input reaches the branch" in first["finding"], f"the finding was not recorded: {first!r}")
     check("refuted" in first["finding"] and "2026-07-14T09:00:00Z" in first["finding"],
           f"the finding does not say WHICH outcome it produced, or WHEN: {first['finding']!r}")
-    check(first["evidence"] == "e0",
+    check(first["evidence"] == seeded("evidence"),
           f"the investigation CLOBBERED the claim's own evidence: {first['evidence']!r}")
 
     run(["--file", str(path), "corroborate", "--id", fid, "--finding", "reproduced: blank ref, exit 0",
@@ -2126,9 +2392,15 @@ def t_load_rejects_an_illegal_history(tmp: Path) -> None:
                 # satisfies NO alternative, and only this construction produces one. (It cannot accidentally
                 # satisfy another: the alternatives are minimal, so none is a subset of another.)
                 carried = {f: f"<{f}>" for f in alt if f != missing}
+                # EVERY REQUIRED field is filled and every OTHER witness left at its placeholder: the ONE
+                # thing wrong with this entry is the missing witness under test. Fill nothing else and the
+                # store is refused for carrying no `evidence` — a real refusal, for the WRONG reason, and
+                # the fixture would 'pass' on a rule it never exercised. (`REQUIRED` and the witnesses are
+                # disjoint by construction: no transition WRITES a required field.)
                 path = write_lines(tmp / f"{state}-{'+'.join(sorted(alt))}-no-{missing}.jsonl",
-                                   json.dumps({"type": "followup", **DEFAULTS, "id": "fu1",
-                                               "state": state, **carried}))
+                                   json.dumps({"type": "followup", **DEFAULTS,
+                                               **{f: f"<{f}>" for f in REQUIRED},
+                                               "id": "fu1", "state": state, **carried}))
                 code, out, err = run(["--file", str(path), "list"])
                 check(code == 1,
                       f"an entry in state {state!r} carrying {sorted(carried)!r} but NO {missing!r} LOADED "
@@ -2226,8 +2498,7 @@ def t_ids_are_assigned_and_never_reused(tmp: Path) -> None:
           "closed it, the user's note) now points at a DIFFERENT follow-up")
 
     # …the caller cannot set one (there is no flag), and a malformed/duplicate id on disk is REJECTED.
-    code, _, _ = run(["--file", str(path), "add", "--title", "t", "--evidence", "e",
-                      "--deferred-why", "w", "--id", "fu99"])
+    code, _, _ = run(["--file", str(path), *add_argv(), "--id", "fu99"])
     check(code == 2, "add --id was accepted — the caller must not choose the id")
     for name, bad in (("malformed", entry_line(id="pwned")), ("zero", entry_line(id="fu0")),
                       ("empty", entry_line(id=""))):
@@ -2276,15 +2547,30 @@ def t_store_is_validated(tmp: Path) -> None:
 
 
 def t_defaults_backfill(tmp: Path) -> None:
-    """An entry written BEFORE a field existed still reads back complete — every absent field defaults.
+    """AN OPTIONAL FIELD BACKFILLS. A REQUIRED ONE DOES NOT — AND ITS ABSENCE REFUSES THE ENTRY.
 
-    This is what lets a field be added to the schema without migrating a store that CANNOT BE REBUILT, and
-    it is why the investigation/ACT fields could be added to a live store at all: an entry raised before
-    they existed is a `candidate`, a `candidate` is required to witness nothing, and so it stays legal.
-    That is not luck — it is the same rule that makes an unknown state default to the one that still needs
-    the user.
+    THE BACKFILL IS WHY A FIELD CAN BE ADDED TO THE SCHEMA AT ALL. This store cannot be rebuilt, so an entry
+    raised before `finding` and the ACT witnesses existed must still load: it is a `candidate`, a `candidate`
+    is required to witness nothing, and every field it never heard of reads as the placeholder.
+
+    AND THAT IS EXACTLY AS FAR AS IT MAY GO. The backfill used to cover EVERY field, `REQUIRED` included, and
+    that is what MANUFACTURED a follow-up out of a fragment: a hand-written `{id, state, title}` was filled
+    out with `evidence: "-"` and `deferred_why: "-"`, and `-` is what an UNSET field holds — so it read as an
+    entry to everything and as a value to nothing. `list` loaded it, `accept` took it, and `publish --ref`
+    FILED IT AS AN ISSUE, with no evidence and no reason it was ever deferred. The write door refused those
+    very blanks at the same moment; the load door invented them.
+
+    So the two halves are pinned TOGETHER, and both are derived — the optional fields from `FIELDS - REQUIRED`
+    and the refusal from `REQUIRED`, so a field moved between them tomorrow changes which half it lands in and
+    nothing else:
+
+      * an entry missing every OPTIONAL field loads, and reads back complete;
+      * an entry missing ANY REQUIRED field does NOT load — and the store it is in does not open.
     """
-    p = write_lines(tmp / "old.jsonl", json.dumps({"type": "followup", "id": "fu1", "title": "old"}))
+    # An entry from before the optional fields existed: it carries the REQUIRED fields (it always had to —
+    # `add` demanded them) and NOTHING else. It must still load, and read back complete.
+    old = {"type": "followup", "id": "fu1", **{f: f"old-{f}" for f in REQUIRED}}
+    p = write_lines(tmp / "old.jsonl", json.dumps(old))
     code, out, err = run(["--file", str(p), "get", "--id", "fu1"])
     check(code == 0, f"get on a pre-schema entry exited {code}: {err!r}")
     entry = json.loads(out)
@@ -2292,17 +2578,32 @@ def t_defaults_backfill(tmp: Path) -> None:
     check(entry["state"] == DEFAULTS["state"] == "candidate",
           f"a state-less entry did not default to a CANDIDATE (it defaulted to {entry['state']!r}) — an "
           f"entry whose state is unknown must be the one that needs the user, never one that skipped them")
-    check(entry["title"] == "old", "the field the entry DID carry was overwritten by its default")
     check(WITNESS["candidate"] == (frozenset(),),
           f"a `candidate` is required to witness {WITNESS['candidate']!r} — every entry raised before "
           f"those fields existed would stop loading, and this store cannot be rebuilt")
-    for f in ("finding", *ACT_FLAGS):
-        check(entry[f] == PLACEHOLDER, f"a pre-schema entry's {f!r} did not default to a placeholder")
+    for f in REQUIRED:
+        check(entry[f] == f"old-{f}", f"the {f!r} the entry DID carry was overwritten by a default")
+    for f in FIELDS:  # every OPTIONAL field it never heard of — derived, so a new one is covered that day
+        if f not in REQUIRED and f not in ("id", "state"):
+            check(entry[f] == PLACEHOLDER, f"a pre-schema entry's optional {f!r} did not default")
+
+    # …AND THE OTHER HALF: a REQUIRED field is never invented. Absent is BLANK, and blank is REFUSED — the
+    # same refusal the write door gives, from the same function (`entry_error`; see `same-validator`).
+    for absent in REQUIRED:
+        rec = {"type": "followup", "id": "fu1",
+               **{f: f"old-{f}" for f in REQUIRED if f != absent}}
+        p = write_lines(tmp / f"no-{absent}.jsonl", json.dumps(rec))
+        code, out, err = run(["--file", str(p), "list"])
+        check(code == 1,
+              f"an entry with NO {absent!r} at all LOADED (exit {code}) — the load door BACKFILLED a "
+              f"REQUIRED field the write door refuses, and manufactured a follow-up out of a fragment:\n{out}")
+        check(absent in err and "carries no" in err,
+              f"the refusal does not name the missing field {absent!r}: {err!r}")
 
 
 def t_values_are_strings(tmp: Path) -> None:
     """Every ingested value is coerced to `str`, so an on-disk JSON number cannot change a comparison."""
-    p = write_lines(tmp / "n.jsonl", json.dumps({"type": "followup", "id": "fu1", "found_run": 260714}))
+    p = write_lines(tmp / "n.jsonl", entry_line(id="fu1", found_run=260714))
     code, out, err = run(["--file", str(p), "get", "--id", "fu1"])
     check(code == 0, f"get exited {code}: {err!r}")
     check(all(isinstance(v, str) for v in json.loads(out).values()), f"a non-string survived load(): {out!r}")
@@ -2323,10 +2624,10 @@ def t_concurrent_writers_lose_nothing(tmp: Path) -> None:
     """
     path = tmp / "race.jsonl"
     writers, adds = 8, 4
-    script = (
+    script = (  # the `add` is DERIVED (`add_argv`), so a new REQUIRED field races here too, with no edit
         "import sys; sys.path.insert(0, %r); import followups as f;"
-        "[f.main(['--file', %r, 'add', '--title', 't', '--evidence', 'e', '--deferred-why', 'w'])"
-        " for _ in range(%d)]" % (str(Path(__file__).resolve().parent), str(path), adds)
+        "[f.main(['--file', %r] + %r) for _ in range(%d)]"
+        % (str(Path(__file__).resolve().parent), str(path), add_argv(), adds)
     )
     import subprocess
     procs = [subprocess.Popen([sys.executable, "-c", script],
@@ -2427,19 +2728,27 @@ def t_table_grid_integrity(tmp: Path) -> None:
     newline fabricates an entry, a leading `#` fabricates the rule line or the omission notice. This store
     prints through the ledger's `escape_cell()`/`grid_lines()`, and it is checked by the LEDGER'S OWN
     ORACLE — the same parser, not a friendlier copy of it.
+
+    A BLANK hostile (`''`, `'   '`) is put ONLY in an OPTIONAL column, and that is not a gap — it is the rule
+    one layer up. A REQUIRED column cannot HOLD a blank: both doors refuse one (`same-validator`), so no
+    `table` can ever be asked to render one there, and a fixture that hand-wrote one would be testing a store
+    that cannot exist. The blank still goes through the grid — through `published`, which may legitimately
+    carry nothing — so the empty-cell rendering stays covered. Derived from `is_blank()` and `REQUIRED`, so a
+    field moved into REQUIRED tomorrow moves to the safe value here with no edit.
     """
     for name, hostile in ledger.HOSTILE.items():
+        cells = {f: hostile for f in ("title", "evidence", "published")}
+        if is_blank(hostile):  # …then a REQUIRED column may not hold it: keep the characters, drop the blank
+            cells.update({f: f"x{hostile}x" for f in cells if f in REQUIRED})
         path = write_lines(tmp / f"g-{name}.jsonl",
-                           entry_line(id="fu1", title=hostile, evidence=hostile, published=hostile),
-                           entry_line(id="fu2", title="benign"))
+                           entry_line(id="fu1", **cells), entry_line(id="fu2", title="benign"))
         for fields in (("id", "title", "state"), ("title",), ("published", "id")):
             code, out, err = run(["--file", str(path), "table", "--fields", ",".join(fields)])
             check(code == 0, f"[{name}] table exited {code}: {err!r}")
-            _, _, cells = ledger.grid(out, fields, ("store", "rule"), TABLE_MARKERS)
-            check(len(cells) == 2, f"[{name}] the value forged an ENTRY: {len(cells)} rows, not 2\n{out}")
-            check(cells[0] == [escape_cell({"id": "fu1", "title": hostile, "state": "candidate",
-                                            "evidence": hostile, "published": hostile}[f]) for f in fields],
-                  f"[{name}] the printed row is not the escaped row: {cells[0]!r}\n{out}")
+            _, _, got = ledger.grid(out, fields, ("store", "rule"), TABLE_MARKERS)
+            check(len(got) == 2, f"[{name}] the value forged an ENTRY: {len(got)} rows, not 2\n{out}")
+            check(got[0] == [escape_cell({**cells, "id": "fu1", "state": "candidate"}[f]) for f in fields],
+                  f"[{name}] the printed row is not the escaped row: {got[0]!r}\n{out}")
             check(ledger.notices(out) == [],
                   f"[{name}] a VISIBLE row forged an out-of-band line: {ledger.notices(out)!r}\n{out}")
 
@@ -2575,6 +2884,7 @@ CASES = [
     ("publish-needs-ref", "a published follow-up must name WHERE", t_publish_needs_a_ref),
     ("evidence-required", "a follow-up with no evidence is a RUMOR — `add` refuses it, for EVERY required field", t_evidence_is_required),
     ("required-not-editable-away", "a REQUIRED field cannot be BLANKED through `set` — the rule holds where an entry CHANGES, not only where it was made", t_required_cannot_be_edited_away),
+    ("same-validator", "the WRITE door and the LOAD door are ONE function — what either refuses, both refuse, for EVERY required field and EVERY spelling of blank", t_both_doors_run_one_validator),
     ("no-unreadable-store", "no write door can write a store `load()` refuses — every door shares ONE blank predicate", t_no_door_writes_a_store_that_will_not_load),
     ("every-value-validated", "EVERY value the CLI takes, at EVERY write door, passes the blank predicate — a flag that skips it cannot exist", t_every_value_the_cli_takes_is_validated),
     ("nothing-accepted-is-dropped", "EVERY flag of EVERY subcommand is USED — a value the CLI accepts and discards cannot exist", t_no_door_takes_a_value_it_does_not_use),
