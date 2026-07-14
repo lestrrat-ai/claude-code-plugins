@@ -288,20 +288,36 @@ missing what a follow-up cannot be without. Such an entry is not argued with; **
 and neither does the store holding it. The accessor owns that question — do not restate the checks here; a
 summary of them that drifts is worse than none, because it is the version people read.
 
-**THE DOOR THE STORE OPENS BY ACCEPTS ONLY WHAT A WRITE DOOR COULD HAVE PRODUCED.** That is the same rule
-one level lower down, and it is the one this store kept breaking in a new dress. A write door is fed by
-`argv`, and `argv` can hand it **nothing but a string** — so every value on a line that is *not* a string,
-and every key that is not one of the declared fields, arrived by a **hand-edit**, and nothing downstream
-expects it. So the load door refuses, rather than doing what it used to do, which was worse than refusing:
+**THE DOOR THE STORE OPENS BY ACCEPTS ONLY WHAT A WRITE DOOR COULD HAVE PRODUCED — AND WHAT A WRITE DOOR
+CAN PRODUCE IS A STRING.** State it as the rule, not as a list of bad shapes:
+
+> **Every value in a follow-up entry is a STRING, because a string is the only thing the write door can
+> produce.** Anything else, from any source, is a **corrupt record** and is **REFUSED** — never coerced,
+> never defaulted, never dropped, and never **crashed on**. The id high-water mark (`followup-seq.high`) is
+> the **one declared exception** in the whole store, and it is an `int`; no follow-up field has one.
+
+A write door is fed by `argv`, and `argv` can hand it **nothing but a string**. So a value on a line that is
+not a string — a **number** included — did not come from a door: it arrived by a **hand-edit**, and nothing
+downstream expects it. The rule is stated and enforced in **one place** (`project()` in `followups.py`),
+asked by **both** doors, because a **list of blocked shapes is what this store shipped seven times** — each
+fix blocked the shapes its author had thought of, and the next shape walked straight in:
 
 - an **unknown key** used to load fine and then be **silently deleted** by the next write — the accessor
   rebuilds each record from the fields it knows, so a key it does not know simply stopped existing;
 - `NaN` and `Infinity` — which **JSON does not define** and Python's parser accepts anyway — used to load
   as the *text* `"nan"`, which shows three characters, so it passed every blank check in the store and
-  could be **published as an issue**.
+  could be **published as an issue**;
+- `null` — JSON's own word for *there is no value here* — used to load as the five characters `"None"`, and
+  **was published as an issue**;
+- and a **number** used to load as its **digits**: `{"evidence": 123}` read back as `"123"`, which is not
+  blank, so it was accepted and **published**. Digits are not evidence. This one is worth naming twice,
+  because the fix that came before it **declared a finite number legal** in the same breath as writing down
+  the rule that forbids it.
 
-Neither is preserved and neither is coerced: a line carrying either is a line written by something that
-does **not** share this schema, and the store refuses to open rather than rewrite on top of it.
+**A crash is not a refusal, either.** A hand-written file can carry things Python's own parser chokes on —
+a 10,000-digit integer, 100,000 nested arrays — and those used to end in a **traceback**, which tells the
+caller nothing about whether the store is corrupt or the tool is broken. Every door now **refuses cleanly**,
+with the file untouched: a bad line, a bad value, a bad byte, a bad *parse*.
 
 This is also why the store is **never hand-edited** — a hand-written entry is, at best, one the accessor
 will reject, and it will now reject it **loudly and without touching the file**, instead of quietly
