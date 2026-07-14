@@ -11,6 +11,15 @@ sounds like what you want to read.
 ````markdown
 # Reporting
 
+## Word choice (ALL user-facing text)
+
+- Plain, common English. NEVER use a rare/formal word when a common one works: "ratified" → "agreed",
+  "corroborate" → "confirm", "exposes a collision" → "creates a conflict".
+- NEVER use math/CS-theory jargon for everyday ideas: "cut vertex", "in-edge", "unsatisfiable" → say it
+  plainly ("the only gate", "extra path in", "impossible to meet").
+- Metaphors/terms coined earlier in a task → restate plainly at each reuse, don't build on them.
+- Test: a non-native technical reader gets it on first pass. Domain terms the code itself uses are fine.
+
 ## Interim updates (after tool batches, subagent returns, phase boundaries)
 
 - State what was learned / what changed in plain language, then next step. NEVER narrate mechanics
@@ -45,6 +54,12 @@ sounds like what you want to read.
 ## What each rule is actually buying you
 
 Worth understanding before you adopt or drop any of them — several look like style nits and are not.
+
+**"Plain, common English."** The rule most likely to be dismissed as a style nit, and the one that decides
+whether any of the others matter. A brief report you have to re-read twice saved you nothing. Agents drift
+into jargon because it is *precise* — but precision the reader has to decode is not precision, it is a bill
+you handed them. Watch for the specific failure: a term coined earlier in the task, reused later as if it
+were now common ground. It is common ground for the agent, not for you.
 
 **"End every update with an action item or 'Nothing needed from you.'"** The single highest-value rule
 for an unattended run. It makes *blocked-on-you* impossible to miss and impossible to fake — the agent
