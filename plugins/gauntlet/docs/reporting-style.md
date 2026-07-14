@@ -4,7 +4,8 @@ Nothing here is loaded or enforced by the plugin — see the
 [README](../README.md#optional--tell-it-how-to-report-to-you) for why it's a sample and not a setting.
 
 One set of rules that works. Opinionated on purpose. Copy it into your `CLAUDE.md` and edit until it
-sounds like what you want to read.
+sounds like what you want to read. It is a snapshot to copy and adapt, not a mirror of anyone's live
+configuration, and it is not kept in sync with any other file.
 
 ## The sample
 
@@ -53,13 +54,14 @@ sounds like what you want to read.
 
 ## What each rule is actually buying you
 
-Worth understanding before you adopt or drop any of them — several look like style nits and are not.
+Worth understanding before you adopt or drop any of them — several look like minor style choices and are
+not.
 
-**"Plain, common English."** The rule most likely to be dismissed as a style nit, and the one that decides
-whether any of the others matter. A brief report you have to re-read twice saved you nothing. Agents drift
-into jargon because it is *precise* — but precision the reader has to decode is not precision, it is a bill
-you handed them. Watch for the specific failure: a term coined earlier in the task, reused later as if it
-were now common ground. It is common ground for the agent, not for you.
+**"Plain, common English."** The rule most likely to be dismissed as a minor style issue, and the one that
+decides whether any of the others matter. A brief report you have to re-read twice saved you nothing.
+Agents drift into jargon because it is *precise* — but precision the reader has to decode is not precision,
+it is work you handed the reader. Watch for the specific failure: a term coined earlier in the task, reused
+later as if it were now common ground. It is common ground for the agent, not for you.
 
 **"End every update with an action item or 'Nothing needed from you.'"** The single highest-value rule
 for an unattended run. It makes *blocked-on-you* impossible to miss and impossible to fake — the agent
