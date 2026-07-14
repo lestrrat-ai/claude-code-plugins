@@ -58,13 +58,23 @@ remove. Never silently drop an entry you're uncertain about.
 **The question must not stall the run.** Keep every uncertain entry in place and start the run's work
 immediately — surface the candidate list to the user in the same message and fold the answer in when
 it lands as its own wake (prune then). Same principle as "never hold the run hostage on a user prompt"
-(Run lease). Note what was pruned (and what the user kept) so the decision is auditable next run.
+(Run lease). Note what was pruned (and what the user kept) so the decision is auditable next run; like
+every other slot it reaches the ledger when this run distills on exit, not at the moment it is decided
+(see the write-at-exit note below).
 
 A run is distilled into the ledger **exactly once**, on its **normal exit** (all its PRs terminal) —
 Loop control step 5 writes that run's own `.gauntlet/history/<run-id>.md`. The finished-run
 "ask the user → yes" path reuses *that* file; it does not re-distill. `--new` never pre-empts other
 runs — each run is isolated and always distills itself on its own exit — so there is no mid-flight
 snapshot path.
+
+**Write-at-exit is a property of the whole file, not of any one slot.** A run killed mid-flight writes
+**none** of it: `merged`, `aborted`, `skipped` and `pruned` are lost equally, and each is decided well
+before the exit that records it — pruning at startup (step 3) is only the earliest of them. So a prune
+decision lost to a mid-run death is **not** a `pruned`-specific gap; it is this property. If that is to
+change it must change for the **whole file at once**. Making a single slot durable at decision time while
+the rest stay exit-only leaves a half-written file whose slots disagree about what a death means — worse
+than losing all of them together, which at least keeps the record self-consistent.
 
 ### Starting a fresh run
 
