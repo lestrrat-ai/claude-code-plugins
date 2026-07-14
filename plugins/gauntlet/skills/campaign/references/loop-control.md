@@ -50,9 +50,11 @@ blocks; each completion is its own wake.
      **And whenever this refresh writes a NEW `head_sha` — gate reset or not — RESET THE LIVENESS
      COUNTERS** (`stage-2-ci.md`, "THE LIVENESS COUNTERS"), in the same `ledger.py … set` call. This
      covers **both** cases above: the content change that resets the gate, **and** the clean base-only
-     advance that does not. The new head is new evidence, so the old head's `settled_strikes` /
-     `unusable_refetches` describe nothing — carried forward, they park a healthy PR early, on strikes
-     it never earned at this SHA.
+     advance that does not. The new head is new evidence, so the old head's liveness counters describe
+     nothing — carried forward, they park a healthy PR early, on a budget it never spent at this SHA.
+     **NAME the set; do NOT unpack it here.** A gloss that lists the set's members is a **restatement**,
+     even standing next to a correct pointer — it is the part a reader believes, and it goes stale the
+     moment the set gains a member (this line's did, when `ci_stalled_since` joined).
 
      Do the PR scan as
      **one batched snapshot per wake** — the **same canonical command** `pr-adoption.md` runs, writing the

@@ -548,9 +548,11 @@ to this file, before you write it down.**
 The failure this prevents is subtle and it has already happened: hardening a rule set against a false
 *green* — one "→ pending, NEVER green" clause at a time, each one correct on its own — produces a
 machine that in common configurations can **never go green at all**. Many rules enter `pending`; nothing
-leaves it except CI itself changing; and the bailout is **disabled while `ci == pending`**. So the PR
-sits there forever and **no one is ever told**. A wedge is not safer than a false green — it is just a
-failure that never files a report.
+leaves it except CI itself changing; and the 1-hour task cap **was disabled for the whole of `pending`** —
+its exemption was keyed to the **`ci` VALUE**, so it exempted a wait that **nothing was counting down**. So
+the PR sat there forever and **no one was ever told**. A wedge is not safer than a false green — it is just
+a failure that never files a report. (That cap's exemption is now keyed to a **LIVE liveness bound**, never
+to `ci` — `bailout-and-final-report.md`. The rest of this section is what makes such a bound exist.)
 
 The missing concept is **"CI has STOPPED MOVING and the rule is STILL unsatisfied."** `ci = pending`
 cannot express it, because `pending` conflates *still running* with *stuck*.
