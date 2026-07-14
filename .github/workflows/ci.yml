@@ -139,5 +139,8 @@ jobs:
       # entry that NOTHING can rebuild. Weaken any of them and a fixture goes red. It renders through the
       # ledger's escaping and is checked by the ledger's own grid oracle, so a hostile PR title cannot
       # forge a column here either.
+      #
+      # The fixtures themselves live in the sibling `followups-test.py`, which `self-test` loads by path.
+      # A MISSING sibling fails loudly — it can never report an all-clear over a suite it did not run.
       - name: Follow-up store contract
         run: python3 plugins/gauntlet/skills/campaign/scripts/followups.py self-test

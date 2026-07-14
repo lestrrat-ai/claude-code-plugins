@@ -189,6 +189,11 @@ because the driver must read the rule before it can obey it — so the self-test
 agreement**: add or drop a condition in the script and the mismatch with this page turns CI red
 (`doc-and-code-agree`).
 
+**The rules on this page are EXECUTABLE.** The fixtures live beside the script, in
+`scripts/followups-test.py`, and are run through it — `python3 <skill-dir>/scripts/followups.py self-test`,
+which is what CI invokes. Each fixture pins one rule and goes red if that rule is weakened; the named
+fixtures cited below (`user-step-unskippable`, `delete-needs-a-record`, …) are those checks, not prose.
+
 **What every field is for** (the schema owns the list; this owns the *why*): an entry carries a stable
 id, a one-line title, the **evidence** (which PR, which review pass, which `file:line`), **why it was
 deferred** rather than folded in, its lifecycle state, which run found it and when, **which PR is
@@ -204,43 +209,27 @@ the deleted entry is really gone and its id is still spent forever. That mark is
 store that is not a follow-up; it is the accessor's, and like everything else there it is never
 hand-edited.
 
-**The required fields are required at EVERY door an entry can pass through — INCLUDING THE ONE THE STORE
-OPENS BY.** `add` refuses to create a follow-up without them and `set` refuses to **empty** one that has
-them; and **`load()` refuses one that arrived carrying nothing**, however it arrived. All three ask the
-**same function** (`entry_error()` in `followups.py`, which owns what a legal record is) — not three checks
-that agree, one check. That is the whole rule, and the reason it is stated this way: this store has shipped
-the same defect five times, and it was **two doors disagreeing about what a value is** every single time. A
-rule enforced only where an entry is CREATED is not enforced — `set --evidence '   '` an hour later leaves
-the same rumor, except this one the store has already vouched for — and a rule enforced only at the doors
-the CLI offers is not enforced either: a hand-written line with no `evidence` was read back with the field
-**defaulted**, then accepted, then **published as an issue**.
+**The required fields are required at EVERY door an entry can pass through.** `add` refuses to create a
+follow-up without them, `set` refuses to **empty** one that has them, and the store refuses to **open** on a
+line that carries none. A rule enforced only where an entry is CREATED is not enforced: `set --evidence
+'   '` an hour later leaves the same rumor, except this one the store has already vouched for.
 
-**A value that SHOWS nothing is not a value**: whitespace of any kind is not, `-` is not (it is what an
-**unset** field holds), and neither is a character that RENDERS as nothing — a zero-width space, a soft
-hyphen, a BOM. The accessor asks the Unicode category, not a list of codepoints, so evidence nobody can see
-is refused at every door, including the ACT conditions. **Nor is a field a required follow-up simply lacks:
-absence is not a value either**, so it is never defaulted into one — only a genuinely optional field
-backfills, which is what lets the schema grow without migrating a store that cannot be rebuilt.
+**A value that carries nothing is not a value**: whitespace of any kind is not, and `-` is not — it is what
+an **unset** field holds, so a door that accepted it would write an entry that reads back empty. **Nor is a
+field a required follow-up simply lacks: absence is not a value either**, so it is never defaulted into one.
+Only a genuinely **optional** field backfills, which is what lets the schema grow without migrating a store
+that cannot be rebuilt.
 
-**Every value the CLI takes is that value — the timestamps too.** The rule is not "evidence is checked";
-it is that **nothing** enters the store without passing the one blank predicate, and that is enforced by
-construction rather than by each door remembering to ask: the flags a write door offers are generated from
-one intake table, and the accessor validates whatever that table declares. A stamp (`--at`, `--found`) may
-be **omitted** — it then defaults to now — but a stamp that is **supplied** and shows nothing is refused
-like anything else. It has to be: a blank `--at` on the user's ruling writes an `accepted` entry that was
-never ruled on, which is a history `load()` calls illegal, and **the whole store then stops opening** — and
-these follow-ups have no other copy anywhere. A write that would leave the store unreadable is refused at
-the write, with the file on disk untouched.
+**Every value the CLI takes is checked — the timestamps too**, and by construction rather than by each door
+remembering to ask: the flags a write door offers are generated from **one intake table**, and the accessor
+validates whatever that table declares. Add a flag without registering it and the self-test goes red before
+it can ever take a blank. A stamp (`--at`, `--found`) may be **omitted** — it then defaults to now — but a
+stamp that is **supplied** and shows nothing is refused like anything else.
 
-**And nothing the CLI accepts is thrown away.** Validating a value you then discard fixes nothing, so the
-rule has a second half: **anything this tool accepts, it must either USE or REFUSE** — the mirror of the one
-it already keeps on the way out (it will not write a store it could not read back). So a flag exists on a
-subcommand **only where that subcommand consumes it**: `--at` is offered by the steps that **stamp**
-something and by no others, and passing it anywhere else is an argparse **error**, not a value that
-vanishes. `<cmd> --help` names every flag that command takes — and the self-test
-(`nothing-accepted-is-dropped`) exercises **every flag of every subcommand** with two values and requires
-the tool to behave differently on them, so a flag wired to nothing turns CI red the day it is added. Never
-"document" a dropped value: a documented silent discard is still a silent discard.
+**And a flag exists on a subcommand only where that subcommand consumes it.** `--at` is offered by the steps
+that **stamp** something and by no others; passing it elsewhere is an argparse **error**, not a value that
+silently vanishes. `<cmd> --help` names every flag a command takes. Never "document" a dropped value: a
+documented silent discard is still a silent discard.
 
 **The claim's `evidence` and the investigation's `finding` are DIFFERENT FIELDS, and both matter.** One is
 why the driver **raised** it; the other is what happened when somebody actually **looked**. A finding never
@@ -252,7 +241,7 @@ they are what made the self-acceptance legal.
 **There is deliberately NO severity field.** Severity is the driver's judgment about a claim nobody has
 corroborated, and a machine-readable rank is exactly what an autonomous driver would sort on and *act*
 on — which is the prioritisation the user has not yet given. If an item is worse than it looks, **say so
-in its prose**, where a human reads it and rules on it. (The store's own `fu3` does precisely that.)
+in its prose**, where a human reads it and rules on it.
 
 ### The lifecycle — the THRESHOLD, enforced by the graph
 
@@ -266,7 +255,7 @@ Two structural facts carry the whole threshold, and both are **proved on the gra
 
 - **No sequence of driver-only steps reaches `accepted`, nor any state `publish` may leave from.**
   `accepted` has exactly one in-edge and it is the user's `accept`; `publish` leaves only from `accepted`.
-  Tier 3 has no back door — not a missing check, an absent **edge**. (That `publish` now **deletes** the
+  Tier 3 has no back door — not a missing check, an absent **edge**. (That `publish` **deletes** the
   entry rather than parking it changes nothing: the guarantee was never about the state it landed in, but
   about which states the step may leave **from**.)
 - **The driver's own edge is evidence-bearing and lands somewhere else.** `take-up` leaves only from
@@ -279,96 +268,38 @@ And a third, which is what makes DELETION safe (`delete-needs-a-record`):
   and the accessor **refuses** the step if it does not. An entry cannot be deleted with nothing, anywhere,
   left to remember it.
 
-**AND THE INVARIANT IS ENFORCED WHERE THE DATA ENTERS, NOT ONLY WHERE THE COMMANDS DO.** A transition
-checking the state it comes **from** guards nothing against a driver that hand-writes `"state":
-"accepted"` into the JSONL — **and that is the driver this store defends against**. So the door the store
-opens by asks exactly what the write doors ask, of every line on disk: **is this a legal record?** An entry
-that could not have been produced by any legal sequence of transitions is refused, and so is one that is
-missing what a follow-up cannot be without. Such an entry is not argued with; **it does not load at all**,
-and neither does the store holding it. The accessor owns that question — do not restate the checks here; a
-summary of them that drifts is worse than none, because it is the version people read.
+### What the store is — and what it is NOT hardened against
 
-**THE DOOR THE STORE OPENS BY ACCEPTS ONLY WHAT A WRITE DOOR COULD HAVE PRODUCED — AND WHAT A WRITE DOOR
-CAN PRODUCE IS A STRING.** State it as the rule, not as a list of bad shapes:
+**The store is a DRIVER-OWNED LOCAL SCRATCH FILE.** Its only writer is the campaign driver, through
+`followups.py`. It is git-ignored, it is never published, and nobody else can see it — so the accessor is
+**not** built to defend against a hostile or hand-edited store, and it does not pretend to be. What it
+defends against is the thing a driver can get wrong on its own: **taking a step it has not earned**, which
+is the graph above.
 
-> **Every value in a follow-up entry is a STRING, because a string is the only thing the write door can
-> produce.** Anything else, from any source, is a **corrupt record** and is **REFUSED** — never coerced,
-> never defaulted, never dropped, and never **crashed on**. The id high-water mark (`followup-seq.high`) is
-> the **one declared exception** in the whole store, and it is an `int`; no follow-up field has one.
+Two properties are still load-bearing, and neither is a nicety:
 
-**AND AN EXCEPTION IS NOT A HOLE — it is declared by DERIVING its accept-set from what the write door can
-emit, never by naming a TYPE.** That distinction is not a nicety: **every** bug this store has shipped in
-this class arrived as an exception somebody wrote down **on purpose**, next to the very rule it contradicts
-(*"a finite number is legal"*; *"`null` IS absence"*; *"`high` is an `int`"* — which then accepted **any**
-int, including one that made the next `add` emit a malformed id). So the mark is an `int` **and** it is
-exactly one the accessor could have written: the id of a follow-up really handed out. The accessor owns
-which ones (`mark_error()`); the self-test (`exceptions-no-wider`) holds **every** declared exception to
-that test, and a new one that is wider than its write door turns CI red.
+- **The read-modify-write is LOCKED.** Every concurrent run writes this one file, and nothing can rebuild a
+  lost follow-up. An unlocked race silently drops entries, with no error and no other copy anywhere.
+- **A corrupt store is REFUSED, and the refusal names the LINE it is on** — the same contract `ledger.py`
+  keeps. Malformed JSON, a record that is not a JSON object, an unknown record type, an unknown state, a
+  duplicate id: each is reported, never silently repaired and never **skipped**. A skipped line is a
+  follow-up nothing reads.
 
-A write door is fed by `argv`, and `argv` can hand it **nothing but a string**. So a value on a line that is
-not a string — a **number** included — did not come from a door: it arrived by a **hand-edit**, and nothing
-downstream expects it. The rule is stated and enforced in **one place** (`project()` in `followups.py`),
-asked by **both** doors, because a **list of blocked shapes is what this store shipped seven times** — each
-fix blocked the shapes its author had thought of, and the next shape walked straight in:
-
-- an **unknown key** used to load fine and then be **silently deleted** by the next write — the accessor
-  rebuilds each record from the fields it knows, so a key it does not know simply stopped existing;
-- `NaN` and `Infinity` — which **JSON does not define** and Python's parser accepts anyway — used to load
-  as the *text* `"nan"`, which shows three characters, so it passed every blank check in the store and
-  could be **published as an issue**;
-- `null` — JSON's own word for *there is no value here* — used to load as the five characters `"None"`, and
-  **was published as an issue**;
-- a **number** used to load as its **digits**: `{"evidence": 123}` read back as `"123"`, which is not
-  blank, so it was accepted and **published**. Digits are not evidence. This one is worth naming twice,
-  because the fix that came before it **declared a finite number legal** in the same breath as writing down
-  the rule that forbids it;
-- and a **surrogate code point** loaded, and survived `list`, and then **killed `table` and `get --field`
-  with a `UnicodeEncodeError` — half a row already printed**. `json.dumps` escapes a lone `\ud800` happily,
-  so it reaches disk; it is not text, it **cannot be encoded**, and a value the store can hold but can never
-  **show** is not a value it can hold. It reaches the **write** door too: `argv` is *bytes*, and Python
-  decodes an undecodable one as a surrogate, so `add --title $'\xff'` really did store one.
-
-**Absence is a MISSING KEY — `null` is not one.** Only a line that **omits** a key is absent, and only an
-absent *optional* field backfills (which is what lets the schema grow without migrating a store that cannot
-be rebuilt). A key that is **present** carrying `null` is a **value the writer put there**, and the write
-door emits `-` for an unset optional and can **never** emit `null` — so `null` is outside the accept-set and
-is refused, in a required field and an optional one alike. Reading it as absence is the same coercion in
-JSON's own vocabulary, and it did what all of them do: `{"found_run": null}` loaded, and the next
-`set --title` **rewrote the line with a `-` the store had invented**.
-
-**And an unset optional field holds `-` — not "some blank".** That is the store's *other* declared exception
-(a blank is refused, **except** the placeholder in an optional field), and it is bounded exactly like the
-mark: the write door emits **precisely** `-` there and `taken()` refuses every blank a caller could hand in,
-so an optional field carries the placeholder or something **non-blank**, and nothing else. `"   "` and a
-zero-width space are neither — they show nothing while not **being** the `-` that *means* unset, so they read
-as a value to nothing and as a set field to everything. That is the `-` backfill's own shape, one field over.
-
-**A crash is not a refusal, either — and a HANG is worse than a crash.** A hand-written file can carry things
-Python's own parser chokes on — a 10,000-digit integer, 100,000 nested arrays — and those used to end in a
-**traceback**, which tells the caller nothing about whether the store is corrupt or the tool is broken. **The
-environment is hostile too, not just the lines:** `--file` pointed at a **directory**, an **unreadable** path,
-or a store in an **unwritable** directory each used to end in a traceback out of the plumbing; and `--file` at
-a **FIFO** did not even crash — it **blocked forever**, holding the lock, with nothing downstream ever
-learning why. The accept-set is the same class rule one level up: the accessor writes a **regular file**, so a
-regular file — or **nothing at all**, since a missing store is an empty one — is everything a write door could
-have produced. Every door now **refuses cleanly**, with the file untouched: a bad line, a bad value, a bad
-byte, a bad *parse*, a bad *path*.
-
-This is also why the store is **never hand-edited** — a hand-written entry is, at best, one the accessor
-will reject, and it will now reject it **loudly and without touching the file**, instead of quietly
-dropping the part it did not understand.
+**Every value in a follow-up is a STRING**, because `argv` is the only thing that feeds a write door and it
+has nothing else to hand one. A `null` or a number on a line is refused rather than **coerced**: coercion
+invents a value — `str(None)` is `"None"` and `str(123)` is `"123"`, both non-blank — and this store's whole
+job is to hold claims a human can audit.
 
 **State the limit honestly: the script cannot verify that the user really agreed.** No local file can.
 `accept` is a promise the driver makes, and what the graph buys is that **skipping the user is a
-DELIBERATE LIE rather than an oversight**. It is a footgun guard, **NOT** a security boundary — the same
-class of guarantee as the CI-fix symlink preflight (`stage-2-ci.md`).
+DELIBERATE act rather than an oversight**. It is a footgun guard, **NOT** a security boundary.
 
 **The user's ruling is DURABLE DATA.** `accept`/`reject` stamp when it was made, for the same reason the
 ledger's `api_approval` records `approved@<iso>` rather than living in the driver's head: **a later wake
 is a fresh agent that never saw the conversation**, and it must not re-ask a question the user already
 answered. **Nothing the driver does alone stamps it** — not an investigation, not a `take-up`, not opening
 a PR, not `publish`. A ruling written by anything but the user would launder the driver's action into the
-user's consent, and it is exactly what `load()` demands of an `accepted` entry.
+user's consent (`ruling-recorded` proves the stamp belongs to `accept`/`reject` and to nothing else).
 
 ### WHEN TO RECORD ONE — the moment it is noticed, not at the end
 
