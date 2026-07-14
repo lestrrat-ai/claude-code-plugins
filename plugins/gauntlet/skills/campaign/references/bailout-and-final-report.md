@@ -97,6 +97,12 @@ When the loop exits, summarize:
   least-certain area it named — `required(tier)` lines, so two for a STANDARD/HIGH PR and one for a
   TRIVIAL PR), and a flag when two accepting passes name the same area. This is non-actionable,
   non-gating calibration metadata — a place a human might look, never a reopened finding (Stage 2a).
+- **What the base branch REQUIRED** — the ledger's `required_set` (`stage-2-ci.md` owns its states). Report
+  **which state the run was in**, because it is what every `green` in this report rests on: `declared:…` —
+  name the checks that had to pass; `none` — the base branch required nothing, **read and confirmed**, not
+  merely unobserved. **NEVER report `unknown` as "no required checks"**: it means campaign **could not
+  read** them, nothing merged on it, and any PR that reached it **escalated** — say which read failed, so
+  the user can fix the access rather than wonder why the run stalled.
 - **Aborted** — PR number + slug, why, pointer to `abort-<id>.md`.
 - **Skipped (API-declined)** — any PR whose API-changing fix the user was asked about and declined,
   with the change each would have needed.

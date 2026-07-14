@@ -72,9 +72,10 @@ blocks; each completion is its own wake.
      — and drive reconcile from that file; fall back to per-PR `gh pr view` only where the snapshot
      isn't enough (merge-gate CI truth stays the SHA-pinned, SHA-verified snapshot of **both** check
      families, Stage 2b). Wake
-     turnaround is throughput: every serial `gh` call in reconcile delays every dispatch behind it. Re-read `run_id`, `base_branch`, `api_changes`, and `reviewer` from the ledger
-     header — they govern namespacing, the merge/diff target, API-change handling, and which reviewer runs
-     the review passes, and must be
+     turnaround is throughput: every serial `gh` call in reconcile delays every dispatch behind it. Re-read
+     **the ledger header's run config — EVERY field of it, whatever they are** (`files-and-ledger.md` owns
+     that set; do NOT keep a copy of it here, a list beside a property goes stale the wake a field is
+     added). It governs the run, and must be
      consulted fresh each wake, never from memory (a wake may be a fresh agent instance that just
      adopted the run, so an explicit/preferred reviewer would otherwise
      be lost and silently revert to the default; Constraints, Base branch, "The reviewer",

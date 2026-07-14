@@ -340,10 +340,12 @@
   **never guessed into a bucket**. **The ORDER is `red` BEFORE the catch-all, on purpose:** a snapshot
   carrying **both** a `FAIL` and an unknown value is `red`, gets its CI fix, and **parks on the unknown
   value at the next derivation** once the failure clears — deferred, never dropped, and never merged
-  (`red` cannot merge). One gap remains **open and disclosed** in `stage-2-ci.md`, and a
-  green claim must respect it: the **REGISTRATION GAP** — green proves only that *what had registered*
-  passed, **never** that the required set is complete. **NEVER claim more from a green than those rules
-  and that gap allow.**
+  (`red` cannot merge). And green is **not** a claim about the rows that happened to show up: it requires
+  that **the base branch's REQUIRED set is accounted for** — every declared required check **present and
+  passing**, or the set **read and empty** (`required_set`, `stage-2-ci.md`, "WHAT WERE WE EXPECTING TO
+  SEE?"). **A required set campaign could not read is NEVER green** — it is a `pending` outcome that
+  escalates, because a check that never registered is **no row**, and no count of passing rows can rule it
+  out. **NEVER claim more from a green than those rules allow.**
 - The run targets a **base branch** (`base_branch` in the ledger header), which is **not assumed to
   be `main`** — it is the `baseRefName` of the adopted PRs (must agree across them, else prompt).
   Reviews diff `origin/<base>...HEAD` and PRs merge into `<base>`; a fix worktree branches off the PR's OWN
