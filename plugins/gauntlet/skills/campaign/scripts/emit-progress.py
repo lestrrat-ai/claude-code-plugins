@@ -62,6 +62,13 @@ The help door and the parser door disagreed about what the command IS, which is 
 doors disagreeing about what an ID is, one layer up — and the help is the door a reviewer READS. It has
 its own parser now, built from the owner's own `add_emit_args` (so the flags still have ONE definition and
 cannot drift), and `review-pass.py self-test` EXECUTES the invocation this `--help` advertises.
+
+**AND IT DOES THAT FOR EVERY DOOR, NOT JUST THIS ONE — WHICH IS THE PART THE FIRST CURE MISSED.** That
+check looked at this wrapper and at nothing else, so the owner's own subcommands went on advertising
+whatever they liked: `review-pass.py plan-add --help` bracketed `[--check CHECK]` — argparse for OPTIONAL —
+while the write path refused that exact command for having no checks. The same defect, one door over,
+underneath the check written to stop it. `self-test` now runs EVERY door — every subcommand and this
+wrapper — in the shape its own `--help` advertises.
 """
 
 from __future__ import annotations

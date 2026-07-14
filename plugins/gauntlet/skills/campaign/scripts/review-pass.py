@@ -26,8 +26,10 @@ So this file is the review pass's artifacts, executed:
   identity    write a pass's `pass_identity` line                 (the SHA stops being a `printf`)
   emit        append ONE progress event                           (what `emit-progress.py` calls)
   verify      READ a pass and answer: DOES THIS PASS COUNT?       (the tally stops being by eye)
-  self-test   the fixtures, the proof that every rule is pinned by one, and every JSON example in the
-              docs fed THROUGH the tool (a documented example the tool refuses is a trap, not a typo)
+  self-test   the fixtures, the proof that every rule is pinned by one, every JSON example in the docs fed
+              THROUGH the tool (a documented example the tool refuses is a trap, not a typo), and EVERY
+              DOOR run in the shape its own `--help` advertises (a command the help promises and the tool
+              refuses is the same trap, one layer up — `plan-add` shipped one)
 
 WHAT `verify` DOES NOT DO — AND THE LINE IS DELIBERATE. It never opens `review-<pr>-<n>.txt`, never
 parses the reviewer's prose, and CANNOT SAY `SATISFIED`. Its whole answer is about the pass's MECHANICS:
@@ -95,6 +97,7 @@ import argparse
 import ast
 import io
 import json
+import os
 import re
 import subprocess
 import sys
@@ -1112,7 +1115,10 @@ def cmd_verify(args) -> int:
 #   3. asserts that EVERY enforcement point in a rule function sits under a marker. A rule ADDED without
 #      one is never mutated, so nothing could ever report it unpinned. An unmarked rule is an untested one;
 #   4. DELETES each rule in turn — splicing in its weakening — re-runs every fixture, every CLI case and
-#      the whole round trip, and FAILS if no fixture notices.
+#      the whole round trip, and FAILS if no fixture notices;
+#   5. EXECUTES EVERY DOOR — every subcommand the parser has, and the `emit-progress.py` wrapper — in the
+#      exact shape that door's OWN `--help` advertises, and fails when the tool refuses it (`check_doors`).
+#      A door is free to lie about what it takes until something RUNS what it says.
 #
 # Step 4 exists because step 1 CANNOT see the failure that matters most: a rule NOTHING tests. Delete such
 # a rule and the suite stays green while the tool has quietly stopped checking. A sibling PR in this repo
@@ -1385,7 +1391,19 @@ PLAN_CLI_CASES = [
      "HEADLINE, PLAN DOOR: THE FINDING. This exited 0, and the id it wrote was one `emit` could never match — because `emit` stripped its `--unit` and this door did not. The plan is the INTAKE: refuse the id here and no later door can be handed a unit it cannot name"),
     (PLAN_FILE, ["--id", "U01", "--kind", "file", "--target", "x.py", "--check", "a"], 1, "NOT AN ID",
      "…and an id that is merely a different SPELLING of a legal one. There is no such thing: an identifier has one form, so `U01` is not `u01` in capitals — it is not an id, and it is refused rather than folded"),
-    (PLAN_FILE, ["--id", "u03", "--kind", "file", "--target", "x.py"], 1, "not a unit", "a unit with NO checks"),
+    (PLAN_FILE, ["--id", "u03", "--kind", "file", "--target", "x.py"], 2,
+     "the following arguments are required: --check",
+     "HEADLINE, THE HELP DOOR: **THIS IS THE COMMAND `plan-add --help` ADVERTISED.** `--check` was OPTIONAL "
+     "to argparse — the usage line BRACKETED it, `[--check CHECK]` — and the write path then refused the "
+     "call with `checks is []`. So the exact invocation the tool's own help tells you to run exited 1 — and "
+     "the mechanical check written to stop precisely this had only ever executed the `emit-progress.py` "
+     "wrapper's help, never this script's own doors, so it could not fire on the case that mattered. It is "
+     "`required=True` now, so the refusal comes from ARGPARSE and NAMES THE FLAG "
+     "(exit 2 — the CALLER's mistake) instead of from a rule about the unit that was built without it"),
+    (PLAN_FILE, ["--id", "u03", "--kind", "file", "--target", "x.py", "--check", "  "], 1, "not a unit",
+     "…and the check that argparse CANNOT make: a `--check` that is present and BLANK. `required=True` says "
+     "a unit has checks; only `check_unit` can say a blank string is not one, and it is the same statement "
+     "the read door refuses an empty `checks` list with"),
     ("plan.jsonl", ["--id", "u03", "--kind", "file", "--target", "x.py", "--check", "a"], 1,
      "not a plan artifact's name",
      "the plan's name was enforced at the READ door BY CONSTRUCTION (`verify` derives it and takes no plan path) and at the write door NOT AT ALL: this wrote a perfectly valid plan to a name nothing will ever open, and the pass would then be refused for a MISSING plan with its units on disk one filename away"),
@@ -1748,28 +1766,79 @@ def check_docs() -> int:
     return failures
 
 
-# --- the WRAPPER's HELP: what it SAYS must be what the tool TAKES --------------------------------
+# --- EVERY DOOR'S HELP: what it SAYS must be what the tool TAKES ---------------------------------
 #
 # `emit-progress.py --help` printed `usage: emit-progress.py emit [-h] --file …`, and running that exact
 # command failed with `unrecognized arguments: emit` — the wrapper prepends `emit` itself, so its own help
 # advertised a command shape it REFUSES. Two doors disagreeing about what the COMMAND is, which is the same
 # defect as two doors disagreeing about what an ID is — and the help is the door a reviewer READS.
 #
-# An exhortation to "keep the help and the parser in sync" cannot fail. This can: the usage block is parsed
-# for the invocation it advertises, and **that invocation is EXECUTED** — as a subprocess, against a real
-# dispatched pass, exactly as a reviewer would run it. Advertise a command the tool refuses and the suite
-# goes red. The FLAGS are checked the same way, against the emit door's own `add_emit_args`: the help may
-# not name a flag the tool does not take, nor omit one it requires.
+# **AND THE CURE FOR THAT HAD THE DISEASE IT WAS CURING.** The check written for it was real — it ran
+# `--help`, parsed the invocation and EXECUTED it — and it did that for the WRAPPER AND NOTHING ELSE. This
+# script has five doors of its own and not one of them was ever looked at, so the very next help/parser lie
+# shipped straight underneath the check meant to stop it: `plan-add --help` printed `[--check CHECK]` —
+# argparse's brackets mean OPTIONAL — while the write path refused that exact advertised command with
+# `checks is [] — a unit with no concrete checks is not a unit`. The command the tool's own help tells you
+# to run exited 1. **A check that cannot fire on the case that matters is not a check; it is a claim.**
+#
+# So every door is driven, and the DOOR LIST IS DERIVED from `build_parser()` — never hand-written — so a
+# subcommand added tomorrow is covered the day it is added, by failing until someone says how to drive it.
+# For each door:
+#
+#   1. its `--help` runs;
+#   2. the usage block is parsed for the COMMAND WORDS it advertises, its REQUIRED flags (argparse leaves
+#      them bare) and its OPTIONAL ones (argparse BRACKETS them) — and that split must be the one the
+#      door's own parser declares;
+#   3. **the advertised MINIMAL invocation is EXECUTED** — the required flags and NOTHING ELSE — as a
+#      subprocess, against a realistic seed, exactly as a reviewer would run it. It must SUCCEED. This is
+#      the direction the wrapper's cure never asked about and the one `plan-add` lied in: **a flag the help
+#      calls OPTIONAL must really be OMITTABLE**, in the WRITE path and not merely in argparse;
+#   4. …and every REQUIRED flag is dropped in turn, and the door must REFUSE the call: **a flag the help
+#      calls REQUIRED must really be refused when absent.** Same lie, other direction.
 
-WRAPPER = Path(__file__).resolve().parent / "emit-progress.py"
+OWNER = Path(__file__).resolve()
+WRAPPER = OWNER.parent / "emit-progress.py"
+WRAPPER_DOOR = "emit-progress.py"
+
+# The `self-test` door is a door like any other, and EXECUTING it is what this check does to every door —
+# so probing it means self-test runs self-test. This is what stops that being infinite: the nested run sees
+# the variable and skips THIS check (only this one — everything else runs in full), so the door is really
+# executed, by the real parser, all the way through its real body.
+DOOR_PROBE_ENV = "REVIEW_PASS_DOOR_PROBE"
+
+# Each door's `--file` artifact, and the bytes that file realistically holds when a caller runs that door —
+# the state the ORCHESTRATOR has left at that point of a real pass. `None` bytes = the file does not exist
+# yet (`identity` writes the first line of a progress file; `plan-add` the first unit of a plan). `None`
+# artifact = the door takes no `--file`.
+DOOR_SEEDS: "dict[str, tuple[str | None, list[str] | None]]" = {
+    "emit": (PROGRESS_FILE, DISPATCHED),       # the reviewer's door: the identity is already in the file
+    WRAPPER_DOOR: (PROGRESS_FILE, DISPATCHED),  # …and the same door, through the wrapper a reviewer runs
+    "identity": (PROGRESS_FILE, None),         # it writes into a file that must hold NO BYTES
+    "plan-add": (PLAN_FILE, None),             # the first unit lands in a plan that does not exist yet
+    "verify": (PROGRESS_FILE, WORKED),         # a COMPLETE, sound pass — it verifies `ok`, so exit 0
+    "self-test": (None, None),                 # no --file, no flags at all
+}
+
+# A realistic value for every flag any door advertises (`--file` is the seed's, above). A door that grows a
+# flag with no value here FAILS the suite: a flag nothing can supply is a door nothing can drive.
+FLAG_VALUES: "dict[str, list[str]]" = {
+    "--unit": ["u01"], "--status": [STARTED], "--evidence": ["f.py:1"],
+    "--head-sha": [SHA], "--dispatched-at": [TS],
+    "--id": ["u09"], "--kind": ["file"], "--target": ["x.py"], "--check": ["a"],
+    "--amendments-ruled": ["0"],
+}
 
 
-def advertised(help_text: str) -> "tuple[list[str], set[str]]":
-    """(the COMMAND WORDS `--help` advertises, the OPTIONS it advertises) — read out of its usage block.
+def advertised(help_text: str) -> "tuple[list[str], set[str], set[str]]":
+    """(the COMMAND WORDS a `--help` advertises, its REQUIRED flags, its OPTIONAL flags) — from the usage.
 
     The usage block is the first `usage:` line plus argparse's indented continuation lines. The command
-    words are everything before the first flag or bracket (`emit-progress.py`, and any subcommand it
-    claims); the options are every `-x`/`--xyz` in it.
+    words are everything before the first flag or bracket (the script, and any subcommand it claims).
+
+    **The BRACKETS are the claim under test.** argparse writes a required option bare (`--file FILE`) and
+    an optional one in brackets (`[--check CHECK]`), so the usage line does not merely list the flags — it
+    says which ones you may LEAVE OUT. That promise is what `plan-add` broke, and it is only a promise a
+    test can stand on because it has an exact shape.
     """
     block: list[str] = []
     for line in help_text.splitlines():
@@ -1785,44 +1854,162 @@ def advertised(help_text: str) -> "tuple[list[str], set[str]]":
         if word.startswith(("-", "[")):
             break
         words.append(word)
-    return words, set(re.findall(r"--?[a-z][a-z-]*", usage))
+    every = set(re.findall(r"--[a-z][a-z-]*", usage))
+    optional = {flag for group in re.findall(r"\[[^\[\]]*\]", usage)
+                for flag in re.findall(r"--[a-z][a-z-]*", group)}
+    return words, every - optional, optional
 
 
-def check_wrapper_help(tmp: Path) -> int:
-    """Run `emit-progress.py --help`, take the command it advertises, and RUN THAT. Returns the failures."""
-    failures = 0
-    help_run = subprocess.run([sys.executable, str(WRAPPER), "--help"],  # noqa: S603 - our own sibling
+def door_parsers() -> "dict[str, argparse.ArgumentParser]":
+    """Every door the tool has, and the parser behind it — DERIVED from `build_parser`, never listed.
+
+    That is what makes the coverage below un-rottable: a subcommand appears here the moment it is added to
+    the parser, and a door with no entry in `DOOR_SEEDS` fails the suite by name. The wrapper is the one
+    door that is a separate SCRIPT, so its parser is rebuilt here from `add_emit_args` — the same single
+    definition the wrapper itself calls; what is actually EXECUTED for it is the real script, as a
+    subprocess, so the replica cannot hide a wrapper that has drifted from it.
+    """
+    p, _cmds = build_parser()
+    doors: dict[str, argparse.ArgumentParser] = {}
+    for action in p._actions:  # noqa: SLF001 - the subparser map is where the doors are
+        choices = getattr(action, "choices", None)
+        if isinstance(choices, dict):
+            doors.update({str(name): sub for name, sub in choices.items()})
+    wrapper = argparse.ArgumentParser(prog=WRAPPER_DOOR)
+    add_emit_args(wrapper)
+    doors[WRAPPER_DOOR] = wrapper
+    return doors
+
+
+def declared(p: argparse.ArgumentParser) -> "tuple[set[str], set[str]]":
+    """(the flags a parser REQUIRES, the flags it accepts and does not require) — from the parser itself."""
+    required: set[str] = set()
+    optional: set[str] = set()
+    for action in p._actions:  # noqa: SLF001 - the flags are the actions; there is no public view of them
+        longs = {opt for opt in action.option_strings if opt.startswith("--")} - {"--help"}
+        (required if action.required else optional).update(longs)
+    return required, optional
+
+
+def seed_door(tmp: Path, door: str, case: str) -> "list[str]":
+    """A FRESH realistic pre-existing state for one probe of one door, and the `--file` argv naming it.
+
+    Fresh per probe, never shared: the minimal invocation of `emit` APPENDS to the file it is given, and a
+    later probe run against that mutated file would be probing something nobody declared.
+    """
+    artifact, lines = DOOR_SEEDS[door]
+    if artifact is None:
+        return []
+    d = tmp / f"door-{door}-{case}"
+    d.mkdir(parents=True, exist_ok=True)
+    if artifact != PLAN_FILE:  # a sound plan sits beside every progress-file door, as in a real rundir
+        (d / PLAN_FILE).write_text("".join(line + "\n" for line in PLAN), encoding="utf-8")
+    target = d / artifact
+    if lines is not None:
+        target.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
+    return ["--file", str(target)]
+
+
+def run_door(door: str, words: "list[str]", argv: "list[str]") -> "tuple[int, str]":
+    """Run a door AS A CALLER DOES — a subprocess, with the command words its OWN help advertised.
+
+    `words[1:]` is the load-bearing part: it is the subcommand the usage line CLAIMS, not the one we know
+    it to be. `emit-progress.py --help` used to advertise `emit-progress.py emit …`, and running THAT is
+    the only thing that could have caught it.
+    """
+    script = WRAPPER if door == WRAPPER_DOOR else OWNER
+    run = subprocess.run([sys.executable, str(script), *words[1:], *argv],  # noqa: S603 - our own scripts
+                         capture_output=True, text=True, check=False,
+                         env={**os.environ, DOOR_PROBE_ENV: "1"})
+    return run.returncode, (run.stdout + run.stderr).strip()
+
+
+def check_door(door: str, parser: argparse.ArgumentParser, tmp: Path) -> int:
+    """One door: what its `--help` says, against what it TAKES. Returns the failures."""
+    script = WRAPPER if door == WRAPPER_DOOR else OWNER
+    ask = [] if door == WRAPPER_DOOR else [door]
+    help_run = subprocess.run([sys.executable, str(script), *ask, "--help"],  # noqa: S603 - our own scripts
                               capture_output=True, text=True, check=False)
     if help_run.returncode != 0:
-        print(f"FAIL     [help] `{WRAPPER.name} --help` exited {help_run.returncode}: {help_run.stderr}")
+        print(f"FAIL     [door] `{door} --help` exited {help_run.returncode}: {help_run.stderr.strip()}")
         return 1
-    words, options = advertised(help_run.stdout)
+    words, required, optional = advertised(help_run.stdout)
+    failures = 0
 
-    probe = argparse.ArgumentParser()
-    add_emit_args(probe)  # the door that ACCEPTS — its flags, not a list typed out here
-    accepted = {opt for action in probe._actions for opt in action.option_strings  # noqa: SLF001
-                if opt.startswith("--")} - {"--help"}
-    long_flags = {opt for opt in options if opt.startswith("--")}
-    if long_flags != accepted:
-        print(f"FAIL     [help] it advertises {sorted(long_flags)} and the tool accepts {sorted(accepted)} "
-              f"— a flag in one and not the other is a flag someone will type and be refused for")
+    declared_required, declared_optional = declared(parser)
+    if (required, optional) != (declared_required, declared_optional):
+        print(f"FAIL     [door] `{door}` ADVERTISES required {sorted(required)} / optional "
+              f"{sorted(optional)}, and its parser DECLARES required {sorted(declared_required)} / optional "
+              f"{sorted(declared_optional)} — the help is the door a reviewer READS, and a flag that is one "
+              f"thing there and another in the parser is a command someone will type and be refused for")
         failures += 1
     else:
-        print(f"ok       [help] the flags it advertises are the flags the emit door takes: {sorted(accepted)}")
+        print(f"ok       [door] `{door}` advertises exactly what its parser takes: required "
+              f"{sorted(required)}, optional {sorted(optional)}")
 
-    # …and now the whole point: EXECUTE what it advertises, on a pass that is really dispatched.
-    progress = build(tmp, "wrapper-help", PLAN, [ident()])
-    invocation = [sys.executable, str(WRAPPER), *words[1:],
-                  "--file", str(progress), "--unit", "u01", "--status", STARTED]
-    run = subprocess.run(invocation, capture_output=True, text=True, check=False)  # noqa: S603
-    shown = " ".join([WRAPPER.name, *words[1:], "--file <progress> --unit u01 --status started"])
-    if run.returncode != 0:
-        print(f"FAIL     [help] the tool REFUSES the command its own --help advertises — `{shown}` exited "
-              f"{run.returncode}: {(run.stdout + run.stderr).strip()}. The help door and the parser door "
-              f"disagree about what the command IS, and the help is the one a reviewer reads")
+    unsupplied = sorted((required | optional) - set(FLAG_VALUES) - {"--file"})
+    if unsupplied:
+        print(f"FAIL     [door] `{door}` advertises {unsupplied}, and `FLAG_VALUES` declares no value for "
+              f"it — a flag nothing can supply is a door nothing can drive, and an undriven door is exactly "
+              f"how `plan-add` came to refuse the command its own help advertised")
+        return failures + 1
+
+    def invoke(flags: "set[str]", case: str) -> "tuple[int, str]":
+        argv: list[str] = []
+        for flag in sorted(flags):
+            if flag == "--file":
+                argv += seed_door(tmp, door, case)
+            else:
+                argv += [arg for value in FLAG_VALUES[flag] for arg in (flag, value)]
+        return run_door(door, words, argv)
+
+    # THE WHOLE POINT: the MINIMAL command the help advertises — every flag it brackets left OUT — EXECUTED.
+    shown = " ".join([Path(script).name, *words[1:], *(f"{flag} …" for flag in sorted(required))]) or door
+    code, text = invoke(required, "minimal")
+    if code != 0:
+        print(f"FAIL     [door] the tool REFUSES the command its own `--help` advertises — `{shown}` exited "
+              f"{code}: {text}\n         Every flag left out is one the help BRACKETS as optional. This is "
+              f"the help door and the WRITE door disagreeing about what the command IS: `plan-add` "
+              f"advertised `[--check CHECK]` and then refused the call for having no checks")
         failures += 1
     else:
-        print(f"ok       [help] the advertised invocation RUNS: `{shown}` -> exit 0")
+        print(f"ok       [door] the advertised MINIMAL invocation RUNS: `{shown}` -> exit 0")
+
+    # …and the other direction: a flag the help calls REQUIRED must really be refused when it is absent.
+    for flag in sorted(required):
+        code, text = invoke(required - {flag}, f"no{flag}")
+        if code == 0:
+            print(f"FAIL     [door] `{door}` advertises {flag} as REQUIRED and then ACCEPTED the call "
+                  f"WITHOUT it (exit 0) — the same lie as an optional flag it refuses, with its sign "
+                  f"flipped: the help promises a shape, and the shape is not what the tool takes")
+            failures += 1
+    if required:
+        print(f"ok       [door] `{door}` REFUSES the call with any of {sorted(required)} absent")
+    return failures
+
+
+def check_doors(tmp: Path) -> int:
+    """EVERY door — the subcommands `build_parser` has AND the wrapper. Returns the failures.
+
+    The reconciliation is the mechanical part, and it is why this cannot rot back into the wrapper-only
+    check it replaces: the door list comes from the PARSER, so a door with no seed is REPORTED, by name,
+    the day it is added — and a seed for a door that no longer exists is reported too.
+    """
+    failures = 0
+    parsers = door_parsers()
+    for door in sorted(set(parsers) | set(DOOR_SEEDS)):
+        if door not in parsers:
+            print(f"FAIL     [door] `{door}` has a seed in `DOOR_SEEDS` but the tool has no such door — a "
+                  f"door that was renamed or removed leaves a check that probes NOTHING and passes")
+            failures += 1
+        elif door not in DOOR_SEEDS:
+            print(f"FAIL     [door] the parser has a door `{door}` that NOTHING drives — declare in "
+                  f"`DOOR_SEEDS` what its `--file` names and the bytes that file realistically holds, so "
+                  f"its `--help` can be executed against it. A door nothing drives is one that is free to "
+                  f"advertise a command it refuses")
+            failures += 1
+        else:
+            failures += check_door(door, parsers[door], tmp)
     return failures
 
 
@@ -2120,9 +2307,18 @@ def self_test() -> int:
         print(f"COMMANDS {problem}")
         failures += 1
 
+    # The `self-test` door is EXECUTED like every other door — which means self-test runs self-test. The
+    # nested run is the real door, doing its real work; it skips ONLY this check, which is the sole thing
+    # that recurses. Everything else in it runs in full.
+    probe = bool(os.environ.get(DOOR_PROBE_ENV))
     with tempfile.TemporaryDirectory() as tmpdir:
         got = run_cases(sys.modules[__name__], Path(tmpdir))
-        help_failures = check_wrapper_help(Path(tmpdir))
+        if probe:
+            door_failures = 0
+            print("skip     [door] the door checks do not run inside the `self-test` door's own probe — "
+                  "this process IS that probe, and re-running them here would recurse forever")
+        else:
+            door_failures = check_doors(Path(tmpdir))
     print()
     for case, (want, needle, why) in expect.items():
         outcome, text = got[case]
@@ -2137,7 +2333,7 @@ def self_test() -> int:
             print(f"FAIL     {case[:44]:44} -> {outcome:11} but nothing mentions {needle!r}\n         got: {text}")
             failures += 1
     print()
-    failures += help_failures
+    failures += door_failures
     failures += check_boundaries()
     print()
     doc_failures = check_docs()
@@ -2146,6 +2342,9 @@ def self_test() -> int:
     if failures:
         print(f"{failures} check(s) FAILED — the review-pass contract is broken.")
         return 1
+    doors = (f"the door checks were SKIPPED (this run is the `self-test` door's own probe)" if probe else
+             f"every one of the {len(DOOR_SEEDS)} doors ({', '.join(sorted(DOOR_SEEDS))}) had the MINIMAL "
+             f"invocation its OWN `--help` advertises EXECUTED, and it runs")
     print(f"all {len(CASES)} fixtures + {len(NAME_CASES)} name cases + "
           f"{len(CLI_CASES) + len(PLAN_CLI_CASES)} CLI cases + "
           f"{len(WRITE_COMMANDS) * len(FILE_STATES)} round-trip cases ({len(WRITE_COMMANDS)} write "
@@ -2153,8 +2352,7 @@ def self_test() -> int:
           f"{len(CROSS_DOOR_IDS)} cross-door cases (the plan door refuses the id, or the emit door can "
           f"match it) + {len(BOUNDARY_CASES)} boundary cases ({len(DOMAINS)} bounded values, each probed "
           f"JUST INSIDE and JUST OUTSIDE its declared domain) + {len(doc_examples())} DOC examples hold — "
-          f"and the invocation "
-          f"`{WRAPPER.name} --help` advertises was EXECUTED, and runs.\n")
+          f"and {doors}.\n")
 
     # …and now the question the block above CANNOT answer: is any rule pinned by NO fixture?
     marked = marked_statements(source)
@@ -2250,9 +2448,11 @@ def add_emit_args(p: argparse.ArgumentParser) -> None:
 def build_parser() -> "tuple[argparse.ArgumentParser, list[str]]":
     """The CLI, and the list of subcommands it actually has — DERIVED from the parser, never typed out.
 
-    The round-trip fixture drives every command this returns and FAILS on one it does not know how to
-    drive. So a subcommand added here is covered on the day it is added: there is no second list of
-    commands to forget to update, which is the only way a new write path could ever ship unpinned.
+    TWO checks stand on this, and both FAIL on a subcommand they do not know how to drive: the ROUND TRIP
+    (does what this command writes read back?) and the DOOR check (does the command its own `--help`
+    advertises actually RUN?). So a subcommand added here is covered on the day it is added — there is no
+    second list of commands to forget to update, which is the only way a new door could ever ship
+    advertising a shape it refuses.
     """
     p = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -2269,7 +2469,16 @@ def build_parser() -> "tuple[argparse.ArgumentParser, list[str]]":
     a.add_argument("--id", required=True)
     a.add_argument("--kind", required=True, help="file | cross-cutting | docs | …")
     a.add_argument("--target", required=True, help="the CONCRETE thing reviewed")
-    a.add_argument("--check", action="append", default=[], help="a concrete check; repeat (at least one)")
+    # REQUIRED, and the `required=` is the whole of what this line had to say and did not. `--check` was
+    # OPTIONAL to argparse — so `--help` bracketed it, `[--check CHECK]` — while `check_unit` refuses a unit
+    # whose `checks` is empty. The command this tool's own help advertised (`plan-add --file … --id … --kind
+    # … --target …`) therefore exited 1: `checks is [] — a unit with no concrete checks is not a unit`. The
+    # help door and the WRITE door disagreed about what the command IS, which is the same defect as two
+    # doors disagreeing about what an ID is. It is `required=True` now, so the shape the help advertises is
+    # the shape the write path takes, and a missing `--check` is refused by ARGPARSE — at the door, naming
+    # the flag — instead of by a rule about the unit that was built from it.
+    a.add_argument("--check", action="append", default=[], required=True,
+                   help="a concrete check; REQUIRED, and repeatable — a unit with no checks is not a unit")
 
     v = sub.add_parser("verify", help="DOES THIS PASS COUNT? (it never reads the reviewer's report)")
     v.add_argument("--file", required=True, help="the ACTIVE launch attempt's progress.jsonl")
