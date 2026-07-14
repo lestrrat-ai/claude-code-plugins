@@ -109,7 +109,13 @@ the **slurped** pages — so a marker cannot exist for a fetch that did not run:
 #     the SAME response, says rows are missing. Every page must STATE the fact and every page must state the
 #     SAME fact; a page that omits it is a page we cannot read, never a page that agrees.
 gh api --paginate --slurp "repos/<owner>/<repo>/commits/<head_sha>/check-runs" | jq -c '
-  [.[].check_runs[]] as $r | [.[].total_count] as $totals
+  if ([.[] | select((.check_runs|type) != "array")] | length) > 0
+    then error("check-runs: a PAGE carries no check_runs ARRAY — a page that is MISSING the row array is
+      NOT a page that has NO rows. `// []` erases that difference: delete the member from an otherwise-green
+      response, leave total_count 0, and the count agrees with the zero rows collected, the pages agree,
+      containment holds, and the verdict is GREEN. An absence read as nothing-wrong, one field along.")
+    else . end
+  | [.[].check_runs[]] as $r | [.[].total_count] as $totals
   | if ($totals|length) == 0 or ([$totals[] | select((type) == "number") | select((floor) == .)]|length) != ($totals|length)
     then error("check-runs: a PAGE carries no integer total_count — that is the count GitHub itself
       reports for this commit, on EVERY page, and it is the ONLY thing we can check our read against. A page
@@ -143,7 +149,12 @@ gh api --paginate --slurp "repos/<owner>/<repo>/commits/<head_sha>/check-runs" |
 #     evidence gap this section exists to refuse. It gets the SAME completeness test as (1), and the test
 #     is APPLIED PER FAMILY: one family checked and the other not is one family short-read in silence.
 gh api --paginate --slurp "repos/<owner>/<repo>/commits/<head_sha>/status" | jq -c '
-  [.[].statuses[]] as $s | [.[].sha] as $shas | [.[].total_count] as $totals
+  if ([.[] | select((.statuses|type) != "array")] | length) > 0
+    then error("status: a PAGE carries no statuses ARRAY — see (1). A page MISSING the member is not a page
+      with an EMPTY one, and this is the family that carries the FAILING Jenkins status: read the absence as
+      zero statuses and the commit that has a failing one reports none at all.")
+    else . end
+  | [.[].statuses[]] as $s | [.[].sha] as $shas | [.[].total_count] as $totals
   | if ($totals|length) == 0 or ([$totals[] | select((type) == "number") | select((floor) == .)]|length) != ($totals|length)
     then error("status: a PAGE carries no integer total_count — see (1): a page that does not state it is a
       page we cannot read, and we cannot tell a complete read from a truncated one.")
@@ -280,6 +291,18 @@ machine-read convention as `state.jsonl` and the review plan/progress files (`fi
   fact, and the tool believing whichever one it happened to read first. `ci-status.py` reconciles them at a
   single seam (`read_pages`/`agreed`), which every paginated fetch must pass through, so a fetcher **cannot**
   parse a page itself and therefore cannot forget.
+- **A PAGE MISSING ITS ROW ARRAY IS NOT A PAGE WITH NO ROWS — AND NO FIELD READ MAY DEFAULT.** Both rules
+  above were written and *both still passed* on a response whose `statuses` member was simply **not there**:
+  `(.statuses // [])` — and `page.get("statuses") or []` in the tool — read the absence as an **empty list**,
+  so `total_count: 0` agreed with the zero rows collected, the pages agreed with each other, containment
+  held, and the verdict was **`green`** for a commit whose status rows we never actually received. The row
+  array must be **present and a LIST on every page**, or the fetch fails closed. **The class, not the line:**
+  every field read off a GitHub response **declares the shape it expects** and refuses anything else —
+  `ci-status.py` has exactly one accessor (`field()`), it takes **no default**, and an AST scan (`[shape]`
+  cases) fails the build if any fetcher reads a field another way. A value that **may** be absent or null
+  (`app`, `conclusion`, `detailsUrl`) **says so at the read**; a value that may not, **cannot become one by
+  accident**. *`x // []` and `x or []` are the same bug in two languages: they erase the difference between
+  "GitHub says there are none" and "GitHub said nothing at all".*
 - **Honest limits, and they are NOT closed by the above.** Say them, and never claim more:
   - `/check-runs` is capped at the **1000 most recent check suites**. `--paginate` defeats page-size
     truncation and the `total_count` test defeats a short read — **neither proves completeness at that

@@ -169,6 +169,7 @@ tool written to prevent it.
 from __future__ import annotations
 
 import argparse
+import ast
 import contextlib
 import importlib.util
 import io
@@ -418,6 +419,16 @@ RULES = {
     #     lesson (a body no family CALLS is not a rule; two call sites must never share one marker) is not
     #     weakened but STRENGTHENED: each weakening now bypasses the whole page-reader for that family, which
     #     is the code this file actually shipped, and that family's fixtures must catch it alone.
+    # --- AND A FIELD THAT IS NOT THERE IS NOT A FIELD THAT IS EMPTY (`field` / `check_field_shapes`) -------
+    # The SIXTH false green, in the seam built ONE ROUND AGO to stop the fifth. `page.get(rows_key) or []`:
+    # delete a page's `statuses` member, leave `total_count: 0`, and every rule agreed — the count matched
+    # the rows collected, the pages agreed, containment held — GREEN. The class is not "that line": it is a
+    # field read that DECLARES NOTHING, and so can REFUSE nothing. Every field of a GitHub response now comes
+    # through `field()`, which takes a SHAPE and never a default, and a fetcher that reads one any other way
+    # is named by an AST scan and the suite goes RED.
+    "rows-are-a-list": "EVERY page carries its rows as a LIST — a page MISSING the key is NOT a page with an EMPTY one, and `or []` said it was: an otherwise-green response with its `statuses` member deleted returned GREEN",
+    "field-shape-declared": "a field whose DECLARED shape the response does not have is REFUSED — absent, null, or the wrong type, and NEVER defaulted to the benign-looking value the caller forgot to think about",
+    "field-reads-through-the-seam": "a fetcher CANNOT read a field any other way — a raw `.get()`, a raw subscript, or a `field()` call with no shape is caught by an AST scan of the code that RUNS, because a door with a way around it is not a door",
     "pages-are-an-array": "a `--slurp` that did not yield a NON-EMPTY ARRAY is a fetch we cannot read — never rows to iterate, and never zero pages to quantify over vacuously",
     "page-is-an-object": "EVERY page is an OBJECT — a page we cannot read used to reach `.get` and CRASH, and a crash is not a refusal: no verdict was reached at all",
     "page-fact-known": "EVERY page must STATE the facts GitHub repeats on all of them (`total_count`; the status `.sha`) — a page that does not is not a page that agrees, and an absent count is NOT a count of zero",
@@ -647,6 +658,150 @@ def s(value: object) -> object:
     return str(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else value
 
 
+# --- ONE DOOR FOR EVERY FIELD READ OFF A GITHUB RESPONSE -------------------------------------------
+#
+# **THE SIXTH FALSE GREEN, AND IT WAS `x or []` — THE IDIOM THAT ERASES THE DIFFERENCE BETWEEN "GITHUB SAID
+# THERE ARE NONE" AND "GITHUB SAID NOTHING AT ALL".** `read_pages` — the seam added ONE ROUND AGO precisely
+# to make a paginated read safe — flattened its rows with `page.get(rows_key) or []`. Delete the `statuses`
+# member from an otherwise-green response, leave `total_count: 0`, and every rule in this file agrees: the
+# count matches the rows collected (zero of them), the pages agree, containment holds — **GREEN**. The tool
+# ALREADY KNEW this rule (`total_count` absent is refused; a MISSING `statusCheckRollup` is refused) and the
+# brand-new seam reintroduced it anyway, because a field read that DECLARES NOTHING cannot refuse ANYTHING.
+#
+# So the class is closed the way `repo_scoped()` closed its own: **not by fixing the one line, but by making
+# the mistake unreachable.** Every field read off a GitHub response goes through `field()`, and `field()`
+# takes no default — it takes a DECLARED SHAPE, and refuses anything else. A key that may be absent, or null,
+# says so (`ABSENT`, `NULL`); a key that may not, cannot become one by accident. And `check_field_shapes()`
+# AST-scans this file: a fetcher that reads a field any other way — a raw `.get()`, a raw subscript, or a
+# `field()` call with no shape at all — FAILS THE SUITE BY NAME. Forgetting is not made unlikely; it is made
+# impossible to commit quietly.
+#
+# **A DECLARED TOLERANCE IS NOT A COERCION**, and the difference is the whole point. `conclusion` is null on a
+# running check and `app` is null on a check run that came from no app — those reads declare `NULL`/`ABSENT`
+# and the value lands in the artifact as `-`, which is a FACT GitHub stated. What is forbidden is the read
+# that does not SAY what it expects, because that is the one that cannot tell a fact from a silence.
+
+ABSENT = "may be ABSENT"   # the key may be MISSING from the object entirely
+NULL = "may be NULL"       # the key may be present and explicitly null
+
+# What a shape READS AS, in the refusal. `list` -> "a list", so a message says "…is null, NOT A LIST", which
+# is the sentence a reader needs — never `<class 'list'>`.
+SHAPE_NAMES = {list: "a list", dict: "an object", str: "a string", int: "an integer", bool: "a boolean"}
+
+
+def shape_problem(source: str, obj: object, key: str, shape: tuple) -> str | None:
+    """Does `obj[key]` have the shape the caller DECLARED? Returns the COMPLAINT, or None if it does.
+
+    It NEVER returns the value. Reading is `field()`'s job and there is exactly ONE door — a second function
+    that could hand back a value would be a second door, and the next `or []` would go through it.
+    """
+    kinds = tuple(k for k in shape if isinstance(k, type))
+    want = " or ".join([*(SHAPE_NAMES.get(k, k.__name__) for k in kinds),
+                        *(k for k in shape if not isinstance(k, type))]) or "NOTHING AT ALL"
+    if not kinds:
+        return (f"{source}: the read of {key!r} DECLARES NO SHAPE — a read that does not say what it expects "
+                f"cannot REFUSE anything, so a MISSING value silently becomes an empty one. That is the bug "
+                f"this seam exists to make unwritable.")
+    if not isinstance(obj, dict):
+        return (f"{source}: {key!r} cannot be read off {SHAPE_NAMES.get(type(obj), type(obj).__name__)} — "
+                f"GitHub returns an object here, and a response we cannot read is not a response with "
+                f"nothing in it.")
+    if key not in obj:
+        return None if ABSENT in shape else (
+            f"{source}: the response STATES NO {key!r} — it is ABSENT, not {want}. AN ABSENT VALUE IS NOT AN "
+            f"EMPTY ONE: 'GitHub says there are none' is a FACT, 'GitHub said nothing at all' is a response "
+            f"we cannot read, and defaulting the second to the first is how a read with a HOLE in it reports "
+            f"a complete one.")
+    value = obj[key]
+    if value is None:
+        return None if NULL in shape else (
+            f"{source}: {key!r} is null, not {want} — and a null we did not DECLARE is a value we do not "
+            f"understand, never a benign one.")
+    if isinstance(value, bool) and bool not in kinds:
+        return f"{source}: {key!r} is a boolean ({value!r}), not {want}."
+    if not isinstance(value, kinds):
+        return (f"{source}: {key!r} is {SHAPE_NAMES.get(type(value), type(value).__name__)} ({value!r}), not "
+                f"{want} — a value of a shape we did not declare is a response we cannot read.")
+    return None
+
+
+def field(source: str, obj: object, key: str, *shape: object, why: str = "") -> object:
+    """**THE ONLY WAY A FIELD OF A GITHUB RESPONSE ENTERS THIS TOOL.**
+
+    `field("status", page, "statuses", list)` — the caller SAYS WHAT IT EXPECTS, and anything else is a
+    `FetchError`. There is no `default` parameter and there will never be one: a default is a legal-looking
+    value handed to whoever did not think about the illegal case, and every false green in this file is one
+    of those. `ABSENT` / `NULL` in the shape are how a caller declares a value GitHub legitimately may not
+    send (a running check has no `conclusion`); anything NOT declared is REFUSED, loudly, here.
+
+    `why` is the caller's reason — appended to the refusal, so the message says what the SHAPE means as well
+    as what it is (see `rollup-entries-present`, whose fixture pins that sentence).
+    """
+    problem = shape_problem(source, obj, key, shape)
+    # MUTATE:field-shape-declared:problem = None
+    if problem:
+        raise FetchError(f"{problem}{' ' + why if why else ''}")
+    return obj.get(key) if isinstance(obj, dict) else None
+
+
+# The functions that read a GITHUB RESPONSE. Every field read inside one of them goes through `field()`, and
+# `check_field_shapes` PROVES it. (`build_snapshot` is NOT here: the dicts IT reads are the rows THIS FILE
+# built, not GitHub's.)
+FIELD_READERS = ("readable", "agreed", "read_pages", "fetch_check_runs", "fetch_statuses", "fetch_rollup")
+
+# The one dict a fetcher reads that this FILE built: `read_pages` returns `facts`, keyed by `PAGE_FACTS`, so
+# every key is present BY CONSTRUCTION. Reading it is not a field read off a response. Keep this list at one
+# name; every addition is a hole in the scan.
+SEAM_OWNED = ("facts",)
+
+
+def check_field_shapes(source: str | None = None) -> str:
+    """EVERY FIELD READ IN EVERY FETCHER DECLARES ITS SHAPE — asserted over the AST of the code that RUNS.
+
+    This is the half `field()` cannot do. A door only helps if there is no way around it, and the way around
+    it is one character long: `page.get(rows_key)`. So the source is SCANNED, and a fetcher that reads a
+    field any other way is named and the suite goes RED:
+
+      * a raw `.get(…)` — declares no shape, and turns MISSING into None (then `or []` turns it into empty);
+      * a raw `obj["k"]` subscript — declares no shape either, and a KeyError is a CRASH where a verdict was
+        owed (this file already refuses that reasoning for pages, see `page-is-an-object`);
+      * a `field()` call with NO SHAPE — the read went through the door and still said nothing.
+
+    Its honest limit, stated rather than implied: it scans the functions in `FIELD_READERS`. A NEW fetcher
+    that is not added to that tuple is not scanned — the same limit `code_argv` has, and the reason both are
+    derived from the running code rather than a hand-written list wherever that is possible.
+    """
+    tree = ast.parse(source if source is not None else Path(__file__).read_text(encoding="utf-8"))
+    bad: list[str] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.FunctionDef) and node.name in FIELD_READERS):
+            continue
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute) and sub.func.attr == "get":
+                bad.append(f"{node.name}:{sub.lineno} reads a field with a raw `.get(…)` — it DECLARES NO "
+                           f"SHAPE, so an ABSENT value becomes None, and `or []` then makes it EMPTY")
+            elif (isinstance(sub, ast.Subscript) and isinstance(sub.slice, ast.Constant)
+                  and isinstance(sub.slice.value, str)
+                  and not (isinstance(sub.value, ast.Name) and sub.value.id in SEAM_OWNED)):
+                bad.append(f"{node.name}:{sub.lineno} reads {sub.slice.value!r} with a raw subscript — it "
+                           f"DECLARES NO SHAPE, and a KeyError is a crash, not a refusal")
+            elif (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name) and sub.func.id == "field"
+                  and len(sub.args) < 4):
+                bad.append(f"{node.name}:{sub.lineno} calls field() with NO SHAPE — it went through the door "
+                           f"and still did not say what it expects")
+    # MUTATE:field-reads-through-the-seam:pass
+    if bad:
+        raise FetchError(
+            "A FIELD READ THAT FORGETS ITS SHAPE: " + "; ".join(bad) + ". Every field of a GitHub response "
+            "is read through `field(source, obj, key, <shape>)`, which REFUSES anything the caller did not "
+            "declare. A read that declares nothing cannot refuse anything — and the last one to ship "
+            "(`page.get(rows_key) or []`) turned a response that was MISSING its row array into a page with "
+            "NO rows, and returned GREEN."
+        )
+    return (f"every field read declares its shape and goes through field(): "
+            f"{', '.join(sorted(FIELD_READERS))}")
+
+
 # --- A PAGINATED RESPONSE IS A SOURCE THAT CAN CONTRADICT *ITSELF*, AND IT DID -----------------------
 #
 # **THE FIFTH FALSE GREEN IN THIS FILE, AND THE FIFTH TIME IT WAS THE SAME SHAPE: TWO SOURCES THAT DISAGREE
@@ -678,7 +833,7 @@ def s(value: object) -> object:
 # what makes both halves meaningful: the pages must agree, and the agreed value must equal the rows collected
 # across ALL pages, which is exactly what `--slurp` gives us.
 
-# The per-commit facts each REST family's response repeats on EVERY page: (field, the type it must be).
+# The per-commit facts each REST family's response repeats on EVERY page: (the fact, the shape it must have).
 # **A FACT LISTED HERE IS RECONCILED; A FACT NOT LISTED IS NOT READ AT ALL.** The status response's top-level
 # `.state` is deliberately absent: this tool never reads it (a commit with zero statuses reports
 # `{"state":"pending"}` — an absence read as a verdict), and reconciling a value nothing consumes would be a
@@ -689,36 +844,48 @@ PAGE_FACTS = {
 }
 
 
-def agreed(source: str, pages: list[dict], field: str, kind: type) -> object:
-    """THE ONE PLACE A FACT REPEATED ACROSS PAGES IS RECONCILED. Every page must STATE it, readably, and every
-    page must state THE SAME ONE.
+def readable(source: str, pages: list[dict], fact: str, kind: type) -> list[object]:
+    """EVERY page STATES the fact, in the shape it must have — or NO page's value is read at all.
 
     A PAGE THAT DOES NOT STATE IT IS NOT A PAGE THAT AGREES WITH US. An absent value is not a benign value —
     this file already knows that about `headRefOid` and about a rollup `state`, and the knowledge simply never
     reached page two. Skipping the pages that "have nothing to say" is how a truncated read reports a complete
     one: the page that would have told you rows were missing is exactly the page you skipped.
 
-    AND TWO PAGES THAT DISAGREE ARE TWO SOURCES THAT DISAGREE. It does not matter that they arrived in one
-    response — one of them is wrong, we cannot tell which, and evidence we cannot reconcile is not evidence.
-    The conflict is NOT resolved by taking the first page (which is what the bug did), nor the last, nor the
-    largest: the same rule, and the same reason, as `agree_or_refuse`.
+    The shape check is `shape_problem` — the same one `field()` refuses with — asked of EVERY page before ANY
+    value is taken, so the refusal can NAME the pages instead of dying on the first of them.
     """
-    stated = [page.get(field) for page in pages]
-    # MUTATE:page-fact-known:stated = [v for v in stated if isinstance(v, kind) and not isinstance(v, bool)] or stated
-    if any(isinstance(v, bool) or not isinstance(v, kind) for v in stated):
+    problems = [shape_problem(source, page, fact, (kind,)) for page in pages]
+    bad = [i for i, problem in enumerate(problems) if problem]
+    if bad:
         raise FetchError(
-            f"{source}: page(s) "
-            + ", ".join(str(i + 1) for i, v in enumerate(stated)
-                        if isinstance(v, bool) or not isinstance(v, kind))
-            + f" of {len(pages)} carry no readable {field} ({', '.join(repr(v) for v in stated)}) — GitHub "
+            f"{source}: page(s) " + ", ".join(str(i + 1) for i in bad)
+            + f" of {len(pages)} carry no readable {fact} ({'; '.join(problems[i] for i in bad)}) — GitHub "
             f"repeats it on EVERY page, so a page that does not state it is a page we cannot read. An absent "
             f"count is NOT a count of zero and an absent sha is NOT this commit: a fail-closed rule that "
             f"cannot fire is not a rule, and the page we waved through is the one that would have told us."
         )
+    return [field(source, page, fact, kind) for page in pages]
+
+
+def agreed(source: str, pages: list[dict], fact: str, kind: type) -> object:
+    """THE ONE PLACE A FACT REPEATED ACROSS PAGES IS RECONCILED. Every page must STATE it, readably, and every
+    page must state THE SAME ONE.
+
+    TWO PAGES THAT DISAGREE ARE TWO SOURCES THAT DISAGREE. It does not matter that they arrived in one
+    response — one of them is wrong, we cannot tell which, and evidence we cannot reconcile is not evidence.
+    The conflict is NOT resolved by taking the first page (which is what the bug did), nor the last, nor the
+    largest: the same rule, and the same reason, as `agree_or_refuse`.
+    """
+    # The weakening is the SHIPPED BUG, verbatim: read the fact RAW off every page, then quietly DROP the
+    # pages that did not state it readably. The pages that remain then agree with each other — vacuously —
+    # and the page that would have said rows were missing is the one that was thrown away.
+    # MUTATE:page-fact-known:stated = [v for v in (page.get(fact) for page in pages) if isinstance(v, kind) and not isinstance(v, bool)] or [page.get(fact) for page in pages]
+    stated = readable(source, pages, fact, kind)
     # MUTATE:pages-agree:stated = stated[:1]
     if len(set(stated)) != 1:
         raise FetchError(
-            f"{source}: THE PAGES OF ONE RESPONSE DISAGREE ABOUT {field} — {', '.join(f'page {i + 1} says {v!r}' for i, v in enumerate(stated))}. "
+            f"{source}: THE PAGES OF ONE RESPONSE DISAGREE ABOUT {fact} — {', '.join(f'page {i + 1} says {v!r}' for i, v in enumerate(stated))}. "
             f"GitHub repeats this fact on every page, so the pages cannot both be right, and a response that "
             f"contradicts ITSELF is not evidence about this PR. It is NOT resolved by believing page one: "
             f"that is precisely the bug — page one said the read was complete while page two said rows were "
@@ -766,8 +933,20 @@ def read_pages(fetch: Fetch, source: str, argv: list[str], rows_key: str) -> tup
             f"that says 'there are more rows' stops being read."
         )
 
-    rows = [row for page in pages for row in page.get(rows_key) or []]
-    facts = {field: agreed(source, pages, field, kind) for field, kind in PAGE_FACTS[source]}
+    # **AND EVERY PAGE CARRIES ITS ROW ARRAY — AS AN ARRAY.** The weakening below is the code that SHIPPED,
+    # and it is `x or []`: the idiom that erases the difference between "GitHub says this commit has no
+    # statuses" (a FACT, and `total_count: 0` confirms it) and "the response did not contain a `statuses`
+    # member at all" (a response we cannot read). Delete that member from an otherwise-green fixture and the
+    # count still matched the rows collected — zero — the pages still agreed, containment still held, and
+    # `derive()` returned **GREEN**. The tool refuses an absent `total_count` and an absent
+    # `statusCheckRollup` for exactly this reason; the brand-new page seam defaulted the one thing left.
+    # A page missing the key, or carrying anything but a LIST there, is REFUSED — never defaulted, never
+    # coerced. `field()` is what makes that unforgettable rather than merely written down.
+    # MUTATE:rows-are-a-list:rows = [row for page in pages for row in page.get(rows_key) or []]
+    rows = [row for page in pages for row in field(source, page, rows_key, list, why=(
+        f"Every page of this response carries its rows under {rows_key!r}; a page that does not is not a "
+        f"page with NO rows, and the row it is hiding could be the FAILING one."))]
+    facts = {fact: agreed(source, pages, fact, kind) for fact, kind in PAGE_FACTS[source]}
 
     # WHAT WE COLLECTED MUST BE WHAT GITHUB SAYS IT HOLDS — across every page, now that every page has been
     # made to say the same number. A short read is a hole we KNOW about, and a hole we know about is never
@@ -806,7 +985,12 @@ def fetch_check_runs(fetch: Fetch, head_sha: str) -> tuple[list[dict], dict]:
 
     rows = []
     for r in runs:
-        app = r.get("app") or {}
+        # THE SHAPES ARE DECLARED, one read at a time (`field`). `app` is NULL on a check run that came from
+        # no app and `conclusion` is NULL on one still running — both are things GitHub legitimately sends,
+        # so both are DECLARED, and they land in the artifact as `-`, which is a fact and not a default. What
+        # a read may never do is stay SILENT about what it expects: that is the read that cannot refuse.
+        app = field("check-runs", r, "app", dict, NULL, ABSENT)
+        app_id = field("check-runs", app, "id", int, NULL, ABSENT) if isinstance(app, dict) else None
         # GITHUB'S OWN `.head_sha`, off the row it sits on — NEVER the `head_sha` we asked for. The whole
         # force of the verify rule downstream comes from these two being INDEPENDENT: the header carries
         # ours, the rows carry GitHub's, so they CAN disagree, and on a snapshot fetched for a superseded
@@ -814,21 +998,21 @@ def fetch_check_runs(fetch: Fetch, head_sha: str) -> tuple[list[dict], dict]:
         # source: it matches BY CONSTRUCTION, it can never fail, and the verification is deleted rather
         # than implemented. That bug has already shipped in this repo once.
         # MUTATE:evidence-sha-from-response:sha = head_sha
-        sha = s(r.get("head_sha"))
+        sha = field("check-runs", r, "head_sha", str)
         rows.append({
             "row": "checkrun",
             "sha": sha,
-            "name": s(r.get("name")),
-            "app_id": s(app.get("id")) if app.get("id") is not None else NO_OID,
-            "status": up(r.get("status")),
-            "conclusion": up(r.get("conclusion") or NO_OID),
-            "id": s(r.get("details_url") or NO_OID),
+            "name": field("check-runs", r, "name", str),
+            "app_id": s(app_id) if app_id is not None else NO_OID,
+            "status": up(field("check-runs", r, "status", str)),
+            "conclusion": up(field("check-runs", r, "conclusion", str, NULL, ABSENT) or NO_OID),
+            "id": field("check-runs", r, "details_url", str, NULL, ABSENT) or NO_OID,
         })
 
     # The commit oid lives ONLY on the rows here, so a fetch that returned ZERO rows has NO oid to carry and
     # its marker's sha is `-`. Inventing one would be the fabrication the contract forbids outright.
     # MUTATE:checkruns-marker-sha:marker_sha = head_sha
-    marker_sha = s(runs[0].get("head_sha")) if runs else NO_OID
+    marker_sha = field("check-runs", runs[0], "head_sha", str) if runs else NO_OID
     marker = {"row": "source", "source": "check-runs", "sha": marker_sha, "count": str(len(rows))}
 
     # The FAMILY IS READ, and what it returned is what goes in the artifact. A family never read reports
@@ -877,7 +1061,8 @@ def fetch_statuses(fetch: Fetch, head_sha: str) -> tuple[list[dict], dict]:
     # MUTATE:status-sha-from-response:sha = head_sha
     sha = s(facts["sha"])
     rows = [
-        {"row": "status", "sha": sha, "context": s(st.get("context")), "state": up(st.get("state"))}
+        {"row": "status", "sha": sha,
+         "context": field("status", st, "context", str), "state": up(field("status", st, "state", str))}
         for st in statuses
     ]
     # ALWAYS GitHub's, never `-`: a `-` here did not come from the response, and a marker whose sha is not
@@ -966,21 +1151,17 @@ def fetch_rollup(fetch: Fetch, pr: str) -> tuple[list[dict], dict, object, list[
     # founding rule — an absence must read as "we do not know", never as "nothing wrong" — applied to the
     # response instead of the artifact. (gh returns the key as a list on every PR checked; refusing a shape
     # we have never seen costs nothing and cannot wedge one we have.)
-    entries = data.get("statusCheckRollup")
-    # MUTATE:rollup-entries-present:entries = entries or []
-    if not isinstance(entries, list):
-        raise FetchError(
-            f"rollup: the response's statusCheckRollup is {type(entries).__name__}, not a list — that is not "
-            f"an EMPTY rollup (a fact GitHub can state), it is a response we cannot read. Treating it as "
-            f"'no witnesses' would make the containment test a claim about the empty set, which passes "
-            f"TRIVIALLY: an absence read as 'nothing wrong'."
-        )
+    # MUTATE:rollup-entries-present:entries = data.get("statusCheckRollup") or []
+    entries = field("rollup", data, "statusCheckRollup", list, why=(
+        "That is not an EMPTY rollup (a fact GitHub can state), it is a response we cannot read. Treating "
+        "it as 'no witnesses' would make the containment test a claim about the empty set, which passes "
+        "TRIVIALLY: an absence read as 'nothing wrong'."))
 
     witnesses: list[dict] = []
     status_rollup: list[dict] = []
     run_rollup: list[dict] = []
     for entry in entries:
-        kind = entry.get("__typename") if isinstance(entry, dict) else None
+        kind = field("rollup", entry, "__typename", str, NULL, ABSENT)
         if kind == "CheckRun":
             witnesses.append(entry)
             # AND ITS VERDICT IS KEPT — NOT to be believed, but to be RECONCILED. The rollup returns each
@@ -994,11 +1175,19 @@ def fetch_rollup(fetch: Fetch, pr: str) -> tuple[list[dict], dict, object, list[
             # `build_snapshot` — if the two sources contradict each other about one run, neither is
             # evidence. The witness's `id` (detailsUrl) is the CROSS-SOURCE identity, the same one
             # `ci-snapshot.check_containment` compares on.
+            #
+            # `status` and `conclusion` DECLARE that the rollup may not send them (`NULL`, `ABSENT`) — and
+            # that is NOT a coercion, because nothing here reads their absence as "no opinion". A field the
+            # rollup did not send buckets as `UNKNOWN_VALUE` (see `checkrun_bucket`), which CONTRADICTS any
+            # REST twin that classifies, and `agree_or_refuse` then refuses the pair. The tolerance is
+            # declared at the read; the REFUSAL happens where the two sources meet.
+            run_status = field("rollup", entry, "status", str, NULL, ABSENT)
+            run_conclusion = field("rollup", entry, "conclusion", str, NULL, ABSENT) or NO_OID
             run_rollup.append({
-                "id": s(entry.get("detailsUrl") or NO_OID),
-                "name": s(entry.get("name")),
-                "bucket": checkrun_bucket(up(entry.get("status")), up(entry.get("conclusion") or NO_OID)),
-                "state": f"{up(entry.get('status'))}/{up(entry.get('conclusion') or NO_OID)}",
+                "id": field("rollup", entry, "detailsUrl", str, NULL, ABSENT) or NO_OID,
+                "name": field("rollup", entry, "name", str),
+                "bucket": checkrun_bucket(up(run_status), up(run_conclusion)),
+                "state": f"{up(run_status)}/{up(run_conclusion)}",
             })
             continue
         if kind == "StatusContext":
@@ -1020,11 +1209,12 @@ def fetch_rollup(fetch: Fetch, pr: str) -> tuple[list[dict], dict, object, list[
             # CLASSIFIES with, never a fourth copy of the values. `doc-check` already asserts that union IS
             # the `StatusState` enum the doc declares (`StatusState is TOTAL`), so a value GitHub adds
             # tomorrow lands outside it and is REFUSED, and a value it removes cannot silently linger here.
-            state = up(entry.get("state"))
+            context = field("rollup", entry, "context", str)
+            state = up(field("rollup", entry, "state", str, NULL, ABSENT))
             # MUTATE:rollup-status-state-known:pass
             if state not in STATUS_STATES:
                 raise FetchError(
-                    f"rollup: StatusContext {s(entry.get('context'))!r} is in an UNRECOGNISED state "
+                    f"rollup: StatusContext {context!r} is in an UNRECOGNISED state "
                     f"{state!r} — StatusState is {' / '.join(sorted(STATUS_STATES))}, and a state we cannot "
                     f"read is NOT a state we may drop. It never enters the artifact, so NOTHING downstream "
                     f"can refuse it: accepted here, it is accepted for good, and this PR would go GREEN on a "
@@ -1032,7 +1222,7 @@ def fetch_rollup(fetch: Fetch, pr: str) -> tuple[list[dict], dict, object, list[
                     f"demonstrated. If GitHub has added a state, TEACH `ci-snapshot.py` ABOUT IT (its "
                     f"CLASSIFY buckets, and the doc's enum block) — do not let it fall on the floor here."
                 )
-            status_rollup.append({"context": s(entry.get("context")), "state": state})
+            status_rollup.append({"context": context, "state": state})
             continue
         # The weakening below is the ORIGINAL BUG, restored: keep what we recognise, drop the rest, say
         # nothing. It is how the `StatusContext` — and with it every required-but-unposted check — became
@@ -1045,7 +1235,8 @@ def fetch_rollup(fetch: Fetch, pr: str) -> tuple[list[dict], dict, object, list[
             f"GREEN. If GitHub has added a type, TEACH THIS TOOL ABOUT IT — do not let it fall on the floor."
         )
 
-    rows = [{"row": "witness", "name": s(w.get("name")), "id": s(w.get("detailsUrl") or NO_OID)}
+    rows = [{"row": "witness", "name": field("rollup", w, "name", str),
+             "id": field("rollup", w, "detailsUrl", str, NULL, ABSENT) or NO_OID}
             for w in witnesses]
     # MUTATE:rollup-marker-sha:marker = {"row": "source", "source": "rollup", "sha": "0" * 40, "count": str(len(rows))}
     marker = {"row": "source", "source": "rollup", "sha": NO_OID, "count": str(len(rows))}
@@ -1054,7 +1245,12 @@ def fetch_rollup(fetch: Fetch, pr: str) -> tuple[list[dict], dict, object, list[
     # has moved past — and "we cannot tell" has exactly one safe answer, which is not green. Left as `None`
     # it would sail straight through `head_moved()` as "not moved" — a fail-closed check that fails OPEN on
     # the one input it cannot read, which is the whole family of bug this file is about.
-    head_now = data.get("headRefOid")
+    #
+    # THE READ DECLARES THAT GITHUB MAY NOT SEND IT, AND THE RULE BELOW SAYS WHAT WE DO ABOUT THAT — which
+    # is REFUSE. That split is deliberate: `field()` says which shapes may ARRIVE, the rule says which ones
+    # we can DERIVE FROM, and collapsing the two would leave this refusal (and its fixture) with nothing to
+    # fire on. An EMPTY string is refused here too — it is no more a commit than an absent one is.
+    head_now = field("rollup", data, "headRefOid", str, NULL, ABSENT)
     if not isinstance(head_now, str) or not head_now:
         # MUTATE:head-must-be-known:head_now = None
         raise FetchError(
@@ -2107,7 +2303,31 @@ SEAM_EXPECT = {
     # defect, reconstructed — must be REFUSED by the seam, not merely absent from a list.
     "[argv] every GitHub call is repo-scoped": ("accepted", "every GitHub call names the repo"),
     "[argv] a fetcher that forgets the repo": ("refused", "is NOT scoped to"),
+    # **THE SAME TWO QUESTIONS, ABOUT FIELD READS.** The argv pair above proves a fetcher cannot ask the
+    # WRONG REPOSITORY; this pair proves it cannot read a field WITHOUT SAYING WHAT IT EXPECTS — the defect
+    # that shipped `page.get(rows_key) or []`, which read a MISSING row array as an EMPTY one and returned
+    # GREEN. The first case is the INVENTORY, over the code that RUNS (`check_field_shapes` AST-scans this
+    # file). The second is the DECISIVE one: a fetcher that FORGETS, reconstructed — and it must be REFUSED
+    # BY NAME, not merely absent from a list. The bad source is INVENTED and lives only in this string: a
+    # forgetful read written into the tree is a read somebody copies.
+    "[shape] every field read declares its shape": ("accepted", "every field read declares its shape"),
+    "[shape] a fetcher that forgets its shape": ("refused", "FORGETS ITS SHAPE"),
+    # And the RUN-TIME backstop behind the scan: a read that reaches `field()` with no shape at all refuses
+    # there too. The scan is static and covers `FIELD_READERS`; this covers the call itself, wherever it is.
+    "[shape] a field read that declares NO shape": ("refused", "DECLARES NO SHAPE"),
 }
+
+# A fetcher that forgets — the defect itself, in the three ways it can be written. INVENTED source: it is
+# parsed, never executed, and it exists NOWHERE in this tree, so a sweeper who greps for it lands here and
+# nowhere else.
+FORGETFUL_FETCHER = """
+def fetch_check_runs(fetch, head_sha):
+    pages = fetch("check-runs", [])
+    rows = [row for page in pages for row in page.get("check_runs") or []]
+    total = pages[0]["total_count"]
+    name = field("check-runs", rows[0], "name")
+    return rows, total, name
+"""
 
 
 def seam_cases(tmp: Path) -> dict[str, tuple[str, str]]:
@@ -2148,6 +2368,11 @@ def seam_cases(tmp: Path) -> dict[str, tuple[str, str]]:
     case("[argv] a fetcher that forgets the repo",
          lambda: repo_scoped(lambda _s, argv: argv, "o/r")(
              "a-new-fetcher", ["gh", "pr", "view", "35", "--json", "statusCheckRollup,headRefOid"]))
+    # THE FIELD-READ SEAM: the inventory over the code that RUNS, and the fetcher that forgets.
+    case("[shape] every field read declares its shape", check_field_shapes)
+    case("[shape] a fetcher that forgets its shape", lambda: check_field_shapes(FORGETFUL_FETCHER))
+    case("[shape] a field read that declares NO shape",
+         lambda: field("check-runs", {"check_runs": []}, "check_runs"))
     doc_cases(tmp, case)  # the alarm's OWN guards — see DOC_EXPECT
     return out
 
@@ -2279,6 +2504,17 @@ def check_seams(tmp: Path) -> list[str]:
 
 def self_test(tmp: Path) -> int:
     failures = 0
+    # **THE STATIC SCAN RUNS BEFORE ANY FIXTURE, AND THE ORDER IS THE POINT.** A field read that forgets its
+    # shape can CRASH a fixture (a raw subscript raises KeyError) before a single guard has said a word — and
+    # then the suite is red for the wrong reason, with a traceback where a NAMED defect belonged. Ask the
+    # question that is true of the SOURCE first, and the answer names the line. (It is also a `[shape]` seam
+    # case: that is what the MUTATION matrix kills the rule with. This call is what makes the failure legible.)
+    try:
+        print(f"ok       {'every field read':32} -> {check_field_shapes()}")
+    except FetchError as exc:
+        print(f"FAIL     {exc}")
+        return 1
+
     names = cases()
     if not names:
         print(f"FAIL     no fixtures in {FIXTURES} — a suite with nothing in it passes VACUOUSLY")
@@ -2434,9 +2670,16 @@ def main() -> int:
 
     repo = args.repo
     if not repo:
+        # THROUGH THE SAME DOOR, AND IT WAS `str()` OVER A RAW JSON VALUE. This read used to be
+        # `str(response.get("nameWithOwner"))` — and `str(None)` is the four perfectly parseable letters
+        # `"None"`, so a response we could not read became the repository `None`, every fetch was scoped to
+        # `repos/None/…`, and the tool reported a FETCH FAILURE about a repository that does not exist
+        # instead of the caller's actual problem. It failed closed, and it lied about why. `field()` refuses
+        # it, and the operator gets the error that is true: we cannot tell which repo this is.
         try:
-            repo = str(gh_fetch("repo", ["gh", "repo", "view", "--json", "nameWithOwner"]).get("nameWithOwner"))  # type: ignore[union-attr]
-        except (FetchError, AttributeError) as exc:
+            repo = field("repo", gh_fetch("repo", ["gh", "repo", "view", "--json", "nameWithOwner"]),
+                         "nameWithOwner", str)
+        except FetchError as exc:
             fail(f"cannot determine the repo ({exc}) — pass --repo owner/name")
 
     out = derive(gh_fetch, repo, args.pr, args.head_sha, args.rundir, required)
