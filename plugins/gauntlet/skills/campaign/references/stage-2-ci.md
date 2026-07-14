@@ -100,33 +100,24 @@ the **slurped** pages — so a marker cannot exist for a fetch that did not run:
 #     `sha` comes from GITHUB'S OWN `.head_sha` on each row — NEVER a literal we substitute in, and the
 #     MARKER's sha comes from that same place. The commit oid lives ONLY on the rows here, so a fetch that
 #     returned ZERO rows has no oid to carry: its marker's sha is "-", and inventing one is forbidden.
-#     THE READ MUST BE COMPLETE: `total_count` is GitHub's own count of the rows it holds FOR THE COMMIT,
-#     repeated on every page, so the SLURPED rows are checked against it and a SHORT READ is a HARD ERROR —
-#     never a green with a footnote. A count we cannot READ is refused too: a rule that cannot fire is not
-#     a rule. Same test, same reason, in (2).
-#     AND IT IS ASKED OF **EVERY PAGE, NOT OF PAGE ONE** — see "THE PAGES OF ONE RESPONSE MUST AGREE", below.
-#     Reading `.[0].total_count` was a FALSE GREEN: page one can say the read is complete while page two, of
-#     the SAME response, says rows are missing. Every page must STATE the fact and every page must state the
-#     SAME fact; a page that omits it is a page we cannot read, never a page that agrees.
+#     THE READ MUST BE COMPLETE: `total_count` is GitHub's own count of the rows it holds FOR THE COMMIT —
+#     not for the page — so the SLURPED rows (every page, flattened) are checked against it and a SHORT READ
+#     is a HARD ERROR, never a green with a footnote. A count we cannot READ is refused too: a rule that
+#     cannot fire is not a rule. Same test, same reason, in (2).
 gh api --paginate --slurp "repos/<owner>/<repo>/commits/<head_sha>/check-runs" | jq -c '
   if ([.[] | select((.check_runs|type) != "array")] | length) > 0
     then error("check-runs: a PAGE carries no check_runs ARRAY — a page that is MISSING the row array is
       NOT a page that has NO rows. `// []` erases that difference: delete the member from an otherwise-green
-      response, leave total_count 0, and the count agrees with the zero rows collected, the pages agree,
-      containment holds, and the verdict is GREEN. An absence read as nothing-wrong, one field along.")
+      response, leave total_count 0, and the count agrees with the zero rows collected, containment holds,
+      and the verdict is GREEN. An absence read as nothing-wrong, one field along.")
     else . end
-  | [.[].check_runs[]] as $r | [.[].total_count] as $totals
-  | if ($totals|length) == 0 or ([$totals[] | select((type) == "number") | select((floor) == .)]|length) != ($totals|length)
-    then error("check-runs: a PAGE carries no integer total_count — that is the count GitHub itself
-      reports for this commit, on EVERY page, and it is the ONLY thing we can check our read against. A page
-      that does not state it is a page we cannot read: we cannot tell a complete read from a truncated one,
-      and cannot-tell is not a green.")
-    elif ($totals|unique|length) != 1
-    then error("check-runs: THE PAGES DISAGREE about total_count (\($totals|tostring)) — one response, one
-      commit, and it contradicts ITSELF. Believing page one is the bug: it said the read was complete while
-      another page said rows were missing, and the missing row could be the FAILING one.")
-    elif $totals[0] != ($r|length)
-    then error("check-runs: total_count=\($totals[0]) but the slurped read collected \($r|length) row(s) —
+  | [.[].check_runs[]] as $r | (.[0].total_count) as $total
+  | if ($total|type) != "number" or ($total|floor) != $total
+    then error("check-runs: the response carries no integer total_count — that is the count GitHub itself
+      reports for this commit, and it is the ONLY thing we can check our read against. Without it we cannot
+      tell a complete read from a truncated one, and cannot-tell is not a green.")
+    elif $total != ($r|length)
+    then error("check-runs: total_count=\($total) but the slurped read collected \($r|length) row(s) —
       EVIDENCE IS MISSING. A row GitHub holds for this commit is not in our hands, and it could be the
       FAILING one. No verdict is derived from a read we KNOW is short.")
     else . end
@@ -141,10 +132,10 @@ gh api --paginate --slurp "repos/<owner>/<repo>/commits/<head_sha>/check-runs" |
 #     carries it EVEN WHEN `.statuses` IS EMPTY. That is what makes the marker below able to PROVE a
 #     zero-status commit: {"source":"status","sha":"<GITHUB'S>","count":"0"} says "we asked this commit, and
 #     it has none". Again GITHUB'S value, NEVER a literal we substitute in.
-#     AND `.sha` IS THE SECOND FACT EVERY PAGE REPEATS, so it is reconciled ACROSS the pages exactly like
-#     `total_count`. Taking `.[0].sha` and stamping it on every row was FABRICATION: a page whose own `.sha`
-#     said its rows belong to ANOTHER commit had them relabelled with the head we asked for, and the
-#     superseded-response rule (VERIFY, below) can only ever catch that on page one.
+#     THE SHA IS GITHUB'S OWN, off the RESPONSE — never a literal we substitute in. That is what lets the
+#     superseded-response rule (VERIFY, below) FAIL: the header carries the sha we ASKED for and the rows
+#     carry the one GitHub NAMED, so the two can disagree, and on a response fetched for a superseded commit
+#     they do. Interpolate our own value here and the comparison is a copy against its own source.
 #     THIS is the family that carries the failing Jenkins status, so a short read HERE is precisely the
 #     evidence gap this section exists to refuse. It gets the SAME completeness test as (1), and the test
 #     is APPLIED PER FAMILY: one family checked and the other not is one family short-read in silence.
@@ -154,24 +145,19 @@ gh api --paginate --slurp "repos/<owner>/<repo>/commits/<head_sha>/status" | jq 
       with an EMPTY one, and this is the family that carries the FAILING Jenkins status: read the absence as
       zero statuses and the commit that has a failing one reports none at all.")
     else . end
-  | [.[].statuses[]] as $s | [.[].sha] as $shas | [.[].total_count] as $totals
-  | if ($totals|length) == 0 or ([$totals[] | select((type) == "number") | select((floor) == .)]|length) != ($totals|length)
-    then error("status: a PAGE carries no integer total_count — see (1): a page that does not state it is a
-      page we cannot read, and we cannot tell a complete read from a truncated one.")
-    elif ([$shas[] | select((type) == "string") | select((length) > 0)]|length) != ($shas|length)
-    then error("status: a PAGE carries no sha — GitHub names the commit on EVERY page, even at zero
-      statuses, and a page that does not name it cannot say which commit its rows are about.")
-    elif ($shas|unique|length) != 1 or ($totals|unique|length) != 1
-    then error("status: THE PAGES DISAGREE about the commit or the count (sha \($shas|tostring), total
-      \($totals|tostring)) — one response contradicting ITSELF. Believing page one is the bug: its value got
-      STAMPED on rows another page said belong to a different commit.")
-    elif $totals[0] != ($s|length)
-    then error("status: total_count=\($totals[0]) but the slurped read collected \($s|length) row(s) —
+  | [.[].statuses[]] as $s | (.[0].sha) as $sha | (.[0].total_count) as $total
+  | if ($total|type) != "number" or ($total|floor) != $total
+    then error("status: the response carries no integer total_count — see (1): without it we cannot tell a
+      complete read from a truncated one, and cannot-tell is not a green.")
+    elif ($sha|type) != "string" or ($sha|length) == 0
+    then error("status: the response carries no sha — GitHub names the commit at the TOP LEVEL, even at zero
+      statuses, and a response that does not name it cannot say which commit its rows are about.")
+    elif $total != ($s|length)
+    then error("status: total_count=\($total) but the slurped read collected \($s|length) row(s) —
       EVIDENCE IS MISSING, and the status we did not get could be the FAILING Jenkins one.")
     else . end
-  | ($shas[0]) as $sha
   | ($s[] | {row:"status", sha:$sha, context:.context, state:(.state|ascii_upcase)}),
-    {row:"source", source:"status", sha:($sha // "-"), count:($s|length|tostring)}'
+    {row:"source", source:"status", sha:$sha, count:($s|length|tostring)}'
 
 # (3) ROLLUP — ITS ROWS ARE WITNESSES ONLY (identity, no verdict): the rollup may NEVER be a verdict
 #     source. That is a rule about the ARTIFACT, and it is NOT a licence to leave the rollup's own verdict
@@ -269,38 +255,24 @@ machine-read convention as `state.jsonl` and the review plan/progress files (`fi
   `repos/cli/cli/commits/trunk/status`. Whether *that* commit still carries zero statuses is a **live
   fact that changes**; the API's behavior **at zero** is the permanent point.)
 - **A SHORT READ IS NOT A GREEN — CHECK WHAT YOU COLLECTED AGAINST GITHUB'S OWN `total_count`.** Both REST
-  families return it, and it counts the rows GitHub holds **for the commit, across ALL pages** — every page
-  repeats the same total (observed 2026-07-14: 27 check runs read at `per_page=5` returns six pages, each
-  reporting `total_count=27`; the *count-is-the-cross-page-total* behavior is the permanent point, the 27 is
-  not). So `total_count` vs the rows the **slurp** collected is a completeness test, and a read that is
-  **short FAILS CLOSED** (`unusable`, refetch): a row GitHub holds and we do not have **could be the failing
-  one**, and a verdict derived from evidence we KNOW has a hole in it is the false green of this whole file
-  wearing a footnote. **A note beside a green is not a disclosure, it is a trapdoor** — the tool used to
-  print exactly that, and it shipped a green anyway. **And a count we cannot READ is refused too** (absent,
-  or not an integer): a fail-closed rule that cannot fire is not a rule.
-- **THE PAGES OF ONE RESPONSE MUST AGREE — ASK EVERY PAGE, NEVER PAGE ONE.** The rule above is worthless if
-  it is asked of `.[0]` alone, and that is exactly how it was written. **A response can contradict ITSELF**:
-  page one reporting `total_count` equal to the rows collected while **page two of the same response reports
-  more**. Both families derived **`green`** from that — page two's own metadata said the read was **short**,
-  and nothing looked at it. So **every** per-commit fact GitHub repeats on **every** page is reconciled
-  across them: `total_count` in both families, and **the status family's `.sha`** (taking page one's and
-  stamping it on every row **fabricated the provenance** of rows a later page said belonged to a *different
-  commit* — the superseded-response rule under VERIFY can only ever see page one). A page that **omits** the
-  fact is a page we **cannot read**, never a page that agrees; an absent count is **not** a count of zero.
-  **This is the same defect as "the two sources must AGREE", one level in** — two things that state the same
-  fact, and the tool believing whichever one it happened to read first. `ci-status.py` reconciles them at a
-  single seam (`read_pages`/`agreed`), which every paginated fetch must pass through, so a fetcher **cannot**
-  parse a page itself and therefore cannot forget.
-- **A PAGE MISSING ITS ROW ARRAY IS NOT A PAGE WITH NO ROWS — AND NO FIELD READ MAY DEFAULT.** Both rules
-  above were written and *both still passed* on a response whose `statuses` member was simply **not there**:
+  families return it, and it counts the rows GitHub holds **for the commit, across ALL pages**, not for the
+  page it sits on (observed 2026-07-14: 27 check runs read at `per_page=5` returns six pages, each reporting
+  `total_count=27`; the *count-is-the-cross-page-total* behavior is the permanent point, the 27 is not). So
+  `total_count` vs the rows the **slurp** collected is a completeness test, and a read that is **short FAILS
+  CLOSED** (`unusable`, refetch): a row GitHub holds and we do not have **could be the failing one**, and a
+  verdict derived from evidence we KNOW has a hole in it is the false green of this whole file wearing a
+  footnote. **A note beside a green is not a disclosure, it is a trapdoor** — the tool used to print exactly
+  that, and it shipped a green anyway. **And a count we cannot READ is refused too** (absent, or not an
+  integer): a fail-closed rule that cannot fire is not a rule.
+- **A PAGE MISSING ITS ROW ARRAY IS NOT A PAGE WITH NO ROWS — AND NO FIELD READ MAY DEFAULT.** The rule
+  above was written and *still passed* on a response whose `statuses` member was simply **not there**:
   `(.statuses // [])` — and `page.get("statuses") or []` in the tool — read the absence as an **empty list**,
-  so `total_count: 0` agreed with the zero rows collected, the pages agreed with each other, containment
-  held, and the verdict was **`green`** for a commit whose status rows we never actually received. The row
-  array must be **present and a LIST on every page**, or the fetch fails closed. **The class, not the line:**
-  every field read off a GitHub response **declares the shape it expects** and refuses anything else —
-  `ci-status.py` has exactly one accessor (`field()`), it takes **no default**, and an AST scan (`[shape]`
-  cases) fails the build if any fetcher reads a field another way. A value that **may** be absent or null
-  (`app`, `conclusion`, `detailsUrl`) **says so at the read**; a value that may not, **cannot become one by
+  so `total_count: 0` agreed with the zero rows collected, containment held, and the verdict was **`green`**
+  for a commit whose status rows we never actually received. The row array must be **present and a LIST on
+  every page**, or the fetch fails closed. **The class, not the line:** every field read off a GitHub
+  response **declares the shape it expects** and refuses anything else — `ci-status.py` has exactly one
+  accessor (`field()`), and **it takes no default**. A value that **may** be absent or null (`app`,
+  `conclusion`, `detailsUrl`) **says so at the read**; a value that may not, **cannot become one by
   accident**. *`x // []` and `x or []` are the same bug in two languages: they erase the difference between
   "GitHub says there are none" and "GitHub said nothing at all".*
 - **Honest limits, and they are NOT closed by the above.** Say them, and never claim more:
@@ -606,9 +578,13 @@ because a fixture suite cannot see its own worst failure — a rule that **nothi
 leaves the suite green — and a hand-written matrix claiming otherwise was **wrong about two rules**.
 **"Which rules are unpinned?" is a question the SUITE answers, never one a reviewer has to discover.** If
 you change a rule here, change it there; if you add one, mark it (`# MUTATE:<id>:<weakening>`) and give it
-a fixture that goes **GREEN** when it is deleted. (`mutate-ci-snapshot.py --script scripts/ci-status.py`
-asks the same question of the **PRODUCER**, whose fixtures are **recorded API responses** driven through
-the real fetch path.)
+a fixture that goes **GREEN** when it is deleted.
+
+**AND THE PRODUCER'S OWN RULES ARE PINNED THE SAME WAY.** `scripts/ci-status-test.py` — run by
+`ci-status.py self-test`, in CI — drives **recorded API responses** through the **real fetch path**, and
+asserts each fixture's verdict **and the rule that produced it**. Most of those fixtures are **false greens
+the tool actually shipped**: a family never fetched, a rollup `StatusContext` dropped on the floor, a page
+whose row array was absent, two sources contradicting each other, a head that moved under the fetch.
 
 **AND THIS PROSE CANNOT SILENTLY DRIFT FROM THE CODE ANY MORE.** The enums, the CLASSIFY buckets and the
 DECIDE bullet order are written **here**, in prose, **and** encoded in `ci-snapshot.py` as Python —
@@ -621,23 +597,30 @@ without editing the code and the build goes RED** — which is the only kind of 
 ever worked.
 
 **AND THE FETCH COMMANDS ABOVE ARE EXECUTED, NOT MERELY READ — because the version of this check that only
-read the ENUMS is exactly where the drift got in.** `doc-check` did not parse the `gh … | jq` block, so this
-file went on specifying `(.statusCheckRollup // [])` — which turns a **MISSING** rollup into an **EMPTY**
-one — while the tool **refused** that shape. The doc and the code disagreed about **what is refused**, in the
-one place nothing was looking. So the filters above are now **RUN**: the fixtures' recorded API responses go
-in, and for **every fixture and every source** this file's spec must give the **same answer the tool gives —
-the same rows, or the same REFUSAL**. The `gh` invocations are checked against the argv the code really
-issues, **in every copy of them in this file** (a recap that drops `,headRefOid` reconstructs a fetch the
-MOVED-HEAD rule can never fire on — that copy had drifted, and this is what caught it). **Two** refusals are
-**cross-source** and no single-fetch filter can state them — the rollup's `StatusContext` **coverage**, and
-the **AGREEMENT** of the two sources about a check they both report — so `doc-check` **prints them as named
-limits** instead of letting the omission pass for coverage.
+read the ENUMS is exactly where the drift got in.** Nothing parsed the `gh … | jq` block, so this file went
+on specifying `(.statusCheckRollup // [])` — which turns a **MISSING** rollup into an **EMPTY** one — while
+the tool **refused** that shape. The doc and the code disagreed about **what is refused**, in the one place
+nothing was looking. Two checks close that, and **neither is optional**:
 
-**AND BECAUSE THOSE TWO ARE THE ONLY RULES `doc-check` CANNOT EXECUTE, THEY ARE THE ONLY ONES THIS FILE
-COULD QUIETLY LOSE — SO THE FILE IS PINNED TO STATING THEM.** Every other rule here is held by execution: the
-enums are compared, the CLASSIFY tables are compared, the `jq` filters are **run**. These two are held by
-**prose alone**, and prose is what rots. So `doc-check` asserts this file still **carries** them, by name —
-delete either paragraph and the build goes **RED**, exactly as it does when a rule and its code disagree.
+- **`ci-snapshot.py`'s `producer_test` RUNS the filters** (the `--paginate` bullet, above, is the same
+  point). It extracts **all five reads this file prescribes** — (1)(2)(3) here and (a)(b) below — **verbatim,
+  by their command line**, and executes them over recorded, **multi-page** API payloads, asserting **the
+  exact rows**. Drop a `--paginate`, drop `,headRefOid`, drop `--repo`, or write a `//` default on the wrong
+  side of a `tostring`, and it goes **RED**: the read it pins is the one an operator would copy out of this
+  file.
+- **`ci-status.py doc-check` checks every `gh` INVOCATION in this file against the argv the code really
+  issues** — *every copy of them*, not just the spec block (a recap that drops `,headRefOid` reconstructs a
+  fetch the MOVED-HEAD rule can never fire on; that copy had drifted, and this is what caught it). It sweeps
+  **every copy of the `ci-status.py derive` command across every skill doc** for `--required-set`, too — the
+  flag that decides a merge must not be droppable by a recap.
+
+**TWO refusals are CROSS-SOURCE and no single-fetch filter can state them** — the rollup's `StatusContext`
+**coverage**, and the **AGREEMENT** of the two sources about a check they both report. One `jq` filter sees
+ONE fetch, so neither can live in the spec above: the tool does both in `build_snapshot()`, the rules are the
+FETCH bullets on `StatusContext` and on AGREEMENT, and the fixtures that pin them are
+`rollup-expected-status.json`, `rollup-status-conflict.json` and `rollup-checkrun-conflict.json`. **They are
+named here rather than quietly omitted**, because a reader who does not find them in the filters must not
+conclude they do not exist.
 
 #### CROSS-FETCH AGREEMENT — containment on a USABLE `.id`, NOT equality
 

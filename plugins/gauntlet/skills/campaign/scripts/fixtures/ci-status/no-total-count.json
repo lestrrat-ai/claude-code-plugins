@@ -1,5 +1,5 @@
 {
-  "why": "GITHUB'S OWN COUNT IS ABSENT, so the completeness test CANNOT BE MADE \u2014 and a fail-closed rule that cannot fire is not a rule, it is a hole with a comment above it. The tool used to read `total_count` off page one; it now asks EVERY page, and this response's only page states none. An absent count is NOT a count of zero: 'we cannot tell whether the read was short' has exactly one safe answer, and it is not green. Same reasoning as a rollup response with no headRefOid",
+  "why": "GITHUB'S OWN COUNT IS ABSENT, so the completeness test CANNOT BE MADE \u2014 and a fail-closed rule that cannot fire is not a rule, it is a hole with a comment above it. `total_count` is the ONLY thing we can check our read against, so a response that does not state it is one we cannot tell a complete read from a truncated one in. An absent count is NOT a count of zero: 'we cannot tell whether the read was short' has exactly one safe answer, and it is not green. Same reasoning as a rollup response with no headRefOid",
   "required_set": "none",
   "pr": "35",
   "api": {
@@ -49,7 +49,7 @@
   "expect": {
     "verdict": "unusable",
     "ci": "pending",
-    "needle": "carry no readable total_count",
+    "needle": "check-runs: the response STATES NO 'total_count'",
     "promoted": false
   }
 }

@@ -1,5 +1,5 @@
 {
-  "why": "THE PAGE IS MISSING ITS ROW ARRAY ENTIRELY. `check_runs` is not there — not empty, ABSENT — and `total_count: 0` agrees with the zero rows a `// []` default would collect. Every other rule then passes honestly (the pages agree, the read is 'complete', containment holds) and the tool returned GREEN. An absence is not a count of zero, in this field as in every other.",
+  "why": "THE PAGE IS MISSING ITS ROW ARRAY ENTIRELY. `check_runs` is not there — not empty, ABSENT — and `total_count: 0` agrees with the zero rows a `// []` default would collect. Every other rule then passes honestly (the read is 'complete' — zero rows collected, zero rows claimed — and containment holds) and the tool returned GREEN. An absence is not a count of zero, in this field as in every other.",
   "required_set": "none",
   "pr": "35",
   "api": {
