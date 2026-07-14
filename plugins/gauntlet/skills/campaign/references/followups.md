@@ -126,7 +126,7 @@ followups.py --file <store> accept  --id fuN        # THE USER AGREED — the on
 followups.py --file <store> reject  --id fuN        # the user ruled against it
 followups.py --file <store> publish --id fuN --ref <issue>     # TIER 3 — only AFTER the user's accept
 followups.py --file <store> done    --id fuN        # it shipped
-followups.py --file <store> set --id fuN --<field> <value>      # edit the PROSE of the claim, nothing else
+followups.py --file <store> set --id fuN --<field> <value>      # edit the PROSE of the claim — never EMPTY it
 followups.py --file <store> get --id fuN [--field <f>]          # read one entry, or one field
 followups.py --file <store> list [--where <field>=<value>]      # ids of matching entries
 followups.py --file <store> table [--all] [--fields <f>,<f>,…]  # the open follow-ups (read-only)
@@ -143,10 +143,16 @@ agreement**: add or drop a condition in the script and the mismatch with this pa
 **What every field is for** (the schema owns the list; this owns the *why*): an entry carries a stable
 id, a one-line title, the **evidence** (which PR, which review pass, which `file:line`), **why it was
 deferred** rather than folded in, its lifecycle state, which run found it and when, and — once ruled on —
-when the user decided and where it was published. **A follow-up with no evidence is a RUMOR** and `add`
-refuses it: nobody can audit an entry that says only *"the merge logic looks wrong"*. **Why it was
-deferred** is required on the same terms — without it the next run cannot see why the finding was not
-simply folded into the PR that found it, and re-litigates the decision.
+when the user decided and where it was published. **A follow-up with no evidence is a RUMOR**: nobody can
+audit an entry that says only *"the merge logic looks wrong"*. **Why it was deferred** is required on the
+same terms — without it the next run cannot see why the finding was not simply folded into the PR that
+found it, and re-litigates the decision.
+
+**The required fields are required at EVERY door an entry can pass through** — `add` refuses to create a
+follow-up without them, and `set` refuses to **empty** one that has them. A rule enforced only where an
+entry is CREATED is not enforced: `set --evidence '   '` an hour later leaves the same rumor, except this
+one the store has already vouched for. Whitespace is not a value, and neither is `-` (what an **unset**
+field holds).
 
 **The claim's `evidence` and the investigation's `finding` are DIFFERENT FIELDS, and both matter.** One is
 why the driver **raised** it; the other is what happened when somebody actually **looked**. A finding never

@@ -286,7 +286,14 @@ WITNESS = witness_alternatives()
 
 
 def is_blank(value: str) -> bool:
-    """A field carries nothing: empty, whitespace, or the placeholder an unset field defaults to."""
+    """A field carries nothing: empty, whitespace, or the placeholder an unset field defaults to.
+
+    THE ONE BLANK PREDICATE — every door uses THIS, and none of them re-spells it. A door that tested
+    `value.strip()` instead would disagree with this one about the PLACEHOLDER, and the two doors of a
+    store must never disagree about what "carries nothing" means: `load()` reads `-` as blank, so a write
+    door that ACCEPTS `-` writes an entry that reads back EMPTY — and, for a witness, one `load()` then
+    rejects as an illegal history, leaving a store its own accessor can no longer open.
+    """
     return value.strip() in ("", PLACEHOLDER)
 
 # What the DEFAULT view hides: the CLOSED entries — the ones NOBODY has anything left to do about. A
@@ -472,7 +479,7 @@ def cmd_add(path: Path, args) -> int:
         entry = dict(DEFAULTS)
         for f in REQUIRED:
             value = getattr(args, f)
-            if not value.strip():
+            if is_blank(value):  # THE one predicate — `-` is what an UNSET field holds, so it is not a value
                 fail(f"--{f.replace('_', '-')} must not be empty — a follow-up without it is a rumor")
             entry[f] = value
         entry["id"] = next_id(entries)  # assigned here; never caller-set, never reused
@@ -486,6 +493,16 @@ def cmd_add(path: Path, args) -> int:
 
 
 def cmd_set(path: Path, args) -> int:
+    """Edit the claim's PROSE — and NEVER edit it AWAY.
+
+    A REQUIRED field is required WHEREVER AN ENTRY CAN CHANGE, not only where `add` happened to create it.
+    `add` refusing a blank `evidence` guards nothing if `set --evidence '   '` can hollow the entry out an
+    hour later: what is left is the same RUMOR the store exists to refuse — except this one the store has
+    already vouched for, because it was checked once, at a door it is no longer standing at.
+
+    The check is DERIVED from REQUIRED. Hand-listing the fields here is how it rots: the next field added
+    to REQUIRED would be pinned at `add` and blankable through this door on the day it is added.
+    """
     with locked(path):
         entries = load(path)
         entry = find(entries, args.id)
@@ -494,6 +511,10 @@ def cmd_set(path: Path, args) -> int:
         updates = {f: getattr(args, f) for f in EDITABLE if getattr(args, f) is not None}
         if not updates:
             fail(f"set requires at least one --<field> <value>; editable: {', '.join(EDITABLE)}")
+        for f in REQUIRED:  # DERIVED from REQUIRED — never a list of field names retyped here
+            if f in updates and is_blank(updates[f]):
+                fail(f"--{f.replace('_', '-')} must not be EMPTIED — a follow-up without it is a rumor, "
+                     f"and this one the store already vouched for")
         entry.update(updates)  # by NAME — never by position. `state` is NOT here: see EDITABLE.
         dump(path, entries)
     print(json.dumps(entry))
@@ -543,8 +564,8 @@ def cmd_transition(path: Path, args) -> int:
                 entry[field] = stamp
                 continue
             value = getattr(args, field)
-            if not value.strip():
-                fail(f"{FLAG[field]} must not be empty — {BLANK_WHY[field]}")
+            if is_blank(value):  # THE one predicate — see `is_blank()`. A `-` witness writes an ILLEGAL
+                fail(f"{FLAG[field]} must not be empty — {BLANK_WHY[field]}")  # history the store cannot open
             entry[field] = (append_finding(entry[field], to, stamp, value) if field == "finding"
                             else value)
         entry["state"] = to
@@ -653,10 +674,39 @@ def transition_args(cmd: str) -> "list[str]":
     return argv
 
 
+# EVERY spelling of "carries nothing" that `is_blank()` recognises — the vocabulary EVERY door must
+# refuse, used by every fixture that tests a blank. PLACEHOLDER is IN IT, and that is the whole point: it
+# is what an UNSET field holds, so a door that accepts it writes an entry that reads back EMPTY. Spelled
+# once, here: a fixture carrying its own private list of blanks is how `-` slipped past three doors at
+# once while every one of them looked tested.
+BLANKS = ("", "   ", "\t", PLACEHOLDER)
+
+
 def write_lines(path: Path, *lines: str) -> Path:
     """Write a store RAW — bypassing dump(), so a fixture can hold what dump() would never emit."""
     path.write_text("".join(line + "\n" for line in lines))
     return path
+
+
+def drive_to(path: Path, fid: str, target: str) -> None:
+    """Move an entry to `target` along the GRAPH — the shortest legal path, derived from TRANSITIONS.
+
+    So a fixture that needs an entry in some state does not restate how one gets there; add an edge and the
+    path is re-derived. A BFS, because the shortest legal route is the one with the fewest witnesses to
+    invent along the way.
+    """
+    paths = {"candidate": []}
+    queue = ["candidate"]
+    while queue:
+        state = queue.pop(0)
+        for cmd, (frm, to) in TRANSITIONS.items():
+            if state in frm and to not in paths:
+                paths[to] = paths[state] + [cmd]
+                queue.append(to)
+    check(target in paths, f"no legal path reaches {target!r} — the graph cannot produce this fixture")
+    for cmd in paths[target]:
+        code, _, err = run(["--file", str(path), cmd, "--id", fid, *transition_args(cmd)])
+        check(code == 0, f"driving to {target!r}: `{cmd}` exited {code}: {err!r}")
 
 
 def seed(path: Path, n: int = 1) -> "list[str]":
@@ -910,7 +960,7 @@ def t_evidence_is_required(tmp: Path) -> None:
         code, _, err = run(argv)
         check(code == 2, f"add without --{missing} was ACCEPTED (exit {code}): {err!r}")
     for blanked in REQUIRED:
-        for blank in ("", "   ", "\t"):
+        for blank in BLANKS:
             argv = ["--file", str(path), "add"]
             for f in REQUIRED:
                 argv += [f"--{f.replace('_', '-')}", blank if f == blanked else "x"]
@@ -920,6 +970,79 @@ def t_evidence_is_required(tmp: Path) -> None:
                   f"REQUIRED, so a value made only of whitespace is not a value")
             check("rumor" in err, f"add failed for the wrong reason: {err!r}")
     check(load(path) == [], "a REFUSED add still wrote an entry to the store")
+
+
+def t_required_cannot_be_edited_away(tmp: Path) -> None:
+    """A REQUIRED FIELD IS REQUIRED AT EVERY DOOR AN ENTRY CAN CHANGE — not only at the one that made it.
+
+    `add` refusing a blank `evidence` guards NOTHING if `set --evidence '   '` hollows the entry out an hour
+    later. The result is the same rumor the store exists to refuse, and a worse one: this claim the store
+    has already VOUCHED for, because it was checked once, at a door it is no longer standing at. The rule
+    was enforced where an entry is CREATED and not where it is CHANGED.
+
+    THE LOOP RUNS OVER `REQUIRED` × `BLANKS` — never a hand-list. A field added to REQUIRED tomorrow is
+    pinned at this door with no edit here, and every spelling of blank is tried, INCLUDING the placeholder.
+    Delete the guard in `cmd_set` and this goes red for `title` first.
+    """
+    path = tmp / "f.jsonl"
+    (fid,) = seed(path)
+    before = json.loads(run(["--file", str(path), "get", "--id", fid])[1])
+    for field in REQUIRED:
+        if field not in EDITABLE:
+            continue  # not settable at all — a different door, pinned by `state-not-settable`
+        flag = f"--{field.replace('_', '-')}"
+        for blank in BLANKS:
+            code, _, err = run(["--file", str(path), "set", "--id", fid, flag, blank])
+            check(code == 1,
+                  f"`set {flag} {blank!r}` was ACCEPTED (exit {code}) — {field!r} is REQUIRED, and a value "
+                  f"made only of whitespace (or the placeholder an UNSET field holds) is not a value")
+            check("rumor" in err, f"`set {flag}` failed for the wrong reason: {err!r}")
+            # …and the REFUSAL is total: the field it could not blank still holds what it held.
+            now = json.loads(run(["--file", str(path), "get", "--id", fid])[1])
+            check(now == before, f"a REFUSED `set {flag} {blank!r}` changed the entry anyway: {now!r}")
+
+    # …and a real edit still lands: the rule refuses an EMPTYING, not an edit (see `state-not-settable`).
+    code, out, err = run(["--file", str(path), "set", "--id", fid, "--evidence", "reproduced at line 488"])
+    check(code == 0, f"a NON-blank set exited {code}: {err!r}")
+    check(json.loads(out)["evidence"] == "reproduced at line 488", f"set did not write the field: {out!r}")
+
+
+def t_no_door_writes_a_store_that_will_not_load(tmp: Path) -> None:
+    """WHATEVER A WRITE DOOR ACCEPTS, `load()` MUST ACCEPT BACK. The blank predicate is ONE: `is_blank()`.
+
+    The doors used to test `value.strip()` while `load()` tested `is_blank()` — which ALSO reads the
+    PLACEHOLDER `-` (what an UNSET field holds) as carrying nothing. So `-` passed the WRITE check and
+    failed the READ check, and the two doors of one store disagreed about what "carries nothing" means.
+
+    That is not a cosmetic gap. `take-up --act-not-gate - --act-behavior - --act-reversible -` exited 0 and
+    wrote the entry — and the store then WOULD NOT LOAD. Not the entry: the STORE. Every later command
+    (`table`, `get`, `list`, `add`, every transition) exits 1 on an illegal history, and these follow-ups
+    have NO OTHER COPY ANYWHERE. A door that can write a store its own accessor cannot open is the worst
+    failure this file has, and it was reachable through the ordinary CLI with nothing hand-edited.
+
+    Derived from WRITES/FLAG/BLANKS, so a new evidence-bearing edge is pinned the day it is added. Restore
+    either `.strip()` check in `cmd_transition` and this goes red — on the `-` case, and on the STORE.
+    """
+    for cmd, fields in WRITES.items():
+        required = [f for f in fields if f not in OPTIONAL]
+        for field in required:
+            frm, _ = TRANSITIONS[cmd]
+            path = tmp / f"{cmd}-{field}.jsonl"
+            (fid,) = seed(path)
+            drive_to(path, fid, frm[0])
+            was = state_of(path, fid)
+            for blank in BLANKS:
+                values = [a for f in required for a in (FLAG[f], blank if f == field else "x")]
+                code, _, err = run(["--file", str(path), cmd, "--id", fid, *values])
+                check(code == 1,
+                      f"`{cmd}` with a BLANK {FLAG[field]} ({blank!r}) was ACCEPTED (exit {code}) — a "
+                      f"witness that carries nothing is not a witness")
+                # THE POINT: the refusal is what keeps the store READABLE. Had it been written, this fails.
+                code, _, err = run(["--file", str(path), "list"])
+                check(code == 0,
+                      f"after `{cmd} {FLAG[field]} {blank!r}` the STORE ITSELF NO LONGER LOADS (exit "
+                      f"{code}) — a write door wrote a history `load()` calls illegal: {err!r}")
+            check(state_of(path, fid) == was, f"a refused `{cmd}` moved the state anyway")
 
 
 def t_investigation_shows_its_work(tmp: Path) -> None:
@@ -940,7 +1063,7 @@ def t_investigation_shows_its_work(tmp: Path) -> None:
         (fid,) = seed(path)
         code, _, err = run(["--file", str(path), cmd, "--id", fid])
         check(code == 2, f"`{cmd}` without --finding was ACCEPTED (exit {code}): {err!r}")
-        for blank in ("", "   ", "\t"):
+        for blank in BLANKS:
             code, _, err = run(["--file", str(path), cmd, "--id", fid, "--finding", blank])
             check(code == 1, f"`{cmd}` with a BLANK finding ({blank!r}) was ACCEPTED (exit {code})")
             check("rumor" in err, f"`{cmd}` failed for the wrong reason: {err!r}")
@@ -1039,7 +1162,7 @@ def t_act_edge_needs_every_condition(tmp: Path) -> None:
         omitted = [a for f in ACT_FLAGS if f != witness for a in (FLAG[f], "x")]
         code, _, err = run([*argv, *omitted])
         check(code == 2, f"`{ACT_CMD}` without {FLAG[witness]} was ACCEPTED (exit {code}): {err!r}")
-        for blank in ("", "   ", "\t"):
+        for blank in BLANKS:
             values = [a for f in ACT_FLAGS for a in (FLAG[f], blank if f == witness else "x")]
             code, _, err = run([*argv, *values])
             check(code == 1,
@@ -1465,6 +1588,8 @@ CASES = [
     ("ruling-recorded", "the USER's ruling is stamped durably; NOTHING the driver does alone stamps it", t_ruling_is_recorded),
     ("publish-needs-ref", "a published follow-up must name WHERE", t_publish_needs_a_ref),
     ("evidence-required", "a follow-up with no evidence is a RUMOR — `add` refuses it, for EVERY required field", t_evidence_is_required),
+    ("required-not-editable-away", "a REQUIRED field cannot be BLANKED through `set` — the rule holds where an entry CHANGES, not only where it was made", t_required_cannot_be_edited_away),
+    ("no-unreadable-store", "no write door can write a store `load()` refuses — every door shares ONE blank predicate", t_no_door_writes_a_store_that_will_not_load),
     ("ids-never-reused", "ids are assigned by the store, sequential, and NEVER reused", t_ids_are_assigned_and_never_reused),
     ("store-validated", "a corrupt store is rejected, never silently repaired; a missing one is empty", t_store_is_validated),
     ("defaults-backfill", "an entry written before a field existed reads back complete — as a CANDIDATE", t_defaults_backfill),
