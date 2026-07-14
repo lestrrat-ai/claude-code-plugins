@@ -30,7 +30,10 @@ than by review. Use `gh pr checks --watch` to **wait**; never to decide.
 
 #### FETCH — pinned to the SHA, paginated, BOTH check families, and emitted as JSONL
 
-A source you never queried reports nothing, and "nothing" parses as "nothing wrong". Read **both**:
+A source you never queried reports nothing, and "nothing" parses as "nothing wrong". Read **both** — and
+**each fetch also emits a `source` COMPLETION MARKER, so that "we asked and got nothing" is a thing the
+artifact can SAY.** Each command below emits its evidence rows **and** its marker, from **one** `jq`, over
+the **slurped** pages — so a marker cannot exist for a fetch that did not run:
 
 ```sh
 # (1) CHECK RUNS — pinned to <head_sha> BY THE URL, and the only source of a check-run verdict.
@@ -38,35 +41,51 @@ A source you never queried reports nothing, and "nothing" parses as "nothing wro
 #     conclusion), so no check-run judgment is ever joined across two fetches. `id` is `details_url`, the
 #     CROSS-SOURCE identity the containment test below compares on — REST `.details_url` and rollup
 #     `.detailsUrl` are the SAME VALUE. REST status/conclusion are lowercase -> upcased.
-#     `sha` comes from GITHUB'S OWN `.head_sha` on each row — NEVER a literal we substitute in.
-gh api --paginate "repos/<owner>/<repo>/commits/<head_sha>/check-runs" \
-  --jq '.check_runs[] | {row:"checkrun", sha:.head_sha, name:.name, app_id:(.app.id|tostring),
-                         status:(.status|ascii_upcase),
-                         conclusion:((.conclusion // "-")|ascii_upcase),
-                         id:(.details_url // "-")}'
+#     `sha` comes from GITHUB'S OWN `.head_sha` on each row — NEVER a literal we substitute in, and the
+#     MARKER's sha comes from that same place. The commit oid lives ONLY on the rows here, so a fetch that
+#     returned ZERO rows has no oid to carry: its marker's sha is "-", and inventing one is forbidden.
+gh api --paginate --slurp "repos/<owner>/<repo>/commits/<head_sha>/check-runs" | jq -c '
+  [.[].check_runs[]] as $r
+  | ($r[] | {row:"checkrun", sha:.head_sha, name:.name, app_id:(.app.id|tostring),
+             status:(.status|ascii_upcase),
+             conclusion:((.conclusion // "-")|ascii_upcase),
+             id:(.details_url // "-")}),
+    {row:"source", source:"check-runs", sha:(($r[0].head_sha) // "-"), count:($r|length|tostring)}'
 
 # (2) COMMIT STATUSES — the legacy family, which (1) CANNOT SEE.
-#     The response carries the commit ONCE, at the TOP LEVEL (`.sha`) — not on each status. Capture it
-#     first and stamp GITHUB'S value onto every row; again, NEVER a literal we substitute in.
-gh api --paginate "repos/<owner>/<repo>/commits/<head_sha>/status" \
-  --jq '.sha as $sha | .statuses[] |
-        {row:"status", sha:$sha, context:.context, state:(.state|ascii_upcase)}'
+#     The response carries the commit ONCE, at the TOP LEVEL (`.sha`) — not on each status — and carries it
+#     EVEN WHEN `.statuses` IS EMPTY. That is what makes the marker below able to PROVE a zero-status
+#     commit: {"source":"status","sha":"<GITHUB'S>","count":"0"} says "we asked this commit, and it has
+#     none". Again GITHUB'S value, NEVER a literal we substitute in.
+gh api --paginate --slurp "repos/<owner>/<repo>/commits/<head_sha>/status" | jq -c '
+  [.[].statuses[]] as $s | (.[0].sha) as $sha
+  | ($s[] | {row:"status", sha:$sha, context:.context, state:(.state|ascii_upcase)}),
+    {row:"source", source:"status", sha:$sha, count:($s|length|tostring)}'
 
 # (3) ROLLUP — WITNESSES ONLY (identity, no verdict). Used ONLY for the containment test below.
-#     The rollup carries no app.id and no commit oid, so it can NEVER be read as a verdict.
-gh pr view <pr> --json statusCheckRollup \
-  --jq '.statusCheckRollup[]? | select(.__typename=="CheckRun") | {row:"witness", name:.name, id:.detailsUrl}'
+#     The rollup carries no app.id and no commit oid, so it can NEVER be read as a verdict — and its
+#     marker's sha is therefore "-", ALWAYS. A sha there would be one WE invented.
+gh pr view <pr> --json statusCheckRollup | jq -c '
+  [.statusCheckRollup[]? | select(.__typename=="CheckRun")] as $w
+  | ($w[] | {row:"witness", name:.name, id:.detailsUrl}),
+    {row:"source", source:"rollup", sha:"-", count:($w|length|tostring)}'
 ```
 
-Each `--jq` above emits **one compact JSON object per line** — the artifact is **JSONL**, the same
+Each `jq -c` above emits **one compact JSON object per line** — the artifact is **JSONL**, the same
 machine-read convention as `state.jsonl` and the review plan/progress files (`files-and-ledger.md`).
 
 - **`--paginate` is MANDATORY** — `/check-runs` pages at **30**; without it you parse page one and call
-  it the whole set.
-- **BOTH families are MANDATORY.** A failing Jenkins/CircleCI **commit status is genuinely invisible** to
-  `/check-runs`: a commit can carry **live commit statuses** while `/check-runs` reports
-  `check_runs.total_count = 0` for that very commit. Read only one family and the other's failures are
-  simply **absent** from your evidence — and an absence parses as "nothing wrong".
+  it the whole set. **`--slurp` collects every page into ONE array before `jq` runs**, which is what lets a
+  single filter emit the rows *and* a marker whose `count` is the total **across pages** (per-page `--jq`
+  cannot know it). `--slurp` and gh's own `--jq` are mutually exclusive, hence the pipe to `jq -c`.
+- **BOTH families are MANDATORY, AND THE ARTIFACT MUST PROVE BOTH WERE READ.** A failing Jenkins/CircleCI
+  **commit status is genuinely invisible** to `/check-runs`: a commit can carry **live commit statuses**
+  while `/check-runs` reports `check_runs.total_count = 0` for that very commit. Read only one family and
+  the other's failures are simply **absent** from your evidence — and an absence parses as "nothing wrong".
+  **This rule was, until now, UNENFORCEABLE by the artifact**: a file with no `status` rows said *nothing*
+  about whether the status fetch **ran and found none** or was **never made**, and an all-passing
+  check-runs-only snapshot therefore verified **GREEN with a mandatory source unqueried**. The `source`
+  markers are what close it — see VERIFY below. **A missing marker is `unusable`, NEVER green.**
 - **NEVER read the combined status `.state` as a verdict.** A commit carrying **ZERO** statuses reports
   `{"state":"pending","total_count":0}` — an absence, read as a verdict, is a lie in both directions.
   (Illustrative, and expected to drift: observed on 2026-07-13 on
@@ -87,22 +106,38 @@ machine-read convention as `state.jsonl` and the review plan/progress files (`fi
 Write to a temp file **inside `<rundir>`** (same filesystem ⇒ `mv` is an atomic rename), then promote:
 
 ```sh
+# PIPEFAIL IS MANDATORY, and it is not boilerplate. Without it a pipeline reports the exit status of its
+# LAST command — `jq` — so a `gh` that DIED would hand jq an EMPTY stdin, jq would print nothing and exit
+# 0, and `|| exit 1` would NEVER FIRE. The fetch failed, the shell called it success, and the only thing
+# left saying so is the missing marker. Fail at the fetch, not two rules later.
+set -o pipefail
+
 tmp="<rundir>/.ci-<pr>.$$"      # INSIDE <rundir>, so the mv below cannot cross a filesystem
 # The header records the sha we REQUESTED — this is the ONE row whose sha is ours. Every EVIDENCE row's
-# sha comes from GitHub (above), which is what makes the verify rule able to fail at all.
+# sha, and every MARKER's sha, comes from GitHub (above), which is what makes the verify rule able to fail.
 printf '{"row":"header","sha":"%s"}\n' "<head_sha>" > "$tmp"
-#   ... append the three fetches above ...
+
+# Then the THREE fetches above, IN ORDER, each appending its rows AND ITS MARKER. `|| exit 1` on every one:
+# a marker is written ONLY by a fetch that SUCCEEDED, and it is written BY THAT FETCH'S OWN jq — so a fetch
+# that fails writes NEITHER its rows nor its marker, and nothing is promoted. A marker appended
+# UNCONDITIONALLY — after the fetch, by a separate command, on a line of its own — would be exactly the
+# RUBBER STAMP this design exists to prevent: it would say "queried" about a fetch that died.
+gh api --paginate --slurp ".../check-runs" | jq -c '...(1) above...' >> "$tmp" || exit 1
+gh api --paginate --slurp ".../status"     | jq -c '...(2) above...' >> "$tmp" || exit 1
+gh pr view <pr> --json statusCheckRollup   | jq -c '...(3) above...' >> "$tmp" || exit 1
+
 mv "$tmp" "<rundir>/ci-<pr>-<head_sha>.txt"
 ```
 
 The artifact is **JSONL: EVERY line is one JSON object, with NO exceptions** — the header included. There
 is no comment line, no plain-text line, and nothing to special-case: read the file line by line and parse
-each line as JSON. Four `row` types, distinguished by the `row` field — and **every EVIDENCE row
+each line as JSON. Five `row` types, distinguished by the `row` field — and **every EVIDENCE row
 (`checkrun`, `status`) carries the SHA it is about**:
 
 | `row` | Fields | Meaning | Whose SHA |
 |---|---|---|---|
 | `header` | `sha` | The `head_sha` we **REQUESTED** — what the file was fetched *for*. Exactly one, first line. | **OURS** (the ledger's) |
+| `source` | `source`, `sha`, `count` | **COMPLETION MARKER — "this source WAS QUERIED".** Exactly **ONE** per mandatory source (`check-runs`, `status`, `rollup`), written **by that fetch's own `jq`**. `count` = the rows it returned. | **GITHUB'S**, or `"-"` where GitHub has none (below) |
 | `checkrun` | `sha`, `name`, `app_id`, `status`, `conclusion`, `id` | Check-run **identity AND verdict**. `conclusion` is `"-"` when absent; `id` is `details_url` (`"-"` when absent). | **GITHUB'S** (`.head_sha`) |
 | `status` | `sha`, `context`, `state` | Commit-status **verdict**. | **GITHUB'S** (response `.sha`) |
 | `witness` | `name`, `id` | Rollup **identity only** — **no `sha`, no verdict**. `id` is `detailsUrl`. | — (none exists) |
@@ -111,6 +146,19 @@ each line as JSON. Four `row` types, distinguished by the `row` field — and **
 **evidence** row carries the SHA **GitHub itself** put on that row. They come from **two different
 sources**, which is the only reason comparing them can tell you anything.
 
+**A `source` marker's `sha` is `"-"` EXACTLY where GitHub's response carries no commit oid — and NOWHERE
+ELSE.** This is not a formality; it is what stops the marker from being a self-issued receipt:
+
+| `source` | Its `sha` | Because |
+|---|---|---|
+| `check-runs` | **GitHub's `.head_sha`** — but `"-"` when it returned **ZERO rows** | the oid lives **on the rows**, so with no rows there is genuinely none. `count:"0"` + `sha:"-"` is the honest statement, and a sha there would be **invented**. |
+| `status` | **GitHub's top-level `.sha`, ALWAYS** — never `"-"` | the status response carries `.sha` **even when `.statuses` is empty**. So `{"source":"status","sha":"<GitHub's>","count":"0"}` **PROVES** we asked this commit and it has **no statuses**. A `"-"` there did **not** come from the response. |
+| `rollup` | **`"-"`, ALWAYS** | the rollup carries **no commit oid at all** — the same reason `witness` rows are SHA-LESS. Any sha on it is one **WE fabricated**. |
+
+**That middle row is the whole fix.** An artifact with no `status` rows used to be **silent** about whether
+the status family had been read. Now it either carries GitHub's own commit oid saying *"asked; none"*, or
+it carries **no marker** — and no marker is **`unusable`**.
+
 **WHY JSONL, and NOT a space-delimited row: CHECK-RUN NAMES AND STATUS CONTEXTS CONTAIN SPACES.** This
 repo's own two checks are named **`Lint scripts`** and **`Validate plugins`**. A positional parser handed
 `checkrun <sha> Lint scripts 15368 COMPLETED SUCCESS <url>` cannot tell where the name ends and the next
@@ -118,11 +166,19 @@ field begins — it reads name=`Lint`, app_id=`scripts`, and **every** rule belo
 containment, DECIDE) then reads garbage out of shifted fields. In JSON a value containing spaces is just a
 string. **A machine-read artifact must NEVER require guessing where a field ends.**
 
+**The `Fields` column is EXACT — every field that row type carries, and NOT ONE MORE.** A row holding a
+field its type does not define is **UNUSABLE**, exactly like a row of a type the table does not list:
+nothing reads that field, so whatever it claims is neither verified nor refuted — it is one more piece of
+evidence **present and not counted**. **NEVER "accept it and ignore it."**
+
 **`witness` rows are IDENTITY-ONLY, SHA-LESS, and NEVER a verdict.** They exist for **one** purpose: the
 containment test below. **NEVER write a SHA onto a witness row** — the rollup **carries no commit oid at
 all**, so any SHA on that row would be one *we* invented, not one the API vouched for: **fabricated
 evidence**. Their SHA-lessness is exactly **WHY** they can never be read as evidence about a commit, and
-why they are exempt from the verify rule instead of being patched into it.
+why they are exempt from the verify rule instead of being patched into it. **A `witness` row carrying a
+`sha` therefore makes the snapshot UNUSABLE** → `ci = pending`, refetch. Not "harmless extra detail", and
+never something to skip past: it is a value **we fabricated**, sitting in the file, that the verify rule —
+which exempts witness rows **by design** — would never check.
 
 The `id` on a witness row (the rollup's `detailsUrl`) is **not** a SHA and not a verdict: it is the
 **cross-source identity** the containment test counts on. It is safe to carry precisely because it is
@@ -145,12 +201,100 @@ So the check has force **only** because the `checkrun`/`status` rows carry **Git
 independent sources, so they **CAN** disagree — and if the snapshot describes a superseded commit, they
 **WILL**.
 
-Parse the file **only** if the `header` row's `.sha`, **every `checkrun` and `status` row's `.sha`**,
-**and** the filename all equal the ledger's current `head_sha`. **`witness` rows are EXEMPT** — they carry
-**no `sha` field at all** and no verdict. Any mismatch means the snapshot describes a **superseded commit**
+Parse the file **only** if the `header` row's `.sha`, **every `checkrun` and `status` row's `.sha`**, **every
+`source` marker's `.sha` that is not `"-"`**, **and** the filename all equal the ledger's current
+`head_sha`. **`witness` rows are EXEMPT** — they carry **no `sha` field at all** and no verdict. Any
+mismatch means the snapshot describes a **superseded commit**
 → discard it, `ci = pending`, refetch. **NEVER** green off it, and never "fix up" the mismatch. A line that
 **does not parse as JSON** is a corrupt snapshot — treat it exactly like a failed fetch: `ci = pending`,
 refetch.
+
+**CHECK THE EXACT SHAPE — "what I need is in there somewhere" is NOT a check.** Every rule below matches
+the artifact's shape *exactly*, and each one is that way because the loose version of it says GREEN to a
+file that is lying:
+
+- **The FILENAME must be EXACTLY `ci-<pr>-<head_sha>.txt`** — one PR number, **ONE** sha in **LOWERCASE**
+  40-hex (a git object id **is** lowercase, and every producer of ours writes it that way), that
+  extension. **NEVER** settle for "the expected sha appears somewhere in the name":
+  `ci-<pr>-<head_sha>-<old_sha>.txt` contains it *and names two commits*, so it says nothing about which
+  one these bytes describe. And **NEVER case-fold the comparison**: `ci-<pr>-<HEAD_SHA>.txt` is a name no
+  producer of ours can emit, so a file wearing it came from something we do not know. "Close enough" is
+  the substring bug wearing a new hat.
+- **The `header` is EXACTLY ONE row, and it is the FIRST line.** These are **two** requirements, and
+  **both** are checked. A file that says which commit it is about only *after* it has already listed
+  evidence has not said it: those rows were read unstamped. And a **SECOND** header is read by nothing —
+  so if it named a different commit, the file would describe **two**, and nothing would notice. (An
+  **empty** file lands here too, as "zero headers" — it is **no snapshot**.)
+- **Each row type carries an EXACT field set** — the one in the table above. Every field it requires, and
+  **NOT ONE MORE**.
+- **Every field value is a STRING**, and a value of any other type — a nested object, a number, a list —
+  makes the snapshot **UNUSABLE**. This is the *same* rule one level down, and skipping it does not
+  produce a lenient verdict, it produces **NO verdict**: a `{"row":{...}}` or a `"conclusion":{...}` is a
+  value you cannot compare, and a comparison you cannot make is not a comparison you may assume the
+  result of. **A CRASH IS NOT A VERDICT** — the tool failing to have an opinion is the one outcome this
+  vocabulary has no word for.
+- **A REPEATED member name makes the snapshot UNUSABLE** — in **any** object on the line, nested ones
+  included. Never *"last one wins"*, never *"first one wins"*: a field given **two** values means the file
+  does not say **one thing**, and evidence that does not say one thing is **not evidence**. This rule
+  belongs **at the DECODER**, because that is the last place the duplicate is still **visible**: a JSON
+  decoder resolves a repeated key by keeping **one** value and **silently discarding** the other, and every
+  rule above only ever sees what survived. So `{"row":"header","sha":"<old>","sha":"<head>"}` verified
+  **GREEN** with a **stale commit** sitting in the bytes, and `{"row":"status_context","row":"checkrun",…}`
+  verified **GREEN** with the row type the contract **rejects** silently gone. **Present in the bytes,
+  reaching NO rule** — the defect this entire section is about, one level *below* every rule written to
+  catch it. Parse with a **duplicate-key-rejecting hook** (Python: `object_pairs_hook`); a decoder that
+  picks a winner for you has **decided a question that was yours**.
+- **A line the decoder cannot decode WITHOUT CRASHING is UNUSABLE too** — a line nested thousands of levels
+  deep exhausts the decoder's stack and **raises**, and a raise where a verdict was owed is the tool having
+  **no opinion**, not a lenient one. Catch it and call the artifact unusable: a row of the shape this
+  contract defines is a **flat object of strings**, so nothing legitimate is ever anywhere near that depth.
+
+**AND THE SOURCES MUST PROVE THEY WERE QUERIED — an ABSENCE must say "we do not know", never "nothing
+wrong".** This is the rule this whole section opens with, and until the `source` row existed the artifact
+**could not express it**: *"the commit-status fetch RAN and this commit carries zero statuses"* and *"the
+commit-status fetch was SKIPPED, or died before appending anything"* produced the **byte-identical file**.
+So:
+
+- **EXACTLY ONE `source` marker per MANDATORY source** (`check-runs`, `status`, `rollup`), **and no
+  others.** A **missing** marker → **UNUSABLE** (*"a mandatory source was never queried — its failures
+  cannot be in this artifact"*). **NEVER green.** **TWO** markers for one source → unusable as well: if they
+  disagreed the file would claim two things, and nothing would read the second. A marker for a source the
+  contract does not define is **present and not counted**, exactly like an unknown row type.
+- **`count` MUST EQUAL the rows of that source actually present** (`check-runs`→`checkrun`,
+  `status`→`status`, `rollup`→`witness`). A marker claiming **5** where **3** sit in the file means the
+  artifact is **TRUNCATED** — rows the fetch emitted did not survive promotion, and **a row that is not in
+  the file could be the failing one** → **UNUSABLE**. A `count` that is not a decimal integer is not a
+  count you can **compare**, and a comparison you cannot make is not one you may assume the result of.
+- **`sha` MUST be GITHUB'S, and it is compared to the LEDGER'S `head_sha`** — the same two-sources rule as
+  the evidence rows, for the same reason: they **can** disagree, so the check **can** fail. A marker that
+  disagrees means **GitHub answered about another commit**, so every row that source contributed is about
+  that commit → **UNUSABLE**.
+- **`sha` may be `"-"` EXACTLY where GitHub gives no oid** (the table above), and nowhere else. A `"-"` on
+  the **`status`** marker, or on a **`check-runs`** marker whose fetch **did** return rows, means the value
+  was **not built from the response** — and a marker whose sha is not GitHub's **cannot disagree with the
+  ledger, so it could never fail**: a **rubber stamp**. A **real sha on the `rollup`** marker is worse — it
+  is a value **we invented**, the same fabrication as a sha on a `witness` row. Both → **UNUSABLE**.
+
+**WHY A MARKER IS NOT A RUBBER STAMP.** It carries what **only a fetch that actually ran** could know: a
+`count` that must match the file it sits in, and a `sha` that must match a **ledger value it never saw**.
+And it **cannot be written for a fetch that failed**, because it is emitted by **that fetch's own `jq`**,
+from the **slurped** response, in the **same command** as its rows — a failed fetch writes **neither**.
+**NEVER append a marker as a separate, unconditional step after the fetch**: that reintroduces exactly the
+stamp-you-wrote-yourself defect this file was written against.
+
+**EVERY line must be READ, and a line you cannot read is NOT a line you may SKIP.** The five `row` types
+above are the **whole** vocabulary. A **blank** line, bytes that are **not valid UTF-8** (**never** decode
+them leniently — that silently rewrites what the file says), a row of a type **not** in that table, a row
+**missing a field its type requires** (a `checkrun` with no `status`, a `status` with no `state`, a
+`witness` with no `id`), a row whose value has the **wrong TYPE**, a row that **names a member twice**, or
+a row carrying a field its type does **not** define (**a `sha` on a `witness` row** — see below) makes the
+snapshot **UNUSABLE** → `ci = pending`, refetch. **NEVER skip past it, and NEVER accept-and-ignore it.**
+
+Skipping is how the false green gets back in: an unrecognised row is not *nothing*, it is something you
+**failed to understand** — and if it happened to carry a **FAILURE**, ignoring it turns a red commit green
+while every other rule in this section passes. **An unexpected FIELD is the same defect one level down**:
+nothing reads it, so whatever it asserts is neither verified nor refuted. **Evidence that is present but
+not counted parses as "nothing wrong."**
 
 The `header` and the filename are **ours**, so checking them catches only a *misfiled* artifact (a stale
 file left in `<rundir>`). The **evidence rows** are what catch a **wrong-commit fetch** — they are the
@@ -159,6 +303,16 @@ an evidence row, you have deleted the verification**, not implemented it.
 
 **The ledger write is GATED ON the parsed contents.** A guard that runs *beside* the write is not a
 guard.
+
+**EVERY RULE ABOVE IS EXECUTED, AND EVERY ONE IS PINNED BY A FIXTURE THAT FAILS WHEN IT IS GONE.** Prose
+cannot be run, and three defects shipped in *this prose* — so the rules also exist as
+`scripts/ci-snapshot.py` (`self-test` runs the fixtures) and `scripts/mutate-ci-snapshot.py`, which
+**removes each rule in turn and FAILS if no fixture notices**. Both run in CI. That second script exists
+because a fixture suite cannot see its own worst failure — a rule that **nothing** tests, whose deletion
+leaves the suite green — and a hand-written matrix claiming otherwise was **wrong about two rules**.
+**"Which rules are unpinned?" is a question the SUITE answers, never one a reviewer has to discover.** If
+you change a rule here, change it there; if you add one, mark it (`# MUTATE:<id>:<weakening>`) and give it
+a fixture that goes **GREEN** when it is deleted.
 
 #### CROSS-FETCH AGREEMENT — containment on a USABLE `.id`, NOT equality
 
@@ -242,19 +396,27 @@ claim that the risk is gone:
   present AND passing**. Until that lands, this gap is **open**.
 
 Read verdicts from the JSON fields: `.status` and `.conclusion` on `checkrun` rows, `.state` on `status`
-rows. The `header` and `witness` rows hold **no verdict** and are never consulted here. "Rows" below means
-**evidence rows** — `checkrun` + `status`; the `header` row does not count toward any of them.
+rows. The `header`, `source` and `witness` rows hold **no verdict** and are never consulted here. "Rows"
+below means **evidence rows** — `checkrun` + `status`; the `header` and `source` rows do not count toward
+any of them.
 
-- **green** → the snapshot lists **≥1 evidence row**; **every** `checkrun` row has `.status` `COMPLETED`
-  and `.conclusion` `SUCCESS`; **every** `status` row has `.state` `SUCCESS`; and containment holds **on a
-  usable identity** (every `witness` `.id` non-null and unique).
+- **green** → **all three `source` markers are present and hold** (VERIFY above — otherwise you do not know
+  what you did not read); the snapshot lists **≥1 evidence row**; **every** `checkrun` row has `.status`
+  `COMPLETED` and `.conclusion` `SUCCESS`; **every** `status` row has `.state` `SUCCESS`; and containment
+  holds **on a usable identity** (every `witness` `.id` non-null and unique).
   **Zero evidence rows is NOT green** — it means nothing has registered yet. This bullet is subject to the
   **registration gap** above: it proves only that **what had registered** passed, **never** that the
   required set is complete.
-- **pending** → no usable snapshot (any fetch failed, the file is absent, a line does not parse as JSON, a
-  `.sha` does not match, or containment **cannot be established** — it fails, **or** a `witness` `.id` is
-  null/duplicated so the test proves nothing), zero evidence rows, or any `checkrun` row whose `.status`
-  is not yet `COMPLETED` / any `status` row whose `.state` is `PENDING` → leave `ci = pending` and, if the
+- **pending** → no usable snapshot (any fetch failed, the file is absent, it **fails ANY rule in VERIFY
+  above** — misnamed, header not first or not alone, a line that does not parse as JSON, an unknown row
+  type, a missing or unexpected field, a field whose **value is not a string**, a `.sha` that does not
+  match, **a mandatory `source` marker missing, duplicated, mis-counted, or carrying a sha that is not
+  GitHub's** — or containment **cannot be
+  established**: it fails, **or** a `witness` `.id` is null/duplicated so the test proves nothing), zero
+  evidence rows, or any `checkrun` row whose `.status`
+  is not yet `COMPLETED` / any `status` row whose `.state` is `PENDING` or `EXPECTED` (**`EXPECTED` is a
+  required status that has not been posted yet** — it can still move, so it is **NOT** a green) → leave
+  `ci = pending` and, if the
   watch task has exited, **relaunch it in this same wake** — a pending PR must never sit unwatched waiting
   for the heartbeat.
 - **red** → any `checkrun` row whose `.conclusion` is `FAILURE` / `TIMED_OUT` / `CANCELLED` /

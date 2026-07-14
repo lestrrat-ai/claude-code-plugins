@@ -51,3 +51,16 @@ jobs:
           mapfile -t files < <(find . -name '*.py' -not -path './.git/*')
           printf 'checking %s\n' "${files[@]}"
           python3 -m py_compile "${files[@]}"
+
+      # The CI-snapshot contract, executed. The rules it pins are prose in stage-2-ci.md, and prose
+      # cannot be run — three defects shipped in that prose, each of which dies instantly against a
+      # fixture. If a rule is ever weakened, a fixture goes green when it must not, and this fails.
+      - name: CI-snapshot contract
+        run: python3 plugins/gauntlet/skills/campaign/scripts/ci-snapshot.py self-test
+
+      # ...and the question the step above CANNOT answer: is any rule pinned by NO fixture? Delete such a
+      # rule and `self-test` still passes — total health reported while the tool has stopped checking. This
+      # removes each rule in turn and FAILS if no fixture notices. It found two unpinned rules that a
+      # hand-written matrix had sworn were covered, which is exactly why the matrix is now DERIVED here.
+      - name: CI-snapshot mutation matrix (every rule pinned by a fixture)
+        run: python3 plugins/gauntlet/skills/campaign/scripts/mutate-ci-snapshot.py
