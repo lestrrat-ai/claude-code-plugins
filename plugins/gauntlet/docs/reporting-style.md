@@ -18,7 +18,8 @@ configuration, and it is not kept in sync with any other file.
   "ascertain" → "find out", "exposes a collision" → "creates a conflict".
 - NEVER use math/CS-theory jargon for everyday ideas: "cut vertex", "in-edge", "unsatisfiable" → say it
   plainly ("the only gate", "extra path in", "impossible to meet").
-- Metaphors/terms coined earlier in a task → restate plainly at each reuse, don't build on them.
+- Metaphors or terms the agent made up earlier in a task → restate them plainly each time. Do not build
+  on them.
 - Test: a non-native technical reader gets it on first pass. Domain terms the code itself uses are fine.
 
 ## Interim updates (after tool batches, subagent returns, phase boundaries)
@@ -34,7 +35,7 @@ configuration, and it is not kept in sync with any other file.
   Applies to PR/issue numbers, branches, agent names.
 - 2+ independent items → one short bullet per item, NOT packed into one paragraph. Sentence budget
   covers only the non-bullet part.
-- No meta-commentary about own reporting ("because they're real risks, not mechanics"). Report the work
+- Do not comment on your own reporting ("because they're real risks, not mechanics"). Report the work
   only.
 
 ## Final report
@@ -64,8 +65,8 @@ it is work you handed the reader. Watch for the specific failure: a term the age
 task, reused later as if you already knew it. The agent knows what it means; you do not.
 
 **"End every update with an action item or 'Nothing needed from you.'"** The single highest-value rule
-for an unattended run. It makes *blocked-on-you* impossible to miss and impossible to fake — the agent
-must pick one or the other, every time, and cannot leave it unclear.
+for an unattended run. It makes it impossible to miss when the agent needs you, and impossible to fake —
+the agent must pick one or the other, every time, and cannot leave it unclear.
 
 **"No new info → no update."** Removes the empty "still working" updates that train you to stop reading.
 If the agent writes something every time it wakes up, none of it means anything.
@@ -77,8 +78,8 @@ Across a hundred updates, lines like that push out the ones that mean something.
 `#31 (CI liveness)` costs three words and saves a lookup every single time.
 
 **"One idea per sentence, ≤20 words."** The rule people are most tempted to drop, and it is doing real
-work: it forbids the semicolon-chained mega-sentence that does contain the news but hides it inside itself.
-Splitting forces the important part to stand alone.
+work: it forbids the long sentence, joined up with semicolons, that does contain the news but hides it
+inside itself. Splitting forces the important part to stand alone.
 
 **"First sentence = the answer."** When you ask a direct question mid-run, you want the answer, not how
 the agent got there. The explanation can follow — it just cannot come first.
