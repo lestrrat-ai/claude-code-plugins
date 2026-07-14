@@ -89,6 +89,37 @@
 - The review gate is **tier-dependent**: `required(tier)` fresh, context-isolated `SATISFIED` verdicts
   on the same live PR content — **one if TRIVIAL, two otherwise** (any code / agent-doc / sensitive
   change always requires two). Re-derive the tier from `head_sha` each wake.
+- **The review is measured against the PR's INTENT — never against "is anything wrong with this code?"**
+  The reviewer is handed `<rundir>/intent-<pr>.md` **verbatim** and answers one question: **does this PR
+  achieve its stated Purpose, without breaking anything reachable by an actor named in its Threat model?**
+  The open-ended question **has no fixed point** — there is always one more true thing to say about a diff,
+  and asking it ran one PR through **21 review rounds** of true, reproduced, irrelevant findings until a
+  human stopped it. **Declared non-goals BIND the reviewer**: a finding that attacks one cannot gate. The
+  adversarial sweep **stays** — bounded by the threat model rather than by nothing
+  (`stage-2-review-gate.md`, "What the review is MEASURED AGAINST").
+- **A finding must ANCHOR, or it does NOT gate.** Every finding is a record written by
+  `scripts/emit-finding.py`, naming **either** the `## Purpose` line it defends (quoted **verbatim** — the
+  tool checks it against the intent) **or** the `writer` who can actually supply the bad input (a CLOSED
+  enum: `end-user`, `network`, `ci`, `repo-content`, `driver-only`, `hand-edit`, `dev-time`). **A finding
+  whose `purpose` is `-` AND whose `writer` is `driver-only`/`hand-edit`/`dev-time` is NON-GATING**: it
+  **MUST NOT** produce `NOT SATISFIED`, **no fix is dispatched for it**, and it is recorded as a follow-up.
+  Enforced in `review-pass.py`. **Not every true statement about the code is a reason to block it**, and a
+  guard being incomplete is not, by itself, a defect: name the writer who gets through it.
+- **The gating rule and the audit ask DIFFERENT questions, and both must pass.** The gating rule asks
+  **does it MATTER?** (can anyone outside the machine trigger it; does it defend a stated purpose) — a NO
+  makes it a follow-up. The audit below asks **is it TRUE?** (can the mechanism occur) — a NO makes it
+  REFUTED. A finding must **matter** before anyone spends an audit on whether it is **true**. When the
+  reachability test says *"provenance is the wrong question"*, it is answering **is it TRUE?**, and it is
+  right; it is **not** saying "never ask who can write the input" — that is the other question, and the
+  `writer` field is what answers it.
+- **Record every verdict with `ledger.py verdict` — NEVER set `reviews_ok` by hand.** It bumps
+  `review_rounds`, applies the tally, and moves `ns_streak` in one atomic write. **`review_rounds` is the
+  review loop's only memory across fresh-context wakes and is NEVER reset** — not by a fix, a rebase, a
+  content change or a re-triage. There is no flag at any door that can write it; `set` cannot even RAISE
+  `reviews_ok` (only a verdict adds a verdict). Without that counter, the ledger after 21 review rounds is
+  **indistinguishable** from the ledger after one, and every stopping rule of the form "on the second NOT
+  SATISFIED…" is a backstop with **no sensor** — which is exactly how one sat in this skill, unfired,
+  through 21 of them.
 - **NEVER leave `gauntlet-accepted` on a PR whose live content no longer holds `required(tier)`
   SATISFIED verdicts.** The label is a projection of `reviews_ok`, and it is the only run state a human
   sees on GitHub — a stale `gauntlet-accepted` publicly claims a PR passed a gauntlet it did not. So the
@@ -117,8 +148,9 @@
   claim. **The tell that you have invented one: each fix creates the next finding.** When that happens,
   stop patching and re-derive whether the original thing was ever broken.
 - **A reviewer's finding is a CLAIM, not a fact — AUDIT it before you fix it.** On every `NOT
-  SATISFIED`, verdict each finding against the source *before* dispatching a fix — NEVER dispatch a fix
-  for an unaudited finding: **CONFIRMED** (real, and its mechanism can occur → fix), **ADJUSTED** (a real
+  SATISFIED`, verdict each **GATING** finding against the source *before* dispatching a fix (a NON-GATING
+  finding is never fixed, so there is nothing to audit — it is recorded as a follow-up) — NEVER dispatch a
+  fix for an unaudited finding: **CONFIRMED** (real, and its mechanism can occur → fix), **ADJUSTED** (a real
   defect, but not the one described → fix the real one), or **REFUTED** (false, or its **mechanism cannot
   occur** → do NOT fix; refute in the tree). Record the audit in `<rundir>/audit-<pr>-<n>.md`; only
   CONFIRMED + ADJUSTED reach the fix subagent. The **reachability test is NOT about where the trigger
@@ -184,12 +216,22 @@
   is a miss-catcher, not a proof of correctness.
 - **A review pass's artifacts have a TOOL — `scripts/review-pass.py`. NEVER hand-parse one, NEVER
   hand-write a line the tool writes** (Stage 2a). It owns the plan, the `pass_identity`, the unit-progress
-  events, and the read that answers **does this pass COUNT?** — `verify`, which validates EVERY line of the
-  file, including the one event the emit-only rule exempts from tool-writing (Stage 2a owns that rule). **A verdict from a pass that does not verify `ok` is
-  NEVER tallied**: a short SHA or any other malformed identifier, a `done` for a unit that was never
-  planned, an evidence-free `done`, a
-  `done` that no `started` precedes, a SECOND `done` for one unit, a hand-written line of the wrong shape,
-  or an identity naming another commit or attempt all make the pass `unusable`, whatever its report says.
+  events, **the findings**, and the read that answers **does this pass COUNT?** — `verify`, which validates
+  EVERY line of those files, including the one event the emit-only rule exempts from tool-writing (Stage 2a
+  owns that rule). **A verdict from a pass that does not verify `ok` is NEVER tallied**, and there are
+  **three** kinds of defect that make a pass `unusable`, whatever its report says (Stage 2a, "Does this pass
+  COUNT?", owns the enumeration):
+  - **the ARTIFACTS are malformed** — a short SHA or any other malformed identifier, a `done` for a unit
+    that was never planned, an evidence-free `done`, a `done` that no `started` precedes, a SECOND `done`
+    for one unit, a hand-written line of the wrong shape, an identity naming another commit or attempt;
+  - **the PR has no usable INTENT block** for the pass to be measured against — checked for **every** pass,
+    **including one that found nothing** (that is the ordinary case, and the one that merges a PR);
+  - **the VERDICT does not cohere with the FINDINGS** — the rule is an **if and only if**: `not-satisfied`
+    exactly when at least one GATING finding stands, so a `not-satisfied` that recorded none is refused,
+    and so is a `satisfied` that recorded one. **`--verdict` is a REQUIRED input to `verify`**, so a
+    COMPLETE pass verified without one is refused too: a rule whose input may be omitted is a rule the
+    driver switches off by forgetting a flag, and this one is the only mechanical check on the reviewer's
+    own verdict.
   Every one of those rules holds at **both doors** — the same predicate refuses it on write (`emit`) and on
   read (`verify`), so it cannot be enforced at one and not the other. **Every identifier it handles has ONE
   legal form and NO door repairs one** (a unit id is `u01`-shaped; `pr`/`pass`/`launch_attempt` are decimal
@@ -221,12 +263,13 @@
 - After finishing every planned unit, a pass runs a brief UNSTRUCTURED ADVERSARIAL SWEEP for defects
   outside the plan's decomposition (cross-unit interactions, unstated assumptions, edge cases,
   unenumerated categories). It complements — never replaces — the plan, reports only concrete
-  `file:line` defects at the normal finding bar (a real one → NOT SATISFIED), and treats "nothing
+  `file:line` defects at the normal finding bar (a real **GATING** one → NOT SATISFIED; the sweep is
+  BOUNDED by the threat model, not narrowed, and its findings anchor like any other), and treats "nothing
   found" as a fine result; no speculative "might be fragile" notes (Stage 2a).
 - A SATISFIED verdict carries one `RESIDUAL-RISK: <area> — <why>` line (the least-certain part of the
   diff). It is calibration metadata, never a finding: it never withholds the gate, never enters the fix
   loop, and is never fed into the corroborating review. Do not manufacture a concern to fill it; a real
-  defect found while identifying it is a normal finding → NOT SATISFIED (Stage 2a).
+  **GATING** defect found while identifying it is a normal finding → NOT SATISFIED (Stage 2a).
 - One decision at N sites is the most common root cause. Trigger the §2a-deep root-cause pass on the
   **first** "missing/wrong at site X" finding (its shape, not a round count), map the whole space with
   a dedicated **read-only mapper** subagent — never one that also fixes, which under-maps toward what

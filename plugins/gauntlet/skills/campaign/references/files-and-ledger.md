@@ -13,7 +13,9 @@ files from colliding — see "Run identity and concurrency".
 | `review-<pr>-<n>.txt` | The reviewer's PR review output, round `n` (launch attempt 1) |
 | `review-<pr>-<n>.plan.jsonl` | Orchestrator-authored review work units for round `n` (per-pass — a relaunch reuses it). Written through `scripts/review-pass.py plan-add`, never a heredoc |
 | `review-<pr>-<n>.progress.jsonl` | Reviewer progress events against the plan for round `n` (launch attempt 1), opened by the orchestrator's `pass_identity` line. **Every line is READ and validated through `scripts/review-pass.py` — and not every line is WRITTEN by it.** The `pass_identity` (`review-pass.py identity`) and the unit-progress events (the reviewer's `emit-progress.py`) are; a `plan_amendment_request` the reviewer appends **directly** is not — it is the one event the emit-only rule exempts. `stage-2-review-gate.md` owns that rule; see "Review-pass artifacts" below |
-| `review-<pr>-<n>.a<k>.txt` / `.a<k>.progress.jsonl` | Same two artifacts for **launch attempt `k ≥ 2`** — a relaunched pass writes here, never over attempt 1's files, so a killed-but-alive attempt can't corrupt the live one. Only the attempt named in the active `pass_identity` is read or counted (see `stage-2-review-gate.md`) |
+| `review-<pr>-<n>.findings.jsonl` | The pass's FINDINGS, round `n` (launch attempt 1) — one validated record per finding, written **only** through `scripts/emit-finding.py`. A finding used to be prose in the report, so nothing could check its citation, bound its writer, or ask what it DEFENDED — and therefore nothing could ever **decline** one. Each record ANCHORS to the PR's intent: a `## Purpose` line quoted verbatim, or the actor who can actually write the bad input. `stage-2-review-gate.md` owns the schema and the gating rule |
+| `intent-<pr>.md` | **What this PR is FOR** — `## Purpose` / `## Non-goals` / `## Threat model`. Written at adoption (`pr-adoption.md`), from the PR body when it carries one and **authored by the driver** from the diff/title/body when it does not; re-read every wake, never re-derived. It is passed to the reviewer **verbatim**, and it is what the **pass** is measured against: `review-pass.py verify` loads it for **every** pass it judges — including one that found nothing — so a PR with no usable block here earns **no verdicts at all** (`stage-2-review-gate.md`, "Does this pass COUNT?"). **LOCAL and git-ignored — campaign NEVER writes it back to the PR** |
+| `review-<pr>-<n>.a<k>.txt` / `.a<k>.progress.jsonl` / `.a<k>.findings.jsonl` | The same three per-attempt artifacts for **launch attempt `k ≥ 2`** — a relaunched pass writes here, never over attempt 1's files, so a killed-but-alive attempt can't corrupt the live one. Only the attempt named in the active `pass_identity` is read or counted (see `stage-2-review-gate.md`). The plan and the intent are **not** per-attempt: the plan is per-pass, the intent per-PR |
 | `ci-<pr>-<head_sha>.txt` | Latest **SHA-pinned** CI snapshot for a PR — check runs **AND** commit statuses, fetched **BY THE WAKE** after the watch completes (**the watch never writes it**), promoted atomically, and **stamped with the `head_sha` it describes** (verify the stamp before parsing). Carries a **`source` completion marker per mandatory source**, so a source that was **never queried** is `unusable`, not a silent green (`stage-2-ci.md`). Never the watch stream, and never `gh pr checks` — its output carries **no SHA** |
 | `audit-<pr>-<n>.md` | The orchestrator's audit of round `n`'s findings — CONFIRMED / ADJUSTED / REFUTED, each with evidence. A REFUTED finding's reasoning is recorded here **and** written into the tree as an inline comment at the site, committed like any other change (`stage-2-review-gate.md`, "Audit every finding before you fix it") |
 | `abort-<id>.md` | Detailed log for an aborted PR-task |
@@ -101,10 +103,16 @@ following line is one adopted PR's row record (`{"type": "row", …}`). Every re
 — fields are keyed by NAME, never by column position:
 
 ```
-{"type": "header", "run_id": "g260704-0915-a3f29c1b", "base_branch": "main", "api_changes": "ask", "reviewer": "codex", "required_set": "declared:[{\"context\": \"build\", \"app\": \"-\"}, {\"context\": \"test (3.12, ubuntu)\", \"app\": \"15368\"}]"}
-{"type": "row", "id": "pr41", "slug": "fix-null-deref", "branch": "fix-null-deref", "worktree": ".worktrees/fix-null-deref", "worktree_owned": "yes", "branch_owned": "yes", "pr": "41", "head_sha": "a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c", "reviews_ok": "2", "ci": "green", "tier": "STANDARD", "attempts": "1", "started": "2026-07-04T09:15:00Z", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:9f2c\u2026", "settled_strikes": "0", "unusable_refetches": "0", "ci_stalled_since": "-", "ci_reason": "-", "blocker_ruling": "-"}
-{"type": "row", "id": "pr52", "slug": "add-retry-flag", "branch": "add-retry-flag", "worktree": ".worktrees/add-retry-flag", "worktree_owned": "no", "branch_owned": "no", "pr": "52", "head_sha": "b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7089a1b", "reviews_ok": "0", "ci": "pending", "tier": "HIGH", "attempts": "0", "started": "-", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:4a71\u2026", "settled_strikes": "1", "unusable_refetches": "0", "ci_stalled_since": "-", "ci_reason": "required check absent: integration-tests", "blocker_ruling": "-"}
+{"type": "header", "run_id": "g260704-0915-a3f29c1b", "base_branch": "main", "api_changes": "ask", "reviewer": "codex", "required_set": "declared:[{\"context\": \"build\", \"app\": \"-\"}, {\"context\": \"test (3.12, ubuntu)\", \"app\": \"15368\"}]", "skill_version": "0.1.4"}
+{"type": "row", "id": "pr41", "slug": "fix-null-deref", "branch": "fix-null-deref", "worktree": ".worktrees/fix-null-deref", "worktree_owned": "yes", "branch_owned": "yes", "pr": "41", "head_sha": "a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c", "reviews_ok": "2", "ci": "green", "tier": "STANDARD", "attempts": "1", "started": "2026-07-04T09:15:00Z", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:9f2c\u2026", "settled_strikes": "0", "unusable_refetches": "0", "ci_stalled_since": "-", "ci_reason": "-", "blocker_ruling": "-", "review_rounds": "3", "ns_streak": "0", "intent": "stated@2026-07-04T09:15:00Z"}
+{"type": "row", "id": "pr52", "slug": "add-retry-flag", "branch": "add-retry-flag", "worktree": ".worktrees/add-retry-flag", "worktree_owned": "no", "branch_owned": "no", "pr": "52", "head_sha": "b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7089a1b", "reviews_ok": "0", "ci": "pending", "tier": "HIGH", "attempts": "0", "started": "-", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:4a71\u2026", "settled_strikes": "1", "unusable_refetches": "0", "ci_stalled_since": "-", "ci_reason": "required check absent: integration-tests", "blocker_ruling": "-", "review_rounds": "5", "ns_streak": "2", "intent": "authored@2026-07-04T09:20:00Z"}
 ```
+
+Read those two rows together and the sensor's whole point is visible: **`pr41` and `pr52` both read
+`reviews_ok = 0`-or-`2` and say nothing about how hard they were to get there** \u2014 but `pr52` has taken **5
+review rounds** and is **2 NOT SATISFIED deep**, and `pr41` has taken 3 and is converging. Before
+`review_rounds` existed, a PR twenty-one rounds into a spiral rendered **identically** to one on its first
+round, and the only reader who could tell them apart was a human holding every round in one context.
 
 **`head_sha` is ALWAYS the full 40-char `headRefOid` — never an abbreviation.** The examples above spell
 it in full because they are what gets copied. A SHA in the ledger is compared for equality against `gh`'s
@@ -118,7 +126,16 @@ once, see "Base branch"), `api_changes` (`ask` | `allowed`, run-wide; set once f
 `reviewer` (`default` (Claude subagents) | `codex` | `<other>` — the selected reviewer; set once, see
 "The reviewer"), `required_set` (what `base_branch` **requires** — `stage-2-ci.md`, "What were we
 expecting to see?", owns the three states, the format, and the reads that produce them; re-read every
-wake while it is `unknown`).
+wake while it is `unknown`), `skill_version` (**which copy of the rules actually governed this run**).
+
+`skill_version` is read at startup from the **running plugin's** `plugin.json` (`SKILL.md`) and stated in
+the final report. **It is not cosmetic.** The harness loads this skill from the **installed plugin cache**,
+and a merged, version-bumped rule governs **nothing** until that cache refreshes — which is not a
+hypothetical: the rule that audits a finding before fixing it was written, reviewed, merged and bumped to
+`0.1.3`, and then **did not run**, for days, because the installed copy was still `0.1.2`. **No artifact of
+the run recorded which version it was**, so no report could say so, and the failure was invisible until a
+human went looking. It defaults to `unknown` for the same reason `required_set` does: *"I did not look"* is
+a different fact from any version number, and must never be spelled as one.
 
 `required_set` is a property of the **base branch**, not of a PR, which is why it lives in the header. It
 defaults to **`unknown`**, and that default is **load-bearing, not a placeholder**: `unknown` **cannot go
@@ -169,6 +186,38 @@ Header field notes (the header fields above; per-row fields follow):
   those counters: the old head's strikes and stall clock measured evidence that no longer exists.
 - `reviews_ok` — number of fresh, context-isolated SATISFIED verdicts recorded against this PR's
   current content. Target = `required(tier)`: **1 if `tier == TRIVIAL`, else 2** (Stage **2a-triage**).
+  **Only `ledger.py verdict` may RAISE it** — `set --reviews-ok <n>` refuses any value above the current
+  one, because a hand-raised tally is indistinguishable from an earned one and `reviews_ok >=
+  required(tier)` is a merge precondition. `set --reviews-ok 0` stays available and correct: **voiding** the
+  tally on a PR-content change is not a verdict (`stage-2-review-gate.md`, "Recording a verdict").
+- `review_rounds` — **landed verdicts, ever, for this PR — and it is NEVER RESET.** Not by a fix, not by a
+  rebase, not by a content change, not by a re-triage. Written **only** by `ledger.py verdict`, which is why
+  there is **no `--review-rounds` flag at any door**: a door that can write a counter is a door that can
+  zero it, and the rule is enforced by the flag's ABSENCE rather than by a promise.
+
+  **It is the review loop's only memory across fresh-context wakes.** `reviews_ok` is a gate tally and is
+  correctly zeroed on every NOT SATISFIED — which means that without this field, **the ledger after 21
+  review rounds is indistinguishable from the ledger after one**, and every stopping rule of the form "on
+  the second NOT SATISFIED…" is a backstop with **no sensor**. That is not a hypothetical either: one PR ran
+  **21 rounds** with such a backstop sitting unfired in this very skill, and its final row read
+  `reviews_ok=0 attempts=0`. Note the asymmetry it closes: the **CI** path already carries three persisted
+  counters with caps (`settled_strikes`, `unusable_refetches`, `ci_stalled_since`) and has never spiralled;
+  the **review** path carried none.
+- `ns_streak` — consecutive NOT SATISFIED verdicts. Cleared **only** by a SATISFIED — never by a fix, a
+  rebase or a content change. Same owner, same absent flag, same reason.
+
+  **Nothing in this release READS either counter** — there is no cap and no escalation here. They are
+  **sensors**; the autonomous reassessment that consumes them lands separately. A counter that is reset by
+  the thing that consumes it is not a counter.
+- `intent` — the PROVENANCE of `<rundir>/intent-<pr>.md` (the file itself is markdown, so it lives in the
+  run dir, not in this one-object-per-line store): `-` (not adopted yet) | `stated@<iso>` (the PR body
+  already carried a usable intent block, copied verbatim) | `authored@<iso>` (the driver **inferred** it
+  from the PR's title, body and diff). Set at adoption (`pr-adoption.md` step 3a) and **preserved** by every
+  refresh — a wake is a fresh agent instance, and an intent invented twice is two intents.
+
+  The distinction is the honest one and the final report states it: an `authored` intent is **the driver's
+  CLAIM about what the PR is for**, not the author's, and a wrong intent block silently **narrows** a
+  review.
 - `tier` — the adaptive review tier derived from `head_sha`: `TRIVIAL` | `STANDARD` | `HIGH`. Re-derived
   every wake and re-triaged on any content change; drives `required(tier)` and the review depth.
 - `ci` — `green` / `red` / `pending` for `head_sha`. (**There is no `none`.** It was documented but no
@@ -297,16 +346,23 @@ Header field notes (the header fields above; per-row fields follow):
 
 ### Review-pass artifacts — use `scripts/review-pass.py`
 
-The plan, the `pass_identity`, the progress events and the read that decides **whether a pass counts** are
-one artifact set with one owner. `scripts/review-pass.py` READS every line of it — whatever wrote that
-line — and WRITES every line the emit-only rule does not exempt; the reviewer's `emit-progress.py` (CLI
-unchanged) is a door into the same owner. **Never hand-parse one of those files, and never hand-write a
+The plan, the `pass_identity`, the progress events, **the findings** and the read that decides **whether a
+pass counts** are one artifact set with one owner. `scripts/review-pass.py` READS every line of it —
+whatever wrote that line — and WRITES every line the emit-only rule does not exempt; the reviewer's two
+doors, `emit-progress.py` (CLI unchanged) and `emit-finding.py`, are doors into the same owner. **Never
+hand-parse one of those files, and never hand-write a
 line the tool writes for you** — the hand-written `pass_identity` is how a truncated SHA reached real
 state, and the hand-rolled tally is the same "read it by eye and write down the answer" that produced a
 false `ci = green`. `stage-2-review-gate.md` owns the rules — including the emit-only rule and the ONE
-event it exempts — the subcommands, and the four verdicts `verify`
+event it exempts, the intent a finding must ANCHOR to, and the gating rule that decides whether a finding
+may block the PR — the subcommands, and the four verdicts `verify`
 returns; resolve the script at `<skill-dir>/scripts/review-pass.py` and pass that path to subtasks, exactly
 as with `ledger.py` below.
+
+**Each script's fixtures are a SIBLING `*-test.py`** (`review-pass-test.py`, `ledger-test.py`), loaded by
+`self-test` from a `__file__`-relative path. **`self-test` FAILS LOUDLY when the sibling is missing** — a
+self-test that passes because it found no tests is a green derived from zero evidence, which is the exact
+class of bug these suites exist to catch.
 
 ### Editing the ledger — use `scripts/ledger.py`
 
@@ -330,6 +386,8 @@ ledger.py --file <state.jsonl> header get <field>                 # read a run-c
 ledger.py --file <state.jsonl> header set <field> <value>         # set a run-config header field
 ledger.py --file <state.jsonl> add-row --pr N [--<field> <val> …] # register a row (refuses a duplicate pr; unset fields default)
 ledger.py --file <state.jsonl> set --pr N --<field> <val> [--<field> <val> …]  # update named fields on the row for PR N
+ledger.py --file <state.jsonl> verdict --pr N --head-sha <sha> --verdict satisfied|not-satisfied
+                                                                  # record ONE landed review verdict — the ONLY sanctioned path
 ledger.py --file <state.jsonl> get --pr N [--field <f>]           # print the row as JSON, or one field
 ledger.py --file <state.jsonl> list [--where <field>=<val>]       # print matching rows' pr numbers (all if no filter)
 ledger.py --file <state.jsonl> table [--all] [--fields <f>,<f>,…] # print run header + the live rows as an aligned table (read-only)

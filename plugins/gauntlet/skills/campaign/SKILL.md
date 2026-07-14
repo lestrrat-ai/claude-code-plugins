@@ -41,14 +41,29 @@ Bundled scripts live in `scripts/`, resolved relative to the directory holding t
 the current working directory) — installed as `${CLAUDE_PLUGIN_ROOT}/skills/campaign/scripts/`, or in
 the repo at `plugins/gauntlet/skills/campaign/scripts/`. Pass their absolute paths to subtasks.
 `scripts/review-pass.py` is the schema-owning accessor for a review pass's artifacts — the plan, the
-`pass_identity`, the unit-progress events, and the READ that answers "does this pass COUNT?", which
+`pass_identity`, the unit-progress events, **the findings**, and the READ that answers "does this pass
+COUNT?", which
 validates every line of those files, including the one event the emit-only rule exempts from tool-writing
 (see `references/stage-2-review-gate.md`); never hand-parse one of those files, and never hand-write a
 line the tool writes.
 `scripts/emit-progress.py` is the reviewer's door into it — **its CLI is unchanged**, and it is the only
-sanctioned way to record a unit-progress event. `scripts/ledger.py` is the schema-owning accessor for
+sanctioned way to record a unit-progress event. **`scripts/emit-finding.py` is the reviewer's other door,
+and the only sanctioned way to report a FINDING**: every finding is a validated record that ANCHORS to the
+PR's intent (a `## Purpose` line quoted verbatim, or the actor who can actually write the bad input), and a
+finding that anchors to neither is **NON-GATING** — recorded as a follow-up, never a `NOT SATISFIED`, never
+a fix. `scripts/ledger.py` is the schema-owning accessor for
 `state.jsonl` — read/write the ledger header and per-PR rows **by field name** through it, never by column
-position (see `references/files-and-ledger.md`); pass its absolute path to subtasks the same way.
+position (see `references/files-and-ledger.md`); pass its absolute path to subtasks the same way. Its
+`verdict` subcommand is the **only** sanctioned way to record a review verdict.
+
+Each script's fixtures live in a **sibling `*-test.py`** (`review-pass-test.py`, `ledger-test.py`); the
+`self-test` subcommand loads it and **fails loudly if it is missing**.
+
+**At run startup, record which version of these rules is actually running:** read `version` from the
+running plugin's `plugin.json` and write it to the ledger header —
+`ledger.py --file <state.jsonl> header set skill_version <version>`. The harness loads this skill from the
+**installed plugin cache**, so a merged, version-bumped rule governs **nothing** until that cache refreshes;
+one already did not, for days, and no artifact of the run recorded it.
 
 ## Subagent Dispatch — model per class
 
@@ -166,9 +181,36 @@ Read stage refs only when that stage/action is due:
   only one).
 - **Progress ledger:** reviewer progress means planned unit `done` or accepted amendment, not vague
   output.
-- **Findings are claims, not facts:** on every `NOT SATISFIED`, audit each finding (CONFIRMED /
+- **The review is measured against the PR's INTENT, never against "is anything wrong with this code?"**
+  The reviewer is handed `<rundir>/intent-<pr>.md` **verbatim** (`## Purpose` / `## Non-goals` /
+  `## Threat model`; written at adoption, local and git-ignored — **never** written back to the PR) and
+  answers ONE question: **does this PR achieve its stated Purpose, without breaking anything reachable by an
+  actor named in its Threat model?** The open-ended question has **no fixed point** — it ran one PR through
+  21 rounds of true, reproduced, irrelevant findings. **Non-goals BIND** the reviewer. The adversarial sweep
+  **stays**, bounded by the threat model rather than by nothing (`references/stage-2-review-gate.md`).
+  **It is the PASS that is measured against it, not merely its findings:** `review-pass.py verify` loads
+  the intent for **every** pass — including one that found nothing, which is the case that merges a PR — so
+  a PR with no usable intent block earns **no verdicts at all**.
+- **A finding must ANCHOR, or it does not gate:** every finding is a record written by
+  `scripts/emit-finding.py`, naming **either** the `## Purpose` line it defends (quoted verbatim) **or** the
+  `writer` who can actually supply the bad input (a CLOSED enum). **A finding whose `purpose` is `-` AND
+  whose `writer` is `driver-only`/`hand-edit`/`dev-time` is NON-GATING** — recorded as a follow-up, never a
+  `NOT SATISFIED`, never a fix. Enforced in `review-pass.py`, not by good intentions. **Not every true
+  statement about the code is a reason to block it**; a guard being incomplete is not, by itself, a defect.
+  **And the rule runs BOTH ways — it is an if and only if: `NOT SATISFIED` exactly when at least one GATING
+  finding stands.** A pass that records a gating finding and returns `SATISFIED` anyway is `unusable`, the
+  same as one that blocks with nothing to point at. A finding cannot be blocking in the artifact and
+  ignorable in the verdict. **The verdict is a REQUIRED input to `verify`** (`--verdict`, what the report's
+  `VERDICT:` line says): a COMPLETE pass verified without one is `unusable`, because a guard whose input
+  can be ABSENT never fires.
+- **Verdicts go through `ledger.py verdict` — NEVER set `reviews_ok` by hand.** It bumps `review_rounds`
+  (**monotone, never reset — the loop's only memory across fresh-context wakes**), applies the tally, and
+  moves `ns_streak`, atomically. `set` cannot RAISE the tally and no door can write the counters at all.
+- **Findings are claims, not facts:** on every `NOT SATISFIED`, audit each **gating** finding (CONFIRMED /
   ADJUSTED / REFUTED, with evidence, into `audit-<pr>-<n>.md`) BEFORE dispatching a fix; only
-  CONFIRMED + ADJUSTED get fixed. The reachability test asks whether the **mechanism can occur**, not
+  CONFIRMED + ADJUSTED get fixed. That asks **is it TRUE?**; the gating rule above asks **does it MATTER?**
+  — both must pass, and a finding must matter before anyone spends an audit on whether it is true. The
+  reachability test asks whether the **mechanism can occur**, not
   where the trigger comes from; **unsure → CONFIRMED, never REFUTED**. A refutation NEVER clears the
   gate — `reviews_ok` stays 0 — and is **written into the tree** as an inline comment at the site and
   **committed**: a commit is PR content, so it resets the gate and the next reviewer REVIEWS the

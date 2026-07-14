@@ -154,10 +154,22 @@ blocks; each completion is its own wake.
    **never** decided from the watch's exit code (Stage 2b, "WHO DOES WHAT" and "VERIFY THE STAMP BEFORE
    PARSING"); review →
    the **active launch attempt's** output file, with its progress file as liveness evidence — attempt 1
-   writes `review-<pr>-<n>.txt` / `.progress.jsonl`, a relaunch writes `review-<pr>-<n>.a<k>.*`, and
+   writes `review-<pr>-<n>.txt` / `.progress.jsonl` / `.findings.jsonl`, a relaunch writes
+   `review-<pr>-<n>.a<k>.*`, and
    only the attempt named in the current `pass_identity` is read or counted (Stage 2a). **Before a
-   review verdict is counted, the pass's artifacts must verify** — `scripts/review-pass.py verify`, never
-   an ad-hoc parse; anything but `ok` means the verdict is not tallied (Stage 2a, "Does this pass COUNT?");
+   review verdict is counted, the pass's artifacts must verify** — `scripts/review-pass.py verify --verdict
+   <what the report's VERDICT line says>`, never
+   an ad-hoc parse; anything but `ok` means the verdict is not tallied (Stage 2a, "Does this pass COUNT?").
+   **`--verdict` is REQUIRED** — it is what lets the tool check the one rule it can, so a COMPLETE pass
+   verified without it is `unusable`, never `ok` (a rule a driver can switch off by forgetting a flag is
+   not a gate). That rule is an **if and only if**: **`not-satisfied` exactly when at least one GATING
+   finding stands** — a verdict that blocks a PR
+   must name what blocks it, and a finding that blocks a PR cannot be waved through by the verdict. Either
+   way round is `unusable` (Stage 2a, "Does this pass COUNT?").
+   **Then record the verdict with `scripts/ledger.py verdict --pr <N> --head-sha <sha> --verdict …`** — the
+   ONLY sanctioned path, and the only thing that bumps `review_rounds` (Stage 2a, "Recording a verdict");
+   never set `reviews_ok` by hand.
+   For any completed task (review, CI watch,
    CI/review fix), record the result against the SHA it ran on and act per Stage 2.
 3. **Dispatch due work — non-blocking, idempotent, bounded, work-conserving.** Scan the whole run,
    not just the PR/job that woke you. Launch every due action that fits a free slot before returning.
@@ -245,7 +257,15 @@ blocks; each completion is its own wake.
      `head_sha` and sets `required(tier)` = **1 if TRIVIAL else 2**.
    - current tip has `reviews_ok < required(tier)`, its **review preconditions are clear** (no
      unaddressed Copilot review items, CI not red, no merge conflict with `<base>` — see Stage 2a
-     preconditions), and no review running for that SHA → **first ensure the PR-head worktree exists**
+     preconditions), and no review running for that SHA → **first ensure the PR's INTENT
+     (`<rundir>/intent-<pr>.md`) and PR-head worktree exist.** The dispatch substitutes the intent block
+     into the review prompt **verbatim** (`stage-2-review-gate.md`), and a reviewer with no intent is a
+     reviewer asked "is anything wrong with this code?" — the question with no fixed point. **It is not an
+     exhortation: `review-pass.py verify` loads `intent-<pr>.md` for EVERY pass, so a pass dispatched
+     without one is `unusable` and its verdict cannot be tallied** — the review would be spent for nothing.
+     If the file is
+     missing (a wiped `<rundir>`), write it **per `pr-adoption.md` step 3a** and record its provenance in
+     the row's `intent`. Then **ensure the PR-head worktree exists**
      (the review runs `codex exec -C <worktree>` — the PR row's ledger `worktree` column value, the
      single source of truth for this PR's checkout path (created at adoption/pre-review per
      `pr-adoption.md`; the ledger-recorded `<worktree>` path — default `.worktrees/<headRefName>` when

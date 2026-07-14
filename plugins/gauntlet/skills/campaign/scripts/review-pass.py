@@ -33,9 +33,11 @@ So this file is the review pass's artifacts, executed:
 
 WHAT `verify` DOES NOT DO — AND THE LINE IS DELIBERATE. It never opens `review-<pr>-<n>.txt`, never
 parses the reviewer's prose, and CANNOT SAY `SATISFIED`. Its whole answer is about the pass's MECHANICS:
-is there an identity, does it name the commit the pass actually ran on, is every `done` for a unit that
-was really planned, did every `done` FOLLOW a `started` for that same unit, does every `done` carry
-evidence, were amendments raised. The VERDICT is the reviewer's JUDGMENT and stays theirs.
+is there an identity, does it name the commit the pass actually ran on, WAS THERE AN INTENT for this
+reviewer to be measured against, is every `done` for a unit that was really planned, did every `done`
+FOLLOW a `started` for that same unit, does every `done` carry evidence, were amendments raised, and does
+the verdict the orchestrator READ cohere with the findings the reviewer RECORDED. The VERDICT itself is
+the reviewer's JUDGMENT and stays theirs.
 
 That line is what keeps this tool from BECOMING the gate. `verify` can only ever SUBTRACT a pass — refuse
 one that is defective. It can never ADD a SATISFIED verdict, never raise `reviews_ok`, and never merge
@@ -79,10 +81,18 @@ door has a `--head-sha` to compare against. That gap is named there and nowhere 
 
 THE VERDICTS. Exactly one is printed, and there is no "counts, BUT…":
 
-  ok          the artifacts are sound; the pass's verdict may now be read from its report
+  ok          the artifacts are sound AND the verdict you gave coheres with them; it may now be tallied
   incomplete  sound, but a planned unit has no `done` event — the pass did not cover its plan
   amended     sound, but the reviewer raised a plan amendment nobody has ruled on yet
   unusable    the artifacts are defective — this pass CANNOT count, whatever its report says
+
+`--verdict` IS REQUIRED, and that is the whole of what "a gate must not depend on a caller remembering"
+means here. You come to `verify` WITH the report's `VERDICT:` line in hand; you do not come to it to find
+out whether the reviewer is done. A pass still in flight is WATCHED, not verified — its progress file is
+the liveness evidence (stage-2-review-gate.md, "Launch check"). While the flag could be left out, a
+complete pass verified without it returned `ok`, so the one machine-checked rule about the reviewer's own
+verdict was OFF for any driver that forgot a flag — and a driver that forgot it merged a PR whose reviewer
+had returned SATISFIED over a GATING finding it recorded itself.
 
 `amended` is a VERDICT and not a footnote beside `ok` on purpose. A disclosure printed next to a pass is a
 trapdoor, not a disclosure: "this pass counts, but note that the reviewer says the plan is missing a
@@ -94,18 +104,14 @@ so. Absent that, the guard fires: the DEFAULT is that nothing has been ruled on.
 from __future__ import annotations
 
 import argparse
-import ast
-import io
+import importlib.util
 import json
-import os
 import re
-import subprocess
 import sys
 import tempfile
 import types
 from collections import Counter
 from collections.abc import Callable
-from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime
 from pathlib import Path
 from typing import NoReturn
@@ -130,6 +136,15 @@ STARTED = "started"
 DONE = "done"
 STATUSES = (STARTED, DONE)
 
+# The REVIEWER'S VERDICT, as the orchestrator READ it off the report and TELLS this tool. This file still
+# never opens the report and still cannot say `SATISFIED` — it is handed the value so that ONE rule can be
+# machine-checked, and that rule is an IF AND ONLY IF (`decide`): **NOT SATISFIED exactly when at least one
+# GATING finding stands.** Both halves of it refuse a pass and neither can grant one. The spelling is the
+# ledger's (`ledger.py verdict --verdict satisfied|not-satisfied`), because the same string is typed at both
+# doors by the same driver in the same step, and two spellings of one verdict is a bug waiting for a wake.
+SATISFIED, NOT_SATISFIED = "satisfied", "not-satisfied"
+VERDICTS = (SATISFIED, NOT_SATISFIED)
+
 # The EXACT key set each event carries — every key it requires, and NOT ONE MORE. "Every required key is
 # present" admits an event that ALSO carries a key nothing reads, and a key nothing reads is evidence that
 # is PRESENT AND NOT COUNTED: a `done` with a `ts` nobody parses, a `pass_identity` with a second sha. The
@@ -151,6 +166,124 @@ UNIT_KEYS = {"type", "id", "kind", "target", "checks"}
 # below. Stating a weaker rule for it here as well is how a value comes to have two definitions.
 UNIT_STRINGS = ("kind", "target")
 UNIT = "unit"
+
+
+# --- THE FINDING, and the INTENT it must ANCHOR to ------------------------------------------------
+#
+# **A FINDING USED TO BE PROSE.** It was a paragraph in `review-<pr>-<n>.txt`, and nothing could validate
+# it, count it, or decline it — so every finding a reviewer reported became a fix, and every fix added
+# code, and the next reviewer hunted the code the last fix added. One PR took 21 review rounds and never
+# converged; a human had to stop it. **Not one of the late findings was WRONG.** They were true, reproduced,
+# `file:line`-concrete statements about defects that really existed — in guards the loop had itself just
+# built, against inputs that NOBODY CAN WRITE.
+#
+# The reviewer was not malfunctioning. It was doing exactly what it was asked, and **what it was asked has
+# no fixed point**: "is anything wrong with this code?" There is always one more true thing to say.
+#
+# So the question changes, and this is the whole of the fix:
+#
+#   **DOES THIS PR ACHIEVE ITS STATED PURPOSE, WITHOUT BREAKING ANYTHING REACHABLE BY AN ACTOR NAMED IN
+#   ITS THREAT MODEL?**
+#
+# A question with a fixed point. To ask it, the run must know what the PR is FOR — which it did not, at all:
+# the dispatch prompt said "review the changes on this branch", and adoption did not even FETCH the PR's
+# body. The intent block (`<rundir>/intent-<pr>.md`, `pr-adoption.md`) is that missing input, and these two
+# fields are how a finding is held against it.
+#
+# EVERY FINDING ANCHORS, or it does not gate. It names EITHER:
+#   * `purpose` — a VERBATIM line of the intent's `## Purpose` block, the thing this finding DEFENDS; or
+#   * `writer`  — WHO CAN ACTUALLY PUT THE BAD INPUT THERE, from a closed enum.
+# A finding that can anchor to neither is a true statement about code that nothing in the world can reach
+# and nothing the PR promised depends on. It is recorded as a follow-up. It does not gate.
+
+FINDING = "finding"
+
+# The EXACT key set, by the same rule every other record here obeys: every key it requires, and NOT ONE
+# more. `line` is a string like every other value in these artifacts.
+FINDING_KEYS = {"type", "file", "line", "writer", "purpose", "repro", "fix"}
+# The prose fields — checked for being a non-blank string, and nothing more. `file` and `line` are the
+# CITATION (a finding with no `file:line` is not a finding, it is an opinion); `repro` is what makes it a
+# demonstrated defect rather than a claim; `fix` is what the fix subagent is dispatched with.
+FINDING_STRINGS = ("file", "repro", "fix")
+
+# **WHO CAN ACTUALLY WRITE THE BAD INPUT — A CLOSED ENUM, DECLARED PER FINDING.**
+#
+# This is the reviewer's judgment, and it is the one place in this tool that is. It is bounded three ways:
+# the enum is CLOSED (a value outside it is refused, never guessed at), the choice is cross-checked against
+# the reviewer's own `repro` (`check_writer_repro`), and it only ever matters for a finding that ALSO
+# anchors to no purpose line.
+WRITERS = ("end-user", "network", "ci", "repo-content", "driver-only", "hand-edit", "dev-time")
+
+# The three that name NO ADVERSARY — nobody outside the machine can produce the input:
+#   driver-only  only the campaign driver itself writes this; no user, no network, no repo content
+#   hand-edit    only someone hand-editing a LOCAL, GIT-IGNORED file the driver owns
+#   dev-time     only someone EDITING THE SOURCE OF THE CODE UNDER REVIEW ("I mutated X in memory…")
+#
+# The other four name a real one: `end-user` (a CLI argument, a human), `network` (a real API response),
+# `ci` (a CI system's output), `repo-content` (a file in the repo, a doc, a fixture, a file mode).
+#
+# **THE DISTINCTION IS THE WHOLE POINT, and the record proves both halves of it.** The findings that were
+# worth 21 rounds were all in the first group. The findings that were GENUINELY serious were in the second
+# — including one against code an EARLIER FIX ROUND had added, which is exactly why "was this line added by
+# a fix?" is NOT the test: a fix round can absolutely introduce a real defect. A paginated reader added
+# mid-gauntlet treated a missing row array as empty and produced a FALSE GREEN from a real GitHub response.
+# `writer=network`. It gates, and it must.
+NO_ADVERSARY = ("driver-only", "hand-edit", "dev-time")
+
+# The `purpose` of a finding that defends no stated purpose. It is a literal `-`, never blank — "I looked
+# and there is none" must be a value the reviewer TYPES, not one it can reach by leaving a field empty.
+#
+# **BECAUSE IT IS A SENTINEL, IT MUST NEVER ALSO BE DATA.** `-` means "anchors to NO purpose" AND is a
+# string a human can type into a `## Purpose` bullet — so a purpose line that IS `-` would collide with the
+# marker for its own absence, and a finding quoting that line verbatim would read as anchoring to nothing.
+# `parse_intent` closes the gap at the WRITE door: a `## Purpose` bullet equal to `NO_PURPOSE` is REFUSED,
+# so the set of real purpose lines and the "no purpose" marker stay disjoint and `check_finding`'s
+# `purpose == NO_PURPOSE or purpose in purposes` can never be true for two different reasons at once.
+NO_PURPOSE = "-"
+
+
+def gating(rec: dict) -> bool:
+    """**MAY THIS FINDING BLOCK THE PR?** The rule, in one statement, and the only definition of it.
+
+    A finding gates unless it anchors to NOTHING: no line of the PR's stated purpose is served by fixing
+    it, AND nobody outside the machine can write the input that triggers it.
+
+    **NOT EVERY TRUE STATEMENT ABOUT THE CODE IS A REASON TO BLOCK IT.** A non-gating finding is not
+    refuted, not dismissed and not necessarily wrong — it is simply not a reason to spend another round.
+    It is recorded as a follow-up and the review moves on.
+
+    Read the two conjuncts as the two ways a finding can EARN its block, because that is what they are:
+      * it DEFENDS something the PR promised to do (`purpose` quotes that promise), or
+      * it is reachable by SOMEONE (`writer` names them).
+    Only a finding that can say neither is discharged.
+    """
+    return not (rec["purpose"] == NO_PURPOSE and rec["writer"] in NO_ADVERSARY)
+
+
+# **THE REPRO THAT GIVES THE WRITER AWAY.** `writer` is declared by the reviewer, so it is the soft joint
+# in this design — and this is the cross-check that hardens it where the record showed it mattered. A
+# reproduction that begins "I mutated … in memory" or "I changed it in a temp copy" is describing an EDIT
+# TO THE SOURCE UNDER REVIEW. There is no input, no actor and no adversary in it: the only person who can
+# do that is a developer with a text editor. Such a repro MUST declare `writer=dev-time`.
+#
+# **IT IS A HEURISTIC AND I AM CALLING IT ONE.** It keys on PHRASES, listed below, and it therefore catches
+# exactly the reproductions that use them — which is both of the real ones this rule was written from, and
+# not a reproduction that describes the same source edit in other words. It cannot be complete, because a
+# repro is prose. What it CAN do is fail SAFE: a repro that trips it while claiming a real-world writer is
+# REFUSED (the pass is unusable and gets re-run), never quietly demoted. It can only ever cost a re-review.
+#
+# Each phrase names an act on the CODE, never on an INPUT — that is the line, and it is why "removed",
+# "changed" and "crafted" are deliberately NOT here. A reviewer that "removed the `statuses` member from
+# the otherwise-green fixture" is describing a RESPONSE SHAPE, and that finding was a real false green from
+# a real GitHub reply. A rule that read the word "removed" as a source edit would have discharged it.
+SOURCE_EDIT_RE = re.compile(
+    r"\bmutat(?:e|ed|es|ing|ion|ions)\b"      # "I mutated EXCEPTIONS |= {…}"; "I executed two mutations"
+    r"|\bin memory\b"                          # "…in memory and the full self_test() still exited 0"
+    r"|\btemp(?:orary)? copy\b"                # "I changed this catch to RuntimeError in a temp copy"
+    r"|\balternate index\b"                    # "I stripped ledger.py to 100644 in an alternate index"
+    r"|\bedit(?:s|ed|ing)? the source\b",
+    re.IGNORECASE,
+)
 
 
 # --- the IDENTIFIERS: ONE LEGAL STRING EACH, and NO CONVERSIONS ANYWHERE -------------------------
@@ -242,6 +375,9 @@ ID_FORMATS: "dict[str, tuple[re.Pattern[str], str, str]]" = {
                  "verdict describe the live tip?' comparison made against it is unfalsifiable. This is the "
                  "row no amount of trimming could ever have caught — a truncated sha is perfectly clean, "
                  "and simply not a commit id"),
+    "line": (re.compile(rf"^{COUNT}\Z"), "a decimal number from 1 up",
+             "a finding CITES a defect at a `file:line`, and a citation nobody can open is not one. There "
+             "is no line 0, and `line` is where a human and a fix subagent are both sent to look"),
 }
 
 
@@ -307,6 +443,33 @@ NAME_RE = re.compile(rf"^review-(?P<pr>{COUNT})-(?P<pass>{COUNT})(?:\.a(?P<attem
 # at one door and not at all at the other is the same asymmetry as any other; `PLAN_NAME_RE` closes it.
 PLAN_NAME = "review-{pr}-{pass}.plan.jsonl"
 PLAN_NAME_RE = re.compile(rf"^review-{COUNT}-{COUNT}\.plan\.jsonl\Z")
+
+# The FINDINGS artifact is PER LAUNCH ATTEMPT, not per pass — it is the reviewer's OUTPUT, like the report
+# (`review-<pr>-<n>.txt`), and a relaunched pass produces its own. So its name is the progress file's name
+# with one suffix swapped, and it is DERIVED from it exactly as the plan's is: no door takes a findings
+# path and a progress path that could disagree about which pass they belong to.
+PROGRESS_SUFFIX, FINDINGS_SUFFIX = ".progress.jsonl", ".findings.jsonl"
+FINDINGS_NAME_RE = re.compile(rf"^review-(?P<pr>{COUNT})-{COUNT}(?:\.a{ATTEMPT})?\.findings\.jsonl\Z")
+
+# The INTENT — what this PR is FOR. One per PR, written at adoption (`pr-adoption.md`), re-read every wake
+# and never re-derived: a wake is a fresh agent instance, and an intent held only in context is one that
+# gets invented a second time, differently.
+#
+# **EVERY PASS IS JUDGED AGAINST ONE — `evaluate` loads it whatever the pass found, and that is the whole
+# rule.** It used to be loaded only where a finding needed ANCHORING, which meant a pass with NO findings
+# never asked whether the intent existed at all: the guard's input could simply be ABSENT, and a guard whose
+# input can be absent never fires. A SATISFIED pass that found nothing is the COMMON case and the one that
+# merges a PR, so that was the hole in the exact shape of the door it was guarding.
+#
+# It is DERIVED from the artifact's own name too (the `pr` is in it), for the same reason the plan is: a
+# `--intent` flag is a way to point a pass at somebody else's intent, and there is no reason to have one.
+INTENT_NAME = "intent-{pr}.md"
+
+# The three sections, verbatim, and ALL THREE ARE REQUIRED. A block missing one is not a weaker intent, it
+# is an unusable one: `## Purpose` is what a finding quotes, `## Threat model` is what bounds the sweep, and
+# `## Non-goals` is the only thing that can say "this was deliberate, stop reporting it".
+PURPOSE_H, NON_GOALS_H, THREAT_H = "## Purpose", "## Non-goals", "## Threat model"
+INTENT_SECTIONS = (PURPOSE_H, NON_GOALS_H, THREAT_H)
 
 
 class Defect(Exception):
@@ -504,6 +667,296 @@ def load_plan(path: Path) -> "dict[str, dict]":
             f"plan, so a pass that reviewed nothing at all would verify {OK}"
         )
     return units
+
+
+# --- the intent, and the findings that must anchor to it -----------------------------------------
+
+def parse_intent(text: str, path: Path) -> "dict[str, list[str]]":
+    """The intent block's three sections, each as its list of bullet lines. ONE parser, at both doors.
+
+    The format is the one `pr-adoption.md` writes and this file's docstring shows: three `##` headings,
+    each followed by `- ` bullets. Nothing else about the file is read — a human may put whatever prose
+    they like around it, and often should.
+
+    **ALL THREE HEADINGS ARE REQUIRED, AND `## Purpose` AND `## Threat model` MUST EACH HAVE AT LEAST ONE
+    BULLET.** They are the intent's two ANCHORS, and a finding gates by naming one of them: a `## Purpose`
+    line quoted verbatim, or an actor from the `## Threat model` who can really write the bad input. Empty
+    either one and the guard on that side has no input — and a guard whose input can be ABSENT never fires.
+    An empty `## Purpose` forces every finding to anchor to `-`. An empty `## Threat model` names NO actor,
+    so nothing a reviewer finds can be anchored to one, and REAL, REACHABLE defects are then discharged as
+    non-gating: the exact failure this intent block exists to prevent, running backwards. A section that can
+    be empty is a section that will be.
+
+    **`## Non-goals` MAY be empty, and that is not an oversight — it is the one section where empty MEANS
+    something.** "We exclude nothing" is a complete, honest answer, and it is the DEFAULT answer: it makes
+    the reviewer's job strictly harder (nothing is off-limits), so nobody can weaken a review by leaving it
+    blank. An empty threat model is not the analogous statement — "no actor can write any input this code
+    reads" is not a scope decision, it is a section nobody filled in — and unlike the other two it is not a
+    claim a reviewer would ever WRITE. So the rule is drawn where the risk is: the two anchors must say
+    something; the exclusions may say nothing.
+
+    **AND NO `## Purpose` BULLET MAY BE THE STRING `NO_PURPOSE` (`-`).** That value is the SENTINEL a
+    finding types (`--purpose -`) to say it anchors to no purpose. A purpose line that IS that string is a
+    sentinel masquerading as data: a finding quoting it verbatim carries `purpose == NO_PURPOSE`, which
+    `gating()` reads as "anchors to nothing" and discharges — turning a real, anchored finding non-gating.
+    The write door refuses it here, so the real purpose lines and the absent-marker can never overlap.
+    """
+    sections: dict[str, list[str]] = {}
+    current: "str | None" = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line in INTENT_SECTIONS:
+            if line in sections:
+                # MUTATE:intent-duplicate-section:pass
+                raise Defect(
+                    f"{path.name}: `{line}` appears TWICE — two purposes are two intents, and a finding "
+                    f"quoting a line from one of them would be anchored to a document that says two things"
+                )
+            sections[line] = []
+            current = line
+        elif line.startswith("#"):
+            current = None  # some other heading: the intent's sections end here
+        elif current is not None and line.startswith("- "):
+            sections[current].append(line[2:].strip())
+    missing = [h for h in INTENT_SECTIONS if h not in sections]
+    if missing:
+        # MUTATE:intent-missing-section:pass
+        raise Defect(
+            f"{path.name} is missing {missing} — an intent block is all three sections. `{PURPOSE_H}` is "
+            f"what a finding QUOTES, `{THREAT_H}` is what BOUNDS the adversarial sweep, and "
+            f"`{NON_GOALS_H}` is the only thing that can say a gap was DELIBERATE. Two of three is not a "
+            f"weaker intent; it is one the reviewer cannot be measured against"
+        )
+    if not sections[PURPOSE_H]:
+        # MUTATE:intent-empty-purpose:pass
+        raise Defect(
+            f"{path.name}: `{PURPOSE_H}` has no bullets — every finding would then anchor to {NO_PURPOSE!r} "
+            f"by force, and a guard whose input can be ABSENT never fires. State at least one line the PR "
+            f"must do"
+        )
+    if not sections[THREAT_H]:
+        # MUTATE:intent-empty-threat-model:pass
+        raise Defect(
+            f"{path.name}: `{THREAT_H}` has no bullets — it NAMES THE ACTORS a finding may anchor to, so an "
+            f"empty one names none, and a finding that cannot reach an actor is discharged as NON-GATING. "
+            f"That turns the guard INSIDE OUT: real, reachable defects would be waved through, which is the "
+            f"failure this block exists to prevent. State who can write the inputs this code reads — and who "
+            f"cannot"
+        )
+    if NO_PURPOSE in sections[PURPOSE_H]:
+        # MUTATE:intent-purpose-is-sentinel:pass
+        raise Defect(
+            f"{path.name}: a `{PURPOSE_H}` bullet is {NO_PURPOSE!r} — that is the SENTINEL a finding uses to "
+            f"say it anchors to NO purpose (`--purpose {NO_PURPOSE}`), so a purpose line that IS that string "
+            f"collides with the marker for its own absence: a finding quoting it VERBATIM carries "
+            f"`purpose == {NO_PURPOSE!r}`, and `gating()` then reads a REAL, anchored finding as anchoring to "
+            f"nothing and discharges it. A purpose is a thing the PR must DO; {NO_PURPOSE!r} names none, so it "
+            f"is not one. State the line the PR must do, or drop the bullet"
+        )
+    return sections
+
+
+def load_intent(path: Path) -> "dict[str, list[str]]":
+    """The PR's intent, or a Defect saying it is not there.
+
+    **A MISSING INTENT IS NOT AN EMPTY INTENT.** It is refused, loudly, and it is refused for EVERY pass —
+    not merely for one that has a finding to anchor. A finding cannot be anchored to a document that does
+    not exist, and the alternative (treat every `purpose` as unverifiable and wave it through) hands the
+    reviewer a field it can write anything into. Adoption writes this file before the PR's first review
+    pass is ever dispatched (`pr-adoption.md`), so its absence means the run skipped a step, never that the
+    PR has no purpose.
+
+    **BOTH DOORS CALL IT, AND SO DOES THE PASS ITSELF.** `cmd_finding_add` calls it to check an anchor at
+    the moment the reviewer records one; `check_findings_file` calls it to check every anchor already on
+    disk; and `evaluate` calls it for EVERY pass it judges — a pass with zero findings has nothing to
+    anchor and is still measured against an intent, because "was this reviewer told what the PR is FOR?"
+    is a question about the PASS, not about its findings. One function, one definition, three callers.
+
+    **THE ABSENCE HAS ITS OWN MESSAGE, AND THAT IS NOT DECORATION.** Every other artifact this tool reads is
+    written by the ORCHESTRATOR AT DISPATCH, so `read_text`'s message says so — and for the intent that
+    sentence is a LIE with a recovery attached: it is written at ADOPTION, long before, and the fix is not
+    to re-run the reviewer but to write the file and re-dispatch. A missing intent is the one `unusable`
+    that is NOT a reviewer failure, and a driver that follows the generic message re-rolls a reviewer
+    forever against a PR that still has no intent.
+    """
+    if not path.exists():
+        # MUTATE:intent-missing-file:pass
+        raise Defect(
+            f"no intent block at {path} — THE RUN SKIPPED A STEP, and this is not a reviewer failure. "
+            f"`{INTENT_NAME.format(pr='<pr>')}` is written at ADOPTION (`pr-adoption.md` step 3a), before "
+            f"the PR's first review pass is ever dispatched, and EVERY pass is measured against it — a pass "
+            f"that found nothing included. Re-rolling the reviewer cannot produce one. Write the intent "
+            f"block, then re-dispatch the pass"
+        )
+    return parse_intent(read_text(path, "intent block"), path)
+
+
+def check_writer_repro(rec: dict, where: str) -> None:
+    """Does the reviewer's own REPRO contradict the WRITER it declared?
+
+    The one automatic check on the one field this tool lets a reviewer judge. A reproduction that says "I
+    mutated it in memory" describes a developer with a text editor — there is no input and no actor in it —
+    so it MUST be `dev-time`. A finding that claims a real-world writer while reproducing itself by editing
+    the code is either mis-declared or mis-reproduced, and either way its `writer` cannot be trusted to
+    decide whether the PR merges.
+
+    It FAILS SAFE and only ever costs a re-review: it can refuse a pass, never demote a finding.
+    """
+    hit = SOURCE_EDIT_RE.search(rec["repro"])
+    if hit is not None and rec["writer"] != "dev-time":
+        # MUTATE:writer-contradicts-repro:pass
+        raise Defect(
+            f"{where}: `writer` is {rec['writer']!r}, but the repro says {hit.group(0)!r} — that is an EDIT "
+            f"TO THE SOURCE UNDER REVIEW, and the only actor who can perform it is a developer with a text "
+            f"editor. Its writer is `dev-time`. Declare it, or reproduce the defect with an input the "
+            f"writer you named can actually supply — if there is one, this is a DIFFERENT and much more "
+            f"serious finding, and it should say so"
+        )
+
+
+def check_finding(rec: dict, where: str, purposes: "list[str]") -> None:
+    """ONE finding, checked to the exact shape — and ANCHORED. Run at BOTH doors, so there is one
+    definition of what a finding IS.
+
+    `purposes` is the intent's `## Purpose` bullets. **The `purpose` field must be one of them, VERBATIM,
+    or the literal `-`.** That is what makes the anchor a fact rather than a claim: the reviewer cannot
+    invent a purpose line to justify a finding, because the only strings that validate are the ones the
+    intent already says. It is the same discipline as every identifier in this file — one legal form, no
+    repair — applied to a whole line of prose.
+
+    `rec: dict` — and unlike `check_unit`, that IS a promise every caller can keep. A finding is never
+    nested inside another record, so the only two things that reach here are a line `parse_lines` has
+    already proved is a JSON object, and the dict `finding-add` builds from its own flags. There is no
+    third door, so there is no "not an object" case to guard — and a guard for a case that cannot occur is
+    a rule no fixture can ever kill.
+    """
+    if set(rec) != FINDING_KEYS:
+        missing = sorted(FINDING_KEYS - set(rec))
+        extra = sorted(set(rec) - FINDING_KEYS)
+        # MUTATE:finding-keys:pass
+        raise Defect(
+            f"{where}: a finding carries EXACTLY {sorted(FINDING_KEYS)}"
+            + (f"; missing {missing}" if missing else "")
+            + (f"; unexpected key(s) {extra} — nothing reads them, so whatever they assert is neither "
+               f"verified nor refuted" if extra else "")
+        )
+    if rec["type"] != FINDING:
+        # MUTATE:finding-row-type:pass
+        raise Defect(f"{where}: type is {rec['type']!r}, and a findings file holds only {FINDING!r} records")
+    for field in sorted(FINDING_KEYS - {"type"}):
+        if not isinstance(rec[field], str):
+            # MUTATE:finding-non-string:continue
+            raise Defect(
+                f"{where}: `{field}` is {rec[field]!r}, not a string — a value we cannot read is not one we "
+                f"may hand to a comparison and hope"
+            )
+    # The CITATION. `line` is an identifier by this file's own definition — a value two doors compare —
+    # so it goes through `check_id`, the one validator, exactly as a sha or a unit id does.
+    check_id("line", rec["line"], where)
+    for field in FINDING_STRINGS:
+        if not rec[field].strip():
+            # MUTATE:finding-blank:continue
+            raise Defect(
+                f"{where}: `{field}` is blank — a finding names the FILE it is in, the REPRO that makes it "
+                f"fail, and the FIX. A blank one of those is a finding with nothing behind it, and this is "
+                f"the field a fix subagent is dispatched with"
+            )
+    if rec["writer"] not in WRITERS:
+        # MUTATE:finding-writer-enum:pass
+        raise Defect(
+            f"{where}: `writer` is {rec['writer']!r} — it names WHO CAN ACTUALLY PUT THE BAD INPUT THERE, "
+            f"from a CLOSED enum: {list(WRITERS)}. A value outside it is not a new kind of actor, it is a "
+            f"field nobody filled in. `hand-edit` = only by hand-editing a local git-ignored file the driver "
+            f"owns; `dev-time` = only by editing the source of the code under review"
+        )
+    if rec["purpose"] != NO_PURPOSE and rec["purpose"] not in purposes:
+        # MUTATE:finding-purpose-anchor:pass
+        raise Defect(
+            f"{where}: `purpose` is {rec['purpose']!r}, which is NOT a line of this PR's `{PURPOSE_H}` "
+            f"block. It must be one of them VERBATIM, or the literal {NO_PURPOSE!r} — a purpose the reviewer "
+            f"paraphrases is a purpose the reviewer WROTE, and the whole point of the anchor is that it is "
+            f"the PR's claim and not the finding's. The stated purpose is:\n  "
+            + "\n  ".join(f"- {p}" for p in purposes)
+        )
+    check_writer_repro(rec, where)
+
+
+def findings_name(path: Path) -> "re.Match[str]":
+    """THE findings artifact's name rule — one statement, and every door runs it.
+
+    It RETURNS the match, because the name is not merely checked: the `pr` in it is what locates the intent
+    this file's findings must anchor to. Checking the name and then re-deriving the pr somewhere else is how
+    two doors come to disagree about which PR a file belongs to.
+    """
+    m = FINDINGS_NAME_RE.match(path.name)
+    if m is None:
+        # MUTATE:findings-name-shape:return FINDINGS_NAME_RE.match("review-1-1.findings.jsonl")
+        raise Defect(
+            f"{path.name} is not a findings artifact's name — it is `review-<pr>-<n>.findings.jsonl`, or "
+            f"`review-<pr>-<n>.a<k>.findings.jsonl` for launch attempt k >= 2. `verify` never takes this "
+            f"path: it DERIVES it from the progress file's name, so findings written under any other name "
+            f"are findings nothing will ever read — and a NOT SATISFIED pass would then be refused for "
+            f"recording no finding while its findings sat on disk one filename away"
+        )
+    return m
+
+
+def check_findings_file(text: str, path: Path) -> "list[dict]":
+    """Every rule a findings artifact's BYTES must satisfy — the same statement at both doors.
+
+    The intent is loaded from the `pr` this file's own NAME carries, and only once there is a finding to
+    anchor: with no findings there is nothing to anchor, so this function has nothing to say.
+
+    **THAT IS A STATEMENT ABOUT THIS FILE, AND IT IS NOT — EVER — A STATEMENT ABOUT THE PASS.** "No
+    findings, therefore no intent needed" was once true of both, and it was the hole: a pass with no
+    findings never loaded the intent at all, so a SATISFIED pass on a PR whose intent was never written
+    verified `ok`. The pass-level rule lives in `evaluate`, which loads the intent for EVERY pass it
+    judges, whatever this file holds — including when it does not exist.
+    """
+    pr = findings_name(path).group("pr")
+    records = parse_lines(text, path.name)
+    if not records:
+        return []
+    purposes = load_intent(intent_path(path.parent, pr))[PURPOSE_H]
+    for n, rec in enumerate(records, start=1):
+        check_finding(rec, f"{path.name} line {n}", purposes)
+    return records
+
+
+def findings_path(progress: Path) -> Path:
+    """The pass's findings artifact, DERIVED from its progress file's name — never passed in, at any door."""
+    return progress.parent / (progress.name[: -len(PROGRESS_SUFFIX)] + FINDINGS_SUFFIX)
+
+
+def intent_path(parent: Path, pr: str) -> Path:
+    """Where this PR's intent lives — beside the pass's artifacts, in the run dir.
+
+    It takes the `pr` rather than sniffing it out of a filename, because every caller has ALREADY parsed
+    the name it came from (that parse is what refused a misfiled artifact one statement earlier). A second
+    name check here would be a rule no input can reach and no fixture can kill.
+    """
+    return parent / INTENT_NAME.format(pr=pr)
+
+
+def load_findings(progress: Path) -> "list[dict]":
+    """This pass's findings — `[]` when the artifact does not exist.
+
+    **AN ABSENT FINDINGS FILE IS ZERO FINDINGS, AND THAT IS NOT A DEFECT.** A pass that found nothing
+    records nothing, and "finding nothing is a fine and common result" is the reviewer's own contract. What
+    an absent file is NOT is a licence to return NOT SATISFIED: `decide` refuses that pass, because a
+    verdict that blocks a PR with no gating finding behind it is a verdict nobody can act on and nobody can
+    check.
+
+    **AND IT IS NOT A LICENCE TO SKIP THE INTENT EITHER.** This function is the one place a whole artifact
+    is allowed to be absent, so it is the one place that could quietly take the intent check down with it —
+    and it DID: an absent findings file returned `[]` here, `load_intent` was never reached, and a pass on
+    a PR with NO intent block at all counted. `evaluate` loads the intent for every pass, so absence here
+    now means exactly what it says — zero findings — and nothing more.
+    """
+    path = findings_path(progress)
+    if not path.exists():
+        return []
+    return check_findings_file(read_text(path, "findings file"), path)
 
 
 # --- the progress events -------------------------------------------------------------------------
@@ -750,7 +1203,8 @@ def check_head(ident: dict, head_sha: str) -> None:
 
 # --- the verdict ---------------------------------------------------------------------------------
 
-def decide(events: "list[dict]", units: "dict[str, dict]", ruled: int) -> "tuple[str, str]":
+def decide(events: "list[dict]", units: "dict[str, dict]", ruled: int,
+           findings: "list[dict]", verdict: "str | None") -> "tuple[str, str]":
     """Given SOUND artifacts: does this pass COUNT? (Its report is still not read. That is the point.)
 
     The per-event rules — planned unit, `done` follows `started`, no SECOND `done` — are `check_progress`,
@@ -762,6 +1216,34 @@ def decide(events: "list[dict]", units: "dict[str, dict]", ruled: int) -> "tuple
     verified `ok`: the tool that exists to prove a review HAPPENED accepted a review that demonstrably did
     not. Skip straight to "done" for every unit and the gate was satisfied on zero evidence of work. A
     `done` with no `started` is not progress, exactly as an empty plan is not a plan.
+
+    **`verdict` IS TOLD TO THIS TOOL, NEVER READ BY IT — AND THE LINE IS THE SAME LINE AS ALWAYS.** This
+    function still does not open `review-<pr>-<n>.txt` and still cannot SAY `SATISFIED`. The orchestrator
+    reads the reviewer's VERDICT line, exactly as before, and passes what it read (`--verdict`) so that ONE
+    coherence rule can be checked mechanically. **THE RULE IS AN IF AND ONLY IF, AND IT IS ENFORCED IN BOTH
+    DIRECTIONS: NOT SATISFIED exactly when at least one GATING finding stands.**
+
+    **AND ON A COMPLETE PASS THE VERDICT IS NOT OPTIONAL — an ABSENT one is `unusable`, never `ok`.** It
+    was optional, and that made the coherence rule above a guard a caller could switch off by FORGETTING a
+    flag: a complete pass verified with no `--verdict` returned `ok`, so a driver that dropped it merged a
+    PR whose reviewer had returned SATISFIED over a GATING finding it had itself recorded. That is the same
+    defect as the intent that could be missing on exactly the passes that count — **a guard whose input can
+    be ABSENT never fires** — and it is closed the same way: the input is DEMANDED. A verdict a driver has
+    not read yet is not a reason to skip the rule; it is a reason not to be at this door yet.
+
+      * NOT SATISFIED and NO gating finding — a verdict that blocks a PR and names nothing that blocks it.
+      * SATISFIED and a gating finding that STANDS — the reviewer recorded a defect that anchors to the PR's
+        own purpose, or that a named actor can really reach, and then passed the PR anyway. Half the
+        contract was enforced and this half was not, so exactly that pass verified `ok`: the finding is
+        real, it gates by the rule the reviewer itself applied when it recorded it, and the gate waved it
+        through. If the reviewer believes it does NOT gate, the fix is to say so where it is SAID — a
+        finding that anchors to nothing is `purpose = -` and a no-adversary `writer`, and `finding-add`
+        prints NON-GATING when it writes one. What may never happen is a finding that reads as gating in
+        the artifact and as ignorable in the verdict.
+
+    Note which direction EITHER half can move a pass — both can only ever REFUSE one. Nothing here can turn
+    a NOT SATISFIED into a pass, raise `reviews_ok`, or merge anything; a tool that could accept would merge
+    a PR nobody reviewed, and a bug in one that can only refuse costs a re-review.
     """
     _announced, done = walk_progress(events, units)
 
@@ -784,10 +1266,50 @@ def decide(events: "list[dict]", units: "dict[str, dict]", ruled: int) -> "tuple
             f"{len(done)}/{len(units)} planned units are done; no `{DONE}` event for {missing} — the pass "
             f"has not covered its plan"
         )
+
+    # The pass is COMPLETE from here down — every planned unit is done and no amendment is outstanding — so
+    # there IS a report, and the ONE rule this tool can check mechanically has an input it may not be denied.
+    # Ordered BELOW `incomplete` on purpose: a pass still in flight has no verdict to state, and asking it
+    # for one would refuse a reviewer for being unfinished, which `incomplete` already says better.
+    if verdict is None:
+        # MUTATE:verdict-missing-on-complete:pass
+        return UNUSABLE, (
+            f"all {len(units)} planned units are done, so this pass is FINISHED — and no verdict was given "
+            f"to check it against ({VERDICTS} — what the report's `VERDICT:` line says). The coherence rule "
+            f"is the only thing standing between a reviewer that returns SATISFIED over a GATING finding it "
+            f"recorded itself and a PR that merges anyway, and a rule whose input may be OMITTED is a rule a "
+            f"caller switches off by forgetting a flag. Read the report's VERDICT line and state it"
+        )
+
+    blocking = [f for f in findings if gating(f)]
+    if verdict == NOT_SATISFIED and not blocking:
+        # MUTATE:not-satisfied-without-gating-finding:pass
+        return UNUSABLE, (
+            f"this pass returned NOT SATISFIED and recorded NO GATING finding ({len(findings)} finding(s), "
+            f"all NON-GATING). A verdict that blocks a PR must name what blocks it: a finding that DEFENDS "
+            f"a line of the PR's stated purpose, or one an actor in its threat model can actually reach. A "
+            f"finding that anchors to NEITHER is a true statement about code nobody can reach, in service of "
+            f"nothing the PR promised — record it as a follow-up and return SATISFIED. That is not a "
+            f"loophole; it is the difference between the findings that were worth 21 rounds and the ones "
+            f"that were not"
+        )
+    if verdict == SATISFIED and blocking:
+        # MUTATE:satisfied-with-gating-finding:pass
+        return UNUSABLE, (
+            f"this pass returned SATISFIED while {len(blocking)} GATING finding(s) STAND: "
+            + "; ".join(f"{f['file']}:{f['line']}" for f in blocking)
+            + f". The contract is an IF AND ONLY IF — NOT SATISFIED exactly when at least one GATING finding "
+              f"stands — and only its other half was ever enforced, so a pass could record a blocking defect "
+              f"and pass the PR anyway. A gating finding is one that DEFENDS a line of the PR's stated "
+              f"purpose or that an actor in its threat model can really reach, and the reviewer said so when "
+              f"it recorded it. If it does not gate, say so where it is SAID: `purpose` is `-` and `writer` "
+              f"is one of {list(NO_ADVERSARY)}. A finding cannot read as blocking in the artifact and as "
+              f"ignorable in the verdict"
+        )
     return OK, (
         f"all {len(units)} planned units are done with evidence, on {events[0]['head_sha']}, no unruled "
-        f"amendments. This says the ARTIFACTS are sound — NOT that the pass is SATISFIED. Read the "
-        f"VERDICT line in the report"
+        f"amendments, {len(blocking)} gating finding(s) of {len(findings)}. This says the ARTIFACTS are "
+        f"sound — NOT that the pass is SATISFIED. Read the VERDICT line in the report"
     )
 
 
@@ -816,13 +1338,34 @@ def plan_path(progress: Path) -> Path:
     return progress.parent / PLAN_NAME.format(pr=pr, **{"pass": npass})
 
 
-def evaluate(progress: Path, head_sha: str, ruled: int = 0) -> "tuple[str, str]":
-    """The whole read side. Every exception a rule can raise lands here as a VERDICT — never as a crash."""
+def evaluate(progress: Path, head_sha: str, ruled: int = 0,
+             verdict: "str | None" = None) -> "tuple[str, str]":
+    """The whole read side. Every exception a rule can raise lands here as a VERDICT — never as a crash.
+
+    **THE INTENT IS AN INPUT TO EVERY PASS, AND IT IS LOADED HERE FOR EXACTLY THAT REASON.** A pass is
+    measured against what the PR is FOR: that is what this whole artifact set exists to make true, and a
+    pass measured against nothing is the open-ended review that ran a PR through 21 rounds. So the question
+    "is there an intent, and can it be read?" is asked of THE PASS, once, whatever the pass found — never
+    delegated to a file that is allowed to be absent.
+
+    It used to be asked only where a FINDING needed anchoring (`check_findings_file`), and a pass with no
+    findings does not go there: an absent findings file returned `[]` and nothing ever looked for the
+    intent. A SATISFIED pass with no findings is the ordinary case and the one that MERGES a PR, so the
+    intent could be missing on precisely the passes that count. A guard whose input can be ABSENT never
+    fires.
+
+    The `pr` comes from the progress file's own NAME — the same parse `plan_path` derives the plan from —
+    so a pass can no more be judged against another PR's intent than against another pass's plan, and there
+    is no `--intent` flag for a caller to point somewhere else with.
+    """
     try:
         plan = plan_path(progress)
+        pr, _npass, _attempt = parse_name(progress)
         events, units = check_progress_file(text=read_text(progress, "progress file"), path=progress,
                                             plan=lambda: load_plan(plan), head_sha=head_sha)
-        return decide(events, units, ruled)
+        # MUTATE:intent-required:pass
+        load_intent(intent_path(progress.parent, pr))
+        return decide(events, units, ruled, load_findings(progress), verdict)
     except Defect as exc:
         return UNUSABLE, str(exc)
 
@@ -1069,6 +1612,60 @@ def cmd_plan_add(args) -> int:
     return 0
 
 
+def cmd_finding_add(args) -> int:
+    """Append ONE validated finding — the ONLY sanctioned way a reviewer records one.
+
+    It is `emit`'s twin, one artifact over, and for the same reason: a finding used to be a PARAGRAPH in a
+    report, so nothing could check its citation, bound its writer, or ask what it defended — and every
+    finding therefore became a fix, and every fix became the next reviewer's hunting ground.
+
+    The ANCHOR is checked HERE, at the moment the reviewer records it, and not fifteen minutes later by a
+    `verify` the reviewer never sees: `--purpose` must quote a line of the PR's `## Purpose` block verbatim
+    or be `-`, `--writer` must be in the enum, and the repro must not contradict the writer. A finding that
+    cannot pass those is a finding the reviewer can still FIX while it is holding the evidence.
+    """
+    path = Path(args.file)
+    rec: "dict[str, object]" = {
+        "type": FINDING, "file": args.path, "line": args.line, "writer": args.writer,
+        "purpose": args.purpose, "repro": args.repro, "fix": args.fix,
+    }
+    # The NAME first, and by the SAME statement the read door runs: a path that is not a findings
+    # artifact's name is not a file this tool reads at all, and the `pr` in that name is what locates the
+    # intent this finding must anchor to.
+    pr = findings_name(path).group("pr")
+    # …then the finding itself, checked HERE — while the reviewer is still holding the evidence, and not
+    # fifteen minutes later by a `verify` it never sees.
+    check_finding(rec, "the finding you asked to record",
+                  load_intent(intent_path(path.parent, pr))[PURPOSE_H])
+    sys.stdout.write(write_line(path, before_text(path), rec,
+                                lambda after: check_findings_file(after, path)))
+    # NEITHER of these is an error or a refusal — the finding is RECORDED either way. They are the tool
+    # telling the reviewer WHAT IT JUST WROTE, because the verdict/findings rule is an IF AND ONLY IF and
+    # a reviewer can get it wrong in BOTH directions: a NON-GATING finding turned into a NOT SATISFIED, or
+    # a GATING one left out of the verdict. `verify` refuses the pass either way, fifteen minutes later,
+    # by a tool the reviewer never sees; this is where it learns it, while it can still act.
+    if not gating(rec):
+        sys.stdout.write(
+            f"# NON-GATING: this finding anchors to no `{PURPOSE_H}` line and its writer is "
+            f"`{rec['writer']}` — nobody outside the machine can supply that input. It is RECORDED as a "
+            f"follow-up and it MUST NOT produce NOT SATISFIED. If you believe it does gate, then either it "
+            f"defends a stated purpose (quote that line in --purpose) or a real actor can write the input "
+            f"(name them in --writer) — say which, do not simply re-file it.\n"
+        )
+    else:
+        sys.stdout.write(
+            f"# GATING: this finding ANCHORS — it defends a `{PURPOSE_H}` line, or `{rec['writer']}` can "
+            f"really write that input, and you said so when you recorded it. So it BLOCKS: your verdict "
+            f"MUST be NOT SATISFIED while it stands. A pass that records this and returns SATISFIED is "
+            f"UNUSABLE and gets thrown away — the rule is NOT SATISFIED if and ONLY if at least one GATING "
+            f"finding stands. If it does not really block, it is the ANCHOR that is wrong, not the verdict: "
+            f"a finding that serves no stated purpose and that nobody outside the machine can trigger is "
+            f"`--purpose -` with a `driver-only`/`hand-edit`/`dev-time` writer, and it is recorded as a "
+            f"follow-up instead.\n"
+        )
+    return 0
+
+
 def cmd_verify(args) -> int:
     path = Path(args.file)
     # The CALLER's sha, against the SAME pattern the artifact's own `head_sha` is held to (`ID_FORMATS`) —
@@ -1095,1332 +1692,55 @@ def cmd_verify(args) -> int:
             f"a ruling can only ever answer an amendment that EXISTS, and an over-count would silently "
             f"clear the next one the reviewer raises"
         )
-    verdict, reason = evaluate(path, args.head_sha, args.amendments_ruled)
+    verdict, reason = evaluate(path, args.head_sha, args.amendments_ruled, args.verdict)
     print(f"{verdict}: {reason}")
     # `ok` is the ONLY exit-0 verdict — and it still is NOT `SATISFIED`.
     return 0 if verdict == OK else 1
 
 
-# --- self-test: the fixtures ARE the contract ----------------------------------------------------
+# --- self-test: the fixtures ARE the contract, and they are a SIBLING ----------------------------
 #
-# Every rule above marks itself `# MUTATE:<id>:<weakening>` on the line ABOVE the statement that ENFORCES
-# it. `self-test` then does four things, and the last two are the ones that matter:
+# **THE SUITE LIVES IN `review-pass-test.py`, NOT IN THIS FILE.** A fixture table that ships inside the tool
+# it tests is a fixture table the tool it tests can quietly disarm — and this repo has watched a reviewer do
+# exactly that: `CASES=[]`, spliced in memory, and `self_test()` still exited 0 reporting "all 0 fixtures
+# hold". Moving the suite out does not make that impossible (nothing does, against someone editing source),
+# but it stops the tool and its own contract from being one file that a single edit can make agree with
+# itself.
 #
-#   1. runs every fixture and asserts its verdict AND the needle its reason must contain (the reason is
-#      the only thing that says WHICH rule fired — a fixture that goes `unusable` for someone else's
-#      reason pins NOTHING);
-#   2. drives the ROUND TRIP — every write command the PARSER has, against every pre-existing file state —
-#      and asserts the property no per-rule fixture can state: **either the command FAILS, or the file it
-#      produced VERIFIES**;
-#   3. asserts that EVERY enforcement point in a rule function sits under a marker. A rule ADDED without
-#      one is never mutated, so nothing could ever report it unpinned. An unmarked rule is an untested one;
-#   4. DELETES each rule in turn — splicing in its weakening — re-runs every fixture, every CLI case and
-#      the whole round trip, and FAILS if no fixture notices;
-#   5. EXECUTES EVERY DOOR — every subcommand the parser has, and the `emit-progress.py` wrapper — in the
-#      exact shape that door's OWN `--help` advertises, and fails when the tool refuses it (`check_doors`).
-#      A door is free to lie about what it takes until something RUNS what it says.
+# `self-test` loads the sibling by a `__file__`-relative path — never the cwd, which is the reviewer's
+# worktree while these scripts live wherever the plugin is installed — and **FAILS LOUDLY IF IT IS NOT
+# THERE.** A check that cannot find the thing it checks must FAIL, never pass. Reporting success because
+# zero fixtures ran is a green derived from zero evidence, and it is the founding defect of everything on
+# the other side of this call.
 #
-# Step 4 exists because step 1 CANNOT see the failure that matters most: a rule NOTHING tests. Delete such
-# a rule and the suite stays green while the tool has quietly stopped checking. A sibling PR in this repo
-# proved the danger is not theoretical: a hand-written "N rules pinned" matrix was TRUE and INSUFFICIENT —
-# 8 guards were not in the inventory at all, and 7 of those were pinned by nothing. THE COUNT IS A CLAIM.
-# So the count is DERIVED, here, on every CI run, and "which rules are unpinned?" is a question the SUITE
-# answers rather than one a reviewer has to discover.
-#
-# Step 2 exists for the failure step 1 cannot see EITHER, and it is a different one: a defect that is not
-# in any rule but in the RELATION between the doors. Every rule can hold on both sides while the tool still
-# writes a file it will not read — and a fixture that asserts one command's exit code cannot fail on that.
-# The fixture at the head of the CLI list used to ASSERT the bad write succeeded (`emit` on an EMPTY file,
-# expected exit 0); the test encoded the bug, and a green suite reported it as correct behavior.
-
-SHA = "a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c"
-OTHER_SHA = "b" * 40
-TS = "2026-07-06T00:00:00Z"
-
-
-class _Drop:
-    """The sentinel that REMOVES a key from a fixture record, so a fixture can OMIT a required field.
-
-    It is not `None`: `null` is a legal JSON value, so a fixture must stay free to write
-    `"evidence": null` and watch the tool refuse it. "Absent" and "present and null" are different bytes
-    and different defects — collapse them onto one sentinel and one of the two becomes untestable.
-    """
-
-
-DROP = _Drop()
-
-# A fixture record's values are typed `object`, and that IS the type: these builders exist to write what
-# the schema FORBIDS — an `evidence` that is a list, a `proposed_unit` that is a string, a key that is not
-# there at all. Declaring them `str` would be a promise the fixtures are written to break, and a type
-# checker believing it would reject the very cases the read side must catch.
-Value = object
-
-
-def _rec(fields: "dict[str, Value]", over: "dict[str, Value]") -> str:
-    rec = {**fields, **over}
-    return json.dumps({k: v for k, v in rec.items() if v is not DROP})
-
-
-def ident(**over: Value) -> str:
-    return _rec({"type": IDENTITY, "pr": "41", "pass": "1", "head_sha": SHA,
-                 "launch_attempt": "1", "dispatched_at": TS}, over)
-
-
-def unit(uid: str = "u01", **over: Value) -> str:
-    return _rec({"type": UNIT, "id": uid, "kind": "file", "target": "scripts/review-pass.py",
-                 "checks": ["the read side refuses what the write side refuses"]}, over)
-
-
-def started(uid: str = "u01", **over: Value) -> str:
-    return _rec({"type": PROGRESS, "unit": uid, "status": STARTED}, over)
-
-
-def done(uid: str = "u01", evidence: Value = "review-pass.py:42 `check_event`", **over: Value) -> str:
-    return _rec({"type": PROGRESS, "unit": uid, "status": DONE, "evidence": evidence}, over)
-
-
-def amendment(**over: Value) -> str:
-    return _rec({"type": AMENDMENT, "ts": TS, "reason": "no unit covers the mutation harness",
-                 "proposed_unit": json.loads(unit("u99"))}, over)
-
-PLAN = [unit("u01"), unit("u02", target="stage-2-review-gate.md", checks=["the docs match the tool"])]
-WORKED = [ident(), started("u01"), done("u01"), started("u02"), done("u02", evidence="stage-2:161")]
-
-# A progress file written as BYTES, not lines — a sound pass with one byte in it that is not UTF-8. Read
-# leniently, `\xff` becomes U+FFFD and the file quietly says something it does not say.
-RAW_BYTES = b'{"type":"progress","unit":"u01","status":"done","evidence":"\xff"}\n'
-
-# name -> (plan lines, progress lines, expected verdict, needle its reason must contain, why it exists).
-# EVERY fixture must FAIL WHEN ITS RULE IS DELETED — that is what step 3 above checks, one rule at a time.
-CASES = {
-    "worked": (PLAN, WORKED, OK, "ARTIFACTS are sound", "the shape of a pass that counts — and the tool STILL does not say SATISFIED"),
-
-    # THE HEADLINES.
-    "unplanned-done": (PLAN, [ident(), done("u99")], UNUSABLE, "NOT IN THE PLAN",
-                       "a `done` for a unit nobody planned. The rule was PROSE and enforced by NOBODY: the write tool accepted it and the read side never looked"),
-    "unplanned-started": (PLAN, [ident(), started("u99")], UNUSABLE, "NOT IN THE PLAN",
-                          "…and a `started` for one, which is what a reviewer inventing a unit does FIRST"),
-    "done-without-started": (PLAN, [ident(), done("u01"), done("u02", evidence="stage-2:161")], UNUSABLE,
-                             "no earlier 'started'",
-                             "THE FORGED PASS: a valid identity and a `done` for EVERY planned unit, with NOT ONE `started`. It verified `ok` — the tool that exists to prove a review HAPPENED accepted one that demonstrably did not, on zero evidence of any work"),
-    "done-before-started": (PLAN, [ident(), done("u01"), started("u01"), started("u02"), done("u02")], UNUSABLE,
-                            "no earlier 'started'",
-                            "…and the ORDER of it: every `started` a real pass would have, but one lands BELOW its `done`. The file is append-only, so its order IS the sequence; 'u01 finished, then u01 began' is not a review"),
-    "done-no-evidence": (PLAN, [ident(), done("u01", evidence=DROP)], UNUSABLE, "carries EXACTLY",
-                         "a `done` with no evidence key at all — a claim with nothing behind it"),
-    "done-blank-evidence": (PLAN, [ident(), done("u01", evidence="   ")], UNUSABLE, "CONCRETE evidence",
-                            "…and a `done` whose evidence is whitespace, which the key check cannot see"),
-    "short-sha": (PLAN, [ident(head_sha=SHA[:7]), done("u01"), done("u02")], UNUSABLE, "A prefix is not a commit",
-                  "a truncated sha in a hand-written pass_identity — this HAPPENED, in production"),
-    "handwritten-bogus": (PLAN, [ident(), '{"type":"progress","unit_id":"u01","status":"done","evidence":"x"}'],
-                          UNUSABLE, "carries EXACTLY",
-                          "the reviewer bypassed the emit tool and hand-wrote a line — with `unit_id`, the exact renaming stage-2 forbids. The READ side catches it: it never assumes the write tool was used"),
-
-    # The progress file's line-level shape.
-    "blank-line": (PLAN, [ident(), "", done("u01")], UNUSABLE, "is blank", "JSONL has no blank lines"),
-    "not-json": (PLAN, [ident(), "u01 done"], UNUSABLE, "is not JSON", "a corrupt line is a corrupt artifact, never one to skip"),
-    "not-object": (PLAN, [ident(), '"u01 done"'], UNUSABLE, "not a JSON object", "a bare string is not an event"),
-    "duplicate-key": (PLAN, [ident(), '{"type":"progress","unit":"u99","unit":"u01","status":"started"}'],
-                      UNUSABLE, "duplicate member name", "the decoder DISCARDS the first value, so the unplanned `u99` in the bytes reaches no rule at all"),
-    "too-deep": (PLAN, [ident(), '{"type":"progress","unit":' + "[" * 20000 + "]" * 20000 + ',"status":"started"}'],
-                 UNUSABLE, "nested too deeply", "the decoder RAISED where a verdict was owed, and a crash is not a verdict"),
-    "unknown-event": (PLAN, [ident(), '{"type":"unit_done","unit":"u01"}'], UNUSABLE, "UNRECOGNISED event type",
-                      "the exact renaming stage-2 forbids (`unit_done`) — skipping it makes the pass read as incomplete-but-clean"),
-    "bad-status": (PLAN, [ident(), started("u01", status="finished")], UNUSABLE, "the only unit-progress statuses",
-                   "a status the tool never emits — it can only have been hand-written"),
-    "extra-key": (PLAN, [ident(), done("u01", ts=TS)], UNUSABLE, "present and NOT COUNTED",
-                  "a `done` carrying a `ts` nothing reads (stage-2 forbids extra keys by name)"),
-    "non-string": (PLAN, [ident(), done("u01", evidence=["file.py:1"])], UNUSABLE, "not a string",
-                   "evidence as a LIST — it used to be handed straight to `.strip()`"),
-    "started-with-evidence": (PLAN, [ident(), started("u01", evidence="x")], UNUSABLE, "carries EXACTLY",
-                              "a `started` carrying evidence: the mirror of a `done` without it"),
-
-    # pass_identity — the binding to a PR, a pass, an ATTEMPT and a COMMIT.
-    "no-identity": (PLAN, [done("u01"), done("u02")], UNUSABLE, "NO `pass_identity`",
-                    "two done units and nothing saying WHAT they reviewed"),
-    "identity-not-first": (PLAN, [started("u01"), ident(), done("u01")], UNUSABLE, "not the FIRST line",
-                           "an event written BEFORE the reviewer was dispatched"),
-    "identity-twice": (PLAN, [ident(), ident(head_sha=OTHER_SHA), done("u01")], UNUSABLE, "2 `pass_identity`",
-                       "a second identity naming another commit — read by nothing, present in the bytes"),
-    "wrong-head": (PLAN, [ident(head_sha=OTHER_SHA), done("u01"), done("u02")], UNUSABLE, "no longer there",
-                   "the pass ran on a commit that is not the tip: its verdict describes content that has moved"),
-    "identity-bad-number": (PLAN, [ident(launch_attempt="one"), done("u01")], UNUSABLE,
-                            "a decimal number from 1 up",
-                            "an attempt number that cannot be COMPARED to the one in the filename"),
-    "identity-bad-ts": (PLAN, [ident(dispatched_at="just now"), done("u01")], UNUSABLE, "LAUNCH DEADLINE's clock",
-                        "a dispatched_at nobody can parse — the ~5-min deadline measured from it NEVER FIRES"),
-    "identity-impossible-ts": (PLAN, [ident(dispatched_at="2026-99-99T99:99:99Z"), started("u01"), done("u01"),
-                                      started("u02"), done("u02")], UNUSABLE, "not a real UTC time",
-                               "A DATE THAT CANNOT EXIST, in the right SHAPE. The regex matched it and the whole pass verified `ok` — month 99, hour 99. The shape check could not fire on the one input that defeats the deadline it protects"),
-    "identity-missing-key": (PLAN, [ident(dispatched_at=DROP), done("u01")], UNUSABLE, "carries EXACTLY",
-                             "a pass_identity with no dispatch clock at all"),
-
-    # The plan.
-    "plan-empty": ([], WORKED, UNUSABLE, "VACUOUSLY TRUE",
-                   "an EMPTY plan: 'every planned unit is done' is true of it, so a pass that reviewed NOTHING would verify ok"),
-    "plan-duplicate-id": ([unit("u01"), unit("u01", target="other.py")], [ident(), done("u01")], UNUSABLE,
-                          "duplicate unit id", "two units with one id — a `done` for it says nothing about WHICH was checked"),
-    "plan-unknown-type": ([unit("u01"), unit("u02", type="note")], WORKED, UNUSABLE, "only 'unit'",
-                          "a plan line of a type nothing reads — perfectly unit-SHAPED, and still not a unit"),
-    "plan-unit-extra-key": ([unit("u01", owner="me")], [ident(), done("u01")], UNUSABLE, "unexpected key",
-                            "a unit carrying a field nothing reads"),
-    "plan-unit-no-checks": ([unit("u01", checks=[])], [ident(), done("u01")], UNUSABLE, "not a unit",
-                            "a unit with an EMPTY checks list — a heading, not a unit: nothing can be shown to have been done against it"),
-    "plan-unit-blank-target": ([unit("u01", target="  ")], [ident(), done("u01")], UNUSABLE, "names nothing",
-                               "a unit with no target"),
-    "plan-line-not-object": (['["u01"]'], [ident(), done("u01")], UNUSABLE, "not a JSON object",
-                             "a plan LINE that is a list — the strict reader refuses it at the plan door exactly as at the progress door"),
-
-    # THE IDENTIFIERS. One legal form each, at every door — and nothing is ever repaired into one.
-    "plan-unit-padded-id": ([unit(" u01 ")], [ident()], UNUSABLE, "NOT AN ID",
-                            "THE FINDING, AT THE PLAN DOOR: a unit id with surrounding whitespace. `plan-add --id ' u01 '` exited 0 and `emit --unit ' u01 '` then said NOT IN THE PLAN — while printing `Planned: [' u01 ']` — because the emit door STRIPPED the value and the plan door did not. The plan held a unit no door could match and the pass could never complete. It is not repaired now, at either door: ` u01 ` is not `u01` with a space, it is not an id"),
-    "progress-padded-unit": (PLAN, [ident(), started(" u01 ")], UNUSABLE, "The emit door does NOT strip it",
-                             "…and at the PROGRESS door, which is where the strip used to be. A hand-written event naming ` u01 ` is told its unit id is malformed — not told the unit is 'not in the plan', which is the wrong lesson and was the old message"),
-    "amendment-padded-unit-id": (PLAN, [ident(), amendment(proposed_unit=json.loads(unit(" u99 ")))], UNUSABLE,
-                                 "NOT AN ID",
-                                 "…and at the THIRD intake: an amendment's `proposed_unit` is what the orchestrator FOLDS INTO THE PLAN, so an id the plan door would refuse must be refused here too — or the plan acquires, one wake later, exactly the unmatchable unit this rule exists to keep out of it"),
-    "amendment-unit-not-object": (PLAN, [ident(), amendment(proposed_unit="u99")], UNUSABLE, "not a JSON object",
-                                  "the amendment's proposed_unit is a STRING. This is the one place a non-dict unit can reach `check_unit` — the plan's own lines are objects by the time it runs — and it used to be handed straight to `set()`"),
-    "plan-missing": (None, WORKED, UNUSABLE, "no plan at",
-                     "NO PLAN FILE AT ALL. A guard whose input can be ABSENT never fires — so absence is refused, never skipped"),
-    "not-utf8": (PLAN, RAW_BYTES, UNUSABLE, "UTF-8",
-                 "bytes we cannot decode are not evidence — and decoding them LENIENTLY rewrites what the file says"),
-
-    # Amendments, completeness, and the verdicts that are not refusals.
-    "amendment-unruled": (PLAN, [ident(), started("u01"), done("u01"), amendment(), started("u02"), done("u02")],
-                          AMENDED, "not yet ruled on",
-                          "the reviewer says the plan is missing a dimension. It is a VERDICT, never a footnote printed beside `ok`"),
-    "amendment-bad-unit": (PLAN, [ident(), amendment(proposed_unit={"id": "u99"})], UNUSABLE, "carries EXACTLY",
-                           "a hand-written amendment (they are EXEMPT from the emit-only rule, so this is the one event a reviewer really does write) whose proposed unit is malformed"),
-    "amendment-impossible-ts": (PLAN, [ident(), amendment(ts="2026-99-99T99:99:99Z")], UNUSABLE,
-                                "not a real UTC ISO-8601 time",
-                                "the amendment's `ts` had NO check at all beyond 'is a string' — the identity's clock was guarded and this one, the same kind of value, was not. The orchestrator rules on amendments; a `ts` that is not a moment cannot be ordered against one"),
-    "amendment-blank-reason": (PLAN, [ident(), amendment(reason="   ")], UNUSABLE, "an amendment is a CLAIM",
-                               "an amendment with a blank reason: it FORCES the `amended` verdict — a pass held back — while saying nothing the orchestrator can rule on. The evidence-free `done` of the amendment world"),
-    "incomplete": (PLAN, [ident(), started("u01"), done("u01"), started("u02")], INCOMPLETE, "has not covered its plan",
-                   "u02 was started and never finished — `started` is liveness, NEVER completion"),
-    "duplicate-done": (PLAN, [ident(), started("u01"), done("u01"), done("u01", evidence="somewhere else"),
-                              started("u02"), done("u02")],
-                       UNUSABLE, "SECOND", "two accounts of one unit, and nothing says which was read"),
-    "identity-only": (PLAN, [ident()], INCOMPLETE, "0/2",
-                      "the file the orchestrator leaves at dispatch: the reviewer has produced NOTHING, and this is not an error — it is a pass that has not covered its plan yet"),
-}
-
-# The NAME cases. Same sound pass every time — only the FILENAME differs, so the name is the only thing
-# under test. It is the one thing that says which PASS and which ATTEMPT these bytes are, and the docs
-# already name substituting attempt-1 paths into a relaunch a "silent self-defeat".
-NAME_CASES = [
-    ("review-41-1.progress.jsonl", OK, "ARTIFACTS are sound", "attempt 1's name — the real artifact's shape"),
-    ("review-41-1.a2.progress.jsonl", UNUSABLE, "silent self-defeat",
-     "THE ONE THAT MATTERS: a RELAUNCH's file holding attempt 1's identity. The live pass would be writing into the dead attempt's file, and the launch check would read it as never launched"),
-    ("review-42-1.progress.jsonl", UNUSABLE, "silent self-defeat", "another PR's pass, filed under this one"),
-    ("review-41-2.progress.jsonl", UNUSABLE, "silent self-defeat", "pass 2's file holding pass 1's identity"),
-    ("progress.jsonl", UNUSABLE, "not a progress artifact's name", "a name that binds these bytes to nothing at all"),
-    ("review-41-1.progress.json", UNUSABLE, "not a progress artifact's name", "one character off is not the artifact"),
-]
-
-# The WRITE door. Same rules, other side. `(argv, the progress file it runs against, expected exit, needle
-# in stdout+stderr, why)`. `emit-progress.py`'s CLI is unchanged, so the `emit` argv here are exactly what
-# a live reviewer prompt already runs — the contract those prompts were written against is the contract
-# still under test. The seed for `emit` is the file the orchestrator leaves AT DISPATCH — a `pass_identity`
-# and nothing else — because that is the only file a reviewer's `emit` is ever run against. `identity`'s
-# seed is the EMPTY file, which is what it is for.
-EMPTY: "list[str]" = []
-DISPATCHED = [ident()]  # what the orchestrator leaves behind: `pass_identity`, written before the launch
-BEGUN = [ident(), started("u01")]  # the file a reviewer has in hand once it has ANNOUNCED u01
-FINISHED = [ident(), started("u01"), done("u01")]  # …and once it has already FINISHED u01
-CLI_CASES = [
-    (["emit", "--unit", "u01", "--status", "started"], DISPATCHED, 0, '"status":"started"', "the call every reviewer prompt makes"),
-    (["emit", "--unit", "u01", "--status", "done", "--evidence", "f.py:1"], BEGUN, 0, '"evidence":"f.py:1"',
-     "…and its done form, on the file that HAS the matching `started` — the only file the done form was ever meant to be run against"),
-    (["emit", "--unit", "u01", "--status", "started"], EMPTY, 1, "NO `pass_identity`",
-     "HEADLINE, WRITE DOOR: THE FILE THIS TOOL WROTE AND WOULD NOT READ. `emit` on an EMPTY progress file exited 0 — it never looked for the identity — and `verify` then called that same file `unusable: NO pass_identity`. The reviewer was told its work landed, and the pass could not count. `emit` now runs the READ side's identity check on the file it appends into, so what it accepts is what `verify` can read"),
-    (["emit", "--unit", "u01", "--status", "done", "--evidence", "somewhere else"], FINISHED, 1, "SECOND",
-     "HEADLINE, WRITE DOOR: a SECOND `done` for a unit already finished. `verify` refused it on READ and this door WROTE it (exit 0) — the rule held at one door and not the other, so the reviewer was handed a success and the pass was thrown away later for a defect the tool had just helped it commit. Both doors now run the SAME predicate"),
-    (["emit", "--unit", "u02", "--status", "done", "--evidence", "f.py:1"], BEGUN, 1, "no earlier 'started'",
-     "HEADLINE, WRITE DOOR: a `done` for a unit that was never begun. The write door refuses it at the moment the reviewer makes the mistake, instead of the pass being thrown away by `verify` fifteen minutes later"),
-    (["emit", "--unit", "u99", "--status", "done", "--evidence", "f.py:1"], DISPATCHED, 1, "NOT IN THE PLAN",
-     "HEADLINE, WRITE DOOR: the tool accepted a self-granted unit. It no longer does — and it says UNPLANNED, not 'no started': an unplanned unit's real defect is that nobody planned it"),
-    (["emit", "--unit", "u99", "--status", "started"], DISPATCHED, 1, "NOT IN THE PLAN", "…and refuses to START one"),
-    (["emit", "--unit", "u01", "--status", "done"], DISPATCHED, 1, "carries EXACTLY", "a done with no evidence — the SAME key rule a hand-written line meets, not a second CLI-shaped copy of it"),
-    (["emit", "--unit", "u01", "--status", "done", "--evidence", "  "], BEGUN, 1, "CONCRETE evidence", "…and blank evidence, on a file where the `started` is not the problem"),
-    (["emit", "--unit", "u01", "--status", "started", "--evidence", "x"], DISPATCHED, 1, "carries EXACTLY", "a started carrying evidence: the mirror of a done without it, and the same rule"),
-    (["emit", "--unit", "  ", "--status", "started"], DISPATCHED, 1, "The emit door does NOT strip it",
-     "a blank unit id. It is refused for what it IS — not an id — and not for what it is not: this door used to STRIP `--unit` and then report the trimmed value 'not in the plan', which named the wrong defect even when it fired"),
-    (["emit", "--unit", " u01 ", "--status", "started"], DISPATCHED, 1, "The emit door does NOT strip it",
-     "HEADLINE, WRITE DOOR: THE FINDING. `plan-add --id ' u01 '` used to exit 0 while this door silently STRIPPED the padding — so the plan held a unit whose progress could never be recorded, and the review could never complete. `emit` said NOT IN THE PLAN and printed `Planned: [' u01 ']` in the same breath. Neither door repairs an identifier now, and the plan door refuses that id in the first place"),
-    (["emit", "--unit", "u02", "--status", "started"], [ident(), '{"type":"progress","unit_id":"u01","status":"done","evidence":"x"}'], 1, "carries EXACTLY",
-     "the file it is APPENDING TO is evidence too: a hand-written line already in it makes the pass unusable, so `emit` refuses to add a good line to a file `verify` will throw away"),
-    (["identity", "--head-sha", SHA, "--dispatched-at", TS], EMPTY, 0, '"launch_attempt":"1"',
-     "the line that was a `printf` — pr/pass/attempt now come from the FILENAME, so they cannot disagree with it"),
-    (["identity", "--head-sha", SHA[:7], "--dispatched-at", TS], EMPTY, 1, "escaped into this repo's real state",
-     "HEADLINE, WRITE DOOR: the truncated sha that got written into a real pass_identity"),
-    (["identity", "--head-sha", SHA.upper(), "--dispatched-at", TS], EMPTY, 1, "LOWERCASE",
-     "an UPPERCASE sha: no producer of ours emits one, so it did not come from `git rev-parse`"),
-    (["identity", "--head-sha", SHA, "--dispatched-at", "just now"], EMPTY, 1, "LAUNCH DEADLINE's clock",
-     "a dispatch clock the launch deadline cannot be measured from — the write door runs the READ side's shape rules, so it cannot write one `verify` would reject"),
-    (["identity", "--head-sha", SHA, "--dispatched-at", "2026-99-99T99:99:99Z"], EMPTY, 1, "not a real UTC time",
-     "…and the one the SHAPE rule cannot see: an impossible date in the right shape. Both doors parse it now, so neither can produce a `dispatched_at` no clock ever passes"),
-    (["identity", "--head-sha", OTHER_SHA, "--dispatched-at", TS], [ident()], 1, "NOT EMPTY",
-     "a SECOND identity into a live pass's file. `pass_identity` is the FIRST line, written before dispatch — a relaunch gets its OWN file, and appending here is how one pass ends up describing two commits"),
-    (["identity", "--head-sha", SHA, "--dispatched-at", TS], [""], 1, "NOT EMPTY",
-     "HEADLINE, WRITE DOOR: a WHITESPACE-ONLY file. This door decided 'empty' with `.strip()`, so a file holding one blank line counted as fresh — it wrote the identity in below the blank line, exited 0, and `verify` then refused the artifact FOR THAT BLANK LINE. Two doors, two definitions of empty, and the file in the crack was one this tool wrote and would not read. EMPTY now means NO BYTES, at both"),
-    (["verify", "--head-sha", SHA[:7]], EMPTY, 2, "No verdict beats a wrong one",
-     "an OPERATOR error is not a snapshot verdict: exit 2, never a verdict computed from a comparison that could not have succeeded"),
-    (["verify", "--head-sha", SHA, "--amendments-ruled", "1"], EMPTY, 2, "raised only 0",
-     "a ruling for an amendment that does not exist would silently clear the NEXT one raised"),
-    (["verify", "--head-sha", SHA, "--amendments-ruled", "-1"], WORKED, 2, "smallest legal value is 0",
-     "HEADLINE: A NEGATIVE RULING WEDGES A PASS THAT WAS EARNED. The seed is a COMPLETE, sound pass — it "
-     "verifies `ok` with no flag at all — and `--amendments-ruled -1` used to turn it into `amended`: "
-     "`decide` subtracts the ruling, so `0 - (-1) = 1` amendment 'not yet ruled on' that the reviewer "
-     "never raised and no ruling can ever clear. It failed SAFE (this tool can only SUBTRACT a pass), and "
-     "a pass withheld forever is still withheld. The over-count rule bounded the value ABOVE and NOTHING "
-     "bounded it below: a cardinality's domain starts at 0, and now the floor is checked before `decide`"),
-]
-
-# `plan-add` gets its own family: its `--check` is repeatable, so its argv do not fit the shape above, and
-# the plan file's NAME is under test too — `(the plan file's name, argv, expected exit, needle, why)`.
-PLAN_FILE = "review-41-1.plan.jsonl"
-PLAN_CLI_CASES = [
-    (PLAN_FILE, ["--id", "u03", "--kind", "cross-cutting", "--target", "both doors", "--check", "a", "--check", "b"],
-     0, '"checks":["a","b"]', "the plan stops being a shell heredoc"),
-    (PLAN_FILE, ["--id", "u01", "--kind", "file", "--target", "x.py", "--check", "a"], 1, "duplicate unit id",
-     "a duplicate id — a `done` for it would say nothing about which unit was checked. Refused by the SAME statement `load_plan` refuses it with: the plan as it WOULD be goes through the reader's own function"),
-    (PLAN_FILE, ["--id", "  ", "--kind", "file", "--target", "x.py", "--check", "a"], 1, "NOT AN ID", "a blank id"),
-    (PLAN_FILE, ["--id", " u01 ", "--kind", "file", "--target", "x.py", "--check", "a"], 1, "NOT AN ID",
-     "HEADLINE, PLAN DOOR: THE FINDING. This exited 0, and the id it wrote was one `emit` could never match — because `emit` stripped its `--unit` and this door did not. The plan is the INTAKE: refuse the id here and no later door can be handed a unit it cannot name"),
-    (PLAN_FILE, ["--id", "U01", "--kind", "file", "--target", "x.py", "--check", "a"], 1, "NOT AN ID",
-     "…and an id that is merely a different SPELLING of a legal one. There is no such thing: an identifier has one form, so `U01` is not `u01` in capitals — it is not an id, and it is refused rather than folded"),
-    (PLAN_FILE, ["--id", "u03", "--kind", "file", "--target", "x.py"], 2,
-     "the following arguments are required: --check",
-     "HEADLINE, THE HELP DOOR: **THIS IS THE COMMAND `plan-add --help` ADVERTISED.** `--check` was OPTIONAL "
-     "to argparse — the usage line BRACKETED it, `[--check CHECK]` — and the write path then refused the "
-     "call with `checks is []`. So the exact invocation the tool's own help tells you to run exited 1 — and "
-     "the mechanical check written to stop precisely this had only ever executed the `emit-progress.py` "
-     "wrapper's help, never this script's own doors, so it could not fire on the case that mattered. It is "
-     "`required=True` now, so the refusal comes from ARGPARSE and NAMES THE FLAG "
-     "(exit 2 — the CALLER's mistake) instead of from a rule about the unit that was built without it"),
-    (PLAN_FILE, ["--id", "u03", "--kind", "file", "--target", "x.py", "--check", "  "], 1, "not a unit",
-     "…and the check that argparse CANNOT make: a `--check` that is present and BLANK. `required=True` says "
-     "a unit has checks; only `check_unit` can say a blank string is not one, and it is the same statement "
-     "the read door refuses an empty `checks` list with"),
-    ("plan.jsonl", ["--id", "u03", "--kind", "file", "--target", "x.py", "--check", "a"], 1,
-     "not a plan artifact's name",
-     "the plan's name was enforced at the READ door BY CONSTRUCTION (`verify` derives it and takes no plan path) and at the write door NOT AT ALL: this wrote a perfectly valid plan to a name nothing will ever open, and the pass would then be refused for a MISSING plan with its units on disk one filename away"),
-]
-
-
-class SelfTestFailure(AssertionError):
-    """A rule this file claims to enforce does not hold."""
-
-
-# --- the ROUND TRIP: anything the tool can WRITE, it must be able to READ BACK --------------------
-#
-# The cases above pin RULES, one by one, and that is exactly why they could not see this: **both findings
-# it missed were about a file the tool WROTE and then REFUSED TO READ.** `emit --status started` on an
-# empty progress file exited 0 and `verify` called that file `unusable: NO pass_identity`; `identity` on a
-# whitespace-only file exited 0 and `verify` refused the artifact for the blank line. Every individual rule
-# was correct at both doors. What was broken was the RELATION between them — and a per-rule fixture cannot
-# fail on a relation nobody stated. (The fixture at the head of the CLI list even ASSERTED the bad write
-# succeeded: `emit` on an EMPTY file, expected exit 0. The test encoded the bug.)
-#
-# So the relation is stated here, ONCE, as a property, and every write path is driven against a range of
-# pre-existing file states:
-#
-#   **EITHER THE COMMAND FAILS, OR THE FILE IT PRODUCED VERIFIES.** Never "succeeds, then does not verify".
-#
-# "Verifies" means the READ side can READ it — not that the pass is `ok`. A pass whose plan is not yet
-# covered reads back `incomplete`, and that is a correct, readable artifact: `ok`/`incomplete`/`amended`
-# all say the bytes are sound. `unusable` — and a CRASH, which is worse — are what a write must never
-# produce. (`verify` can still refuse the pass LATER for a reason that is not about the file: the head SHA
-# moves when someone pushes. That is `check_head`, the one read-door rule no write door can run, and it is
-# the honest gap in this property — see `check_head`.)
-#
-# THE COMMAND LIST IS DERIVED FROM THE PARSER (`build_parser`), never hand-listed: a subcommand that no
-# entry below drives FAILS the self-test. A new write path is therefore covered on the day it is added —
-# by failing until someone covers it, which is the only kind of coverage that cannot rot.
-
-PROGRESS_FILE = "review-41-1.progress.jsonl"
-
-# The pre-existing states of the file a write lands in. They are applied to WHICHEVER artifact the command
-# writes, and deliberately not "realistic" per command: a plan file holding a progress event, or a progress
-# file holding a plan unit, is exactly the kind of state nobody predicted — and the property must hold on
-# every one of them, or it is not a property.
-FILE_STATES: "dict[str, bytes | None]" = {
-    "absent": None,
-    "empty": b"",
-    "whitespace-only": b"   \n",
-    "blank-line": b"\n",
-    "identified": (ident() + "\n").encode(),
-    "begun": (ident() + "\n" + started("u01") + "\n").encode(),
-    "planned": (unit("u01") + "\n").encode(),
-    # THE CONCATENATION. The last line has NO trailing newline, so the next append lands ON it and fuses
-    # two records into one line that is not JSON. Every record-level check passes — the record was never
-    # the problem — and only the bytes `before + line` can show it. This is the SAME class as the two
-    # findings, and nothing but the round trip would have caught it.
-    "no-trailing-newline": (ident()).encode(),
-    "plan-no-trailing-newline": (unit("u01")).encode(),
-    "corrupt": b"not json at all\n",
-    "not-utf8": b"\xff\n",
-}
-
-# How to drive each WRITE command, and which artifact it writes. The command LIST is derived; only the
-# flags are here, because no parser can know what a valid `--check` looks like.
-WRITE_COMMANDS: "dict[str, tuple[str, list[str]]]" = {
-    "emit": (PROGRESS_FILE, ["--unit", "u01", "--status", "started"]),
-    "identity": (PROGRESS_FILE, ["--head-sha", SHA, "--dispatched-at", TS]),
-    "plan-add": (PLAN_FILE, ["--id", "u09", "--kind", "file", "--target", "x.py", "--check", "a"]),
-}
-
-# The subcommands that write NOTHING. They are listed so that `build_parser`'s subcommands can be
-# ACCOUNTED FOR exhaustively — a new one falls into neither set and fails the suite.
-READ_ONLY_COMMANDS = frozenset({"verify", "self-test"})
-
-HOLDS, VIOLATED = "holds", "VIOLATED"
-
-
-# --- the CROSS-DOOR property: an id the PLAN door takes is an id the EMIT door can NAME -----------
-#
-# The round trip above asks "can the tool read back what it wrote?" — ONE artifact, one command. This asks
-# the question one artifact over, and it is the one the tool got wrong: **the plan door and the emit door
-# must agree about what a unit id IS.** They did not. `plan-add --id ' u01 '` exited 0; `emit --unit
-# ' u01 '` then failed with `NOT IN THE PLAN` and printed `Planned: [' u01 ']`, because the emit door
-# STRIPPED its `--unit` and the plan door had accepted the padding verbatim. The plan held a unit whose
-# progress could never be recorded — a review that could never complete, wedged by two doors disagreeing
-# about one value.
-#
-# No per-rule fixture could fail on that: every rule was right on its own side. The defect was in the
-# RELATION, exactly as with the two write-then-refuse-to-read findings — so, exactly as there, the relation
-# is stated once, as a property, and driven:
-#
-#   **THE PLAN DOOR REFUSES THE ID, OR THE EMIT DOOR CAN MATCH IT.** Never "planned, and unnameable".
-#
-# It is driven with the reviewer's own input (` u01 `) and with every other way a shell, a YAML block or an
-# agent hands over a value with something extra on it. Note what makes it hold now: not that both doors
-# strip, but that NEITHER does — an id has one legal form (`ID_FORMATS`), so there is nothing to disagree
-# about. A future door that "helpfully" normalizes its input fails this the day it is added.
-
-CROSS_DOOR_IDS = {
-    "plain": "u01",
-    "padded": " u01 ",              # THE FINDING, verbatim: the reviewer's exact input
-    "trailing-space": "u01 ",
-    "leading-tab": "\tu01",
-    "inner-space": "u 01",
-    "blank": "   ",
-    "uppercase": "U01",
-    "newline": "u01\n",
-}
-
-
-def cross_door(mod: types.ModuleType, tmp: Path) -> "dict[str, tuple[str, str]]":
-    """`plan-add --id X`, then `emit --unit X` — the SAME string, through both doors, for each X.
-
-    `holds` = the plan door REFUSED the id (so no plan ever held it), or it accepted the id and the emit
-    door could then name the unit. `VIOLATED` = the plan door took an id the emit door cannot match: a
-    planned unit with no way to record progress against it, which is a pass that can never complete.
-    """
-    got: dict[str, tuple[str, str]] = {}
-    for name, uid in CROSS_DOOR_IDS.items():
-        d = tmp / f"xd-{name}"
-        d.mkdir(parents=True, exist_ok=True)
-        plan, progress = d / PLAN_FILE, d / PROGRESS_FILE
-        key = f"[cross-door] the id {uid!r}"
-        try:
-            code, text = run_cli(mod, ["plan-add", "--file", str(plan), "--id", uid,
-                                       "--kind", "file", "--target", "x.py", "--check", "a"])
-            if code != 0:
-                got[key] = (HOLDS, f"the PLAN door REFUSED it (exit {code}), so no plan can hold it: "
-                                   f"{text.strip()}")
-                continue
-            run_cli(mod, ["identity", "--file", str(progress), "--head-sha", SHA, "--dispatched-at", TS])
-            code, text = run_cli(mod, ["emit", "--file", str(progress), "--unit", uid, "--status", "started"])
-            got[key] = (
-                (HOLDS if code == 0 else VIOLATED),
-                f"the plan door PLANNED it, and the emit door exited {code}: {text.strip()}",
-            )
-        except Exception as exc:  # noqa: BLE001 - a crash at either door is a violation, not an error
-            got[key] = (f"crash:{type(exc).__name__}", str(exc))
-    return got
-
-
-# --- EVERY BOUNDED VALUE, probed JUST INSIDE and JUST OUTSIDE its declared domain -----------------
-#
-# A bounded value is one this tool ACCEPTS or REJECTS against a domain it has declared: every identifier
-# (`ID_FORMATS`), every number the FILENAME carries, and every numeric flag. The declaration is the tool's
-# CLAIM about what the value may be; this is the check on that claim, and it is the reason a strict format
-# beats normalizing — a rule that says "trim it" cannot be tabulated (there is no set of strings it
-# refuses), while a rule that says "it looks like THIS" has an exact boundary, and **an exact boundary is a
-# thing a test can stand on BOTH SIDES OF.**
-#
-# **THE TOOL'S TWO WORST BUGS WERE BOTH A BOUNDARY NO FIXTURE STOOD ON**, and neither was a missing rule:
-#
-#   * the attempt suffix was `[2-9][0-9]*` — it took `a2`…`a9` and `a20` and REFUSED `a10` through `a19`,
-#     while the tool's own error message said `k >= 2`. A domain with a HOLE in the middle of it.
-#   * `--amendments-ruled` took `-1`, which `decide` then SUBTRACTED: a complete, sound pass with no
-#     amendments came back `amended`, "0 amendment(s), 1 not yet ruled on", and nothing could clear it.
-#
-# Every rule was present; every rule was right in the middle of its range. So the fence is not another rule
-# — it is COVERAGE, made mechanical. The values COVERED here are reconciled against `DOMAINS`, and a domain
-# with no cases, **or with cases on only ONE side of its boundary**, FAILS the suite. "We tested carefully"
-# cannot fail. "Every declared domain has a case just inside and just outside it, and here they are" can.
-
-Probe = Callable[[object], None]
-
-
-def probe_id(name: str) -> Probe:
-    """An identifier, through `check_id` — the ONE validator every real door calls."""
-    return lambda value: check_id(name, value, "[domain]")
-
-
-# The three numbers a progress file's NAME carries. They are probed through `parse_name` — the REAL door,
-# not a copy of its regex — by building the name that wears the value. `pr` and `pass` are the same `COUNT`
-# the identifiers use (the name is compared to the `pass_identity`, so they must be the same kind of value);
-# the attempt is `ATTEMPT`, from 2 up, and it is the one that was wrong.
-NAME_TEMPLATES = {"pr": "review-{v}-1.progress.jsonl",
-                  "pass": "review-41-{v}.progress.jsonl",
-                  "attempt": "review-41-1.a{v}.progress.jsonl"}
-
-
-def probe_name(field: str) -> Probe:
-    # A `def`, not a lambda: `parse_name` RETURNS the three numbers it parsed, and a probe answers only
-    # "was it refused?". The result is dropped here rather than leaked into a `Probe` that claims `None`.
-    def probe(value: object) -> None:
-        parse_name(Path(NAME_TEMPLATES[field].format(v=value)))
-
-    return probe
-
-
-def probe_ruled(value: object) -> None:
-    """`--amendments-ruled`, through the same `check_ruled` that `verify` runs — never a second copy of it.
-
-    The parser's `type=int` is what guarantees an int ever reaches that function, so this narrows the same
-    way: a non-integer is refused by argparse at the CLI door, one layer before the domain is consulted.
-    """
-    if not isinstance(value, int):
-        raise OperatorError(f"[domain] --amendments-ruled {value!r} is not an integer — the parser's "
-                            f"`type=int` refuses it before the domain is ever reached")
-    check_ruled(value)
-
-
-# The tool's every bounded value: name -> (the REAL door it enters by, its domain in words).
-DOMAINS: "dict[str, tuple[Probe, str]]" = {
-    **{name: (probe_id(name), spec) for name, (_re, spec, _why) in ID_FORMATS.items()},
-    "filename pr": (probe_name("pr"), "a decimal number from 1 up, as the progress file's NAME carries it"),
-    "filename pass": (probe_name("pass"), "a decimal number from 1 up, as the NAME carries it"),
-    "filename attempt": (probe_name("attempt"),
-                         "the `a<k>` suffix: a decimal integer from 2 UP, no leading zeros (attempt 1 "
-                         "wears no suffix at all)"),
-    "--amendments-ruled": (probe_ruled,
-                           "a CARDINALITY: an integer from 0 up, and never more than the pass raised"),
-}
-
-BOUNDARY_CASES: "list[tuple[str, object, bool]]" = [
-    ("id", "u01", True), ("id", "u99", True), ("id", "unit01", True),
-    ("id", " u01 ", False), ("id", "u01 ", False), ("id", "\tu01", False), ("id", "u 01", False),
-    ("id", "u01\n", False), ("id", "U01", False), ("id", "u", False), ("id", "01", False),
-    ("id", "u01a", False), ("id", "u-01", False), ("id", "", False), ("id", "   ", False),
-    ("id", 1, False), ("id", None, False),
-    ("unit", "u01", True), ("unit", " u01 ", False), ("unit", "U01", False), ("unit", "", False),
-    ("pr", "41", True), ("pr", "1", True),
-    ("pr", "0", False), ("pr", "041", False), ("pr", " 41", False), ("pr", "41 ", False),
-    ("pr", "+41", False), ("pr", "-41", False), ("pr", "4_1", False), ("pr", "", False), ("pr", 41, False),
-    ("pass", "1", True), ("pass", "0", False), ("pass", "one", False), ("pass", "01", False),
-    ("launch_attempt", "1", True), ("launch_attempt", "2", True), ("launch_attempt", "10", True),
-    ("launch_attempt", "0", False), ("launch_attempt", " 2", False), ("launch_attempt", "two", False),
-    ("head_sha", SHA, True),
-    ("head_sha", SHA[:7], False),          # THE TRUNCATED SHA — it reached real state, and it is CLEAN:
-    ("head_sha", SHA.upper(), False),      # no trimming could ever have caught it. Only a FORMAT can.
-    ("head_sha", SHA + "0", False), ("head_sha", SHA[:39], False),
-    ("head_sha", " " + SHA, False), ("head_sha", SHA + "\n", False),
-    ("head_sha", "", False), ("head_sha", None, False),
-
-    # The FILENAME's numbers — the same domains, at the door that reads the NAME rather than the bytes.
-    ("filename pr", "1", True), ("filename pr", "41", True), ("filename pr", "10", True),
-    ("filename pr", "0", False), ("filename pr", "041", False), ("filename pr", "", False),
-    ("filename pr", "-1", False), ("filename pr", "1 ", False),
-    ("filename pass", "1", True), ("filename pass", "2", True), ("filename pass", "10", True),
-    ("filename pass", "0", False), ("filename pass", "01", False), ("filename pass", "", False),
-
-    # **THE ATTEMPT SUFFIX — THE BOUNDARY NOBODY STOOD ON.** `a2`…`a9` and `a20` were accepted and
-    # `a10`…`a19` were REFUSED, so both edges of the hole are pinned here (9/10 and 19/20), along with the
-    # bottom edge (1 is out, 2 is in — attempt 1 wears no suffix) and the leading zero.
-    ("filename attempt", "2", True), ("filename attempt", "3", True), ("filename attempt", "9", True),
-    ("filename attempt", "10", True), ("filename attempt", "11", True), ("filename attempt", "19", True),
-    ("filename attempt", "20", True), ("filename attempt", "99", True), ("filename attempt", "100", True),
-    ("filename attempt", "1", False), ("filename attempt", "0", False),
-    ("filename attempt", "02", False), ("filename attempt", "010", False),
-    ("filename attempt", "", False), ("filename attempt", "-2", False), ("filename attempt", "+2", False),
-    ("filename attempt", "2 ", False), ("filename attempt", " 2", False), ("filename attempt", "2a", False),
-
-    # **`--amendments-ruled` — A CARDINALITY, and 0 is INSIDE it.** `-1` is the wedge: subtracted from the
-    # amendments the pass raised, it invents one that nobody can ever rule on.
-    ("--amendments-ruled", 0, True), ("--amendments-ruled", 1, True), ("--amendments-ruled", 7, True),
-    ("--amendments-ruled", -1, False), ("--amendments-ruled", -2, False),
-]
-
-
-def check_boundaries() -> int:
-    """Every bounded value, JUST INSIDE and JUST OUTSIDE its domain — and every domain probed on BOTH sides.
-
-    Returns the failures. The second loop is the mechanical part: it is what a bug like `a10` has to get
-    past, and it cannot — a domain nobody fenced on both sides is reported as unfenced, by name.
-    """
-    failures = 0
-    sides: dict[str, set[bool]] = {}
-    for name, value, accepted in BOUNDARY_CASES:
-        # Recorded BEFORE the lookup, so a case naming a value with no declared domain is REPORTED (below)
-        # rather than skipped into silence — the `stray` check is how this table cannot quietly test a
-        # domain the tool does not actually declare.
-        sides.setdefault(name, set()).add(accepted)
-        if name not in DOMAINS:
-            continue
-        probe, spec = DOMAINS[name]
-        try:
-            probe(value)
-            got = True
-        except (Defect, OperatorError):
-            got = False
-        if got == accepted:
-            print(f"ok       [domain] `{name}` {'accepts' if accepted else 'REFUSES'} {value!r}")
-        else:
-            print(f"FAIL     [domain] `{name}` {'REFUSED' if accepted else 'ACCEPTED'} {value!r} — its "
-                  f"domain is {spec}, and the BOUNDARY is where two doors come to disagree about what a "
-                  f"value IS. `a10` was refused by a pattern whose own error message said `k >= 2`")
-            failures += 1
-
-    for name, (_probe, spec) in DOMAINS.items():
-        probed = sides.get(name, set())
-        if probed == {True, False}:
-            continue
-        gap = ("NO CASES AT ALL" if not probed else
-               "no case INSIDE it" if True not in probed else "no case OUTSIDE it")
-        print(f"FAIL     [domain] `{name}` ({spec}) has {gap} — a domain is fenced only when the suite "
-              f"stands on BOTH sides of its boundary. An unprobed side is what `a10` and `-1` cost")
-        failures += 1
-
-    stray = sorted(set(sides) - set(DOMAINS))
-    if stray:
-        print(f"FAIL     [domain] cases for a value with no declared domain: {stray} — a domain is "
-              f"DECLARED in `DOMAINS` or it is not a domain at all")
-        failures += 1
-    return failures
-
-
-# --- the DOCS' examples, fed through the tool ----------------------------------------------------
-#
-# The doc is what a reviewer actually follows. **A documented example the tool REFUSES is not a typo — it
-# is a trap that makes correct behavior impossible**: the `plan_amendment_request` example omitted
-# `"type":"unit"` from its `proposed_unit`, the verifier REQUIRES that key, so a reviewer who copied the
-# documented shape produced a pass the tool then called `unusable`, with nothing telling it why.
-#
-# Eyeballing them is what let that ship. So they are EXECUTED: every JSON example in the campaign skill's
-# docs that claims one of THIS tool's types is parsed out and put through the very functions `verify` runs,
-# and a doc example this tool would reject FAILS THE BUILD. (Routing is by `type`, so the ledger's own
-# examples one file over are not this schema's business. The cost is that an example with a MISSPELLED
-# type would be skipped rather than caught — which is why the type set found is asserted below: a scan
-# that matched nothing, or lost a type, is a check that has quietly stopped checking.)
-
-DOCS = Path(__file__).resolve().parent.parent  # the campaign skill: SKILL.md and references/
-DOC_TYPES = {UNIT, PROGRESS, AMENDMENT, IDENTITY}
-
-
-def doc_examples() -> "list[tuple[str, int, dict]]":
-    """(file, line, record) for every JSON example in the docs that claims one of this tool's types."""
-    found: list[tuple[str, int, dict]] = []
-    for md in sorted(DOCS.rglob("*.md")):
-        for n, line in enumerate(md.read_text(encoding="utf-8").splitlines(), start=1):
-            text = line.strip()
-            if not text.startswith("{") or not text.endswith("}"):
-                continue
-            try:
-                rec = json.loads(text)
-            except json.JSONDecodeError:
-                continue  # a JSON-SHAPED line that is not JSON is some other doc's prose, not an example
-            if isinstance(rec, dict) and rec.get("type") in DOC_TYPES:
-                found.append((str(md.relative_to(DOCS)), n, rec))
-    return found
-
-
-def check_docs() -> int:
-    """Every documented example, through the tool. Returns the number that the tool would REFUSE."""
-    examples = doc_examples()
-    failures = 0
-    for where, n, rec in examples:
-        try:
-            if rec["type"] == UNIT:
-                check_unit(rec, f"{where}:{n}")
-            else:
-                check_event(rec, f"{where}:{n}")
-                if rec["type"] == IDENTITY:
-                    check_identity_shape(rec, f"{where}:{n}")
-            print(f"ok       {where}:{n:<4} {rec['type']:22} the tool accepts its own documented example")
-        except Defect as exc:
-            print(f"FAIL     {where}:{n:<4} the tool REFUSES its own documented example: {exc}")
-            failures += 1
-    seen = {rec["type"] for _w, _n, rec in examples}
-    if seen != DOC_TYPES:
-        print(f"FAIL     the docs no longer show an example of every event type — missing "
-              f"{sorted(DOC_TYPES - seen)}. A scan that matches nothing passes every time and checks "
-              f"nothing; these examples ARE the contract, so their absence is the failure")
-        failures += 1
-    return failures
-
-
-# --- EVERY DOOR'S HELP: what it SAYS must be what the tool TAKES ---------------------------------
-#
-# `emit-progress.py --help` printed `usage: emit-progress.py emit [-h] --file …`, and running that exact
-# command failed with `unrecognized arguments: emit` — the wrapper prepends `emit` itself, so its own help
-# advertised a command shape it REFUSES. Two doors disagreeing about what the COMMAND is, which is the same
-# defect as two doors disagreeing about what an ID is — and the help is the door a reviewer READS.
-#
-# **AND THE CURE FOR THAT HAD THE DISEASE IT WAS CURING.** The check written for it was real — it ran
-# `--help`, parsed the invocation and EXECUTED it — and it did that for the WRAPPER AND NOTHING ELSE. This
-# script has five doors of its own and not one of them was ever looked at, so the very next help/parser lie
-# shipped straight underneath the check meant to stop it: `plan-add --help` printed `[--check CHECK]` —
-# argparse's brackets mean OPTIONAL — while the write path refused that exact advertised command with
-# `checks is [] — a unit with no concrete checks is not a unit`. The command the tool's own help tells you
-# to run exited 1. **A check that cannot fire on the case that matters is not a check; it is a claim.**
-#
-# So every door is driven, and the DOOR LIST IS DERIVED from `build_parser()` — never hand-written — so a
-# subcommand added tomorrow is covered the day it is added, by failing until someone says how to drive it.
-# For each door:
-#
-#   1. its `--help` runs;
-#   2. the usage block is parsed for the COMMAND WORDS it advertises, its REQUIRED flags (argparse leaves
-#      them bare) and its OPTIONAL ones (argparse BRACKETS them) — and that split must be the one the
-#      door's own parser declares;
-#   3. **the advertised MINIMAL invocation is EXECUTED** — the required flags and NOTHING ELSE — as a
-#      subprocess, against a realistic seed, exactly as a reviewer would run it. It must SUCCEED. This is
-#      the direction the wrapper's cure never asked about and the one `plan-add` lied in: **a flag the help
-#      calls OPTIONAL must really be OMITTABLE**, in the WRITE path and not merely in argparse;
-#   4. …and every REQUIRED flag is dropped in turn, and the door must REFUSE the call: **a flag the help
-#      calls REQUIRED must really be refused when absent.** Same lie, other direction.
-
-OWNER = Path(__file__).resolve()
-WRAPPER = OWNER.parent / "emit-progress.py"
-WRAPPER_DOOR = "emit-progress.py"
-
-# The `self-test` door is a door like any other, and EXECUTING it is what this check does to every door —
-# so probing it means self-test runs self-test. This is what stops that being infinite: the nested run sees
-# the variable and skips THIS check (only this one — everything else runs in full), so the door is really
-# executed, by the real parser, all the way through its real body.
-DOOR_PROBE_ENV = "REVIEW_PASS_DOOR_PROBE"
-
-# Each door's `--file` artifact, and the bytes that file realistically holds when a caller runs that door —
-# the state the ORCHESTRATOR has left at that point of a real pass. `None` bytes = the file does not exist
-# yet (`identity` writes the first line of a progress file; `plan-add` the first unit of a plan). `None`
-# artifact = the door takes no `--file`.
-DOOR_SEEDS: "dict[str, tuple[str | None, list[str] | None]]" = {
-    "emit": (PROGRESS_FILE, DISPATCHED),       # the reviewer's door: the identity is already in the file
-    WRAPPER_DOOR: (PROGRESS_FILE, DISPATCHED),  # …and the same door, through the wrapper a reviewer runs
-    "identity": (PROGRESS_FILE, None),         # it writes into a file that must hold NO BYTES
-    "plan-add": (PLAN_FILE, None),             # the first unit lands in a plan that does not exist yet
-    "verify": (PROGRESS_FILE, WORKED),         # a COMPLETE, sound pass — it verifies `ok`, so exit 0
-    "self-test": (None, None),                 # no --file, no flags at all
-}
-
-# A realistic value for every flag any door advertises (`--file` is the seed's, above). A door that grows a
-# flag with no value here FAILS the suite: a flag nothing can supply is a door nothing can drive.
-FLAG_VALUES: "dict[str, list[str]]" = {
-    "--unit": ["u01"], "--status": [STARTED], "--evidence": ["f.py:1"],
-    "--head-sha": [SHA], "--dispatched-at": [TS],
-    "--id": ["u09"], "--kind": ["file"], "--target": ["x.py"], "--check": ["a"],
-    "--amendments-ruled": ["0"],
-}
-
-
-def advertised(help_text: str) -> "tuple[list[str], set[str], set[str]]":
-    """(the COMMAND WORDS a `--help` advertises, its REQUIRED flags, its OPTIONAL flags) — from the usage.
-
-    The usage block is the first `usage:` line plus argparse's indented continuation lines. The command
-    words are everything before the first flag or bracket (the script, and any subcommand it claims).
-
-    **The BRACKETS are the claim under test.** argparse writes a required option bare (`--file FILE`) and
-    an optional one in brackets (`[--check CHECK]`), so the usage line does not merely list the flags — it
-    says which ones you may LEAVE OUT. That promise is what `plan-add` broke, and it is only a promise a
-    test can stand on because it has an exact shape.
-    """
-    block: list[str] = []
-    for line in help_text.splitlines():
-        if line.startswith("usage:"):
-            block.append(line)
-        elif block and line.startswith(" ") and line.strip():
-            block.append(line)
-        elif block:
-            break
-    usage = " ".join(block).partition("usage:")[2]
-    words: list[str] = []
-    for word in usage.split():
-        if word.startswith(("-", "[")):
-            break
-        words.append(word)
-    every = set(re.findall(r"--[a-z][a-z-]*", usage))
-    optional = {flag for group in re.findall(r"\[[^\[\]]*\]", usage)
-                for flag in re.findall(r"--[a-z][a-z-]*", group)}
-    return words, every - optional, optional
-
-
-def door_parsers() -> "dict[str, argparse.ArgumentParser]":
-    """Every door the tool has, and the parser behind it — DERIVED from `build_parser`, never listed.
-
-    That is what makes the coverage below un-rottable: a subcommand appears here the moment it is added to
-    the parser, and a door with no entry in `DOOR_SEEDS` fails the suite by name. The wrapper is the one
-    door that is a separate SCRIPT, so its parser is rebuilt here from `add_emit_args` — the same single
-    definition the wrapper itself calls; what is actually EXECUTED for it is the real script, as a
-    subprocess, so the replica cannot hide a wrapper that has drifted from it.
-    """
-    p, _cmds = build_parser()
-    doors: dict[str, argparse.ArgumentParser] = {}
-    for action in p._actions:  # noqa: SLF001 - the subparser map is where the doors are
-        choices = getattr(action, "choices", None)
-        if isinstance(choices, dict):
-            doors.update({str(name): sub for name, sub in choices.items()})
-    wrapper = argparse.ArgumentParser(prog=WRAPPER_DOOR)
-    add_emit_args(wrapper)
-    doors[WRAPPER_DOOR] = wrapper
-    return doors
-
-
-def declared(p: argparse.ArgumentParser) -> "tuple[set[str], set[str]]":
-    """(the flags a parser REQUIRES, the flags it accepts and does not require) — from the parser itself."""
-    required: set[str] = set()
-    optional: set[str] = set()
-    for action in p._actions:  # noqa: SLF001 - the flags are the actions; there is no public view of them
-        longs = {opt for opt in action.option_strings if opt.startswith("--")} - {"--help"}
-        (required if action.required else optional).update(longs)
-    return required, optional
-
-
-def seed_door(tmp: Path, door: str, case: str) -> "list[str]":
-    """A FRESH realistic pre-existing state for one probe of one door, and the `--file` argv naming it.
-
-    Fresh per probe, never shared: the minimal invocation of `emit` APPENDS to the file it is given, and a
-    later probe run against that mutated file would be probing something nobody declared.
-    """
-    artifact, lines = DOOR_SEEDS[door]
-    if artifact is None:
-        return []
-    d = tmp / f"door-{door}-{case}"
-    d.mkdir(parents=True, exist_ok=True)
-    if artifact != PLAN_FILE:  # a sound plan sits beside every progress-file door, as in a real rundir
-        (d / PLAN_FILE).write_text("".join(line + "\n" for line in PLAN), encoding="utf-8")
-    target = d / artifact
-    if lines is not None:
-        target.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
-    return ["--file", str(target)]
-
-
-def run_door(door: str, words: "list[str]", argv: "list[str]") -> "tuple[int, str]":
-    """Run a door AS A CALLER DOES — a subprocess, with the command words its OWN help advertised.
-
-    `words[1:]` is the load-bearing part: it is the subcommand the usage line CLAIMS, not the one we know
-    it to be. `emit-progress.py --help` used to advertise `emit-progress.py emit …`, and running THAT is
-    the only thing that could have caught it.
-    """
-    script = WRAPPER if door == WRAPPER_DOOR else OWNER
-    run = subprocess.run([sys.executable, str(script), *words[1:], *argv],  # noqa: S603 - our own scripts
-                         capture_output=True, text=True, check=False,
-                         env={**os.environ, DOOR_PROBE_ENV: "1"})
-    return run.returncode, (run.stdout + run.stderr).strip()
-
-
-def check_door(door: str, parser: argparse.ArgumentParser, tmp: Path) -> int:
-    """One door: what its `--help` says, against what it TAKES. Returns the failures."""
-    script = WRAPPER if door == WRAPPER_DOOR else OWNER
-    ask = [] if door == WRAPPER_DOOR else [door]
-    help_run = subprocess.run([sys.executable, str(script), *ask, "--help"],  # noqa: S603 - our own scripts
-                              capture_output=True, text=True, check=False)
-    if help_run.returncode != 0:
-        print(f"FAIL     [door] `{door} --help` exited {help_run.returncode}: {help_run.stderr.strip()}")
-        return 1
-    words, required, optional = advertised(help_run.stdout)
-    failures = 0
-
-    declared_required, declared_optional = declared(parser)
-    if (required, optional) != (declared_required, declared_optional):
-        print(f"FAIL     [door] `{door}` ADVERTISES required {sorted(required)} / optional "
-              f"{sorted(optional)}, and its parser DECLARES required {sorted(declared_required)} / optional "
-              f"{sorted(declared_optional)} — the help is the door a reviewer READS, and a flag that is one "
-              f"thing there and another in the parser is a command someone will type and be refused for")
-        failures += 1
-    else:
-        print(f"ok       [door] `{door}` advertises exactly what its parser takes: required "
-              f"{sorted(required)}, optional {sorted(optional)}")
-
-    unsupplied = sorted((required | optional) - set(FLAG_VALUES) - {"--file"})
-    if unsupplied:
-        print(f"FAIL     [door] `{door}` advertises {unsupplied}, and `FLAG_VALUES` declares no value for "
-              f"it — a flag nothing can supply is a door nothing can drive, and an undriven door is exactly "
-              f"how `plan-add` came to refuse the command its own help advertised")
-        return failures + 1
-
-    def invoke(flags: "set[str]", case: str) -> "tuple[int, str]":
-        argv: list[str] = []
-        for flag in sorted(flags):
-            if flag == "--file":
-                argv += seed_door(tmp, door, case)
-            else:
-                argv += [arg for value in FLAG_VALUES[flag] for arg in (flag, value)]
-        return run_door(door, words, argv)
-
-    # THE WHOLE POINT: the MINIMAL command the help advertises — every flag it brackets left OUT — EXECUTED.
-    shown = " ".join([Path(script).name, *words[1:], *(f"{flag} …" for flag in sorted(required))]) or door
-    code, text = invoke(required, "minimal")
-    if code != 0:
-        print(f"FAIL     [door] the tool REFUSES the command its own `--help` advertises — `{shown}` exited "
-              f"{code}: {text}\n         Every flag left out is one the help BRACKETS as optional. This is "
-              f"the help door and the WRITE door disagreeing about what the command IS: `plan-add` "
-              f"advertised `[--check CHECK]` and then refused the call for having no checks")
-        failures += 1
-    else:
-        print(f"ok       [door] the advertised MINIMAL invocation RUNS: `{shown}` -> exit 0")
-
-    # …and the other direction: a flag the help calls REQUIRED must really be refused when it is absent.
-    for flag in sorted(required):
-        code, text = invoke(required - {flag}, f"no{flag}")
-        if code == 0:
-            print(f"FAIL     [door] `{door}` advertises {flag} as REQUIRED and then ACCEPTED the call "
-                  f"WITHOUT it (exit 0) — the same lie as an optional flag it refuses, with its sign "
-                  f"flipped: the help promises a shape, and the shape is not what the tool takes")
-            failures += 1
-    if required:
-        print(f"ok       [door] `{door}` REFUSES the call with any of {sorted(required)} absent")
-    return failures
-
-
-def check_doors(tmp: Path) -> int:
-    """EVERY door — the subcommands `build_parser` has AND the wrapper. Returns the failures.
-
-    The reconciliation is the mechanical part, and it is why this cannot rot back into the wrapper-only
-    check it replaces: the door list comes from the PARSER, so a door with no seed is REPORTED, by name,
-    the day it is added — and a seed for a door that no longer exists is reported too.
-    """
-    failures = 0
-    parsers = door_parsers()
-    for door in sorted(set(parsers) | set(DOOR_SEEDS)):
-        if door not in parsers:
-            print(f"FAIL     [door] `{door}` has a seed in `DOOR_SEEDS` but the tool has no such door — a "
-                  f"door that was renamed or removed leaves a check that probes NOTHING and passes")
-            failures += 1
-        elif door not in DOOR_SEEDS:
-            print(f"FAIL     [door] the parser has a door `{door}` that NOTHING drives — declare in "
-                  f"`DOOR_SEEDS` what its `--file` names and the bytes that file realistically holds, so "
-                  f"its `--help` can be executed against it. A door nothing drives is one that is free to "
-                  f"advertise a command it refuses")
-            failures += 1
-        else:
-            failures += check_door(door, parsers[door], tmp)
-    return failures
-
-
-def build(tmp: Path, name: str, plan: "list[str] | None", progress: "list[str] | bytes") -> Path:
-    """Write a fixture pass to disk RAW — bypassing every write-side check, because half these fixtures
-    hold exactly what the write side would have refused. That is the point: the READ side must catch them
-    without being told how they got there. (`progress` as BYTES is how a fixture holds what is not text.)"""
-    d = tmp / name
-    d.mkdir(parents=True, exist_ok=True)
-    path = d / "review-41-1.progress.jsonl"
-    if isinstance(progress, bytes):
-        path.write_bytes(progress)
-    else:
-        path.write_text("".join(line + "\n" for line in progress), encoding="utf-8")
-    if plan is not None:
-        (d / "review-41-1.plan.jsonl").write_text("".join(line + "\n" for line in plan), encoding="utf-8")
-    return path
-
-
-def run_cli(mod: types.ModuleType, argv: "list[str]") -> "tuple[int, str]":
-    """Drive the REAL CLI in-process: (exit code, stdout+stderr). Never the internals — so argparse, the
-    `Defect`/`OperatorError` -> exit-code mapping, and `main()`'s wiring are all under test too."""
-    out, err = io.StringIO(), io.StringIO()
-    try:
-        with redirect_stdout(out), redirect_stderr(err):
-            code = mod.main(argv)
-    except SystemExit as exc:  # argparse -> 2
-        code = exc.code if isinstance(exc.code, int) else 1
-    return code, out.getvalue() + err.getvalue()
-
-
-def reads_back(mod: types.ModuleType, artifact: str, path: Path) -> "tuple[bool, str]":
-    """The READ side's answer about a file a write just produced: CAN IT BE READ BACK?
-
-    It calls the (possibly mutated) module's OWN read side — never this one's — because the question is
-    always "would THIS tool read back what THIS tool wrote?", and a mutant is a tool with a rule removed.
-
-    An exception is the loudest failure of all: the read side owes a VERDICT on any bytes, and a crash is
-    not a verdict.
-    """
-    try:
-        if artifact == PLAN_FILE:
-            mod.load_plan(path)
-            return True, "the plan reads back"
-        verdict, reason = mod.evaluate(path, SHA)
-        return verdict != UNUSABLE, f"{verdict}: {reason}"
-    except Exception as exc:  # noqa: BLE001 - a crash on READ is a violation, not an error to propagate
-        return False, f"crash:{type(exc).__name__}: {exc}"
-
-
-def round_trip(mod: types.ModuleType, tmp: Path) -> "dict[str, tuple[str, str]]":
-    """EVERY write command x EVERY pre-existing file state: does the property hold on each?
-
-    `holds` = the command REFUSED (any non-zero exit), or it wrote and the result READS BACK.
-    `VIOLATED` = it exited 0 and produced an artifact its own read side will not read. That is the bug
-    class both findings belong to, and the one this asserts out of existence.
-    """
-    got: dict[str, tuple[str, str]] = {}
-    for cmd, (artifact, argv) in WRITE_COMMANDS.items():
-        for state, content in FILE_STATES.items():
-            d = tmp / f"rt-{cmd}-{state}"
-            d.mkdir(parents=True, exist_ok=True)
-            # A sound plan sits beside every progress-file case, so that what `evaluate` says about the
-            # produced file is about the PROGRESS file and nothing else.
-            (d / PLAN_FILE).write_text("".join(line + "\n" for line in PLAN), encoding="utf-8")
-            target = d / artifact
-            if content is None:
-                target.unlink(missing_ok=True)
-            else:
-                target.write_bytes(content)
-            key = f"[round-trip] {cmd} on a {state} file"
-            try:
-                code, text = run_cli(mod, [cmd, "--file", str(target), *argv])
-            except Exception as exc:  # noqa: BLE001 - the CLI owes an exit code, and a crash is not one
-                got[key] = (f"crash:{type(exc).__name__}", str(exc))
-                continue
-            if code != 0:
-                got[key] = (HOLDS, f"REFUSED (exit {code}) — nothing was written: {text.strip()}")
-                continue
-            ok, why = reads_back(mod, artifact, target)
-            got[key] = (
-                (HOLDS if ok else VIOLATED),
-                f"exit 0, and the file it produced reads back as -> {why}",
-            )
-    return got
-
-
-def run_cases(mod: types.ModuleType, tmp: Path) -> "dict[str, tuple[str, str]]":
-    """Every fixture, every name case, every CLI case and the round-trip property, against this (possibly
-    mutated) module.
-
-    A mutant that CRASHES has not returned a verdict, and "no verdict" is itself a deviation — recorded,
-    never swallowed."""
-    got: dict[str, tuple[str, str]] = {}
-    for name, (plan, progress, _want, _needle, _why) in CASES.items():
-        path = build(tmp, f"case-{name}", plan, progress)
-        try:
-            got[name] = mod.evaluate(path, SHA)
-        except Exception as exc:  # noqa: BLE001 - a crash IS the result here
-            got[name] = (f"crash:{type(exc).__name__}", str(exc))
-    for i, (name, _want, _needle, _why) in enumerate(NAME_CASES):
-        d = build(tmp, f"name-{i}", PLAN, WORKED).parent
-        path = d / name
-        path.write_text("".join(line + "\n" for line in WORKED), encoding="utf-8")
-        try:
-            got[f"[name] {name}"] = mod.evaluate(path, SHA)
-        except Exception as exc:  # noqa: BLE001
-            got[f"[name] {name}"] = (f"crash:{type(exc).__name__}", str(exc))
-    for i, (argv, seed, _want, _needle, _why) in enumerate(CLI_CASES):
-        path = build(tmp, f"cli-{i}", PLAN, seed)
-        try:
-            code, text = run_cli(mod, [argv[0], "--file", str(path), *argv[1:]])
-            got[cli_key(i, argv)] = (f"exit{code}", text)
-        except Exception as exc:  # noqa: BLE001
-            got[cli_key(i, argv)] = (f"crash:{type(exc).__name__}", str(exc))
-    for i, (pname, argv, _want, _needle, _why) in enumerate(PLAN_CLI_CASES):
-        plan = build(tmp, f"plan-cli-{i}", PLAN, []).parent / pname
-        try:
-            code, text = run_cli(mod, ["plan-add", "--file", str(plan), *argv])
-            got[f"[plan] {pname} {' '.join(argv)}"] = (f"exit{code}", text)
-        except Exception as exc:  # noqa: BLE001
-            got[f"[plan] {pname} {' '.join(argv)}"] = (f"crash:{type(exc).__name__}", str(exc))
-    got.update(round_trip(mod, tmp))
-    got.update(cross_door(mod, tmp))
-    return got
-
-
-def cli_key(i: int, argv: "list[str]") -> str:
-    """The case's key. The INDEX is in it because the SEED is part of the case and the argv is not: `emit
-    --unit u01 --status started` is a different case against an empty file than against a dispatched one —
-    that is the whole of finding 1 — and two cases sharing a key would silently collapse into one."""
-    return f"[cli {i}] {' '.join(argv)}"
-
-
-def expectations() -> "dict[str, tuple[str, str, str]]":
-    """case -> (expected outcome, needle its output must contain, why the case exists)."""
-    out = {n: (w, needle, why) for n, (_p, _pr, w, needle, why) in CASES.items()}
-    out.update({f"[name] {n}": (w, needle, why) for n, w, needle, why in NAME_CASES})
-    out.update({cli_key(i, a): (f"exit{c}", needle, why)
-                for i, (a, _seed, c, needle, why) in enumerate(CLI_CASES)})
-    out.update({f"[plan] {p} {' '.join(a)}": (f"exit{c}", needle, why)
-                for p, a, c, needle, why in PLAN_CLI_CASES})
-    # The round trip's expectation is the PROPERTY, and it is the same for every case: the write is
-    # refused, or what it wrote reads back. There is no needle — no particular rule has to fire, and
-    # demanding one would be demanding a specific defect where the case only demands a sound outcome. The
-    # OUTCOME is the whole assertion.
-    out.update({f"[round-trip] {cmd} on a {state} file": (
-        HOLDS, "",
-        f"`{cmd}` against a {state} target: it must FAIL, or the file it wrote must READ BACK")
-        for cmd in WRITE_COMMANDS for state in FILE_STATES})
-    # …and the cross-door property, whose expectation is likewise the PROPERTY and not a particular rule:
-    # the plan door refuses the id, or the emit door can match it. There is nothing else it may do.
-    out.update({f"[cross-door] the id {uid!r}": (
-        HOLDS, "",
-        f"`plan-add --id {uid!r}` then `emit --unit {uid!r}`: the PLAN door must refuse the id, or the "
-        f"EMIT door must be able to name the unit it planned")
-        for uid in CROSS_DOOR_IDS.values()})
-    return out
-
-
-# The outcomes that mean "this passed": a mutant that turns a failing case into one of these has produced
-# the loudest possible failure — the weakened tool says "ship it" about artifacts that are defective.
-PASSING = (OK, "exit0")
-
-MARKER_RE = re.compile(r"^(?P<indent>[ ]*)# MUTATE:(?P<rule>[a-z0-9-]+):(?P<weakening>.+?)\s*$")
-
-# The functions that ENFORCE the contract. Every enforcement point inside them must carry a marker.
-# `evaluate` is not one: it MAPS an exception to a verdict; it decides nothing.
-RULE_FUNCTIONS = (
-    "hook", "read_text", "parse_lines", "read_lines", "check_id", "check_unit", "plan_units", "load_plan",
-    "check_event", "check_progress", "walk_progress", "check_identity_shape", "check_identity",
-    "check_head", "check_progress_file", "check_plan_file", "decide", "parse_name", "check_ruled",
-    "before_text", "write_line", "cmd_emit", "cmd_identity", "cmd_plan_add", "cmd_verify",
-)
-ENFORCING_EXCEPTIONS = ("Defect", "OperatorError")
-# The NAMES as they are spelled in the source, because that is what the AST holds — `return UNUSABLE, …`
-# parses to an `ast.Name` whose `id` is "UNUSABLE", never to the string "unusable" it evaluates to.
-# `return OK` is the ABSENCE of a rule, so it is not here.
-ENFORCING_VERDICT_NAMES = ("INCOMPLETE", "AMENDED", "UNUSABLE")
-
-FALSE_PASS, VERDICT_KILL, MESSAGE_KILL, CRASH_KILL = "FALSE-PASS", "VERDICT", "MESSAGE", "CRASH"
-
-
-def markers(source: str) -> "list[tuple[str, str, int]]":
-    out = []
-    for n, line in enumerate(source.splitlines(), 1):
-        m = MARKER_RE.match(line)
-        if m:
-            out.append((m.group("rule"), m.group("weakening"), n))
-    return out
-
-
-def marked_statements(source: str) -> "dict[str, tuple[str, ast.stmt]]":
-    """rule id -> (weakening, the statement the marker sits directly above).
-
-    `ast.stmt`, never `ast.AST`: only a statement has a `lineno`/`end_lineno`, and those two are the whole
-    reason this is collected — they are the span `mutate()` replaces.
-    """
-    tree = ast.parse(source)
-    stmts = {node.lineno: node for node in ast.walk(tree) if isinstance(node, ast.stmt)}
-    out: dict[str, tuple[str, ast.stmt]] = {}
-    for rule, weakening, line in markers(source):
-        stmt = stmts.get(line + 1)
-        if stmt is None:
-            raise SelfTestFailure(f"# MUTATE:{rule} on line {line} sits above no statement")
-        if rule in out:
-            raise SelfTestFailure(f"duplicate rule id {rule!r} — every rule is marked exactly once")
-        out[rule] = (weakening, stmt)
-    if not out:
-        raise SelfTestFailure("no MUTATE markers — the rules cannot mark themselves absent")
-    return out
-
-
-def unmarked(source: str, marked: "dict[str, tuple[str, ast.stmt]]") -> "list[str]":
-    """EVERY refusal and every non-OK return in a rule function must sit under a marker.
-
-    This is the half of the question fixtures can NEVER answer. A rule added without a marker is never
-    mutated, so nothing ever asks whether a fixture would notice its absence — it is reported "pinned" by
-    nobody having looked. THE COUNT IS A CLAIM, and this is what makes the claim checkable: the inventory
-    is DERIVED from the source, never typed into a report.
-
-    Every node is NARROWED to the concrete statement type before its `lineno` is read. `ast.AST` does not
-    declare one — reaching through the base class for it is how this walk would silently start reading the
-    line number of something that has none.
-    """
-    lines = {stmt.lineno for _w, stmt in marked.values()}
-    problems: list[str] = []
-    for fn in ast.walk(ast.parse(source)):
-        if not isinstance(fn, ast.FunctionDef) or fn.name not in RULE_FUNCTIONS:
-            continue
-        for node in ast.walk(fn):
-            if isinstance(node, ast.Raise):
-                exc = node.exc
-                enforcing = (isinstance(exc, ast.Call) and isinstance(exc.func, ast.Name)
-                             and exc.func.id in ENFORCING_EXCEPTIONS)
-                what = "raise"
-            elif isinstance(node, ast.Return):
-                val = node.value
-                enforcing = (isinstance(val, ast.Tuple) and bool(val.elts)
-                             and isinstance(val.elts[0], ast.Name)
-                             and val.elts[0].id in ENFORCING_VERDICT_NAMES)
-                what = "return"
-            else:
-                continue  # `node` is now an ast.stmt, so `lineno` below is one it really has
-            if enforcing and node.lineno not in lines:
-                problems.append(
-                    f"review-pass.py:{node.lineno}: {fn.name}() enforces a rule ({what}) with NO "
-                    f"# MUTATE marker — an unmarked rule is never mutated, so nothing can report it unpinned"
-                )
-    return problems
-
-
-def mutate(source: str, rule: str, weakening: str, stmt: ast.stmt) -> str:
-    lines = source.splitlines()
-    body = [f"{' ' * stmt.col_offset}{weakening}  # MUTANT:{rule}"]
-    return "\n".join(lines[: stmt.lineno - 1] + body + lines[stmt.end_lineno:]) + "\n"
-
-
-def load_module(source: str, name: str) -> types.ModuleType:
-    mod = types.ModuleType(name)
-    mod.__file__ = __file__
-    exec(compile(source, f"<{name}>", "exec"), mod.__dict__)  # noqa: S102 - the whole job
+# It hands the sibling THIS MODULE (`sys.modules[__name__]`), so the fixtures drive the code the command
+# actually loaded — and the mutation harness, which lives over there too, builds each mutant from THIS
+# file's source text.
+
+TEST_PY = Path(__file__).resolve().parent / "review-pass-test.py"
+
+
+def load_test_module() -> types.ModuleType:
+    if not TEST_PY.exists():
+        fail(
+            f"the fixture suite is NOT AT {TEST_PY} — `self-test` has NO SUBJECT, and a check that cannot "
+            f"find the thing it tests must FAIL, never pass. Reporting success here would be a green "
+            f"derived from zero evidence, which is precisely the bug those fixtures exist to prevent",
+            1,
+        )
+    spec = importlib.util.spec_from_file_location("review_pass_test", TEST_PY)
+    if spec is None or spec.loader is None:  # pragma: no cover - a broken checkout, not a verdict
+        fail(f"cannot load the fixture suite at {TEST_PY} — refusing to report a self-test that never ran", 1)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
     return mod
 
 
-def check_commands_covered() -> "list[str]":
-    """Is EVERY subcommand the parser has either driven by the round trip or declared to write nothing?
-
-    This is what makes the round trip's coverage DERIVED rather than claimed. A new subcommand appears in
-    the parser and in neither set below — so the suite goes red the day it is added, and stays red until
-    someone says which it is. A hand-listed set of commands would have gone on passing, silently, about a
-    write path nothing had ever driven.
-    """
-    _parser, commands = build_parser()
-    problems = []
-    for cmd in commands:
-        if cmd not in WRITE_COMMANDS and cmd not in READ_ONLY_COMMANDS:
-            problems.append(
-                f"the parser has a subcommand `{cmd}` that the round trip does not drive. If it WRITES, "
-                f"add it to WRITE_COMMANDS (the property must hold for it); if it writes nothing, add it "
-                f"to READ_ONLY_COMMANDS. An undriven write path is one nothing has ever asked to read back"
-            )
-    for cmd in sorted(set(WRITE_COMMANDS) | set(READ_ONLY_COMMANDS)):
-        if cmd not in commands:
-            problems.append(f"`{cmd}` is driven by the round trip but the parser no longer has it")
-    return problems
-
-
 def self_test() -> int:
-    source = Path(__file__).read_text(encoding="utf-8")
-    expect = expectations()
-    failures = 0
-
-    for problem in check_commands_covered():
-        print(f"COMMANDS {problem}")
-        failures += 1
-
-    # The `self-test` door is EXECUTED like every other door — which means self-test runs self-test. The
-    # nested run is the real door, doing its real work; it skips ONLY this check, which is the sole thing
-    # that recurses. Everything else in it runs in full.
-    probe = bool(os.environ.get(DOOR_PROBE_ENV))
+    """Run the sibling suite against THIS module."""
+    tests = load_test_module()
     with tempfile.TemporaryDirectory() as tmpdir:
-        got = run_cases(sys.modules[__name__], Path(tmpdir))
-        if probe:
-            door_failures = 0
-            print("skip     [door] the door checks do not run inside the `self-test` door's own probe — "
-                  "this process IS that probe, and re-running them here would recurse forever")
-        else:
-            door_failures = check_doors(Path(tmpdir))
-    print()
-    for case, (want, needle, why) in expect.items():
-        outcome, text = got[case]
-        if outcome == want and needle in text:
-            print(f"ok       {case[:44]:44} -> {outcome:11} ({why})")
-        elif outcome != want:
-            print(f"FAIL     {case[:44]:44} -> {outcome:11} expected {want}\n         got: {text}")
-            failures += 1
-        else:
-            # Right outcome, WRONG RULE. The message is the only thing that says which rule fired, and a
-            # fixture that goes `unusable` for someone else's reason pins nothing.
-            print(f"FAIL     {case[:44]:44} -> {outcome:11} but nothing mentions {needle!r}\n         got: {text}")
-            failures += 1
-    print()
-    failures += door_failures
-    failures += check_boundaries()
-    print()
-    doc_failures = check_docs()
-    failures += doc_failures
-    print()
-    if failures:
-        print(f"{failures} check(s) FAILED — the review-pass contract is broken.")
-        return 1
-    doors = (f"the door checks were SKIPPED (this run is the `self-test` door's own probe)" if probe else
-             f"every one of the {len(DOOR_SEEDS)} doors ({', '.join(sorted(DOOR_SEEDS))}) had the MINIMAL "
-             f"invocation its OWN `--help` advertises EXECUTED, and it runs")
-    print(f"all {len(CASES)} fixtures + {len(NAME_CASES)} name cases + "
-          f"{len(CLI_CASES) + len(PLAN_CLI_CASES)} CLI cases + "
-          f"{len(WRITE_COMMANDS) * len(FILE_STATES)} round-trip cases ({len(WRITE_COMMANDS)} write "
-          f"commands, derived from the parser, x {len(FILE_STATES)} pre-existing file states) + "
-          f"{len(CROSS_DOOR_IDS)} cross-door cases (the plan door refuses the id, or the emit door can "
-          f"match it) + {len(BOUNDARY_CASES)} boundary cases ({len(DOMAINS)} bounded values, each probed "
-          f"JUST INSIDE and JUST OUTSIDE its declared domain) + {len(doc_examples())} DOC examples hold — "
-          f"and {doors}.\n")
-
-    # …and now the question the block above CANNOT answer: is any rule pinned by NO fixture?
-    marked = marked_statements(source)
-    gaps = unmarked(source, marked)
-    for gap in gaps:
-        print(f"UNMARKED {gap}")
-    if gaps:
-        print(f"\n{len(gaps)} enforcement point(s) carry NO marker.")
-        return 1
-
-    print(f"{'rule':24} {'weakened to':42} {'killed by':32} {'outcome':11} kill")
-    print(f"{'-' * 24} {'-' * 42} {'-' * 32} {'-' * 11} ----")
-    unpinned, broken, tally = [], [], Counter()
-    for rule, (weakening, stmt) in marked.items():
-        try:
-            mod = load_module(mutate(source, rule, weakening, stmt), f"rp_mutant_{rule.replace('-', '_')}")
-        except SyntaxError as exc:
-            broken.append(f"{rule}: the weakening {weakening!r} does not compile ({exc})")
-            continue
-        with tempfile.TemporaryDirectory() as tmpdir:
-            mutant = run_cases(mod, Path(tmpdir))
-        # A mutation only ever REMOVES a rule, so it can never turn a PASSING case into a failing one.
-        # If it does, the mutation is bogus — a harness bug, never a pinned rule.
-        wrong = [f"{c} expected {w} but the mutant returned {mutant[c][0]}"
-                 for c, (w, _n, _y) in expect.items() if w in PASSING and mutant[c][0] != w]
-        if wrong:
-            broken.append(f"{rule}: BOGUS MUTATION — {'; '.join(wrong)}")
-            continue
-        killers = []
-        for case, (want, needle, _why) in expect.items():
-            if want in PASSING:
-                continue  # a case that PASSES cannot kill a rule; it is a canary (checked above)
-            outcome, text = mutant[case]
-            if outcome in PASSING:
-                strength = FALSE_PASS
-            elif outcome.startswith("crash:"):
-                strength = CRASH_KILL
-            elif outcome != want:
-                strength = VERDICT_KILL
-            elif needle not in text:
-                strength = MESSAGE_KILL
-            else:
-                continue
-            killers.append((strength, case, outcome))
-        order = {FALSE_PASS: 0, VERDICT_KILL: 1, CRASH_KILL: 2, MESSAGE_KILL: 3}
-        killers.sort(key=lambda k: (order[k[0]], k[1]))
-        if not killers:
-            print(f"{rule:24} {weakening[:42]:42} {'NOTHING':32} {'—':11} UNPINNED")
-            unpinned.append(rule)
-            continue
-        strength, case, outcome = killers[0]
-        extra = f" (+{len(killers) - 1} more)" if len(killers) > 1 else ""
-        tally[strength] += 1
-        print(f"{rule:24} {weakening[:42]:42} {case[:32]:32} {outcome:11} {strength}{extra}")
-
-    print()
-    for b in broken:
-        print(f"HARNESS BROKEN: {b}")
-    if unpinned:
-        print(f"{len(unpinned)} RULE(S) PINNED BY NO FIXTURE: {', '.join(unpinned)}\n"
-              f"Delete any one of them and the fixtures still pass — the suite would report total health "
-              f"while the tool had stopped checking. Write a fixture that FAILS when the rule is gone.")
-    if unpinned or broken:
-        return 1
-    print(f"all {len(marked)} rules are pinned: {tally[FALSE_PASS]} by a FALSE PASS, "
-          f"{tally[VERDICT_KILL]} by a verdict change, {tally[CRASH_KILL]} by a crash, "
-          f"{tally[MESSAGE_KILL]} by its message. Remove any rule and a fixture fails.")
-    return 0
+        return tests.run(sys.modules[__name__], Path(tmpdir))
 
 
 # --- CLI -----------------------------------------------------------------------------------------
@@ -2443,6 +1763,36 @@ def add_emit_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--unit", required=True, help="a PLANNED unit's id — an unplanned one is refused")
     p.add_argument("--status", required=True, choices=STATUSES)
     p.add_argument("--evidence", help="concrete citation; REQUIRED for --status done")
+
+
+def add_finding_args(p: argparse.ArgumentParser) -> None:
+    """The finding door's flags — defined in exactly ONE place, exactly as `add_emit_args` is.
+
+    `emit-finding.py` (the reviewer's door) and `review-pass.py finding-add` (the owner's) both call this,
+    so the two cannot come to accept — or ADVERTISE — different flags. The lesson is `emit-progress.py`'s:
+    it had no parser of its own, rendered the OWNER's help, and printed a command it then refused.
+
+    `--path`, not `--file`: `--file` is the ARTIFACT this line is appended to, at every door in this tool,
+    and a second meaning for it here is how a reviewer comes to write a finding into the source file it is
+    about.
+    """
+    p.add_argument("--file", required=True, help="the launch attempt's findings.jsonl")
+    p.add_argument("--path", required=True, help="the FILE the defect is in (the citation's first half)")
+    p.add_argument("--line", required=True, help="the LINE it is on — a decimal from 1 up")
+    p.add_argument("--writer", required=True, choices=WRITERS,
+                   help="WHO CAN ACTUALLY PUT THE BAD INPUT THERE. `hand-edit` = only by hand-editing a "
+                        "local git-ignored file the driver owns; `dev-time` = only by editing the source of "
+                        "the code under review (if your repro starts 'I mutated … in memory', it is this). "
+                        "A guard being incomplete is not, by itself, a defect: name the writer who gets "
+                        "through it")
+    p.add_argument("--purpose", required=True,
+                   help="the line of the PR's `## Purpose` block this finding DEFENDS, quoted VERBATIM — or "
+                        "`-` if fixing it serves no stated purpose. Not a formality: it is the question "
+                        "'does this PR do its job?', and a finding that cannot answer it is not a reason to "
+                        "block the PR")
+    p.add_argument("--repro", required=True,
+                   help="the command, input or edit that makes it fail — what you actually did")
+    p.add_argument("--fix", required=True, help="the concrete fix")
 
 
 def build_parser() -> "tuple[argparse.ArgumentParser, list[str]]":
@@ -2480,12 +1830,30 @@ def build_parser() -> "tuple[argparse.ArgumentParser, list[str]]":
     a.add_argument("--check", action="append", default=[], required=True,
                    help="a concrete check; REQUIRED, and repeatable — a unit with no checks is not a unit")
 
+    add_finding_args(sub.add_parser(
+        "finding-add", help="record ONE finding, anchored to the PR's intent (what emit-finding.py calls)"))
+
     v = sub.add_parser("verify", help="DOES THIS PASS COUNT? (it never reads the reviewer's report)")
     v.add_argument("--file", required=True, help="the ACTIVE launch attempt's progress.jsonl")
     v.add_argument("--head-sha", required=True, help="the PR's LIVE head — the pass must have run on it")
     v.add_argument("--amendments-ruled", type=int, default=0, metavar="N",
                    help="how many of this pass's plan amendments you have already ruled on — a count, so "
                         "N >= 0, and never more than the pass actually raised (default 0)")
+    # REQUIRED — and it was OPTIONAL, which is the same defect `--check` had one door over, in the shape
+    # that costs the most. The coherence rule is the ONLY mechanical check on the reviewer's own verdict,
+    # and while this flag could be left out, a complete pass verified WITHOUT it came back `ok`: the guard
+    # was OFF for any driver that simply forgot the flag, and the gate merged whatever the report claimed.
+    # A gate MUST NOT depend on an agent remembering to pass something. `verify` is a door you come to with
+    # the report in hand; a pass still in flight is not verified, it is WATCHED (its progress file is the
+    # liveness evidence — `stage-2-review-gate.md`, "Launch check"), and `decide` refuses an absent verdict
+    # only once the pass is COMPLETE, so an in-process caller still gets `incomplete` rather than a scolding.
+    v.add_argument("--verdict", choices=VERDICTS, required=True,
+                   help="REQUIRED: the VERDICT line you read in the reviewer's report. It buys ONE "
+                        "machine-checked rule, an IF AND ONLY IF: the pass is UNUSABLE if `not-satisfied` "
+                        "recorded NO gating finding (a verdict that blocks a PR must name what blocks it), "
+                        "and equally UNUSABLE if `satisfied` recorded ONE (a finding that gates cannot be "
+                        "waved through in the verdict). A pass verified without it is UNUSABLE too — a rule "
+                        "a caller can switch off by omitting a flag is not a gate")
 
     sub.add_parser("self-test", help="run every fixture, then DELETE each rule and prove a fixture notices")
 
@@ -2503,8 +1871,8 @@ def dispatch(args) -> int:
     if args.cmd == "self-test":
         return self_test()
     try:
-        return {"emit": cmd_emit, "identity": cmd_identity,
-                "plan-add": cmd_plan_add, "verify": cmd_verify}[args.cmd](args)
+        return {"emit": cmd_emit, "identity": cmd_identity, "plan-add": cmd_plan_add,
+                "finding-add": cmd_finding_add, "verify": cmd_verify}[args.cmd](args)
     except Defect as exc:
         fail(str(exc), 1)
     except OperatorError as exc:
