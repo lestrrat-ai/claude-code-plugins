@@ -70,6 +70,11 @@ GitHub ITSELF told us was short, called green". Two places could produce it, and
     rollup `StatusContext` to be VISIBLE in the REST status family (posted statuses are — verified live: a
     Prow PR whose rollup contexts `tide`/`EasyCLA` both appear in `/status`), and refuses when one is not. An
     entry of a `__typename` we do not know is refused too: a row we cannot read is not a row we may drop.
+    **AND SO IS A `StatusContext` WHOSE `state` IS NOT IN THE `StatusState` ENUM** — that value NEVER ENTERS
+    THE ARTIFACT (the rollup may not be a verdict source), so no rule downstream can ever refuse it: it is
+    refused HERE or it is accepted for good. It was accepted for good, and a reviewer proved what that costs
+    — an invented `BRAND_NEW_FAILURE` beside a `SUCCESS` REST row for the SAME context, and `derive()`
+    returned GREEN. AN UNRECOGNISED VALUE IS NOT A BENIGN VALUE, in any field, from any source.
 
     **AND THAT COVERAGE RULE IS NOT WHAT CLOSES THE `EXPECTED` FALSE GREEN. IT CANNOT BE — READ THIS BEFORE
     YOU TRUST IT.** It quantifies over the `StatusContext` entries THE ROLLUP RETURNED, and the rollup
@@ -190,6 +195,13 @@ def load_snapshot_module():
 
 SNAP = load_snapshot_module()
 
+# `StatusState`, as the ROLLUP hands it to us — and it is NOT a fourth copy of those values, it is the UNION
+# OF THE THREE BUCKETS `ci-snapshot.py` CLASSIFIES WITH. That file owns the enum; this file only asks whether
+# a value it was handed is IN it. `doc-check` asserts that same union equals the `StatusState` enum the doc
+# declares (`StatusState is TOTAL`), so all three copies are held together mechanically and a value GitHub
+# adds tomorrow is OUTSIDE this set — which is the point: it is REFUSED, never quietly accepted.
+STATUS_STATES = SNAP.STATUS_PASS | SNAP.STATUS_RUNNING | SNAP.STATUS_FAIL
+
 # The LEDGER's `ci` column is a THREE-VALUE enum (`green`/`red`/`pending` — `files-and-ledger.md`), while
 # DECIDE has SIX outcomes. So the mapping is LOSSY, and that is exactly why this tool emits BOTH: `ci` (what
 # the driver writes to the ledger) and `verdict` (what the evidence actually said). Collapsing them into one
@@ -296,6 +308,7 @@ RULES = {
     "rollup-witnesses": "the rollup is read for WITNESSES — with none, containment passes TRIVIALLY",
     "rollup-entries-present": "a rollup response with NO entry list FAILS CLOSED — an EMPTY rollup is a fact, a MISSING one makes containment vacuous",
     "rollup-entry-known": "a rollup entry of an UNKNOWN `__typename` FAILS CLOSED — a row we cannot read is not a row we may drop",
+    "rollup-status-state-known": "a rollup `StatusContext` in an UNKNOWN `state` FAILS CLOSED — the value never enters the artifact, so NO rule downstream can refuse it: accepted here it is accepted for good, and the PR goes GREEN on a state nobody has classified",
     "rollup-status-covered": "a rollup `StatusContext` the REST status family CANNOT SEE fails closed — the two sources DISAGREE about what exists (NOT the registration gap's closure: see `required-set-is-passed`)",
     "required-set-is-passed": "the verdict is decided UNDER THE BASE BRANCH'S REQUIRED SET — a required check that never registered is NO ROW, and no rule that reads rows can see it",
     "head-read-last": "the PR's CURRENT head is read AFTER the evidence — a head read FIRST cannot see a push that lands mid-fetch",
@@ -633,8 +646,10 @@ def fetch_rollup(fetch: Fetch, pr: str) -> tuple[list[dict], dict, object, list[
     So the entries are PARTITIONED, and nothing is discarded in silence:
 
       * `CheckRun`      -> witness rows, as before (identity only; the containment test).
-      * `StatusContext` -> returned to `build_snapshot`, which requires each one to be VISIBLE in the REST
-        status family and REFUSES when one is not. They do NOT enter the artifact: the rollup carries no
+      * `StatusContext` -> its `state` is CHECKED AGAINST THE `StatusState` ENUM (an unknown value is a hard
+        FetchError — see below), and it is then returned to `build_snapshot`, which requires each one to be
+        VISIBLE in the REST status family and REFUSES when one is not. They do NOT enter the artifact: the
+        rollup carries no
         commit oid and no app id, so it can never be read as a verdict (that is this file's founding split),
         and a status row built out of it would be exactly the verdict-from-the-rollup this design forbids.
         Their job is to prove the REST family SAW everything — the same job the witnesses do for check runs.
@@ -687,7 +702,37 @@ def fetch_rollup(fetch: Fetch, pr: str) -> tuple[list[dict], dict, object, list[
             witnesses.append(entry)
             continue
         if kind == "StatusContext":
-            status_rollup.append({"context": s(entry.get("context")), "state": up(entry.get("state"))})
+            # THE STATE IS AN ENUM GITHUB HANDS US, AND AN ENUM VALUE WE DO NOT RECOGNISE IS NOT A BENIGN
+            # ONE. This value was ACCEPTED, unread, for as long as the REST status family happened to report
+            # the same context — and then the coverage rule below passed, and the PR went GREEN. A reviewer
+            # put `BRAND_NEW_FAILURE` into a rollup `StatusContext` beside a `SUCCESS` REST row and watched
+            # `derive()` return green: the two sources DISAGREED about a context and the tool believed the
+            # one it could parse. That is this file's founding defect — an unrecognised value read as
+            # "nothing wrong" — in the one field nothing validated.
+            #
+            # It is NOT covered by the row-level catch-all in `ci-snapshot.py` (which is what refuses an
+            # unknown REST `.state`, an unknown `.status` and an unknown `.conclusion`): a rollup
+            # `StatusContext` NEVER ENTERS THE ARTIFACT, by design (no oid, no app id — it may never be a
+            # verdict), so no rule downstream can ever see it. The value dies here or it dies nowhere.
+            # It is refused HERE, in the producer, for exactly the reason an unknown `__typename` is.
+            #
+            # THE ENUM HAS ONE OWNER and it is `ci-snapshot.py` — this is the union of the three buckets it
+            # CLASSIFIES with, never a fourth copy of the values. `doc-check` already asserts that union IS
+            # the `StatusState` enum the doc declares (`StatusState is TOTAL`), so a value GitHub adds
+            # tomorrow lands outside it and is REFUSED, and a value it removes cannot silently linger here.
+            state = up(entry.get("state"))
+            # MUTATE:rollup-status-state-known:pass
+            if state not in STATUS_STATES:
+                raise FetchError(
+                    f"rollup: StatusContext {s(entry.get('context'))!r} is in an UNRECOGNISED state "
+                    f"{state!r} — StatusState is {' / '.join(sorted(STATUS_STATES))}, and a state we cannot "
+                    f"read is NOT a state we may drop. It never enters the artifact, so NOTHING downstream "
+                    f"can refuse it: accepted here, it is accepted for good, and this PR would go GREEN on a "
+                    f"context whose state nobody has ever classified — which is exactly what a reviewer "
+                    f"demonstrated. If GitHub has added a state, TEACH `ci-snapshot.py` ABOUT IT (its "
+                    f"CLASSIFY buckets, and the doc's enum block) — do not let it fall on the floor here."
+                )
+            status_rollup.append({"context": s(entry.get("context")), "state": state})
             continue
         # The weakening below is the ORIGINAL BUG, restored: keep what we recognise, drop the rest, say
         # nothing. It is how the `StatusContext` — and with it every required-but-unposted check — became

@@ -149,6 +149,10 @@ gh api --paginate --slurp "repos/<owner>/<repo>/commits/<head_sha>/status" | jq 
 #     verdict); they are checked AGAINST family (2), and a context family (2) does not report FAILS CLOSED.
 #     ANY OTHER __typename is a HARD ERROR: a row we cannot read is not a row we may drop, and dropping
 #     one is exactly how a required-but-unposted check became invisible.
+#     AND A StatusContext WHOSE `state` IS NOT IN THE StatusState ENUM IS A HARD ERROR TOO. Because it never
+#     enters the artifact, NO rule downstream can ever refuse it — CLASSIFY (below) never sees it — so it is
+#     refused HERE or not at all. Accepted, it green-lights a context whose state nobody has classified: an
+#     unrecognised value is NOT a benign value. The enum is the one declared in the enum block, below.
 #     `headRefOid` rides along on this SAME call — the PR's current head, read LAST, after both evidence
 #     families (see "A MOVED HEAD FAILS CLOSED", above). It never enters the artifact — and a response that
 #     does NOT carry it is a FAILED fetch, because a head we cannot read makes that fail-closed rule unable
@@ -168,6 +172,12 @@ gh pr view <pr> --json statusCheckRollup,headRefOid | jq -c '
   | [$all[] | select(.__typename=="StatusContext")] as $sc
   | if (($w|length) + ($sc|length)) != ($all|length)
     then error("rollup: an entry of an UNRECOGNISED __typename — teach the tool about it; NEVER drop it")
+    elif ([$sc[] | select((.state|ascii_upcase) as $st
+          | ["SUCCESS","PENDING","EXPECTED","FAILURE","ERROR"] | index($st) | not)] | length) > 0
+    then error("rollup: a StatusContext in an UNRECOGNISED state — StatusState is
+      SUCCESS/PENDING/EXPECTED/FAILURE/ERROR, and a state we cannot read is not a state we may drop. It
+      never enters the artifact, so nothing downstream can refuse it: accepted here, it is accepted for
+      good, and the PR goes GREEN on a state nobody has classified.")
     elif (.headRefOid|type) != "string" or (.headRefOid|length) == 0
     then error("rollup: the response carries no headRefOid — WE CANNOT TELL which commit is the head, so we
       cannot tell whether this evidence describes it. That is not a green; it is a fetch we cannot use.")
@@ -256,6 +266,15 @@ machine-read convention as `state.jsonl` and the review plan/progress files (`fi
   status DOES appear in both** (verified 2026-07-14 against a Prow PR, whose rollup contexts `tide` and
   `EasyCLA` were both reported by `/status`) — which is why this is a **coverage test** and not a refusal on
   sight: refusing every `StatusContext` would **wedge every Jenkins/Prow repo forever**.
+  **AND ITS `state` MUST BE IN THE `StatusState` ENUM, OR THE FETCH FAILS CLOSED TOO** — a value outside it
+  is `unusable`, never dropped and never coerced. This is **not** the same rule as the coverage test beside
+  it, and the coverage test **cannot** stand in for it: a context that IS reported by family (2) passes
+  coverage, and the rollup's own state for it was then accepted **unread**. A `StatusContext` **never enters
+  the artifact**, so CLASSIFY (below) — which is what refuses an unknown `.state`, `.status` or
+  `.conclusion` on an artifact row — **can never see it**: the value is refused in the FETCH or it is never
+  refused at all. It was never refused at all, and a reviewer showed the price: an invented
+  `BRAND_NEW_FAILURE` in the rollup, `success` for the SAME context in family (2), verdict **GREEN**. **An
+  unrecognised enum value is not a benign one, in any field, from any source.**
   **THIS RULE IS NOT WHAT PROVES A REQUIRED CHECK REGISTERED, AND IT MUST NEVER AGAIN BE SOLD AS THAT.** It
   can only see the contexts the rollup **returned**, and the rollup **cannot be proven complete** ("Honest
   limits", above): a rollup that simply omits the `EXPECTED` entry leaves this rule **nothing to check**, and
