@@ -141,12 +141,20 @@ gh api --paginate --slurp "repos/<owner>/<repo>/commits/<head_sha>/status" | jq 
   | ($s[] | {row:"status", sha:$sha, context:.context, state:(.state|ascii_upcase)}),
     {row:"source", source:"status", sha:($sha // "-"), count:($s|length|tostring)}'
 
-# (3) ROLLUP — WITNESSES ONLY (identity, no verdict). Used ONLY for the containment tests below.
+# (3) ROLLUP — ITS ROWS ARE WITNESSES ONLY (identity, no verdict): the rollup may NEVER be a verdict
+#     source. That is a rule about the ARTIFACT, and it is NOT a licence to leave the rollup's own verdict
+#     UNREAD — the fetch reads it, and RECONCILES it, and never writes it down. See AGREEMENT, below.
 #     The rollup carries no app.id and no commit oid, so it can NEVER be read as a verdict — and its
 #     marker's sha is therefore "-", ALWAYS. A sha there would be one WE invented.
 #     IT RETURNS TWO KINDS OF ENTRY. `CheckRun` entries become the witnesses. `StatusContext` entries are
 #     the ROLLUP'S VIEW OF FAMILY (2), and they do NOT enter the artifact (no oid, no app id — never a
 #     verdict); they are checked AGAINST family (2), and a context family (2) does not report FAILS CLOSED.
+#     NEITHER KIND ENTERS THE ARTIFACT WITH A VERDICT — AND NEITHER IS READ FOR ONE. But the rollup STATES a
+#     verdict for both (a `CheckRun` carries `status` + `conclusion`; a `StatusContext` carries `state`), and
+#     a verdict we were HANDED and never LOOKED AT is a verdict that can CONTRADICT family (1)/(2) in
+#     silence. It did, and it was GREEN. So both are carried out of this fetch to be RECONCILED against the
+#     REST row for the SAME check (see "THE TWO SOURCES MUST AGREE ABOUT WHAT A CHECK SAYS", below) — which
+#     is why the witness rows below still carry IDENTITY ONLY: reconciling is not believing.
 #     ANY OTHER __typename is a HARD ERROR: a row we cannot read is not a row we may drop, and dropping
 #     one is exactly how a required-but-unposted check became invisible.
 #     AND A StatusContext WHOSE `state` IS NOT IN THE StatusState ENUM IS A HARD ERROR TOO. Because it never
@@ -158,9 +166,11 @@ gh api --paginate --slurp "repos/<owner>/<repo>/commits/<head_sha>/status" | jq 
 #     does NOT carry it is a FAILED fetch, because a head we cannot read makes that fail-closed rule unable
 #     to fire. `statusCheckRollup` must be an ARRAY: `// []` here would turn a response we cannot read into
 #     "no witnesses" — see "An EMPTY rollup is a FACT; a MISSING one is NOT EVIDENCE", below.
-#     ONE refusal is NOT expressible here, and it is named rather than quietly omitted: `$sc` (the rollup's
-#     StatusContexts) must be COVERED by family (2), which no single-fetch jq can see. The tool does it
-#     across the two fetches (`build_snapshot`); the rule is the FETCH bullet on `StatusContext`, below.
+#     TWO refusals are NOT expressible here, and they are named rather than quietly omitted — BOTH are
+#     CROSS-SOURCE, and no single-fetch jq can see another fetch's rows: (a) `$sc` (the rollup's
+#     StatusContexts) must be COVERED by family (2); (b) every rollup entry family (1)/(2) DOES report must
+#     AGREE with it about the check's state. The tool does both across the fetches (`build_snapshot`); the
+#     rules are the FETCH bullets on `StatusContext` and on AGREEMENT, below.
 gh pr view <pr> --json statusCheckRollup,headRefOid | jq -c '
   (.statusCheckRollup) as $all
   | if ($all|type) != "array"
@@ -281,6 +291,42 @@ machine-read convention as `state.jsonl` and the review plan/progress files (`fi
   the PR goes green. **The REQUIRED SET is the closure** ("WHAT WERE WE EXPECTING TO SEE?", below) — it is
   declared by the base branch, so it does not depend on the rollup showing up, and `green` requires every
   declared check to be **present and passing**.
+- **THE TWO SOURCES MUST AGREE ABOUT WHAT A CHECK SAYS, OR THE FETCH FAILS CLOSED.** The rule above asks
+  only whether a check **EXISTS** in both sources. It does **not** ask whether they **SAY THE SAME THING
+  ABOUT IT** — and for as long as nobody asked, the tool believed whichever source it happened to parse. A
+  reviewer set family (2) to `success` and the rollup to **`FAILURE`** for the **same context**: coverage
+  passed (the context is in both), and the verdict was **GREEN**. The check-run family had the identical hole
+  and nobody had looked at it at all: the rollup returns each `CheckRun`'s **`status` and `conclusion`**, the
+  producer kept the **name** and dropped the **verdict**, so a rollup `FAILURE` beside a REST `success` for
+  the same run was green too. **Containment could never have caught either one — existence is not
+  agreement.**
+  **THIS NEEDS NOBODY TO BE LYING.** Families (1) and (2) are fetched **BEFORE** (3). A check that flips to
+  failure **between** those calls — the head never moving, so the MOVED-HEAD rule cannot fire — produces two
+  **honest** sources that **contradict** each other, and that is the one thing this tool must never average
+  out. So: **every rollup entry whose check IS reported by the REST family must land in the SAME BUCKET as
+  the REST row for it** (`CheckRun` → the `checkrun` row with the same `.id`; `StatusContext` → the `status`
+  row with the same context), and one that does not is `unusable` — **refetch**. A settled check reports the
+  same thing to both.
+  **THE CONFLICT IS NEVER RESOLVED, AND THE WAYS OF "RESOLVING" IT ARE ALL THE SAME BUG.** Not by preferring
+  the REST row — it is "right" only by the accident of being fetched **first**, and in the race above it is
+  the **stale** one. Not by preferring the rollup — it carries **no commit oid**, so it may never be a
+  verdict. And **never** by taking the more favourable of the two, which is how a tool ends up optimistic on
+  exactly the evidence it should refuse. **Two sources that disagree about one fact are not evidence, and
+  untrustworthy evidence is not green.**
+  **DISAGREE MEANS A DIFFERENT BUCKET, NOT A DIFFERENT SPELLING.** The two sources use different
+  vocabularies, and a comparison of raw values would refuse **every honest PR**: REST `success` and rollup
+  `SUCCESS` are one fact in two spellings, and REST `pending` and rollup `EXPECTED` are both **RUNNING**. So
+  both sides are mapped through the **CLASSIFY buckets below** (PASS / RUNNING / FAIL) and the **buckets**
+  are compared. A value in **no** bucket is its own answer — `an UNRECOGNISED value` — and it agrees only
+  with **another** unrecognised value: `BRAND_NEW_FAILURE` in the rollup against `success` in REST is a
+  **disagreement**, and it fails closed. (Where **both** sources report the same unrecognised value, the
+  artifact carries family (1)/(2)'s copy of it and **CLASSIFY's catch-all** owns it — `UNKNOWN_VALUE`,
+  escalate, never green.)
+  **A ROLLUP ENTRY WITH NO REST TWIN IS NOT THIS RULE'S BUSINESS** — the coverage rule above owns that for a
+  `StatusContext`, and the containment test below owns it for a `CheckRun`. Each rule keeps the case it can
+  name precisely. **A MOVED HEAD IS NOT A DISAGREEMENT** either: the rollup then describes the **new** head
+  while (1) and (2) describe the old one, so of course they differ — that is the MOVED-HEAD rule's business,
+  and it is the better diagnosis.
 - **EVERY evidence row's `sha` MUST come from the RESPONSE, NEVER from a literal you interpolate.** Both
   APIs return the commit themselves — `.head_sha` on each check run, `.sha` at the top level of the status
   response — so take it from there. Stamping `sha:"<head_sha>"` into the `--jq` filter would copy the value
@@ -521,15 +567,29 @@ one place nothing was looking. So the filters above are now **RUN**: the fixture
 in, and for **every fixture and every source** this file's spec must give the **same answer the tool gives —
 the same rows, or the same REFUSAL**. The `gh` invocations are checked against the argv the code really
 issues, **in every copy of them in this file** (a recap that drops `,headRefOid` reconstructs a fetch the
-MOVED-HEAD rule can never fire on — that copy had drifted, and this is what caught it). **One** refusal is
-**cross-source** and no single-fetch filter can state it — the rollup's `StatusContext` coverage — so
-`doc-check` **prints it as a named limit** instead of letting the omission pass for coverage.
+MOVED-HEAD rule can never fire on — that copy had drifted, and this is what caught it). **Two** refusals are
+**cross-source** and no single-fetch filter can state them — the rollup's `StatusContext` **coverage**, and
+the **AGREEMENT** of the two sources about a check they both report — so `doc-check` **prints them as named
+limits** instead of letting the omission pass for coverage.
+
+**AND BECAUSE THOSE TWO ARE THE ONLY RULES `doc-check` CANNOT EXECUTE, THEY ARE THE ONLY ONES THIS FILE
+COULD QUIETLY LOSE — SO THE FILE IS PINNED TO STATING THEM.** Every other rule here is held by execution: the
+enums are compared, the CLASSIFY tables are compared, the `jq` filters are **run**. These two are held by
+**prose alone**, and prose is what rots. So `doc-check` asserts this file still **carries** them, by name —
+delete either paragraph and the build goes **RED**, exactly as it does when a rule and its code disagree.
 
 #### CROSS-FETCH AGREEMENT — containment on a USABLE `.id`, NOT equality
 
-The fetches are taken at different times, so they can disagree. But the correct test is **containment**,
-not equality — compared on the **per-run identity**, and **only** when that identity can actually tell two
-runs apart:
+**THIS SECTION IS ABOUT WHAT EXISTS, NOT ABOUT WHAT IT SAYS — AND THE TWO ARE DIFFERENT QUESTIONS.** It
+answers *did REST see every check the rollup saw?*, and **nothing more**. Whether the two sources **AGREE
+ABOUT THE STATE** of a check they **both** report is the FETCH rule "THE TWO SOURCES MUST AGREE ABOUT WHAT A
+CHECK SAYS", above, and containment **cannot** stand in for it: a check present in both **passes containment
+by existing**, whatever either source says about it. Read this section as the whole cross-fetch story and you
+will rebuild the false green that rule exists to close.
+
+The fetches are taken at different times, so they can disagree. But the correct test **of existence** is
+**containment**, not equality — compared on the **per-run identity**, and **only** when that identity can
+actually tell two runs apart:
 
 > **FIRST, the identity must be USABLE — a NULL or DUPLICATED witness identity is UNVERIFIABLE, never
 > "fine".** If **any** `witness` row's `.id` is **null/absent** (`"-"`), **or** two `witness` rows share

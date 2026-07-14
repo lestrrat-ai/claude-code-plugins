@@ -1,12 +1,12 @@
 {
-  "why": "THE NEGATIVE CONTROL FOR THE SELF-STAMPED SHA. GitHub returned a row describing a SUPERSEDED commit. The row's sha must be GITHUB'S, so it DISAGREES with the ledger and the snapshot is refused. Stamp our own literal on the rows instead and this file verifies GREEN — the check that could not fail",
+  "why": "THE TWO SOURCES CONTRADICT EACH OTHER ABOUT ONE COMMIT STATUS. REST reports `ci/jenkins/pr-merge` as success; the ROLLUP reports the SAME context as FAILURE. The coverage rule beside this one is SATISFIED — the context exists in both — and the tool then believed the source it could parse and returned GREEN. Reachable with nobody lying: the REST families are fetched BEFORE the rollup, so a check that flips to failure between the two calls lands exactly here, and the head never moves, so the moved-head rule cannot fire. EVIDENCE WE CANNOT RECONCILE IS NOT EVIDENCE",
   "required_set": "none",
   "pr": "35",
   "api": {
     "check-runs": {
       "response": [
         {
-          "total_count": 2,
+          "total_count": 1,
           "check_runs": [
             {
               "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
@@ -17,16 +17,6 @@
               "status": "completed",
               "conclusion": "success",
               "details_url": "https://github.com/o/r/actions/runs/29318959841/job/1"
-            },
-            {
-              "head_sha": "e846cd76a783aa1087e221cc0684b84136419404",
-              "name": "Validate plugins",
-              "app": {
-                "id": 15368
-              },
-              "status": "completed",
-              "conclusion": "success",
-              "details_url": "https://github.com/o/r/actions/runs/29318959841/job/2"
             }
           ]
         }
@@ -36,9 +26,14 @@
       "response": [
         {
           "sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
-          "state": "pending",
-          "total_count": 0,
-          "statuses": []
+          "state": "success",
+          "total_count": 1,
+          "statuses": [
+            {
+              "context": "ci/jenkins/pr-merge",
+              "state": "success"
+            }
+          ]
         }
       ]
     },
@@ -54,11 +49,11 @@
             "detailsUrl": "https://github.com/o/r/actions/runs/29318959841/job/1"
           },
           {
-            "__typename": "CheckRun",
-            "name": "Validate plugins",
-            "status": "COMPLETED",
-            "conclusion": "SUCCESS",
-            "detailsUrl": "https://github.com/o/r/actions/runs/29318959841/job/2"
+            "__typename": "StatusContext",
+            "context": "ci/jenkins/pr-merge",
+            "state": "FAILURE",
+            "targetUrl": "https://jenkins.example/job/pr-merge/1",
+            "startedAt": "2026-07-14T09:32:37Z"
           }
         ]
       }
@@ -67,6 +62,7 @@
   "expect": {
     "verdict": "unusable",
     "ci": "pending",
-    "needle": "superseded commit"
+    "needle": "ci/jenkins/pr-merge",
+    "promoted": false
   }
 }

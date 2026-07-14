@@ -88,6 +88,18 @@ GitHub ITSELF told us was short, called green". Two places could produce it, and
     What the coverage rule is still FOR is stated at its own site (`build_snapshot`) — it is a CROSS-SOURCE
     consistency check, not the registration gap's closure, and it must never again be sold as one.
 
+  * **AND TWO SOURCES THAT DISAGREE.** Every rule above asks whether a check EXISTS in the evidence. NONE of
+    them asked whether the two sources SAY THE SAME THING ABOUT IT — so the tool believed whichever one it
+    could parse, and it was GREEN for a PR the rollup was calling FAILED. Twice: a `StatusContext` REST
+    reported as `success` and the rollup as `FAILURE`, and (the half nobody had looked at) a `CheckRun` whose
+    `status`/`conclusion` the rollup HANDS US and this file dropped on the floor while keeping its name. THE
+    REST FAMILIES ARE FETCHED BEFORE THE ROLLUP, so a check that flips to failure between the calls makes two
+    HONEST sources contradict each other with the head never moving — no moved-head rule can fire on it.
+    `build_snapshot()` now REFUSES a conflict (`agree_or_refuse`), and it does NOT resolve it: not by
+    preferring REST (it is first, not right), not by preferring the rollup (no oid — never a verdict), and
+    never by taking the kinder of the two. Compared as BUCKETS, so `success` vs `SUCCESS` is not a conflict
+    and `pending` vs `EXPECTED` is not either — see `status_bucket` / `checkrun_bucket`.
+
 **THERE IS NO `notes` CHANNEL, ON PURPOSE.** A field that says "this evidence may be incomplete" BESIDE a
 green verdict is the trapdoor, not the disclosure — it was read by nobody, and it let the tool ship the one
 thing it exists to prevent. Every known gap is a REFUSAL now, so there is nothing left to disclose next to
@@ -202,6 +214,59 @@ SNAP = load_snapshot_module()
 # adds tomorrow is OUTSIDE this set — which is the point: it is REFUSED, never quietly accepted.
 STATUS_STATES = SNAP.STATUS_PASS | SNAP.STATUS_RUNNING | SNAP.STATUS_FAIL
 
+# --- THE BUCKETS, and they are NOT a fourth copy of the vocabulary either -------------------------
+#
+# THE TWO SOURCES SPELL THE SAME FACT DIFFERENTLY. REST returns `success` / `failure` / `pending`; the rollup
+# returns `SUCCESS` / `FAILURE` / `PENDING` / `EXPECTED` / `ERROR`, and for a check run it returns a `status`
+# AND a `conclusion` where REST returns a lowercase pair of the same two. A cross-source comparison written
+# on the RAW VALUES would therefore report a DISAGREEMENT for every honest PR on Earth (`success` != `SUCCESS`),
+# and a rule that wedges honest input gets deleted by the next person in a hurry.
+#
+# So both sides are mapped THROUGH THE BUCKETS `ci-snapshot.py` ALREADY OWNS — the same sets `decide()`
+# classifies with, imported, never restated. `up()` has already removed the spelling difference; these
+# functions remove the VOCABULARY difference (REST `pending` and rollup `EXPECTED` are both RUNNING, and a
+# check run's two fields collapse to the one bucket `decide()` would put it in).
+#
+# **`UNKNOWN_VALUE` IS A BUCKET, NOT AN ERROR** — and that is the load-bearing design choice here. A value
+# NEITHER source's enum contains is a value nobody has classified; two sources are IN AGREEMENT about it only
+# if BOTH of them said it, and then `ci-snapshot.py`'s catch-all owns it downstream (it escalates, and it
+# CANNOT go green). What must never happen is one source saying a value we KNOW (`success`) while the other
+# says one we do NOT — that is a bucket difference, it is REFUSED, and it is exactly the shape a reviewer
+# demonstrated with an invented `BRAND_NEW_FAILURE`.
+PASS, RUNNING, FAIL, UNKNOWN_VALUE = "PASS", "RUNNING", "FAIL", "an UNRECOGNISED value"
+
+
+def status_bucket(state: object) -> str:
+    """A commit status's `state` -> the bucket `ci-snapshot.decide()` would put it in."""
+    if state in SNAP.STATUS_PASS:
+        return PASS
+    if state in SNAP.STATUS_RUNNING:
+        return RUNNING
+    if state in SNAP.STATUS_FAIL:
+        return FAIL
+    return UNKNOWN_VALUE
+
+
+def checkrun_bucket(status: object, conclusion: object) -> str:
+    """A check run's (`status`, `conclusion`) -> the same three buckets, by `ci-snapshot.decide()`'s rule:
+    a run that is not COMPLETED is judged on its STATUS, and a COMPLETED one on its CONCLUSION.
+
+    **A FIELD THE ROLLUP DID NOT SEND LANDS HERE AS `UNKNOWN_VALUE`, ON PURPOSE.** `gh pr view --json
+    statusCheckRollup` returns `status` and `conclusion` on every `CheckRun` entry (verified live), so their
+    ABSENCE is a response we do not understand — and absence must never be the thing that quietly switches a
+    guard off. It is not read as "no opinion"; it is a value no bucket holds, and it CONTRADICTS a REST twin
+    that classifies. A guard whose input can go missing is a guard that never fires.
+    """
+    if status in SNAP.RUNNING_STATUSES:
+        return RUNNING
+    if status == SNAP.TERMINAL_STATUS:
+        if conclusion in SNAP.PASS_CONCLUSIONS:
+            return PASS
+        if conclusion in SNAP.FAIL_CONCLUSIONS:
+            return FAIL
+    return UNKNOWN_VALUE
+
+
 # The LEDGER's `ci` column is a THREE-VALUE enum (`green`/`red`/`pending` — `files-and-ledger.md`), while
 # DECIDE has SIX outcomes. So the mapping is LOSSY, and that is exactly why this tool emits BOTH: `ci` (what
 # the driver writes to the ledger) and `verdict` (what the evidence actually said). Collapsing them into one
@@ -310,6 +375,14 @@ RULES = {
     "rollup-entry-known": "a rollup entry of an UNKNOWN `__typename` FAILS CLOSED — a row we cannot read is not a row we may drop",
     "rollup-status-state-known": "a rollup `StatusContext` in an UNKNOWN `state` FAILS CLOSED — the value never enters the artifact, so NO rule downstream can refuse it: accepted here it is accepted for good, and the PR goes GREEN on a state nobody has classified",
     "rollup-status-covered": "a rollup `StatusContext` the REST status family CANNOT SEE fails closed — the two sources DISAGREE about what exists (NOT the registration gap's closure: see `required-set-is-passed`)",
+    # EXISTENCE IS NOT AGREEMENT, and the rule above only ever asked about existence. THE THREE BELOW ARE THE
+    # OTHER HALF: the two sources report the same check, and they say DIFFERENT THINGS ABOUT ITS STATE. One
+    # rule BODY (`agree_or_refuse`) and TWO APPLICATIONS, marked separately for the reason `checkruns-complete`
+    # and `status-complete` are — a body no family calls is not a rule, and one marker over two call sites
+    # reports a rule PINNED while half of what it guards is unguarded.
+    "sources-agree": "two sources that CONTRADICT each other about one check's state FAIL CLOSED — untrustworthy evidence is not green, and the conflict is NEVER resolved by preferring the source we happened to read first",
+    "status-agrees": "the commit-status family IS SUBJECT to that test — rollup `FAILURE` beside REST `success` for one context was GREEN",
+    "checkrun-agrees": "the check-run family IS SUBJECT to it TOO — the rollup carries each `CheckRun`'s status/conclusion, and this tool used to read its NAME and throw its VERDICT away",
     "required-set-is-passed": "the verdict is decided UNDER THE BASE BRANCH'S REQUIRED SET — a required check that never registered is NO ROW, and no rule that reads rows can see it",
     "head-read-last": "the PR's CURRENT head is read AFTER the evidence — a head read FIRST cannot see a push that lands mid-fetch",
     "head-must-be-known": "a rollup response with NO headRefOid is a FAILED fetch — an unknown head makes the fail-closed rule below unable to fire",
@@ -353,6 +426,7 @@ RULES = {
     "doc-fetch-spec-unique": "TWO fetch commands for one source FAILS — with two copies, `doc-check` executes one and the reader may follow the other",
     "doc-derive-required-set": "a COPY of the derive command that drops `--required-set` FAILS — the recap is where a merge-deciding flag goes to die",
     "doc-derive-copies-found": "finding ZERO copies of the derive command FAILS — the sweep would otherwise pass by having swept nothing",
+    "doc-cross-source-stated": "a CROSS-SOURCE rule the fetch spec CANNOT express must be STATED IN THE DOC — `SPEC_CANNOT_EXPRESS` is the only list of rules `doc-check` does not execute, so a rule that drops out of the doc drops out of EVERYTHING",
 }
 
 
@@ -627,8 +701,14 @@ def fetch_statuses(fetch: Fetch, repo: str, head_sha: str) -> tuple[list[dict], 
     return rows, {"row": "source", "source": "status", "sha": marker_sha, "count": str(len(rows))}
 
 
-def fetch_rollup(fetch: Fetch, pr: str) -> tuple[list[dict], dict, object, list[dict]]:
-    """(3) ROLLUP — WITNESSES ONLY (identity, no verdict), for the containment test.
+def fetch_rollup(fetch: Fetch, pr: str) -> tuple[list[dict], dict, object, list[dict], list[dict]]:
+    """(3) ROLLUP — its ROWS are WITNESSES ONLY (identity, no verdict), for the containment test.
+
+    THAT IS A RULE ABOUT THE ARTIFACT, AND IT IS NOT A LICENCE TO LEAVE THE ROLLUP'S OWN VERDICT UNREAD.
+    "The rollup may never BE a verdict" was read, for two rules running, as "the rollup's verdict may be
+    ignored" — and the verdict it states was thrown away twice over (the `StatusContext`'s `state`, then
+    every `CheckRun`'s `status`/`conclusion`), each time producing a green for a PR the rollup was calling
+    FAILED. It is read here, RECONCILED in `build_snapshot`, and never written down.
 
     IT RETURNS TWO KINDS OF ENTRY, AND THIS FUNCTION USED TO KEEP ONE AND DROP THE OTHER ON THE FLOOR.
     `statusCheckRollup` holds `CheckRun` entries AND `StatusContext` entries (verified live: a Prow PR whose
@@ -645,7 +725,11 @@ def fetch_rollup(fetch: Fetch, pr: str) -> tuple[list[dict], dict, object, list[
 
     So the entries are PARTITIONED, and nothing is discarded in silence:
 
-      * `CheckRun`      -> witness rows, as before (identity only; the containment test).
+      * `CheckRun`      -> witness rows (identity only; the containment test) — AND its `status` /
+        `conclusion` are carried out to `build_snapshot` to be RECONCILED against the REST row for the same
+        run. They are NOT written into the artifact: the rollup may never be a verdict. But a verdict we
+        were HANDED and did not so much as LOOK AT is the same silent drop as the `StatusContext` below,
+        and it cost the same false green.
       * `StatusContext` -> its `state` is CHECKED AGAINST THE `StatusState` ENUM (an unknown value is a hard
         FetchError — see below), and it is then returned to `build_snapshot`, which requires each one to be
         VISIBLE in the REST status family and REFUSES when one is not. They do NOT enter the artifact: the
@@ -696,10 +780,28 @@ def fetch_rollup(fetch: Fetch, pr: str) -> tuple[list[dict], dict, object, list[
 
     witnesses: list[dict] = []
     status_rollup: list[dict] = []
+    run_rollup: list[dict] = []
     for entry in entries:
         kind = entry.get("__typename") if isinstance(entry, dict) else None
         if kind == "CheckRun":
             witnesses.append(entry)
+            # AND ITS VERDICT IS KEPT — NOT to be believed, but to be RECONCILED. The rollup returns each
+            # CheckRun's `status` and `conclusion` (verified live: every entry carries both), and this
+            # function used to read the NAME and the URL and DROP THEM — the same silent drop the
+            # `StatusContext` suffered, in the family that carries most of the verdicts. A reviewer's
+            # `FAILURE` in the rollup beside a `success` in REST for the SAME run returned GREEN.
+            #
+            # They still do NOT enter the artifact: the rollup carries no oid and no app id, so it may
+            # never BE a verdict (this file's founding split). What they are for is `agree_or_refuse` in
+            # `build_snapshot` — if the two sources contradict each other about one run, neither is
+            # evidence. The witness's `id` (detailsUrl) is the CROSS-SOURCE identity, the same one
+            # `ci-snapshot.check_containment` compares on.
+            run_rollup.append({
+                "id": s(entry.get("detailsUrl") or NO_OID),
+                "name": s(entry.get("name")),
+                "bucket": checkrun_bucket(up(entry.get("status")), up(entry.get("conclusion") or NO_OID)),
+                "state": f"{up(entry.get('status'))}/{up(entry.get('conclusion') or NO_OID)}",
+            })
             continue
         if kind == "StatusContext":
             # THE STATE IS AN ENUM GITHUB HANDS US, AND AN ENUM VALUE WE DO NOT RECOGNISE IS NOT A BENIGN
@@ -765,8 +867,8 @@ def fetch_rollup(fetch: Fetch, pr: str) -> tuple[list[dict], dict, object, list[
 
     # WITNESSES, or containment passes TRIVIALLY: with none, "REST saw everything the rollup saw" is a claim
     # about the empty set. The weakening below is the rollup going dark — and it takes the head with it.
-    # MUTATE:rollup-witnesses:return [], {"row": "source", "source": "rollup", "sha": NO_OID, "count": "0"}, None, []
-    return rows, marker, head_now, status_rollup
+    # MUTATE:rollup-witnesses:return [], {"row": "source", "source": "rollup", "sha": NO_OID, "count": "0"}, None, [], []
+    return rows, marker, head_now, status_rollup, run_rollup
 
 
 def up(value: object) -> object:
@@ -798,8 +900,8 @@ def build_snapshot(fetch: Fetch, repo: str, pr: str, head_sha: str) -> tuple[lis
     # closed, while the check-runs call — pinned BY URL to the ledger's now-superseded sha — happily returns
     # the OLD head's green runs. Two snapshots of two different moments, spliced into one GREEN verdict about
     # a commit that is no longer the PR's head. `head-moves-mid-fetch.json` is that push, recorded.
-    # MUTATE:head-read-last:(witnesses, ru_marker, head_now, status_rollup), (runs, cr_marker), (statuses, st_marker) = fetch_rollup(fetch, pr), fetch_check_runs(fetch, repo, head_sha), fetch_statuses(fetch, repo, head_sha)
-    (runs, cr_marker), (statuses, st_marker), (witnesses, ru_marker, head_now, status_rollup) = (
+    # MUTATE:head-read-last:(witnesses, ru_marker, head_now, status_rollup, run_rollup), (runs, cr_marker), (statuses, st_marker) = fetch_rollup(fetch, pr), fetch_check_runs(fetch, repo, head_sha), fetch_statuses(fetch, repo, head_sha)
+    (runs, cr_marker), (statuses, st_marker), (witnesses, ru_marker, head_now, status_rollup, run_rollup) = (
         fetch_check_runs(fetch, repo, head_sha),
         fetch_statuses(fetch, repo, head_sha),
         fetch_rollup(fetch, pr),
@@ -863,7 +965,84 @@ def build_snapshot(fetch: Fetch, repo: str, pr: str, head_sha: str) -> tuple[lis
             "proven complete — it is NOT what proves a required check registered. The REQUIRED SET is "
             "(--required-set)."
         )
+
+    # AND EXISTING IN BOTH IS NOT THE SAME AS SAYING THE SAME THING. The rule above asks "does the REST
+    # family REPORT this context AT ALL?" — and it was the ONLY question asked, so it answered YES and the
+    # tool then believed whichever source it could parse. A reviewer shaped `rollup-status-posted.json` so
+    # that REST said `success` and the ROLLUP said `FAILURE` for THE SAME CONTEXT, and `derive()` returned
+    # **GREEN**. The check-run family had the identical hole and nobody had looked: the rollup hands us each
+    # `CheckRun`'s status and conclusion, and this tool read the NAME and threw the VERDICT AWAY, so a rollup
+    # `FAILURE` beside a REST `success` for the same run was green too.
+    #
+    # **THIS IS REACHABLE WITHOUT ANYBODY LYING.** The REST families are fetched BEFORE the rollup. A check
+    # that flips to failure BETWEEN those calls — the head never moving, so the moved-head rule cannot fire —
+    # lands here exactly. The two sources are then both HONEST and they CONTRADICT each other, which is the
+    # one thing this tool must never average out.
+    #
+    # SO: WHEN TWO SOURCES DISAGREE ABOUT ONE FACT, THE EVIDENCE IS NOT TRUSTWORTHY, AND UNTRUSTWORTHY
+    # EVIDENCE IS NOT GREEN. The conflict is NOT resolved. Not by preferring REST (it is only "right" here by
+    # the accident of being fetched first, and on the race above it is the STALE one); not by preferring the
+    # rollup (it carries no oid — it may never be a verdict); and NEVER by taking the more favourable of the
+    # two, which is how a tool ends up optimistic on exactly the evidence it should refuse. `unusable`,
+    # refetch, and the next derivation sees a settled world.
+    #
+    # DISAGREE MEANS A DIFFERENT BUCKET, NOT A DIFFERENT SPELLING — see `status_bucket` / `checkrun_bucket`.
+    # REST `success` vs rollup `SUCCESS` is one fact in two vocabularies and it MUST NOT refuse anything;
+    # REST `pending` vs rollup `EXPECTED` are both RUNNING and agree. What does not agree is PASS vs FAIL,
+    # and a value NOBODY has classified (`UNKNOWN_VALUE`) vs one we know.
+    #
+    # A ROLLUP ENTRY WITH NO REST TWIN IS NOT THIS RULE'S BUSINESS, and reporting it here would be the worse
+    # diagnosis: for a `StatusContext` the coverage rule above already refused it, and for a `CheckRun` the
+    # containment test does (`ci-snapshot.check_containment`, on the same `id`). Each rule keeps the case it
+    # can name precisely.
+    #
+    # A MOVED HEAD IS NOT A DISAGREEMENT EITHER — the rollup then describes the NEW head and the REST
+    # families the old one, so of course they differ. Same exemption, same reason, as the coverage rule.
+    if not head_moved(head_sha, head_now):
+        rest_status: dict[object, set[str]] = {}
+        for r in statuses:
+            rest_status.setdefault(r["context"], set()).add(status_bucket(r["state"]))
+        # MUTATE:status-agrees:pass
+        agree_or_refuse("commit status", [
+            (w["context"], status_bucket(w["state"]), w["state"], rest_status[w["context"]])
+            for w in status_rollup if w["context"] in rest_status
+            and status_bucket(w["state"]) not in rest_status[w["context"]]
+        ])
+
+        rest_runs: dict[object, set[str]] = {}
+        for r in runs:
+            rest_runs.setdefault(r["id"], set()).add(checkrun_bucket(r["status"], r["conclusion"]))
+        # MUTATE:checkrun-agrees:pass
+        agree_or_refuse("check run", [
+            (w["name"], w["bucket"], w["state"], rest_runs[w["id"]])
+            for w in run_rollup if w["id"] in rest_runs and w["bucket"] not in rest_runs[w["id"]]
+        ])
     return rows, meta
+
+
+def agree_or_refuse(kind: str, conflicts: list[tuple]) -> None:
+    """THE RULE BODY. Called ONCE PER FAMILY, and each CALL carries its own marker — see
+    `checkruns-complete` / `status-complete`, which learned this the hard way: a body no family invokes is
+    not a rule, and one marker over two call sites reports a rule PINNED while half of what it guards is
+    unguarded. `rollup-status-conflict.json` kills one application, `rollup-checkrun-conflict.json` the
+    other, and NEITHER can stand in for the other.
+    """
+    # MUTATE:sources-agree:pass
+    if conflicts:
+        raise FetchError(
+            f"rollup: THE TWO SOURCES DISAGREE ABOUT WHAT A {kind.upper()} SAYS — "
+            + "; ".join(
+                f"{name!r}: the rollup says {raw} ({bucket}), the REST family says "
+                f"{' + '.join(sorted(rest))}"
+                for name, bucket, raw, rest in conflicts
+            )
+            + ". They describe the SAME check on the SAME commit and they cannot both be right, so this "
+            "evidence is not trustworthy — and untrustworthy evidence is NOT GREEN. The conflict is NOT "
+            "resolved here: preferring the REST row would prefer the source we merely happened to fetch "
+            "FIRST (a check that flips to failure between the two calls makes it the STALE one), and "
+            "preferring the rollup would let a source that carries no commit oid decide a verdict. Neither "
+            "is evidence about this PR. Derive again — a settled check reports the same thing to both."
+        )
 
 
 def promote(rows: list[dict], rundir: Path, pr: str, head_sha: str) -> Path:
@@ -1189,13 +1368,50 @@ def parse_decide_order(text: str) -> tuple[str, ...]:
 DOC_FETCH_RE = re.compile(r"^(?P<cmd>gh [^\n|]*?)\s*\|\s*jq -c '(?P<jq>.*?)'\s*$", re.MULTILINE | re.DOTALL)
 
 # The producer refusals a per-fetch `jq` filter CANNOT express, and the fixture that pins each one anyway.
-# NEVER let this dict grow to hide a refusal that COULD be expressed: it exists to make one honest omission
+# NEVER let this dict grow to hide a refusal that COULD be expressed: it exists to make honest omissions
 # visible, not to become the place drift goes to retire.
+#
+# **AND EVERY ENTRY MUST BE STATED IN THE DOC — `check_cross_source_stated` FAILS THE BUILD IF IT IS NOT.**
+# These are the ONLY rules `doc-check` does not EXECUTE against the doc, which makes them the only ones the
+# doc could quietly lose. `doc` below is the exact phrase the doc must carry; the whole point of the
+# executed-spec design is that no rule is held by prose alone, and for these three the prose is all there is,
+# so the prose itself is pinned.
 SPEC_CANNOT_EXPRESS = {
-    "rollup StatusContext coverage": "CROSS-SOURCE (rollup vs the REST status family) — no single-fetch jq "
-                                     "can see another fetch's rows; build_snapshot() does it, and "
-                                     "rollup-expected-status.json pins it",
+    "rollup StatusContext coverage": {
+        "doc": "THE ROLLUP'S `StatusContext` ENTRIES MUST BE VISIBLE IN FAMILY (2)",
+        "why": "CROSS-SOURCE (rollup vs the REST status family) — no single-fetch jq can see another "
+               "fetch's rows; build_snapshot() does it, and rollup-expected-status.json pins it",
+    },
+    "the two sources must AGREE": {
+        "doc": "THE TWO SOURCES MUST AGREE ABOUT WHAT A CHECK SAYS",
+        "why": "CROSS-SOURCE (the rollup's own state for a check vs the REST row for the SAME check) — the "
+               "same reason: one jq filter sees ONE fetch. rollup-status-conflict.json and "
+               "rollup-checkrun-conflict.json pin it",
+    },
 }
+
+
+def check_cross_source_stated(text: str) -> list[str]:
+    """The rules the fetch spec CANNOT execute are held by the DOC — so the DOC is held to having them.
+
+    A rule `doc-check` executes cannot rot in silence: the doc's own `jq` is run and compared. These cannot
+    be executed (they span two fetches), so nothing but the prose says them — and a prose rule with nothing
+    watching it is precisely the drift this whole check exists to catch, one level up. Delete the paragraph
+    and the tool still refuses, but the SPEC a reviewer reads no longer mentions why, and the next person to
+    "simplify" the producer has the doc's blessing.
+    """
+    missing = [f"{what}: the doc no longer states it — expected the phrase `{spec['doc']}`. {spec['why']}"
+               for what, spec in SPEC_CANNOT_EXPRESS.items() if spec["doc"] not in text]
+    # MUTATE:doc-cross-source-stated:pass
+    if missing:
+        raise DocError(
+            "a CROSS-SOURCE rule is MISSING FROM THE DOC: " + " | ".join(missing)
+            + " — these are the ONLY producer refusals doc-check does NOT execute, so the doc is the only "
+              "place they are written down at all. A rule that drops out of it drops out of everything a "
+              "reader can see."
+        )
+    return [f"{'the CROSS-SOURCE rules':32} {len(SPEC_CANNOT_EXPRESS)} stated in the doc, verbatim — the "
+            f"only rules the fetch spec cannot execute"]
 
 
 def parse_fetch_spec(text: str) -> dict[str, tuple[str, str]]:
@@ -1269,14 +1485,14 @@ def code_rows(source: str, fx: dict) -> list[dict]:
     elif source == "status":
         rows, marker = fetch_statuses(fetch, "o/r", head_sha)
     else:
-        rows, marker, _head, _sc = fetch_rollup(fetch, fx.get("pr", "35"))
+        rows, marker, _head, _sc, _cr = fetch_rollup(fetch, fx.get("pr", "35"))
     return [*rows, marker]
 
 
 def check_fetch_spec(text: str) -> tuple[list[str], list[str]]:
     """EXECUTE the doc's fetch commands. Returns (problems, the things that held).
 
-    Three questions, and the third is the one the enum/DECIDE checks could never ask:
+    Four questions, and the last two are the ones the enum/DECIDE checks could never ask:
 
       1. does the doc INVOKE `gh` the way the code does? (the flags and the `--json` field list, taken from
          the argv the code really issues — `--paginate`/`--slurp` are what defeat page-size truncation, and
@@ -1286,6 +1502,8 @@ def check_fetch_spec(text: str) -> tuple[list[str], list[str]]:
          the CLASS check: the spec block was right and the PROMOTE block's copy was stale.)
       3. do the doc's `jq` filters and the code's producer give the SAME ANSWER on every fixture — the same
          rows, or the same REFUSAL?
+      4. and does the doc still STATE the refusals no filter can express (`check_cross_source_stated`)? They
+         span two fetches, so 1–3 cannot reach them, and the doc is the only place a reader meets them.
     """
     problems: list[str] = []
     if JQ is None:
@@ -1355,6 +1573,10 @@ def check_fetch_spec(text: str) -> tuple[list[str], list[str]]:
     else:
         held.append(f"{'the jq filters, EXECUTED':32} {compared} (fixture, source) pairs: same rows, or the "
                     f"same refusal")
+
+    # (4) AND THE RULES THE SPEC CANNOT EXECUTE AT ALL. They span two fetches, so no filter above can carry
+    # them, and the doc is the only place they exist for a reader — which makes the doc the thing to pin.
+    held += check_cross_source_stated(text)
     return problems, held
 
 
@@ -1507,8 +1729,8 @@ def doc_check(doc: Path) -> int:
         print(f"FAIL     {problem}")
     # NAMED, NEVER SILENT: what the spec cannot express, and what pins it instead. A gap you print is a gap
     # somebody can close; a gap you omit is one the next reader will assume is covered.
-    for what, why in SPEC_CANNOT_EXPRESS.items():
-        print(f"limit    {what:32} NOT in the fetch spec — {why}")
+    for what, spec in SPEC_CANNOT_EXPRESS.items():
+        print(f"limit    {what:32} NOT in the fetch spec — {spec['why']}")
 
     print()
     if failures:
@@ -1697,6 +1919,9 @@ DOC_EXPECT = {
     "[doc] TWO fetch commands for one source": ("refused", "TWO fetch commands"),
     "[doc] a derive copy drops --required-set": ("refused", "WITHOUT `--required-set`"),
     "[doc] NO copy of the derive command": ("refused", "ZERO copies"),
+    # The one class of rule `doc-check` CANNOT execute against the doc, so the doc's own PROSE is the
+    # subject — and prose is what rots. Delete the paragraph and nothing else in this file notices.
+    "[doc] a CROSS-SOURCE rule is GONE": ("refused", "MISSING FROM THE DOC"),
 }
 
 
@@ -1760,6 +1985,12 @@ def doc_cases(tmp: Path, case: Callable[[str, Callable[[], object]], None]) -> N
          lambda: derive_tree("bad-copy", "Run `ci-status.py derive --pr 7 --head-sha <sha> --rundir <d>`.\n"))
     case("[doc] NO copy of the derive command",
          lambda: derive_tree("no-copy", "This doc prescribes nothing at all.\n"))
+    # A doc that has LOST a cross-source rule. Every OTHER doc guard would still pass on it — the enums, the
+    # CLASSIFY tables, the DECIDE order and every executable fetch filter are untouched — which is exactly
+    # why this one has to exist: the rules that cannot be executed are the rules that can be deleted quietly.
+    case("[doc] a CROSS-SOURCE rule is GONE",
+         lambda: check_cross_source_stated(
+             text.replace(SPEC_CANNOT_EXPRESS["the two sources must AGREE"]["doc"], "(deleted by this case)")))
 
 
 def check_seams(tmp: Path) -> list[str]:

@@ -49,11 +49,15 @@
           {
             "__typename": "CheckRun",
             "name": "Lint scripts",
+            "status": "COMPLETED",
+            "conclusion": "FAILURE",
             "detailsUrl": "https://github.com/o/r/actions/runs/29318959841/job/1"
           },
           {
             "__typename": "CheckRun",
             "name": "Validate plugins",
+            "status": "AWAITING_APPROVAL",
+            "conclusion": null,
             "detailsUrl": "https://github.com/o/r/actions/runs/29318959841/job/2"
           }
         ]

@@ -1,12 +1,12 @@
 {
-  "why": "GITHUB SAYS IT HOLDS 3 CHECK RUNS FOR THIS COMMIT; THE PAGINATED READ COLLECTED 2. The row we did not get could be the FAILING one — so there is no verdict to derive. This fixture used to expect GREEN with a note attached, which is a green computed from evidence the tool had just proven incomplete. The needle NAMES THE FAMILY: this fixture pins the completeness call in `fetch_check_runs`, and `truncated-statuses.json` pins the one in `fetch_statuses` — a fixture that cannot say WHICH family it caught cannot pin either",
+  "why": "THE SAME CONTRADICTION IN THE CHECK-RUN FAMILY — and this is the half nobody had looked at. The rollup carries each CheckRun's status AND conclusion (verified live), and the producer read its NAME, kept it as a witness, and threw the VERDICT away: rollup FAILURE beside REST success for the same run was GREEN. Containment passes (the run exists in both), so containment could never have caught it — existence is not agreement",
   "required_set": "none",
   "pr": "35",
   "api": {
     "check-runs": {
       "response": [
         {
-          "total_count": 3,
+          "total_count": 2,
           "check_runs": [
             {
               "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
@@ -50,7 +50,7 @@
             "__typename": "CheckRun",
             "name": "Lint scripts",
             "status": "COMPLETED",
-            "conclusion": "SUCCESS",
+            "conclusion": "FAILURE",
             "detailsUrl": "https://github.com/o/r/actions/runs/29318959841/job/1"
           },
           {
@@ -67,7 +67,7 @@
   "expect": {
     "verdict": "unusable",
     "ci": "pending",
-    "needle": "check-runs: GitHub reported total_count=3",
+    "needle": "Lint scripts",
     "promoted": false
   }
 }
