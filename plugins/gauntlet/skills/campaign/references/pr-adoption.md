@@ -114,12 +114,15 @@ For each `#PR` to adopt:
      That is a **property, not a list** — and deliberately so, because the list that stood here was one:
      `ledger.py … set` writes only the fields it **NAMES**, so preservation is the **default**, and this
      step's job is to name nothing it must not clobber. Everything a previous wake wrote and a later one
-     still needs therefore survives untouched — non-exhaustively, the user's answers (`api_approval`,
-     `blocker_ruling`), the live position (`status`, `attempts`, `started`, `reviews_ok`, `tier`), the
-     open park's `ci_reason`, **and any field added to the schema after this line was written**. Resetting
-     one would violate the durable-decision contract for **both** user answers (`files-and-ledger.md` /
-     `scope-and-constraints.md`): it could re-ask the user about a PR already ruled on, revive an
-     already-declined/aborted PR, or blank the blocker an open park is waiting on an answer about.
+     still needs therefore survives untouched — **including every field added to the schema after this
+     line was written**. **The members are NOT retyped here, and marking a retyped list "examples" would
+     not save it**: a member missing from such a list is a field a refresh silently clobbers, and the
+     omission is invisible at this site. Clobbering a preserved field would violate the durable-decision
+     contract for **both** user answers (`files-and-ledger.md` / `scope-and-constraints.md`): it could
+     re-ask the user about a PR already ruled on, revive an already-declined/aborted PR, or blank the
+     blocker an open park is waiting on an answer about. It would equally **restart the liveness
+     counters** on every reconcile (`stage-2-ci.md`, "THE LIVENESS COUNTERS") — a counter that restarts
+     never reaches its cap, and the bound never fires.
      **Preserving `blocker_ruling` here is safe because it is cleared at its
      own park boundaries** — at park **entry** and when a `retry` is **consumed** (`stage-2-ci.md`, "THE
      RULING IS CONSUMED EXACTLY ONCE") — so a ruling this refresh can see is either still **awaiting its

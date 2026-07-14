@@ -71,8 +71,9 @@ review gate"), and the review re-starts on the clean tip:
   it onto `<base>` before reviewing. Clean rebase with the PR diff unchanged keeps `reviews_ok` but
   sets `ci = pending` **and resets the liveness counters** — the gate does not reset, but the `head_sha`
   **moved**, and **every** `head_sha` change resets them (`stage-2-ci.md`, "THE LIVENESS COUNTERS");
-  conflict-resolving rebase changes PR content, so it resets the gate **as well** (`stage-3-merge.md`,
-  the step-6 reconcile of other open PRs).
+  conflict-resolving rebase changes PR content, so it resets the gate **as well** — here, at this site,
+  exactly as the step-6 reconcile does at its own (`stage-3-merge.md`), and it therefore **relabels in the
+  same step** ("Status labels mirror the review gate", below).
 
 Only launch a review pass once all three are clear for the current tip.
 
@@ -616,7 +617,7 @@ that drop `reviews_ok` to 0):
 | Review-fix **or refutation** commit pushed (both are campaign commits to the PR head) | this file, verdict tally |
 | CI-fix commit pushed — cheap tier **or** session-model tier | `stage-2-ci.md`, "Any campaign commit to the PR head resets the gate" |
 | Copilot-item fix pushed | Stage 2a preconditions, above |
-| Conflict-resolving rebase | `stage-3-merge.md` |
+| Conflict-resolving rebase — at **either** of the two sites that rebase a PR | **Stage 2a preconditions, above** (the pre-review rebase of a `CONFLICTING`/`DIRTY`/`BEHIND` PR) **and** `stage-3-merge.md`'s step-6 reconcile. Naming only one of them is how the relabel goes missing at the other; the *event* owes the relabel, wherever it happens |
 | Re-adoption refresh detects changed content | `pr-adoption.md` step 3 (step 4 then sets the status label from the **live** gate — `gauntlet-reviewing` here, but `gauntlet-accepted` for a re-adoption whose content did **not** change and whose verdicts step 3 preserved; either way it removes the other label) |
 | Any other PR-content change on the head branch — formatter/bot commit, manual push | **Loop control step 1's ledger refresh** — the wake that *detects* it resets the gate, so it relabels there |
 
