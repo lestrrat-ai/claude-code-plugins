@@ -101,7 +101,8 @@ DESCRIPTION = "Schema-owning accessor for the follow-up ledger (.gauntlet/follow
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ledger  # noqa: E402
 from ledger import (  # noqa: E402
-    SelfTestFailure, check, config_lines, escape_cell, grid_lines, hidden_notice,
+    SelfTestFailure, check, config_lines, escape_cell, grid_lines, harness_errors, hidden_notice,
+    preflight_report,
 )
 
 # --- the ACT conditions (owned here, once) ------------------------------------
@@ -2828,42 +2829,71 @@ def t_the_harness_reports_a_fatal_fixture(tmp: Path) -> None:
     check(ran == ["poison", "canary"],
           f"the suite STOPPED at the first casualty — the cases that actually ran were {ran!r}")
 
-    # And the OTHER ways this harness could call an untested rule a passing one — each is a route by which
-    # a fixture never runs while the suite still prints its all-clear:
-    names = [name for name, _, _ in CASES]
-    check(len(names) == len(set(names)),
-          f"two fixtures share a name — their reports are indistinguishable: {names!r}")
+    # The OTHER routes by which a fixture never runs while the suite still prints its all-clear — an
+    # unregistered fixture, a duplicate name, an emptied corpus, an empty `CASES` — were checked HERE, from
+    # a case inside `CASES`. That was the defect this comment now stands in place of: DELETING THIS FIXTURE
+    # DELETED THEM. They are checks on the suite, so they live OUTSIDE the suite, in `preflight()` below —
+    # which is also what makes THIS fixture undeletable, since the preflight demands it by name.
+    #
+    # And that is also why this fixture no longer reads `CASES` at all: the only thing above is what
+    # `run_case()` DOES with a fixture the store kills, which cannot be asked of anything but a real run.
+    #
+    # What is left to pin is the half of the preflight this file OWNS — `intake_errors()`, which every
+    # blank- and flag-loop in this suite trusts to have knocked on every real door. Hand it a table that
+    # disagrees with the parser, in both directions, and it must say so. (The generic half is pinned in the
+    # ledger, by `t_the_preflight_catches_a_gutted_suite`.)
+    check(preflight() == [], f"the REAL suite does not pass its own preflight: {preflight()}")
 
-    # EVERY FIXTURE IS REGISTERED. A `t_*` written but never added to CASES runs NEVER, and the suite
-    # reports every remaining fixture holding — the rule it was written to pin is untested and nothing says
-    # so. The declaration is the registration; this is what makes forgetting it loud.
-    declared = {fn for _, _, fn in CASES}
-    orphans = sorted(n for n, v in globals().items()
-                     if n.startswith("t_") and callable(v) and v not in declared)
-    check(not orphans, f"fixtures defined but NEVER RUN — they are not in CASES: {orphans}")
+    short = {**INTAKE, "add": {f: v for f, v in INTAKE["add"].items() if f != "evidence"}}
+    check(any("add" in e for e in intake_errors(short)),
+          "an INTAKE row MISSING a field the door really takes passed — the loops over it would report a "
+          "value they never tried")
+    long = {**INTAKE, "merged": {**INTAKE["merged"], "pr": "--pr"}}
+    check(any("merged" in e for e in intake_errors(long)),
+          "an INTAKE row claiming a field the door does NOT take passed — the loops over it would 'cover' a "
+          "flag the CLI cannot even accept")
 
-    # NO FIXTURE PASSES VACUOUSLY ON AN EMPTY CORPUS. Whole fixtures are nothing but a loop over one of
-    # these shared corpora (BLANKS, the hostile values, the graph). Empty one and its loop body never
-    # executes: the fixture passes without testing anything, and the suite is louder about nothing.
-    for corpus, label in ((BLANKS, "BLANKS"), (ledger.HOSTILE, "ledger.HOSTILE"),
-                          (TRANSITIONS, "TRANSITIONS"), (STATES, "STATES"), (FIELDS, "FIELDS"),
-                          (INTAKE, "INTAKE"), (WRITE_CMDS, "WRITE_CMDS"), (PROBE, "PROBE"),
-                          (STAMPS, "STAMPS")):
-        check(len(corpus) > 0, f"{label} is EMPTY — every fixture that loops over it passes vacuously")
-    # …and the INTAKE rows are the same lie one level down, in BOTH directions. A row with FEWER fields than
-    # the door has flags is a door the blank fixture loops over and never actually knocks on — it reports a
-    # value it never tried. A row with MORE is a field the CLI cannot even take. Neither is a judgment about
-    # SIZE: an EMPTY row is perfectly honest for a door that takes no value at all (`merged` and
-    # `closed-unmerged` carry no evidence and stamp nothing, so they offer nothing but the key `--id`) — the
-    # lie is a row that DISAGREES WITH THE PARSER, and that is what is asked. (`--id` is the door's KEY, not
-    # a value going into an entry; the value-flag check that owns it is `nothing-accepted-is-dropped`.)
+
+def intake_errors(intake: "dict[str, dict[str, str]]") -> "list[str]":
+    """The INTAKE rows must AGREE WITH THE REAL PARSER, in both directions — else the loops over them lie.
+
+    A row with FEWER fields than the door has flags is a door the blank fixture loops over and never
+    actually knocks on: it reports a value it never tried. A row with MORE is a field the CLI cannot even
+    take. Neither is a judgment about SIZE — an EMPTY row is perfectly honest for a door that takes no value
+    at all (`merged` and `closed-unmerged` carry no evidence and stamp nothing, so they offer nothing but the
+    key `--id`). The lie is a row that DISAGREES WITH THE PARSER, and that is what is asked. (`--id` is the
+    door's KEY, not a value going into an entry; the check that owns it is `nothing-accepted-is-dropped`.)
+
+    Takes the table as an ARGUMENT so a fixture can hand it a wrong one and watch it complain — a check
+    that can only ever see the real, correct table is a check nothing pins.
+    """
+    errors: "list[str]" = []
     subs = subcommands(build_parser())
-    for cmd, table in INTAKE.items():
+    for cmd, table in intake.items():
         offered = {a.dest for a in subs[cmd]._actions  # noqa: SLF001
                    if a.option_strings and a.dest not in ("help", "id")}
-        check(offered == set(table),
-              f"INTAKE[{cmd!r}] holds {sorted(table)} and `{cmd}` offers {sorted(offered)} — the door is "
-              f"'covered' by a loop over fields it does not take, or takes values that loop never reaches")
+        if offered != set(table):
+            errors.append(f"INTAKE[{cmd!r}] holds {sorted(table)} and `{cmd}` offers {sorted(offered)} — the "
+                          f"door is 'covered' by a loop over fields it does not take, or takes values that "
+                          f"loop never reaches")
+    return errors
+
+
+# The fixture that may NOT be dropped, named from OUTSIDE `CASES` — see `ledger.harness_errors()`. It is
+# the check on the harness, so it is exactly the one an edit to `CASES` must not be able to remove.
+REQUIRED_FIXTURES = ("t_the_harness_reports_a_fatal_fixture",)
+
+
+def preflight() -> "list[str]":
+    """Everything that must hold BEFORE a single fixture runs, checked from OUTSIDE `CASES`. Empty == ok.
+
+    The generic half — an empty suite, an unregistered fixture, a missing required fixture, a duplicate
+    name, an emptied corpus — is `ledger.harness_errors()`, shared with the ledger's own suite and pinned by
+    a fixture there. The half that is specific to this file is the INTAKE table, whose rows every blank- and
+    flag-loop in this suite trusts.
+    """
+    return [*harness_errors(globals(), CASES, REQUIRED_FIXTURES, also=(vars(ledger),)),
+            *intake_errors(INTAKE)]
 
 
 CASES = [
@@ -2897,7 +2927,7 @@ CASES = [
     ("table-omission-loud", "the omission is never silent, and an all-closed store never reads as empty", t_table_omission_is_never_silent),
     ("table-grid-integrity", "no hostile title/evidence forges a column, an entry, or an out-of-band line", t_table_grid_integrity),
     ("fields-and-lookup", "read by FIELD NAME; an unknown or empty field is rejected", t_fields_and_lookup),
-    ("harness-holds", "THE HARNESS ITSELF: a fixture the ACCESSOR KILLS is reported and the NEXT one still runs; no fixture is unregistered, unnamed, or vacuous — nothing untested can pass as tested", t_the_harness_reports_a_fatal_fixture),
+    ("harness-holds", "THE HARNESS ITSELF: a fixture the ACCESSOR KILLS is reported and the NEXT one still runs; and the INTAKE rows the suite's loops trust really are the parser's doors", t_the_harness_reports_a_fatal_fixture),
 ]
 
 
@@ -2950,7 +2980,17 @@ def run_cases(cases: "list[tuple[str, str, Callable[[Path], None]]]",
 
 
 def self_test() -> int:
-    """Run every fixture. Exit 0 iff every rule this file claims to enforce actually holds."""
+    """Run every fixture. Exit 0 iff every rule this file claims to enforce actually holds.
+
+    THE PREFLIGHT RUNS FIRST, AND NO EDIT TO `CASES` CAN SKIP IT. CI runs exactly this command and trusts
+    its exit code, so the one thing this must never do is print an all-clear over a suite that ran nothing:
+    an empty `CASES`, a fixture nobody registered, the check on the harness deleted, a corpus emptied. Those
+    are checks on the SUITE, so they cannot live in the suite — see `preflight()`.
+    """
+    errors = preflight()
+    if errors:
+        return preflight_report(errors, "the follow-up store's contract")
+
     rules = {name: rule for name, rule, _ in CASES}
     results: "list[tuple[str, str | None]]" = []
     with tempfile.TemporaryDirectory() as tmpdir:
