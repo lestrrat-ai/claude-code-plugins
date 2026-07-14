@@ -275,7 +275,11 @@ blocks; each completion is its own wake.
      threshold: with no launch deadline pending, nothing can declare a review stalled before then, so a
      shorter interval only re-reconciles git/gh with no new signal (and pays a fresh-context cost per
      wake). ALWAYS schedule a heartbeat whenever non-terminal work remains — skipping it means a hung
-     or orphaned run wakes no one. Return.
+     or orphaned run wakes no one. Then **end the turn showing the user where the run stands**: run
+     `ledger.py --file <state.jsonl> table` and include its output verbatim, fenced, in the end-of-turn
+     message, followed by one line per remaining wait naming what it waits on (review in flight, CI
+     watch, parked on the user's answer). Render it after every ledger write of the wake — the ledger
+     was reconciled this wake, so the table is the state the next wake resumes from. Return.
    - All this run's PRs `merged` or `aborted` → **distill the run into the carryover ledger** (write
      this run's block to its own file `.gauntlet/history/<run-id>.md` — merged PRs, aborted
      PRs + why, and declined-API PRs; per-run files never

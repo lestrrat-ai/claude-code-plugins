@@ -64,3 +64,12 @@ jobs:
       # hand-written matrix had sworn were covered, which is exactly why the matrix is now DERIVED here.
       - name: CI-snapshot mutation matrix (every rule pinned by a fixture)
         run: python3 plugins/gauntlet/skills/campaign/scripts/mutate-ci-snapshot.py
+
+      # The ledger's contract, executed — same reason, one file over. `escape_cell` is security-shaped: it
+      # is what stops a PR title from forging a column, a row, or a run-config line in the `table` view, and
+      # a sanitizer verified by eye is a sanitizer verified by NOTHING. The fixtures assert the escaping is
+      # INJECTIVE (two values that differ can never print as one cell) and re-parse the printed grid back to
+      # its declared columns and widths — mechanically, never by looking at it. Weaken any escape and one of
+      # them goes red.
+      - name: Ledger contract
+        run: python3 plugins/gauntlet/skills/campaign/scripts/ledger.py self-test

@@ -204,8 +204,9 @@ Read stage refs only when that stage/action is due:
    PR, and — whenever any non-terminal work remains — a `ScheduleWakeup` heartbeat is actually
    scheduled. If any due launch or the heartbeat is missing, launch it and re-audit. NEVER sleep with
    due work un-launched or the heartbeat unscheduled.
-7. **Terminal -> carryover/report;** otherwise refresh lease and return (step 6 has already ensured the
-   heartbeat is scheduled).
+7. **Terminal -> carryover/report;** otherwise refresh lease, show the user where the run stands
+   (`ledger.py … table` output plus what each wait is on — `references/loop-control.md`, "Reschedule
+   or exit"), and return (step 6 has already ensured the heartbeat is scheduled).
 
 ## Critical Rules
 

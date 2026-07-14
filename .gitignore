@@ -1,3 +1,4 @@
 .tmp/
 .gauntlet/
 .worktrees/
+__pycache__/
