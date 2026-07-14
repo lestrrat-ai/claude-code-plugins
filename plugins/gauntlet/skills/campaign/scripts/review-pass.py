@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# THE EXEC BIT: mode 100644 is DELIBERATE, and TWO separate reviews have now proposed `chmod +x` here. The
+# answer is the same both times: nothing invokes this as `./review-pass.py`. Every caller runs it as
+# `python3 <path>` — CI does (`.github/workflows/ci.yml`), and so does the reviewer's emit call — so the
+# shebang is a courtesy and the mode carries nothing. Leave it.
 """Executable contract for a REVIEW PASS's artifacts (stage-2-review-gate.md).
 
 A review pass produces four things, and until now exactly ONE of them had a tool:
@@ -183,6 +187,20 @@ UNIT = "unit"
 # 0, so a value that names one is not a value we may go on to compare.
 COUNT = r"[1-9][0-9]*"
 
+# The LAUNCH ATTEMPT, as a FILENAME wears it: the `a<k>` suffix, which exists only for k >= 2 (attempt 1
+# has no suffix). Its domain is every decimal integer from 2 up, no leading zeros — a strict subset of
+# `COUNT`, because the attempt in the NAME is compared to the `launch_attempt` in the `pass_identity` and
+# the two must be the same kind of value.
+#
+# **IT WAS `[2-9][0-9]*`, WHICH READS LIKE "2 UPWARD" AND IS NOT.** That pattern accepts `a2`…`a9` and
+# `a20`, and REFUSES `a10` THROUGH `a19`: a tenth launch attempt could not name its own file, while this
+# tool's own error message and every doc say `k >= 2`. The regex and the definition disagreed about what an
+# attempt number IS — the same disease as ` u01 ` being two spellings of one id, one door over. A domain
+# with a hole in the middle of it is not a domain, and no fixture stood on that boundary.
+#
+# `[2-9]` is the one-digit case; `[1-9][0-9]+` is every longer one (so `10` is in and `02` is out).
+ATTEMPT = r"(?:[2-9]|[1-9][0-9]+)"
+
 # A unit id, and the one form of one: lowercase letters then digits — `u01`, `u02`. It is the id an
 # ORCHESTRATOR writes into the plan and a REVIEWER names in every progress event, so it is typed twice by
 # two different processes, and the whole point of pinning its shape is that those two typings cannot differ
@@ -270,9 +288,9 @@ def real_utc(value: str) -> bool:
 #
 # The `pr` and `pass` in a NAME are the SAME identifiers `ID_FORMATS` governs, so they are built from the
 # same `COUNT` — a name is an intake door too, and `review-041-1.progress.jsonl` is not another way of
-# writing PR 41. (The attempt suffix appears only for k >= 2: attempt 1 has no suffix, which is why its
-# form is spelled out here rather than reused.)
-NAME_RE = re.compile(rf"^review-(?P<pr>{COUNT})-(?P<pass>{COUNT})(?:\.a(?P<attempt>[2-9][0-9]*))?"
+# writing PR 41. The attempt suffix is `ATTEMPT`, and it is a NAMED constant for the reason every other
+# value here is: written out inline it was `[2-9][0-9]*`, which silently refused `a10`-`a19`.
+NAME_RE = re.compile(rf"^review-(?P<pr>{COUNT})-(?P<pass>{COUNT})(?:\.a(?P<attempt>{ATTEMPT}))?"
                      rf"\.progress\.jsonl\Z")
 
 # The plan is PER-PASS, not per-attempt: a relaunch reuses it unchanged (stage-2-review-gate.md). So it is
@@ -871,6 +889,30 @@ def check_plan_file(text: str, path: Path) -> "dict[str, dict]":
     return plan_units(parse_lines(text, path.name), path.name)
 
 
+def check_ruled(ruled: int) -> None:
+    """`--amendments-ruled` is a CARDINALITY — how many amendments the orchestrator has ruled on — so its
+    domain starts at ZERO, and this is the floor. The CEILING is the pass's own amendment count, and
+    `cmd_verify` enforces it one statement later; together they are the whole domain, bounded on both sides.
+
+    **A NEGATIVE VALUE WEDGES A PASS THAT WAS LEGITIMATELY EARNED.** `decide` computes `raised - ruled`, so
+    `--amendments-ruled -1` on a sound, COMPLETE pass with no amendments at all gives `0 - (-1) = 1` unruled
+    — and the pass comes back `amended`: "0 amendment(s), 1 not yet ruled on". There is no amendment to
+    rule on, so there is no way to clear it: the verdict names a thing that does not exist. It fails SAFE
+    (this tool can only ever SUBTRACT a pass, never grant one), and a pass withheld forever is still a pass
+    withheld — the over-count rule below already refuses a ruling for an amendment that does not exist, and
+    a NEGATIVE ruling is that same mistake with its sign flipped.
+    """
+    if ruled < 0:
+        # MUTATE:caller-ruled-negative:pass
+        raise OperatorError(
+            f"--amendments-ruled {ruled} is negative — it is a CARDINALITY (how many amendments you have "
+            f"already ruled on), so the smallest legal value is 0. A negative one is SUBTRACTED from the "
+            f"amendments the pass raised, so a complete, sound pass with none at all would come back "
+            f"{AMENDED!r} — '0 amendment(s), 1 not yet ruled on' — and no ruling could ever clear an "
+            f"amendment that was never raised"
+        )
+
+
 def count_amendments(progress: Path) -> int:
     """How many amendments the file holds — read WITHOUT judging it, so `--amendments-ruled` can be
     checked against reality before any verdict is computed."""
@@ -1037,6 +1079,11 @@ def cmd_verify(args) -> int:
             f"Every comparison below would be against a value that cannot be a commit, so the verdict "
             f"would be about the wrong question. No verdict beats a wrong one"
         )
+    # The ruling's DOMAIN, bounded on both sides and BEFORE `decide` ever sees the value: `check_ruled` is
+    # the floor (a cardinality starts at 0), the over-count rule below is the ceiling (you cannot rule on an
+    # amendment that was never raised). Neither is a fact about the artifacts — both are the CALLER's
+    # mistake, hence `OperatorError` and exit 2, not a verdict about the pass.
+    check_ruled(args.amendments_ruled)
     raised = count_amendments(path)
     if args.amendments_ruled > raised:
         # MUTATE:caller-ruled:pass
@@ -1316,6 +1363,13 @@ CLI_CASES = [
      "an OPERATOR error is not a snapshot verdict: exit 2, never a verdict computed from a comparison that could not have succeeded"),
     (["verify", "--head-sha", SHA, "--amendments-ruled", "1"], EMPTY, 2, "raised only 0",
      "a ruling for an amendment that does not exist would silently clear the NEXT one raised"),
+    (["verify", "--head-sha", SHA, "--amendments-ruled", "-1"], WORKED, 2, "smallest legal value is 0",
+     "HEADLINE: A NEGATIVE RULING WEDGES A PASS THAT WAS EARNED. The seed is a COMPLETE, sound pass — it "
+     "verifies `ok` with no flag at all — and `--amendments-ruled -1` used to turn it into `amended`: "
+     "`decide` subtracts the ruling, so `0 - (-1) = 1` amendment 'not yet ruled on' that the reviewer "
+     "never raised and no ruling can ever clear. It failed SAFE (this tool can only SUBTRACT a pass), and "
+     "a pass withheld forever is still withheld. The over-count rule bounded the value ABOVE and NOTHING "
+     "bounded it below: a cardinality's domain starts at 0, and now the floor is checked before `decide`"),
 ]
 
 # `plan-add` gets its own family: its `--check` is repeatable, so its argv do not fit the shape above, and
@@ -1471,16 +1525,78 @@ def cross_door(mod: types.ModuleType, tmp: Path) -> "dict[str, tuple[str, str]]"
     return got
 
 
-# --- every IDENTIFIER's format, stated as a table of what it TAKES and what it REFUSES ------------
+# --- EVERY BOUNDED VALUE, probed JUST INSIDE and JUST OUTSIDE its declared domain -----------------
 #
-# `ID_FORMATS` is the tool's claim about what an identifier is. This is the check on that claim, and it is
-# the reason a strict format beats normalizing: a rule that says "trim it" cannot be tabulated — there is
-# no set of strings it refuses — while a rule that says "it looks like THIS" has an exact boundary, and an
-# exact boundary is a thing a test can stand on both sides of.
+# A bounded value is one this tool ACCEPTS or REJECTS against a domain it has declared: every identifier
+# (`ID_FORMATS`), every number the FILENAME carries, and every numeric flag. The declaration is the tool's
+# CLAIM about what the value may be; this is the check on that claim, and it is the reason a strict format
+# beats normalizing — a rule that says "trim it" cannot be tabulated (there is no set of strings it
+# refuses), while a rule that says "it looks like THIS" has an exact boundary, and **an exact boundary is a
+# thing a test can stand on BOTH SIDES OF.**
 #
-# The identifiers COVERED are reconciled against `ID_FORMATS` itself, so an identifier added to the table
-# with no cases here FAILS the suite. A format nobody has fenced is a format that will drift.
-ID_CASES = [
+# **THE TOOL'S TWO WORST BUGS WERE BOTH A BOUNDARY NO FIXTURE STOOD ON**, and neither was a missing rule:
+#
+#   * the attempt suffix was `[2-9][0-9]*` — it took `a2`…`a9` and `a20` and REFUSED `a10` through `a19`,
+#     while the tool's own error message said `k >= 2`. A domain with a HOLE in the middle of it.
+#   * `--amendments-ruled` took `-1`, which `decide` then SUBTRACTED: a complete, sound pass with no
+#     amendments came back `amended`, "0 amendment(s), 1 not yet ruled on", and nothing could clear it.
+#
+# Every rule was present; every rule was right in the middle of its range. So the fence is not another rule
+# — it is COVERAGE, made mechanical. The values COVERED here are reconciled against `DOMAINS`, and a domain
+# with no cases, **or with cases on only ONE side of its boundary**, FAILS the suite. "We tested carefully"
+# cannot fail. "Every declared domain has a case just inside and just outside it, and here they are" can.
+
+Probe = Callable[[object], None]
+
+
+def probe_id(name: str) -> Probe:
+    """An identifier, through `check_id` — the ONE validator every real door calls."""
+    return lambda value: check_id(name, value, "[domain]")
+
+
+# The three numbers a progress file's NAME carries. They are probed through `parse_name` — the REAL door,
+# not a copy of its regex — by building the name that wears the value. `pr` and `pass` are the same `COUNT`
+# the identifiers use (the name is compared to the `pass_identity`, so they must be the same kind of value);
+# the attempt is `ATTEMPT`, from 2 up, and it is the one that was wrong.
+NAME_TEMPLATES = {"pr": "review-{v}-1.progress.jsonl",
+                  "pass": "review-41-{v}.progress.jsonl",
+                  "attempt": "review-41-1.a{v}.progress.jsonl"}
+
+
+def probe_name(field: str) -> Probe:
+    # A `def`, not a lambda: `parse_name` RETURNS the three numbers it parsed, and a probe answers only
+    # "was it refused?". The result is dropped here rather than leaked into a `Probe` that claims `None`.
+    def probe(value: object) -> None:
+        parse_name(Path(NAME_TEMPLATES[field].format(v=value)))
+
+    return probe
+
+
+def probe_ruled(value: object) -> None:
+    """`--amendments-ruled`, through the same `check_ruled` that `verify` runs — never a second copy of it.
+
+    The parser's `type=int` is what guarantees an int ever reaches that function, so this narrows the same
+    way: a non-integer is refused by argparse at the CLI door, one layer before the domain is consulted.
+    """
+    if not isinstance(value, int):
+        raise OperatorError(f"[domain] --amendments-ruled {value!r} is not an integer — the parser's "
+                            f"`type=int` refuses it before the domain is ever reached")
+    check_ruled(value)
+
+
+# The tool's every bounded value: name -> (the REAL door it enters by, its domain in words).
+DOMAINS: "dict[str, tuple[Probe, str]]" = {
+    **{name: (probe_id(name), spec) for name, (_re, spec, _why) in ID_FORMATS.items()},
+    "filename pr": (probe_name("pr"), "a decimal number from 1 up, as the progress file's NAME carries it"),
+    "filename pass": (probe_name("pass"), "a decimal number from 1 up, as the NAME carries it"),
+    "filename attempt": (probe_name("attempt"),
+                         "the `a<k>` suffix: a decimal integer from 2 UP, no leading zeros (attempt 1 "
+                         "wears no suffix at all)"),
+    "--amendments-ruled": (probe_ruled,
+                           "a CARDINALITY: an integer from 0 up, and never more than the pass raised"),
+}
+
+BOUNDARY_CASES: "list[tuple[str, object, bool]]" = [
     ("id", "u01", True), ("id", "u99", True), ("id", "unit01", True),
     ("id", " u01 ", False), ("id", "u01 ", False), ("id", "\tu01", False), ("id", "u 01", False),
     ("id", "u01\n", False), ("id", "U01", False), ("id", "u", False), ("id", "01", False),
@@ -1491,37 +1607,83 @@ ID_CASES = [
     ("pr", "0", False), ("pr", "041", False), ("pr", " 41", False), ("pr", "41 ", False),
     ("pr", "+41", False), ("pr", "-41", False), ("pr", "4_1", False), ("pr", "", False), ("pr", 41, False),
     ("pass", "1", True), ("pass", "0", False), ("pass", "one", False), ("pass", "01", False),
-    ("launch_attempt", "1", True), ("launch_attempt", "2", True),
+    ("launch_attempt", "1", True), ("launch_attempt", "2", True), ("launch_attempt", "10", True),
     ("launch_attempt", "0", False), ("launch_attempt", " 2", False), ("launch_attempt", "two", False),
     ("head_sha", SHA, True),
     ("head_sha", SHA[:7], False),          # THE TRUNCATED SHA — it reached real state, and it is CLEAN:
     ("head_sha", SHA.upper(), False),      # no trimming could ever have caught it. Only a FORMAT can.
-    ("head_sha", SHA + "0", False), ("head_sha", " " + SHA, False), ("head_sha", SHA + "\n", False),
+    ("head_sha", SHA + "0", False), ("head_sha", SHA[:39], False),
+    ("head_sha", " " + SHA, False), ("head_sha", SHA + "\n", False),
     ("head_sha", "", False), ("head_sha", None, False),
+
+    # The FILENAME's numbers — the same domains, at the door that reads the NAME rather than the bytes.
+    ("filename pr", "1", True), ("filename pr", "41", True), ("filename pr", "10", True),
+    ("filename pr", "0", False), ("filename pr", "041", False), ("filename pr", "", False),
+    ("filename pr", "-1", False), ("filename pr", "1 ", False),
+    ("filename pass", "1", True), ("filename pass", "2", True), ("filename pass", "10", True),
+    ("filename pass", "0", False), ("filename pass", "01", False), ("filename pass", "", False),
+
+    # **THE ATTEMPT SUFFIX — THE BOUNDARY NOBODY STOOD ON.** `a2`…`a9` and `a20` were accepted and
+    # `a10`…`a19` were REFUSED, so both edges of the hole are pinned here (9/10 and 19/20), along with the
+    # bottom edge (1 is out, 2 is in — attempt 1 wears no suffix) and the leading zero.
+    ("filename attempt", "2", True), ("filename attempt", "3", True), ("filename attempt", "9", True),
+    ("filename attempt", "10", True), ("filename attempt", "11", True), ("filename attempt", "19", True),
+    ("filename attempt", "20", True), ("filename attempt", "99", True), ("filename attempt", "100", True),
+    ("filename attempt", "1", False), ("filename attempt", "0", False),
+    ("filename attempt", "02", False), ("filename attempt", "010", False),
+    ("filename attempt", "", False), ("filename attempt", "-2", False), ("filename attempt", "+2", False),
+    ("filename attempt", "2 ", False), ("filename attempt", " 2", False), ("filename attempt", "2a", False),
+
+    # **`--amendments-ruled` — A CARDINALITY, and 0 is INSIDE it.** `-1` is the wedge: subtracted from the
+    # amendments the pass raised, it invents one that nobody can ever rule on.
+    ("--amendments-ruled", 0, True), ("--amendments-ruled", 1, True), ("--amendments-ruled", 7, True),
+    ("--amendments-ruled", -1, False), ("--amendments-ruled", -2, False),
 ]
 
 
-def check_id_formats() -> int:
-    """Every identifier's format, against what it must TAKE and what it must REFUSE. Returns the failures."""
+def check_boundaries() -> int:
+    """Every bounded value, JUST INSIDE and JUST OUTSIDE its domain — and every domain probed on BOTH sides.
+
+    Returns the failures. The second loop is the mechanical part: it is what a bug like `a10` has to get
+    past, and it cannot — a domain nobody fenced on both sides is reported as unfenced, by name.
+    """
     failures = 0
-    for name, value, accepted in ID_CASES:
+    sides: dict[str, set[bool]] = {}
+    for name, value, accepted in BOUNDARY_CASES:
+        # Recorded BEFORE the lookup, so a case naming a value with no declared domain is REPORTED (below)
+        # rather than skipped into silence — the `stray` check is how this table cannot quietly test a
+        # domain the tool does not actually declare.
+        sides.setdefault(name, set()).add(accepted)
+        if name not in DOMAINS:
+            continue
+        probe, spec = DOMAINS[name]
         try:
-            check_id(name, value, "[id-format]")
+            probe(value)
             got = True
-        except Defect:
+        except (Defect, OperatorError):
             got = False
         if got == accepted:
-            verb = "accepts" if accepted else "REFUSES"
-            print(f"ok       [id] `{name}` {verb} {value!r}")
+            print(f"ok       [domain] `{name}` {'accepts' if accepted else 'REFUSES'} {value!r}")
         else:
-            print(f"FAIL     [id] `{name}` {'REFUSED' if accepted else 'ACCEPTED'} {value!r} — and an "
-                  f"identifier's format is the ONE thing both doors read it by")
+            print(f"FAIL     [domain] `{name}` {'REFUSED' if accepted else 'ACCEPTED'} {value!r} — its "
+                  f"domain is {spec}, and the BOUNDARY is where two doors come to disagree about what a "
+                  f"value IS. `a10` was refused by a pattern whose own error message said `k >= 2`")
             failures += 1
-    covered = {name for name, _v, _a in ID_CASES}
-    if covered != set(ID_FORMATS):
-        print(f"FAIL     [id] identifiers with a format and NO cases: {sorted(set(ID_FORMATS) - covered)}; "
-              f"cases for an identifier that has no format: {sorted(covered - set(ID_FORMATS))}. A format "
-              f"nobody fenced is one that will drift")
+
+    for name, (_probe, spec) in DOMAINS.items():
+        probed = sides.get(name, set())
+        if probed == {True, False}:
+            continue
+        gap = ("NO CASES AT ALL" if not probed else
+               "no case INSIDE it" if True not in probed else "no case OUTSIDE it")
+        print(f"FAIL     [domain] `{name}` ({spec}) has {gap} — a domain is fenced only when the suite "
+              f"stands on BOTH sides of its boundary. An unprobed side is what `a10` and `-1` cost")
+        failures += 1
+
+    stray = sorted(set(sides) - set(DOMAINS))
+    if stray:
+        print(f"FAIL     [domain] cases for a value with no declared domain: {stray} — a domain is "
+              f"DECLARED in `DOMAINS` or it is not a domain at all")
         failures += 1
     return failures
 
@@ -1832,7 +1994,7 @@ MARKER_RE = re.compile(r"^(?P<indent>[ ]*)# MUTATE:(?P<rule>[a-z0-9-]+):(?P<weak
 RULE_FUNCTIONS = (
     "hook", "read_text", "parse_lines", "read_lines", "check_id", "check_unit", "plan_units", "load_plan",
     "check_event", "check_progress", "walk_progress", "check_identity_shape", "check_identity",
-    "check_head", "check_progress_file", "check_plan_file", "decide", "parse_name",
+    "check_head", "check_progress_file", "check_plan_file", "decide", "parse_name", "check_ruled",
     "before_text", "write_line", "cmd_emit", "cmd_identity", "cmd_plan_add", "cmd_verify",
 )
 ENFORCING_EXCEPTIONS = ("Defect", "OperatorError")
@@ -1976,7 +2138,7 @@ def self_test() -> int:
             failures += 1
     print()
     failures += help_failures
-    failures += check_id_formats()
+    failures += check_boundaries()
     print()
     doc_failures = check_docs()
     failures += doc_failures
@@ -1989,8 +2151,9 @@ def self_test() -> int:
           f"{len(WRITE_COMMANDS) * len(FILE_STATES)} round-trip cases ({len(WRITE_COMMANDS)} write "
           f"commands, derived from the parser, x {len(FILE_STATES)} pre-existing file states) + "
           f"{len(CROSS_DOOR_IDS)} cross-door cases (the plan door refuses the id, or the emit door can "
-          f"match it) + {len(ID_CASES)} identifier-format cases ({len(ID_FORMATS)} identifiers, each with "
-          f"ONE legal form) + {len(doc_examples())} DOC examples hold — and the invocation "
+          f"match it) + {len(BOUNDARY_CASES)} boundary cases ({len(DOMAINS)} bounded values, each probed "
+          f"JUST INSIDE and JUST OUTSIDE its declared domain) + {len(doc_examples())} DOC examples hold — "
+          f"and the invocation "
           f"`{WRAPPER.name} --help` advertises was EXECUTED, and runs.\n")
 
     # …and now the question the block above CANNOT answer: is any rule pinned by NO fixture?
@@ -2112,7 +2275,8 @@ def build_parser() -> "tuple[argparse.ArgumentParser, list[str]]":
     v.add_argument("--file", required=True, help="the ACTIVE launch attempt's progress.jsonl")
     v.add_argument("--head-sha", required=True, help="the PR's LIVE head — the pass must have run on it")
     v.add_argument("--amendments-ruled", type=int, default=0, metavar="N",
-                   help="how many of this pass's plan amendments you have already ruled on (default 0)")
+                   help="how many of this pass's plan amendments you have already ruled on — a count, so "
+                        "N >= 0, and never more than the pass actually raised (default 0)")
 
     sub.add_parser("self-test", help="run every fixture, then DELETE each rule and prove a fixture notices")
 
