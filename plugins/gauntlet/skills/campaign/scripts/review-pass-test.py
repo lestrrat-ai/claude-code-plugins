@@ -59,6 +59,7 @@ import tempfile
 import types
 from collections import Counter
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -707,7 +708,10 @@ class Tables:
             "plan-add": (PLAN_FILE, ["--id", "u09", "--kind", "file", "--target", "x.py", "--check", "a"]),
             "finding-add": (FINDINGS_FILE, FIND_OK),
         }
-        self.READ_ONLY_COMMANDS = frozenset({"verify", "self-test"})
+        # `status` writes NOTHING — it is an ADVISORY read-only view — so the round trip does not drive it
+        # (there is no produced artifact to read back), and it is declared read-only here so the
+        # command-coverage check is satisfied the day the subcommand is added.
+        self.READ_ONLY_COMMANDS = frozenset({"verify", "self-test", "status"})
 
         # --- the DOORS ---------------------------------------------------------------------------
         self.DOOR_SEEDS: "dict[str, tuple[str | None, list[str] | None]]" = {
@@ -720,6 +724,9 @@ class Tables:
             # a COMPLETE, sound pass — and the minimal invocation now CARRIES a `--verdict` (it is required),
             # so the door check drives the rule as well as the shape: `satisfied`, 0 gating findings, exit 0
             "verify": (PROGRESS_FILE, WORKED),
+            # status takes `--run`, not `--file`, and writes nothing — its minimal advertised invocation is
+            # `status --run .`, which globs the cwd, finds no passes, and exits 0. So it needs no seed file.
+            "status": (None, None),
             "self-test": (None, None),                  # no --file, no flags at all
         }
 
@@ -730,6 +737,12 @@ class Tables:
             "--amendments-ruled": ["0"], "--verdict": [R.SATISFIED],
             "--path": ["scripts/ci-status.py"], "--line": ["769"], "--writer": ["network"],
             "--purpose": [PURPOSE_GREEN], "--repro": ["a reply with no rows"], "--fix": ["refuse it"],
+            # status's view flags. `--run .` drives the minimal invocation the door check executes; the
+            # OPTIONAL flags are never in a minimal call, so their values are only here to satisfy the
+            # "every advertised flag has a supplied value" reconciliation. `--verify`/`--all-attempts` are
+            # store_true, so their value list is empty and never iterated.
+            "--run": ["."], "--pr": ["41"], "--ledger": ["state.jsonl"], "--now": [TS],
+            "--verify": [], "--all-attempts": [],
         }
 
         # --- the DOMAINS -------------------------------------------------------------------------
@@ -810,6 +823,140 @@ class Tables:
             ("--amendments-ruled", 0, True), ("--amendments-ruled", 1, True), ("--amendments-ruled", 7, True),
             ("--amendments-ruled", -1, False), ("--amendments-ruled", -2, False),
         ]
+
+        # --- THE STATUS FAMILY: the ADVISORY render, pinned by its printed bytes ---------------------
+        #
+        # `status` is READ-ONLY and DECIDES NOTHING, so — unlike the gate rules above — it carries no
+        # `# MUTATE` markers and is not in the mutation matrix. What it CAN get wrong is the RENDER, so
+        # every case seeds a synthetic rundir (plan + progress [+ findings / report / ledger]), runs
+        # `status --run <tmp>`, and asserts the PRINTED CELLS of the row(s) — the bytes, not internal
+        # state — exactly as `ledger-test.py`'s `grid()` re-parses the printed table. A deterministic
+        # `--now` seam fixes `elapsed`/`health` without the wall clock, and the STALLED case seeds the
+        # progress file's mtime with `os.utime` (the liveness clock the design's gap 1 is about).
+        #
+        # Each case: {files, now, [flags], [mtimes], [expect], [absent], why}. `files` maps a filename to
+        # its content — a list of JSONL lines, a raw str (a torn tail or a report), or bytes. `expect` maps
+        # a rendered `pass` label to the cell values that row must show; `absent` lists labels that must
+        # NOT appear. `mtimes` maps a filename to the UTC time `os.utime` stamps on it.
+        TORN = ident() + "\n" + started("u01") + "\n" + done("u01") + "\n" + \
+            '{"type":"progress","unit":"u02","status":"star'   # a half-written append, NO trailing newline
+        PLAN3 = [unit("u01"), unit("u02", target="b.py", checks=["c"]),
+                 unit("u03", target="c.py", checks=["c"]), unit("u04", target="d.py", checks=["c"])]
+        NG1 = finding(writer="dev-time", purpose="-",
+                      repro="I mutated it in memory", fix="bound it")
+        NG2 = finding(writer="hand-edit", purpose="-",
+                      repro="hand-edit a git-ignored file", fix="guard it")
+        PLAN_HEADER = '{"type":"plan","pr":"41","pass":"1","units":2}'
+
+        def ident7(**over: Value) -> str:
+            return ident(pr="7", **over)
+
+        self.STATUS_CASES: "dict[str, dict]" = {
+            "launching": {
+                "files": {PROGRESS_FILE: [ident()], PLAN_FILE: self.PLAN},
+                "now": "2026-07-06T00:03:00Z",
+                "expect": {"41-1": {"units": "0/2", "now": "-", "find": "0/0",
+                                    "elapsed": "3m", "health": "launching", "verdict": "-"}},
+                "why": "a fresh dispatch (identity only), 3 min in: no launch evidence yet and inside the "
+                       "~5-min deadline, so it is `launching`, not an alarm",
+            },
+            "no-launch": {
+                "files": {PROGRESS_FILE: [ident()], PLAN_FILE: self.PLAN},
+                "now": "2026-07-06T00:10:00Z",
+                "expect": {"41-1": {"units": "0/2", "health": "NO-LAUNCH!", "elapsed": "10m"}},
+                "why": "identity only, PAST the ~5-min launch deadline — a likely failed launch, flagged "
+                       "for attention",
+            },
+            "working-now-unit": {
+                "files": {PROGRESS_FILE: [ident(), started("u01"), done("u01"), started("u02")],
+                          PLAN_FILE: self.PLAN},
+                "now": "2026-07-06T00:03:00Z",
+                "expect": {"41-1": {"units": "1/2", "now": "u02", "health": "working", "verdict": "-"}},
+                "why": "u02 started with no matching done — `now` reads the plan's own unit id, and the "
+                       "pass is `working`",
+            },
+            "three-done": {
+                "files": {PROGRESS_FILE: [ident(), started("u01"), done("u01"), started("u02"),
+                                          done("u02", evidence="x:1"), started("u03"),
+                                          done("u03", evidence="x:2")],
+                          PLAN_FILE: PLAN3},
+                "now": "2026-07-06T00:03:00Z",
+                "expect": {"41-1": {"units": "3/4", "now": "-", "health": "working"}},
+                "why": "3 of 4 planned units done — the tolerant tally counts `done` events against the "
+                       "plan's unit count",
+            },
+            "amend-outranks-liveness": {
+                "files": {PROGRESS_FILE: [ident(), amendment()], PLAN_FILE: self.PLAN},
+                "now": "2026-07-06T00:10:00Z",
+                "expect": {"41-1": {"health": "AMEND(1)", "elapsed": "10m"}},
+                "why": "an amendment IS launch evidence and the more actionable fact, so `AMEND(1)` "
+                       "outranks the past-deadline NO-LAUNCH! this elapsed would otherwise show",
+            },
+            "done-verdict": {
+                "files": {PROGRESS_FILE: self.WORKED, PLAN_FILE: self.PLAN,
+                          "review-41-1.txt": "Report body.\nVERDICT: NOT SATISFIED\n"},
+                "now": "2026-07-06T00:03:00Z",
+                "expect": {"41-1": {"units": "2/2", "health": "done", "verdict": "NOT-SAT"}},
+                "why": "the report `.txt` carries a VERDICT line, so health is `done` and the verdict is "
+                       "scraped as NOT-SAT (NOT SATISFIED is tested before SATISFIED, which it contains)",
+            },
+            "find-gating-split": {
+                "files": {PROGRESS_FILE: self.WORKED, PLAN_FILE: self.PLAN,
+                          FINDINGS_FILE: [finding(), NG1, NG2]},
+                "now": "2026-07-06T00:03:00Z",
+                "expect": {"41-1": {"find": "1/2", "health": "working"}},
+                "why": "one gating (network / defends a purpose line) and two non-gating findings, "
+                       "classified by the ONE `gating()` predicate — `find = 1/2`",
+            },
+            "torn-last-line": {
+                "files": {PROGRESS_FILE: TORN, PLAN_FILE: self.PLAN},
+                "now": "2026-07-06T00:03:00Z",
+                "expect": {"41-1": {"units": "1/2", "now": "-", "health": "working"}},
+                "why": "the file is mid-append (a torn trailing line with no newline). `status` truncates "
+                       "at the last newline, so the torn u02 `started` is ignored and the prior u01 done "
+                       "still counts — one bad tail must not blank the row",
+            },
+            "active-attempt-only": {
+                "files": {"review-7-1.progress.jsonl": [ident7()],
+                          "review-7-1.a2.progress.jsonl": [ident7(launch_attempt="2"), started("u01")],
+                          "review-7-1.plan.jsonl": self.PLAN},
+                "now": "2026-07-06T00:03:00Z",
+                "expect": {"7-1.a2": {"units": "0/2", "now": "u01", "health": "working"}},
+                "absent": ["7-1"],
+                "why": "both attempt 1 and attempt 2 exist on disk; the default view collapses to the "
+                       "highest launch_attempt, so only `7-1.a2` renders and the dead `7-1` is suppressed",
+            },
+            "plan-header-tolerated": {
+                "files": {PROGRESS_FILE: self.WORKED,
+                          PLAN_FILE: [PLAN_HEADER, unit("u01"),
+                                      unit("u02", target="b.py", checks=["c"])]},
+                "now": "2026-07-06T00:03:00Z",
+                "expect": {"41-1": {"units": "2/2", "health": "working"}},
+                "why": "a plan with a leading `{\"type\":\"plan\",...}` header (the design's gap 2): "
+                       "`total` counts only the `unit` records, so the header is ignored and the render "
+                       "does not crash — which is WHY `status` does not reuse the strict `load_plan`",
+            },
+            "stalled-by-mtime": {
+                "files": {PROGRESS_FILE: [ident(), started("u01"), done("u01"), started("u02")],
+                          PLAN_FILE: self.PLAN},
+                "mtimes": {PROGRESS_FILE: "2026-07-06T00:00:00Z"},
+                "now": "2026-07-06T00:20:00Z",
+                "expect": {"41-1": {"units": "1/2", "now": "u02", "health": "STALLED", "elapsed": "20m"}},
+                "why": "launch evidence is present but the progress file's mtime is 20 min old, past the "
+                       "~15-min meaningful-progress deadline — STALLED. The mtime is the liveness clock "
+                       "because progress events carry no timestamp (the design's gap 1)",
+            },
+            "verify-column": {
+                "files": {PROGRESS_FILE: self.WORKED, PLAN_FILE: self.PLAN, INTENT_FILE: INTENT,
+                          "review-41-1.txt": "VERDICT: SATISFIED\n"},
+                "now": "2026-07-06T00:03:00Z",
+                "flags": ["--verify"],
+                "expect": {"41-1": {"units": "2/2", "verdict": "SAT", "counts(--verify)": "ok"}},
+                "why": "the opt-in `--verify` column runs the AUTHORITATIVE `evaluate()` verdict verbatim "
+                       "(complete, sound, SATISFIED, zero gating findings) — `ok`, distinct from the "
+                       "advisory tally",
+            },
+        }
 
 
 # --- the CROSS-DOOR property ----------------------------------------------------------------------
@@ -1501,6 +1648,87 @@ def check_commands_covered(R: types.ModuleType, T: Tables) -> "list[str]":
     return problems
 
 
+def status_parse(out: str) -> "tuple[list[str], dict[str, dict[str, str]]]":
+    """Parse `status`'s printed table BACK: (column names, {pass label -> {column -> cell}}).
+
+    The layout is a run header line, a blank line, the column-header row, a dash rule row, then one row per
+    pass — two-space gutters, every data line rstripped. No status cell carries an interior space, so
+    splitting on whitespace recovers the cells exactly. Re-parsing the PRINTED BYTES (never internal state)
+    is the same discipline `ledger-test.py`'s `grid()` uses.
+    """
+    lines = out.split("\n")
+    rule_i = next((i for i, line in enumerate(lines) if line and set(line) <= {"-", " "}), None)
+    if rule_i is None or rule_i < 1:
+        raise SelfTestFailure(f"status output has no dash rule line:\n{out}")
+    columns = lines[rule_i - 1].split()
+    rows: dict[str, dict[str, str]] = {}
+    for line in lines[rule_i + 1:]:
+        if not line.strip() or line.startswith("#"):
+            continue
+        cells = line.split()
+        rows[cells[0]] = dict(zip(columns, cells))
+    return columns, rows
+
+
+def run_status_cases(mod: types.ModuleType, T: Tables, tmp: Path) -> int:
+    """The ADVISORY render family: seed a synthetic rundir per case, run `status`, assert the PRINTED cells.
+
+    **FAILS LOUDLY IF THE FAMILY IS MISSING** — a check that cannot find the thing it checks must fail,
+    never pass; that is the founding rule of this whole suite (`load_test_module`)."""
+    if not getattr(T, "STATUS_CASES", None):
+        print("FAIL     [status] the STATUS_CASES fixture family is MISSING or EMPTY — `status` would "
+              "render unpinned, and a check with no subject must FAIL, never report success")
+        return 1
+    failures = 0
+    for name, case in T.STATUS_CASES.items():
+        d = tmp / f"status-{name}"
+        d.mkdir(parents=True, exist_ok=True)
+        for fname, content in case["files"].items():
+            path = d / fname
+            if isinstance(content, bytes):
+                path.write_bytes(content)
+            elif isinstance(content, str):
+                path.write_text(content, encoding="utf-8")   # a torn tail or a report body
+            else:
+                path.write_text("".join(line + "\n" for line in content), encoding="utf-8")
+        for fname, ts in case.get("mtimes", {}).items():
+            epoch = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
+            os.utime(d / fname, (epoch, epoch))
+        argv = ["status", "--run", str(d), "--now", case["now"], *case.get("flags", [])]
+        code, out = run_cli(mod, argv)
+        if code != 0:
+            print(f"FAIL     [status] {name}: `status` exited {code}\n{out}")
+            failures += 1
+            continue
+        try:
+            _cols, rows = status_parse(out)
+        except SelfTestFailure as exc:
+            print(f"FAIL     [status] {name}: {exc}")
+            failures += 1
+            continue
+        ok = True
+        for label, want in case.get("expect", {}).items():
+            got = rows.get(label)
+            if got is None:
+                print(f"FAIL     [status] {name}: no rendered row for {label!r}\n{out}")
+                ok = False
+                continue
+            for col, val in want.items():
+                if got.get(col) != val:
+                    print(f"FAIL     [status] {name}: row {label} column {col!r} is {got.get(col)!r}, "
+                          f"expected {val!r}\n{out}")
+                    ok = False
+        for label in case.get("absent", []):
+            if label in rows:
+                print(f"FAIL     [status] {name}: {label!r} must be suppressed but it rendered\n{out}")
+                ok = False
+        if ok:
+            print(f"ok       [status] {name:24} {case['why'][:58]}")
+        else:
+            failures += 1
+    return failures
+
+
 def run(R: types.ModuleType, tmp: Path) -> int:
     """Every family, then the mutation matrix. Non-zero on any failure.
 
@@ -1546,6 +1774,8 @@ def run(R: types.ModuleType, tmp: Path) -> int:
     print()
     failures += check_docs(R)
     print()
+    failures += run_status_cases(R, T, tmp)
+    print()
     if failures:
         print(f"{failures} check(s) FAILED — the review-pass contract is broken.")
         return 1
@@ -1558,7 +1788,8 @@ def run(R: types.ModuleType, tmp: Path) -> int:
           f"{len(T.WRITE_COMMANDS) * len(T.FILE_STATES)} round-trip cases + "
           f"{len(CROSS_DOOR_IDS)} cross-door cases + {len(T.BOUNDARY_CASES)} boundary cases "
           f"({len(T.DOMAINS)} bounded values, each probed JUST INSIDE and JUST OUTSIDE its declared "
-          f"domain) + {len(doc_examples(R))} DOC examples hold — and {doors}.\n")
+          f"domain) + {len(doc_examples(R))} DOC examples + {len(T.STATUS_CASES)} status render cases "
+          f"hold — and {doors}.\n")
 
     # …and now the question the block above CANNOT answer: is any rule pinned by NO fixture?
     marked = marked_statements(source)
