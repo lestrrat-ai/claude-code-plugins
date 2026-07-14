@@ -18,6 +18,14 @@ when it references a planned unit" was stated in prose and enforced by nobody �
 `done` for a unit that was never planned, and the read side never looked. It holds at both doors now. If
 the plan is genuinely missing a dimension, raise a `plan_amendment_request`; never self-grant a unit.
 
+**And `--unit` IS NOT TRIMMED — pass the id exactly as the plan spells it.** A unit id has ONE legal form
+(lowercase letters then digits: `u01`), and a `--unit` outside that form is refused for what it IS — not
+an id — rather than silently repaired. This CHANGES what the CLI accepts, and the flags have still not
+moved: ` u01 ` used to be quietly stripped to `u01` here while `plan-add` took its `--id` verbatim, so a
+plan could hold ` u01 ` and this tool would then tell you that unit was NOT IN THE PLAN — while printing
+`Planned: [' u01 ']`. Two doors, two ideas of what an id is, and a planned unit whose progress could never
+be recorded. Neither door repairs an identifier now, so there is only ever one string to pass.
+
 The rule you are most likely to meet SECOND, and the one that CHANGES what this CLI accepts: **a `done`
 for a unit with no earlier `started` is refused.** Emit `--status started` when a unit BEGINS and
 `--status done` when it ends — do not batch both at the end, and never emit only the `done`. The flags are

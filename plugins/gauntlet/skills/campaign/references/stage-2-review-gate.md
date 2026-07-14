@@ -127,11 +127,23 @@ The hand-written artifacts are what this replaces, and each had already failed: 
 `pass_identity` put a **TRUNCATED SHA** into real state; the emit tool accepted a `done` for a unit that
 **was never planned** (the rule was prose, enforced by nobody); and the tally was re-derived by eye with
 an ad-hoc parser written fresh each wake — the same "read it by eye, write down the answer" that produced
-a false `ci = green`. `verify` refuses a short sha, an unplanned unit, an evidence-free `done`, a `done`
+a false `ci = green`. `verify` refuses a short sha, a malformed identifier of any kind, an unplanned unit,
+an evidence-free `done`, a `done`
 that no `started` precedes, a SECOND `done` for a unit already finished, a `pass_identity` that names
 another commit or another launch attempt, and any hand-written line that is not the exact shape below —
 **whether or not the write tool was used**. **`emit` refuses every one of those it can see, by calling the
 SAME functions** — one implementation, both doors, so a rule cannot hold at one and not the other.
+
+**EVERY IDENTIFIER HAS ONE LEGAL FORM, AND NO DOOR REPAIRS ONE.** A unit `id`/`unit` is lowercase letters
+then digits (`u01`); `pr`, `pass` and `launch_attempt` are decimal numbers from 1 up; `head_sha` is 40
+lowercase hex. A value outside its form is an ERROR, not a variant to be trimmed into shape — and that
+distinction is the point, not pedantry. The tool used to strip `emit`'s `--unit` while `plan-add` took its
+`--id` verbatim, so `plan-add --id ' u01 '` exited 0 and `emit --unit ' u01 '` then failed with NOT IN THE
+PLAN, printing `Planned: [' u01 ']`: two doors, two ideas of one id, and a planned unit no reviewer could
+ever record progress against. Trimming at *both* doors would have fixed that call and kept the disease —
+two spellings of one id, and every future door obliged to remember the conversion. A FORMAT leaves nothing
+to convert. It is also the only rule that could ever have caught the **truncated sha** that reached real
+state: `a3f29c1` is perfectly clean, and simply not a commit id.
 
 **ANYTHING THE TOOL WRITES, IT CAN READ BACK — a write is REFUSED unless the file it would produce
 verifies.** Every rule holding at both doors is not enough on its own, and that gap was real: `emit` on an
@@ -180,6 +192,16 @@ Rules:
   the same SHA (or clean base-only rebase, diff unchanged), copy pass 1's plan to
   `review-<pr>-2.plan.jsonl` instead of re-deriving. Re-derive only when PR content changed.
 - Each unit MUST name concrete `target` + concrete `checks`.
+- **A unit `id` has ONE legal form: lowercase letters then digits (`u01`, `u02`) — and anything else is an
+  ERROR, never a variant to be repaired.** `U01`, `u 01`, ` u01 ` are not other ways of spelling `u01`;
+  they are not ids, and `plan-add` refuses them. This is the id every progress event MATCHES the unit by,
+  so a second spelling of it is a unit the reviewer's `emit` cannot name: the tool once accepted
+  `plan-add --id ' u01 '` and then told the reviewer that ` u01 ` was NOT IN THE PLAN — while printing
+  `Planned: [' u01 ']` — because the emit door trimmed the value and the plan door had not. The plan held a
+  unit whose progress could never be recorded, and the pass could never complete. **No door trims,
+  normalizes or repairs an identifier**; each is refused where it enters, so the plan can never come to
+  hold an id the other doors cannot match. The same holds for every other identifier the tool touches
+  (`pr`, `pass`, `launch_attempt` — decimal, from 1 up; `head_sha` — 40 lowercase hex).
 - **The plan's filename is part of the contract: `review-<pr>-<n>.plan.jsonl`, and `plan-add` refuses any
   other.** `verify` is never given the plan's path — it DERIVES it from the progress file's name — so a
   plan written under a different name is a plan nothing will ever open, and the pass is then refused for a
@@ -229,7 +251,9 @@ an amendment holds a pass back, so it must say something the orchestrator can ru
 file directly — no hand-written JSON, no `echo`/`printf`/redirection into it, no editor append. Every
 unit-progress event reaches the file through the tool and no other path. **Its CLI is unchanged**
 (`--file --unit --status --evidence`); it now forwards to `review-pass.py emit`, which **REFUSES a unit
-that is not in the plan**, a `done` with no concrete evidence, a `done` that no `started` precedes, a
+that is not in the plan**, **a `--unit` that is not a well-formed unit id** (it is NOT trimmed — pass the
+id exactly as the plan spells it), a `done` with no concrete evidence, a `done` that no `started`
+precedes, a
 SECOND `done` for a unit already finished, and — the refusal that is not about the event at all — **a
 progress file `verify` could not read**, which most often means one carrying no `pass_identity` yet. And the emit-only rule is no longer
 enforced by good faith: `verify` re-derives every rule from the bytes, so a hand-written line that the
@@ -482,7 +506,7 @@ pass is a trapdoor, not a disclosure:
 | `ok` | 0 | the artifacts are sound: a `pass_identity` naming **this** PR, **this** pass, **this** launch attempt and **the live head SHA**; every planned unit `done` **once**, with concrete evidence, after a `started` for it; every `done` for a unit that is **actually in the plan**; no unruled amendment | **now** read the report's `VERDICT:` line and tally it |
 | `incomplete` | 1 | sound, but a planned unit has no `done` — the pass has not covered its plan | it is still working (or it stopped early — the meaningful-progress rule decides which). **Never tally a verdict from it** |
 | `amended` | 1 | sound, but the reviewer raised a `plan_amendment_request` nobody has ruled on | fold it into the plan and restart the pass, or ignore it with a note — then re-run with `--amendments-ruled N` |
-| `unusable` | 1 | the artifacts are **defective** — a short SHA, a `done` for an unplanned unit, an evidence-free `done`, a `done` that no `started` precedes, a SECOND `done` for one unit, a hand-written line of the wrong shape, an identity naming another commit or another attempt | the pass **CANNOT count, whatever its report says.** Treat it as a reviewer system failure (retry / fresh-subagent fallback), never as a verdict |
+| `unusable` | 1 | the artifacts are **defective** — a short SHA or any other malformed identifier, a `done` for an unplanned unit, an evidence-free `done`, a `done` that no `started` precedes, a SECOND `done` for one unit, a hand-written line of the wrong shape, an identity naming another commit or another attempt | the pass **CANNOT count, whatever its report says.** Treat it as a reviewer system failure (retry / fresh-subagent fallback), never as a verdict |
 
 **`ok` IS NOT `SATISFIED`, and the tool will never say `SATISFIED`.** It does not open
 `review-<pr>-<n>.txt` and does not parse the reviewer's prose — the VERDICT is the reviewer's **judgment**

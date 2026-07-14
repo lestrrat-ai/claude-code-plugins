@@ -185,11 +185,18 @@
 - **A review pass's artifacts have a TOOL — `scripts/review-pass.py`. NEVER hand-write one, NEVER
   hand-parse one** (Stage 2a). It owns the plan, the `pass_identity`, the progress events, and the read
   that answers **does this pass COUNT?** — `verify`. **A verdict from a pass that does not verify `ok` is
-  NEVER tallied**: a short SHA, a `done` for a unit that was never planned, an evidence-free `done`, a
+  NEVER tallied**: a short SHA or any other malformed identifier, a `done` for a unit that was never
+  planned, an evidence-free `done`, a
   `done` that no `started` precedes, a SECOND `done` for one unit, a hand-written line of the wrong shape,
   or an identity naming another commit or attempt all make the pass `unusable`, whatever its report says.
   Every one of those rules holds at **both doors** — the same predicate refuses it on write (`emit`) and on
-  read (`verify`), so it cannot be enforced at one and not the other. And **anything the tool writes it can
+  read (`verify`), so it cannot be enforced at one and not the other. **Every identifier it handles has ONE
+  legal form and NO door repairs one** (a unit id is `u01`-shaped; `pr`/`pass`/`launch_attempt` are decimal
+  from 1 up; `head_sha` is 40 lowercase hex): the tool used to strip `emit`'s `--unit` while `plan-add`
+  took its `--id` verbatim, so a plan could hold ` u01 ` and `emit` would then call that unit NOT IN THE
+  PLAN — a planned unit whose progress could never be recorded, and a review that could never complete.
+  Trimming at both doors would leave two spellings of one id; a FORMAT leaves nothing to convert. And
+  **anything the tool writes it can
   read back**: a write is refused unless the file it would produce verifies, so the tool can never accept
   your work and then tell you the work does not count (it did — see Stage 2a). `ok` is **not** `SATISFIED` — the
   tool never reads the report and never says SATISFIED; it can only ever *refuse* a pass, never accept one.

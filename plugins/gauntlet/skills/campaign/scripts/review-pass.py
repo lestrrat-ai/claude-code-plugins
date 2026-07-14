@@ -138,24 +138,110 @@ EVENT_KEYS: "dict[tuple[str, str | None], set[str]]" = {
 # is not a string: it is a LIST of them, and it is what makes a unit auditable ("what did you actually
 # look for?"). An empty list is a unit with no checks, which is not a unit.
 UNIT_KEYS = {"type", "id", "kind", "target", "checks"}
-UNIT_STRINGS = ("id", "kind", "target")
+# The two DESCRIPTIVE strings. `id` is NOT one of them: it is the one field in either artifact that is
+# MATCHED — a progress event names a unit BY it — so it is an IDENTIFIER and is governed by `ID_FORMATS`
+# below. Stating a weaker rule for it here as well is how a value comes to have two definitions.
+UNIT_STRINGS = ("kind", "target")
 UNIT = "unit"
+
+
+# --- the IDENTIFIERS: ONE LEGAL STRING EACH, and NO CONVERSIONS ANYWHERE -------------------------
+#
+# **AN IDENTIFIER IS A VALUE TWO DOORS COMPARE.** A unit id is written by `plan-add` and matched by `emit`;
+# `pr`/`pass`/`launch_attempt` are read from the FILENAME and compared to the `pass_identity`; `head_sha` is
+# written by `identity` and compared to the PR's live head. Every one of them crosses the tool, and a value
+# that crosses the tool is a value two doors must agree about.
+#
+# **SO EACH HAS EXACTLY ONE LEGAL FORM, AND ANYTHING ELSE IS AN ERROR — NEVER A VARIANT TO REPAIR.** That
+# is the whole rule, and it is NOT the same as normalizing. This tool used to `.strip()` `--unit` at the
+# emit door while the plan door accepted the padding, so `plan-add --id ' u01 '` succeeded and `emit --unit
+# ' u01 '` then failed with NOT IN THE PLAN, printing `Planned: [' u01 ']` — a plan holding a unit the emit
+# door could never match, and a review that could never complete. Stripping at BOTH doors would have fixed
+# that one call and kept the disease: two spellings of one id, and every future door obliged to remember
+# the conversion. A FORMAT leaves nothing to convert — `' u01 '` is not another way of writing `u01`, it is
+# NOT AN ID — so there is nothing for two doors to disagree about.
+#
+# The `head_sha` row is the proof that this beats normalization outright: no amount of stripping catches a
+# TRUNCATED sha (`a3f29c1`, which is what a hand-written `pass_identity` once carried into real state). It
+# is perfectly "clean"; it is simply not a commit id. Only a FORMAT can say so.
+#
+# REJECT ON THE WAY IN, NEVER ON THE WAY OUT: every door that ACCEPTS one of these calls `check_id`, so a
+# plan can never come to hold an id no door can match. `check_id` is the ONE validator; these are the ONE
+# set of patterns; there is no second copy and no door-local rule.
+#
+# **EVERY PATTERN HERE ENDS `\Z`, NEVER `$`, AND THAT IS NOT A STYLE CHOICE.** In Python `$` also matches
+# just BEFORE a trailing newline, so `^[0-9a-f]{40}$` — which is what this file used to say — ACCEPTS a
+# 40-hex sha with a `\n` glued to the end. That is a second spelling of one commit id: exactly the disease
+# the whole table exists to kill, hiding inside the fence meant to stop it. `\Z` is the end of the STRING,
+# and an identifier is a whole string or it is not one. The format matrix (`ID_CASES`) is what found this,
+# by asking each identifier to refuse its own value with a newline on it — which is the point of writing a
+# format down: it has an exact boundary, so a test can stand on both sides of it.
+
+# A decimal count of something that starts at ONE: no sign, no leading zeros, no whitespace, and no `int()`
+# (which would take `" +2 "` and then CRASH on `"two"`). There is no PR 0, no pass 0 and no launch attempt
+# 0, so a value that names one is not a value we may go on to compare.
+COUNT = r"[1-9][0-9]*"
+
+# A unit id, and the one form of one: lowercase letters then digits — `u01`, `u02`. It is the id an
+# ORCHESTRATOR writes into the plan and a REVIEWER names in every progress event, so it is typed twice by
+# two different processes, and the whole point of pinning its shape is that those two typings cannot differ
+# by a space. Nothing about it is normalized: `U01`, `u 01`, ` u01 ` and `u01 ` are all simply not ids.
+UNIT_ID_RE = re.compile(r"^[a-z]+[0-9]+\Z")
 
 # A git object id, as git writes one: 40 LOWERCASE hex. **A SHORT SHA HAS ESCAPED INTO REAL STATE IN THIS
 # REPO TWICE**, once through a hand-written `pass_identity`. A prefix is not a commit: it does not identify
 # the content a pass reviewed, and every "did this verdict describe the live tip?" comparison made against
 # one is a comparison that cannot mean what it says.
-SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+SHA_RE = re.compile(r"^[0-9a-f]{40}\Z")
 
-# A decimal integer: no sign, no leading zeros, no whitespace, no `int()` (which would take `" +2 "` and
-# then CRASH on `"two"`). `pr`, `pass` and `launch_attempt` are compared to the values parsed out of the
-# FILENAME, and a value we cannot compare is not one whose comparison we may assume.
-NUM_RE = re.compile(r"^(0|[1-9][0-9]*)$")
+# identifier -> (its ONE legal form, that form in words, and why a value outside it is not one to repair).
+# The key is the FIELD NAME as it is spelled in the artifacts, so a message names the thing the caller
+# typed. A field not in this table is not an identifier — it is prose (`kind`, `target`, `evidence`,
+# `reason`), and prose is checked for being a non-blank string and nothing more.
+ID_FORMATS: "dict[str, tuple[re.Pattern[str], str, str]]" = {
+    "id": (UNIT_ID_RE, "lowercase letters then digits, e.g. `u01`",
+           "a unit id is MATCHED, not read: the plan writes it and every progress event names the unit by "
+           "it. A second spelling of one id is a unit the other door cannot find — ` u01 ` is not `u01` "
+           "with a space, it is NOT AN ID. Nothing here is stripped or repaired, at any door"),
+    "unit": (UNIT_ID_RE, "lowercase letters then digits, e.g. `u01`",
+             "the unit this event is progress FOR, named exactly as the plan names it. The emit door does "
+             "NOT strip it — if it did, the plan and the progress file would hold two spellings of one id "
+             "and only one of them would ever match"),
+    "pr": (re.compile(rf"^{COUNT}\Z"), "a decimal number from 1 up",
+           "it is COMPARED to the number in the FILENAME, and a value we cannot compare proves nothing"),
+    "pass": (re.compile(rf"^{COUNT}\Z"), "a decimal number from 1 up",
+             "it is COMPARED to the number in the FILENAME, and a value we cannot compare proves nothing"),
+    "launch_attempt": (re.compile(rf"^{COUNT}\Z"), "a decimal number from 1 up",
+                       "it is COMPARED to the attempt in the FILENAME — it is how a later wake knows the "
+                       "pass was already relaunched — and a value we cannot compare proves nothing"),
+    "head_sha": (SHA_RE, "40 LOWERCASE hex — `git rev-parse HEAD`, NEVER an abbreviation",
+                 "A short sha has escaped into this repo's real state TWICE, once through a hand-written "
+                 "`pass_identity`. A prefix is not a commit: it names no content, so every 'did this "
+                 "verdict describe the live tip?' comparison made against it is unfalsifiable. This is the "
+                 "row no amount of trimming could ever have caught — a truncated sha is perfectly clean, "
+                 "and simply not a commit id"),
+}
+
+
+def check_id(name: str, value: object, where: str) -> None:
+    """THE validator for every identifier this tool reads or writes. One function, one table, every door.
+
+    It is called wherever an identifier ENTERS — `plan-add`'s `--id`, `emit`'s `--unit`, the `pass_identity`
+    the orchestrator writes, and each of those same fields again as `verify` re-derives them from the bytes.
+    No caller normalizes, compares or repairs an identifier itself; a caller that did would be the second
+    definition, and two definitions of one value is the defect this table exists to make impossible.
+    """
+    pattern, spec, why = ID_FORMATS[name]
+    if not isinstance(value, str) or not pattern.match(value):
+        # MUTATE:id-format:return
+        raise Defect(f"{where}: `{name}` is {value!r} — an identifier has ONE legal form ({spec}), and "
+                     f"anything else is an ERROR, never a variant to be repaired. {why}")
+
 
 # `dispatched_at` is the launch check's CLOCK — the ~5-minute first-event deadline is measured from it. A
 # value that cannot be parsed as a time silently DISABLES that deadline: the guard's input is absent, so
 # the guard never fires, and a reviewer that never started is waited on forever. UTC ISO-8601, `Z`.
-TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z")
 
 
 def real_utc(value: str) -> bool:
@@ -180,7 +266,13 @@ def real_utc(value: str) -> bool:
 # The name is not decoration — it is the ONLY thing that says which PASS and which LAUNCH ATTEMPT these
 # bytes belong to, and the docs already call substituting attempt-1 names into a relaunch a "silent
 # self-defeat". Silent no longer: the name is parsed, and the identity inside must AGREE with it.
-NAME_RE = re.compile(r"^review-(?P<pr>\d+)-(?P<pass>\d+)(?:\.a(?P<attempt>[2-9]\d*))?\.progress\.jsonl$")
+#
+# The `pr` and `pass` in a NAME are the SAME identifiers `ID_FORMATS` governs, so they are built from the
+# same `COUNT` — a name is an intake door too, and `review-041-1.progress.jsonl` is not another way of
+# writing PR 41. (The attempt suffix appears only for k >= 2: attempt 1 has no suffix, which is why its
+# form is spelled out here rather than reused.)
+NAME_RE = re.compile(rf"^review-(?P<pr>{COUNT})-(?P<pass>{COUNT})(?:\.a(?P<attempt>[2-9][0-9]*))?"
+                     rf"\.progress\.jsonl\Z")
 
 # The plan is PER-PASS, not per-attempt: a relaunch reuses it unchanged (stage-2-review-gate.md). So it is
 # DERIVED from the progress path and never passed separately — one fewer door, and no way to point a pass
@@ -192,7 +284,7 @@ NAME_RE = re.compile(r"^review-(?P<pr>\d+)-(?P<pass>\d+)(?:\.a(?P<attempt>[2-9]\
 # refuse the pass for a MISSING plan while its units sat on disk a filename away. Enforced by construction
 # at one door and not at all at the other is the same asymmetry as any other; `PLAN_NAME_RE` closes it.
 PLAN_NAME = "review-{pr}-{pass}.plan.jsonl"
-PLAN_NAME_RE = re.compile(r"^review-\d+-\d+\.plan\.jsonl$")
+PLAN_NAME_RE = re.compile(rf"^review-{COUNT}-{COUNT}\.plan\.jsonl\Z")
 
 
 class Defect(Exception):
@@ -330,6 +422,10 @@ def check_unit(unit: object, where: str) -> None:
     if unit["type"] != UNIT:
         # MUTATE:plan-row-type:pass
         raise Defect(f"{where}: type is {unit['type']!r}, and a plan holds only {UNIT!r} records")
+    # The id is an IDENTIFIER — the value the progress events MATCH — so it is checked by `check_id` and by
+    # nothing else, here or at any other door. This is the intake: a unit whose id is not an id never
+    # reaches the plan, so the plan can never come to hold a unit `emit` is unable to name.
+    check_id("id", unit["id"], where)
     for field in UNIT_STRINGS:
         if not isinstance(unit[field], str) or not unit[field].strip():
             # MUTATE:unit-fields:continue
@@ -428,6 +524,12 @@ def check_event(rec: dict, where: str) -> None:
                 f"{where}: `{field}` is {rec[field]!r}, not a string — a value we cannot read is not one "
                 f"we may hand to a comparison and hope (it used to CRASH the tool)"
             )
+    if kind == PROGRESS:
+        # The unit this event names is the SAME identifier the plan's `id` is, checked by the SAME table —
+        # so the two artifacts cannot come to hold two spellings of one unit. It is checked HERE, on the
+        # event, and not only against the plan: "not in the plan" is the wrong thing to tell someone who
+        # typed ` u01 `, and it is what this tool used to say — after quietly stripping the value first.
+        check_id("unit", rec["unit"], where)
     if kind == AMENDMENT:
         # The amendment is the ONE event a reviewer really does hand-write (it is exempt from the
         # emit-only rule), so it is the one whose fields nothing upstream has already shaped. Its `ts` had
@@ -539,22 +641,12 @@ def check_identity_shape(ident: dict, where: str) -> None:
     the pass was already relaunched once. Every one of those is a COMPARISON, and a comparison against a
     malformed value is not one.
     """
-    if not SHA_RE.match(ident["head_sha"]):
-        # MUTATE:identity-sha:pass
-        raise Defect(
-            f"{where}: head_sha {ident['head_sha']!r} is not a git object id (40 LOWERCASE hex). A short "
-            f"sha has escaped into this repo's real state TWICE — once through a hand-written "
-            f"`pass_identity`. A prefix is not a commit: it names no content, so every 'did this verdict "
-            f"describe the live tip?' comparison made against it is unfalsifiable. Use `git rev-parse "
-            f"HEAD`, never an abbreviation"
-        )
-    for field in ("pr", "pass", "launch_attempt"):
-        if not NUM_RE.match(ident[field]):
-            # MUTATE:identity-numbers:continue
-            raise Defect(
-                f"{where}: `{field}` is {ident[field]!r}, not a decimal number — it is COMPARED to the "
-                f"value in the FILENAME, and a value we cannot compare proves nothing"
-            )
+    # FOUR IDENTIFIERS, ONE VALIDATOR. The sha rule and the number rules used to be written out here, and
+    # writing a rule out is how it comes to exist in two places: the sha is ALSO what `verify`'s caller
+    # passes, the numbers are ALSO what the filename carries. They are `ID_FORMATS` rows now, and every door
+    # that takes one runs this same statement over it.
+    for field in ("head_sha", "pr", "pass", "launch_attempt"):
+        check_id(field, ident[field], where)
     if not TS_RE.match(ident["dispatched_at"]):
         # MUTATE:identity-dispatched-at:pass
         raise Defect(
@@ -844,11 +936,19 @@ def cmd_emit(args) -> int:
     """
     path = Path(args.file)
     pr, npass, _attempt = parse_name(path)
-    # The RECORD IS THE FLAGS. `--status done` with no `--evidence` is an event with no `evidence` key, and
-    # `--status started --evidence x` is one carrying a key nothing reads — so the flags are judged by the
-    # same `check_event` that judges a hand-written line, and the evidence rule exists in ONE place. (A CLI
-    # blank `--unit` needs no rule of its own either: it is a unit no plan holds, which is what it is.)
-    rec: "dict[str, object]" = {"type": PROGRESS, "unit": args.unit.strip(), "status": args.status}
+    # The RECORD IS THE FLAGS — VERBATIM. `--status done` with no `--evidence` is an event with no
+    # `evidence` key, and `--status started --evidence x` is one carrying a key nothing reads, so the flags
+    # are judged by the same `check_event` that judges a hand-written line and the evidence rule exists in
+    # ONE place.
+    #
+    # **`--unit` IS NOT STRIPPED, AND THAT IS THE RULE, NOT AN OVERSIGHT.** It used to be, and that one
+    # `.strip()` was the whole defect: the plan door accepted ` u01 ` verbatim while this door quietly
+    # trimmed it, so `plan-add --id ' u01 '` exited 0 and `emit --unit ' u01 '` then said the unit was NOT
+    # IN THE PLAN — while printing `Planned: [' u01 ']`. The plan held a unit this door could never match,
+    # and the pass could never complete. An identifier now has ONE legal form and no door repairs it: the
+    # id is refused where it ENTERS (`check_id`, from `check_event` below), by the same statement the plan
+    # door refuses it with, and the value that reaches the file is the value the reviewer typed.
+    rec: "dict[str, object]" = {"type": PROGRESS, "unit": args.unit, "status": args.status}
     if args.evidence is not None:
         rec["evidence"] = args.evidence
     check_event(rec, "the event you asked to emit (--unit/--status/--evidence)")
@@ -925,6 +1025,10 @@ def cmd_plan_add(args) -> int:
 
 def cmd_verify(args) -> int:
     path = Path(args.file)
+    # The CALLER's sha, against the SAME pattern the artifact's own `head_sha` is held to (`ID_FORMATS`) —
+    # they are compared to each other, so a form either one may take and the other may not is a comparison
+    # waiting to be meaningless. Only the VERDICT differs: a malformed value here is the OPERATOR's mistake
+    # (exit 2), not the artifact's.
     if not SHA_RE.match(args.head_sha):
         # MUTATE:caller-sha:pass
         raise OperatorError(
@@ -1086,7 +1190,8 @@ CASES = {
                        "a second identity naming another commit — read by nothing, present in the bytes"),
     "wrong-head": (PLAN, [ident(head_sha=OTHER_SHA), done("u01"), done("u02")], UNUSABLE, "no longer there",
                    "the pass ran on a commit that is not the tip: its verdict describes content that has moved"),
-    "identity-bad-number": (PLAN, [ident(launch_attempt="one"), done("u01")], UNUSABLE, "not a decimal number",
+    "identity-bad-number": (PLAN, [ident(launch_attempt="one"), done("u01")], UNUSABLE,
+                            "a decimal number from 1 up",
                             "an attempt number that cannot be COMPARED to the one in the filename"),
     "identity-bad-ts": (PLAN, [ident(dispatched_at="just now"), done("u01")], UNUSABLE, "LAUNCH DEADLINE's clock",
                         "a dispatched_at nobody can parse — the ~5-min deadline measured from it NEVER FIRES"),
@@ -1111,6 +1216,15 @@ CASES = {
                                "a unit with no target"),
     "plan-line-not-object": (['["u01"]'], [ident(), done("u01")], UNUSABLE, "not a JSON object",
                              "a plan LINE that is a list — the strict reader refuses it at the plan door exactly as at the progress door"),
+
+    # THE IDENTIFIERS. One legal form each, at every door — and nothing is ever repaired into one.
+    "plan-unit-padded-id": ([unit(" u01 ")], [ident()], UNUSABLE, "NOT AN ID",
+                            "THE FINDING, AT THE PLAN DOOR: a unit id with surrounding whitespace. `plan-add --id ' u01 '` exited 0 and `emit --unit ' u01 '` then said NOT IN THE PLAN — while printing `Planned: [' u01 ']` — because the emit door STRIPPED the value and the plan door did not. The plan held a unit no door could match and the pass could never complete. It is not repaired now, at either door: ` u01 ` is not `u01` with a space, it is not an id"),
+    "progress-padded-unit": (PLAN, [ident(), started(" u01 ")], UNUSABLE, "The emit door does NOT strip it",
+                             "…and at the PROGRESS door, which is where the strip used to be. A hand-written event naming ` u01 ` is told its unit id is malformed — not told the unit is 'not in the plan', which is the wrong lesson and was the old message"),
+    "amendment-padded-unit-id": (PLAN, [ident(), amendment(proposed_unit=json.loads(unit(" u99 ")))], UNUSABLE,
+                                 "NOT AN ID",
+                                 "…and at the THIRD intake: an amendment's `proposed_unit` is what the orchestrator FOLDS INTO THE PLAN, so an id the plan door would refuse must be refused here too — or the plan acquires, one wake later, exactly the unmatchable unit this rule exists to keep out of it"),
     "amendment-unit-not-object": (PLAN, [ident(), amendment(proposed_unit="u99")], UNUSABLE, "not a JSON object",
                                   "the amendment's proposed_unit is a STRING. This is the one place a non-dict unit can reach `check_unit` — the plan's own lines are objects by the time it runs — and it used to be handed straight to `set()`"),
     "plan-missing": (None, WORKED, UNUSABLE, "no plan at",
@@ -1177,7 +1291,10 @@ CLI_CASES = [
     (["emit", "--unit", "u01", "--status", "done"], DISPATCHED, 1, "carries EXACTLY", "a done with no evidence — the SAME key rule a hand-written line meets, not a second CLI-shaped copy of it"),
     (["emit", "--unit", "u01", "--status", "done", "--evidence", "  "], BEGUN, 1, "CONCRETE evidence", "…and blank evidence, on a file where the `started` is not the problem"),
     (["emit", "--unit", "u01", "--status", "started", "--evidence", "x"], DISPATCHED, 1, "carries EXACTLY", "a started carrying evidence: the mirror of a done without it, and the same rule"),
-    (["emit", "--unit", "  ", "--status", "started"], DISPATCHED, 1, "NOT IN THE PLAN", "a blank unit id — a unit no plan holds, which is exactly what it is"),
+    (["emit", "--unit", "  ", "--status", "started"], DISPATCHED, 1, "The emit door does NOT strip it",
+     "a blank unit id. It is refused for what it IS — not an id — and not for what it is not: this door used to STRIP `--unit` and then report the trimmed value 'not in the plan', which named the wrong defect even when it fired"),
+    (["emit", "--unit", " u01 ", "--status", "started"], DISPATCHED, 1, "The emit door does NOT strip it",
+     "HEADLINE, WRITE DOOR: THE FINDING. `plan-add --id ' u01 '` used to exit 0 while this door silently STRIPPED the padding — so the plan held a unit whose progress could never be recorded, and the review could never complete. `emit` said NOT IN THE PLAN and printed `Planned: [' u01 ']` in the same breath. Neither door repairs an identifier now, and the plan door refuses that id in the first place"),
     (["emit", "--unit", "u02", "--status", "started"], [ident(), '{"type":"progress","unit_id":"u01","status":"done","evidence":"x"}'], 1, "carries EXACTLY",
      "the file it is APPENDING TO is evidence too: a hand-written line already in it makes the pass unusable, so `emit` refuses to add a good line to a file `verify` will throw away"),
     (["identity", "--head-sha", SHA, "--dispatched-at", TS], EMPTY, 0, '"launch_attempt":"1"',
@@ -1208,7 +1325,11 @@ PLAN_CLI_CASES = [
      0, '"checks":["a","b"]', "the plan stops being a shell heredoc"),
     (PLAN_FILE, ["--id", "u01", "--kind", "file", "--target", "x.py", "--check", "a"], 1, "duplicate unit id",
      "a duplicate id — a `done` for it would say nothing about which unit was checked. Refused by the SAME statement `load_plan` refuses it with: the plan as it WOULD be goes through the reader's own function"),
-    (PLAN_FILE, ["--id", "  ", "--kind", "file", "--target", "x.py", "--check", "a"], 1, "names nothing", "a blank id"),
+    (PLAN_FILE, ["--id", "  ", "--kind", "file", "--target", "x.py", "--check", "a"], 1, "NOT AN ID", "a blank id"),
+    (PLAN_FILE, ["--id", " u01 ", "--kind", "file", "--target", "x.py", "--check", "a"], 1, "NOT AN ID",
+     "HEADLINE, PLAN DOOR: THE FINDING. This exited 0, and the id it wrote was one `emit` could never match — because `emit` stripped its `--unit` and this door did not. The plan is the INTAKE: refuse the id here and no later door can be handed a unit it cannot name"),
+    (PLAN_FILE, ["--id", "U01", "--kind", "file", "--target", "x.py", "--check", "a"], 1, "NOT AN ID",
+     "…and an id that is merely a different SPELLING of a legal one. There is no such thing: an identifier has one form, so `U01` is not `u01` in capitals — it is not an id, and it is refused rather than folded"),
     (PLAN_FILE, ["--id", "u03", "--kind", "file", "--target", "x.py"], 1, "not a unit", "a unit with NO checks"),
     ("plan.jsonl", ["--id", "u03", "--kind", "file", "--target", "x.py", "--check", "a"], 1,
      "not a plan artifact's name",
@@ -1283,6 +1404,125 @@ WRITE_COMMANDS: "dict[str, tuple[str, list[str]]]" = {
 READ_ONLY_COMMANDS = frozenset({"verify", "self-test"})
 
 HOLDS, VIOLATED = "holds", "VIOLATED"
+
+
+# --- the CROSS-DOOR property: an id the PLAN door takes is an id the EMIT door can NAME -----------
+#
+# The round trip above asks "can the tool read back what it wrote?" — ONE artifact, one command. This asks
+# the question one artifact over, and it is the one the tool got wrong: **the plan door and the emit door
+# must agree about what a unit id IS.** They did not. `plan-add --id ' u01 '` exited 0; `emit --unit
+# ' u01 '` then failed with `NOT IN THE PLAN` and printed `Planned: [' u01 ']`, because the emit door
+# STRIPPED its `--unit` and the plan door had accepted the padding verbatim. The plan held a unit whose
+# progress could never be recorded — a review that could never complete, wedged by two doors disagreeing
+# about one value.
+#
+# No per-rule fixture could fail on that: every rule was right on its own side. The defect was in the
+# RELATION, exactly as with the two write-then-refuse-to-read findings — so, exactly as there, the relation
+# is stated once, as a property, and driven:
+#
+#   **THE PLAN DOOR REFUSES THE ID, OR THE EMIT DOOR CAN MATCH IT.** Never "planned, and unnameable".
+#
+# It is driven with the reviewer's own input (` u01 `) and with every other way a shell, a YAML block or an
+# agent hands over a value with something extra on it. Note what makes it hold now: not that both doors
+# strip, but that NEITHER does — an id has one legal form (`ID_FORMATS`), so there is nothing to disagree
+# about. A future door that "helpfully" normalizes its input fails this the day it is added.
+
+CROSS_DOOR_IDS = {
+    "plain": "u01",
+    "padded": " u01 ",              # THE FINDING, verbatim: the reviewer's exact input
+    "trailing-space": "u01 ",
+    "leading-tab": "\tu01",
+    "inner-space": "u 01",
+    "blank": "   ",
+    "uppercase": "U01",
+    "newline": "u01\n",
+}
+
+
+def cross_door(mod: types.ModuleType, tmp: Path) -> "dict[str, tuple[str, str]]":
+    """`plan-add --id X`, then `emit --unit X` — the SAME string, through both doors, for each X.
+
+    `holds` = the plan door REFUSED the id (so no plan ever held it), or it accepted the id and the emit
+    door could then name the unit. `VIOLATED` = the plan door took an id the emit door cannot match: a
+    planned unit with no way to record progress against it, which is a pass that can never complete.
+    """
+    got: dict[str, tuple[str, str]] = {}
+    for name, uid in CROSS_DOOR_IDS.items():
+        d = tmp / f"xd-{name}"
+        d.mkdir(parents=True, exist_ok=True)
+        plan, progress = d / PLAN_FILE, d / PROGRESS_FILE
+        key = f"[cross-door] the id {uid!r}"
+        try:
+            code, text = run_cli(mod, ["plan-add", "--file", str(plan), "--id", uid,
+                                       "--kind", "file", "--target", "x.py", "--check", "a"])
+            if code != 0:
+                got[key] = (HOLDS, f"the PLAN door REFUSED it (exit {code}), so no plan can hold it: "
+                                   f"{text.strip()}")
+                continue
+            run_cli(mod, ["identity", "--file", str(progress), "--head-sha", SHA, "--dispatched-at", TS])
+            code, text = run_cli(mod, ["emit", "--file", str(progress), "--unit", uid, "--status", "started"])
+            got[key] = (
+                (HOLDS if code == 0 else VIOLATED),
+                f"the plan door PLANNED it, and the emit door exited {code}: {text.strip()}",
+            )
+        except Exception as exc:  # noqa: BLE001 - a crash at either door is a violation, not an error
+            got[key] = (f"crash:{type(exc).__name__}", str(exc))
+    return got
+
+
+# --- every IDENTIFIER's format, stated as a table of what it TAKES and what it REFUSES ------------
+#
+# `ID_FORMATS` is the tool's claim about what an identifier is. This is the check on that claim, and it is
+# the reason a strict format beats normalizing: a rule that says "trim it" cannot be tabulated — there is
+# no set of strings it refuses — while a rule that says "it looks like THIS" has an exact boundary, and an
+# exact boundary is a thing a test can stand on both sides of.
+#
+# The identifiers COVERED are reconciled against `ID_FORMATS` itself, so an identifier added to the table
+# with no cases here FAILS the suite. A format nobody has fenced is a format that will drift.
+ID_CASES = [
+    ("id", "u01", True), ("id", "u99", True), ("id", "unit01", True),
+    ("id", " u01 ", False), ("id", "u01 ", False), ("id", "\tu01", False), ("id", "u 01", False),
+    ("id", "u01\n", False), ("id", "U01", False), ("id", "u", False), ("id", "01", False),
+    ("id", "u01a", False), ("id", "u-01", False), ("id", "", False), ("id", "   ", False),
+    ("id", 1, False), ("id", None, False),
+    ("unit", "u01", True), ("unit", " u01 ", False), ("unit", "U01", False), ("unit", "", False),
+    ("pr", "41", True), ("pr", "1", True),
+    ("pr", "0", False), ("pr", "041", False), ("pr", " 41", False), ("pr", "41 ", False),
+    ("pr", "+41", False), ("pr", "-41", False), ("pr", "4_1", False), ("pr", "", False), ("pr", 41, False),
+    ("pass", "1", True), ("pass", "0", False), ("pass", "one", False), ("pass", "01", False),
+    ("launch_attempt", "1", True), ("launch_attempt", "2", True),
+    ("launch_attempt", "0", False), ("launch_attempt", " 2", False), ("launch_attempt", "two", False),
+    ("head_sha", SHA, True),
+    ("head_sha", SHA[:7], False),          # THE TRUNCATED SHA — it reached real state, and it is CLEAN:
+    ("head_sha", SHA.upper(), False),      # no trimming could ever have caught it. Only a FORMAT can.
+    ("head_sha", SHA + "0", False), ("head_sha", " " + SHA, False), ("head_sha", SHA + "\n", False),
+    ("head_sha", "", False), ("head_sha", None, False),
+]
+
+
+def check_id_formats() -> int:
+    """Every identifier's format, against what it must TAKE and what it must REFUSE. Returns the failures."""
+    failures = 0
+    for name, value, accepted in ID_CASES:
+        try:
+            check_id(name, value, "[id-format]")
+            got = True
+        except Defect:
+            got = False
+        if got == accepted:
+            verb = "accepts" if accepted else "REFUSES"
+            print(f"ok       [id] `{name}` {verb} {value!r}")
+        else:
+            print(f"FAIL     [id] `{name}` {'REFUSED' if accepted else 'ACCEPTED'} {value!r} — and an "
+                  f"identifier's format is the ONE thing both doors read it by")
+            failures += 1
+    covered = {name for name, _v, _a in ID_CASES}
+    if covered != set(ID_FORMATS):
+        print(f"FAIL     [id] identifiers with a format and NO cases: {sorted(set(ID_FORMATS) - covered)}; "
+              f"cases for an identifier that has no format: {sorted(covered - set(ID_FORMATS))}. A format "
+              f"nobody fenced is one that will drift")
+        failures += 1
+    return failures
 
 
 # --- the DOCS' examples, fed through the tool ----------------------------------------------------
@@ -1465,6 +1705,7 @@ def run_cases(mod: types.ModuleType, tmp: Path) -> "dict[str, tuple[str, str]]":
         except Exception as exc:  # noqa: BLE001
             got[f"[plan] {pname} {' '.join(argv)}"] = (f"crash:{type(exc).__name__}", str(exc))
     got.update(round_trip(mod, tmp))
+    got.update(cross_door(mod, tmp))
     return got
 
 
@@ -1491,6 +1732,13 @@ def expectations() -> "dict[str, tuple[str, str, str]]":
         HOLDS, "",
         f"`{cmd}` against a {state} target: it must FAIL, or the file it wrote must READ BACK")
         for cmd in WRITE_COMMANDS for state in FILE_STATES})
+    # …and the cross-door property, whose expectation is likewise the PROPERTY and not a particular rule:
+    # the plan door refuses the id, or the emit door can match it. There is nothing else it may do.
+    out.update({f"[cross-door] the id {uid!r}": (
+        HOLDS, "",
+        f"`plan-add --id {uid!r}` then `emit --unit {uid!r}`: the PLAN door must refuse the id, or the "
+        f"EMIT door must be able to name the unit it planned")
+        for uid in CROSS_DOOR_IDS.values()})
     return out
 
 
@@ -1503,7 +1751,7 @@ MARKER_RE = re.compile(r"^(?P<indent>[ ]*)# MUTATE:(?P<rule>[a-z0-9-]+):(?P<weak
 # The functions that ENFORCE the contract. Every enforcement point inside them must carry a marker.
 # `evaluate` is not one: it MAPS an exception to a verdict; it decides nothing.
 RULE_FUNCTIONS = (
-    "hook", "read_text", "parse_lines", "read_lines", "check_unit", "plan_units", "load_plan",
+    "hook", "read_text", "parse_lines", "read_lines", "check_id", "check_unit", "plan_units", "load_plan",
     "check_event", "check_progress", "walk_progress", "check_identity_shape", "check_identity",
     "check_head", "check_progress_file", "check_plan_file", "decide", "parse_name",
     "before_text", "write_line", "cmd_emit", "cmd_identity", "cmd_plan_add", "cmd_verify",
@@ -1646,6 +1894,8 @@ def self_test() -> int:
             print(f"FAIL     {case[:44]:44} -> {outcome:11} but nothing mentions {needle!r}\n         got: {text}")
             failures += 1
     print()
+    failures += check_id_formats()
+    print()
     doc_failures = check_docs()
     failures += doc_failures
     print()
@@ -1656,7 +1906,9 @@ def self_test() -> int:
           f"{len(CLI_CASES) + len(PLAN_CLI_CASES)} CLI cases + "
           f"{len(WRITE_COMMANDS) * len(FILE_STATES)} round-trip cases ({len(WRITE_COMMANDS)} write "
           f"commands, derived from the parser, x {len(FILE_STATES)} pre-existing file states) + "
-          f"{len(doc_examples())} DOC examples hold.\n")
+          f"{len(CROSS_DOOR_IDS)} cross-door cases (the plan door refuses the id, or the emit door can "
+          f"match it) + {len(ID_CASES)} identifier-format cases ({len(ID_FORMATS)} identifiers, each with "
+          f"ONE legal form) + {len(doc_examples())} DOC examples hold.\n")
 
     # …and now the question the block above CANNOT answer: is any rule pinned by NO fixture?
     marked = marked_statements(source)
