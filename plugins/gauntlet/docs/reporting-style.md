@@ -1,28 +1,12 @@
 # A sample reporting style
 
-**Nothing here is loaded, read, or enforced by the plugin.** This is a reference you can copy into your
-own `CLAUDE.md` (or an output style) and edit until it sounds like what you want to read. How Claude
-talks to *you* is yours to set, not a plugin's to decide — see [why this file exists](#why-this-file-exists)
-below.
+Nothing here is loaded or enforced by the plugin — see the
+[README](../README.md#optional--tell-it-how-to-report-to-you) for why it's a sample and not a setting.
 
-## Why a campaign makes reporting worth tuning
-
-`/gauntlet:campaign` runs unattended, often for hours. It wakes on every review verdict, CI completion
-and fix landing, and each wake produces an update. Over a long run that is dozens of updates you did not
-ask for individually, and they are the entire surface you experience the run through — you are not
-watching the tool calls, you are reading the summaries.
-
-So the cost of a vague default lands harder here than in a normal back-and-forth session. Ten wakes of
-"I'll now check the CI status" tells you nothing about a run that has been going for two hours. What you
-usually want to know at a glance is: **what changed, is it converging, and does it need me.** That third
-one especially — an unattended run is worth exactly nothing if you have to reconstruct whether it is
-blocked on you.
-
-The rules below are one set that works. They are opinionated on purpose. Take the parts you like.
+One set of rules that works. Opinionated on purpose. Copy it into your `CLAUDE.md` and edit until it
+sounds like what you want to read.
 
 ## The sample
-
-Copy from here down into your `CLAUDE.md`.
 
 ---
 
@@ -86,13 +70,3 @@ derivation. The explanation can follow — it just cannot come first.
 
 **"Never justify past work unasked."** An agent explaining why its earlier choice was defensible is
 spending your attention on its reputation instead of your problem.
-
-## Why this file exists
-
-Reporting style is an *environment* concern. It belongs to you and your `CLAUDE.md`, not to a plugin
-you installed — a skill that dictated tone would be overreaching into a preference it has no business
-holding, and it would fight whatever you had already set.
-
-But the campaign skill is unusual in how much it reports and in how long it runs without you, so leaving
-you to discover the problem after a four-hour run seemed worse than offering a starting point. Hence: a
-sample, not a setting.
