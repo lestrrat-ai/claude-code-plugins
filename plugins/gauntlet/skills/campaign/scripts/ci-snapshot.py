@@ -114,6 +114,7 @@ import argparse
 import json
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 from collections import Counter
@@ -258,6 +259,22 @@ def parse_required_set(spec: str) -> RequiredSet:
         ctx, app = entry["context"], entry["app"]
         if not isinstance(ctx, str) or not isinstance(app, str) or not ctx:
             raise SpecError(f"`context` and `app` must be strings, and `context` non-empty: {entry!r}")
+        # AN APP BINDING IS A GITHUB APP ID — DECIMAL DIGITS — OR `ANY_APP`. THERE IS NO THIRD SHAPE, and
+        # the one that keeps trying to be one is the STRING "null": jq's `tostring` applied to a null
+        # binding BEFORE the `// "-"` default, which is exactly what the producer read shipped (stage-2-ci.md
+        # FETCH owns the rule; `cli/cli` returns `app_id: null` for every required check on `trunk`, so it is
+        # the COMMON case). Bound to an app that DOES NOT EXIST, the check can never be matched by any row:
+        # the PR reports `pending (required check absent)` FOREVER, for a reason nobody can see. That is a
+        # WEDGE, and a wedge is not the safe side of a false green — it is the other failure.
+        #
+        # So it is REJECTED, never NORMALISED. Reading "null" as ANY_APP would be a GUESS about a value we
+        # could not read — the same degradation this parser refuses everywhere else, and this time it would
+        # guess in the direction that makes an unmatched required check pass.
+        if app != ANY_APP and not (app.isascii() and app.isdigit()):
+            raise SpecError(
+                f"`app` is an app id in decimal digits, or {ANY_APP!r} when the declaration binds no app "
+                f"(the string 'null' is a `//` default that fired too late, never a producer): {entry!r}"
+            )
         checks.append((ctx, app))
     return RequiredSet(DECLARED, tuple(checks))
 
@@ -907,6 +924,7 @@ EXPECTED = {
     "expected-status.jsonl": (PENDING, "still running", "EXPECTED = a required status DECLARED BUT NOT POSTED YET — the one shape of not-yet-registered the evidence can express on its own; REQUIRED_CASES below covers the shape it cannot"),
     "status-passing.jsonl": (GREEN, "all passing", "a SUCCESS commit status and no check runs at all — the family /check-runs cannot see, green on its own; REQUIRED_CASES uses it to pin what a producer-less row can and cannot prove"),
     "skipped-is-pass.jsonl": (GREEN, "all passing", "SKIPPED is a PASS — GitHub rolls it up that way, and a rule set without it can NEVER go green on a repo with path filters"),
+    "unbound-checkrun.jsonl": (GREEN, "all passing", "a check run with NO PRODUCER — `.app` was null, so the read wrote `-`. Green on its own; REQUIRED_CASES pins what that row may and may not PROVE"),
     # THE CATCH-ALL, and it is now reachable ONLY by a value GitHub has ADDED SINCE — which is exactly what
     # it is for. Both values below are INVENTED: no CheckStatusState is `AWAITING_APPROVAL`, no
     # CheckConclusionState is `FLAKED_OUT`, and no StatusState is `BLOCKED`. That is the point — the real
@@ -998,14 +1016,15 @@ def self_test(fixtures: Path) -> int:
 
     failures += filename_test(fixtures)
     failures += required_test(fixtures)
+    failures += producer_test(fixtures)
     failures += spec_test()
     print()
     if failures:
         print(f"{failures} check(s) FAILED — the CI-snapshot contract is broken.")
         return 1
     print(f"all {len(EXPECTED)} fixtures + {len(FILENAME_CASES)} filename cases + "
-          f"{len(REQUIRED_CASES)} required-set cases + {len(SPEC_CASES)} spec cases hold — "
-          f"the contract is intact.")
+          f"{len(REQUIRED_CASES)} required-set cases + {len(PRODUCER_CASES)} producer cases + "
+          f"{len(SPEC_CASES)} spec cases hold — the contract is intact.")
     print("`mutate-ci-snapshot.py` is what proves each of them pins its OWN rule. Run it too.")
     return 0
 
@@ -1047,6 +1066,17 @@ REQUIRED_CASES = [
      GREEN, "required set satisfied: ci/jenkins",
      "an UNBOUND declaration IS satisfiable by a commit status — the producer rule must not wall off the "
      "legacy family it was never about"),
+    # `-` ON A ROW IS "NO PRODUCER", AND ON A DECLARATION IT IS "ANY PRODUCER". Both sides can now carry it
+    # — the check-run read defaults a null `.app` to `-` — and the two meanings must not blur into a
+    # wildcard that matches from either end.
+    ("unbound-checkrun.jsonl", f'{DECLARED_PREFIX}[{{"context": "Deploy", "app": "-"}}]',
+     GREEN, "required set satisfied: Deploy",
+     "an UNBOUND declaration satisfied by a check run that HAS NO PRODUCER — the pair the wedge made "
+     "unmatchable, and the configuration `cli/cli` actually runs: every required check on `trunk` is unbound"),
+    ("unbound-checkrun.jsonl", f'{DECLARED_PREFIX}[{{"context": "Deploy", "app": "15368"}}]',
+     PENDING, "required check absent: Deploy (app 15368)",
+     "THE MIRROR: a producer-less row cannot prove an APP-BOUND declaration. `-` on a ROW means 'no app', "
+     "NEVER 'any app' — read as a wildcard it would let an unidentified producer satisfy a check that named one"),
     # A declared check that is PRESENT but still RUNNING is NOT this rule's business: it is a RUNNING row,
     # so plain `pending` outranks and the PR gets WATCHED, as it must. Ordering, pinned.
     ("running-checkrun.jsonl", f'{DECLARED_PREFIX}[{{"context": "Validate plugins", "app": "-"}}]',
@@ -1076,6 +1106,129 @@ def required_test(fixtures: Path) -> int:
     return failures
 
 
+# --- THE PRODUCER, EXECUTED — the two reads in stage-2-ci.md, RUN over recorded API payloads -----------
+#
+# Every rule above takes the required set AS GIVEN. So a required set the DOC READS WRONG is a defect that
+# NOTHING above could see — and one shipped: both reads defaulted a null app binding AFTER converting it,
+# `((.x | tostring) // "-")` where `((.x // "-") | tostring)` was meant (the shape is written with a
+# placeholder on purpose: an illustration of a defect must not be a live string anyone can grep into).
+# In jq, `null | tostring` is the STRING "null", which is TRUTHY, so the default NEVER FIRED, and a
+# required check that binds NO app
+# came out bound to a producer named "null". No row can ever match that: the PR reports `pending (required
+# check absent)` FOREVER, for a reason nobody can see. That is a WEDGE — NOT the safe side of a false green,
+# but the OTHER failure, the one that files no report. And it was not exotic: `repos/cli/cli/branches/trunk`
+# returns `app_id: null` for EVERY required check it has.
+#
+# So the filters are NOT retyped here — they are EXTRACTED FROM stage-2-ci.md AND EXECUTED. A copy in this
+# file is exactly what could NOT have caught this: the bug was in the DOC, which is the only place these
+# reads live and the only place an operator reads them from. A test of a copy would have passed, forever.
+DOC = Path(__file__).resolve().parents[1] / "references" / "stage-2-ci.md"
+PAYLOADS = Path(__file__).parent / "fixtures" / "required-set"
+
+# Each read is identified by the `gh api` line that introduces it. A jq filter contains no single quote, so
+# the value is everything up to the next one.
+READS = {
+    "classic": 'gh api "repos/<owner>/<repo>/branches/<base>" --jq \'',
+    "ruleset": 'gh api "repos/<owner>/<repo>/rules/branches/<base>" --jq \'',
+}
+
+
+class DocDrift(Exception):
+    """The read this test executes is no longer in the doc, or no longer runs. NEVER a silent skip: a check
+    that cannot run must FAIL, or it reports health it did not measure."""
+
+
+def doc_read(which: str) -> str:
+    """The jq program stage-2-ci.md tells the operator to run. Extracted, never retyped."""
+    text = DOC.read_text(encoding="utf-8")
+    opener = READS[which]
+    start = text.find(opener)
+    if start < 0:
+        raise DocDrift(f"{DOC.name} no longer contains the {which} read — this test pins NOTHING until the "
+                       f"line `{opener[:46]}…` is found again")
+    start += len(opener)
+    end = text.find("'", start)
+    if end < 0:
+        raise DocDrift(f"the {which} read in {DOC.name} is never closed by a `'`")
+    return text[start:end]
+
+
+def required_set_from(which: str, payload: Path) -> list:
+    """Run the DOC's read over a recorded payload and return the declared checks it produces."""
+    jq = shutil.which("jq")
+    if jq is None:
+        raise DocDrift("`jq` is not installed, so the reads cannot be executed — and a check that SKIPS is "
+                       "a check that lies. Install jq (the campaign's own fetch needs it regardless)")
+    proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        [jq, "-c", doc_read(which), str(payload)], capture_output=True, text=True, check=False
+    )
+    if proc.returncode != 0:
+        raise DocDrift(f"the {which} read FAILED on {payload.name}: {proc.stderr.strip()}")
+    out = json.loads(proc.stdout)
+    if which == "classic":
+        if not isinstance(out, dict) or not isinstance(out.get("checks"), list):
+            raise DocDrift(f"the classic read no longer produces a `checks` array: {out!r}")
+        out = out["checks"]
+    if not isinstance(out, list):
+        raise DocDrift(f"the {which} read did not produce an array: {out!r}")
+    return out
+
+
+# (payload, read, the checks the read MUST produce, snapshot, verdict, needle, why)
+PRODUCER_CASES = [
+    ("classic-protection.json", "classic", [("Lint scripts", "15368"), ("Validate plugins", ANY_APP)],
+     "green.jsonl", GREEN, "required set satisfied: Lint scripts, Validate plugins",
+     "CLASSIC PROTECTION carrying a NULL app binding — the shape cli/cli's trunk really returns. The unbound "
+     "check must read `-`, be satisfied by a row WHATEVER its producer, and go GREEN — while the BOUND check "
+     "keeps its id, because a default that fires when a binding IS there is the mirror bug"),
+    ("ruleset-null-app.json", "ruleset", [("ci/jenkins", ANY_APP)],
+     "status-passing.jsonl", GREEN, "required set satisfied: ci/jenkins",
+     "a RULESET whose `integration_id` is explicitly NULL, satisfied by a COMMIT STATUS — a row with NO "
+     "producer field at all, which is precisely what an unbound declaration can be proven by"),
+    ("ruleset-no-app.json", "ruleset", [("ci/jenkins", ANY_APP)],
+     "status-passing.jsonl", GREEN, "required set satisfied: ci/jenkins",
+     "the same ruleset with `integration_id` ABSENT rather than null — jq reads a missing field as null, and "
+     "this pins that the read defaults it the same way instead of emitting a key it never saw"),
+]
+
+
+def producer_test(fixtures: Path) -> int:
+    """The doc's read -> the spec -> the parser -> a verdict. The whole chain, on payloads with a NULL app
+    binding, because the chain is where the wedge lived and no link of it could see the wedge alone."""
+    failures = 0
+    for payload, which, want_checks, snapshot, want, needle, why in PRODUCER_CASES:
+        label = f"{payload} -> {which} read"
+        try:
+            produced = required_set_from(which, PAYLOADS / payload)
+        except DocDrift as exc:
+            print(f"FAIL     {label:44} -> {exc}")
+            failures += 1
+            continue
+        got_checks = [(c.get("context"), c.get("app")) for c in produced]
+        if got_checks != want_checks:
+            print(f"FAIL     {label:44} -> the read produced {got_checks}, expected {want_checks}")
+            failures += 1
+            continue
+        spec = DECLARED_PREFIX + json.dumps([{"context": c, "app": a} for c, a in got_checks])
+        try:
+            required = parse_required_set(spec)
+        except SpecError as exc:
+            # The read produced a required set ITS OWN PARSER refuses. Exactly what `app: "null"` does.
+            print(f"FAIL     {label:44} -> the read produced a spec the parser REJECTS: {exc}")
+            failures += 1
+            continue
+        got, reason = evaluate(
+            fixtures / snapshot, FIXTURE_SHA, required=required, expect_filename_sha=False
+        )
+        if got == want and needle in reason:
+            print(f"ok       {label:44} -> {got:8} ({why})")
+        else:
+            print(f"FAIL     {label:44} -> {got:8} expected {want} mentioning {needle!r}"
+                  f"\n         reason: {reason}")
+            failures += 1
+    return failures
+
+
 # A SPEC WE CANNOT READ MUST NEVER BECOME `none`. That is the one degradation that would rebuild the false
 # green inside the parser — "the base branch requires nothing", asserted on the strength of a value we
 # failed to parse. Every case below must RAISE, and the CLI turns each into exit 2 with NO verdict.
@@ -1088,6 +1241,14 @@ SPEC_CASES = [
     ('declared:[{"context": "build"}]', "a declared check missing its `app` — half a declaration"),
     ('declared:[{"context": "build", "app": 15368}]', "a non-string `app` — a value we cannot compare"),
     ('declared:[{"context": "", "app": "-"}]', "an EMPTY context — it would match nothing, forever"),
+    ('declared:[{"context": "build", "app": "null"}]',
+     'THE WEDGE, ONE LAYER DOWN: the STRING "null" — a `// "-"` default written AFTER `tostring`, so it '
+     "never fired. It binds the check to an app that DOES NOT EXIST, no row can ever match it, and the PR "
+     "is `pending (required check absent)` FOREVER. Rejected, and never normalised back to `-`"),
+    ('declared:[{"context": "build", "app": "github-actions"}]',
+     "an app NAME where the id belongs — a producer that no `app_id` on any row can equal"),
+    ('declared:[{"context": "build", "app": ""}]',
+     "an EMPTY app — 'binds no app' is `-`, written explicitly; an empty string is a value we failed to write"),
     ("none-declared", "a near-miss of a state name, which is not one of the three"),
     ("NONE", "the right word, the wrong case — states are exact, never close enough"),
 ]

@@ -46,7 +46,7 @@ the **slurped** pages — so a marker cannot exist for a fetch that did not run:
 #     returned ZERO rows has no oid to carry: its marker's sha is "-", and inventing one is forbidden.
 gh api --paginate --slurp "repos/<owner>/<repo>/commits/<head_sha>/check-runs" | jq -c '
   [.[].check_runs[]] as $r
-  | ($r[] | {row:"checkrun", sha:.head_sha, name:.name, app_id:(.app.id|tostring),
+  | ($r[] | {row:"checkrun", sha:.head_sha, name:.name, app_id:((.app.id // "-")|tostring),
              status:(.status|ascii_upcase),
              conclusion:((.conclusion // "-")|ascii_upcase),
              id:(.details_url // "-")}),
@@ -78,6 +78,19 @@ machine-read convention as `state.jsonl` and the review plan/progress files (`fi
   it the whole set. **`--slurp` collects every page into ONE array before `jq` runs**, which is what lets a
   single filter emit the rows *and* a marker whose `count` is the total **across pages** (per-page `--jq`
   cannot know it). `--slurp` and gh's own `--jq` are mutually exclusive, hence the pipe to `jq -c`.
+- **EVERY `//` DEFAULT GOES BEFORE THE CONVERSION, NEVER AFTER — `((.x // "-") | tostring)`, and
+  NEVER `((.x | tostring) // "-")`.** In jq, `null | tostring` is the **STRING `"null"`**, which is
+  **TRUTHY**, so a default placed after the conversion **NEVER FIRES** and the field carries the
+  four letters `null` where `-` was meant. This applies to **every nullable field read anywhere in
+  this file** — `.app.id` above (a check run need not come from an app) and the required-set reads'
+  `.app_id` / `.integration_id` below. **It is not cosmetic there: it is a WEDGE.** An unbound
+  required check would come out bound to a producer named `"null"`, no evidence row could ever match
+  it, and the PR would report `pending (required check absent)` **forever, for a reason nobody can
+  see** — which is the failure this file's own SETTLED rule exists to prevent, arriving by the back
+  door. `cli/cli`'s `trunk` returns `app_id: null` for **every** one of its required checks, so this
+  is the **common** configuration, not an exotic one. `ci-snapshot.py`'s `producer_test` **extracts
+  these filters from this file and runs them** against recorded payloads that carry null bindings —
+  write the order backwards and it goes red.
 - **BOTH families are MANDATORY, AND THE ARTIFACT MUST PROVE BOTH WERE READ.** A failing Jenkins/CircleCI
   **commit status is genuinely invisible** to `/check-runs`: a commit can carry **live commit statuses**
   while `/check-runs` reports `check_runs.total_count = 0` for that very commit. Read only one family and
@@ -138,7 +151,7 @@ each line as JSON. Five `row` types, distinguished by the `row` field — and **
 |---|---|---|---|
 | `header` | `sha` | The `head_sha` we **REQUESTED** — what the file was fetched *for*. Exactly one, first line. | **OURS** (the ledger's) |
 | `source` | `source`, `sha`, `count` | **COMPLETION MARKER — "this source WAS QUERIED".** Exactly **ONE** per mandatory source (`check-runs`, `status`, `rollup`), written **by that fetch's own `jq`**. `count` = the rows it returned. | **GITHUB'S**, or `"-"` where GitHub has none (below) |
-| `checkrun` | `sha`, `name`, `app_id`, `status`, `conclusion`, `id` | Check-run **identity AND verdict**. `conclusion` is `"-"` when absent; `id` is `details_url` (`"-"` when absent). | **GITHUB'S** (`.head_sha`) |
+| `checkrun` | `sha`, `name`, `app_id`, `status`, `conclusion`, `id` | Check-run **identity AND verdict**. `app_id` is `"-"` when the run has **no app**; `conclusion` is `"-"` when absent; `id` is `details_url` (`"-"` when absent). | **GITHUB'S** (`.head_sha`) |
 | `status` | `sha`, `context`, `state` | Commit-status **verdict**. | **GITHUB'S** (response `.sha`) |
 | `witness` | `name`, `id` | Rollup **identity only** — **no `sha`, no verdict**. `id` is `detailsUrl`. | — (none exists) |
 
@@ -574,16 +587,18 @@ Two reads, **both needing only Metadata**. **BOTH are mandatory** — neither ca
 #     `.protection.enabled` tells you whether classic protection EXISTS, so you never have to guess
 #     what a 404 from /branches/<b>/protection meant. `.checks[]` carries the app binding; `.contexts`
 #     is the same set WITHOUT it, and is deprecated — read `.checks[]`, never `.contexts`.
+#     `.app_id` is NULLABLE — the DEFAULT GOES BEFORE `tostring` (FETCH above owns that rule; get it
+#     backwards and every unbound required check binds to an app named "null" and can NEVER be matched).
 gh api "repos/<owner>/<repo>/branches/<base>" --jq '
   {classic_enabled: (.protection.enabled // false),
    checks: [(.protection.required_status_checks.checks // [])[]
-            | {context: .context, app: ((.app_id | tostring) // "-")}]}'
+            | {context: .context, app: ((.app_id // "-") | tostring)}]}'
 
 # (b) RULESETS — the rules actually in force on the branch. The CLASSIC endpoint CANNOT SEE THESE.
 gh api "repos/<owner>/<repo>/rules/branches/<base>" --jq '
   [.[] | select(.type=="required_status_checks")
        | .parameters.required_status_checks[]
-       | {context: .context, app: ((.integration_id | tostring) // "-")}]'
+       | {context: .context, app: ((.integration_id // "-") | tostring)}]'
 ```
 
 **A 404 from `/branches/<b>/protection` means THREE different things** — genuinely unprotected, *you may
@@ -628,8 +643,13 @@ non-empty set, you know **SOME** required checks — not that you know them **AL
 READ** (`unknown`). A **permissive** endpoint answering never vouches for a **restricted** one erroring.
 
 **`declared:` carries a JSON array, NOT a comma-separated list.** Each element is
-`{"context": "<name>", "app": "<app_id>" | "-"}`, and `"-"` means the declaration **binds no app** (any
-producer satisfies it). The payload is JSON because **a required check's name may CONTAIN A COMMA** — a
+`{"context": "<name>", "app": "<app_id>" | "-"}`, where `<app_id>` is the app id **as decimal digits** and
+`"-"` means the declaration **binds no app** (any producer satisfies it). **Those two are the ONLY shapes
+an `app` may take**: `ci-snapshot.py --required-set` rejects every other one **loudly** — above all the
+string `"null"`, which is what a `//` default written **after** a `tostring` yields from a null binding
+(FETCH above owns that rule). Bound to an app that **does not exist**, a check can never be matched by any
+row, so **accepting it would WEDGE the PR** — and **normalising it to `"-"` would be a GUESS** about a
+value we could not read. The payload is JSON because **a required check's name may CONTAIN A COMMA** — a
 matrix job's name is `job (a, b)`, and 40 of the 100 check runs on `vercel/next.js`'s default-branch head
 carried one when this was written (a dated illustration; the **claim** — commas are legal and common in
 check names — is the permanent point). A comma-separated list of those names is **ambiguous at the
@@ -641,8 +661,11 @@ required" would rebuild the exact false green this section removes.
 **MATCH ON PRODUCER, not just on name — a right-named check from the WRONG app is not the required one.**
 A declared check is **satisfied** only by an evidence row that carries its `context` **and** its producer:
 
-- a `checkrun` row whose `name` equals the context, and whose `app_id` equals the declared `app` (any
-  `app_id` satisfies a declaration whose `app` is `"-"`);
+- a `checkrun` row whose `name` equals the context, and whose `app_id` equals the declared `app`
+  (any `app_id` satisfies a declaration whose `app` is `"-"`). **`"-"` is a wildcard on the
+  DECLARATION and NOT on the ROW**: on a declaration it means *any producer may satisfy this*, while
+  on a row it means *this run came from no app* — so a producer-less row satisfies an **unbound**
+  declaration and **never** an app-bound one, for the same reason a `status` row cannot;
 - a `status` row whose `context` equals it — **and only where the declaration binds NO app.** The
   commit-status rows carry **no producer field at all** (FETCH above: the status response has none to
   give), so an app-bound declaration **cannot be proven** by one. It stays unsatisfied → `pending

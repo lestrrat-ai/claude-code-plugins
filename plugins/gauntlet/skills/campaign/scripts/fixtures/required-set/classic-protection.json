@@ -1,0 +1,16 @@
+{
+  "_fixture": "GET /repos/{owner}/{repo}/branches/{branch}, trimmed to what the read touches. `app_id: null` is NOT invented: repos/cli/cli/branches/trunk returns exactly that for every one of its required checks (read 2026-07-13). The contexts are this repo's, so the required set this payload produces can be run end-to-end against green.jsonl; the app-bound entry pins that a default must not swallow a binding that IS there.",
+  "name": "main",
+  "protected": true,
+  "protection": {
+    "enabled": true,
+    "required_status_checks": {
+      "enforcement_level": "everyone",
+      "checks": [
+        { "context": "Lint scripts", "app_id": 15368 },
+        { "context": "Validate plugins", "app_id": null }
+      ],
+      "contexts": ["Lint scripts", "Validate plugins"]
+    }
+  }
+}
