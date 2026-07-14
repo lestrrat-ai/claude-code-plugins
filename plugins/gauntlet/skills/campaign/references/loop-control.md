@@ -155,8 +155,10 @@ blocks; each completion is its own wake.
    PARSING"); review →
    the **active launch attempt's** output file, with its progress file as liveness evidence — attempt 1
    writes `review-<pr>-<n>.txt` / `.progress.jsonl`, a relaunch writes `review-<pr>-<n>.a<k>.*`, and
-   only the attempt named in the current `pass_identity` is read or counted (Stage 2a); CI/review fix),
-   record the result against the SHA it ran on and act per Stage 2.
+   only the attempt named in the current `pass_identity` is read or counted (Stage 2a). **Before a
+   review verdict is counted, the pass's artifacts must verify** — `scripts/review-pass.py verify`, never
+   an ad-hoc parse; anything but `ok` means the verdict is not tallied (Stage 2a, "Does this pass COUNT?");
+   CI/review fix), record the result against the SHA it ran on and act per Stage 2.
 3. **Dispatch due work — non-blocking, idempotent, bounded, work-conserving.** Scan the whole run,
    not just the PR/job that woke you. Launch every due action that fits a free slot before returning.
    Launch only what is actually due *and not already in flight* (check ground truth first, never the

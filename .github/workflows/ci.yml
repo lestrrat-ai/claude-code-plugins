@@ -106,3 +106,11 @@ jobs:
       # them goes red.
       - name: Ledger contract
         run: python3 plugins/gauntlet/skills/campaign/scripts/ledger.py self-test
+
+      # The REVIEW PASS's contract, executed — the gate one layer up from CI. What a pass's plan,
+      # pass_identity and progress files say decides whether a review COUNTS, and therefore whether a PR
+      # may merge; three of those four artifacts used to be hand-written and the tally hand-parsed. This
+      # runs every fixture AND (like the mutation matrix above, but built in) deletes each rule in turn and
+      # fails if no fixture notices — so "N rules pinned" is DERIVED here, never a claim in a report.
+      - name: Review-pass contract (every rule pinned by a fixture)
+        run: python3 plugins/gauntlet/skills/campaign/scripts/review-pass.py self-test
