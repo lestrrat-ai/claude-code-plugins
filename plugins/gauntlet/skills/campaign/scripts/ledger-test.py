@@ -1259,6 +1259,277 @@ def t_skill_version_is_recorded(L: ModuleType, tmp: Path) -> None:
           f"the table's run-config block does not state which version governed the run: {config!r}")
 
 
+# --- the caps: what READS the counters, and stops the loop ---------------------
+
+def verdicts(L: ModuleType, path: Path, seq: str, pr: str = "1", move_head: bool = False) -> "tuple[int, int]":
+    """Drive a verdict sequence ('N'/'S') through the real CLI. Returns (verdicts landed, exit of the last).
+
+    `move_head` replays what really happens between rounds: a NOT SATISFIED sends a fix, the fix pushes,
+    the head moves. That is what makes this a test of "`review_rounds` survives a fix" and not a rehearsal
+    on static content.
+    """
+    sha = SHA_A
+    for i, v in enumerate(seq, start=1):
+        code, _, _ = cli(L, ["--file", str(path), "verdict", "--pr", pr, "--head-sha", sha,
+                             "--verdict", "satisfied" if v == "S" else "not-satisfied"])
+        if code != 0:
+            return i, code
+        if move_head and v == "N":
+            sha = f"{i:040x}"
+            cli(L, ["--file", str(path), "set", "--pr", pr, "--head-sha", sha])
+    return len(seq), 0
+
+
+def capped_row(L: ModuleType, tmp: Path, name: str, **over: str) -> Path:
+    fields = {"pr": "1", "head_sha": SHA_A, "status": "in_review", **over}
+    return write_lines(tmp / name, header_line(L), row_line(L, **fields))
+
+
+def t_round_cap_fires(L: ModuleType, tmp: Path) -> None:
+    """At ROUND_CAP, a NOT SATISFIED holds the row `repairing` and EXITS NON-ZERO.
+
+    Non-zero is the entire point. The skill's own "hard backstop" on the 2nd NOT SATISFIED sat unfired
+    through 35 review rounds because nothing COMPUTED it — it was prose, evaluated by a fresh-context wake
+    that could not see round 1 from round 21. A driver that dispatches a fix after this has a FAILED
+    COMMAND in its transcript, not a judgment call.
+    """
+    path = capped_row(L, tmp, "cap.jsonl")
+    # alternate so the NS streak never fires — this isolates the ROUND cap
+    landed, code = verdicts(L, path, "NS" * (L.ROUND_CAP // 2) + "N"[: L.ROUND_CAP % 2])
+    check(code == L.EXIT_STOP,
+          f"{landed} verdicts landed and the last exited {code}, not {L.EXIT_STOP} — the round cap did not "
+          f"fire, so the driver is free to dispatch fix number {L.ROUND_CAP + 1}")
+    check(landed == L.ROUND_CAP, f"the cap fired at verdict {landed}, not {L.ROUND_CAP}")
+
+    code, out, _ = cli(L, ["--file", str(path), "get", "--pr", "1"])
+    row = json.loads(out)
+    check(row["status"] == L.REPAIR_STATUS, f"the row is {row['status']!r}, not {L.REPAIR_STATUS!r}")
+    check(row["review_rounds"] == str(L.ROUND_CAP), "the verdict that tripped the cap must still be RECORDED")
+
+
+def t_ns_streak_cap_fires(L: ModuleType, tmp: Path) -> None:
+    """NS_STREAK_CAP is an INDEPENDENT sensor — it catches the PR that NEVER scores, well before ROUND_CAP.
+
+    A PR that has not once come back SATISFIED is failing in a way a round count is slow to see. (The cap
+    sits below ROUND_CAP on purpose; if the two were equal this fixture would pin nothing.)
+    """
+    check(L.NS_STREAK_CAP < L.ROUND_CAP, "the streak cap must bite before the round cap, or it is dead code")
+
+    path = capped_row(L, tmp, "streak.jsonl")
+    landed, code = verdicts(L, path, "N" * L.NS_STREAK_CAP)
+    check(code == L.EXIT_STOP, f"{L.NS_STREAK_CAP} consecutive NOT SATISFIEDs exited {code}")
+    check(landed == L.NS_STREAK_CAP, f"the streak cap fired at {landed}, not {L.NS_STREAK_CAP}")
+
+    # …and ONE SATISFIED breaks it: the sensor measures CONSECUTIVE failure and nothing else.
+    path = capped_row(L, tmp, "streak2.jsonl")
+    _, code = verdicts(L, path, "N" * (L.NS_STREAK_CAP - 1) + "S" + "N")
+    check(code == 0, "a SATISFIED did not clear the streak — the sensor is counting the wrong thing")
+
+
+def t_a_satisfied_never_fires_a_cap(L: ModuleType, tmp: Path) -> None:
+    """THE CAPS ARE NEVER EVALUATED ON A SATISFIED — a PR one pass from merging is never torn up.
+
+    Not an optimization: a correctness rule taken from the record. PR #42's TENTH landed verdict was a
+    SATISFIED, so a cap that fired on ANY verdict at 10 would have interrupted a PR whose very next pass
+    could have merged it. A PR is interrupted only when a verdict says its content is STILL WRONG *and*
+    the loop's history says it is no longer converging.
+    """
+    path = capped_row(L, tmp, "sat.jsonl")
+    landed, code = verdicts(L, path, "S" * (L.ROUND_CAP * 2))
+    check(code == 0, f"a SATISFIED exited {code} — a cap fired on a PASSING verdict")
+    check(landed == L.ROUND_CAP * 2, "the fixture never got past the cap")
+    code, out, _ = cli(L, ["--file", str(path), "get", "--pr", "1", "--field", "status"])
+    check(out.strip() == "in_review", f"a run of SATISFIED verdicts held the row: {out!r}")
+
+
+def t_no_verdict_for_a_held_row(L: ModuleType, tmp: Path) -> None:
+    """No verdict may land on a HELD row — no review pass should have been running for it at all."""
+    for status in L.HELD_STATUSES:
+        path = capped_row(L, tmp, f"held-{status}.jsonl", status=status)
+        code, _, err = cli(L, ["--file", str(path), "verdict", "--pr", "1", "--head-sha", SHA_A,
+                               "--verdict", "not-satisfied"])
+        check(code == 1, f"[{status}] a verdict on a held row was ACCEPTED (exit {code})")
+        code, out, _ = cli(L, ["--file", str(path), "get", "--pr", "1", "--field", "review_rounds"])
+        check(out == "0\n", f"[{status}] the REFUSED verdict bumped the counter anyway: {out!r}")
+
+
+def t_dispatch_check_is_the_guard(L: ModuleType, tmp: Path) -> None:
+    """`dispatch-check` refuses a mutating dispatch on EVERY held status, and allows one on a live row.
+
+    The park was already a prose rule obeyed by attention; `repairing` is a new one. Both are now a command
+    that FAILS. The message must say what CLEARS the hold — a guard that only says "refused" teaches the
+    driver nothing and invites it to route around the guard.
+    """
+    for status in L.HELD_STATUSES:
+        path = capped_row(L, tmp, f"dc-{status}.jsonl", status=status)
+        code, _, err = cli(L, ["--file", str(path), "dispatch-check", "--pr", "1"])
+        check(code == L.EXIT_STOP, f"[{status}] dispatch-check exited {code}, not {L.EXIT_STOP}")
+        check(status in err and "MUTATES" in err, f"[{status}] the refusal does not state the rule: {err!r}")
+        check("watch" in err, f"[{status}] the refusal must keep the CI watch exempt — observing is not "
+                              f"mutating, and a stopped watch is how a PR goes unwatched forever: {err!r}")
+
+    check(L.REPAIR_STATUS in L.HELD_STATUSES, "the repairing status must be HELD, or NO guard covers it")
+
+    for status in ("in_review", "pending"):
+        path = capped_row(L, tmp, f"live-{status}.jsonl", status=status)
+        code, out, err = cli(L, ["--file", str(path), "dispatch-check", "--pr", "1"])
+        check(code == 0, f"[{status}] a LIVE row was HELD (exit {code}) — the run would stall: {err!r}")
+
+    # `--action repair`: refused with no decision recorded, and refused on a row that is not repairing.
+    path = capped_row(L, tmp, "rep.jsonl", status=L.REPAIR_STATUS)
+    code, _, err = cli(L, ["--file", str(path), "dispatch-check", "--pr", "1", "--action", "repair"])
+    check(code == L.EXIT_STOP, f"a repair was dispatchable with NO decision recorded (exit {code})")
+    check("NO REASSESSMENT DECISION" in err, f"refused for the wrong reason: {err!r}")
+
+    path = capped_row(L, tmp, "live-rep.jsonl", status="in_review")
+    code, _, err = cli(L, ["--file", str(path), "dispatch-check", "--pr", "1", "--action", "repair"])
+    check(code == L.EXIT_STOP, f"repair work was dispatchable on a PR that never hit a cap (exit {code})")
+
+
+def t_the_repair_bound_has_no_door(L: ModuleType, tmp: Path) -> None:
+    """`repair_count` CANNOT BE WRITTEN through `set`/`add-row` — the same mechanism as `review_rounds`.
+
+    A driver that could zero its own repair budget could repair forever. The bound on the repair is only a
+    bound if nothing but the tool that SPENDS it may write it. Enforced by the ABSENCE of a flag, which
+    argparse cannot be talked round.
+    """
+    path = capped_row(L, tmp, "ro.jsonl")
+    for field in L.REPAIR_OWNED:
+        for door in (["set", "--pr", "1"], ["add-row", "--pr", "77"]):
+            code, _, err = cli(L, ["--file", str(path), *door, f"--{field.replace('_', '-')}", "0"])
+            check(code == 2, f"`{door[0]} --{field}` was ACCEPTED (exit {code}) — a door that can write the "
+                             f"repair budget is a door that can RESET it, and the repair would never end")
+            check("unrecognized arguments" in err,
+                  f"`{door[0]} --{field}` failed, but not because the flag does not EXIST: {err!r}")
+
+
+def t_pr_origin_defaults_to_external(L: ModuleType, tmp: Path) -> None:
+    """A row whose origin was never established is `external` — the FAIL-SAFE direction.
+
+    `pr_origin` decides whether an autonomous repair may REWRITE this PR's branch. Guessing wrong in the
+    other direction lets the mechanism reshape a stranger's work because a field was never set. "I do not
+    know who wrote this" must never resolve to "I wrote this".
+    """
+    path = write_lines(tmp / "origin.jsonl", header_line(L),
+                       json.dumps({"type": "row", "pr": "3", "slug": "pre-schema"}))
+    code, out, err = cli(L, ["--file", str(path), "get", "--pr", "3"])
+    check(code == 0, f"get on a pre-schema row exited {code}: {err!r}")
+    row = json.loads(out)
+    check(row["pr_origin"] == "external",
+          f"pr_origin back-filled as {row['pr_origin']!r} — a row of UNKNOWN origin must never be treated "
+          f"as campaign's own work to rewrite")
+    check((row["repair_count"], row["repair_decision"]) == ("0", "-"), f"repair fields: {row!r}")
+
+
+# --- the acceptance test: REPLAY THE REAL RECORD -------------------------------
+
+# The verdict sequences PR #42 and PR #43 actually produced, in order, on the night of 2026-07-14 (run
+# g260714-0746-bc5e8e20), read off each pass's `VERDICT:` line. The passes that landed NO verdict (#42 r4,
+# r7; #43 r5, r16) are absent — a pass that lands no verdict is not a round. `S`/`N` = SATISFIED / NOT.
+#
+# `protect_through` and `preempts` are the two halves of the thresholds' DEFENCE, and they pull in OPPOSITE
+# directions — which is exactly why BOTH are asserted. A cap must land after the work and before the
+# spiral, and on this record those two windows very nearly touch.
+REAL_RECORD = {
+    "42": {
+        "verdicts": "NNSNNNSNNSNSNSNNNSNNN",
+        "passes": [1, 2, 3, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+        "fires_at": 13,
+        # The last finding a real END USER could reach: `accept --at -` exits 0 and writes a store that
+        # `list` then refuses to read. Squarely the PR's job — a ledger that corrupts itself.
+        "protect_through": 10,
+        # THE DISCLOSED COST, asserted so it can never be quietly forgotten. Pass r15 ("the load path
+        # accepts blank required fields") is PR-ORIGINAL and gating, and the trigger DOES cut it off. It is
+        # not lost: RESCOPE shrinks the PR back to its purpose and RE-GATES it from scratch, and this defect
+        # is in the PR's own validation — a fresh reviewer meets it again on the shrunk diff if it survived.
+        # What is bought for that risk is TEN ROUNDS: a human stopped this PR at r21; the cap stops it at r13.
+        "preempts": [15],
+    },
+    "43": {
+        "verdicts": "NNNNSNNNNNSNNN",
+        "passes": [1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        "fires_at": 13,
+        # THE HARD BAR. #43's four genuine false-green bugs — the exact thing that PR exists to prevent —
+        # landed at passes 1, 4, 7 and 11, and pass 12 is the SATISFIED that corroborated the last fix. The
+        # trigger must be silent through ALL of it, and it fires at 13: the FIRST spiral round, where the
+        # subject of review had become the AST scanner that the r11–r12 fixes themselves built.
+        "protect_through": 12,
+        "preempts": [],  # nothing genuine is cut off on #43
+    },
+}
+
+
+def replay(L: ModuleType, tmp: Path, pr: str, stop_after: "int | None" = None) -> "int | None":
+    """Drive one PR's REAL verdict sequence through the REAL CLI. Returns the pass the trigger fired at."""
+    rec = REAL_RECORD[pr]
+    seq, passes = rec["verdicts"], rec["passes"]
+    assert isinstance(seq, str) and isinstance(passes, list)
+    check(len(seq) == len(passes), f"[#{pr}] the fixture's own record is inconsistent")
+    path = write_lines(tmp / f"replay-{pr}-{stop_after}.jsonl", header_line(L),
+                       row_line(L, pr=pr, head_sha=SHA_A, status="in_review"))
+    sha = SHA_A
+    for i, (v, npass) in enumerate(zip(seq, passes), start=1):
+        if stop_after is not None and npass > stop_after:
+            return None
+        code, _, _ = cli(L, ["--file", str(path), "verdict", "--pr", pr, "--head-sha", sha,
+                             "--verdict", "satisfied" if v == "S" else "not-satisfied"])
+        if code == L.EXIT_STOP:
+            code, out, _ = cli(L, ["--file", str(path), "get", "--pr", pr, "--field", "status"])
+            check(out.strip() == L.REPAIR_STATUS, f"[#{pr}] the trigger left the row live")
+            return npass
+        check(code == 0, f"[#{pr}] verdict {i} (pass r{npass}) exited {code}")
+        if v == "N":  # a fix was dispatched and pushed: the head MOVED
+            sha = f"{i:040x}"
+            cli(L, ["--file", str(path), "set", "--pr", pr, "--head-sha", sha])
+    return None
+
+
+def t_replay_the_real_record(L: ModuleType, tmp: Path) -> None:
+    """THE ACCEPTANCE TEST. Drive the two PRs that ACTUALLY spiralled through the real CLI.
+
+    Three claims, and the last two are what make the thresholds *defended* rather than merely chosen:
+
+    1. **The trigger fires.** #42 at review pass r13 (it ran 23), #43 at r13 (it ran 16). The loop stops.
+    2. **It never fires before the genuine work is done.** #43's four false-green bugs landed at passes 1,
+       4, 7 and 11 and were corroborated at 12; the trigger is silent through all of it. A cap that aborted
+       #43 at pass 3 would have destroyed the entire point of that PR.
+    3. **What it DOES cut off is STATED, not hidden.** On #42 the trigger pre-empts the PR-original finding
+       at pass r15. That is a real cost, it is asserted here, and RESCOPE + a full re-gate is what recovers
+       it. A design whose costs live only in its author's head is a design nobody can review.
+
+    Re-tune a cap and this fixture tells you, in its own failure message, what the new number would have
+    done to two PRs that really ran.
+    """
+    for pr, rec in REAL_RECORD.items():
+        fires_at, protect, preempts = rec["fires_at"], rec["protect_through"], rec["preempts"]
+        assert isinstance(fires_at, int) and isinstance(protect, int) and isinstance(preempts, list)
+
+        fired_at = replay(L, tmp, pr)
+        check(fired_at is not None,
+              f"[#{pr}] the trigger NEVER FIRED across all {len(rec['verdicts'])} landed verdicts — this is "
+              f"the 8.5-hour spiral, exactly as it happened, and the mechanism did nothing about it")
+        check(fired_at == fires_at,
+              f"[#{pr}] the trigger fired at review pass r{fired_at}, not r{fires_at}. With "
+              f"ROUND_CAP={L.ROUND_CAP} / NS_STREAK_CAP={L.NS_STREAK_CAP} the loop stops at a different "
+              f"round than the one the thresholds were defended against — re-derive them against the "
+              f"record before changing this expectation")
+
+        # (2) THE WORK IS PROTECTED. Replayed independently, so it cannot be satisfied by the run above
+        # having already stopped: this asserts the trigger is SILENT through the last genuine finding.
+        check(replay(L, tmp, pr, stop_after=protect) is None,
+              f"[#{pr}] THE TRIGGER FIRED AT OR BEFORE PASS r{protect}, WHERE THE PR WAS STILL FINDING "
+              f"GENUINE, PURPOSE-SERVING DEFECTS. A cap this tight destroys real value — #43's four "
+              f"false-green bugs ARE the reason that PR exists. Raise ROUND_CAP (={L.ROUND_CAP}) / "
+              f"NS_STREAK_CAP (={L.NS_STREAK_CAP}); do NOT weaken this fixture")
+
+        # (3) THE COST IS DISCLOSED — a fact about the thresholds, so it is asserted like one.
+        for p in preempts:
+            check(fires_at < p,
+                  f"[#{pr}] the record claims the trigger pre-empts the gating finding at pass r{p}, but it "
+                  f"fires at r{fires_at} — the disclosure is now STALE, which is worse than no disclosure: "
+                  f"it is the version people read")
+
+
 CASES = [
     ("escape-injective", "escape_cell is INJECTIVE — no two values collide", t_escape_injective),
     ("render-injective", "the PRINTED ROWS are injective too — no two values print the same line", t_render_injective),
@@ -1294,6 +1565,14 @@ CASES = [
     ("counter-corrupt", "a counter field that is not a count is refused, never handed to int()", t_counter_refuses_a_corrupt_value),
     ("write-atomic", "a write that dies mid-way leaves the OLD ledger intact — temp + fsync + os.replace", t_write_is_atomic),
     ("skill-version", "the header records WHICH VERSION of the rules governed the run; default `unknown`", t_skill_version_is_recorded),
+    ("round-cap", "at ROUND_CAP a NOT SATISFIED holds the row `repairing` and exits non-zero", t_round_cap_fires),
+    ("ns-streak-cap", "NS_STREAK_CAP is an independent sensor; one SATISFIED clears the streak", t_ns_streak_cap_fires),
+    ("satisfied-never-fires", "a cap is NEVER evaluated on a SATISFIED — a passing PR is never torn up", t_a_satisfied_never_fires_a_cap),
+    ("held-row-no-verdict", "no verdict may land on a held row", t_no_verdict_for_a_held_row),
+    ("dispatch-check", "every HELD status refuses a mutating dispatch; a repair needs its decision first", t_dispatch_check_is_the_guard),
+    ("repair-bound-no-door", "repair_count has NO flag — a budget you can zero is not a bound", t_the_repair_bound_has_no_door),
+    ("pr-origin-default", "an unknown origin is `external` — the fail-safe direction", t_pr_origin_defaults_to_external),
+    ("replay-the-record", "the REAL #42/#43 verdict sequences: it fires, never too early, and says what it costs", t_replay_the_real_record),
 ]
 
 

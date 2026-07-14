@@ -7,11 +7,15 @@ equals the ledger `head_sha` AND `reviews_ok >= required(tier)` AND `ci == green
 against the live tip. (An adopted PR may have no local worktree checked out, so use the PR's own head
 via `gh`, never a local `git rev-parse HEAD`.)
 
-**The parked-status guard binds the merge (`loop-control.md` step 3).** A PR whose `status` is
-`awaiting-user` or `awaiting-api` is parked on a HUMAN: **NEVER merge it**, whatever `reviews_ok` /
-`ci` / `mergeable` say. Merge eligibility is **not** derived from the gate counters alone — a park does
-not lower `reviews_ok`, so a rule that reads only the counters would merge a PR whose disputed finding
-or API change the user has not yet ruled on. Only the user's answer unparks it, and **to the `status` that
+**The held-status guard binds the merge (`loop-control.md` step 3).** A **HELD** PR — `ledger.py …
+dispatch-check --pr <N>` exits non-zero for it — is **NEVER merged**, whatever `reviews_ok` / `ci` /
+`mergeable` say. That covers a PR **parked on a HUMAN** (`awaiting-user`, `awaiting-api`) and a PR that has
+stopped converging and is being **`repairing`**-ed (`repair-pass.md`); `HELD_STATUSES` in
+`scripts/ledger.py` is the one enumeration, so **do not retype it here**. Merge eligibility is **not**
+derived from the gate counters alone — being held does not lower `reviews_ok`, so a rule that reads only
+the counters would merge a PR whose disputed finding or API change the user has not yet ruled on, or one
+whose diff the reassessment pass is in the middle of rescoping. For a park, only the user's answer unparks
+it, and **to the `status` that
 answer dictates** — `in_review` for a **resume** answer; terminal `aborted` for a **terminal** one (a
 `declined` API change, a `blocker_ruling` of `abort`), which never returns to `in_review` and is never
 merged (`loop-control.md` step 3, "Only the user's answer unparks a PR", owns the mapping). Until the
@@ -164,9 +168,10 @@ subagent at a check that is merely **still running**.
    change below through `scripts/ledger.py … set --pr <N> --<field> <val>` by field name, never by
    hand-editing the row by column position).
 
-   **SKIP PARKED PRs FIRST — before any base refresh, rebase, or conflict handling.** A PR whose
-   `status` is `awaiting-user` or `awaiting-api` is **FROZEN** (`loop-control.md` step 3,
-   "parked-status guard"): this reconcile MUTATES a PR, so it is exactly what the guard forbids. A clean
+   **SKIP HELD PRs FIRST — before any base refresh, rebase, or conflict handling.** A **HELD** PR
+   (`ledger.py … dispatch-check --pr <N>` — parked on a human, or `repairing`) is **FROZEN**
+   (`loop-control.md` step 3,
+   "held-status guard"): this reconcile MUTATES a PR, so it is exactly what the guard forbids. A clean
    rebase would move its `head_sha`, set `ci = pending` and reset its liveness counters (`stage-2-ci.md`,
    "THE LIVENESS COUNTERS"); a conflict-resolving rebase would reset
    `reviews_ok`, relabel, and relaunch work — and would **change the PR's content**, which can invalidate

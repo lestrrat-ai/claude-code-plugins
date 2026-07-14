@@ -37,14 +37,17 @@ the row by column position). Default to **STANDARD** whenever you are unsure. `r
 
 ### 2a. The review gauntlet
 
-**A PARKED PR IS NOT REVIEWABLE — check `status` FIRST.** If `status` is `awaiting-user` or
-`awaiting-api` the PR is **FROZEN**: take no action that **MUTATES** it — no review pass, no
+**A HELD PR IS NOT REVIEWABLE — check `status` FIRST, and check it with the TOOL.** Run `ledger.py …
+dispatch-check --pr <N>`: it exits non-zero on every **HELD** status (`files-and-ledger.md`, `status` —
+the owner; `HELD_STATUSES` in `scripts/ledger.py` is the one place they are enumerated, so **never retype
+that list**). A held PR is **FROZEN**: take no action that **MUTATES** it — no review pass, no
 precondition fix (including the conflict rebase below), no CI fix, no review fix, no merge, and nothing
-else that changes it (`loop-control.md` step 3, "parked-status guard" — the governing property; these
-are only examples). The park leaves
+else that changes it (`loop-control.md` step 3, "held-status guard" — the governing property; these
+are only examples). Held leaves
 `reviews_ok < required(tier)`, so the review-launch rule MUST read `status` too — otherwise the next
-wake re-reviews a PR that is waiting on a HUMAN and a `SATISFIED` verdict merges it **without the
-user's ruling**. The park does **not** change its CI watch either way — observing is not mutating, so the
+wake re-reviews a PR that is **waiting on a HUMAN** (a park) and a `SATISFIED` verdict merges it **without
+the user's ruling**, or re-reviews a PR that has **stopped converging** (`repairing`) and spends round 22
+of a loop that has already been told to stop. The park does **not** change its CI watch either way — observing is not mutating, so the
 watch follows the normal policy (`stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE": alive while a row can still
 move, **not** relaunched once CI has SETTLED). Everything else waits for the user's answer.
 
@@ -758,9 +761,21 @@ unfired — the trigger is a fact about history, and nothing recorded any histor
 `reviews_ok=0 attempts=0`, exactly as it had after round one. `ns_streak` (consecutive `NOT SATISFIED`,
 cleared **only** by a `SATISFIED`) is the same sensor one derivative down.
 
-**This PR adds the counters and NOTHING that reads them** — no cap, no escalation. They are sensors; the
-autonomous reassessment that consumes them lands separately. A counter that is reset by the thing that
-consumes it is not a counter.
+**What READS these counters is `verdict` itself, and at a cap it STOPS THE LOOP.** They are sensors, and
+the reader is fused into the one door that cannot be skipped — deliberately. A cap evaluated by a
+*separate* command is a cap a driver can forget to run, and that is precisely how the "hard backstop" above
+sat unfired through 35 review rounds. The hazard that normally argues for keeping a reader out of a sensor
+— that the reader comes to reset what it consumes — is structurally absent here: **the cap path writes
+`status` and nothing else**, so `review_rounds` stays monotone whatever it decides.
+
+**At a review-loop cap, `verdict` sets `status = repairing` and EXITS NON-ZERO.** The PR has stopped
+converging: **do NOT dispatch a fix subagent and do NOT launch another review pass for it.** Hand its
+**whole history at once** to the **reassessment pass** and execute the one decision it returns —
+`repair-pass.md` owns the caps, the decision enum, and the repair. Ordinary work on that PR is refused by
+`ledger.py … dispatch-check --pr <N>` until the repair lands, so this is not a rule you have to remember.
+
+**A `SATISFIED` NEVER trips a cap.** The gate is moving, and a PR one corroborating pass from merging must
+never be torn up for a repair.
 
 Then, per verdict:
 
@@ -771,7 +786,8 @@ Then, per verdict:
   applies the moment the verdict lands, *before* any fix is written: a PR whose latest verdict says
   NOT SATISFIED must never still read `gauntlet-accepted` on GitHub. **Only GATING findings reach the fix
   path at all** — a non-gating finding is recorded as a follow-up and no fix is dispatched for it (the
-  gating rule, above; `verify` has already refused the pass if a `not-satisfied` recorded none). **Then AUDIT
+  gating rule, above; `verify` has already refused the pass if a `not-satisfied` recorded none). **Then —
+  unless `verdict` just held the PR for repair, in which case NO fix is dispatched at all — AUDIT
   the gating findings — see
   "Audit every finding before you fix it" below; NEVER dispatch a fix for an unaudited finding — and
   dispatch a scoped fix subagent** into `<worktree>` (the PR row's ledger `worktree` column value) with
@@ -803,7 +819,8 @@ Then, per verdict:
   reported. Scope bounds the READING; the sweep bounds the WRITING; the fixer owes you both.
 - **SATISFIED** → record it (`ledger.py … verdict --pr <N> --head-sha <sha> --verdict satisfied`, which
   bumps `reviews_ok` and `review_rounds` and clears `ns_streak` in one write — **never** `set
-  --reviews-ok`, which refuses to raise the tally). The gate is met once this SHA holds `required(tier)` SATISFIED verdicts
+  --reviews-ok`, which refuses to raise the tally). It **never** trips a review-loop cap. The gate is met
+  once this SHA holds `required(tier)` SATISFIED verdicts
   (2, or 1 for TRIVIAL). If the tally is still short of the target — e.g. the **first** SATISFIED on a
   `required==2` PR — the next wake launches the next (corroborating) review on the same SHA. When the
   tally **reaches** `required(tier)` on the same SHA, the review gate is met for this HEAD — swap the

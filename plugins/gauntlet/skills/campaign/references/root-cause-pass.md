@@ -16,8 +16,17 @@ decision applied independently at more than one site. Do **NOT** wait for the re
 sites 2..N over successive rounds — that is the reviewer mapping *your* space for you, one expensive
 review at a time. One such finding is enough to suspect the archetype and map the whole space now. (A
 string of `NOT SATISFIED` findings that are siblings in one structured space — same function/concept,
-different instance — is the same signal arriving late; treat it identically, and see the Bailout
-escalation rung, which forces this pass no later than the 2nd `NOT SATISFIED` on a PR.)
+different instance — is the same signal arriving late; treat it identically.)
+
+**The old "no later than the 2nd `NOT SATISFIED`" backstop is GONE — do not look for it, and do not
+restore it.** It triggered on a fact about history that nothing recorded, evaluated by a wake that
+remembers nothing, and it **never fired once** across 35 review rounds on two PRs
+(`bailout-and-final-report.md`). What backstops this pass now is a **counter with a cap**: at a review-loop
+cap the PR goes `repairing` and a reassessment pass sees **every round at once** and returns one decision —
+and **ROOT-CAUSE is one of the five** (`repair-pass.md`). So this pass is now reached by **two** doors: the
+shape trigger above, which is still the fast one and still the one you should be using, and the
+reassessment, which is the backstop that actually fires. **This file remains the definition of the pass
+itself; the reassessment REUSES it and never reimplements it.**
 
 **Enumeration is a SEPARATE read-only pass — NEVER folded into a fix.**
 

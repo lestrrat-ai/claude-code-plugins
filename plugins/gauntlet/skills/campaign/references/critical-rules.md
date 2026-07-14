@@ -191,15 +191,19 @@
   `blocker_ruling` = `retry`/`abort` (`files-and-ledger.md`, `status`;
   `loop-control.md` step 3, "Only the user's answer unparks a PR"). **NEVER park into a state whose exit
   is undefined.**
-- **A PARKED PR IS FROZEN — TAKE NO ACTION THAT MUTATES IT.** `status = awaiting-user` (standoff) or
-  `awaiting-api` (API approval) means the PR waits on a **HUMAN**. The test is **"does this MUTATE the
+- **A HELD PR IS FROZEN — TAKE NO ACTION THAT MUTATES IT. ASK THE TOOL: `ledger.py … dispatch-check --pr
+  <N>` exits non-zero.** A PR is **HELD** when it is **parked on a HUMAN** (`status = awaiting-user`, a
+  standoff; `awaiting-api`, API approval) **or `repairing`** — it reached a review-loop cap, has stopped
+  converging, and is being reassessed and repaired (`repair-pass.md`; **that one waits on no human — do
+  NOT prompt the user**). `HELD_STATUSES` in `scripts/ledger.py` is the **one** enumeration; never retype
+  it. The test is **"does this MUTATE the
   PR?"** — **not** "is this action named in a list", because an enumeration will miss a site (it did:
   the guard once named four dispatch sites and missed `stage-3-merge.md` step 6's post-merge rebase).
   **NEVER** launch a review pass, a CI fix, a review fix, or a merge for it; **NEVER** rebase it,
   refresh its base, push to it, relabel it, or change its content in any other way — **and nothing
-  absent from that list either**. Skip it and keep driving the run's other PRs. The park does **not**
+  absent from that list either**. Skip it and keep driving the run's other PRs. Being held does **not**
   raise `reviews_ok`, so a dispatch or merge rule that reads only `reviews_ok`/`ci`/`mergeable` would
-  re-review a parked PR and let a `SATISFIED` verdict merge it **without the user's ruling** — and a
+  re-review a held PR and let a `SATISFIED` verdict merge it **without the user's ruling** — and a
   post-merge rebase would change the very content the user is adjudicating. The guard MUST be enforced
   at **every dispatch and mutation site** — `loop-control.md` step 3 (the canonical statement), the
   **merge** and the **post-merge reconcile** (`stage-3-merge.md`) — not merely recorded in the ledger.
@@ -273,8 +277,27 @@
 - One decision at N sites is the most common root cause. Trigger the §2a-deep root-cause pass on the
   **first** "missing/wrong at site X" finding (its shape, not a round count), map the whole space with
   a dedicated **read-only mapper** subagent — never one that also fixes, which under-maps toward what
-  it can reach — and fix at a **single chokepoint**. Hard backstop: a 2nd `NOT SATISFIED` on one PR
-  forces the pass (Bailout).
+  it can reach — and fix at a **single chokepoint**. **The old "2nd `NOT SATISFIED` forces the pass"
+  backstop is GONE — it triggered on history nothing recorded and NEVER FIRED, across 35 review rounds
+  on two PRs.** The backstop now is a **counter with a cap** (`repair-pass.md`), and the root-cause pass
+  is one of the five decisions it can reach.
+- **RECORD EVERY VERDICT WITH `ledger.py verdict` — NEVER hand-set `reviews_ok` for one.** It bumps the
+  loop's memory (`review_rounds`, **never** reset; `ns_streak`), applies the tally, and evaluates the
+  review-loop caps, **atomically**. Hand-setting the tally silently skips the counters and restores the
+  amnesia that let a PR run **21** review rounds while its row still read `reviews_ok=0`. (A gate **reset**
+  from a content change is still `set --reviews-ok 0` — `verdict` records what a reviewer *decided*, `set`
+  records what a commit *did*.)
+- **A PR THAT STOPS CONVERGING IS REPAIRED, NOT PROMPTED.** At a review-loop cap `ledger.py verdict` sets
+  `status = repairing` and **exits non-zero**: dispatch **no** further targeted fix and **no** further
+  review pass. Hand the PR's **whole history at once** to a context-isolated reassessment pass, which
+  returns ONE decision — **RESCOPE / REPAIR-INTENT / DEMOTE / ROOT-CAUSE / ABORT** — and execute it
+  **without asking the user** (`repair-pass.md`). **A cap is a MODE SWITCH, not a doorbell.**
+- **AUTONOMOUS REPAIR NEVER REWRITES A PR CAMPAIGN DOES NOT OWN.** On a PR with `pr_origin = external` —
+  the user's, a teammate's, any PR adopted by number, **and the DEFAULT** — the permitted decisions are
+  **only DEMOTE / REPAIR-INTENT / ABORT**. RESCOPE and ROOT-CAUSE reshape branch content wholesale, and
+  `repair-pass.py` refuses them outright. (Ordinary targeted fixes are unaffected — this is about the
+  wholesale rewrite.) **A second failed repair ABORTS rather than looping**: the mechanism that fixes
+  non-convergence must not itself fail to converge.
 - When a PR's tier requires two reviews they run **sequentially, never queued together**: launch the
   first, wait for its verdict, and launch the second **only if the first came back SATISFIED**. A
   NOT-SATISFIED first review means a fix lands and the SHA changes, so a concurrently-queued second
