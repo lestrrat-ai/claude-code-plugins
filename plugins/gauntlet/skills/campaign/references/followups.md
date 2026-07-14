@@ -207,8 +207,10 @@ hand-edited.
 **The required fields are required at EVERY door an entry can pass through** — `add` refuses to create a
 follow-up without them, and `set` refuses to **empty** one that has them. A rule enforced only where an
 entry is CREATED is not enforced: `set --evidence '   '` an hour later leaves the same rumor, except this
-one the store has already vouched for. Whitespace is not a value, and neither is `-` (what an **unset**
-field holds).
+one the store has already vouched for. **A value that SHOWS nothing is not a value**: whitespace of any
+kind is not, `-` is not (it is what an **unset** field holds), and neither is a character that RENDERS as
+nothing — a zero-width space, a soft hyphen, a BOM. The accessor asks the Unicode category, not a list of
+codepoints, so evidence nobody can see is refused at every door, including the ACT conditions.
 
 **The claim's `evidence` and the investigation's `finding` are DIFFERENT FIELDS, and both matter.** One is
 why the driver **raised** it; the other is what happened when somebody actually **looked**. A finding never

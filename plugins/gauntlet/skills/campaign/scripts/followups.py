@@ -82,6 +82,7 @@ import os
 import re
 import sys
 import tempfile
+import unicodedata
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
@@ -348,16 +349,45 @@ def witness_alternatives() -> "dict[str, tuple[frozenset, ...]]":
 WITNESS = witness_alternatives()
 
 
+# The Unicode categories of a character that SHOWS NOTHING: the separators (`Zs` — every non-ASCII space,
+# U+00A0, U+2000-U+200A, U+3000; `Zl`/`Zp`), the controls (`Cc` — tab, newline, and the C0/C1 range), and
+# the FORMAT characters (`Cf` — the zero-width space U+200B, ZWNJ U+200C, ZWJ U+200D, the word joiner
+# U+2060, the BOM/ZWNBSP U+FEFF, the soft hyphen U+00AD, the bidi overrides).
+#
+# THE CATEGORY IS THE RULE — NEVER A HAND-LIST OF CODEPOINTS. A list is a property plus an enumeration of
+# the cases somebody happened to think of: it is right about U+200B and silently wrong about the next
+# invisible character Unicode adds, and about the one the attacker looked up that the author did not. The
+# category is the property ITSELF, so a codepoint added to the standard tomorrow is covered with no edit
+# here. `unicodedata` carries the Unicode version Python was built against.
+INVISIBLE_CATEGORIES = ("Zs", "Zl", "Zp", "Cc", "Cf")
+
+
+def visible(value: str) -> str:
+    """What is LEFT of a value once every character that renders as NOTHING is taken out of it.
+
+    Not `strip()`: an invisible character is discarded WHEREVER it sits, not only at the ends — otherwise
+    `-​` (a placeholder wearing a zero-width space) reads as a value, which is exactly the bypass.
+    """
+    return "".join(c for c in value if unicodedata.category(c) not in INVISIBLE_CATEGORIES)
+
+
 def is_blank(value: str) -> bool:
-    """A field carries nothing: empty, whitespace, or the placeholder an unset field defaults to.
+    """A field carries nothing: it SHOWS nothing, or it shows only the placeholder an unset field holds.
 
     THE ONE BLANK PREDICATE — every door uses THIS, and none of them re-spells it. A door that tested
     `value.strip()` instead would disagree with this one about the PLACEHOLDER, and the two doors of a
     store must never disagree about what "carries nothing" means: `load()` reads `-` as blank, so a write
     door that ACCEPTS `-` writes an entry that reads back EMPTY — and, for a witness, one `load()` then
     rejects as an illegal history, leaving a store its own accessor can no longer open.
+
+    AND `str.strip()` IS NOT ENOUGH TO ASK IT, which is why `visible()` exists: `"​".strip()` is
+    `"​"` — a zero-width space is not whitespace to Python, so the whole check waved it through. An
+    adversarial reviewer took a follow-up up FOR WORK with U+200B as the evidence for all three ACT
+    conditions: exit 0, state `self-accepted`, and a table of empty-looking cells. A condition ASSERTED
+    but not EVIDENCED is a bypass — and evidence nobody can SEE is not evidence. This predicate is what
+    says so, so it must answer for what a character SHOWS, not for what Python calls whitespace.
     """
-    return value.strip() in ("", PLACEHOLDER)
+    return visible(value) in ("", PLACEHOLDER)
 
 # What the DEFAULT view hides: the CLOSED entries — the ones NOBODY has anything left to do about. Work
 # that FINISHED is not here to be hidden: it is DELETED (the merged PR, or the issue, is the record). What
@@ -812,12 +842,32 @@ def transition_args(cmd: str) -> "list[str]":
     return argv
 
 
+# The INVISIBLE characters, one per category `is_blank()` refuses (`INVISIBLE_CATEGORIES`) — SAMPLES of a
+# rule, never the rule: the predicate answers with `unicodedata.category`, so these are what the fixtures
+# TYPE, not what the code KNOWS. U+200B is the one an adversarial reviewer actually got a `take-up`
+# through with.
+INVISIBLES = (
+    "​",  # Cf — ZERO WIDTH SPACE: the bypass that was executed
+    "‌‍",  # Cf — ZWNJ, ZWJ
+    "⁠",  # Cf — WORD JOINER
+    "﻿",  # Cf — BOM / ZWNBSP
+    "­",  # Cf — SOFT HYPHEN
+    " ",  # Zs — NO-BREAK SPACE
+    " ",  # Zs — EM SPACE
+    "　",  # Zs — IDEOGRAPHIC SPACE
+    " ",  # Zl — LINE SEPARATOR
+    "\x01",  # Cc — a C0 control that is not whitespace
+)
+
 # EVERY spelling of "carries nothing" that `is_blank()` recognises — the vocabulary EVERY door must
 # refuse, used by every fixture that tests a blank. PLACEHOLDER is IN IT, and that is the whole point: it
-# is what an UNSET field holds, so a door that accepts it writes an entry that reads back EMPTY. Spelled
-# once, here: a fixture carrying its own private list of blanks is how `-` slipped past three doors at
-# once while every one of them looked tested.
-BLANKS = ("", "   ", "\t", PLACEHOLDER)
+# is what an UNSET field holds, so a door that accepts it writes an entry that reads back EMPTY. So are the
+# INVISIBLES, and the placeholder DRESSED in one (`-​`): a character that renders as nothing is not a
+# value, wherever in the string it sits. Spelled once, here: a fixture carrying its own private list of
+# blanks is how `-` slipped past three doors at once while every one of them looked tested — so every
+# fixture that loops over BLANKS picked the invisible family up the day it was added, with no edit.
+BLANKS = ("", "   ", "\t", PLACEHOLDER, *INVISIBLES,
+          f"​{PLACEHOLDER}​", f" {PLACEHOLDER}﻿")
 
 
 def write_lines(path: Path, *lines: str) -> Path:
@@ -1544,6 +1594,48 @@ def t_act_edge_needs_every_condition(tmp: Path) -> None:
               f"{entry!r}")
 
 
+def t_invisible_evidence_is_not_evidence(tmp: Path) -> None:
+    """EVIDENCE NOBODY CAN SEE IS NOT EVIDENCE — and a zero-width space walked through every door.
+
+    `is_blank()` used to ask `value.strip()`, and Python does not call U+200B whitespace. So an adversarial
+    reviewer ran `take-up` with a ZERO WIDTH SPACE as the evidence for all three ACT condition flags: exit
+    0, state `self-accepted`, and a table whose cells rendered EMPTY. The driver had self-approved work on
+    grounds that are literally invisible — through the one check whose entire purpose is to refuse a
+    condition that is asserted and not evidenced.
+
+    THE RULE IS THE UNICODE CATEGORY, NOT A LIST. This asserts the PROPERTY on characters the code names
+    nowhere: `visible()` keeps what SHOWS something and drops every `Cf`/`Cc`/`Z*`, so the codepoint added
+    to the standard tomorrow is refused with no edit here. Narrow `is_blank()` back to `.strip()` — or drop
+    any category from `INVISIBLE_CATEGORIES` — and this goes red.
+    """
+    # The PROPERTY, over the whole Unicode range — not the samples in `INVISIBLES`, which are only what the
+    # fixtures can type. Every character in a refused category is blank; nothing outside them is.
+    for cp in range(0x110000):
+        ch = chr(cp)
+        if unicodedata.category(ch) in INVISIBLE_CATEGORIES:
+            check(is_blank(ch) and is_blank(PLACEHOLDER + ch),
+                  f"U+{cp:04X} ({unicodedata.category(ch)}) renders as NOTHING and is read as a VALUE")
+    for ch in ("x", "-x", "—", "…", "0"):
+        check(not is_blank(ch), f"{ch!r} SHOWS something and was read as blank")
+
+    # …and the ACT edge — the door the bypass was executed at — REFUSES it, for every condition flag, in
+    # every spelling. The store must still LOAD afterwards, and the entry must NOT have moved.
+    for witness in ACT_FLAGS:
+        path = tmp / f"invisible-{witness}.jsonl"
+        (fid,) = seed(path)
+        run(["--file", str(path), "corroborate", "--id", fid, "--finding", "reproduced"])
+        for blank in INVISIBLES:
+            values = [a for f in ACT_FLAGS for a in (FLAG[f], blank if f == witness else "x")]
+            code, _, err = run(["--file", str(path), ACT_CMD, "--id", fid, *values])
+            check(code == 1,
+                  f"`{ACT_CMD}` with an INVISIBLE {FLAG[witness]} ({blank!r}) was ACCEPTED (exit {code}) — "
+                  f"the driver self-approved work on evidence nobody can see")
+            check("bypass" in err, f"`{ACT_CMD}` failed for the wrong reason: {err!r}")
+        check(state_of(path, fid) == "corroborated",
+              f"a refused `{ACT_CMD}` moved the state anyway — it reached {TRANSITIONS[ACT_CMD][1]!r} on "
+              f"invisible grounds")
+
+
 def t_self_accepted_is_never_mistaken_for_accepted(tmp: Path) -> None:
     """A follow-up the USER agreed to and one the DRIVER took up are DIFFERENT THINGS — forever, and at a
     glance.
@@ -1972,6 +2064,7 @@ CASES = [
     ("closed-pr-reopens", "a PR closed WITHOUT merging returns the entry to open work — it never vanishes with it", t_a_closed_pr_returns_the_entry_to_open_work),
     ("rejection-kept", "a REJECTED follow-up is kept — deleting it is how the next run re-raises it", t_a_rejection_is_never_deleted),
     ("act-needs-conditions", "the autonomous ACT edge must EVIDENCE every condition, or it is refused", t_act_edge_needs_every_condition),
+    ("invisible-evidence", "a character that renders as NOTHING is not evidence — the rule is the Unicode category", t_invisible_evidence_is_not_evidence),
     ("self-accept-distinct", "a DRIVER-accepted follow-up is never mistaken for a USER-accepted one", t_self_accepted_is_never_mistaken_for_accepted),
     ("doc-and-code-agree", "the ACT conditions the driver READS are the ones the code ENFORCES", t_the_doc_and_the_code_agree),
     ("investigation-evidence", "an investigation shows its work; the finding APPENDS and never clobbers", t_investigation_shows_its_work),
