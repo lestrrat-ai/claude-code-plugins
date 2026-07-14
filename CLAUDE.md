@@ -119,9 +119,39 @@ every place that RESTATES it is correct.**
 
 **Sweep for restatements. Every time. Before you call it fixed.**
 
-- `grep` for the old value, the old spelling, the old command, the old number — not just the file you
-  edited. Restatements hide in **summaries**, **quick-reference bullets**, **cross-references**, **table
-  rows**, **worked examples**, and **other copies of the same command**.
+- **Enumerate SEMANTICALLY first, then search for the identifiers that enumeration names.** That is the
+  method for **every** definition or fact change — one you EDITED and one you just INTRODUCED alike. List
+  every site that **does or states the thing the rule governs**, search for those behavior identifiers (the
+  field, the state, the command, the cap), and check every hit. Restatements hide in **summaries**,
+  **quick-reference bullets**, **cross-references**, **table rows**, **worked examples**, and **other
+  copies of the same command** — not just the file you edited.
+- **`grep` for the old value, the old spelling, the old command, the old number is ONE INPUT to that
+  sweep, never the sweep itself** — `grep` cannot tell you WHAT to search for. A restatement is greppable
+  only if it COPIED the old value; one that **PARAPHRASES** the rule contains no old string, and an EDIT
+  has just as many paraphrases as an introduction — the drifted "green" summary below paraphrased a rule
+  that was rewritten three times, and no search for an old value would ever have reached it. An INTRODUCED
+  rule is the same trap at its sharpest: there is no old string at all, and searching for the new rule's
+  own WORDING or NAME matches only the sites you already fixed, so it reports success every time and is
+  wrong every time. The shape of that miss (**INVENTED strings — they exist nowhere in this repo, see the
+  bullet below**): you add *"a re-queue must reset the freshness counters"*, and a line elsewhere already
+  reads *"it only bumps `retry_epoch`"* — a stale restatement of your brand-new rule that shares not one
+  word with it. None of this is a licence to skip text search: searching for the **behavior identifiers the
+  rule governs** (here, `retry_epoch` — which only the enumeration could have told you to look for) is HOW
+  you execute the enumeration.
+- **An illustration of a defect must never be a live string in the tree.** When you quote a bad line as an
+  example, quote one that exists **nowhere** — invent it, and say you invented it. Quote a real one and the
+  doc becomes a false-positive generator: the next sweeper searches for the example, lands on the live site,
+  and condemns correct text. If a real quotation is unavoidable, mark it HISTORICAL unmistakably — but
+  prefer the invented one: that marking has to say where the phrase is still live and why it is correct
+  there, which is a fact about the tree, and it rots. **An example a reader can act on by mistake is worse
+  than no example.**
+- **A pointer with a gloss is still a restatement.** A site that points at the owner and then "just
+  briefly" restates it — *"reset the liveness counters (`settled_strikes`, `unusable_refetches`)"* — has
+  copied the definition into the gloss. The pointer stays right while the gloss silently goes wrong, and
+  the gloss is the part people read. **Name the set; do not unpack it.** This survives every sweep that
+  asks "does this site point at the owner?", because it does.
+- **Prefer a mechanical check to an exhortation.** "Sweep thoroughly" cannot fail. "`rg -Un '<value>'`
+  returns exactly one hit, and here is every hit accounted for" can — reconcile the output out loud.
 - A **summary that has drifted from its definition is worse than no summary**: it is the version people
   actually read, and it will be believed. A one-line "green means zero failing and zero pending" outlived
   three rewrites of the rule it summarised, and silently discarded both of that rule's disclosed caveats.

@@ -109,8 +109,8 @@ argument point the same way.
 beyond the named files — an unscoped fixer re-reads everything it was already told), and **SWEEP** the
 writing (a fix that changes a definition or a fact is not done until every site that RESTATES it is
 correct — the contract's sweep-and-report block goes into the prompt **verbatim**). Read narrowly to
-UNDERSTAND, grep widely to FINISH. Read the contract before dispatching a fixer; do not reconstruct it
-from this summary.
+UNDERSTAND, sweep widely to FINISH — and the contract, not this line, defines how to sweep. Read the
+contract before dispatching a fixer; do not reconstruct it from this summary.
 
 ## Load Discipline
 
