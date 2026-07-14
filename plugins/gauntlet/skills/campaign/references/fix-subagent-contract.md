@@ -76,16 +76,27 @@ the one line it was pointed at and leave the class intact:
 >
 > An INTRODUCED rule is the same trap at its sharpest: there is no old string to hunt at all, and
 > **searching for the new rule's own WORDING or NAME matches only the sites you already fixed, so it
-> reports success every time and is wrong every time.** A sentence reading "it only sets `ci = pending`" is
-> a stale restatement of a brand-new counter-reset rule and shares not one word with it.
+> reports success every time and is wrong every time.** The shape of that miss — **INVENTED strings, they
+> exist nowhere in this repo, see the rule below**: you add *"a re-queue must reset the freshness
+> counters"*, and somewhere else a line already reads *"it only bumps `retry_epoch`"*. That line is now a
+> stale restatement of your brand-new rule, and it shares **not one word** with it — no search for the
+> rule's wording, its name, or any old value will ever reach it.
 >
 > **This does NOT mean text search is useless** — believing that swaps one incomplete method for another,
 > and makes you skip a search that would have worked. Searching for the **BEHAVIOR IDENTIFIERS the rule
 > governs** — the field, the state, the command, the cap's name — is legitimate and necessary; it is HOW
-> you execute the sweep. The site that survived five sweeps on one PR read *"the bailout is disabled while
-> `ci == pending`"*: `ci`, `pending` and `bailout` are all greppable, and a search WOULD have found it —
-> **but only once you knew to look for sites that describe what the bailout keys off.** Nothing in the new
-> rule's wording tells you that.
+> you execute the sweep. Continue the invented example: *"it only bumps `retry_epoch`"* names a field, and
+> a search for `retry_epoch` WOULD have found it — **but only once you enumerated the sites that state what
+> a re-queue does.** Nothing in the new rule's own wording ("reset the freshness counters") tells you to go
+> looking for `retry_epoch`. That is the whole gap the enumeration closes.
+>
+> **AN ILLUSTRATION OF A DEFECT MUST NEVER BE A LIVE STRING IN THE TREE.** When you quote a bad line as an
+> example — here or in any doc you fix — quote one that exists **nowhere**, invent it, and say you invented
+> it. Quote a real one and the doc becomes a false-positive generator: the next sweeper searches for the
+> example, lands on the live site, and condemns text that is correct. If a real quotation is truly
+> unavoidable, mark it HISTORICAL unmistakably — but prefer the invented one, because that marking has to
+> say **where** the phrase is still live and **why** it is correct there, which is a fact about the tree,
+> and it rots. **An example a reader can act on by mistake is worse than no example.**
 >
 > So, for EVERY definition or fact change alike: **enumerate SEMANTICALLY first, then search for the
 > identifiers the enumeration names.** List every site that **DOES OR STATES THE THING THE RULE GOVERNS** —

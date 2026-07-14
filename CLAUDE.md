@@ -132,9 +132,19 @@ every place that RESTATES it is correct.**
   that was rewritten three times, and no search for an old value would ever have reached it. An INTRODUCED
   rule is the same trap at its sharpest: there is no old string at all, and searching for the new rule's
   own WORDING or NAME matches only the sites you already fixed, so it reports success every time and is
-  wrong every time — *"it only sets `ci = pending`"* restates a brand-new counter-reset rule and shares not
-  one word with it. None of this is a licence to skip text search: searching for the **behavior identifiers
-  the rule governs** is HOW you execute the enumeration.
+  wrong every time. The shape of that miss (**INVENTED strings — they exist nowhere in this repo, see the
+  bullet below**): you add *"a re-queue must reset the freshness counters"*, and a line elsewhere already
+  reads *"it only bumps `retry_epoch`"* — a stale restatement of your brand-new rule that shares not one
+  word with it. None of this is a licence to skip text search: searching for the **behavior identifiers the
+  rule governs** (here, `retry_epoch` — which only the enumeration could have told you to look for) is HOW
+  you execute the enumeration.
+- **An illustration of a defect must never be a live string in the tree.** When you quote a bad line as an
+  example, quote one that exists **nowhere** — invent it, and say you invented it. Quote a real one and the
+  doc becomes a false-positive generator: the next sweeper searches for the example, lands on the live site,
+  and condemns correct text. If a real quotation is unavoidable, mark it HISTORICAL unmistakably — but
+  prefer the invented one: that marking has to say where the phrase is still live and why it is correct
+  there, which is a fact about the tree, and it rots. **An example a reader can act on by mistake is worse
+  than no example.**
 - **A pointer with a gloss is still a restatement.** A site that points at the owner and then "just
   briefly" restates it — *"reset the liveness counters (`settled_strikes`, `unusable_refetches`)"* — has
   copied the definition into the gloss. The pointer stays right while the gloss silently goes wrong, and
