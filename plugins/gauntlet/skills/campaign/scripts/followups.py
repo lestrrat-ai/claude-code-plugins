@@ -262,6 +262,25 @@ FLAG = {"finding": "--finding", "published": "--ref", "decided": "--at", "pr": "
         **{f: flag_of(f) for f in ACT_FLAGS}}
 OPTIONAL = ("decided",)
 
+# --- the stamp: WHERE `--at` MEANS ANYTHING (owned here, once) -----------------
+#
+# THE FIELDS A STEP'S TIMESTAMP GOES INTO. `decided` IS the stamp — the USER's ruling, and when they made
+# it. `finding` EMBEDS it — an investigation's record opens `[<outcome> <at>]`. A transition that writes
+# NEITHER has nowhere to put a timestamp at all.
+STAMPED = ("decided", "finding")
+
+# …so those are the ONLY steps that may OFFER `--at`, and which ones they are is DERIVED from what each edge
+# WRITES — never listed. `--at` used to be offered by EVERY transition and read by only these:
+# `open-pr --at 1999-01-01T00:00:00Z` exited 0, and that timestamp appeared NOWHERE — not in the entry, not
+# on stdout. The caller believes they set a value; the tool tells them it worked; the value is gone.
+#
+# ANYTHING THIS TOOL ACCEPTS, IT MUST EITHER USE OR REFUSE. A silently discarded value is never acceptable —
+# so on a step that stamps nothing, `--at` is not a flag at all and argparse REFUSES it, loudly, at exit 2.
+# That is the other half of the rule this store already keeps on the way OUT (`dump()` refuses to write what
+# `load()` could not read back), and `t_no_door_takes_a_value_it_does_not_use` holds EVERY flag of EVERY
+# subcommand to it — asked of the REAL parser, so the next flag added is covered the day it is added.
+STAMPS = tuple(c for c in TRANSITIONS if set(WRITES[c]) & set(STAMPED))
+
 # Why a blank value is refused, per field. A field that may be blank is not a value — and for a WITNESS it
 # is worse than that: `load()` reads a blank witness as a history no legal path produces, so the store STOPS
 # OPENING. One reason per INTAKE field, and the fixture pins that: a new writable field with no reason here
@@ -271,9 +290,10 @@ BLANK_WHY = {
     "published": "a published follow-up must name WHERE it was published",
     "pr": "the PR is the DURABLE RECORD this entry's deletion will rest on — an entry that says one is "
           "addressing it must name WHICH",
-    "decided": "the USER's ruling is stamped with WHEN it was made — a stamp that shows nothing is no "
-               "stamp, and `load()` then reads the entry as one the user never ruled on: an illegal "
-               "history, and the WHOLE STORE stops opening. Omit --at and it stamps now",
+    "decided": "a step is stamped with WHEN it was taken — the USER's ruling into `decided`, an "
+               "investigation's into its `finding` record. A stamp that shows nothing is no stamp, and "
+               "`load()` then reads a ruled-on entry as one the user never ruled on: an illegal history, "
+               "and the WHOLE STORE stops opening. Omit --at and it stamps now",
     "found": "a follow-up records WHEN it was found — omit --found and it stamps now",
     "found_run": "--run names the RUN that found it — omit it and the entry simply carries no run",
     **{f: "a follow-up without it is a rumor — and this one the store may already have VOUCHED for"
@@ -343,9 +363,12 @@ INTAKE = {
             "found_run": "--run",     # the run-id that found it — an ordinary value, and so an ordinary
             "found": "--found"},      # blank check: the two that were read by hand, next to the one that was
     "set": {f: flag_of(f) for f in EDITABLE},
-    # Every transition takes `--at` (it stamps `decided` where the edge writes one, and the finding record
-    # otherwise), plus whatever evidence the edge must leave behind.
-    **{cmd: {**{f: FLAG[f] for f in WRITES[cmd]}, "decided": FLAG["decided"]} for cmd in TRANSITIONS},
+    # A transition takes whatever evidence its edge must leave behind — and `--at` ONLY IF IT STAMPS
+    # SOMETHING (`STAMPS`, derived from `WRITES`: the user's ruling stamps `decided`, an investigation stamps
+    # its `finding` record). On an edge that stamps neither, `--at` would be a value the door ACCEPTS and
+    # THROWS AWAY, so it is not a flag there at all — argparse refuses it. USE IT OR REFUSE IT; never both.
+    **{cmd: {**{f: FLAG[f] for f in WRITES[cmd]},
+             **({"decided": FLAG["decided"]} if cmd in STAMPS else {})} for cmd in TRANSITIONS},
 }
 
 # Every door that WRITES. Derived — a subcommand is a write door because it takes values in, not because a
@@ -824,9 +847,11 @@ def cmd_transition(path: Path, args) -> int:
                 f"{args.id} is '{entry['state']}' — `{cmd}` applies only to: {', '.join(frm)}. "
                 f"A follow-up reaches '{to}' only along the transition graph; nothing else moves `state`."
             )
-        # The user's ruling is DURABLE DATA, exactly like the ledger's `api_approval`: a later run — or a
-        # fresh agent that never saw the conversation — reads it and does not re-ask. OMITTED, the stamp
-        # defaults to now; SUPPLIED, it is a value like any other and `taken()` has already refused a blank.
+        # WHEN this step was taken. The user's ruling is DURABLE DATA, exactly like the ledger's
+        # `api_approval`: a later run — or a fresh agent that never saw the conversation — reads it and does
+        # not re-ask. OMITTED, the stamp defaults to now; SUPPLIED (`--at`), it is a value like any other and
+        # `taken()` has already refused a blank. It is offered ONLY where it lands somewhere (`STAMPS`) — an
+        # edge that stamps nothing does not take it, so there is no value here to throw away.
         stamp = values.get("decided") or now_iso()
         for field in WRITES[cmd]:
             if field in OPTIONAL:
@@ -987,6 +1012,85 @@ def subcommands(parser: argparse.ArgumentParser) -> "dict[str, argparse.Argument
         if isinstance(action, argparse._SubParsersAction):  # noqa: SLF001
             return action.choices
     raise SelfTestFailure("the parser has no subcommands — the CLI is not what this file thinks it is")
+
+
+# The TWO values each flag is PROBED with, to prove the tool actually READS it (see
+# `t_no_door_takes_a_value_it_does_not_use`). Any flag that carries a store FIELD needs no entry here: the
+# pair is DERIVED, because `INTAKE` already says any non-blank string is a legal value for it — so a write
+# flag added tomorrow is probed on the day it is added, with no edit. What is spelled here is the flags whose
+# value is STRUCTURED — a field name, a `<field>=<value>` filter, a switch that carries no value at all —
+# because only a legal one exercises the door rather than bouncing off its own validation. `--id` is derived
+# too (it names an ENTRY, so the pair is "one that exists" and "one that does not").
+#
+# A flag with NO PROBE FAILS the fixture. That is the point: a new flag is either derivable — which means it
+# is registered in INTAKE, hence validated AND probed — or it is declared here. Either way it is EXERCISED,
+# and a value nothing reads cannot slip in behind a table nobody updated.
+PROBE = {
+    ("get", "field"): ("title", "state"),
+    ("list", "where"): ("state=candidate", "state=rejected"),
+    ("table", "fields"): ("id,title", "id,state"),
+    ("table", "show_all"): (False, True),  # a switch takes no value: it is PRESENT, or it is not
+}
+
+# The id no probe store ever holds — the "and one that does not exist" half of `--id`'s pair.
+ABSENT_ID = "fu99"
+
+
+def probe_pair(cmd: str, dest: str, fid: str) -> "tuple | None":
+    """The two values `--<dest>` is probed with on `cmd` — DERIVED where it can be, DECLARED where it cannot.
+
+    None means NOBODY KNOWS HOW TO EXERCISE THIS FLAG, and that is a failure, never a skip: an unprobed flag
+    is exactly the one whose value could be silently dropped with nothing to notice.
+    """
+    if dest == "id":
+        return (fid, ABSENT_ID)  # the KEY: an entry that EXISTS, and one that does not
+    if dest in INTAKE.get(cmd, {}):
+        # A store field: `INTAKE` is the promise that any non-blank string is a legal value for it.
+        return (f"probe-one-{dest}", f"probe-two-{dest}")
+    return PROBE.get((cmd, dest))
+
+
+def probe_store(path: Path, cmd: str) -> str:
+    """A store `cmd` can be driven against LEGALLY, and the id of the entry to drive it at.
+
+    Two entries, because ONE would not do: the second is REJECTED, so the default table HIDES it. Without a
+    hidden entry `table --all` prints the same thing with the switch and without it, and a switch NOTHING
+    READS would look consumed. A probe corpus that cannot tell the two apart is a probe that passes for the
+    wrong reason.
+    """
+    a, b = seed(path, 2)
+    code, _, err = run(["--file", str(path), "reject", "--id", b])
+    check(code == 0, f"probe setup: `reject` exited {code}: {err!r}")
+    check(TRANSITIONS["reject"][1] in TABLE_HIDDEN_STATES,
+          "the probe store's second entry is not HIDDEN by the default view — `table --all` would show the "
+          "same thing with the switch and without it, and a switch nothing reads would look consumed")
+    if cmd in TRANSITIONS:
+        drive_to(path, a, TRANSITIONS[cmd][0][0])  # …into a state the edge may be applied FROM
+    return a
+
+
+def probe_argv(cmd: str, fid: str, dest: str, value) -> "list[str]":
+    """The argv for `cmd` with ONE flag set to `value` and every REQUIRED flag carrying a legal one.
+
+    Which flags are REQUIRED is read off the PARSER's own `required`, never restated — so a door that gains a
+    mandatory flag tomorrow is still driven legally here, and an OPTIONAL flag is left out (the door is
+    supposed to work without it).
+    """
+    argv = [cmd]
+    for action in subcommands(build_parser())[cmd]._actions:  # noqa: SLF001
+        if not action.option_strings or action.dest == "help":
+            continue
+        if action.dest != dest and not action.required:
+            continue
+        pair = probe_pair(cmd, action.dest, fid)
+        check(pair is not None, f"`{cmd} {'/'.join(action.option_strings)}` has no probe (see `probe_pair`)")
+        got = value if action.dest == dest else pair[0]
+        if action.nargs == 0:  # a switch: it is PRESENT, or it is not — it carries nothing
+            if got:
+                argv.append(action.option_strings[0])
+        else:
+            argv += [action.option_strings[0], str(got)]
+    return argv
 
 
 def write_argv(cmd: str, fid: str, field: str, value: str) -> "list[str]":
@@ -1503,6 +1607,95 @@ def t_every_value_the_cli_takes_is_validated(tmp: Path) -> None:
     code, out, err = run(["--file", str(path), "accept", "--id", fid, "--at", "2026-01-01T00:00:00Z"])
     check(code == 0, f"`accept --at <stamp>` was refused: {err!r}")
     check(json.loads(out)["decided"] == "2026-01-01T00:00:00Z", f"the stamp was not written: {out!r}")
+
+
+def t_no_door_takes_a_value_it_does_not_use(tmp: Path) -> None:
+    """NOTHING THE CLI ACCEPTS IS SILENTLY DISCARDED — every flag of every subcommand is USED, or it is not
+    a flag there and argparse REFUSES it.
+
+    THE OTHER HALF OF A RULE THIS STORE ALREADY KEEPS. `dump()` refuses to write what `load()` could not read
+    back: anything the tool WRITES, it must be able to READ. The missing half was: ANYTHING THE TOOL ACCEPTS,
+    IT MUST EITHER USE OR REFUSE. `--at` was offered on EVERY transition and consumed by only the four that
+    stamp something — `open-pr --id fu1 --pr '#1' --at 1999-01-01T00:00:00Z` exited 0, and that timestamp
+    appeared NOWHERE: not in the entry, not in the store, not on stdout. The caller believes they set a
+    value. The tool told them it worked. `take-up`, `closed-unmerged`, `merged` and `publish` did the same.
+    A DOCUMENTED silent discard would still be a silent discard, so `--at` is now offered ONLY where it lands
+    (`STAMPS`), and everywhere else it is an argparse ERROR.
+
+    THAT WAS THE INSTANCE. THIS FIXTURE IS THE CLASS, and it is why the next flag cannot repeat it:
+
+      1. THE FLAGS COME OFF THE REAL PARSER — every subcommand, every flag, never a list of what exists
+         today. A flag added tomorrow is in this loop the day it is added.
+      2. EVERY ONE OF THEM IS EXERCISED with TWO legal values, and the tool must BEHAVE DIFFERENTLY on them:
+         different exit code, stdout, stderr, or store on disk. A flag whose two values leave the tool
+         BYTE-IDENTICAL in everything it produces is a flag NOTHING READS.
+      3. A FLAG WITH NO PROBE FAILS — never skips. An unexercised flag is precisely the one that could be
+         dropped with nothing to notice, so "the fixture did not know how to drive it" is a failure of the
+         fixture, reported as one.
+
+    Add a flag to any door and wire it to nothing — this goes RED naming it. That is the whole guarantee:
+    `INTAKE` proves a value is VALIDATED, and validating a value you then throw away fixes nothing.
+
+    (`--file` is not probed here: it is the top-level flag naming the store, and every single run in this
+    suite passes a different one. Were it dropped, not one fixture in this file could pass.)
+    """
+    subs = subcommands(build_parser())
+    for cmd, dest in PROBE:
+        check(cmd in subs and any(a.dest == dest for a in subs[cmd]._actions),  # noqa: SLF001
+              f"PROBE names `{cmd}`/{dest!r}, which the CLI does not offer — a stale probe pins nothing, and "
+              f"a flag it was written for may have been renamed out from under it")
+
+    probed = 0
+    for cmd, sub in subs.items():
+        for action in sub._actions:  # noqa: SLF001
+            if not action.option_strings or action.dest == "help":
+                continue
+            dest, flag = action.dest, "/".join(action.option_strings)
+            path = tmp / f"{cmd}-{dest}.jsonl"
+            fid = probe_store(path, cmd)
+            pair = probe_pair(cmd, dest, fid)
+            check(pair is not None,
+                  f"`{cmd} {flag}` is a flag NOTHING PROBES — so nothing here says whether its value is used "
+                  f"or silently DROPPED, which is the exact defect this fixture exists to catch. Register it "
+                  f"in INTAKE (the probe is then derived) or give it a legal pair in PROBE")
+            # The SAME store for both runs, byte for byte — a difference must come from the FLAG, never from
+            # the setup (`seed()` stamps `found` with the clock, and two runs can straddle a second).
+            before = path.read_text()
+            seen = []
+            for value in pair:
+                path.write_text(before)
+                code, out, err = run(["--file", str(path), *probe_argv(cmd, fid, dest, value)])
+                seen.append((code, out, err, path.read_text()))
+            check(seen[0] != seen[1],
+                  f"`{cmd} {flag}` ACCEPTED two DIFFERENT values ({pair[0]!r} and {pair[1]!r}) and produced "
+                  f"BYTE-IDENTICAL output AND store — the value is DISCARDED, and the caller who passed it "
+                  f"was told it worked. USE IT OR REFUSE IT: consume the value, or do not offer the flag on "
+                  f"`{cmd}` at all.\n  exit   {seen[0][0]}\n  stdout {seen[0][1]!r}\n  stderr {seen[0][2]!r}"
+                  f"\n  store  {seen[0][3]!r}")
+            probed += 1
+
+    check(probed > 0, "NOT ONE flag was probed — the fixture passed by looping over nothing")
+    # …and `--at` is where the rule was learned, so the shape of that bug is pinned by name: it is offered by
+    # the steps that STAMP something and by NOTHING else. Derived from WRITES, so an edge that starts (or
+    # stops) stamping moves this with it.
+    offers = {c for c in TRANSITIONS if "decided" in INTAKE[c]}
+    check(offers == set(STAMPS),
+          f"`--at` is offered by {sorted(offers)!r} and stamps something on {sorted(STAMPS)!r} — on the "
+          f"difference it is accepted and thrown away")
+    for cmd in TRANSITIONS:
+        path = tmp / f"at-{cmd}.jsonl"
+        fid = probe_store(path, cmd)
+        code, _, err = run(["--file", str(path), cmd, "--id", fid, *transition_args(cmd),
+                            "--at", "1999-01-01T00:00:00Z"])
+        if cmd in STAMPS:
+            check(code == 0, f"`{cmd} --at` was REFUSED (exit {code}) — it stamps something: {err!r}")
+            check("1999-01-01T00:00:00Z" in path.read_text(),
+                  f"`{cmd} --at 1999-01-01T00:00:00Z` exited 0 and the stamp is NOT IN THE STORE")
+        else:
+            check(code == 2,
+                  f"`{cmd} --at 1999-01-01T00:00:00Z` exited {code} — `{cmd}` stamps NOTHING, so it must "
+                  f"REFUSE the flag (argparse, exit 2), not accept the value and throw it away")
+            check("unrecognized arguments" in err, f"`{cmd} --at` failed for the wrong reason: {err!r}")
 
 
 def t_investigation_shows_its_work(tmp: Path) -> None:
@@ -2345,12 +2538,23 @@ def t_the_harness_reports_a_fatal_fixture(tmp: Path) -> None:
     # executes: the fixture passes without testing anything, and the suite is louder about nothing.
     for corpus, label in ((BLANKS, "BLANKS"), (ledger.HOSTILE, "ledger.HOSTILE"),
                           (TRANSITIONS, "TRANSITIONS"), (STATES, "STATES"), (FIELDS, "FIELDS"),
-                          (INTAKE, "INTAKE"), (WRITE_CMDS, "WRITE_CMDS")):
+                          (INTAKE, "INTAKE"), (WRITE_CMDS, "WRITE_CMDS"), (PROBE, "PROBE"),
+                          (STAMPS, "STAMPS")):
         check(len(corpus) > 0, f"{label} is EMPTY — every fixture that loops over it passes vacuously")
-    # …and an INTAKE row that is empty is the same lie one level down: the door is looped over, every field
-    # of it is not, and the blank fixture reports a door it never actually knocked on.
+    # …and the INTAKE rows are the same lie one level down, in BOTH directions. A row with FEWER fields than
+    # the door has flags is a door the blank fixture loops over and never actually knocks on — it reports a
+    # value it never tried. A row with MORE is a field the CLI cannot even take. Neither is a judgment about
+    # SIZE: an EMPTY row is perfectly honest for a door that takes no value at all (`merged` and
+    # `closed-unmerged` carry no evidence and stamp nothing, so they offer nothing but the key `--id`) — the
+    # lie is a row that DISAGREES WITH THE PARSER, and that is what is asked. (`--id` is the door's KEY, not
+    # a value going into an entry; the value-flag check that owns it is `nothing-accepted-is-dropped`.)
+    subs = subcommands(build_parser())
     for cmd, table in INTAKE.items():
-        check(len(table) > 0, f"INTAKE[{cmd!r}] is EMPTY — `{cmd}` is 'covered' by a loop over no fields")
+        offered = {a.dest for a in subs[cmd]._actions  # noqa: SLF001
+                   if a.option_strings and a.dest not in ("help", "id")}
+        check(offered == set(table),
+              f"INTAKE[{cmd!r}] holds {sorted(table)} and `{cmd}` offers {sorted(offered)} — the door is "
+              f"'covered' by a loop over fields it does not take, or takes values that loop never reaches")
 
 
 CASES = [
@@ -2373,6 +2577,7 @@ CASES = [
     ("required-not-editable-away", "a REQUIRED field cannot be BLANKED through `set` — the rule holds where an entry CHANGES, not only where it was made", t_required_cannot_be_edited_away),
     ("no-unreadable-store", "no write door can write a store `load()` refuses — every door shares ONE blank predicate", t_no_door_writes_a_store_that_will_not_load),
     ("every-value-validated", "EVERY value the CLI takes, at EVERY write door, passes the blank predicate — a flag that skips it cannot exist", t_every_value_the_cli_takes_is_validated),
+    ("nothing-accepted-is-dropped", "EVERY flag of EVERY subcommand is USED — a value the CLI accepts and discards cannot exist", t_no_door_takes_a_value_it_does_not_use),
     ("ids-never-reused", "ids are assigned by the store, sequential, and NEVER reused", t_ids_are_assigned_and_never_reused),
     ("store-validated", "a corrupt store is rejected, never silently repaired; a missing one is empty", t_store_is_validated),
     ("defaults-backfill", "an entry written before a field existed reads back complete — as a CANDIDATE", t_defaults_backfill),

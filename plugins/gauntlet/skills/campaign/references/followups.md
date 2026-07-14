@@ -222,6 +222,16 @@ never ruled on, which is a history `load()` calls illegal, and **the whole store
 these follow-ups have no other copy anywhere. A write that would leave the store unreadable is refused at
 the write, with the file on disk untouched.
 
+**And nothing the CLI accepts is thrown away.** Validating a value you then discard fixes nothing, so the
+rule has a second half: **anything this tool accepts, it must either USE or REFUSE** — the mirror of the one
+it already keeps on the way out (it will not write a store it could not read back). So a flag exists on a
+subcommand **only where that subcommand consumes it**: `--at` is offered by the steps that **stamp**
+something and by no others, and passing it anywhere else is an argparse **error**, not a value that
+vanishes. `<cmd> --help` names every flag that command takes — and the self-test
+(`nothing-accepted-is-dropped`) exercises **every flag of every subcommand** with two values and requires
+the tool to behave differently on them, so a flag wired to nothing turns CI red the day it is added. Never
+"document" a dropped value: a documented silent discard is still a silent discard.
+
 **The claim's `evidence` and the investigation's `finding` are DIFFERENT FIELDS, and both matter.** One is
 why the driver **raised** it; the other is what happened when somebody actually **looked**. A finding never
 overwrites the claim, and a second investigation never overwrites the first — it **appends**. The driver
