@@ -89,7 +89,12 @@ For each `#PR` to adopt:
    (`ledger.py --file <state.jsonl> get --pr <N>`): if a row already exists (re-adoption / resume),
    **refresh it in place** with `ledger.py … set --pr <N> --<field> <val> …` — never append a second
    row for the same PR (`add-row` refuses a duplicate `pr`). Otherwise create it with
-   `ledger.py … add-row --pr <N> --<field> <val> …`. Write the **full** row:
+   `ledger.py … add-row --pr <N> --<field> <val> …`. Write every field that needs a **COMPUTED** value —
+   the ones below. Every field **not** named here takes its **default** from `ledger.py` (`add-row`
+   defaults unset fields; `ROW_DEFAULTS` owns them — the liveness counters, `ci_reason` and any field
+   added later all start at theirs). **This is NOT an enumeration of the row**, and must never be read as
+   one: the schema lives in the script, and a copy of it retyped here would be stale the next time a row
+   field is added.
 
    - `id` = `pr<N>`; `slug` = slugified PR title; `branch` = the PR's **own** `headRefName` (adopted PRs
      keep their branch — do NOT mint a `fix-<run-id>-...` branch); `worktree` = `-`,

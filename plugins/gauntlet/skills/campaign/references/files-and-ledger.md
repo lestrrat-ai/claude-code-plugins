@@ -313,13 +313,17 @@ human*, and the formatting is lossy in four ways:
   missing ROW is not a missing PR**, exactly as a missing column is not a missing value. Which statuses the
   default hides is owned by `TABLE_HIDDEN_STATUSES` in `scripts/ledger.py` and named **live** in `ledger.py
   table --help`; when this paragraph and that output disagree, **the script is right**.
-- **It shows only SOME fields.** The default view is a **SUBSET** of the row fields listed above — as of
-  this writing `pr`, `slug`, `tier`, `reviews_ok`, `ci`, `attempts`, `status`, `head_sha`. Every other row
-  field (`branch`, `worktree`, `worktree_owned`, `branch_owned`, `started`, `api_approval`, `id`) is
-  **hidden unless you ask for it** with `--fields <f>,<f>,…`. So **a missing COLUMN is not a missing
-  VALUE** — the field is in the store, the default projection just does not print it. The list itself is
-  owned by `TABLE_DEFAULT_FIELDS` in `scripts/ledger.py` and printed **live** by `ledger.py table --help`
-  (it names the defaults); when this paragraph and that output disagree, **the script is right**.
+- **It shows only SOME fields.** The default view is a **SUBSET** of the row fields, and **NEITHER the
+  shown nor the hidden set is enumerated here** — both are **DERIVED from the live schema**, never retyped
+  on this page. The shown set is `TABLE_DEFAULT_FIELDS` in `scripts/ledger.py`, printed **live** by
+  `ledger.py table --help` (it names the defaults). The **hidden set is everything else** — `ROW_FIELDS`
+  minus that projection — and every row field is printed by `ledger.py … get --pr N`, which projects onto
+  the full `ROW_FIELDS`. Anything hidden is **shown on request** with `--fields <f>,<f>,…`. So **a missing
+  COLUMN is not a missing VALUE** — the field is in the store, the default projection just does not print
+  it. **The script is the owner; when this page and its output disagree, the script is right.** A
+  hand-typed list of hidden fields would be **stale the next time a row field is added — by a change its
+  author never sees**, and that is exactly how this paragraph broke before: it named seven hidden fields,
+  a later PR added six more row fields, and neither author touched the other's work.
 - **It shortens the SHA.** `table` prints `head_sha` truncated to its first **8 characters**. This is a
   **display-only** truncation and applies to **`table` alone** — nothing else in campaign ever shortens a
   SHA. The stored value, and the one every other subcommand returns, stays the full 40-char `headRefOid`:
