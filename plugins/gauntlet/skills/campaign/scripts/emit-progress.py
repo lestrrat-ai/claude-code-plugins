@@ -53,15 +53,26 @@ says is that the event you asked for — or the file it would land in — is one
 read, and writing it would only lose the pass. Read the message, fix the call, re-run. If the message is
 about the FILE and not your event, it is not yours to fix: report it, because the pass's dispatch is
 broken and no event you emit into that file will count.
+
+**AND `--help` NOW DESCRIBES THE COMMAND THIS TOOL ACCEPTS.** It did not. This file had no parser of its
+own — it prepended the owner's `emit` subcommand to `sys.argv` and let the OWNER's argparse render the
+help under THIS script's name — so `--help` printed `usage: emit-progress.py emit [-h] --file …` while
+running that exact command died with `unrecognized arguments: emit`: the wrapper supplies `emit` itself.
+The help door and the parser door disagreed about what the command IS, which is the same defect as two
+doors disagreeing about what an ID is, one layer up — and the help is the door a reviewer READS. It has
+its own parser now, built from the owner's own `add_emit_args` (so the flags still have ONE definition and
+cannot drift), and `review-pass.py self-test` EXECUTES the invocation this `--help` advertises.
 """
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import sys
 from pathlib import Path
 
 OWNER = Path(__file__).resolve().parent / "review-pass.py"
+PROG = Path(__file__).name
 
 
 def load_owner():
@@ -80,5 +91,21 @@ def load_owner():
     return mod
 
 
+def main(argv: "list[str] | None" = None) -> int:
+    """This door's OWN parser — so what `--help` SAYS is what the tool TAKES, verbatim.
+
+    The flags are NOT restated here: `add_emit_args` is the owner's one definition of the emit door, and
+    both doors call it. The subcommand is supplied by `set_defaults`, where the caller cannot type it and
+    no usage line can advertise it — the old wrapper prepended it to `argv` instead, which is precisely how
+    it came to advertise a command it then refused. And the parsed args go to the owner's `dispatch`, so
+    the refusal-to-exit-code mapping is the owner's too: a non-zero exit means your inputs were rejected.
+    """
+    owner = load_owner()
+    p = argparse.ArgumentParser(prog=PROG, description=(__doc__ or "").splitlines()[0])
+    owner.add_emit_args(p)
+    p.set_defaults(cmd="emit")
+    return owner.dispatch(p.parse_args(argv))
+
+
 if __name__ == "__main__":
-    raise SystemExit(load_owner().main(["emit", *sys.argv[1:]]))
+    raise SystemExit(main(sys.argv[1:]))

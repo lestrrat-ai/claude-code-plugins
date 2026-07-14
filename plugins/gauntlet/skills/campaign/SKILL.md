@@ -41,8 +41,10 @@ Bundled scripts live in `scripts/`, resolved relative to the directory holding t
 the current working directory) — installed as `${CLAUDE_PLUGIN_ROOT}/skills/campaign/scripts/`, or in
 the repo at `plugins/gauntlet/skills/campaign/scripts/`. Pass their absolute paths to subtasks.
 `scripts/review-pass.py` is the schema-owning accessor for a review pass's artifacts — the plan, the
-`pass_identity`, the progress events, and the READ that answers "does this pass COUNT?" (see
-`references/stage-2-review-gate.md`); never hand-write or hand-parse one of those files.
+`pass_identity`, the unit-progress events, and the READ that answers "does this pass COUNT?", which
+validates every line of those files, including the one event the emit-only rule exempts from tool-writing
+(see `references/stage-2-review-gate.md`); never hand-parse one of those files, and never hand-write a
+line the tool writes.
 `scripts/emit-progress.py` is the reviewer's door into it — **its CLI is unchanged**, and it is the only
 sanctioned way to record a unit-progress event. `scripts/ledger.py` is the schema-owning accessor for
 `state.jsonl` — read/write the ledger header and per-PR rows **by field name** through it, never by column

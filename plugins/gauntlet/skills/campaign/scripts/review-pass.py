@@ -92,6 +92,7 @@ import ast
 import io
 import json
 import re
+import subprocess
 import sys
 import tempfile
 import types
@@ -1585,6 +1586,84 @@ def check_docs() -> int:
     return failures
 
 
+# --- the WRAPPER's HELP: what it SAYS must be what the tool TAKES --------------------------------
+#
+# `emit-progress.py --help` printed `usage: emit-progress.py emit [-h] --file …`, and running that exact
+# command failed with `unrecognized arguments: emit` — the wrapper prepends `emit` itself, so its own help
+# advertised a command shape it REFUSES. Two doors disagreeing about what the COMMAND is, which is the same
+# defect as two doors disagreeing about what an ID is — and the help is the door a reviewer READS.
+#
+# An exhortation to "keep the help and the parser in sync" cannot fail. This can: the usage block is parsed
+# for the invocation it advertises, and **that invocation is EXECUTED** — as a subprocess, against a real
+# dispatched pass, exactly as a reviewer would run it. Advertise a command the tool refuses and the suite
+# goes red. The FLAGS are checked the same way, against the emit door's own `add_emit_args`: the help may
+# not name a flag the tool does not take, nor omit one it requires.
+
+WRAPPER = Path(__file__).resolve().parent / "emit-progress.py"
+
+
+def advertised(help_text: str) -> "tuple[list[str], set[str]]":
+    """(the COMMAND WORDS `--help` advertises, the OPTIONS it advertises) — read out of its usage block.
+
+    The usage block is the first `usage:` line plus argparse's indented continuation lines. The command
+    words are everything before the first flag or bracket (`emit-progress.py`, and any subcommand it
+    claims); the options are every `-x`/`--xyz` in it.
+    """
+    block: list[str] = []
+    for line in help_text.splitlines():
+        if line.startswith("usage:"):
+            block.append(line)
+        elif block and line.startswith(" ") and line.strip():
+            block.append(line)
+        elif block:
+            break
+    usage = " ".join(block).partition("usage:")[2]
+    words: list[str] = []
+    for word in usage.split():
+        if word.startswith(("-", "[")):
+            break
+        words.append(word)
+    return words, set(re.findall(r"--?[a-z][a-z-]*", usage))
+
+
+def check_wrapper_help(tmp: Path) -> int:
+    """Run `emit-progress.py --help`, take the command it advertises, and RUN THAT. Returns the failures."""
+    failures = 0
+    help_run = subprocess.run([sys.executable, str(WRAPPER), "--help"],  # noqa: S603 - our own sibling
+                              capture_output=True, text=True, check=False)
+    if help_run.returncode != 0:
+        print(f"FAIL     [help] `{WRAPPER.name} --help` exited {help_run.returncode}: {help_run.stderr}")
+        return 1
+    words, options = advertised(help_run.stdout)
+
+    probe = argparse.ArgumentParser()
+    add_emit_args(probe)  # the door that ACCEPTS — its flags, not a list typed out here
+    accepted = {opt for action in probe._actions for opt in action.option_strings  # noqa: SLF001
+                if opt.startswith("--")} - {"--help"}
+    long_flags = {opt for opt in options if opt.startswith("--")}
+    if long_flags != accepted:
+        print(f"FAIL     [help] it advertises {sorted(long_flags)} and the tool accepts {sorted(accepted)} "
+              f"— a flag in one and not the other is a flag someone will type and be refused for")
+        failures += 1
+    else:
+        print(f"ok       [help] the flags it advertises are the flags the emit door takes: {sorted(accepted)}")
+
+    # …and now the whole point: EXECUTE what it advertises, on a pass that is really dispatched.
+    progress = build(tmp, "wrapper-help", PLAN, [ident()])
+    invocation = [sys.executable, str(WRAPPER), *words[1:],
+                  "--file", str(progress), "--unit", "u01", "--status", STARTED]
+    run = subprocess.run(invocation, capture_output=True, text=True, check=False)  # noqa: S603
+    shown = " ".join([WRAPPER.name, *words[1:], "--file <progress> --unit u01 --status started"])
+    if run.returncode != 0:
+        print(f"FAIL     [help] the tool REFUSES the command its own --help advertises — `{shown}` exited "
+              f"{run.returncode}: {(run.stdout + run.stderr).strip()}. The help door and the parser door "
+              f"disagree about what the command IS, and the help is the one a reviewer reads")
+        failures += 1
+    else:
+        print(f"ok       [help] the advertised invocation RUNS: `{shown}` -> exit 0")
+    return failures
+
+
 def build(tmp: Path, name: str, plan: "list[str] | None", progress: "list[str] | bytes") -> Path:
     """Write a fixture pass to disk RAW — bypassing every write-side check, because half these fixtures
     hold exactly what the write side would have refused. That is the point: the READ side must catch them
@@ -1881,6 +1960,8 @@ def self_test() -> int:
 
     with tempfile.TemporaryDirectory() as tmpdir:
         got = run_cases(sys.modules[__name__], Path(tmpdir))
+        help_failures = check_wrapper_help(Path(tmpdir))
+    print()
     for case, (want, needle, why) in expect.items():
         outcome, text = got[case]
         if outcome == want and needle in text:
@@ -1894,6 +1975,7 @@ def self_test() -> int:
             print(f"FAIL     {case[:44]:44} -> {outcome:11} but nothing mentions {needle!r}\n         got: {text}")
             failures += 1
     print()
+    failures += help_failures
     failures += check_id_formats()
     print()
     doc_failures = check_docs()
@@ -1908,7 +1990,8 @@ def self_test() -> int:
           f"commands, derived from the parser, x {len(FILE_STATES)} pre-existing file states) + "
           f"{len(CROSS_DOOR_IDS)} cross-door cases (the plan door refuses the id, or the emit door can "
           f"match it) + {len(ID_CASES)} identifier-format cases ({len(ID_FORMATS)} identifiers, each with "
-          f"ONE legal form) + {len(doc_examples())} DOC examples hold.\n")
+          f"ONE legal form) + {len(doc_examples())} DOC examples hold — and the invocation "
+          f"`{WRAPPER.name} --help` advertises was EXECUTED, and runs.\n")
 
     # …and now the question the block above CANNOT answer: is any rule pinned by NO fixture?
     marked = marked_statements(source)
@@ -1986,6 +2069,21 @@ def fail(msg: str, code: int) -> NoReturn:
     raise SystemExit(code)
 
 
+def add_emit_args(p: argparse.ArgumentParser) -> None:
+    """The emit door's flags — `--file --unit --status --evidence` — defined in exactly ONE place.
+
+    This is a PUBLIC CONTRACT: it is what every review prompt already dispatched against an INSTALLED copy
+    of this skill runs. `build_parser`'s `emit` subcommand and `emit-progress.py`'s own top-level parser
+    both call this, so the reviewer's door and the owner's door cannot come to accept — or ADVERTISE —
+    different flags. `emit-progress.py` used to have no parser of its own at all, and rendered the OWNER's
+    help instead: `--help` printed a command (`emit-progress.py emit …`) that the wrapper itself refuses.
+    """
+    p.add_argument("--file", required=True, help="the launch attempt's progress.jsonl")
+    p.add_argument("--unit", required=True, help="a PLANNED unit's id — an unplanned one is refused")
+    p.add_argument("--status", required=True, choices=STATUSES)
+    p.add_argument("--evidence", help="concrete citation; REQUIRED for --status done")
+
+
 def build_parser() -> "tuple[argparse.ArgumentParser, list[str]]":
     """The CLI, and the list of subcommands it actually has — DERIVED from the parser, never typed out.
 
@@ -1996,11 +2094,7 @@ def build_parser() -> "tuple[argparse.ArgumentParser, list[str]]":
     p = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    e = sub.add_parser("emit", help="append one unit-progress event (what emit-progress.py calls)")
-    e.add_argument("--file", required=True, help="the launch attempt's progress.jsonl")
-    e.add_argument("--unit", required=True, help="a PLANNED unit's id — an unplanned one is refused")
-    e.add_argument("--status", required=True, choices=STATUSES)
-    e.add_argument("--evidence", help="concrete citation; REQUIRED for --status done")
+    add_emit_args(sub.add_parser("emit", help="append one unit-progress event (what emit-progress.py calls)"))
 
     i = sub.add_parser("identity", help="write a pass's pass_identity line (pr/pass/attempt come from --file)")
     i.add_argument("--file", required=True, help="the launch attempt's progress.jsonl — it must not exist yet")
@@ -2025,9 +2119,14 @@ def build_parser() -> "tuple[argparse.ArgumentParser, list[str]]":
     return p, sorted(str(name) for name in (sub.choices or {}))
 
 
-def main(argv: "list[str] | None" = None) -> int:
-    p, _cmds = build_parser()
-    args = p.parse_args(argv)
+def dispatch(args) -> int:
+    """Run one PARSED command — and the ONE place a refusal becomes an exit code.
+
+    `emit-progress.py` hands its own parser's `args` straight to this (with `cmd` fixed to `emit` by
+    `set_defaults`, where no caller can type it and no help text can advertise it). So the wrapper reaches
+    the same function through the same refusal-to-exit-code mapping: exit 1 = your inputs were rejected,
+    exit 2 = the caller asked the wrong question. There is no second mapping to drift.
+    """
     if args.cmd == "self-test":
         return self_test()
     try:
@@ -2037,6 +2136,11 @@ def main(argv: "list[str] | None" = None) -> int:
         fail(str(exc), 1)
     except OperatorError as exc:
         fail(str(exc), 2)
+
+
+def main(argv: "list[str] | None" = None) -> int:
+    p, _cmds = build_parser()
+    return dispatch(p.parse_args(argv))
 
 
 if __name__ == "__main__":

@@ -182,9 +182,10 @@
   stochastic reviewer to catch a missed defect — the two are NOT statistically independent (the same
   diff, task, and protocol correlate them; same-reviewer passes also share model/prompt), so the gate
   is a miss-catcher, not a proof of correctness.
-- **A review pass's artifacts have a TOOL — `scripts/review-pass.py`. NEVER hand-write one, NEVER
-  hand-parse one** (Stage 2a). It owns the plan, the `pass_identity`, the progress events, and the read
-  that answers **does this pass COUNT?** — `verify`. **A verdict from a pass that does not verify `ok` is
+- **A review pass's artifacts have a TOOL — `scripts/review-pass.py`. NEVER hand-parse one, NEVER
+  hand-write a line the tool writes** (Stage 2a). It owns the plan, the `pass_identity`, the unit-progress
+  events, and the read that answers **does this pass COUNT?** — `verify`, which validates EVERY line of the
+  file, including the one event the emit-only rule exempts from tool-writing (Stage 2a owns that rule). **A verdict from a pass that does not verify `ok` is
   NEVER tallied**: a short SHA or any other malformed identifier, a `done` for a unit that was never
   planned, an evidence-free `done`, a
   `done` that no `started` precedes, a SECOND `done` for one unit, a hand-written line of the wrong shape,

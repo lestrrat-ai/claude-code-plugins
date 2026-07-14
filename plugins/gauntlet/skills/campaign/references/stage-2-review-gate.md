@@ -104,9 +104,12 @@ subagent fallback pass counts toward the review gate exactly like an external pa
 it's another fresh, context-isolated re-roll in its own context. (When the reviewer is already Claude
 subagents, this *is* the normal path, not a fallback.)
 
-**A REVIEW PASS'S ARTIFACTS HAVE A TOOL — `scripts/review-pass.py`. NEVER hand-write one, and never
-hand-parse one.** The plan, the `pass_identity`, every progress event, and the read that decides whether a
-pass COUNTS all go through it. It is the schema owner for the review-pass artifact set exactly as
+**A REVIEW PASS'S ARTIFACTS HAVE A TOOL — `scripts/review-pass.py`. NEVER hand-parse one, and never
+hand-write a line the tool writes.** The plan, the `pass_identity`, every unit-progress event, and the read
+that decides whether a pass COUNTS all go through it — and so does every line it does NOT write: `verify`
+re-derives its rules from the bytes, whatever produced them. There is exactly ONE event the reviewer
+appends directly, and the emit-only rule below is what names it.
+It is the schema owner for the review-pass artifact set exactly as
 `ledger.py` is for `state.jsonl`, and it enforces every rule below at **both doors** — where the commands
 enter *and* where the data enters, because a rule enforced only on write is not enforced: the progress
 file is a plaintext file in a directory the reviewer can write to.
