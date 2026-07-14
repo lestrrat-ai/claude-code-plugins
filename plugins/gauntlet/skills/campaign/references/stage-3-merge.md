@@ -98,7 +98,7 @@ subagent at a check that is merely **still running**.
    no-working-tree case):
 
    ```
-   git -C $PROJECT fetch origin refs/heads/<base>:refs/remotes/origin/<base>   # explicit refspec: refresh origin/<base> (bare `fetch origin <base>` only writes FETCH_HEAD)
+   git -C $PROJECT fetch origin refs/heads/<base>:refs/remotes/origin/<base>   # explicit refspec: refresh origin/<base> even when <base> has no local branch and no upstream configured
    # case A — <base> is checked out in some working tree <dir> (root or a worktree):
    git -C <dir> merge --ff-only origin/<base>
    # case B — <base> is checked out in no working tree:

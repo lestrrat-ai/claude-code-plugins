@@ -21,7 +21,7 @@ blocks; each completion is its own wake.
    exists — and scope **every** git/gh scan to this run's `gauntlet-run-<run-id>` label so another run's
    PRs are never mistaken for your own (adopted PRs keep their OWN head branch, so ownership is the
    LABEL only — never a branch prefix). Live work (this run) = any open PR carrying this run's label,
-   **OR** any non-terminal row in this run's `state.jsonl` (`in_review` / `mergeable` / `awaiting-api` /
+   **OR** any non-terminal row in this run's `state.jsonl` (`in_review` / `awaiting-api` /
    `awaiting-user`).
    Three cases:
 
@@ -185,8 +185,8 @@ blocks; each completion is its own wake.
      behind** until then; it is not dropped from the run, just frozen.
    - **Why the guard must live HERE, at the dispatch site:** `reviews_ok < required(tier)` is TRUE for a
      parked PR (the park does not raise it), so a dispatch rule that looks only at `reviews_ok` will
-     happily re-review a PR that is waiting on a human — and a `SATISFIED` verdict would then carry it
-     to `mergeable` and **merge it WITHOUT the user's ruling**, which is exactly the hole the standoff
+     happily re-review a PR that is waiting on a human — and a `SATISFIED` verdict would then make it
+     eligible to merge and **merge it WITHOUT the user's ruling**, which is exactly the hole the standoff
      park exists to close. **The park MUST be enforced wherever the PR is ACTED ON — every dispatch site
      and every mutation site — not merely recorded in the ledger.**
 

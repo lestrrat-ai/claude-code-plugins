@@ -50,5 +50,8 @@ When the loop exits, summarize:
   with the change each would have needed.
 - Any worktrees left for inspection.
 
-The same outcomes are written to this run's durable carryover file
-(`.gauntlet/history/<run-id>.md`) on exit (Loop control step 5), so the next fresh run inherits them.
+This run's durable carryover file (`.gauntlet/history/<run-id>.md`) is written on exit (Loop control
+step 5), so the next fresh run inherits what this run's PRs came to. Its contents are **NOT** a copy of
+the list above: the carryover file's schema is owned by `carryover.md` ("The carryover ledger") — write
+the slots that owner defines, and take any change to them from there. The two lists overlap but are not
+the same list, and the report must never be read as an enumeration of the carryover file.

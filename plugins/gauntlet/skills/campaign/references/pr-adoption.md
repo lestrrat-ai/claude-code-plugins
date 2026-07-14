@@ -101,7 +101,9 @@ For each `#PR` to adopt:
      it reused a pre-existing local branch or checkout;
      `pr` = `<N>`; `head_sha` = `headRefOid`.
    - **On a NEW row only, initialize:** `reviews_ok` = `0` (no verdicts yet); `ci` = `pending`;
-     `tier` = triage per `head_sha` ("Adaptive review tiers"); `attempts` = `1`; `started` = now;
+     `tier` = triage per `head_sha` (Stage **2a-triage**); `attempts` = `0` (no attempt has run yet —
+     `attempts` counts attempts **so far**, and seeding it at `1` silently spends half the retry-once
+     budget before any work is dispatched); `started` = now;
      `api_approval` = `-`; `status` = `in_review`.
    - **On a REFRESH of an existing row, PRESERVE the durable/live fields** — `api_approval`, `attempts`,
      `started`, `status`, `reviews_ok`, and `tier` — do **NOT** reset them (that would violate the
@@ -159,7 +161,7 @@ For each `#PR` to adopt:
 
    ```
    git fetch origin refs/heads/<base>:refs/remotes/origin/<base>                 # refresh origin/<base> — the review diffs origin/<base>...HEAD, and adoption otherwise fetches only the PR head, not <base>
-   git fetch origin refs/heads/<headRefName>:refs/remotes/origin/<headRefName>   # update origin/<headRefName> (explicit refspec — a bare `git fetch origin <hrn>` only writes FETCH_HEAD)
+   git fetch origin refs/heads/<headRefName>:refs/remotes/origin/<headRefName>   # explicit refspec: refresh origin/<headRefName> regardless of local branch/upstream configuration
    # is <headRefName> already checked out somewhere? (root or a worktree)
    existing=$(git worktree list --porcelain | awk -v b="refs/heads/<headRefName>" '$1=="worktree"{p=$2} $1=="branch" && $2==b{print p}')
    if [ -n "$existing" ]; then
