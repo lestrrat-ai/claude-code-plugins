@@ -59,8 +59,10 @@ record a review verdict (it bumps `review_rounds`/`ns_streak`, applies the tally
 PR `repairing` and exits non-zero**), and `ledger.py dispatch-check` is the guard you run before **any**
 action that mutates a PR.
 `scripts/followups.py` is the schema-owning accessor for the **follow-up** store
-(`.gauntlet/followups.jsonl`) — the durable record of work the campaign FOUND and deliberately did not do
-(see `references/followups.md`); same rules: by field name, never hand-edited.
+(`.gauntlet/followups.jsonl`) — the durable **work queue** of what the campaign FOUND and deliberately did
+not do. It is a queue, not an archive: an entry is **deleted** once a durable record of it exists elsewhere
+(a merged PR, an issue), and **kept** when nothing else would remember it — `references/followups.md` owns
+when. Same rules: by field name, never hand-edited.
 `scripts/repair-pass.py` records the reassessment pass's decision for a PR that
 has stopped converging — the closed enum, the ownership guardrail, and the repair cap
 (`references/repair-pass.md`).

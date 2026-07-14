@@ -130,11 +130,13 @@ jobs:
       - name: Review-pass contract (every rule pinned by a fixture)
         run: python3 plugins/gauntlet/skills/campaign/scripts/review-pass.py self-test
 
-      # The FOLLOW-UP store's contract, executed. Two rules here are not merely correctness rules:
-      # the lifecycle graph is what makes the USER's agreement unskippable — no edge runs from
-      # `candidate` to `published`, so an autonomous driver cannot file a GitHub issue for its own
-      # uncorroborated claim — and the lock is what stops two concurrent runs from silently dropping an
-      # entry that NOTHING can rebuild. Weaken either and a fixture goes red. It renders through the
+      # The FOLLOW-UP store's contract, executed. Three rules here are not merely correctness rules:
+      # the lifecycle graph is what makes the USER's agreement unskippable — no driver-only path reaches
+      # `accepted`, and `publish` leaves from nowhere else, so an autonomous driver cannot file a GitHub
+      # issue for its own uncorroborated claim; DELETION happens only once a durable record exists
+      # elsewhere (a merged PR, an issue), never when work merely starts, or a PR that dies would take the
+      # follow-up down with it; and the lock is what stops two concurrent runs from silently dropping an
+      # entry that NOTHING can rebuild. Weaken any of them and a fixture goes red. It renders through the
       # ledger's escaping and is checked by the ledger's own grid oracle, so a hostile PR title cannot
       # forge a column here either.
       - name: Follow-up store contract

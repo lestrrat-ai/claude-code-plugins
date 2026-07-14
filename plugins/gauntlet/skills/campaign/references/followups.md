@@ -86,12 +86,51 @@ An issue is a **published claim**: it asserts to anyone reading the repo that th
 doing, **in the user's name**. A follow-up has not earned that, and filing one unilaterally launders an
 unvalidated self-diagnosis into a public statement of fact.
 
-**There is no autonomous path to `published`.** Not from a candidate, not from a corroborated one, not
-from one the driver took up and shipped. The only way in is the user's `accept`, and the graph has no
-other edge — see the lifecycle below.
+**There is no autonomous path to `publish`.** Not from a candidate, not from a corroborated one, not from
+one the driver took up and shipped. `publish` leaves **only** from `accepted`, `accepted` has exactly one
+in-edge, and that edge is the user's `accept` — the graph has no other way there. See the lifecycle below.
 
 The promotion path for publication is **raise → consensus with the user → publish**. Nothing skips the
 middle step.
+
+## THE LIFETIME OF AN ENTRY — delete once a durable record exists ELSEWHERE; KEEP what prevents repeated work
+
+**This store is a WORK QUEUE, not an archive.** It is **local** and **git-ignored**: it does not survive a
+fresh clone and nobody else can see it. That makes it a poor archive and a fine queue — *and an archive
+nobody reads is just a file that grows.*
+
+So a finished follow-up is **DELETED**, not parked in a "done" state and hidden. But **when** it is deleted
+is the whole safety of it, and there is exactly one test:
+
+**Is there a record ELSEWHERE?**
+
+- **A PR that MERGED** — it is on GitHub, it is reviewable, and it is where anyone actually looks for *"why
+  did we do this"*. The entry can go; the fact did not.
+- **PUBLISHED as an issue** — the issue is then the record.
+
+**DELETION NEVER HAPPENS WHEN THE WORK IS MERELY TAKEN UP.** An entry deleted at `take-up` is one a PR that
+is **closed, abandoned, or rejected in review** takes down with it — the work still undone, and *nothing
+left to remember it*. That is the exact permanent loss this store exists to prevent, just moved later in
+time. So:
+
+- While the PR is **open**, the entry **STAYS** (`in-pr`) and records **which PR** is addressing it.
+- The PR **merges** → `merged` deletes the entry. The PR is the record now.
+- The PR is **closed WITHOUT merging** → `closed-unmerged` returns it to **open work** (`reopened`), with
+  its history intact — the finding, the ACT grounds or the user's ruling, and the PR that died. It never
+  vanishes with the PR, and it is never stuck in "being worked on" forever.
+
+**Move it in the wake that SAW the event** — the same rule as recording one the moment it is noticed, and
+for the same reason: the driver's memory of it dies with the driver's context. The wake that opens the PR
+addressing a follow-up runs `open-pr`; the wake that observes that PR **merged** or **closed** runs
+`merged` / `closed-unmerged`. A follow-up whose PR landed three wakes ago and still sits in `in-pr` is a
+queue nobody can trust to say what is left to do.
+
+**AND REJECTIONS ARE KEPT.** A `rejected` entry stays in the store — hidden from the default view (nobody
+has anything left to do about it), **never deleted**. This is not an exception to the rule above; it is
+that rule, applied: ask a rejection the same question. *Is there a record elsewhere?* **No** — nothing was
+filed and nothing merged, and this store is the only place the user's *no* exists. Delete it and the next
+run rediscovers the same thing, records it again, and **asks the user the same question** — forever. **A
+rejection is worth remembering precisely so it is not re-raised.**
 
 ### The store — `.gauntlet/followups.jsonl`
 
@@ -123,14 +162,21 @@ followups.py --file <store> corroborate --id fuN --finding F   # TIER 1 — free
 followups.py --file <store> refute      --id fuN --finding F   # TIER 1 — free. And it stays in the store
 followups.py --file <store> take-up     --id fuN --act-...     # TIER 2 — only with EVERY condition evidenced
 followups.py --file <store> accept  --id fuN        # THE USER AGREED — the only edge into `accepted`
-followups.py --file <store> reject  --id fuN        # the user ruled against it
-followups.py --file <store> publish --id fuN --ref <issue>     # TIER 3 — only AFTER the user's accept
-followups.py --file <store> done    --id fuN        # it shipped
+followups.py --file <store> reject  --id fuN        # the user ruled against it — and the entry is KEPT
+followups.py --file <store> open-pr --id fuN --pr <ref>    # a PR is addressing it — the entry STAYS
+followups.py --file <store> merged  --id fuN        # that PR LANDED — it is the record now, so the entry is DELETED
+followups.py --file <store> closed-unmerged --id fuN       # that PR died — back to OPEN WORK, nothing recorded it
+followups.py --file <store> publish --id fuN --ref <issue> # TIER 3 — only AFTER the user's accept. The ISSUE
+                                                           # is the record now, so the entry is DELETED
 followups.py --file <store> set --id fuN --<field> <value>      # edit the PROSE of the claim — never EMPTY it
 followups.py --file <store> get --id fuN [--field <f>]          # read one entry, or one field
 followups.py --file <store> list [--where <field>=<value>]      # ids of matching entries
 followups.py --file <store> table [--all] [--fields <f>,<f>,…]  # the open follow-ups (read-only)
 ```
+
+**A DELETING step still PRINTS the entry it removed, in full** — that record is the driver's handoff, and it
+names where the follow-up now lives (the merged PR; the issue). Put it in the report; the store no longer
+has it.
 
 The **fields**, the **states**, which transition is legal **from** which state, and **what each transition
 must record** are owned by `scripts/followups.py` and printed live by `followups.py --help` / `<cmd>
@@ -142,11 +188,18 @@ agreement**: add or drop a condition in the script and the mismatch with this pa
 
 **What every field is for** (the schema owns the list; this owns the *why*): an entry carries a stable
 id, a one-line title, the **evidence** (which PR, which review pass, which `file:line`), **why it was
-deferred** rather than folded in, its lifecycle state, which run found it and when, and — once ruled on —
-when the user decided and where it was published. **A follow-up with no evidence is a RUMOR**: nobody can
-audit an entry that says only *"the merge logic looks wrong"*. **Why it was deferred** is required on the
-same terms — without it the next run cannot see why the finding was not simply folded into the PR that
-found it, and re-litigates the decision.
+deferred** rather than folded in, its lifecycle state, which run found it and when, **which PR is
+addressing it**, and — once ruled on — when the user decided. **A follow-up with no evidence is a RUMOR**:
+nobody can audit an entry that says only *"the merge logic looks wrong"*. **Why it was deferred** is
+required on the same terms — without it the next run cannot see why the finding was not simply folded into
+the PR that found it, and re-litigates the decision.
+
+**An `id` is never reused, not even after the entry that held it was DELETED** — a reused one would
+silently re-point every reference to the old follow-up (the merged PR that closed it, the user's own note)
+at a different one. The store therefore keeps the high-water mark of every id it has ever handed out, so
+the deleted entry is really gone and its id is still spent forever. That mark is the **one** record in the
+store that is not a follow-up; it is the accessor's, and like everything else there it is never
+hand-edited.
 
 **The required fields are required at EVERY door an entry can pass through** — `add` refuses to create a
 follow-up without them, and `set` refuses to **empty** one that has them. A rule enforced only where an
@@ -170,24 +223,34 @@ in its prose**, where a human reads it and rules on it. (The store's own `fu3` d
 
 Every entry enters as a **candidate**. The state moves **only** along the transition graph in
 `followups.py` — `set` cannot write `state`, nor any evidence a transition left behind, and each
-transition validates the state it is coming **from**.
+transition validates the state it is coming **from**. **The END of an entry is on that graph too:** a
+deleting step is an edge like any other, and it is refused from any state it does not leave from.
 
 Two structural facts carry the whole threshold, and both are **proved on the graph** by the self-test
 (`user-step-unskippable`), not asserted in prose:
 
-- **No sequence of driver-only steps reaches `accepted` or `published`.** `accepted` has exactly one
-  in-edge and it is the user's `accept`; `published` has exactly one and it leaves only from `accepted`.
-  Tier 3 has no back door — not a missing check, an absent **edge**.
+- **No sequence of driver-only steps reaches `accepted`, nor any state `publish` may leave from.**
+  `accepted` has exactly one in-edge and it is the user's `accept`; `publish` leaves only from `accepted`.
+  Tier 3 has no back door — not a missing check, an absent **edge**. (That `publish` now **deletes** the
+  entry rather than parking it changes nothing: the guarantee was never about the state it landed in, but
+  about which states the step may leave **from**.)
 - **The driver's own edge is evidence-bearing and lands somewhere else.** `take-up` leaves only from
   `corroborated` (tier 2, condition 1) and lands in `self-accepted`, which is never `accepted`.
+
+And a third, which is what makes DELETION safe (`delete-needs-a-record`):
+
+- **No deleting edge can be reached without a durable record in the entry.** Every legal history that
+  arrives at one has already written the field that names where the record lives — the PR, or the issue —
+  and the accessor **refuses** the step if it does not. An entry cannot be deleted with nothing, anywhere,
+  left to remember it.
 
 **AND THE INVARIANT IS ENFORCED WHERE THE DATA ENTERS, NOT ONLY WHERE THE COMMANDS DO.** A transition
 checking the state it comes **from** guards nothing against a driver that hand-writes `"state":
 "accepted"` into the JSONL — **and that is the driver this store defends against**. So `load()` refuses any
-entry no legal history could have produced: an `accepted` with no user ruling stamped, a `published` with
-no ref, a `self-accepted` missing any ACT condition's evidence. Such an entry is not argued with; **it does
-not load at all**. This is also why the store is **never hand-edited** — a hand-written entry is, at best,
-one the accessor will reject.
+entry no legal history could have produced: an `accepted` with no user ruling stamped, an `in-pr` naming no
+PR, a `self-accepted` missing any ACT condition's evidence. Such an entry is not argued with; **it does not
+load at all**. This is also why the store is **never hand-edited** — a hand-written entry is, at best, one
+the accessor will reject.
 
 **State the limit honestly: the script cannot verify that the user really agreed.** No local file can.
 `accept` is a promise the driver makes, and what the graph buys is that **skipping the user is a
@@ -197,8 +260,8 @@ class of guarantee as the CI-fix symlink preflight (`stage-2-ci.md`).
 **The user's ruling is DURABLE DATA.** `accept`/`reject` stamp when it was made, for the same reason the
 ledger's `api_approval` records `approved@<iso>` rather than living in the driver's head: **a later wake
 is a fresh agent that never saw the conversation**, and it must not re-ask a question the user already
-answered. **Nothing the driver does alone stamps it** — not an investigation, not a `take-up`, not
-`publish` or `done`. A ruling written by anything but the user would launder the driver's action into the
+answered. **Nothing the driver does alone stamps it** — not an investigation, not a `take-up`, not opening
+a PR, not `publish`. A ruling written by anything but the user would launder the driver's action into the
 user's consent, and it is exactly what `load()` demands of an `accepted` entry.
 
 ### WHEN TO RECORD ONE — the moment it is noticed, not at the end
