@@ -46,10 +46,19 @@ WHAT THIS CANNOT DO is verify that the user really agreed (no local file can): `
 driver makes. It makes skipping the user a DELIBERATE LIE rather than an oversight — a footgun guard, NOT
 a security boundary. But the guard must hold against a driver that writes the JSONL BY HAND, because THAT
 IS THE DRIVER IT DEFENDS AGAINST: so the invariants are checked where the DATA enters, not only where the
-COMMANDS do — AND BY THE SAME FUNCTION (`entry_error()`, which owns what a legal record is; the load door
-and every write door ask IT, so they cannot come to disagree). An entry that is CORRUPT — one no legal
+COMMANDS do — AND BY THE SAME FUNCTIONS (`entry_error()`, which owns what a legal ENTRY is, and `project()`
+/`loads()`, which own what a RECORD may be at all — its keys, and the type of its values; the load door and
+every write door ask THEM, so they cannot come to disagree). An entry that is CORRUPT — one no legal
 sequence of transitions could have produced, or one missing what a follow-up cannot be WITHOUT — is refused,
 loudly, never silently repaired, never skipped, and never DEFAULTED into looking complete.
+
+AND THE LOAD DOOR ACCEPTS ONLY WHAT A WRITE DOOR COULD HAVE PRODUCED. That is the same sentence one level
+lower, and it is the one this file kept breaking in a new dress. A write door is fed by `argv`, which can
+hand it NOTHING BUT A `str` — so a value that is not a string, and a key outside the declared fields, can
+only have come from a HAND-EDIT, and nothing downstream expects it. It is not preserved and it is not
+coerced: an unknown key used to load and then be SILENTLY DELETED by the next write, and a `NaN` — which
+JSON does not define and Python's parser takes anyway — used to load as the TEXT "nan", which is not blank,
+so it passed every check here and could be PUBLISHED. Both are now REFUSED, with the file untouched.
 
 THE STORE IS A WORK QUEUE, NOT AN ARCHIVE — and THE PRINCIPLE OF ITS LIFETIME IS: DELETE ONCE A DURABLE
 RECORD EXISTS ELSEWHERE; KEEP WHAT PREVENTS REPEATED WORK. It is LOCAL and GIT-IGNORED — it does not
@@ -80,6 +89,7 @@ import argparse
 import fcntl
 import io
 import json
+import math
 import os
 import re
 import sys
@@ -186,6 +196,71 @@ REQUIRED = ("title", "evidence", "deferred_why")
 MISSING = ""
 DEFAULTS = {**{f: PLACEHOLDER for f in FIELDS if f not in REQUIRED}, "state": "candidate"}
 
+# THE KEYS A RECORD MAY CARRY, AND NOTHING ELSE — one set per record type, both DERIVED from the schema.
+#
+# AN UNKNOWN KEY IS NOT AN EXTENSION, IT IS A DIFFERENT SCHEMA. The load door used to ACCEPT one and the
+# next write SILENTLY DROPPED it: hand-write `{"extra": "keep-me"}`, run `list` (it loads), then `set
+# --title x` — and `extra` is GONE, because `project()` rebuilds the record from `FIELDS` and `dump()`
+# writes what it rebuilt. Nothing errored; the value simply stopped existing, in the one store that has no
+# other copy and that a human is invited to hand-edit.
+#
+# Preserving it is not the answer either — this accessor has no idea what the key MEANS, what may edit it,
+# or what a transition should do to it, and a value carried along by a schema that does not know it is a
+# value nothing maintains. A key outside this set means the line was written by something that does NOT
+# share this schema, and the only honest thing to do with it is REFUSE THE STORE, loudly, before anything
+# is rewritten on top of it.
+RECORD_KEYS = frozenset(FIELDS) | {"type"}
+SEQ_KEYS = frozenset({"type", "high"})
+
+
+class CorruptRecord(ValueError):
+    """A line no legal writer could have produced. Raised from the JSON hooks below, where the file is
+    still being PARSED — so `read_store()` can name the line it died on."""
+
+
+def no_constants(token: str) -> NoReturn:
+    """`NaN`, `Infinity`, `-Infinity` — Python's `json` accepts all three, and JSON DEFINES NONE OF THEM.
+
+    They are not values this store can hold, and no write door could ever produce one: argparse hands a
+    door a `str`. A hand-written `"evidence": NaN` used to LOAD — as the text `"nan"`, which is three
+    visible characters, so it is not blank, so it passed every blank check the store has and was PUBLISHED
+    AS AN ISSUE. The `-Infinity` spelling was the same, one character longer.
+
+    `json.dumps` never emits these, so refusing them cannot refuse anything this accessor wrote.
+    """
+    raise CorruptRecord(
+        f"{token} is not JSON — the JSON standard has no NaN and no Infinity, and this store holds none. "
+        f"Python's parser accepts them as an extension; a value that loads as the TEXT 'nan' is not "
+        f"evidence, and it is not something any door here could have written."
+    )
+
+
+def no_duplicate_keys(pairs: "list[tuple[str, object]]") -> dict:
+    """One key, ONE value. Python's parser keeps the LAST of a duplicate and discards the rest, SILENTLY.
+
+    `{"title": "a", "title": "b"}` is a line whose author wrote two things and whose reader sees one. Which
+    one is a coin-flip nobody documented, and the other is DATA THAT VANISHED at the load door — the same
+    silent loss as the dropped unknown key, wearing the parser's clothes instead of the projection's.
+    """
+    seen: dict = {}
+    for key, value in pairs:
+        if key in seen:
+            raise CorruptRecord(
+                f"duplicate key {key!r} in one object — it carries two values and a reader would silently "
+                f"see only the LAST. Nothing this accessor writes can produce that line."
+            )
+        seen[key] = value
+    return seen
+
+
+def loads(line: str) -> object:
+    """`json.loads`, with Python's two non-standard indulgences taken away — THE PARSE DOOR.
+
+    Every line of the store enters through THIS, so the two shapes below cannot reach the schema at all.
+    Both are things Python's parser accepts that JSON does not define and this store cannot write.
+    """
+    return json.loads(line, parse_constant=no_constants, object_pairs_hook=no_duplicate_keys)
+
 
 def project(rec: "dict", where: str = "") -> "dict[str, str]":
     """A record — off disk, or out of a door — as THE FIELDS, every value a `str`.
@@ -205,11 +280,29 @@ def project(rec: "dict", where: str = "") -> "dict[str, str]":
       * `null` IS ABSENCE, and JSON says so. It reads as the field's DEFAULT — which a REQUIRED field does
         not have, so it is MISSING, so it is blank, so `entry_error()` refuses it. Absent, null and blank are
         ONE case, at ONE door: that is the whole point of this store having one validator.
-      * a STRING is itself, and a NUMBER is its digits — an on-disk `"found_run": 260714` must compare as the
-        string key the rest of the accessor uses (`t_values_are_strings`).
+      * a STRING is itself, and a FINITE NUMBER is its digits — an on-disk `"found_run": 260714` must compare
+        as the string key the rest of the accessor uses (`t_values_are_strings`).
+      * A NON-FINITE FLOAT IS NOT A NUMBER, and `str()` on one INVENTS a value exactly as it does on `null`:
+        `str(float('nan'))` is `"nan"` and `str(float('inf'))` is `"inf"` — three visible characters, so NOT
+        blank, so they pass every blank check in the store. `no_constants()` refuses the `NaN`/`Infinity`
+        SPELLINGS at the parse door, but it CANNOT be the only guard: a plain-looking `1e400` is standard
+        JSON, never touches `parse_constant`, and overflows to `inf` right here. So the TYPE is checked where
+        the value lands, not only where it was spelled.
+      * A NUL IS NOT TEXT SOMEBODY TYPED. `execve` cannot carry one in `argv`, so no write door can produce a
+        field containing it — it can only have come from a hand-edit, and a NUL silently truncates this
+        plaintext store for every C-based reader (`grep`, `cut`, the shell) that a `.jsonl` exists to be read
+        by. (Other control characters STAY legal: a door really does produce them — `finding` is newline-
+        joined by `append_finding()` — so refusing them would refuse this store's own output.)
       * ANYTHING ELSE — a list, an object, a bool — is not a value a field can hold. It is a CORRUPT record,
         and it is refused LOUDLY, never quietly turned into the text of its own repr.
     """
+    unknown = sorted(set(rec) - RECORD_KEYS)
+    if unknown:  # …not dropped, not carried along: REFUSED. See `RECORD_KEYS`.
+        fail(f"{where}unknown key(s) {', '.join(repr(k) for k in unknown)} — a follow-up carries "
+             f"{len(FIELDS)} declared fields and nothing else. This line was written by something that "
+             f"does NOT share this schema, and REWRITING IT WOULD DESTROY those keys: the next write "
+             f"rebuilds the record from the fields it knows, and everything else silently disappears. "
+             f"Nothing was touched. Valid: {', '.join(sorted(RECORD_KEYS))}.")
     entry: "dict[str, str]" = {}
     for f in FIELDS:
         raw = rec.get(f)
@@ -219,6 +312,15 @@ def project(rec: "dict", where: str = "") -> "dict[str, str]":
             fail(f"{where}{f} is {raw!r} — a follow-up's fields are TEXT. A list, an object or a boolean is "
                  f"not a value one can hold, and it is NOT quietly turned into the text of its own repr: "
                  f"that is how `null` became five characters of 'evidence' and got PUBLISHED.")
+        if isinstance(raw, float) and not math.isfinite(raw):
+            fail(f"{where}{f} is {raw!r} — NOT A NUMBER, and not a value. It would read back as the text "
+                 f"{str(raw)!r}, which SHOWS something, so every blank check in this store would wave it "
+                 f"through and a follow-up with no {f} could be PUBLISHED carrying it.")
+        held = unholdable(raw) if isinstance(raw, str) else None
+        if held is not None:  # THE one predicate — see `unholdable()`. Called HERE, so BOTH doors ask it.
+            fail(f"{where}{f} carries {held} — no write door here can produce that (a door is fed by "
+                 f"`argv`, which cannot hold it), so this line was hand-edited, and it truncates this "
+                 f"plaintext store for every reader that is not this script.")
         entry[f] = raw if isinstance(raw, str) else str(raw)
     return entry
 
@@ -509,6 +611,26 @@ def visible(value: str) -> str:
     return "".join(c for c in value if unicodedata.category(c) not in INVISIBLE_CATEGORIES)
 
 
+def unholdable(value: str) -> "str | None":
+    """Why NO FIELD OF THIS STORE CAN HOLD this text — or None. The other half of `is_blank()`.
+
+    `is_blank()` asks whether a value carries NOTHING. This asks whether it is a value THIS STORE CAN HOLD
+    AT ALL — and the test is the class rule: could a WRITE DOOR have produced it? A write door is fed by
+    `argv`, and `execve` cannot put a NUL in an `argv` element, so a field containing one did not come from
+    any door here. It came from a hand-edit. And a NUL is not inert: this store is plaintext JSONL, meant to
+    be `cat`/`grep`/`jq`-able, and a NUL truncates the line for every C-based reader that is not this script.
+
+    OTHER CONTROL CHARACTERS STAY LEGAL, and that is not an oversight: a door really does produce them.
+    `append_finding()` joins an investigation's records with a NEWLINE, so a `finding` with a newline in it
+    is this store's OWN OUTPUT. Refusing the class would refuse what the write door writes — which is the
+    same bug as accepting what it cannot write, pointed the other way.
+
+    ONE PREDICATE, asked by `project()` (so both doors refuse it) and by the fixtures (so a hostile value the
+    store cannot hold is not rendered into a table that could never have been asked to hold it).
+    """
+    return "a NUL (U+0000)" if "\x00" in value else None
+
+
 def is_blank(value: str) -> bool:
     """A field carries nothing: it SHOWS nothing, or it shows only the placeholder an unset field holds.
 
@@ -637,6 +759,14 @@ def read_store(path: Path) -> "tuple[list[dict], int]":
     high-water mark below); an unknown type is REJECTED, never skipped (a silently dropped entry is exactly
     the loss this store exists to prevent).
 
+    THE LOAD DOOR ACCEPTS ONLY WHAT A WRITE DOOR COULD HAVE PRODUCED. That is the whole rule, and it is the
+    one this store kept breaking in a new dress: argparse can hand a door NOTHING BUT A `str`, so every
+    non-string, non-declared shape on a line came in HERE — and nothing downstream expects it. So a line is
+    parsed by `loads()` (which takes away Python's two non-standard indulgences: `NaN`/`Infinity`, and the
+    silently-deduplicated key) and projected by `project()` (which owns the KEYS a record may carry and the
+    TYPE a value may be). A shape no door can write is a CORRUPT record: refused, LOUDLY — never coerced,
+    never defaulted, and above all never quietly DROPPED, which is what the next write would do to it.
+
     THEN EVERY LINE IS PUT TO `entry_error()` — the ONE definition of a legal record, and the SAME function
     `dump()` asks of every entry a write door is about to write. What makes a record legal is spelled THERE,
     once, and is not restated here: this door has no opinions of its own, because a door with its own
@@ -663,23 +793,41 @@ def read_store(path: Path) -> "tuple[list[dict], int]":
         return entries, high
     seen: set[str] = set()
     marked = False
-    for n, line in enumerate(path.read_text().splitlines(), start=1):
+    try:  # …not `read_text()`: an undecodable byte raised UnicodeDecodeError and CRASHED with a traceback.
+        text = path.read_bytes().decode("utf-8")  # A corrupt store is REFUSED, and a refusal is not a crash.
+    except UnicodeDecodeError as e:
+        fail(f"the store is not valid UTF-8 ({e}) — this accessor writes UTF-8 and nothing else, so the "
+             f"file was written by something that is not this accessor. Nothing was touched.")
+    for n, line in enumerate(text.splitlines(), start=1):
         if not line.strip():
             continue
         try:
-            rec = json.loads(line)
+            rec = loads(line)  # THE parse door — no `NaN`, no `Infinity`, no duplicate keys (see `loads()`)
         except json.JSONDecodeError as e:
             fail(f"malformed JSON on line {n}: {e}")
+        except CorruptRecord as e:
+            fail(f"line {n}: {e}")
         if not isinstance(rec, dict):
             fail(f"line {n}: record is not a JSON object")
         if rec.get("type") == SEQ_TYPE:
             if marked:
                 fail(f"line {n}: a second {SEQ_TYPE} record — the store holds ONE high-water mark")
             marked = True
-            try:
-                high = int(rec.get("high", 0))
-            except (TypeError, ValueError):
-                fail(f"line {n}: {SEQ_TYPE} carries a non-numeric high-water mark {rec.get('high')!r}")
+            unknown = sorted(set(rec) - SEQ_KEYS)
+            if unknown:  # the meta record gets the SAME rule as an entry — see `RECORD_KEYS`
+                fail(f"line {n}: {SEQ_TYPE} carries unknown key(s) "
+                     f"{', '.join(repr(k) for k in unknown)} — it holds {', '.join(sorted(SEQ_KEYS))} and "
+                     f"nothing else, and the next write would silently DROP whatever else is on it.")
+            # AN `int`, AND ONLY AN `int` — `dump()` writes one, so nothing else can have come from here.
+            # `int()` used to be asked to CONVERT whatever was on the line, and it converted too much: a
+            # `true` became 1 (Python's bool IS an int), a `1.9` was TRUNCATED to 1, and a `1e400` overflowed
+            # and CRASHED with a traceback. An id high-water mark that quietly moves is an id handed out
+            # TWICE — every reference to the old follow-up silently re-pointed at a different one.
+            mark = rec.get("high")
+            if isinstance(mark, bool) or not isinstance(mark, int):
+                fail(f"line {n}: {SEQ_TYPE} carries a non-numeric high-water mark {mark!r} — it is a whole "
+                     f"number of follow-ups ever handed out, and this accessor writes it as one.")
+            high = mark
             if high < 0:
                 fail(f"line {n}: {SEQ_TYPE} carries a negative high-water mark {high}")
             continue
@@ -1082,6 +1230,163 @@ INVISIBLES = (
 # fixture that loops over BLANKS picked the invisible family up the day it was added, with no edit.
 BLANKS = ("", "   ", "\t", PLACEHOLDER, *INVISIBLES,
           f"​{PLACEHOLDER}​", f" {PLACEHOLDER}﻿")
+
+
+# EVERY SHAPE A HAND-WRITTEN LINE CAN PUT IN A FIELD THAT NO WRITE DOOR COULD EVER PRODUCE — as RAW JSON
+# TEXT, because most of them cannot be spelled through an encoder at all (`json.dumps` emits no `NaN`, and
+# `argparse` hands a door nothing but a `str`, which is the entire point).
+#
+# THIS IS THE VOCABULARY, NOT THE SCHEMA — the same division as `BLANKS`. The fixture below applies EVERY
+# one of these to EVERY field of `FIELDS`, so a field added to the schema tomorrow is covered in every
+# spelling with NO edit here. What is NOT in this list is as deliberate as what is:
+#
+#   * a FINITE number is absent — an on-disk `"found_run": 260714` is legal and reads as its digits
+#     (`t_values_are_strings`), so it is a shape a door's output can be compared against, not a corrupt one;
+#   * `null` is absent — JSON's own word for ABSENCE, so it DEFAULTS in an optional field and reads as
+#     MISSING (hence blank, hence refused) in a REQUIRED one. Both halves are pinned by `defaults-backfill`
+#     and `same-validator`, which is where that rule is owned.
+#
+# `1e400` earns its place the hard way: it is ORDINARY JSON, it never touches `parse_constant`, and it
+# overflows to `inf` — so it is the shape that proves the refusal cannot live at the parse door alone.
+#
+# The third element is WHAT THE REFUSAL MUST NAME. `NAMES_THE_FIELD` for a shape refused by `project()`,
+# which knows the field it is projecting; a literal needle for the three refused at the PARSE door, which
+# runs BEFORE any field exists — `NaN` is not a bad value for `evidence`, it is a token JSON does not have,
+# and the line is rejected without ever being looked at as a record. The distinction is the point: pinning
+# them to name a field would pin the refusal to the WRONG DOOR, and the parse door is the only one that can
+# stop a spelling the schema never sees.
+NAMES_THE_FIELD = None
+UNWRITABLE = (
+    ("true", "true", NAMES_THE_FIELD),
+    ("false", "false", NAMES_THE_FIELD),
+    ("an object", '{"a": 1}', NAMES_THE_FIELD),
+    ("an empty object", "{}", NAMES_THE_FIELD),
+    ("an array", '["x"]', NAMES_THE_FIELD),
+    ("an empty array", "[]", NAMES_THE_FIELD),
+    ("NaN", "NaN", "not JSON"),
+    ("Infinity", "Infinity", "not JSON"),
+    ("-Infinity", "-Infinity", "not JSON"),
+    ("1e400 (ordinary JSON — it OVERFLOWS to inf)", "1e400", NAMES_THE_FIELD),
+    ("-1e400 (overflows to -inf)", "-1e400", NAMES_THE_FIELD),
+    ("a string carrying a NUL", '"a\\u0000b"', NAMES_THE_FIELD),
+)
+
+
+def raw_line(field: str, value: str, **over: object) -> str:
+    """A LEGAL store line but for ONE field, whose value is spliced in as RAW JSON TEXT.
+
+    A fixture cannot build these through `json.dumps`: there is no Python object it will encode as `NaN`,
+    and none it will encode as a duplicate key. The whole point of these shapes is that no ENCODER produces
+    them — only a hand-edit does, which is exactly the writer this store defends against.
+    """
+    rec = json.loads(entry_line(**over))
+    rec[field] = "@@RAW@@"
+    return json.dumps(rec).replace('"@@RAW@@"', value)
+
+
+def t_the_load_door_takes_only_what_a_write_door_can_produce(tmp: Path) -> None:
+    """THE LOAD DOOR ACCEPTS ONLY WHAT A WRITE DOOR COULD HAVE PRODUCED. Everything else is REFUSED — not
+    coerced, not defaulted, and above all not silently DROPPED.
+
+    THIS IS THE CLASS, AND IT IS THE ONE THIS FILE KEEPS RE-SHIPPING IN A NEW DRESS. Every instance has the
+    same sentence under it: THE LOAD DOOR ACCEPTED WHAT THE WRITE DOOR CAN NEVER PRODUCE.
+
+      * the write door refused a blank REQUIRED field; the LOAD door DEFAULTED it, and an evidence-less
+        entry reached `publish`;
+      * the LOAD door blind-`str()`'d raw JSON, so `{"evidence": null}` — JSON's own word for NO VALUE —
+        became the five non-blank characters `"None"`, and was PUBLISHED AS AN ISSUE;
+      * an UNKNOWN KEY loaded fine and the next write SILENTLY DELETED it (`{"extra": "keep-me"}` survived
+        `list` and did not survive `set --title`);
+      * and `NaN` — which JSON does not define and Python accepts anyway — loaded as the text `"nan"`,
+        which SHOWS three characters, so it passed every blank check in the store and could be PUBLISHED.
+
+    `argparse` can hand a write door NOTHING BUT A `str`. So EVERY non-string, non-declared shape that has
+    ever reached this store came in through the LOAD door, and NOTHING downstream expects it. The fix is
+    therefore not four patches but one rule, and this is the fixture that holds the rule:
+
+      1. EVERY FIELD × EVERY UNWRITABLE SHAPE is REFUSED, and the store is left untouched. Derived from
+         `FIELDS` × `UNWRITABLE` — add a field to the schema and it is covered here, in every spelling, with
+         NO EDIT TO THIS FIXTURE. That is the difference between fixing the class and fixing the instance.
+      2. THE RECORD ITSELF: an unknown key (on an entry AND on the meta record), a duplicate key, a
+         high-water mark that is not a whole number, a file that is not UTF-8. Each is REFUSED, and none of
+         them CRASHES — an undecodable byte and a `high` of `Infinity` used to end in a TRACEBACK, which is
+         not a refusal, it is a tool that fell over.
+      3. AND THE CONVERSE, or a load door that refused EVERYTHING would pass every check above: the legal
+         store still loads, a finite number still reads as its digits, and a `null` in an optional field is
+         still ABSENCE.
+    """
+    # 1. EVERY FIELD × EVERY UNWRITABLE SHAPE.
+    for field in FIELDS:
+        for i, (name, value, needle) in enumerate(UNWRITABLE):
+            path = write_lines(tmp / f"v-{field}-{i}.jsonl", raw_line(field, value, id="fu1"))
+            before = path.read_text()
+            code, out, err = run(["--file", str(path), "list"])
+            check(code == 1,
+                  f"the LOAD door ACCEPTED {name} as {field!r} (exit {code}) — NO WRITE DOOR CAN PRODUCE "
+                  f"THAT VALUE (argparse hands a door nothing but a `str`), so it can only have been "
+                  f"hand-written, and nothing downstream expects it:\n{out}")
+            check((field if needle is NAMES_THE_FIELD else needle) in err,
+                  f"the refusal of {name} in {field!r} does not name "
+                  f"{'the field' if needle is NAMES_THE_FIELD else repr(needle)} — it was refused, but at "
+                  f"the wrong door, or for a reason that is not this one: {err!r}")
+            # …and the REFUSAL IS TOTAL: a corrupt store is never rewritten, and never half-repaired.
+            check(path.read_text() == before,
+                  f"a REFUSED {name} in {field!r} rewrote the store anyway — the corrupt line was 'fixed' "
+                  f"in place, which is how the unknown key was DELETED in the first place")
+
+    # …and the DROP, end to end — the exact reproduction. An unknown key must never reach a write at all:
+    # it LOADED, and then `set` rebuilt the record from the fields it knew and the key was GONE.
+    path = write_lines(tmp / "drop.jsonl", json.dumps({**json.loads(entry_line(id="fu1")),
+                                                       "extra": "keep-me"}))
+    code, _, err = run(["--file", str(path), "set", "--id", "fu1", "--title", "new"])
+    check(code == 1, f"`set` RAN on a store carrying an unknown key (exit {code}) — and the rewrite it was "
+                     f"about to do DESTROYS that key")
+    check("keep-me" in path.read_text(),
+          "the unknown key was DROPPED by the rewrite — silent data loss, in the one store that has no "
+          "other copy and that a human is invited to hand-edit")
+
+    # 2. THE RECORD ITSELF. Each is refused; NONE of them crashes.
+    entry = entry_line(id="fu1")
+    mark = json.dumps({"type": SEQ_TYPE, "high": 1})
+    for name, lines, needle in (
+        ("unknown key on an entry", (json.dumps({**json.loads(entry), "extra": "x"}),), "unknown key"),
+        ("unknown key on the mark", (json.dumps({"type": SEQ_TYPE, "high": 1, "x": 1}), entry),
+         "unknown key"),
+        ("duplicate key", ('{"type": "followup", "id": "fu1", "id": "fu2"}',), "duplicate key"),
+        ("mark = true", (json.dumps({"type": SEQ_TYPE, "high": True}), entry), "non-numeric"),
+        ("mark = 1.9", (json.dumps({"type": SEQ_TYPE, "high": 1.9}), entry), "non-numeric"),
+        ("mark = '3'", (json.dumps({"type": SEQ_TYPE, "high": "3"}), entry), "non-numeric"),
+        ("mark = Infinity", ('{"type": "followup-seq", "high": Infinity}', entry), "not JSON"),
+        ("mark absent", (json.dumps({"type": SEQ_TYPE}), entry), "non-numeric"),
+        ("a top-level NaN", ("NaN",), "not JSON"),
+        ("a bare scalar", ("42",), "not a JSON object"),
+    ):
+        path = write_lines(tmp / f"r-{name.replace(' ', '-').replace('=', '')}.jsonl", *lines)
+        code, out, err = run(["--file", str(path), "list"])
+        check(code == 1, f"[{name}] a corrupt store LOADED (exit {code}):\n{out}")
+        check(needle in err, f"[{name}] refused for the wrong reason: {err!r}")
+        check("Traceback" not in err,
+              f"[{name}] the accessor CRASHED instead of refusing — a traceback is not a refusal, and the "
+              f"caller cannot tell a corrupt store from a broken tool:\n{err}")
+
+    # …and a file that is not UTF-8 at all. `read_text()` raised UnicodeDecodeError and took the tool down.
+    path = tmp / "utf8.jsonl"
+    path.write_bytes(entry.encode() + b"\xff\xfe\n")
+    code, out, err = run(["--file", str(path), "list"])
+    check(code == 1, f"a store that is not valid UTF-8 LOADED (exit {code}):\n{out}")
+    check("Traceback" not in err, f"an undecodable byte CRASHED the accessor instead of being refused:\n{err}")
+    check("UTF-8" in err, f"the refusal does not say what is wrong with the file: {err!r}")
+
+    # 3. THE CONVERSE. A load door that refused everything would satisfy every check above.
+    path = write_lines(tmp / "ok.jsonl", entry_line(id="fu1", found_run=260714))
+    code, out, err = run(["--file", str(path), "get", "--id", "fu1"])
+    check(code == 0, f"a LEGAL store did not load (exit {code}): {err!r}")
+    check(json.loads(out)["found_run"] == "260714",
+          f"a FINITE number no longer reads as its digits — `values-are-strings` is regressed: {out!r}")
+    path = write_lines(tmp / "null.jsonl", raw_line("found_run", "null", id="fu1"))
+    code, out, err = run(["--file", str(path), "get", "--id", "fu1", "--field", "found_run"])
+    check((code, out) == (0, PLACEHOLDER + "\n"),
+          f"a JSON `null` in an OPTIONAL field is no longer ABSENCE (exit {code}): {out!r} {err!r}")
 
 
 def subcommands(parser: argparse.ArgumentParser) -> "dict[str, argparse.ArgumentParser]":
@@ -1762,6 +2067,12 @@ def t_both_doors_run_one_validator(tmp: Path) -> None:
     # an INVENTION: `str(None)` is `"None"` and `str([])` is `"[]"`, both NON-BLANK, and `{"evidence": null}`
     # — JSON's own word for "there is no value here" — LOADED, was ACCEPTED, and was PUBLISHED AS AN ISSUE
     # carrying five characters of the word "None" as its evidence. Same defect, one dress further along.
+    #
+    # WHAT THIS LOOP OWNS is the `str()`-INVENTION and the split that `null` makes: ABSENCE in an optional
+    # field, MISSING (hence blank, hence refused) in a REQUIRED one. It is NOT the corpus of unwritable
+    # shapes — `UNWRITABLE` is, and `load-takes-only-writable` applies it to EVERY field. Do not grow this
+    # tuple into a second copy of that list: two corpora of one rule is how this store shipped the same bug
+    # five times.
     for raw in (None, [], {}, True, ["x"], {"a": 1}):
         for field in REQUIRED:
             path = write_lines(tmp / f"j-{field}-{type(raw).__name__}.jsonl",
@@ -2736,8 +3047,19 @@ def t_table_grid_integrity(tmp: Path) -> None:
     that cannot exist. The blank still goes through the grid — through `published`, which may legitimately
     carry nothing — so the empty-cell rendering stays covered. Derived from `is_blank()` and `REQUIRED`, so a
     field moved into REQUIRED tomorrow moves to the safe value here with no edit.
+
+    AND A HOSTILE THIS STORE CANNOT HOLD AT ALL IS SKIPPED, on exactly the same terms one layer further out.
+    `unholdable()` is the predicate: a NUL cannot come from any write door (`argv` cannot carry one) and the
+    LOAD door refuses it, so this store can never hold one IN ANY COLUMN — a `table` rendering it is a store
+    that cannot exist, and hand-writing one here would pin a lie. Nothing is lost by skipping it: the ESCAPING
+    of a NUL is the LEDGER's to pin, because the ledger OWNS `escape_cell()` (this file imports it), and the
+    ledger's own corpus covers every codepoint below U+0021. What is refused here instead is pinned by
+    `load-takes-only-writable`, which puts a NUL in EVERY field and demands a refusal. Derived from
+    `unholdable()`, so a shape ruled unholdable tomorrow leaves this fixture with no edit.
     """
     for name, hostile in ledger.HOSTILE.items():
+        if unholdable(hostile) is not None:
+            continue  # no column of this store can hold it — see above, and `load-takes-only-writable`
         cells = {f: hostile for f in ("title", "evidence", "published")}
         if is_blank(hostile):  # …then a REQUIRED column may not hold it: keep the characters, drop the blank
             cells.update({f: f"x{hostile}x" for f in cells if f in REQUIRED})
@@ -2915,6 +3237,7 @@ CASES = [
     ("evidence-required", "a follow-up with no evidence is a RUMOR — `add` refuses it, for EVERY required field", t_evidence_is_required),
     ("required-not-editable-away", "a REQUIRED field cannot be BLANKED through `set` — the rule holds where an entry CHANGES, not only where it was made", t_required_cannot_be_edited_away),
     ("same-validator", "the WRITE door and the LOAD door are ONE function — what either refuses, both refuse, for EVERY required field and EVERY spelling of blank", t_both_doors_run_one_validator),
+    ("load-takes-only-writable", "the LOAD door accepts ONLY what a write door could have produced — every other JSON shape, in EVERY field, is REFUSED and never silently dropped", t_the_load_door_takes_only_what_a_write_door_can_produce),
     ("no-unreadable-store", "no write door can write a store `load()` refuses — every door shares ONE blank predicate", t_no_door_writes_a_store_that_will_not_load),
     ("every-value-validated", "EVERY value the CLI takes, at EVERY write door, passes the blank predicate — a flag that skips it cannot exist", t_every_value_the_cli_takes_is_validated),
     ("nothing-accepted-is-dropped", "EVERY flag of EVERY subcommand is USED — a value the CLI accepts and discards cannot exist", t_no_door_takes_a_value_it_does_not_use),

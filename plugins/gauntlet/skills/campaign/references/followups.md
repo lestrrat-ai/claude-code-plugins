@@ -285,11 +285,27 @@ checking the state it comes **from** guards nothing against a driver that hand-w
 opens by asks exactly what the write doors ask, of every line on disk: **is this a legal record?** An entry
 that could not have been produced by any legal sequence of transitions is refused, and so is one that is
 missing what a follow-up cannot be without. Such an entry is not argued with; **it does not load at all**,
-and neither does the store holding it. `entry_error()` owns both halves of that question — do not restate
-the checks here; a summary of them that drifts is worse than none, because it is the version people read.
+and neither does the store holding it. The accessor owns that question — do not restate the checks here; a
+summary of them that drifts is worse than none, because it is the version people read.
+
+**THE DOOR THE STORE OPENS BY ACCEPTS ONLY WHAT A WRITE DOOR COULD HAVE PRODUCED.** That is the same rule
+one level lower down, and it is the one this store kept breaking in a new dress. A write door is fed by
+`argv`, and `argv` can hand it **nothing but a string** — so every value on a line that is *not* a string,
+and every key that is not one of the declared fields, arrived by a **hand-edit**, and nothing downstream
+expects it. So the load door refuses, rather than doing what it used to do, which was worse than refusing:
+
+- an **unknown key** used to load fine and then be **silently deleted** by the next write — the accessor
+  rebuilds each record from the fields it knows, so a key it does not know simply stopped existing;
+- `NaN` and `Infinity` — which **JSON does not define** and Python's parser accepts anyway — used to load
+  as the *text* `"nan"`, which shows three characters, so it passed every blank check in the store and
+  could be **published as an issue**.
+
+Neither is preserved and neither is coerced: a line carrying either is a line written by something that
+does **not** share this schema, and the store refuses to open rather than rewrite on top of it.
 
 This is also why the store is **never hand-edited** — a hand-written entry is, at best, one the accessor
-will reject.
+will reject, and it will now reject it **loudly and without touching the file**, instead of quietly
+dropping the part it did not understand.
 
 **State the limit honestly: the script cannot verify that the user really agreed.** No local file can.
 `accept` is a promise the driver makes, and what the graph buys is that **skipping the user is a
