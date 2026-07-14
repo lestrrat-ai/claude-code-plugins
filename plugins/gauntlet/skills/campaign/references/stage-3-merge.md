@@ -28,9 +28,21 @@ MergeableState (.mergeable)       MERGEABLE CONFLICTING UNKNOWN
 MergeStateStatus (.mergeStateStatus)  DIRTY UNKNOWN BLOCKED BEHIND UNSTABLE HAS_HOOKS CLEAN
 ```
 
+**The two enums answer DIFFERENT questions, and `.mergeable` NEVER answers the merge question.**
+`.mergeable` says whether the branches **can be combined at all**; `.mergeStateStatus` says whether the
+merge is **permitted right now**. So `MERGEABLE` is **NECESSARY BUT NOT SUFFICIENT** — a `MERGEABLE` PR
+is routinely `BLOCKED`, `BEHIND` or `UNSTABLE`, and merging on `.mergeable` alone would merge straight
+over a blocked, stale, or non-passing PR. **`MERGEABLE` does NOT mean "merge it"; only the
+`.mergeStateStatus` rows below decide that.** The two are read together, never one instead of the other.
+
+The table maps **BOTH enums TOTALLY** — every value of each has its own row, so the catch-all fires
+**only** on a value GitHub has genuinely added since. A value with no row is a **wedge**: it falls to the
+catch-all and parks a PR that nothing was wrong with.
+
 | Field / value | Meaning | Do |
 |---|---|---|
 | `.isDraft = true` | a **draft** PR — GitHub blocks the merge regardless of CI | **NEVER merge.** Park `awaiting-user`. |
+| `.mergeable = MERGEABLE` | the branches **can** be combined — **the ONLY non-blocking `.mergeable` value, and the one EVERY healthy PR carries** | **NOT a licence to merge.** The `.mergeable` precondition is satisfied and **nothing else is decided**: fall through to the `.mergeStateStatus` rows below, which decide whether the merge may actually run. |
 | `.mergeable = CONFLICTING` | conflicts with the base | refresh the PR per step 6 |
 | `.mergeable = UNKNOWN` | **not computed yet** (GitHub computes mergeability lazily) | **re-poll with backoff**, bounded; **never** read as a verdict |
 | `.mergeStateStatus = CLEAN` | mergeable, everything green | **merge** |
