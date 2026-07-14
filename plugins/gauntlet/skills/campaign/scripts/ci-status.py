@@ -436,6 +436,11 @@ RULES = {
     # fetcher. Zero exemptions is the only number that cannot be spoofed.
     "field-reads-through-the-seam": "a reader CANNOT read a field any other way — a raw `.get()` (or any dict-reading method), ANY raw subscript (literal key, variable key, computed key, on ANY object), a `field()` call with no shape, or a fetch inlined into `build_snapshot` is caught by an AST scan of the code that RUNS, because a door with a way around it is not a door",
     "field-scan-has-a-subject": "the scan DERIVES its readers from the fetch seam, and a source in which NOTHING is handed that seam FAILS — an empty reader set would pass every source on Earth, and a check that finds nothing must never report health",
+    # THE OTHER WAY OUT OF THE READER SET, and for one round the scan asserted only the first: a fetch inlined
+    # into `build_snapshot`. But a fetcher that RETURNS the response unread puts it in `build_snapshot`'s hands
+    # just as surely — and that function is the one the reader set cannot contain, so its subscripts are
+    # unscanned. A response is read in a FETCHER, through the door, or it never leaves one.
+    "fetchers-never-return-a-response": "a reader NEVER HANDS THE RAW RESPONSE BACK — a response read outside every scanned reader is a response nothing made declare its shape",
     "pages-are-an-array": "a `--slurp` that did not yield a NON-EMPTY ARRAY is a fetch we cannot read — never rows to iterate, and never zero pages to quantify over vacuously",
     "page-is-an-object": "EVERY page is an OBJECT — a page we cannot read used to reach `.get` and CRASH, and a crash is not a refusal: no verdict was reached at all",
     "page-fact-known": "EVERY page must STATE the facts GitHub repeats on all of them (`total_count`; the status `.sha`) — a page that does not is not a page that agrees, and an absent count is NOT a count of zero",
@@ -455,6 +460,12 @@ RULES = {
     # the PR in the CURRENT CHECKOUT. The rule is not "the rollup passes --repo" (that is the instance); it
     # is that NO fetcher is handed the repo at all, so a new one CANNOT forget it.
     "every-fetch-is-repo-scoped": "every GitHub call NAMES THE REPOSITORY — an argv that does not is REFUSED, so a fetcher cannot silently run against the checkout it happens to be standing in",
+    # AND WHERE IT NAMES IT IS A POSITION, NOT A STRING SOMEWHERE IN THE ARGV. The rule above was fixed once
+    # for `gh pr view` (the repo must be the word after `--repo`, not a repo-shaped `--template`) and the
+    # `gh api` half was left testing ANY argument — so `gh api repos/wrong/repo/… --template repos/o/r/x`
+    # satisfied it and queried `wrong/repo`. A guard that accepts a STRING where it means a POSITION can be
+    # fed the string; this one is the position.
+    "api-endpoint-is-a-position": "a `gh api` call is scoped by its ENDPOINT — the operand `gh api` will use as the path, never a repo-shaped value in some other flag",
     # THE SEAM ITSELF, and the CLI. `gh_fetch` is the ONLY code path that talks to GitHub, and every fixture
     # REPLACES it — so nothing executed its rules. `seam_cases` drives them against a local process.
     "gh-exit-is-checked": "a NON-ZERO exit from `gh` is a FAILED FETCH — the doc's shell version needs pipefail to learn this",
@@ -588,13 +599,51 @@ def adjacent(argv: list[str]):
 
 
 def is_endpoint(repo: str, arg: str) -> bool:
-    """Is this argument the ENDPOINT of a `gh api` call about `repo`? A PATH, or the full URL of one.
+    """Does THIS ONE ARGUMENT — already known to be the endpoint POSITION — name `repo`? A PATH, or the full
+    URL of one.
 
-    It is only ever asked of a command that IS `gh api` — see `require_repo_scoped`. On its own it is still
-    a substring test, and a substring test is exactly what was spoofable.
+    It is a string test, and a string test is exactly what was spoofable. What makes it sound is that it is
+    asked of ONE argument, the one `gh api` will actually use as the path (`api_endpoint`), and of no other.
+    Ask it of `any(...)` over the argv and it is the spoof again: see `require_repo_scoped`.
     """
     return (arg.startswith(f"repos/{repo}/") or arg.startswith(f"/repos/{repo}/")
             or f"//api.github.com/repos/{repo}/" in arg)
+
+
+# The ONLY words this tool may write between `api` and the ENDPOINT — and BOTH TAKE NO VALUE, which is the
+# entire reason a fixed set is safe. A flag that takes a value (`-H`, `-f`, `-F`, `-q`/`--jq`, `--template`,
+# `-X`) puts a word after itself that is NOT the endpoint, and a parser that has to guess which flags do that
+# is a parser that can be handed a repo-shaped value where the path belongs. So this one does not guess: any
+# other word before the endpoint means the endpoint's position CANNOT BE IDENTIFIED, and that is a REFUSAL.
+# Flags that carry values are written AFTER the endpoint (as `gh` accepts them, and as this tool writes them
+# nowhere at all), where nothing consults them.
+API_VALUELESS_FLAGS = ("--paginate", "--slurp")
+
+
+def api_endpoint(argv: list[str]) -> str | None:
+    """THE ENDPOINT OF A `gh api` CALL, BY POSITION — the operand `gh` will use as the path.
+
+    `gh api [flags] <endpoint> [flags]`: the endpoint is the FIRST OPERAND, i.e. the first word after `api`
+    that is not one of the valueless flags this tool writes ahead of it (`API_VALUELESS_FLAGS`).
+
+    It returns None — and None REFUSES, upstream — in every case where that position is not identifiable:
+
+      * the command is not `gh api` at all (that repository is named by `--repo`, not by a path);
+      * there is no operand after `api`;
+      * a word before the endpoint is a flag this tool does not write. It MIGHT take a value, and then the
+        word after it is that value and not the path — so the parse FAILS CLOSED rather than picking one.
+
+    Written without indexing the argv: this function is reachable from `build_snapshot` through
+    `repo_scoped`, so the field-shape scan reaches it, and that scan refuses EVERY subscript (`adjacent`).
+    """
+    words = iter(argv)
+    if next(words, None) != "gh" or next(words, None) != "api":
+        return None
+    for word in words:
+        if word in API_VALUELESS_FLAGS:
+            continue
+        return None if word.startswith("-") else word
+    return None
 
 
 def require_repo_scoped(source: str, repo: str, argv: list[str]) -> list[str]:
@@ -603,13 +652,25 @@ def require_repo_scoped(source: str, repo: str, argv: list[str]) -> list[str]:
       * `gh api` — the repository is the ENDPOINT (`repos/<owner>/<name>/…`, or the full URL of it);
       * every other subcommand — the repository is the value of `--repo`, i.e. the word RIGHT AFTER it.
 
-    **AND WHICH OF THE TWO IS LEGAL IS DECIDED BY THE SUBCOMMAND, NOT BY WHERE A STRING TURNS UP.** This
-    guard used to ask whether the repo's name appeared ANYWHERE in the argv, and the audit that followed the
-    field-shape scan's two bypasses found the same shape here: `gh pr view 35 --template repos/o/r/x`
-    SATISFIED it. The repository was named — in a flag that scopes NOTHING — and the command still resolved
-    against whatever checkout the process was standing in. **A GUARD THAT ACCEPTS A STRING WHERE IT MEANS A
-    POSITION CAN BE FED THE STRING**, which is the same sentence as "an exemption by name is a guard asking
-    to be spoofed", one file over.
+    **AND WHICH OF THE TWO IS LEGAL IS DECIDED BY THE SUBCOMMAND, NOT BY WHERE A STRING TURNS UP.** The
+    subcommand picks the form, and the OTHER form is then no defence: a `gh api` whose endpoint names the
+    wrong repository is refused even if `--repo <right>` is somewhere in the argv (`gh api` does not have a
+    `--repo`; it would be a flag the command ignores, which is this file's oldest defect wearing a hat).
+
+    **A GUARD THAT ACCEPTS A STRING WHERE IT MEANS A POSITION CAN BE FED THE STRING** — the same sentence as
+    "an exemption by name is a guard asking to be spoofed", one file over. This guard has now been that guard
+    TWICE, in the same round:
+
+      * it asked whether the repo's name appeared ANYWHERE in the argv, so `gh pr view 35 --template
+        repos/o/r/x` SATISFIED it — the repository was named, in a flag that scopes NOTHING, and the command
+        still resolved against whatever checkout the process was standing in;
+      * that was fixed FOR `gh pr view` ONLY. The `gh api` branch went on testing ANY argument, so
+        `gh api repos/wrong/repo/commits/<sha>/check-runs --template repos/o/r/x` SATISFIED it and would have
+        queried **wrong/repo** — the same spoof, in the very guard that had just been "fixed" for the other
+        half of itself. The lesson is not "check the template flag"; it is that BOTH halves must name a
+        POSITION: the endpoint `gh` will actually request (`api_endpoint`), and the word right after `--repo`
+        (`adjacent`). A repo-shaped string anywhere else — `--jq`, `-f`, `-F`, a header, a field value —
+        scopes nothing and satisfies nothing.
 
     Anything else is a command that will resolve against THE CURRENT CHECKOUT, which is not a repository the
     caller ever named. That is not a fetch about this PR; it is a fetch about wherever this process happens
@@ -618,15 +679,23 @@ def require_repo_scoped(source: str, repo: str, argv: list[str]) -> list[str]:
     `repo` derives nothing.
     """
     is_api = next(iter(adjacent(argv)), None) == ("gh", "api")
+    # MUTATE:api-endpoint-is-a-position:endpoint = next((a for a in argv if is_endpoint(repo, a)), None)
+    endpoint = api_endpoint(argv)  # the POSITION `gh` will request — None unless this argv IS `gh api …`
+    if is_api:
+        scoped = endpoint is not None and is_endpoint(repo, endpoint)
+    else:
+        scoped = any(flag == "--repo" and name == repo for flag, name in adjacent(argv))
     # MUTATE:every-fetch-is-repo-scoped:return argv
-    if not ((is_api and any(is_endpoint(repo, a) for a in argv))
-            or any(flag == "--repo" and name == repo for flag, name in adjacent(argv))):
+    if not scoped:
         raise FetchError(
             f"{source}: `{' '.join(argv)}` is NOT scoped to {repo!r} — it would resolve against whatever "
             f"checkout this process is standing in, which is not the repository the caller named. A `gh api` "
-            f"call carries the repo in its PATH (`repos/{repo}/…`); every other `gh` subcommand carries it as "
-            f"`--repo {repo}`. A fetch that cannot say WHICH repository it is about is not evidence about "
-            f"this PR — and a flag this tool ACCEPTS it must USE, or REFUSE."
+            f"call carries the repo in the ENDPOINT it requests (`repos/{repo}/…`, the first operand after "
+            f"`api`); every other `gh` subcommand carries it as `--repo {repo}`, in the word right after the "
+            f"flag. NOWHERE ELSE COUNTS: a repo-shaped value in a `--template`, a `--jq`, a field or a header "
+            f"scopes nothing, and the command still asks the wrong repository. A fetch that cannot say WHICH "
+            f"repository it is about is not evidence about this PR — and a flag this tool ACCEPTS it must "
+            f"USE, or REFUSE."
         )
     return argv
 
@@ -846,8 +915,10 @@ def scanned_readers(tree: ast.Module) -> dict[str, ast.FunctionDef]:
     Two things are deliberately NOT in the set, and neither is an exemption a forgetful read can hide in:
 
       * `build_snapshot` itself — it is the ROOT, and it reads only the rows THIS FILE built, never a
-        response. It is not merely skipped: it is also checked (below) for calling the seam DIRECTLY, which
-        is the one way a response could be read there.
+        response. It is not merely skipped: BOTH ways a response could reach it are refused (below) — it
+        calling the seam DIRECTLY, and a fetcher HANDING THE RESPONSE BACK unread. The first alone was
+        asserted for one round, while the comment here claimed it was "the one way"; it was not, and a
+        fetcher whose whole body is `return fetch("x", [])` walked through the scan untouched.
       * the DOOR, and whatever only the DOOR calls — see `DOOR`.
 
     Only TOP-LEVEL defs resolve a call: a nested `def fetch(...)` (the fixtures have one) must never be
@@ -905,6 +976,52 @@ def executable(fn: ast.FunctionDef) -> list[ast.AST]:
     return [node for node in ast.walk(fn) if id(node) not in skip]
 
 
+def own_body(fn: ast.FunctionDef) -> list[ast.AST]:
+    """Every node in THIS function's own body — NOT descending into a nested def or lambda.
+
+    The hand-back rule below asks what a FETCHER returns TO ITS CALLER, and a nested function returns to the
+    fetcher, not past it. The distinction is not cosmetic: `repo_scoped`'s inner `scoped()` returns the seam's
+    value BECAUSE IT IS THE SEAM — the wrapper every fetch passes through — and what it hands back goes to a
+    FETCHER, which is scanned. Walking into it would condemn the seam for being the seam.
+
+    (Raw READS inside a nested def are still refused: `executable`/`check_field_shapes` walk the whole tree.
+    This narrower view is used by the hand-back rule alone.)
+    """
+    out: list[ast.AST] = []
+    stack: list[ast.AST] = list(fn.body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        out.append(node)
+        stack += list(ast.iter_child_nodes(node))
+    return out
+
+
+def handed_back(fn: ast.FunctionDef) -> list[ast.expr]:
+    """Every value a function RETURNS to its caller — a returned TUPLE unpacked, because that is how every
+    fetcher here hands back more than one thing, and a raw response could ride in any slot of it."""
+    out: list[ast.expr] = []
+    for node in own_body(fn):
+        if isinstance(node, ast.Return) and node.value is not None:
+            out += node.value.elts if isinstance(node.value, ast.Tuple) else [node.value]
+    return out
+
+
+def seam_bound(fn: ast.FunctionDef) -> set[str]:
+    """The locals bound DIRECTLY to what the seam returned: `pages = fetch(source, argv)`."""
+    return {t.id for node in own_body(fn)
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name) and node.value.func.id == SEAM
+            for t in node.targets if isinstance(t, ast.Name)}
+
+
+def is_raw_response(value: ast.expr, bound: set[str]) -> bool:
+    """Is this expression the SEAM'S OWN VALUE — the response, unread? The call itself, or a name bound to it."""
+    return ((isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id == SEAM)
+            or (isinstance(value, ast.Name) and value.id in bound))
+
+
 def check_field_shapes(source: str | None = None) -> str:
     """EVERY FIELD READ IN EVERY READER DECLARES ITS SHAPE — asserted over the AST of the code that RUNS.
 
@@ -947,6 +1064,20 @@ def check_field_shapes(source: str | None = None) -> str:
                   and len(sub.args) < 4):
                 bad.append((sub.lineno, f"{name}:{sub.lineno} calls {DOOR}() with NO SHAPE — it went through "
                                         f"the door and still did not say what it expects"))
+        # AND NO READER HANDS THE RESPONSE BACK UNREAD. This is the OTHER way a response is read outside every
+        # scanned reader, and the scan asserted only the first one (`build_snapshot` calling the seam) while
+        # CLAIMING that was "the one way" — a guard that MEANT "no raw response is ever read" and ASSERTED
+        # something narrower. `def fetch_x(fetch, sha): return fetch("x", [])` reads nothing, so it passed
+        # every rule above, and `build_snapshot` — which the reader set cannot contain — could then subscript
+        # the raw response with nothing to stop it. A response is READ IN THE FETCHER, through the door, or it
+        # does not leave the fetcher at all.
+        bound = seam_bound(node)
+        for value in handed_back(node):
+            # MUTATE:fetchers-never-return-a-response:continue
+            if is_raw_response(value, bound):
+                bad.append((value.lineno, f"{name}:{value.lineno} HANDS THE RAW RESPONSE BACK to its caller "
+                                          f"— unread, undeclared, and OUT of every reader this scan derives. "
+                                          f"Read it HERE, through {DOOR}(), or do not return it."))
     # AND THE ROOT ITSELF. `build_snapshot` is not a reader — it reads only the rows this file built — but it
     # HOLDS the seam, so a fetch inlined there would read a raw response in the one function the reader set
     # cannot contain. It hands the seam to a fetcher; it never calls it. (`scanned_readers` has already
@@ -2104,7 +2235,7 @@ def code_rows(source: str, fx: dict) -> list[dict]:
 
 
 def check_gh_invocations(text: str, argv: dict[str, list[str]]) -> list[str]:
-    """EVERY COPY, ANYWHERE IN THE DOC, OF A `gh` COMMAND THIS TOOL ISSUES — against the argv the code really
+    """EVERY RUNNABLE COPY IN THE DOC OF A `gh` COMMAND THIS TOOL ISSUES — against the argv the code really
     issues. A recap is where a flag goes to die, and it has already happened here twice: a copy that dropped
     `,headRefOid` (the moved-head rule's only input), and — the defect that added the `--repo` check below —
     a rollup fetch with NO REPOSITORY AT ALL, which resolves the PR in whatever checkout the reader is
@@ -2117,6 +2248,15 @@ def check_gh_invocations(text: str, argv: dict[str, list[str]]) -> list[str]:
     (`gh api` lines in the doc's PROMOTE recap ELIDE the URL — `".../check-runs"` — because the spec block
     above owns it; they are pointers, and the flags they still spell out are still checked. A `gh pr view`
     is never elided: it is written out in full every time, so `--repo` is required of every copy.)
+
+    **THE SUBJECT IS A COMMAND A READER CAN RUN, AND THAT IS EXACTLY WHAT IS TESTED FOR — say so, or the next
+    audit reads "every copy anywhere" and believes it.** A copy is a line (continuations JOINED — see below)
+    that BEGINS with the command. Prose that mentions `gh pr view` mid-sentence is not a copy, and must not be
+    treated as one: this doc WARNS about the bad form in prose, and a guard that matched the command anywhere
+    in a line would fail the build on the warning — condemning correct text, which is how a guard gets deleted
+    by the next person in a hurry. The disclosed limit of that choice, stated rather than implied: a runnable
+    copy hidden mid-line (`out=$(gh pr view … --json statusCheckRollup,headRefOid)`) is NOT seen. There is no
+    such copy in the doc, and a fetch written that way would have to be spelled out to be followed anyway.
     """
     problems: list[str] = []
     json_fields = argv["rollup"][argv["rollup"].index("--json") + 1]
@@ -2526,6 +2666,27 @@ SEAM_EXPECT = {
     # NOTHING satisfied it — and the command still resolved against the current checkout. A guard that
     # accepts a STRING where it means a POSITION can be fed the string.
     "[argv] the repo named in a flag that scopes nothing": ("refused", "is NOT scoped to"),
+    # AND THE SAME SPOOF ON THE OTHER HALF OF THE SAME GUARD, which is what the round that "fixed" the case
+    # above actually left behind: it named a POSITION for `gh pr view` and went on testing ANY ARGUMENT for
+    # `gh api`. So the endpoint could name `wrong/repo` while a `--template` (or a `--jq`, a `-f`, a `--field`,
+    # a header — one case each, because "some flag" is how a guard gets fixed for one flag) carried the
+    # repo-shaped string that satisfied the guard. Each of these WOULD HAVE QUERIED `wrong/repo`.
+    "[argv] a gh api endpoint aimed at the WRONG repo": ("refused", "is NOT scoped to"),
+    "[argv] a repo-shaped --jq on a wrong endpoint": ("refused", "is NOT scoped to"),
+    "[argv] a repo-shaped -f field on a wrong endpoint": ("refused", "is NOT scoped to"),
+    "[argv] a repo-shaped --field on a wrong endpoint": ("refused", "is NOT scoped to"),
+    "[argv] a repo-shaped header on a wrong endpoint": ("refused", "is NOT scoped to"),
+    # A FLAG BEFORE THE ENDPOINT THAT MIGHT EAT IT: `gh api --template <x> repos/wrong/…` — the word after
+    # `--template` is its VALUE, not the path, and a parser that guessed would read the repo-shaped value as
+    # the endpoint. The position is then NOT IDENTIFIABLE, and an unidentifiable position FAILS CLOSED.
+    "[argv] an unknown flag ahead of the endpoint": ("refused", "is NOT scoped to"),
+    # A `--repo` IS NO DEFENCE FOR A `gh api`: the subcommand decides the form. `gh api` has no `--repo` — it
+    # would be a flag the command ignores — so the endpoint alone scopes it, and this endpoint is wrong.
+    "[argv] gh api with a right --repo and a wrong endpoint": ("refused", "is NOT scoped to"),
+    # **AND THE MIRROR, OR THE FIX IS "REFUSE EVERYTHING".** A CORRECTLY scoped endpoint that happens to carry
+    # a repo-shaped string in a flag as well is a perfectly good fetch, and must be ACCEPTED. A guard is only
+    # honest if it can still say yes.
+    "[argv] a right endpoint with repo-shaped junk elsewhere": ("accepted", "repos/o/r/commits/"),
     # **THE SAME TWO QUESTIONS, ABOUT FIELD READS.** The argv pair above proves a fetcher cannot ask the
     # WRONG REPOSITORY; the cases below prove it cannot read a field WITHOUT SAYING WHAT IT EXPECTS — the
     # defect that shipped `page.get(rows_key) or []`, which read a MISSING row array as an EMPTY one and
@@ -2546,6 +2707,11 @@ SEAM_EXPECT = {
     "[shape] a field() call with NO shape": ("refused", "calls field() with NO SHAPE"),
     "[shape] a NEW fetcher that declares nothing": ("refused", "fetch_deployments"),
     "[shape] build_snapshot reads a response itself": ("refused", "calls the `fetch` seam DIRECTLY"),
+    # THE OTHER HALF OF THAT SAME RULE, and the one the scan did not have: the fetcher READS NOTHING and hands
+    # the response back, so every rule above passes — and the raw response is then in `build_snapshot`, the one
+    # function the reader set cannot contain, where a subscript on it is scanned by nobody.
+    "[shape] a fetcher that HANDS BACK the response": ("refused", "HANDS THE RAW RESPONSE BACK"),
+    "[shape] a fetcher that hands back a NAME for it": ("refused", "HANDS THE RAW RESPONSE BACK"),
     "[shape] a source in which NOTHING fetches": ("refused", "found NO FETCHER"),
     # And the RUN-TIME backstop behind the scan: a read that reaches `field()` with no shape at all refuses
     # there too. The scan is static and covers the readers it DERIVES; this covers the call itself, wherever
@@ -2597,6 +2763,20 @@ def fetch_check_runs(fetch, head_sha):
     page = fetch("check-runs", [])
     return field("check-runs", page, "check_runs")
 """),
+    # THE FETCHER THAT READS NOTHING AT ALL. There is no forgetful READ here to catch — that is the point: the
+    # response is handed back whole, `build_snapshot` gets it, and the scan does not scan `build_snapshot`. The
+    # rule is on the HAND-BACK, so it fires wherever the caller then reads it.
+    "[shape] a fetcher that HANDS BACK the response": forgetful("""
+def fetch_check_runs(fetch, head_sha):
+    return fetch("check-runs", [])
+"""),
+    # The same thing, one name along — the response bound to a local and returned. A rule that knew only the
+    # bare call would be the guard that gets bypassed by moving the read one character sideways, again.
+    "[shape] a fetcher that hands back a NAME for it": forgetful("""
+def fetch_check_runs(fetch, head_sha):
+    pages = fetch("check-runs", [])
+    return pages, {"row": "source"}
+"""),
     # THE HOLE THE OLD SCAN DISCLOSED INSTEAD OF CLOSING: a fetcher nobody added to the list was not scanned.
     # The reader set is DERIVED now, so this one is scanned the moment `build_snapshot` drives it.
     "[shape] a NEW fetcher that declares nothing": forgetful("""
@@ -2630,6 +2810,15 @@ def seam_cases(tmp: Path) -> dict[str, tuple[str, str]]:
     out: dict[str, tuple[str, str]] = {}
 
     def case(name: str, fn: Callable[[], object]) -> None:
+        # TWO CASES UNDER ONE NAME IS ONE CASE NOBODY ASSERTS ON. The results are a dict keyed by name, so the
+        # second would overwrite the first — and `check_seams`, which reconciles the NAMES both ways, would see
+        # one name, one expectation, and report health for a case whose result it had thrown away. That is the
+        # very shape this file keeps finding, so it is refused mechanically rather than watched for.
+        if name in out:
+            raise DocError(
+                f"{name}: TWO seam cases share this name — the second overwrites the first, and the suite then "
+                f"asserts on ONE of them while REPORTING both. Every case is named exactly once."
+            )
         # `fail()` PRINTS to stderr before it exits, and these cases fire it ON PURPOSE, once per mutant —
         # so its output is captured here rather than smeared across the report. The suppression is scoped to
         # the case: nothing else in this file writes to stderr, and swallowing a REAL diagnostic would be
@@ -2670,6 +2859,35 @@ def seam_cases(tmp: Path) -> dict[str, tuple[str, str]]:
          lambda: repo_scoped(lambda _s, argv: argv, "o/r")(
              "a-new-fetcher", ["gh", "pr", "view", "35", "--json", "statusCheckRollup,headRefOid",
                                "--template", "repos/o/r/x"]))
+    # THE SAME SPOOF ON THE `gh api` HALF — the half the round that wrote the case above left testing ANY
+    # argument. The ENDPOINT names `wrong/repo`; the repo-shaped string sits in a flag that scopes nothing,
+    # once per flag a fetcher might plausibly reach for. `gh` would query `wrong/repo` for every one of them.
+    def api_call(*extra: str) -> object:
+        return repo_scoped(lambda _s, argv: argv, "o/r")(
+            "a-new-fetcher", ["gh", "api", "--paginate", "--slurp",
+                              "repos/wrong/repo/commits/abc/check-runs", *extra])
+
+    case("[argv] a gh api endpoint aimed at the WRONG repo", lambda: api_call("--template", "repos/o/r/x"))
+    case("[argv] a repo-shaped --jq on a wrong endpoint", lambda: api_call("--jq", "repos/o/r/x"))
+    case("[argv] a repo-shaped -f field on a wrong endpoint", lambda: api_call("-f", "repos/o/r/x"))
+    case("[argv] a repo-shaped --field on a wrong endpoint", lambda: api_call("--field", "repos/o/r/x"))
+    case("[argv] a repo-shaped header on a wrong endpoint",
+         lambda: api_call("-H", "X-Repo: repos/o/r/x"))
+    # The endpoint's POSITION cannot be identified past a flag that may take a value — so it fails closed.
+    case("[argv] an unknown flag ahead of the endpoint",
+         lambda: repo_scoped(lambda _s, argv: argv, "o/r")(
+             "a-new-fetcher", ["gh", "api", "--template", "repos/o/r/x",
+                               "repos/wrong/repo/commits/abc/check-runs"]))
+    # A `--repo` does not rescue a `gh api` whose ENDPOINT is wrong: the subcommand decides the form.
+    case("[argv] gh api with a right --repo and a wrong endpoint",
+         lambda: api_call("--repo", "o/r"))
+    # AND THE ACCEPTANCE: the endpoint IS this repo, and a repo-shaped string elsewhere changes nothing. If
+    # this case ever goes `refused`, the guard was "fixed" by refusing everything, which fixes nothing.
+    case("[argv] a right endpoint with repo-shaped junk elsewhere",
+         lambda: repo_scoped(lambda _s, argv: argv, "o/r")(
+             "a-new-fetcher", ["gh", "api", "--paginate", "--slurp",
+                               "repos/o/r/commits/abc/check-runs", "--jq", "repos/o/r/x",
+                               "-H", "X-Repo: repos/other/repo/x"]))
     # THE FIELD-READ SEAM: the inventory over the code that RUNS, and then the reader that forgets — in
     # every spelling, INCLUDING the two that beat the first version of this scan (a variable-key subscript,
     # and a local spoofing the name the scan used to exempt).
