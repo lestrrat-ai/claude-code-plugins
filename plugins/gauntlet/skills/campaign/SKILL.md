@@ -167,7 +167,7 @@ Read stage refs only when that stage/action is due:
 | A PR at a review-loop cap (`status = repairing`) / a verdict that exits non-zero | `references/repair-pass.md` |
 | CI watch, check polling, CI fix | `references/stage-2-ci.md` |
 | Merge candidate / base refresh / cleanup | `references/stage-3-merge.md` |
-| Recording / promoting a follow-up (work found but not done) | `references/followups.md` |
+| Recording / investigating / acting on a follow-up (work found but not done) | `references/followups.md` |
 | Stuck task, abort, final report | `references/bailout-and-final-report.md` |
 | Rule lookup / uncertainty | `references/critical-rules.md` |
 
@@ -314,8 +314,9 @@ Read stage refs only when that stage/action is due:
   driver bookkeeping, not repo content. Stage only the specific source files a fix touches, by explicit
   path; never `git add -A`/`git add .`. Ensure `.gauntlet/` is git-ignored (add it if missing). Campaign has
   **no committed file of its own** — no repo-root config (`files-and-ledger.md`).
-- NEVER publish a follow-up — open a GitHub issue or a PR for one — without the USER's agreement on that
-  SPECIFIC item. They are the driver's own uncorroborated claims; the store is LOCAL and stays local
-  (`references/followups.md`).
+- **What the driver may do with a follow-up WITHOUT ASKING is the THREE-TIER AUTONOMY THRESHOLD**, owned by
+  `references/followups.md` — investigate freely, ACT only on a corroborated claim that meets every one of
+  its conditions, and **NEVER PUBLISH** (a GitHub issue, a release) without the USER's agreement on that
+  specific item. Read the threshold before touching one; do not reconstruct it from here.
 - NEVER `rm -rf .gauntlet/`; only `.gauntlet/tmp/**` is disposable — **everything else under
   `.gauntlet/` is durable**, and some of it nothing can rebuild (`references/files-and-ledger.md`).

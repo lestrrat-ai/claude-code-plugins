@@ -169,11 +169,12 @@ When the loop exits, summarize:
 - **Skipped (API-declined)** — any PR whose API-changing fix the user was asked about and declined,
   with the change each would have needed.
 - **Follow-ups** — whenever the store holds an open entry, the `followups.py … table` output
-  (`followups.md`): the work this run FOUND and deliberately did not do. Every entry is a **CANDIDATE**
-  the user has not yet agreed to — so **surface them and ASK**; **never** open an issue or a PR for one
-  without the user's agreement on that specific item. A defect a bailout exposed and this run will not
-  fix is recorded there **before** the report is written, not announced only in it — a follow-up that
-  exists only in this report dies with it.
+  (`followups.md`): the work this run FOUND and deliberately did not do. A `candidate` is a claim the user
+  has not agreed to and the driver has not investigated — so **surface it and ASK**. What the run may do
+  with one instead of asking is the **autonomy threshold** (`followups.md`), and **PUBLISHING is never on
+  that list**: no issue, no release, without the user's agreement on that specific item. A defect a bailout
+  exposed and this run will not fix is recorded in the store **before** the report is written, not
+  announced only in it — a follow-up that exists only in this report dies with it.
 - Any worktrees left for inspection.
 
 This run's durable carryover file (`.gauntlet/history/<run-id>.md`) is written on exit (Loop control

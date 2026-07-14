@@ -21,16 +21,33 @@ THREE PROPERTIES SEPARATE THIS STORE FROM `state.jsonl`, and each one drives the
 
 EVERY ENTRY IS A CANDIDATE, NEVER AN ISSUE. These are things the DRIVER noticed — claims, not facts, and
 the repo already holds that a driver's own diagnosis is a claim needing corroboration (`CLAUDE.md`, "Your
-OWN diagnosis is a claim too"). So the store is LOCAL and stays local: NOTHING in it may be published — a
-GitHub issue, a PR — without the USER's agreement ON THAT SPECIFIC ITEM. Filing one unilaterally would
-launder an unvalidated self-diagnosis into a public statement of fact.
+OWN diagnosis is a claim too"). So the store is LOCAL and stays local, and the one thing the driver may
+NEVER do on its own is PUBLISH one — filing an issue would launder an unvalidated self-diagnosis into a
+public statement of fact, made in the user's name.
 
-The lifecycle enforces that structurally: `publish` and `done` are reachable ONLY from `accepted`, and
-the ONLY way into `accepted` is the `accept` transition, which exists to record the user's agreement. An
-autonomous driver cannot get from `candidate` to `published` — there is no edge. What this CANNOT do is
-verify that the user really agreed (no local file can): `accept` is a promise the driver makes. It makes
-skipping the user a DELIBERATE LIE rather than an oversight, and that is the whole claim — it is a
-footgun guard, NOT a security boundary.
+WHAT THE DRIVER MAY DO WITHOUT ASKING is the THREE-TIER AUTONOMY THRESHOLD, and `references/followups.md`
+OWNS it — the tiers, the conditions, and what each one costs. DO NOT RESTATE THEM HERE. This file enforces
+what is STRUCTURAL about them, and the enforcement is the graph:
+
+  * AN INVESTIGATION NEEDS NO PERMISSION. It is read-only, its product is EVIDENCE, and its outcome —
+    `corroborated` or `refuted` — is recorded here. A REFUTATION IS RECORDED, NEVER DROPPED: it is the
+    driver's own uncorroborated claim about its own uncorroborated claim, so it stays in the store, with
+    its evidence, VISIBLE, and the user can still overturn it.
+  * THE DRIVER MUST NOT ACTION AN UNCORROBORATED CLAIM. That — not the user's signature — is the real
+    guarantee. So the autonomous edge that takes a follow-up up for work (`take-up`) leaves ONLY from
+    `corroborated`, and it must RECORD ITS EVIDENCE for every ACT condition or it is refused. It lands in
+    `self-accepted`, which is a DIFFERENT STATE from `accepted`: a follow-up the USER agreed to and one
+    the DRIVER took up on its own are different things, forever, and the table says which at a glance.
+  * PUBLICATION STAYS THE USER'S. `published` is reachable only from `accepted`, and the only edge into
+    `accepted` is `accept`. No sequence of driver-only transitions reaches either — proved on the graph
+    itself, not on one lucky path (`t_user_ruling_is_unskippable`).
+
+WHAT THIS CANNOT DO is verify that the user really agreed (no local file can): `accept` is a promise the
+driver makes. It makes skipping the user a DELIBERATE LIE rather than an oversight — a footgun guard, NOT
+a security boundary. But the guard must hold against a driver that writes the JSONL BY HAND, because THAT
+IS THE DRIVER IT DEFENDS AGAINST: so the invariants are checked where the DATA enters (`load()`), not only
+where the COMMANDS do. An entry no legal sequence of transitions could have produced is CORRUPT, and it is
+refused — loudly, never silently repaired and never skipped.
 
 The store is plaintext JSONL, one JSON object per line, cat/grep/jq-able. This script owns the schema
 ONCE (the field list and the transition graph below) so callers read/write BY FIELD NAME.
@@ -64,21 +81,50 @@ from ledger import (  # noqa: E402
     SelfTestFailure, check, config_lines, escape_cell, grid_lines, hidden_notice,
 )
 
+# --- the ACT conditions (owned here, once) ------------------------------------
+#
+# The FOUR conditions that let the driver take a follow-up up FOR WORK with no user ruling. The tier and
+# its rationale are owned by `references/followups.md`; what lives here is the one thing code can enforce:
+# EVERY CONDITION MUST BE WITNESSED BY EVIDENCE IN THE ENTRY, or the take-up is refused. A condition
+# ASSERTED but not EVIDENCED is not a condition — it is a bypass with a nicer name, and the whole tier
+# collapses into "the driver decided it was fine".
+#
+# `(condition, the FIELD that witnesses it, what that evidence must actually say)`. Everything else about
+# the ACT edge is DERIVED from this tuple — the CLI flags, what `take-up` writes, and what `load()` demands
+# of a `self-accepted` entry — so a fifth condition is enforced end-to-end the day it is added here, and a
+# stale restatement of the list cannot exist because there is no second list.
+ACT_CONDITIONS = (
+    ("corroborated", "finding",
+     "An INVESTIGATION corroborated it — a reviewer confirmed it, or the driver reproduced the failure. "
+     "This one is enforced by the GRAPH (`take-up` leaves only from `corroborated`) and its witness is the "
+     "investigation's own `finding`, so it takes no flag: the evidence is already in the entry."),
+    ("not-gate-machinery", "act_not_gate",
+     "It does not decide whether a PR may merge (`CLAUDE.md` defines the gate). WHEN UNCLEAR IT IS GATE "
+     "MACHINERY — the ambiguous case resolves toward ASK, never toward act."),
+    ("behavior-preserved", "act_behavior",
+     "It preserves user-facing behavior. If it HAS a behavioral surface, name the TEST that proves so. If "
+     "it has NONE, say so and name why — an assertion of no-behavioral-surface is itself a claim, and it "
+     "is recorded like any other."),
+    ("reversible", "act_reversible",
+     "A revert restores the prior state. A schema migration is not reversible; anything already published "
+     "is not."),
+)
+
+# Every ACT condition's witness field, and the subset `take-up` must carry in itself. Condition 1's
+# witness is the INVESTIGATION's `finding` — already in the entry, because `take-up` leaves only from
+# `corroborated` — so it takes no flag. Both are DERIVED from ACT_CONDITIONS; neither is a second list.
+ACT_WITNESSES = tuple(w for _, w, _ in ACT_CONDITIONS)
+ACT_FLAGS = tuple(w for w in ACT_WITNESSES if w != "finding")
+
 # --- schema (owned here, once) ------------------------------------------------
 
-FIELDS = (
-    "id", "title", "evidence", "deferred_why", "state", "found_run", "found", "decided", "published",
-)
-DEFAULTS = {
-    "id": "-", "title": "-", "evidence": "-", "deferred_why": "-", "state": "candidate",
-    "found_run": "-", "found": "-", "decided": "-", "published": "-",
-}
+PLACEHOLDER = "-"  # what an unset field holds, and what `is_blank()` reads as "carries nothing"
 
-# Fields a caller may EDIT after the fact. `state` is deliberately ABSENT: it moves only through the
-# transitions below, which check where it is coming FROM. Were it settable, `set --state published` would
-# walk straight past the user's agreement — the one thing this store exists to make unskippable. `id`,
-# `found*`, `decided` and `published` are records of what happened, not opinions to revise.
-EDITABLE = ("title", "evidence", "deferred_why")
+FIELDS = (
+    "id", "title", "evidence", "deferred_why", "finding", *ACT_FLAGS,
+    "state", "found_run", "found", "decided", "published",
+)
+DEFAULTS = {**{f: PLACEHOLDER for f in FIELDS}, "state": "candidate"}
 
 # Fields a follow-up cannot be WITHOUT. A follow-up with no evidence is a RUMOR — a claim nobody can
 # check, which is the one thing this store must never accumulate; and one with no `deferred_why` makes
@@ -87,24 +133,161 @@ REQUIRED = ("title", "evidence", "deferred_why")
 
 # --- the lifecycle (owned here, once) -----------------------------------------
 #
-# THE GRAPH IS THE ENFORCEMENT. `accepted` is a cut vertex: every path from `candidate` to `published` or
-# `done` runs through it, and the only edge into it is `accept` — the transition whose entire purpose is
-# to record that the USER agreed to THIS item. Remove that edge and there is no route to publication at
-# all. This is why the lifecycle is a graph and not a settable string.
+# THE GRAPH IS THE ENFORCEMENT, and what it enforces is: THE DRIVER MUST NOT ACTION AN UNCORROBORATED
+# CLAIM, and PUBLICATION IS THE USER'S. Two structural facts carry all of it, and both are PROVED on the
+# graph rather than asserted (`t_user_ruling_is_unskippable`):
+#
+#   * `accepted` has exactly ONE in-edge, `accept`, and that is the USER's ruling. `published` has exactly
+#     one in-edge, `publish`, and it leaves only from `accepted`. So NO sequence of driver-only
+#     transitions reaches `accepted` or `published` — the user cannot be routed around, by any path.
+#   * The driver's own edge for taking work up, `take-up`, leaves ONLY from `corroborated` and lands in
+#     `self-accepted` — a state that is NOT `accepted` and never becomes indistinguishable from it. Its
+#     ACT witnesses stay in the entry forever, and `decided` (the user's stamp) stays `-`.
+#
+# This is why the lifecycle is a graph and not a settable string.
 #
 # `<subcommand>: (states it may be applied FROM, the state it moves TO)`.
 TRANSITIONS = {
-    "accept":  (("candidate",), "accepted"),
-    "reject":  (("candidate", "accepted"), "rejected"),
-    "publish": (("accepted",), "published"),
-    "done":    (("accepted", "published"), "done"),
+    "corroborate": (("candidate", "refuted"), "corroborated"),
+    "refute":      (("candidate", "corroborated"), "refuted"),
+    "take-up":     (("corroborated",), "self-accepted"),
+    "accept":      (("candidate", "corroborated", "refuted", "self-accepted"), "accepted"),
+    "reject":      (("candidate", "corroborated", "refuted", "self-accepted", "accepted"), "rejected"),
+    "publish":     (("accepted",), "published"),
+    "done":        (("accepted", "self-accepted", "published"), "done"),
 }
 
-# The transitions that are the USER'S RULING, not the driver's bookkeeping — they are the ones that stamp
-# `decided`. Derived from that fact, never listed twice.
+# The transitions that are the USER'S RULING. They are the ones that stamp `decided`, and the ONLY ones —
+# a `decided` written by anything else would launder the driver's action into the user's consent.
 USER_RULINGS = ("accept", "reject")
 
+# Everything else is the DRIVER's. Derived, never listed: whatever is not the user's ruling is a step the
+# driver can take on its own, and the closure over exactly these edges is what must not reach `accepted`
+# or `published`. Add an edge tomorrow and it lands in this set automatically — including in the fixture
+# that proves the user cannot be skipped.
+DRIVER_STEPS = tuple(c for c in TRANSITIONS if c not in USER_RULINGS)
+
+# The read-only investigation, and the ACT edge. Named because they are the two the THRESHOLD speaks of;
+# what they may do is still whatever the graph above says.
+INVESTIGATION = ("corroborate", "refute")
+ACT_CMD = "take-up"
+
 STATES = ("candidate",) + tuple(dict.fromkeys(to for _, to in TRANSITIONS.values()))
+
+# The states nothing leaves. DERIVED from the graph — a state is terminal because no transition applies to
+# it, never because a list here says so.
+TERMINAL = tuple(s for s in STATES if not any(s in frm for frm, _ in TRANSITIONS.values()))
+
+# --- evidence: what each transition MUST write --------------------------------
+#
+# The EVIDENCE a transition is required to leave behind. This is the other half of the enforcement, and it
+# is what makes the graph survive a driver that writes the JSONL by hand: `load()` derives from this table
+# (below) what a legal history must have left in an entry, and REFUSES one that could not have arisen.
+#
+# ONE OWNER. `build_parser()` wires the CLI from it, `cmd_transition()` writes from it, `load()` validates
+# from it, and the fixtures derive their argv from it — so an evidence-bearing edge cannot be added with a
+# flag the fixtures do not know to pass, or a witness `load()` does not know to demand.
+WRITES = {
+    "corroborate": ("finding",),
+    "refute":      ("finding",),
+    ACT_CMD:       ACT_FLAGS,
+    "accept":      ("decided",),
+    "reject":      ("decided",),
+    "publish":     ("published",),
+    "done":        (),
+}
+
+# The flag that carries each evidence field in. `decided` is the one that may be OMITTED — a timestamp
+# defaults to now; EVIDENCE never defaults to anything.
+FLAG = {"finding": "--finding", "published": "--ref", "decided": "--at",
+        **{f: "--" + f.replace("_", "-") for f in ACT_FLAGS}}
+OPTIONAL = ("decided",)
+
+# Why a blank value is refused, per field. An evidence field that may be blank is not evidence.
+BLANK_WHY = {
+    "finding": "an investigation that shows no work is a rumor about a rumor",
+    "published": "a published follow-up must name WHERE it was published",
+    **{w: f"ACT condition '{c}' was ASSERTED but not EVIDENCED — that is not a condition, it is a bypass"
+       for c, w, _ in ACT_CONDITIONS if w in ACT_FLAGS},
+}
+
+# What each flag is FOR, printed live by `<cmd> --help`. The ACT conditions' help IS their definition,
+# quoted from ACT_CONDITIONS — the driver reads the condition at the moment it is asserting it.
+FLAG_HELP = {
+    "finding": "the EVIDENCE this investigation produced — APPENDED, never clobbering the claim's own "
+               "evidence nor an earlier investigation's finding",
+    "published": "where it was published (issue ref or URL)",
+    **{w: f"ACT condition '{c}' — {why}" for c, w, why in ACT_CONDITIONS if w in ACT_FLAGS},
+}
+
+
+def role(cmd: str) -> str:
+    """WHO takes this step — the one thing a reader of `--help` must not have to guess."""
+    if cmd in USER_RULINGS:
+        return "THE USER rules"
+    if cmd in INVESTIGATION:
+        return "an INVESTIGATION found (autonomous: it is READ-ONLY)"
+    if cmd == ACT_CMD:
+        return "the DRIVER takes it up for work (autonomous ONLY with every ACT condition EVIDENCED)"
+    return "the driver records (it is already past the user)"
+
+# Every field some transition writes. NONE of them may be editable: `set` does not check where an entry
+# came from, so a settable witness would let the grounds that made a self-acceptance legal be rewritten
+# after the fact — or erased.
+EVIDENCE_FIELDS = tuple(dict.fromkeys(f for w in WRITES.values() for f in w))
+
+# Fields a caller may EDIT after the fact. `state` is deliberately ABSENT: it moves only through the
+# transitions above, which check where it is coming FROM. Were it settable, `set --state published` would
+# walk straight past the user's agreement — the one thing this store exists to make unskippable. So are
+# every EVIDENCE_FIELD (see above), and `id`/`found*`, which are records of what happened, not opinions to
+# revise. What is left is the PROSE of the original claim, which a later run may legitimately sharpen.
+EDITABLE = ("title", "evidence", "deferred_why")
+
+
+def witness_alternatives() -> "dict[str, tuple[frozenset, ...]]":
+    """For each state, the ALTERNATIVE evidence sets that a LEGAL history would have left in the entry.
+
+    THIS IS THE LOAD-TIME GUARD, and it is derived from TRANSITIONS + WRITES by a fixpoint — never
+    hand-listed. Walk every path from `candidate`, accumulating what each edge is required to write.
+    Nothing ever erases a witness (no transition clears a field, and none of them is EDITABLE), so an entry
+    in state S is legal only if it carries EVERY field of AT LEAST ONE alternative for S.
+
+    Alternatives, not one set, because a state can be reached more than one way and the entry must satisfy
+    the way it actually came: `done` is legal with the user's `decided` stamp (it came through `accept`) OR
+    with the full ACT witness set (it came through `take-up`) — but NOT with neither, which is what a
+    hand-written `done` would be. Only the MINIMAL alternatives are kept: a superset can never make an
+    entry legal that its subset would not.
+
+    This is what closes the gap the transitions alone leave open. `publish` checking that the entry is
+    `accepted` guards nothing against a driver that simply WRITES `"state": "accepted"` into the file — and
+    that driver is the one this store exists to defend against. With this, `accepted` without a `decided`
+    stamp is not an entry the accessor argues with; it is an entry no legal history could have produced,
+    and it does not load at all.
+    """
+    alts: "dict[str, set]" = {s: set() for s in STATES}
+    alts["candidate"] = {frozenset()}
+    changed = True
+    while changed:
+        changed = False
+        for cmd, (frm, to) in TRANSITIONS.items():
+            for prev in frm:
+                for base in tuple(alts[prev]):
+                    reached = base | frozenset(WRITES[cmd])
+                    if reached not in alts[to]:
+                        alts[to].add(reached)
+                        changed = True
+    return {
+        s: tuple(sorted((a for a in sets if not any(b < a for b in sets)), key=lambda a: (len(a), sorted(a))))
+        for s, sets in alts.items()
+    }
+
+
+WITNESS = witness_alternatives()
+
+
+def is_blank(value: str) -> bool:
+    """A field carries nothing: empty, whitespace, or the placeholder an unset field defaults to."""
+    return value.strip() in ("", PLACEHOLDER)
 
 # What the DEFAULT view hides: the CLOSED entries — the ones NOBODY has anything left to do about. A
 # `done` follow-up shipped; a `rejected` one the user ruled against. Everything else is somebody's open
@@ -146,6 +329,32 @@ def now_iso() -> str:
 
 # --- parse / serialize --------------------------------------------------------
 
+def illegal_history(entry: dict) -> "str | None":
+    """Why this entry could NOT have been produced by any legal sequence of transitions — or None.
+
+    THE INVARIANT IS CHECKED WHERE THE DATA ENTERS, not only where the COMMANDS do. `publish` refusing to
+    run on a non-`accepted` entry guards nothing against a driver that hand-writes `"state": "accepted"`
+    into the JSONL — and a driver that would skip the user is exactly the one that would do that. So an
+    entry must carry the evidence a legal path to its state was REQUIRED to leave behind (`WITNESS`, which
+    is derived from the graph itself): an `accepted` with no `decided` stamp, a `published` with no ref, a
+    `self-accepted` missing any ACT condition's evidence — none of these is an entry to argue with. It is
+    an entry that cannot exist, and it does not load.
+
+    The message names EVERY missing field of the CLOSEST alternative, so a corrupt store says what is
+    wrong with it rather than merely refusing.
+    """
+    alts = WITNESS[entry["state"]]
+    missing = min((sorted(a for a in alt if is_blank(entry[a])) for alt in alts), key=len, default=[])
+    if not missing:
+        return None
+    ways = " or ".join("/".join(sorted(alt)) for alt in alts)
+    return (
+        f"state {entry['state']!r} with no {', '.join(missing)} — no legal history produces that. "
+        f"Reaching {entry['state']!r} requires: {ways}. The entry was hand-written, or written by "
+        f"something that is not this accessor."
+    )
+
+
 def load(path: Path) -> "list[dict]":
     """Return the entries. A missing file is an EMPTY store — a first follow-up, not an error.
 
@@ -154,6 +363,9 @@ def load(path: Path) -> "list[dict]":
     on-disk JSON number compares as the string key the rest of the accessor uses. `id` and `state` are
     validated: a malformed id could never be addressed again, and an unrecognised state would sit in the
     table as something no transition can move.
+
+    And the STATE ITSELF IS VALIDATED AGAINST ITS OWN HISTORY (`illegal_history()`) — the transitions
+    cannot be the only guard, because they only ever see entries this accessor wrote.
     """
     entries: list[dict] = []
     if not path.exists():
@@ -177,6 +389,9 @@ def load(path: Path) -> "list[dict]":
             fail(f"line {n}: unknown state {entry['state']!r}; valid: {', '.join(STATES)}")
         if entry["id"] in seen:
             fail(f"line {n}: duplicate entry for {entry['id']}")
+        why = illegal_history(entry)
+        if why is not None:
+            fail(f"line {n}: {entry['id']} is {why}")
         seen.add(entry["id"])
         entries.append(entry)
     return entries
@@ -285,13 +500,31 @@ def cmd_set(path: Path, args) -> int:
     return 0
 
 
-def cmd_transition(path: Path, args) -> int:
-    """`accept` / `reject` / `publish` / `done` — the ONLY things that move `state`.
+def append_finding(existing: str, outcome: str, at: str, text: str) -> str:
+    """APPEND the investigation's finding — NEVER clobber what is already there.
 
-    Each checks the state it is coming FROM against the graph, so the user's agreement cannot be routed
-    around: there is no edge from `candidate` to `published` or to `done`.
+    The claim's `evidence` (why the driver raised it) and the investigation's `finding` (what happened when
+    somebody actually looked) are DIFFERENT THINGS and both matter — so the finding never touches
+    `evidence`, and a SECOND investigation never erases the first. A later run that overturns an earlier
+    refutation must leave that refutation standing: the record of the driver changing its mind IS the audit
+    trail, and a `finding` that only ever holds the latest verdict is a store that quietly rewrites its own
+    history. Each record is stamped with the outcome it produced and when.
     """
-    frm, to = TRANSITIONS[args.cmd]
+    record = f"[{outcome} {at}] {text}"
+    return record if is_blank(existing) else existing + "\n" + record
+
+
+def cmd_transition(path: Path, args) -> int:
+    """The ONLY things that move `state` — every one of them checks the state it is coming FROM.
+
+    So the graph is the guard, not a convention: there is no edge by which a driver reaches `accepted` or
+    `published`, and no edge out of `candidate` that skips an investigation on the way to work.
+
+    WHAT EACH TRANSITION MUST WRITE comes from `WRITES`, and a blank value is REFUSED. That is what stops
+    the ACT edge from degenerating into a bypass: `take-up` cannot claim a condition it will not evidence.
+    """
+    cmd = args.cmd
+    frm, to = TRANSITIONS[cmd]
     with locked(path):
         entries = load(path)
         entry = find(entries, args.id)
@@ -299,18 +532,22 @@ def cmd_transition(path: Path, args) -> int:
             fail(f"no follow-up {args.id}")
         if entry["state"] not in frm:
             fail(
-                f"{args.id} is '{entry['state']}' — `{args.cmd}` applies only to: {', '.join(frm)}. "
+                f"{args.id} is '{entry['state']}' — `{cmd}` applies only to: {', '.join(frm)}. "
                 f"A follow-up reaches '{to}' only along the transition graph; nothing else moves `state`."
             )
-        if args.cmd == "publish":
-            if not args.ref.strip():
-                fail("--ref must not be empty — a published follow-up must name WHERE it was published")
-            entry["published"] = args.ref
+        # The user's ruling is DURABLE DATA, exactly like the ledger's `api_approval`: a later run — or a
+        # fresh agent that never saw the conversation — reads it and does not re-ask.
+        stamp = getattr(args, "at", None) or now_iso()
+        for field in WRITES[cmd]:
+            if field in OPTIONAL:
+                entry[field] = stamp
+                continue
+            value = getattr(args, field)
+            if not value.strip():
+                fail(f"{FLAG[field]} must not be empty — {BLANK_WHY[field]}")
+            entry[field] = (append_finding(entry[field], to, stamp, value) if field == "finding"
+                            else value)
         entry["state"] = to
-        if args.cmd in USER_RULINGS:
-            # The user's ruling is DURABLE DATA, exactly like the ledger's `api_approval`: a later run —
-            # or a fresh agent that never saw the conversation — reads it and does not re-ask.
-            entry["decided"] = args.at or now_iso()
         dump(path, entries)
     print(json.dumps(entry))
     return 0
@@ -389,7 +626,31 @@ def run(argv: "list[str]") -> "tuple[int, str, str]":
 
 
 def entry_line(**over: str) -> str:
-    return json.dumps({"type": "followup", **DEFAULTS, **over})
+    """A raw store line for an entry in some state — with the evidence that state REQUIRES filled in.
+
+    Derived from `WITNESS`, so a fixture asking for a `self-accepted` entry gets a LEGAL one without
+    restating what a self-acceptance must carry (and a fixture that wants an ILLEGAL one blanks a witness
+    on purpose — see `t_load_rejects_an_illegal_history`). A new state, or a new witness on an existing
+    one, is filled here the day the graph gains it, with no fixture edit.
+    """
+    state = over.get("state", DEFAULTS["state"])
+    witness = min(WITNESS[state], key=len) if WITNESS.get(state) else frozenset()
+    return json.dumps({"type": "followup", **DEFAULTS,
+                       **{f: f"<{f}>" for f in witness}, **over})
+
+
+def transition_args(cmd: str) -> "list[str]":
+    """The flags a transition REQUIRES — derived from `WRITES`, never retyped.
+
+    So every graph fixture exercises a new evidence-bearing edge the day it is added: forget to pass a
+    required flag and argparse exits 2, which is a fixture failure, not a silent skip.
+    """
+    argv: list[str] = []
+    for field in WRITES[cmd]:
+        if field in OPTIONAL:
+            continue
+        argv += [FLAG[field], f"{cmd}:{field}"]
+    return argv
 
 
 def write_lines(path: Path, *lines: str) -> Path:
@@ -414,25 +675,83 @@ def state_of(path: Path, fid: str) -> str:
     return out.strip()
 
 
-def t_user_step_is_unskippable(tmp: Path) -> None:
-    """A CANDIDATE CAN NEVER BE PUBLISHED OR CLOSED — the user's agreement has no bypass.
+def closure(start: "tuple[str, ...]", cmds: "tuple[str, ...]") -> "set[str]":
+    """Every state reachable from `start` using ONLY the named transitions. A fixpoint over the graph."""
+    seen = set(start)
+    changed = True
+    while changed:
+        changed = False
+        for cmd in cmds:
+            frm, to = TRANSITIONS[cmd]
+            if to not in seen and any(f in seen for f in frm):
+                seen.add(to)
+                changed = True
+    return seen
 
-    THE load-bearing rule of this store. `accepted` is a cut vertex: every path to `published`/`done` runs
-    through it, and the only edge into it is `accept`, which exists to record the user's ruling. Delete
-    that check — let `publish` apply to a `candidate` — and an autonomous driver files a GitHub issue for
-    an unvalidated self-diagnosis, which is the exact thing this store was built to prevent.
+
+def t_user_ruling_is_unskippable(tmp: Path) -> None:
+    """THE DRIVER CAN NEVER REACH `accepted` OR `published` ON ITS OWN — proved ON THE GRAPH, not on one
+    lucky path.
+
+    THE load-bearing rule of this store, and the ONE the ACT tier had to be built without breaking. The
+    driver may investigate freely, and it may TAKE UP a corroborated follow-up for work — but publication
+    is a claim made in the USER's name, so `published` sits behind `accepted`, `accepted` has exactly one
+    in-edge, and that edge is the user's.
+
+    Checked three ways, every one of them DERIVED from TRANSITIONS — so an edge added tomorrow that routes
+    around the user goes red here rather than shipping:
+
+      1. the in-edges. `accepted` has exactly one and it is `accept`, a USER ruling; `published` has
+         exactly one and it leaves only from `accepted`.
+      2. the CLOSURE over every driver-only step (everything that is not a user ruling): from `candidate`
+         it reaches the investigation outcomes and the ACT state — and NEITHER `accepted` NOR `published`.
+         This is the property in full: not "there is no direct edge", but "there is no PATH".
+      3. the same closure from `self-accepted` — the new autonomous state, the one a bypass would be built
+         out of. It reaches work (`done`); it never reaches publication.
+
+    Then the same thing END-TO-END through the real CLI, because a graph that is right and an accessor that
+    does not enforce it is a comment.
     """
-    path = tmp / "f.jsonl"
-    (fid,) = seed(path)
-    for cmd, extra in (("publish", ["--ref", "#123"]), ("done", [])):
-        code, out, err = run(["--file", str(path), cmd, "--id", fid, *extra])
+    gated = {"accepted", "published"}
+
+    # 1. the in-edges.
+    for state, edge in (("accepted", "accept"), ("published", "publish")):
+        ins = [c for c, (_, to) in TRANSITIONS.items() if to == state]
+        check(ins == [edge], f"`{state}` has in-edges {ins!r} — `{edge}` must be the ONLY one")
+    check("accept" in USER_RULINGS, "`accept` is not a USER ruling — the gate would be the driver's own")
+    check(TRANSITIONS["publish"][0] == ("accepted",),
+          f"`publish` leaves from {TRANSITIONS['publish'][0]!r}, not from `accepted` alone")
+
+    # 2. + 3. the closure over EVERY driver-only step, from the start and from the ACT state.
+    for start in ("candidate", TRANSITIONS[ACT_CMD][1]):
+        reach = closure((start,), DRIVER_STEPS)
+        check(not (reach & gated),
+              f"a driver with NO user ruling reaches {sorted(reach & gated)!r} from {start!r} — the user "
+              f"is BYPASSABLE (reachable: {sorted(reach)})")
+    autonomous = closure(("candidate",), DRIVER_STEPS)
+    # …and the tier is REAL, not decorative: the investigation outcomes and the ACT state ARE reachable.
+    expected = {to for c, (_, to) in TRANSITIONS.items() if c in INVESTIGATION or c == ACT_CMD}
+    check(expected <= autonomous,
+          f"the driver cannot reach {sorted(expected - autonomous)!r} on its own — the INVESTIGATE/ACT "
+          f"tiers do not exist")
+
+    # …and end-to-end: a CANDIDATE, and an INVESTIGATED one, are both refused publication.
+    for setup in ([], ["corroborate"], ["refute"], ["corroborate", ACT_CMD]):
+        path = tmp / ("start-" + "-".join(setup or ["none"]) + ".jsonl")
+        (fid,) = seed(path)
+        for cmd in setup:
+            code, _, err = run(["--file", str(path), cmd, "--id", fid, *transition_args(cmd)])
+            check(code == 0, f"setup `{cmd}` exited {code}: {err!r}")
+        was = state_of(path, fid)
+        code, out, err = run(["--file", str(path), "publish", "--id", fid, "--ref", "#123"])
         check(code == 1,
-              f"`{cmd}` was ACCEPTED on a CANDIDATE (exit {code}) — the user's agreement was skipped:\n{out}")
-        check("applies only to" in err, f"`{cmd}` failed for the wrong reason: {err!r}")
-        check(state_of(path, fid) == "candidate",
-              f"a refused `{cmd}` still moved the state to {state_of(path, fid)!r}")
+              f"`publish` was ACCEPTED on a {was!r} follow-up (exit {code}) — the user was skipped:\n{out}")
+        check("applies only to" in err, f"publish failed for the wrong reason: {err!r}")
+        check(state_of(path, fid) == was, f"a refused publish still moved {was!r} to {state_of(path, fid)!r}")
 
     # …and the ONLY route through: accept (the user agreed), and only then publish.
+    path = tmp / "route.jsonl"
+    (fid,) = seed(path)
     check(run(["--file", str(path), "accept", "--id", fid])[0] == 0, "accept must succeed on a candidate")
     check(state_of(path, fid) == "accepted", "accept did not reach `accepted`")
     check(run(["--file", str(path), "publish", "--id", fid, "--ref", "#123"])[0] == 0,
@@ -440,20 +759,30 @@ def t_user_step_is_unskippable(tmp: Path) -> None:
     check(state_of(path, fid) == "published", "publish did not reach `published`")
 
 
-def t_state_is_not_settable(tmp: Path) -> None:
-    """`set` CANNOT WRITE `state` — not by flag, not by field name.
+def t_state_and_evidence_are_not_settable(tmp: Path) -> None:
+    """`set` CANNOT WRITE `state`, AND IT CANNOT WRITE ANY EVIDENCE FIELD — not by flag, not by name.
 
     The transitions check where a follow-up is coming FROM; `set` does not. A settable `state` would walk
-    straight past `accept` — `set --state published` — and the whole graph would be decoration. So `state`
-    is absent from EDITABLE, and the flag does not exist at all (argparse rejects it, exit 2).
+    straight past `accept` — `set --state published` — and the whole graph would be decoration.
+
+    THE SAME IS TRUE OF EVERY WITNESS. `load()` now admits a `self-accepted` entry only because it carries
+    the evidence for each ACT condition; a `set --act-reversible ''` would let the driver assert the
+    conditions, take the work up, and then rewrite or hollow out the grounds it acted on — and the entry
+    would still load, because the state was legal WHEN IT WAS WRITTEN. So the rule is not "state is frozen"
+    but "NOTHING A TRANSITION WROTE IS EDITABLE", and it is derived from `EVIDENCE_FIELDS`: a new witness
+    is covered here the day the graph gains it.
     """
     path = tmp / "f.jsonl"
     (fid,) = seed(path)
-    for flag in ("--state", "--decided", "--published", "--id-", "--found"):
-        code, _, err = run(["--file", str(path), "set", "--id", fid, flag, "published"])
+    # (`id` is absent: it is `set`'s KEY, not one of its fields.)
+    for field in ("state", "found", "found_run", *EVIDENCE_FIELDS):
+        flag = "--" + field.replace("_", "-")
+        code, _, err = run(["--file", str(path), "set", "--id", fid, flag, "x"])
         check(code == 2, f"`set {flag}` was ACCEPTED (exit {code}) — it must not be a flag at all: {err!r}")
+        check(field not in EDITABLE,
+              f"{field!r} is EDITABLE — a transition wrote it, and `set` could now rewrite the record of "
+              f"what happened")
     check(state_of(path, fid) == "candidate", "a rejected `set` moved the state anyway")
-    check("state" not in EDITABLE, "`state` is EDITABLE — `set --state published` would skip the user")
 
     # …and the prose fields ARE editable (the rule is targeted, not a blanket freeze).
     code, out, err = run(["--file", str(path), "set", "--id", fid, "--evidence", "PR #9, review 2"])
@@ -472,8 +801,7 @@ def t_transition_graph(tmp: Path) -> None:
         for state in STATES:
             path = tmp / f"{cmd}-{state}.jsonl"
             write_lines(path, entry_line(id="fu1", state=state))
-            extra = ["--ref", "#1"] if cmd == "publish" else []
-            code, _, err = run(["--file", str(path), cmd, "--id", "fu1", *extra])
+            code, _, err = run(["--file", str(path), cmd, "--id", "fu1", *transition_args(cmd)])
             if state in frm:
                 check(code == 0, f"`{cmd}` was refused from the ALLOWED state {state!r}: {err!r}")
                 check(state_of(path, "fu1") == to, f"`{cmd}` from {state!r} did not reach {to!r}")
@@ -482,10 +810,22 @@ def t_transition_graph(tmp: Path) -> None:
                 check(state_of(path, "fu1") == state,
                       f"a refused `{cmd}` still moved {state!r} to {state_of(path, 'fu1')!r}")
 
-    # A TERMINAL state is terminal: nothing in the graph leaves `rejected` or `done`.
-    for state in ("rejected", "done"):
-        check(not any(state in frm for frm, _ in TRANSITIONS.values()),
-              f"{state!r} is not terminal — some transition applies to it")
+    # AN INVESTIGATION OUTCOME IS NEVER TERMINAL, and that is a rule, not an accident. A refutation is the
+    # driver's own uncorroborated claim ABOUT its own uncorroborated claim. If `refuted` had no way out,
+    # the driver could CLOSE a follow-up by investigating it badly — the mirror image of publishing one
+    # unilaterally, and just as unappealable. So the user can always overturn it, and so can a better
+    # investigation. (Terminality itself needs no separate check: the loop above already proves that every
+    # command is refused from every state the graph does not allow it from.)
+    for cmd in INVESTIGATION:
+        outcome = TRANSITIONS[cmd][1]
+        out_edges = [c for c, (frm, _) in TRANSITIONS.items() if outcome in frm]
+        check(outcome not in TERMINAL,
+              f"{outcome!r} is TERMINAL — an investigation could close a follow-up with no user ruling")
+        check("accept" in out_edges,
+              f"the USER cannot `accept` a {outcome!r} follow-up — the driver's own investigation is final")
+        check(any(c in INVESTIGATION for c in out_edges),
+              f"no further investigation can leave {outcome!r} — the FIRST investigation is authoritative, "
+              f"and a driver that got it wrong can never correct itself")
 
 
 def t_ruling_is_recorded(tmp: Path) -> None:
@@ -516,8 +856,24 @@ def t_ruling_is_recorded(tmp: Path) -> None:
     check(after["decided"] == "2026-07-14T09:00:00Z",
           f"`publish` overwrote the USER's ruling timestamp: {after!r}")
     check(after["published"] == "#77", f"publish did not record WHERE: {after!r}")
-    check(set(USER_RULINGS) == {"accept", "reject"},
-          "USER_RULINGS changed — the transitions that stamp `decided` must be the user's, and only those")
+
+    # …and NOTHING THE DRIVER DOES ALONE STAMPS IT. An investigation is evidence, not consent; a take-up is
+    # the driver's own call, not the user's. A `decided` written by either would launder the driver's action
+    # into the user's agreement — and `decided` is exactly what `load()` demands of an `accepted` entry, so
+    # a driver that could stamp it could forge one.
+    stampers = {c for c, w in WRITES.items() if "decided" in w}
+    check(stampers == set(USER_RULINGS),
+          f"`decided` is stamped by {sorted(stampers)!r} — it must be stamped by the USER's rulings "
+          f"({sorted(USER_RULINGS)}) and by NOTHING else")
+    path = tmp / "driver.jsonl"
+    (c,) = seed(path)
+    for cmd in ("corroborate", ACT_CMD):
+        code, _, err = run(["--file", str(path), cmd, "--id", c, *transition_args(cmd)])
+        check(code == 0, f"`{cmd}` exited {code}: {err!r}")
+        got = json.loads(run(["--file", str(path), "get", "--id", c])[1])
+        check(got["decided"] == PLACEHOLDER,
+              f"`{cmd}` stamped `decided` ({got['decided']!r}) — the DRIVER's own step was recorded as the "
+              f"USER's ruling")
 
 
 def t_publish_needs_a_ref(tmp: Path) -> None:
@@ -539,6 +895,11 @@ def t_evidence_is_required(tmp: Path) -> None:
     A store of unfalsifiable claims is worse than no store: nobody can audit an entry that says only "the
     merge logic looks wrong". `deferred_why` is required on the same terms — without it the next run
     cannot see why the finding was not simply folded into the PR that found it, and re-litigates it.
+
+    BOTH LOOPS RUN OVER `REQUIRED` — the missing-flag case AND the blank-value case. Hand-listing the blank
+    case is how the rule rots: with only `evidence` blank-tested, `cmd_add`'s blank check could be narrowed
+    to `evidence` alone — dropping `title` and `deferred_why` outright — and this suite stayed GREEN through
+    it. A field added to REQUIRED tomorrow is pinned here with no edit.
     """
     path = tmp / "f.jsonl"
     for missing in REQUIRED:
@@ -548,12 +909,298 @@ def t_evidence_is_required(tmp: Path) -> None:
                 argv += [f"--{f.replace('_', '-')}", "x"]
         code, _, err = run(argv)
         check(code == 2, f"add without --{missing} was ACCEPTED (exit {code}): {err!r}")
-    for blank in ("", "   ", "\t"):
-        code, _, err = run(["--file", str(path), "add", "--title", "t", "--evidence", blank,
-                            "--deferred-why", "w"])
-        check(code == 1, f"add with a BLANK evidence ({blank!r}) was ACCEPTED (exit {code})")
-        check("rumor" in err, f"add failed for the wrong reason: {err!r}")
+    for blanked in REQUIRED:
+        for blank in ("", "   ", "\t"):
+            argv = ["--file", str(path), "add"]
+            for f in REQUIRED:
+                argv += [f"--{f.replace('_', '-')}", blank if f == blanked else "x"]
+            code, _, err = run(argv)
+            check(code == 1,
+                  f"add with a BLANK --{blanked} ({blank!r}) was ACCEPTED (exit {code}) — the field is "
+                  f"REQUIRED, so a value made only of whitespace is not a value")
+            check("rumor" in err, f"add failed for the wrong reason: {err!r}")
     check(load(path) == [], "a REFUSED add still wrote an entry to the store")
+
+
+def t_investigation_shows_its_work(tmp: Path) -> None:
+    """AN INVESTIGATION MUST SHOW ITS WORK — `--finding` is required, non-blank, and APPENDED, never
+    clobbered.
+
+    An investigation is the one thing the driver may do with NO permission at all, so its only cost is that
+    it produces EVIDENCE. Without that, `corroborated` is the driver marking its own homework — and a blank
+    `refuted` is worse: it is the driver telling the user "there is nothing here", with nothing to check.
+
+    APPEND, never clobber, and never into `evidence`. The claim's `evidence` (why the driver raised it) and
+    the investigation's `finding` (what happened when somebody looked) are DIFFERENT THINGS, and a second
+    investigation that overturns the first must leave the first STANDING — the record of the driver
+    changing its mind IS the audit trail.
+    """
+    for cmd in INVESTIGATION:
+        path = tmp / f"{cmd}.jsonl"
+        (fid,) = seed(path)
+        code, _, err = run(["--file", str(path), cmd, "--id", fid])
+        check(code == 2, f"`{cmd}` without --finding was ACCEPTED (exit {code}): {err!r}")
+        for blank in ("", "   ", "\t"):
+            code, _, err = run(["--file", str(path), cmd, "--id", fid, "--finding", blank])
+            check(code == 1, f"`{cmd}` with a BLANK finding ({blank!r}) was ACCEPTED (exit {code})")
+            check("rumor" in err, f"`{cmd}` failed for the wrong reason: {err!r}")
+        check(state_of(path, fid) == "candidate", f"a refused `{cmd}` moved the state anyway")
+
+    # …and the record ACCUMULATES: a later investigation never erases an earlier one.
+    path = tmp / "append.jsonl"
+    (fid,) = seed(path)
+    run(["--file", str(path), "refute", "--id", fid, "--finding", "no input reaches the branch",
+         "--at", "2026-07-14T09:00:00Z"])
+    first = json.loads(run(["--file", str(path), "get", "--id", fid])[1])
+    check("no input reaches the branch" in first["finding"], f"the finding was not recorded: {first!r}")
+    check("refuted" in first["finding"] and "2026-07-14T09:00:00Z" in first["finding"],
+          f"the finding does not say WHICH outcome it produced, or WHEN: {first['finding']!r}")
+    check(first["evidence"] == "e0",
+          f"the investigation CLOBBERED the claim's own evidence: {first['evidence']!r}")
+
+    run(["--file", str(path), "corroborate", "--id", fid, "--finding", "reproduced: blank ref, exit 0",
+         "--at", "2026-07-14T10:00:00Z"])
+    second = json.loads(run(["--file", str(path), "get", "--id", fid])[1])
+    check("no input reaches the branch" in second["finding"],
+          f"the SECOND investigation erased the first — the refutation the driver reversed is GONE, and "
+          f"nobody can audit the reversal: {second['finding']!r}")
+    check("reproduced: blank ref, exit 0" in second["finding"],
+          f"the second finding was not recorded: {second['finding']!r}")
+    check(second["state"] == "corroborated", "a later investigation could not overturn an earlier one")
+
+
+def t_refutation_stays_in_the_store(tmp: Path) -> None:
+    """A REFUTED FOLLOW-UP STAYS — IN THE STORE, IN THE VIEW, AND THE USER'S TO OVERTURN.
+
+    The driver refuting its OWN claim is precisely the case the user must be able to audit. Refuting is not
+    deleting and it is not closing: if a refuted entry vanished from the store — or merely from the default
+    table — a driver could bury a real defect by investigating it badly, silently, with nothing left behind.
+    This repo has already burned four review rounds on a bug that was never real; the OPPOSITE mistake,
+    refuting one that IS, must cost nothing to catch.
+    """
+    path = tmp / "f.jsonl"
+    (fid,) = seed(path)
+    run(["--file", str(path), "refute", "--id", fid, "--finding", "cannot reproduce on main"])
+    check(state_of(path, fid) == "refuted", "refute did not reach `refuted`")
+
+    code, out, _ = run(["--file", str(path), "list"])
+    check(out == f"{fid}\n", f"a refuted follow-up was DROPPED from the store: {out!r}")
+    code, out, err = run(["--file", str(path), "table", "--fields", "id,state"])
+    check(code == 0, f"table exited {code}: {err!r}")
+    _, _, cells = ledger.grid(out, ("id", "state"), ("store", "rule"), TABLE_MARKERS)
+    check(cells == [[fid, "refuted"]],
+          f"a refuted follow-up is HIDDEN by the default view — the driver's own refutation is unauditable "
+          f"unless the user already knows to look: {cells!r}\n{out}")
+    check("refuted" not in TABLE_HIDDEN_STATES, "`refuted` is hidden by default")
+
+    # …and the USER can overturn it, with the refutation's evidence still there to be judged.
+    check(run(["--file", str(path), "accept", "--id", fid])[0] == 0,
+          "the USER cannot accept what the DRIVER refuted — the driver's investigation is unappealable")
+    after = json.loads(run(["--file", str(path), "get", "--id", fid])[1])
+    check(after["state"] == "accepted", f"accept from `refuted` did not reach `accepted`: {after!r}")
+    check("cannot reproduce on main" in after["finding"],
+          f"the refutation's evidence was destroyed when the user overturned it: {after!r}")
+
+
+def t_act_edge_needs_every_condition(tmp: Path) -> None:
+    """THE AUTONOMOUS EDGE IS EVIDENCE-BEARING, OR IT IS A BYPASS WITH A NICER NAME.
+
+    `take-up` is the one step where the driver commits the repo to work with NO user ruling. What makes
+    that safe is not the driver's good intentions — it is that EVERY ACT condition must be witnessed IN THE
+    ENTRY, and the accessor refuses the step otherwise, exactly as `add` refuses a blank `evidence`.
+
+    Condition 1 (CORROBORATED) is enforced by the GRAPH, not by a flag: `take-up` leaves only from
+    `corroborated`, so a claim nobody investigated cannot be taken up at all. The rest are flags, and each
+    is REQUIRED and must be non-blank. Every check below is derived from ACT_CONDITIONS — a fifth condition
+    is pinned here the day it is added.
+    """
+    # Condition 1: the graph. An UNINVESTIGATED claim cannot be taken up — and neither can a REFUTED one.
+    check(TRANSITIONS[ACT_CMD][0] == ("corroborated",),
+          f"`{ACT_CMD}` leaves from {TRANSITIONS[ACT_CMD][0]!r} — it must leave ONLY from `corroborated`, "
+          f"which is what makes CORROBORATION structural rather than a claim the driver types in")
+    for setup in ([], ["refute"]):
+        path = tmp / ("cond1-" + "-".join(setup or ["raw"]) + ".jsonl")
+        (fid,) = seed(path)
+        for cmd in setup:
+            run(["--file", str(path), cmd, "--id", fid, *transition_args(cmd)])
+        was = state_of(path, fid)
+        code, _, err = run(["--file", str(path), ACT_CMD, "--id", fid, *transition_args(ACT_CMD)])
+        check(code == 1, f"`{ACT_CMD}` was ACCEPTED on a {was!r} follow-up (exit {code}) — the driver took "
+                         f"up an UNCORROBORATED claim")
+        check(state_of(path, fid) == was, f"a refused `{ACT_CMD}` moved {was!r} anyway")
+
+    # Conditions 2..N: each is a REQUIRED flag, and each refuses a blank.
+    for witness in ACT_FLAGS:
+        path = tmp / f"cond-{witness}.jsonl"
+        (fid,) = seed(path)
+        run(["--file", str(path), "corroborate", "--id", fid, "--finding", "reproduced"])
+
+        argv = ["--file", str(path), ACT_CMD, "--id", fid]
+        omitted = [a for f in ACT_FLAGS if f != witness for a in (FLAG[f], "x")]
+        code, _, err = run([*argv, *omitted])
+        check(code == 2, f"`{ACT_CMD}` without {FLAG[witness]} was ACCEPTED (exit {code}): {err!r}")
+        for blank in ("", "   ", "\t"):
+            values = [a for f in ACT_FLAGS for a in (FLAG[f], blank if f == witness else "x")]
+            code, _, err = run([*argv, *values])
+            check(code == 1,
+                  f"`{ACT_CMD}` with a BLANK {FLAG[witness]} ({blank!r}) was ACCEPTED (exit {code}) — a "
+                  f"condition asserted with no evidence is not a condition")
+            check("bypass" in err, f"`{ACT_CMD}` failed for the wrong reason: {err!r}")
+        check(state_of(path, fid) == "corroborated", f"a refused `{ACT_CMD}` moved the state anyway")
+
+    # …and with every condition evidenced, it goes through — and the evidence is IN the entry.
+    path = tmp / "ok.jsonl"
+    (fid,) = seed(path)
+    run(["--file", str(path), "corroborate", "--id", fid, "--finding", "reproduced at followups.py:1"])
+    code, _, err = run(["--file", str(path), ACT_CMD, "--id", fid, *transition_args(ACT_CMD)])
+    check(code == 0, f"`{ACT_CMD}` exited {code} with every condition evidenced: {err!r}")
+    entry = json.loads(run(["--file", str(path), "get", "--id", fid])[1])
+    check(entry["state"] == TRANSITIONS[ACT_CMD][1], f"`{ACT_CMD}` did not reach its state: {entry!r}")
+    for witness in ACT_WITNESSES:
+        check(not is_blank(entry[witness]),
+              f"the entry was taken up with NO evidence for the condition witnessed by {witness!r}: "
+              f"{entry!r}")
+
+
+def t_self_accepted_is_never_mistaken_for_accepted(tmp: Path) -> None:
+    """A follow-up the USER agreed to and one the DRIVER took up are DIFFERENT THINGS — forever, and at a
+    glance.
+
+    They are modelled as different STATES rather than one state with a flag, for two reasons that a field
+    could not buy:
+
+      * the STATE is what the default table shows, so the difference is visible without asking for it;
+      * and the graph can then make `published` reachable only from the USER's `accepted` — publication is
+        a claim in the user's name, so no autonomous path may reach it. A `who_decided` field could not
+        enforce that; an edge can, and `t_user_ruling_is_unskippable` proves it does.
+
+    And the distinction SURVIVES the entry closing out: a self-accepted lineage carries the ACT witnesses
+    and NO `decided` stamp; a user-accepted one carries `decided` and no ACT witnesses. Even in `done` —
+    the one state both can reach — the entry still says which happened.
+    """
+    self_state = TRANSITIONS[ACT_CMD][1]
+    check(self_state != "accepted", "the driver's own acceptance IS `accepted` — it is indistinguishable")
+    check(self_state in STATES and "accepted" in STATES, "both acceptances must be real states")
+
+    driven = tmp / "driver.jsonl"
+    (a,) = seed(driven)
+    run(["--file", str(driven), "corroborate", "--id", a, "--finding", "reproduced"])
+    run(["--file", str(driven), ACT_CMD, "--id", a, *transition_args(ACT_CMD)])
+    ruled = tmp / "user.jsonl"
+    (b,) = seed(ruled)
+    run(["--file", str(ruled), "accept", "--id", b, "--at", "2026-07-14T09:00:00Z"])
+
+    for path, fid in ((driven, a), (ruled, b)):
+        code, out, err = run(["--file", str(path), "table", "--fields", "id,state"])
+        check(code == 0, f"table exited {code}: {err!r}")
+        _, _, cells = ledger.grid(out, ("id", "state"), ("store", "rule"), TABLE_MARKERS)
+        check(cells and cells[0][1] == state_of(path, fid),
+              f"the default view does not show WHO accepted it: {cells!r}\n{out}")
+    check(state_of(driven, a) != state_of(ruled, b),
+          "a self-accepted and a user-accepted follow-up show the SAME state in the table")
+
+    # …and after both close out into `done`, the entries still say which is which.
+    run(["--file", str(driven), "done", "--id", a])
+    run(["--file", str(ruled), "done", "--id", b])
+    d = json.loads(run(["--file", str(driven), "get", "--id", a])[1])
+    u = json.loads(run(["--file", str(ruled), "get", "--id", b])[1])
+    check(state_of(driven, a) == state_of(ruled, b) == "done", "both must be able to close out")
+    check(is_blank(d["decided"]),
+          f"a DRIVER-accepted follow-up carries a `decided` stamp ({d['decided']!r}) — it reads as the "
+          f"user's ruling, and `load()` would accept it as one")
+    check(not is_blank(u["decided"]), f"a USER-accepted follow-up lost its ruling: {u!r}")
+    for witness in ACT_FLAGS:
+        check(not is_blank(d[witness]), f"the ACT grounds vanished when the work closed out: {d!r}")
+        check(is_blank(u[witness]),
+              f"a USER-accepted follow-up carries ACT grounds ({witness}) it never needed: {u!r}")
+
+
+def t_load_rejects_an_illegal_history(tmp: Path) -> None:
+    """AN ENTRY NO LEGAL HISTORY COULD PRODUCE DOES NOT LOAD — the guard holds against a HAND-WRITTEN store.
+
+    The transitions only ever see entries this accessor wrote. A driver that means to skip the user does not
+    call `accept` and lie; it writes `"state": "accepted"` into the JSONL and calls `publish` — and every
+    from-state check in the file waves it through, because by then the entry IS accepted. THAT DRIVER IS THE
+    ONE THIS STORE DEFENDS AGAINST. So the invariant is enforced where the DATA enters.
+
+    Derived from `WITNESS`: for every state, blank each field a legal path to it must have written, and the
+    store must REFUSE to load. A new state, a new edge, or a new witness is covered with no fixture edit —
+    which is the only way a rule of this kind stays true.
+    """
+    for state in STATES:
+        for alt in WITNESS[state]:
+            for missing in sorted(alt):
+                # Build the entry from THE ALTERNATIVE UNDER TEST, minus one of its witnesses — not from
+                # the store's minimal one. `done` is reachable two ways (the user's `decided` stamp, or the
+                # full ACT witness set), and an entry that satisfies EITHER is legal: strip a field from the
+                # one it did not come by and nothing is wrong with it. What must be refused is an entry that
+                # satisfies NO alternative, and only this construction produces one. (It cannot accidentally
+                # satisfy another: the alternatives are minimal, so none is a subset of another.)
+                carried = {f: f"<{f}>" for f in alt if f != missing}
+                path = write_lines(tmp / f"{state}-{'+'.join(sorted(alt))}-no-{missing}.jsonl",
+                                   json.dumps({"type": "followup", **DEFAULTS, "id": "fu1",
+                                               "state": state, **carried}))
+                code, out, err = run(["--file", str(path), "list"])
+                check(code == 1,
+                      f"an entry in state {state!r} carrying {sorted(carried)!r} but NO {missing!r} LOADED "
+                      f"(exit {code}) — no legal sequence of transitions produces that entry:\n{out}")
+                check("no legal history" in err, f"[{state}/{missing}] failed for the wrong reason: {err!r}")
+        # …and the LEGAL entry in that state loads.
+        path = write_lines(tmp / f"{state}-ok.jsonl", entry_line(id="fu1", state=state))
+        code, out, err = run(["--file", str(path), "list"])
+        check((code, out) == (0, "fu1\n"), f"a LEGAL {state!r} entry did not load: {code} {err!r}")
+
+    # THE REVIEWER'S EXACT CASE, end to end: hand-write `accepted` with no user ruling, then publish.
+    path = write_lines(tmp / "forged.jsonl",
+                       entry_line(id="fu1", state="accepted", decided=PLACEHOLDER))
+    code, out, err = run(["--file", str(path), "publish", "--id", "fu1", "--ref", "#666"])
+    check(code == 1,
+          f"a HAND-WRITTEN `accepted` entry with NO user ruling was PUBLISHED (exit {code}) — the cut "
+          f"vertex is enforced only against a driver that cooperates with it:\n{out}")
+    check("decided" in err, f"the refusal does not name what is missing: {err!r}")
+    # (the REF, not the word "publish" — every entry carries a `published` FIELD, so that would match on
+    # a store nothing had touched.)
+    check("#666" not in path.read_text(), "the store was written despite the refusal")
+
+    # …and the same for the ACT edge: a hand-written self-acceptance missing a condition's evidence.
+    for witness in ACT_WITNESSES:
+        path = write_lines(tmp / f"forged-act-{witness}.jsonl",
+                           entry_line(id="fu1", state=TRANSITIONS[ACT_CMD][1], **{witness: PLACEHOLDER}))
+        code, out, err = run(["--file", str(path), "done", "--id", "fu1"])
+        check(code == 1,
+              f"a HAND-WRITTEN self-acceptance with no evidence for {witness!r} was CLOSED OUT (exit "
+              f"{code}) — the ACT conditions are enforced only on the way IN:\n{out}")
+
+
+def t_the_doc_and_the_code_agree(tmp: Path) -> None:
+    """THE THRESHOLD THE DRIVER READS AND THE THRESHOLD THE CODE ENFORCES ARE THE SAME FOUR CONDITIONS.
+
+    The ACT conditions necessarily exist twice: as prose in `references/followups.md`, which is where the
+    driver reads the RULE, and as `ACT_CONDITIONS` here, which is what REFUSES the step. Two copies of one
+    definition is the shape this repo has been bitten by over and over — a summary that has drifted from
+    its definition is worse than no summary, because it is the version people actually read.
+
+    So the two are not merely both maintained; their AGREEMENT is executed. Add a fifth condition to the
+    code and the doc goes stale — red. Delete one from the code and the doc now documents a condition
+    nothing enforces — red. This is the check `fu5` in the live store asks for, applied to the one
+    definition in this file that could not be given a single owner.
+    """
+    doc = Path(__file__).resolve().parent.parent / "references" / "followups.md"
+    check(doc.exists(), f"the threshold's prose is missing entirely: {doc}")
+    text = doc.read_text()
+
+    documented = set(re.findall(r"--act-[a-z-]+", text))
+    enforced = {FLAG[w] for w in ACT_FLAGS}
+    check(documented == enforced,
+          f"the doc and the code disagree about the ACT conditions.\n"
+          f"  documented but NOT enforced: {sorted(documented - enforced)}\n"
+          f"  enforced but NOT documented: {sorted(enforced - documented)}\n"
+          f"{doc}")
+    for label, _, _ in ACT_CONDITIONS:
+        check(label in text,
+              f"ACT condition '{label}' is enforced by this file and appears NOWHERE in {doc.name} — the "
+              f"driver is refused a step it was never told the rule for")
+    check(ACT_CMD in text, f"`{ACT_CMD}` — the autonomous edge itself — is not documented in {doc.name}")
 
 
 def t_ids_are_assigned_and_never_reused(tmp: Path) -> None:
@@ -612,7 +1259,11 @@ def t_store_is_validated(tmp: Path) -> None:
 def t_defaults_backfill(tmp: Path) -> None:
     """An entry written BEFORE a field existed still reads back complete — every absent field defaults.
 
-    This is what lets a field be added to the schema without migrating a store that cannot be rebuilt.
+    This is what lets a field be added to the schema without migrating a store that CANNOT BE REBUILT, and
+    it is why the investigation/ACT fields could be added to a live store at all: an entry raised before
+    they existed is a `candidate`, a `candidate` is required to witness nothing, and so it stays legal.
+    That is not luck — it is the same rule that makes an unknown state default to the one that still needs
+    the user.
     """
     p = write_lines(tmp / "old.jsonl", json.dumps({"type": "followup", "id": "fu1", "title": "old"}))
     code, out, err = run(["--file", str(p), "get", "--id", "fu1"])
@@ -623,6 +1274,11 @@ def t_defaults_backfill(tmp: Path) -> None:
           f"a state-less entry did not default to a CANDIDATE (it defaulted to {entry['state']!r}) — an "
           f"entry whose state is unknown must be the one that needs the user, never one that skipped them")
     check(entry["title"] == "old", "the field the entry DID carry was overwritten by its default")
+    check(WITNESS["candidate"] == (frozenset(),),
+          f"a `candidate` is required to witness {WITNESS['candidate']!r} — every entry raised before "
+          f"those fields existed would stop loading, and this store cannot be rebuilt")
+    for f in ("finding", *ACT_FLAGS):
+        check(entry[f] == PLACEHOLDER, f"a pre-schema entry's {f!r} did not default to a placeholder")
 
 
 def t_values_are_strings(tmp: Path) -> None:
@@ -683,6 +1339,12 @@ def t_table_hides_closed(tmp: Path) -> None:
     check(shown == [s for s in STATES if s not in TABLE_HIDDEN_STATES],
           f"the default view hid something other than the closed states — it shows {shown!r}\n{out}")
     check("candidate" in shown, "a CANDIDATE was hidden — the entry that is waiting on the user is invisible")
+    # NOTHING SOMEBODY CAN STILL ACT ON IS EVER HIDDEN. A hidden state must be one the graph cannot leave —
+    # otherwise the view buries an entry that still has a move left in it, which is how a driver would make
+    # its own refutation, or its own self-acceptance, quietly disappear. Derived: hidden ⊆ TERMINAL.
+    check(set(TABLE_HIDDEN_STATES) <= set(TERMINAL),
+          f"{sorted(set(TABLE_HIDDEN_STATES) - set(TERMINAL))!r} is HIDDEN by default and yet a transition "
+          f"still applies to it — the view hides an entry somebody can still act on")
 
     code, out, err = run(["--file", str(path), "table", "--all", "--fields", "id,state"])
     check(code == 0, f"table --all exited {code}: {err!r}")
@@ -791,12 +1453,18 @@ def t_fields_and_lookup(tmp: Path) -> None:
 
 
 CASES = [
-    ("user-step-unskippable", "a CANDIDATE can never be published or closed — no edge bypasses `accept`", t_user_step_is_unskippable),
-    ("state-not-settable", "`set` cannot write `state` — only the transitions move it", t_state_is_not_settable),
-    ("transition-graph", "every transition is checked against TRANSITIONS; terminal states are terminal", t_transition_graph),
-    ("ruling-recorded", "the USER's ruling is stamped durably; the driver's own steps never stamp it", t_ruling_is_recorded),
+    ("user-step-unskippable", "no driver-only path reaches `accepted` or `published` — proved on the graph", t_user_ruling_is_unskippable),
+    ("illegal-history", "an entry no legal history produces does NOT LOAD — the guard holds against a hand-written store", t_load_rejects_an_illegal_history),
+    ("act-needs-conditions", "the autonomous ACT edge must EVIDENCE every condition, or it is refused", t_act_edge_needs_every_condition),
+    ("self-accept-distinct", "a DRIVER-accepted follow-up is never mistaken for a USER-accepted one", t_self_accepted_is_never_mistaken_for_accepted),
+    ("doc-and-code-agree", "the ACT conditions the driver READS are the ones the code ENFORCES", t_the_doc_and_the_code_agree),
+    ("investigation-evidence", "an investigation shows its work; the finding APPENDS and never clobbers", t_investigation_shows_its_work),
+    ("refutation-stays", "a refuted follow-up stays in the store, stays visible, and stays overturnable", t_refutation_stays_in_the_store),
+    ("state-not-settable", "`set` writes neither `state` nor any evidence a transition left behind", t_state_and_evidence_are_not_settable),
+    ("transition-graph", "every transition is checked against TRANSITIONS; an investigation outcome is never terminal", t_transition_graph),
+    ("ruling-recorded", "the USER's ruling is stamped durably; NOTHING the driver does alone stamps it", t_ruling_is_recorded),
     ("publish-needs-ref", "a published follow-up must name WHERE", t_publish_needs_a_ref),
-    ("evidence-required", "a follow-up with no evidence is a RUMOR — `add` refuses it", t_evidence_is_required),
+    ("evidence-required", "a follow-up with no evidence is a RUMOR — `add` refuses it, for EVERY required field", t_evidence_is_required),
     ("ids-never-reused", "ids are assigned by the store, sequential, and NEVER reused", t_ids_are_assigned_and_never_reused),
     ("store-validated", "a corrupt store is rejected, never silently repaired; a missing one is empty", t_store_is_validated),
     ("defaults-backfill", "an entry written before a field existed reads back complete — as a CANDIDATE", t_defaults_backfill),
@@ -855,16 +1523,18 @@ def build_parser() -> argparse.ArgumentParser:
     for f in EDITABLE:  # `state` is NOT here, and that is the point: see EDITABLE.
         s.add_argument(f"--{f.replace('_', '-')}", dest=f, help=f"field '{f}'")
 
-    # The transitions — the ONLY things that move `state`. Each validates the state it comes FROM, so
-    # `accept` (the user's agreement) cannot be routed around.
+    # The transitions — the ONLY things that move `state`. Each validates the state it comes FROM, so the
+    # user's ruling cannot be routed around. Their FLAGS are derived from `WRITES`: every evidence field a
+    # transition must leave behind is a REQUIRED flag, so an edge cannot be added that writes a witness the
+    # CLI never asks for (and that `load()` would then reject as an illegal history).
     for cmd, (frm, to) in TRANSITIONS.items():
-        who = "THE USER agrees" if cmd in USER_RULINGS else "the driver records"
-        t = sub.add_parser(cmd, help=f"{who}: {'/'.join(frm)} -> {to}")
+        t = sub.add_parser(cmd, help=f"{role(cmd)}: {'/'.join(frm)} -> {to}")
         t.add_argument("--id", required=True)
-        if cmd == "publish":
-            t.add_argument("--ref", required=True, help="where it was published (issue/PR ref or URL)")
-        if cmd in USER_RULINGS:
-            t.add_argument("--at", help="ISO timestamp of the user's ruling (default: now)")
+        t.add_argument("--at", help="ISO timestamp of this step (default: now)")
+        for field in WRITES[cmd]:
+            if field in OPTIONAL:
+                continue  # a TIMESTAMP may default; evidence never may
+            t.add_argument(FLAG[field], dest=field, required=True, help=FLAG_HELP[field])
 
     g = sub.add_parser("get", help="print a follow-up as JSON, or one field")
     g.add_argument("--id", required=True)
