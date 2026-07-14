@@ -51,9 +51,25 @@ at both. Those are two halves of one discipline, and each half has already faile
   * and a rule enforced at both doors by TWO implementations is a rule waiting to acquire two definitions.
 
 So there are no per-door copies. `check_event`, `check_unit`, `check_identity_shape`, `check_progress` and
-`plan_units` ARE the rules; `emit`, `identity` and `plan-add` call exactly the functions `verify` calls —
-`emit` even replays the file it is appending to through `walk_progress`, the same walk `verify` performs,
-so it can never append a line to a file `verify` would refuse to read.
+`plan_units` ARE the rules; `emit`, `identity` and `plan-add` call exactly the functions `verify` calls.
+
+**AND THE RULES ARE NOT ENOUGH — ANYTHING THIS TOOL CAN WRITE, IT MUST BE ABLE TO READ BACK.** That is a
+property of the doors TOGETHER, and every individual rule can be right at both doors while it fails. It
+did, twice, in one release: `emit --status started` on an EMPTY progress file exited 0 (nothing checked
+that the file had an identity yet), and `verify` then called that same file `unusable: NO pass_identity`.
+`identity` decided "empty" with `.strip()`, so a file holding one blank line counted as fresh, the
+identity went in below the blank line — and `verify` refused the artifact FOR THAT BLANK LINE. In both
+cases the tool ACCEPTED the reviewer's work and then told it the work did not count. A pass is re-runnable
+so nothing was lost but time; the same defect in a store with no second copy BRICKS it.
+
+So the property is structural, not remembered: EVERY write goes through `write_line`, which hands the
+bytes it is about to produce — `the file as it is` + `the line` — to the READ side's own whole-file
+function (`check_progress_file`, `check_plan_file`) and REFUSES TO WRITE unless they accept it. Not a
+write-shaped copy of the rules: the same functions `verify` runs. And "empty" means NO BYTES at every
+door, because a file with a blank line in it is not an empty file — it is a file with a blank line, and
+`verify` says so. The one read-door rule a write door cannot run is `check_head` (it compares the file to
+the PR's LIVE head — the world, not the bytes); nothing a write does can cause that defect, and no write
+door has a `--head-sha` to compare against. That gap is named there and nowhere else.
 
 THE VERDICTS. Exactly one is printed, and there is no "counts, BUT…":
 
@@ -80,6 +96,7 @@ import sys
 import tempfile
 import types
 from collections import Counter
+from collections.abc import Callable
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime
 from pathlib import Path
@@ -188,7 +205,7 @@ class OperatorError(Exception):
 
 # --- the strict JSONL reader (shared by both artifacts) -----------------------------------------
 
-def strict_object(path: Path, n: int):
+def strict_object(name: str, n: int):
     """`object_pairs_hook` rejecting a REPEATED member name, in ANY object on the line.
 
     `json.loads` keeps the LAST value of a repeated key and silently DISCARDS the earlier one, so the
@@ -201,7 +218,7 @@ def strict_object(path: Path, n: int):
         if dupes:
             # MUTATE:duplicate-key:pass
             raise Defect(
-                f"{path.name} line {n}: duplicate member name(s) {', '.join(dupes)} — the decoder keeps "
+                f"{name} line {n}: duplicate member name(s) {', '.join(dupes)} — the decoder keeps "
                 f"only ONE value for a repeated key and discards the other, so the discarded one is in the "
                 f"bytes and reaches no rule"
             )
@@ -210,11 +227,15 @@ def strict_object(path: Path, n: int):
     return hook
 
 
-def read_lines(path: Path, what: str) -> "list[dict]":
-    """Every line of a JSONL artifact, as a dict. No line is skipped — not a blank one, not a bad one.
+def read_text(path: Path, what: str) -> str:
+    """An artifact's BYTES, as text — the one place either door turns a file into something to read.
 
-    A line this reader cannot understand is a producer we cannot trust, and a producer we cannot trust is
-    not one whose output a PR may merge on.
+    Both doors call it, and that is the point: `verify` reads the file it JUDGES through this, and a write
+    command reads the file it is about to append INTO through this, so a file the read side cannot decode
+    is not one the write side will grow. It returns the raw text and not lines, because the write side
+    needs the BYTES: what it is about to produce is `read_text(...) + the line`, and a file whose last line
+    has no newline turns the next append into a CONCATENATION — two events fused into one unreadable line.
+    Only the bytes can show that; a list of parsed lines has already forgotten it.
     """
     if not path.exists():
         # MUTATE:file-missing:pass
@@ -224,43 +245,58 @@ def read_lines(path: Path, what: str) -> "list[dict]":
             f"starts, so this file exists from dispatch onward)"
         )
     try:
-        text = path.read_text(encoding="utf-8")
+        return path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
-        # MUTATE:unreadable:text = path.read_bytes().decode("utf-8", errors="replace")
+        # MUTATE:unreadable:return path.read_bytes().decode("utf-8", errors="replace")
         raise Defect(
             f"{path.name} cannot be read as UTF-8 text ({exc}) — bytes we cannot decode are not evidence, "
             f"and decoding them LENIENTLY rewrites what the file says"
         ) from exc
 
+
+def parse_lines(text: str, name: str) -> "list[dict]":
+    """Every line of a JSONL artifact's TEXT, as a dict. No line is skipped — not a blank one, not a bad one.
+
+    A line this reader cannot understand is a producer we cannot trust, and a producer we cannot trust is
+    not one whose output a PR may merge on.
+
+    It takes TEXT, not a path, for one reason: the write side must be able to ask it about a file that does
+    not exist yet — the file it is ABOUT TO PRODUCE. Same statements, same defects, one implementation.
+    """
     out = []
     for n, line in enumerate(text.splitlines(), start=1):
         if not line.strip():
             # MUTATE:blank-line:continue
             raise Defect(
-                f"{path.name} line {n} is blank — JSONL has no blank lines, and a producer that writes one "
+                f"{name} line {n} is blank — JSONL has no blank lines, and a producer that writes one "
                 f"is not one we can trust with the lines we DO read"
             )
         try:
-            rec = json.loads(line, object_pairs_hook=strict_object(path, n))
+            rec = json.loads(line, object_pairs_hook=strict_object(name, n))
         except json.JSONDecodeError as exc:
             # MUTATE:not-json:continue
             raise Defect(
-                f"{path.name} line {n} is not JSON ({exc}) — a corrupt line is a corrupt artifact, never a "
+                f"{name} line {n} is not JSON ({exc}) — a corrupt line is a corrupt artifact, never a "
                 f"line to skip past"
             ) from exc
         except RecursionError as exc:
             # MUTATE:too-deep:continue
             raise Defect(
-                f"{path.name} line {n} is nested too deeply for the decoder — it RAISED where a verdict "
+                f"{name} line {n} is nested too deeply for the decoder — it RAISED where a verdict "
                 f"was owed, and a crash is not a verdict"
             ) from exc
         if not isinstance(rec, dict):
             # MUTATE:not-object:continue
             raise Defect(
-                f"{path.name} line {n} is not a JSON object — every line of this artifact is one event"
+                f"{name} line {n} is not a JSON object — every line of this artifact is one event"
             )
         out.append(rec)
     return out
+
+
+def read_lines(path: Path, what: str) -> "list[dict]":
+    """The file on disk, as events — the two halves above, in the only order they compose."""
+    return parse_lines(read_text(path, what), path.name)
 
 
 # --- the plan ------------------------------------------------------------------------------------
@@ -339,9 +375,10 @@ def load_plan(path: Path) -> "dict[str, dict]":
 
     Emptiness is the ONE rule here that is deliberately read-only, and it is not one-sided: `plan-add` is
     how a plan STOPS being empty, so a write door that refused an empty plan could never write the first
-    unit. The rule is about a plan a pass is JUDGED against, and that is the read door's question.
+    unit. The rule is about a plan a pass is JUDGED against, and that is the read door's question. Every
+    other plan rule is `check_plan_file` — the same statement `plan-add` runs over the plan it produces.
     """
-    units = plan_units(read_lines(path, "plan"), path.name)
+    units = check_plan_file(read_text(path, "plan"), path)
     if not units:
         # MUTATE:plan-empty:pass
         raise Defect(
@@ -535,9 +572,16 @@ def check_identity_shape(ident: dict, where: str) -> None:
         )
 
 
-def check_identity(events: "list[dict]", pr: str, npass: str, attempt: str, head_sha: str) -> dict:
+def check_identity(events: "list[dict]", pr: str, npass: str, attempt: str) -> dict:
     """The `pass_identity` line: exactly one, FIRST, well-formed, and agreeing with the NAME it is filed
-    under and with the commit the caller says the PR is on."""
+    under. **Everything here is a property of the BYTES ALONE** — which is exactly why both doors run it.
+
+    The commit comparison is NOT here; it is `check_head`, and the split is the line between "is this file
+    readable back?" (this) and "does what it says still describe the world?" (that). A write door can
+    answer the first and cannot answer the second: `emit`'s CLI has no `--head-sha` and never will (its
+    flags are a public contract). So `emit` runs THIS, and it is the whole of what a progress file must
+    satisfy for `verify` to be able to read it at all.
+    """
     ids = [e for e in events if e["type"] == IDENTITY]
     if not ids:
         # MUTATE:identity-missing:ids = [dict(events[0])]
@@ -569,13 +613,25 @@ def check_identity(events: "list[dict]", pr: str, npass: str, attempt: str, head
             f"self-defeat the attempt-scoped artifacts exist to prevent: the live pass writes into the "
             f"DEAD attempt's file and reads as never launched"
         )
+    return ident
+
+
+def check_head(ident: dict, head_sha: str) -> None:
+    """The pass's commit against the PR's LIVE head — the ONE rule that is not about the file.
+
+    It compares the artifact to THE WORLD, and the world is not in the bytes: a file that reads back
+    perfectly becomes stale the moment someone pushes. So it is the one read-door rule no write door can
+    run, and it is the honest GAP in "a write is refused unless the result would verify" — a write can
+    guarantee the file it produces is READABLE, never that the tip will not move afterwards. Nothing a
+    write door does can cause this defect (`identity` is handed the sha it writes; `emit` appends events
+    that name no commit at all), so the gap costs nothing: it is a rule about time, not about bytes.
+    """
     if ident["head_sha"] != head_sha:
         # MUTATE:identity-head-mismatch:pass
         raise Defect(
             f"this pass ran on {ident['head_sha']} but the PR's head is {head_sha} — its verdict describes "
             f"content that is no longer there, and PR content changing is exactly what voids a tally"
         )
-    return ident
 
 
 # --- the verdict ---------------------------------------------------------------------------------
@@ -636,22 +692,90 @@ def parse_name(path: Path) -> "tuple[str, str, str]":
     return m.group("pr"), m.group("pass"), m.group("attempt") or "1"
 
 
+def plan_path(progress: Path) -> Path:
+    """The pass's plan, DERIVED from its progress file's name — never passed in, at either door.
+
+    One derivation, so `emit` cannot be judged against a plan `verify` will not open. (The plan is
+    per-PASS, not per-attempt: a relaunch reuses it unchanged, so the attempt is not in its name.)
+    """
+    pr, npass, _attempt = parse_name(progress)
+    return progress.parent / PLAN_NAME.format(pr=pr, **{"pass": npass})
+
+
 def evaluate(progress: Path, head_sha: str, ruled: int = 0) -> "tuple[str, str]":
     """The whole read side. Every exception a rule can raise lands here as a VERDICT — never as a crash."""
     try:
-        pr, npass, attempt = parse_name(progress)
-        events = read_lines(progress, "progress file")
-        check_events(events, progress)
-        check_identity(events, pr, npass, attempt, head_sha)
-        units = load_plan(progress.parent / PLAN_NAME.format(pr=pr, **{"pass": npass}))
+        plan = plan_path(progress)
+        events, units = check_progress_file(text=read_text(progress, "progress file"), path=progress,
+                                            plan=lambda: load_plan(plan), head_sha=head_sha)
         return decide(events, units, ruled)
     except Defect as exc:
         return UNUSABLE, str(exc)
 
 
-def check_events(events: "list[dict]", path: Path) -> None:
+def check_events(events: "list[dict]", name: str) -> None:
     for n, rec in enumerate(events, start=1):
-        check_event(rec, f"{path.name} line {n}")
+        check_event(rec, f"{name} line {n}")
+
+
+# --- what "READABLE BACK" means, for each artifact — ONE statement of it, called at BOTH doors ----
+#
+# **ANYTHING THIS TOOL CAN WRITE, IT MUST BE ABLE TO READ BACK.** These two functions are that property,
+# and they are the only definition of it. `verify` calls them to judge a pass; every write path calls them
+# on the bytes it is ABOUT TO PRODUCE and refuses to write unless they hold (`write_line`). A write door
+# that used its own notion of "well-formed" would be a second definition, and two definitions of one rule
+# is how a tool comes to write a file it then refuses to read — which it DID: `emit --status started` on an
+# EMPTY progress file exited 0, and `verify` then called that same file `unusable: NO pass_identity`. The
+# tool accepted the reviewer's work and then told it the work did not count.
+#
+# Both take TEXT, never a path, because the file a write door must judge DOES NOT EXIST YET.
+
+
+def check_progress_file(text: str, path: Path, plan: "Callable[[], dict[str, dict]]",
+                        head_sha: "str | None" = None) -> "tuple[list[dict], dict[str, dict]]":
+    """Every rule `verify` derives from a progress file's BYTES — the name it is filed under, its lines,
+    its events, its identity, and the ORDER of its unit progress. Returns (events, plan units).
+
+    ONE function, so the doors cannot compose the rules differently — and **the ORDER is part of the
+    contract**, not an implementation detail: a file whose identity names another PR must be told THAT, not
+    told its plan is missing (the plan's path is derived from the progress file's name, so a misfiled
+    identity takes the plan's name down with it). Hence `plan` is a THUNK: the plan is not needed until the
+    file's own events are replayed, so it is not loaded — and cannot fail — before the file has answered
+    for itself.
+
+    `head_sha` is optional for the one reason set out in `check_head`: it is the only rule here that
+    compares the file to THE WORLD, and a write door has no `--head-sha` to compare against. Passing it is
+    what makes this the WHOLE of `verify`'s read; omitting it makes this the whole of what a write door can
+    guarantee about the file it produces. Nothing else differs between the doors.
+    """
+    pr, npass, attempt = parse_name(path)
+    events = parse_lines(text, path.name)
+    check_events(events, path.name)
+    ident = check_identity(events, pr, npass, attempt)
+    if head_sha is not None:
+        check_head(ident, head_sha)
+    units = plan()
+    walk_progress(events, units)
+    return events, units
+
+
+def check_plan_file(text: str, path: Path) -> "dict[str, dict]":
+    """…and the same, one artifact over: every rule `load_plan` derives from a plan file's BYTES.
+
+    `load_plan`'s EMPTINESS rule is deliberately not here, and that is not an inconsistency — it is the
+    reason this function exists. "A plan with no units is not a plan" is a rule about a plan a pass is
+    JUDGED against; `plan-add` is how a plan stops being empty, so a write door that enforced it could
+    never write the first unit. Every OTHER plan rule holds at both doors, by this statement.
+    """
+    if not PLAN_NAME_RE.match(path.name):
+        # MUTATE:plan-name-shape:pass
+        raise Defect(
+            f"{path.name} is not a plan artifact's name — it is `review-<pr>-<n>.plan.jsonl`. `verify` "
+            f"never takes the plan's path: it DERIVES it from the progress file's name, so a plan written "
+            f"under any other name is a plan nothing will ever read. The pass would be refused for a "
+            f"MISSING plan while its units sat on disk one filename away"
+        )
+    return plan_units(parse_lines(text, path.name), path.name)
 
 
 def count_amendments(progress: Path) -> int:
@@ -665,10 +789,35 @@ def count_amendments(progress: Path) -> int:
 
 # --- the write side (the same rules, at the other door) ------------------------------------------
 
-def append(path: Path, rec: dict) -> str:
+def before_text(path: Path) -> str:
+    """The bytes the file ALREADY holds — "" when it does not exist yet, and NOTHING ELSE means empty.
+
+    **EMPTY MEANS NO BYTES.** It used to mean "no non-whitespace text" at one door and no bytes at the
+    other, and a file with a blank line in it fell in the crack: `identity` called it fresh and wrote into
+    it, `verify` then refused the artifact FOR THE BLANK LINE. A file with a blank line is not an empty
+    file; it is a file with a blank line, and this returns it as such so the rules can say so.
+    """
+    return read_text(path, "file") if path.exists() else ""
+
+
+def write_line(path: Path, before: str, rec: "dict[str, object]",
+               readable_back: "Callable[[str], object]") -> str:
+    """THE ONE WRITE. A record is appended ONLY IF the file it would PRODUCE reads back.
+
+    Every write path in this tool goes through here, and `readable_back` is always one of the READ side's
+    own whole-file functions — never a write-shaped restatement of them. So the property is structural
+    rather than a rule someone remembered to repeat: **the tool cannot write a file it would refuse to
+    read**, because the bytes are handed to the reader BEFORE they reach the disk.
+
+    That is also what catches the defect neither door's per-record checks can see: a file whose last line
+    has NO TRAILING NEWLINE. The append lands ON that line, fusing two events into one — and every
+    record-level check passes, because the RECORD was never the problem. Only `before + line` shows it.
+    """
     line = json.dumps(rec, separators=(",", ":")) + "\n"
+    # MUTATE:write-verifies-result:pass
+    readable_back(before + line)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a") as out:
+    with path.open("a", encoding="utf-8") as out:
         out.write(line)
     return line
 
@@ -676,11 +825,18 @@ def append(path: Path, rec: dict) -> str:
 def cmd_emit(args) -> int:
     """Append one unit-progress event — the ONLY sanctioned way a reviewer records one.
 
-    **It runs the READ side's functions, and no others.** The event it is about to append is checked by
-    `check_event` and `check_progress`; the file it is about to append TO is re-read from disk and put
-    through `check_events` and `walk_progress` — the very walk `verify` performs. So `emit` cannot write a
-    line `verify` would refuse, and there is no CLI-shaped second copy of any rule to drift away from the
-    one the verdict is computed with.
+    **It runs the READ side's functions, and no others**, over THREE things in this order: the EVENT it was
+    asked for (`check_event`, `check_progress` — so the message names the mistake the reviewer just made),
+    the file it is about to append INTO (`check_progress_file` — a file `verify` already refuses is not one
+    to add a good line to), and the file it would PRODUCE (`write_line`). The last is what makes the
+    property structural; the first two exist to say WHICH rule fired, and all three are the same
+    statements, so there is no CLI-shaped second copy of any rule to drift from the one the verdict is
+    computed with.
+
+    **The file it appends into must ALREADY carry a valid `pass_identity`.** The orchestrator writes it
+    before the reviewer is launched, so it is there — and this door used to not look: `emit --status
+    started` on an EMPTY progress file exited 0, and `verify` then refused that very file for holding NO
+    `pass_identity`. The tool wrote what it would not read, and told the reviewer it had succeeded.
 
     That is not symmetry for its own sake. Every rule this refuses at write, it refuses at the moment the
     reviewer makes the mistake — with a message it can act on — instead of the pass being thrown away
@@ -697,27 +853,39 @@ def cmd_emit(args) -> int:
         rec["evidence"] = args.evidence
     check_event(rec, "the event you asked to emit (--unit/--status/--evidence)")
 
-    units = load_plan(path.parent / PLAN_NAME.format(pr=pr, **{"pass": npass}))
-    events = read_lines(path, "progress file")
-    check_events(events, path)
+    plan = plan_path(path)
+    text = read_text(path, "progress file")
+    events, units = check_progress_file(text, path, lambda: load_plan(plan))
     announced, done = walk_progress(events, units)
     check_progress(rec, units, announced, done, "the event you asked to emit")
-    sys.stdout.write(append(path, rec))
+    # …and the file it would PRODUCE, through that same function. `units` is already loaded, so the thunk
+    # just hands it back; nothing is re-derived, and nothing is re-stated.
+    sys.stdout.write(write_line(path, text, rec, lambda after: check_progress_file(after, path, lambda: units)))
     return 0
 
 
 def cmd_identity(args) -> int:
-    """Write a pass's `pass_identity` — the line that used to be a `printf`, and once got a TRUNCATED SHA."""
+    """Write a pass's `pass_identity` — the line that used to be a `printf`, and once got a TRUNCATED SHA.
+
+    It writes into a file that must hold NO BYTES. It used to demand only that the file hold no non-blank
+    TEXT — so a whitespace-only file counted as fresh, the identity went in below the blank line, and
+    `verify` then refused the artifact FOR THAT BLANK LINE. Two doors, two definitions of "empty", and the
+    file in the crack was one this tool wrote and would not read.
+    """
     path = Path(args.file)
     pr, npass, attempt = parse_name(path)
-    if path.exists() and path.read_text(encoding="utf-8", errors="replace").strip():
+    text = before_text(path)
+    if text:
         # MUTATE:identity-write-first:pass
         raise Defect(
-            f"{path.name} already holds events — `pass_identity` is the FIRST line of a launch attempt's "
-            f"progress file, written before the reviewer starts. A relaunch gets its OWN file "
-            f"(`review-<pr>-<n>.a<k>.progress.jsonl`), never this one"
+            f"{path.name} is NOT EMPTY — it already holds {len(text)} byte(s), and `pass_identity` is the "
+            f"FIRST line of a launch attempt's progress file, written before the reviewer starts. A "
+            f"relaunch gets its OWN file (`review-<pr>-<n>.a<k>.progress.jsonl`), never this one. EMPTY "
+            f"means NO BYTES: a file holding only a blank line is not empty, it is a file with a blank "
+            f"line — `verify` refuses the pass for exactly that, so writing here would produce an artifact "
+            f"this tool would then refuse to read"
         )
-    rec = {
+    rec: "dict[str, object]" = {
         "type": IDENTITY, "pr": pr, "pass": npass, "head_sha": args.head_sha,
         "launch_attempt": attempt, "dispatched_at": args.dispatched_at,
     }
@@ -725,31 +893,33 @@ def cmd_identity(args) -> int:
     # can never call malformed, and the sha/clock rules exist in exactly one place.
     check_event(rec, "the pass_identity you asked to write")
     check_identity_shape(rec, "the pass_identity you asked to write")
-    sys.stdout.write(append(path, rec))
+    # …and then the file it would PRODUCE, through the read side's own whole-file function. The EMPTY plan
+    # is EXACT and not a shortcut: the guard above proved the file holds no bytes, so what this produces is
+    # ONE line — the identity — and no unit-progress event a plan could have anything to say about. It is
+    # also why `identity` does not require the plan to exist yet: the orchestrator writes both before
+    # dispatch, and this door has no business imposing an order between them. (If the guard above is ever
+    # weakened, this still refuses whatever was in the file: an event no plan names.)
+    sys.stdout.write(write_line(path, text, rec, lambda after: check_progress_file(after, path, dict)))
     return 0
 
 
 def cmd_plan_add(args) -> int:
     """Append one validated unit to a pass's plan — the artifact that used to be a shell heredoc."""
     path = Path(args.file)
-    if not PLAN_NAME_RE.match(path.name):
-        # MUTATE:plan-name-shape:pass
-        raise Defect(
-            f"{path.name} is not a plan artifact's name — it is `review-<pr>-<n>.plan.jsonl`. `verify` "
-            f"never takes the plan's path: it DERIVES it from the progress file's name, so a plan written "
-            f"under any other name is a plan nothing will ever read. The pass would be refused for a "
-            f"MISSING plan while its units sat on disk one filename away"
-        )
-    rec = {
+    rec: "dict[str, object]" = {
         "type": UNIT, "id": args.id, "kind": args.kind, "target": args.target,
         "checks": list(args.check),
     }
     check_unit(rec, "the unit you asked to add")
-    # The plan AS IT WOULD BE, run through the reader's own function: the duplicate-id rule fires from the
-    # one statement `verify` fires it from, never from a second copy that can drift away from it.
-    existing = read_lines(path, "plan") if path.exists() else []
-    plan_units([*existing, rec], path.name)
-    sys.stdout.write(append(path, rec))
+    # The plan AS IT WOULD BE, run through the reader's own function: the NAME rule and the duplicate-id
+    # rule fire from the one statement `load_plan` fires them from, never from a second copy that can drift
+    # away from it. `check_plan_file` sees the produced BYTES, so a plan whose last line carries no newline
+    # is refused rather than fused with the next unit into one line nothing can parse.
+    #
+    # The name is checked BEFORE the file is read, and by the same statement: a path that is not a plan's
+    # name is not a file this tool reads at all, so `before_text` is not asked about it.
+    text = before_text(path) if PLAN_NAME_RE.match(path.name) else ""
+    sys.stdout.write(write_line(path, text, rec, lambda after: check_plan_file(after, path)))
     return 0
 
 
@@ -779,22 +949,31 @@ def cmd_verify(args) -> int:
 # --- self-test: the fixtures ARE the contract ----------------------------------------------------
 #
 # Every rule above marks itself `# MUTATE:<id>:<weakening>` on the line ABOVE the statement that ENFORCES
-# it. `self-test` then does three things, in order, and the third is the one that matters:
+# it. `self-test` then does four things, and the last two are the ones that matter:
 #
 #   1. runs every fixture and asserts its verdict AND the needle its reason must contain (the reason is
 #      the only thing that says WHICH rule fired — a fixture that goes `unusable` for someone else's
 #      reason pins NOTHING);
-#   2. asserts that EVERY enforcement point in a rule function sits under a marker. A rule ADDED without
+#   2. drives the ROUND TRIP — every write command the PARSER has, against every pre-existing file state —
+#      and asserts the property no per-rule fixture can state: **either the command FAILS, or the file it
+#      produced VERIFIES**;
+#   3. asserts that EVERY enforcement point in a rule function sits under a marker. A rule ADDED without
 #      one is never mutated, so nothing could ever report it unpinned. An unmarked rule is an untested one;
-#   3. DELETES each rule in turn — splicing in its weakening — re-runs every fixture and every CLI case,
-#      and FAILS if no fixture notices.
+#   4. DELETES each rule in turn — splicing in its weakening — re-runs every fixture, every CLI case and
+#      the whole round trip, and FAILS if no fixture notices.
 #
-# Step 3 exists because step 1 CANNOT see the failure that matters most: a rule NOTHING tests. Delete such
+# Step 4 exists because step 1 CANNOT see the failure that matters most: a rule NOTHING tests. Delete such
 # a rule and the suite stays green while the tool has quietly stopped checking. A sibling PR in this repo
 # proved the danger is not theoretical: a hand-written "N rules pinned" matrix was TRUE and INSUFFICIENT —
 # 8 guards were not in the inventory at all, and 7 of those were pinned by nothing. THE COUNT IS A CLAIM.
 # So the count is DERIVED, here, on every CI run, and "which rules are unpinned?" is a question the SUITE
 # answers rather than one a reviewer has to discover.
+#
+# Step 2 exists for the failure step 1 cannot see EITHER, and it is a different one: a defect that is not
+# in any rule but in the RELATION between the doors. Every rule can hold on both sides while the tool still
+# writes a file it will not read — and a fixture that asserts one command's exit code cannot fail on that.
+# The fixture at the head of the CLI list used to ASSERT the bad write succeeded (`emit` on an EMPTY file,
+# expected exit 0); the test encoded the bug, and a green suite reported it as correct behavior.
 
 SHA = "a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c"
 OTHER_SHA = "b" * 40
@@ -975,26 +1154,30 @@ NAME_CASES = [
 # The WRITE door. Same rules, other side. `(argv, the progress file it runs against, expected exit, needle
 # in stdout+stderr, why)`. `emit-progress.py`'s CLI is unchanged, so the `emit` argv here are exactly what
 # a live reviewer prompt already runs — the contract those prompts were written against is the contract
-# still under test. The default seed is an EMPTY progress file: what the orchestrator has in hand when it
-# writes `pass_identity`, and what `emit` appends to thereafter.
+# still under test. The seed for `emit` is the file the orchestrator leaves AT DISPATCH — a `pass_identity`
+# and nothing else — because that is the only file a reviewer's `emit` is ever run against. `identity`'s
+# seed is the EMPTY file, which is what it is for.
 EMPTY: "list[str]" = []
+DISPATCHED = [ident()]  # what the orchestrator leaves behind: `pass_identity`, written before the launch
 BEGUN = [ident(), started("u01")]  # the file a reviewer has in hand once it has ANNOUNCED u01
 FINISHED = [ident(), started("u01"), done("u01")]  # …and once it has already FINISHED u01
 CLI_CASES = [
-    (["emit", "--unit", "u01", "--status", "started"], EMPTY, 0, '"status":"started"', "the call every reviewer prompt makes"),
+    (["emit", "--unit", "u01", "--status", "started"], DISPATCHED, 0, '"status":"started"', "the call every reviewer prompt makes"),
     (["emit", "--unit", "u01", "--status", "done", "--evidence", "f.py:1"], BEGUN, 0, '"evidence":"f.py:1"',
      "…and its done form, on the file that HAS the matching `started` — the only file the done form was ever meant to be run against"),
+    (["emit", "--unit", "u01", "--status", "started"], EMPTY, 1, "NO `pass_identity`",
+     "HEADLINE, WRITE DOOR: THE FILE THIS TOOL WROTE AND WOULD NOT READ. `emit` on an EMPTY progress file exited 0 — it never looked for the identity — and `verify` then called that same file `unusable: NO pass_identity`. The reviewer was told its work landed, and the pass could not count. `emit` now runs the READ side's identity check on the file it appends into, so what it accepts is what `verify` can read"),
     (["emit", "--unit", "u01", "--status", "done", "--evidence", "somewhere else"], FINISHED, 1, "SECOND",
      "HEADLINE, WRITE DOOR: a SECOND `done` for a unit already finished. `verify` refused it on READ and this door WROTE it (exit 0) — the rule held at one door and not the other, so the reviewer was handed a success and the pass was thrown away later for a defect the tool had just helped it commit. Both doors now run the SAME predicate"),
     (["emit", "--unit", "u02", "--status", "done", "--evidence", "f.py:1"], BEGUN, 1, "no earlier 'started'",
      "HEADLINE, WRITE DOOR: a `done` for a unit that was never begun. The write door refuses it at the moment the reviewer makes the mistake, instead of the pass being thrown away by `verify` fifteen minutes later"),
-    (["emit", "--unit", "u99", "--status", "done", "--evidence", "f.py:1"], EMPTY, 1, "NOT IN THE PLAN",
+    (["emit", "--unit", "u99", "--status", "done", "--evidence", "f.py:1"], DISPATCHED, 1, "NOT IN THE PLAN",
      "HEADLINE, WRITE DOOR: the tool accepted a self-granted unit. It no longer does — and it says UNPLANNED, not 'no started': an unplanned unit's real defect is that nobody planned it"),
-    (["emit", "--unit", "u99", "--status", "started"], EMPTY, 1, "NOT IN THE PLAN", "…and refuses to START one"),
-    (["emit", "--unit", "u01", "--status", "done"], EMPTY, 1, "carries EXACTLY", "a done with no evidence — the SAME key rule a hand-written line meets, not a second CLI-shaped copy of it"),
+    (["emit", "--unit", "u99", "--status", "started"], DISPATCHED, 1, "NOT IN THE PLAN", "…and refuses to START one"),
+    (["emit", "--unit", "u01", "--status", "done"], DISPATCHED, 1, "carries EXACTLY", "a done with no evidence — the SAME key rule a hand-written line meets, not a second CLI-shaped copy of it"),
     (["emit", "--unit", "u01", "--status", "done", "--evidence", "  "], BEGUN, 1, "CONCRETE evidence", "…and blank evidence, on a file where the `started` is not the problem"),
-    (["emit", "--unit", "u01", "--status", "started", "--evidence", "x"], EMPTY, 1, "carries EXACTLY", "a started carrying evidence: the mirror of a done without it, and the same rule"),
-    (["emit", "--unit", "  ", "--status", "started"], EMPTY, 1, "NOT IN THE PLAN", "a blank unit id — a unit no plan holds, which is exactly what it is"),
+    (["emit", "--unit", "u01", "--status", "started", "--evidence", "x"], DISPATCHED, 1, "carries EXACTLY", "a started carrying evidence: the mirror of a done without it, and the same rule"),
+    (["emit", "--unit", "  ", "--status", "started"], DISPATCHED, 1, "NOT IN THE PLAN", "a blank unit id — a unit no plan holds, which is exactly what it is"),
     (["emit", "--unit", "u02", "--status", "started"], [ident(), '{"type":"progress","unit_id":"u01","status":"done","evidence":"x"}'], 1, "carries EXACTLY",
      "the file it is APPENDING TO is evidence too: a hand-written line already in it makes the pass unusable, so `emit` refuses to add a good line to a file `verify` will throw away"),
     (["identity", "--head-sha", SHA, "--dispatched-at", TS], EMPTY, 0, '"launch_attempt":"1"',
@@ -1007,8 +1190,10 @@ CLI_CASES = [
      "a dispatch clock the launch deadline cannot be measured from — the write door runs the READ side's shape rules, so it cannot write one `verify` would reject"),
     (["identity", "--head-sha", SHA, "--dispatched-at", "2026-99-99T99:99:99Z"], EMPTY, 1, "not a real UTC time",
      "…and the one the SHAPE rule cannot see: an impossible date in the right shape. Both doors parse it now, so neither can produce a `dispatched_at` no clock ever passes"),
-    (["identity", "--head-sha", OTHER_SHA, "--dispatched-at", TS], [ident()], 1, "already holds events",
+    (["identity", "--head-sha", OTHER_SHA, "--dispatched-at", TS], [ident()], 1, "NOT EMPTY",
      "a SECOND identity into a live pass's file. `pass_identity` is the FIRST line, written before dispatch — a relaunch gets its OWN file, and appending here is how one pass ends up describing two commits"),
+    (["identity", "--head-sha", SHA, "--dispatched-at", TS], [""], 1, "NOT EMPTY",
+     "HEADLINE, WRITE DOOR: a WHITESPACE-ONLY file. This door decided 'empty' with `.strip()`, so a file holding one blank line counted as fresh — it wrote the identity in below the blank line, exited 0, and `verify` then refused the artifact FOR THAT BLANK LINE. Two doors, two definitions of empty, and the file in the crack was one this tool wrote and would not read. EMPTY now means NO BYTES, at both"),
     (["verify", "--head-sha", SHA[:7]], EMPTY, 2, "No verdict beats a wrong one",
      "an OPERATOR error is not a snapshot verdict: exit 2, never a verdict computed from a comparison that could not have succeeded"),
     (["verify", "--head-sha", SHA, "--amendments-ruled", "1"], EMPTY, 2, "raised only 0",
@@ -1033,6 +1218,71 @@ PLAN_CLI_CASES = [
 
 class SelfTestFailure(AssertionError):
     """A rule this file claims to enforce does not hold."""
+
+
+# --- the ROUND TRIP: anything the tool can WRITE, it must be able to READ BACK --------------------
+#
+# The cases above pin RULES, one by one, and that is exactly why they could not see this: **both findings
+# it missed were about a file the tool WROTE and then REFUSED TO READ.** `emit --status started` on an
+# empty progress file exited 0 and `verify` called that file `unusable: NO pass_identity`; `identity` on a
+# whitespace-only file exited 0 and `verify` refused the artifact for the blank line. Every individual rule
+# was correct at both doors. What was broken was the RELATION between them — and a per-rule fixture cannot
+# fail on a relation nobody stated. (The fixture at the head of the CLI list even ASSERTED the bad write
+# succeeded: `emit` on an EMPTY file, expected exit 0. The test encoded the bug.)
+#
+# So the relation is stated here, ONCE, as a property, and every write path is driven against a range of
+# pre-existing file states:
+#
+#   **EITHER THE COMMAND FAILS, OR THE FILE IT PRODUCED VERIFIES.** Never "succeeds, then does not verify".
+#
+# "Verifies" means the READ side can READ it — not that the pass is `ok`. A pass whose plan is not yet
+# covered reads back `incomplete`, and that is a correct, readable artifact: `ok`/`incomplete`/`amended`
+# all say the bytes are sound. `unusable` — and a CRASH, which is worse — are what a write must never
+# produce. (`verify` can still refuse the pass LATER for a reason that is not about the file: the head SHA
+# moves when someone pushes. That is `check_head`, the one read-door rule no write door can run, and it is
+# the honest gap in this property — see `check_head`.)
+#
+# THE COMMAND LIST IS DERIVED FROM THE PARSER (`build_parser`), never hand-listed: a subcommand that no
+# entry below drives FAILS the self-test. A new write path is therefore covered on the day it is added —
+# by failing until someone covers it, which is the only kind of coverage that cannot rot.
+
+PROGRESS_FILE = "review-41-1.progress.jsonl"
+
+# The pre-existing states of the file a write lands in. They are applied to WHICHEVER artifact the command
+# writes, and deliberately not "realistic" per command: a plan file holding a progress event, or a progress
+# file holding a plan unit, is exactly the kind of state nobody predicted — and the property must hold on
+# every one of them, or it is not a property.
+FILE_STATES: "dict[str, bytes | None]" = {
+    "absent": None,
+    "empty": b"",
+    "whitespace-only": b"   \n",
+    "blank-line": b"\n",
+    "identified": (ident() + "\n").encode(),
+    "begun": (ident() + "\n" + started("u01") + "\n").encode(),
+    "planned": (unit("u01") + "\n").encode(),
+    # THE CONCATENATION. The last line has NO trailing newline, so the next append lands ON it and fuses
+    # two records into one line that is not JSON. Every record-level check passes — the record was never
+    # the problem — and only the bytes `before + line` can show it. This is the SAME class as the two
+    # findings, and nothing but the round trip would have caught it.
+    "no-trailing-newline": (ident()).encode(),
+    "plan-no-trailing-newline": (unit("u01")).encode(),
+    "corrupt": b"not json at all\n",
+    "not-utf8": b"\xff\n",
+}
+
+# How to drive each WRITE command, and which artifact it writes. The command LIST is derived; only the
+# flags are here, because no parser can know what a valid `--check` looks like.
+WRITE_COMMANDS: "dict[str, tuple[str, list[str]]]" = {
+    "emit": (PROGRESS_FILE, ["--unit", "u01", "--status", "started"]),
+    "identity": (PROGRESS_FILE, ["--head-sha", SHA, "--dispatched-at", TS]),
+    "plan-add": (PLAN_FILE, ["--id", "u09", "--kind", "file", "--target", "x.py", "--check", "a"]),
+}
+
+# The subcommands that write NOTHING. They are listed so that `build_parser`'s subcommands can be
+# ACCOUNTED FOR exhaustively — a new one falls into neither set and fails the suite.
+READ_ONLY_COMMANDS = frozenset({"verify", "self-test"})
+
+HOLDS, VIOLATED = "holds", "VIOLATED"
 
 
 # --- the DOCS' examples, fed through the tool ----------------------------------------------------
@@ -1123,8 +1373,65 @@ def run_cli(mod: types.ModuleType, argv: "list[str]") -> "tuple[int, str]":
     return code, out.getvalue() + err.getvalue()
 
 
+def reads_back(mod: types.ModuleType, artifact: str, path: Path) -> "tuple[bool, str]":
+    """The READ side's answer about a file a write just produced: CAN IT BE READ BACK?
+
+    It calls the (possibly mutated) module's OWN read side — never this one's — because the question is
+    always "would THIS tool read back what THIS tool wrote?", and a mutant is a tool with a rule removed.
+
+    An exception is the loudest failure of all: the read side owes a VERDICT on any bytes, and a crash is
+    not a verdict.
+    """
+    try:
+        if artifact == PLAN_FILE:
+            mod.load_plan(path)
+            return True, "the plan reads back"
+        verdict, reason = mod.evaluate(path, SHA)
+        return verdict != UNUSABLE, f"{verdict}: {reason}"
+    except Exception as exc:  # noqa: BLE001 - a crash on READ is a violation, not an error to propagate
+        return False, f"crash:{type(exc).__name__}: {exc}"
+
+
+def round_trip(mod: types.ModuleType, tmp: Path) -> "dict[str, tuple[str, str]]":
+    """EVERY write command x EVERY pre-existing file state: does the property hold on each?
+
+    `holds` = the command REFUSED (any non-zero exit), or it wrote and the result READS BACK.
+    `VIOLATED` = it exited 0 and produced an artifact its own read side will not read. That is the bug
+    class both findings belong to, and the one this asserts out of existence.
+    """
+    got: dict[str, tuple[str, str]] = {}
+    for cmd, (artifact, argv) in WRITE_COMMANDS.items():
+        for state, content in FILE_STATES.items():
+            d = tmp / f"rt-{cmd}-{state}"
+            d.mkdir(parents=True, exist_ok=True)
+            # A sound plan sits beside every progress-file case, so that what `evaluate` says about the
+            # produced file is about the PROGRESS file and nothing else.
+            (d / PLAN_FILE).write_text("".join(line + "\n" for line in PLAN), encoding="utf-8")
+            target = d / artifact
+            if content is None:
+                target.unlink(missing_ok=True)
+            else:
+                target.write_bytes(content)
+            key = f"[round-trip] {cmd} on a {state} file"
+            try:
+                code, text = run_cli(mod, [cmd, "--file", str(target), *argv])
+            except Exception as exc:  # noqa: BLE001 - the CLI owes an exit code, and a crash is not one
+                got[key] = (f"crash:{type(exc).__name__}", str(exc))
+                continue
+            if code != 0:
+                got[key] = (HOLDS, f"REFUSED (exit {code}) — nothing was written: {text.strip()}")
+                continue
+            ok, why = reads_back(mod, artifact, target)
+            got[key] = (
+                (HOLDS if ok else VIOLATED),
+                f"exit 0, and the file it produced reads back as -> {why}",
+            )
+    return got
+
+
 def run_cases(mod: types.ModuleType, tmp: Path) -> "dict[str, tuple[str, str]]":
-    """Every fixture, every name case and every CLI case, against this (possibly mutated) module.
+    """Every fixture, every name case, every CLI case and the round-trip property, against this (possibly
+    mutated) module.
 
     A mutant that CRASHES has not returned a verdict, and "no verdict" is itself a deviation — recorded,
     never swallowed."""
@@ -1147,9 +1454,9 @@ def run_cases(mod: types.ModuleType, tmp: Path) -> "dict[str, tuple[str, str]]":
         path = build(tmp, f"cli-{i}", PLAN, seed)
         try:
             code, text = run_cli(mod, [argv[0], "--file", str(path), *argv[1:]])
-            got[f"[cli] {' '.join(argv)}"] = (f"exit{code}", text)
+            got[cli_key(i, argv)] = (f"exit{code}", text)
         except Exception as exc:  # noqa: BLE001
-            got[f"[cli] {' '.join(argv)}"] = (f"crash:{type(exc).__name__}", str(exc))
+            got[cli_key(i, argv)] = (f"crash:{type(exc).__name__}", str(exc))
     for i, (pname, argv, _want, _needle, _why) in enumerate(PLAN_CLI_CASES):
         plan = build(tmp, f"plan-cli-{i}", PLAN, []).parent / pname
         try:
@@ -1157,16 +1464,33 @@ def run_cases(mod: types.ModuleType, tmp: Path) -> "dict[str, tuple[str, str]]":
             got[f"[plan] {pname} {' '.join(argv)}"] = (f"exit{code}", text)
         except Exception as exc:  # noqa: BLE001
             got[f"[plan] {pname} {' '.join(argv)}"] = (f"crash:{type(exc).__name__}", str(exc))
+    got.update(round_trip(mod, tmp))
     return got
+
+
+def cli_key(i: int, argv: "list[str]") -> str:
+    """The case's key. The INDEX is in it because the SEED is part of the case and the argv is not: `emit
+    --unit u01 --status started` is a different case against an empty file than against a dispatched one —
+    that is the whole of finding 1 — and two cases sharing a key would silently collapse into one."""
+    return f"[cli {i}] {' '.join(argv)}"
 
 
 def expectations() -> "dict[str, tuple[str, str, str]]":
     """case -> (expected outcome, needle its output must contain, why the case exists)."""
     out = {n: (w, needle, why) for n, (_p, _pr, w, needle, why) in CASES.items()}
     out.update({f"[name] {n}": (w, needle, why) for n, w, needle, why in NAME_CASES})
-    out.update({f"[cli] {' '.join(a)}": (f"exit{c}", needle, why) for a, _seed, c, needle, why in CLI_CASES})
+    out.update({cli_key(i, a): (f"exit{c}", needle, why)
+                for i, (a, _seed, c, needle, why) in enumerate(CLI_CASES)})
     out.update({f"[plan] {p} {' '.join(a)}": (f"exit{c}", needle, why)
                 for p, a, c, needle, why in PLAN_CLI_CASES})
+    # The round trip's expectation is the PROPERTY, and it is the same for every case: the write is
+    # refused, or what it wrote reads back. There is no needle — no particular rule has to fire, and
+    # demanding one would be demanding a specific defect where the case only demands a sound outcome. The
+    # OUTCOME is the whole assertion.
+    out.update({f"[round-trip] {cmd} on a {state} file": (
+        HOLDS, "",
+        f"`{cmd}` against a {state} target: it must FAIL, or the file it wrote must READ BACK")
+        for cmd in WRITE_COMMANDS for state in FILE_STATES})
     return out
 
 
@@ -1179,9 +1503,10 @@ MARKER_RE = re.compile(r"^(?P<indent>[ ]*)# MUTATE:(?P<rule>[a-z0-9-]+):(?P<weak
 # The functions that ENFORCE the contract. Every enforcement point inside them must carry a marker.
 # `evaluate` is not one: it MAPS an exception to a verdict; it decides nothing.
 RULE_FUNCTIONS = (
-    "hook", "read_lines", "check_unit", "plan_units", "load_plan", "check_event", "check_progress",
-    "walk_progress", "check_identity_shape", "check_identity", "decide", "parse_name",
-    "cmd_emit", "cmd_identity", "cmd_plan_add", "cmd_verify",
+    "hook", "read_text", "parse_lines", "read_lines", "check_unit", "plan_units", "load_plan",
+    "check_event", "check_progress", "walk_progress", "check_identity_shape", "check_identity",
+    "check_head", "check_progress_file", "check_plan_file", "decide", "parse_name",
+    "before_text", "write_line", "cmd_emit", "cmd_identity", "cmd_plan_add", "cmd_verify",
 )
 ENFORCING_EXCEPTIONS = ("Defect", "OperatorError")
 # The NAMES as they are spelled in the source, because that is what the AST holds — `return UNUSABLE, …`
@@ -1274,10 +1599,37 @@ def load_module(source: str, name: str) -> types.ModuleType:
     return mod
 
 
+def check_commands_covered() -> "list[str]":
+    """Is EVERY subcommand the parser has either driven by the round trip or declared to write nothing?
+
+    This is what makes the round trip's coverage DERIVED rather than claimed. A new subcommand appears in
+    the parser and in neither set below — so the suite goes red the day it is added, and stays red until
+    someone says which it is. A hand-listed set of commands would have gone on passing, silently, about a
+    write path nothing had ever driven.
+    """
+    _parser, commands = build_parser()
+    problems = []
+    for cmd in commands:
+        if cmd not in WRITE_COMMANDS and cmd not in READ_ONLY_COMMANDS:
+            problems.append(
+                f"the parser has a subcommand `{cmd}` that the round trip does not drive. If it WRITES, "
+                f"add it to WRITE_COMMANDS (the property must hold for it); if it writes nothing, add it "
+                f"to READ_ONLY_COMMANDS. An undriven write path is one nothing has ever asked to read back"
+            )
+    for cmd in sorted(set(WRITE_COMMANDS) | set(READ_ONLY_COMMANDS)):
+        if cmd not in commands:
+            problems.append(f"`{cmd}` is driven by the round trip but the parser no longer has it")
+    return problems
+
+
 def self_test() -> int:
     source = Path(__file__).read_text(encoding="utf-8")
     expect = expectations()
     failures = 0
+
+    for problem in check_commands_covered():
+        print(f"COMMANDS {problem}")
+        failures += 1
 
     with tempfile.TemporaryDirectory() as tmpdir:
         got = run_cases(sys.modules[__name__], Path(tmpdir))
@@ -1301,7 +1653,10 @@ def self_test() -> int:
         print(f"{failures} check(s) FAILED — the review-pass contract is broken.")
         return 1
     print(f"all {len(CASES)} fixtures + {len(NAME_CASES)} name cases + "
-          f"{len(CLI_CASES) + len(PLAN_CLI_CASES)} CLI cases + {len(doc_examples())} DOC examples hold.\n")
+          f"{len(CLI_CASES) + len(PLAN_CLI_CASES)} CLI cases + "
+          f"{len(WRITE_COMMANDS) * len(FILE_STATES)} round-trip cases ({len(WRITE_COMMANDS)} write "
+          f"commands, derived from the parser, x {len(FILE_STATES)} pre-existing file states) + "
+          f"{len(doc_examples())} DOC examples hold.\n")
 
     # …and now the question the block above CANNOT answer: is any rule pinned by NO fixture?
     marked = marked_statements(source)
@@ -1379,7 +1734,13 @@ def fail(msg: str, code: int) -> NoReturn:
     raise SystemExit(code)
 
 
-def main(argv: "list[str] | None" = None) -> int:
+def build_parser() -> "tuple[argparse.ArgumentParser, list[str]]":
+    """The CLI, and the list of subcommands it actually has — DERIVED from the parser, never typed out.
+
+    The round-trip fixture drives every command this returns and FAILS on one it does not know how to
+    drive. So a subcommand added here is covered on the day it is added: there is no second list of
+    commands to forget to update, which is the only way a new write path could ever ship unpinned.
+    """
     p = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -1409,6 +1770,11 @@ def main(argv: "list[str] | None" = None) -> int:
 
     sub.add_parser("self-test", help="run every fixture, then DELETE each rule and prove a fixture notices")
 
+    return p, sorted(str(name) for name in (sub.choices or {}))
+
+
+def main(argv: "list[str] | None" = None) -> int:
+    p, _cmds = build_parser()
     args = p.parse_args(argv)
     if args.cmd == "self-test":
         return self_test()

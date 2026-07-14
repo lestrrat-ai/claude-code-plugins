@@ -189,7 +189,9 @@
   `done` that no `started` precedes, a SECOND `done` for one unit, a hand-written line of the wrong shape,
   or an identity naming another commit or attempt all make the pass `unusable`, whatever its report says.
   Every one of those rules holds at **both doors** — the same predicate refuses it on write (`emit`) and on
-  read (`verify`), so it cannot be enforced at one and not the other. `ok` is **not** `SATISFIED` — the
+  read (`verify`), so it cannot be enforced at one and not the other. And **anything the tool writes it can
+  read back**: a write is refused unless the file it would produce verifies, so the tool can never accept
+  your work and then tell you the work does not count (it did — see Stage 2a). `ok` is **not** `SATISFIED` — the
   tool never reads the report and never says SATISFIED; it can only ever *refuse* a pass, never accept one.
 - Before each review, write an orchestrator-owned `review-<pr>-<n>.plan.jsonl` (per-pass — a relaunch
   reuses it; written through the tool above, never a heredoc); reviewers append progress events against planned units to the **active launch attempt's**

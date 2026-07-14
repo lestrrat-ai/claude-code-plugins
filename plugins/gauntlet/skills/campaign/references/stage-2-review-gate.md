@@ -133,6 +133,21 @@ another commit or another launch attempt, and any hand-written line that is not 
 **whether or not the write tool was used**. **`emit` refuses every one of those it can see, by calling the
 SAME functions** — one implementation, both doors, so a rule cannot hold at one and not the other.
 
+**ANYTHING THE TOOL WRITES, IT CAN READ BACK — a write is REFUSED unless the file it would produce
+verifies.** Every rule holding at both doors is not enough on its own, and that gap was real: `emit` on an
+empty progress file exited 0 (it never checked that the identity was there) and `verify` then called that
+same file `unusable: NO pass_identity`; `identity` treated a whitespace-only file as fresh and `verify`
+then refused the artifact for the blank line. The tool accepted the work and then said the work did not
+count. So every write command now runs the READ side's whole-file check on the bytes it is about to
+produce — the file it writes INTO and the file it would LEAVE — and writes nothing if that check refuses.
+Two consequences you can see from the outside: **`emit` refuses a progress file with no valid
+`pass_identity`** (the orchestrator writes it before the reviewer is launched, so an empty one means the
+pass was never dispatched — never "start" it by emitting into it), and **`identity` refuses a file that
+holds ANY BYTES**, not merely any non-blank text. **EMPTY MEANS NO BYTES**: a file with a blank line in it
+is not empty, it is a file with a blank line, and `verify` refuses the pass for exactly that. The one
+read-side rule no write can enforce is the LIVE HEAD comparison — the tip can move after a sound file is
+written, which is the whole reason a tally is voided when PR content changes.
+
 **Review work-plan ledger — orchestrator-owned, target-generic.** Before launching each review pass,
 write `<rundir>/review-<pr>-<n>.plan.jsonl` (through `review-pass.py plan-add` — one unit per call, each
 validated as it lands; a shell heredoc has no schema and no validation). The orchestrator owns the plan; the reviewer reports
@@ -214,8 +229,9 @@ an amendment holds a pass back, so it must say something the orchestrator can ru
 file directly — no hand-written JSON, no `echo`/`printf`/redirection into it, no editor append. Every
 unit-progress event reaches the file through the tool and no other path. **Its CLI is unchanged**
 (`--file --unit --status --evidence`); it now forwards to `review-pass.py emit`, which **REFUSES a unit
-that is not in the plan**, a `done` with no concrete evidence, a `done` that no `started` precedes, and a
-SECOND `done` for a unit already finished. And the emit-only rule is no longer
+that is not in the plan**, a `done` with no concrete evidence, a `done` that no `started` precedes, a
+SECOND `done` for a unit already finished, and — the refusal that is not about the event at all — **a
+progress file `verify` could not read**, which most often means one carrying no `pass_identity` yet. And the emit-only rule is no longer
 enforced by good faith: `verify` re-derives every rule from the bytes, so a hand-written line that the
 tool would have refused is caught on **READ** — the pass goes `unusable` rather than counting. This emit-only rule applies
 ONLY to the `started`/`done` unit-progress events: the tool does not produce any other event type.
@@ -416,6 +432,10 @@ codex exec --sandbox workspace-write -c "sandbox_workspace_write.network_access=
    unit BEGINS — do not batch both at the end), and a done with no evidence. Hand-writing the event to \
    get around a refusal does not work and destroys the pass: it is read back under the same rules, and \
    one line the tool would have rejected makes the whole pass unusable. \
+   It also refuses to append to a progress file that could not be read back — most often one holding no \
+   pass_identity, which is written for you before you are launched. That refusal is about the FILE, not \
+   your event: it means the pass was not dispatched properly, so do not retry and do not create the file \
+   yourself — say so in your report and stop. \
    After every planned unit is done, do a brief UNSTRUCTURED ADVERSARIAL SWEEP: deliberately hunt for \
    defects no plan unit would naturally catch — cross-unit interactions, unstated assumptions, edge \
    cases, and whole categories the plan did not enumerate. This complements the plan, never replaces \

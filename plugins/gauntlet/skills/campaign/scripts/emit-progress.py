@@ -30,9 +30,21 @@ refused to READ one; this door WROTE it, exited 0, and the pass was thrown away 
 tool had just helped commit. A rule enforced at one door is not enforced. If what you found changed, the
 pass is what re-runs, not the line.
 
+The FOURTH is not about your event at all — it is about the FILE: **a progress file that `verify` cannot
+read is refused, and nothing is appended to it.** Most often that means the file does not yet carry the
+orchestrator's `pass_identity` (it is written before you are launched, so an EMPTY or absent file means
+the pass was never dispatched — do not try to start it yourself), or a line already in it was
+hand-written, or its last line has no newline. This one is NEW, and it exists because the tool used to do
+the opposite: `--status started` on an empty file exited 0, and `verify` then called that same file
+`unusable: NO pass_identity`. Your event landed and your pass could not count. **Anything this tool
+writes, it must be able to read back** — so if the file it would produce is one `verify` would throw away,
+it declines to write and says why, while there is still something you can do about it.
+
 A REFUSAL here is not a broken CLI. The flags are the contract and they have not moved; what a refusal
-says is that the event you asked for is one `verify` would refuse to read, and writing it would only lose
-the pass. Read the message, fix the call, re-run.
+says is that the event you asked for — or the file it would land in — is one `verify` would refuse to
+read, and writing it would only lose the pass. Read the message, fix the call, re-run. If the message is
+about the FILE and not your event, it is not yours to fix: report it, because the pass's dispatch is
+broken and no event you emit into that file will count.
 """
 
 from __future__ import annotations
