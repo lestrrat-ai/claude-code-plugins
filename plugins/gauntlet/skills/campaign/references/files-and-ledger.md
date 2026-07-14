@@ -207,7 +207,12 @@ ledger.py --file <state.jsonl> add-row --pr N [--<field> <val> …] # register a
 ledger.py --file <state.jsonl> set --pr N --<field> <val> [--<field> <val> …]  # update named fields on the row for PR N
 ledger.py --file <state.jsonl> get --pr N [--field <f>]           # print the row as JSON, or one field
 ledger.py --file <state.jsonl> list [--where <field>=<val>]       # print matching rows' pr numbers (all if no filter)
+ledger.py --file <state.jsonl> table [--fields <f>,<f>,…]         # print run header + all rows as an aligned table (read-only)
 ```
+
+`table` is the user-facing status view: the end-of-wake report renders it whenever the run goes back
+to waiting (`loop-control.md`, "Reschedule or exit"). It is a pure projection of the ledger — raw field
+values only (`head_sha` shortened for display), no gate logic.
 
 It rejects an unknown field name (listing the valid ones), refuses a duplicate `pr` on `add-row`,
 errors on a missing row for `set`/`get`, and creates the file with the header if it is missing. It also

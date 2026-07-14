@@ -220,6 +220,42 @@ def cmd_list(path: Path, args) -> int:
     return 0
 
 
+TABLE_DEFAULT_FIELDS = ("pr", "slug", "tier", "reviews_ok", "ci", "attempts", "status", "head_sha")
+
+# Display-only truncation: a 40-char SHA would dominate the table. The full
+# value stays on disk and in `get`; the table is a projection, not a source.
+TABLE_SHA_WIDTH = 8
+
+
+def cmd_table(path: Path, args) -> int:
+    header, rows = load(path)
+    if args.fields is not None:  # an empty --fields is malformed, not "omitted"
+        fields = tuple(f.strip() for f in args.fields.split(","))
+        for f in fields:
+            check_field(f, ROW_FIELDS)
+    else:
+        fields = TABLE_DEFAULT_FIELDS
+    # '#' + blank line keep the run-config lines from reading as table columns
+    for f in HEADER_FIELDS:
+        print(f"# {f}: {header[f]}")
+    print()
+    cells = []
+    for row in rows:
+        cells.append(tuple(
+            row[f][:TABLE_SHA_WIDTH] if f == "head_sha" else row[f]
+            for f in fields
+        ))
+    widths = [max(len(f), *(len(c[i]) for c in cells)) if cells else len(f)
+              for i, f in enumerate(fields)]
+    print(" | ".join(f.ljust(w) for f, w in zip(fields, widths)).rstrip())
+    print("-+-".join("-" * w for w in widths))
+    for c in cells:
+        print(" | ".join(v.ljust(w) for v, w in zip(c, widths)).rstrip())
+    if not cells:
+        print("(no rows)")
+    return 0
+
+
 # --- cli ----------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
@@ -258,6 +294,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     ls = sub.add_parser("list", help="print matching rows' pr numbers")
     ls.add_argument("--where", help="filter as <field>=<value>")
+
+    t = sub.add_parser("table", help="print the run header and all rows as an aligned table")
+    t.add_argument("--fields", help=f"comma-separated row fields to show (default: {','.join(TABLE_DEFAULT_FIELDS)})")
     return parser
 
 
@@ -266,7 +305,7 @@ def main(argv: list[str]) -> int:
     path = Path(args.file)
     handlers = {
         "header": cmd_header, "add-row": cmd_add_row, "set": cmd_set,
-        "get": cmd_get, "list": cmd_list,
+        "get": cmd_get, "list": cmd_list, "table": cmd_table,
     }
     return handlers[args.cmd](path, args)
 
