@@ -23,8 +23,9 @@ for the *shape* of the rules — a recipe does not go stale, a list of files doe
 - **pointers at this file** — `fix-subagent-contract`
 
 Then read each hit and decide: it is a summary of this contract, or it is not. Do not stop when the count
-matches something you were told. And if you ADD a rule here rather than change one, **no text search can
-find its stale restatements** — sweep SEMANTICALLY instead, exactly as the SWEEP block below requires.
+matches something you were told. And if you ADD a rule here rather than change one, **searching for the
+new rule's own wording finds only the sites you already fixed** — enumerate SEMANTICALLY first and then
+search for the identifiers that enumeration names, exactly as the SWEEP block below requires.
 
 The contract has two halves that pull in opposite directions **on purpose**. Ship both, or the fixer
 optimizes the one you gave it:
@@ -65,16 +66,26 @@ the one line it was pointed at and leave the class intact:
 > This widening is **bounded by the change you are making**: grep for what your own fix invalidated. It
 > is **not** permission to re-derive the diff, re-review the PR, or fix defects nobody asked you to fix.
 >
-> **GREP FINDS A CHANGED DEFINITION. IT CANNOT FIND A NEW ONE.** When you EDIT an existing rule you have
-> an old string to hunt — the old value, the old spelling, the old number. When you INTRODUCE a rule,
-> **there is nothing to grep for**: a stale restatement of a brand-new rule shares no keyword with it. A
-> sentence reading "it only sets `ci = pending`" is a stale restatement of a counter-reset rule and
-> contains not one word of it. Searching for your new rule's NAME finds only the places you already
-> fixed — it will report success every time, and it will be wrong every time.
+> **GREP CANNOT TELL YOU WHAT TO SEARCH FOR.** When you EDIT an existing rule you have an old string to
+> hunt — the old value, the old spelling, the old number. When you INTRODUCE a rule there is no such
+> string, and **searching for the new rule's own WORDING or NAME is a trap: it matches only the sites you
+> already fixed, so it reports success every time and is wrong every time.** A sentence reading "it only
+> sets `ci = pending`" is a stale restatement of a brand-new counter-reset rule and shares not one word
+> with it.
 >
-> So for a NEW rule, sweep **SEMANTICALLY**: enumerate every site that **DOES THE THING THE RULE
-> GOVERNS** — every site that writes the field, enters the state, performs the reset, states the cap —
-> and check each one against the definition. Enumerate the BEHAVIOR, not the words. Report the site list.
+> **This does NOT mean text search is useless** — believing that swaps one incomplete method for another,
+> and makes you skip a search that would have worked. Searching for the **BEHAVIOR IDENTIFIERS the rule
+> governs** — the field, the state, the command, the cap's name — is legitimate and necessary; it is HOW
+> you execute the sweep. The site that survived five sweeps on one PR read *"the bailout is disabled while
+> `ci == pending`"*: `ci`, `pending` and `bailout` are all greppable, and a search WOULD have found it —
+> **but only once you knew to look for sites that describe what the bailout keys off.** Nothing in the new
+> rule's wording tells you that.
+>
+> So: **enumerate SEMANTICALLY first, then search for the identifiers the enumeration names.** List every
+> site that **DOES THE THING THE RULE GOVERNS** — writes the field, enters the state, performs the reset,
+> states the cap — search for each of those identifiers, and check every hit against the definition.
+> **The enumeration tells you WHAT to search for; the search is how you execute it, never a substitute
+> for it.** Enumerate the BEHAVIOR, not the words. Report the site list.
 >
 > **A POINTER WITH A GLOSS IS STILL A RESTATEMENT.** A site that correctly points at the owner and then
 > "just briefly" restates what it points at — *"reset the liveness counters (`settled_strikes`,

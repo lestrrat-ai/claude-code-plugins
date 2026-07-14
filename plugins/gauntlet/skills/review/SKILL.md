@@ -398,8 +398,7 @@ or **Adjusted** finding only (skip Refuted and Uncertain), in its own branch off
    SWEEP the tree for every place that RESTATES it and correct each one **in this same PR**: a definition
    left with a stale restatement is a definition that lies, and that sweep is part of the fix, not a
    drive-by. Report every site you found and its disposition, including any you deliberately left alone.
-   **Sweep the way the contract says** — `grep` alone finds only what a *changed* definition invalidated;
-   it cannot find a stale restatement of a rule you just INTRODUCED. (This paragraph is a
+   **Sweep the way the contract says** — it defines the method; this paragraph does not. (This paragraph is a
    **non-authoritative summary** of the same contract campaign puts in every fix subagent's prompt —
    `${CLAUDE_PLUGIN_ROOT}/skills/campaign/references/fix-subagent-contract.md` is the complete DEFINITION
    and **wins over this** wherever they differ; read it, never reconstruct it from this summary.)

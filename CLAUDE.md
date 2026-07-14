@@ -122,12 +122,13 @@ every place that RESTATES it is correct.**
 - `grep` for the old value, the old spelling, the old command, the old number — not just the file you
   edited. Restatements hide in **summaries**, **quick-reference bullets**, **cross-references**, **table
   rows**, **worked examples**, and **other copies of the same command**.
-- **`grep` finds a CHANGED definition. It cannot find a NEW one.** A rule you just INTRODUCED has no old
-  string to hunt, and a stale restatement of it shares no keyword with it — *"it only sets `ci =
-  pending`"* restates a counter-reset rule and contains not one word of it. Searching for the new rule's
-  NAME finds only the sites you already fixed: it reports success every time and is wrong every time. So
-  sweep **semantically** — enumerate every site that **does the thing the rule governs** (writes the
-  field, enters the state, performs the reset, states the cap) and check each one.
+- **`grep` cannot tell you WHAT to search for.** A rule you just INTRODUCED has no old string to hunt, and
+  searching for the new rule's own WORDING or NAME matches only the sites you already fixed: it reports
+  success every time and is wrong every time — *"it only sets `ci = pending`"* restates a brand-new
+  counter-reset rule and shares not one word with it. This is **not** a licence to skip text search:
+  searching for the **behavior identifiers the rule governs** (the field, the state, the command, the cap)
+  still works and is HOW you sweep. So **enumerate semantically first** — every site that **does the thing
+  the rule governs** — **then search for the identifiers that enumeration names**, and check every hit.
 - **A pointer with a gloss is still a restatement.** A site that points at the owner and then "just
   briefly" restates it — *"reset the liveness counters (`settled_strikes`, `unusable_refetches`)"* — has
   copied the definition into the gloss. The pointer stays right while the gloss silently goes wrong, and
