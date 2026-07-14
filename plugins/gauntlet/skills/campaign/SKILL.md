@@ -177,7 +177,10 @@ Read stage refs only when that stage/action is due:
   changes it (a park does NOT lower `reviews_ok`, so guard on `status` at every dispatch AND mutation
   site). Sole exception: the park does not change the CI watch either way — observing is not mutating, so
   the watch follows the normal policy (alive only while a check can still move). Keep driving the other
-  PRs; unpark only on the user's answer (`references/loop-control.md`, "parked-status guard").
+  PRs; unpark only on the user's answer — **recorded DURABLY, per park class** (`api_approval`; the
+  standoff's audit record; `blocker_ruling` = `retry`/`abort` for a machine blocker, which clears the
+  liveness counters on `retry`). **Every park names the event that leaves it** (`references/loop-control.md`,
+  "parked-status guard" and "Only the user's answer unparks a PR").
 - **No green by watch exit:** derive CI from a **SHA-pinned** snapshot of **both** check families
   (`check-runs` **and** commit `status`), verified against `head_sha` before parsing. **NEVER from `gh pr
   checks`** — its output carries **no SHA** (`references/stage-2-ci.md`).
@@ -205,7 +208,8 @@ Read stage refs only when that stage/action is due:
    step 4's dispatch scan across both concurrency pools (CI-fix subagents and review passes each have
    their own cap): confirm every due review pass was launched, a CI watch is live for every PR with a
    **still-RUNNING** check (**not** for one whose CI has settled — that is the hot-spin bug), that every
-   PR at its `settled_strikes` cap was **escalated** rather than left spinning, and — whenever any
+   PR at a liveness cap (`settled_strikes` / `unusable_refetches`) was **escalated** rather than left
+   spinning, and — whenever any
    non-terminal work remains — a `ScheduleWakeup` heartbeat is actually
    scheduled. If any due launch or the heartbeat is missing, launch it and re-audit. NEVER sleep with
    due work un-launched or the heartbeat unscheduled.

@@ -54,6 +54,14 @@ catch-all and parks a PR that nothing was wrong with.
 | `.mergeStateStatus = UNKNOWN` | not computed yet | re-poll with backoff, bounded |
 | **any other value** | GitHub added one | **park `awaiting-user`**, naming the value. Never guess. |
 
+**EVERY `awaiting-user` park in this table is a MACHINE-BLOCKER park, and it MUST declare its exit** — a
+park whose exit event never comes is the same wedge it was meant to prevent. So, in the same step: write
+`ci_reason` **naming the blocker** (the draft state, `BLOCKED`, or the unrecognized value verbatim), and
+resolve it through `blocker_ruling` = `retry` / `abort` — the user marks the PR ready, clears the
+protection, or gives up, and answers. The record and the unpark are defined once, in `files-and-ledger.md`
+(`status`) and `loop-control.md` step 3, "Only the user's answer unparks a PR"; never invent a second
+mechanism here.
+
 **`BLOCKED` does NOT mean "a required check is missing or failing."** It means the merge is blocked **for
 any reason** — including a **draft** PR, or one **awaiting a human approving review**, or a ruleset
 campaign cannot read. Verified: `cli/cli` PR #13856 reads `BLOCKED` with `mergeable = MERGEABLE` **and a
@@ -166,8 +174,8 @@ subagent at a check that is merely **still running**.
    invalidate gauntlet reviews.** Rebase only if GitHub flags the PR behind/conflicting:
    - Clean rebase (no conflicts) → verify the PR's own diff/content is unchanged → keep `reviews_ok`,
      **keep its status label as-is** (the gate did not reset, so an accepted PR stays
-     `gauntlet-accepted`), update `head_sha` to the new tip, set `ci = pending`, reset `ci_fingerprint`
-     and `settled_strikes` (new commit, new evidence — `stage-2-ci.md`, "SETTLED"), **and re-derive CI
+     `gauntlet-accepted`), update `head_sha` to the new tip, set `ci = pending`, **reset the liveness
+     counters** (new commit, new evidence — `stage-2-ci.md`, "THE LIVENESS COUNTERS"), **and re-derive CI
      from a snapshot of the new tip in the same wake, launching a watch only if that snapshot holds a
      still-RUNNING row** ("WATCH ONLY WHAT CAN MOVE"). A rebased PR must not sit unwatched until the
      heartbeat while its checks are running — but it must not be watched when **nothing** is running

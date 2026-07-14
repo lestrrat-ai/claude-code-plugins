@@ -104,11 +104,12 @@ For each `#PR` to adopt:
      `tier` = triage per `head_sha` (Stage **2a-triage**); `attempts` = `0` (no attempt has run yet —
      `attempts` counts attempts **so far**, and seeding it at `1` silently spends half the retry-once
      budget before any work is dispatched); `started` = now;
-     `api_approval` = `-`; `status` = `in_review`.
-   - **On a REFRESH of an existing row, PRESERVE the durable/live fields** — `api_approval`, `attempts`,
-     `started`, `status`, `reviews_ok`, and `tier` — do **NOT** reset them (that would violate the
-     durable API-decision contract, `files-and-ledger.md` / `scope-and-constraints.md`, and could re-ask
-     or revive an already-declined/aborted PR). Only re-read `head_sha`/`ci` from ground truth; reset
+     `api_approval` = `-`; `blocker_ruling` = `-`; `status` = `in_review`.
+   - **On a REFRESH of an existing row, PRESERVE the durable/live fields** — `api_approval`,
+     `blocker_ruling`, `attempts`, `started`, `status`, `reviews_ok`, and `tier` — do **NOT** reset them
+     (that would violate the durable-decision contract for **both** user answers, `files-and-ledger.md` /
+     `scope-and-constraints.md`, and could re-ask the user about a PR already ruled on, or revive an
+     already-declined/aborted PR). Only re-read `head_sha`/`ci` from ground truth; reset
      `reviews_ok` to `0` and re-triage `tier` **only if** reconciliation detects a PR-content change
      since the recorded `head_sha` (per the gate's SHA-pinning rules). **That reset is a gate-reset
      site: in the same step, restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`**

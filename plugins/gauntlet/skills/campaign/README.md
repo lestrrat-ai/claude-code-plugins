@@ -100,8 +100,17 @@ it comes to **you** to settle — with the finding, the refutation, the evidence
 counter. It parks that PR while it waits and keeps driving the others. A parked PR is genuinely frozen:
 campaign changes nothing about it — no review, no fix, no merge, and no rebase, even if another PR
 merges and leaves it behind the base — until you answer. It stays behind rather than let a rebase
-rewrite the very content you're being asked to rule on. It does keep watching CI, so the status stays
-current. The same freeze applies to a PR parked for your approval of an API change.
+rewrite the very content you're being asked to rule on. Parking doesn't change what it watches, though:
+observing isn't changing, so the CI watch stays alive exactly when a check can still move, and stops when
+CI has stopped moving — the same rule as any other PR. The same freeze applies to a PR parked for your
+approval of an API change.
+
+It also parks a PR when CI itself goes nowhere — checks that never register, a run that stops moving and
+never turns green, a status value GitHub added that it doesn't recognize, a merge GitHub blocks for a
+reason it can't name. It tells you which one, with what it already tried, and asks for one of two
+answers: **retry** (you fixed something outside the PR — look again) or **abort** (stop working on it).
+Every park has a way out, and the answer is written down, so a fresh agent picking the run up later never
+asks you twice.
 
 It also doesn't wait around. Everything long-running — reviews, CI watches, fix subagents — happens
 in the background across all the adopted PRs at once, so at any moment it's doing all the work that's

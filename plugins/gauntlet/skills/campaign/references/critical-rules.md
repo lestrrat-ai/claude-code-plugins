@@ -136,8 +136,14 @@
   finding.** **NEVER refute the same finding twice on your own authority:** if the fresh reviewer drops
   it, done; if it **re-raises** it against the stated evidence, that is a STANDOFF — park
   (`status = awaiting-user`), surface finding + refutation + evidence + the reviewer's counter, let the
-  USER adjudicate, and keep driving the other PRs. `awaiting-user` is **standoff-only** — a REFUTED
-  finding does NOT park by itself (`stage-2-review-gate.md`, "Audit every finding before you fix it").
+  USER adjudicate, and keep driving the other PRs. A REFUTED finding does **NOT** park by itself — only
+  the **re-raise** parks (`stage-2-review-gate.md`, "Audit every finding before you fix it"). The standoff
+  is **one of TWO `awaiting-user` classes**, and each has its own durable answer record: the standoff is
+  answered into `audit-<pr>-<n>.md`; a **machine blocker** (CI SETTLED-not-green, an UNUSABLE snapshot at
+  its cap, an unrecognized enum value, a `BLOCKED`/unrecognized `mergeStateStatus`, a draft PR — `ci_reason`
+  names it) is answered into `blocker_ruling` = `retry`/`abort` (`files-and-ledger.md`, `status`;
+  `loop-control.md` step 3, "Only the user's answer unparks a PR"). **NEVER park into a state whose exit
+  is undefined.**
 - **A PARKED PR IS FROZEN — TAKE NO ACTION THAT MUTATES IT.** `status = awaiting-user` (standoff) or
   `awaiting-api` (API approval) means the PR waits on a **HUMAN**. The test is **"does this MUTATE the
   PR?"** — **not** "is this action named in a list", because an enumeration will miss a site (it did:
@@ -150,9 +156,12 @@
   post-merge rebase would change the very content the user is adjudicating. The guard MUST be enforced
   at **every dispatch and mutation site** — `loop-control.md` step 3 (the canonical statement), the
   **merge** and the **post-merge reconcile** (`stage-3-merge.md`) — not merely recorded in the ledger.
-  Only the user's answer unparks it (`status` → `in_review`; a declined API change → `aborted`); a
-  parked PR that fell behind its base stays behind until then. **Keep the CI watch running** while
-  parked — observing a PR is not mutating it — but dispatch no CI fix.
+  Only the user's answer unparks it (`status` → `in_review`, recorded durably per park class; a declined
+  API change or a `blocker_ruling` of `abort` → `aborted`); a parked PR that fell behind its base stays
+  behind until then. **The park does not change the CI watch either way** — observing a PR is not mutating
+  it, so the watch follows the normal policy (`stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE"): alive while a
+  row can still move, **not** relaunched once CI has SETTLED. Parking neither stops a warranted watch nor
+  starts an unwarranted one — and it dispatches no CI fix.
 - Reviews are fresh, context-isolated re-rolls: a separate reviewer invocation each pass (Claude
   subagent by default, or the user's preferred reviewer), no shared context. A second pass re-rolls a
   stochastic reviewer to catch a missed defect — the two are NOT statistically independent (the same
@@ -263,8 +272,10 @@
   or a hermetic no-model tool path.
 - **ANY campaign commit to the PR head resets the gate** (`stage-2-ci.md`, "Any campaign commit to the PR
   head resets the gate") — cheap CI-fix, session-model CI-fix, review-fix, or **refutation commit** alike. In the SAME step: reset
-  `reviews_ok` to 0 AND restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`, relaunch the CI
-  watch, and re-enter Stage 2a. NEVER exempt a commit because it "only reformatted".
+  `reviews_ok` to 0 AND restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`, re-derive CI
+  for the new tip and watch it **only if a row can still move** (`stage-2-ci.md`, "WATCH ONLY WHAT CAN
+  MOVE" — a watch launched on a tip whose checks have not registered yet has nothing to block on and
+  exits in about a second), and re-enter Stage 2a. NEVER exempt a commit because it "only reformatted".
 - **EVERY fix subagent — CI-fix (both tiers) and review-fix — is dispatched under the fix-subagent contract
   (`fix-subagent-contract.md`, the complete DEFINITION; read it before dispatching, never reconstruct it
   from a summary).** Both halves are mandatory: **SCOPE** the reading — worktree + concrete issue list, NOT

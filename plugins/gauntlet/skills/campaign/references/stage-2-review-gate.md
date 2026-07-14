@@ -44,7 +44,9 @@ else that changes it (`loop-control.md` step 3, "parked-status guard" — the go
 are only examples). The park leaves
 `reviews_ok < required(tier)`, so the review-launch rule MUST read `status` too — otherwise the next
 wake re-reviews a PR that is waiting on a HUMAN and a `SATISFIED` verdict merges it **without the
-user's ruling**. Its CI watch keeps running; everything else waits for the user's answer.
+user's ruling**. The park does **not** change its CI watch either way — observing is not mutating, so the
+watch follows the normal policy (`stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE": alive while a row can still
+move, **not** relaunched once CI has SETTLED). Everything else waits for the user's answer.
 
 **Preconditions — clear Copilot items, CI, and conflicts before reviewing.** A review pass is
 expensive and is invalidated by any PR-content change, so never spend one on a PR whose current tip
@@ -517,11 +519,14 @@ reviewer and a `codex exec` reviewer both receive it.
   review pass, a CI fix, a review fix, or a merge for that PR (`loop-control.md` step 3;
   `stage-3-merge.md`) — `reviews_ok` stays 0, so a re-review would let a `SATISFIED` verdict merge the PR
   with the disputed finding never adjudicated. Only the user's answer unparks it (`status` →
-  `in_review`): ruling the finding **invalid** → drop it and return to the normal flow; **valid** → fix
-  it exactly like a CONFIRMED finding.
+  `in_review`), and **the ruling is recorded durably in `<rundir>/audit-<pr>-<n>.md`** — a wake may be a
+  fresh agent instance, and an answer held only in context is one the user is asked for twice
+  (`loop-control.md` step 3, "Only the user's answer unparks a PR"). Ruling the finding **invalid** → drop
+  it and return to the normal flow; **valid** → fix it exactly like a CONFIRMED finding.
 - **NEVER refute the same finding twice on your own authority.** One refutation, then the reviewer rules;
-  if it re-raises, the user rules. `awaiting-user` is the **standoff-only** park — a REFUTED finding does
-  **NOT** park by itself.
+  if it re-raises, the user rules. A REFUTED finding does **NOT** park by itself — only the **re-raise**
+  parks. The standoff is the **review-gate** cause of `awaiting-user`; a **machine blocker** parks the same
+  status by its own rule, answered into `blocker_ruling` (`files-and-ledger.md`, `status`).
 
 **Why this cannot become self-gating:** the audit only ever *subtracts* work from a fix list. It cannot
 add a SATISFIED verdict, cannot raise `reviews_ok`, and cannot merge anything. The refutation itself is

@@ -169,20 +169,36 @@ blocks; each completion is its own wake.
    PR's `head_sha`, reset its gate, and **changed the very PR content the user was parked to
    adjudicate**. Any site the skill grows later is covered the moment it would mutate a parked PR, with
    no edit to this list. When unsure whether an action mutates, treat it as mutating and skip it.
-   - **The ONE exception is the CI watch: OBSERVING a PR is not mutating it.** A parked PR **keeps its
-     watch**, and an exited watch on a parked PR whose CI reads pending is **relaunched as usual**, so
-     its CI state is current the moment the user answers. But do **NOT** dispatch a CI *fix*.
+   - **The ONE exception is the CI watch: OBSERVING a PR is not mutating it.** The park **does not change
+     the watch either way** — it follows the normal policy, `stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE":
+     alive while an evidence row can still `RUN`, **not** relaunched once CI has SETTLED (relaunching a
+     settled PR's watch burns a wake per second and observes nothing). Parking never stops a warranted
+     watch and never starts an unwarranted one. But do **NOT** dispatch a CI *fix*.
    - **Recording ground truth is not mutating either.** Reconcile still READS a parked PR (live SHA, CI,
      labels) and writes what it read to the ledger — including a `reviews_ok` reset, and its label
      mirror, when **someone else** pushed to the PR (step 1). Recording a change campaign did not make is
      not making one. What is frozen is **campaign's own action on the PR**; a park never licenses a
      lying label or a stale row.
-   - **Only the user's answer unparks a PR.** On the answer: record it (`api_approval` for the API
-     park; the audit record for the standoff ruling), set `status` back to `in_review` via
-     `ledger.py … set --pr <N> --status in_review`, and resume normal dispatch — including any rebase or
-     base refresh the PR has been owed while frozen — from the next wake. (A declined API change goes
-     terminal `aborted` instead.) A parked PR that has fallen **behind** its base simply **stays
-     behind** until then; it is not dropped from the run, just frozen.
+   - **Only the user's answer unparks a PR — and EVERY park class names the durable record it is
+     answered into.** An answer that lives only in this session is an answer a fresh agent re-asks. On
+     the answer: **record it**, set `status` back to `in_review` via `ledger.py … set --pr <N> --status
+     in_review`, and resume normal dispatch — including any rebase or base refresh the PR has been owed
+     while frozen — from the next wake. A parked PR that has fallen **behind** its base simply **stays
+     behind** until then; it is not dropped from the run, just frozen. The record and the unpark, per
+     cause (`files-and-ledger.md`, `status`):
+
+     | Park cause | Durable record | Unpark |
+     |---|---|---|
+     | **`awaiting-api`** — an API-changing fix | `api_approval` = `approved@<iso>` / `declined@<iso>` | `approved` → `in_review`; `declined` → terminal `aborted` |
+     | **`awaiting-user`, review standoff** — a REFUTED finding the fresh reviewer re-raised | the ruling in `<rundir>/audit-<pr>-<n>.md` | `in_review`; ruled **valid** → the finding is fixed like a CONFIRMED one, ruled **invalid** → normal flow |
+     | **`awaiting-user`, machine blocker** — CI SETTLED-not-green, an UNUSABLE snapshot at its cap, an unrecognized CI enum value, a `BLOCKED`/unrecognized `mergeStateStatus`, a draft PR (`ci_reason` names it) | `blocker_ruling` = `retry@<iso>` / `abort@<iso>` | `retry` → `in_review` **and RESET THE LIVENESS COUNTERS** (`stage-2-ci.md`, "THE LIVENESS COUNTERS"), then re-derive CI on the next wake; `abort` → terminal `aborted` |
+
+     **A `retry` that clears nothing re-escalates on its first derivation** — the strikes are still at
+     the cap — so the counter reset is **part of the unpark, not an optimization**. It buys the PR a
+     fresh liveness budget and no more: if CI still does not move, the same bound re-parks it, this time
+     reporting that the retry did not move CI (`stage-2-ci.md`, "SETTLED" / "UNUSABLE — the refetch is
+     BOUNDED"). The loop is bounded by the **human**: campaign never re-asks unprompted, and every park
+     is a fresh question backed by a fresh snapshot.
    - **Why the guard must live HERE, at the dispatch site:** `reviews_ok < required(tier)` is TRUE for a
      parked PR (the park does not raise it), so a dispatch rule that looks only at `reviews_ok` will
      happily re-review a PR that is waiting on a human — and a `SATISFIED` verdict would then make it

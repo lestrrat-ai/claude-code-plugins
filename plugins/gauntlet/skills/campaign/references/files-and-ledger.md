@@ -101,8 +101,8 @@ following line is one adopted PR's row record (`{"type": "row", …}`). Every re
 
 ```
 {"type": "header", "run_id": "g260704-0915-a3f29c1b", "base_branch": "main", "api_changes": "ask", "reviewer": "codex"}
-{"type": "row", "id": "pr41", "slug": "fix-null-deref", "branch": "fix-null-deref", "worktree": ".worktrees/fix-null-deref", "worktree_owned": "yes", "branch_owned": "yes", "pr": "41", "head_sha": "a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c", "reviews_ok": "2", "ci": "green", "tier": "STANDARD", "attempts": "1", "started": "2026-07-04T09:15:00Z", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:9f2c\u2026", "settled_strikes": "0", "ci_reason": "-"}
-{"type": "row", "id": "pr52", "slug": "add-retry-flag", "branch": "add-retry-flag", "worktree": ".worktrees/add-retry-flag", "worktree_owned": "no", "branch_owned": "no", "pr": "52", "head_sha": "b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7089a1b", "reviews_ok": "0", "ci": "pending", "tier": "HIGH", "attempts": "0", "started": "-", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:4a71\u2026", "settled_strikes": "1", "ci_reason": "required check absent: integration-tests"}
+{"type": "row", "id": "pr41", "slug": "fix-null-deref", "branch": "fix-null-deref", "worktree": ".worktrees/fix-null-deref", "worktree_owned": "yes", "branch_owned": "yes", "pr": "41", "head_sha": "a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c", "reviews_ok": "2", "ci": "green", "tier": "STANDARD", "attempts": "1", "started": "2026-07-04T09:15:00Z", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:9f2c\u2026", "settled_strikes": "0", "unusable_refetches": "0", "ci_reason": "-", "blocker_ruling": "-"}
+{"type": "row", "id": "pr52", "slug": "add-retry-flag", "branch": "add-retry-flag", "worktree": ".worktrees/add-retry-flag", "worktree_owned": "no", "branch_owned": "no", "pr": "52", "head_sha": "b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7089a1b", "reviews_ok": "0", "ci": "pending", "tier": "HIGH", "attempts": "0", "started": "-", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:4a71\u2026", "settled_strikes": "1", "unusable_refetches": "0", "ci_reason": "required check absent: integration-tests", "blocker_ruling": "-"}
 ```
 
 **`head_sha` is ALWAYS the full 40-char `headRefOid` — never an abbreviation.** The examples above spell
@@ -164,15 +164,28 @@ Header field notes (the header fields above; per-row fields follow):
   (`checkrun` + `status`) and only the fields CLASSIFY reads:
   `sha256(head_sha + the canonicalized evidence lines, sorted)`. `stage-2-ci.md`, "SETTLED", is the
   **definition** — never restate the serialization here. **UNCHANGED + nothing RUNNING == SETTLED.**
-- `settled_strikes` — consecutive derivations seen **SETTLED but not green**. At **2**, escalate: park
-  `awaiting-user` naming the blocker. Reset to `0` on any `head_sha` change or fingerprint change.
+- `settled_strikes` — consecutive derivations seen **SETTLED but not green** *while no machine action was
+  due or in flight* for the PR at this `head_sha` (`stage-2-ci.md`, "SETTLED", owns the gate — a PR the
+  driver is actively repairing is never struck). At **2**, escalate: park `awaiting-user` naming the
+  blocker. Reset to `0` on any `head_sha` change or fingerprint change.
+- `unusable_refetches` — consecutive derivations whose snapshot was **UNUSABLE** at this `head_sha`. An
+  UNUSABLE snapshot has **no fingerprint** (its rows were never trusted), so it can never be a
+  `settled_strike`: it gets its own counter. At **3**, escalate the same way. Reset to `0` on any
+  `head_sha` change and on any **VERIFIED** snapshot (`stage-2-ci.md`, "UNUSABLE — the refetch is
+  BOUNDED").
 - `ci_reason` — **why** `ci` is not green, in a form a human can act on: the DECIDE bullet that matched
   and the row that made it match (which check never registered, which enum value was unrecognized, which
-  read was denied). This is what the escalation reports; a park that cannot name its blocker is not
-  actionable.
+  read was denied, which VERIFY rule the snapshot failed). This is what the escalation reports; a park
+  that cannot name its blocker is not actionable.
+- `blocker_ruling` — durable record of the user's answer to a **machine-blocker park** (the `status`
+  taxonomy below): `-` (none yet) | `retry@<iso>` | `abort@<iso>`. It is the **answer** to the question
+  `ci_reason` **asks**, and it exists for the same reason `api_approval` does: a wake may be a fresh
+  agent instance, so an answer held only in context is an answer the user is asked for twice. `retry`
+  unparks with the liveness counters cleared; `abort` goes terminal `aborted`. The unpark is
+  `loop-control.md` step 3, "Only the user's answer unparks a PR".
 
-  These three live **on disk, not in the driver's head**: a wake may be a fresh agent instance, and a
-  strike count that dies with the context never reaches its cap.
+  These live **on disk, not in the driver's head**: a wake may be a fresh agent instance, and a counter —
+  or a ruling — that dies with the context never reaches its cap.
 - `attempts` — task attempts so far (for the retry-once bailout).
 - `started` — wall-clock start of the current attempt (for the 1-hour cap).
 - `api_approval` — durable record of the user's decision on this PR's API-changing fix: `-`
@@ -196,22 +209,30 @@ Header field notes (the header fields above; per-row fields follow):
   user's answer sets `status` back to `in_review` and normal dispatch resumes on the next wake.
   - `awaiting-api` — parked for the user to approve an API-changing fix. Resolves via `api_approval`:
     `approved` returns the PR to the normal flow, `declined` makes it `aborted` (terminal).
-  - `awaiting-user` — parked for the user to adjudicate. **Two causes**:
-    1. **A review standoff** — a finding the orchestrator REFUTED in the tree and a **fresh reviewer
+  - `awaiting-user` — parked for the user to adjudicate. **Two CLASSES, each with its OWN durable answer
+    record** (the class is a **property**, not a list of sites — any future park where campaign cannot
+    make progress without a human is a machine blocker and inherits class 2's exit):
+    1. **A REVIEW STANDOFF** — a finding the orchestrator REFUTED in the tree and a **fresh reviewer
        re-raised anyway** (`stage-2-review-gate.md`, "Audit every finding before you fix it"). A REFUTED
        finding does **NOT** park by itself — it is committed as an inline refutation and the next
-       reviewer judges it; only the re-raise parks.
-    2. **CI has SETTLED and is still not green** (`settled_strikes` hit its cap), or a check carried an
-       **unrecognized enum value**, or the merge is `BLOCKED` for a cause campaign cannot enumerate
-       (`stage-2-ci.md`, "SETTLED"; `stage-3-merge.md`, "The merge precondition"). `ci_reason` names the
-       blocker. **This is the exit from `pending`** — without it, a stuck PR spins forever and no one is
-       ever told.
+       reviewer judges it; only the re-raise parks. **Answered into** `<rundir>/audit-<pr>-<n>.md`: ruled
+       **invalid** → back to the normal flow; ruled **valid** → back to the normal flow with that finding
+       fixed like a CONFIRMED one.
+    2. **A MACHINE BLOCKER — campaign cannot move this PR without a human.** `ci_reason` **names** it.
+       Non-exhaustively: **CI has SETTLED and is still not green** (`settled_strikes` at its cap), a
+       snapshot that stayed **UNUSABLE** (`unusable_refetches` at its cap), a check carrying an
+       **unrecognized enum value**, a merge `BLOCKED` for a cause campaign cannot enumerate, an
+       **unrecognized `mergeStateStatus`**, or a **draft** PR (`stage-2-ci.md`, "SETTLED" and "UNUSABLE —
+       the refetch is BOUNDED"; `stage-3-merge.md`, "The merge precondition"). **This is the exit from
+       `pending`** — without it, a stuck PR spins forever and no one is ever told. **Answered into**
+       `blocker_ruling`: `retry@<iso>` → back to `in_review` **with the liveness counters cleared** (else
+       it re-escalates on its first derivation), `abort@<iso>` → terminal `aborted`.
 
     Same park mechanics as
-    `awaiting-api`: `reviews_ok` stays 0, no review pass is launched for this PR, the other PRs keep
-    being driven, and the answer folds in as its own wake. The user ruling the finding **invalid**
-    returns the PR to the normal flow; ruling it **valid** returns it to the normal flow with that
-    finding fixed like a CONFIRMED one. NEVER park without surfacing the question.
+    `awaiting-api` for both: `reviews_ok` stays 0, no review pass is launched for this PR, the other PRs
+    keep being driven, and the answer folds in as its own wake (`loop-control.md` step 3, "Only the
+    user's answer unparks a PR" — the owning definition of the record + unpark for **every** park class).
+    NEVER park without surfacing the question, and NEVER park into a state whose exit is undefined.
 
 ### Editing the ledger — use `scripts/ledger.py`
 

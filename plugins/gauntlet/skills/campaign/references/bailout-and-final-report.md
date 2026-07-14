@@ -4,8 +4,9 @@
   *stuck* task, not a slow external system, and the ledger records no separately-metered work time — so
   key it off recorded row state, not a running subtraction of durations nothing stores: **do not fire
   the cap on a wake where the row is blocked on an external wait** — `status == awaiting-api` (parked
-  for user approval) or `status == awaiting-user` (parked for the user to adjudicate a review-finding
-  standoff or a settled-but-not-green CI), or `ci == pending` **and CI is still MOVING** — a
+  for user approval) or `status == awaiting-user` (parked for the user to adjudicate a **review standoff**
+  or a **machine blocker** — `files-and-ledger.md`, `status`), or `ci == pending` **and CI is still
+  MOVING** — a
   still-RUNNING row, or a fingerprint that changed since the last derivation (`stage-2-ci.md`,
   "SETTLED"). **`pending` alone is NOT an external wait.** A pending PR that has SETTLED is waiting on
   **nothing**, and treating it as an external wait is what let a wedged PR sit forever with the cap
@@ -16,6 +17,9 @@
   `started`). The PR is user/externally owned — campaign never closes it and opens a replacement of
   its own. Instead, **rebuild the worktree from the PR's head branch** so the retry runs with fresh
   LOCAL state against that same PR / its head; the PR itself is left in place.
+- **The user's `abort` ruling on a parked PR takes this SAME path.** A `blocker_ruling = abort@<iso>`
+  (`loop-control.md` step 3, "Only the user's answer unparks a PR") is a permanent abort of that PR, not a
+  new mechanism: run exactly the procedure below, with the park's `ci_reason` as the recorded cause.
 - On the **second** stuck/failure, abort permanently: stop work on that PR but **leave the PR OPEN** —
   the adopted PR may be user/externally owned, so closing it is destructive and contradicts "set aside
   and move on." Instead, **remove THIS run's owner label (`gauntlet-run-<run-id>`) and its status

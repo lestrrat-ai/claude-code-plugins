@@ -575,8 +575,10 @@ fingerprint = sha256( head_sha + "\n" + <those lines, sorted bytewise, one per l
   EXCLUDED too**: it is a cross-source **identity** for containment, not a verdict, and a re-run that
   produces the same result under a new job id is **not** CI moving toward green.
 - **A snapshot that is not VERIFIED has NO fingerprint.** `UNUSABLE` never yields one — its rows were
-  never trusted. It is handled by its own line in the watch table below (bounded refetch, then escalate),
-  never by a strike counted against evidence we rejected.
+  never trusted, so **nothing rejected is ever hashed** and an `UNUSABLE` derivation **NEVER touches
+  `settled_strikes`**: a strike is a claim that *trusted* evidence did not move, and `UNUSABLE` is the
+  **absence** of trusted evidence — the two cannot be counted on the same dial. It gets its **own**
+  persisted counter and its **own** bound: "UNUSABLE — the refetch is BOUNDED" below.
 
 ```
 SETTLED  ==  NO evidence row classifies RUNNING       # nothing left that could move on its own
@@ -588,14 +590,43 @@ SETTLED  ==  NO evidence row classifies RUNNING       # nothing left that could 
 `PENDING`/`EXPECTED`. Do **not** re-derive it from `ci`: `red` outranks `pending` in DECIDE, so a snapshot
 recorded `red` can still hold a **RUNNING** row, and that PR is still moving.
 
-Per derivation, in this order:
+Per derivation **on a VERIFIED snapshot** (an `UNUSABLE` one has no `fp` at all — it is handled entirely
+by "UNUSABLE — the refetch is BOUNDED" below, and never touches `settled_strikes`), in this order:
 
 ```
-head_sha changed          -> ci_fingerprint = fp ; settled_strikes = 0     # new commit, new evidence
+head_sha changed          -> reset the LIVENESS COUNTERS (below) ; then ci_fingerprint = fp   # new evidence
 fp != ci_fingerprint      -> ci_fingerprint = fp ; settled_strikes = 0     # still MOVING — be patient
-SETTLED and ci != green   -> settled_strikes += 1
-settled_strikes >= 2      -> ESCALATE
+SETTLED and ci != green
+  and NO MACHINE ACTION due or in flight
+  for this PR at this head_sha      -> settled_strikes += 1                # nobody is coming — count it
+settled_strikes >= 2                -> ESCALATE
 ```
+
+**A STRIKE MEANS "NOBODY IS COMING" — NEVER PARK A PR THE DRIVER IS ALREADY REPAIRING.** `SETTLED` is
+about **CI**, not about **campaign**: a **red** PR whose rows are all terminal is SETTLED on the **first**
+derivation, and a CI-fix subagent in flight does **not** change `head_sha` until it pushes — so an
+ungated strike rule would park, after two wakes, the exact PR the driver is actively fixing.
+
+**MACHINE ACTION** = work **campaign dispatches** that can produce a **new `head_sha`** on this PR: a
+CI-fix subagent (either tier, including an escalation from the cheap one), a review-fix subagent, a
+copilot-address fix, a refutation commit, or a conflict-resolving rebase.
+
+- **In flight** = dispatched for this PR at this `head_sha` and not yet completed — **the same in-flight
+  test `loop-control.md` step 3 already applies** to suppress a duplicate dispatch ("CI red and no fix is
+  already in flight for that PR/SHA"). The strike rule reads that same fact; it does not invent a second
+  one.
+- **Due** = that step-3 dispatch scan **would launch one on this wake** — it is not in flight and nothing
+  but a free concurrency slot is missing.
+- **The CI watch is NOT a machine action, and neither is a review pass.** Neither pushes a commit, so
+  neither can move CI: a settled PR under review is still settled, and suppressing its strike would wedge
+  it exactly as before.
+
+**IT STILL TERMINATES — a liveness rule that can be suppressed forever is not a liveness rule.** Machine
+actions on one PR are **bounded**: a stuck task is retried **once** and then aborted permanently, and "CI
+fails identically after a fix attempt" is itself a stop condition (`bailout-and-final-report.md`). So a
+**red** PR whose CI-fix budget is **spent** has no action due and none in flight → strikes accrue on the
+next derivations → it parks like any other settled PR. The gate suppresses a strike **only while a fix is
+actually coming**, never merely because the PR is red.
 
 **ESCALATE** = park the PR (`status = awaiting-user`, `ci_reason` = the blocker **named**: which check
 never registered, which value was unrecognized, which read was denied), and tell the user. It does **not**
@@ -603,10 +634,63 @@ abort the run or close the PR — the run's other PRs keep going. `ci_reason` is
 this snapshot** — the bullet that matched and the row that made it match — never a bare restatement of
 `ci`. A park that cannot name its blocker is not actionable.
 
-`settled_strikes` and `ci_fingerprint` live **in the ledger, not in the driver's head**: a wake may be a
-fresh agent instance, and a strike count that dies with the context is a strike count that never reaches
-its cap. Write them through `scripts/ledger.py … set --pr <N>` **by field name**, like every other field
-(`files-and-ledger.md`).
+**THE PARK MUST DECLARE ITS OWN EXIT — the invariant at the top of this section binds `awaiting-user`
+too.** A park whose exit event never comes is the same wedge, one level up. So the escalation:
+
+- **PROMPTS with the blocker and what campaign already spent on it** — the PR, its `ci_reason`, the
+  evidence (the fingerprint that did not change; the row, value, or VERIFY rule that made the bullet
+  match), and what was already tried (CI-fix attempts, strikes, refetches). **Never a bare "CI is
+  stuck".**
+- **Asks for exactly ONE of two answers, and names them:**
+  - **`retry`** — "I changed something **outside** the PR (re-ran the workflow, registered the missing
+    check, fixed the repo/branch setting); derive again."
+  - **`abort`** — "stop work on this PR" (terminal `aborted`, PR left open — `bailout-and-final-report.md`).
+- **Records that answer DURABLY in the ledger's `blocker_ruling`** (`files-and-ledger.md`) the moment it
+  lands, and unparks per `loop-control.md` step 3, "Only the user's answer unparks a PR" — which also
+  **clears the liveness counters**, so the retry gets a fresh budget instead of re-escalating on its first
+  derivation. A wake may be a fresh agent instance: an answer that lives only in the driver's head is an
+  answer that gets re-asked.
+
+`settled_strikes`, `ci_fingerprint`, `unusable_refetches`, and `blocker_ruling` live **in the ledger, not
+in the driver's head**: a wake may be a fresh agent instance, and a counter that dies with the context is
+a counter that never reaches its cap. Write them through `scripts/ledger.py … set --pr <N>` **by field
+name**, like every other field (`files-and-ledger.md`).
+
+**THE LIVENESS COUNTERS — one name for the set, so a new counter never leaves a stale restatement.** They
+are `ci_fingerprint`, `settled_strikes`, and `unusable_refetches`. **Reset them TOGETHER** (`-`, `0`, `0`)
+at exactly two kinds of site: **any `head_sha` change** (new commit, new evidence — every gate-reset site
+below, plus a clean rebase in `stage-3-merge.md`), and an **unpark by `retry`** (`loop-control.md` step 3).
+Any rule that says "reset the liveness counters" means **these**, and a counter added here is inherited by
+every one of those sites with no edit to them. `ci_reason` and `blocker_ruling` are **records, not
+counters** — they are overwritten by the next derivation / the next ruling, never blanket-reset.
+
+#### UNUSABLE — the refetch is BOUNDED: `unusable_refetches`, cap 3
+
+`UNUSABLE` is the one DECIDE outcome with **no fingerprint** (above), so `settled_strikes` can say nothing
+about it — and "refetch until it works" is an absorbing state with no exit, which the invariant forbids.
+It gets its own counter, on the same shape:
+
+```
+snapshot for this head_sha is UNUSABLE  -> unusable_refetches += 1 ; refetch on the NEXT wake
+snapshot for this head_sha is VERIFIED  -> unusable_refetches = 0      # any usable outcome, incl. red/pending
+head_sha changed                        -> unusable_refetches = 0
+unusable_refetches >= 3                 -> ESCALATE (above)
+```
+
+- **The counter counts FETCH ATTEMPTS, never evidence.** It stays consistent with "an UNUSABLE snapshot
+  yields no fingerprint": nothing rejected is hashed, nothing rejected is judged. The two counters answer
+  two different questions — `settled_strikes`: "trusted evidence stopped moving"; `unusable_refetches`:
+  "we never obtained trusted evidence at all."
+- **The bound is 3, not 2** (the strike cap), **on purpose.** UNUSABLE is dominated by **transient**
+  causes — a `gh` call failed, the check set changed mid-fetch so a `source` count no longer matches, the
+  snapshot raced a push — and a fresh fetch usually clears them; a SETTLED-but-not-green snapshot is,
+  by construction, **not** transient. Three gives two free retries and still terminates.
+- **The WAKE is the backoff — never sleep inside one.** UNUSABLE gets **no watch** ("WATCH ONLY WHAT CAN
+  MOVE" below), so the next attempt arrives on the heartbeat or another task's completion, never in a
+  tight loop. At most **one** refetch per wake.
+- On escalation `ci_reason` names **the VERIFY rule that failed and the line/row that failed it** (not
+  "unusable") — a snapshot campaign could not read three times running is a real, actionable blocker: a
+  denied read, a wrong-SHA artifact, a fetch that never succeeds.
 
 #### WATCH ONLY WHAT CAN MOVE — the relaunch is not free
 
@@ -619,7 +703,7 @@ The watch is warranted by **a row that can still move**, never by the `ci` value
 | **red** — but some row still `RUNNING` | **YES** — that row can still move; the CI fix runs regardless. |
 | **red** — every row terminal | **NO.** The CI fix moves it, not the watch. |
 | **UNKNOWN_VALUE** | **NO.** The park is the resolution. |
-| **UNUSABLE** | **NO.** Refetch with backoff, **bounded** — then ESCALATE. |
+| **UNUSABLE** | **NO.** Refetch on the **next wake** (the wake *is* the backoff), **bounded at 3** — then ESCALATE ("UNUSABLE — the refetch is BOUNDED"). |
 | **green** | **NO.** |
 
 **NEVER relaunch the watch merely because `ci == pending`.** On a settled PR `gh pr checks --watch`
@@ -640,7 +724,7 @@ Every one of them MUST, in the same step:
   review gate");
 - **re-derive `ci` from a fresh snapshot for the NEW `head_sha`, and launch a watch if — and only if —
   that snapshot holds a row that can still move** ("WATCH ONLY WHAT CAN MOVE" above). The new commit
-  resets `ci_fingerprint` and `settled_strikes` (SETTLED above), so the PR gets a clean liveness budget.
+  **resets the liveness counters** ("THE LIVENESS COUNTERS" above), so the PR gets a clean budget.
   **NEVER launch the watch unconditionally on the push**: at that instant the checks may not have
   registered yet, the snapshot holds **zero evidence rows**, and `gh pr checks --watch` would exit in
   about a second — a wake per second, forever, on a PR nothing is watching *for*;
@@ -738,8 +822,9 @@ A cheap model verifying a tool's diff is a **MISS-CATCHER, NOT A PROOF.** It can
 
 What backs it: the **exact failing check must pass**; the subagent **must escalate anything it cannot
 verify**; and **every commit campaign pushes is still gated by the full review gauntlet** — any campaign
-commit to the PR head resets `reviews_ok` to 0, restores `gauntlet-reviewing`, relaunches the CI watch,
-and re-enters Stage 2a on the session model.
+commit to the PR head resets `reviews_ok` to 0, restores `gauntlet-reviewing`, re-derives CI for the new
+tip and watches it **only if a row can still move** ("WATCH ONLY WHAT CAN MOVE"), and re-enters Stage 2a
+on the session model.
 
 This trades a **small, bounded risk** for a workflow that is **cheaper AND more capable** than either a
 full-strength subagent on every formatting failure or a hermetic no-model tool path. **The user accepts
