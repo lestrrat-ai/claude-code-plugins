@@ -546,6 +546,17 @@ class Tables:
                 INTENT + "\n## Purpose\n- something else entirely\n", NS, UNUSABLE, "appears TWICE",
                 "two `## Purpose` blocks are two intents, and a finding quoting one of them is anchored to a "
                 "document that says two things"),
+            "intent-purpose-is-sentinel": (
+                PLAN, WORKED, [F(writer="hand-edit", purpose="-")],
+                "## Purpose\n- -\n\n## Non-goals\n- nothing\n\n## Threat model\n"
+                "- Who can write the inputs this code reads: a human hand-editing a git-ignored file\n",
+                SAT, UNUSABLE, "is the SENTINEL",
+                "**A SENTINEL THAT IS ALSO DATA.** `NO_PURPOSE` is `-`, and a `## Purpose` bullet of `-` is "
+                "that exact string typed in as a real purpose line. It passed the empty-purpose check "
+                "(the block HAS a bullet), so the intent parsed — and then a finding quoting the `-` purpose "
+                "VERBATIM carried `purpose == '-'`, which `gating()` reads as 'anchors to no purpose' and "
+                "discharges. A REAL, anchored finding would be waved through as non-gating. The write door "
+                "now REFUSES the `-` bullet, so real purpose lines and the absent-marker can never collide"),
 
             # --- the findings file's own line shape --------------------------------------------------
             "findings-not-json": (

@@ -176,7 +176,10 @@ For each `#PR` to adopt:
 
    **USABLE means the parser will take it — `review-pass.py` is the definition, and this is the same rule
    stated for a human:** all three headings, **at least one `## Purpose` bullet, AND at least one
-   `## Threat model` bullet**. `## Non-goals` **may be empty** — and only that one may.
+   `## Threat model` bullet**. `## Non-goals` **may be empty** — and only that one may. **No `## Purpose`
+   bullet may be the bare `-`**: that is the sentinel a finding types (`--purpose -`) to say it anchors to
+   no purpose, so a purpose line that IS `-` collides with the marker for its own absence — a finding
+   quoting it verbatim would read as anchoring to nothing and be discharged. Write the line the PR must do.
 
    The asymmetry is not an oversight; it is where the risk is. The two ANCHORS are what a finding names, so
    an empty one is a guard with no input: an empty `## Purpose` forces every finding to anchor to `-`, and

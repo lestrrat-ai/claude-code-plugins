@@ -232,6 +232,13 @@ NO_ADVERSARY = ("driver-only", "hand-edit", "dev-time")
 
 # The `purpose` of a finding that defends no stated purpose. It is a literal `-`, never blank — "I looked
 # and there is none" must be a value the reviewer TYPES, not one it can reach by leaving a field empty.
+#
+# **BECAUSE IT IS A SENTINEL, IT MUST NEVER ALSO BE DATA.** `-` means "anchors to NO purpose" AND is a
+# string a human can type into a `## Purpose` bullet — so a purpose line that IS `-` would collide with the
+# marker for its own absence, and a finding quoting that line verbatim would read as anchoring to nothing.
+# `parse_intent` closes the gap at the WRITE door: a `## Purpose` bullet equal to `NO_PURPOSE` is REFUSED,
+# so the set of real purpose lines and the "no purpose" marker stay disjoint and `check_finding`'s
+# `purpose == NO_PURPOSE or purpose in purposes` can never be true for two different reasons at once.
 NO_PURPOSE = "-"
 
 
@@ -687,6 +694,12 @@ def parse_intent(text: str, path: Path) -> "dict[str, list[str]]":
     reads" is not a scope decision, it is a section nobody filled in — and unlike the other two it is not a
     claim a reviewer would ever WRITE. So the rule is drawn where the risk is: the two anchors must say
     something; the exclusions may say nothing.
+
+    **AND NO `## Purpose` BULLET MAY BE THE STRING `NO_PURPOSE` (`-`).** That value is the SENTINEL a
+    finding types (`--purpose -`) to say it anchors to no purpose. A purpose line that IS that string is a
+    sentinel masquerading as data: a finding quoting it verbatim carries `purpose == NO_PURPOSE`, which
+    `gating()` reads as "anchors to nothing" and discharges — turning a real, anchored finding non-gating.
+    The write door refuses it here, so the real purpose lines and the absent-marker can never overlap.
     """
     sections: dict[str, list[str]] = {}
     current: "str | None" = None
@@ -729,6 +742,16 @@ def parse_intent(text: str, path: Path) -> "dict[str, list[str]]":
             f"That turns the guard INSIDE OUT: real, reachable defects would be waved through, which is the "
             f"failure this block exists to prevent. State who can write the inputs this code reads — and who "
             f"cannot"
+        )
+    if NO_PURPOSE in sections[PURPOSE_H]:
+        # MUTATE:intent-purpose-is-sentinel:pass
+        raise Defect(
+            f"{path.name}: a `{PURPOSE_H}` bullet is {NO_PURPOSE!r} — that is the SENTINEL a finding uses to "
+            f"say it anchors to NO purpose (`--purpose {NO_PURPOSE}`), so a purpose line that IS that string "
+            f"collides with the marker for its own absence: a finding quoting it VERBATIM carries "
+            f"`purpose == {NO_PURPOSE!r}`, and `gating()` then reads a REAL, anchored finding as anchoring to "
+            f"nothing and discharges it. A purpose is a thing the PR must DO; {NO_PURPOSE!r} names none, so it "
+            f"is not one. State the line the PR must do, or drop the bullet"
         )
     return sections
 
