@@ -100,8 +100,17 @@ it comes to **you** to settle — with the finding, the refutation, the evidence
 counter. It parks that PR while it waits and keeps driving the others. A parked PR is genuinely frozen:
 campaign changes nothing about it — no review, no fix, no merge, and no rebase, even if another PR
 merges and leaves it behind the base — until you answer. It stays behind rather than let a rebase
-rewrite the very content you're being asked to rule on. It does keep watching CI, so the status stays
-current. The same freeze applies to a PR parked for your approval of an API change.
+rewrite the very content you're being asked to rule on. Parking doesn't change what it watches, though:
+observing isn't changing, so the CI watch stays alive exactly when a check can still move, and stops when
+CI has stopped moving — the same rule as any other PR. The same freeze applies to a PR parked for your
+approval of an API change.
+
+It also parks a PR when CI itself goes nowhere — checks that never register, a run that stops moving and
+never turns green, a status value GitHub added that it doesn't recognize, a merge GitHub blocks for a
+reason it can't name. It tells you which one, with what it already tried, and asks for one of two
+answers: **retry** (you fixed something outside the PR — look again) or **abort** (stop working on it).
+Every park has a way out, and the answer is written down, so a fresh agent picking the run up later never
+asks you twice.
 
 It also doesn't wait around. Everything long-running — reviews, CI watches, fix subagents — happens
 in the background across all the adopted PRs at once, so at any moment it's doing all the work that's
@@ -137,7 +146,7 @@ anything it left for you to weigh in on.
 ```mermaid
 flowchart TD
     A(["invoke /gauntlet:campaign #PRs"]) --> B{PR numbers, no args, or --new?}
-    B -- "#PRs / --new #PRs" --> C[adopt each PR: ledger row + run label,<br/>launch CI watch]
+    B -- "#PRs / --new #PRs" --> C[adopt each PR: ledger row + run label,<br/>CI watch only if a check can still move]
     B -- "no args" --> D{PRs already under this run?}
     D -- yes --> C
     D -- no --> E([prompt: run gauntlet:review<br/>or pass PR numbers])
@@ -162,7 +171,13 @@ flowchart TD
     P -- yes --> M
     N -- yes --> R{CI status on current SHA?}
     R -- red --> S[scoped CI-fix subagent: commit + push, new SHA]
-    R -- pending --> M
+    R -- "pending / unreadable" --> CM{can any check still move?}
+    CM -- "yes: a check is still running" --> CW[keep a CI watch alive<br/>relaunch it if it exited] --> M
+    CM -- "no: CI has stopped moving" --> CB{still within its bounds?}
+    CB -- yes --> M
+    CB -- "no: bound reached" --> CP[park the PR: name the blocker,<br/>ask the user to retry or abort]
+    CP -- retry --> M
+    CP -- abort --> AA
     Q --> T[reset gate - verdicts and CI are SHA-pinned,<br/>re-triage tier on the new SHA]
     S --> T
     T --> M
@@ -179,6 +194,11 @@ flowchart TD
     Y -. no .-> AA[abort + write log, continue others]
     AA -.-> W
 ```
+
+The diagram shows the **shape**, not the rules. What counts as "can still move", what makes CI unreadable,
+and how long each bound waits before it parks the PR are defined in
+[`references/stage-2-ci.md`](./references/stage-2-ci.md) — that file is the owner, and this picture is
+never the place to look them up.
 
 ## Good to know
 

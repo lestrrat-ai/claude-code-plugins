@@ -11,8 +11,11 @@ via `gh`, never a local `git rev-parse HEAD`.)
 `awaiting-user` or `awaiting-api` is parked on a HUMAN: **NEVER merge it**, whatever `reviews_ok` /
 `ci` / `mergeable` say. Merge eligibility is **not** derived from the gate counters alone — a park does
 not lower `reviews_ok`, so a rule that reads only the counters would merge a PR whose disputed finding
-or API change the user has not yet ruled on. Only the user's answer unparks it (`status` back to
-`in_review`); until then it is skipped, never merged.
+or API change the user has not yet ruled on. Only the user's answer unparks it, and **to the `status` that
+answer dictates** — `in_review` for a **resume** answer; terminal `aborted` for a **terminal** one (a
+`declined` API change, a `blocker_ruling` of `abort`), which never returns to `in_review` and is never
+merged (`loop-control.md` step 3, "Only the user's answer unparks a PR", owns the mapping). Until the
+answer lands the PR is skipped, never merged.
 
 ### The merge precondition — TWO enums, and NEITHER of them is a CI signal
 
@@ -53,6 +56,16 @@ catch-all and parks a PR that nothing was wrong with.
 | `.mergeStateStatus = BLOCKED` | the merge is blocked — **cause NOT enumerable** | **do not merge.** Park `awaiting-user`. **NEVER** map it to `ci = pending`. |
 | `.mergeStateStatus = UNKNOWN` | not computed yet | re-poll with backoff, bounded |
 | **any other value** | GitHub added one | **park `awaiting-user`**, naming the value. Never guess. |
+
+**EVERY `awaiting-user` park in this table is a MACHINE-BLOCKER park, and it MUST declare its exit** — a
+park whose exit event never comes is the same wedge it was meant to prevent. So, in the same step: write
+`ci_reason` **naming the blocker** (the draft state, `BLOCKED`, or the unrecognized value verbatim),
+**clear `blocker_ruling` to `-`** (park entry spends nothing and answers nothing — a ruling already on the
+row belongs to a **previous** park; `stage-2-ci.md`, "THE RULING IS CONSUMED EXACTLY ONCE"), and
+resolve it through `blocker_ruling` = `retry` / `abort` — the user marks the PR ready, clears the
+protection, or gives up, and answers. The record and the unpark are defined once, in `files-and-ledger.md`
+(`status`) and `loop-control.md` step 3, "Only the user's answer unparks a PR"; never invent a second
+mechanism here.
 
 **`BLOCKED` does NOT mean "a required check is missing or failing."** It means the merge is blocked **for
 any reason** — including a **draft** PR, or one **awaiting a human approving review**, or a ruleset
@@ -154,25 +167,35 @@ subagent at a check that is merely **still running**.
    **SKIP PARKED PRs FIRST — before any base refresh, rebase, or conflict handling.** A PR whose
    `status` is `awaiting-user` or `awaiting-api` is **FROZEN** (`loop-control.md` step 3,
    "parked-status guard"): this reconcile MUTATES a PR, so it is exactly what the guard forbids. A clean
-   rebase would move its `head_sha` and set `ci = pending`; a conflict-resolving rebase would reset
+   rebase would move its `head_sha`, set `ci = pending` and reset its liveness counters (`stage-2-ci.md`,
+   "THE LIVENESS COUNTERS"); a conflict-resolving rebase would reset
    `reviews_ok`, relabel, and relaunch work — and would **change the PR's content**, which can invalidate
    the very refutation or API change the user was parked to adjudicate. **A parked PR that has fallen
    behind simply STAYS behind** until the user answers; it is re-reconciled normally on the wake after it
-   unparks. **Do NOT drop its row** — it stays in the run, and **keeps its CI watch** (observation, not
-   mutation), so an exited watch on a parked pending PR is still relaunched.
+   unparks. **Do NOT drop its row** — it stays in the run, and the park **does not change its CI watch
+   either way** (observation, not mutation): the watch follows the normal policy (`stage-2-ci.md`, "WATCH
+   ONLY WHAT CAN MOVE") — relaunched while a row is still RUNNING, **not** relaunched once CI has settled.
 
    For each **non-parked** open PR: **base advancement alone does NOT
    invalidate gauntlet reviews.** Rebase only if GitHub flags the PR behind/conflicting:
    - Clean rebase (no conflicts) → verify the PR's own diff/content is unchanged → keep `reviews_ok`,
      **keep its status label as-is** (the gate did not reset, so an accepted PR stays
-     `gauntlet-accepted`), update `head_sha` to the new tip, set `ci = pending`, **and relaunch its CI
-     watch in the same wake** — the rebased PR must not sit unwatched until the heartbeat; CI must
-     return green before merging.
+     `gauntlet-accepted`), update `head_sha` to the new tip, set `ci = pending`, **reset the liveness
+     counters** (new commit, new evidence — `stage-2-ci.md`, "THE LIVENESS COUNTERS"), **and re-derive CI
+     from a snapshot of the new tip in the same wake, launching a watch only if that snapshot holds a
+     still-RUNNING row** ("WATCH ONLY WHAT CAN MOVE"). A rebased PR must not sit unwatched until the
+     heartbeat while its checks are running — but it must not be watched when **nothing** is running
+     either, which right after a push is the common case (no check has registered yet). CI must return
+     green before merging.
    - Rebase requiring conflict resolution → PR content changed → **reset `reviews_ok` to 0 AND, in that
      same step, restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`** (`gh pr edit <pr>
      --remove-label gauntlet-accepted --add-label gauntlet-reviewing`) — the gate and its label move
-     together (`stage-2-review-gate.md`, "Status labels mirror the review gate"). Then relaunch the CI
-     watch and re-enter Stage 2.
+     together (`stage-2-review-gate.md`, "Status labels mirror the review gate"). Update `head_sha` to the
+     new tip and **reset the liveness counters** (a new head is new evidence — `stage-2-ci.md`, "THE
+     LIVENESS COUNTERS"; the clean-rebase branch above does the same, and this branch is no different in
+     that respect). Then re-derive CI for
+     the new tip — watching it only if a row can still move ("WATCH ONLY WHAT CAN MOVE") — and re-enter
+     Stage 2.
    - Still open, **not parked**, mergeable, not behind/dirty/conflicting, same live `head_sha`,
      `reviews_ok >= required(tier)`, and `ci == green` → still immediately mergeable; return to step 1
      in the same wake.

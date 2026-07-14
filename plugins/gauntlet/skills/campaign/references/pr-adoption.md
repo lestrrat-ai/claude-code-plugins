@@ -89,7 +89,12 @@ For each `#PR` to adopt:
    (`ledger.py --file <state.jsonl> get --pr <N>`): if a row already exists (re-adoption / resume),
    **refresh it in place** with `ledger.py … set --pr <N> --<field> <val> …` — never append a second
    row for the same PR (`add-row` refuses a duplicate `pr`). Otherwise create it with
-   `ledger.py … add-row --pr <N> --<field> <val> …`. Write the **full** row:
+   `ledger.py … add-row --pr <N> --<field> <val> …`. Write every field that needs a **COMPUTED** value —
+   the ones below. Every field **not** named here takes its **default** from `ledger.py` (`add-row`
+   defaults unset fields; `ROW_DEFAULTS` owns them — the liveness counters, `ci_reason` and any field
+   added later all start at theirs). **This is NOT an enumeration of the row**, and must never be read as
+   one: the schema lives in the script, and a copy of it retyped here would be stale the next time a row
+   field is added.
 
    - `id` = `pr<N>`; `slug` = slugified PR title; `branch` = the PR's **own** `headRefName` (adopted PRs
      keep their branch — do NOT mint a `fix-<run-id>-...` branch); `worktree` = `-`,
@@ -104,11 +109,26 @@ For each `#PR` to adopt:
      `tier` = triage per `head_sha` (Stage **2a-triage**); `attempts` = `0` (no attempt has run yet —
      `attempts` counts attempts **so far**, and seeding it at `1` silently spends half the retry-once
      budget before any work is dispatched); `started` = now;
-     `api_approval` = `-`; `status` = `in_review`.
-   - **On a REFRESH of an existing row, PRESERVE the durable/live fields** — `api_approval`, `attempts`,
-     `started`, `status`, `reviews_ok`, and `tier` — do **NOT** reset them (that would violate the
-     durable API-decision contract, `files-and-ledger.md` / `scope-and-constraints.md`, and could re-ask
-     or revive an already-declined/aborted PR). Only re-read `head_sha`/`ci` from ground truth; reset
+     `api_approval` = `-`; `blocker_ruling` = `-`; `status` = `in_review`.
+   - **On a REFRESH of an existing row, PRESERVE EVERY FIELD THIS STEP DOES NOT EXPLICITLY RECOMPUTE.**
+     That is a **property, not a list** — and deliberately so, because the list that stood here was one:
+     `ledger.py … set` writes only the fields it **NAMES**, so preservation is the **default**, and this
+     step's job is to name nothing it must not clobber. Everything a previous wake wrote and a later one
+     still needs therefore survives untouched — **including every field added to the schema after this
+     line was written**. **The members are NOT retyped here, and marking a retyped list "examples" would
+     not save it**: a member missing from such a list is a field a refresh silently clobbers, and the
+     omission is invisible at this site. Clobbering a preserved field would violate the durable-decision
+     contract for **both** user answers (`files-and-ledger.md` / `scope-and-constraints.md`): it could
+     re-ask the user about a PR already ruled on, revive an already-declined/aborted PR, or blank the
+     blocker an open park is waiting on an answer about. It would equally **restart the liveness
+     counters** on every reconcile (`stage-2-ci.md`, "THE LIVENESS COUNTERS") — a counter that restarts
+     never reaches its cap, and the bound never fires.
+     **Preserving `blocker_ruling` here is safe because it is cleared at its
+     own park boundaries** — at park **entry** and when a `retry` is **consumed** (`stage-2-ci.md`, "THE
+     RULING IS CONSUMED EXACTLY ONCE") — so a ruling this refresh can see is either still **awaiting its
+     park's exit** (preserving it is the whole point: a wake may be a fresh agent instance) or the
+     **terminal** record of an `abort`. A **spent** ruling is never on the row for this step to resurrect.
+     Only re-read `head_sha`/`ci` from ground truth; reset
      `reviews_ok` to `0` and re-triage `tier` **only if** reconciliation detects a PR-content change
      since the recorded `head_sha` (per the gate's SHA-pinning rules). **That reset is a gate-reset
      site: in the same step, restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`**
@@ -116,6 +136,14 @@ For each `#PR` to adopt:
      `stage-2-review-gate.md`, "Status labels mirror the review gate"). Step 4's `--add-label
      gauntlet-reviewing` alone is NOT sufficient: it would leave the stale `gauntlet-accepted` in
      place, so the PR would carry **both** status labels and still publicly claim it passed.
+   - **Whenever this refresh writes a NEW `head_sha`, RESET THE LIVENESS COUNTERS** (`stage-2-ci.md`,
+     "THE LIVENESS COUNTERS") in the same `ledger.py … set` call — **whether or not the gate reset with
+     it**: a clean base-only advance moves the head without touching `reviews_ok`, and it still means the
+     old head's strikes, stall clock and refetch count describe evidence that no longer exists. Carried
+     onto the new head they park a healthy PR early. **Reset the SET, never a list retyped here** — a
+     counter added to it is inherited by this site with no edit. (This is one of the **explicit
+     recomputes** the preserve-by-default rule above defers to: the counters are pinned to `head_sha`, not
+     to the user, so a new head voids them.)
 
    The ownership marker for an adopted PR is the **label**, not the branch name (its branch won't match
    the `fix-<run-id>-` prefix) — so labelling in step 4 is what makes the PR ours.
@@ -213,10 +241,13 @@ For each `#PR` to adopt:
    source files changed (explicit paths, never `git add -A`). Fix commits are pushed back to the PR's
    head branch on `origin`.
 
-6. **Ensure a live CI watch when `ci = pending`.** Every adopted PR whose CI state is unknown gets a
-   background watch so a settling run wakes the driver. **The backgrounded command is the watch and
-   NOTHING ELSE** — its **ONLY** job is to **block** until the run settles, so that **its completion
-   becomes a wake**:
+6. **Ensure a live CI watch when — and ONLY when — a check can still move.** The warrant for a watch is a
+   **still-RUNNING evidence row** in the PR's snapshot, **never the `ci` value** (Stage 2b, `stage-2-ci.md`
+   — "WATCH ONLY WHAT CAN MOVE"): a PR whose CI has **SETTLED** gets **no watch**, because
+   `gh pr checks --watch` on it exits in about a second and its completion is itself a wake — a wake per
+   second, forever, observing nothing. A watch on a run that is still moving wakes the driver when it
+   settles. **The backgrounded command is the watch and NOTHING ELSE** — its **ONLY** job is to **block**
+   until the run settles, so that **its completion becomes a wake**:
 
    ```
    # run in background. This is the WHOLE command: it BLOCKS, and that is all it does.

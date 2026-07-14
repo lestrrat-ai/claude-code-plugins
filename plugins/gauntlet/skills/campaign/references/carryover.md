@@ -70,7 +70,8 @@ snapshot path.
    record the run.** A bare `mkdir` (no `-p`) of `.gauntlet/tmp/<new-run-id>/` starts empty and fails
    loudly on the rare id clash (retry with a fresh id). Write the lease and the `state.jsonl` header —
    with `base_branch` filled from the agreed `baseRefName` (known from preflight) — then adopt each PR
-   (ledger row + labels + worktree + CI watch); a death mid-adoption still leaves a discoverable run.
+   (ledger row + labels + worktree, and a CI watch **only when one is due** — `pr-adoption.md` owns what
+   adoption produces and when the watch is warranted); a death mid-adoption still leaves a discoverable run.
    Any already-live run keeps its own dir, lease, and heartbeat; a fresh run never closes, merges, or
    stops driving another run's PRs.
 3. **Read every file in `.gauntlet/history/`, then prune against the resolved `base_branch`** (drop

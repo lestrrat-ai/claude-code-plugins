@@ -47,6 +47,15 @@ blocks; each completion is its own wake.
      site that defers to it is the exact bug this rule forbids. (A clean base-only advance with the PR
      diff unchanged does not reset the gate, so it keeps `gauntlet-accepted`.)
 
+     **And whenever this refresh writes a NEW `head_sha` — gate reset or not — RESET THE LIVENESS
+     COUNTERS** (`stage-2-ci.md`, "THE LIVENESS COUNTERS"), in the same `ledger.py … set` call. This
+     covers **both** cases above: the content change that resets the gate, **and** the clean base-only
+     advance that does not. The new head is new evidence, so the old head's liveness counters describe
+     nothing — carried forward, they park a healthy PR early, on a budget it never spent at this SHA.
+     **NAME the set; do NOT unpack it here.** A gloss that lists the set's members is a **restatement**,
+     even standing next to a correct pointer — it is the part a reader believes, and it goes stale the
+     moment the set gains a member (this line's did, when `ci_stalled_since` joined).
+
      Do the PR scan as
      **one batched snapshot per wake** — the **same canonical command** `pr-adoption.md` runs, writing the
      **same path with the same schema** (they are the same scan; two spellings of it is how a reader of
@@ -87,7 +96,8 @@ blocks; each completion is its own wake.
      empty orphan run behind. **Only once the full set passes preflight**: mint a run-id + agent token,
      atomically create `<rundir>`, and write the lease **and `state.jsonl` header** — now with
      `base_branch` filled from the agreed `baseRefName` (known from preflight). Then **adopt** each PR
-     (ledger row + labels + worktree + CI watch per `pr-adoption.md`); a death mid-adoption still leaves
+     (ledger row + labels + worktree, and a CI watch **only when one is due** — `pr-adoption.md` owns what
+     adoption produces and when the watch is warranted); a death mid-adoption still leaves
      a discoverable, adoptable run. Then fall through to dispatch/reschedule.
    - **This run's `state.jsonl` is fully terminal — every row `merged`/`aborted`, no open PR carrying this
      run's label → the run is finished.** Do **not** silently exit "all fixed" (the old bug) and do **not**
@@ -169,20 +179,54 @@ blocks; each completion is its own wake.
    PR's `head_sha`, reset its gate, and **changed the very PR content the user was parked to
    adjudicate**. Any site the skill grows later is covered the moment it would mutate a parked PR, with
    no edit to this list. When unsure whether an action mutates, treat it as mutating and skip it.
-   - **The ONE exception is the CI watch: OBSERVING a PR is not mutating it.** A parked PR **keeps its
-     watch**, and an exited watch on a parked PR whose CI reads pending is **relaunched as usual**, so
-     its CI state is current the moment the user answers. But do **NOT** dispatch a CI *fix*.
+   - **The ONE exception is the CI watch: OBSERVING a PR is not mutating it.** The park **does not change
+     the watch either way** — it follows the normal policy, `stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE":
+     alive while an evidence row can still `RUN`, **not** relaunched once CI has SETTLED (relaunching a
+     settled PR's watch burns a wake per second and observes nothing). Parking never stops a warranted
+     watch and never starts an unwarranted one. But do **NOT** dispatch a CI *fix*.
    - **Recording ground truth is not mutating either.** Reconcile still READS a parked PR (live SHA, CI,
      labels) and writes what it read to the ledger — including a `reviews_ok` reset, and its label
      mirror, when **someone else** pushed to the PR (step 1). Recording a change campaign did not make is
      not making one. What is frozen is **campaign's own action on the PR**; a park never licenses a
      lying label or a stale row.
-   - **Only the user's answer unparks a PR.** On the answer: record it (`api_approval` for the API
-     park; the audit record for the standoff ruling), set `status` back to `in_review` via
-     `ledger.py … set --pr <N> --status in_review`, and resume normal dispatch — including any rebase or
-     base refresh the PR has been owed while frozen — from the next wake. (A declined API change goes
-     terminal `aborted` instead.) A parked PR that has fallen **behind** its base simply **stays
-     behind** until then; it is not dropped from the run, just frozen.
+   - **Only the user's answer unparks a PR — and EVERY park class names the durable record it is
+     answered into.** An answer that lives only in this session is an answer a fresh agent re-asks. On
+     the answer: **record it**, then unpark to the `status` **THAT ANSWER** dictates — the table below is
+     the authority, and it is **NOT always `in_review`**:
+     - a **RESUME** answer (`api_approval` = `approved`, a standoff ruling either way, `blocker_ruling` =
+       `retry`) → `ledger.py … set --pr <N> --status in_review`, and resume normal dispatch — including any
+       rebase or base refresh the PR has been owed while frozen — from the next wake. A parked PR that has
+       fallen **behind** its base simply **stays behind** until then; it is not dropped from the run, just
+       frozen.
+     - a **TERMINAL** answer (`api_approval` = `declined`, `blocker_ruling` = `abort`) → `--status aborted`
+       (terminal), via `bailout-and-final-report.md`'s abort procedure. It **never** returns to
+       `in_review`, and nothing is dispatched for it again.
+
+     The record and the unpark, per cause (`files-and-ledger.md`, `status`):
+
+     | Park cause | Durable record | Unpark |
+     |---|---|---|
+     | **`awaiting-api`** — an API-changing fix | `api_approval` = `approved@<iso>` / `declined@<iso>` | `approved` → `in_review`; `declined` → terminal `aborted` |
+     | **`awaiting-user`, review standoff** — a REFUTED finding the fresh reviewer re-raised | the ruling in `<rundir>/audit-<pr>-<n>.md` | `in_review`; ruled **valid** → the finding is fixed like a CONFIRMED one, ruled **invalid** → normal flow |
+     | **`awaiting-user`, machine blocker** — campaign cannot move this PR without a human; that **property** IS the class, **never a list of cases** (one illustration: CI has SETTLED and is still not green). Do not enumerate the members here — `files-and-ledger.md`, `status`, `awaiting-user` class 2, **owns** the class, and `ci_reason` names the blocker at every one of them, present or future | `blocker_ruling` = `retry@<iso>` / `abort@<iso>` | `retry` → `in_review`, **RESET THE LIVENESS COUNTERS**, and **SPEND the ruling: `blocker_ruling` = `-`** (`stage-2-ci.md`, "THE LIVENESS COUNTERS" / "THE RULING IS CONSUMED EXACTLY ONCE"), then re-derive CI on the next wake; `abort` → terminal `aborted` (the ruling **stays** — it is the record of why) |
+
+     **A `retry` that clears nothing re-escalates on its first derivation** — the strikes are still at
+     the cap — so the counter reset is **part of the unpark, not an optimization**. It buys the PR a
+     fresh liveness budget and no more: if CI still does not move, the same bound re-parks it, this time
+     reporting that the retry did not move CI (`stage-2-ci.md`, "SETTLED" / "UNUSABLE — the refetch is
+     BOUNDED"). The loop is bounded by the **human**: campaign never re-asks unprompted, and every park
+     is a fresh question backed by a fresh snapshot.
+
+     **A `retry` is SPENT when it is consumed — one ruling answers exactly ONE park.** Write `status =
+     in_review`, the counter reset, and `blocker_ruling` = `-` in the **same** `ledger.py … set --pr <N>`
+     call. That re-park above is precisely the case that proves it: the PR comes back to the **same**
+     machine blocker, and a ruling left on the row would answer the new park with the **old** answer —
+     the blocker would silently self-clear with no fresh user answer, which is the one thing the durable
+     record exists to prevent. Park **entry** clears it too (`stage-2-ci.md`, ESCALATE), so a crash
+     between the unpark and the next park cannot resurrect a spent ruling; the two clears are belt and
+     braces on the same invariant, and the entry clear is the one that survives a lost context.
+     **`abort` is different and is NOT cleared:** it goes **terminal** (`aborted`), and a terminal row is
+     never re-parked, so nothing can ever re-consume it.
    - **Why the guard must live HERE, at the dispatch site:** `reviews_ok < required(tier)` is TRUE for a
      parked PR (the park does not raise it), so a dispatch rule that looks only at `reviews_ok` will
      happily re-review a PR that is waiting on a human — and a `SATISFIED` verdict would then make it
@@ -235,9 +279,17 @@ blocks; each completion is its own wake.
      resulting commit **resets the gate** (Stage 2b, "Any campaign commit to the PR head resets the gate").
      The subagent's job order, the no-weakening prohibition, and the denylist live in `stage-2-ci.md` —
      follow them there; do NOT restate them here. Different PRs may fix CI concurrently within the cap.
-   - CI snapshot reads `pending` for a PR whose watch task has already exited → **relaunch the watch
-     in this same wake**. A pending PR must never sit unwatched until the heartbeat; the heartbeat is
-     a fallback, not the mechanism.
+   - CI snapshot holds a **still-RUNNING** evidence row (an evidence row that classifies `RUNNING` under
+     Stage 2b CLASSIFY — never "a row that is not terminal") for a PR whose watch task has already exited →
+     **relaunch the watch in this same wake**. A PR with a row that can still move must never sit
+     unwatched until the heartbeat; the heartbeat is a fallback, not the mechanism. **But NEVER relaunch
+     it merely because `ci == pending`** — once CI has SETTLED nothing can move, `gh pr checks --watch`
+     exits in about a second, and its completion is itself a wake: that is a wake per second, forever
+     (Stage 2b, "WATCH ONLY WHAT CAN MOVE"). A settled PR is resolved by the `settled_strikes`
+     escalation, not by watching it harder. **And a row that never leaves `RUNNING` is resolved by
+     RUNNING-STALL** (Stage 2b): its watch blocks forever and completes never, so the escalation lands on
+     **this heartbeat wake**, once `ci_stalled_since` has stood at the same fingerprint for the CI STALL
+     CAP. **A watch is never a bound.**
    - about to dispatch content-changing work on a PR (review fix, CI fix, copilot-address,
      conflict-resolving rebase) while a review is in flight on that PR → **stop that review task
      first** (its verdict can only describe a SHA the fix is about to replace); the freed slot goes

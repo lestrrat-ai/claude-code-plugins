@@ -101,8 +101,8 @@ following line is one adopted PR's row record (`{"type": "row", …}`). Every re
 
 ```
 {"type": "header", "run_id": "g260704-0915-a3f29c1b", "base_branch": "main", "api_changes": "ask", "reviewer": "codex"}
-{"type": "row", "id": "pr41", "slug": "fix-null-deref", "branch": "fix-null-deref", "worktree": ".worktrees/fix-null-deref", "worktree_owned": "yes", "branch_owned": "yes", "pr": "41", "head_sha": "a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c", "reviews_ok": "2", "ci": "green", "tier": "STANDARD", "attempts": "1", "started": "2026-07-04T09:15:00Z", "api_approval": "-", "status": "in_review"}
-{"type": "row", "id": "pr52", "slug": "add-retry-flag", "branch": "add-retry-flag", "worktree": ".worktrees/add-retry-flag", "worktree_owned": "no", "branch_owned": "no", "pr": "52", "head_sha": "b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7089a1b", "reviews_ok": "0", "ci": "pending", "tier": "HIGH", "attempts": "0", "started": "-", "api_approval": "-", "status": "in_review"}
+{"type": "row", "id": "pr41", "slug": "fix-null-deref", "branch": "fix-null-deref", "worktree": ".worktrees/fix-null-deref", "worktree_owned": "yes", "branch_owned": "yes", "pr": "41", "head_sha": "a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c", "reviews_ok": "2", "ci": "green", "tier": "STANDARD", "attempts": "1", "started": "2026-07-04T09:15:00Z", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:9f2c\u2026", "settled_strikes": "0", "unusable_refetches": "0", "ci_stalled_since": "-", "ci_reason": "-", "blocker_ruling": "-"}
+{"type": "row", "id": "pr52", "slug": "add-retry-flag", "branch": "add-retry-flag", "worktree": ".worktrees/add-retry-flag", "worktree_owned": "no", "branch_owned": "no", "pr": "52", "head_sha": "b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7089a1b", "reviews_ok": "0", "ci": "pending", "tier": "HIGH", "attempts": "0", "started": "-", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:4a71\u2026", "settled_strikes": "1", "unusable_refetches": "0", "ci_stalled_since": "-", "ci_reason": "required check absent: integration-tests", "blocker_ruling": "-"}
 ```
 
 **`head_sha` is ALWAYS the full 40-char `headRefOid` — never an abbreviation.** The examples above spell
@@ -153,12 +153,81 @@ Header field notes (the header fields above; per-row fields follow):
   and `tier` describe. `ci`
   and `tier` are pinned to this exact SHA (re-triage on any content change). `reviews_ok` is pinned to
   this SHA **unless** the only change is a clean base-only rebase/merge with the PR diff unchanged;
-  then carry `reviews_ok` forward to the new `head_sha` and set `ci = pending`.
+  then carry `reviews_ok` forward to the new `head_sha`, set `ci = pending`, and — because the head
+  **moved** — **reset the liveness counters** (`stage-2-ci.md`, "THE LIVENESS COUNTERS"). A clean rebase
+  does not reset the *gate*, but it **is** a `head_sha` change, and **every** `head_sha` change resets
+  those counters: the old head's strikes and stall clock measured evidence that no longer exists.
 - `reviews_ok` — number of fresh, context-isolated SATISFIED verdicts recorded against this PR's
   current content. Target = `required(tier)`: **1 if `tier == TRIVIAL`, else 2** (Stage **2a-triage**).
 - `tier` — the adaptive review tier derived from `head_sha`: `TRIVIAL` | `STANDARD` | `HIGH`. Re-derived
   every wake and re-triaged on any content change; drives `required(tier)` and the review depth.
-- `ci` — `green` / `red` / `pending` / `none` for `head_sha`.
+- `ci` — `green` / `red` / `pending` for `head_sha`. (**There is no `none`.** It was documented but no
+  procedure could ever write it.)
+- `ci_fingerprint` — digest of the last **verified** CI snapshot. **What it covers and exactly how it is
+  serialized is DEFINED in `stage-2-ci.md`, "SETTLED" — and is NEVER restated here**, because a
+  fingerprint reconstructed from a paraphrase is a different fingerprint. **UNCHANGED + nothing RUNNING
+  == SETTLED.**
+- `settled_strikes` — consecutive derivations seen **SETTLED but not green** *while no machine action was
+  due or in flight* for the PR at this `head_sha` (`stage-2-ci.md`, "SETTLED", owns the gate — a PR the
+  driver is actively repairing is never struck). At the **STRIKE CAP**, escalate: park `awaiting-user`
+  naming the blocker. Reset to `0` on any `head_sha` change or fingerprint change.
+- `unusable_refetches` — consecutive derivations whose snapshot was **UNUSABLE** at this `head_sha`. An
+  UNUSABLE snapshot has **no fingerprint** (its rows were never trusted), so it can never be a
+  `settled_strike`: it gets its own counter. At the **REFETCH CAP**, escalate the same way. Reset to `0`
+  on any `head_sha` change and on any **VERIFIED** snapshot (`stage-2-ci.md`, "UNUSABLE — the refetch is
+  BOUNDED").
+- `ci_stalled_since` — `-`, or the **UTC ISO-8601 timestamp** of the first derivation that saw the check
+  set **RUNNING-STALLED** at this fingerprint: an evidence row still classifies `RUNNING` **and** the
+  fingerprint did **not** change (`stage-2-ci.md`, "RUNNING-STALL" — the definition; the cap lives there
+  and nowhere else). A **clock, not a tally**, and that is deliberate: a `RUNNING` row that is merely
+  **SLOW** and one that is **DEAD** are indistinguishable on a fingerprint, and derivations are driven by
+  wakes whose cadence depends on the run's load — so only elapsed **TIME** separates them. It is on disk
+  precisely so `now - ci_stalled_since` is computable by a fresh agent instance that remembers nothing.
+  Cleared (`-`) on any fingerprint change, on any `head_sha` change, and whenever a **machine action** is
+  due or in flight for this PR at this `head_sha` (a fix that pushes will replace these rows). At the cap,
+  escalate: park `awaiting-user`, `ci_reason` naming the check that never finished and how long the check
+  set sat unchanged.
+
+  **The three caps above are NAMED here, never numbered.** The **STRIKE CAP**, the **CI STALL CAP** and the
+  **REFETCH CAP** each carry their value at exactly ONE defining site, and `stage-2-ci.md`, "THE LIVENESS
+  COUNTERS", is the one table that maps each counter to its cap and to that site. Never retype a value here.
+- `ci_reason` — the durable **MACHINE-BLOCKER REASON**: what campaign cannot get past without a human, in
+  a form that human can act on. It is the **question** `blocker_ruling` **answers**, and the escalation
+  prompt is built from it — so, like every park field, it lives on disk: a fresh agent instance that lost
+  it cannot even ask. A park that cannot name its blocker is not actionable.
+
+  **"`ci` is not green because X" is ONE CLASS of it, not the whole of it.** The `ci_` prefix is
+  historical and **understates** the field: it is also written at machine-blocker parks where **`ci` is
+  `green`**. The name is kept — renaming it would churn the schema and every write site for cosmetics —
+  so the definition, not the name, is what binds. Its write sites, both classes:
+  - **CI blockers** (`stage-2-ci.md`, "ESCALATE" — `ci` is `red` or `pending`): the DECIDE bullet that
+    matched and the row that made it match — which required check never registered, which check has been
+    `RUNNING` since when without the check set moving, which enum value was unrecognized, which VERIFY
+    rule the snapshot failed, which read was denied.
+  - **MERGE-PRECONDITION blockers** (`stage-3-merge.md`, "The merge precondition" — reached only with
+    **`ci = green`**): the PR is a **draft**, `mergeStateStatus` = `BLOCKED`, or an **unrecognized**
+    `mergeStateStatus` — the offending value named **verbatim**.
+
+  Those two are the write sites that exist today, **not a bound on the set**: the class is the
+  **property** — *campaign cannot move this PR without a human* (`status`, below, `awaiting-user` class
+  2) — so **any** future park with that property writes its reason here, with no edit to this bullet.
+- `blocker_ruling` — durable record of the user's answer to a **machine-blocker park** (the `status`
+  taxonomy below): `-` (none yet) | `retry@<iso>` | `abort@<iso>`. It is the **answer** to the question
+  `ci_reason` **asks**, and it exists for the same reason `api_approval` does: a wake may be a fresh
+  agent instance, so an answer held only in context is an answer the user is asked for twice. `retry`
+  unparks with the liveness counters cleared; `abort` goes terminal `aborted`. The unpark is
+  `loop-control.md` step 3, "Only the user's answer unparks a PR".
+
+  **DURABLE *and* SPENT EXACTLY ONCE — one ruling answers exactly ONE park.** It is set back to `-` when a
+  machine-blocker park is **ENTERED** and when a `retry` is **CONSUMED** (`stage-2-ci.md`, "THE RULING IS
+  CONSUMED EXACTLY ONCE" — that is the owning definition). That is what **scopes** a ruling to its park: a
+  ruling sitting on a **parked** row can only have been written while **that** park was open, so a stale
+  `retry` can never unpark a **later** blocker with no fresh user answer. `abort@<iso>` is **never**
+  cleared — it goes terminal, and a terminal row is never re-parked, so it stays as the record of why.
+  A **counter reset never touches it**: it is not one of the liveness counters.
+
+  These live **on disk, not in the driver's head**: a wake may be a fresh agent instance, and a counter —
+  or a ruling — that dies with the context never reaches its cap.
 - `attempts` — task attempts so far (for the retry-once bailout).
 - `started` — wall-clock start of the current attempt (for the 1-hour cap).
 - `api_approval` — durable record of the user's decision on this PR's API-changing fix: `-`
@@ -175,19 +244,46 @@ Header field notes (the header fields above; per-row fields follow):
   relabel it (`loop-control.md` step 3, "parked-status guard" — the property, of which those are only
   examples; `stage-3-merge.md` binds both the merge and the post-merge reconcile). The park does
   not raise `reviews_ok`, so the guard reads **`status`** — never `reviews_ok`/`ci`/`mergeable` alone,
-  which would re-review a parked PR and merge it without the ruling. The PR's **CI watch keeps running**
-  (observing is not mutating). The other PRs keep being driven; the user's answer sets `status`
-  back to `in_review` and normal dispatch resumes on the next wake.
+  which would re-review a parked PR and merge it without the ruling. **The park does not change the watch
+  policy either way** (observing is not mutating): the watch follows `stage-2-ci.md`, "WATCH ONLY WHAT CAN
+  MOVE" — alive while a row is still `RUNNING`, **not** relaunched once CI has settled. Parking never
+  stops a warranted watch, and never starts an unwarranted one. The other PRs keep being driven; the
+  user's answer unparks the PR **to the `status` that answer dictates** — a **RESUME** answer (`approved`,
+  a standoff ruling, `retry`) to `in_review`, with normal dispatch resuming on the next wake; a
+  **TERMINAL** answer (`declined`, `abort`) to `aborted`, which never resumes. Per class, below —
+  and `loop-control.md` step 3, "Only the user's answer unparks a PR", owns the mapping.
   - `awaiting-api` — parked for the user to approve an API-changing fix. Resolves via `api_approval`:
     `approved` returns the PR to the normal flow, `declined` makes it `aborted` (terminal).
-  - `awaiting-user` — **standoff only**: parked for the user to adjudicate a finding the orchestrator
-    REFUTED in the tree and a **fresh reviewer re-raised anyway** (`stage-2-review-gate.md`, "Audit every
-    finding before you fix it"). A REFUTED finding does **NOT** park by itself — it is committed as an
-    inline refutation and the next reviewer judges it; only the re-raise parks. Same park mechanics as
-    `awaiting-api`: `reviews_ok` stays 0, no review pass is launched for this PR, the other PRs keep
-    being driven, and the answer folds in as its own wake. The user ruling the finding **invalid**
-    returns the PR to the normal flow; ruling it **valid** returns it to the normal flow with that
-    finding fixed like a CONFIRMED one. NEVER park without surfacing the question.
+  - `awaiting-user` — parked for the user to adjudicate. **Two CLASSES, each with its OWN durable answer
+    record** (the class is a **property**, not a list of sites — any future park where campaign cannot
+    make progress without a human is a machine blocker and inherits class 2's exit):
+    1. **A REVIEW STANDOFF** — a finding the orchestrator REFUTED in the tree and a **fresh reviewer
+       re-raised anyway** (`stage-2-review-gate.md`, "Audit every finding before you fix it"). A REFUTED
+       finding does **NOT** park by itself — it is committed as an inline refutation and the next
+       reviewer judges it; only the re-raise parks. **Answered into** `<rundir>/audit-<pr>-<n>.md`: ruled
+       **invalid** → back to the normal flow; ruled **valid** → back to the normal flow with that finding
+       fixed like a CONFIRMED one.
+    2. **A MACHINE BLOCKER — campaign cannot move this PR without a human.** `ci_reason` **names** it.
+       Non-exhaustively: **CI has SETTLED and is still not green** (`settled_strikes` at its cap), a check
+       that **never stopped `RUNNING`** while nothing in the check set moved (`ci_stalled_since` at the CI
+       STALL CAP — a hung runner, a dead reporter, a required check that queues and never starts), a
+       snapshot that stayed **UNUSABLE** (`unusable_refetches` at its cap), a check carrying an
+       **unrecognized enum value**, a merge `BLOCKED` for a cause campaign cannot enumerate, an
+       **unrecognized `mergeStateStatus`**, or a **draft** PR (`stage-2-ci.md`, "SETTLED", "RUNNING-STALL"
+       and "UNUSABLE — the refetch is BOUNDED"; `stage-3-merge.md`, "The merge precondition"). **This is
+       the exit from `pending` — in BOTH of its shapes**, the settled one and the forever-`RUNNING` one;
+       without it, a stuck PR spins forever and no one is ever told. **Answered into**
+       `blocker_ruling`: `retry@<iso>` → back to `in_review` **with the liveness counters cleared** (else
+       it re-escalates on its first derivation) **and the ruling itself SPENT back to `-`** (a ruling is
+       consumed exactly once — `stage-2-ci.md`, "THE RULING IS CONSUMED EXACTLY ONCE"; entering this park
+       clears it too, so it can never be answered by a **previous** park's ruling), `abort@<iso>` →
+       terminal `aborted` (not cleared — terminal rows are never re-parked).
+
+    Same park mechanics as
+    `awaiting-api` for both: `reviews_ok` stays 0, no review pass is launched for this PR, the other PRs
+    keep being driven, and the answer folds in as its own wake (`loop-control.md` step 3, "Only the
+    user's answer unparks a PR" — the owning definition of the record + unpark for **every** park class).
+    NEVER park without surfacing the question, and NEVER park into a state whose exit is undefined.
 
 ### Editing the ledger — use `scripts/ledger.py`
 
@@ -233,13 +329,17 @@ human*, and the formatting is lossy in four ways:
   missing ROW is not a missing PR**, exactly as a missing column is not a missing value. Which statuses the
   default hides is owned by `TABLE_HIDDEN_STATUSES` in `scripts/ledger.py` and named **live** in `ledger.py
   table --help`; when this paragraph and that output disagree, **the script is right**.
-- **It shows only SOME fields.** The default view is a **SUBSET** of the row fields listed above — as of
-  this writing `pr`, `slug`, `tier`, `reviews_ok`, `ci`, `attempts`, `status`, `head_sha`. Every other row
-  field (`branch`, `worktree`, `worktree_owned`, `branch_owned`, `started`, `api_approval`, `id`) is
-  **hidden unless you ask for it** with `--fields <f>,<f>,…`. So **a missing COLUMN is not a missing
-  VALUE** — the field is in the store, the default projection just does not print it. The list itself is
-  owned by `TABLE_DEFAULT_FIELDS` in `scripts/ledger.py` and printed **live** by `ledger.py table --help`
-  (it names the defaults); when this paragraph and that output disagree, **the script is right**.
+- **It shows only SOME fields.** The default view is a **SUBSET** of the row fields, and **NEITHER the
+  shown nor the hidden set is enumerated here** — both are **DERIVED from the live schema**, never retyped
+  on this page. The shown set is `TABLE_DEFAULT_FIELDS` in `scripts/ledger.py`, printed **live** by
+  `ledger.py table --help` (it names the defaults). The **hidden set is everything else** — `ROW_FIELDS`
+  minus that projection — and every row field is printed by `ledger.py … get --pr N`, which projects onto
+  the full `ROW_FIELDS`. Anything hidden is **shown on request** with `--fields <f>,<f>,…`. So **a missing
+  COLUMN is not a missing VALUE** — the field is in the store, the default projection just does not print
+  it. **The script is the owner; when this page and its output disagree, the script is right.** A
+  hand-typed list of hidden fields would be **stale the next time a row field is added — by a change its
+  author never sees**, and that is exactly how this paragraph broke before: it named seven hidden fields,
+  a later PR added six more row fields, and neither author touched the other's work.
 - **It shortens the SHA.** `table` prints `head_sha` truncated to its first **8 characters**. This is a
   **display-only** truncation and applies to **`table` alone** — nothing else in campaign ever shortens a
   SHA. The stored value, and the one every other subcommand returns, stays the full 40-char `headRefOid`:

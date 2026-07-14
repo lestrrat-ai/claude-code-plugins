@@ -730,7 +730,7 @@ EXPECTED = {
     "zero-rows.jsonl": (PENDING, "zero evidence rows", "zero rows is NOT green"),
     "red-status-only.jsonl": (RED, "commit status", "a commit-status failure invisible to /check-runs — why BOTH families are read"),
     "red-checkrun.jsonl": (RED, "concluded FAILURE", "a FAILED check run is RED — the rule that decides the whole point of the artifact"),
-    "running-checkrun.jsonl": (PENDING, "still running", "a check run that is not COMPLETED can still move — it is NOT a green"),
+    "running-checkrun.jsonl": (PENDING, "still running", "a check run whose `.status` classifies RUNNING can still move — it is NOT a green (and the test is MEMBERSHIP in RUNNING_STATUSES, never `!= COMPLETED`)"),
     "pending-status.jsonl": (PENDING, "still running", "a PENDING commit status can still move — it is NOT a green"),
     "expected-status.jsonl": (PENDING, "still running", "EXPECTED = a required status NOT POSTED YET — the registration gap, visible in the evidence for once"),
     "skipped-is-pass.jsonl": (GREEN, "all passing", "SKIPPED is a PASS — GitHub rolls it up that way, and a rule set without it can NEVER go green on a repo with path filters"),

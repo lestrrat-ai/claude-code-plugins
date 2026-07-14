@@ -90,9 +90,15 @@ Each run has `<rundir>/lease.json`:
   foreground operation, so liveness flags a *dead* driver, not a busy one.
 - **Never hold the run hostage on a user prompt.** Do NOT block the loop waiting on a user answer —
   that freezes the heartbeat and could let the run be declared stale mid-drive. Park the PR
-  (`awaiting-api` for an API-changing fix; `awaiting-user` for a review-finding standoff — a refutation
-  the fresh reviewer re-raised), surface the question, keep driving the other PRs, reschedule, and fold
-  the answer in when it lands as its own wake (Constraints; `stage-2-review-gate.md`).
+  (`awaiting-api` for an API-changing fix; `awaiting-user` for a **review standoff** — a refutation the
+  fresh reviewer re-raised — **or a machine blocker**, which is a **property**, not a list of cases:
+  *campaign cannot move this PR without a human*, with `ci_reason` naming whatever it was. This file
+  deliberately enumerates **no** blocker cases — `files-and-ledger.md`, `status`, `awaiting-user` class
+  2, owns the class), surface the question, keep driving the other PRs, reschedule, and fold
+  the answer in when it lands as its own wake. Each class names the **durable record** it is answered into
+  and the **unpark** it triggers (`files-and-ledger.md`, `status`; `loop-control.md` step 3, "Only the
+  user's answer unparks a PR") — a park with no defined exit is the wedge one level up (Constraints;
+  `stage-2-review-gate.md`).
 - **Adopt only an orphaned run.** Safe to take over only when the lease is **absent or stale** (under
   the claim lock). After writing your token, re-read: if it isn't yours, you lost the race — stand down.
 - **Stand down if superseded.** On a self-wake, present your `--token`: if the lease is **fresh** and

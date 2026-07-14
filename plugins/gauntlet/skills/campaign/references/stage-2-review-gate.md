@@ -44,7 +44,9 @@ else that changes it (`loop-control.md` step 3, "parked-status guard" — the go
 are only examples). The park leaves
 `reviews_ok < required(tier)`, so the review-launch rule MUST read `status` too — otherwise the next
 wake re-reviews a PR that is waiting on a HUMAN and a `SATISFIED` verdict merges it **without the
-user's ruling**. Its CI watch keeps running; everything else waits for the user's answer.
+user's ruling**. The park does **not** change its CI watch either way — observing is not mutating, so the
+watch follows the normal policy (`stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE": alive while a row can still
+move, **not** relaunched once CI has SETTLED). Everything else waits for the user's answer.
 
 **Preconditions — clear Copilot items, CI, and conflicts before reviewing.** A review pass is
 expensive and is invalidated by any PR-content change, so never spend one on a PR whose current tip
@@ -67,8 +69,11 @@ review gate"), and the review re-starts on the clean tip:
 - **Merge conflicts with `<base>`.** If GitHub flags the PR conflicting/behind
   (`gh pr view <pr> --json mergeable,mergeStateStatus` → `CONFLICTING` / `DIRTY` / `BEHIND`), rebase
   it onto `<base>` before reviewing. Clean rebase with the PR diff unchanged keeps `reviews_ok` but
-  sets `ci = pending`; conflict-resolving rebase changes PR content, so it resets the gate (Stage 3
-  step 6).
+  sets `ci = pending` **and resets the liveness counters** — the gate does not reset, but the `head_sha`
+  **moved**, and **every** `head_sha` change resets them (`stage-2-ci.md`, "THE LIVENESS COUNTERS");
+  conflict-resolving rebase changes PR content, so it resets the gate **as well** — here, at this site,
+  exactly as the step-6 reconcile does at its own (`stage-3-merge.md`), and it therefore **relabels in the
+  same step** ("Status labels mirror the review gate", below).
 
 Only launch a review pass once all three are clear for the current tip.
 
@@ -485,7 +490,8 @@ On REFUTED:
 - **Commit it.** The refutation commit is a **PR-content change**, so it **RESETS THE GATE** exactly like
   any other campaign commit: route it through the existing "any campaign commit to the PR head resets the
   gate" rule (`reviews_ok` → 0, restore `gauntlet-reviewing` — "Status labels mirror the review gate" —
-  relaunch the CI watch, re-enter Stage 2a on the new tip). Do **NOT** invent a second mechanism.
+  re-derive CI for the new tip and watch it only if a row can still move, re-enter Stage 2a on the new
+  tip). Do **NOT** invent a second mechanism.
 - CONFIRMED / ADJUSTED findings from the same round still go to the scoped fix subagent; the refutation
   comment rides along in the same round's work.
 
@@ -516,11 +522,14 @@ reviewer and a `codex exec` reviewer both receive it.
   review pass, a CI fix, a review fix, or a merge for that PR (`loop-control.md` step 3;
   `stage-3-merge.md`) — `reviews_ok` stays 0, so a re-review would let a `SATISFIED` verdict merge the PR
   with the disputed finding never adjudicated. Only the user's answer unparks it (`status` →
-  `in_review`): ruling the finding **invalid** → drop it and return to the normal flow; **valid** → fix
-  it exactly like a CONFIRMED finding.
+  `in_review`), and **the ruling is recorded durably in `<rundir>/audit-<pr>-<n>.md`** — a wake may be a
+  fresh agent instance, and an answer held only in context is one the user is asked for twice
+  (`loop-control.md` step 3, "Only the user's answer unparks a PR"). Ruling the finding **invalid** → drop
+  it and return to the normal flow; **valid** → fix it exactly like a CONFIRMED finding.
 - **NEVER refute the same finding twice on your own authority.** One refutation, then the reviewer rules;
-  if it re-raises, the user rules. `awaiting-user` is the **standoff-only** park — a REFUTED finding does
-  **NOT** park by itself.
+  if it re-raises, the user rules. A REFUTED finding does **NOT** park by itself — only the **re-raise**
+  parks. The standoff is the **review-gate** cause of `awaiting-user`; a **machine blocker** parks the same
+  status by its own rule, answered into `blocker_ruling` (`files-and-ledger.md`, `status`).
 
 **Why this cannot become self-gating:** the audit only ever *subtracts* work from a fix list. It cannot
 add a SATISFIED verdict, cannot raise `reviews_ok`, and cannot merge anything. The refutation itself is
@@ -570,8 +579,9 @@ agent-facing instructions, where a surviving defect is expensive, but not for pu
 one adversarial pass is proportionate. Record the reviewed SHA
 (`git rev-parse HEAD`) with each pass. A verdict counts while its SHA equals the live tip. It also
 continues to count after `<base>` advances if the PR is still non-conflicting and the PR diff/content
-is unchanged (e.g. clean base-only rebase); carry `reviews_ok` forward to the new `head_sha` and set
-`ci = pending`. The moment PR content changes — review fix, CI fix, conflict-resolving rebase, a
+is unchanged (e.g. clean base-only rebase); carry `reviews_ok` forward to the new `head_sha`, set
+`ci = pending`, and **reset the liveness counters** — the head moved, so the old head's CI liveness
+describes nothing (`stage-2-ci.md`, "THE LIVENESS COUNTERS"). The moment PR content changes — review fix, CI fix, conflict-resolving rebase, a
 formatter/bot commit on the PR branch, or manual push — earlier verdicts are stale and `reviews_ok`
 drops to 0. Pinning to SHA plus the clean-base-only exception makes the gate verifiable from git while
 not burning reviews merely because another PR merged cleanly. A `NOT SATISFIED` invalidates that
@@ -607,7 +617,7 @@ that drop `reviews_ok` to 0):
 | Review-fix **or refutation** commit pushed (both are campaign commits to the PR head) | this file, verdict tally |
 | CI-fix commit pushed — cheap tier **or** session-model tier | `stage-2-ci.md`, "Any campaign commit to the PR head resets the gate" |
 | Copilot-item fix pushed | Stage 2a preconditions, above |
-| Conflict-resolving rebase | `stage-3-merge.md` |
+| Conflict-resolving rebase — at **either** of the two sites that rebase a PR | **Stage 2a preconditions, above** (the pre-review rebase of a `CONFLICTING`/`DIRTY`/`BEHIND` PR) **and** `stage-3-merge.md`'s step-6 reconcile. Naming only one of them is how the relabel goes missing at the other; the *event* owes the relabel, wherever it happens |
 | Re-adoption refresh detects changed content | `pr-adoption.md` step 3 (step 4 then sets the status label from the **live** gate — `gauntlet-reviewing` here, but `gauntlet-accepted` for a re-adoption whose content did **not** change and whose verdicts step 3 preserved; either way it removes the other label) |
 | Any other PR-content change on the head branch — formatter/bot commit, manual push | **Loop control step 1's ledger refresh** — the wake that *detects* it resets the gate, so it relabels there |
 
@@ -618,8 +628,10 @@ table with the relabel attached, and the search that proves this table complete 
 `reviews_ok`**, not for any particular phrasing.
 
 **Exception — a clean base-only rebase** (PR diff unchanged) carries `reviews_ok` forward and therefore
-**keeps** `gauntlet-accepted`; it only sets `ci = pending`. The gate did not reset, so the label does
-not move. Gate and label stay in lockstep in both directions.
+**keeps** `gauntlet-accepted`. The gate did not reset, so the label does not move. Gate and label stay in
+lockstep in both directions. **It is still a `head_sha` change, though**, so it sets `ci = pending` **and
+resets the liveness counters** (`stage-2-ci.md`, "THE LIVENESS COUNTERS") — the gate and the counters key
+off **different** events, and this row is exactly where they part company.
 
 **Reconcile is the backstop, not the mechanism.** Loop control re-derives every label from the live
 gate each wake so a missed swap self-heals, exactly as the CI-watch heartbeat backstops a missed watch.
