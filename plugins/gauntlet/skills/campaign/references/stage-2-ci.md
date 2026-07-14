@@ -654,26 +654,61 @@ change `head_sha` until it pushes — so an ungated strike rule would park, with
 of wakes, the exact PR the driver is actively fixing, and an ungated stall clock would start timing a
 `RUNNING` row the driver is about to make irrelevant.
 
-**MACHINE ACTION** = work **campaign dispatches** that can produce a **new `head_sha`** on this PR: a
-CI-fix subagent (either tier, including an escalation from the cheap one), a review-fix subagent, a
-copilot-address fix, a refutation commit, or a conflict-resolving rebase.
+**MACHINE ACTION** = **any work campaign dispatches that can produce a new `head_sha` on this PR.** That
+**PROPERTY is the definition, and it is the whole of it.** **APPLY THE PROPERTY — NEVER CONSULT A LIST.**
+Of any work in question, ask: *when it completes, can it put a new commit on this PR's head?* If yes it is
+a MACHINE ACTION, **whether or not it appears in any enumeration anywhere in this repo** — the same idiom
+as the parked-PR guard's "does this MUTATE the PR?, **not** is it on a list" (`SKILL.md`). A set defined
+by a property but **applied** through its examples is a set that silently shrinks every time a member is
+added somewhere else — which is exactly how the list below went stale once already.
 
-- **In flight** = dispatched for this PR at this `head_sha` and not yet completed — **the same in-flight
-  test `loop-control.md` step 3 already applies** to suppress a duplicate dispatch ("CI red and no fix is
-  already in flight for that PR/SHA"). The strike rule and the stall clock read that same fact; they do
-  not invent a second one.
-- **Due** = that step-3 dispatch scan **would launch one on this wake** — it is not in flight and nothing
-  but a free concurrency slot is missing.
-- **The CI watch is NOT a machine action, and neither is a review pass.** Neither pushes a commit, so
-  neither can move CI: a settled PR under review is still settled, a stalled one is still stalled, and
-  suppressing either bound would wedge it exactly as before.
+- **NON-NORMATIVE EXAMPLES. Illustrative only; they DO NOT BOUND THE SET:** a CI-fix subagent (either
+  tier, including an escalation from the cheap one), a review-fix subagent, a copilot-address fix, a
+  refutation commit, and **every rebase and base refresh — the conflict-resolving rebase and the CLEAN
+  BASE-ONLY one alike** (Stage 2a's precondition rebase, `stage-2-review-gate.md`; the post-merge
+  reconcile, `stage-3-merge.md` step 6). Work that has the property but is missing from this list is
+  **still** a machine action.
+- **The CLEAN BASE-ONLY REBASE IS ONE — it is the member this list omitted, and the omission parked
+  healthy PRs.** It qualifies for exactly the reason every other member does: **it MOVES `head_sha`**
+  ("THE LIVENESS COUNTERS" below, which resets the counters at it for that same reason). Whether it also
+  resets the **gate** is a **DIFFERENT QUESTION** — it does not — and it is **not this one**: the property
+  here is `head_sha`, not `reviews_ok`. A PR merely **DUE** for a clean rebase would otherwise keep
+  striking (or keep its stall clock running) against a head the rebase is about to replace, and **park —
+  a spurious park, with the work already on its way**.
+- **The CI watch is NOT a machine action, and neither is a review pass.** They fail the property: neither
+  pushes a commit, so neither can move CI. A settled PR under review is still settled, a stalled one is
+  still stalled, and suppressing either bound for them would wedge the PR exactly as before.
 
-**IT STILL TERMINATES — a liveness rule that can be suppressed forever is not a liveness rule.** Machine
-actions on one PR are **bounded**: a stuck task is retried **once** and then aborted permanently, and "CI
-fails identically after a fix attempt" is itself a stop condition (`bailout-and-final-report.md`). So a
-**red** PR whose CI-fix budget is **spent** has no action due and none in flight → strikes accrue (or the
-stall clock runs) on the next derivations → it parks like any other settled or stalled PR. The gate
-suppresses a bound **only while a fix is actually coming**, never merely because the PR is red.
+**In flight** = dispatched for this PR at this `head_sha` and not yet completed — **the same in-flight
+test `loop-control.md` step 3 already applies** to suppress a duplicate dispatch ("CI red and no fix is
+already in flight for that PR/SHA"). The strike rule and the stall clock read that same fact; they do not
+invent a second one.
+
+**Due** = **this wake would launch it** — it is not in flight, and nothing but a free concurrency slot is
+missing. That, too, is a **property, not a fixed list of scans**: whichever rule OWNS that dispatch is the
+one that says so. For a CI fix it is `loop-control.md` step 3's dispatch scan; for a rebase it is the rule
+that owns the rebase (Stage 2a's preconditions, `stage-2-review-gate.md`; the step-6 reconcile,
+`stage-3-merge.md`) finding the PR behind/conflicting on this wake. A PR **frozen by a park** has **no**
+machine action due — the parked-status guard forbids every one of them (`loop-control.md`), so nothing is
+coming, which is why the park is the terminus and not another wait.
+
+**IT STILL TERMINATES — a liveness rule that can be suppressed forever is not a liveness rule.** The STOP
+is keyed to a machine action being **DUE or IN FLIGHT**, and **every machine action ENDS**, so the STOP
+ends with it — the broader definition above does not widen it into a wedge:
+
+- **A fix subagent is bounded**: a stuck task is retried **once** and then aborted permanently, and "CI
+  fails identically after a fix attempt" is itself a stop condition (`bailout-and-final-report.md`).
+- **A rebase is bounded by construction**: it either lands a new head — which **resets the counters at the
+  site that moved it**, the correct outcome, not a suppression — or it fails; either way it is afterwards
+  neither due nor in flight.
+- **DUE cannot persist**: the only thing a due action waits on is a **free concurrency slot**, and slots
+  free as work completes.
+
+So a PR whose machine actions are **all exhausted** — a **red** PR whose CI-fix budget is **spent**, not
+behind or conflicting, so no rebase is owed — has **none due and none in flight**: the STOP does not fire,
+strikes accrue (or the stall clock runs) on the next derivations, and **it reaches its cap and parks**,
+like any other settled or stalled PR. The gate suppresses a bound **only while work that can move
+`head_sha` is actually coming**, never merely because the PR is red.
 
 **ESCALATE** = park the PR (`status = awaiting-user`, `ci_reason` = the blocker **named**: which check
 never registered, **which check has been `RUNNING` since when without the check set moving**, which value
@@ -753,12 +788,15 @@ BOUNDED wait rather than a wedge.
 **Reset them TOGETHER** (`-`, `0`, `0`, `-`) at exactly two kinds of site:
 
 1. **Any `head_sha` change — whether or not the gate resets with it.** The new head is new evidence, so
-   the old head's liveness says nothing about it. Every site that writes a new `head_sha` resets them, and
-   they are all of these: **"Any campaign commit to the PR head resets the gate"** (below — CI-fix,
-   review-fix, copilot-item fix, refutation commit); **`stage-3-merge.md`, step 6's reconcile** (BOTH
-   branches — a clean base-only rebase, which does **not** reset the gate, and a conflict-resolving
-   rebase, which does); **`loop-control.md` step 1's ledger refresh** and **`pr-adoption.md` step 3's row
-   refresh** (a formatter/bot commit, a manual push, any content change this run did not dispatch).
+   the old head's liveness says nothing about it. **THE TRIGGER IS THE PROPERTY — "this site wrote a new
+   `head_sha`" — and NOT membership of a list.** Every site that writes one resets them, including a site
+   added after this paragraph was written, with **no edit here**. Today's sites, **illustratively and
+   NON-EXHAUSTIVELY**: **"Any campaign commit to the PR head resets the gate"** (below — CI-fix,
+   review-fix, copilot-item fix, refutation commit); **Stage 2a's precondition rebase**
+   (`stage-2-review-gate.md`) and **`stage-3-merge.md`, step 6's reconcile** — for each, BOTH branches: a
+   clean base-only rebase, which does **not** reset the gate, and a conflict-resolving rebase, which does;
+   **`loop-control.md` step 1's ledger refresh** and **`pr-adoption.md` step 3's row refresh** (a
+   formatter/bot commit, a manual push, any content change this run did not dispatch).
 2. **An unpark by `retry`** (`loop-control.md` step 3) — no new head, but the user changed something
    **outside** the PR (they re-ran the workflow, killed the hung runner, registered the missing check), so
    the strikes and the stall clock that measured the old attempt are void.
