@@ -58,8 +58,21 @@ but NOT COUNTED parses as "nothing wrong":
     founding principle, unenforced by its own artifact. `source` rows (below) are what make an ABSENCE
     say "we do not know" instead of "nothing wrong".
 
-The lesson is one lesson, not eight: check the EXACT shape. "The thing I need is in there somewhere" is
-not a check — it is the absence of one, and every defect above is that same absence wearing a new hat.
+  * and then ONE LEVEL ABOVE THE ARTIFACT ENTIRELY — the last one, and the only one no rule here could
+    ever have caught, because it is not a defect IN the file. THE REGISTRATION GAP: every rule above
+    quantifies over the rows that ARE in the snapshot, and a REQUIRED check that has not registered yet is
+    NOT A FAILING ROW — IT IS NO ROW. So a snapshot could be perfectly formed, every marker present, every
+    row PASSING, containment holding — and still be silent about a required check that never showed up.
+    `green` meant "everything that had registered by the time we looked had passed", which is a statement
+    about WHAT SHOWED UP, while every caller read it as a statement about WHAT WAS REQUIRED. It was known,
+    and it was DISCLOSED IN A COMMENT — which merges the PR just the same: a disclaimer printed beside a
+    green is not a disclosure, it is a trapdoor with a sign on it. The fix is the only one available: STOP
+    LOOKING ONLY AT THE FILE. Read what the base branch REQUIRES and pass it in (`--required-set`).
+
+The lesson is one lesson, not nine: check the EXACT shape, and against the EXPECTED set. "The thing I need
+is in there somewhere" is not a check — it is the absence of one — and neither is "everything in here looks
+fine", when nothing ever asked what was supposed to BE here. Every defect above is that same absence
+wearing a new hat.
 
 So this file is not a description of the rules. It is the rules, executed, with fixtures that FAIL
 when the rules are wrong. `self-test` is the handoff: give it to a reviewer or a fix subagent and
@@ -81,7 +94,9 @@ it — and `mutate-ci-snapshot.py` removes each one in turn, re-runs the fixture
 notices, and FAILS if none does. Both run in CI. "Which rules are unpinned?" is a question the SUITE
 answers, not one a reviewer has to discover. ADD A RULE, MARK IT, AND GIVE IT A FIXTURE.
 
-  verify    parse a snapshot, verify it against an expected head_sha, and print the verdict
+  verify    parse a snapshot, verify it against an expected head_sha AND the base branch's required set
+            (--required-set, MANDATORY — the file alone cannot tell you what was missing from it), and
+            print the verdict
   self-test run every fixture and assert its expected verdict (and its REASON — the reason is the only
             thing that says WHICH rule fired, and a fixture that fails for someone else's reason pins
             nothing)
@@ -103,7 +118,7 @@ import sys
 import tempfile
 from collections import Counter
 from pathlib import Path
-from typing import NoReturn
+from typing import NamedTuple, NoReturn
 
 # --- the contract (stage-2-ci.md) ---------------------------------------------------------------
 #
@@ -159,6 +174,121 @@ PENDING = "pending"
 UNUSABLE = "unusable"  # the evidence is defective; refetch
 UNVERIFIABLE = "unverifiable"  # containment cannot be decided; fail CLOSED
 UNCLASSIFIED = "unclassified"  # a value NO rule maps — escalate to a human; NEVER guess a bucket for it
+
+
+# --- WHAT WERE WE EXPECTING TO SEE? — the required-check set -------------------------------------
+#
+# EVERY RULE ABOVE QUANTIFIES OVER THE ROWS THAT ARE IN THE FILE. Not one of them can see a row that is
+# NOT — and a REQUIRED check that has not registered yet is exactly that: not a failing row, NO ROW. So a
+# snapshot can be nonempty, every row PASSING, containment holding, every marker present — and still not be
+# the truth about the commit. "Every check that had registered by the time we looked had passed" is a
+# statement about what SHOWED UP; `green` is supposed to be a statement about what was REQUIRED.
+#
+# That was the REGISTRATION GAP, and it is what this section closes: the expected set is READ from the base
+# branch (branch protection AND rulesets — stage-2-ci.md owns the two reads), carried in the ledger header's
+# `required_set`, and passed in here. `green` now requires every declared check to be PRESENT and PASSING.
+#
+# THREE STATES, NEVER TWO. "I could not see any" is NOT "there are none":
+DECLARED = "declared"  # both reads succeeded, the union is non-empty — these checks must be present+passing
+NONE_DECLARED = "none"  # both reads succeeded, the union is EMPTY — a read FACT: nothing is required
+CANNOT_READ = "unknown"  # a read FAILED. We do not know what was required — see below
+
+# `unknown` CANNOT GO GREEN, and that is the whole reason it is not folded into `none`. A green printed
+# beside "...but a required check may exist, be missing, and campaign cannot tell" is NOT a disclosure, it
+# is a TRAPDOOR WITH A SIGN ON IT: the merge still happens and nobody reads the sign. So `unknown` is a
+# PENDING outcome that escalates (stage-2-ci.md, SETTLED) — and it is `ledger.py`'s DEFAULT, which makes a
+# run that never performed the read merge NOTHING instead of merging everything with a footnote.
+
+# The spec, as it is written in the ledger header: `declared:<json>` | `none` | `unknown`.
+#
+# The `declared:` payload is a JSON ARRAY, not a comma-separated list, and that is not fussiness: A REQUIRED
+# CHECK'S NAME MAY CONTAIN A COMMA. A matrix job is named `job (a, b)` — 40 of the 100 check runs on
+# `vercel/next.js`'s default-branch head carried one when this was written (a dated illustration; that
+# commas are legal and common in check names is the permanent claim). `"build,test".split(",")` on that set
+# invents checks that do not exist and loses the ones that do, and a required set you cannot parse back is a
+# required set you DO NOT HAVE.
+DECLARED_PREFIX = "declared:"
+
+# The declaration binds no app — ANY producer satisfies it. Same "-" convention as NO_OID: an explicit
+# "there is nothing here", never a value we failed to write down.
+ANY_APP = "-"
+
+
+class RequiredSet(NamedTuple):
+    """What the base branch requires. `checks` is empty unless `state` is DECLARED."""
+
+    state: str
+    checks: tuple[tuple[str, str], ...] = ()  # (context, app_id | ANY_APP)
+
+
+class SpecError(Exception):
+    """The --required-set spec is not readable. An OPERATOR error, never a snapshot verdict."""
+
+
+def parse_required_set(spec: str) -> RequiredSet:
+    """Parse the ledger's `required_set` value. STRICT, and LOUD when it cannot.
+
+    THE ONE THING THIS MUST NEVER DO IS DEGRADE. A spec we cannot read quietly becoming `none` would say
+    "the base branch requires nothing" on the strength of a value we failed to parse — rebuilding the exact
+    false green this whole section removes, one layer further down. So: raise, and the caller exits 2 with
+    NO verdict. No verdict at all beats a verdict about the wrong question.
+    """
+    if spec == NONE_DECLARED:
+        return RequiredSet(NONE_DECLARED)
+    if spec == CANNOT_READ:
+        return RequiredSet(CANNOT_READ)
+    if not spec.startswith(DECLARED_PREFIX):
+        raise SpecError(
+            f"{spec!r} is not a required-set spec: expected {NONE_DECLARED!r}, {CANNOT_READ!r}, "
+            f"or {DECLARED_PREFIX}<json>"
+        )
+    try:
+        payload = json.loads(spec[len(DECLARED_PREFIX):])
+    except json.JSONDecodeError as exc:
+        raise SpecError(f"the {DECLARED_PREFIX} payload is not JSON: {exc}") from exc
+    if not isinstance(payload, list) or not payload:
+        raise SpecError(
+            f"the {DECLARED_PREFIX} payload must be a NON-EMPTY JSON array — an empty required set is "
+            f"{NONE_DECLARED!r}, which is a different fact and must be recorded as one"
+        )
+    checks: list[tuple[str, str]] = []
+    for entry in payload:
+        if not isinstance(entry, dict) or set(entry) != {"context", "app"}:
+            raise SpecError(f"each declared check is {{'context': …, 'app': …}}, not {entry!r}")
+        ctx, app = entry["context"], entry["app"]
+        if not isinstance(ctx, str) or not isinstance(app, str) or not ctx:
+            raise SpecError(f"`context` and `app` must be strings, and `context` non-empty: {entry!r}")
+        checks.append((ctx, app))
+    return RequiredSet(DECLARED, tuple(checks))
+
+
+def satisfied_by(rows: list[dict], context: str, app: str) -> bool:
+    """Is this declared required check PRESENT and PASSING in the evidence?
+
+    MATCHED ON PRODUCER, NOT JUST ON NAME — A RIGHT-NAMED CHECK FROM THE WRONG APP IS NOT THE REQUIRED ONE.
+    A declaration that binds an app (`app != ANY_APP`) is a statement about WHO must produce the check, and
+    a rule that compares only the name would let any app in the world satisfy it by naming a job the same.
+
+    A `status` row can satisfy only an UNBOUND declaration. The commit-status family carries NO producer
+    field at all (the response has none to give — see the FETCH block in stage-2-ci.md), so an app-bound
+    declaration CANNOT BE PROVEN by one. It stays unsatisfied, the PR goes `pending (required check
+    missing)`, and SETTLED escalates it with the check named. That is FAIL-CLOSED ON PURPOSE: the
+    alternative is to accept a status from an app we never identified as proof of a check that named one —
+    the false green with an extra step.
+
+    PASSING is tested here, not assumed from the caller's position. It is true that `decide` only reaches
+    this after every row has already classified PASS — but a rule that is correct only because of where it
+    sits is a rule that breaks silently the day the bullets are reordered.
+    """
+    for r in rows:
+        if r["row"] == "checkrun" and r.get("name") == context:
+            if app in (ANY_APP, r.get("app_id")) and r.get("status") == TERMINAL_STATUS \
+                    and r.get("conclusion") in PASS_CONCLUSIONS:
+                return True
+        if r["row"] == "status" and r.get("context") == context and app == ANY_APP:
+            if r.get("state") in STATUS_PASS:
+                return True
+    return False
 
 
 class SnapshotError(Exception):
@@ -587,8 +717,13 @@ class Unverifiable(Exception):
     """Containment cannot be decided. Fail closed; never green."""
 
 
-def decide(rows: list[dict]) -> tuple[str, str]:
-    """Decide from the verified file's contents — FIRST MATCH WINS. Returns (verdict, reason).
+def decide(rows: list[dict], required: RequiredSet) -> tuple[str, str]:
+    """Decide from the verified file's contents AND what the base branch REQUIRED — FIRST MATCH WINS.
+    Returns (verdict, reason).
+
+    `required` is the second half of the question, and the file alone cannot answer it: every rule that
+    reads `rows` quantifies over the rows that ARE there, and a required check that never registered is
+    NO ROW. See "WHAT WERE WE EXPECTING TO SEE?" above.
 
     THE ORDER IS PART OF THE RULE, and `red` OUTRANKS `UNCLASSIFIED` DELIBERATELY. A snapshot carrying BOTH
     a failing row and an unknown value is RED: the known failure is actionable NOW and blocks the merge
@@ -659,12 +794,49 @@ def decide(rows: list[dict]) -> tuple[str, str]:
         # MUTATE:zero-evidence:pass
         return PENDING, "zero evidence rows — nothing has registered yet (NOT green)"
 
-    # Every evidence row classified PASS. Nothing else can reach this line.
-    return GREEN, f"{len(evidence)} evidence rows, all passing, containment holds"
+    # ---------------------------------------------------------------------------------------------
+    # Every evidence row classified PASS. EVERY RULE ABOVE IS NOW SATISFIED — and that is exactly the
+    # state in which the registration gap used to hand back a false green. The remaining question is the
+    # one no row can answer: WERE THESE THE ROWS THAT WERE SUPPOSED TO BE HERE?
+    # ---------------------------------------------------------------------------------------------
+
+    # --- pending: we do not know what was required, so we cannot say this is green. INCOMPLETE EVIDENCE
+    # IS NOT GREEN, exactly as ZERO evidence is not. This is the branch that makes `unknown` — ledger.py's
+    # DEFAULT — fail CLOSED: a run that never read the base branch's required checks merges nothing.
+    if required.state == CANNOT_READ:
+        # MUTATE:required-set-unreadable:pass
+        return PENDING, (
+            "the base branch's required checks could NOT BE READ (required_set=unknown) — a required check "
+            "may exist, be missing, and this snapshot cannot tell. NOT green"
+        )
+
+    # --- pending: a DECLARED required check has no passing row. It has not registered — which is NO ROW,
+    # not a failing one, so every rule above passed straight over it.
+    for context, app in required.checks:
+        if not satisfied_by(rows, context, app):
+            # MUTATE:required-check-missing:pass
+            return PENDING, (
+                f"required check absent: {context}"
+                f"{'' if app == ANY_APP else f' (app {app})'} — declared by the base branch, and NOT "
+                f"present and passing in this snapshot. NOT green"
+            )
+
+    # Every evidence row passed AND the required set is accounted for. Nothing else can reach this line,
+    # and `green` here means the REQUIRED SET PASSED — not merely that whatever showed up did.
+    return GREEN, (
+        f"{len(evidence)} evidence rows, all passing, containment holds; required set "
+        f"{'satisfied: ' + ', '.join(c for c, _ in required.checks) if required.checks else 'is EMPTY (read, not assumed)'}"
+    )
 
 
-def evaluate(path: Path, expected_sha: str, *, expect_filename_sha: bool = True) -> tuple[str, str]:
-    """`expect_filename_sha` is OFF only for the fixtures, which are named by the PROPERTY they pin
+def evaluate(
+    path: Path, expected_sha: str, *, required: RequiredSet, expect_filename_sha: bool = True
+) -> tuple[str, str]:
+    """`required` is MANDATORY and keyword-only. There is deliberately NO default: a caller that forgot to
+    say what the base branch requires must not be silently given the permissive answer — that is the whole
+    class of bug this parameter exists to kill.
+
+    `expect_filename_sha` is OFF only for the fixtures, which are named by the PROPERTY they pin
     (`green.jsonl`, `wrong-sha.jsonl`, …) rather than by a SHA — their names are documentation. It is ON
     for every real artifact, and `self-test` proves the check still fires (FILENAME_CASES below).
     """
@@ -679,7 +851,7 @@ def evaluate(path: Path, expected_sha: str, *, expect_filename_sha: bool = True)
         return UNVERIFIABLE, str(exc)
     except SnapshotError as exc:
         return UNUSABLE, str(exc)
-    return decide(rows)
+    return decide(rows, required)
 
 
 # --- self-test: the fixtures ARE the evidence ---------------------------------------------------
@@ -732,7 +904,8 @@ EXPECTED = {
     "red-checkrun.jsonl": (RED, "concluded FAILURE", "a FAILED check run is RED — the rule that decides the whole point of the artifact"),
     "running-checkrun.jsonl": (PENDING, "still running", "a check run whose `.status` classifies RUNNING can still move — it is NOT a green (and the test is MEMBERSHIP in RUNNING_STATUSES, never `!= COMPLETED`)"),
     "pending-status.jsonl": (PENDING, "still running", "a PENDING commit status can still move — it is NOT a green"),
-    "expected-status.jsonl": (PENDING, "still running", "EXPECTED = a required status NOT POSTED YET — the registration gap, visible in the evidence for once"),
+    "expected-status.jsonl": (PENDING, "still running", "EXPECTED = a required status DECLARED BUT NOT POSTED YET — the one shape of not-yet-registered the evidence can express on its own; REQUIRED_CASES below covers the shape it cannot"),
+    "status-passing.jsonl": (GREEN, "all passing", "a SUCCESS commit status and no check runs at all — the family /check-runs cannot see, green on its own; REQUIRED_CASES uses it to pin what a producer-less row can and cannot prove"),
     "skipped-is-pass.jsonl": (GREEN, "all passing", "SKIPPED is a PASS — GitHub rolls it up that way, and a rule set without it can NEVER go green on a repo with path filters"),
     # THE CATCH-ALL, and it is now reachable ONLY by a value GitHub has ADDED SINCE — which is exactly what
     # it is for. Both values below are INVENTED: no CheckStatusState is `AWAITING_APPROVAL`, no
@@ -786,6 +959,13 @@ EXPECTED = {
 }
 
 
+# EVERY fixture in EXPECTED is evaluated against a base branch that requires NOTHING (`none`) — the state
+# in which the rules above are the ONLY thing deciding, which is exactly what those fixtures are for. The
+# required-set rule gets its own table, REQUIRED_CASES, because it is the one rule whose input is NOT in the
+# file: the same bytes are green or pending depending on what the BASE BRANCH declared.
+NO_REQUIRED = RequiredSet(NONE_DECLARED)
+
+
 def self_test(fixtures: Path) -> int:
     """Every fixture is evaluated against the SAME expected head_sha the ledger would hold.
 
@@ -802,7 +982,7 @@ def self_test(fixtures: Path) -> int:
             failures += 1
             continue
         # The fixtures are named by PROPERTY, not by SHA, so the filename rule is exercised separately.
-        got, reason = evaluate(path, FIXTURE_SHA, expect_filename_sha=False)
+        got, reason = evaluate(path, FIXTURE_SHA, required=NO_REQUIRED, expect_filename_sha=False)
         if got == want and needle in reason:
             print(f"ok       {name:28} -> {got:14} ({why})")
         elif got != want:
@@ -817,13 +997,113 @@ def self_test(fixtures: Path) -> int:
             failures += 1
 
     failures += filename_test(fixtures)
+    failures += required_test(fixtures)
+    failures += spec_test()
     print()
     if failures:
         print(f"{failures} check(s) FAILED — the CI-snapshot contract is broken.")
         return 1
-    print(f"all {len(EXPECTED)} fixtures + {len(FILENAME_CASES)} filename cases hold — the contract is intact.")
+    print(f"all {len(EXPECTED)} fixtures + {len(FILENAME_CASES)} filename cases + "
+          f"{len(REQUIRED_CASES)} required-set cases + {len(SPEC_CASES)} spec cases hold — "
+          f"the contract is intact.")
     print("`mutate-ci-snapshot.py` is what proves each of them pins its OWN rule. Run it too.")
     return 0
+
+
+# THE REGISTRATION GAP, PINNED. Every case below reuses fixture bytes that are ALREADY GREEN on their own —
+# so the ONLY thing under test is what the BASE BRANCH declared. That is the point: the gap was never
+# visible in the file, which is precisely why no rule that reads only the file could ever have closed it.
+#
+# Each case is (fixture, spec, verdict, needle, why).
+REQUIRED_CASES = [
+    # The two that would have been FALSE GREENS, and the reason this rule exists.
+    ("green.jsonl", CANNOT_READ, PENDING, "could NOT BE READ",
+     "THE ONE THAT MATTERS MOST: flawless all-passing evidence, and we never learned what was REQUIRED — "
+     "so it is NOT green. `unknown` is ledger.py's DEFAULT, which makes a run that never looked merge nothing"),
+    ("green.jsonl", f'{DECLARED_PREFIX}[{{"context": "integration-tests", "app": "-"}}]',
+     PENDING, "required check absent: integration-tests",
+     "THE REGISTRATION GAP ITSELF: a required check that NEVER REGISTERED is not a failing row, it is NO "
+     "ROW — the snapshot is nonempty, every row passes, and it is still not the truth about this commit"),
+    # PRODUCER. A right-named check from the WRONG app is not the required one.
+    ("green.jsonl", f'{DECLARED_PREFIX}[{{"context": "Lint scripts", "app": "99999"}}]',
+     PENDING, "required check absent: Lint scripts (app 99999)",
+     "the name matches and the APP DOES NOT — matching on name alone would let any app on earth satisfy a "
+     "declaration by naming a job the same"),
+    ("status-passing.jsonl", f'{DECLARED_PREFIX}[{{"context": "ci/jenkins", "app": "15368"}}]',
+     PENDING, "required check absent: ci/jenkins (app 15368)",
+     "an APP-BOUND declaration against a COMMIT STATUS, which carries no producer field at all — it cannot "
+     "be PROVEN, so it is not accepted. Fail-closed, and the doc says so"),
+    # The greens. A rule that cannot say YES is not a gate, it is a wall.
+    ("green.jsonl", NONE_DECLARED, GREEN, "required set is EMPTY (read, not assumed)",
+     "the base branch requires NOTHING — and that is a READ FACT, not an absence of one, so nothing "
+     "required can be missing and the green carries NO caveat"),
+    ("green.jsonl",
+     f'{DECLARED_PREFIX}[{{"context": "Lint scripts", "app": "15368"}}, '
+     f'{{"context": "Validate plugins", "app": "-"}}]',
+     GREEN, "required set satisfied: Lint scripts, Validate plugins",
+     "every declared check PRESENT and PASSING — one bound to its app, one unbound. THIS is what green is "
+     "now allowed to mean"),
+    ("status-passing.jsonl", f'{DECLARED_PREFIX}[{{"context": "ci/jenkins", "app": "-"}}]',
+     GREEN, "required set satisfied: ci/jenkins",
+     "an UNBOUND declaration IS satisfiable by a commit status — the producer rule must not wall off the "
+     "legacy family it was never about"),
+    # A declared check that is PRESENT but still RUNNING is NOT this rule's business: it is a RUNNING row,
+    # so plain `pending` outranks and the PR gets WATCHED, as it must. Ordering, pinned.
+    ("running-checkrun.jsonl", f'{DECLARED_PREFIX}[{{"context": "Validate plugins", "app": "-"}}]',
+     PENDING, "still running",
+     "a declared check that IS registered and still running is caught by the RUNNING bullet, NOT by "
+     "'required check missing' — it can still move, so it is watched"),
+]
+
+
+def required_test(fixtures: Path) -> int:
+    """The same bytes, different declarations. Nothing here is a property OF THE FILE."""
+    failures = 0
+    for name, spec, want, needle, why in REQUIRED_CASES:
+        got, reason = evaluate(
+            fixtures / name, FIXTURE_SHA, required=parse_required_set(spec), expect_filename_sha=False
+        )
+        label = f"{name} + {spec[:34]}"
+        if got == want and needle in reason:
+            print(f"ok       {label:70} -> {got:8} ({why})")
+        elif got != want:
+            print(f"FAIL     {label:70} -> {got:8} expected {want}\n         reason: {reason}")
+            failures += 1
+        else:
+            print(f"FAIL     {label:70} -> {got:8} but the reason does not mention {needle!r}"
+                  f"\n         reason: {reason}")
+            failures += 1
+    return failures
+
+
+# A SPEC WE CANNOT READ MUST NEVER BECOME `none`. That is the one degradation that would rebuild the false
+# green inside the parser — "the base branch requires nothing", asserted on the strength of a value we
+# failed to parse. Every case below must RAISE, and the CLI turns each into exit 2 with NO verdict.
+SPEC_CASES = [
+    ("", "an empty spec is not a state"),
+    ("declared:", "a `declared:` with no payload"),
+    ("declared:[]", "an EMPTY declared list — an empty required set is `none`, a DIFFERENT fact"),
+    ("declared:build,test", "THE OLD COMMA FORMAT: unparseable as JSON, and never silently read as `none`"),
+    ('declared:{"context": "build", "app": "-"}', "an object where an ARRAY is required"),
+    ('declared:[{"context": "build"}]', "a declared check missing its `app` — half a declaration"),
+    ('declared:[{"context": "build", "app": 15368}]', "a non-string `app` — a value we cannot compare"),
+    ('declared:[{"context": "", "app": "-"}]', "an EMPTY context — it would match nothing, forever"),
+    ("none-declared", "a near-miss of a state name, which is not one of the three"),
+    ("NONE", "the right word, the wrong case — states are exact, never close enough"),
+]
+
+
+def spec_test() -> int:
+    failures = 0
+    for spec, why in SPEC_CASES:
+        try:
+            got = parse_required_set(spec)
+        except SpecError:
+            print(f"ok       spec {spec[:30]!r:34} -> REJECTED ({why})")
+            continue
+        print(f"FAIL     spec {spec[:30]!r:34} -> PARSED as {got} — it must be REJECTED, never degraded")
+        failures += 1
+    return failures
 
 
 # The filename rule, every way. A check that cannot FAIL is not a check — `wrong-sha.jsonl` exists because
@@ -851,7 +1131,7 @@ def filename_test(fixtures: Path) -> int:
         for name, want, needle, why in FILENAME_CASES:
             path = Path(tmp) / name
             shutil.copyfile(fixtures / "green.jsonl", path)
-            got, reason = evaluate(path, FIXTURE_SHA, expect_filename_sha=True)
+            got, reason = evaluate(path, FIXTURE_SHA, required=NO_REQUIRED, expect_filename_sha=True)
             if got == want and needle in reason:
                 print(f"ok       {name:28} -> {got:14} ({why})")
             elif got != want:
@@ -876,6 +1156,17 @@ def main() -> int:
     v = sub.add_parser("verify", help="verify a snapshot against an expected head_sha")
     v.add_argument("--file", required=True, type=Path)
     v.add_argument("--head-sha", required=True)
+    v.add_argument(
+        "--required-set",
+        required=True,
+        help=(
+            "what the BASE BRANCH requires — the ledger header's `required_set`, VERBATIM: "
+            "`declared:<json>` | `none` | `unknown` (stage-2-ci.md, 'WHAT WERE WE EXPECTING TO SEE?'). "
+            "REQUIRED, with no default: a snapshot can be nonempty and all-passing while a REQUIRED check "
+            "has not registered at all — that is no row, not a failing one, and no rule that reads only "
+            "the file can see it. `unknown` NEVER goes green."
+        ),
+    )
     v.add_argument(
         "--expect-filename-sha",
         action=argparse.BooleanOptionalAction,
@@ -903,7 +1194,16 @@ def main() -> int:
         fail(f"--head-sha {args.head_sha!r} is not a git object id (40 LOWERCASE hex) — refusing to verify")
     if not args.file.exists():
         fail(f"no such snapshot: {args.file}")
-    verdict, reason = evaluate(args.file, args.head_sha, expect_filename_sha=args.expect_filename_sha)
+    # A required-set spec we cannot READ is an operator error too, and it gets the same treatment: exit 2,
+    # NO verdict. It must NEVER fall back to `none` — "the base branch requires nothing", asserted from a
+    # value we failed to parse, is the false green this flag exists to prevent, rebuilt inside the parser.
+    try:
+        required = parse_required_set(args.required_set)
+    except SpecError as exc:
+        fail(f"--required-set: {exc}")
+    verdict, reason = evaluate(
+        args.file, args.head_sha, required=required, expect_filename_sha=args.expect_filename_sha
+    )
     print(f"{verdict}: {reason}")
     # green is the ONLY exit-0 verdict. Everything else — including UNCLASSIFIED — is not a green.
     return 0 if verdict == GREEN else 1

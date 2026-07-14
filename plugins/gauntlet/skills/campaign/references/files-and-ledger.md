@@ -94,13 +94,14 @@ due from those, then refreshes this file. So a stale or half-written ledger is s
 act on it without reconciling against gh (and any existing worktree) first.
 
 The store is **JSONL** — one JSON object per line, `cat`/`grep`/`jq`-able. The first line is the
-run-config header record (`{"type": "header", …}` — `run_id`, `base_branch`, `api_changes`, `reviewer`,
-re-read every wake, see Constraints and "Run identity and concurrency"); each
+run-config header record (`{"type": "header", …}` — the run's config, **every field of it** re-read each
+wake, never from memory; the fields are the ones `ledger.py`'s `HEADER_FIELDS` declares and "Header-record
+fields" below defines, and no reader may keep its own copy of that list); each
 following line is one adopted PR's row record (`{"type": "row", …}`). Every record is **self-describing**
 — fields are keyed by NAME, never by column position:
 
 ```
-{"type": "header", "run_id": "g260704-0915-a3f29c1b", "base_branch": "main", "api_changes": "ask", "reviewer": "codex"}
+{"type": "header", "run_id": "g260704-0915-a3f29c1b", "base_branch": "main", "api_changes": "ask", "reviewer": "codex", "required_set": "declared:[{\"context\": \"build\", \"app\": \"-\"}, {\"context\": \"test (3.12, ubuntu)\", \"app\": \"15368\"}]"}
 {"type": "row", "id": "pr41", "slug": "fix-null-deref", "branch": "fix-null-deref", "worktree": ".worktrees/fix-null-deref", "worktree_owned": "yes", "branch_owned": "yes", "pr": "41", "head_sha": "a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c", "reviews_ok": "2", "ci": "green", "tier": "STANDARD", "attempts": "1", "started": "2026-07-04T09:15:00Z", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:9f2c\u2026", "settled_strikes": "0", "unusable_refetches": "0", "ci_stalled_since": "-", "ci_reason": "-", "blocker_ruling": "-"}
 {"type": "row", "id": "pr52", "slug": "add-retry-flag", "branch": "add-retry-flag", "worktree": ".worktrees/add-retry-flag", "worktree_owned": "no", "branch_owned": "no", "pr": "52", "head_sha": "b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7089a1b", "reviews_ok": "0", "ci": "pending", "tier": "HIGH", "attempts": "0", "started": "-", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:4a71\u2026", "settled_strikes": "1", "unusable_refetches": "0", "ci_stalled_since": "-", "ci_reason": "required check absent: integration-tests", "blocker_ruling": "-"}
 ```
@@ -115,7 +116,16 @@ Header-record fields: `run_id` (this run's identity — namespaces its dir/label
 `base_branch` (the adopted PRs' baseRefName — the branch they merge into & diffs measure against; set
 once, see "Base branch"), `api_changes` (`ask` | `allowed`, run-wide; set once from the invocation),
 `reviewer` (`default` (Claude subagents) | `codex` | `<other>` — the selected reviewer; set once, see
-"The reviewer").
+"The reviewer"), `required_set` (what `base_branch` **requires** — `stage-2-ci.md`, "What were we
+expecting to see?", owns the three states, the format, and the reads that produce them; re-read every
+wake while it is `unknown`).
+
+`required_set` is a property of the **base branch**, not of a PR, which is why it lives in the header. It
+defaults to **`unknown`**, and that default is **load-bearing, not a placeholder**: `unknown` **cannot go
+green** (`stage-2-ci.md`), so a run that never performed the read merges **nothing**. **"I have not
+looked" and "I looked and there are none" are different facts**, and the default is the one that claims
+nothing — a `none` that really meant "I could not see" is how a green gets recorded for a commit whose
+required check never registered.
 
 Header field notes (the header fields above; per-row fields follow):
 

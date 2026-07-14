@@ -24,12 +24,25 @@ from typing import NoReturn
 
 # --- schema (owned here, once) ------------------------------------------------
 
-HEADER_FIELDS = ("run_id", "base_branch", "api_changes", "reviewer")
+HEADER_FIELDS = ("run_id", "base_branch", "api_changes", "reviewer", "required_set")
 HEADER_DEFAULTS = {
     "run_id": "-",
     "base_branch": "-",
     "api_changes": "ask",
     "reviewer": "default",
+    # What `base_branch` REQUIRES (stage-2-ci.md, "WHAT WERE WE EXPECTING TO SEE?", which owns the three
+    # states and the format). A property of the BASE BRANCH, not of a PR, so it lives here, not on the rows.
+    #
+    #   declared:<json>  the required checks, READ. `ci-snapshot.py --required-set` is the one parser.
+    #   none             both reads succeeded and the set is EMPTY — a read FACT: nothing is required.
+    #   unknown          a read failed. We do not know what was required.
+    #
+    # The default is `unknown`, and it is LOAD-BEARING, not a placeholder: `unknown` CANNOT GO GREEN
+    # (stage-2-ci.md), so a run that never performed the read merges NOTHING. "I have not looked" and "I
+    # looked and there are none" are DIFFERENT facts, and the default is the one that claims nothing —
+    # a `none` that really meant "I could not see" is how a green is recorded for a commit whose required
+    # check never registered.
+    "required_set": "unknown",
 }
 
 ROW_FIELDS = (

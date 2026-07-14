@@ -439,26 +439,20 @@ block a merge, this is the line that was wrong.
 
 #### DECIDE — first match wins
 
-**KNOWN GAP — THE REGISTRATION GAP: `green` here does NOT mean the required set passed.** `main`'s green
-rule also demanded that "**the expected checks are actually present**". This change does **NOT** carry that
-requirement forward, and that omission is a **deliberate, disclosed** one — not an oversight, and **not** a
-claim that the risk is gone:
+**THE REGISTRATION GAP IS CLOSED — `green` means the required set passed.** It did not always. `green`
+once meant only *"every check that had REGISTERED by the time we looked had passed"*, which says nothing
+about whether a **required** check ever registered at all: a required check that has not registered is not
+a failing row, it is **NO ROW**, so the snapshot was nonempty, all-passing, and **not the truth about the
+commit** — a false green with a disclaimer printed beside it. **The disclaimer is gone because the hole is
+gone**, not because it was talked away:
 
-- **Why it is dropped: `main`'s version was UNIMPLEMENTABLE.** `main` names **no mechanism** for knowing
-  what checks are *expected* — it demands a comparison against a set it never defines. The rule below is an
-  **honest restatement of what the evidence can actually deliver**, not a weakening dressed up as one.
-- **THE RISK IS REAL AND IT IS NAMED.** Where required checks exist but have **not registered yet** on the
-  `head_sha`, a snapshot holding **one** registered, successful check derives **green** — and campaign can
-  merge over a required check it **never saw**. `green` here means **ONLY**: *"every check that had
-  registered by the time we looked had passed."* It does **NOT** mean the required set passed, and it does
-  **NOT** mean the required set is complete.
-- **NEVER claim more than the registration gap allows when reporting a green.** Not in the ledger, not in
-  the report, not to the user. `green` is a statement about **what was observed**, never about what was
-  **expected**.
-- **The mechanism that closes it lands in the `required-set` PR later in this series** — it reads the base
-  branch's required checks from **branch protection + rulesets**, records `required_set` as
-  DECLARED / NONE DECLARED / CANNOT READ, and makes `green` require **every declared required check to be
-  present AND passing**. Until that lands, this gap is **open**.
+- **The expected set is now READ, not assumed** — from branch protection **and** rulesets, into the ledger's
+  `required_set` ("WHAT WERE WE EXPECTING TO SEE?" below). That read is the mechanism the rule always
+  needed and never had.
+- **`green` now requires every declared required check to be PRESENT and PASSING**, matched on producer.
+- **The states that cannot support the claim do not make it.** A missing declared check and an unreadable
+  required set are **`pending` bullets below** — non-merging outcomes, each bounded and escalated — never a
+  green with a footnote. **A caveat attached to a green is not a caveat; it is a merge.**
 
 Evaluate the bullets **in this order — first match wins.**
 
@@ -533,11 +527,128 @@ ever re-ordered again.
   green** — it means nothing has registered yet. **Do NOT watch it**: there is no row that could move, so
   there is nothing to block on. If nothing ever registers, SETTLED below escalates it instead of letting it
   spin.
+- **pending (required set unreadable)** → `required_set` is **CANNOT READ** ("WHAT WERE WE EXPECTING TO
+  SEE?" below). We do not know what this commit was supposed to show, so **no snapshot of it can be
+  green** — not even an all-`PASS` one. **Do NOT watch it**: no row moving would answer the question that
+  is open. It is **bounded like every other `pending`**: nothing is RUNNING, so SETTLED below strikes it
+  and escalates at the STRIKE CAP, naming the read that failed. Re-attempt the read each wake while it is
+  `unknown` — a transient failure clears itself well inside that budget.
+- **pending (required check missing)** → `required_set` is **DECLARED** and a declared required check has
+  **no row** in the snapshot (matched on name **and** producer — below). **A check that has not registered
+  is not a failing row, it is NO ROW**, and a snapshot missing it is nonempty, all-`PASS`, and **not the
+  truth about this commit**. **NEVER green.** Bounded the same way: if it never registers, SETTLED
+  escalates with the check **named** (that is exactly the "which check never registered" ESCALATE already
+  promises). A declared check that IS present but still running is not this bullet — it is a `RUNNING` row,
+  so plain `pending` above already caught it, and it is watched, as it should be.
 - **green** → **all three `source` markers are present and hold** (VERIFY above — otherwise you do not know
-  what you did not read); **≥1 evidence row**; **every** evidence row classifies `PASS`; and containment
-  holds **on a usable identity** (every `witness` `.id` non-null and unique). This bullet is subject to the
-  **registration gap** above: it proves only that **what had registered** passed, **never** that the
-  required set is complete.
+  what you did not read); **≥1 evidence row**; **every** evidence row classifies `PASS`; containment
+  holds **on a usable identity** (every `witness` `.id` non-null and unique); **and the required set is
+  ACCOUNTED FOR** — `required_set` is **DECLARED** and every declared check is **present AND classified
+  `PASS`, proven from the SAME row, matched on producer**, or `required_set` is **NONE DECLARED**, which is
+  a **read fact, not an absence of one**: the base branch requires nothing, so nothing required can be
+  missing. **`green` now means the required set passed. It carries NO caveat, and it never did license
+  one** — the two states that could not support the claim (`CANNOT READ`, a missing declared check) are
+  **`pending` bullets above**, not footnotes under this one.
+
+#### WHAT WERE WE EXPECTING TO SEE? — the required-check set
+
+`green` above says *"every evidence row passes"*. That is only worth something if the rows are **the rows
+that were supposed to be there**. A required check that has **not registered yet** is not a failing row —
+it is **no row at all** — so a snapshot of the checks that *did* register can be nonempty, entirely
+passing, and **still not the truth about this commit**. This section is what makes `green` mean the
+required set passed. **It is not a disclosure of that hole; it is the closing of it.**
+
+So: **read what the base branch REQUIRES, and prove every required check is PRESENT and PASSING.**
+
+**PROBE THE DATA, NEVER THE PERMISSIONS.** Do **not** ask "may I read this?" and infer the answer —
+**ask for the thing, and see whether you got it.** A permissions probe is not evidence about a token:
+`GET /repos/{o}/{r}` needs only **Metadata**, and its `.permissions` reports **the USER's role, not the
+TOKEN's grants** — so a fine-grained token owned by an admin reads `admin: true` while lacking
+`Administration: read`. **A rule keyed on that probe declares "proven unprotected" on a branch it simply
+cannot see.**
+
+Two reads, **both needing only Metadata**. **BOTH are mandatory** — neither can see what the other sees:
+
+```sh
+# (a) CLASSIC branch protection — AND the field that disambiguates its absence.
+#     `.protection.enabled` tells you whether classic protection EXISTS, so you never have to guess
+#     what a 404 from /branches/<b>/protection meant. `.checks[]` carries the app binding; `.contexts`
+#     is the same set WITHOUT it, and is deprecated — read `.checks[]`, never `.contexts`.
+gh api "repos/<owner>/<repo>/branches/<base>" --jq '
+  {classic_enabled: (.protection.enabled // false),
+   checks: [(.protection.required_status_checks.checks // [])[]
+            | {context: .context, app: ((.app_id | tostring) // "-")}]}'
+
+# (b) RULESETS — the rules actually in force on the branch. The CLASSIC endpoint CANNOT SEE THESE.
+gh api "repos/<owner>/<repo>/rules/branches/<base>" --jq '
+  [.[] | select(.type=="required_status_checks")
+       | .parameters.required_status_checks[]
+       | {context: .context, app: ((.integration_id | tostring) // "-")}]'
+```
+
+**A 404 from `/branches/<b>/protection` means THREE different things** — genuinely unprotected, *you may
+not look*, **or protected by a RULESET the classic endpoint cannot see**. Reproduced on **this repo** (a
+dated illustration — the repo's settings are a live fact and will drift; the API behavior is the permanent
+point): `.permissions.admin` reads `true`, `.protection.enabled` reads `false`, and yet
+`branches/main.protected` reads `true`, because a **ruleset** protects it. **A classic 404, or a
+`classic_enabled: false`, NEVER establishes "nothing is required."** That is why read (b) exists and why
+it is not optional.
+
+##### THREE states, NEVER two — "I CANNOT SEE ANY" IS NOT "THERE ARE NONE"
+
+Persist the outcome in the ledger header as `required_set` — **a state you cannot persist is a state you do
+not have** (`files-and-ledger.md` owns the field; this block owns its meaning and its format):
+
+```sh
+ledger.py --file <state.jsonl> header set required_set '<declared:<json> | none | unknown>'
+```
+
+**WHEN: read it once per run, before the first CI derivation** — it is a property of `base_branch`, which is
+itself set once (`files-and-ledger.md`, "Base branch"), so one read serves every PR in the run. **And read
+it AGAIN, every wake, for as long as it is `unknown`** — that is the whole of its retry policy, and it is
+what keeps a transient failure (a network blip, a rate limit) from parking PRs that were never really
+blocked: a read that recovers before the STRIKE CAP costs the run nothing at all. **Once it is `declared:…`
+or `none`, it is SETTLED — do not re-read it**, and never overwrite a successful read with a later failure.
+
+| State | `required_set` | When | What `green` may claim |
+|---|---|---|---|
+| **DECLARED** | `declared:<json>` | **BOTH** reads succeeded **and** their union is non-empty | every declared check is **present AND passing** — the required set passed |
+| **NONE DECLARED** | `none` | **BOTH** reads succeeded **and** their union is empty | the base branch **requires nothing**, so nothing required can be missing — **the required set passed, vacuously and completely** |
+| **CANNOT READ** | `unknown` | **EITHER** read errored, **or** the field it needed was **absent** from the response | **NOTHING. `green` is UNREACHABLE** — the PR goes `pending (required set unreadable)` and escalates. |
+
+**`unknown` CANNOT GO GREEN, and that is the entire point of separating it from `none`.** A `green`
+printed next to *"…but a required check may exist, be missing, and campaign cannot tell"* is **not a
+disclosure, it is a trapdoor with a sign on it**: the merge still happens, and the sign is read by nobody.
+The three states are not three flavours of green — they are **two that can prove the claim and one that
+must not make it**. That is also what makes `unknown` the **safe default** (`ledger.py`): a run that never
+performed the read merges **nothing**, rather than merging everything with a footnote.
+
+**`DECLARED` requires that BOTH reads SUCCEEDED.** If one read was denied and the other returned a
+non-empty set, you know **SOME** required checks — not that you know them **ALL**. That is **CANNOT
+READ** (`unknown`). A **permissive** endpoint answering never vouches for a **restricted** one erroring.
+
+**`declared:` carries a JSON array, NOT a comma-separated list.** Each element is
+`{"context": "<name>", "app": "<app_id>" | "-"}`, and `"-"` means the declaration **binds no app** (any
+producer satisfies it). The payload is JSON because **a required check's name may CONTAIN A COMMA** — a
+matrix job's name is `job (a, b)`, and 40 of the 100 check runs on `vercel/next.js`'s default-branch head
+carried one when this was written (a dated illustration; the **claim** — commas are legal and common in
+check names — is the permanent point). A comma-separated list of those names is **ambiguous at the
+separator**, and a required set you cannot parse back is a required set you do not have.
+`ci-snapshot.py --required-set` is the **one parser**; it rejects anything malformed **loudly** and
+**NEVER degrades a value it cannot read into `none`** — quietly reading a broken spec as "nothing is
+required" would rebuild the exact false green this section removes.
+
+**MATCH ON PRODUCER, not just on name — a right-named check from the WRONG app is not the required one.**
+A declared check is **satisfied** only by an evidence row that carries its `context` **and** its producer:
+
+- a `checkrun` row whose `name` equals the context, and whose `app_id` equals the declared `app` (any
+  `app_id` satisfies a declaration whose `app` is `"-"`);
+- a `status` row whose `context` equals it — **and only where the declaration binds NO app.** The
+  commit-status rows carry **no producer field at all** (FETCH above: the status response has none to
+  give), so an app-bound declaration **cannot be proven** by one. It stays unsatisfied → `pending
+  (required check missing)` → SETTLED escalates it, naming the check. **That is fail-closed on purpose**:
+  the alternative is to accept a status from an app we never identified as proof of a check that named
+  one, which is the false green with an extra step.
 
 #### `pending` MUST NOT BE AN ABSORBING STATE — SETTLED, then ESCALATE
 
@@ -955,6 +1066,8 @@ The watch is warranted by **a row that can still move**, never by the `ci` value
 |---|---|
 | **pending** — an evidence row classifies `RUNNING` | **YES** — ensure a watch task is alive; relaunch it in this same wake if it has exited. **The watch is not the bound**: if that row never finishes, the watch blocks forever and RUNNING-STALL is what ends it, on the heartbeat. |
 | **pending (nothing registered)** — zero evidence rows | **NO.** Nothing to block on. SETTLED escalates it. |
+| **pending (required check missing)** — a declared check has no row | **NO.** Every row present is terminal (a running one would have matched plain `pending` above), so nothing can move. SETTLED escalates it, naming the check. |
+| **pending (required set unreadable)** — `required_set` is `unknown` | **NO.** The open question is what the base branch REQUIRES; no row finishing would answer it. Re-attempt the read each wake; SETTLED escalates it. |
 | **red** — but some row still `RUNNING` | **YES** — that row can still move; the CI fix runs regardless. |
 | **red** — every row terminal | **NO.** The CI fix moves it, not the watch. |
 | **UNKNOWN_VALUE** | **NO.** The park is the resolution. |
@@ -1093,7 +1206,8 @@ correctness (`stage-2-review-gate.md`). Say that plainly whenever the question c
 
 Every CI failure must be handled; never merge over a red or pending check, and never infer green from
 the watch's exit code — always confirm against a **SHA-pinned, SHA-verified** snapshot of **both** check
-families.
+families, **and against what the base branch REQUIRED** ("WHAT WERE WE EXPECTING TO SEE?"): the rows that
+showed up passing is not the same claim as the required set passing, and only the second one may merge.
 
 CI fixes serialize only within one PR/SHA. Different PRs with red CI may run scoped CI-fix subagents
 concurrently within the dispatcher cap.

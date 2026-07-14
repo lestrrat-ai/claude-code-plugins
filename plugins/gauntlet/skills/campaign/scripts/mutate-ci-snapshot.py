@@ -159,8 +159,15 @@ def mutate(source: str, rule: str, weakening: str, stmt: ast.stmt) -> str:
     return "\n".join(lines[: stmt.lineno - 1] + body + lines[stmt.end_lineno :]) + "\n"
 
 
+def required_case_id(name: str, spec: str) -> str:
+    """Stable, readable key for a REQUIRED_CASES case. The spec is part of the identity: the SAME bytes are
+    green or pending depending on it, which is the entire point of that table."""
+    return f"[req] {name} + {spec[:40]}"
+
+
 def run_cases(mod: types.ModuleType) -> dict[str, tuple[str, str]]:
-    """Every fixture + every filename case, against this (possibly mutated) module.
+    """Every fixture + every filename case + every required-set case, against this (possibly mutated)
+    module.
 
     A mutant that CRASHES has not returned a verdict, and "no verdict" is itself a deviation — so it is
     recorded, never swallowed.
@@ -168,7 +175,9 @@ def run_cases(mod: types.ModuleType) -> dict[str, tuple[str, str]]:
     out: dict[str, tuple[str, str]] = {}
     for name in mod.EXPECTED:
         try:
-            out[name] = mod.evaluate(FIXTURES / name, mod.FIXTURE_SHA, expect_filename_sha=False)
+            out[name] = mod.evaluate(
+                FIXTURES / name, mod.FIXTURE_SHA, required=mod.NO_REQUIRED, expect_filename_sha=False
+            )
         except Exception as exc:  # noqa: BLE001 - a crash IS the result here
             out[name] = (f"crash:{type(exc).__name__}", str(exc))
     with tempfile.TemporaryDirectory() as tmp:
@@ -176,9 +185,22 @@ def run_cases(mod: types.ModuleType) -> dict[str, tuple[str, str]]:
             path = Path(tmp) / name
             shutil.copyfile(FIXTURES / "green.jsonl", path)
             try:
-                out[f"[name] {name}"] = mod.evaluate(path, mod.FIXTURE_SHA, expect_filename_sha=True)
+                out[f"[name] {name}"] = mod.evaluate(
+                    path, mod.FIXTURE_SHA, required=mod.NO_REQUIRED, expect_filename_sha=True
+                )
             except Exception as exc:  # noqa: BLE001
                 out[f"[name] {name}"] = (f"crash:{type(exc).__name__}", str(exc))
+    # The required-set rule is the ONE rule whose input is not in the file. Its cases must run against the
+    # mutant too, or removing it would be pinned by nobody — the failure mode this harness exists for.
+    for name, spec, _want, _needle, _why in mod.REQUIRED_CASES:
+        case = required_case_id(name, spec)
+        try:
+            out[case] = mod.evaluate(
+                FIXTURES / name, mod.FIXTURE_SHA,
+                required=mod.parse_required_set(spec), expect_filename_sha=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            out[case] = (f"crash:{type(exc).__name__}", str(exc))
     return out
 
 
@@ -186,6 +208,10 @@ def expectations(mod: types.ModuleType) -> dict[str, tuple[str, str]]:
     """case -> (expected verdict, needle the reason must contain)."""
     out = {name: (want, needle) for name, (want, needle, _why) in mod.EXPECTED.items()}
     out.update({f"[name] {n}": (want, needle) for n, want, needle, _why in mod.FILENAME_CASES})
+    out.update({
+        required_case_id(n, spec): (want, needle)
+        for n, spec, want, needle, _why in mod.REQUIRED_CASES
+    })
     return out
 
 
