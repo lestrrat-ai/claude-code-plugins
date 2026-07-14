@@ -1,0 +1,56 @@
+{
+  "why": "THE FALSE GREEN INSIDE THE FALSE-GREEN TOOL. The checks on the ledger's head_sha all PASSED — and that commit is no longer the PR's head: someone pushed, and the NEW head has no checks registered yet (the rollup is empty). The evidence is green, complete, and ABOUT THE WRONG COMMIT. It is therefore not evidence about this PR at all: NOT green (it is stale), and not red either (that would be a claim about the wrong commit). FAIL CLOSED, name the moved head, and re-derive against it",
+  "pr": "35",
+  "api": {
+    "check-runs": {
+      "response": [
+        {
+          "total_count": 2,
+          "check_runs": [
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "Lint scripts",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/29318959841/job/1"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "Validate plugins",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/29318959841/job/2"
+            }
+          ]
+        }
+      ]
+    },
+    "status": {
+      "response": [
+        {
+          "sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+          "state": "pending",
+          "total_count": 0,
+          "statuses": []
+        }
+      ]
+    },
+    "rollup": {
+      "response": {
+        "headRefOid": "e846cd76a783aa1087e221cc0684b84136419404",
+        "statusCheckRollup": []
+      }
+    }
+  },
+  "expect": {
+    "verdict": "unusable",
+    "ci": "pending",
+    "needle": "HEAD MOVED"
+  }
+}

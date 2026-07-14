@@ -42,13 +42,21 @@ direction the reader did not check. The verdict you get from this command is, by
 `ci-snapshot.py verify` gives for the artifact it leaves behind — and it leaves the artifact behind
 precisely so that claim is AUDITABLE and not merely asserted.
 
-WHAT IT DOES NOT DECIDE, ON PURPOSE. It answers **what the evidence says**. It does NOT answer **what the
-driver should do about it** — whether to launch a watch, dispatch a CI fix, or park the PR. Those rules
-live in `stage-2-ci.md` and they are being rewritten as this lands (PR #31: SETTLED, RUNNING-STALL, the
-bounded refetch, the ESCALATE park). Encoding them here would create a SECOND owner of a rule that is
-moving under it — a stale restatement by construction. This file's output gives the driver everything
-those rules read (the verdict, the reason, the evidence counts) and states nothing about what to do with
-them.
+EVIDENCE ABOUT A COMMIT THAT IS NO LONGER THE HEAD IS NOT EVIDENCE ABOUT THE PR. The fetch is pinned to the
+LEDGER's `head_sha`, and a push can land at any time — including WHILE this tool is fetching. So the tool
+also reads the PR's CURRENT head, LAST (after both evidence families), and if it has MOVED the verdict is
+`unusable`, NEVER green and never red: green would merge a PR on checks that never ran against its head —
+the same false green this file exists to kill, one level deeper — and red would be a claim about the wrong
+commit too. `ci = pending`, and the reason NAMES the new head so the driver re-derives against it rather
+than guessing. See `derive()`.
+
+WHAT IT DOES NOT DECIDE, ON PURPOSE. It answers **what the evidence says**, and **whether that evidence is
+about this PR at all**. It does NOT answer **what the driver should do about it** — whether to launch a
+watch, dispatch a CI fix, or park the PR. Those rules live in `stage-2-ci.md` and they are being rewritten
+as this lands (PR #31: SETTLED, RUNNING-STALL, the bounded refetch, the ESCALATE park). Encoding them here
+would create a SECOND owner of a rule that is moving under it — a stale restatement by construction. This
+file's output gives the driver everything those rules read (the verdict, the reason, the evidence counts,
+the head that superseded ours) and states nothing about what to do with them.
 
 THE DOC AND THIS TOOL CANNOT SILENTLY DISAGREE — `doc-check` is what makes that true.
 The enums, the CLASSIFY buckets and the DECIDE order are stated in `stage-2-ci.md` as prose AND encoded in
@@ -169,6 +177,9 @@ RULES = {
     "both-families-checkruns": "the check-run family is FETCHED — a family never read reports nothing, and nothing parses as nothing-wrong",
     "both-families-status": "the commit-status family is FETCHED — /check-runs CANNOT SEE a failing Jenkins status",
     "rollup-witnesses": "the rollup is read for WITNESSES — with none, containment passes TRIVIALLY",
+    "head-read-last": "the PR's CURRENT head is read AFTER the evidence — a head read FIRST cannot see a push that lands mid-fetch",
+    "head-must-be-known": "a rollup response with NO headRefOid is a FAILED fetch — an unknown head makes the fail-closed rule below unable to fire",
+    "head-moved-is-not-evidence": "a MOVED head FAILS CLOSED — evidence about a commit that is not the head is not evidence about the PR",
     "fetch-failure-is-not-evidence": "a `gh` call that FAILS yields NO verdict from evidence, and promotes NOTHING",
     "verdict-from-snapshot": "the verdict comes from ci-snapshot.evaluate() over the PROMOTED BYTES — never from what we think we fetched",
     "disclose-truncation": "an evidence count that disagrees with GitHub's own total_count is DISCLOSED, never silently dropped",
@@ -273,6 +284,9 @@ def fetch_check_runs(fetch: Fetch, repo: str, head_sha: str) -> tuple[list[dict]
     # number of rows, EVIDENCE IS MISSING — and a missing row could be the failing one. It is DISCLOSED
     # (below), never dropped in silence.
     total = pages[0].get("total_count") if pages and isinstance(pages[0], dict) else None
+    # The FAMILY IS READ, and what it returned is what goes in the artifact. A family never read reports
+    # NOTHING, and "nothing" parses as "nothing wrong" — the weakening below is that family going dark.
+    # MUTATE:both-families-checkruns:return [], {"row": "source", "source": "check-runs", "sha": NO_OID, "count": "0"}, None
     return rows, marker, total if isinstance(total, int) else None
 
 
@@ -308,6 +322,9 @@ def fetch_statuses(fetch: Fetch, repo: str, head_sha: str) -> tuple[list[dict], 
     # GitHub's cannot disagree with the ledger — so it could never fail. That is a rubber stamp.
     # MUTATE:status-marker-sha:marker_sha = NO_OID
     marker_sha = sha if sha is not None else NO_OID
+    # THE FAMILY /check-runs CANNOT SEE. The weakening below is this family never being read — and it is
+    # SELF-STAMPED on purpose, so that what kills it is the MISSING JENKINS FAILURE and not the marker rule.
+    # MUTATE:both-families-status:return [], {"row": "source", "source": "status", "sha": head_sha, "count": "0"}
     return rows, {"row": "source", "source": "status", "sha": marker_sha, "count": str(len(rows))}
 
 
@@ -317,10 +334,14 @@ def fetch_rollup(fetch: Fetch, pr: str) -> tuple[list[dict], dict, object]:
     The rollup carries NO app id and NO commit oid, so it can never be read as a verdict — and its marker's
     sha is therefore `-`, ALWAYS. A sha there would be one WE invented.
 
-    `headRefOid` rides along on the SAME call (no extra request). It is ADVISORY ONLY and is reported, never
-    judged: it is what tells the driver the ledger's `head_sha` has been superseded while it was looking.
-    NOTHING in the verdict reads it — a snapshot is about the commit it was PINNED to, and letting the
-    current head touch the verdict would make the artifact describe a commit it never asked GitHub about.
+    `headRefOid` — the PR's head AS OF THIS CALL — rides along on the SAME call (no extra request), and it
+    is the LAST thing this tool asks GitHub. It NEVER ENTERS THE ARTIFACT and NO RULE IN `ci-snapshot.py`
+    READS IT: a snapshot is about the commit it was PINNED to, and writing the current head into it would
+    make the artifact describe a commit it never asked GitHub about. What it decides is one level up, in
+    `derive()`, and it is not what the evidence SAYS but whether that evidence is ABOUT THIS PR AT ALL: if
+    the head has moved, the snapshot is a true report about a commit that is no longer this PR's, and it
+    FAILS CLOSED (never green, never red). The purity of the verifier is untouched; the PRODUCER is the only
+    one that can see the head move, and so it is the producer that must refuse.
     """
     data = fetch("rollup", ["gh", "pr", "view", pr, "--json", "statusCheckRollup,headRefOid"])
     if not isinstance(data, dict):
@@ -333,7 +354,24 @@ def fetch_rollup(fetch: Fetch, pr: str) -> tuple[list[dict], dict, object]:
             for w in witnesses]
     # MUTATE:rollup-marker-sha:marker = {"row": "source", "source": "rollup", "sha": "0" * 40, "count": str(len(rows))}
     marker = {"row": "source", "source": "rollup", "sha": NO_OID, "count": str(len(rows))}
-    return rows, marker, data.get("headRefOid")
+    # THE HEAD MUST BE KNOWN, or the fail-closed rule below is a rule that cannot fire. A response with no
+    # `headRefOid` leaves us unable to say whether this evidence is about the PR's head or about a commit it
+    # has moved past — and "we cannot tell" has exactly one safe answer, which is not green. Left as `None`
+    # it would sail straight through `head_moved()` as "not moved" — a fail-closed check that fails OPEN on
+    # the one input it cannot read, which is the whole family of bug this file is about.
+    head_now = data.get("headRefOid")
+    if not isinstance(head_now, str) or not head_now:
+        # MUTATE:head-must-be-known:head_now = None
+        raise FetchError(
+            "rollup: the response carries no headRefOid — WE CANNOT TELL which commit is the PR's head, so "
+            "we cannot tell whether this evidence describes it. That is not a green; it is a fetch we "
+            "cannot use."
+        )
+
+    # WITNESSES, or containment passes TRIVIALLY: with none, "REST saw everything the rollup saw" is a claim
+    # about the empty set. The weakening below is the rollup going dark — and it takes the head with it.
+    # MUTATE:rollup-witnesses:return [], {"row": "source", "source": "rollup", "sha": NO_OID, "count": "0"}, None
+    return rows, marker, head_now
 
 
 def up(value: object) -> object:
@@ -352,17 +390,26 @@ def build_snapshot(fetch: Fetch, repo: str, pr: str, head_sha: str) -> tuple[lis
     rows: list[dict] = [{"row": "header", "sha": head_sha}]
     meta: dict = {"notes": [], "head_sha_now": None}
 
-    # MUTATE:both-families-checkruns:runs, cr_marker, total = [], {"row": "source", "source": "check-runs", "sha": NO_OID, "count": "0"}, None
-    runs, cr_marker, total = fetch_check_runs(fetch, repo, head_sha)
-    rows += runs + [cr_marker]
-
-    # MUTATE:both-families-status:statuses, st_marker = [], {"row": "source", "source": "status", "sha": head_sha, "count": "0"}
-    statuses, st_marker = fetch_statuses(fetch, repo, head_sha)
-    rows += statuses + [st_marker]
-
-    # MUTATE:rollup-witnesses:witnesses, ru_marker, head_now = [], {"row": "source", "source": "rollup", "sha": NO_OID, "count": "0"}, None
-    witnesses, ru_marker, head_now = fetch_rollup(fetch, pr)
-    rows += witnesses + [ru_marker]
+    # THE ORDER OF THESE THREE FETCHES IS ITSELF A RULE: **THE EVIDENCE FIRST, THE PR'S CURRENT HEAD LAST.**
+    # No snapshot of a moving thing is atomic — a push can land BETWEEN two of these calls — so the question
+    # is never "can the head move under us" (it can) but "can a head we read still be the head those checks
+    # were fetched under". Read the head LAST and the answer is yes for every push up to that instant: any
+    # push that could have staled the evidence happened BEFORE the head read, so `headRefOid` shows it and
+    # `derive()` fails closed. (A push AFTER the last call is invisible to any tool at any ordering, and it
+    # is harmless: it moves the ledger's head_sha, and the next derivation is pinned to the new one.)
+    #
+    # READ IT FIRST — the weakening below — AND THE RACE IS WIDE OPEN, silently: a push landing between the
+    # head read and the check-runs fetch leaves `headRefOid` EQUAL to the sha we asked for, so nothing fails
+    # closed, while the check-runs call — pinned BY URL to the ledger's now-superseded sha — happily returns
+    # the OLD head's green runs. Two snapshots of two different moments, spliced into one GREEN verdict about
+    # a commit that is no longer the PR's head. `head-moves-mid-fetch.json` is that push, recorded.
+    # MUTATE:head-read-last:(witnesses, ru_marker, head_now), (runs, cr_marker, total), (statuses, st_marker) = fetch_rollup(fetch, pr), fetch_check_runs(fetch, repo, head_sha), fetch_statuses(fetch, repo, head_sha)
+    (runs, cr_marker, total), (statuses, st_marker), (witnesses, ru_marker, head_now) = (
+        fetch_check_runs(fetch, repo, head_sha),
+        fetch_statuses(fetch, repo, head_sha),
+        fetch_rollup(fetch, pr),
+    )
+    rows += runs + [cr_marker] + statuses + [st_marker] + witnesses + [ru_marker]
 
     meta["head_sha_now"] = head_now
     meta["evidence"] = {"checkrun": len(runs), "status": len(statuses), "witness": len(witnesses)}
@@ -396,14 +443,38 @@ def promote(rows: list[dict], rundir: Path, pr: str, head_sha: str) -> Path:
     return final
 
 
-def derive(fetch: Fetch, repo: str, pr: str, head_sha: str, rundir: Path) -> dict:
-    """FETCH -> PROMOTE -> VERIFY -> DECIDE. The verdict comes from the BYTES, never from the fetch.
+def head_moved(head_sha: str, head_now: object) -> bool:
+    """Is the commit we pinned this fetch to no longer the PR's head?
 
-    That last part is the whole architecture in one line. It would be trivial — and wrong — to decide from
-    the row dicts still in memory: they are what we THINK we fetched. Writing them out and reading them back
-    through `ci-snapshot.evaluate()` means the verdict is computed from THE ARTIFACT THAT WILL BE AUDITED,
-    by the same code any reviewer runs against it. A tool whose answer cannot be reproduced from the
-    evidence it leaves behind is asking to be trusted, which is the thing this repo does not do.
+    ONE OWNER for this predicate, because it is stated twice — the FAIL-CLOSED rule in `derive()` reads it,
+    and the `head_moved` field the driver reads is it. Two copies of a comparison is two chances to write
+    `==` for `!=`, and the day they disagreed the JSON would say `head_moved: true` beside a green verdict.
+
+    A head we did not get is `None` — and that CANNOT REACH HERE from a promoted snapshot: `fetch_rollup`
+    refuses a response with no `headRefOid` outright. It is handled anyway, because a predicate that is
+    correct only while some other function stays correct is a predicate with a landmine under it.
+    """
+    return bool(head_now) and head_now != head_sha
+
+
+def derive(fetch: Fetch, repo: str, pr: str, head_sha: str, rundir: Path) -> dict:
+    """FETCH -> PROMOTE -> VERIFY -> DECIDE, and then: IS THIS EVIDENCE EVEN ABOUT THIS PR?
+
+    The verdict comes from the BYTES, never from the fetch. That is the whole architecture in one line. It
+    would be trivial — and wrong — to decide from the row dicts still in memory: they are what we THINK we
+    fetched. Writing them out and reading them back through `ci-snapshot.evaluate()` means the verdict is
+    computed from THE ARTIFACT THAT WILL BE AUDITED, by the same code any reviewer runs against it. A tool
+    whose answer cannot be reproduced from the evidence it leaves behind is asking to be trusted, which is
+    the thing this repo does not do.
+
+    AND THEN ONE QUESTION THE BYTES CANNOT ANSWER, WHICH IS WHY IT IS ASKED HERE AND NOT IN `ci-snapshot.py`.
+    The artifact is a report about the commit it was PINNED to, and it is checked to death against that
+    commit — but NOTHING IN IT KNOWS WHETHER THAT COMMIT IS STILL THE PR'S HEAD. `ci-snapshot.py` is a pure
+    function from bytes on disk to a verdict; it is handed no PR, it makes no network call, and the day it
+    did it would stop being independently auditable. Only the PRODUCER sees the head. So only the producer
+    can refuse, and it MUST: a perfectly green snapshot of a commit the PR has moved past is a TRUE report
+    about the WRONG THING, and merging on it merges code whose checks never ran. Same false green as
+    `zero-checks.json`, one level deeper — the evidence is not missing, it is about somebody else.
     """
     try:
         rows, meta = build_snapshot(fetch, repo, pr, head_sha)
@@ -419,7 +490,32 @@ def derive(fetch: Fetch, repo: str, pr: str, head_sha: str, rundir: Path) -> dic
 
     # MUTATE:verdict-from-snapshot:verdict, reason = SNAP.GREEN, "fetched"
     verdict, reason = SNAP.evaluate(path, head_sha, expect_filename_sha=True)
-    return result(pr, head_sha, verdict, reason, path, meta["evidence"], meta["head_sha_now"], meta["notes"])
+
+    # FAIL CLOSED ON A MOVED HEAD — and note WHICH verdicts this overrides: ALL OF THEM, `red` included.
+    # Green is obvious (it would merge a PR on checks that never ran against its head). RED IS THE ONE
+    # WORTH SAYING OUT LOUD: it looks safe — it blocks the merge either way — but it is still a claim about
+    # a commit that is not the PR's, and recording it as this PR's `ci` red would blame the new head for the
+    # old one's failure and send a fix subagent at a bug the push may already have fixed. The evidence does
+    # not describe the thing being judged; the only honest thing to report is that we do not yet know.
+    #
+    # `unusable`, not `pending`, and the distinction is the DRIVER'S TO USE: `pending` means "this PR's
+    # checks have not started" (see zero-checks.json), and a driver that reads a moved head as that would
+    # sit and WAIT for checks on a commit nobody is going to check. `unusable` means "the snapshot cannot be
+    # trusted — REFETCH" (`stage-2-ci.md`), which is exactly right, and the reason NAMES the new head so the
+    # refetch is pinned to it instead of guessed. Both map to ledger `ci = pending` (LEDGER_CI is lossy, and
+    # that is why `verdict` is emitted BESIDE `ci` and not collapsed into it).
+    head_now = meta["head_sha_now"]
+    if head_moved(head_sha, head_now):
+        # MUTATE:head-moved-is-not-evidence:pass
+        verdict, reason = SNAP.UNUSABLE, (
+            f"HEAD MOVED — this evidence was fetched for {head_sha}, but the PR's head is NOW {head_now}. "
+            f"It describes a commit that is no longer this PR's head, so it is not evidence about this PR "
+            f"at all: NOT green (the evidence is stale), and NOT red (that would be a claim about the wrong "
+            f"commit). Re-derive with --head-sha {head_now} once the ledger holds it. "
+            f"(what the stale snapshot said, for the record: {verdict} — {reason})"
+        )
+
+    return result(pr, head_sha, verdict, reason, path, meta["evidence"], head_now, meta["notes"])
 
 
 def result(pr: str, head_sha: str, verdict: str, reason: str, path: Path | None,
@@ -451,8 +547,13 @@ def result(pr: str, head_sha: str, verdict: str, reason: str, path: Path | None,
         "reason": reason,              # WHICH rule fired and WHICH row made it fire
         "snapshot": str(path) if path else None,   # the evidence, on disk, re-verifiable by hand
         "evidence": evidence,          # counts per row type — `{}` when nothing was ever fetched
-        "head_sha_now": head_now,      # ADVISORY: the PR's head at fetch time. Read by NO rule here.
-        "head_moved": bool(head_now) and head_now != head_sha,
+        # The PR's head as of the LAST call this tool made. It NEVER enters the artifact (`ci-snapshot.py`
+        # reads no such thing), and it decides EXACTLY ONE question, in `derive()`: is the evidence about
+        # this PR's head at all? If it is not, the verdict is `unusable` and `head_moved` is true — which is
+        # what tells the driver to re-derive against THIS sha instead of waiting for checks that will never
+        # arrive on the old one.
+        "head_sha_now": head_now,
+        "head_moved": head_moved(head_sha, head_now),
         "notes": notes,                # anything filtered, capped, or incomplete. NEVER silent.
     }
 
@@ -691,14 +792,32 @@ SUPERSEDED_SHA = "e846cd76a783aa1087e221cc0684b84136419404"
 
 
 def fixture_fetch(fx: dict) -> Fetch:
-    """A `Fetch` that answers from a fixture instead of GitHub — same seam, same producer, no network."""
+    """A `Fetch` that answers from a fixture instead of GitHub — same seam, same producer, no network.
+
+    A fixture may also record a PUSH THAT LANDS MID-FETCH:
+
+        "push": {"after": "check-runs", "head": "<the new head sha>"}
+
+    From the moment that source has been read, the rollup answers with the NEW `headRefOid`, exactly as
+    GitHub would — before it, with the old one. **A STATIC RECORDING CANNOT TEST AN ORDERING.** It replays
+    the same bytes whichever order the sources are read in, so it cannot tell a head read BEFORE the evidence
+    from one read AFTER it — and that difference is the whole of the `head-read-last` rule. A fixture with no
+    `push` key is unaffected: nothing moves, and the order cannot matter.
+    """
+    push = fx.get("push")
+    seen: set[str] = set()
+
     def fetch(source: str, _argv: list[str]) -> object:
         spec = fx["api"].get(source)
         if spec is None:
             raise FetchError(f"{source}: the fixture records no response for this source")
         if "fail" in spec:
             raise FetchError(f"{source}: {spec['fail']}")
-        return spec["response"]
+        response = spec["response"]
+        if push and source == "rollup" and push["after"] in seen:
+            response = {**response, "headRefOid": push["head"]}  # the push has landed; GitHub says so
+        seen.add(source)
+        return response
     return fetch
 
 

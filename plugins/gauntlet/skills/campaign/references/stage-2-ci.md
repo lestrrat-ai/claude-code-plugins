@@ -18,8 +18,19 @@ python3 <skill>/scripts/ci-status.py derive --pr <N> --head-sha <the LEDGER's he
 It performs every step below — FETCH (SHA-pinned, paginated, **both** families), PROMOTE (atomic), VERIFY
 (via `scripts/ci-snapshot.py`, which it calls), and DECIDE — and prints **JSON**: the `verdict`, the `ci`
 value to write to the ledger, the `reason` (**which rule fired, and which row made it fire** — this is what
-`ci_reason` is built from), the evidence counts, and the path to the snapshot it left behind. It exits `0`
-**only** on green. **Write `ci` from that JSON; never from an impression of some command's output.**
+`ci_reason` is built from), the evidence counts, `head_moved` + `head_sha_now`, and the path to the snapshot
+it left behind. It exits `0` **only** on green. **Write `ci` from that JSON; never from an impression of
+some command's output.**
+
+**A MOVED HEAD FAILS CLOSED — `head_moved: true` is NEVER a green, and never a red either.** The fetch is
+pinned to the `head_sha` **the ledger holds**, and a push can land at any moment — including *while the tool
+is fetching*, which is why it reads the PR's current head **LAST**, after both evidence families. If that
+head differs from the one it was pinned to, the snapshot is a **true report about a commit that is no longer
+this PR's head** — so it is not evidence about this PR at all: `verdict = unusable`, **`ci = pending`**, and
+the `reason` **names the new head** (`head_sha_now`). Green would merge a PR on checks that never ran
+against its code; red would blame the new head for the old one's failure. **Do NOT read this as "checks have
+not started"** — that is `verdict = pending` (zero evidence rows), and it means *wait*. This means
+**re-derive**: refresh the PR's `head_sha` into the ledger (`pr-adoption.md`) and derive again, pinned to it.
 
 **WHY THIS IS A COMMAND AND NOT A PROCEDURE YOU FOLLOW.** Every rule in this section was already correct,
 and a driver still wrote **`ci = green`** into the ledger for a PR whose checks had **not registered** —
