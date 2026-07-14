@@ -93,22 +93,40 @@ classification is TOTAL over the enums the doc declares (every value in exactly 
 two, no bucket holding a value the enum does not have). It runs in CI and in `self-test`. Drift is now a
 RED BUILD, not a discovery.
 
+AND IT READS THE FETCH COMMANDS TOO — because the version that did NOT is where the doc actually drifted.
+An alarm with a blind spot tells you where the next defect will land, and this one landed there: `doc-check`
+compared enums and DECIDE order and NEVER PARSED THE `gh … | jq` BLOCK, so the doc went on saying
+`(.statusCheckRollup // [])` — a MISSING rollup laundered into an EMPTY one — while `fetch_rollup` refused
+exactly that shape. The doc and the code disagreed about WHAT IS REFUSED, in the one place nothing looked.
+So the doc's fetch commands are now EXECUTED (`check_fetch_spec`): its `jq` filters are run over the
+fixtures' recorded responses, and for EVERY fixture and EVERY source the doc must give the SAME ANSWER as
+this file's producer — the same rows, or the same REFUSAL. Its `gh` invocations are checked against the argv
+the code really issues, EVERY COPY OF THEM in the doc (a recap that quietly drops `,headRefOid` is a reader
+reconstructing a fetch the moved-head rule cannot fire on). One refusal is CROSS-SOURCE and no single-fetch
+filter can express it — the rollup's `StatusContext` coverage — and `doc-check` PRINTS that limit rather
+than letting it pass for coverage. Executing the spec needs `jq`; if `jq` is missing, `doc-check` FAILS.
+
 **A check that finds nothing MUST NOT PASS.** If the doc cannot be found, or a block cannot be parsed, or
-zero rules are extracted, `doc-check` FAILS. An extractor that silently matches nothing and reports success
-is the false green of this whole story, one level up, in the tool written to prevent it.
+zero rules are extracted, or zero (fixture, source) pairs are compared, `doc-check` FAILS. An extractor that
+silently matches nothing and reports success is the false green of this whole story, one level up, in the
+tool written to prevent it.
 
   derive     fetch a PR's checks, promote the snapshot, verify it, and print the verdict as JSON
-  doc-check  assert stage-2-ci.md's enums / CLASSIFY / DECIDE order agree with the code that runs
+  doc-check  assert stage-2-ci.md's enums / CLASSIFY / DECIDE order AND its executed fetch spec agree with
+             the code that runs
   self-test  run every fixture, assert its verdict AND the rule that produced it, then run doc-check
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -119,6 +137,10 @@ HERE = Path(__file__).resolve().parent
 SNAPSHOT_PY = HERE / "ci-snapshot.py"
 DOC = HERE.parent / "references" / "stage-2-ci.md"
 FIXTURES = HERE / "fixtures" / "ci-status"
+
+# `doc-check` EXECUTES the doc's own `jq` filters (see `check_fetch_spec`). Its ABSENCE is a FAILURE, never a
+# skip: a check that quietly does not run is the false green this whole file exists to refuse, one level up.
+JQ = shutil.which("jq")
 
 # A git object id, as GitHub returns it: 40 LOWERCASE hex. Same rule, same reason, as `ci-snapshot.py` —
 # a `--head-sha` of any other shape makes every comparison downstream unfalsifiable, so it is an OPERATOR
@@ -194,6 +216,18 @@ DECIDE_ORDER = ("UNUSABLE", "red", "UNKNOWN_VALUE", "pending", "pending (nothing
 # say it plainly rather than dress the gap up — is a rule ADDED to this file and left out of BOTH this dict
 # and the markers. Adding a rule here without marking it is the one way to add an untested rule to this
 # script, and nothing but review will catch it.
+#
+# **AND THAT IS NOT HYPOTHETICAL — REVIEW CAUGHT NINE.** The matrix printed "all 18 rules are pinned" and it
+# was TRUE and it was NOT ENOUGH: the sentence is about the rules IN THIS DICT, and NINE REAL GUARDS WERE NOT
+# IN IT. Deleted one at a time, each left the entire suite AND the entire matrix green — the completeness
+# call on the STATUS family (the body was marked, both call sites were not, so either fixture killed the
+# marker and neither killed the deletion); three response-SHAPE guards; `gh_fetch`'s two rules (no fixture
+# runs it — every fixture REPLACES it); and the two CLI operator-error guards (no fixture calls `main`).
+#
+# **THE COUNT IS A CLAIM, AND THE CLAIM WAS WRONG. The method that found that out is the only one that
+# works, and it is not reading:** take each rule, DELETE IT ALONE, and run everything. Something must go red.
+# If nothing does, the rule is decoration. Do this for every guard in the file — not just the ones already
+# listed here, because the ones NOT listed are exactly where the answer will surprise you.
 RULES = {
     "evidence-sha-from-response": "a checkrun row's sha is GITHUB'S `.head_sha`, NEVER the sha we asked for",
     "status-sha-from-response": "a status row's sha is the response's own top-level `.sha`",
@@ -213,6 +247,25 @@ RULES = {
     "verdict-from-snapshot": "the verdict comes from ci-snapshot.evaluate() over the PROMOTED BYTES — never from what we think we fetched",
     "evidence-count-known": "GitHub's own total_count MUST be readable — a completeness rule that cannot fire is not a rule",
     "evidence-is-complete": "a read SHORTER than GitHub's own total_count FAILS CLOSED — the row we did not get could be the failing one",
+    # THE RULE BODY AND ITS APPLICATION ARE TWO RULES, and the two below are the second kind. A guard is not
+    # enforced by EXISTING; it is enforced by being CALLED, once per family — and a call site nothing pins is
+    # a call site that can be deleted with the suite still green. It happened: the status family's call was
+    # removed and NOTHING went red, because the body's own markers were killed by the OTHER family's fixture.
+    # Never let two applications of one rule share one marker: the harness cannot tell them apart, and it
+    # will report a rule PINNED while half of what it guards is unguarded.
+    "checkruns-complete": "the check-run family IS SUBJECT to the completeness test — a body nobody calls is not a rule",
+    "status-complete": "the commit-status family IS SUBJECT to it TOO — this is the family that carries the failing Jenkins status",
+    # A RESPONSE OF THE WRONG SHAPE IS A RESPONSE WE CANNOT READ. Each of these three was pinned by NOTHING
+    # until the audit below deleted it alone and watched the suite stay green.
+    "checkruns-pages-are-an-array": "a `--slurp` that did not yield an ARRAY is a fetch we cannot read — never rows to iterate",
+    "status-pages-are-an-array": "the same, for the family /check-runs cannot see",
+    "rollup-is-an-object": "`gh pr view --json` returns an OBJECT — anything else is a response we cannot read",
+    # THE SEAM ITSELF, and the CLI. `gh_fetch` is the ONLY code path that talks to GitHub, and every fixture
+    # REPLACES it — so nothing executed its rules. `seam_cases` drives them against a local process.
+    "gh-exit-is-checked": "a NON-ZERO exit from `gh` is a FAILED FETCH — the doc's shell version needs pipefail to learn this",
+    "gh-stdout-is-json": "stdout that is not JSON is a FAILED FETCH, not a CRASH — a raise where a verdict was owed is no verdict",
+    "cli-head-sha-is-an-oid": "a `--head-sha` that is not a git object id is an OPERATOR ERROR (exit 2), never a verdict about the PR",
+    "cli-rundir-exists": "a `--rundir` that is not a directory is an OPERATOR ERROR — named before the fetch, not as a crash during promotion",
 }
 
 
@@ -227,6 +280,31 @@ class FetchError(Exception):
 def fail(msg: str) -> NoReturn:
     print(f"ci-status: {msg}", file=sys.stderr)
     raise SystemExit(2)
+
+
+# --- the OPERATOR-ERROR guards: functions, so that ONE owner is both CALLED by `main` and DRIVEN by the
+# suite. Inline in `main()` they were reachable ONLY through the CLI — which no fixture goes through — so
+# both were pinned by NOTHING, and deleting either left the whole matrix green. `seam_cases` drives them.
+
+def check_head_sha(head_sha: str) -> str:
+    """An OPERATOR ERROR is not a verdict about the PR. A `--head-sha` that is not a git object id makes
+    every comparison downstream unfalsifiable, and blaming the EVIDENCE for the caller's mistake is how a
+    tool reports a defect that is not there. Exit 2: no verdict at all beats a verdict about the wrong
+    question."""
+    # MUTATE:cli-head-sha-is-an-oid:pass
+    if not SHA_RE.match(head_sha):
+        fail(f"--head-sha {head_sha!r} is not a git object id (40 LOWERCASE hex) — refusing to derive")
+    return head_sha
+
+
+def check_rundir(rundir: Path) -> Path:
+    """`promote()` writes the artifact INTO <rundir>; a rundir that does not exist is a caller mistake, and
+    it must be named as one BEFORE any fetch — not surface later as a crash in the middle of promotion,
+    where it would look like a defect in the evidence."""
+    # MUTATE:cli-rundir-exists:pass
+    if not rundir.is_dir():
+        fail(f"--rundir {rundir} is not a directory")
+    return rundir
 
 
 # --- FETCH ---------------------------------------------------------------------------------------
@@ -245,10 +323,19 @@ def gh_fetch(source: str, argv: list[str]) -> object:
     this, because a dead `gh` piped into `jq` yields an EMPTY stdin, and `jq` then prints nothing and exits
     0 — the fetch failed and the shell called it success. There is no pipeline here, and the exit status is
     checked directly, which is the same rule with nothing left to forget.
+
+    **THIS FUNCTION IS THE ONE SEAM THE FIXTURES REPLACE, WHICH IS WHY BOTH ITS RULES WERE PINNED BY
+    NOTHING.** Every fixture drives the producer through `fixture_fetch`, so nothing in the suite ever
+    executed these two lines: delete either and the whole matrix stayed green — the audit that found the
+    completeness call found this too. They are driven now, by `seam_cases`, against a LOCAL PROCESS (no
+    network): a command that prints valid JSON and exits 1, and one that prints garbage and exits 0. A rule
+    on the only code path that talks to GitHub is the last rule that may go untested.
     """
     proc = subprocess.run(argv, capture_output=True, text=True, check=False)  # noqa: S603
+    # MUTATE:gh-exit-is-checked:pass
     if proc.returncode != 0:
         raise FetchError(f"{source}: `{' '.join(argv[:3])} …` exited {proc.returncode}: {proc.stderr.strip()}")
+    # MUTATE:gh-stdout-is-json:return json.loads(proc.stdout)
     try:
         return json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
@@ -318,6 +405,10 @@ def fetch_check_runs(fetch: Fetch, repo: str, head_sha: str) -> tuple[list[dict]
     pages = fetch("check-runs", [
         "gh", "api", "--paginate", "--slurp", f"repos/{repo}/commits/{head_sha}/check-runs",
     ])
+    # A `--slurp` that did not yield an ARRAY is a response we cannot read — and the row loop below would
+    # then iterate an object's KEYS and blow up on the first `.get`, which is a CRASH where a verdict was
+    # owed. Pinned by `slurp-not-an-array-checkruns.json`; it was pinned by nothing.
+    # MUTATE:checkruns-pages-are-an-array:pass
     if not isinstance(pages, list):
         raise FetchError(f"check-runs: expected an array of pages from --slurp, got {type(pages).__name__}")
     runs = [r for page in pages for r in (page or {}).get("check_runs", [])]
@@ -352,6 +443,16 @@ def fetch_check_runs(fetch: Fetch, repo: str, head_sha: str) -> tuple[list[dict]
     # WHAT WE COLLECTED MUST BE WHAT GITHUB SAYS IT HOLDS. A short read is a hole we KNOW about, and a hole
     # we know about is never green — see `require_complete`. (This is not the marker's `count` rule, which
     # asks a DIFFERENT question, downstream: "did every row this fetch produced survive into the file?")
+    #
+    # **THE CALL IS ITS OWN RULE, MARKED SEPARATELY FROM THE ONE IT CALLS — and here is why.** The rule
+    # BODY lives in `require_complete` and is marked there (`evidence-count-known`, `evidence-is-complete`).
+    # But a body no family CALLS is a rule that does not run, and the two call sites were INDISTINGUISHABLE
+    # to the mutation harness: delete THIS one and the body's markers still died on the OTHER family's
+    # fixture, so the matrix stayed green while this family had quietly stopped being checked. That is the
+    # false green of this whole file, committed by its own test harness. One marker per call site, one
+    # fixture per call site: `truncated-checkruns.json` kills this one, `truncated-statuses.json` kills the
+    # other, and NEITHER can stand in for the other.
+    # MUTATE:checkruns-complete:pass
     require_complete("check-runs", pages, len(rows))
 
     # The FAMILY IS READ, and what it returned is what goes in the artifact. A family never read reports
@@ -378,6 +479,8 @@ def fetch_statuses(fetch: Fetch, repo: str, head_sha: str) -> tuple[list[dict], 
     pages = fetch("status", [
         "gh", "api", "--paginate", "--slurp", f"repos/{repo}/commits/{head_sha}/status",
     ])
+    # Same rule, same reason, on the family that carries the failing Jenkins status.
+    # MUTATE:status-pages-are-an-array:pass
     if not isinstance(pages, list):
         raise FetchError(f"status: expected an array of pages from --slurp, got {type(pages).__name__}")
     statuses = [st for page in pages for st in (page or {}).get("statuses", [])]
@@ -395,6 +498,13 @@ def fetch_statuses(fetch: Fetch, repo: str, head_sha: str) -> tuple[list[dict], 
 
     # This family gets the SAME completeness proof as the other one. It is the family that carries the
     # FAILING JENKINS STATUS, so a short read here is the exact evidence gap this file was written about.
+    #
+    # AND IT IS MARKED AS ITS OWN RULE — see the twin call in `fetch_check_runs`. A REVIEWER deleted THIS
+    # LINE ALONE and both the self-test AND the mutation matrix stayed GREEN: the completeness rule was real,
+    # and NOTHING TESTED that this family was subject to it. A rule that can be deleted with no test going
+    # red is a rule that reports a safety it does not provide — the exact thesis of this file, turned on the
+    # file itself. `truncated-statuses.json` is what fails now.
+    # MUTATE:status-complete:pass
     require_complete("status", pages, len(rows))
 
     # THE FAMILY /check-runs CANNOT SEE. The weakening below is this family never being read — and it is
@@ -443,6 +553,10 @@ def fetch_rollup(fetch: Fetch, pr: str) -> tuple[list[dict], dict, object, list[
     one that can see the head move, and so it is the producer that must refuse.
     """
     data = fetch("rollup", ["gh", "pr", "view", pr, "--json", "statusCheckRollup,headRefOid"])
+    # `gh pr view --json` returns an OBJECT. Anything else is a response we cannot read, and reading
+    # `.get("statusCheckRollup")` off it would crash — no verdict at all, which is the one outcome this
+    # vocabulary has no word for. Pinned by `rollup-not-an-object.json`; it was pinned by nothing.
+    # MUTATE:rollup-is-an-object:pass
     if not isinstance(data, dict):
         raise FetchError(f"rollup: expected an object, got {type(data).__name__}")
 
@@ -849,10 +963,199 @@ def parse_decide_order(text: str) -> tuple[str, ...]:
     return found
 
 
+# --- doc-check, part 2: THE FETCH SPEC IS EXECUTED, not merely read ------------------------------
+#
+# **THE BLIND SPOT THIS CLOSES, AND WHY IT WAS THE DANGEROUS ONE.** `doc-check` compared the doc's ENUMS and
+# its DECIDE ORDER against the code — and NOT ITS FETCH COMMANDS. So the drift landed exactly there, inside
+# the alarm: the doc's rollup filter still said `(.statusCheckRollup // [])`, which turns a MISSING rollup
+# list into an EMPTY one, while `fetch_rollup` REFUSES that shape (a missing list makes the containment test
+# a claim about the empty set, which passes trivially). The doc and the code disagreed about WHAT IS REFUSED,
+# and the only thing watching them was looking the other way.
+#
+# The fix is not another prose rule. **The doc's `gh … | jq` commands are RUN** — the fixtures' recorded API
+# responses go in, and what comes out must be, for EVERY fixture and EVERY source, the SAME ANSWER the code's
+# producer gives: the same rows, or the same REFUSAL. A doc that is executed cannot drift in silence.
+#
+# WHAT THIS PINS, EXACTLY: refusal-parity and row-parity, over the fixture corpus. Two limits, named rather
+# than papered over:
+#   * it proves agreement ON THE FIXTURES, not over all possible responses. A shape no fixture records (a
+#     `null` check-run name, say) is not compared — that is what the fixture corpus is for, and adding one is
+#     how you extend this.
+#   * ONE producer refusal is NOT in the fetch spec at all and CANNOT be: the rollup's `StatusContext`
+#     entries must be COVERED by the REST status family, which is a CROSS-SOURCE test — no single-fetch `jq`
+#     can see another fetch's rows. The tool does it in `build_snapshot`; the doc states it as a FETCH bullet;
+#     `rollup-expected-status.json` pins it. It is called out in the doc's own (3) comment so the omission is
+#     a STATED limit and not a silent hole. Below, `SPEC_CANNOT_EXPRESS` names it, and the check PRINTS it.
+
+# `gh … | jq -c '<filter>'`, as the doc writes it. The filter is single-quoted and spans lines.
+DOC_FETCH_RE = re.compile(r"^(?P<cmd>gh [^\n|]*?)\s*\|\s*jq -c '(?P<jq>.*?)'\s*$", re.MULTILINE | re.DOTALL)
+
+# The producer refusals a per-fetch `jq` filter CANNOT express, and the fixture that pins each one anyway.
+# NEVER let this dict grow to hide a refusal that COULD be expressed: it exists to make one honest omission
+# visible, not to become the place drift goes to retire.
+SPEC_CANNOT_EXPRESS = {
+    "rollup StatusContext coverage": "CROSS-SOURCE (rollup vs the REST status family) — no single-fetch jq "
+                                     "can see another fetch's rows; build_snapshot() does it, and "
+                                     "rollup-expected-status.json pins it",
+}
+
+
+def parse_fetch_spec(text: str) -> dict[str, tuple[str, str]]:
+    """The doc's three fetch commands -> {source: (the gh command, the jq filter)}."""
+    found: dict[str, tuple[str, str]] = {}
+    for block in fenced_blocks(text):
+        for m in DOC_FETCH_RE.finditer(block):
+            cmd, filt = m.group("cmd").strip(), m.group("jq")
+            if "..." in filt:
+                continue  # the PROMOTE block's `'...(1) above...'` is a POINTER to the spec, not a copy
+            if "gh pr view" in cmd:
+                source = "rollup"
+            elif "/check-runs" in cmd:
+                source = "check-runs"
+            elif "/status" in cmd:
+                source = "status"
+            else:
+                continue
+            if source in found:
+                raise DocError(f"the doc gives TWO fetch commands for {source!r} — which one is the spec?")
+            found[source] = (cmd, filt)
+    missing = [s for s in ("check-runs", "status", "rollup") if s not in found]
+    if missing:
+        raise DocError(
+            f"the doc's FETCH block has no `gh … | jq -c` command for {', '.join(missing)} — the spec this "
+            f"check EXECUTES is gone or reformatted, and a check with no subject NEVER passes"
+        )
+    return found
+
+
+def code_argv() -> dict[str, list[str]]:
+    """The argv the CODE actually hands `gh`, captured through the same `Fetch` seam the fixtures drive.
+
+    Taken from the RUNNING CODE, never written down here: an expected-argv list in this file would be a
+    THIRD copy of the command, free to rot exactly like the doc's, and checked by nobody.
+    """
+    fx = json.loads((FIXTURES / "green.json").read_text(encoding="utf-8"))
+    inner, seen = fixture_fetch(fx), {}
+
+    def record(source: str, argv: list[str]) -> object:
+        seen[source] = argv
+        return inner(source, argv)
+
+    build_snapshot(record, "o/r", fx.get("pr", "35"), fx.get("head_sha", FIXTURE_SHA))
+    return seen
+
+
+def jq_rows(filt: str, response: object) -> list[dict]:
+    """Run the DOC's filter over a recorded response. A non-zero exit is the doc's spec REFUSING it."""
+    proc = subprocess.run([JQ or "jq", "-c", filt], input=json.dumps(response),  # noqa: S603
+                          capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        raise FetchError(proc.stderr.strip().splitlines()[0] if proc.stderr.strip() else "jq: non-zero exit")
+    return [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
+
+
+def code_rows(source: str, fx: dict) -> list[dict]:
+    """The rows + marker the CODE's producer builds from that same recorded response, or its FetchError."""
+    fetch = fixture_fetch(fx)
+    head_sha = fx.get("head_sha", FIXTURE_SHA)
+    if source == "check-runs":
+        rows, marker = fetch_check_runs(fetch, "o/r", head_sha)
+    elif source == "status":
+        rows, marker = fetch_statuses(fetch, "o/r", head_sha)
+    else:
+        rows, marker, _head, _sc = fetch_rollup(fetch, fx.get("pr", "35"))
+    return [*rows, marker]
+
+
+def check_fetch_spec(text: str) -> tuple[list[str], list[str]]:
+    """EXECUTE the doc's fetch commands. Returns (problems, the things that held).
+
+    Three questions, and the third is the one the enum/DECIDE checks could never ask:
+
+      1. does the doc INVOKE `gh` the way the code does? (the flags and the `--json` field list, taken from
+         the argv the code really issues — `--paginate`/`--slurp` are what defeat page-size truncation, and
+         `headRefOid` is what makes the moved-head rule able to fire at all);
+      2. is that true of EVERY restatement of those commands in the doc — not just the spec block? A recap
+         that drops `,headRefOid` is a reader reconstructing a fetch the moved-head rule cannot use. (This is
+         the CLASS check: the spec block was right and the PROMOTE block's copy was stale.)
+      3. do the doc's `jq` filters and the code's producer give the SAME ANSWER on every fixture — the same
+         rows, or the same REFUSAL?
+    """
+    problems: list[str] = []
+    if JQ is None:
+        return ([
+            "jq is not on PATH — the doc's fetch spec CANNOT BE EXECUTED, so doc/code agreement about it is "
+            "UNKNOWN. A check that cannot run its subject must never report success."
+        ], [])
+
+    spec = parse_fetch_spec(text)
+    argv = code_argv()
+    held: list[str] = []
+
+    # (1) + (2): the INVOCATION, and every restatement of it anywhere in the doc.
+    json_fields = argv["rollup"][argv["rollup"].index("--json") + 1]
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("gh api") and ("/check-runs" in line or "/status" in line):
+            for flag in ("--paginate", "--slurp"):
+                if flag not in line:
+                    problems.append(f"a REST fetch in the doc omits {flag} — `{line[:60]}…`. The code passes "
+                                    f"it, and without it you parse page one and call it the whole set.")
+        if line.startswith("gh pr view") and "statusCheckRollup" in line:
+            got = re.search(r"--json\s+(\S+)", line)
+            if not got or got.group(1) != json_fields:
+                problems.append(
+                    f"a rollup fetch in the doc requests `--json {got.group(1) if got else '?'}` but the code "
+                    f"requests `--json {json_fields}` — `{line[:60]}…`. Drop `headRefOid` and the PR's current "
+                    f"head is unknown, which is the one input the MOVED-HEAD rule cannot do without."
+                )
+    if not problems:
+        held.append(f"{'the gh invocations':32} every copy in the doc: --paginate --slurp, --json {json_fields}")
+
+    # (3) THE FILTERS, EXECUTED. Same responses, same answers — or the doc is lying about what it refuses.
+    compared = 0
+    for name in cases():
+        fx = json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+        for source, (_cmd, filt) in spec.items():
+            recorded = fx["api"].get(source)
+            if recorded is None or "fail" in recorded:
+                continue  # a fixture that records a DEAD `gh` has no bytes for the filter to read
+            compared += 1
+            try:
+                doc_out: object = jq_rows(filt, recorded["response"])
+            except FetchError as exc:
+                doc_out = f"REFUSED ({exc})"
+            try:
+                py_out: object = code_rows(source, fx)
+            except FetchError as exc:
+                py_out = f"REFUSED ({exc})"
+            doc_refused, py_refused = isinstance(doc_out, str), isinstance(py_out, str)
+            if doc_refused != py_refused:
+                who = "the DOC refuses it, the CODE does not" if doc_refused else \
+                      "the CODE refuses it, the DOC does not"
+                problems.append(
+                    f"{name} / {source}: the doc's spec and the code DISAGREE ABOUT WHAT IS REFUSED — {who}. "
+                    f"doc: {doc_out if doc_refused else 'produced rows'} | "
+                    f"code: {py_out if py_refused else 'produced rows'}"
+                )
+            elif not doc_refused and doc_out != py_out:
+                problems.append(
+                    f"{name} / {source}: the doc's jq and the code build DIFFERENT ROWS from the same "
+                    f"response.\n         doc:  {doc_out}\n         code: {py_out}"
+                )
+    if compared == 0:
+        problems.append("ZERO (fixture, source) pairs were compared — the spec was executed against NOTHING, "
+                        "and a check that finds nothing must never pass")
+    else:
+        held.append(f"{'the jq filters, EXECUTED':32} {compared} (fixture, source) pairs: same rows, or the "
+                    f"same refusal")
+    return problems, held
+
+
 def doc_check(doc: Path) -> int:
     """Assert the DOC, the CODE, and this tool's DECIDE_ORDER all say the same thing.
 
-    Three things are checked, and the third is the one no reader ever does by hand:
+    Four things are checked, and the last two are the ones no reader ever does by hand:
 
       1. the doc's CLASSIFY buckets == the sets `ci-snapshot.py` actually classifies with;
       2. the doc's DECIDE bullet order == DECIDE_ORDER (which the fixtures pin behaviourally);
@@ -861,6 +1164,9 @@ def doc_check(doc: Path) -> int:
          tables line for line and still leave a HOLE, because the tables and the enum list are two different
          paragraphs. A value in a hole matches NO branch: not green, not red, not pending — the PR can never
          resolve, and it WEDGES. This is the check that catches that, and nothing else in the repo does.
+      4. **THE DOC'S FETCH COMMANDS, EXECUTED** (`check_fetch_spec`) — because 1–3 did NOT read them, and
+         that is precisely where the doc drifted: it kept a `// []` that turns a MISSING rollup into an EMPTY
+         one, next to code that refuses it. An alarm with a blind spot is where the next defect will land.
     """
     if not doc.exists():
         print(f"FAIL     the doc is not at {doc} — a check that cannot find its subject NEVER passes")
@@ -922,13 +1228,30 @@ def doc_check(doc: Path) -> int:
               f"         doc says:  {fmt(got)}\n"
               f"         missing from the doc: {fmt(missing) or '—'}   only in the doc: {fmt(extra) or '—'}"
               + (f"\n         {why}" if why else ""))
+
+    # AND THE FETCH COMMANDS, WHICH NOTHING ABOVE READS. This is where the doc drifted last time.
+    try:
+        problems, held = check_fetch_spec(text)
+    except DocError as exc:
+        print(f"FAIL     the fetch spec cannot be read: {exc}")
+        return 1
+    for line in held:
+        print(f"ok       {line}")
+    for problem in problems:
+        failures += 1
+        print(f"FAIL     {problem}")
+    # NAMED, NEVER SILENT: what the spec cannot express, and what pins it instead. A gap you print is a gap
+    # somebody can close; a gap you omit is one the next reader will assume is covered.
+    for what, why in SPEC_CANNOT_EXPRESS.items():
+        print(f"limit    {what:32} NOT in the fetch spec — {why}")
+
     print()
     if failures:
         print(f"{failures} disagreement(s) between {doc.name} and the code that runs. "
               f"ONE of them is wrong and a reader will believe the other.")
         return 1
-    print(f"{len(checks)} checks: {doc.name}, ci-snapshot.py and ci-status.py agree — "
-          f"enums, CLASSIFY buckets, TOTALITY, and the DECIDE order.")
+    print(f"{len(checks) + len(held)} checks: {doc.name}, ci-snapshot.py and ci-status.py agree — enums, "
+          f"CLASSIFY buckets, TOTALITY, the DECIDE order, and the FETCH SPEC (executed, not read).")
     return 0
 
 
@@ -1010,6 +1333,68 @@ def check_fixture(name: str, got: dict, fx: dict) -> list[str]:
     return bad
 
 
+# --- the SEAMS no fixture can reach ---------------------------------------------------------------
+#
+# **A FIXTURE DRIVES THE PRODUCER THROUGH `fixture_fetch` — WHICH IS TO SAY IT NEVER RUNS `gh_fetch` AT ALL.**
+# So the two rules on the ONLY code path that ever talks to GitHub (a dead `gh` is a failed fetch; stdout
+# that is not JSON is a failed fetch) were executed by NOTHING, and the CLI's operator-error guards were
+# reachable only through `main()`, which the suite never calls. All four were UNPINNED: deleted one at a
+# time, the entire suite AND the entire matrix stayed green. That is the same defect the completeness call
+# had, and it was found the same way — by DELETING EACH RULE ALONE and asking what noticed.
+#
+# They are driven here, with NO NETWORK: `gh_fetch` is pointed at a LOCAL PYTHON PROCESS that behaves the way
+# a broken `gh` does (prints valid JSON, exits 1 / prints garbage, exits 0), and the CLI guards are called
+# directly. The result of each case is `refused` (the rule fired), `accepted` (it did not), or `crash:<T>`
+# — because a tool that raises where a verdict was owed has NOT refused, it has had no opinion, and the two
+# must never be recorded as the same thing.
+SEAM_EXPECT = {
+    "[seam] a dead gh is a failed fetch": ("refused", "exited 1"),
+    "[seam] gh stdout that is not JSON": ("refused", "not JSON"),
+    "[seam] --head-sha must be an oid": ("refused", "exit 2"),
+    "[seam] --rundir must exist": ("refused", "exit 2"),
+}
+
+
+def seam_cases(tmp: Path) -> dict[str, tuple[str, str]]:
+    out: dict[str, tuple[str, str]] = {}
+
+    def case(name: str, fn: Callable[[], object]) -> None:
+        # `fail()` PRINTS to stderr before it exits, and these cases fire it ON PURPOSE, once per mutant —
+        # so its output is captured here rather than smeared across the report. The suppression is scoped to
+        # the case: nothing else in this file writes to stderr, and swallowing a REAL diagnostic would be
+        # exactly the kind of quiet this tool exists to refuse.
+        with contextlib.redirect_stderr(io.StringIO()):
+            try:
+                out[name] = ("accepted", repr(fn()))
+            except FetchError as exc:
+                out[name] = ("refused", str(exc))
+            except SystemExit as exc:
+                out[name] = ("refused", f"exit {exc.code}")
+            except Exception as exc:  # noqa: BLE001 - a CRASH is not a REFUSAL: no verdict was ever reached
+                out[name] = (f"crash:{type(exc).__name__}", str(exc))
+
+    py = sys.executable
+    case("[seam] a dead gh is a failed fetch",
+         lambda: gh_fetch("check-runs", [py, "-c", "import sys; print('[]'); sys.exit(1)"]))
+    case("[seam] gh stdout that is not JSON",
+         lambda: gh_fetch("check-runs", [py, "-c", "print('<html>rate limited</html>')"]))
+    case("[seam] --head-sha must be an oid", lambda: check_head_sha("HEAD"))
+    case("[seam] --rundir must exist", lambda: check_rundir(tmp / "no-such-dir"))
+    return out
+
+
+def check_seams(tmp: Path) -> list[str]:
+    bad = []
+    got = seam_cases(tmp)
+    for name, (want, needle) in SEAM_EXPECT.items():
+        verdict, detail = got[name]
+        if verdict != want:
+            bad.append(f"{name}: {verdict!r}, expected {want!r} — {detail}")
+        elif needle not in detail:
+            bad.append(f"{name}: right outcome, WRONG RULE: {needle!r} not in {detail!r}")
+    return bad
+
+
 def self_test(tmp: Path) -> int:
     failures = 0
     names = cases()
@@ -1025,6 +1410,13 @@ def self_test(tmp: Path) -> int:
             failures += 1
             for b in bad:
                 print(f"FAIL     {name:32} {b}")
+
+    for problem in check_seams(tmp):
+        failures += 1
+        print(f"FAIL     {problem}")
+    if not check_seams(tmp):
+        print(f"ok       {'the seams no fixture reaches':32} -> {len(SEAM_EXPECT)} cases: gh_fetch's own two "
+              f"rules, and the CLI's operator-error guards")
     print()
     print(f"--- doc-check: {DOC.name} vs the code that runs ---")
     failures += doc_check(DOC)
@@ -1057,8 +1449,16 @@ MUTATION_GREEN_CANARY = False
 
 
 def mutation_expectations() -> dict[str, tuple[str, str]]:
-    return {name: (fx["expect"]["verdict"], fx["expect"]["needle"])
-            for name, fx in ((n, json.loads((FIXTURES / n).read_text(encoding="utf-8"))) for n in cases())}
+    """Every case the harness mutates against — the fixtures AND the seams they cannot reach.
+
+    THE SEAM CASES BELONG HERE OR THEY PIN NOTHING. The harness only ever asks "did any CASE notice?", so a
+    rule whose only witness is not in this dict is a rule reported PINNED BY NOTHING — which is precisely
+    what `gh_fetch`'s two rules were, for as long as the only cases were fixtures.
+    """
+    out = {name: (fx["expect"]["verdict"], fx["expect"]["needle"])
+           for name, fx in ((n, json.loads((FIXTURES / n).read_text(encoding="utf-8"))) for n in cases())}
+    out.update(SEAM_EXPECT)
+    return out
 
 
 def mutation_run() -> dict[str, tuple[str, str]]:
@@ -1090,6 +1490,7 @@ def mutation_run() -> dict[str, tuple[str, str]]:
                 continue
             problems = check_fixture(name, got, fx)
             out[name] = (f"deviates:{problems[0]}", got["reason"]) if problems else (got["verdict"], got["reason"])
+        out.update(seam_cases(Path(tmp)))  # the rules no fixture can reach — see SEAM_EXPECT
     return out
 
 
@@ -1106,7 +1507,8 @@ def main() -> int:
     d.add_argument("--rundir", required=True, type=Path, help="where the snapshot is promoted")
     d.add_argument("--repo", help="owner/name (default: the current checkout's, via `gh repo view`)")
 
-    c = sub.add_parser("doc-check", help="assert stage-2-ci.md agrees with the code that runs")
+    c = sub.add_parser("doc-check", help="assert stage-2-ci.md agrees with the code that runs — enums, "
+                                         "CLASSIFY, DECIDE order, and its fetch spec EXECUTED")
     c.add_argument("--doc", type=Path, default=DOC)
 
     s_ = sub.add_parser("self-test", help="run every fixture, then doc-check")
@@ -1128,14 +1530,8 @@ def main() -> int:
         with tempfile.TemporaryDirectory() as tmp:
             return self_test(Path(tmp))
 
-    # An OPERATOR ERROR is not a verdict about the PR. A `--head-sha` that is not a git object id makes
-    # every comparison downstream unfalsifiable, and blaming the EVIDENCE for the caller's mistake is how a
-    # tool reports a defect that is not there. Exit 2: no verdict at all beats a verdict about the wrong
-    # question.
-    if not SHA_RE.match(args.head_sha):
-        fail(f"--head-sha {args.head_sha!r} is not a git object id (40 LOWERCASE hex) — refusing to derive")
-    if not args.rundir.is_dir():
-        fail(f"--rundir {args.rundir} is not a directory")
+    check_head_sha(args.head_sha)
+    check_rundir(args.rundir)
 
     repo = args.repo
     if not repo:

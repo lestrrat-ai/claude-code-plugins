@@ -90,8 +90,21 @@ the **slurped** pages — so a marker cannot exist for a fetch that did not run:
 #     `sha` comes from GITHUB'S OWN `.head_sha` on each row — NEVER a literal we substitute in, and the
 #     MARKER's sha comes from that same place. The commit oid lives ONLY on the rows here, so a fetch that
 #     returned ZERO rows has no oid to carry: its marker's sha is "-", and inventing one is forbidden.
+#     THE READ MUST BE COMPLETE: `total_count` is GitHub's own count of the rows it holds FOR THE COMMIT,
+#     repeated on every page, so the SLURPED rows are checked against it and a SHORT READ is a HARD ERROR —
+#     never a green with a footnote. A count we cannot READ is refused too: a rule that cannot fire is not
+#     a rule. Same test, same reason, in (2).
 gh api --paginate --slurp "repos/<owner>/<repo>/commits/<head_sha>/check-runs" | jq -c '
-  [.[].check_runs[]] as $r
+  [.[].check_runs[]] as $r | (.[0].total_count) as $total
+  | if ($total|type) != "number" or ($total|floor) != $total
+    then error("check-runs: the response carries no integer total_count — that is the count GitHub itself
+      reports for this commit, and it is the ONLY thing we can check our read against. We cannot tell a
+      complete read from a truncated one, and cannot-tell is not a green.")
+    elif $total != ($r|length)
+    then error("check-runs: total_count=\($total) but the slurped read collected \($r|length) row(s) —
+      EVIDENCE IS MISSING. A row GitHub holds for this commit is not in our hands, and it could be the
+      FAILING one. No verdict is derived from a read we KNOW is short.")
+    else . end
   | ($r[] | {row:"checkrun", sha:.head_sha, name:.name, app_id:((.app.id // "-")|tostring),
              status:(.status|ascii_upcase),
              conclusion:((.conclusion // "-")|ascii_upcase),
@@ -103,10 +116,20 @@ gh api --paginate --slurp "repos/<owner>/<repo>/commits/<head_sha>/check-runs" |
 #     EVEN WHEN `.statuses` IS EMPTY. That is what makes the marker below able to PROVE a zero-status
 #     commit: {"source":"status","sha":"<GITHUB'S>","count":"0"} says "we asked this commit, and it has
 #     none". Again GITHUB'S value, NEVER a literal we substitute in.
+#     THIS is the family that carries the failing Jenkins status, so a short read HERE is precisely the
+#     evidence gap this section exists to refuse. It gets the SAME completeness test as (1), and the test
+#     is APPLIED PER FAMILY: one family checked and the other not is one family short-read in silence.
 gh api --paginate --slurp "repos/<owner>/<repo>/commits/<head_sha>/status" | jq -c '
-  [.[].statuses[]] as $s | (.[0].sha) as $sha
+  [.[].statuses[]] as $s | (.[0].sha) as $sha | (.[0].total_count) as $total
+  | if ($total|type) != "number" or ($total|floor) != $total
+    then error("status: the response carries no integer total_count — see (1): we cannot tell a complete
+      read from a truncated one, and cannot-tell is not a green.")
+    elif $total != ($s|length)
+    then error("status: total_count=\($total) but the slurped read collected \($s|length) row(s) —
+      EVIDENCE IS MISSING, and the status we did not get could be the FAILING Jenkins one.")
+    else . end
   | ($s[] | {row:"status", sha:$sha, context:.context, state:(.state|ascii_upcase)}),
-    {row:"source", source:"status", sha:$sha, count:($s|length|tostring)}'
+    {row:"source", source:"status", sha:($sha // "-"), count:($s|length|tostring)}'
 
 # (3) ROLLUP — WITNESSES ONLY (identity, no verdict). Used ONLY for the containment tests below.
 #     The rollup carries no app.id and no commit oid, so it can NEVER be read as a verdict — and its
@@ -117,15 +140,29 @@ gh api --paginate --slurp "repos/<owner>/<repo>/commits/<head_sha>/status" | jq 
 #     ANY OTHER __typename is a HARD ERROR: a row we cannot read is not a row we may drop, and dropping
 #     one is exactly how a required-but-unposted check became invisible.
 #     `headRefOid` rides along on this SAME call — the PR's current head, read LAST, after both evidence
-#     families (see "A MOVED HEAD FAILS CLOSED", above). It never enters the artifact.
+#     families (see "A MOVED HEAD FAILS CLOSED", above). It never enters the artifact — and a response that
+#     does NOT carry it is a FAILED fetch, because a head we cannot read makes that fail-closed rule unable
+#     to fire. `statusCheckRollup` must be an ARRAY: `// []` here would turn a response we cannot read into
+#     "no witnesses" — see "An EMPTY rollup is a FACT; a MISSING one is NOT EVIDENCE", below.
+#     ONE refusal is NOT expressible here, and it is named rather than quietly omitted: `$sc` (the rollup's
+#     StatusContexts) must be COVERED by family (2), which no single-fetch jq can see. The tool does it
+#     across the two fetches (`build_snapshot`); the rule is the FETCH bullet on `StatusContext`, below.
 gh pr view <pr> --json statusCheckRollup,headRefOid | jq -c '
-  (.statusCheckRollup // []) as $all
+  (.statusCheckRollup) as $all
+  | if ($all|type) != "array"
+    then error("rollup: statusCheckRollup is not a list — an EMPTY rollup is a FACT GitHub can state, a
+      MISSING one is a response we cannot read. Taking it for no-witnesses makes containment a claim about
+      the EMPTY SET, which passes trivially: an absence read as nothing-wrong.")
+    else . end
   | [$all[] | select(.__typename=="CheckRun")]      as $w
   | [$all[] | select(.__typename=="StatusContext")] as $sc
   | if (($w|length) + ($sc|length)) != ($all|length)
     then error("rollup: an entry of an UNRECOGNISED __typename — teach the tool about it; NEVER drop it")
+    elif (.headRefOid|type) != "string" or (.headRefOid|length) == 0
+    then error("rollup: the response carries no headRefOid — WE CANNOT TELL which commit is the head, so we
+      cannot tell whether this evidence describes it. That is not a green; it is a fetch we cannot use.")
     else . end
-  | ($w[] | {row:"witness", name:.name, id:.detailsUrl}),
+  | ($w[] | {row:"witness", name:.name, id:(.detailsUrl // "-")}),
     {row:"source", source:"rollup", sha:"-", count:($w|length|tostring)}'
 ```
 
@@ -229,7 +266,7 @@ printf '{"row":"header","sha":"%s"}\n' "<head_sha>" > "$tmp"
 # RUBBER STAMP this design exists to prevent: it would say "queried" about a fetch that died.
 gh api --paginate --slurp ".../check-runs" | jq -c '...(1) above...' >> "$tmp" || exit 1
 gh api --paginate --slurp ".../status"     | jq -c '...(2) above...' >> "$tmp" || exit 1
-gh pr view <pr> --json statusCheckRollup   | jq -c '...(3) above...' >> "$tmp" || exit 1
+gh pr view <pr> --json statusCheckRollup,headRefOid | jq -c '...(3) above...' >> "$tmp" || exit 1
 
 mv "$tmp" "<rundir>/ci-<pr>-<head_sha>.txt"
 ```
@@ -430,6 +467,18 @@ the order of the DECIDE bullets — and asserts they agree with the sets the cod
 the property this section claims, which nothing used to check). It runs in CI. **Edit a rule in this file
 without editing the code and the build goes RED** — which is the only kind of "keep them in sync" that has
 ever worked.
+
+**AND THE FETCH COMMANDS ABOVE ARE EXECUTED, NOT MERELY READ — because the version of this check that only
+read the ENUMS is exactly where the drift got in.** `doc-check` did not parse the `gh … | jq` block, so this
+file went on specifying `(.statusCheckRollup // [])` — which turns a **MISSING** rollup into an **EMPTY**
+one — while the tool **refused** that shape. The doc and the code disagreed about **what is refused**, in the
+one place nothing was looking. So the filters above are now **RUN**: the fixtures' recorded API responses go
+in, and for **every fixture and every source** this file's spec must give the **same answer the tool gives —
+the same rows, or the same REFUSAL**. The `gh` invocations are checked against the argv the code really
+issues, **in every copy of them in this file** (a recap that drops `,headRefOid` reconstructs a fetch the
+MOVED-HEAD rule can never fire on — that copy had drifted, and this is what caught it). **One** refusal is
+**cross-source** and no single-fetch filter can state it — the rollup's `StatusContext` coverage — so
+`doc-check` **prints it as a named limit** instead of letting the omission pass for coverage.
 
 #### CROSS-FETCH AGREEMENT — containment on a USABLE `.id`, NOT equality
 

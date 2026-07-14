@@ -236,7 +236,8 @@ def run_cases(mod: types.ModuleType) -> dict[str, tuple[str, str]]:
     required-set rule is the one rule whose input is NOT in the file, so its cases carry their own spec).
 
     A script that owns cases this harness cannot construct — `ci-status.py`'s are RECORDED API RESPONSES
-    driven through its producer, not artifacts on disk — exports `mutation_run()` and answers for itself.
+    driven through its producer, plus the SEAMS no recorded response can reach (its `gh` runner, which every
+    fixture replaces, and its CLI guards) — exports `mutation_run()` and answers for itself.
 
     A mutant that CRASHES has not returned a verdict, and "no verdict" is itself a deviation — so it is
     recorded, never swallowed.

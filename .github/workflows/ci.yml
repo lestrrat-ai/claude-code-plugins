@@ -113,6 +113,10 @@ jobs:
       # responses driven through its real fetch path. `self-test` also runs `doc-check`, which parses
       # stage-2-ci.md's enum block, CLASSIFY tables and DECIDE order and FAILS if the prose and the code
       # that runs have drifted apart — including if the classification stopped being TOTAL over the enums.
+      # It also EXECUTES the doc's own `gh | jq` fetch spec against those fixtures (hence `jq`, which the
+      # runner image ships) and FAILS unless the doc and the tool REFUSE THE SAME RESPONSES: the doc had
+      # drifted to `(.statusCheckRollup // [])` — a missing rollup laundered into an empty one — in the one
+      # block the drift alarm did not read.
       - name: CI-status derivation contract (+ stage-2-ci.md agrees with the code)
         run: python3 plugins/gauntlet/skills/campaign/scripts/ci-status.py self-test
 

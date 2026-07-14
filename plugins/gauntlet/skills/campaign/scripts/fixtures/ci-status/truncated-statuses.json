@@ -1,0 +1,63 @@
+{
+  "why": "THE OTHER FAMILY'S SHORT READ. GitHub says it holds 2 commit statuses for this commit; the paginated read collected 1, and the one it collected PASSED. The row we did not get could be the FAILING Jenkins status — the very failure /check-runs cannot see. Delete the completeness call in `fetch_statuses` ALONE and every other fixture stays green while this family goes unchecked: this one goes GREEN, which is the kill that matters",
+  "pr": "35",
+  "api": {
+    "check-runs": {
+      "response": [
+        {
+          "total_count": 1,
+          "check_runs": [
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "Lint scripts",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/29318959841/job/1"
+            }
+          ]
+        }
+      ]
+    },
+    "status": {
+      "response": [
+        {
+          "sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+          "state": "success",
+          "total_count": 2,
+          "statuses": [
+            {
+              "context": "ci/jenkins/pr-head",
+              "state": "success"
+            }
+          ]
+        }
+      ]
+    },
+    "rollup": {
+      "response": {
+        "headRefOid": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+        "statusCheckRollup": [
+          {
+            "__typename": "CheckRun",
+            "name": "Lint scripts",
+            "detailsUrl": "https://github.com/o/r/actions/runs/29318959841/job/1"
+          },
+          {
+            "__typename": "StatusContext",
+            "context": "ci/jenkins/pr-head",
+            "state": "SUCCESS"
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "verdict": "unusable",
+    "ci": "pending",
+    "needle": "status: GitHub reported total_count=2",
+    "promoted": false
+  }
+}

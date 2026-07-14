@@ -1,5 +1,5 @@
 {
-  "why": "GITHUB SAYS IT HOLDS 3 CHECK RUNS FOR THIS COMMIT; THE PAGINATED READ COLLECTED 2. The row we did not get could be the FAILING one — so there is no verdict to derive. This fixture used to expect GREEN with a note attached, which is a green computed from evidence the tool had just proven incomplete",
+  "why": "GITHUB SAYS IT HOLDS 3 CHECK RUNS FOR THIS COMMIT; THE PAGINATED READ COLLECTED 2. The row we did not get could be the FAILING one — so there is no verdict to derive. This fixture used to expect GREEN with a note attached, which is a green computed from evidence the tool had just proven incomplete. The needle NAMES THE FAMILY: this fixture pins the completeness call in `fetch_check_runs`, and `truncated-statuses.json` pins the one in `fetch_statuses` — a fixture that cannot say WHICH family it caught cannot pin either",
   "pr": "35",
   "api": {
     "check-runs": {
@@ -62,7 +62,7 @@
   "expect": {
     "verdict": "unusable",
     "ci": "pending",
-    "needle": "total_count=3",
+    "needle": "check-runs: GitHub reported total_count=3",
     "promoted": false
   }
 }
