@@ -96,7 +96,8 @@ blocks; each completion is its own wake.
      empty orphan run behind. **Only once the full set passes preflight**: mint a run-id + agent token,
      atomically create `<rundir>`, and write the lease **and `state.jsonl` header** — now with
      `base_branch` filled from the agreed `baseRefName` (known from preflight). Then **adopt** each PR
-     (ledger row + labels + worktree + CI watch per `pr-adoption.md`); a death mid-adoption still leaves
+     (ledger row + labels + worktree, and a CI watch **only when one is due** — `pr-adoption.md` owns what
+     adoption produces and when the watch is warranted); a death mid-adoption still leaves
      a discoverable, adoptable run. Then fall through to dispatch/reschedule.
    - **This run's `state.jsonl` is fully terminal — every row `merged`/`aborted`, no open PR carrying this
      run's label → the run is finished.** Do **not** silently exit "all fixed" (the old bug) and do **not**

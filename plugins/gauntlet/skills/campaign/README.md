@@ -146,7 +146,7 @@ anything it left for you to weigh in on.
 ```mermaid
 flowchart TD
     A(["invoke /gauntlet:campaign #PRs"]) --> B{PR numbers, no args, or --new?}
-    B -- "#PRs / --new #PRs" --> C[adopt each PR: ledger row + run label,<br/>launch CI watch]
+    B -- "#PRs / --new #PRs" --> C[adopt each PR: ledger row + run label,<br/>CI watch only if a check can still move]
     B -- "no args" --> D{PRs already under this run?}
     D -- yes --> C
     D -- no --> E([prompt: run gauntlet:review<br/>or pass PR numbers])
@@ -171,7 +171,13 @@ flowchart TD
     P -- yes --> M
     N -- yes --> R{CI status on current SHA?}
     R -- red --> S[scoped CI-fix subagent: commit + push, new SHA]
-    R -- pending --> M
+    R -- "pending / unreadable" --> CM{can any check still move?}
+    CM -- "yes: a check is still running" --> CW[keep a CI watch alive<br/>relaunch it if it exited] --> M
+    CM -- "no: CI has stopped moving" --> CB{still within its bounds?}
+    CB -- yes --> M
+    CB -- "no: bound reached" --> CP[park the PR: name the blocker,<br/>ask the user to retry or abort]
+    CP -- retry --> M
+    CP -- abort --> AA
     Q --> T[reset gate - verdicts and CI are SHA-pinned,<br/>re-triage tier on the new SHA]
     S --> T
     T --> M
@@ -188,6 +194,11 @@ flowchart TD
     Y -. no .-> AA[abort + write log, continue others]
     AA -.-> W
 ```
+
+The diagram shows the **shape**, not the rules. What counts as "can still move", what makes CI unreadable,
+and how long each bound waits before it parks the PR are defined in
+[`references/stage-2-ci.md`](./references/stage-2-ci.md) — that file is the owner, and this picture is
+never the place to look them up.
 
 ## Good to know
 
