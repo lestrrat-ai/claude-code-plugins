@@ -59,8 +59,9 @@ The plugin deliberately does **not** set how Claude talks to you. That is your e
 (`CLAUDE.md`, an output style), not a plugin's, and a skill that dictated tone would just fight whatever
 you had already configured.
 
-Set something anyway. A campaign reports on every wake, for hours, and those updates are all you see of
-it. Without a contract, the update that needs your decision reads exactly like the twenty that don't.
+It's still worth setting something. A campaign reports on every wake, for hours, and those updates are all
+you see of it. Without a contract, the update that needs your decision reads much like the twenty that
+don't.
 
 If you don't already have a style you like, [`docs/reporting-style.md`](docs/reporting-style.md) is a
 sample to copy into your `CLAUDE.md` and edit. The rule to steal even if you take nothing else: **end
