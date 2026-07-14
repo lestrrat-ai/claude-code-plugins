@@ -1,5 +1,6 @@
 {
-  "why": "DECIDE ORDER, EXECUTED: an UNRECOGNISED enum value (invented \u2014 no CheckStatusState is `AWAITING_APPROVAL`) alongside a still-running row. It PARKS: a running row does not postpone the escalation, and the value is NEVER guessed into a bucket",
+  "why": "DECIDE ORDER, EXECUTED: an UNRECOGNISED enum value (invented — no CheckStatusState is `AWAITING_APPROVAL`) alongside a still-running row. It PARKS: a running row does not postpone the escalation, and the value is NEVER guessed into a bucket",
+  "required_set": "none",
   "pr": "35",
   "api": {
     "check-runs": {

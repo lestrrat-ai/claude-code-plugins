@@ -1,5 +1,6 @@
 {
   "why": "A ROLLUP ENTRY OF A TYPE WE DO NOT KNOW (invented: there is no `DeploymentStatus` in statusCheckRollup today). The old filter kept CheckRun and dropped everything else in silence — which is EXACTLY how the StatusContext was lost, and how the next type GitHub adds would be lost after it. A row we cannot read is never a row we may ignore",
+  "required_set": "none",
   "pr": "35",
   "api": {
     "check-runs": {

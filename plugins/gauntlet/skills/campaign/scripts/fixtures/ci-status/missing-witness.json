@@ -1,5 +1,6 @@
 {
-  "why": "the rollup saw a run the REST read did NOT return \u2014 evidence is incomplete, and the run it is missing could be the failing one. Drop the rollup fetch and containment passes TRIVIALLY: this file goes GREEN on evidence known to be short a row",
+  "why": "the rollup saw a run the REST read did NOT return — evidence is incomplete, and the run it is missing could be the failing one. Drop the rollup fetch and containment passes TRIVIALLY: this file goes GREEN on evidence known to be short a row",
+  "required_set": "none",
   "pr": "35",
   "api": {
     "check-runs": {

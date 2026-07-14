@@ -1,5 +1,6 @@
 {
   "why": "THE ANTI-WEDGE CONTROL, and it is why the rollup rule is a COVERAGE test and not a refusal on sight. A POSTED commit status appears in BOTH the rollup and the REST status family (verified live on a Prow PR), and the REST row carries identity AND verdict — so nothing is missing and this is a real GREEN. A rule that refused every StatusContext would wedge every Jenkins/Prow repo forever, and a rule that wedges honest input gets deleted by the next person in a hurry",
+  "required_set": "none",
   "pr": "35",
   "api": {
     "check-runs": {

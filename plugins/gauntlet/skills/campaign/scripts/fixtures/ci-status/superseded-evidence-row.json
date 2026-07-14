@@ -1,5 +1,6 @@
 {
-  "why": "THE NEGATIVE CONTROL FOR THE SELF-STAMPED SHA. GitHub returned a row describing a SUPERSEDED commit. The row's sha must be GITHUB'S, so it DISAGREES with the ledger and the snapshot is refused. Stamp our own literal on the rows instead and this file verifies GREEN \u2014 the check that could not fail",
+  "why": "THE NEGATIVE CONTROL FOR THE SELF-STAMPED SHA. GitHub returned a row describing a SUPERSEDED commit. The row's sha must be GITHUB'S, so it DISAGREES with the ledger and the snapshot is refused. Stamp our own literal on the rows instead and this file verifies GREEN — the check that could not fail",
+  "required_set": "none",
   "pr": "35",
   "api": {
     "check-runs": {

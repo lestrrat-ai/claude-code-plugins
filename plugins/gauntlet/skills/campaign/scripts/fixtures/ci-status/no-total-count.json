@@ -1,5 +1,6 @@
 {
   "why": "THE HOLE UNDER THE COMPLETENESS RULE ITSELF. The response carries no `total_count`, so the read CANNOT BE COMPARED to what GitHub holds — and a rule that cannot fire is not a rule. Otherwise-green evidence: a tool that shrugs at the missing count greens it, and never notices a short read again",
+  "required_set": "none",
   "pr": "35",
   "api": {
     "check-runs": {

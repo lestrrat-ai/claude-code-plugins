@@ -12,15 +12,25 @@ position.
 **The wake derives `ci` by RUNNING `scripts/ci-status.py`, and by nothing else:**
 
 ```sh
-python3 <skill>/scripts/ci-status.py derive --pr <N> --head-sha <the LEDGER's head_sha> --rundir <rundir>
+python3 <skill>/scripts/ci-status.py derive --pr <N> --head-sha <the LEDGER's head_sha> --rundir <rundir> \
+  --required-set "$(python3 <skill>/scripts/ledger.py --file <rundir>/state.jsonl header get required_set)"
 ```
 
 It performs every step below — FETCH (SHA-pinned, paginated, **both** families), PROMOTE (atomic), VERIFY
 (via `scripts/ci-snapshot.py`, which it calls), and DECIDE — and prints **JSON**: the `verdict`, the `ci`
 value to write to the ledger, the `reason` (**which rule fired, and which row made it fire** — this is what
-`ci_reason` is built from), the evidence counts, `head_moved` + `head_sha_now`, and the path to the snapshot
-it left behind. It exits `0` **only** on green. **Write `ci` from that JSON; never from an impression of
-some command's output.**
+`ci_reason` is built from), the evidence counts, `head_moved` + `head_sha_now`, the `required_set` state the
+verdict was decided under, and the path to the snapshot it left behind. It exits `0` **only** on green.
+**Write `ci` from that JSON; never from an impression of some command's output.**
+
+**`--required-set` IS MANDATORY, AND IT HAS NO DEFAULT.** It is the ledger header's `required_set`, passed
+straight through (`declared:<json>` | `none` | `unknown` — "WHAT WERE WE EXPECTING TO SEE?", below). The
+evidence can only ever say what **showed up**; what was **supposed** to show up is a property of the base
+branch, and **a required check that never registered is NO ROW AT ALL** — invisible to the counts, to
+containment, and to the rollup cross-check alike. So the tool refuses to guess it: a caller who omits the
+flag gets an error, and a spec it cannot parse is **exit 2**, never a quiet `none`. `unknown` is a legal
+value and **can never go green** — which is what makes a run that never performed the read merge **nothing**
+rather than merge everything with a footnote.
 
 **A MOVED HEAD FAILS CLOSED — `head_moved: true` is NEVER a green, and never a red either.** The fetch is
 pinned to the `head_sha` **the ledger holds**, and a push can land at any moment — including *while the tool
@@ -218,9 +228,19 @@ machine-read convention as `state.jsonl` and the review plan/progress files (`fi
     scale**.
   - **The rollup (3) carries no total and is a single un-paginated page**, so *its* completeness cannot be
     proven at all. **That is precisely why it may NEVER be the source of a verdict** — it is a cross-check
-    over families (1) and (2), whose completeness IS proven against GitHub's own counts. A rollup that is
-    short can only make a cross-check weaker; it can never admit a failing row into a green, because a
-    failing row would have to be missing from **both** REST families, and their counts say it is not.
+    over families (1) and (2), whose completeness IS proven against GitHub's own counts.
+  - **A SHORT ROLLUP CANNOT HIDE A FAILING ROW — AND IT COULD ONCE HIDE A MISSING ONE. THOSE ARE NOT THE
+    SAME CLAIM, AND THIS FILE USED TO MAKE THE WRONG ONE.** It said a short rollup "can never admit a false
+    green, because a failing row would have to be missing from **both** REST families, and their counts say
+    it is not". Every word of that is true **about a FAILING row**, and it was **FALSE as a guarantee**: the
+    thing a short rollup hides is not a row that failed but **a required check that produced NO ROW AT ALL**
+    — an `EXPECTED` `StatusContext`, which no REST family can express and no `total_count` can miss, because
+    **there is nothing to count**. Delete that one entry from the rollup response and the coverage rule below
+    has nothing to check: all-passing check runs, zero status rows, **GREEN**, on a PR blocked on a check
+    nobody has run. **A GUARD WHOSE INPUT CAN BE ABSENT NEVER FIRES.** What closes it is not the rollup at
+    all — it is the **REQUIRED SET** ("WHAT WERE WE EXPECTING TO SEE?", below), which is **DECLARED by the
+    base branch** and therefore says what must be present *without asking what showed up*. **Never argue
+    from the completeness of the evidence to the completeness of the EXPECTATION.**
 - **An EMPTY rollup is a FACT; a MISSING one is NOT EVIDENCE.** `[]` means GitHub says this head has nothing
   in the rollup (legitimate — every suite may be dynamic-event). A response with **no entry list at all** is
   one we cannot read, and taking it for "no witnesses" makes containment a claim about the **empty set**,
@@ -230,12 +250,18 @@ machine-read convention as `state.jsonl` and the review plan/progress files (`fi
   rollup lists commit statuses too, and a `StatusContext` in state **`EXPECTED`** is **a required status
   check that has not been posted yet** — the PR is *blocked* on it. **The REST commit-status API has no
   `EXPECTED` state at all** (success / pending / failure / error), so family (2) **cannot report it**: the
-  rollup is the ONLY place it exists. Keep only the `CheckRun` entries — as this tool once did — and a PR
-  blocked on a check **nobody has run** shows all-passing check runs and **zero** status rows: **GREEN**.
-  So every rollup `StatusContext` must appear among family (2)'s contexts, and one that does not is
-  `unusable`. **A posted status DOES appear in both** (verified 2026-07-14 against a Prow PR, whose rollup
-  contexts `tide` and `EasyCLA` were both reported by `/status`) — which is why this is a **coverage test**
-  and not a refusal on sight: refusing every `StatusContext` would **wedge every Jenkins/Prow repo forever**.
+  rollup is the only *evidence* source in which it appears at all. So every rollup `StatusContext` must
+  appear among family (2)'s contexts, and one that does not is `unusable`: **the two sources disagree about
+  what exists**, and a snapshot built from evidence that cannot be reconciled is not evidence. **A posted
+  status DOES appear in both** (verified 2026-07-14 against a Prow PR, whose rollup contexts `tide` and
+  `EasyCLA` were both reported by `/status`) — which is why this is a **coverage test** and not a refusal on
+  sight: refusing every `StatusContext` would **wedge every Jenkins/Prow repo forever**.
+  **THIS RULE IS NOT WHAT PROVES A REQUIRED CHECK REGISTERED, AND IT MUST NEVER AGAIN BE SOLD AS THAT.** It
+  can only see the contexts the rollup **returned**, and the rollup **cannot be proven complete** ("Honest
+  limits", above): a rollup that simply omits the `EXPECTED` entry leaves this rule **nothing to check**, and
+  the PR goes green. **The REQUIRED SET is the closure** ("WHAT WERE WE EXPECTING TO SEE?", below) — it is
+  declared by the base branch, so it does not depend on the rollup showing up, and `green` requires every
+  declared check to be **present and passing**.
 - **EVERY evidence row's `sha` MUST come from the RESPONSE, NEVER from a literal you interpolate.** Both
   APIs return the commit themselves — `.head_sha` on each check run, `.sha` at the top level of the status
   response — so take it from there. Stamping `sha:"<head_sha>"` into the `--jq` filter would copy the value

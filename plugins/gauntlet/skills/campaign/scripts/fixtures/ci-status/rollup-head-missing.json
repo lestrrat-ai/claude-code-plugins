@@ -1,5 +1,6 @@
 {
   "why": "THE HOLE UNDER THE FAIL-CLOSED RULE ITSELF. The rollup answered without a `headRefOid`, so the PR's CURRENT head is UNKNOWN — and a moved-head check that cannot read the head cannot fire: it would wave this through as `not moved` and green a snapshot nobody can show describes the PR's head. A fail-closed rule that fails OPEN on the one input it cannot read is not a rule. No head, no verdict: the fetch is UNUSABLE and nothing is promoted",
+  "required_set": "none",
   "pr": "35",
   "api": {
     "check-runs": {

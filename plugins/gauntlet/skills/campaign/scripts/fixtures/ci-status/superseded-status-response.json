@@ -1,5 +1,6 @@
 {
-  "why": "the same negative control on the OTHER family: the status response describes another commit. Its sha is the response's own top-level `.sha`, so it can disagree \u2014 substitute our literal and this verifies GREEN",
+  "why": "the same negative control on the OTHER family: the status response describes another commit. Its sha is the response's own top-level `.sha`, so it can disagree — substitute our literal and this verifies GREEN",
+  "required_set": "none",
   "pr": "35",
   "api": {
     "check-runs": {

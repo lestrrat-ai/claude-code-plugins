@@ -1,5 +1,6 @@
 {
-  "why": "a FAILING check run the rollup does not list at all \u2014 GitHub omits dynamic-event suites BY DESIGN, so a REST-only row is legitimate and must still be judged. It is also RED while another row is still RUNNING: red OUTRANKS pending",
+  "why": "a FAILING check run the rollup does not list at all — GitHub omits dynamic-event suites BY DESIGN, so a REST-only row is legitimate and must still be judged. It is also RED while another row is still RUNNING: red OUTRANKS pending",
+  "required_set": "none",
   "pr": "35",
   "api": {
     "check-runs": {

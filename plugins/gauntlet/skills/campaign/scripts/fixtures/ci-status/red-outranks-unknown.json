@@ -1,5 +1,6 @@
 {
-  "why": "DECIDE ORDER, EXECUTED: a FAILURE and an enum value nobody has classified, in one snapshot. `red` wins \u2014 the failure is actionable NOW, and the unknown value is DEFERRED, not discarded: it parks on the next derivation once the failure is gone",
+  "why": "DECIDE ORDER, EXECUTED: a FAILURE and an enum value nobody has classified, in one snapshot. `red` wins — the failure is actionable NOW, and the unknown value is DEFERRED, not discarded: it parks on the next derivation once the failure is gone",
+  "required_set": "none",
   "pr": "35",
   "api": {
     "check-runs": {

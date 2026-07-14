@@ -1,5 +1,6 @@
 {
   "why": "THE SAME WRONG SHAPE, ON THE FAMILY /check-runs CANNOT SEE. A bare object where the slurped array belongs is a response we cannot read — and this is the family that carries the failing Jenkins status, so reading it wrong is the false green this file exists to refuse",
+  "required_set": "none",
   "pr": "35",
   "api": {
     "check-runs": {

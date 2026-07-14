@@ -1,5 +1,6 @@
 {
-  "why": "the only green there is: every registered check passed, BOTH families were queried, containment holds. Names CONTAIN SPACES (`Lint scripts`) and survive \u2014 a space-delimited artifact could not have carried them",
+  "why": "the only green there is: every registered check passed, BOTH families were queried, containment holds. Names CONTAIN SPACES (`Lint scripts`) and survive — a space-delimited artifact could not have carried them",
+  "required_set": "none",
   "pr": "35",
   "api": {
     "check-runs": {

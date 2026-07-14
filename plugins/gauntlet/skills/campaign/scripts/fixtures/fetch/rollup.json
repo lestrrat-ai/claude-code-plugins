@@ -1,5 +1,6 @@
 {
-  "_fixture": "`gh pr view <pr> --json statusCheckRollup`. WITNESSES ONLY: the rollup carries no app id and NO COMMIT OID, so it can never be read as a verdict — hence its marker's sha is `-`, ALWAYS, and a sha there would be one WE invented. The StatusContext entry is here to pin the `select(.__typename==\"CheckRun\")`: it must NOT become a witness, because the containment test compares check-run identities and a status has no `detailsUrl` to compare.",
+  "_fixture": "`gh pr view <pr> --json statusCheckRollup,headRefOid`. WITNESSES ONLY: the rollup carries no app id and NO COMMIT OID, so it can never be read as a verdict — hence its marker's sha is `-`, ALWAYS, and a sha there would be one WE invented. The StatusContext entry is here to pin the partition: it must NOT become a witness, because the containment test compares check-run identities and a status has no `detailsUrl` to compare. `headRefOid` is the PR's CURRENT head, read on this same call and LAST of all — it never enters the artifact, and a response without it is a FAILED fetch (the moved-head rule could not fire).",
+  "headRefOid": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
   "statusCheckRollup": [
     {
       "__typename": "CheckRun",

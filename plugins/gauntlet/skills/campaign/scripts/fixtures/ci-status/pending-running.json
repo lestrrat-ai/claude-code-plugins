@@ -1,5 +1,6 @@
 {
-  "why": "a QUEUED run can still move, so it is NOT a green \u2014 and the test that says so is MEMBERSHIP in the RUNNING set, never `!= COMPLETED`",
+  "why": "a QUEUED run can still move, so it is NOT a green — and the test that says so is MEMBERSHIP in the RUNNING set, never `!= COMPLETED`",
+  "required_set": "none",
   "pr": "35",
   "api": {
     "check-runs": {

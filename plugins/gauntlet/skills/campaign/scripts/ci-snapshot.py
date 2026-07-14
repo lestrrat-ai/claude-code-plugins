@@ -1142,7 +1142,10 @@ READS = {
     # The THREE evidence fetches (FETCH).
     "check-runs": 'gh api --paginate --slurp "repos/<owner>/<repo>/commits/<head_sha>/check-runs" | jq -c \'',
     "status": 'gh api --paginate --slurp "repos/<owner>/<repo>/commits/<head_sha>/status" | jq -c \'',
-    "rollup": "gh pr view <pr> --json statusCheckRollup | jq -c '",
+    # `,headRefOid` RIDES ALONG ON THIS READ, and it is part of the identity for a reason: the PR's current
+    # head is what the MOVED-HEAD rule fires on (`ci-status.py`), and a doc that quietly drops the field
+    # prescribes a fetch that rule can never fire on. Pinned verbatim here, so dropping it goes RED.
+    "rollup": "gh pr view <pr> --json statusCheckRollup,headRefOid | jq -c '",
     # The TWO required-set reads (WHAT WERE WE EXPECTING TO SEE?).
     "classic": 'gh api "repos/<owner>/<repo>/branches/<base>" --jq \'',
     "ruleset": 'gh api --paginate --slurp "repos/<owner>/<repo>/rules/branches/<base>" | jq -c \'',

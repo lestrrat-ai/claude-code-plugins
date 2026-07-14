@@ -1,5 +1,6 @@
 {
   "why": "`gh pr view --json` RETURNS AN OBJECT. This response is a LIST — a shape we have never seen and cannot read. `.get(\"statusCheckRollup\")` on it would crash, and a crash where a verdict was owed is the tool having NO opinion, not a lenient one. Refuse it",
+  "required_set": "none",
   "pr": "35",
   "api": {
     "check-runs": {

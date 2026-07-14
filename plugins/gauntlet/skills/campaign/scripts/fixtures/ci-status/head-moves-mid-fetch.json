@@ -1,5 +1,6 @@
 {
   "why": "THE NEAR-MISS: the push lands BETWEEN the check-runs fetch and the rollup. No snapshot of a moving thing is atomic, so the ONLY defence is the ORDER — read the evidence first and the head LAST, and every push that could have staled the evidence is visible in the head. Read the head FIRST and `headRefOid` still equals the sha we asked for while the URL-pinned check-runs call returns the OLD head's green runs: two moments spliced into one GREEN verdict. This fixture is that push, recorded — it is the only one whose answer DEPENDS on the fetch order",
+  "required_set": "none",
   "pr": "35",
   "push": {
     "after": "check-runs",

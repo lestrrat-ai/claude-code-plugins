@@ -1,5 +1,6 @@
 {
   "why": "THE ROLLUP RESPONSE WITH NO ENTRY LIST AT ALL — not an EMPTY rollup (a fact GitHub can state, see zero-checks.json), but a response we cannot read. Taken as 'no witnesses' it makes CONTAINMENT VACUOUS: 'REST saw everything the rollup saw' becomes a claim about the empty set and passes trivially, so otherwise-passing check runs go GREEN with the cross-check silently switched off",
+  "required_set": "none",
   "pr": "35",
   "api": {
     "check-runs": {

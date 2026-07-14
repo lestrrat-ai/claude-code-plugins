@@ -1,5 +1,6 @@
 {
-  "why": "THE FALSE GREEN THAT MOTIVATED THIS TOOL. No checks have registered on the commit. `gh pr checks` says so in prose and the driver read it as green. ZERO EVIDENCE IS NOT GREEN \u2014 and the status marker still carries GitHub's OWN sha, which is what PROVES we asked and it had none",
+  "why": "THE FALSE GREEN THAT MOTIVATED THIS TOOL. No checks have registered on the commit. `gh pr checks` says so in prose and the driver read it as green. ZERO EVIDENCE IS NOT GREEN — and the status marker still carries GitHub's OWN sha, which is what PROVES we asked and it had none",
+  "required_set": "none",
   "pr": "35",
   "api": {
     "check-runs": {

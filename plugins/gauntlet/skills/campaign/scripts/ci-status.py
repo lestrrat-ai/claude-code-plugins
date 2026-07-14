@@ -15,11 +15,20 @@ shortcut LOOKS like an answer. `ci-snapshot.py` cannot save you here: it verifie
 only ever as good as the odds that somebody BOTHERED to produce one. **The fix is that deriving CI is now
 a COMMAND, and eyeballing is not one of the things it can do.**
 
-    ci-status.py derive --pr 31 --head-sha <40-hex> --rundir <rundir>
+    ci-status.py derive --pr 31 --head-sha <40-hex> --rundir <rundir> --required-set <spec>
 
 prints a verdict as JSON and exits 0 ONLY on green. Nothing here is judged by eye, and `gh pr checks` is
 never read: its `--json` surface carries exactly ONE field (`bucket`) — no sha, no name, no conclusion —
 so it can never say WHICH COMMIT it describes and can never be evidence. Use it to WAIT, never to decide.
+
+WHAT WAS SUPPOSED TO BE THERE IS NOT A QUESTION THE EVIDENCE CAN ANSWER — SO IT IS AN INPUT (`--required-set`).
+Every rule below quantifies over the rows we GOT. A REQUIRED CHECK THAT HAS NOT REGISTERED IS NO ROW AT ALL,
+so no count, no marker and no cross-check can see it: they all agree, correctly, about a set that is missing
+the one member that matters. The base branch's REQUIRED SET is the other half of the question, it is read
+from branch protection AND rulesets (`stage-2-ci.md`, "WHAT WERE WE EXPECTING TO SEE?"), it is carried in the
+ledger header, and it is passed in here — MANDATORY, with NO DEFAULT, because a caller who forgot must never
+be handed the permissive answer. `unknown` (the read FAILED) is a PENDING outcome that escalates; it can
+NEVER go green. `ci-snapshot.py` owns the rule, this tool's job is to HAND IT THE SET — see `derive()`.
 
 SCOPE — WHY THIS IS A SEPARATE FILE FROM `ci-snapshot.py`, AND NOT A SUBCOMMAND OF IT.
 The split is PRODUCER vs VERIFIER, and it is the same two-independent-sources principle that the snapshot
@@ -55,12 +64,24 @@ GitHub ITSELF told us was short, called green". Two places could produce it, and
     for the same reason `headRefOid` is: a fail-closed rule that cannot fire is not a rule.
   * **A ROLLUP `StatusContext`.** The rollup returns two entry types; this tool kept `CheckRun` and DROPPED
     the rest ON THE FLOOR. A `StatusContext` in state `EXPECTED` is *a REQUIRED status check that has not
-    been posted yet* — and it exists NOWHERE ELSE: the REST commit-status API has no `EXPECTED` state, so
-    the family that carries status VERDICTS cannot see it, by construction. Dropping it silently reported
-    GREEN for a PR that is BLOCKED on a check nobody has run. `build_snapshot()` now requires every rollup
-    `StatusContext` to be VISIBLE in the REST status family (posted statuses are — verified live: a Prow PR
-    whose rollup contexts `tide`/`EasyCLA` both appear in `/status`), and refuses when one is not. An entry
-    of a `__typename` we do not know is refused too: a row we cannot read is not a row we may drop.
+    been posted yet* — and no VERDICT source can see it: the REST commit-status API has no `EXPECTED` state,
+    so the family that carries status verdicts cannot express it, by construction. Dropping it silently
+    reported GREEN for a PR that is BLOCKED on a check nobody has run. `build_snapshot()` now requires every
+    rollup `StatusContext` to be VISIBLE in the REST status family (posted statuses are — verified live: a
+    Prow PR whose rollup contexts `tide`/`EasyCLA` both appear in `/status`), and refuses when one is not. An
+    entry of a `__typename` we do not know is refused too: a row we cannot read is not a row we may drop.
+
+    **AND THAT COVERAGE RULE IS NOT WHAT CLOSES THE `EXPECTED` FALSE GREEN. IT CANNOT BE — READ THIS BEFORE
+    YOU TRUST IT.** It quantifies over the `StatusContext` entries THE ROLLUP RETURNED, and the rollup
+    carries NO total: unlike both REST families it cannot be proven complete (`stage-2-ci.md`, "Honest
+    limits"). Delete the one `EXPECTED` entry from a rollup response and the guard has NOTHING TO CHECK, and
+    the PR — blocked on a check nobody has run — goes GREEN. A reviewer did exactly that to a fixture and
+    watched the verdict flip. **A GUARD WHOSE INPUT CAN BE ABSENT NEVER FIRES**, and this file has now paid
+    for that lesson three times (zero checks; a family never fetched; this). The closure is the REQUIRED SET,
+    above: it is DECLARED BY THE BASE BRANCH, so what must be present does not depend on what showed up, and
+    a required check missing from the rollup AND from REST is caught by the thing that SAYS IT MUST BE THERE.
+    What the coverage rule is still FOR is stated at its own site (`build_snapshot`) — it is a CROSS-SOURCE
+    consistency check, not the registration gap's closure, and it must never again be sold as one.
 
 **THERE IS NO `notes` CHANNEL, ON PURPOSE.** A field that says "this evidence may be incomplete" BESIDE a
 green verdict is the trapdoor, not the disclosure — it was read by nobody, and it let the tool ship the one
@@ -201,7 +222,14 @@ LEDGER_CI = {
 #
 # A copy that is checked against both owners is a PIVOT. A copy that is merely written down beside them is
 # the stale restatement this repo keeps killing. Delete either check and this becomes the latter.
-DECIDE_ORDER = ("UNUSABLE", "red", "UNKNOWN_VALUE", "pending", "pending (nothing registered)", "green")
+#
+# THE TWO REQUIRED-SET BULLETS ARE THE LAST TWO BEFORE `green`, AND THEIR POSITION IS THE POINT: they are
+# the questions no ROW can answer, so they are asked once every row has already passed. `pending (required
+# set unreadable)` and `pending (required check missing)` are `pending` OUTCOMES — non-merging, bounded and
+# escalated — never a caveat under a green. `required-set-unreadable.json` and `required-check-absent.json`
+# drive them behaviourally; this line is what pins that the DOC still evaluates them in that order.
+DECIDE_ORDER = ("UNUSABLE", "red", "UNKNOWN_VALUE", "pending", "pending (nothing registered)",
+                "pending (required set unreadable)", "pending (required check missing)", "green")
 
 # THE RULES THIS SCRIPT OWNS — the inventory `mutants` reconciles against the `# MUTATE:` markers in the
 # source, in BOTH directions: a rule named here with no marker is a rule that is never mutated, and a marker
@@ -224,10 +252,39 @@ DECIDE_ORDER = ("UNUSABLE", "red", "UNKNOWN_VALUE", "pending", "pending (nothing
 # marker and neither killed the deletion); three response-SHAPE guards; `gh_fetch`'s two rules (no fixture
 # runs it — every fixture REPLACES it); and the two CLI operator-error guards (no fixture calls `main`).
 #
-# **THE COUNT IS A CLAIM, AND THE CLAIM WAS WRONG. The method that found that out is the only one that
+# **AND THE NEXT AUDIT CAUGHT TEN MORE — INSIDE `doc-check` ITSELF.** Every guard in the alarm (the doc is
+# not there; the enum block is gone; the CLASSIFY tables parse to nothing; the catch-all is missing; the
+# DECIDE section is gone or lists no outcomes; a fetch command is MISSING or DUPLICATED; a copy of the derive
+# command has dropped `--required-set`; the sweep found no copies at all) was reachable ONLY FROM A BROKEN
+# DOC — and every doc in the tree is intact, so no case ever ran one. Nine were message specialisations; ONE
+# WAS LOAD-BEARING (`doc-fetch-spec-complete`: without it a doc that had LOST AN ENTIRE `gh` COMMAND passed,
+# the spec executed against whatever remained, printing `ok`). They are driven now by BROKEN DOCS BUILT AT
+# RUN TIME (`DOC_EXPECT`) — never written into the tree, because a doc that is deliberately wrong is a doc
+# somebody reads.
+#
+# **THE COUNT IS A CLAIM, AND THE CLAIM WAS WRONG TWICE. The method that found that out is the only one that
 # works, and it is not reading:** take each rule, DELETE IT ALONE, and run everything. Something must go red.
 # If nothing does, the rule is decoration. Do this for every guard in the file — not just the ones already
 # listed here, because the ones NOT listed are exactly where the answer will surprise you.
+#
+# **WHAT IS DELIBERATELY *NOT* IN HERE, AND WHY — the exclusions are named so the next audit starts from a
+# list and not from zero.** Each was DELETED ALONE and its consequence MEASURED, not assumed:
+#   * `fail()` itself, and `load_snapshot_module`'s refusal — a BROKEN CHECKOUT (no `ci-snapshot.py`), not a
+#     claim about a PR. No fixture can construct it without deleting the file the suite imports.
+#   * `result()`'s "DECIDE returned a verdict I cannot map" — UNREACHABLE by construction: `LEDGER_CI` is
+#     TOTAL over the six verdicts `ci-snapshot.py` can return. It fires only if that file grows a SEVENTH,
+#     which is the day it earns its place. Marking it would report it "pinned by NOTHING" forever.
+#   * `main()`'s "cannot determine the repo" — a DIAGNOSIS, not a safety rule: delete it and `repo` stays
+#     `None`, every fetch URL is malformed, `gh` fails, and the verdict is `unusable`. It still FAILS CLOSED;
+#     what is lost is the good error message, and no verdict can pin a message.
+#   * `run_fixture`'s "this fixture declares no `required_set`" and `fixture_fetch`'s refusals — HARNESS
+#     scaffolding. They guard the SUITE against a malformed fixture, and they are not rules about a PR.
+#   * `parse_enums`' two inner refusals (a line it cannot read; a block that parses to ZERO enums) — both sit
+#     BEHIND the block-not-found guard that IS pinned, and neither can be reached without a doc whose enum
+#     block exists, names the enum, and yet holds no parsable enum line.
+#   * `check_fetch_spec`'s `compared == 0` and `JQ is None` — fail-closed backstops whose input the suite
+#     cannot construct (green.json must exist for `code_argv`, and `jq` is a hard dependency of the check).
+#     They cost nothing and they refuse; a case that could reach them would have to break the harness first.
 RULES = {
     "evidence-sha-from-response": "a checkrun row's sha is GITHUB'S `.head_sha`, NEVER the sha we asked for",
     "status-sha-from-response": "a status row's sha is the response's own top-level `.sha`",
@@ -239,7 +296,8 @@ RULES = {
     "rollup-witnesses": "the rollup is read for WITNESSES — with none, containment passes TRIVIALLY",
     "rollup-entries-present": "a rollup response with NO entry list FAILS CLOSED — an EMPTY rollup is a fact, a MISSING one makes containment vacuous",
     "rollup-entry-known": "a rollup entry of an UNKNOWN `__typename` FAILS CLOSED — a row we cannot read is not a row we may drop",
-    "rollup-status-covered": "a rollup `StatusContext` the REST status family CANNOT SEE fails closed — `EXPECTED` (a required check not yet posted) lives ONLY in the rollup",
+    "rollup-status-covered": "a rollup `StatusContext` the REST status family CANNOT SEE fails closed — the two sources DISAGREE about what exists (NOT the registration gap's closure: see `required-set-is-passed`)",
+    "required-set-is-passed": "the verdict is decided UNDER THE BASE BRANCH'S REQUIRED SET — a required check that never registered is NO ROW, and no rule that reads rows can see it",
     "head-read-last": "the PR's CURRENT head is read AFTER the evidence — a head read FIRST cannot see a push that lands mid-fetch",
     "head-must-be-known": "a rollup response with NO headRefOid is a FAILED fetch — an unknown head makes the fail-closed rule below unable to fire",
     "head-moved-is-not-evidence": "a MOVED head FAILS CLOSED — evidence about a commit that is not the head is not evidence about the PR",
@@ -266,6 +324,22 @@ RULES = {
     "gh-stdout-is-json": "stdout that is not JSON is a FAILED FETCH, not a CRASH — a raise where a verdict was owed is no verdict",
     "cli-head-sha-is-an-oid": "a `--head-sha` that is not a git object id is an OPERATOR ERROR (exit 2), never a verdict about the PR",
     "cli-rundir-exists": "a `--rundir` that is not a directory is an OPERATOR ERROR — named before the fetch, not as a crash during promotion",
+    "cli-required-set-readable": "a `--required-set` we cannot PARSE is an OPERATOR ERROR (exit 2) — NEVER degraded to `none`, which would say 'nothing is required' on the strength of a value we failed to read",
+    # THE ALARM'S OWN GUARDS. `doc-check` is the thing that stops the doc and the code drifting apart, and
+    # ITS subject can go missing too: an extractor that matches NOTHING and reports success is this file's
+    # founding defect, one level up, inside the tool written to prevent it. Every one of these was pinned by
+    # NOTHING until the audit deleted it alone — and `doc-fetch-spec-complete` was not a message
+    # specialisation but LOAD-BEARING: without it a doc that had lost an entire `gh` command passed.
+    "doc-has-a-subject": "a doc that is NOT THERE fails the check — it never passes for want of a subject",
+    "doc-enum-block-found": "an enum block that is GONE or renamed FAILS — never an empty enum set, which agrees with anything",
+    "doc-classify-found": "CLASSIFY tables that parse to NOTHING FAIL — zero rules agree with every rule set",
+    "doc-classify-catch-all": "a CLASSIFY table with NO `ANY OTHER VALUE` catch-all FAILS — without it tomorrow's enum value falls in a HOLE and the PR WEDGES",
+    "doc-decide-section-found": "a DECIDE section that is GONE FAILS — an empty order agrees with any order",
+    "doc-decide-bullets-found": "a DECIDE section listing ZERO outcome bullets FAILS — it cannot be checked, so it does not pass",
+    "doc-fetch-spec-complete": "a FETCH command MISSING from the doc FAILS — LOAD-BEARING: without it the spec is executed against the commands that happen to remain, and reports `ok`",
+    "doc-fetch-spec-unique": "TWO fetch commands for one source FAILS — with two copies, `doc-check` executes one and the reader may follow the other",
+    "doc-derive-required-set": "a COPY of the derive command that drops `--required-set` FAILS — the recap is where a merge-deciding flag goes to die",
+    "doc-derive-copies-found": "finding ZERO copies of the derive command FAILS — the sweep would otherwise pass by having swept nothing",
 }
 
 
@@ -305,6 +379,33 @@ def check_rundir(rundir: Path) -> Path:
     if not rundir.is_dir():
         fail(f"--rundir {rundir} is not a directory")
     return rundir
+
+
+def check_required_set(spec: str):
+    """The base branch's required set, as the ledger holds it (`declared:<json>` | `none` | `unknown`).
+
+    ONE PARSER, AND IT IS `ci-snapshot.py`'s — the same object `decide()` reads, so this tool cannot hold a
+    second opinion about what "required" means. It is called from `main` BEFORE the fetch, with the other
+    operator-error guards: a spec we cannot read is the CALLER'S mistake, and naming it as one beats
+    surfacing it later as a crash, or (far worse) as a verdict about the PR.
+
+    A SPEC WE CANNOT PARSE IS EXIT 2, NEVER `none`. Degrading it would announce "the base branch requires
+    nothing" on the strength of a value we just failed to read — rebuilding the exact false green the
+    required set exists to remove, one layer down. `SpecError` says so loudly; this turns it into an
+    operator error and NO verdict at all, which beats a verdict about the wrong question.
+    """
+    try:
+        return SNAP.parse_required_set(spec)
+    except SNAP.SpecError as exc:
+        # The weakening below is the DEGRADATION itself — "we could not read it, so call it `none`" — which
+        # is why the mutant must be killed by the SEAM case (no fixture carries an unreadable spec).
+        # MUTATE:cli-required-set-readable:return SNAP.RequiredSet(SNAP.NONE_DECLARED)
+        fail(
+            f"--required-set {spec!r} cannot be read ({exc}) — and a spec we cannot read is NOT `none`. "
+            f"It is the ledger header's `required_set` (`ledger.py … header get required_set`), and "
+            f"guessing at it would say 'the base branch requires nothing' on the strength of a value we "
+            f"failed to parse."
+        )
 
 
 # --- FETCH ---------------------------------------------------------------------------------------
@@ -668,15 +769,34 @@ def build_snapshot(fetch: Fetch, repo: str, pr: str, head_sha: str) -> tuple[lis
     # RUN the rollup saw, and this proves REST saw every commit STATUS the rollup saw. The rollup never
     # enters the artifact, so this is the producer's job and nowhere else's.
     #
-    # A context the REST family DOES report needs nothing further: that row carries identity AND verdict, so
-    # it is already in the evidence and already decided — which is exactly why this is a coverage test and
-    # not a fail-closed-on-any-StatusContext rule. (Verified live against a Prow PR: every rollup context was
-    # present in `/status`.) A rule that refused every StatusContext would WEDGE every Jenkins/Prow repo,
-    # forever, and a rule that wedges honest input gets deleted by the next person in a hurry.
+    # **READ THIS BEFORE YOU LEAN ON IT: THIS RULE IS *NOT* WHAT CLOSES THE REGISTRATION GAP, AND IT NEVER
+    # COULD HAVE BEEN.** It was WRITTEN as that closure — "a required check that has not been posted appears
+    # in the rollup and NOWHERE ELSE, so we check the rollup" — and the claim was FALSE, provably: it
+    # quantifies over the `StatusContext` entries THE ROLLUP RETURNED, and the rollup carries no total, is a
+    # single un-paginated page, and CANNOT BE PROVEN COMPLETE. Take the one `EXPECTED` entry out of the
+    # response — a rollup that is merely SHORT — and `uncovered` is EMPTY, this rule has nothing to check,
+    # and the PR goes GREEN while blocked on a check nobody has run. A reviewer deleted exactly that entry
+    # from `rollup-expected-status.json` and watched the verdict flip. **A GUARD WHOSE INPUT CAN BE ABSENT
+    # NEVER FIRES.** The closure is the REQUIRED SET, which is DECLARED by the base branch and therefore does
+    # not depend on the rollup showing up: `required-check-absent.json` is the reviewer's case, and what
+    # catches it is `decide()`'s required-check rule (see `derive()`), not this line.
     #
-    # `EXPECTED` is the case that cannot be covered, and it is the whole reason this rule exists: the REST
-    # commit-status API has NO SUCH STATE, so a required check that has not been posted appears in the rollup
-    # and NOWHERE ELSE. Weaken this (below) and that PR — blocked on a check nobody has run — reports GREEN.
+    # SO WHAT IS IT STILL FOR? It is KEPT, and it is not redundant — but its job is the one it can actually
+    # do: **the two sources DISAGREE ABOUT WHAT EXISTS.** The rollup names a commit status; the REST status
+    # family, whose read is PROVEN COMPLETE against GitHub's own `total_count`, does not report it at all.
+    # That is not "a check is missing" (the required set owns that question) — it is EVIDENCE WE CANNOT
+    # RECONCILE, and a snapshot built from two sources that contradict each other is not a snapshot. Two live
+    # cases reach it, and neither is hypothetical:
+    #   * an `EXPECTED` context the required set does NOT declare — a ruleset changed after the run read it
+    #     (the read is once-per-run and SETTLED, `stage-2-ci.md`), or the set read `none`. The rollup is then
+    #     the ONLY source that knows, and this is what refuses;
+    #   * a POSTED context (`SUCCESS`/`FAILURE`/…) present in the rollup and absent from `/status` — which
+    #     should be impossible (verified live against a Prow PR: every rollup context appeared in `/status`),
+    #     and if it ever happens it means our status read is wrong in a way `total_count` did not catch.
+    # A context the REST family DOES report needs nothing further: that row carries identity AND verdict, so
+    # it is already in the evidence and already decided — which is why this is a coverage test and not a
+    # fail-closed-on-any-StatusContext rule. Refusing every `StatusContext` would WEDGE every Jenkins/Prow
+    # repo forever, and a rule that wedges honest input gets deleted by the next person in a hurry.
     #
     # A MOVED HEAD IS NOT A COVERAGE FAILURE, and must not be reported as one: the rollup then describes the
     # NEW head while the REST families describe the old one, so of course its contexts are not in ours. That
@@ -690,10 +810,13 @@ def build_snapshot(fetch: Fetch, repo: str, pr: str, head_sha: str) -> tuple[lis
             "rollup: the PR's status rollup lists "
             + ", ".join(f"{w['context']!r} ({w['state']})" for w in uncovered)
             + " — and the REST commit-status family, which is where a status VERDICT comes from, does not "
-            "report it at all. A rollup StatusContext in state EXPECTED is a REQUIRED CHECK THAT HAS NOT "
-            "BEEN POSTED YET, and REST has no EXPECTED state to report it with: the rollup is the only "
-            "place it exists. This PR is BLOCKED on a check we cannot see the result of — which is not a "
-            "green, and not a red either. Derive again once it has been posted."
+            "report it at all, on a read PROVEN COMPLETE against GitHub's own total_count. THE TWO SOURCES "
+            "DISAGREE ABOUT WHAT EXISTS, and a snapshot built from evidence we cannot reconcile is not "
+            "evidence: not a green, and not a red. An EXPECTED context is a required status nobody has "
+            "posted (REST has no EXPECTED state to report it with), so derive again once it has been "
+            "posted. NOTE: this rule can only see contexts the ROLLUP RETURNED, and the rollup cannot be "
+            "proven complete — it is NOT what proves a required check registered. The REQUIRED SET is "
+            "(--required-set)."
         )
     return rows, meta
 
@@ -727,7 +850,7 @@ def head_moved(head_sha: str, head_now: object) -> bool:
     return bool(head_now) and head_now != head_sha
 
 
-def derive(fetch: Fetch, repo: str, pr: str, head_sha: str, rundir: Path) -> dict:
+def derive(fetch: Fetch, repo: str, pr: str, head_sha: str, rundir: Path, required) -> dict:
     """FETCH -> PROMOTE -> VERIFY -> DECIDE, and then: IS THIS EVIDENCE EVEN ABOUT THIS PR?
 
     The verdict comes from the BYTES, never from the fetch. That is the whole architecture in one line. It
@@ -745,6 +868,15 @@ def derive(fetch: Fetch, repo: str, pr: str, head_sha: str, rundir: Path) -> dic
     can refuse, and it MUST: a perfectly green snapshot of a commit the PR has moved past is a TRUE report
     about the WRONG THING, and merging on it merges code whose checks never ran. Same false green as
     `zero-checks.json`, one level deeper — the evidence is not missing, it is about somebody else.
+
+    AND ONE QUESTION THE EVIDENCE CANNOT ANSWER EITHER, WHICH IS WHY IT ARRIVES AS AN ARGUMENT. `required` is
+    what the BASE BRANCH declared (`--required-set`, from the ledger header). Every rule that reads the
+    artifact quantifies over the rows that ARE in it, and a required check that has not registered is NO ROW:
+    invisible to the counts, to containment, and to the rollup cross-check alike — all three agree, correctly,
+    about a set that is missing the one member that decides the merge. Only a DECLARED set can see it,
+    because only a declaration is independent of what showed up. This tool does not re-implement that rule
+    (`ci-snapshot.decide()` owns it, and `stage-2-ci.md` owns the read); its whole job here is to HAND THE SET
+    OVER — and `required-set-is-passed` is the marker that proves a fixture notices when it stops.
     """
     try:
         rows, meta = build_snapshot(fetch, repo, pr, head_sha)
@@ -753,13 +885,23 @@ def derive(fetch: Fetch, repo: str, pr: str, head_sha: str, rundir: Path) -> dic
         # mistake for evidence, and no verdict is derived from a fetch we know to be incomplete. The
         # `promote` below is NEVER reached, and that is the whole of the "no partial artifact" rule: it is
         # this `return`, so it is marked ONCE, here, rather than twice in two places that cannot disagree.
-        # MUTATE:fetch-failure-is-not-evidence:return result(pr, head_sha, SNAP.GREEN, "the fetch failed, assumed fine", None, {}, None)
-        return result(pr, head_sha, SNAP.UNUSABLE, f"FETCH FAILED — {exc}", None, {}, None)
+        # MUTATE:fetch-failure-is-not-evidence:return result(pr, head_sha, SNAP.GREEN, "the fetch failed, assumed fine", None, {}, None, required)
+        return result(pr, head_sha, SNAP.UNUSABLE, f"FETCH FAILED — {exc}", None, {}, None, required)
 
     path = promote(rows, rundir, pr, head_sha)
 
+    # THE SET THE VERDICT IS DECIDED UNDER IS THE SET THE RESULT REPORTS — one value, used twice, so the
+    # answer and the account of how it was reached can never disagree. It is a statement OF ITS OWN because
+    # HANDING THE SET OVER IS ITSELF A RULE, distinct from "the verdict comes from the bytes" below: the
+    # bytes-rule can be perfectly intact while this file quietly passes a PERMISSIVE STAND-IN, and every
+    # fixture would still pass, and every required check could then be missing. (Same reasoning as
+    # `checkruns-complete` / `status-complete`: a rule BODY that no caller invokes is not a rule. The harness
+    # cannot mutate half a call, so the application gets its own line and its own marker.)
+    # MUTATE:required-set-is-passed:decided_under = SNAP.RequiredSet(SNAP.NONE_DECLARED)
+    decided_under = required
+
     # MUTATE:verdict-from-snapshot:verdict, reason = SNAP.GREEN, "fetched"
-    verdict, reason = SNAP.evaluate(path, head_sha, expect_filename_sha=True)
+    verdict, reason = SNAP.evaluate(path, head_sha, required=decided_under, expect_filename_sha=True)
 
     # FAIL CLOSED ON A MOVED HEAD — and note WHICH verdicts this overrides: ALL OF THEM, `red` included.
     # Green is obvious (it would merge a PR on checks that never ran against its head). RED IS THE ONE
@@ -785,11 +927,11 @@ def derive(fetch: Fetch, repo: str, pr: str, head_sha: str, rundir: Path) -> dic
             f"(what the stale snapshot said, for the record: {verdict} — {reason})"
         )
 
-    return result(pr, head_sha, verdict, reason, path, meta["evidence"], head_now)
+    return result(pr, head_sha, verdict, reason, path, meta["evidence"], head_now, decided_under)
 
 
 def result(pr: str, head_sha: str, verdict: str, reason: str, path: Path | None,
-           evidence: dict, head_now: object) -> dict:
+           evidence: dict, head_now: object, required) -> dict:
     """The machine-readable verdict — everything the driver needs, and NOTHING it has to interpret.
 
     `ci` is what goes into the ledger. `verdict` is what the evidence said. They are separate because the
@@ -824,6 +966,12 @@ def result(pr: str, head_sha: str, verdict: str, reason: str, path: Path | None,
         # arrive on the old one.
         "head_sha_now": head_now,
         "head_moved": head_moved(head_sha, head_now),
+        # THE SET THIS VERDICT WAS DECIDED UNDER — `declared` / `none` / `unknown`, exactly as the ledger
+        # header holds it. It is an INPUT, recorded so the answer can be reproduced, and it is NOT a caveat
+        # channel: `unknown` NEVER accompanies a green (it is a `pending` bullet in `decide()`), so this can
+        # never become "green, but note that we could not read what was required". If it ever does, the bug
+        # is upstream in `decide()`, not here.
+        "required_set": required.state,
         # THERE IS NO `notes` FIELD, and its absence is a RULE, not an oversight. It used to carry "the
         # evidence may be incomplete" NEXT TO A GREEN VERDICT — a disclosure nobody read, attached to the
         # one answer it contradicted. Every gap we can DETECT is now a REFUSAL (`require_complete`, the
@@ -870,6 +1018,7 @@ def parse_enums(blocks: list[str]) -> dict[str, set[str]]:
         if not enums:
             raise DocError("the enum block parsed to ZERO enums")
         return enums
+    # MUTATE:doc-enum-block-found:return {}
     raise DocError("no fenced block naming CheckStatusState — the doc's enum block is GONE or renamed")
 
 
@@ -935,8 +1084,10 @@ def parse_classify(blocks: list[str]) -> dict[str, set[str]]:
             out.setdefault(key, set())
             out[key] |= values
     if not out:
+        # MUTATE:doc-classify-found:pass
         raise DocError("no CLASSIFY rules parsed — the tables are GONE, renamed, or reformatted")
     if seen_catch_all < 2:
+        # MUTATE:doc-classify-catch-all:pass
         raise DocError(
             f"found {seen_catch_all} `ANY OTHER VALUE -> UNKNOWN_VALUE` catch-all(s), expected one per "
             f"CLASSIFY table. The catch-all is what makes classification TOTAL; without it an enum value "
@@ -953,12 +1104,14 @@ def parse_decide_order(text: str) -> tuple[str, ...]:
     """
     section = re.search(r"^#### DECIDE.*?\n(.*?)(?=^#### |\Z)", text, re.MULTILINE | re.DOTALL)
     if not section:
+        # MUTATE:doc-decide-section-found:return ()
         raise DocError("no `#### DECIDE` section — the order this tool pins is not where it was")
     names = "|".join(re.escape(n) for n in sorted(DECIDE_ORDER, key=len, reverse=True))
     found = tuple(
         m.group(1) for m in re.finditer(rf"^- \*\*({names})\*{{0,2}}", section.group(1), re.MULTILINE)
     )
     if not found:
+        # MUTATE:doc-decide-bullets-found:pass
         raise DocError("the DECIDE section lists ZERO outcome bullets — it cannot be checked, so it FAILS")
     return found
 
@@ -1017,9 +1170,17 @@ def parse_fetch_spec(text: str) -> dict[str, tuple[str, str]]:
             else:
                 continue
             if source in found:
+                # MUTATE:doc-fetch-spec-unique:continue
                 raise DocError(f"the doc gives TWO fetch commands for {source!r} — which one is the spec?")
             found[source] = (cmd, filt)
     missing = [s for s in ("check-runs", "status", "rollup") if s not in found]
+    # **THIS GUARD IS LOAD-BEARING, AND IT WAS PINNED BY NOTHING — THE AUDIT FOUND IT.** Delete it alone and
+    # a doc that has LOST AN ENTIRE FETCH COMMAND sails through `doc-check`, which reports success having
+    # compared the two commands that remain: the check-runs read could vanish from the spec and the alarm
+    # would say `ok`. It is the same shape as every other defect in this file — A CHECK WHOSE SUBJECT CAN BE
+    # ABSENT REPORTS HEALTH IT DID NOT MEASURE — this time inside the alarm itself. `[doc] a FETCH command is
+    # MISSING` is the case that kills it now.
+    # MUTATE:doc-fetch-spec-complete:pass
     if missing:
         raise DocError(
             f"the doc's FETCH block has no `gh … | jq -c` command for {', '.join(missing)} — the spec this "
@@ -1152,6 +1313,57 @@ def check_fetch_spec(text: str) -> tuple[list[str], list[str]]:
     return problems, held
 
 
+def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]:
+    """EVERY COPY OF THE DERIVE COMMAND, IN EVERY SKILL DOC — not just the one in the doc under test.
+
+    THE FLAG THAT DECIDES A MERGE MUST NOT BE DROPPABLE BY A RECAP. `--required-set` is what makes `green`
+    mean *the required set passed*; a copy of the command that omits it is a reader reconstructing an
+    invocation the tool REFUSES (it is a required argument) — or, if this file ever relaxed that, one that
+    silently answers a weaker question. This repo has already paid for the class TWICE: a fourth copy of a
+    canonical command that had gone stale, and a doc recap that dropped `,headRefOid` from the rollup fetch
+    (which `check_fetch_spec` now catches, for the `gh` commands, for exactly this reason).
+
+    A copy is any occurrence that RUNS the command (`ci-status.py derive` carrying `--pr`) — prose that
+    merely NAMES the command is not a copy, and is not checked. **THE UNIT IS THE COMMAND, NOT THE LINE**:
+    an invocation WRAPS (a shell `\\`, or plain prose reflow), and a line-by-line check would report the
+    continuation line as a violation of itself — which is exactly what the first draft of this check did.
+    So each copy is read to the end of its PARAGRAPH.
+
+    FINDING ZERO COPIES IS A FAILURE: the command is prescribed by at least `stage-2-ci.md` and
+    `critical-rules.md`, and a check that cannot find its subject never passes.
+
+    `root` is the skill directory; the CASES point it at a temp tree holding a DELIBERATELY BAD copy, which
+    is the only way to execute these two guards — every copy in the real tree is correct, so nothing in the
+    suite would otherwise run them, and they would be exactly the unpinned guards this file keeps finding.
+    """
+    problems, copies = [], []
+    for md in sorted((root or HERE.parent).rglob("*.md")):
+        text = md.read_text(encoding="utf-8")
+        for m in re.finditer(r"ci-status\.py derive", text):
+            end = text.find("\n\n", m.start())
+            command = text[m.start(): end if end > 0 else len(text)]
+            if "--pr" not in command:
+                continue  # prose that NAMES the command, not a copy of it
+            n = text.count("\n", 0, m.start()) + 1
+            copies.append(f"{md.name}:{n}")
+            if "--required-set" not in command:
+                # MUTATE:doc-derive-required-set:pass
+                problems.append(
+                    f"{md.name}:{n} runs `ci-status.py derive` WITHOUT `--required-set` — the flag that "
+                    f"makes `green` mean the REQUIRED SET passed. A reader following this copy issues a "
+                    f"command the tool refuses; a reader who 'fixes' it by dropping the flag gets a verdict "
+                    f"about the rows that showed up, which is the registration gap, reopened by a recap."
+                )
+    if not copies:
+        # MUTATE:doc-derive-copies-found:pass
+        problems.append(
+            "ZERO copies of `ci-status.py derive` were found in the skill's docs — the command is "
+            "prescribed by stage-2-ci.md and critical-rules.md, so finding none means this check has lost "
+            "its subject, and a check that finds nothing must never pass"
+        )
+    return problems, copies
+
+
 def doc_check(doc: Path) -> int:
     """Assert the DOC, the CODE, and this tool's DECIDE_ORDER all say the same thing.
 
@@ -1168,6 +1380,7 @@ def doc_check(doc: Path) -> int:
          that is precisely where the doc drifted: it kept a `// []` that turns a MISSING rollup into an EMPTY
          one, next to code that refuses it. An alarm with a blind spot is where the next defect will land.
     """
+    # MUTATE:doc-has-a-subject:pass
     if not doc.exists():
         print(f"FAIL     the doc is not at {doc} — a check that cannot find its subject NEVER passes")
         return 1
@@ -1235,6 +1448,13 @@ def doc_check(doc: Path) -> int:
     except DocError as exc:
         print(f"FAIL     the fetch spec cannot be read: {exc}")
         return 1
+
+    # AND EVERY COPY OF THE DERIVE COMMAND ITSELF, ACROSS EVERY SKILL DOC — the class, not the instance.
+    derive_problems, derive_copies = check_derive_copies()
+    problems += derive_problems
+    if not derive_problems:
+        held.append(f"{'the derive invocations':32} {len(derive_copies)} copies across the skill's docs, "
+                    f"every one of them passing --required-set")
     for line in held:
         print(f"ok       {line}")
     for problem in problems:
@@ -1306,11 +1526,25 @@ def fixture_fetch(fx: dict) -> Fetch:
 
 
 def run_fixture(name: str, tmp: Path) -> tuple[dict, dict]:
+    """Drive one recorded fixture through the REAL producer.
+
+    `required_set` IS MANDATORY IN EVERY FIXTURE, and there is deliberately NO DEFAULT — the same rule
+    `evaluate()` enforces on its callers, enforced here on the fixtures. A default would be a permissive
+    answer handed to whoever forgot to think about it, and the value is never incidental: the SAME recorded
+    responses are `green` under `none` and `pending` under a `declared:` set that names a check nobody has
+    registered. That is the whole of `required-check-absent.json`, and a fixture that did not have to state
+    the set could not have expressed it.
+    """
     fx = json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+    if "required_set" not in fx:
+        fail(f"{name}: the fixture declares no `required_set` — it is an INPUT to the verdict, not a "
+             f"detail, and a suite that defaults it silently tests the permissive case and calls it the "
+             f"only case")
     head_sha = fx.get("head_sha", FIXTURE_SHA)
     rundir = tmp / name.replace(".json", "")
     rundir.mkdir(parents=True, exist_ok=True)
-    return fx, derive(fixture_fetch(fx), "o/r", fx.get("pr", "35"), head_sha, rundir)
+    required = SNAP.parse_required_set(fx["required_set"])
+    return fx, derive(fixture_fetch(fx), "o/r", fx.get("pr", "35"), head_sha, rundir, required)
 
 
 def cases() -> list[str]:
@@ -1352,6 +1586,10 @@ SEAM_EXPECT = {
     "[seam] gh stdout that is not JSON": ("refused", "not JSON"),
     "[seam] --head-sha must be an oid": ("refused", "exit 2"),
     "[seam] --rundir must exist": ("refused", "exit 2"),
+    # No FIXTURE can carry an unreadable spec — `run_fixture` parses it before the producer ever runs, so a
+    # fixture with a broken one would fail as a BROKEN FIXTURE, not as the rule firing. The guard belongs
+    # here, with the other operator errors: it is about what the CALLER handed us, never about the PR.
+    "[seam] --required-set must parse": ("refused", "exit 2"),
 }
 
 
@@ -1366,7 +1604,7 @@ def seam_cases(tmp: Path) -> dict[str, tuple[str, str]]:
         with contextlib.redirect_stderr(io.StringIO()):
             try:
                 out[name] = ("accepted", repr(fn()))
-            except FetchError as exc:
+            except (FetchError, DocError) as exc:
                 out[name] = ("refused", str(exc))
             except SystemExit as exc:
                 out[name] = ("refused", f"exit {exc.code}")
@@ -1380,13 +1618,109 @@ def seam_cases(tmp: Path) -> dict[str, tuple[str, str]]:
          lambda: gh_fetch("check-runs", [py, "-c", "print('<html>rate limited</html>')"]))
     case("[seam] --head-sha must be an oid", lambda: check_head_sha("HEAD"))
     case("[seam] --rundir must exist", lambda: check_rundir(tmp / "no-such-dir"))
+    # A spec that is neither `none`, `unknown`, nor `declared:<json>`. The one answer that must NEVER come
+    # back is a RequiredSet — degrading an unreadable spec to "nothing is required" is the false green the
+    # required set exists to close, rebuilt inside its own parser's caller.
+    case("[seam] --required-set must parse", lambda: check_required_set("build,test"))
+    doc_cases(tmp, case)  # the alarm's OWN guards — see DOC_EXPECT
     return out
+
+
+# --- the DOC-CHECK'S OWN GUARDS: an alarm whose SUBJECT can go missing ----------------------------
+#
+# **`doc-check` IS THE THING THAT STOPS THE DOC AND THE CODE DRIFTING APART — AND NOTHING CHECKED *IT*.**
+# Its guards all say the same sentence, which is this whole file's sentence: *a check that cannot find its
+# subject must FAIL, never pass.* But they were reachable only from a BROKEN DOC, and every doc in the tree
+# is intact — so no case in the suite ever executed one. Deleted alone, the suite AND the matrix stayed
+# green. That is the third time this shape has been found here, and this time it was inside the alarm.
+#
+# One of them was not decoration. Weaken `doc-fetch-spec-complete` and a doc that has LOST AN ENTIRE `gh`
+# COMMAND passes: the spec is then executed against whichever commands survive, and `doc-check` prints `ok`
+# for a fetch it never compared. The others are message specialisations (the comparison behind each one
+# still fails, more confusingly) — MEASURED, not assumed, by deleting each and running a broken doc through.
+#
+# The broken docs are BUILT HERE, from the REAL doc, by REMOVING THE ONE THING each guard exists to notice.
+# They are never written to the tree: a doc file that is deliberately corrupt is a doc somebody will read.
+DOC_EXPECT = {
+    "[doc] the doc itself is GONE": ("refused", "cannot find its subject"),
+    "[doc] the enum block is GONE": ("refused", "enum block is GONE"),
+    "[doc] the CLASSIFY tables are GONE": ("refused", "no CLASSIFY rules parsed"),
+    "[doc] the CLASSIFY catch-all is GONE": ("refused", "catch-all"),
+    "[doc] the DECIDE section is GONE": ("refused", "#### DECIDE"),
+    "[doc] the DECIDE section lists no outcomes": ("refused", "ZERO outcome bullets"),
+    "[doc] a FETCH command is MISSING": ("refused", "check-runs"),
+    "[doc] TWO fetch commands for one source": ("refused", "TWO fetch commands"),
+    "[doc] a derive copy drops --required-set": ("refused", "WITHOUT `--required-set`"),
+    "[doc] NO copy of the derive command": ("refused", "ZERO copies"),
+}
+
+
+def doc_cases(tmp: Path, case: Callable[[str, Callable[[], object]], None]) -> None:
+    """Drive each `doc-check` guard against a doc BROKEN in exactly the way that guard exists to notice.
+
+    `case` is the same recorder the seams use, so a guard that RAISES is `refused`, one that returns is
+    `accepted`, and one that blows up is a `crash` — three outcomes, never conflated.
+    """
+    text = DOC.read_text(encoding="utf-8")
+
+    def whole_check(path: Path) -> object:
+        """`doc_check` RETURNS a code, it does not raise — so a non-zero return IS its refusal and must be
+        recorded as one. Returning 0 for a doc that is not there is the ACCEPTANCE this must never allow."""
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = doc_check(path)
+        if rc != 0:
+            raise DocError("doc-check FAILED — a check that cannot find its subject NEVER passes")
+        return "doc-check PASSED on a doc that is NOT THERE"
+
+    case("[doc] the doc itself is GONE", lambda: whole_check(tmp / "no-such-doc.md"))
+    # The enum block is found BY NAME, so renaming the enum IS "the block is gone or renamed". The new name
+    # must not CONTAIN the old one — `CheckStatusStateZ` still matches the `in block` test, and the first
+    # draft of this case renamed it that way, "broke" nothing, and was caught by its own assertion.
+    case("[doc] the enum block is GONE",
+         lambda: parse_enums(fenced_blocks(text.replace("CheckStatusState", "CheckRunState"))))
+    # The CLASSIFY tables are found by their `->` arrows: break the arrows and the tables parse to NOTHING.
+    case("[doc] the CLASSIFY tables are GONE",
+         lambda: parse_classify(fenced_blocks(text.replace("-> RUNNING", "~> RUNNING")
+                                                  .replace("-> PASS", "~> PASS"))))
+    case("[doc] the CLASSIFY catch-all is GONE",
+         lambda: parse_classify(fenced_blocks(text.replace("ANY OTHER VALUE", "SOME OTHER VALUE"))))
+    case("[doc] the DECIDE section is GONE",
+         lambda: parse_decide_order(text.replace("#### DECIDE", "#### HOW TO DECIDE")))
+    case("[doc] the DECIDE section lists no outcomes",
+         lambda: parse_decide_order(re.sub(r"^- \*\*", "- __", text, flags=re.MULTILINE)))
+    # THE LOAD-BEARING ONE: a doc that has lost an entire fetch command. Nothing else notices.
+    case("[doc] a FETCH command is MISSING",
+         lambda: parse_fetch_spec(text.replace(
+             'gh api --paginate --slurp "repos/<owner>/<repo>/commits/<head_sha>/check-runs" | jq -c \'',
+             "# (the check-runs fetch: DELETED by this case)\n(", 1)))
+    # A SECOND copy of a command is where drift hides: `doc-check` executes one, the reader follows the
+    # other. The duplicate is APPENDED, so the spec block itself is left exactly as it is.
+    case("[doc] TWO fetch commands for one source",
+         lambda: parse_fetch_spec(text + '\n```sh\ngh api --paginate --slurp '
+                                         '"repos/<owner>/<repo>/commits/<head_sha>/check-runs" | jq -c \'.\'\n```\n'))
+
+    # THE DERIVE-COMMAND SWEEP, against a doc tree built HERE — the real one is correct, so nothing else can
+    # ever execute these two guards. The bad copy is INVENTED and lives only in `tmp`: a stale command
+    # written into the tree is a command somebody follows.
+    def derive_tree(name: str, body: str) -> object:
+        root = tmp / name
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "some-doc.md").write_text(body, encoding="utf-8")
+        problems, _copies = check_derive_copies(root)
+        if problems:
+            raise DocError(problems[0])
+        return "the sweep found nothing to complain about"
+
+    case("[doc] a derive copy drops --required-set",
+         lambda: derive_tree("bad-copy", "Run `ci-status.py derive --pr 7 --head-sha <sha> --rundir <d>`.\n"))
+    case("[doc] NO copy of the derive command",
+         lambda: derive_tree("no-copy", "This doc prescribes nothing at all.\n"))
 
 
 def check_seams(tmp: Path) -> list[str]:
     bad = []
     got = seam_cases(tmp)
-    for name, (want, needle) in SEAM_EXPECT.items():
+    for name, (want, needle) in {**SEAM_EXPECT, **DOC_EXPECT}.items():
         verdict, detail = got[name]
         if verdict != want:
             bad.append(f"{name}: {verdict!r}, expected {want!r} — {detail}")
@@ -1411,12 +1745,15 @@ def self_test(tmp: Path) -> int:
             for b in bad:
                 print(f"FAIL     {name:32} {b}")
 
-    for problem in check_seams(tmp):
+    problems = check_seams(tmp)
+    for problem in problems:
         failures += 1
         print(f"FAIL     {problem}")
-    if not check_seams(tmp):
+    if not problems:
         print(f"ok       {'the seams no fixture reaches':32} -> {len(SEAM_EXPECT)} cases: gh_fetch's own two "
               f"rules, and the CLI's operator-error guards")
+        print(f"ok       {'the doc-check guards':32} -> {len(DOC_EXPECT)} cases: a BROKEN doc, one break per "
+              f"guard — an alarm that cannot find its subject must never report health")
     print()
     print(f"--- doc-check: {DOC.name} vs the code that runs ---")
     failures += doc_check(DOC)
@@ -1449,15 +1786,18 @@ MUTATION_GREEN_CANARY = False
 
 
 def mutation_expectations() -> dict[str, tuple[str, str]]:
-    """Every case the harness mutates against — the fixtures AND the seams they cannot reach.
+    """Every case the harness mutates against — the fixtures, the seams they cannot reach, AND the broken
+    docs that are the only way to execute `doc-check`'s own guards.
 
-    THE SEAM CASES BELONG HERE OR THEY PIN NOTHING. The harness only ever asks "did any CASE notice?", so a
-    rule whose only witness is not in this dict is a rule reported PINNED BY NOTHING — which is precisely
-    what `gh_fetch`'s two rules were, for as long as the only cases were fixtures.
+    THE SEAM AND DOC CASES BELONG HERE OR THEY PIN NOTHING. The harness only ever asks "did any CASE
+    notice?", so a rule whose only witness is not in this dict is a rule reported PINNED BY NOTHING — which
+    is precisely what `gh_fetch`'s two rules were, for as long as the only cases were fixtures, and what
+    every `doc-check` guard was until a broken doc was constructed to run them against.
     """
     out = {name: (fx["expect"]["verdict"], fx["expect"]["needle"])
            for name, fx in ((n, json.loads((FIXTURES / n).read_text(encoding="utf-8"))) for n in cases())}
     out.update(SEAM_EXPECT)
+    out.update(DOC_EXPECT)
     return out
 
 
@@ -1506,6 +1846,14 @@ def main() -> int:
     d.add_argument("--head-sha", required=True, help="the LEDGER's head_sha — the commit to pin the fetch to")
     d.add_argument("--rundir", required=True, type=Path, help="where the snapshot is promoted")
     d.add_argument("--repo", help="owner/name (default: the current checkout's, via `gh repo view`)")
+    # MANDATORY, AND WITH NO DEFAULT — the same rule `ci-snapshot.evaluate()` enforces on ITS callers, and
+    # for the same reason: a caller who forgot to say what the base branch requires must not be handed the
+    # permissive answer. It is the ledger header's value, verbatim:
+    #   --required-set "$(python3 <skill>/scripts/ledger.py --file <rundir>/state.jsonl header get required_set)"
+    # `unknown` is a legal value and it can NEVER go green (it is a `pending` bullet in DECIDE) — which is
+    # exactly what makes a run that never performed the read merge NOTHING, instead of merging everything.
+    d.add_argument("--required-set", required=True,
+                   help="the ledger header's `required_set`: `declared:<json>` | `none` | `unknown`")
 
     c = sub.add_parser("doc-check", help="assert stage-2-ci.md agrees with the code that runs — enums, "
                                          "CLASSIFY, DECIDE order, and its fetch spec EXECUTED")
@@ -1530,8 +1878,11 @@ def main() -> int:
         with tempfile.TemporaryDirectory() as tmp:
             return self_test(Path(tmp))
 
+    # EVERY OPERATOR ERROR IS NAMED BEFORE THE FIRST FETCH. A caller's mistake surfacing later — as a crash
+    # during promotion, or as a verdict about the PR — is a defect reported against the wrong thing.
     check_head_sha(args.head_sha)
     check_rundir(args.rundir)
+    required = check_required_set(args.required_set)
 
     repo = args.repo
     if not repo:
@@ -1540,7 +1891,7 @@ def main() -> int:
         except (FetchError, AttributeError) as exc:
             fail(f"cannot determine the repo ({exc}) — pass --repo owner/name")
 
-    out = derive(gh_fetch, repo, args.pr, args.head_sha, args.rundir)
+    out = derive(gh_fetch, repo, args.pr, args.head_sha, args.rundir, required)
     print(json.dumps(out, indent=2, ensure_ascii=False))
     # green is the ONLY exit-0 verdict. Everything else — pending, red, unusable, an unclassified value —
     # is NOT a green, and a caller that checks only the exit status must never be told otherwise.

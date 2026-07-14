@@ -1,5 +1,6 @@
 {
-  "why": "THE REASON BOTH FAMILIES ARE MANDATORY. Every check RUN passes; a failing Jenkins COMMIT STATUS \u2014 which /check-runs cannot see, and which carries no `name` at all, only a `context` \u2014 is the only thing that is red. Skip the status fetch and this file goes GREEN over a failing check",
+  "why": "THE REASON BOTH FAMILIES ARE MANDATORY. Every check RUN passes; a failing Jenkins COMMIT STATUS — which /check-runs cannot see, and which carries no `name` at all, only a `context` — is the only thing that is red. Skip the status fetch and this file goes GREEN over a failing check",
+  "required_set": "none",
   "pr": "35",
   "api": {
     "check-runs": {
