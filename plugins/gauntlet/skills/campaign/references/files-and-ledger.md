@@ -422,10 +422,13 @@ against ground truth every wake (above) — the accessor changes *how* records a
 ledger means.
 
 Resolve its absolute path as `<skill-dir>/scripts/ledger.py` (skill dir = the directory holding the
-campaign `SKILL.md`) and pass that path to subtasks, exactly as with `emit-progress.py`. Subcommands
+campaign `SKILL.md`), run it as **`python3 <that path>`** (`SKILL.md`, "Bundled Scripts" — never bare),
+and pass that path to subtasks, exactly as with `emit-progress.py`. Subcommands
 (`<state.jsonl>` = this run's `<rundir>/state.jsonl`):
 
 ```
+# Run: python3 <skill-dir>/scripts/ledger.py --file <state.jsonl> <subcommand> …
+# The synopsis abbreviates that `python3 <skill-dir>/scripts/ledger.py` prefix to `ledger.py`.
 ledger.py --file <state.jsonl> header get <field>                 # read a run-config header field
 ledger.py --file <state.jsonl> header set <field> <value>         # set a run-config header field
 ledger.py --file <state.jsonl> add-row --pr N [--<field> <val> …] # register a row (refuses a duplicate pr; unset fields default)

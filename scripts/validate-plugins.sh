@@ -16,7 +16,7 @@ fail() {
   status=1
 }
 
-for tool in claude jq git; do
+for tool in claude jq; do
   command -v "$tool" >/dev/null || {
     printf 'error: required tool not found: %s\n' "$tool" >&2
     exit 127
@@ -91,31 +91,28 @@ while IFS= read -r skill; do
 done < <(find plugins -path '*/skills/*/SKILL.md' -type f | sort)
 
 echo
-echo "==> bundled script permissions"
-# The docs tell agents to run bundled scripts directly (`<skill-dir>/scripts/x.py …`),
-# so a script committed without the executable bit dies with "Permission denied" in
-# someone else's run. Enforce the pair in BOTH directions:
+echo "==> bundled script invocations"
+# Bundled scripts are invoked through their interpreter with an absolute path
+# (`python3 <skill-dir>/scripts/x.py …`) — campaign SKILL.md, "Bundled Scripts" owns the
+# rule. A doc that prescribes the *path* form without an interpreter (`<skill-dir>/scripts/x.py
+# --file …`) is telling an agent to rely on the executable bit and the shebang surviving every
+# checkout, archive and install path. Most bundled scripts are not committed executable, so that
+# instruction dies with "Permission denied" in someone else's run — which is exactly how this
+# check was born.
 #
-#   shebang  => must be committed 100755   (it is meant to be run directly)
-#   100755   => must carry a shebang       (otherwise exec'ing it is a coin toss)
-#
-# Read the INDEX, not the worktree: a local `chmod` that was never staged fixes
-# nothing for anyone else, and the index mode is what an installed copy ships with.
-while IFS= read -r entry; do
-  mode=${entry%% *}
-  file=${entry#*$'\t'}
-
-  case $file in */scripts/*) ;; *) continue ;; esac
-  [[ $mode == 100644 || $mode == 100755 ]] || continue # symlinks, submodules
-
-  head2=$(git cat-file blob ":$file" | head -c 2 || true)
-
-  if [[ $head2 == '#!' && $mode != 100755 ]]; then
-    fail "$file: has a shebang but is committed $mode; run: git update-index --chmod=+x $file"
-  elif [[ $head2 != '#!' && $mode == 100755 ]]; then
-    fail "$file: is committed executable but has no shebang; add one, or run: git update-index --chmod=-x $file"
-  fi
-done < <(git ls-files --stage -- plugins)
+# Scope: only a script PATH followed by arguments — i.e. an actual prescribed command line.
+# Prose that merely NAMES the tool (`scripts/ledger.py` is the accessor; `ledger.py … set`) is
+# shorthand, not an invocation, and is left alone.
+bare_invocations=$(
+  grep -rnE '(^|[^a-zA-Z0-9_/.-])((\./|<skill-dir>/|\$\{CLAUDE_PLUGIN_ROOT\}[^ `]*/)scripts/)[A-Za-z0-9_-]+\.(py|sh)[[:space:]]+[^`]' \
+    plugins --include='*.md' |
+    grep -vE '(python3|bash)[[:space:]]+[^`]*scripts/' || true
+)
+if [[ -n $bare_invocations ]]; then
+  while IFS= read -r hit; do
+    fail "prescribes a bundled script without an interpreter (use 'python3 <path>' / 'bash <path>'): $hit"
+  done <<<"$bare_invocations"
+fi
 
 echo
 if ((status == 0)); then

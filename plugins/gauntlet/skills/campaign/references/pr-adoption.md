@@ -312,7 +312,7 @@ For each `#PR` to adopt:
      worktree_owned=yes                                 # campaign created the worktree — safe to remove at cleanup
    fi
    # record via the accessor, by field name (never by column position):
-   #   ledger.py --file <state.jsonl> set --pr <N> --worktree "$worktree" \
+   #   python3 <skill-dir>/scripts/ledger.py --file <state.jsonl> set --pr <N> --worktree "$worktree" \
    #     --worktree_owned "$worktree_owned" --branch_owned "$branch_owned"
    # (worktree ownership and branch ownership are tracked separately)
    ```

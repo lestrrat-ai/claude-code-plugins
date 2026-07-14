@@ -153,10 +153,13 @@ Two consequences follow, and both are why this is not just another `state.jsonl`
 
 `scripts/followups.py` is the **sanctioned way** to read and write the store, **by FIELD NAME**. It owns
 the schema, the lifecycle graph and the store's invariants in ONE place; agents and subtasks **must not
-hand-edit the JSONL**. Resolve its absolute path as `<skill-dir>/scripts/followups.py` and pass that path
-to subtasks, exactly as with `ledger.py` and `emit-progress.py`.
+hand-edit the JSONL**. Resolve its absolute path as `<skill-dir>/scripts/followups.py`, run it as
+**`python3 <that path>`** (`SKILL.md`, "Bundled Scripts" — never bare), and pass that path to subtasks,
+exactly as with `ledger.py` and `emit-progress.py`.
 
 ```
+# Run: python3 <skill-dir>/scripts/followups.py --file <store> <subcommand> …
+# The synopsis abbreviates that `python3 <skill-dir>/scripts/followups.py` prefix to `followups.py`.
 followups.py --file <store> add --title T --evidence E --deferred-why W [--run <run-id>]  # raise a CANDIDATE
 followups.py --file <store> corroborate --id fuN --finding F   # TIER 1 — free. An investigation confirmed it
 followups.py --file <store> refute      --id fuN --finding F   # TIER 1 — free. And it stays in the store

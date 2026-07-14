@@ -40,6 +40,25 @@ resumes and takes no `#PR`/`--new`; `#PR` args alone start/adopt into a run. Inv
 Bundled scripts live in `scripts/`, resolved relative to the directory holding this `SKILL.md` (not
 the current working directory) — installed as `${CLAUDE_PLUGIN_ROOT}/skills/campaign/scripts/`, or in
 the repo at `plugins/gauntlet/skills/campaign/scripts/`. Pass their absolute paths to subtasks.
+
+**HOW TO RUN ONE — always through the interpreter, with the absolute path:**
+
+```
+python3 <skill-dir>/scripts/<name>.py …      # every bundled Python script
+bash    <skill-dir>/scripts/<name>.sh …      # every bundled shell script
+```
+
+**NEVER invoke a bundled script bare** — no `followups.py …`, no `./scripts/ledger.py`. A bare invocation
+needs the file to be **executable** *and* its shebang to resolve, and needs that to survive every
+checkout, archive, copy and install path between this repo and the machine running it — most of these
+scripts are not even committed executable, so it fails outright with `Permission denied`. The
+interpreter form needs **neither the executable bit nor the shebang** and behaves identically
+everywhere. It is the only sanctioned form; a new script added here inherits it with no further note.
+
+Prose and synopsis blocks throughout these docs write `ledger.py … set --pr <N>`, `followups.py … table`
+and the like. **That is SHORTHAND naming the tool — it always means the full form above**, never a
+literal command line to paste.
+
 `scripts/review-pass.py` is the schema-owning accessor for a review pass's artifacts — the plan, the
 `pass_identity`, the unit-progress events, **the findings**, and the READ that answers "does this pass
 COUNT?", which
