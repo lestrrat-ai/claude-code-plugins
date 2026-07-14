@@ -1,11 +1,11 @@
 {
-  "why": "GITHUB SAYS IT HOLDS 3 CHECK RUNS FOR THIS COMMIT; THE PAGINATED READ COLLECTED 2. The row we did not get could be the FAILING one — so there is no verdict to derive. This fixture used to expect GREEN with a note attached, which is a green computed from evidence the tool had just proven incomplete",
+  "why": "A ROLLUP ENTRY OF A TYPE WE DO NOT KNOW (invented: there is no `DeploymentStatus` in statusCheckRollup today). The old filter kept CheckRun and dropped everything else in silence — which is EXACTLY how the StatusContext was lost, and how the next type GitHub adds would be lost after it. A row we cannot read is never a row we may ignore",
   "pr": "35",
   "api": {
     "check-runs": {
       "response": [
         {
-          "total_count": 3,
+          "total_count": 1,
           "check_runs": [
             {
               "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
@@ -16,16 +16,6 @@
               "status": "completed",
               "conclusion": "success",
               "details_url": "https://github.com/o/r/actions/runs/29318959841/job/1"
-            },
-            {
-              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
-              "name": "Validate plugins",
-              "app": {
-                "id": 15368
-              },
-              "status": "completed",
-              "conclusion": "success",
-              "details_url": "https://github.com/o/r/actions/runs/29318959841/job/2"
             }
           ]
         }
@@ -51,9 +41,8 @@
             "detailsUrl": "https://github.com/o/r/actions/runs/29318959841/job/1"
           },
           {
-            "__typename": "CheckRun",
-            "name": "Validate plugins",
-            "detailsUrl": "https://github.com/o/r/actions/runs/29318959841/job/2"
+            "__typename": "DeploymentStatus",
+            "state": "FAILURE"
           }
         ]
       }
@@ -62,7 +51,7 @@
   "expect": {
     "verdict": "unusable",
     "ci": "pending",
-    "needle": "total_count=3",
+    "needle": "UNRECOGNISED __typename",
     "promoted": false
   }
 }

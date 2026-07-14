@@ -42,6 +42,32 @@ direction the reader did not check. The verdict you get from this command is, by
 `ci-snapshot.py verify` gives for the artifact it leaves behind — and it leaves the artifact behind
 precisely so that claim is AUDITABLE and not merely asserted.
 
+EVIDENCE WE KNOW IS INCOMPLETE IS NOT EVIDENCE. NOTHING HERE DISCLOSES A GAP AND GREENS ANYWAY.
+This is the same false green as the one above, one level in: not "no evidence, called green", but "evidence
+GitHub ITSELF told us was short, called green". Two places could produce it, and both now FAIL CLOSED:
+
+  * **A SHORT READ.** Both REST families return GitHub's OWN `total_count` for the commit — the number of
+    rows it holds, ACROSS PAGES (verified: 27 check runs at `per_page=5`, six pages, every page reporting
+    `total_count=27`). If the paginated read collected FEWER, a row GitHub holds is NOT IN OUR HANDS, and
+    the row that is missing could be the FAILING one. `require_complete()` refuses. It used to write a NOTE
+    and return green — a green computed from evidence the tool KNEW had a hole in it, with the hole
+    politely printed beside it. A count we cannot READ (`total_count` absent, or not an integer) is refused
+    for the same reason `headRefOid` is: a fail-closed rule that cannot fire is not a rule.
+  * **A ROLLUP `StatusContext`.** The rollup returns two entry types; this tool kept `CheckRun` and DROPPED
+    the rest ON THE FLOOR. A `StatusContext` in state `EXPECTED` is *a REQUIRED status check that has not
+    been posted yet* — and it exists NOWHERE ELSE: the REST commit-status API has no `EXPECTED` state, so
+    the family that carries status VERDICTS cannot see it, by construction. Dropping it silently reported
+    GREEN for a PR that is BLOCKED on a check nobody has run. `build_snapshot()` now requires every rollup
+    `StatusContext` to be VISIBLE in the REST status family (posted statuses are — verified live: a Prow PR
+    whose rollup contexts `tide`/`EasyCLA` both appear in `/status`), and refuses when one is not. An entry
+    of a `__typename` we do not know is refused too: a row we cannot read is not a row we may drop.
+
+**THERE IS NO `notes` CHANNEL, ON PURPOSE.** A field that says "this evidence may be incomplete" BESIDE a
+green verdict is the trapdoor, not the disclosure — it was read by nobody, and it let the tool ship the one
+thing it exists to prevent. Every known gap is a REFUSAL now, so there is nothing left to disclose next to
+a green. What CANNOT be known is stated where it belongs (`stage-2-ci.md`, the FETCH bullets), never
+emitted as reassurance beside a verdict.
+
 EVIDENCE ABOUT A COMMIT THAT IS NO LONGER THE HEAD IS NOT EVIDENCE ABOUT THE PR. The fetch is pinned to the
 LEDGER's `head_sha`, and a push can land at any time — including WHILE this tool is fetching. So the tool
 also reads the PR's CURRENT head, LAST (after both evidence families), and if it has MOVED the verdict is
@@ -177,12 +203,16 @@ RULES = {
     "both-families-checkruns": "the check-run family is FETCHED — a family never read reports nothing, and nothing parses as nothing-wrong",
     "both-families-status": "the commit-status family is FETCHED — /check-runs CANNOT SEE a failing Jenkins status",
     "rollup-witnesses": "the rollup is read for WITNESSES — with none, containment passes TRIVIALLY",
+    "rollup-entries-present": "a rollup response with NO entry list FAILS CLOSED — an EMPTY rollup is a fact, a MISSING one makes containment vacuous",
+    "rollup-entry-known": "a rollup entry of an UNKNOWN `__typename` FAILS CLOSED — a row we cannot read is not a row we may drop",
+    "rollup-status-covered": "a rollup `StatusContext` the REST status family CANNOT SEE fails closed — `EXPECTED` (a required check not yet posted) lives ONLY in the rollup",
     "head-read-last": "the PR's CURRENT head is read AFTER the evidence — a head read FIRST cannot see a push that lands mid-fetch",
     "head-must-be-known": "a rollup response with NO headRefOid is a FAILED fetch — an unknown head makes the fail-closed rule below unable to fire",
     "head-moved-is-not-evidence": "a MOVED head FAILS CLOSED — evidence about a commit that is not the head is not evidence about the PR",
     "fetch-failure-is-not-evidence": "a `gh` call that FAILS yields NO verdict from evidence, and promotes NOTHING",
     "verdict-from-snapshot": "the verdict comes from ci-snapshot.evaluate() over the PROMOTED BYTES — never from what we think we fetched",
-    "disclose-truncation": "an evidence count that disagrees with GitHub's own total_count is DISCLOSED, never silently dropped",
+    "evidence-count-known": "GitHub's own total_count MUST be readable — a completeness rule that cannot fire is not a rule",
+    "evidence-is-complete": "a read SHORTER than GitHub's own total_count FAILS CLOSED — the row we did not get could be the failing one",
 }
 
 
@@ -240,7 +270,46 @@ def s(value: object) -> object:
     return str(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else value
 
 
-def fetch_check_runs(fetch: Fetch, repo: str, head_sha: str) -> tuple[list[dict], dict, int | None]:
+def require_complete(source: str, pages: object, collected: int) -> None:
+    """GITHUB TELLS US HOW MANY ROWS IT HOLDS. If we collected fewer, WE KNOW our evidence has a hole in it —
+    and the row that is not in our hands could be the FAILING one. That is not a green, and it is not a
+    footnote beside one: it is a fetch we cannot use.
+
+    This rule REPLACES a note. The tool used to record `total_count=3 but collected 2` in a `notes` list and
+    return GREEN anyway — a verdict computed from evidence it had just finished proving incomplete, with the
+    proof printed politely underneath. Disclosure is not a substitute for refusal. **The only honest thing to
+    do with evidence you KNOW is missing a row is to REFUSE TO DERIVE A VERDICT FROM IT.**
+
+    `total_count` is the count for the WHOLE COMMIT, not for the page — every page repeats it (verified live:
+    a commit with 27 check runs read at `per_page=5` returns six pages, each saying `total_count=27`), so the
+    comparison is against the rows collected across ALL pages, which is exactly what `--slurp` gives us.
+
+    AND A COUNT WE CANNOT READ IS ITSELF A REFUSAL. If `total_count` is absent or not an integer, the
+    comparison below CANNOT BE MADE — and a fail-closed rule that cannot fire is not a rule, it is a hole
+    with a comment above it. Same reasoning, exactly, as a rollup response with no `headRefOid`.
+    """
+    page = pages[0] if isinstance(pages, list) and pages and isinstance(pages[0], dict) else {}
+    total = page.get("total_count")
+    # MUTATE:evidence-count-known:total = collected
+    if isinstance(total, bool) or not isinstance(total, int):
+        raise FetchError(
+            f"{source}: the response carries no integer total_count ({total!r}) — that is GitHub's own count "
+            f"of what it holds for this commit, and it is the ONLY thing we can check our read against. "
+            f"Without it we cannot tell a complete read from a truncated one, and 'we cannot tell' is not a "
+            f"green."
+        )
+    # MUTATE:evidence-is-complete:pass
+    if total != collected:
+        raise FetchError(
+            f"{source}: GitHub reported total_count={total} but the paginated read collected {collected} "
+            f"row(s) — EVIDENCE IS MISSING. A row GitHub holds for this commit is not in our hands, and it "
+            f"could be the FAILING one. No verdict is derived from a read we KNOW is short. "
+            f"(/check-runs is also capped at the 1000 most recent check suites; --paginate defeats page-size "
+            f"truncation, and this count defeats a short read — neither proves completeness at that scale.)"
+        )
+
+
+def fetch_check_runs(fetch: Fetch, repo: str, head_sha: str) -> tuple[list[dict], dict]:
     """(1) CHECK RUNS — pinned to <head_sha> BY THE URL. Identity AND verdict in one row.
 
     `--paginate` is MANDATORY (`/check-runs` pages at 30) and `--slurp` collects every page into ONE array,
@@ -280,14 +349,15 @@ def fetch_check_runs(fetch: Fetch, repo: str, head_sha: str) -> tuple[list[dict]
     marker_sha = s(runs[0].get("head_sha")) if runs else NO_OID
     marker = {"row": "source", "source": "check-runs", "sha": marker_sha, "count": str(len(rows))}
 
-    # GitHub's OWN count of what it holds for this commit. If the paginated read collected a different
-    # number of rows, EVIDENCE IS MISSING — and a missing row could be the failing one. It is DISCLOSED
-    # (below), never dropped in silence.
-    total = pages[0].get("total_count") if pages and isinstance(pages[0], dict) else None
+    # WHAT WE COLLECTED MUST BE WHAT GITHUB SAYS IT HOLDS. A short read is a hole we KNOW about, and a hole
+    # we know about is never green — see `require_complete`. (This is not the marker's `count` rule, which
+    # asks a DIFFERENT question, downstream: "did every row this fetch produced survive into the file?")
+    require_complete("check-runs", pages, len(rows))
+
     # The FAMILY IS READ, and what it returned is what goes in the artifact. A family never read reports
     # NOTHING, and "nothing" parses as "nothing wrong" — the weakening below is that family going dark.
-    # MUTATE:both-families-checkruns:return [], {"row": "source", "source": "check-runs", "sha": NO_OID, "count": "0"}, None
-    return rows, marker, total if isinstance(total, int) else None
+    # MUTATE:both-families-checkruns:return [], {"row": "source", "source": "check-runs", "sha": NO_OID, "count": "0"}
+    return rows, marker
 
 
 def fetch_statuses(fetch: Fetch, repo: str, head_sha: str) -> tuple[list[dict], dict]:
@@ -322,14 +392,43 @@ def fetch_statuses(fetch: Fetch, repo: str, head_sha: str) -> tuple[list[dict], 
     # GitHub's cannot disagree with the ledger — so it could never fail. That is a rubber stamp.
     # MUTATE:status-marker-sha:marker_sha = NO_OID
     marker_sha = sha if sha is not None else NO_OID
+
+    # This family gets the SAME completeness proof as the other one. It is the family that carries the
+    # FAILING JENKINS STATUS, so a short read here is the exact evidence gap this file was written about.
+    require_complete("status", pages, len(rows))
+
     # THE FAMILY /check-runs CANNOT SEE. The weakening below is this family never being read — and it is
     # SELF-STAMPED on purpose, so that what kills it is the MISSING JENKINS FAILURE and not the marker rule.
     # MUTATE:both-families-status:return [], {"row": "source", "source": "status", "sha": head_sha, "count": "0"}
     return rows, {"row": "source", "source": "status", "sha": marker_sha, "count": str(len(rows))}
 
 
-def fetch_rollup(fetch: Fetch, pr: str) -> tuple[list[dict], dict, object]:
+def fetch_rollup(fetch: Fetch, pr: str) -> tuple[list[dict], dict, object, list[dict]]:
     """(3) ROLLUP — WITNESSES ONLY (identity, no verdict), for the containment test.
+
+    IT RETURNS TWO KINDS OF ENTRY, AND THIS FUNCTION USED TO KEEP ONE AND DROP THE OTHER ON THE FLOOR.
+    `statusCheckRollup` holds `CheckRun` entries AND `StatusContext` entries (verified live: a Prow PR whose
+    rollup is `[{__typename: StatusContext, context: "tide", state: "PENDING"}, {…"EasyCLA", "SUCCESS"}]`),
+    and a `select(__typename == "CheckRun")` threw the second kind away WITHOUT A WORD. That is a silent
+    drop of evidence — the defect this whole file is about, committed by the file itself.
+
+    **WHAT IT DROPPED IS THE ONE THING NOTHING ELSE CAN SEE.** A `StatusContext` in state `EXPECTED` is a
+    REQUIRED status check that HAS NOT BEEN POSTED YET — the PR is blocked on it, and it will not merge until
+    it arrives. The REST commit-status API does not have an `EXPECTED` state AT ALL (its states are
+    success / pending / failure / error), so the family that carries status VERDICTS **cannot express it**:
+    the rollup is the ONLY place it appears. Drop it, and a PR blocked on a check that has never run reports
+    a snapshot with zero status rows, every check run passing — **GREEN**.
+
+    So the entries are PARTITIONED, and nothing is discarded in silence:
+
+      * `CheckRun`      -> witness rows, as before (identity only; the containment test).
+      * `StatusContext` -> returned to `build_snapshot`, which requires each one to be VISIBLE in the REST
+        status family and REFUSES when one is not. They do NOT enter the artifact: the rollup carries no
+        commit oid and no app id, so it can never be read as a verdict (that is this file's founding split),
+        and a status row built out of it would be exactly the verdict-from-the-rollup this design forbids.
+        Their job is to prove the REST family SAW everything — the same job the witnesses do for check runs.
+      * anything else   -> a hard FetchError. A `__typename` we do not know is a row we cannot read, and a
+        row we cannot read is never a row we may drop: that is how the `StatusContext` got lost.
 
     The rollup carries NO app id and NO commit oid, so it can never be read as a verdict — and its marker's
     sha is therefore `-`, ALWAYS. A sha there would be one WE invented.
@@ -346,10 +445,46 @@ def fetch_rollup(fetch: Fetch, pr: str) -> tuple[list[dict], dict, object]:
     data = fetch("rollup", ["gh", "pr", "view", pr, "--json", "statusCheckRollup,headRefOid"])
     if not isinstance(data, dict):
         raise FetchError(f"rollup: expected an object, got {type(data).__name__}")
-    witnesses = [
-        w for w in (data.get("statusCheckRollup") or [])
-        if isinstance(w, dict) and w.get("__typename") == "CheckRun"
-    ]
+
+    # "THE ROLLUP WAS EMPTY" AND "WE DID NOT GET THE ROLLUP" ARE DIFFERENT ANSWERS, and `or []` gave them the
+    # SAME one. An empty LIST is a FACT — GitHub says this head has no checks in the rollup, and a PR whose
+    # suites are all dynamic-event legitimately looks like that. A MISSING (or non-list) key is a response we
+    # did not understand, and reading it as "no witnesses" makes CONTAINMENT VACUOUS: "REST saw everything
+    # the rollup saw" is then a claim about the empty set, and it passes trivially. That is the file's own
+    # founding rule — an absence must read as "we do not know", never as "nothing wrong" — applied to the
+    # response instead of the artifact. (gh returns the key as a list on every PR checked; refusing a shape
+    # we have never seen costs nothing and cannot wedge one we have.)
+    entries = data.get("statusCheckRollup")
+    # MUTATE:rollup-entries-present:entries = entries or []
+    if not isinstance(entries, list):
+        raise FetchError(
+            f"rollup: the response's statusCheckRollup is {type(entries).__name__}, not a list — that is not "
+            f"an EMPTY rollup (a fact GitHub can state), it is a response we cannot read. Treating it as "
+            f"'no witnesses' would make the containment test a claim about the empty set, which passes "
+            f"TRIVIALLY: an absence read as 'nothing wrong'."
+        )
+
+    witnesses: list[dict] = []
+    status_rollup: list[dict] = []
+    for entry in entries:
+        kind = entry.get("__typename") if isinstance(entry, dict) else None
+        if kind == "CheckRun":
+            witnesses.append(entry)
+            continue
+        if kind == "StatusContext":
+            status_rollup.append({"context": s(entry.get("context")), "state": up(entry.get("state"))})
+            continue
+        # The weakening below is the ORIGINAL BUG, restored: keep what we recognise, drop the rest, say
+        # nothing. It is how the `StatusContext` — and with it every required-but-unposted check — became
+        # invisible, and it is how a `__typename` GitHub adds tomorrow would become invisible next.
+        # MUTATE:rollup-entry-known:continue
+        raise FetchError(
+            f"rollup: entry of an UNRECOGNISED __typename {kind!r} — the rollup returns CheckRun and "
+            f"StatusContext, and a kind we do not know is a kind we cannot read. A row we cannot read is "
+            f"NOT a row we may ignore: dropping one is how a required check that had never run reported "
+            f"GREEN. If GitHub has added a type, TEACH THIS TOOL ABOUT IT — do not let it fall on the floor."
+        )
+
     rows = [{"row": "witness", "name": s(w.get("name")), "id": s(w.get("detailsUrl") or NO_OID)}
             for w in witnesses]
     # MUTATE:rollup-marker-sha:marker = {"row": "source", "source": "rollup", "sha": "0" * 40, "count": str(len(rows))}
@@ -370,8 +505,8 @@ def fetch_rollup(fetch: Fetch, pr: str) -> tuple[list[dict], dict, object]:
 
     # WITNESSES, or containment passes TRIVIALLY: with none, "REST saw everything the rollup saw" is a claim
     # about the empty set. The weakening below is the rollup going dark — and it takes the head with it.
-    # MUTATE:rollup-witnesses:return [], {"row": "source", "source": "rollup", "sha": NO_OID, "count": "0"}, None
-    return rows, marker, head_now
+    # MUTATE:rollup-witnesses:return [], {"row": "source", "source": "rollup", "sha": NO_OID, "count": "0"}, None, []
+    return rows, marker, head_now, status_rollup
 
 
 def up(value: object) -> object:
@@ -388,7 +523,7 @@ def build_snapshot(fetch: Fetch, repo: str, pr: str, head_sha: str) -> tuple[lis
     passes by construction, including on a snapshot fetched for the wrong commit.
     """
     rows: list[dict] = [{"row": "header", "sha": head_sha}]
-    meta: dict = {"notes": [], "head_sha_now": None}
+    meta: dict = {"head_sha_now": None}
 
     # THE ORDER OF THESE THREE FETCHES IS ITSELF A RULE: **THE EVIDENCE FIRST, THE PR'S CURRENT HEAD LAST.**
     # No snapshot of a moving thing is atomic — a push can land BETWEEN two of these calls — so the question
@@ -403,8 +538,8 @@ def build_snapshot(fetch: Fetch, repo: str, pr: str, head_sha: str) -> tuple[lis
     # closed, while the check-runs call — pinned BY URL to the ledger's now-superseded sha — happily returns
     # the OLD head's green runs. Two snapshots of two different moments, spliced into one GREEN verdict about
     # a commit that is no longer the PR's head. `head-moves-mid-fetch.json` is that push, recorded.
-    # MUTATE:head-read-last:(witnesses, ru_marker, head_now), (runs, cr_marker, total), (statuses, st_marker) = fetch_rollup(fetch, pr), fetch_check_runs(fetch, repo, head_sha), fetch_statuses(fetch, repo, head_sha)
-    (runs, cr_marker, total), (statuses, st_marker), (witnesses, ru_marker, head_now) = (
+    # MUTATE:head-read-last:(witnesses, ru_marker, head_now, status_rollup), (runs, cr_marker), (statuses, st_marker) = fetch_rollup(fetch, pr), fetch_check_runs(fetch, repo, head_sha), fetch_statuses(fetch, repo, head_sha)
+    (runs, cr_marker), (statuses, st_marker), (witnesses, ru_marker, head_now, status_rollup) = (
         fetch_check_runs(fetch, repo, head_sha),
         fetch_statuses(fetch, repo, head_sha),
         fetch_rollup(fetch, pr),
@@ -414,16 +549,37 @@ def build_snapshot(fetch: Fetch, repo: str, pr: str, head_sha: str) -> tuple[lis
     meta["head_sha_now"] = head_now
     meta["evidence"] = {"checkrun": len(runs), "status": len(statuses), "witness": len(witnesses)}
 
-    # A SILENT OMISSION IS A LIE. `--paginate` defeats page-size truncation; it does NOT prove completeness,
-    # and `/check-runs` is capped at the 1000 most recent check suites. If what we collected disagrees with
-    # GitHub's own `total_count`, SAY SO — in the output, where the driver reads it.
-    if total is not None and total != len(runs):
-        # MUTATE:disclose-truncation:pass
-        meta["notes"].append(
-            f"check-runs: GitHub reported total_count={total} but the paginated read collected "
-            f"{len(runs)} row(s) — evidence may be INCOMPLETE, and a row that is not here could be the "
-            f"failing one. (/check-runs is also capped at the 1000 most recent check suites; --paginate "
-            f"defeats page-size truncation, it does not prove completeness at that scale.)"
+    # THE ROLLUP'S STATUS CONTEXTS MUST BE VISIBLE IN THE FAMILY THAT CARRIES STATUS VERDICTS — or we do not
+    # derive a verdict. This is CONTAINMENT, for the OTHER family: the witnesses prove REST saw every check
+    # RUN the rollup saw, and this proves REST saw every commit STATUS the rollup saw. The rollup never
+    # enters the artifact, so this is the producer's job and nowhere else's.
+    #
+    # A context the REST family DOES report needs nothing further: that row carries identity AND verdict, so
+    # it is already in the evidence and already decided — which is exactly why this is a coverage test and
+    # not a fail-closed-on-any-StatusContext rule. (Verified live against a Prow PR: every rollup context was
+    # present in `/status`.) A rule that refused every StatusContext would WEDGE every Jenkins/Prow repo,
+    # forever, and a rule that wedges honest input gets deleted by the next person in a hurry.
+    #
+    # `EXPECTED` is the case that cannot be covered, and it is the whole reason this rule exists: the REST
+    # commit-status API has NO SUCH STATE, so a required check that has not been posted appears in the rollup
+    # and NOWHERE ELSE. Weaken this (below) and that PR — blocked on a check nobody has run — reports GREEN.
+    #
+    # A MOVED HEAD IS NOT A COVERAGE FAILURE, and must not be reported as one: the rollup then describes the
+    # NEW head while the REST families describe the old one, so of course its contexts are not in ours. That
+    # is the HEAD MOVED rule's business (`derive()`), it is the better diagnosis, and it is the one that
+    # carries `head_sha_now` back to the driver so the refetch is PINNED rather than guessed.
+    contexts = {r["context"] for r in statuses}
+    uncovered = [w for w in status_rollup if w["context"] not in contexts]
+    # MUTATE:rollup-status-covered:pass
+    if uncovered and not head_moved(head_sha, head_now):
+        raise FetchError(
+            "rollup: the PR's status rollup lists "
+            + ", ".join(f"{w['context']!r} ({w['state']})" for w in uncovered)
+            + " — and the REST commit-status family, which is where a status VERDICT comes from, does not "
+            "report it at all. A rollup StatusContext in state EXPECTED is a REQUIRED CHECK THAT HAS NOT "
+            "BEEN POSTED YET, and REST has no EXPECTED state to report it with: the rollup is the only "
+            "place it exists. This PR is BLOCKED on a check we cannot see the result of — which is not a "
+            "green, and not a red either. Derive again once it has been posted."
         )
     return rows, meta
 
@@ -483,8 +639,8 @@ def derive(fetch: Fetch, repo: str, pr: str, head_sha: str, rundir: Path) -> dic
         # mistake for evidence, and no verdict is derived from a fetch we know to be incomplete. The
         # `promote` below is NEVER reached, and that is the whole of the "no partial artifact" rule: it is
         # this `return`, so it is marked ONCE, here, rather than twice in two places that cannot disagree.
-        # MUTATE:fetch-failure-is-not-evidence:return result(pr, head_sha, SNAP.GREEN, "the fetch failed, assumed fine", None, {}, None, [])
-        return result(pr, head_sha, SNAP.UNUSABLE, f"FETCH FAILED — {exc}", None, {}, None, [str(exc)])
+        # MUTATE:fetch-failure-is-not-evidence:return result(pr, head_sha, SNAP.GREEN, "the fetch failed, assumed fine", None, {}, None)
+        return result(pr, head_sha, SNAP.UNUSABLE, f"FETCH FAILED — {exc}", None, {}, None)
 
     path = promote(rows, rundir, pr, head_sha)
 
@@ -515,11 +671,11 @@ def derive(fetch: Fetch, repo: str, pr: str, head_sha: str, rundir: Path) -> dic
             f"(what the stale snapshot said, for the record: {verdict} — {reason})"
         )
 
-    return result(pr, head_sha, verdict, reason, path, meta["evidence"], head_now, meta["notes"])
+    return result(pr, head_sha, verdict, reason, path, meta["evidence"], head_now)
 
 
 def result(pr: str, head_sha: str, verdict: str, reason: str, path: Path | None,
-           evidence: dict, head_now: object, notes: list[str]) -> dict:
+           evidence: dict, head_now: object) -> dict:
     """The machine-readable verdict — everything the driver needs, and NOTHING it has to interpret.
 
     `ci` is what goes into the ledger. `verdict` is what the evidence said. They are separate because the
@@ -554,7 +710,12 @@ def result(pr: str, head_sha: str, verdict: str, reason: str, path: Path | None,
         # arrive on the old one.
         "head_sha_now": head_now,
         "head_moved": head_moved(head_sha, head_now),
-        "notes": notes,                # anything filtered, capped, or incomplete. NEVER silent.
+        # THERE IS NO `notes` FIELD, and its absence is a RULE, not an oversight. It used to carry "the
+        # evidence may be incomplete" NEXT TO A GREEN VERDICT — a disclosure nobody read, attached to the
+        # one answer it contradicted. Every gap we can DETECT is now a REFUSAL (`require_complete`, the
+        # rollup coverage rule, the moved head), so nothing is left to footnote; and what we CANNOT detect
+        # belongs in `stage-2-ci.md`, stated once, not re-emitted as reassurance beside each verdict.
+        # NEVER re-add a channel that can print a caveat beside a green: fail closed instead.
     }
 
 
@@ -844,9 +1005,6 @@ def check_fixture(name: str, got: dict, fx: dict) -> list[str]:
         bad.append(f"right verdict, WRONG RULE: reason does not mention {want['needle']!r} — {got['reason']}")
     if got["ci"] != want["ci"]:
         bad.append(f"ledger ci {got['ci']!r}, expected {want['ci']!r}")
-    for needle in want.get("notes", []):
-        if not any(needle in n for n in got["notes"]):
-            bad.append(f"no note mentioning {needle!r} — a silent omission is a lie")
     if want.get("promoted") is False and got["snapshot"] is not None:
         bad.append("an artifact was PROMOTED for a fetch that FAILED — a later wake would read it as evidence")
     return bad

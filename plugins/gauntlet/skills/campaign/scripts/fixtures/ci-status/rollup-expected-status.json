@@ -1,11 +1,11 @@
 {
-  "why": "GITHUB SAYS IT HOLDS 3 CHECK RUNS FOR THIS COMMIT; THE PAGINATED READ COLLECTED 2. The row we did not get could be the FAILING one — so there is no verdict to derive. This fixture used to expect GREEN with a note attached, which is a green computed from evidence the tool had just proven incomplete",
+  "why": "THE REQUIRED CHECK THAT HAS NOT BEEN POSTED. The rollup lists a StatusContext in state EXPECTED — a required status nobody has run yet, so the PR CANNOT merge — and the REST commit-status API has no EXPECTED state, so it reports NOTHING. Drop the rollup's StatusContext (as this tool did) and every check run passes: GREEN, on a PR that is blocked",
   "pr": "35",
   "api": {
     "check-runs": {
       "response": [
         {
-          "total_count": 3,
+          "total_count": 1,
           "check_runs": [
             {
               "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
@@ -16,16 +16,6 @@
               "status": "completed",
               "conclusion": "success",
               "details_url": "https://github.com/o/r/actions/runs/29318959841/job/1"
-            },
-            {
-              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
-              "name": "Validate plugins",
-              "app": {
-                "id": 15368
-              },
-              "status": "completed",
-              "conclusion": "success",
-              "details_url": "https://github.com/o/r/actions/runs/29318959841/job/2"
             }
           ]
         }
@@ -51,9 +41,11 @@
             "detailsUrl": "https://github.com/o/r/actions/runs/29318959841/job/1"
           },
           {
-            "__typename": "CheckRun",
-            "name": "Validate plugins",
-            "detailsUrl": "https://github.com/o/r/actions/runs/29318959841/job/2"
+            "__typename": "StatusContext",
+            "context": "ci/jenkins/pr-merge",
+            "state": "EXPECTED",
+            "targetUrl": null,
+            "startedAt": "2026-07-14T09:32:37Z"
           }
         ]
       }
@@ -62,7 +54,7 @@
   "expect": {
     "verdict": "unusable",
     "ci": "pending",
-    "needle": "total_count=3",
+    "needle": "ci/jenkins/pr-merge",
     "promoted": false
   }
 }

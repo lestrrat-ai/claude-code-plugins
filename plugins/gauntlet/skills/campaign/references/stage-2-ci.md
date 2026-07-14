@@ -32,6 +32,14 @@ against its code; red would blame the new head for the old one's failure. **Do N
 not started"** — that is `verdict = pending` (zero evidence rows), and it means *wait*. This means
 **re-derive**: refresh the PR's `head_sha` into the ledger (`pr-adoption.md`) and derive again, pinned to it.
 
+**EVIDENCE THE TOOL KNOWS IS INCOMPLETE FAILS CLOSED THE SAME WAY, AND FOR THE SAME REASON.** A moved head
+is one way to hold evidence that cannot answer the question; a **short read** and a **rollup entry the REST
+families cannot see** are the others. The FETCH bullets below define them — each is `verdict = unusable`,
+**`ci = pending`**, **refetch**, and **no snapshot is promoted**. There is deliberately **no `notes` field
+in the output**: the tool used to disclose an incomplete read *beside a green verdict*, and a caveat printed
+next to the answer it contradicts is a trapdoor, not a disclosure. **Anything the tool knows is missing is a
+REFUSAL now** — so `ci = green` from this command means the evidence was complete, not merely annotated.
+
 **WHY THIS IS A COMMAND AND NOT A PROCEDURE YOU FOLLOW.** Every rule in this section was already correct,
 and a driver still wrote **`ci = green`** into the ledger for a PR whose checks had **not registered** —
 having run `gh pr checks <pr>`, read a line saying no checks were reported for the branch, and judged it
@@ -100,11 +108,23 @@ gh api --paginate --slurp "repos/<owner>/<repo>/commits/<head_sha>/status" | jq 
   | ($s[] | {row:"status", sha:$sha, context:.context, state:(.state|ascii_upcase)}),
     {row:"source", source:"status", sha:$sha, count:($s|length|tostring)}'
 
-# (3) ROLLUP — WITNESSES ONLY (identity, no verdict). Used ONLY for the containment test below.
+# (3) ROLLUP — WITNESSES ONLY (identity, no verdict). Used ONLY for the containment tests below.
 #     The rollup carries no app.id and no commit oid, so it can NEVER be read as a verdict — and its
 #     marker's sha is therefore "-", ALWAYS. A sha there would be one WE invented.
-gh pr view <pr> --json statusCheckRollup | jq -c '
-  [.statusCheckRollup[]? | select(.__typename=="CheckRun")] as $w
+#     IT RETURNS TWO KINDS OF ENTRY. `CheckRun` entries become the witnesses. `StatusContext` entries are
+#     the ROLLUP'S VIEW OF FAMILY (2), and they do NOT enter the artifact (no oid, no app id — never a
+#     verdict); they are checked AGAINST family (2), and a context family (2) does not report FAILS CLOSED.
+#     ANY OTHER __typename is a HARD ERROR: a row we cannot read is not a row we may drop, and dropping
+#     one is exactly how a required-but-unposted check became invisible.
+#     `headRefOid` rides along on this SAME call — the PR's current head, read LAST, after both evidence
+#     families (see "A MOVED HEAD FAILS CLOSED", above). It never enters the artifact.
+gh pr view <pr> --json statusCheckRollup,headRefOid | jq -c '
+  (.statusCheckRollup // []) as $all
+  | [$all[] | select(.__typename=="CheckRun")]      as $w
+  | [$all[] | select(.__typename=="StatusContext")] as $sc
+  | if (($w|length) + ($sc|length)) != ($all|length)
+    then error("rollup: an entry of an UNRECOGNISED __typename — teach the tool about it; NEVER drop it")
+    else . end
   | ($w[] | {row:"witness", name:.name, id:.detailsUrl}),
     {row:"source", source:"rollup", sha:"-", count:($w|length|tostring)}'
 ```
@@ -145,9 +165,40 @@ machine-read convention as `state.jsonl` and the review plan/progress files (`fi
   (Illustrative, and expected to drift: observed on 2026-07-13 on
   `repos/cli/cli/commits/trunk/status`. Whether *that* commit still carries zero statuses is a **live
   fact that changes**; the API's behavior **at zero** is the permanent point.)
-- **Honest limit, not a proof:** `/check-runs` is capped at the **1000 most recent check suites**.
-  `--paginate` defeats page-size truncation; it does **not** prove completeness at extreme scale. Say
-  that, and never claim more.
+- **A SHORT READ IS NOT A GREEN — CHECK WHAT YOU COLLECTED AGAINST GITHUB'S OWN `total_count`.** Both REST
+  families return it, and it counts the rows GitHub holds **for the commit, across ALL pages** — every page
+  repeats the same total (observed 2026-07-14: 27 check runs read at `per_page=5` returns six pages, each
+  reporting `total_count=27`; the *count-is-the-cross-page-total* behavior is the permanent point, the 27 is
+  not). So `total_count` vs the rows the **slurp** collected is a completeness test, and a read that is
+  **short FAILS CLOSED** (`unusable`, refetch): a row GitHub holds and we do not have **could be the failing
+  one**, and a verdict derived from evidence we KNOW has a hole in it is the false green of this whole file
+  wearing a footnote. **A note beside a green is not a disclosure, it is a trapdoor** — the tool used to
+  print exactly that, and it shipped a green anyway. **And a count we cannot READ is refused too** (absent,
+  or not an integer): a fail-closed rule that cannot fire is not a rule.
+- **Honest limits, and they are NOT closed by the above.** Say them, and never claim more:
+  - `/check-runs` is capped at the **1000 most recent check suites**. `--paginate` defeats page-size
+    truncation and the `total_count` test defeats a short read — **neither proves completeness at that
+    scale**.
+  - **The rollup (3) carries no total and is a single un-paginated page**, so *its* completeness cannot be
+    proven at all. **That is precisely why it may NEVER be the source of a verdict** — it is a cross-check
+    over families (1) and (2), whose completeness IS proven against GitHub's own counts. A rollup that is
+    short can only make a cross-check weaker; it can never admit a failing row into a green, because a
+    failing row would have to be missing from **both** REST families, and their counts say it is not.
+- **An EMPTY rollup is a FACT; a MISSING one is NOT EVIDENCE.** `[]` means GitHub says this head has nothing
+  in the rollup (legitimate — every suite may be dynamic-event). A response with **no entry list at all** is
+  one we cannot read, and taking it for "no witnesses" makes containment a claim about the **empty set**,
+  which passes trivially. Refuse it. This is the artifact's founding rule — *an absence must read as "we do
+  not know", never as "nothing wrong"* — applied one level up, to the **response**.
+- **THE ROLLUP'S `StatusContext` ENTRIES MUST BE VISIBLE IN FAMILY (2), OR THE FETCH FAILS CLOSED.** The
+  rollup lists commit statuses too, and a `StatusContext` in state **`EXPECTED`** is **a required status
+  check that has not been posted yet** — the PR is *blocked* on it. **The REST commit-status API has no
+  `EXPECTED` state at all** (success / pending / failure / error), so family (2) **cannot report it**: the
+  rollup is the ONLY place it exists. Keep only the `CheckRun` entries — as this tool once did — and a PR
+  blocked on a check **nobody has run** shows all-passing check runs and **zero** status rows: **GREEN**.
+  So every rollup `StatusContext` must appear among family (2)'s contexts, and one that does not is
+  `unusable`. **A posted status DOES appear in both** (verified 2026-07-14 against a Prow PR, whose rollup
+  contexts `tide` and `EasyCLA` were both reported by `/status`) — which is why this is a **coverage test**
+  and not a refusal on sight: refusing every `StatusContext` would **wedge every Jenkins/Prow repo forever**.
 - **EVERY evidence row's `sha` MUST come from the RESPONSE, NEVER from a literal you interpolate.** Both
   APIs return the commit themselves — `.head_sha` on each check run, `.sha` at the top level of the status
   response — so take it from there. Stamping `sha:"<head_sha>"` into the `--jq` filter would copy the value
