@@ -234,11 +234,16 @@ human*, and the formatting is lossy in three ways:
   **display-only** truncation and applies to **`table` alone** — nothing else in campaign ever shortens a
   SHA. The stored value, and the one every other subcommand returns, stays the full 40-char `headRefOid`:
   `ledger.py … get --pr N --field head_sha` prints all 40.
-- **It escapes cell values.** A value carrying a `|`, a newline, or a leading `#` would otherwise forge a
-  column, a row, or a run-config/marker line, so `table` backslash-escapes those before printing. The
-  escaped text is what you see; the raw value is what is stored. That escaping is also what reserves the
-  leading-`#` namespace for the table's own out-of-band lines — the `# <field>: …` run-config block and
-  the `# (no rows)` empty-ledger marker — so **no row can ever forge one**: an empty grid means the ledger
+- **It escapes cell values.** Rendered raw, a value could forge the very layout it is printed into — an
+  extra column, an extra row, a run-config line, the empty-ledger marker — or, carrying whitespace at its
+  edges, be eaten by the column padding and come out looking like a DIFFERENT value. So `table`
+  backslash-escapes before printing: the escaped text is what you see, the raw value is what is stored.
+  **`escape_cell()` in `scripts/ledger.py` owns which characters are escaped and how, and its `self-test`
+  fixtures pin it** — that function is the definition, and this page deliberately does not restate it (a
+  list here goes stale the moment one is added). What you may rely on: the rendering is **injective** — two
+  different values NEVER print as the same cell, so one row can never be read as another — and it reserves
+  the leading-`#` namespace for the table's own out-of-band lines, the `# <field>: …` run-config block and
+  the `# (no rows)` empty-ledger marker, so **no row can ever forge one**: an empty grid means the ledger
   really is empty.
 
 So **read the ledger by FIELD NAME through `ledger.py get`** (or `list`) — **never by parsing the table**.

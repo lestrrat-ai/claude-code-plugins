@@ -241,8 +241,14 @@ TABLE_SHA_WIDTH = 8
 TABLE_EMPTY_MARKER = "# (no rows)"
 
 
+def _hex_escape(ch: str) -> str:
+    """`\\xNN` for a byte-sized code point, `\\uNNNN` above it — the same spelling Python's own repr uses."""
+    return f"\\x{ord(ch):02x}" if ord(ch) < 0x100 else f"\\u{ord(ch):04x}"
+
+
 def escape_cell(value: str) -> str:
-    r"""Make a value safe to render inside the grid — no value may forge the layout.
+    r"""Make a value safe to render inside the grid — no value may forge the layout, and no two
+    values may render THE SAME.
 
     A field value is free text (`slug` is a PR title; `ci`-style reason fields hold
     prose), so it can contain the very characters the table's layout is built from.
@@ -261,12 +267,33 @@ def escape_cell(value: str) -> str:
     eye — but it is still a DISPLAY form. Read values back with `get --field`, never
     by parsing this table.
 
+    WHITESPACE IS ESCAPED AT THE EDGES, and that is not cosmetic — it is what makes the
+    escaping INJECTIVE ONCE PRINTED. The layout pads each cell with `ljust()` and then
+    `rstrip()`s the line, and BOTH of those EAT trailing whitespace: with it left raw,
+    `""` and `"   "` printed the same blank cell and `"a"` and `"a "` printed the same
+    `a`. The sanitizer was injective and the RENDERING was not — which is the same lie,
+    one layer down. So a leading or trailing whitespace run is escaped (`\x20` for a
+    space) and it survives display. INTERIOR spaces are left alone: escaping them would
+    turn every PR title into `add\x20a\x20table`, and nothing eats them.
+
+    Whitespace that is NOT a plain space is escaped WHEREVER it appears: it is invisible
+    or line-break-ish, `str.rstrip()` eats every bit of it (NBSP and NEL included, not
+    just ASCII), and nothing ordinary contains it. So the guarantee is flat: the escaped
+    text NEVER starts or ends with whitespace, and holds no whitespace but the plain
+    interior space — which is exactly what lets the printed cell be read back off the
+    line by stripping its padding (see `grid()` in the self-test).
+
     Callers MUST escape BEFORE computing column widths, so the widths measure what is
     actually printed. (Truncation of `head_sha` happens first, on the raw value, so a
     cut can never land inside an escape sequence.)
     """
+    # The RAW value's whitespace edges — `lstrip`/`rstrip` here use exactly the definition of
+    # whitespace that `cmd_table`'s `rstrip()` will apply to the printed line, so what is escaped is
+    # precisely what the layout would otherwise eat.
+    lead = len(value) - len(value.lstrip())
+    trail = len(value.rstrip())  # index where the trailing whitespace run starts
     out = []
-    for ch in value:
+    for i, ch in enumerate(value):
         if ch == "\\":
             out.append("\\\\")
         elif ch == "|":
@@ -279,11 +306,17 @@ def escape_cell(value: str) -> str:
             out.append("\\t")
         elif ord(ch) < 0x20 or ord(ch) == 0x7F:
             out.append(f"\\x{ord(ch):02x}")  # any other control char
+        elif ch.isspace() and ch != " ":
+            out.append(_hex_escape(ch))  # NBSP, NEL, U+2028, ideographic space…: invisible, and rstrip() eats it
+        elif ch == " " and (i < lead or i >= trail):
+            out.append("\\x20")  # a LEADING or TRAILING space: the padding would swallow it
         else:
             out.append(ch)
     text = "".join(out)
     # Only a FIRST-column cell can open a line, but escape a leading '#' in every
     # cell regardless: one value then has one rendering, whatever column it lands in.
+    # (A leading whitespace run is already escaped above, so a '#' here can only be the
+    # value's own first character.)
     if text.startswith("#"):
         text = "\\" + text
     return text
@@ -363,9 +396,31 @@ HOSTILE = {
     "empty-marker": "(no rows)",              # forge the EMPTY-LEDGER marker (the old, un-namespaced one)
     "empty-marker-hash": "# (no rows)",       # …and the marker as it is spelled TODAY
     "rule-forge": "--------",                 # spelled like the rule line
-    "empty": "",
-    "spaces": "   ",
 }
+
+# The WHITESPACE family — the attack on the LAYOUT rather than on the escapes. `ljust()` pads a cell with
+# spaces and `cmd_table` rstrips the printed line, so any whitespace at a value's EDGE is eaten by the
+# rendering and DISTINCT values print the same bytes. It is the quietest forgery of all: nothing is
+# fabricated, two rows simply become indistinguishable, and `""` reads as `"   "` reads as a cell that was
+# never there. `\xa0` and `\x85` are in here because `str.rstrip()` eats those too — "whitespace" is not
+# just the space bar.
+WHITESPACE = {
+    "empty": "",
+    "space": " ",
+    "spaces": "   ",
+    "plain": "a",
+    "trailing-space": "a ",
+    "trailing-spaces": "a  ",
+    "leading-space": " a",
+    "surrounded": " a ",
+    "interior-space": "a b",          # …and THIS one must stay byte-identical: it is an ordinary title
+    "nbsp": "a\xa0",                  # U+00A0 — invisible, and rstrip() eats it just the same
+    "nel": "a\x85",                   # U+0085 — a line break to str.splitlines(), whitespace to rstrip()
+    "ideographic-space": "a　",   # U+3000
+    "escaped-space": "a\\x20",        # spelled like the escape for a trailing space
+}
+
+HOSTILE.update(WHITESPACE)
 
 
 class SelfTestFailure(AssertionError):
@@ -406,6 +461,13 @@ def row_line(**over: str) -> str:
     return json.dumps({"type": "row", **ROW_DEFAULTS, **over})
 
 
+def body_lines(out: str) -> "list[str]":
+    """The table's printed ROW lines, EXACTLY as they came out — the bytes a reader actually sees."""
+    body = out.split("\n\n", 1)[1].split("\n")
+    check(body[-1] == "", "the table output must end in a newline")
+    return body[2:-1]  # drop the column-header line, the rule line, and the trailing ''
+
+
 def grid(out: str, fields: "tuple[str, ...]") -> "tuple[list[str], list[int], list[list[str]]]":
     """Parse the printed table BACK and assert its INTEGRITY. Returns (config lines, widths, cells).
 
@@ -414,14 +476,21 @@ def grid(out: str, fields: "tuple[str, ...]") -> "tuple[list[str], list[int], li
       * the run config is EXACTLY len(HEADER_FIELDS) lines, each opening `# <field>: `, and NO grid line
         opens with `#` — except the ONE line that is allowed to, `TABLE_EMPTY_MARKER`, and only as the
         sole body row — so no value can forge a config line and no value can forge the empty marker;
-      * every grid line splits into EXACTLY the number of columns the rule line declares, each at the
-        declared width — so no value can forge a column;
+      * every column boundary is EXACTLY where the rule line's widths declare it, and every BARE `|` in
+        the line IS one of those boundaries — so no value can forge a column;
       * the grid has exactly the lines it should — so no value can forge a row.
 
-    Lines are re-padded to the declared width before splitting, because `cmd_table` rstrips each line
-    (trailing padding is noise). Re-padding can only put SPACES back; it cannot invent a column
-    boundary. What it can NEVER repair is a raw `|` in a cell — that boundary is in the bytes, and the
-    split below then counts one column too many, which is precisely the failure this exists to catch.
+    THE CELLS IT RETURNS ARE THE PRINTED BYTES. `cmd_table` writes `content + padding` in each column and
+    then rstrips the line, so this oracle recovers the CONTENT by removing that padding — and that
+    recovery is EXACT, but only because `escape_cell()` guarantees an escaped cell never ends in
+    whitespace, so every trailing space in a printed column IS padding.
+
+    IT MUST NEVER RE-PAD. The oracle this replaced did: it `ljust`ed the printed line back out to the full
+    grid width and handed back PADDED columns, and every fixture then compared them against an equally
+    `ljust`ed expectation. Both sides were re-padded, so a collision CAUSED BY the padding could not
+    appear on either — and one did: `""` and `"   "` printed the same blank cell, `"a"` and `"a "` the
+    same `a`, and this suite stayed green through it. An oracle that normalizes away the thing under test
+    is not an oracle. What it hands back is what was PRINTED; nothing else.
     """
     lines = out.split("\n")
     check(lines[-1] == "", "the table output must end in a newline")
@@ -446,22 +515,42 @@ def grid(out: str, fields: "tuple[str, ...]") -> "tuple[list[str], list[int], li
     for r in runs:
         check(bool(r) and set(r) == {"-"}, f"malformed rule line: {rule!r}")
     widths = [len(r) for r in runs]
-    full = sum(widths) + 3 * (len(widths) - 1)
+    # Where each column STARTS, and where each separator's '|' sits — fixed by the declared widths alone.
+    starts = [sum(widths[:i]) + 3 * i for i in range(len(widths))]
+    full = starts[-1] + widths[-1]
+    pipes = {s - 2 for s in starts[1:]}
 
-    def split(line: str) -> list[str]:
+    def cut(line: str) -> list[str]:
         check(len(line) <= full, f"line is wider than the declared grid ({full}): {line!r}")
-        parts = line.ljust(full).split(" | ")
-        check(len(parts) == len(fields),
-              f"line splits into {len(parts)} columns, not the declared {len(fields)}: {line!r}")
-        for p, w in zip(parts, widths):
-            check(len(p) == w, f"a column is {len(p)} wide, not the declared {w}: {line!r}")
-        return parts
+        check(line == line.rstrip(), f"a printed line ends in whitespace — it was not rstripped: {line!r}")
+        # A BARE '|' anywhere but a declared separator is a forged column boundary. This is the check,
+        # not a column COUNT: it pins the boundary's POSITION, so a raw `|` smuggled into a cell cannot
+        # pass by landing where a separator would have been (a cell's bytes never reach that offset).
+        for j, ch in enumerate(line):
+            if ch == "|" and (j == 0 or line[j - 1] != "\\"):
+                check(j in pipes, f"a BARE '|' at offset {j} is not a declared column boundary: {line!r}")
+        cells = []
+        for i, (s, w) in enumerate(zip(starts, widths)):
+            if i:
+                check(line[s - 3:s - 1] == " |",
+                      f"the separator before column {i} is not where the widths declare it: {line!r}")
+                # rstrip() can reach the separator's TRAILING space — and only that — when every cell
+                # after it is empty. Nothing else of the separator is ever missing.
+                check(line[s - 1:s] in (" ", ""), f"malformed column separator before column {i}: {line!r}")
+            col = line[s:s + w]
+            # A column is printed at its declared width — UNLESS the line stops inside it, which is the
+            # one thing rstrip() can do: it eats the padding of the trailing columns (and, when they are
+            # all empty, the last separator's own trailing space with it). Anything shorter than that is
+            # a line that does not fit the grid it declares.
+            check(len(col) == w or len(line) <= s + w,
+                  f"column {i} is {len(col)} wide, not the declared {w}, and is not the stripped tail: {line!r}")
+            cells.append(col.rstrip())  # remove the PADDING — and only the padding: content never ends in ws
+        return cells
 
-    check(split(colhead) == [f.ljust(w) for f, w in zip(fields, widths)],
-          f"the column-header line does not name the fields: {colhead!r}")
+    check(cut(colhead) == list(fields), f"the column-header line does not name the fields: {colhead!r}")
     if empty:
         return config, widths, []
-    return config, widths, [split(r) for r in rows]
+    return config, widths, [cut(r) for r in rows]
 
 
 # --- the fixtures -------------------------------------------------------------
@@ -489,6 +578,47 @@ def t_escape_injective(tmp: Path) -> None:
         seen[cell] = raw
 
 
+def t_render_injective(tmp: Path) -> None:
+    """Two DIFFERENT values never render as the same PRINTED ROW. Asserted on the BYTES, not on cells.
+
+    `t_escape_injective` pins injectivity of the SANITIZER. That is not the property anyone relies on —
+    what a reader sees is the LINE, and between `escape_cell()` and the line sit `ljust()` and `rstrip()`,
+    both of which destroy trailing whitespace. So injectivity was pinned one layer above where it was
+    broken: the sanitizer was injective, the RENDERING was not, and this suite was green. This fixture
+    pins it where it is actually consumed — the printed row lines of a real table must be pairwise
+    DISTINCT — and the WHITESPACE family is what it is aimed at.
+
+    Three shapes, because the layout eats whitespace differently in each: a ONE-COLUMN table (the cell
+    owns the whole line, and `rstrip()` hits it directly), the value in the FIRST of two columns (where
+    `ljust()`'s padding swallows it instead), and the value in the LAST column (both at once). Only `slug`
+    varies; the other column is constant, so a difference between two lines can come from NOTHING but the
+    value.
+    """
+    values = sorted(set(HOSTILE.values()))
+    path = tmp / "inj.jsonl"
+    write_lines(path, header_line(),
+                *(row_line(pr=str(i + 1), slug=v, ci="green") for i, v in enumerate(values)))
+    for fields in (("slug",), ("slug", "ci"), ("ci", "slug")):
+        code, out, err = run(["--file", str(path), "table", "--fields", ",".join(fields)])
+        check(code == 0, f"table exited {code}: {err!r}")
+        lines = body_lines(out)
+        check(len(lines) == len(values),
+              f"{fields}: {len(lines)} row lines printed for {len(values)} rows:\n{out}")
+        seen: dict[str, str] = {}
+        for raw, line in zip(values, lines):
+            if line in seen:
+                raise SelfTestFailure(
+                    f"{fields}: the RENDERING is NOT INJECTIVE: {seen[line]!r} and {raw!r} both print as "
+                    f"the row line {line!r} — the table cannot be telling the truth about both"
+                )
+            seen[line] = raw
+        # …and each line really is that value's escaped cell, not merely something distinct.
+        _, _, cells = grid(out, fields)
+        for raw, row in zip(values, cells):
+            check(row[fields.index("slug")] == escape_cell(raw),
+                  f"{fields}: {raw!r} printed as {row[fields.index('slug')]!r}, not {escape_cell(raw)!r}")
+
+
 def bare(cell: str) -> "list[str]":
     """The characters in `cell` that are NOT part of an escape sequence and can forge the layout.
 
@@ -513,8 +643,15 @@ def bare(cell: str) -> "list[str]":
 def t_escape_invariant(tmp: Path) -> None:
     """The escaped cell holds NO BARE grid metacharacter: no unescaped `|`, no line break, no control
     char — and it never opens with `#`. This is what makes the ` | ` separator and the `# ` config prefix
-    mean ONE thing wherever they appear."""
-    for raw in sorted(set(list(HOSTILE.values()) + [chr(c) for c in range(0x21)] + ["\x7f"])):
+    mean ONE thing wherever they appear.
+
+    …and NO EDGE WHITESPACE, which is the layout's metacharacter rather than the syntax's: `ljust()` and
+    `rstrip()` eat it, so a cell that ends in whitespace is a cell whose printed bytes do not say what it
+    holds. That guarantee is also what lets `grid()` recover a cell by removing its padding — every
+    trailing space in a printed column IS padding, because content can no longer end in one.
+    """
+    for raw in sorted(set(list(HOSTILE.values()) + [chr(c) for c in range(0x21)]
+                          + ["\x7f", "\x85", "\xa0", " ", "　", " a ", "  ", "a\t"])):
         cell = escape_cell(raw)
         check(not bare(cell),
               f"escape_cell({raw!r}) = {cell!r} still carries a BARE {bare(cell)!r} — it can forge the layout")
@@ -526,6 +663,12 @@ def t_escape_invariant(tmp: Path) -> None:
               f"escape_cell({raw!r}) = {cell!r} still carries a control character")
         check(not cell.startswith("#"),
               f"escape_cell({raw!r}) = {cell!r} opens with '#' — it can forge a RUN-CONFIG line")
+        check(cell == cell.strip(),
+              f"escape_cell({raw!r}) = {cell!r} begins or ends with WHITESPACE — the padding eats it and "
+              f"the printed cell no longer says what the value is")
+        check(not any(c.isspace() and c != " " for c in cell),
+              f"escape_cell({raw!r}) = {cell!r} carries whitespace that is not a plain space — it is "
+              f"invisible, and rstrip() eats it")
 
 
 def t_escape_mapping(tmp: Path) -> None:
@@ -552,6 +695,23 @@ def t_escape_mapping(tmp: Path) -> None:
     check(escape_cell("#x") == "\\#x", f"a LEADING '#' must be escaped: {escape_cell('#x')!r}")
     check(escape_cell("a#b") == "a#b", f"a '#' that is not leading needs no escape: {escape_cell('a#b')!r}")
 
+    # Whitespace: escaped at the EDGES, where the layout eats it — and only there.
+    for raw, want in {
+        " ": "\\x20",
+        "   ": "\\x20\\x20\\x20",          # an all-whitespace value is ALL edge
+        "a ": "a\\x20",
+        " a": "\\x20a",
+        " a ": "\\x20a\\x20",
+        "a  b": "a  b",                    # INTERIOR spaces are untouched — a title is not a hex dump
+        "\xa0": "\\xa0",                   # not a plain space: escaped wherever it sits…
+        "a\xa0b": "a\\xa0b",               # …including the interior, where rstrip() would not reach it
+        "\x85": "\\x85",
+        "　": "\\u3000",                   # above 0xff, so \uNNNN
+        "#x ": "\\#x\\x20",                # the '#' escape and the whitespace escape compose
+        " #x": "\\x20#x",                  # …and a '#' behind an escaped space no longer opens the cell
+    }.items():
+        check(escape_cell(raw) == want, f"escape_cell({raw!r}) = {escape_cell(raw)!r}, not {want!r}")
+
     # …and the whole reason this is escaping and not quoting: an ordinary value is untouched.
     for plain in ("pr42", "fix/the-thing", "green", "-", "add a table view (#39)", "2026-07-13T10:00:00Z"):
         check(escape_cell(plain) == plain, f"an ordinary value was mangled: {plain!r} -> {escape_cell(plain)!r}")
@@ -570,9 +730,9 @@ def t_grid_integrity(tmp: Path) -> None:
         write_lines(path, header_line(), row_line(pr="1", slug=hostile, ci="green"), row_line(pr="2"))
         code, out, err = run(["--file", str(path), "table", "--fields", ",".join(fields)])
         check(code == 0, f"[{name}] table exited {code}: {err!r}")
-        _, widths, cells = grid(out, fields)
+        _, _, cells = grid(out, fields)
         check(len(cells) == 2, f"[{name}] the value forged a ROW: {len(cells)} rows printed, not 2\n{out}")
-        check(cells[0] == [escape_cell(v).ljust(w) for v, w in zip((hostile, "1", "green"), widths)],
+        check(cells[0] == [escape_cell(v) for v in (hostile, "1", "green")],
               f"[{name}] the printed row is not the escaped row: {cells[0]!r}\n{out}")
 
     # …and again with the hostile value FIRST, which is the only position that can open a line — the
@@ -593,8 +753,8 @@ def t_grid_integrity(tmp: Path) -> None:
         write_lines(path, header_line(), row_line(pr="1", slug=hostile))
         code, out, err = run(["--file", str(path), "table", "--fields", "slug"])
         check(code == 0, f"[{name}] table exited {code}: {err!r}")
-        _, widths, cells = grid(out, ("slug",))
-        check(cells == [[escape_cell(hostile).ljust(widths[0])]],
+        _, _, cells = grid(out, ("slug",))
+        check(cells == [[escape_cell(hostile)]],
               f"[{name}] a one-column grid did not print exactly the one escaped row: {cells!r}\n{out}")
 
 
@@ -650,9 +810,9 @@ def t_truncation_is_display_only(tmp: Path) -> None:
 
     code, out, err = run(["--file", str(path), "table"])
     check(code == 0, f"table exited {code}: {err!r}")
-    _, widths, cells = grid(out, TABLE_DEFAULT_FIELDS)
+    _, _, cells = grid(out, TABLE_DEFAULT_FIELDS)
     col = TABLE_DEFAULT_FIELDS.index("head_sha")
-    cell = cells[0][col].rstrip()
+    cell = cells[0][col]
     # truncate(8) THEN escape -> `abcdefg\|` (9 chars). Escape THEN truncate(8) would cut the `\|` in
     # half and print a DANGLING BACKSLASH — a cell that decodes to something the ledger never held.
     check(cell == "abcdefg\\|",
@@ -660,7 +820,7 @@ def t_truncation_is_display_only(tmp: Path) -> None:
           f"cut landed inside an escape sequence")
     check((len(cell) - len(cell.rstrip("\\"))) % 2 == 0,
           f"the rendered head_sha {cell!r} ends in a DANGLING escape — the cut split an escape sequence")
-    check(len(cell.rstrip()) < len(sha), "head_sha was not truncated for display at all")
+    check(len(cell) < len(sha), "head_sha was not truncated for display at all")
 
     # …and the FULL value is still what the ledger holds and what `get` returns.
     code, out, _ = run(["--file", str(path), "get", "--pr", "1", "--field", "head_sha"])
@@ -726,11 +886,11 @@ def t_empty_marker_not_forgeable(tmp: Path) -> None:
                   f"renders — the marker is forgeable:\n{out}")
 
             # …and mechanically: the grid must parse back to ONE row, not to an empty ledger.
-            _, widths, cells = grid(out, (field,))
+            _, _, cells = grid(out, (field,))
             check(len(cells) == 1,
                   f"[{name}/{field}] a row holding {forgery!r} parsed back as an EMPTY ledger "
                   f"({len(cells)} rows) — the marker is forgeable:\n{out}")
-            check(cells[0] == [escape_cell(forgery).ljust(widths[0])],
+            check(cells[0] == [escape_cell(forgery)],
                   f"[{name}/{field}] the printed row is not the escaped row: {cells[0]!r}\n{out}")
             # …and no LINE of a non-empty table IS the marker. (The escaped cell may well CONTAIN the
             # marker's text — `\# (no rows)` does — but it can never BE that line: the `\` is in front of
@@ -759,7 +919,7 @@ def t_fields_duplicate(tmp: Path) -> None:
     code, out, err = run(["--file", str(path), "table", "--fields", "pr,pr"])
     check(code == 0, f"table exited {code}: {err!r}")
     _, _, cells = grid(out, ("pr", "pr"))
-    check([c.rstrip() for c in cells[0]] == ["1", "1"], f"a duplicated field did not print twice: {cells!r}")
+    check(cells[0] == ["1", "1"], f"a duplicated field did not print twice: {cells!r}")
 
 
 def t_unknown_record_type(tmp: Path) -> None:
@@ -856,6 +1016,7 @@ def t_values_are_strings(tmp: Path) -> None:
 
 CASES = [
     ("escape-injective", "escape_cell is INJECTIVE — no two values collide", t_escape_injective),
+    ("render-injective", "the PRINTED ROWS are injective too — no two values print the same line", t_render_injective),
     ("escape-invariant", "the escaped cell holds no bare |, newline, control char, or leading #", t_escape_invariant),
     ("escape-mapping", "the escape table, char by char — and ordinary values left byte-identical", t_escape_mapping),
     ("grid-integrity", "no hostile value forges a column, a row, or a config line", t_grid_integrity),
