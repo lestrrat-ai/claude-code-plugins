@@ -290,15 +290,25 @@ def checkrun_bucket(status: object, conclusion: object) -> str:
 # unrecognised value is by definition neither a pass nor a failure, so of the three legal column values only
 # `pending` is left. NEVER let an unmapped verdict fall through to a default here: an outcome this table does
 # not name is one nobody has thought about, and guessing `pending` for it is the same "close enough" that
-# greened a commit with no checks on it. It is an OPERATOR ERROR, loudly.
-LEDGER_CI = {
-    SNAP.GREEN: "green",
-    SNAP.RED: "red",
-    SNAP.PENDING: "pending",
-    SNAP.UNUSABLE: "pending",
-    SNAP.UNVERIFIABLE: "pending",
-    SNAP.UNCLASSIFIED: "pending",
-}
+# greened a commit with no checks on it. It is an OPERATOR ERROR, loudly (`ledger_ci`).
+#
+# PAIRS, NOT A DICT, and that is not a style choice: `result()` — which reads this — is INSIDE the producer,
+# and the producer may not perform a raw read of ANY kind (`check_field_shapes`). `LEDGER_CI[verdict]` is a
+# subscript, and the scan refuses every subscript with no exempt object, because an exempt object is the hole
+# the last two bypasses went through. The lookup is a scan of pairs instead, and it costs one line.
+LEDGER_CI = (
+    (SNAP.GREEN, "green"),
+    (SNAP.RED, "red"),
+    (SNAP.PENDING, "pending"),
+    (SNAP.UNUSABLE, "pending"),
+    (SNAP.UNVERIFIABLE, "pending"),
+    (SNAP.UNCLASSIFIED, "pending"),
+)
+
+
+def ledger_ci(verdict: str) -> str | None:
+    """The ledger column this verdict maps to — or None, which `result()` refuses rather than guesses."""
+    return next((column for outcome, column in LEDGER_CI if outcome == verdict), None)
 
 # The DECIDE order, as a NAME PER BULLET, in the order `stage-2-ci.md` evaluates them. This is a THIRD
 # statement of an order that is already owned twice (the doc's bullets; `ci-snapshot.decide()`'s branches),
@@ -428,19 +438,29 @@ RULES = {
     # is named by an AST scan and the suite goes RED.
     "rows-are-a-list": "EVERY page carries its rows as a LIST — a page MISSING the key is NOT a page with an EMPTY one, and `or []` said it was: an otherwise-green response with its `statuses` member deleted returned GREEN",
     "field-shape-declared": "a field whose DECLARED shape the response does not have is REFUSED — absent, null, or the wrong type, and NEVER defaulted to the benign-looking value the caller forgot to think about",
-    # AND THE SCAN THAT PROVES THE DOOR HAS NO WAY AROUND IT — which SHIPPED WITH TWO WAYS AROUND IT. It saw
-    # only STRING-LITERAL subscripts (so `pages[0][rows_key]` walked past it) and it EXEMPTED an object by the
-    # NAME of the local holding it (so `facts = {}` in a reader was exempt). Both left the suite GREEN. The
-    # exemption is DELETED, not narrowed, and the check is TOTAL: every subscript, every dict-reading method,
-    # in every reader the code DERIVES from `build_snapshot` — no exempt key, no exempt object, no exempt
-    # fetcher. Zero exemptions is the only number that cannot be spoofed.
-    "field-reads-through-the-seam": "a reader CANNOT read a field any other way — a raw `.get()` (or any dict-reading method), ANY raw subscript (literal key, variable key, computed key, on ANY object), a `field()` call with no shape, or a fetch inlined into `build_snapshot` is caught by an AST scan of the code that RUNS, because a door with a way around it is not a door",
+    # AND THE SCAN THAT PROVES THE DOOR HAS NO WAY AROUND IT — which SHIPPED WITH THREE WAYS AROUND IT. It saw
+    # only STRING-LITERAL subscripts (so `pages[0][rows_key]` walked past it); it EXEMPTED an object by the
+    # NAME of the local holding it (so `facts = {}` in a reader was exempt); and it scanned only the FETCHERS,
+    # so a response HANDED BACK to `build_snapshot` was read there by nobody's rule at all. All three left the
+    # suite GREEN. The exemption is DELETED, not narrowed; the check is TOTAL over the forms of a read (every
+    # subscript, every dict-reading method — no exempt key, no exempt object); and its REGION is now the whole
+    # PRODUCER, not the fetchers. Zero exemptions is the only number that cannot be spoofed, and the region
+    # has to be everywhere the response can GET TO or the exemptions come back as geography.
+    "field-reads-through-the-seam": "NOTHING in the producer reads a field any other way — a raw `.get()` (or any dict-reading method), ANY raw subscript (literal key, variable key, computed key, on ANY object), a `field()` call with no shape, or a fetch inlined into `build_snapshot` is caught by an AST scan of the code that RUNS, because a door with a way around it is not a door",
     "field-scan-has-a-subject": "the scan DERIVES its readers from the fetch seam, and a source in which NOTHING is handed that seam FAILS — an empty reader set would pass every source on Earth, and a check that finds nothing must never report health",
-    # THE OTHER WAY OUT OF THE READER SET, and for one round the scan asserted only the first: a fetch inlined
-    # into `build_snapshot`. But a fetcher that RETURNS the response unread puts it in `build_snapshot`'s hands
-    # just as surely — and that function is the one the reader set cannot contain, so its subscripts are
-    # unscanned. A response is read in a FETCHER, through the door, or it never leaves one.
-    "fetchers-never-return-a-response": "a reader NEVER HANDS THE RAW RESPONSE BACK — a response read outside every scanned reader is a response nothing made declare its shape",
+    # **THE GUARD THAT KEPT ASSERTING SOMETHING NARROWER THAN IT MEANT, AND THE SIXTH TIME THAT SHAPE HAS COST
+    # A FALSE GREEN HERE.** It MEANT "no raw GitHub response can be read outside a scanned reader" and it
+    # ASSERTED "no fetcher directly returns the seam call or a name bound to it". A fetcher that returned
+    # `{"raw": data}` — or `identity(data)`, or `[data]` — handed the response to `build_snapshot`, which the
+    # reader set CANNOT contain (it is where the seam is handed out), and the raw subscripts there were
+    # scanned by NOBODY. Both were driven through the scan with the suite still green.
+    #
+    # The fix is NOT another shape in the hand-back rule: that is a race the next reviewer wins (a closure, a
+    # comprehension, a default argument). **The READS are removed instead.** Every function that can HOLD a
+    # response is scanned — the producer, not the fetchers — and in ALL of it a raw read is refused. A
+    # laundered hand-back is then harmless: there is nowhere left to read it.
+    "no-raw-read-outside-the-door": "the raw-read refusal covers THE WHOLE PRODUCER, not just the fetchers — `build_snapshot` and every helper it calls read NOTHING raw, so a response HANDED BACK to them (wrapped in a container, laundered through a helper) has nowhere left to be read",
+    "fetchers-never-return-a-response": "a fetcher does not hand the seam's own value back BARE — a narrow rule that names the mistake in the fetcher that made it, and NEVER what makes a hand-back safe (see `no-raw-read-outside-the-door`, which is what does)",
     "pages-are-an-array": "a `--slurp` that did not yield a NON-EMPTY ARRAY is a fetch we cannot read — never rows to iterate, and never zero pages to quantify over vacuously",
     "page-is-an-object": "EVERY page is an OBJECT — a page we cannot read used to reach `.get` and CRASH, and a crash is not a refusal: no verdict was reached at all",
     "page-fact-known": "EVERY page must STATE the facts GitHub repeats on all of them (`total_count`; the status `.sha`) — a page that does not is not a page that agrees, and an absent count is NOT a count of zero",
@@ -853,11 +873,11 @@ def field(source: str, obj: object, key: str, *shape: object, why: str = "") -> 
     return obj.get(key) if isinstance(obj, dict) else None
 
 
-# --- THE SCAN THAT PROVES IT, AND THE TWO HOLES IT SHIPPED WITH -----------------------------------
+# --- THE SCAN THAT PROVES IT, AND THE THREE HOLES IT SHIPPED WITH ----------------------------------
 #
-# **A CURE THAT IS AN INSTANCE OF THE DISEASE IT WAS WRITTEN TO CURE — FOR THE SECOND TIME ON THIS BRANCH.**
-# The scan below was added to make "a field read that declares nothing" IMPOSSIBLE. It had TWO WAYS AROUND
-# IT, and a reviewer drove both straight through:
+# **A CURE THAT IS AN INSTANCE OF THE DISEASE IT WAS WRITTEN TO CURE — THREE TIMES NOW, ON THIS BRANCH.**
+# The scan below was added to make "a field read that declares nothing" IMPOSSIBLE. Reviewers drove three
+# different bypasses straight through it, and every one left the suite GREEN:
 #
 #   * IT ONLY SAW ONE SYNTACTIC FORM OF A SUBSCRIPT. It flagged `page["statuses"]` — a STRING LITERAL key —
 #     and was BLIND to every other spelling of the same read. `pages[0][rows_key]` inside `read_pages`: the
@@ -866,19 +886,36 @@ def field(source: str, obj: object, key: str, *shape: object, why: str = "") -> 
 #     the NAME of the local holding it — so `facts = {}` followed by `facts["statuses"]`, ANYWHERE in a
 #     scanned reader, was exempt. The suite stayed GREEN for that too. **AN EXEMPTION BY NAME IS A GUARD
 #     ASKING TO BE SPOOFED**: the thing it trusts is the one thing the forgetful edit can freely choose.
+#   * **AND ITS REGION WAS THE FETCHERS, WHICH IS NOT WHERE THE RESPONSE ENDS UP.** This is the one that
+#     matters most, and it is the one that survived two rounds of "fixes". The scan covered the functions
+#     HANDED the seam — but a fetcher can HAND ITS RESPONSE BACK, and the function it hands it back to
+#     (`build_snapshot`) is the one function no reader set can ever contain, BECAUSE it is where the seam is
+#     handed out. The hand-back rule that was supposed to close that only knew a BARE return, so a fetcher
+#     that returned `{"raw": data}`, or `identity(data)`, or `[data]`, walked past it — and `build_snapshot`
+#     then subscripted a raw GitHub response with no rule anywhere to say a word.
 #
-# So the exemption is not narrowed, it is DELETED, and the check is not extended to one more spelling, it is
-# made TOTAL: **EVERY subscript in a scanned reader is refused — literal key, variable key, computed key,
-# on any object whatsoever — and so is every dict-reading method call.** The seam-owned dict that needed the
-# exemption is GONE (`read_pages` returns a typed `Facts`, read by ATTRIBUTE), the one list index a fetcher
-# needed is `next(iter(…))`, and the scanned region therefore needs NO exemption at all. **ZERO is the only
-# number of exemptions that cannot be spoofed.**
+# THE FIRST TWO ARE FIXED BY DELETING THE EXEMPTION AND BY BEING TOTAL OVER THE FORMS OF A READ: **EVERY
+# subscript is refused — literal key, variable key, computed key, on any object whatsoever — and so is every
+# dict-reading method call.** The seam-owned dict that needed the exemption is GONE (`read_pages` returns a
+# typed `Facts`, read by ATTRIBUTE), the one list index a fetcher needed is `next(iter(…))`, and the scanned
+# region needs NO exemption at all. **ZERO is the only number of exemptions that cannot be spoofed.**
+#
+# **THE THIRD IS FIXED BY ASSERTING THE PROPERTY INSTEAD OF ENUMERATING THE SHAPES — read this before you
+# "improve" the hand-back rule.** The guard MEANS *"no raw GitHub response can be READ outside a scanned
+# reader"*. Chasing the shapes a response can be smuggled OUT in (a dict, a list, a helper, a closure, a
+# comprehension, a default argument) is a race that always has one more move, and each round of it is a
+# guard that asserts one spelling of what it means. So the shapes are not enumerated. **The READS are
+# removed:** every function that can HOLD a response — the whole PRODUCER, `build_snapshot` and `derive`
+# included — is scanned, and in ALL of it a raw read is refused. A hand-back then has nowhere to be read,
+# whatever shape it wore, and the cross-source facts a fetcher must pass out travel as TYPED values it
+# BUILT (`RestRun`, `RollupStatus`, `Snapshot`) which have no fields to read.
 #
 # AND THE SUBJECT OF THE SCAN IS DERIVED, NOT LISTED. It used to scan a hand-written tuple of function
 # names, so a NEW fetcher nobody added to it was not scanned AT ALL — the hole was disclosed, which is not
-# the same as being closed. The reader set is now the CALL-GRAPH CLOSURE of the functions `build_snapshot`
-# hands the `fetch` seam to. A fetcher added tomorrow is scanned the day it is added, because the seam is
-# how a response gets in, and taking the seam is what makes you a reader.
+# the same as being closed. Both sets are CALL-GRAPH CLOSURES of the running code now: the READERS from the
+# functions `build_snapshot` hands the seam to (`scanned_readers`), and the REGION IN WHICH NO RAW READ IS
+# ALLOWED from `derive` and `build_snapshot` themselves (`producer`). A fetcher added tomorrow is scanned
+# the day it is added, and so is any helper it — or the orchestrator — happens to call.
 
 # THE DOOR. The one function that may touch a response raw — and the ONLY name the scan does not scan.
 #
@@ -904,27 +941,50 @@ SEAM = "fetch"
 RAW_READS = ("get", "items", "keys", "values", "pop", "popitem", "setdefault", "__getitem__")
 
 
+def top_level(tree: ast.Module) -> dict[str, ast.FunctionDef]:
+    """The module's TOP-LEVEL functions — the only names a call is resolved against.
+
+    A nested `def fetch(...)` (the fixtures have one) must never be mistaken for the seam, and a nested def
+    inside a scanned function is scanned anyway, as part of that function's body.
+    """
+    return {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+
+
+def called_by(fn: ast.FunctionDef, funcs: dict[str, ast.FunctionDef], seam_only: bool = False) -> list[str]:
+    """The top-level functions THIS function calls — or, with `seam_only`, just the ones it hands the SEAM."""
+    return [call.func.id for call in ast.walk(fn)
+            if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id in funcs
+            and (not seam_only
+                 or any(isinstance(arg, ast.Name) and arg.id == SEAM for arg in call.args))]
+
+
+def closure(roots: list[str], funcs: dict[str, ast.FunctionDef]) -> dict[str, ast.FunctionDef]:
+    """`roots` and everything they transitively call, MINUS the DOOR (and so minus whatever only it calls)."""
+    out: dict[str, ast.FunctionDef] = {}
+    queue = list(roots)
+    while queue:
+        name = queue.pop()
+        if name in out or name == DOOR or name not in funcs:
+            continue
+        out[name] = funcs[name]
+        queue += called_by(funcs[name], funcs)
+    return out
+
+
 def scanned_readers(tree: ast.Module) -> dict[str, ast.FunctionDef]:
-    """WHICH FUNCTIONS READ A GITHUB RESPONSE — DERIVED FROM THE CODE, never a list somebody maintains.
+    """WHICH FUNCTIONS ARE HANDED A GITHUB RESPONSE — DERIVED FROM THE CODE, never a list somebody maintains.
 
     The ROOTS are the functions `build_snapshot` hands the `fetch` seam to (that is how a response enters
     this tool at all), and the reader set is their TRANSITIVE CALLEES. So a fetcher added to
     `build_snapshot` tomorrow is scanned the moment it exists — the limit the old hand-written tuple had
     (`a NEW fetcher nobody added is not scanned`) is not disclosed, it is gone.
 
-    Two things are deliberately NOT in the set, and neither is an exemption a forgetful read can hide in:
-
-      * `build_snapshot` itself — it is the ROOT, and it reads only the rows THIS FILE built, never a
-        response. It is not merely skipped: BOTH ways a response could reach it are refused (below) — it
-        calling the seam DIRECTLY, and a fetcher HANDING THE RESPONSE BACK unread. The first alone was
-        asserted for one round, while the comment here claimed it was "the one way"; it was not, and a
-        fetcher whose whole body is `return fetch("x", [])` walked through the scan untouched.
-      * the DOOR, and whatever only the DOOR calls — see `DOOR`.
-
-    Only TOP-LEVEL defs resolve a call: a nested `def fetch(...)` (the fixtures have one) must never be
-    mistaken for the seam, and a nested def inside a reader is scanned anyway, as part of that reader's body.
+    **THIS SET IS NO LONGER WHAT BOUNDS THE RAW-READ SCAN — `producer()` IS, AND THE DIFFERENCE IS THE WHOLE
+    OF THE LAST DEFECT.** What this set is still for is the HAND-BACK rule, whose subject is a FETCHER. The
+    reason it cannot bound the read scan is that a response does not stay where it was fetched: hand it back
+    inside a dict, or through any helper, and it is somewhere this set never reached.
     """
-    funcs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    funcs = top_level(tree)
     root = funcs.get("build_snapshot")
     if root is None:
         raise FetchError(
@@ -932,25 +992,60 @@ def scanned_readers(tree: ast.Module) -> dict[str, ast.FunctionDef]:
             "and therefore where the set of readers is DERIVED from. A scan that cannot find its subject "
             "must never report health it did not measure."
         )
-    readers: dict[str, ast.FunctionDef] = {}
-    queue = [call.func.id for call in ast.walk(root)
-             if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id in funcs
-             and any(isinstance(arg, ast.Name) and arg.id == SEAM for arg in call.args)]
+    fetchers = called_by(root, funcs, seam_only=True)
     # MUTATE:field-scan-has-a-subject:pass
-    if not queue:
+    if not fetchers:
         raise FetchError(
             f"the field-shape scan found NO FETCHER — nothing in `build_snapshot` is handed the `{SEAM}` "
             f"seam, so the reader set is EMPTY and this scan has NOTHING TO SCAN. It would then pass every "
             f"source on Earth, including one that reads every field raw. A check with no subject FAILS."
         )
-    while queue:
-        name = queue.pop()
-        if name in readers or name == DOOR:
-            continue
-        readers[name] = funcs[name]
-        queue += [call.func.id for call in ast.walk(funcs[name])
-                  if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id in funcs]
-    return readers
+    return closure(fetchers, funcs)
+
+
+# The PRODUCER's entry points. `derive` is FETCH -> PROMOTE -> VERIFY -> DECIDE, `build_snapshot` is where
+# the seam is handed out, and `resolve_repo` is the one fetch that happens OUTSIDE `derive` (the CLI asking
+# which repository it is standing in). Between them they reach EVERY function that can hold a response or
+# anything derived from one. (`build_snapshot` is named as well as `derive` because the scan is driven
+# against INVENTED sources that have no `derive` — and because the anchor of the reader set must be an anchor
+# here too, or a source could hand the seam out from a function this closure never reaches.)
+PRODUCER_ROOTS = ("derive", "build_snapshot", "resolve_repo")
+
+# **AND THE CLI ITSELF, WHOSE BODY IS SCANNED THOUGH ITS CALLEES ARE NOT.** `main` holds the one thing the
+# producer hands out — the result dict — and "no UNSCANNED code reads a field off ANYTHING" has to mean
+# `main` too, or the boundary is just an exemption with a nicer name. So its body is scanned (it reads the
+# verdict through the DOOR, like everything else), and the closure does NOT descend from it: what it calls
+# is either the PRODUCER, which is already scanned, or the HARNESS (`self-test`, `doc-check`), which never
+# runs on a live derive and reads RECORDED fixtures off disk rather than a live response.
+SCANNED_BOUNDARY = ("main",)
+
+
+def producer(tree: ast.Module) -> dict[str, ast.FunctionDef]:
+    """EVERY FUNCTION THAT CAN HOLD A GITHUB RESPONSE — the call-graph closure of `derive` and
+    `build_snapshot`, which is the region where NO raw read is permitted AT ALL.
+
+    **THIS IS THE FIX FOR THE GUARD THAT KEPT ASSERTING THE WRONG THING.** The scan MEANT *"no raw GitHub
+    response can be read outside a scanned reader"* and ASSERTED *"no fetcher directly returns the seam call
+    or a name bound to it"* — so a fetcher that returned `{"raw": data}`, or `identity(data)`, or `[data]`,
+    handed the response straight to `build_snapshot`, which the reader set CANNOT contain, and the read
+    there was scanned by nobody. Enumerating the shapes a response can be smuggled in is a game with no last
+    move: the next one is a closure, a comprehension, a default argument.
+
+    So the shapes are not enumerated. **The READS are removed.** Everything the response could reach is
+    scanned, and in all of it a raw read is refused — so a laundered hand-back is HARMLESS, because there is
+    nowhere left to read it. `build_snapshot` orchestrates and reads nothing; `derive`, `promote` and
+    `result` handle only values this file BUILT (`Snapshot`, `RestRun`, the artifact rows) and read them by
+    attribute or not at all.
+
+    The honest limit, stated rather than implied — and it is the same one the whole scan has: it sees the
+    code as WRITTEN. A call this file makes into ANOTHER module (`SNAP.evaluate`, `json.dumps`) is not
+    followed, and a deliberately obfuscated read (`getattr(page, "g" + "et")`) is not caught. What is made
+    impossible is committing the mistake QUIETLY — which is how every one of these shipped.
+    """
+    funcs = top_level(tree)
+    scanned = closure([name for name in PRODUCER_ROOTS if name in funcs], funcs)
+    scanned.update({name: funcs[name] for name in SCANNED_BOUNDARY if name in funcs})
+    return scanned
 
 
 def executable(fn: ast.FunctionDef) -> list[ast.AST]:
@@ -1023,11 +1118,11 @@ def is_raw_response(value: ast.expr, bound: set[str]) -> bool:
 
 
 def check_field_shapes(source: str | None = None) -> str:
-    """EVERY FIELD READ IN EVERY READER DECLARES ITS SHAPE — asserted over the AST of the code that RUNS.
+    """NOTHING OUTSIDE THE DOOR READS A FIELD AT ALL — asserted over the AST of the code that RUNS.
 
     This is the half `field()` cannot do. A door only helps if there is no way around it, and the way around
-    it is one character long: `page.get(rows_key)`. So the source is SCANNED, and a reader that reads a
-    field any other way is NAMED and the suite goes RED:
+    it is one character long: `page.get(rows_key)`. So the source is SCANNED, and any function in the
+    PRODUCER that reads a field another way is NAMED and the suite goes RED:
 
       * a raw `.get(…)` — declares no shape, and turns MISSING into None (then `or []` turns it into empty);
       * ANY raw subscript, and the word ANY is the fix: `page["statuses"]`, `pages[0][rows_key]`,
@@ -1037,23 +1132,34 @@ def check_field_shapes(source: str | None = None) -> str:
         there is no exempt object;
       * any other dict-reading method (`RAW_READS`) — the same read, one synonym along;
       * a `field()` call with NO SHAPE — the read went through the door and still said nothing;
-      * and `build_snapshot` CALLING THE SEAM ITSELF — a fetch inlined there would read a response in the
-        one function the reader set does not contain.
+      * and `build_snapshot` CALLING THE SEAM ITSELF — a fetch belongs in a fetcher.
+
+    **AND THE SUBJECT IS THE PRODUCER, NOT THE READER SET — THAT IS THE DEFECT THIS ROUND FIXES.** Scanning
+    only the readers asserted *"no FETCHER reads a field raw"*, which is not what the guard means and never
+    was: `build_snapshot` is where the seam is handed out, so it can never be IN the reader set, and a
+    fetcher had only to hand its response back — wrapped in a dict, laundered through a helper — to have it
+    read there, unscanned. Refusing every raw read in EVERY function that can hold a response is what makes
+    the hand-back HARMLESS: there is nowhere left to read it (see `producer`).
 
     The honest limit, stated rather than implied: a static scan sees the code as WRITTEN. It catches every
     ordinary spelling of a forgetful read — which is what a forgetful read IS — and it is not a sandbox
     against a deliberately obfuscated one (`getattr(page, "g" + "et")`). What it makes impossible is
-    committing the mistake QUIETLY, which is how all six of them shipped.
+    committing the mistake QUIETLY, which is how all six false greens in this file shipped.
     """
     tree = ast.parse(source if source is not None else Path(__file__).read_text(encoding="utf-8"))
     readers = scanned_readers(tree)
+    # THE REGION IN WHICH A RAW READ IS REFUSED. The weakening is the SHIPPED BUG: scan the READERS ONLY, and
+    # every function a response can be handed BACK to — `build_snapshot` first among them — is free to read it
+    # with nothing watching. That is the hole the wrapped and the helper hand-backs went through.
+    # MUTATE:no-raw-read-outside-the-door:scanned = readers
+    scanned = producer(tree)
     bad: list[tuple[int, str]] = []
-    for name, node in readers.items():
+    for name, node in scanned.items():
         for sub in executable(node):
             if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute) and sub.func.attr in RAW_READS:
-                bad.append((sub.lineno, f"{name}:{sub.lineno} reads a field with a raw `.{sub.func.attr}(…)` "
-                                        f"— it DECLARES NO SHAPE, so an ABSENT value becomes None, and "
-                                        f"`or []` then makes it EMPTY"))
+                bad.append((sub.lineno, f"{name}:{sub.lineno} reads `{ast.unparse(sub)}` with a raw "
+                                        f"`.{sub.func.attr}(…)` — it DECLARES NO SHAPE, so an ABSENT value "
+                                        f"becomes None, and `or []` then makes it EMPTY"))
             elif isinstance(sub, ast.Subscript):
                 bad.append((sub.lineno, f"{name}:{sub.lineno} reads `{ast.unparse(sub)}` with a raw "
                                         f"SUBSCRIPT — it DECLARES NO SHAPE, and a KeyError is a crash, not a "
@@ -1064,30 +1170,35 @@ def check_field_shapes(source: str | None = None) -> str:
                   and len(sub.args) < 4):
                 bad.append((sub.lineno, f"{name}:{sub.lineno} calls {DOOR}() with NO SHAPE — it went through "
                                         f"the door and still did not say what it expects"))
-        # AND NO READER HANDS THE RESPONSE BACK UNREAD. This is the OTHER way a response is read outside every
-        # scanned reader, and the scan asserted only the first one (`build_snapshot` calling the seam) while
-        # CLAIMING that was "the one way" — a guard that MEANT "no raw response is ever read" and ASSERTED
-        # something narrower. `def fetch_x(fetch, sha): return fetch("x", [])` reads nothing, so it passed
-        # every rule above, and `build_snapshot` — which the reader set cannot contain — could then subscript
-        # the raw response with nothing to stop it. A response is READ IN THE FETCHER, through the door, or it
-        # does not leave the fetcher at all.
+        # AND NO FETCHER HANDS THE SEAM'S OWN VALUE BACK UNREAD — a NARROW rule, kept, and it is NOT what makes
+        # the hand-back safe. Say that plainly, because believing otherwise is what shipped the last defect:
+        # this catches the response returned BARE (`return fetch("x", [])`) or under a name bound to it, and it
+        # catches NOTHING ELSE — not `{"raw": data}`, not `identity(data)`, not `[data]`. It was sold as the
+        # closure of "no raw response is read outside a scanned reader" and it never was, and NO enumeration of
+        # container shapes ever could be: the next spelling is always one move away.
+        #
+        # **WHAT MAKES A HAND-BACK HARMLESS IS THAT THERE IS NOWHERE LEFT TO READ IT** — the raw-read refusal
+        # above, over the WHOLE producer (`producer`). This rule survives because it names the mistake early,
+        # in the fetcher that made it, with the message that says what to do. NEVER grow it into a taint
+        # analysis; if you find yourself adding a shape to it, the read scan is what you actually want.
         bound = seam_bound(node)
         for value in handed_back(node):
             # MUTATE:fetchers-never-return-a-response:continue
             if is_raw_response(value, bound):
                 bad.append((value.lineno, f"{name}:{value.lineno} HANDS THE RAW RESPONSE BACK to its caller "
-                                          f"— unread, undeclared, and OUT of every reader this scan derives. "
-                                          f"Read it HERE, through {DOOR}(), or do not return it."))
-    # AND THE ROOT ITSELF. `build_snapshot` is not a reader — it reads only the rows this file built — but it
-    # HOLDS the seam, so a fetch inlined there would read a raw response in the one function the reader set
-    # cannot contain. It hands the seam to a fetcher; it never calls it. (`scanned_readers` has already
-    # refused a source with no `build_snapshot`, so this `next` cannot fail.)
+                                          f"— unread and undeclared. Read it HERE, through {DOOR}(), or do "
+                                          f"not return it."))
+    # AND `build_snapshot` NEVER CALLS THE SEAM. It is scanned like everything else now, so a response read
+    # there would be refused anyway — but a fetch inlined into the orchestrator is its own mistake (it puts a
+    # response in a function whose job is to hold none), and it gets its own name. It hands the seam to a
+    # fetcher; it never calls it. (`scanned_readers` has already refused a source with no `build_snapshot`,
+    # so this `next` cannot fail.)
     root = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "build_snapshot")
     for call in executable(root):
         if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id == SEAM:
-            bad.append((call.lineno, f"build_snapshot:{call.lineno} calls the `{SEAM}` seam DIRECTLY — a "
-                                     f"response read there is read OUTSIDE every scanned reader, in the one "
-                                     f"function the reader set cannot contain. A fetch belongs in a FETCHER."))
+            bad.append((call.lineno, f"build_snapshot:{call.lineno} calls the `{SEAM}` seam DIRECTLY — the "
+                                     f"orchestrator holds no response and reads none. A fetch belongs in a "
+                                     f"FETCHER."))
     # MUTATE:field-reads-through-the-seam:pass
     if bad:
         raise FetchError(
@@ -1098,8 +1209,9 @@ def check_field_shapes(source: str | None = None) -> str:
             "(`page.get(rows_key) or []`) turned a response that was MISSING its row array into a page with "
             "NO rows, and returned GREEN."
         )
-    return (f"every field read declares its shape and goes through {DOOR}(), in every reader the code "
-            f"DERIVES from build_snapshot: {', '.join(sorted(readers))}")
+    return (f"every field read declares its shape and goes through {DOOR}(), and NOTHING outside it reads a "
+            f"field at all — in every function the code DERIVES from {' + '.join(PRODUCER_ROOTS)}, plus the "
+            f"CLI boundary ({', '.join(SCANNED_BOUNDARY)}): {', '.join(sorted(scanned))}")
 
 
 # --- A PAGINATED RESPONSE IS A SOURCE THAT CAN CONTRADICT *ITSELF*, AND IT DID -----------------------
@@ -1162,6 +1274,55 @@ class Facts(NamedTuple):
     """
     total_count: int
     sha: object = None
+
+
+# --- WHAT A FETCHER HANDS TO `build_snapshot`: TYPED VALUES IT BUILT, NEVER A RESPONSE ------------
+#
+# **`build_snapshot` ORCHESTRATES; IT DOES NOT READ RESPONSES — AND UNTIL NOW IT READ THE FETCHERS' ROWS
+# WITH RAW SUBSCRIPTS ANYWAY** (`r["context"]`, `w["state"]`, `rest_runs.setdefault(…)`). Those rows were
+# dicts THIS FILE built, so each read was individually harmless — and that is exactly what made the function
+# a place where a read could live. A RESPONSE laundered back to it (wrapped in a container, or passed
+# through any helper) would have been read by the very same idiom, in the one function the reader set
+# cannot contain, with nothing to say a word.
+#
+# So the cross-source facts leave a fetcher as TYPED VALUES — attributes, which are not field reads and
+# cannot be a raw subscript (the same move `Facts` made for the page seam). `build_snapshot` now performs NO
+# raw read of ANY kind, and neither does anything else in the producer, which is what lets the scan assert
+# the thing it always MEANT: **there is nowhere outside the door left to read a response.**
+class RestStatus(NamedTuple):
+    """One commit status as the REST family reported it: its context, and the bucket it classifies to."""
+    context: object
+    bucket: str
+
+
+class RestRun(NamedTuple):
+    """One check run as the REST family reported it. `id` is the detailsUrl — the CROSS-SOURCE identity,
+    the same one `ci-snapshot.check_containment` compares on."""
+    id: object
+    bucket: str
+
+
+class RollupStatus(NamedTuple):
+    """One `StatusContext` from the rollup: its context, the state GitHub spelled, and its bucket."""
+    context: object
+    state: object
+    bucket: str
+
+
+class RollupRun(NamedTuple):
+    """One `CheckRun` from the rollup: its cross-source id, its name, the state it spelled, its bucket."""
+    id: object
+    name: object
+    state: str
+    bucket: str
+
+
+class Snapshot(NamedTuple):
+    """What `build_snapshot` hands `derive`. `rows` are the ARTIFACT'S LINES — dicts this file built, on
+    their way to `promote()`, never read again by anything here."""
+    rows: list
+    head_sha_now: object
+    evidence: dict
 
 
 def readable(source: str, pages: list[dict], fact: str, kind: type) -> list[object]:
@@ -1298,7 +1459,7 @@ def read_pages(fetch: Fetch, source: str, argv: list[str], rows_key: str,
     return rows, facts
 
 
-def fetch_check_runs(fetch: Fetch, head_sha: str) -> tuple[list[dict], dict]:
+def fetch_check_runs(fetch: Fetch, head_sha: str) -> tuple[list[dict], dict, list[RestRun]]:
     """(1) CHECK RUNS — pinned to <head_sha> BY THE URL. Identity AND verdict in one row.
 
     `--paginate` is MANDATORY (`/check-runs` pages at 30) and `--slurp` collects every page into ONE array,
@@ -1318,6 +1479,7 @@ def fetch_check_runs(fetch: Fetch, head_sha: str) -> tuple[list[dict], dict]:
     ], "check_runs", CHECKRUN_PAGE_FACTS)
 
     rows = []
+    seen: list[RestRun] = []
     for r in runs:
         # THE SHAPES ARE DECLARED, one read at a time (`field`). `app` is NULL on a check run that came from
         # no app and `conclusion` is NULL on one still running — both are things GitHub legitimately sends,
@@ -1333,15 +1495,23 @@ def fetch_check_runs(fetch: Fetch, head_sha: str) -> tuple[list[dict], dict]:
         # than implemented. That bug has already shipped in this repo once.
         # MUTATE:evidence-sha-from-response:sha = head_sha
         sha = field("check-runs", r, "head_sha", str)
+        status = up(field("check-runs", r, "status", str))
+        conclusion = up(field("check-runs", r, "conclusion", str, NULL, ABSENT) or NO_OID)
+        run_id = field("check-runs", r, "details_url", str, NULL, ABSENT) or NO_OID
         rows.append({
             "row": "checkrun",
             "sha": sha,
             "name": field("check-runs", r, "name", str),
             "app_id": s(app_id) if app_id is not None else NO_OID,
-            "status": up(field("check-runs", r, "status", str)),
-            "conclusion": up(field("check-runs", r, "conclusion", str, NULL, ABSENT) or NO_OID),
-            "id": field("check-runs", r, "details_url", str, NULL, ABSENT) or NO_OID,
+            "status": status,
+            "conclusion": conclusion,
+            "id": run_id,
         })
+        # AND THE SAME VERDICT, TYPED, FOR THE CROSS-SOURCE TEST. `build_snapshot` reconciles this family
+        # against the rollup, and it used to do so by SUBSCRIPTING the rows above — a raw read, in the one
+        # function no scan covered. The bucket is computed HERE, where the response is already in hand and
+        # already declared, and what leaves this fetcher is a value with no fields to read.
+        seen.append(RestRun(id=run_id, bucket=checkrun_bucket(status, conclusion)))
 
     # The commit oid lives ONLY on the rows here, so a fetch that returned ZERO rows has NO oid to carry and
     # its marker's sha is `-`. Inventing one would be the fabrication the contract forbids outright.
@@ -1353,11 +1523,11 @@ def fetch_check_runs(fetch: Fetch, head_sha: str) -> tuple[list[dict], dict]:
 
     # The FAMILY IS READ, and what it returned is what goes in the artifact. A family never read reports
     # NOTHING, and "nothing" parses as "nothing wrong" — the weakening below is that family going dark.
-    # MUTATE:both-families-checkruns:return [], {"row": "source", "source": "check-runs", "sha": NO_OID, "count": "0"}
-    return rows, marker
+    # MUTATE:both-families-checkruns:return [], {"row": "source", "source": "check-runs", "sha": NO_OID, "count": "0"}, []
+    return rows, marker, seen
 
 
-def fetch_statuses(fetch: Fetch, head_sha: str) -> tuple[list[dict], dict]:
+def fetch_statuses(fetch: Fetch, head_sha: str) -> tuple[list[dict], dict, list[RestStatus]]:
     """(2) COMMIT STATUSES — the legacy family, which (1) CANNOT SEE.
 
     A failing Jenkins/CircleCI commit status is genuinely INVISIBLE to `/check-runs`. Read only one family
@@ -1402,11 +1572,15 @@ def fetch_statuses(fetch: Fetch, head_sha: str) -> tuple[list[dict], dict]:
     # the whole suite still GREEN. The dict is now a TYPED `Facts` and there is nothing to exempt.
     # MUTATE:status-sha-from-response:sha = head_sha
     sha = s(facts.sha)
-    rows = [
-        {"row": "status", "sha": sha,
-         "context": field("status", st, "context", str), "state": up(field("status", st, "state", str))}
-        for st in statuses
-    ]
+    rows = []
+    seen: list[RestStatus] = []
+    for st in statuses:
+        context = field("status", st, "context", str)
+        state = up(field("status", st, "state", str))
+        rows.append({"row": "status", "sha": sha, "context": context, "state": state})
+        # TYPED, for the cross-source test — see `RestRun` in the check-run family, same rule, same reason:
+        # `build_snapshot` must not have to subscript a row to reconcile it.
+        seen.append(RestStatus(context=context, bucket=status_bucket(state)))
     # ALWAYS GitHub's, never `-`: a `-` here did not come from the response, and a marker whose sha is not
     # GitHub's cannot disagree with the ledger — so it could never fail. That is a rubber stamp.
     # MUTATE:status-marker-sha:marker_sha = NO_OID
@@ -1414,11 +1588,12 @@ def fetch_statuses(fetch: Fetch, head_sha: str) -> tuple[list[dict], dict]:
 
     # THE FAMILY /check-runs CANNOT SEE. The weakening below is this family never being read — and it is
     # SELF-STAMPED on purpose, so that what kills it is the MISSING JENKINS FAILURE and not the marker rule.
-    # MUTATE:both-families-status:return [], {"row": "source", "source": "status", "sha": head_sha, "count": "0"}
-    return rows, {"row": "source", "source": "status", "sha": marker_sha, "count": str(len(rows))}
+    # MUTATE:both-families-status:return [], {"row": "source", "source": "status", "sha": head_sha, "count": "0"}, []
+    return rows, {"row": "source", "source": "status", "sha": marker_sha, "count": str(len(rows))}, seen
 
 
-def fetch_rollup(fetch: Fetch, pr: str) -> tuple[list[dict], dict, object, list[dict], list[dict]]:
+def fetch_rollup(fetch: Fetch, pr: str) -> tuple[list[dict], dict, object, list[RollupStatus],
+                                                 list[RollupRun]]:
     """(3) ROLLUP — its ROWS are WITNESSES ONLY (identity, no verdict), for the containment test.
 
     THAT IS A RULE ABOUT THE ARTIFACT, AND IT IS NOT A LICENCE TO LEAVE THE ROLLUP'S OWN VERDICT UNREAD.
@@ -1500,8 +1675,8 @@ def fetch_rollup(fetch: Fetch, pr: str) -> tuple[list[dict], dict, object, list[
         "TRIVIALLY: an absence read as 'nothing wrong'."))
 
     witnesses: list[dict] = []
-    status_rollup: list[dict] = []
-    run_rollup: list[dict] = []
+    status_rollup: list[RollupStatus] = []
+    run_rollup: list[RollupRun] = []
     for entry in entries:
         kind = field("rollup", entry, "__typename", str, NULL, ABSENT)
         if kind == "CheckRun":
@@ -1525,12 +1700,12 @@ def fetch_rollup(fetch: Fetch, pr: str) -> tuple[list[dict], dict, object, list[
             # declared at the read; the REFUSAL happens where the two sources meet.
             run_status = field("rollup", entry, "status", str, NULL, ABSENT)
             run_conclusion = field("rollup", entry, "conclusion", str, NULL, ABSENT) or NO_OID
-            run_rollup.append({
-                "id": field("rollup", entry, "detailsUrl", str, NULL, ABSENT) or NO_OID,
-                "name": field("rollup", entry, "name", str),
-                "bucket": checkrun_bucket(up(run_status), up(run_conclusion)),
-                "state": f"{up(run_status)}/{up(run_conclusion)}",
-            })
+            run_rollup.append(RollupRun(
+                id=field("rollup", entry, "detailsUrl", str, NULL, ABSENT) or NO_OID,
+                name=field("rollup", entry, "name", str),
+                state=f"{up(run_status)}/{up(run_conclusion)}",
+                bucket=checkrun_bucket(up(run_status), up(run_conclusion)),
+            ))
             continue
         if kind == "StatusContext":
             # THE STATE IS AN ENUM GITHUB HANDS US, AND AN ENUM VALUE WE DO NOT RECOGNISE IS NOT A BENIGN
@@ -1564,7 +1739,7 @@ def fetch_rollup(fetch: Fetch, pr: str) -> tuple[list[dict], dict, object, list[
                     f"demonstrated. If GitHub has added a state, TEACH `ci-snapshot.py` ABOUT IT (its "
                     f"CLASSIFY buckets, and the doc's enum block) — do not let it fall on the floor here."
                 )
-            status_rollup.append({"context": context, "state": state})
+            status_rollup.append(RollupStatus(context=context, state=state, bucket=status_bucket(state)))
             continue
         # The weakening below is the ORIGINAL BUG, restored: keep what we recognise, drop the rest, say
         # nothing. It is how the `StatusContext` — and with it every required-but-unposted check — became
@@ -1612,7 +1787,7 @@ def up(value: object) -> object:
     return value.upper() if isinstance(value, str) else value
 
 
-def build_snapshot(fetch: Fetch, repo: str, pr: str, head_sha: str) -> tuple[list[dict], dict]:
+def build_snapshot(fetch: Fetch, repo: str, pr: str, head_sha: str) -> Snapshot:
     """The artifact, in order: header, then each source's rows FOLLOWED BY ITS OWN MARKER.
 
     THE HEADER'S SHA IS THE ONE ROW WHOSE SHA IS OURS — it records the commit we ASKED FOR (the ledger's
@@ -1623,10 +1798,17 @@ def build_snapshot(fetch: Fetch, repo: str, pr: str, head_sha: str) -> tuple[lis
     AND THE REPOSITORY IS BOUND ONCE, HERE, TO THE SEAM ITSELF — never handed to a fetcher (`repo_scoped`).
     A fetcher that forgot it ran against the CURRENT CHECKOUT and nothing noticed; now there is nothing to
     forget, and an argv that does not name the repository cannot get past this line.
+
+    **IT ORCHESTRATES, AND IT READS NOTHING — NOT A RESPONSE, AND NOT A ROW.** This function is the one the
+    reader set can never contain (it is where the seam is HANDED OUT), so for as long as a field could be
+    read here, "no raw GitHub response is read outside a scanned reader" was a hope and not an assertion: a
+    fetcher had only to hand its response back inside a dict, or through any helper, and the reads below
+    would have read it with nobody watching. Every cross-source fact now arrives TYPED (`RestRun`,
+    `RollupStatus`, …) and is read by ATTRIBUTE — and `check_field_shapes` REFUSES every raw read in here,
+    exactly as it does in a fetcher. There is no field left to read outside the door.
     """
     fetch = repo_scoped(fetch, repo)
     rows: list[dict] = [{"row": "header", "sha": head_sha}]
-    meta: dict = {"head_sha_now": None}
 
     # THE ORDER OF THESE THREE FETCHES IS ITSELF A RULE: **THE EVIDENCE FIRST, THE PR'S CURRENT HEAD LAST.**
     # No snapshot of a moving thing is atomic — a push can land BETWEEN two of these calls — so the question
@@ -1641,16 +1823,16 @@ def build_snapshot(fetch: Fetch, repo: str, pr: str, head_sha: str) -> tuple[lis
     # closed, while the check-runs call — pinned BY URL to the ledger's now-superseded sha — happily returns
     # the OLD head's green runs. Two snapshots of two different moments, spliced into one GREEN verdict about
     # a commit that is no longer the PR's head. `head-moves-mid-fetch.json` is that push, recorded.
-    # MUTATE:head-read-last:(witnesses, ru_marker, head_now, status_rollup, run_rollup), (runs, cr_marker), (statuses, st_marker) = fetch_rollup(fetch, pr), fetch_check_runs(fetch, head_sha), fetch_statuses(fetch, head_sha)
-    (runs, cr_marker), (statuses, st_marker), (witnesses, ru_marker, head_now, status_rollup, run_rollup) = (
+    # MUTATE:head-read-last:(witnesses, ru_marker, head_now, status_rollup, run_rollup), (runs, cr_marker, rest_runs), (statuses, st_marker, rest_statuses) = fetch_rollup(fetch, pr), fetch_check_runs(fetch, head_sha), fetch_statuses(fetch, head_sha)
+    (runs, cr_marker, rest_runs), (statuses, st_marker, rest_statuses), (
+        witnesses, ru_marker, head_now, status_rollup, run_rollup) = (
         fetch_check_runs(fetch, head_sha),
         fetch_statuses(fetch, head_sha),
         fetch_rollup(fetch, pr),
     )
     rows += runs + [cr_marker] + statuses + [st_marker] + witnesses + [ru_marker]
 
-    meta["head_sha_now"] = head_now
-    meta["evidence"] = {"checkrun": len(runs), "status": len(statuses), "witness": len(witnesses)}
+    evidence = {"checkrun": len(runs), "status": len(statuses), "witness": len(witnesses)}
 
     # THE ROLLUP'S STATUS CONTEXTS MUST BE VISIBLE IN THE FAMILY THAT CARRIES STATUS VERDICTS — or we do not
     # derive a verdict. This is CONTAINMENT, for the OTHER family: the witnesses prove REST saw every check
@@ -1690,13 +1872,13 @@ def build_snapshot(fetch: Fetch, repo: str, pr: str, head_sha: str) -> tuple[lis
     # NEW head while the REST families describe the old one, so of course its contexts are not in ours. That
     # is the HEAD MOVED rule's business (`derive()`), it is the better diagnosis, and it is the one that
     # carries `head_sha_now` back to the driver so the refetch is PINNED rather than guessed.
-    contexts = {r["context"] for r in statuses}
-    uncovered = [w for w in status_rollup if w["context"] not in contexts]
+    contexts = {st.context for st in rest_statuses}
+    uncovered = [w for w in status_rollup if w.context not in contexts]
     # MUTATE:rollup-status-covered:pass
     if uncovered and not head_moved(head_sha, head_now):
         raise FetchError(
             "rollup: the PR's status rollup lists "
-            + ", ".join(f"{w['context']!r} ({w['state']})" for w in uncovered)
+            + ", ".join(f"{w.context!r} ({w.state})" for w in uncovered)
             + " — and the REST commit-status family, which is where a status VERDICT comes from, does not "
             "report it at all, on a read PROVEN COMPLETE against GitHub's own total_count. THE TWO SOURCES "
             "DISAGREE ABOUT WHAT EXISTS, and a snapshot built from evidence we cannot reconcile is not "
@@ -1739,26 +1921,28 @@ def build_snapshot(fetch: Fetch, repo: str, pr: str, head_sha: str) -> tuple[lis
     #
     # A MOVED HEAD IS NOT A DISAGREEMENT EITHER — the rollup then describes the NEW head and the REST
     # families the old one, so of course they differ. Same exemption, same reason, as the coverage rule.
+    #
+    # THE PAIRING IS BY IDENTITY, AND IT IS WRITTEN WITHOUT A DICT ON PURPOSE. A `{id: {buckets}}` index
+    # would have to be READ back (`rest[w.id]`, `rest.setdefault(…)`) — a raw subscript, in `build_snapshot`,
+    # which is the one function no reader set can contain. There is no exempt object in this scan and there
+    # will not be one: the two rules below scan the REST rows for the twin instead, which is the same answer
+    # (a rollup entry with NO twin is not this rule's business — see above) and reads nothing.
     if not head_moved(head_sha, head_now):
-        rest_status: dict[object, set[str]] = {}
-        for r in statuses:
-            rest_status.setdefault(r["context"], set()).add(status_bucket(r["state"]))
         # MUTATE:status-agrees:pass
         agree_or_refuse("commit status", [
-            (w["context"], status_bucket(w["state"]), w["state"], rest_status[w["context"]])
-            for w in status_rollup if w["context"] in rest_status
-            and status_bucket(w["state"]) not in rest_status[w["context"]]
+            (w.context, w.bucket, w.state, twins)
+            for w in status_rollup
+            if (twins := {st.bucket for st in rest_statuses if st.context == w.context})
+            and w.bucket not in twins
         ])
 
-        rest_runs: dict[object, set[str]] = {}
-        for r in runs:
-            rest_runs.setdefault(r["id"], set()).add(checkrun_bucket(r["status"], r["conclusion"]))
         # MUTATE:checkrun-agrees:pass
         agree_or_refuse("check run", [
-            (w["name"], w["bucket"], w["state"], rest_runs[w["id"]])
-            for w in run_rollup if w["id"] in rest_runs and w["bucket"] not in rest_runs[w["id"]]
+            (w.name, w.bucket, w.state, twins)
+            for w in run_rollup
+            if (twins := {r.bucket for r in rest_runs if r.id == w.id}) and w.bucket not in twins
         ])
-    return rows, meta
+    return Snapshot(rows=rows, head_sha_now=head_now, evidence=evidence)
 
 
 def agree_or_refuse(kind: str, conflicts: list[tuple]) -> None:
@@ -1844,7 +2028,10 @@ def derive(fetch: Fetch, repo: str, pr: str, head_sha: str, rundir: Path, requir
     OVER — and `required-set-is-passed` is the marker that proves a fixture notices when it stops.
     """
     try:
-        rows, meta = build_snapshot(fetch, repo, pr, head_sha)
+        # A TYPED VALUE, unpacked — never `meta["head_sha_now"]`. `derive` is INSIDE the producer, so it may
+        # not perform a raw read either: a fetcher that laundered its response into what it hands back would
+        # otherwise be read HERE just as easily as in `build_snapshot`.
+        rows, head_now, evidence = build_snapshot(fetch, repo, pr, head_sha)
     except FetchError as exc:
         # A source that could not be read leaves NO artifact — there is nothing on disk for a later wake to
         # mistake for evidence, and no verdict is derived from a fetch we know to be incomplete. The
@@ -1881,7 +2068,6 @@ def derive(fetch: Fetch, repo: str, pr: str, head_sha: str, rundir: Path, requir
     # trusted — REFETCH" (`stage-2-ci.md`), which is exactly right, and the reason NAMES the new head so the
     # refetch is pinned to it instead of guessed. Both map to ledger `ci = pending` (LEDGER_CI is lossy, and
     # that is why `verdict` is emitted BESIDE `ci` and not collapsed into it).
-    head_now = meta["head_sha_now"]
     if head_moved(head_sha, head_now):
         # MUTATE:head-moved-is-not-evidence:pass
         verdict, reason = SNAP.UNUSABLE, (
@@ -1892,7 +2078,7 @@ def derive(fetch: Fetch, repo: str, pr: str, head_sha: str, rundir: Path, requir
             f"(what the stale snapshot said, for the record: {verdict} — {reason})"
         )
 
-    return result(pr, head_sha, verdict, reason, path, meta["evidence"], head_now, decided_under)
+    return result(pr, head_sha, verdict, reason, path, evidence, head_now, decided_under)
 
 
 def result(pr: str, head_sha: str, verdict: str, reason: str, path: Path | None,
@@ -1910,7 +2096,8 @@ def result(pr: str, head_sha: str, verdict: str, reason: str, path: Path | None,
     # `ci-snapshot.py` makes for its empty-file case, for the same reason ("the honest fix for an unpinnable
     # rule is to not have it") — except here the guard EARNS its place: an unmapped verdict must not become
     # a silent `pending`, and the day that seventh verdict is added, this is what refuses to guess.
-    if verdict not in LEDGER_CI:
+    column = ledger_ci(verdict)
+    if column is None:
         fail(
             f"DECIDE returned {verdict!r}, which this tool has no ledger mapping for. That is an outcome "
             f"nobody has thought about, and guessing `pending` for it is the same 'close enough' that "
@@ -1920,7 +2107,7 @@ def result(pr: str, head_sha: str, verdict: str, reason: str, path: Path | None,
         "pr": pr,
         "head_sha": head_sha,          # the commit we PINNED to (the ledger's) — what the fetch asked for
         "verdict": verdict,            # the DECIDE outcome, in full
-        "ci": LEDGER_CI[verdict],      # the LEDGER value — write this to `ledger.py … set --pr <N> --ci`
+        "ci": column,                  # the LEDGER value — write this to `ledger.py … set --pr <N> --ci`
         "reason": reason,              # WHICH rule fired and WHICH row made it fire
         "snapshot": str(path) if path else None,   # the evidence, on disk, re-verifiable by hand
         "evidence": evidence,          # counts per row type — `{}` when nothing was ever fetched
@@ -2226,9 +2413,9 @@ def code_rows(source: str, fx: dict) -> list[dict]:
     fetch = repo_scoped(fixture_fetch(fx), "o/r")
     head_sha = fx.get("head_sha", FIXTURE_SHA)
     if source == "check-runs":
-        rows, marker = fetch_check_runs(fetch, head_sha)
+        rows, marker, _seen = fetch_check_runs(fetch, head_sha)
     elif source == "status":
-        rows, marker = fetch_statuses(fetch, head_sha)
+        rows, marker, _seen = fetch_statuses(fetch, head_sha)
     else:
         rows, marker, _head, _sc, _cr = fetch_rollup(fetch, fx.get("pr", "35"))
     return [*rows, marker]
@@ -2694,11 +2881,13 @@ SEAM_EXPECT = {
     # this file). The rest are the DECISIVE ones: a reader that FORGETS, reconstructed in every spelling the
     # hole has ever had — and each must be REFUSED BY NAME, not merely absent from a list.
     #
-    # **THE LAST THREE ARE REGRESSION CASES FOR THE TWO BYPASSES A REVIEWER DROVE THROUGH THE FIRST VERSION
-    # OF THIS SCAN, AND FOR THE HOLE IT DISCLOSED INSTEAD OF CLOSING.** They are not hypothetical: with the
-    # scan as it shipped one round ago, `pages[0][rows_key]` in `read_pages` and `facts = {}` /
-    # `facts["statuses"]` in `fetch_statuses` BOTH left the entire suite GREEN, and a brand-new fetcher was
-    # not scanned at all. Delete one of these cases and that bypass is legal again.
+    # **EVERY `[shape]` CASE BELOW THAT IS NOT THE INVENTORY IS A REGRESSION CASE FOR A BYPASS A REVIEWER
+    # ACTUALLY DROVE THROUGH THIS SCAN.** None is hypothetical. `pages[0][rows_key]` in `read_pages` and
+    # `facts = {}` / `facts["statuses"]` in `fetch_statuses` each left the entire suite GREEN; a brand-new
+    # fetcher was not scanned at all; and the LAUNDERED HAND-BACKS (below) put a raw response into
+    # `build_snapshot`'s hands, where it was read with a subscript that no rule in the file could see. Delete
+    # any one of these cases and that bypass is legal again. (They are named, never numbered: "the last
+    # three" was true of this comment once, and cases get added.)
     "[shape] every field read declares its shape": ("accepted", "every field read declares its shape"),
     "[shape] a raw .get() in a reader": ("refused", "raw `.get(…)`"),
     "[shape] a subscript with a LITERAL key": ("refused", "`page['check_runs']` with a raw SUBSCRIPT"),
@@ -2707,11 +2896,30 @@ SEAM_EXPECT = {
     "[shape] a field() call with NO shape": ("refused", "calls field() with NO SHAPE"),
     "[shape] a NEW fetcher that declares nothing": ("refused", "fetch_deployments"),
     "[shape] build_snapshot reads a response itself": ("refused", "calls the `fetch` seam DIRECTLY"),
-    # THE OTHER HALF OF THAT SAME RULE, and the one the scan did not have: the fetcher READS NOTHING and hands
-    # the response back, so every rule above passes — and the raw response is then in `build_snapshot`, the one
-    # function the reader set cannot contain, where a subscript on it is scanned by nobody.
+    # THE HAND-BACK, BARE: the fetcher READS NOTHING and returns the response, so every read rule above has
+    # nothing to fire on in the fetcher itself.
     "[shape] a fetcher that HANDS BACK the response": ("refused", "HANDS THE RAW RESPONSE BACK"),
     "[shape] a fetcher that hands back a NAME for it": ("refused", "HANDS THE RAW RESPONSE BACK"),
+    # **AND THE HAND-BACK, LAUNDERED — THE TWO BYPASSES A REVIEWER DROVE THROUGH THE RULE ABOVE, PLUS THE
+    # SHAPES THE NEXT ONE WOULD HAVE BROUGHT.** None of these is a bare return, so `fetchers-never-return-a-
+    # response` does not fire on ANY of them and never will: the response is wrapped in a dict, passed through
+    # a helper, put in a list, rebuilt by a comprehension. Under the scan as it shipped one round ago, every
+    # one of these left the suite GREEN while `build_snapshot` read raw GitHub fields off the result.
+    #
+    # WHAT REFUSES THEM NOW IS THAT THE READ HAS NOWHERE TO HAPPEN. `build_snapshot` — and every helper it
+    # calls — is scanned, so the read is NAMED, wherever the response got to. That is the guard asserting what
+    # it MEANS instead of one spelling of it, and it is why these cases name a READ and not a hand-back: the
+    # hand-back is not the defect, the read is, and a hand-back nobody can read is inert.
+    "[shape] a WRAPPED response, read in build_snapshot": ("refused", "`box['raw']` with a raw SUBSCRIPT"),
+    "[shape] a LAUNDERED response, read in build_snapshot": ("refused", "`data.get('check_runs')` with a raw"),
+    "[shape] a LISTED response, read in build_snapshot": ("refused", "`page['check_runs']` with a raw SUBSCRIPT"),
+    "[shape] a COMPREHENDED response, read in build_snapshot": ("refused", "`page.get('check_runs')` with a raw"),
+    # AND THE READ ONE FUNCTION FURTHER OUT: a helper `build_snapshot` calls that is NOT handed the seam is in
+    # no reader set either — the closure is what reaches it.
+    "[shape] a HELPER of build_snapshot reads it": ("refused", "unpack:"),
+    # AND THE CLI, which is the last place a response-derived value gets to. "No UNSCANNED code reads a field"
+    # has to include `main`, or the boundary is an exemption wearing a boundary's clothes.
+    "[shape] main reads the result raw": ("refused", "main:"),
     "[shape] a source in which NOTHING fetches": ("refused", "found NO FETCHER"),
     # And the RUN-TIME backstop behind the scan: a read that reaches `field()` with no shape at all refuses
     # there too. The scan is static and covers the readers it DERIVES; this covers the call itself, wherever
@@ -2763,9 +2971,10 @@ def fetch_check_runs(fetch, head_sha):
     page = fetch("check-runs", [])
     return field("check-runs", page, "check_runs")
 """),
-    # THE FETCHER THAT READS NOTHING AT ALL. There is no forgetful READ here to catch — that is the point: the
-    # response is handed back whole, `build_snapshot` gets it, and the scan does not scan `build_snapshot`. The
-    # rule is on the HAND-BACK, so it fires wherever the caller then reads it.
+    # THE FETCHER THAT READS NOTHING AT ALL. There is no forgetful READ here to catch — the response is
+    # handed back whole. This is the case the NARROW hand-back rule exists for: it names the mistake in the
+    # fetcher that made it. (It is NOT what makes a hand-back safe — see the LAUNDERED cases below, which
+    # this rule does not fire on at all.)
     "[shape] a fetcher that HANDS BACK the response": forgetful("""
 def fetch_check_runs(fetch, head_sha):
     return fetch("check-runs", [])
@@ -2784,9 +2993,10 @@ def fetch_deployments(fetch, head_sha):
     data = fetch("deployments", [])
     return data["deployments"]
 """, drives="fetch_deployments(fetch, head_sha)"),
-    # AND THE ROOT ITSELF: inline a fetch into `build_snapshot` and no reader is involved at all. Its fetcher
-    # is IMPECCABLE here — it reads through the door, with a shape — so the ONLY thing wrong with this source
-    # is the response `build_snapshot` reads itself, in the one function the reader set cannot contain.
+    # AND THE ORCHESTRATOR ITSELF: inline a fetch into `build_snapshot` and no fetcher is involved at all. Its
+    # fetcher is IMPECCABLE here — it reads through the door, with a shape — so the only thing wrong with this
+    # source is the response `build_snapshot` fetches and reads itself. Two rules now name it (the seam call
+    # does not belong there, AND the read is refused like any other); the case pins the first by needle.
     "[shape] build_snapshot reads a response itself": """
 def build_snapshot(fetch, repo, pr, head_sha):
     rows = fetch_check_runs(fetch, head_sha)
@@ -2797,8 +3007,81 @@ def fetch_check_runs(fetch, head_sha):
     pages = fetch("check-runs", [])
     return [row for page in pages for row in field("check-runs", page, "check_runs", list)]
 """,
+    # --- THE LAUNDERED HAND-BACKS: the two bypasses, and the family they belong to --------------------
+    # In every one of these the fetcher's OWN body is impeccable — it reads nothing, so no read rule fires on
+    # it, and it does not RETURN the seam's value bare, so the hand-back rule does not fire either. The
+    # response arrives in `build_snapshot` all the same, and the RAW READ THERE is what is refused. Change the
+    # laundering to any other shape and the case still fails, at the same line: the read is the invariant.
+    "[shape] a WRAPPED response, read in build_snapshot": """
+def build_snapshot(fetch, repo, pr, head_sha):
+    box = fetch_check_runs(fetch, head_sha)
+    return [row for row in box["raw"]["check_runs"]], {}
+
+def fetch_check_runs(fetch, head_sha):
+    data = fetch("check-runs", [])
+    return {"raw": data}
+""",
+    "[shape] a LAUNDERED response, read in build_snapshot": """
+def build_snapshot(fetch, repo, pr, head_sha):
+    data = fetch_check_runs(fetch, head_sha)
+    return data.get("check_runs") or [], {}
+
+def fetch_check_runs(fetch, head_sha):
+    data = fetch("check-runs", [])
+    return identity(data)
+
+def identity(x):
+    return x
+""",
+    "[shape] a LISTED response, read in build_snapshot": """
+def build_snapshot(fetch, repo, pr, head_sha):
+    pages = fetch_check_runs(fetch, head_sha)
+    return [row for page in pages for row in page["check_runs"]], {}
+
+def fetch_check_runs(fetch, head_sha):
+    data = fetch("check-runs", [])
+    return [data]
+""",
+    "[shape] a COMPREHENDED response, read in build_snapshot": """
+def build_snapshot(fetch, repo, pr, head_sha):
+    pages = fetch_check_runs(fetch, head_sha)
+    return [row for page in pages for row in page.get("check_runs") or []], {}
+
+def fetch_check_runs(fetch, head_sha):
+    data = fetch("check-runs", [])
+    return [p for p in data]
+""",
+    # AND ONE FUNCTION FURTHER OUT AGAIN. `unpack` is handed no seam, so it is in NO reader set — but
+    # `build_snapshot` calls it, so the closure reaches it, and its raw read is refused BY NAME.
+    "[shape] a HELPER of build_snapshot reads it": """
+def build_snapshot(fetch, repo, pr, head_sha):
+    box = fetch_check_runs(fetch, head_sha)
+    return unpack(box), {}
+
+def unpack(box):
+    return box["raw"]["check_runs"]
+
+def fetch_check_runs(fetch, head_sha):
+    data = fetch("check-runs", [])
+    return {"raw": data}
+""",
+    # AND THE CLI BOUNDARY. `main` is not in any closure — it is the caller of the producer, not its callee —
+    # so it is scanned BY NAME (`SCANNED_BOUNDARY`), and its reads are refused like anyone else's. Here it
+    # digs a GitHub field out of the result it was handed; the fetcher below is impeccable.
+    "[shape] main reads the result raw": """
+def build_snapshot(fetch, repo, pr, head_sha):
+    return fetch_check_runs(fetch, head_sha)
+
+def fetch_check_runs(fetch, head_sha):
+    pages = fetch("check-runs", [])
+    return [row for page in pages for row in field("check-runs", page, "check_runs", list)]
+
+def main():
+    out = derive(gh_fetch, "o/r", "1", "abc", "/tmp", None)
+    return 0 if out["verdict"] == "green" else 1
+""",
     # A SOURCE IN WHICH NOTHING FETCHES: the reader set is EMPTY, so the scan has nothing to scan — and a
-    # scan with no subject would otherwise pass every source on Earth, including the five above.
+    # scan with no subject would otherwise pass every source on Earth, including the ones above.
     "[shape] a source in which NOTHING fetches": """
 def build_snapshot(fetch, repo, pr, head_sha):
     return [], {}
@@ -3169,8 +3452,26 @@ def mutation_run() -> dict[str, tuple[str, str]]:
 GREEN = SNAP.GREEN
 
 
+def resolve_repo(fetch: Fetch) -> object:
+    """WHICH REPOSITORY IS THIS CHECKOUT? The one fetch that happens outside `derive` — and it goes THROUGH
+    THE DOOR, like every other read of a GitHub response.
+
+    It is a FUNCTION, not three lines inside `main()`, for the reason everything else in this file is: the
+    scan's subject is DERIVED from the call graph, and a response read in `main` would be a response read in
+    a function no closure reaches. Here it is a PRODUCER ROOT, so its read is scanned like any other.
+
+    THIS READ USED TO BE `str(response.get("nameWithOwner"))` — and `str(None)` is the four perfectly
+    parseable letters `"None"`, so a response we could not read became the repository `None`, every fetch was
+    scoped to `repos/None/…`, and the tool reported a FETCH FAILURE about a repository that does not exist
+    instead of the caller's actual problem. It failed closed, and it lied about why. `field()` refuses it,
+    and the operator gets the error that is true: we cannot tell which repo this is.
+    """
+    return field("repo", fetch("repo", ["gh", "repo", "view", "--json", "nameWithOwner"]),
+                 "nameWithOwner", str)
+
+
 def main() -> int:
-    p = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
+    p = argparse.ArgumentParser(description=next(iter((__doc__ or "").splitlines()), ""))
     sub = p.add_subparsers(dest="cmd", required=True)
 
     d = sub.add_parser("derive", help="fetch, promote, verify and decide a PR's CI status")
@@ -3218,15 +3519,9 @@ def main() -> int:
 
     repo = args.repo
     if not repo:
-        # THROUGH THE SAME DOOR, AND IT WAS `str()` OVER A RAW JSON VALUE. This read used to be
-        # `str(response.get("nameWithOwner"))` — and `str(None)` is the four perfectly parseable letters
-        # `"None"`, so a response we could not read became the repository `None`, every fetch was scoped to
-        # `repos/None/…`, and the tool reported a FETCH FAILURE about a repository that does not exist
-        # instead of the caller's actual problem. It failed closed, and it lied about why. `field()` refuses
-        # it, and the operator gets the error that is true: we cannot tell which repo this is.
+        # THROUGH THE DOOR, in a function the scan reaches — see `resolve_repo`.
         try:
-            repo = field("repo", gh_fetch("repo", ["gh", "repo", "view", "--json", "nameWithOwner"]),
-                         "nameWithOwner", str)
+            repo = resolve_repo(gh_fetch)
         except FetchError as exc:
             fail(f"cannot determine the repo ({exc}) — pass --repo owner/name")
 
@@ -3234,7 +3529,12 @@ def main() -> int:
     print(json.dumps(out, indent=2, ensure_ascii=False))
     # green is the ONLY exit-0 verdict. Everything else — pending, red, unusable, an unclassified value —
     # is NOT a green, and a caller that checks only the exit status must never be told otherwise.
-    return 0 if out["verdict"] == SNAP.GREEN else 1
+    #
+    # THROUGH THE DOOR, and not because `out` is a GitHub response — it is the dict `result()` just built.
+    # The rule is that NOTHING OUTSIDE THE DOOR READS A FIELD, in any function a response can reach, and
+    # `main` is one: an exemption here (`out["verdict"]`, "it's our own dict") is exactly the exemption that
+    # was spoofed twice already. A read that declares `str` costs one call and cannot become the hole.
+    return 0 if field("result", out, "verdict", str) == SNAP.GREEN else 1
 
 
 if __name__ == "__main__":
