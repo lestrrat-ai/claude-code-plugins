@@ -1,0 +1,67 @@
+{
+  "why": "the only green there is: every registered check passed, BOTH families were queried, containment holds. Names CONTAIN SPACES (`Lint scripts`) and survive \u2014 a space-delimited artifact could not have carried them",
+  "pr": "35",
+  "api": {
+    "check-runs": {
+      "response": [
+        {
+          "total_count": 2,
+          "check_runs": [
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "Lint scripts",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/29318959841/job/1"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "Validate plugins",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/29318959841/job/2"
+            }
+          ]
+        }
+      ]
+    },
+    "status": {
+      "response": [
+        {
+          "sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+          "state": "pending",
+          "total_count": 0,
+          "statuses": []
+        }
+      ]
+    },
+    "rollup": {
+      "response": {
+        "headRefOid": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+        "statusCheckRollup": [
+          {
+            "__typename": "CheckRun",
+            "name": "Lint scripts",
+            "detailsUrl": "https://github.com/o/r/actions/runs/29318959841/job/1"
+          },
+          {
+            "__typename": "CheckRun",
+            "name": "Validate plugins",
+            "detailsUrl": "https://github.com/o/r/actions/runs/29318959841/job/2"
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "verdict": "green",
+    "ci": "green",
+    "needle": "all passing"
+  }
+}

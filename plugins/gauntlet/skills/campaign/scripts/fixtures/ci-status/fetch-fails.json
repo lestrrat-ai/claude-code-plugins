@@ -1,0 +1,31 @@
+{
+  "why": "a `gh` call that FAILED. There is no evidence, so there is no verdict from evidence \u2014 and NOTHING is promoted: a partial artifact left in the rundir is what a later wake would read as a snapshot. Treat it as fine and it derives GREEN off a fetch that never happened",
+  "pr": "35",
+  "api": {
+    "check-runs": {
+      "fail": "HTTP 502 (Bad Gateway)"
+    },
+    "status": {
+      "response": [
+        {
+          "sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+          "state": "pending",
+          "total_count": 0,
+          "statuses": []
+        }
+      ]
+    },
+    "rollup": {
+      "response": {
+        "headRefOid": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+        "statusCheckRollup": []
+      }
+    }
+  },
+  "expect": {
+    "verdict": "unusable",
+    "ci": "pending",
+    "needle": "FETCH FAILED",
+    "promoted": false
+  }
+}

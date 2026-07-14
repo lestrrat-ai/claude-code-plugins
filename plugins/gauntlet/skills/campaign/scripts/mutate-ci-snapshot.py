@@ -48,8 +48,18 @@ KILL STRENGTH, reported per rule, because not all kills are equal:
   CRASH    the mutant raises instead of returning a verdict. A kill (a crash is not a verdict), and
            reported as such.
 
-Usage:  python3 mutate-ci-snapshot.py            # the full matrix; exits 1 if ANY rule is unpinned
-        python3 mutate-ci-snapshot.py --check-coverage   # marker coverage only, no mutants run
+IT DRIVES `ci-status.py` TOO (`--script`), because the question it answers is not about one file. That
+script is the PRODUCER (it fetches a PR's checks and promotes the snapshot this one verifies), and its
+rules are pinned by the same method: a `# MUTATE:` marker on each, fixtures that must notice. Two things
+differ, and the target script DECLARES them rather than this harness guessing:
+
+  * **How the rules are ENUMERATED.** Every rule in `ci-snapshot.py` is a `raise` or a `return <verdict>`,
+    so `--check-coverage` can DISCOVER them from the AST and prove none is unmarked. A producer's rule is a
+    CHOICE OF VALUE ("take the sha from the RESPONSE, never from the literal we asked for") — no AST scan
+    can tell that assignment from any other. Such a script instead exports `MUTATION_RULES`, a DECLARED
+    inventory, and coverage reconciles it against the markers BOTH WAYS: a declared rule with no marker is
+    never mutated; a marker nobody declared is a rule nobody wrote down.
+  * **Whether a GREEN fixture may move.** See `bogus()`.
 """
 
 from __future__ import annotations
@@ -63,8 +73,9 @@ import tempfile
 import types
 from pathlib import Path
 
-SCRIPT = Path(__file__).parent / "ci-snapshot.py"
-FIXTURES = Path(__file__).parent / "fixtures" / "ci-snapshot"
+HERE = Path(__file__).parent
+DEFAULT_SCRIPT = HERE / "ci-snapshot.py"
+FIXTURES = HERE / "fixtures" / "ci-snapshot"
 
 # `    # MUTATE:blank-line:continue` — the rule id, and the statement that REPLACES the enforcement.
 MARKER_RE = re.compile(r"^(?P<indent>[ ]*)# MUTATE:(?P<rule>[a-z0-9-]+):(?P<weakening>.+?)\s*$")
@@ -84,11 +95,11 @@ class HarnessError(Exception):
     """The harness itself cannot run — never confuse this with a rule being unpinned."""
 
 
-def load(source: str, name: str) -> types.ModuleType:
-    """Exec a (possibly mutated) copy of ci-snapshot.py as a module. `__name__` is not `__main__`,
-    so the CLI at the bottom does not fire."""
+def load(source: str, name: str, script: Path) -> types.ModuleType:
+    """Exec a (possibly mutated) copy of the target script as a module. `__name__` is not `__main__`,
+    so the CLI at the bottom of it does not fire."""
     mod = types.ModuleType(name)
-    mod.__file__ = str(SCRIPT)
+    mod.__file__ = str(script)
     exec(compile(source, f"<{name}>", "exec"), mod.__dict__)  # noqa: S102 - the whole job
     return mod
 
@@ -148,16 +159,40 @@ def is_enforcing_return(node: ast.Return) -> bool:
     )
 
 
-def check_coverage(source: str, marked: dict[str, tuple[str, ast.stmt]]) -> list[str]:
-    """EVERY enforcement point in a rule function must sit under a marker.
+def check_coverage(source: str, marked: dict[str, tuple[str, ast.stmt]], script: Path,
+                   declared: "dict[str, str] | None") -> list[str]:
+    """Is every rule MARKED? A rule ADDED without a marker is never mutated, so nothing can ever report it
+    unpinned — it would be "covered" by nobody ever asking. This is the half of the coverage question that
+    fixtures can never answer.
 
-    This is the half of the coverage question that fixtures can never answer: a rule ADDED without a
-    marker would never be mutated, so it would be reported "pinned" by nobody ever asking. An unmarked
-    rule is an untested rule.
+    Two ways to ask it, and the target script picks by exporting `MUTATION_RULES` (or not):
+
+      * **DERIVED (`ci-snapshot.py`)** — every rule there IS a `raise` or a `return <verdict>` inside a rule
+        function, so the AST can DISCOVER them and this proves, with no inventory to keep, that none is
+        unmarked.
+      * **DECLARED (`ci-status.py`)** — a PRODUCER's rules are choices of value, not raises; the AST cannot
+        see them. It declares them instead, and this reconciles the inventory against the markers BOTH WAYS.
+        The honest limit, stated where it lives (`ci-status.py`, `RULES`): a rule added to that file and left
+        out of BOTH the inventory and the markers is invisible to this check. Reconciliation cannot invent
+        the entry you never wrote; only review catches that.
     """
     marked_lines = {stmt.lineno for _, stmt in marked.values()}
-    tree = ast.parse(source)
     problems = []
+
+    if declared is not None:
+        for rule in sorted(set(declared) - set(marked)):
+            problems.append(
+                f"{script.name}: rule {rule!r} is DECLARED in MUTATION_RULES but carries no # MUTATE marker "
+                f"— it is never mutated, so nothing can report it unpinned"
+            )
+        for rule in sorted(set(marked) - set(declared)):
+            problems.append(
+                f"{script.name}: marker {rule!r} is not DECLARED in MUTATION_RULES — a rule nobody wrote "
+                f"down is a rule nobody reviews"
+            )
+        return problems
+
+    tree = ast.parse(source)
     for fn in ast.walk(tree):
         if not isinstance(fn, ast.FunctionDef) or fn.name not in RULE_FUNCTIONS:
             continue
@@ -174,7 +209,7 @@ def check_coverage(source: str, marked: dict[str, tuple[str, ast.stmt]]) -> list
                 continue
             if enforcing and node.lineno not in marked_lines:
                 problems.append(
-                    f"{SCRIPT.name}:{node.lineno}: {fn.name}() enforces a rule ({what}) with NO "
+                    f"{script.name}:{node.lineno}: {fn.name}() enforces a rule ({what}) with NO "
                     f"# MUTATE marker — an unmarked rule is never mutated, so nothing can report it unpinned"
                 )
     return problems
@@ -195,12 +230,20 @@ def required_case_id(name: str, spec: str) -> str:
 
 
 def run_cases(mod: types.ModuleType) -> dict[str, tuple[str, str]]:
-    """Every fixture + every filename case + every required-set case, against this (possibly mutated)
-    module.
+    """Every case, against this (possibly mutated) module: case -> (verdict, reason).
+
+    For `ci-snapshot.py` that is every fixture + every filename case + every REQUIRED-SET case (the
+    required-set rule is the one rule whose input is NOT in the file, so its cases carry their own spec).
+
+    A script that owns cases this harness cannot construct — `ci-status.py`'s are RECORDED API RESPONSES
+    driven through its producer, not artifacts on disk — exports `mutation_run()` and answers for itself.
 
     A mutant that CRASHES has not returned a verdict, and "no verdict" is itself a deviation — so it is
     recorded, never swallowed.
     """
+    if hasattr(mod, "mutation_run"):
+        return mod.mutation_run()
+
     out: dict[str, tuple[str, str]] = {}
     for name in mod.EXPECTED:
         try:
@@ -237,6 +280,8 @@ def run_cases(mod: types.ModuleType) -> dict[str, tuple[str, str]]:
 
 def expectations(mod: types.ModuleType) -> dict[str, tuple[str, str]]:
     """case -> (expected verdict, needle the reason must contain)."""
+    if hasattr(mod, "mutation_expectations"):
+        return mod.mutation_expectations()
     out = {name: (want, needle) for name, (want, needle, _) in mod.EXPECTED.items()}
     out.update({f"[name] {n}": (want, needle) for n, want, needle, _ in mod.FILENAME_CASES})
     out.update({
@@ -246,36 +291,52 @@ def expectations(mod: types.ModuleType) -> dict[str, tuple[str, str]]:
     return out
 
 
-def kills(expect: dict[str, tuple[str, str]], got: dict[str, tuple[str, str]], green: str) -> list[tuple]:
+def kills(expect: dict[str, tuple[str, str]], got: dict[str, tuple[str, str]], green: str,
+          canary: bool) -> list[tuple]:
     """Which cases NOTICED the mutation, and how loudly. Returns (strength, case, verdict) sorted loudest
     first.
 
-    A case whose EXPECTED verdict is green is not a killer — it is a CANARY. Mutations only ever REMOVE a
-    rule, so they can never turn a green file non-green; if one does, the mutation is bogus, and that is a
-    harness bug, not a pinned rule. `bogus()` below is what watches for it.
+    Under the CANARY (a VERIFIER — see `bogus()`), a green-expecting case is not a killer: a mutation can
+    only make a verifier more permissive, so a green fixture MUST stay green, and one that moves means the
+    mutation is bogus. Without the canary (a PRODUCER), removing a rule corrupts the artifact and the
+    verifier downstream refuses it — so a green fixture going `unusable` IS the fixture noticing, and it
+    counts like any other kill.
     """
     found = []
     for case, (want, needle) in expect.items():
-        if want == green:
+        if want == green and canary:
             continue
         verdict, reason = got[case]
-        if verdict == green:
-            strength = GREEN_KILL
+        if verdict == want and needle in reason:
+            continue  # the case is UNMOVED — it did not notice this mutation
+        if verdict == green and want != green:
+            strength = GREEN_KILL  # the weakened tool says "ship it" about evidence that is defective
         elif verdict.startswith("crash:"):
             strength = CRASH_KILL
         elif verdict != want:
             strength = VERDICT_KILL
-        elif needle not in reason:
-            strength = MESSAGE_KILL
         else:
-            continue
+            strength = MESSAGE_KILL  # right verdict, and ONLY the reason moved
         found.append((strength, case, verdict))
     order = {GREEN_KILL: 0, VERDICT_KILL: 1, CRASH_KILL: 2, MESSAGE_KILL: 3}
     return sorted(found, key=lambda k: (order[k[0]], k[1]))
 
 
-def bogus(expect: dict[str, tuple[str, str]], got: dict[str, tuple[str, str]], green: str) -> list[str]:
-    """Removing a rule can never make a GREEN fixture stop being green. If it did, the mutation is wrong."""
+def bogus(expect: dict[str, tuple[str, str]], got: dict[str, tuple[str, str]], green: str,
+          canary: bool) -> list[str]:
+    """THE CANARY, and it holds for a VERIFIER ONLY.
+
+    Removing a rule from `ci-snapshot.py` can only make it MORE PERMISSIVE, so a green fixture must STAY
+    green; one that moves means the mutation spliced in something that broke the tool rather than weakening
+    one rule — a harness bug, and it must never be miscounted as a pinned rule.
+
+    **THE INVERSE HOLDS FOR A PRODUCER, WHICH IS WHY `ci-status.py` TURNS THIS OFF** (`MUTATION_GREEN_CANARY
+    = False`). Removing one of ITS rules CORRUPTS THE ARTIFACT — a marker missing the sha it must carry, a
+    check family never fetched — and `ci-snapshot.py`, downstream, then REFUSES it. `green.json` coming back
+    `unusable` is the fixture doing its job, not the harness failing at its own.
+    """
+    if not canary:
+        return []
     return [
         f"{case} expected {green} but the mutant returned {got[case][0]}"
         for case, (want, _) in expect.items()
@@ -286,30 +347,46 @@ def bogus(expect: dict[str, tuple[str, str]], got: dict[str, tuple[str, str]], g
 def main() -> int:
     p = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     p.add_argument(
+        "--script", type=Path, default=DEFAULT_SCRIPT,
+        help="the script whose rules to mutate (default: ci-snapshot.py; also: ci-status.py)",
+    )
+    p.add_argument(
         "--check-coverage",
         action="store_true",
-        help="only assert every enforcement point carries a # MUTATE marker; run no mutants",
+        help="only assert every rule carries a # MUTATE marker; run no mutants",
     )
     args = p.parse_args()
 
-    source = SCRIPT.read_text(encoding="utf-8")
+    script: Path = args.script
+    if not script.exists():
+        print(f"HARNESS BROKEN: no such script: {script}", file=sys.stderr)
+        return 2
+
+    source = script.read_text(encoding="utf-8")
     try:
         marked = marked_statements(source)
+        baseline = load(source, f"mutation_baseline_{script.stem.replace('-', '_')}", script)
     except HarnessError as exc:
         print(f"HARNESS BROKEN: {exc}", file=sys.stderr)
         return 2
 
-    gaps = check_coverage(source, marked)
+    declared = getattr(baseline, "MUTATION_RULES", None)
+    canary = getattr(baseline, "MUTATION_GREEN_CANARY", True)
+
+    gaps = check_coverage(source, marked, script, declared)
     for gap in gaps:
         print(f"UNMARKED {gap}")
     if args.check_coverage:
         if gaps:
-            print(f"\n{len(gaps)} enforcement point(s) carry NO marker.")
+            print(f"\n{len(gaps)} rule(s) carry NO marker.")
             return 1
-        print(f"every enforcement point in {SCRIPT.name} carries a # MUTATE marker ({len(marked)} rules).")
+        print(f"every rule in {script.name} carries a # MUTATE marker ({len(marked)} rules).")
         return 0
+    if gaps:
+        print(f"\n{len(gaps)} rule(s) are not marked — an unmarked rule is never mutated.")
+        return 1
 
-    baseline = load(source, "ci_snapshot_baseline")
+    print(f"=== {script.name} ===")
     expect = expectations(baseline)
     got = run_cases(baseline)
     stale = [f"{c}: expected {w}/{n!r}, got {got[c]}" for c, (w, n) in expect.items()
@@ -327,16 +404,16 @@ def main() -> int:
     unpinned, broken, tally = [], [], {GREEN_KILL: 0, VERDICT_KILL: 0, MESSAGE_KILL: 0, CRASH_KILL: 0}
     for rule, (weakening, stmt) in marked.items():
         try:
-            mod = load(mutate(source, rule, weakening, stmt), f"ci_snapshot_mutant_{rule.replace('-', '_')}")
+            mod = load(mutate(source, rule, weakening, stmt), f"mutant_{rule.replace('-', '_')}", script)
         except SyntaxError as exc:
             broken.append(f"{rule}: the weakening {weakening!r} does not compile ({exc})")
             continue
         mutant = run_cases(mod)
-        wrong = bogus(expect, mutant, baseline.GREEN)
+        wrong = bogus(expect, mutant, baseline.GREEN, canary)
         if wrong:
             broken.append(f"{rule}: BOGUS MUTATION — {'; '.join(wrong)}")
             continue
-        killers = kills(expect, mutant, baseline.GREEN)
+        killers = kills(expect, mutant, baseline.GREEN, canary)
         if not killers:
             print(f"{rule:22} {weakening[:46]:46} {'NOTHING':30} {'—':13} UNPINNED")
             unpinned.append(rule)

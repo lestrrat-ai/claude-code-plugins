@@ -7,6 +7,28 @@ code** — then writes the `ci`/`reviews_ok` result through `scripts/ledger.py �
 [--reviews_ok 0]` **by field name** (`files-and-ledger.md`), never by hand-editing the row by column
 position.
 
+#### THE DERIVATION IS A COMMAND — RUN IT. NEVER DERIVE `ci` BY READING TERMINAL OUTPUT.
+
+**The wake derives `ci` by RUNNING `scripts/ci-status.py`, and by nothing else:**
+
+```sh
+python3 <skill>/scripts/ci-status.py derive --pr <N> --head-sha <the LEDGER's head_sha> --rundir <rundir>
+```
+
+It performs every step below — FETCH (SHA-pinned, paginated, **both** families), PROMOTE (atomic), VERIFY
+(via `scripts/ci-snapshot.py`, which it calls), and DECIDE — and prints **JSON**: the `verdict`, the `ci`
+value to write to the ledger, the `reason` (**which rule fired, and which row made it fire** — this is what
+`ci_reason` is built from), the evidence counts, and the path to the snapshot it left behind. It exits `0`
+**only** on green. **Write `ci` from that JSON; never from an impression of some command's output.**
+
+**WHY THIS IS A COMMAND AND NOT A PROCEDURE YOU FOLLOW.** Every rule in this section was already correct,
+and a driver still wrote **`ci = green`** into the ledger for a PR whose checks had **not registered** —
+having run `gh pr checks <pr>`, read a line saying no checks were reported for the branch, and judged it
+green **by eye**. **ZERO EVIDENCE IS NOT GREEN.** The rules did not fail; the one step that was still a
+model **reading output and forming an impression** did. A program cannot get tired, cannot skim, and cannot
+decide that "no checks" is close enough to "passing" — so that step is now a program. **The shell commands
+below are the SPEC the tool implements — they are documentation, NOT a second procedure to hand-run.**
+
 #### WHO DOES WHAT — the background task ONLY WATCHES; the WAKE fetches. This section is the DEFINITION.
 
 **This split is normative, and every other file defers to it** (`pr-adoption.md`, `loop-control.md`):
@@ -14,7 +36,7 @@ position.
 | Actor | Does | Does NOT |
 |---|---|---|
 | **The background task** | **BLOCKS on `gh pr checks <pr> --watch`, and NOTHING else.** Its **ONLY** job is to block, so that **its completion becomes a wake**. | It **NEVER** fetches, **NEVER** writes `ci-<pr>-<head_sha>.txt`, and **NEVER** produces evidence of any kind. |
-| **The wake** | **FETCHES** (SHA-pinned, both families), **PROMOTES** atomically, **VERIFIES** the stamp, **PARSES**, and **DECIDES** `ci`. | — |
+| **The wake** | **RUNS `scripts/ci-status.py derive`** (above), which **FETCHES** (SHA-pinned, both families), **PROMOTES** atomically, **VERIFIES** the stamp, **PARSES**, and **DECIDES** `ci`. | It **NEVER** derives `ci` by READING the output of `gh pr checks` — or of anything else. |
 
 **WHY the fetch cannot live in the background task:** the fetch must be pinned to the `head_sha` **the
 LEDGER currently holds**, and **only the wake knows that**. A background task that fetched at its own
@@ -29,6 +51,11 @@ longer contains**. This produced a false green on a live run in this repo, found
 than by review. Use `gh pr checks --watch` to **wait**; never to decide.
 
 #### FETCH — pinned to the SHA, paginated, BOTH check families, and emitted as JSONL
+
+> **`scripts/ci-status.py derive` DOES ALL OF THIS** ("THE DERIVATION IS A COMMAND", above). The commands
+> in this section are the **SPECIFICATION IT IMPLEMENTS** — read them to understand or to review the tool,
+> and keep them correct. **Do NOT hand-run them to derive `ci`**: a procedure transcribed by hand is a
+> procedure that gets shortcut, and the shortcut is what wrote a false green into the ledger.
 
 A source you never queried reports nothing, and "nothing" parses as "nothing wrong". Read **both** — and
 **each fetch also emits a `source` COMPLETION MARKER, so that "we asked and got nothing" is a thing the
@@ -328,7 +355,19 @@ because a fixture suite cannot see its own worst failure — a rule that **nothi
 leaves the suite green — and a hand-written matrix claiming otherwise was **wrong about two rules**.
 **"Which rules are unpinned?" is a question the SUITE answers, never one a reviewer has to discover.** If
 you change a rule here, change it there; if you add one, mark it (`# MUTATE:<id>:<weakening>`) and give it
-a fixture that goes **GREEN** when it is deleted.
+a fixture that goes **GREEN** when it is deleted. (`mutate-ci-snapshot.py --script scripts/ci-status.py`
+asks the same question of the **PRODUCER**, whose fixtures are **recorded API responses** driven through
+the real fetch path.)
+
+**AND THIS PROSE CANNOT SILENTLY DRIFT FROM THE CODE ANY MORE.** The enums, the CLASSIFY buckets and the
+DECIDE bullet order are written **here**, in prose, **and** encoded in `ci-snapshot.py` as Python —
+**nothing compared them**, so one could rot while the other ran, and the rotted one is the copy a reader
+believes. `scripts/ci-status.py doc-check` **parses this file** — its enum block, both CLASSIFY tables, and
+the order of the DECIDE bullets — and asserts they agree with the sets the code actually classifies with,
+**and that the classification is TOTAL over the enums declared here** (every value in exactly one bucket:
+the property this section claims, which nothing used to check). It runs in CI. **Edit a rule in this file
+without editing the code and the build goes RED** — which is the only kind of "keep them in sync" that has
+ever worked.
 
 #### CROSS-FETCH AGREEMENT — containment on a USABLE `.id`, NOT equality
 

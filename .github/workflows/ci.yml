@@ -106,6 +106,23 @@ jobs:
       - name: CI-snapshot mutation matrix (every rule pinned by a fixture)
         run: python3 plugins/gauntlet/skills/campaign/scripts/mutate-ci-snapshot.py
 
+      # The PRODUCER of that snapshot, executed. `ci-snapshot.py` above can only judge an artifact somebody
+      # BOTHERED to produce — and the step that produced one was a shell block in a doc, transcribed by a
+      # model. It got shortcut: a driver read `gh pr checks`, saw no checks reported, and wrote ci=green.
+      # ZERO EVIDENCE IS NOT GREEN. Deriving CI is now a command, and these fixtures are recorded API
+      # responses driven through its real fetch path. `self-test` also runs `doc-check`, which parses
+      # stage-2-ci.md's enum block, CLASSIFY tables and DECIDE order and FAILS if the prose and the code
+      # that runs have drifted apart — including if the classification stopped being TOTAL over the enums.
+      - name: CI-status derivation contract (+ stage-2-ci.md agrees with the code)
+        run: python3 plugins/gauntlet/skills/campaign/scripts/ci-status.py self-test
+
+      # ...and the same question of the producer: is any of ITS rules pinned by NO fixture? Weaken "take the
+      # sha from GitHub's response" to "use the sha we asked for" and the verification becomes a comparison
+      # of a value against itself — it could never fail. A fixture must go GREEN when that rule is removed,
+      # or the rule is not tested.
+      - name: CI-status mutation matrix (every rule pinned by a fixture)
+        run: python3 plugins/gauntlet/skills/campaign/scripts/mutate-ci-snapshot.py --script plugins/gauntlet/skills/campaign/scripts/ci-status.py
+
       # The ledger's contract, executed — same reason, one file over. `escape_cell` is security-shaped: it
       # is what stops a PR title from forging a column, a row, or a run-config line in the `table` view, and
       # a sanitizer verified by eye is a sanitizer verified by NOTHING. The fixtures assert the escaping is

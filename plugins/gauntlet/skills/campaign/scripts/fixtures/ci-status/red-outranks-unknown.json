@@ -1,0 +1,67 @@
+{
+  "why": "DECIDE ORDER, EXECUTED: a FAILURE and an enum value nobody has classified, in one snapshot. `red` wins \u2014 the failure is actionable NOW, and the unknown value is DEFERRED, not discarded: it parks on the next derivation once the failure is gone",
+  "pr": "35",
+  "api": {
+    "check-runs": {
+      "response": [
+        {
+          "total_count": 2,
+          "check_runs": [
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "Lint scripts",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "failure",
+              "details_url": "https://github.com/o/r/actions/runs/29318959841/job/1"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "Validate plugins",
+              "app": {
+                "id": 15368
+              },
+              "status": "awaiting_approval",
+              "conclusion": null,
+              "details_url": "https://github.com/o/r/actions/runs/29318959841/job/2"
+            }
+          ]
+        }
+      ]
+    },
+    "status": {
+      "response": [
+        {
+          "sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+          "state": "pending",
+          "total_count": 0,
+          "statuses": []
+        }
+      ]
+    },
+    "rollup": {
+      "response": {
+        "headRefOid": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+        "statusCheckRollup": [
+          {
+            "__typename": "CheckRun",
+            "name": "Lint scripts",
+            "detailsUrl": "https://github.com/o/r/actions/runs/29318959841/job/1"
+          },
+          {
+            "__typename": "CheckRun",
+            "name": "Validate plugins",
+            "detailsUrl": "https://github.com/o/r/actions/runs/29318959841/job/2"
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "verdict": "red",
+    "ci": "red",
+    "needle": "concluded FAILURE"
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "why": "the rollup saw a run the REST read did NOT return \u2014 evidence is incomplete, and the run it is missing could be the failing one. Drop the rollup fetch and containment passes TRIVIALLY: this file goes GREEN on evidence known to be short a row",
+  "pr": "35",
+  "api": {
+    "check-runs": {
+      "response": [
+        {
+          "total_count": 1,
+          "check_runs": [
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "Lint scripts",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/29318959841/job/1"
+            }
+          ]
+        }
+      ]
+    },
+    "status": {
+      "response": [
+        {
+          "sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+          "state": "pending",
+          "total_count": 0,
+          "statuses": []
+        }
+      ]
+    },
+    "rollup": {
+      "response": {
+        "headRefOid": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+        "statusCheckRollup": [
+          {
+            "__typename": "CheckRun",
+            "name": "Lint scripts",
+            "detailsUrl": "https://github.com/o/r/actions/runs/29318959841/job/1"
+          },
+          {
+            "__typename": "CheckRun",
+            "name": "Validate plugins",
+            "detailsUrl": "https://github.com/o/r/actions/runs/29318959841/job/2"
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "verdict": "unusable",
+    "ci": "pending",
+    "needle": "missing a witnessed run"
+  }
+}
