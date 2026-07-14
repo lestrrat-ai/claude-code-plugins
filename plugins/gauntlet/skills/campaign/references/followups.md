@@ -296,6 +296,15 @@ CAN PRODUCE IS A STRING.** State it as the rule, not as a list of bad shapes:
 > never defaulted, never dropped, and never **crashed on**. The id high-water mark (`followup-seq.high`) is
 > the **one declared exception** in the whole store, and it is an `int`; no follow-up field has one.
 
+**AND AN EXCEPTION IS NOT A HOLE — it is declared by DERIVING its accept-set from what the write door can
+emit, never by naming a TYPE.** That distinction is not a nicety: **every** bug this store has shipped in
+this class arrived as an exception somebody wrote down **on purpose**, next to the very rule it contradicts
+(*"a finite number is legal"*; *"`null` IS absence"*; *"`high` is an `int`"* — which then accepted **any**
+int, including one that made the next `add` emit a malformed id). So the mark is an `int` **and** it is
+exactly one the accessor could have written: the id of a follow-up really handed out. The accessor owns
+which ones (`mark_error()`); the self-test (`exceptions-no-wider`) holds **every** declared exception to
+that test, and a new one that is wider than its write door turns CI red.
+
 A write door is fed by `argv`, and `argv` can hand it **nothing but a string**. So a value on a line that is
 not a string — a **number** included — did not come from a door: it arrived by a **hand-edit**, and nothing
 downstream expects it. The rule is stated and enforced in **one place** (`project()` in `followups.py`),
@@ -326,6 +335,13 @@ door emits `-` for an unset optional and can **never** emit `null` — so `null`
 is refused, in a required field and an optional one alike. Reading it as absence is the same coercion in
 JSON's own vocabulary, and it did what all of them do: `{"found_run": null}` loaded, and the next
 `set --title` **rewrote the line with a `-` the store had invented**.
+
+**And an unset optional field holds `-` — not "some blank".** That is the store's *other* declared exception
+(a blank is refused, **except** the placeholder in an optional field), and it is bounded exactly like the
+mark: the write door emits **precisely** `-` there and `taken()` refuses every blank a caller could hand in,
+so an optional field carries the placeholder or something **non-blank**, and nothing else. `"   "` and a
+zero-width space are neither — they show nothing while not **being** the `-` that *means* unset, so they read
+as a value to nothing and as a set field to everything. That is the `-` backfill's own shape, one field over.
 
 **A crash is not a refusal, either — and a HANG is worse than a crash.** A hand-written file can carry things
 Python's own parser chokes on — a 10,000-digit integer, 100,000 nested arrays — and those used to end in a

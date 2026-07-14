@@ -56,8 +56,10 @@ AND THE LOAD DOOR ACCEPTS ONLY WHAT A WRITE DOOR COULD HAVE PRODUCED, WHICH IS: 
 sentence one level lower, and it is the one this file kept breaking in a new dress. A write door is fed by
 `argv`, which can hand it NOTHING BUT A `str` — so EVERY value in a follow-up is a string, and anything else
 on a line, from any source, is a CORRUPT record: refused, never coerced, never defaulted, never dropped, and
-never CRASHED on. (The high-water mark, `followup-seq.high`, is the ONE declared exception in the store, and
-it is an `int`.) The rule is stated and enforced in `project()`; it is NOT a list of blocked shapes, because
+never CRASHED on. (The high-water mark, `followup-seq.high`, is the ONE declared exception in the store: it is
+an `int`, and `mark_error()` owns WHICH ints — an exception is declared by DERIVING its accept-set from what
+the write door emits, never by naming a type, which is how this one shipped a bug of its own.) The rule is
+stated and enforced in `project()`; it is NOT a list of blocked shapes, because
 a list is what this file shipped seven times — each fix blocking the shapes its author had thought of, while
 an unknown key loaded and was SILENTLY DELETED by the next write, `NaN` loaded as the TEXT "nan", `null`
 loaded as `"None"`, and `123` loaded as `"123"` and was PUBLISHED AS AN ISSUE. ABSENCE IS A MISSING KEY, and
@@ -293,7 +295,8 @@ def project(rec: "dict", where: str = "") -> "dict[str, str]":
     `argparse` hands a write door a `str` and HAS NOTHING ELSE TO GIVE. So a value on a line that is not a
     string did not come from a door — it came from a hand-edit, and nothing downstream expects it. The ONE
     declared exception in this whole store is `followup-seq.high`, which is an `int` and is not a follow-up
-    field at all (`read_store()`); no follow-up field has one.
+    field at all; no follow-up field has one. And that exception is BOUNDED BY WHAT THE WRITE DOOR CAN EMIT,
+    not by its type — `mark_error()` owns it, and being an `int` is not a licence to be ANY int.
 
     ONE definition of how a record becomes an entry, used on the way IN (`read_store`) and on the way OUT
     (`dump`). Two copies of this is how the doors came to disagree: the load door invented a `-` for a
@@ -750,6 +753,12 @@ TABLE_RULE = "CANDIDATES, not issues — LOCAL. NEVER publish one without the us
 ID_MAX_DIGITS = 18  # 10^18 follow-ups is not a store; and 18 is nowhere near CPython's 4300-digit limit
 ID_RE = re.compile(rf"^fu[1-9][0-9]{{0,{ID_MAX_DIGITS - 1}}}$")
 
+# The largest N an id can spell — DERIVED FROM THE ID FORMAT, never a second constant standing beside it.
+# It is what BOUNDS THE ONE DECLARED EXCEPTION (`followup-seq.high`, an `int`): the mark is the id of a
+# follow-up that was really HANDED OUT, so the marks `dump()` can write are exactly `1 .. ID_MAX`, and a
+# mark outside that is one no write door here could ever have produced (`mark_error()`, which owns the rule).
+ID_MAX = int("9" * ID_MAX_DIGITS)
+
 
 def fail(msg: str) -> NoReturn:
     print(f"followups: {msg}", file=sys.stderr)
@@ -818,6 +827,24 @@ def entry_error(entry: dict) -> "str | None":
             f"required WHEREVER an entry comes from: `add` refuses a blank one, and so does the store. It "
             f"was hand-written, or written by something that is not this accessor."
         )
+    # AND AN OPTIONAL FIELD IS BLANK IN EXACTLY ONE SPELLING — THE PLACEHOLDER. That is not a second blank
+    # rule; it is the SAME rule asked of the OTHER half of the schema, and it is the DECLARED EXCEPTION
+    # "a blank is refused, EXCEPT in an optional field" held to what the write door can actually emit.
+    # `dump()` writes EXACTLY `-` for an unset optional (`DEFAULTS`), and `taken()` refuses a blank at every
+    # write door — so an optional field carries either that one placeholder or something that is NOT blank,
+    # and NOTHING ELSE. `"   "` and a zero-width space are neither: they SHOW nothing while not BEING the
+    # `-` that means unset, so they read as a value to nothing and as a set field to everything — the exact
+    # shape of the `-` backfill that manufactured a complete-looking follow-up out of a fragment. Derived
+    # from `FIELDS`, so a field added tomorrow is held to it that day. (A REQUIRED field never reaches here:
+    # for it the placeholder is blank too, and the check above refuses every blank it can wear.)
+    invented = [f for f in FIELDS if entry[f] != PLACEHOLDER and is_blank(entry[f])]
+    if invented:
+        return (
+            f"{entry['id']} carries a blank {', '.join(invented)} that is not the placeholder "
+            f"{PLACEHOLDER!r} — an UNSET optional field holds exactly {PLACEHOLDER!r} (`dump()`), and every "
+            f"value a door takes in is NON-BLANK (`taken()`). A field that shows nothing and is not the "
+            f"placeholder is a value NO WRITE DOOR HERE CAN PRODUCE: it was hand-written."
+        )
     why = illegal_history(entry)
     return None if why is None else f"{entry['id']} is {why}"
 
@@ -876,6 +903,60 @@ def unusable_store(path: Path) -> "str | None":
     return None
 
 
+def mark_error(high: int, entries: "list[dict]") -> "str | None":
+    """Why this PRESENT high-water mark is not one `dump()` could have written — or None.
+
+    THE ONE DECLARED EXCEPTION TO STRINGS-ONLY IS AN `int` — AND AN EXCEPTION IS NOT A HOLE. That is the
+    whole of this function, and it is the third time on this store that a bug arrived as an exception
+    somebody wrote down ON PURPOSE: "a finite number is legal" published `{"evidence": 123}` as `"123"`;
+    "`null` IS absence" rewrote `{"found_run": null}` as `-`; and "`high` is an `int`" accepted ANY int at
+    all. Each was declared beside the very rule it contradicts, which is exactly why it survived. So an
+    exception is not declared by naming a TYPE. It is declared by DERIVING ITS ACCEPT-SET FROM WHAT THE
+    WRITE DOOR CAN EMIT, and it is no wider than that.
+
+    WHAT THE WRITE DOOR EMITS HERE: `dump()` writes `high_water(entries, high)`, and every mark it has ever
+    raised came from an id `next_id()` really HANDED OUT. So a mark ON DISK is:
+
+      * AT LEAST 1 — `dump()` omits the line ENTIRELY for a store that has never handed an id out, so a
+        present `0` (and every negative) is a line no write door wrote;
+      * AT MOST `ID_MAX` — the largest N an id `fu<N>` can spell (`ID_RE`, from which it is DERIVED). A
+        larger mark was never handed out, because `dump()` REFUSES to write the entry that would have done
+        it: `next_id()` emits a malformed id and `entry_error()` (which `dump()` asks) turns it away;
+      * NEVER BELOW THE HIGHEST ID PRESENT — `high_water()` is what dump writes, and it is a `max`.
+
+    THE LAST ONE IS NOT DECORATION, AND IT IS NOT AN INTEGRITY CHECK FOR ITS OWN SAKE. A too-low mark used
+    to LOAD, and the next write SILENTLY RAISED it — the store INVENTING a value on disk, in the one file
+    nothing can rebuild, which is the same coercion the `null`-as-`-` rewrite was. And it is what stands
+    between this bound and the id rule: a mark that may sit below the entries is a mark that can hand out an
+    id ALREADY IN THE STORE (`t_ids_are_assigned_and_never_reused`).
+    """
+    if high < 1:
+        return (
+            f"{SEQ_TYPE} carries a high-water mark of {high}, and no write door here produced it: a mark ON "
+            f"DISK is the id of a follow-up REALLY HANDED OUT, so it is at least 1. `dump()` writes NO mark "
+            f"line at all for a store that has never handed one out — a zero or negative mark is written by "
+            f"nothing."
+        )
+    if high > ID_MAX:
+        return (
+            f"{SEQ_TYPE} carries a high-water mark of {high}, past the largest id this store can spell "
+            f"(fu{ID_MAX} — {ID_MAX_DIGITS} digits, `ID_RE`). No `add` ever handed that id out: `next_id()` "
+            f"would emit `fu{high + 1}`, which is a MALFORMED id, and `dump()` refuses to write a store that "
+            f"will not load back. A mark the write door cannot REACH is a mark it cannot have WRITTEN — and "
+            f"this one LOADED, and then broke the next `add`."
+        )
+    top = max((int(e["id"][2:]) for e in entries), default=0)
+    if high < top:
+        return (
+            f"{SEQ_TYPE} carries a high-water mark of {high} while the store holds fu{top} — no write door "
+            f"produced that either: `dump()` writes `high_water()`, which is NEVER below the highest id "
+            f"present. Loading it would SILENTLY RAISE the mark to {top} on the next write — a value the "
+            f"store INVENTED, on disk, in the one file nothing can rebuild — and a mark BELOW the entries "
+            f"is a mark that hands out an id the store already holds."
+        )
+    return None
+
+
 def read_store(path: Path) -> "tuple[list[dict], int]":
     """Return the entries AND the id high-water mark. A missing file is an EMPTY store — not an error.
 
@@ -913,6 +994,7 @@ def read_store(path: Path) -> "tuple[list[dict], int]":
     """
     entries: list[dict] = []
     high = 0
+    mark_line = 0
     why = unusable_store(path)  # the class rule, applied to the FILE — a directory, a FIFO, an unreadable path
     if why is not None:
         fail(why)
@@ -966,9 +1048,7 @@ def read_store(path: Path) -> "tuple[list[dict], int]":
             if isinstance(mark, bool) or not isinstance(mark, int):
                 fail(f"line {n}: {SEQ_TYPE} carries a non-numeric high-water mark {mark!r} — it is a whole "
                      f"number of follow-ups ever handed out, and this accessor writes it as one.")
-            high = mark
-            if high < 0:
-                fail(f"line {n}: {SEQ_TYPE} carries a negative high-water mark {high}")
+            high, mark_line = mark, n  # …and WHICH int it may be is `mark_error()`, asked once, below
             continue
         if rec.get("type") != ENTRY_TYPE:
             fail(f"line {n}: missing or unknown record type {rec.get('type')!r}")
@@ -980,6 +1060,15 @@ def read_store(path: Path) -> "tuple[list[dict], int]":
             fail(f"line {n}: duplicate entry for {entry['id']}")
         seen.add(entry["id"])
         entries.append(entry)
+    # THE MARK IS PUT TO `mark_error()` — the ONE definition of a mark this store could have WRITTEN, and
+    # it is asked LAST because the accept-set depends on the ENTRIES (a mark below the highest id present is
+    # not one `dump()` emits). An ABSENT mark is not asked about at all: absence is a MISSING KEY here
+    # exactly as it is in an entry, it is what an older store (and an EMPTY one) really has on disk, and it
+    # BACKFILLS from the highest id present — which is what it would have been.
+    if marked:
+        why = mark_error(high, entries)
+        if why is not None:
+            fail(f"line {mark_line}: {why}")
     return entries, high_water(entries, high)
 
 
@@ -1438,7 +1527,8 @@ UNHOLDABLE_VALUES = ("a\x00b", *[f"a{chr(cp)}b" for cp in (0xD800, 0xDCFF, 0xDFF
 # so it is not loadable, and coercing one to text is the same `str()` laundering that let `null` publish as
 # `"None"`: `{"evidence": 123}` loaded as `"123"`, passed every blank check, and was PUBLISHED as an issue.
 # `int` and `float`, positive, negative and zero, are all just numbers. There is ONE number in this whole
-# store — `followup-seq.high` — and it is not a follow-up field (`read_store()` owns it).
+# store — `followup-seq.high` — and it is not a follow-up field; `mark_error()` owns which ints it may be,
+# and `exceptions-no-wider` pins that its accept-set is exactly the marks `dump()` can emit.
 #
 # `null` IS IN IT, and that is the entry that was got wrong the SECOND time — by a fix on this very branch,
 # which declared `null` to BE absence and DEFAULTED it. The write door emits `-` for an unset optional and
@@ -1503,6 +1593,52 @@ def raw_line(field: str, value: str, **over: object) -> str:
     return json.dumps(rec).replace('"@@RAW@@"', value)
 
 
+def raw_mark(key: str, value: str) -> str:
+    """The META record's line, with ONE key's value spliced in as RAW JSON TEXT — `raw_line()`'s counterpart.
+
+    The mark is the ONE record that is not a follow-up, so it needs its own builder: the entry builder cannot
+    make one, and a fixture that hand-wrote the line would stop covering a key added to `SEQ_KEYS` tomorrow.
+    Built from `SEQ_KEYS` for exactly that reason — every key the record may carry gets a legal value, and
+    the one under test gets the raw text.
+    """
+    rec: "dict[str, object]" = {"type": SEQ_TYPE, **{k: 1 for k in sorted(SEQ_KEYS) if k != "type"}}
+    rec[key] = "@@RAW@@"
+    return json.dumps(rec).replace('"@@RAW@@"', value)
+
+
+# THE VALUE SLOTS OF THE STORE — every place a record can carry a value, DERIVED from the two key-sets that
+# own them (`RECORD_KEYS`, `SEQ_KEYS`), never from a list. `type` is not one: it names WHICH record this is,
+# and `read_store()` refuses any spelling but the two it knows.
+#
+# This exists so `exceptions-no-wider` can enumerate the slots SEMANTICALLY rather than by grep — a key added
+# to either set tomorrow is a slot that fixture must account for THAT DAY, and it will say so by name.
+SLOTS = frozenset(
+    [(ENTRY_TYPE, f) for f in RECORD_KEYS if f != "type"]
+    + [(SEQ_TYPE, k) for k in SEQ_KEYS if k != "type"]
+)
+
+# EVERY DECLARED EXCEPTION TO "EVERY VALUE IN THIS STORE IS A STRING" — the WHOLE list, and it has ONE row.
+#
+# AN EXCEPTION IS NOT A HOLE, AND THIS IS THE CLASS THAT KEPT PROVING IT. Three bugs on this store arrived as
+# an exception somebody wrote down ON PURPOSE, each one stated in a table or a comment right beside the rule
+# it contradicted — which is precisely why each survived review:
+#
+#   1. "a finite number is legal, it reads as its digits"  ->  `{"evidence": 123}` was PUBLISHED as `"123"`.
+#   2. "`null` IS absence, so it defaults"                 ->  `{"found_run": null}` was REWRITTEN as `-`.
+#   3. "`high` is an `int`"                                ->  ANY int at all, including one that made the
+#                                                              next `add` emit the malformed id `fu10^18+1`.
+#
+# Every one of them declared a TYPE and called that the exception. A type is not an accept-set. So a row here
+# does not name what the slot MAY BE — it names the slot whose accept-set is NOT "a string", and the fixture
+# then demands that its accept-set be EXACTLY what the write door can EMIT there and no wider (the accessor
+# owns which values that is: `mark_error()`).
+#
+# THE LIST IS CHECKED FOR COMPLETENESS AGAINST `SLOTS`, so it cannot go stale: every slot NOT named here is
+# held to strings-only against the REAL load door, and a new slot (or a new exception) that nobody bounded
+# turns the suite RED naming it, with no edit to any fixture.
+EXCEPTIONS = frozenset({(SEQ_TYPE, "high")})
+
+
 def t_the_load_door_takes_only_what_a_write_door_can_produce(tmp: Path) -> None:
     """THE LOAD DOOR ACCEPTS ONLY WHAT A WRITE DOOR COULD HAVE PRODUCED. Everything else is REFUSED — not
     coerced, not defaulted, and above all not silently DROPPED.
@@ -1531,7 +1667,8 @@ def t_the_load_door_takes_only_what_a_write_door_can_produce(tmp: Path) -> None:
          `FIELDS` × `UNWRITABLE` — add a field to the schema and it is covered here, in every spelling, with
          NO EDIT TO THIS FIXTURE. That is the difference between fixing the class and fixing the instance.
       2. THE RECORD ITSELF, AND WHAT THE PARSER CHOKES ON: an unknown key (on an entry AND on the meta
-         record), a duplicate key, a high-water mark that is not a whole number, a bare scalar, a file that
+         record), a duplicate key, a high-water mark that is not a whole number (WHICH whole numbers it may
+         be is `mark_error()`'s, and `exceptions-no-wider` pins it), a bare scalar, a file that
          is not UTF-8, a BOM, a 10,000-digit integer, 100,000 nested arrays, an over-long id. Each is
          REFUSED, and NONE of them CRASHES — a huge integer (a bare `ValueError` from the parser), deep
          nesting (`RecursionError`), an undecodable byte and a `high` of `Infinity` all used to end in a
@@ -1635,6 +1772,222 @@ def t_the_load_door_takes_only_what_a_write_door_can_produce(tmp: Path) -> None:
     check((code, out) == (0, PLACEHOLDER + "\n"),
           f"an OMITTED optional key is no longer ABSENCE (exit {code}): {out!r} {err!r} — the `null` fix "
           f"took the BACKFILL down with it, and every pre-schema entry has just stopped loading")
+
+
+def t_every_declared_exception_is_no_wider_than_the_write_door(tmp: Path) -> None:
+    """EVERY DECLARED EXCEPTION'S ACCEPT-SET IS EXACTLY WHAT THE WRITE DOOR CAN EMIT THERE — AND NO WIDER.
+
+    THIS IS THE CLASS, AND THE EXCEPTIONS ARE WHERE IT KEPT SURVIVING. `load-takes-only-writable` holds the
+    RULE (every value is a string); this holds the CARVE-OUTS FROM IT — and all three bugs of that class
+    arrived as a carve-out somebody wrote down on purpose, beside the rule it contradicted (`EXCEPTIONS`):
+    a number declared legal was PUBLISHED as its digits, a `null` declared absent was REWRITTEN as `-`, and
+    `high` declared an `int` accepted ANY int — including one that made the next `add` emit a MALFORMED id.
+    A type is not an accept-set, so this fixture never asks what a slot's type is. It asks what the write
+    door can EMIT there, and demands the load door take exactly that.
+
+      1. THE LIST OF EXCEPTIONS IS COMPLETE. The slots are DERIVED (`SLOTS`, from `RECORD_KEYS` + `SEQ_KEYS`),
+         and every slot NOT declared an exception is put to the REAL load door and must refuse a non-string.
+         So a KEY added to either set — a new follow-up field, a second piece of meta bookkeeping — is
+         covered the day it is added, and an exception nobody bounded goes RED NAMING THE SLOT.
+      2. THE ONE EXCEPTION IS BOUNDED BY THE WRITE DOOR. For `followup-seq.high`:
+           * every shape in `UNWRITABLE` that is not an `int` is REFUSED there too — derived from the corpus,
+             so a shape added to it is covered here with no edit;
+           * and the INTS are bounded to the marks `dump()` can actually write: at least 1 (it writes NO line
+             for a store that has never handed an id out), at most `ID_MAX` (`ID_RE` cannot spell a bigger
+             id, so no `add` handed one out), never below the highest id PRESENT (`dump()` writes
+             `high_water()`, a `max`). Both ends, both sides, DERIVED from `ID_MAX` and from the store.
+      3. AND THE PLACEHOLDER EXCEPTION — "a blank is refused, EXCEPT in an optional field" — is bounded the
+         same way. `dump()` writes EXACTLY `-` for an unset optional and `taken()` refuses every blank, so an
+         optional field holds the placeholder or something NON-blank. `"   "` and a zero-width space are
+         neither: they LOADED, in a store that could never have been written that way. Derived from
+         `DEFAULTS` (which fields the placeholder is the unset value OF) × `BLANKS`.
+      4. AND THE CONVERSE, or a load door that refused everything would pass all of the above: the marks the
+         write door really does emit still LOAD — including the one it emits for a store at the CEILING —
+         and a store this accessor wrote itself still reads back.
+
+    WHAT IS DELIBERATELY *NOT* CLOSED, and why it is not an instance: `read_store()` accepts the mark line in
+    ANY POSITION (`dump()` writes it first) and SKIPS a blank line (`dump()` writes none). Both are wider
+    than the emit-set and NEITHER lets a VALUE across: nothing is coerced, nothing is invented, nothing is
+    dropped that carries anything. Every bug in this class was a value the store INVENTED; a line-ordering
+    tolerance invents nothing.
+    """
+    # 1. THE LIST IS COMPLETE — and it is about the SLOTS the schema really has, not the ones we remembered.
+    check(EXCEPTIONS <= SLOTS,
+          f"EXCEPTIONS names a slot this store does not have: {sorted(EXCEPTIONS - SLOTS)} — the carve-out "
+          f"outlived the thing it carved out of, so nothing is holding it to anything")
+    for record_type, key in sorted(SLOTS - EXCEPTIONS):
+        line = (raw_line(key, "123", id="fu1") if record_type == ENTRY_TYPE
+                else raw_mark(key, "123"))
+        rest = () if record_type == ENTRY_TYPE else (entry_line(id="fu1"),)
+        path = write_lines(tmp / f"slot-{record_type}-{key}.jsonl", line, *rest)
+        code, out, err = run(["--file", str(path), "list"])
+        check(code == 1,
+              f"the slot {record_type}.{key} ACCEPTED the NUMBER 123 (exit {code}) — it is not a declared "
+              f"exception, so it is strings-only, and no write door here can put a number in it. Either it "
+              f"is bounded like every other slot, or it belongs in EXCEPTIONS with an accept-set derived "
+              f"from what the write door emits — an UNBOUNDED carve-out is how this store shipped the same "
+              f"bug three times:\n{out}")
+        check("Traceback" not in err, f"{record_type}.{key} CRASHED instead of refusing:\n{err}")
+
+    # 2. THE ONE EXCEPTION, BOUNDED BY THE WRITE DOOR.
+    #
+    # (a) EVERY UNWRITABLE SHAPE — derived from the corpus. An `int` is what the exception ADMITS, so it is
+    #     not refused HERE; it is BOUNDED below. Everything else in that corpus is as unwritable in the mark
+    #     as it is in a field, and the refusal must still name what is wrong (and never be a traceback).
+    for i, (name, value, needle) in enumerate(UNWRITABLE):
+        try:
+            parsed: object = loads(value)
+        except (ValueError, RecursionError):
+            parsed = _Drop()  # NaN/Infinity: refused at the PARSE door, before any slot exists
+        if isinstance(parsed, int) and not isinstance(parsed, bool):
+            continue  # an int is the exception itself — its BOUND is (b), not this loop
+        path = write_lines(tmp / f"mark-shape-{i}.jsonl", raw_mark("high", value), entry_line(id="fu1"))
+        code, out, err = run(["--file", str(path), "list"])
+        check(code == 1,
+              f"the high-water mark ACCEPTED {name} (exit {code}) — the exception is that it is an `int`, "
+              f"and that is the whole of it. `dump()` writes `json.dumps` of an `int`; it can emit nothing "
+              f"else here:\n{out}")
+        # A shape refused at the PARSE door (`NaN`) is named by ITS needle — the line dies before a slot
+        # exists, so the refusal cannot name the mark. Everything else is the MARK's refusal, and says so.
+        expected = "high-water mark" if needle is NAMES_THE_FIELD else needle
+        check(expected in err,
+              f"the refusal of {name} in the mark does not name {expected!r} — it was refused, but at the "
+              f"wrong door, or for a reason that is not this one: {err!r}")
+        check("Traceback" not in err,
+              f"{name} in the mark CRASHED the accessor instead of being refused — a traceback is not a "
+              f"refusal:\n{err}")
+
+    # (b) THE INTS — bounded to what `dump()` can write, DERIVED from `ID_MAX` and from the entries present.
+    #     `top` is read off the store rather than typed, so the bound is checked against the real one.
+    entries = [entry_line(id=f"fu{i}") for i in (1, 2, 3)]
+    top = 3
+    for high, loads_ok, why in (
+        (top, True, "the mark `dump()` writes for a store whose highest id is the mark"),
+        (top + 1, True, "a mark ABOVE the entries — an id was handed out and its entry DELETED"),
+        (ID_MAX, True, "the CEILING: `ID_RE` spells this id, so an `add` really could have handed it out"),
+        (top - 1, False, "a mark BELOW the highest id present — `high_water()` is a `max`, it writes no such "
+                         "mark, and the next write would SILENTLY RAISE it"),
+        (0, False, "a present mark of 0 — `dump()` writes NO mark line for a store that handed out nothing"),
+        (-1, False, "a negative mark — an id count that never happened"),
+        (ID_MAX + 1, False, "one past the CEILING — `next_id()` would emit a MALFORMED id, so no `add` can "
+                            "ever have handed this one out"),
+        (10 ** (ID_MAX_DIGITS + 2), False, "far past the ceiling — the shape that was REPRODUCED: it LOADED, "
+                                           "and then `add` emitted a malformed id"),
+    ):
+        path = write_lines(tmp / f"mark-{high}.jsonl",
+                           json.dumps({"type": SEQ_TYPE, "high": high}), *entries)
+        before = path.read_text()
+        code, out, err = run(["--file", str(path), "list"])
+        if loads_ok:
+            check(code == 0,
+                  f"a mark of {high} was REFUSED (exit {code}) — but the write door EMITS it: {why}. The "
+                  f"bound is now NARROWER than what `dump()` writes, which brick this store on its own "
+                  f"output: {err!r}")
+            continue
+        check(code == 1,
+              f"a mark of {high} LOADED (exit {code}) — {why}. The exception is an `int`, not ANY int:\n{out}")
+        check("high-water mark" in err, f"the refusal of a mark of {high} does not name it: {err!r}")
+        check("Traceback" not in err, f"a mark of {high} CRASHED instead of being refused:\n{err}")
+        # …AND THE REFUSAL IS TOTAL. The too-low mark's damage was never the load: it was the WRITE that
+        # followed, which SILENTLY RAISED the mark to the highest id present — the store inventing a value on
+        # disk, in the one file nothing can rebuild. Exactly the `null`-rewritten-as-`-` coercion, on the
+        # meta record. No command may touch a store this door refused.
+        for argv in (["set", "--id", "fu1", "--title", "new"], [*add_argv()], ["table"]):
+            run(["--file", str(path), *argv])
+            check(path.read_text() == before,
+                  f"a store whose mark is {high} was REWRITTEN by `{argv[0]}` — the accessor SILENTLY "
+                  f"repaired a mark no write door produced, on disk, in the one store that has no other copy")
+
+    # …and the oversized mark is refused AT THE LOAD DOOR, naming the MARK — not downstream by `dump()`
+    # choking on the malformed id `next_id()` built out of it. That is the whole reproduction: `list` used to
+    # exit 0 on this store and `add` then produced `fu1000000000000000001`.
+    path = write_lines(tmp / "oversized.jsonl",
+                       json.dumps({"type": SEQ_TYPE, "high": ID_MAX + 1}), entry_line(id="fu1"))
+    code, out, err = run(["--file", str(path), *add_argv()])
+    check(code == 1, f"`add` RAN on a store whose mark no `add` could have written (exit {code}):\n{out}")
+    check("malformed id" not in err,
+          f"the oversized mark was caught only when `dump()` refused the MALFORMED ID built out of it — the "
+          f"store LOADED, so every reader took the mark as a fact and the bound is not at the load door "
+          f"where it belongs: {err!r}")
+
+    # (c) AND THE ID RULE SURVIVES THE BOUND, at the one place it could not: the CEILING. A store at `ID_MAX`
+    #     is FULL — `next_id()` has nowhere to go — so `add` must REFUSE it cleanly and leave the store
+    #     alone. It must never wrap, never reuse `fu{ID_MAX}`, and never write a malformed id.
+    full = write_lines(tmp / "full.jsonl", json.dumps({"type": SEQ_TYPE, "high": ID_MAX}),
+                       entry_line(id=f"fu{ID_MAX}"))
+    before = full.read_text()
+    code, out, err = run(["--file", str(full), "list"])
+    check((code, out) == (0, f"fu{ID_MAX}\n"), f"the store at the CEILING does not load (exit {code}): {err!r}")
+    code, out, err = run(["--file", str(full), *add_argv()])
+    check(code == 1, f"`add` on a FULL store exited {code} — the next id is unspellable:\n{out}")
+    check("Traceback" not in err, f"`add` on a FULL store CRASHED instead of refusing:\n{err}")
+    check(full.read_text() == before, "a REFUSED `add` on a full store rewrote it anyway")
+    check(not ID_RE.match(next_id(ID_MAX)),
+          f"`next_id(ID_MAX)` is {next_id(ID_MAX)!r}, which `ID_RE` accepts — then `ID_MAX` is not the "
+          f"ceiling at all and the bound derived from it is wrong")
+    check(ID_RE.match(f"fu{ID_MAX}") is not None,
+          f"`ID_MAX` ({ID_MAX}) is not itself a spellable id — the bound is derived from the wrong thing")
+
+    # 3. THE PLACEHOLDER EXCEPTION — bounded by what `dump()` writes for an UNSET optional, which is EXACTLY
+    #    `-`. Derived from `DEFAULTS`: the fields the placeholder is the unset value OF are the only ones that
+    #    may carry it, and in them EVERY OTHER spelling of blank is a value no door here emits.
+    #    `id` is NOT one of them, and it is not carved out either: it is excluded BECAUSE ITS OWN ACCEPT-SET
+    #    EXCLUDES IT. `DEFAULTS` carries a vestigial placeholder for it, but `ID_RE` refuses `-`, so `dump()`
+    #    can never put one there and no entry can carry one. An exception never reaches a slot whose own
+    #    accept-set already forbids it — and the complement loop below PROVES that rather than assuming it.
+    check(not ID_RE.match(PLACEHOLDER),
+          f"`ID_RE` accepts the placeholder {PLACEHOLDER!r} as an id — then an id really could be UNSET, and "
+          f"the placeholder exception reaches a slot this fixture excludes from it")
+    unset_fields = [f for f in FIELDS if DEFAULTS.get(f) == PLACEHOLDER and f != "id"]
+    check(unset_fields,
+          "NO field's unset value is the placeholder — `DEFAULTS` and this fixture have come apart, and the "
+          "loop below now asserts nothing")
+    for field in unset_fields:
+        path = write_lines(tmp / f"ph-{field}.jsonl", entry_line(**{"id": "fu1", field: PLACEHOLDER}))
+        code, _, err = run(["--file", str(path), "list"])
+        check(code == 0,
+              f"an UNSET optional {field!r} — the placeholder {PLACEHOLDER!r}, which is exactly what "
+              f"`dump()` writes there — was REFUSED (exit {code}): {err!r}. The load door now refuses this "
+              f"store's OWN OUTPUT.")
+        for blank in BLANKS:
+            if blank == PLACEHOLDER:
+                continue
+            path = write_lines(tmp / f"blank-{field}-{BLANKS.index(blank)}.jsonl",
+                               entry_line(**{"id": "fu1", field: blank}))
+            code, out, err = run(["--file", str(path), "list"])
+            check(code == 1,
+                  f"an OPTIONAL {field!r} carrying {blank!r} LOADED (exit {code}) — it SHOWS nothing and it "
+                  f"is not the {PLACEHOLDER!r} that MEANS unset, so no write door here produced it "
+                  f"(`taken()` refuses every blank, `dump()` writes only the placeholder). It reads as a "
+                  f"value to nothing and as a set field to everything:\n{out}")
+            check(field in err, f"the refusal of a blank {field!r} does not name the field: {err!r}")
+    # …and a field the placeholder is NOT the unset value of cannot hold one AT ALL — the exception does not
+    # spread. (A required field's `-` is a RUMOR; an id of `-` is malformed; a state of `-` is no state.)
+    for field in sorted(set(FIELDS) - set(unset_fields)):
+        path = write_lines(tmp / f"noph-{field}.jsonl", entry_line(**{"id": "fu1", field: PLACEHOLDER}))
+        code, out, _ = run(["--file", str(path), "list"])
+        check(code == 1,
+              f"{field!r} carrying the placeholder {PLACEHOLDER!r} LOADED (exit {code}) — the placeholder is "
+              f"what an UNSET OPTIONAL field holds, and this field is not one of those:\n{out}")
+
+    # 4. THE CONVERSE. A load door that refused every mark would satisfy everything above — so a store this
+    #    accessor WROTE ITSELF, mark and all, must still read back, and its mark must still be the one that
+    #    stops a deleted id from being handed out again.
+    real = tmp / "real.jsonl"
+    ids = seed(real, 3)
+    drive_to(real, ids[-1], "in-pr")
+    code, _, err = run(["--file", str(real), "merged", "--id", ids[-1]])
+    check(code == 0, f"merged exited {code}: {err!r}")
+    written = [json.loads(line) for line in real.read_text().splitlines()]
+    marks = [r["high"] for r in written if r["type"] == SEQ_TYPE]
+    check(marks == [3],
+          f"the store this accessor wrote carries the mark(s) {marks} — the fixture's model of what `dump()` "
+          f"emits has come apart from what it really emits, and every bound above is derived from that model")
+    code, out, err = run(["--file", str(real), "list"])
+    check(code == 0 and out.split() == ids[:-1],
+          f"a store this accessor WROTE does not load back (exit {code}): {out!r} {err!r}")
+    check(seed(real)[0] == "fu4",
+          "the mark this accessor wrote no longer stops a DELETED id from being handed out again")
 
 
 def subcommands(parser: argparse.ArgumentParser) -> "dict[str, argparse.ArgumentParser]":
@@ -3149,7 +3502,8 @@ def t_store_is_validated(tmp: Path) -> None:
     supposed to be GONE, and a store holding one is a store something wrote wrong.
 
     The id high-water mark is data, so it is checked where data enters, on exactly those terms: a SECOND
-    mark, or one that is not a number, is a store this accessor did not write.
+    mark, or one that is not a number, is a store this accessor did not write. WHICH numbers it may be is
+    NOT restated here — it is `mark_error()`'s, and `exceptions-no-wider` is the fixture that pins it.
     """
     mark = json.dumps({"type": SEQ_TYPE, "high": 3})
     for name, lines, needle in (
@@ -3437,12 +3791,17 @@ def t_table_grid_integrity(tmp: Path) -> None:
     prints through the ledger's `escape_cell()`/`grid_lines()`, and it is checked by the LEDGER'S OWN
     ORACLE — the same parser, not a friendlier copy of it.
 
-    A BLANK hostile (`''`, `'   '`) is put ONLY in an OPTIONAL column, and that is not a gap — it is the rule
-    one layer up. A REQUIRED column cannot HOLD a blank: both doors refuse one (`same-validator`), so no
-    `table` can ever be asked to render one there, and a fixture that hand-wrote one would be testing a store
-    that cannot exist. The blank still goes through the grid — through `published`, which may legitimately
-    carry nothing — so the empty-cell rendering stays covered. Derived from `is_blank()` and `REQUIRED`, so a
-    field moved into REQUIRED tomorrow moves to the safe value here with no edit.
+    A BLANK hostile (`''`, `'   '`) is put in NO column at all, and that is not a gap — it is the rule one
+    layer up. NO column of this store can HOLD a blank: a REQUIRED one carries something or both doors refuse
+    the entry (`same-validator`), and an OPTIONAL one carries the PLACEHOLDER or something non-blank and
+    NOTHING ELSE (`exceptions-no-wider` — `dump()` writes exactly `-` for an unset field, and `taken()`
+    refuses every blank a caller could hand in). So `table` can never be asked to render a blank cell in ANY
+    column, and a fixture that hand-wrote one would be pinning a store that cannot exist. This fixture used
+    to put one in `published` "which may legitimately carry nothing" — that premise was the UNBOUNDED
+    placeholder exception, restated in a fixture, and it is what let a blank optional field load. The hostile
+    CHARACTERS still go through the grid, wrapped in visible ones; what is dropped is only the claim that a
+    cell can be empty. Derived from `is_blank()`, so a spelling of blank added tomorrow is handled here with
+    no edit.
 
     AND A HOSTILE THIS STORE CANNOT HOLD AT ALL IS SKIPPED, on exactly the same terms one layer further out.
     `unholdable()` is the predicate: a NUL cannot come from any write door (`argv` cannot carry one) and the
@@ -3457,8 +3816,8 @@ def t_table_grid_integrity(tmp: Path) -> None:
         if unholdable(hostile) is not None:
             continue  # no column of this store can hold it — see above, and `load-takes-only-writable`
         cells = {f: hostile for f in ("title", "evidence", "published")}
-        if is_blank(hostile):  # …then a REQUIRED column may not hold it: keep the characters, drop the blank
-            cells.update({f: f"x{hostile}x" for f in cells if f in REQUIRED})
+        if is_blank(hostile):  # …then NO column may hold it: keep the characters, drop the blankness
+            cells = {f: f"x{hostile}x" for f in cells}
         path = write_lines(tmp / f"g-{name}.jsonl",
                            entry_line(id="fu1", **cells), entry_line(id="fu2", title="benign"))
         for fields in (("id", "title", "state"), ("title",), ("published", "id")):
@@ -3777,6 +4136,7 @@ CASES = [
     ("required-not-editable-away", "a REQUIRED field cannot be BLANKED through `set` — the rule holds where an entry CHANGES, not only where it was made", t_required_cannot_be_edited_away),
     ("same-validator", "the WRITE door and the LOAD door are ONE function — what either refuses, both refuse, for EVERY required field and EVERY spelling of blank", t_both_doors_run_one_validator),
     ("load-takes-only-writable", "the LOAD door accepts ONLY what a write door could have produced — every other JSON shape, in EVERY field, is REFUSED and never silently dropped", t_the_load_door_takes_only_what_a_write_door_can_produce),
+    ("exceptions-no-wider", "EVERY DECLARED EXCEPTION to strings-only accepts EXACTLY what the write door can emit there and no wider — the id mark is an `int`, not ANY int; an unset optional is the placeholder, not ANY blank; and a slot nobody bounded goes RED naming itself", t_every_declared_exception_is_no_wider_than_the_write_door),
     ("no-unreadable-store", "no write door can write a store `load()` refuses — every door shares ONE blank predicate", t_no_door_writes_a_store_that_will_not_load),
     ("every-value-validated", "EVERY value the CLI takes, at EVERY write door, passes BOTH of the store's predicates — a value that carries nothing, and one the store cannot hold at all, are refused; a flag that skips either cannot exist", t_every_value_the_cli_takes_is_validated),
     ("nothing-accepted-is-dropped", "EVERY flag of EVERY subcommand is USED — a value the CLI accepts and discards cannot exist", t_no_door_takes_a_value_it_does_not_use),
