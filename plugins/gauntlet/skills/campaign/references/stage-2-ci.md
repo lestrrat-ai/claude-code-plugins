@@ -580,10 +580,16 @@ TOKEN's grants** — so a fine-grained token owned by an admin reads `admin: tru
 `Administration: read`. **A rule keyed on that probe declares "proven unprotected" on a branch it simply
 cannot see.**
 
-Two reads, **both needing only Metadata**. **BOTH are mandatory** — neither can see what the other sees:
+Two reads, and **they do NOT need the same permission** — name them per endpoint, because a token
+provisioned for only one of them fails the other on a **private** repo, the required set reads `unknown`,
+and `unknown` can never go green: **`GET /repos/{o}/{r}/branches/{b}` needs `Contents: read`**;
+**`GET /repos/{o}/{r}/rules/branches/{b}` needs `Metadata: read`** (GitHub REST docs, "Get a branch" /
+"Get rules for a branch"). **BOTH are mandatory** — neither can see what the other sees:
 
 ```sh
-# (a) CLASSIC branch protection — AND the field that disambiguates its absence.
+# (a) CLASSIC branch protection — AND the field that disambiguates its absence. Needs `Contents: read`
+#     (NOT Metadata — on a private repo a Metadata-only token 404s here and the required set reads
+#     `unknown`, which can never go green).
 #     `.protection.enabled` tells you whether classic protection EXISTS, so you never have to guess
 #     what a 404 from /branches/<b>/protection meant. `.checks[]` carries the app binding; `.contexts`
 #     is the same set WITHOUT it, and is deprecated — read `.checks[]`, never `.contexts`.
@@ -595,6 +601,7 @@ gh api "repos/<owner>/<repo>/branches/<base>" --jq '
             | {context: .context, app: ((.app_id // "-") | tostring)}]}'
 
 # (b) RULESETS — the rules actually in force on the branch. The CLASSIC endpoint CANNOT SEE THESE.
+#     Needs `Metadata: read`.
 gh api "repos/<owner>/<repo>/rules/branches/<base>" --jq '
   [.[] | select(.type=="required_status_checks")
        | .parameters.required_status_checks[]
