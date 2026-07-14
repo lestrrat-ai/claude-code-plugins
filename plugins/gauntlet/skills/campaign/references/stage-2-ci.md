@@ -171,7 +171,11 @@ gh api --paginate --slurp "repos/<owner>/<repo>/commits/<head_sha>/status" | jq 
 #     StatusContexts) must be COVERED by family (2); (b) every rollup entry family (1)/(2) DOES report must
 #     AGREE with it about the check's state. The tool does both across the fetches (`build_snapshot`); the
 #     rules are the FETCH bullets on `StatusContext` and on AGREEMENT, below.
-gh pr view <pr> --json statusCheckRollup,headRefOid | jq -c '
+#     `--repo` IS NOT OPTIONAL. `gh pr view <pr>` with no repository resolves the PR IN THE CURRENT
+#     CHECKOUT — so a command without it asks whatever repo you are standing in, which is the one thing this
+#     fetch must never do. (1) and (2) name the repo in the URL; this one names it here, and `ci-status.py`
+#     REFUSES any `gh` argv that names no repository at all.
+gh pr view <pr> --repo <owner>/<repo> --json statusCheckRollup,headRefOid | jq -c '
   (.statusCheckRollup) as $all
   | if ($all|type) != "array"
     then error("rollup: statusCheckRollup is not a list — an EMPTY rollup is a FACT GitHub can state, a
@@ -357,7 +361,7 @@ printf '{"row":"header","sha":"%s"}\n' "<head_sha>" > "$tmp"
 # RUBBER STAMP this design exists to prevent: it would say "queried" about a fetch that died.
 gh api --paginate --slurp ".../check-runs" | jq -c '...(1) above...' >> "$tmp" || exit 1
 gh api --paginate --slurp ".../status"     | jq -c '...(2) above...' >> "$tmp" || exit 1
-gh pr view <pr> --json statusCheckRollup,headRefOid | jq -c '...(3) above...' >> "$tmp" || exit 1
+gh pr view <pr> --repo <owner>/<repo> --json statusCheckRollup,headRefOid | jq -c '...(3) above...' >> "$tmp" || exit 1
 
 mv "$tmp" "<rundir>/ci-<pr>-<head_sha>.txt"
 ```

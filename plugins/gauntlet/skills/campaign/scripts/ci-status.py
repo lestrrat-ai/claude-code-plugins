@@ -404,6 +404,11 @@ RULES = {
     "checkruns-pages-are-an-array": "a `--slurp` that did not yield an ARRAY is a fetch we cannot read — never rows to iterate",
     "status-pages-are-an-array": "the same, for the family /check-runs cannot see",
     "rollup-is-an-object": "`gh pr view --json` returns an OBJECT — anything else is a response we cannot read",
+    # ANYTHING THIS TOOL ACCEPTS, IT MUST USE OR REFUSE. `--repo` was accepted and honoured by TWO of the
+    # three fetchers: the REST pair put it in the URL, and the rollup ran `gh pr view <pr>` — which resolves
+    # the PR in the CURRENT CHECKOUT. The rule is not "the rollup passes --repo" (that is the instance); it
+    # is that NO fetcher is handed the repo at all, so a new one CANNOT forget it.
+    "every-fetch-is-repo-scoped": "every GitHub call NAMES THE REPOSITORY — an argv that does not is REFUSED, so a fetcher cannot silently run against the checkout it happens to be standing in",
     # THE SEAM ITSELF, and the CLI. `gh_fetch` is the ONLY code path that talks to GitHub, and every fixture
     # REPLACES it — so nothing executed its rules. `seam_cases` drives them against a local process.
     "gh-exit-is-checked": "a NON-ZERO exit from `gh` is a FAILED FETCH — the doc's shell version needs pipefail to learn this",
@@ -424,6 +429,7 @@ RULES = {
     "doc-decide-bullets-found": "a DECIDE section listing ZERO outcome bullets FAILS — it cannot be checked, so it does not pass",
     "doc-fetch-spec-complete": "a FETCH command MISSING from the doc FAILS — LOAD-BEARING: without it the spec is executed against the commands that happen to remain, and reports `ok`",
     "doc-fetch-spec-unique": "TWO fetch commands for one source FAILS — with two copies, `doc-check` executes one and the reader may follow the other",
+    "doc-rollup-repo-scoped": "a rollup fetch in the doc with NO `--repo` FAILS — `gh pr view <pr>` resolves the PR in the CURRENT CHECKOUT, and a reader following that copy asks the wrong repository",
     "doc-derive-required-set": "a COPY of the derive command that drops `--required-set` FAILS — the recap is where a merge-deciding flag goes to die",
     "doc-derive-copies-found": "finding ZERO copies of the derive command FAILS — the sweep would otherwise pass by having swept nothing",
     "doc-cross-source-stated": "a CROSS-SOURCE rule the fetch spec CANNOT express must be STATED IN THE DOC — `SPEC_CANNOT_EXPRESS` is the only list of rules `doc-check` does not execute, so a rule that drops out of the doc drops out of EVERYTHING",
@@ -502,6 +508,74 @@ def check_required_set(spec: str):
 # the code under test below is the SAME code that runs against GitHub, not a re-implementation of it.
 
 Fetch = Callable[[str, "list[str]"], object]
+
+# --- WHICH REPOSITORY IS THIS PR IN? ONE ANSWER, ONE PLACE, AND EVERY FETCH GOES THROUGH IT --------
+#
+# **A FLAG THE PARSER ACCEPTS AND THE WORK IGNORES IS A LIE.** `--repo` was honoured by the two REST fetches
+# (which interpolate it into the URL) and SILENTLY DROPPED by the rollup, which ran `gh pr view <pr>` — a
+# command that resolves the PR IN THE CURRENT CHECKOUT. So the tool worked only against the repository you
+# happened to be standing in: `derive --repo cli/cli --pr 13842` came back `unusable` ("Could not resolve to
+# a PullRequest"), and the flag that said otherwise was a lie. It failed CLOSED, which is why it was never a
+# false green — but a tool must USE what it ACCEPTS, or REFUSE it.
+#
+# Fixing the one argv would fix the INSTANCE. This fixes the CLASS: **no fetcher is handed the repo at all.**
+# A fetcher writes `REPO_SLOT` where the repository goes, and `repo_scoped()` — the ONE wrapper every fetch
+# passes through — substitutes it and then REFUSES any argv that does not name the repo. A new fetcher that
+# forgets is not "unlikely to happen"; it CANNOT reach GitHub, because the seam it must go through will not
+# let an unscoped command past. `check_repo_scoping()` asserts the same thing over the argv the code REALLY
+# ISSUES (`code_argv`, derived from the running code — never a hand-written list, which is how a list goes
+# stale the day a fetcher is added), and `[argv] a fetcher that forgets the repo` drives the refusal.
+REPO_SLOT = "{repo}"
+
+
+def require_repo_scoped(source: str, repo: str, argv: list[str]) -> list[str]:
+    """EVERY GitHub call NAMES THE REPOSITORY IT IS ABOUT, in one of the only two ways `gh` has of saying it:
+
+      * `gh api` — the repository is a PATH SEGMENT (`repos/<owner>/<name>/…`);
+      * every other subcommand — the repository is `--repo <owner>/<name>`.
+
+    Anything else is a command that will resolve against THE CURRENT CHECKOUT, which is not a repository the
+    caller ever named. That is not a fetch about this PR; it is a fetch about wherever this process happens
+    to be running, and the answer it brings back is about the wrong repository (or, as here, about no PR at
+    all). Refused — the caller asked about `repo`, and a fetch that cannot ask about `repo` derives nothing.
+    """
+    flag = argv.index("--repo") + 1 if "--repo" in argv else 0
+    # MUTATE:every-fetch-is-repo-scoped:return argv
+    if not (any(f"repos/{repo}/" in a for a in argv) or argv[flag:flag + 1] == [repo]):
+        raise FetchError(
+            f"{source}: `{' '.join(argv)}` is NOT scoped to {repo!r} — it would resolve against whatever "
+            f"checkout this process is standing in, which is not the repository the caller named. A `gh api` "
+            f"call carries the repo in its PATH (`repos/{repo}/…`); every other `gh` subcommand carries it as "
+            f"`--repo {repo}`. A fetch that cannot say WHICH repository it is about is not evidence about "
+            f"this PR — and a flag this tool ACCEPTS it must USE, or REFUSE."
+        )
+    return argv
+
+
+def repo_scoped(fetch: Fetch, repo: str) -> Fetch:
+    """THE ONE PLACE THE REPOSITORY ENTERS A `gh` COMMAND. Wrapped ONCE, in `build_snapshot`, around the seam
+    every fetcher already goes through — so a fetcher cannot opt out of it, and cannot be handed the repo by
+    any other route: none of them takes it as an argument any more.
+    """
+    def scoped(source: str, argv: list[str]) -> object:
+        return fetch(source, require_repo_scoped(source, repo, [a.replace(REPO_SLOT, repo) for a in argv]))
+    return scoped
+
+
+def check_repo_scoping(repo: str = "o/r") -> str:
+    """EVERY GitHub call THE CODE ACTUALLY MAKES, asserted repo-scoped — the fetcher list DERIVED FROM THE
+    CODE (`code_argv` records the argv of every fetch `build_snapshot` issues), never written down here.
+
+    A hand-written list of fetchers is a list that is complete on the day it is written and wrong on the day
+    the next fetcher is added — which is the day it needed to be right. This one covers a new fetcher the
+    moment it exists, and it asserts on the ARGV, not on the verdict: a test that reads only the RESULT
+    cannot tell "the right repository" from "the repository I happened to be standing in", which is exactly
+    how a `--repo` the rollup ignored survived a whole suite of green fixtures.
+    """
+    argv = code_argv()
+    for source, one in argv.items():
+        require_repo_scoped(source, repo, one)
+    return f"every GitHub call names the repo {repo}: {', '.join(sorted(argv))}"
 
 
 def gh_fetch(source: str, argv: list[str]) -> object:
@@ -584,14 +658,16 @@ def require_complete(source: str, pages: object, collected: int) -> None:
         )
 
 
-def fetch_check_runs(fetch: Fetch, repo: str, head_sha: str) -> tuple[list[dict], dict]:
+def fetch_check_runs(fetch: Fetch, head_sha: str) -> tuple[list[dict], dict]:
     """(1) CHECK RUNS — pinned to <head_sha> BY THE URL. Identity AND verdict in one row.
 
     `--paginate` is MANDATORY (`/check-runs` pages at 30) and `--slurp` collects every page into ONE array,
     which is what lets the marker's `count` be the total ACROSS pages rather than the last page's.
+
+    THE REPOSITORY IS `REPO_SLOT`, NOT AN ARGUMENT — see `repo_scoped`. No fetcher is trusted to remember it.
     """
     pages = fetch("check-runs", [
-        "gh", "api", "--paginate", "--slurp", f"repos/{repo}/commits/{head_sha}/check-runs",
+        "gh", "api", "--paginate", "--slurp", f"repos/{REPO_SLOT}/commits/{head_sha}/check-runs",
     ])
     # A `--slurp` that did not yield an ARRAY is a response we cannot read — and the row loop below would
     # then iterate an object's KEYS and blow up on the first `.get`, which is a CRASH where a verdict was
@@ -649,7 +725,7 @@ def fetch_check_runs(fetch: Fetch, repo: str, head_sha: str) -> tuple[list[dict]
     return rows, marker
 
 
-def fetch_statuses(fetch: Fetch, repo: str, head_sha: str) -> tuple[list[dict], dict]:
+def fetch_statuses(fetch: Fetch, head_sha: str) -> tuple[list[dict], dict]:
     """(2) COMMIT STATUSES — the legacy family, which (1) CANNOT SEE.
 
     A failing Jenkins/CircleCI commit status is genuinely INVISIBLE to `/check-runs`. Read only one family
@@ -665,7 +741,7 @@ def fetch_statuses(fetch: Fetch, repo: str, head_sha: str) -> tuple[list[dict], 
     passed. An absence read as a verdict is a lie in both directions, so `.state` is not read here at all.
     """
     pages = fetch("status", [
-        "gh", "api", "--paginate", "--slurp", f"repos/{repo}/commits/{head_sha}/status",
+        "gh", "api", "--paginate", "--slurp", f"repos/{REPO_SLOT}/commits/{head_sha}/status",
     ])
     # Same rule, same reason, on the family that carries the failing Jenkins status.
     # MUTATE:status-pages-are-an-array:pass
@@ -751,8 +827,16 @@ def fetch_rollup(fetch: Fetch, pr: str) -> tuple[list[dict], dict, object, list[
     the head has moved, the snapshot is a true report about a commit that is no longer this PR's, and it
     FAILS CLOSED (never green, never red). The purity of the verifier is untouched; the PRODUCER is the only
     one that can see the head move, and so it is the producer that must refuse.
+
+    **`--repo` IS NOT OPTIONAL HERE, AND ITS ABSENCE IS THE DEFECT THIS FUNCTION SHIPPED.** `gh pr view <pr>`
+    with no repository resolves the PR IN THE CURRENT CHECKOUT — so `--repo` was honoured by the two REST
+    fetches above (they interpolate it into the URL) and thrown away by THIS one, and the tool silently
+    worked only against the repo it happened to be standing in. It is `REPO_SLOT` now, like every other
+    fetch, and `repo_scoped` REFUSES an argv that does not name the repository (see `require_repo_scoped`).
     """
-    data = fetch("rollup", ["gh", "pr", "view", pr, "--json", "statusCheckRollup,headRefOid"])
+    data = fetch("rollup", [
+        "gh", "pr", "view", pr, "--repo", REPO_SLOT, "--json", "statusCheckRollup,headRefOid",
+    ])
     # `gh pr view --json` returns an OBJECT. Anything else is a response we cannot read, and reading
     # `.get("statusCheckRollup")` off it would crash — no verdict at all, which is the one outcome this
     # vocabulary has no word for. Pinned by `rollup-not-an-object.json`; it was pinned by nothing.
@@ -883,7 +967,12 @@ def build_snapshot(fetch: Fetch, repo: str, pr: str, head_sha: str) -> tuple[lis
     `head_sha`). Every EVIDENCE row and every MARKER carries what GITHUB said. Two independent sources, which
     is the ONLY reason comparing them can tell you anything: build the check out of your own input and it
     passes by construction, including on a snapshot fetched for the wrong commit.
+
+    AND THE REPOSITORY IS BOUND ONCE, HERE, TO THE SEAM ITSELF — never handed to a fetcher (`repo_scoped`).
+    A fetcher that forgot it ran against the CURRENT CHECKOUT and nothing noticed; now there is nothing to
+    forget, and an argv that does not name the repository cannot get past this line.
     """
+    fetch = repo_scoped(fetch, repo)
     rows: list[dict] = [{"row": "header", "sha": head_sha}]
     meta: dict = {"head_sha_now": None}
 
@@ -900,10 +989,10 @@ def build_snapshot(fetch: Fetch, repo: str, pr: str, head_sha: str) -> tuple[lis
     # closed, while the check-runs call — pinned BY URL to the ledger's now-superseded sha — happily returns
     # the OLD head's green runs. Two snapshots of two different moments, spliced into one GREEN verdict about
     # a commit that is no longer the PR's head. `head-moves-mid-fetch.json` is that push, recorded.
-    # MUTATE:head-read-last:(witnesses, ru_marker, head_now, status_rollup, run_rollup), (runs, cr_marker), (statuses, st_marker) = fetch_rollup(fetch, pr), fetch_check_runs(fetch, repo, head_sha), fetch_statuses(fetch, repo, head_sha)
+    # MUTATE:head-read-last:(witnesses, ru_marker, head_now, status_rollup, run_rollup), (runs, cr_marker), (statuses, st_marker) = fetch_rollup(fetch, pr), fetch_check_runs(fetch, head_sha), fetch_statuses(fetch, head_sha)
     (runs, cr_marker), (statuses, st_marker), (witnesses, ru_marker, head_now, status_rollup, run_rollup) = (
-        fetch_check_runs(fetch, repo, head_sha),
-        fetch_statuses(fetch, repo, head_sha),
+        fetch_check_runs(fetch, head_sha),
+        fetch_statuses(fetch, head_sha),
         fetch_rollup(fetch, pr),
     )
     rows += runs + [cr_marker] + statuses + [st_marker] + witnesses + [ru_marker]
@@ -1477,16 +1566,64 @@ def jq_rows(filt: str, response: object) -> list[dict]:
 
 
 def code_rows(source: str, fx: dict) -> list[dict]:
-    """The rows + marker the CODE's producer builds from that same recorded response, or its FetchError."""
-    fetch = fixture_fetch(fx)
+    """The rows + marker the CODE's producer builds from that same recorded response, or its FetchError.
+
+    Through `repo_scoped`, exactly as `build_snapshot` drives them: a fetcher is never called with a raw
+    seam anywhere, or the one path this check exercises would be a path production does not take.
+    """
+    fetch = repo_scoped(fixture_fetch(fx), "o/r")
     head_sha = fx.get("head_sha", FIXTURE_SHA)
     if source == "check-runs":
-        rows, marker = fetch_check_runs(fetch, "o/r", head_sha)
+        rows, marker = fetch_check_runs(fetch, head_sha)
     elif source == "status":
-        rows, marker = fetch_statuses(fetch, "o/r", head_sha)
+        rows, marker = fetch_statuses(fetch, head_sha)
     else:
         rows, marker, _head, _sc, _cr = fetch_rollup(fetch, fx.get("pr", "35"))
     return [*rows, marker]
+
+
+def check_gh_invocations(text: str, argv: dict[str, list[str]]) -> list[str]:
+    """EVERY COPY, ANYWHERE IN THE DOC, OF A `gh` COMMAND THIS TOOL ISSUES — against the argv the code really
+    issues. A recap is where a flag goes to die, and it has already happened here twice: a copy that dropped
+    `,headRefOid` (the moved-head rule's only input), and — the defect that added the `--repo` check below —
+    a rollup fetch with NO REPOSITORY AT ALL, which resolves the PR in whatever checkout the reader is
+    standing in. Both are commands a reader can follow and get a WRONG ANSWER from, silently.
+
+    The repo appears in a `gh` command in exactly the two ways `require_repo_scoped` accepts, and the doc
+    writes them with placeholders (`repos/<owner>/<repo>/…`, `--repo <owner>/<repo>`) — so what is checked
+    here is that the command SAYS which repository it is about, not which one it names.
+
+    (`gh api` lines in the doc's PROMOTE recap ELIDE the URL — `".../check-runs"` — because the spec block
+    above owns it; they are pointers, and the flags they still spell out are still checked. A `gh pr view`
+    is never elided: it is written out in full every time, so `--repo` is required of every copy.)
+    """
+    problems: list[str] = []
+    json_fields = argv["rollup"][argv["rollup"].index("--json") + 1]
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("gh api") and ("/check-runs" in line or "/status" in line):
+            for flag in ("--paginate", "--slurp"):
+                if flag not in line:
+                    problems.append(f"a REST fetch in the doc omits {flag} — `{line[:60]}…`. The code passes "
+                                    f"it, and without it you parse page one and call it the whole set.")
+        if line.startswith("gh pr view") and "statusCheckRollup" in line:
+            got = re.search(r"--json\s+(\S+)", line)
+            if not got or got.group(1) != json_fields:
+                problems.append(
+                    f"a rollup fetch in the doc requests `--json {got.group(1) if got else '?'}` but the code "
+                    f"requests `--json {json_fields}` — `{line[:60]}…`. Drop `headRefOid` and the PR's current "
+                    f"head is unknown, which is the one input the MOVED-HEAD rule cannot do without."
+                )
+            # MUTATE:doc-rollup-repo-scoped:pass
+            if "--repo" not in line:
+                problems.append(
+                    f"a rollup fetch in the doc names NO REPOSITORY — `{line[:60]}…`. `gh pr view <pr>` with "
+                    f"no `--repo` resolves the PR in the CURRENT CHECKOUT, so a reader following this copy "
+                    f"derives a verdict about whatever repo they are standing in — or, for a PR that does "
+                    f"not exist there, about nothing at all. The code passes `--repo` (`require_repo_scoped` "
+                    f"refuses an argv without it); the doc must too, in EVERY copy."
+                )
+    return problems
 
 
 def check_fetch_spec(text: str) -> tuple[list[str], list[str]]:
@@ -1518,23 +1655,10 @@ def check_fetch_spec(text: str) -> tuple[list[str], list[str]]:
 
     # (1) + (2): the INVOCATION, and every restatement of it anywhere in the doc.
     json_fields = argv["rollup"][argv["rollup"].index("--json") + 1]
-    for line in text.splitlines():
-        line = line.strip()
-        if line.startswith("gh api") and ("/check-runs" in line or "/status" in line):
-            for flag in ("--paginate", "--slurp"):
-                if flag not in line:
-                    problems.append(f"a REST fetch in the doc omits {flag} — `{line[:60]}…`. The code passes "
-                                    f"it, and without it you parse page one and call it the whole set.")
-        if line.startswith("gh pr view") and "statusCheckRollup" in line:
-            got = re.search(r"--json\s+(\S+)", line)
-            if not got or got.group(1) != json_fields:
-                problems.append(
-                    f"a rollup fetch in the doc requests `--json {got.group(1) if got else '?'}` but the code "
-                    f"requests `--json {json_fields}` — `{line[:60]}…`. Drop `headRefOid` and the PR's current "
-                    f"head is unknown, which is the one input the MOVED-HEAD rule cannot do without."
-                )
+    problems += check_gh_invocations(text, argv)
     if not problems:
-        held.append(f"{'the gh invocations':32} every copy in the doc: --paginate --slurp, --json {json_fields}")
+        held.append(f"{'the gh invocations':32} every copy in the doc: --paginate --slurp, "
+                    f"--json {json_fields}, and REPO-SCOPED")
 
     # (3) THE FILTERS, EXECUTED. Same responses, same answers — or the doc is lying about what it refuses.
     compared = 0
@@ -1857,6 +1981,18 @@ SEAM_EXPECT = {
     # fixture with a broken one would fail as a BROKEN FIXTURE, not as the rule firing. The guard belongs
     # here, with the other operator errors: it is about what the CALLER handed us, never about the PR.
     "[seam] --required-set must parse": ("refused", "exit 2"),
+    # **THE ARGV IS THE SUBJECT HERE, AND IT HAS TO BE.** Every fixture answers from a recording and IGNORES
+    # the argv it was handed, so a fetch aimed at the WRONG REPOSITORY is invisible to all of them: the
+    # rollup ran `gh pr view <pr>` with no `--repo` for the life of this tool, every fixture stayed green,
+    # and the flag was a lie against any repo but the one the process was standing in. A test that asserts on
+    # the RESULT cannot see that. These two assert on the COMMAND.
+    #
+    # The first is the INVENTORY, and it is derived from the CODE (`code_argv` — every fetch `build_snapshot`
+    # actually issues), so a fetcher added tomorrow is covered the day it is added, not the day someone
+    # remembers to list it. The second is the DECISIVE one: a fetcher that FORGETS the repo — which is the
+    # defect, reconstructed — must be REFUSED by the seam, not merely absent from a list.
+    "[argv] every GitHub call is repo-scoped": ("accepted", "every GitHub call names the repo"),
+    "[argv] a fetcher that forgets the repo": ("refused", "is NOT scoped to"),
 }
 
 
@@ -1889,6 +2025,15 @@ def seam_cases(tmp: Path) -> dict[str, tuple[str, str]]:
     # back is a RequiredSet — degrading an unreadable spec to "nothing is required" is the false green the
     # required set exists to close, rebuilt inside its own parser's caller.
     case("[seam] --required-set must parse", lambda: check_required_set("build,test"))
+    # THE ARGV OF EVERY GitHub CALL, taken from the running code (`code_argv`) — never a list written here.
+    case("[argv] every GitHub call is repo-scoped", check_repo_scoping)
+    # AND THE ONE THAT PROVES THE CLASS IS CLOSED: a fetcher that forgets the repo, driven through the SAME
+    # seam every real fetcher goes through. It is the rollup's old argv, verbatim (`gh pr view <pr> --json
+    # …`), which is what makes this the defect itself rather than a model of it — and it must be REFUSED, not
+    # merely uncovered. If this case can be `accepted`, a new fetcher can silently query the wrong repo.
+    case("[argv] a fetcher that forgets the repo",
+         lambda: repo_scoped(lambda _s, argv: argv, "o/r")(
+             "a-new-fetcher", ["gh", "pr", "view", "35", "--json", "statusCheckRollup,headRefOid"]))
     doc_cases(tmp, case)  # the alarm's OWN guards — see DOC_EXPECT
     return out
 
@@ -1917,6 +2062,7 @@ DOC_EXPECT = {
     "[doc] the DECIDE section lists no outcomes": ("refused", "ZERO outcome bullets"),
     "[doc] a FETCH command is MISSING": ("refused", "check-runs"),
     "[doc] TWO fetch commands for one source": ("refused", "TWO fetch commands"),
+    "[doc] the rollup fetch drops --repo": ("refused", "names NO REPOSITORY"),
     "[doc] a derive copy drops --required-set": ("refused", "WITHOUT `--required-set`"),
     "[doc] NO copy of the derive command": ("refused", "ZERO copies"),
     # The one class of rule `doc-check` CANNOT execute against the doc, so the doc's own PROSE is the
@@ -1968,6 +2114,18 @@ def doc_cases(tmp: Path, case: Callable[[str, Callable[[], object]], None]) -> N
     case("[doc] TWO fetch commands for one source",
          lambda: parse_fetch_spec(text + '\n```sh\ngh api --paginate --slurp '
                                          '"repos/<owner>/<repo>/commits/<head_sha>/check-runs" | jq -c \'.\'\n```\n'))
+    # A ROLLUP COMMAND WITH NO REPOSITORY — the code's defect, in the doc's copy of it, and the reason this
+    # guard exists at all: the tool and the doc BOTH ran `gh pr view <pr>` bare, and both therefore asked the
+    # checkout the reader was standing in. Every OTHER doc guard passes on this text (the enums, the CLASSIFY
+    # tables, the DECIDE order and every `jq` filter are untouched) — so nothing else can notice it.
+    def invocations(t: str) -> object:
+        problems = check_gh_invocations(t, code_argv())
+        if problems:
+            raise DocError(problems[0])
+        return "every gh invocation in the doc is fine"
+
+    case("[doc] the rollup fetch drops --repo",
+         lambda: invocations(text.replace(" --repo <owner>/<repo>", "")))
 
     # THE DERIVE-COMMAND SWEEP, against a doc tree built HERE — the real one is correct, so nothing else can
     # ever execute these two guards. The bad copy is INVENTED and lives only in `tmp`: a stale command
