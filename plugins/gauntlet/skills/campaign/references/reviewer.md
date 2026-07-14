@@ -43,15 +43,35 @@ verdict.
 
 ### Running the default reviewer — Claude subagents
 
-The reviewer's only job is the **Stage 2a per-PR review pass**: spawn a **fresh** subagent to review
-the whole `origin/<base>...HEAD` diff with an adversarial pass, using the same plan / progress protocol
-— the per-pass `review-<pr>-<n>.plan.jsonl` and the **active launch attempt's** progress file
-(`review-<pr>-<n>.progress.jsonl`, or `review-<pr>-<n>.a<k>.progress.jsonl` after a relaunch;
-`stage-2-review-gate.md`) — planned units, then the unstructured adversarial sweep —
-and, on SATISFIED, the same `RESIDUAL-RISK: <area> — <why>` line immediately above exactly one final
-`VERDICT: SATISFIED` / `VERDICT: NOT SATISFIED` line. Each pass is a fresh, context-isolated subagent,
-so the review gate holds: for a two-pass tier, launch review 2 only after review 1 is SATISFIED, one
-at a time per PR (see Stage 2a-triage for the per-tier pass count).
+**THE DEFAULT REVIEWER RUNS THE SAME REVIEW PASS AS EVERY OTHER REVIEWER — the one `stage-2-review-gate.md`
+defines, whole.** "Claude subagents" names **who executes it**, and nothing else. It does not name a
+lighter contract, a shorter prompt, or an older protocol, and there is no such thing to name.
+
+**The contract is NOT restated here, and it must not be.** It has one owner
+(`stage-2-review-gate.md` — "The review gauntlet", "What the review is MEASURED AGAINST", "Findings are
+RECORDS, not prose", "Does this pass COUNT?"), and the one time this section carried its own summary of it,
+the summary went stale: it still described a plan/progress/verdict protocol with **no intent, no findings
+artifact and no gating rule**, months after those became the contract. Following it recreated exactly the
+open-ended review — *"is anything wrong with this code?"* — that the intent block exists to kill, **on the
+DEFAULT path**, which is the one that runs whenever no external reviewer is configured. A stale summary is
+worse than no summary: it is the version people actually read, and it is believed.
+
+**Dispatch it by taking the review prompt from `stage-2-review-gate.md` and substituting every placeholder
+exactly as the external-reviewer form does** — the intent block `<INTENT>` **verbatim**, both script paths
+(`<SCRIPT>`, `<FINDING-SCRIPT>`), `<worktree>`, `<base>`, `<pr>`, `<n>`, and the **active launch attempt's**
+`<review-output>` / `<progress-file>` / `<findings-file>`. **The prompt IS the contract**: whatever it
+requires of a `codex exec` reviewer it requires of a subagent — the same question ("does this PR achieve its
+stated Purpose…"), the same emit-only rule, the same anchored findings, the same `RESIDUAL-RISK` +
+single-`VERDICT:` ending. Its verdict is read and its artifacts verified by the same `review-pass.py verify`
+(Stage 2a, "Does this pass COUNT?"), so a pass dispatched without those inputs is not a lighter pass — it is
+an `unusable` one.
+
+Only the **transport** differs from the `codex exec` form: it is a **background subagent task** rather than
+a shell command, so there is no `-o` and no `< /dev/null`, and the subagent is told to **write its report to
+`<rundir>/<review-output>` itself** (same instructions, same output file). Run it on the **session model**
+(above) and give each pass a **fresh, context-isolated** subagent, so the gate holds: for a two-pass tier,
+launch review 2 only after review 1 is SATISFIED, one at a time per PR (see Stage 2a-triage for the per-tier
+pass count).
 
 ### Running an external reviewer (e.g. Codex CLI)
 

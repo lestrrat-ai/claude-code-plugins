@@ -188,12 +188,19 @@ Read stage refs only when that stage/action is due:
   actor named in its Threat model?** The open-ended question has **no fixed point** — it ran one PR through
   21 rounds of true, reproduced, irrelevant findings. **Non-goals BIND** the reviewer. The adversarial sweep
   **stays**, bounded by the threat model rather than by nothing (`references/stage-2-review-gate.md`).
+  **It is the PASS that is measured against it, not merely its findings:** `review-pass.py verify` loads
+  the intent for **every** pass — including one that found nothing, which is the case that merges a PR — so
+  a PR with no usable intent block earns **no verdicts at all**.
 - **A finding must ANCHOR, or it does not gate:** every finding is a record written by
   `scripts/emit-finding.py`, naming **either** the `## Purpose` line it defends (quoted verbatim) **or** the
   `writer` who can actually supply the bad input (a CLOSED enum). **A finding whose `purpose` is `-` AND
   whose `writer` is `driver-only`/`hand-edit`/`dev-time` is NON-GATING** — recorded as a follow-up, never a
   `NOT SATISFIED`, never a fix. Enforced in `review-pass.py`, not by good intentions. **Not every true
   statement about the code is a reason to block it**; a guard being incomplete is not, by itself, a defect.
+  **And the rule runs BOTH ways — it is an if and only if: `NOT SATISFIED` exactly when at least one GATING
+  finding stands.** A pass that records a gating finding and returns `SATISFIED` anyway is `unusable`, the
+  same as one that blocks with nothing to point at. A finding cannot be blocking in the artifact and
+  ignorable in the verdict.
 - **Verdicts go through `ledger.py verdict` — NEVER set `reviews_ok` by hand.** It bumps `review_rounds`
   (**monotone, never reset — the loop's only memory across fresh-context wakes**), applies the tally, and
   moves `ns_streak`, atomically. `set` cannot RAISE the tally and no door can write the counters at all.

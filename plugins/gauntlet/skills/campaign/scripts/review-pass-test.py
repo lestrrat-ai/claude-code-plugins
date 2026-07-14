@@ -395,15 +395,55 @@ class Tables:
                 PLAN, WORKED, [R43_11], INTENT, NS, OK, "1 gating finding(s)",
                 "…and the shape that IS allowed to block: one gating finding, and the pass counts as a real "
                 "NOT SATISFIED"),
-            "satisfied-needs-no-finding": (
-                PLAN, WORKED, [], None, SAT, OK, "0 gating finding(s)",
-                "a SATISFIED pass that found nothing records nothing — and needs no intent to do it. "
-                "'Finding nothing is a fine and common result' is the reviewer's own contract, and an "
-                "absent findings file is zero findings, not a defect"),
+            "satisfied-with-gating": (
+                PLAN, WORKED, [R43_11], INTENT, SAT, UNUSABLE, "GATING finding(s) STAND",
+                "**THE OTHER HALF OF THE IF AND ONLY IF, AND ONLY ONE HALF WAS EVER ENFORCED.** The contract "
+                "is 'NOT SATISFIED exactly when at least one GATING finding stands'. A pass that RECORDS the "
+                "round-11 false-green finding — round-added, `writer=network`, quoting the PR's purpose "
+                "verbatim — and then returns SATISFIED verified `ok`, and the gate merged a PR over a defect "
+                "its own reviewer had just written down. The reviewer decided this finding gates when it "
+                "chose that `writer` and that `purpose`; the verdict may not then ignore it"),
+            "satisfied-with-non-gating-is-fine": (
+                PLAN, WORKED, [R42_23], INTENT, SAT, OK, "0 gating finding(s)",
+                "…and the case that half must NOT catch: a SATISFIED pass carrying a NON-GATING finding is "
+                "the shape the whole design is FOR. The finding is recorded, it becomes a follow-up, and it "
+                "does not block. A rule that refused this would forbid the reviewer to report anything it "
+                "was not willing to block on — which is the 21-round spiral, re-armed"),
             "verdict-not-passed": (
                 PLAN, WORKED, [R42_23], INTENT, None, OK, "0 gating finding(s)",
                 "`--verdict` is OMITTED — the pass is still in flight, or the driver has not read the "
                 "report yet. The findings are still fully validated; only the coherence rule waits"),
+
+            # --- A PASS IS JUDGED AGAINST AN INTENT — WHATEVER IT FOUND, AND EVEN IF IT FOUND NOTHING ----
+            #
+            # THE HOLE THESE FOUR CLOSE: the intent used to be loaded only where a FINDING needed anchoring.
+            # A pass with no findings never went there, so nothing ever asked whether the intent existed —
+            # and a SATISFIED pass with no findings is the ORDINARY case, the one that MERGES A PR. The
+            # guard's input could simply be ABSENT on precisely the passes that count.
+            "satisfied-no-findings-file-no-intent": (
+                PLAN, WORKED, None, None, SAT, UNUSABLE, "THE RUN SKIPPED A STEP",
+                "**THE HOLE, IN ITS EXACT SHAPE: no findings file AT ALL, no intent file AT ALL, verdict "
+                "SATISFIED — and it verified `ok`.** `load_findings` returns `[]` for an absent artifact and "
+                "never reaches `load_intent`, so the one input the entire gate rests on was never even "
+                "looked for. This pass MERGES the PR, and it was measured against nothing"),
+            "satisfied-empty-findings-file-no-intent": (
+                PLAN, WORKED, [], None, SAT, UNUSABLE, "THE RUN SKIPPED A STEP",
+                "…and the same hole one byte over: the findings file EXISTS and is EMPTY. `check_findings_"
+                "file` returns early on zero records — correctly, there is nothing to anchor — and the "
+                "intent went unchecked through that door too. ABSENT and EMPTY are different bytes and the "
+                "same defect"),
+            "satisfied-no-findings-file-with-intent": (
+                PLAN, WORKED, None, INTENT, SAT, OK, "0 gating finding(s)",
+                "…and what must STILL pass, or the fix is a regression: a SATISFIED pass that found nothing, "
+                "on a PR that HAS an intent. 'Finding nothing is a fine and common result' is the reviewer's "
+                "own contract, and an absent findings file is zero findings, not a defect. What it is not is "
+                "a licence to skip the intent"),
+            "incomplete-no-intent": (
+                PLAN, [ident(), started("u01")], None, None, None, UNUSABLE, "THE RUN SKIPPED A STEP",
+                "the pass is still WORKING (u01 started, nothing done) and its PR has no intent — and it is "
+                "refused for the INTENT, not merely reported `incomplete`. A run that dispatched a reviewer "
+                "with nothing to measure it against is broken from the first wake, and the earliest verdict "
+                "that can say so is the one that should"),
 
             # --- the finding's own shape -------------------------------------------------------------
             "finding-bad-writer": (
@@ -455,7 +495,7 @@ class Tables:
 
             # --- the intent artifact itself ----------------------------------------------------------
             "intent-missing": (
-                PLAN, WORKED, [R43_11], None, NS, UNUSABLE, "no intent block at",
+                PLAN, WORKED, [R43_11], None, NS, UNUSABLE, "THE RUN SKIPPED A STEP",
                 "**A MISSING INTENT IS NOT AN EMPTY INTENT.** A finding cannot be anchored to a document "
                 "that is not there, and the alternative — treat every `purpose` as unverifiable and wave it "
                 "through — hands the reviewer a field it can write anything into. Adoption writes this file "
@@ -588,6 +628,13 @@ class Tables:
         self.FINDING_CLI_CASES = [
             (FINDINGS_FILE, FIND_OK, 0, '"writer":"network"',
              "the call the reviewer prompt makes — a finding that DEFENDS a stated purpose and names a real actor"),
+            (FINDINGS_FILE, FIND_OK, 0, "# GATING:",
+             "**AND THE TOOL SAYS SO, AT THE WRITE DOOR.** The same call, and what the reviewer is TOLD: "
+             "this finding ANCHORS, so it BLOCKS, so the verdict must be NOT SATISFIED while it stands. The "
+             "NON-GATING notice below has always existed so a follow-up could not become a block by "
+             "accident; this is its mirror, and the direction that actually merged a PR over a recorded "
+             "defect — `verify` refuses that pass, and this is where the reviewer learns the rule instead "
+             "of losing the pass to it fifteen minutes later"),
             (FINDINGS_FILE, ["--path", "scripts/followups.py", "--line", "1815", "--writer", "dev-time",
                              "--purpose", "-", "--repro", "I mutated EXCEPTIONS in memory and self_test() still exited 0",
                              "--fix", "bound the exception table"],
@@ -769,7 +816,14 @@ PASSING = ("ok", "exit0")
 MARKER_RE = re.compile(r"^(?P<indent>[ ]*)# MUTATE:(?P<rule>[a-z0-9-]+):(?P<weakening>.+?)\s*$")
 
 # The functions that ENFORCE the contract. Every enforcement point inside them must carry a marker.
-# `evaluate` is not one: it MAPS an exception to a verdict; it decides nothing.
+#
+# `evaluate` is NOT one, and it is the interesting exclusion: it RAISES nothing and REFUSES nothing — it
+# composes the read side and maps whatever a rule raised onto a verdict. (Its `return UNUSABLE, str(exc)` is
+# that MAPPING, not a rule; listing `evaluate` here would demand a marker on it and mutate the mapping
+# itself, which pins nothing.) It does carry ONE marker — on the CALL that loads the intent for every pass —
+# and that is exactly what a marker is for: the mutation harness reads markers from the WHOLE source, so a
+# rule enforced by MAKING A CALL is mutated (the call is deleted) and must still be killed by a fixture. It
+# is `unmarked` below, not this tuple, that is scoped to the functions which refuse.
 RULE_FUNCTIONS = (
     "hook", "read_text", "parse_lines", "read_lines", "check_id", "check_unit", "plan_units", "load_plan",
     "check_event", "check_progress", "walk_progress", "check_identity_shape", "check_identity",
@@ -810,10 +864,18 @@ def write_intent(d: Path, text: "str | None" = INTENT) -> None:
 
 
 def build(tmp: Path, name: str, plan: "list[str] | None", progress: "list[str] | bytes",
-          findings: "list[str] | None" = None, intent: "str | None" = None) -> Path:
+          findings: "list[str] | None" = None, intent: "str | None" = INTENT) -> Path:
     """Write a fixture pass to disk RAW — bypassing every write-side check, because half these fixtures
     hold exactly what the write side would have refused. That is the point: the READ side must catch them
-    without being told how they got there. (`progress` as BYTES is how a fixture holds what is not text.)"""
+    without being told how they got there. (`progress` as BYTES is how a fixture holds what is not text.)
+
+    **THE INTENT SITS BESIDE EVERY FIXTURE UNLESS ONE SAYS OTHERWISE, AND THAT DEFAULT IS THE CONTRACT.**
+    `evaluate` judges EVERY pass against an intent block — a pass that found nothing is measured against
+    one exactly as a pass that found ten is — so a rundir without one is not a neutral fixture, it is a
+    rundir with a defect. Every case that is not ABOUT the intent gets a sound one, so that what the read
+    side says is about the thing the case is testing; a case that wants it absent, empty or malformed
+    passes it explicitly (`intent=None`, or the broken text itself).
+    """
     d = tmp / name
     d.mkdir(parents=True, exist_ok=True)
     path = d / PROGRESS_FILE

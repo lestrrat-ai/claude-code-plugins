@@ -174,14 +174,36 @@ For each `#PR` to adopt:
    - Who cannot: <...>
    ```
 
-   **A PR whose body already carries a usable intent block** (all three headings, at least one `## Purpose`
-   bullet) → **COPY IT VERBATIM** into `intent-<pr>.md`. Record `intent = stated@<iso>`.
+   **USABLE means the parser will take it — `review-pass.py` is the definition, and this is the same rule
+   stated for a human:** all three headings, **at least one `## Purpose` bullet, AND at least one
+   `## Threat model` bullet**. `## Non-goals` **may be empty** — and only that one may.
+
+   The asymmetry is not an oversight; it is where the risk is. The two ANCHORS are what a finding names, so
+   an empty one is a guard with no input: an empty `## Purpose` forces every finding to anchor to `-`, and
+   an empty `## Threat model` names **no actor** — so nothing a reviewer finds can be anchored to one, and
+   REAL, REACHABLE defects are then discharged as non-gating. That is this whole block running backwards.
+   An empty `## Non-goals` says *"we exclude nothing"*, which is a complete, honest answer and the one that
+   makes the review **hardest** — nobody can weaken a review by leaving it blank.
+
+   **A block that fails that test is NOT a usable intent, and copying it is worse than authoring one** — the
+   pass would be refused as `unusable` on the first `verify`, and the PR would sit there earning no verdicts.
+
+   **A PR whose body already carries a usable intent block** (by the test above) → **COPY IT VERBATIM** into
+   `intent-<pr>.md`. Record `intent = stated@<iso>`.
 
    **Otherwise the driver AUTHORS it** — from the PR's **diff, title and body** — writes it to
-   `intent-<pr>.md`, and **proceeds**. Record `intent = authored@<iso>`. Do **NOT** stop and ask the user:
+   `intent-<pr>.md`, and **proceeds**. Record `intent = authored@<iso>`. "Otherwise" includes a body that
+   carries the three headings but leaves an anchor empty: author the missing section rather than copying a
+   block the tool will refuse. Do **NOT** stop and ask the user:
    the driver can act here, so it acts. Only if it **cannot form an intent block at all** (an empty PR, a
    diff it cannot characterise) does it **refuse the adoption** and report that PR to the user, adopting the
    rest.
+
+   **The file is READ BY THE TOOL, on every pass.** `review-pass.py verify` loads `intent-<pr>.md` for
+   **every** pass it judges — whatever that pass found, and even when it found nothing — so an absent,
+   empty-anchored or malformed intent makes the pass `unusable` and no verdict can be tallied from it
+   (`stage-2-review-gate.md`, "Does this pass COUNT?"). Writing it here is not bookkeeping; it is a
+   precondition of the PR ever merging.
 
    **Say what it is.** An `authored` intent is **the driver's CLAIM about what the PR is for**, not the
    author's — and a wrong intent block silently **narrows** a review. That is a real cost, disclosed rather

@@ -216,12 +216,19 @@
   is a miss-catcher, not a proof of correctness.
 - **A review pass's artifacts have a TOOL — `scripts/review-pass.py`. NEVER hand-parse one, NEVER
   hand-write a line the tool writes** (Stage 2a). It owns the plan, the `pass_identity`, the unit-progress
-  events, and the read that answers **does this pass COUNT?** — `verify`, which validates EVERY line of the
-  file, including the one event the emit-only rule exempts from tool-writing (Stage 2a owns that rule). **A verdict from a pass that does not verify `ok` is
-  NEVER tallied**: a short SHA or any other malformed identifier, a `done` for a unit that was never
-  planned, an evidence-free `done`, a
-  `done` that no `started` precedes, a SECOND `done` for one unit, a hand-written line of the wrong shape,
-  or an identity naming another commit or attempt all make the pass `unusable`, whatever its report says.
+  events, **the findings**, and the read that answers **does this pass COUNT?** — `verify`, which validates
+  EVERY line of those files, including the one event the emit-only rule exempts from tool-writing (Stage 2a
+  owns that rule). **A verdict from a pass that does not verify `ok` is NEVER tallied**, and there are
+  **three** kinds of defect that make a pass `unusable`, whatever its report says (Stage 2a, "Does this pass
+  COUNT?", owns the enumeration):
+  - **the ARTIFACTS are malformed** — a short SHA or any other malformed identifier, a `done` for a unit
+    that was never planned, an evidence-free `done`, a `done` that no `started` precedes, a SECOND `done`
+    for one unit, a hand-written line of the wrong shape, an identity naming another commit or attempt;
+  - **the PR has no usable INTENT block** for the pass to be measured against — checked for **every** pass,
+    **including one that found nothing** (that is the ordinary case, and the one that merges a PR);
+  - **the VERDICT does not cohere with the FINDINGS** — the rule is an **if and only if**: `not-satisfied`
+    exactly when at least one GATING finding stands, so a `not-satisfied` that recorded none is refused,
+    and so is a `satisfied` that recorded one.
   Every one of those rules holds at **both doors** — the same predicate refuses it on write (`emit`) and on
   read (`verify`), so it cannot be enforced at one and not the other. **Every identifier it handles has ONE
   legal form and NO door repairs one** (a unit id is `u01`-shaped; `pr`/`pass`/`launch_attempt` are decimal
@@ -253,12 +260,13 @@
 - After finishing every planned unit, a pass runs a brief UNSTRUCTURED ADVERSARIAL SWEEP for defects
   outside the plan's decomposition (cross-unit interactions, unstated assumptions, edge cases,
   unenumerated categories). It complements — never replaces — the plan, reports only concrete
-  `file:line` defects at the normal finding bar (a real one → NOT SATISFIED), and treats "nothing
+  `file:line` defects at the normal finding bar (a real **GATING** one → NOT SATISFIED; the sweep is
+  BOUNDED by the threat model, not narrowed, and its findings anchor like any other), and treats "nothing
   found" as a fine result; no speculative "might be fragile" notes (Stage 2a).
 - A SATISFIED verdict carries one `RESIDUAL-RISK: <area> — <why>` line (the least-certain part of the
   diff). It is calibration metadata, never a finding: it never withholds the gate, never enters the fix
   loop, and is never fed into the corroborating review. Do not manufacture a concern to fill it; a real
-  defect found while identifying it is a normal finding → NOT SATISFIED (Stage 2a).
+  **GATING** defect found while identifying it is a normal finding → NOT SATISFIED (Stage 2a).
 - One decision at N sites is the most common root cause. Trigger the §2a-deep root-cause pass on the
   **first** "missing/wrong at site X" finding (its shape, not a round count), map the whole space with
   a dedicated **read-only mapper** subagent — never one that also fixes, which under-maps toward what

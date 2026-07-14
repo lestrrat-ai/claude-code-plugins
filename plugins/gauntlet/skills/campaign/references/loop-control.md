@@ -160,8 +160,10 @@ blocks; each completion is its own wake.
    review verdict is counted, the pass's artifacts must verify** — `scripts/review-pass.py verify --verdict
    <what the report's VERDICT line says>`, never
    an ad-hoc parse; anything but `ok` means the verdict is not tallied (Stage 2a, "Does this pass COUNT?").
-   Passing `--verdict` is what lets the tool check the one rule it can: **a `not-satisfied` pass that
-   recorded no GATING finding is `unusable`** — a verdict that blocks a PR must name what blocks it.
+   Passing `--verdict` is what lets the tool check the one rule it can, and that rule is an **if and only
+   if**: **`not-satisfied` exactly when at least one GATING finding stands** — a verdict that blocks a PR
+   must name what blocks it, and a finding that blocks a PR cannot be waved through by the verdict. Either
+   way round is `unusable` (Stage 2a, "Does this pass COUNT?").
    **Then record the verdict with `scripts/ledger.py verdict --pr <N> --head-sha <sha> --verdict …`** — the
    ONLY sanctioned path, and the only thing that bumps `review_rounds` (Stage 2a, "Recording a verdict");
    never set `reviews_ok` by hand.
@@ -256,7 +258,10 @@ blocks; each completion is its own wake.
      preconditions), and no review running for that SHA → **first ensure the PR's INTENT
      (`<rundir>/intent-<pr>.md`) and PR-head worktree exist.** The dispatch substitutes the intent block
      into the review prompt **verbatim** (`stage-2-review-gate.md`), and a reviewer with no intent is a
-     reviewer asked "is anything wrong with this code?" — the question with no fixed point. If the file is
+     reviewer asked "is anything wrong with this code?" — the question with no fixed point. **It is not an
+     exhortation: `review-pass.py verify` loads `intent-<pr>.md` for EVERY pass, so a pass dispatched
+     without one is `unusable` and its verdict cannot be tallied** — the review would be spent for nothing.
+     If the file is
      missing (a wiped `<rundir>`), write it **per `pr-adoption.md` step 3a** and record its provenance in
      the row's `intent`. Then **ensure the PR-head worktree exists**
      (the review runs `codex exec -C <worktree>` — the PR row's ledger `worktree` column value, the

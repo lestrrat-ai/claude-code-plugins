@@ -37,6 +37,13 @@ dispatched for it. That is not a loophole and it is not a licence to lower your 
 between the findings that were worth 21 rounds and the ones that were not, and it is the only reason this
 gate can ever finish.
 
+**AND A FINDING THAT DOES ANCHOR — GATES. The tool says that too, on the same stdout.** The rule is an IF
+AND ONLY IF: **NOT SATISFIED exactly when at least one GATING finding stands.** So the anchor you type here
+IS your verdict — record a gating finding and return SATISFIED anyway and the pass is UNUSABLE and gets
+thrown away, because a finding cannot read as blocking in the artifact and as ignorable in the verdict. If
+what you found does not really block the PR, the thing to change is the ANCHOR, not the verdict: `--purpose
+-` with a `driver-only`/`hand-edit`/`dev-time` writer says so honestly, and the finding is still recorded.
+
 **Keep hunting.** The adversarial sweep is not narrowed — it is BOUNDED, by the threat model rather than by
 nothing. The findings that mattered were found by exactly this kind of hostile reading: a false CI green
 reachable from a real GitHub response, found in code an earlier fix round had itself added. That one is

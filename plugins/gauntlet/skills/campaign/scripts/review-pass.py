@@ -33,9 +33,11 @@ So this file is the review pass's artifacts, executed:
 
 WHAT `verify` DOES NOT DO — AND THE LINE IS DELIBERATE. It never opens `review-<pr>-<n>.txt`, never
 parses the reviewer's prose, and CANNOT SAY `SATISFIED`. Its whole answer is about the pass's MECHANICS:
-is there an identity, does it name the commit the pass actually ran on, is every `done` for a unit that
-was really planned, did every `done` FOLLOW a `started` for that same unit, does every `done` carry
-evidence, were amendments raised. The VERDICT is the reviewer's JUDGMENT and stays theirs.
+is there an identity, does it name the commit the pass actually ran on, WAS THERE AN INTENT for this
+reviewer to be measured against, is every `done` for a unit that was really planned, did every `done`
+FOLLOW a `started` for that same unit, does every `done` carry evidence, were amendments raised, and does
+the verdict the orchestrator READ cohere with the findings the reviewer RECORDED. The VERDICT itself is
+the reviewer's JUDGMENT and stays theirs.
 
 That line is what keeps this tool from BECOMING the gate. `verify` can only ever SUBTRACT a pass — refuse
 one that is defective. It can never ADD a SATISFIED verdict, never raise `reviews_ok`, and never merge
@@ -128,7 +130,8 @@ STATUSES = (STARTED, DONE)
 
 # The REVIEWER'S VERDICT, as the orchestrator READ it off the report and TELLS this tool. This file still
 # never opens the report and still cannot say `SATISFIED` — it is handed the value so that ONE rule can be
-# machine-checked: a NOT SATISFIED pass must record a GATING finding (`decide`). The spelling is the
+# machine-checked, and that rule is an IF AND ONLY IF (`decide`): **NOT SATISFIED exactly when at least one
+# GATING finding stands.** Both halves of it refuse a pass and neither can grant one. The spelling is the
 # ledger's (`ledger.py verdict --verdict satisfied|not-satisfied`), because the same string is typed at both
 # doors by the same driver in the same step, and two spellings of one verdict is a bug waiting for a wake.
 SATISFIED, NOT_SATISFIED = "satisfied", "not-satisfied"
@@ -437,6 +440,12 @@ FINDINGS_NAME_RE = re.compile(rf"^review-(?P<pr>{COUNT})-{COUNT}(?:\.a{ATTEMPT})
 # and never re-derived: a wake is a fresh agent instance, and an intent held only in context is one that
 # gets invented a second time, differently.
 #
+# **EVERY PASS IS JUDGED AGAINST ONE — `evaluate` loads it whatever the pass found, and that is the whole
+# rule.** It used to be loaded only where a finding needed ANCHORING, which meant a pass with NO findings
+# never asked whether the intent existed at all: the guard's input could simply be ABSENT, and a guard whose
+# input can be absent never fires. A SATISFIED pass that found nothing is the COMMON case and the one that
+# merges a PR, so that was the hole in the exact shape of the door it was guarding.
+#
 # It is DERIVED from the artifact's own name too (the `pr` is in it), for the same reason the plan is: a
 # `--intent` flag is a way to point a pass at somebody else's intent, and there is no reason to have one.
 INTENT_NAME = "intent-{pr}.md"
@@ -719,12 +728,35 @@ def parse_intent(text: str, path: Path) -> "dict[str, list[str]]":
 def load_intent(path: Path) -> "dict[str, list[str]]":
     """The PR's intent, or a Defect saying it is not there.
 
-    **A MISSING INTENT IS NOT AN EMPTY INTENT.** It is refused, loudly, the moment a finding needs to be
-    checked against it — because a finding cannot be anchored to a document that does not exist, and the
-    alternative (treat every `purpose` as unverifiable and wave it through) hands the reviewer a field it
-    can write anything into. Adoption writes this file before the PR's first review pass is ever dispatched
-    (`pr-adoption.md`), so its absence means the run skipped a step, never that the PR has no purpose.
+    **A MISSING INTENT IS NOT AN EMPTY INTENT.** It is refused, loudly, and it is refused for EVERY pass —
+    not merely for one that has a finding to anchor. A finding cannot be anchored to a document that does
+    not exist, and the alternative (treat every `purpose` as unverifiable and wave it through) hands the
+    reviewer a field it can write anything into. Adoption writes this file before the PR's first review
+    pass is ever dispatched (`pr-adoption.md`), so its absence means the run skipped a step, never that the
+    PR has no purpose.
+
+    **BOTH DOORS CALL IT, AND SO DOES THE PASS ITSELF.** `cmd_finding_add` calls it to check an anchor at
+    the moment the reviewer records one; `check_findings_file` calls it to check every anchor already on
+    disk; and `evaluate` calls it for EVERY pass it judges — a pass with zero findings has nothing to
+    anchor and is still measured against an intent, because "was this reviewer told what the PR is FOR?"
+    is a question about the PASS, not about its findings. One function, one definition, three callers.
+
+    **THE ABSENCE HAS ITS OWN MESSAGE, AND THAT IS NOT DECORATION.** Every other artifact this tool reads is
+    written by the ORCHESTRATOR AT DISPATCH, so `read_text`'s message says so — and for the intent that
+    sentence is a LIE with a recovery attached: it is written at ADOPTION, long before, and the fix is not
+    to re-run the reviewer but to write the file and re-dispatch. A missing intent is the one `unusable`
+    that is NOT a reviewer failure, and a driver that follows the generic message re-rolls a reviewer
+    forever against a PR that still has no intent.
     """
+    if not path.exists():
+        # MUTATE:intent-missing-file:pass
+        raise Defect(
+            f"no intent block at {path} — THE RUN SKIPPED A STEP, and this is not a reviewer failure. "
+            f"`{INTENT_NAME.format(pr='<pr>')}` is written at ADOPTION (`pr-adoption.md` step 3a), before "
+            f"the PR's first review pass is ever dispatched, and EVERY pass is measured against it — a pass "
+            f"that found nothing included. Re-rolling the reviewer cannot produce one. Write the intent "
+            f"block, then re-dispatch the pass"
+        )
     return parse_intent(read_text(path, "intent block"), path)
 
 
@@ -842,8 +874,13 @@ def check_findings_file(text: str, path: Path) -> "list[dict]":
     """Every rule a findings artifact's BYTES must satisfy — the same statement at both doors.
 
     The intent is loaded from the `pr` this file's own NAME carries, and only once there is a finding to
-    anchor: an EMPTY findings file needs no intent at all, because there is nothing to anchor. That is not
-    a shortcut — it is what lets `verify` run on a pass that has found nothing, which is most of them.
+    anchor: with no findings there is nothing to anchor, so this function has nothing to say.
+
+    **THAT IS A STATEMENT ABOUT THIS FILE, AND IT IS NOT — EVER — A STATEMENT ABOUT THE PASS.** "No
+    findings, therefore no intent needed" was once true of both, and it was the hole: a pass with no
+    findings never loaded the intent at all, so a SATISFIED pass on a PR whose intent was never written
+    verified `ok`. The pass-level rule lives in `evaluate`, which loads the intent for EVERY pass it
+    judges, whatever this file holds — including when it does not exist.
     """
     pr = findings_name(path).group("pr")
     records = parse_lines(text, path.name)
@@ -878,6 +915,12 @@ def load_findings(progress: Path) -> "list[dict]":
     an absent file is NOT is a licence to return NOT SATISFIED: `decide` refuses that pass, because a
     verdict that blocks a PR with no gating finding behind it is a verdict nobody can act on and nobody can
     check.
+
+    **AND IT IS NOT A LICENCE TO SKIP THE INTENT EITHER.** This function is the one place a whole artifact
+    is allowed to be absent, so it is the one place that could quietly take the intent check down with it —
+    and it DID: an absent findings file returned `[]` here, `load_intent` was never reached, and a pass on
+    a PR with NO intent block at all counted. `evaluate` loads the intent for every pass, so absence here
+    now means exactly what it says — zero findings — and nothing more.
     """
     path = findings_path(progress)
     if not path.exists():
@@ -1146,10 +1189,22 @@ def decide(events: "list[dict]", units: "dict[str, dict]", ruled: int,
     **`verdict` IS TOLD TO THIS TOOL, NEVER READ BY IT — AND THE LINE IS THE SAME LINE AS ALWAYS.** This
     function still does not open `review-<pr>-<n>.txt` and still cannot SAY `SATISFIED`. The orchestrator
     reads the reviewer's VERDICT line, exactly as before, and passes what it read (`--verdict`) so that ONE
-    coherence rule can be checked mechanically: **a pass that returns NOT SATISFIED must record at least one
-    GATING finding.** Note which direction that can move a pass — it can only ever REFUSE one. Nothing here
-    can turn a NOT SATISFIED into a pass, raise `reviews_ok`, or merge anything; a tool that could accept
-    would merge a PR nobody reviewed, and a bug in one that can only refuse costs a re-review.
+    coherence rule can be checked mechanically. **THE RULE IS AN IF AND ONLY IF, AND IT IS ENFORCED IN BOTH
+    DIRECTIONS: NOT SATISFIED exactly when at least one GATING finding stands.**
+
+      * NOT SATISFIED and NO gating finding — a verdict that blocks a PR and names nothing that blocks it.
+      * SATISFIED and a gating finding that STANDS — the reviewer recorded a defect that anchors to the PR's
+        own purpose, or that a named actor can really reach, and then passed the PR anyway. Half the
+        contract was enforced and this half was not, so exactly that pass verified `ok`: the finding is
+        real, it gates by the rule the reviewer itself applied when it recorded it, and the gate waved it
+        through. If the reviewer believes it does NOT gate, the fix is to say so where it is SAID — a
+        finding that anchors to nothing is `purpose = -` and a no-adversary `writer`, and `finding-add`
+        prints NON-GATING when it writes one. What may never happen is a finding that reads as gating in
+        the artifact and as ignorable in the verdict.
+
+    Note which direction EITHER half can move a pass — both can only ever REFUSE one. Nothing here can turn
+    a NOT SATISFIED into a pass, raise `reviews_ok`, or merge anything; a tool that could accept would merge
+    a PR nobody reviewed, and a bug in one that can only refuse costs a re-review.
     """
     _announced, done = walk_progress(events, units)
 
@@ -1185,6 +1240,19 @@ def decide(events: "list[dict]", units: "dict[str, dict]", ruled: int,
             f"loophole; it is the difference between the findings that were worth 21 rounds and the ones "
             f"that were not"
         )
+    if verdict == SATISFIED and blocking:
+        # MUTATE:satisfied-with-gating-finding:pass
+        return UNUSABLE, (
+            f"this pass returned SATISFIED while {len(blocking)} GATING finding(s) STAND: "
+            + "; ".join(f"{f['file']}:{f['line']}" for f in blocking)
+            + f". The contract is an IF AND ONLY IF — NOT SATISFIED exactly when at least one GATING finding "
+              f"stands — and only its other half was ever enforced, so a pass could record a blocking defect "
+              f"and pass the PR anyway. A gating finding is one that DEFENDS a line of the PR's stated "
+              f"purpose or that an actor in its threat model can really reach, and the reviewer said so when "
+              f"it recorded it. If it does not gate, say so where it is SAID: `purpose` is `-` and `writer` "
+              f"is one of {list(NO_ADVERSARY)}. A finding cannot read as blocking in the artifact and as "
+              f"ignorable in the verdict"
+        )
     return OK, (
         f"all {len(units)} planned units are done with evidence, on {events[0]['head_sha']}, no unruled "
         f"amendments, {len(blocking)} gating finding(s) of {len(findings)}. This says the ARTIFACTS are "
@@ -1219,11 +1287,31 @@ def plan_path(progress: Path) -> Path:
 
 def evaluate(progress: Path, head_sha: str, ruled: int = 0,
              verdict: "str | None" = None) -> "tuple[str, str]":
-    """The whole read side. Every exception a rule can raise lands here as a VERDICT — never as a crash."""
+    """The whole read side. Every exception a rule can raise lands here as a VERDICT — never as a crash.
+
+    **THE INTENT IS AN INPUT TO EVERY PASS, AND IT IS LOADED HERE FOR EXACTLY THAT REASON.** A pass is
+    measured against what the PR is FOR: that is what this whole artifact set exists to make true, and a
+    pass measured against nothing is the open-ended review that ran a PR through 21 rounds. So the question
+    "is there an intent, and can it be read?" is asked of THE PASS, once, whatever the pass found — never
+    delegated to a file that is allowed to be absent.
+
+    It used to be asked only where a FINDING needed anchoring (`check_findings_file`), and a pass with no
+    findings does not go there: an absent findings file returned `[]` and nothing ever looked for the
+    intent. A SATISFIED pass with no findings is the ordinary case and the one that MERGES a PR, so the
+    intent could be missing on precisely the passes that count. A guard whose input can be ABSENT never
+    fires.
+
+    The `pr` comes from the progress file's own NAME — the same parse `plan_path` derives the plan from —
+    so a pass can no more be judged against another PR's intent than against another pass's plan, and there
+    is no `--intent` flag for a caller to point somewhere else with.
+    """
     try:
         plan = plan_path(progress)
+        pr, _npass, _attempt = parse_name(progress)
         events, units = check_progress_file(text=read_text(progress, "progress file"), path=progress,
                                             plan=lambda: load_plan(plan), head_sha=head_sha)
+        # MUTATE:intent-required:pass
+        load_intent(intent_path(progress.parent, pr))
         return decide(events, units, ruled, load_findings(progress), verdict)
     except Defect as exc:
         return UNUSABLE, str(exc)
@@ -1498,16 +1586,29 @@ def cmd_finding_add(args) -> int:
                   load_intent(intent_path(path.parent, pr))[PURPOSE_H])
     sys.stdout.write(write_line(path, before_text(path), rec,
                                 lambda after: check_findings_file(after, path)))
+    # NEITHER of these is an error or a refusal — the finding is RECORDED either way. They are the tool
+    # telling the reviewer WHAT IT JUST WROTE, because the verdict/findings rule is an IF AND ONLY IF and
+    # a reviewer can get it wrong in BOTH directions: a NON-GATING finding turned into a NOT SATISFIED, or
+    # a GATING one left out of the verdict. `verify` refuses the pass either way, fifteen minutes later,
+    # by a tool the reviewer never sees; this is where it learns it, while it can still act.
     if not gating(rec):
-        # NOT an error, and NOT a refusal — the finding is RECORDED. This is the tool telling the reviewer
-        # what it just wrote, so that a NON-GATING finding cannot be turned into a NOT SATISFIED by
-        # accident. `verify` enforces it; this is where the reviewer learns it, in time to act on it.
         sys.stdout.write(
             f"# NON-GATING: this finding anchors to no `{PURPOSE_H}` line and its writer is "
             f"`{rec['writer']}` — nobody outside the machine can supply that input. It is RECORDED as a "
             f"follow-up and it MUST NOT produce NOT SATISFIED. If you believe it does gate, then either it "
             f"defends a stated purpose (quote that line in --purpose) or a real actor can write the input "
             f"(name them in --writer) — say which, do not simply re-file it.\n"
+        )
+    else:
+        sys.stdout.write(
+            f"# GATING: this finding ANCHORS — it defends a `{PURPOSE_H}` line, or `{rec['writer']}` can "
+            f"really write that input, and you said so when you recorded it. So it BLOCKS: your verdict "
+            f"MUST be NOT SATISFIED while it stands. A pass that records this and returns SATISFIED is "
+            f"UNUSABLE and gets thrown away — the rule is NOT SATISFIED if and ONLY if at least one GATING "
+            f"finding stands. If it does not really block, it is the ANCHOR that is wrong, not the verdict: "
+            f"a finding that serves no stated purpose and that nobody outside the machine can trigger is "
+            f"`--purpose -` with a `driver-only`/`hand-edit`/`dev-time` writer, and it is recorded as a "
+            f"follow-up instead.\n"
         )
     return 0
 
@@ -1687,11 +1788,14 @@ def build_parser() -> "tuple[argparse.ArgumentParser, list[str]]":
                         "N >= 0, and never more than the pass actually raised (default 0)")
     # OPTIONAL, and deliberately so: `verify` is also run on a pass that is still WORKING (it answers
     # `incomplete`), and a pass that has not finished has no verdict to state. Pass it once the reviewer's
-    # report exists, and this tool will check the ONE thing it can: a NOT SATISFIED must name what blocks.
+    # report exists, and this tool will check the ONE thing it can — in BOTH directions: NOT SATISFIED
+    # exactly when at least one GATING finding stands.
     v.add_argument("--verdict", choices=VERDICTS, default=None,
                    help="the VERDICT line you read in the reviewer's report. Omit while the pass is still "
-                        "in flight. With `not-satisfied`, the pass is UNUSABLE unless it recorded at least "
-                        "one GATING finding — a verdict that blocks a PR must name what blocks it")
+                        "in flight. It buys ONE machine-checked rule, an IF AND ONLY IF: the pass is "
+                        "UNUSABLE if `not-satisfied` recorded NO gating finding (a verdict that blocks a PR "
+                        "must name what blocks it), and equally UNUSABLE if `satisfied` recorded ONE (a "
+                        "finding that gates cannot be waved through in the verdict)")
 
     sub.add_parser("self-test", help="run every fixture, then DELETE each rule and prove a fixture notices")
 
