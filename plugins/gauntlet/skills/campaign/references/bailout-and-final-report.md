@@ -81,6 +81,20 @@
   the whole space with a dedicated read-only mapper and fix at one chokepoint. This is a hard backstop:
   even if the archetype wasn't obvious on finding 1, the 2nd sibling finding forces the pass no later.
 
+  **THIS BACKSTOP HAD NO SENSOR, AND THAT IS WHY IT NEVER FIRED.** Its trigger — *"the second `NOT
+  SATISFIED` on the same PR"* — is a **fact about history**, and nothing recorded any history: `reviews_ok`
+  is zeroed on every `NOT SATISFIED`, so the ledger after twenty-one rounds read exactly as it did after
+  one. Each wake is a **fresh agent instance** holding a single round, so it could not know a second one
+  had ever happened. The rule called itself a hard backstop; it was a hard backstop **with no input**, and
+  one PR ran **21 review rounds** underneath it.
+
+  The ledger now records that history — `ns_streak` (consecutive `NOT SATISFIED`, cleared only by a
+  `SATISFIED`) and `review_rounds` (landed verdicts, **never** reset) — so the trigger is, for the first
+  time, a value a fresh wake can **read** (`files-and-ledger.md`). **This release adds the sensors and
+  nothing that consumes them**: no cap, no new escalation, and no change to when this pass fires. The
+  autonomous reassessment that acts on them lands separately. Adding the reader in the same change as the
+  counter is how a counter comes to be reset by the thing that reads it.
+
 Other stop conditions — escalate rather than loop: a worktree won't build, the reviewer keeps
 returning the same unactionable verdict, or CI fails identically after a fix attempt.
 
@@ -92,6 +106,19 @@ When the loop exits, summarize:
 
 - **Reviewer** — the ledger `reviewer` value the run used, plus any review pass where an external
   reviewer failed and fell back to Claude subagents (see "The reviewer").
+- **Which rules actually ran** — the ledger header's `skill_version`. **State it every time.** The harness
+  loads this skill from the **installed plugin cache**, so a merged, version-bumped rule governs **nothing**
+  until that cache refreshes — and one did not, for days, while every report in that window said "reviewer:
+  codex" and could not say "rules: v0.1.2, which is two commits behind the rule you think is protecting
+  you". If it is `unknown`, say so plainly: the run did not record which copy of the gate judged it.
+- **Review rounds** — for each PR, its `review_rounds` (and `ns_streak` if non-zero). A PR that took many
+  rounds to pass is not the same as one that passed cleanly, and until this counter existed the report
+  could not tell them apart — the difference was visible only to a human holding every round in one context,
+  which is what it took to stop a 21-round loop.
+- **Whose intent the review was measured against** — name every PR whose `intent` is `authored@…` rather
+  than `stated@…`. **An `authored` intent is the DRIVER'S CLAIM about what the PR is for**, not the
+  author's, and a wrong one silently **narrows** a review. It is a real cost and it is disclosed here rather
+  than buried; a `stated@…` intent came from the PR body and needs no flag.
 - **Merged** — PR number + slug, one-line description, and tier.
 - **Residual risk** — for each merged PR, each accepting SATISFIED pass's `RESIDUAL-RISK` line (the
   least-certain area it named — `required(tier)` lines, so two for a STANDARD/HIGH PR and one for a

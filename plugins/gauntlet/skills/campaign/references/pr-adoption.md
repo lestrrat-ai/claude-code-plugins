@@ -53,12 +53,17 @@ For each `#PR` to adopt:
    field** so the refusal check below can reject fork PRs:
 
    ```
-   gh pr view <pr> --json number,title,headRefName,headRefOid,baseRefName,labels,state,isCrossRepository,headRepositoryOwner,headRepository > <rundir>/pr-<pr>.json
+   gh pr view <pr> --json number,title,body,headRefName,headRefOid,baseRefName,labels,state,isCrossRepository,headRepositoryOwner,headRepository > <rundir>/pr-<pr>.json
    ```
 
    `isCrossRepository` is `true` when the head branch lives in a **fork**, not `origin`; in that case
    `headRepositoryOwner`/`headRepository` name the fork. A same-repo PR has `isCrossRepository=false` and
    its head branch is on `origin`. **Campaign gates same-repo PRs only** — fork PRs are refused in step 2.
+
+   **`body` is in the field set because the review gate is measured against WHAT THE PR IS FOR** (step 3a).
+   It was absent, and its absence is the whole reason a reviewer could be asked *"is anything wrong with
+   this code?"* — a question with no fixed point — instead of *"does this PR do its job?"*
+   (`stage-2-review-gate.md`, "What the review is MEASURED AGAINST").
 
 2. **Refuse a foreign-owned PR.** If `labels` already contains a `gauntlet-run-*` label that is **not**
    this run's `gauntlet-run-<run-id>`, another run owns it — **do NOT adopt, relabel, or touch it**.
@@ -147,6 +152,57 @@ For each `#PR` to adopt:
 
    The ownership marker for an adopted PR is the **label**, not the branch name (its branch won't match
    the `fix-<run-id>-` prefix) — so labelling in step 4 is what makes the PR ours.
+
+3a. **Write the PR's INTENT — `<rundir>/intent-<pr>.md`.** This is the input the review gate is measured
+   against, and the reviewer receives it **verbatim** (`stage-2-review-gate.md`, "What the review is
+   MEASURED AGAINST"). Without it, the reviewer is asked *"is anything wrong with this code?"* — a question
+   with no fixed point, and one that ran a PR through 21 review rounds without converging.
+
+   **It is LOCAL, git-ignored driver bookkeeping. Campaign NEVER writes it back to the PR** — no `gh pr
+   edit`, no comment, no commit. The PR belongs to its author; this is the driver's working note about it,
+   and it lives with the run's other artifacts under `<rundir>`.
+
+   The format is exactly three sections:
+
+   ```markdown
+   ## Purpose
+   - <one line per thing this PR must do>
+   ## Non-goals
+   - <one line per thing it deliberately does not do>
+   ## Threat model
+   - Who can write the inputs this code reads: <...>
+   - Who cannot: <...>
+   ```
+
+   **A PR whose body already carries a usable intent block** (all three headings, at least one `## Purpose`
+   bullet) → **COPY IT VERBATIM** into `intent-<pr>.md`. Record `intent = stated@<iso>`.
+
+   **Otherwise the driver AUTHORS it** — from the PR's **diff, title and body** — writes it to
+   `intent-<pr>.md`, and **proceeds**. Record `intent = authored@<iso>`. Do **NOT** stop and ask the user:
+   the driver can act here, so it acts. Only if it **cannot form an intent block at all** (an empty PR, a
+   diff it cannot characterise) does it **refuse the adoption** and report that PR to the user, adopting the
+   rest.
+
+   **Say what it is.** An `authored` intent is **the driver's CLAIM about what the PR is for**, not the
+   author's — and a wrong intent block silently **narrows** a review. That is a real cost, disclosed rather
+   than buried: the ledger's `intent` column carries which kind it is, and the final report names every PR
+   whose intent the driver authored (`bailout-and-final-report.md`). It is still strictly better than the
+   nothing the reviewer was measured against before.
+
+   Writing the three sections:
+   - **`## Purpose`** — what the PR must DO, as the diff and the title actually show it. One line per thing.
+     These are the lines a finding QUOTES, so keep each one a single, checkable claim.
+   - **`## Non-goals`** — what it deliberately does not do. Read them off the diff's boundaries and the PR's
+     own words. **A non-goal BINDS the reviewer**: a finding that attacks one cannot gate. State the ones a
+     hostile reader would otherwise attack (a self-test not hardened against a developer editing it; a
+     display helper not hardened against an adversary that does not exist).
+   - **`## Threat model`** — who can write the inputs this code READS, and who cannot. This is the line that
+     bounds the adversarial sweep, so be concrete: *"GitHub's API over the network; the CI system; a user's
+     CLI arguments"* / *"nobody else — the store is a git-ignored local file only the driver writes"*.
+
+   **On a RE-ADOPTION, do not re-author.** `intent` is one of the fields the refresh **preserves** (step 3),
+   and `intent-<pr>.md` is re-read, never re-derived — a wake is a fresh agent instance, and an intent
+   invented twice is two intents. Re-author only if the file is **gone** (a wiped `<rundir>`), and say so.
 
 4. **Label it ours, and set the status label from the LIVE gate.** Add this run's owner label, then
    apply the status label that matches the PR's gate state **as it stands after step 3** — never a

@@ -89,6 +89,37 @@
 - The review gate is **tier-dependent**: `required(tier)` fresh, context-isolated `SATISFIED` verdicts
   on the same live PR content — **one if TRIVIAL, two otherwise** (any code / agent-doc / sensitive
   change always requires two). Re-derive the tier from `head_sha` each wake.
+- **The review is measured against the PR's INTENT — never against "is anything wrong with this code?"**
+  The reviewer is handed `<rundir>/intent-<pr>.md` **verbatim** and answers one question: **does this PR
+  achieve its stated Purpose, without breaking anything reachable by an actor named in its Threat model?**
+  The open-ended question **has no fixed point** — there is always one more true thing to say about a diff,
+  and asking it ran one PR through **21 review rounds** of true, reproduced, irrelevant findings until a
+  human stopped it. **Declared non-goals BIND the reviewer**: a finding that attacks one cannot gate. The
+  adversarial sweep **stays** — bounded by the threat model rather than by nothing
+  (`stage-2-review-gate.md`, "What the review is MEASURED AGAINST").
+- **A finding must ANCHOR, or it does NOT gate.** Every finding is a record written by
+  `scripts/emit-finding.py`, naming **either** the `## Purpose` line it defends (quoted **verbatim** — the
+  tool checks it against the intent) **or** the `writer` who can actually supply the bad input (a CLOSED
+  enum: `end-user`, `network`, `ci`, `repo-content`, `driver-only`, `hand-edit`, `dev-time`). **A finding
+  whose `purpose` is `-` AND whose `writer` is `driver-only`/`hand-edit`/`dev-time` is NON-GATING**: it
+  **MUST NOT** produce `NOT SATISFIED`, **no fix is dispatched for it**, and it is recorded as a follow-up.
+  Enforced in `review-pass.py`. **Not every true statement about the code is a reason to block it**, and a
+  guard being incomplete is not, by itself, a defect: name the writer who gets through it.
+- **The gating rule and the audit ask DIFFERENT questions, and both must pass.** The gating rule asks
+  **does it MATTER?** (can anyone outside the machine trigger it; does it defend a stated purpose) — a NO
+  makes it a follow-up. The audit below asks **is it TRUE?** (can the mechanism occur) — a NO makes it
+  REFUTED. A finding must **matter** before anyone spends an audit on whether it is **true**. When the
+  reachability test says *"provenance is the wrong question"*, it is answering **is it TRUE?**, and it is
+  right; it is **not** saying "never ask who can write the input" — that is the other question, and the
+  `writer` field is what answers it.
+- **Record every verdict with `ledger.py verdict` — NEVER set `reviews_ok` by hand.** It bumps
+  `review_rounds`, applies the tally, and moves `ns_streak` in one atomic write. **`review_rounds` is the
+  review loop's only memory across fresh-context wakes and is NEVER reset** — not by a fix, a rebase, a
+  content change or a re-triage. There is no flag at any door that can write it; `set` cannot even RAISE
+  `reviews_ok` (only a verdict adds a verdict). Without that counter, the ledger after 21 review rounds is
+  **indistinguishable** from the ledger after one, and every stopping rule of the form "on the second NOT
+  SATISFIED…" is a backstop with **no sensor** — which is exactly how one sat in this skill, unfired,
+  through 21 of them.
 - **NEVER leave `gauntlet-accepted` on a PR whose live content no longer holds `required(tier)`
   SATISFIED verdicts.** The label is a projection of `reviews_ok`, and it is the only run state a human
   sees on GitHub — a stale `gauntlet-accepted` publicly claims a PR passed a gauntlet it did not. So the
@@ -117,8 +148,9 @@
   claim. **The tell that you have invented one: each fix creates the next finding.** When that happens,
   stop patching and re-derive whether the original thing was ever broken.
 - **A reviewer's finding is a CLAIM, not a fact — AUDIT it before you fix it.** On every `NOT
-  SATISFIED`, verdict each finding against the source *before* dispatching a fix — NEVER dispatch a fix
-  for an unaudited finding: **CONFIRMED** (real, and its mechanism can occur → fix), **ADJUSTED** (a real
+  SATISFIED`, verdict each **GATING** finding against the source *before* dispatching a fix (a NON-GATING
+  finding is never fixed, so there is nothing to audit — it is recorded as a follow-up) — NEVER dispatch a
+  fix for an unaudited finding: **CONFIRMED** (real, and its mechanism can occur → fix), **ADJUSTED** (a real
   defect, but not the one described → fix the real one), or **REFUTED** (false, or its **mechanism cannot
   occur** → do NOT fix; refute in the tree). Record the audit in `<rundir>/audit-<pr>-<n>.md`; only
   CONFIRMED + ADJUSTED reach the fix subagent. The **reachability test is NOT about where the trigger

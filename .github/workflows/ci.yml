@@ -75,11 +75,15 @@ jobs:
           set -o pipefail
           npx --yes pyright@1.1.410 --outputjson \
             plugins/gauntlet/skills/campaign/scripts/ledger.py \
-            plugins/gauntlet/skills/campaign/scripts/mutate-ci-snapshot.py | tee pyright.json
+            plugins/gauntlet/skills/campaign/scripts/ledger-test.py \
+            plugins/gauntlet/skills/campaign/scripts/mutate-ci-snapshot.py \
+            plugins/gauntlet/skills/campaign/scripts/review-pass.py \
+            plugins/gauntlet/skills/campaign/scripts/review-pass-test.py \
+            plugins/gauntlet/skills/campaign/scripts/emit-finding.py | tee pyright.json
           analyzed=$(jq '.summary.filesAnalyzed' pyright.json)
           echo "filesAnalyzed=${analyzed}"
-          if [ "${analyzed}" != "2" ]; then
-            echo "::error::pyright analysed ${analyzed} file(s), not the 2 it was pointed at — it checked" \
+          if [ "${analyzed}" != "6" ]; then
+            echo "::error::pyright analysed ${analyzed} file(s), not the 6 it was pointed at — it checked" \
                  "nothing and said so quietly. Fix the paths above; a silent no-op is not a passing gate."
             exit 1
           fi

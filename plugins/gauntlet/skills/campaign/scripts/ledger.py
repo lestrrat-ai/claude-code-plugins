@@ -12,24 +12,40 @@ skill.
 from __future__ import annotations
 
 import argparse
-import io
+import importlib.util
 import json
+import re
 import sys
 import tempfile
-from contextlib import redirect_stderr, redirect_stdout
-
-DESCRIPTION = "Schema-owning accessor for the campaign ledger (state.jsonl)."
 from pathlib import Path
 from typing import NoReturn
 
+DESCRIPTION = "Schema-owning accessor for the campaign ledger (state.jsonl)."
+
+HERE = Path(__file__).resolve().parent
+TEST_PY = HERE / "ledger-test.py"     # the fixture suite — this accessor's executable contract
+
 # --- schema (owned here, once) ------------------------------------------------
 
-HEADER_FIELDS = ("run_id", "base_branch", "api_changes", "reviewer", "required_set")
+HEADER_FIELDS = ("run_id", "base_branch", "api_changes", "reviewer", "required_set", "skill_version")
 HEADER_DEFAULTS = {
     "run_id": "-",
     "base_branch": "-",
     "api_changes": "ask",
     "reviewer": "default",
+    # WHICH COPY OF THE RULES ACTUALLY GOVERNED THIS RUN — read from the RUNNING plugin's `plugin.json`
+    # at startup (SKILL.md), and stated in the final report.
+    #
+    # It is not bookkeeping. The harness loads this skill from the INSTALLED plugin cache, and a merged,
+    # version-bumped rule governs NOTHING until that cache refreshes: a rule that audits findings before
+    # fixing them was written, reviewed, merged and bumped — and then did not run, for days, because the
+    # installed copy was still the previous version. **No artifact of the run recorded which version it
+    # was, so nothing could say so.** A report that says "reviewer: codex" and cannot say "rules: 0.1.2"
+    # is a report about a gate whose identity nobody checked.
+    #
+    # The default is `unknown` for the same reason `required_set`'s is: "I did not look" is a different
+    # fact from any version number, and it must never be spelled as one.
+    "skill_version": "unknown",
     # What `base_branch` REQUIRES (stage-2-ci.md, "WHAT WERE WE EXPECTING TO SEE?", which owns the three
     # states and the format). A property of the BASE BRANCH, not of a PR, so it lives here, not on the rows.
     #
@@ -73,6 +89,31 @@ ROW_FIELDS = (
     # park it was written for (`abort` is terminal and is never cleared). stage-2-ci.md, "THE RULING IS
     # CONSUMED EXACTLY ONCE".
     "blocker_ruling",
+    # THE REVIEW LOOP'S MEMORY (stage-2-review-gate.md, "Recording a verdict"). Every other counter in
+    # this schema guards CI; the review path had NONE, and that asymmetry was the whole of a spiral that
+    # ran one PR through 21 review rounds. `reviews_ok` is a GATE TALLY and is correctly zeroed on every
+    # NOT SATISFIED — which means the ledger after 21 rounds is INDISTINGUISHABLE from the ledger after
+    # one, and every stopping rule that says "on the second NOT SATISFIED…" is a backstop with no sensor.
+    #
+    # A wake is a fresh agent instance. A counter that lives in the driver's head does not exist.
+    "review_rounds",   # landed verdicts, ever, for this PR. MONOTONE — NEVER reset, by anything.
+    "ns_streak",       # consecutive NOT SATISFIED. Reset ONLY by a SATISFIED.
+    # WHERE THIS PR'S INTENT CAME FROM — the PROVENANCE of `<rundir>/intent-<pr>.md`:
+    #   `-`                not adopted yet
+    #   `stated@<iso>`     the PR body already carried a usable intent block; it was COPIED VERBATIM
+    #   `authored@<iso>`   the driver INFERRED it from the PR's title, body and diff
+    #
+    # The block itself is NOT in this store, and that is deliberate: it is many lines of markdown, and this
+    # is one JSON object per line that renders as a table. It lives in the run's own dir as
+    # `intent-<pr>.md` (files-and-ledger.md) — beside the review artifacts that quote it, readable by the
+    # reviewer (which already gets `--add-dir <rundir>`), and by a human. It is DRIVER BOOKKEEPING under
+    # `.gauntlet/`: never repo content, never committed, and NEVER written back to the PR.
+    #
+    # The distinction the two values draw is the honest one, and the report states it: an `authored` intent
+    # is **the driver's CLAIM about what the PR is for**, not the author's. It is still far better than the
+    # nothing the reviewer was measured against before — but a WRONG intent block silently NARROWS a
+    # review, so which kind it is has to be visible rather than buried.
+    "intent",
 )
 ROW_DEFAULTS = {
     "id": "-", "slug": "-", "branch": "-", "worktree": "-", "worktree_owned": "-",
@@ -80,12 +121,53 @@ ROW_DEFAULTS = {
     "tier": "-", "attempts": "0", "started": "-", "api_approval": "-", "status": "pending",
     "ci_fingerprint": "-", "settled_strikes": "0", "unusable_refetches": "0",
     "ci_stalled_since": "-", "ci_reason": "-", "blocker_ruling": "-",
+    "review_rounds": "0", "ns_streak": "0", "intent": "-",
 }
+
+# The two fields `verdict` OWNS — and the ONLY reason they are not settable through `set`/`add-row` is
+# that a door which can write them is a door that can RESET them.
+#
+# `review_rounds` is the loop's only memory across fresh-context wakes, and its whole value is that it is
+# MONOTONE. A rule stating "never reset it" is an exhortation; REMOVING THE DOOR is a mechanism. So there
+# is no `--review-rounds` flag to type: `verdict` increments them, and nothing else writes them at all.
+# (`reviews_ok` is different — a content change legitimately voids the tally, so `set --reviews-ok 0`
+# must stay. What `set` may NOT do is RAISE it: see `check_tally`.)
+VERDICT_OWNED = ("review_rounds", "ns_streak")
+
+SATISFIED, NOT_SATISFIED = "satisfied", "not-satisfied"
+VERDICTS = (SATISFIED, NOT_SATISFIED)
+
+# A git object id, as git writes one: 40 LOWERCASE hex — the same rule `review-pass.py` and
+# `ci-snapshot.py` hold a SHA to, and for the same reason. A verdict is recorded AGAINST a commit, so a
+# value that is not a commit id makes the "does this verdict still describe the live tip?" comparison
+# unfalsifiable. A short SHA has escaped into this repo's real state twice.
+SHA_RE = re.compile(r"^[0-9a-f]{40}\Z")
+
+# A counter's on-disk form: a decimal, from zero up. No sign, no padding, no `int()` on raw input (which
+# would take `" +2 "` and CRASH on `"-"` — and `-` is this schema's own "not set" spelling, so it is a
+# value a counter field can genuinely be handed by a hand-edited store).
+COUNT_RE = re.compile(r"^(?:0|[1-9][0-9]*)\Z")
 
 
 def fail(msg: str) -> NoReturn:
     print(f"ledger: {msg}", file=sys.stderr)
     raise SystemExit(1)
+
+
+def counter(row: dict, field: str) -> int:
+    """One counter field, as a NUMBER — refusing anything that is not one.
+
+    Every value in this store is a string, and these three are ARITHMETIC: `verdict` adds to them. A
+    field holding `-` or `two` cannot be added to, and `int()` on it does not return a wrong answer — it
+    CRASHES, in the middle of a write, which is the one thing a store accessor must never do. So the
+    value is CHECKED, and a store that cannot be counted is refused with a message naming the field.
+    """
+    value = row.get(field, ROW_DEFAULTS[field])
+    if not COUNT_RE.match(value):
+        fail(f"row for pr {row.get('pr')}: `{field}` is {value!r}, which is not a count (a decimal from 0 "
+             f"up) — this field is ARITHMETIC, and a value nothing can add to is a corrupt store, never a "
+             f"number to guess at")
+    return int(value)
 
 
 # --- parse / serialize --------------------------------------------------------
@@ -189,20 +271,54 @@ def cmd_header(path: Path, args) -> int:
     return 0
 
 
-def _named_field_values(args) -> dict:
-    """Collect the --<row-field> options that were actually supplied.
+def settable(name: str) -> bool:
+    """May `set`/`add-row` write this field?
 
-    `pr` is the row key (passed via --pr) and `id` is always derived from it,
-    so neither is a settable update field; both are excluded here.
+    `pr` is the row key (passed via --pr) and `id` is derived from it. `VERDICT_OWNED` is the new
+    exclusion, and it is the mechanism behind "`review_rounds` is NEVER reset": a door that can write a
+    counter is a door that can zero it, so those two fields simply have NO flag. `verdict` writes them.
     """
+    return name not in ("pr", "id") and name not in VERDICT_OWNED
+
+
+def _named_field_values(args) -> dict:
+    """Collect the --<row-field> options that were actually supplied."""
     values = {}
     for name in ROW_FIELDS:
-        if name in ("pr", "id"):
+        if not settable(name):
             continue
         val = getattr(args, name, None)
         if val is not None:
             values[name] = val
     return values
+
+
+def check_tally(updates: dict, row: dict) -> None:
+    """`set` may VOID the tally. It may NEVER RAISE it.
+
+    **`reviews_ok` counts SATISFIED verdicts, and only a verdict may add one.** It stays settable because
+    voiding it is a real, frequent, correct event that is NOT a verdict — a fix commit, a rebase that
+    resolves conflicts, any PR-content change drops it to 0 (stage-2-review-gate.md, "Status labels mirror
+    the review gate", lists every such site). What no caller may do is write a HIGHER number: that is
+    manufacturing a verdict that no review pass ever returned, and it would also skip `review_rounds` and
+    `ns_streak` — the two counters that exist precisely because the tally alone cannot see a loop.
+
+    So the rule is a FLOOR-ONLY door: `set --reviews-ok <n>` is accepted while `n <= current`, and
+    `verdict` is the only way up. "NEVER set `reviews_ok` by hand" is then a mechanism, not an
+    exhortation — and the failure mode it guards is the one that cannot be seen from a transcript: a
+    driver that raised the tally by hand looks EXACTLY like a driver that earned it.
+    """
+    if "reviews_ok" not in updates:
+        return
+    want = updates["reviews_ok"]
+    if not COUNT_RE.match(want):
+        fail(f"--reviews-ok {want!r} is not a count (a decimal from 0 up)")
+    if int(want) > counter(row, "reviews_ok"):
+        fail(f"--reviews-ok {want} would RAISE the tally from {row['reviews_ok']} — and a SATISFIED "
+             f"verdict is the only thing that may. Record it with `verdict --pr {row['pr']} --head-sha "
+             f"<sha> --verdict satisfied`, which bumps `review_rounds` and clears `ns_streak` in the same "
+             f"write. `set` may still VOID the tally (a content change drops it to 0); it may never "
+             f"manufacture one, because a hand-raised tally is indistinguishable from an earned one")
 
 
 def cmd_add_row(path: Path, args) -> int:
@@ -211,7 +327,12 @@ def cmd_add_row(path: Path, args) -> int:
     if find_row(rows, pr) is not None:
         fail(f"a row for pr {pr} already exists; use `set` to update it")
     row = dict(ROW_DEFAULTS)
-    row.update(_named_field_values(args))  # pr/id excluded, so both stay derived
+    updates = _named_field_values(args)  # pr/id/VERDICT_OWNED excluded — they are derived or verdict-owned
+    # A NEW row has run no reviews, so its tally is 0 and the floor rule applies from the defaults: a
+    # `--reviews-ok 2` at CREATION is the same forged verdict as one at `set`, and it used to be the one
+    # door where it went through.
+    check_tally(updates, row)
+    row.update(updates)
     row["pr"] = pr  # --pr is the row key
     row["id"] = f"pr{pr}"  # id is always derived from pr, never caller-set
     rows.append(row)
@@ -229,7 +350,58 @@ def cmd_set(path: Path, args) -> int:
     updates = _named_field_values(args)
     if not updates:
         fail("set requires at least one --<field> <value>")
+    check_tally(updates, row)
     row.update(updates)  # by NAME — never by column position
+    dump(path, header, rows)
+    print(json.dumps(row))
+    return 0
+
+
+def cmd_verdict(path: Path, args) -> int:
+    """Record ONE landed review verdict — the ONLY sanctioned way, and the only door that writes the
+    counters (stage-2-review-gate.md, "Recording a verdict").
+
+    It does THREE things in one atomic write, and the whole point is that they cannot be done separately:
+
+      * bumps `review_rounds` — **always, on every verdict, and it is NEVER reset.** This is the loop's
+        only memory. Not the fix that follows, not a rebase, not a content change, not a re-triage may
+        take it back, because every one of those is a thing that HAPPENED and a round that HAPPENED is a
+        round the next wake must be able to see. There is no `--review-rounds` flag anywhere in this
+        tool to argue with;
+      * applies the TALLY — `satisfied` adds one to `reviews_ok`; `not-satisfied` VOIDS it (the SHA's
+        verdicts are worthless the moment one pass says the content is wrong);
+      * moves `ns_streak` — up on `not-satisfied`, back to 0 on a `satisfied` and on nothing else.
+
+    **The head SHA is checked against the row, and a mismatch is REFUSED.** A verdict describes the
+    content the pass RAN on. If the tip has moved since, that verdict describes content that is no longer
+    there — `review-pass.py verify` already refuses such a pass, and this is the same rule at the ledger
+    door, so a late verdict from a superseded attempt can never reach the tally through a driver that
+    skipped the check.
+
+    **It sets no cap and escalates nothing.** These are SENSORS. What reads them is a separate concern,
+    and building the reader into the sensor is how a counter comes to be reset by the thing that consumes
+    it.
+    """
+    header, rows = load(path)
+    pr = str(args.pr)
+    row = find_row(rows, pr)
+    if row is None:
+        fail(f"no row for pr {pr}; use `add-row` to create it")
+    if not SHA_RE.match(args.head_sha):
+        fail(f"--head-sha {args.head_sha!r} is not a git object id (40 LOWERCASE hex) — a verdict is "
+             f"recorded AGAINST a commit, and a value that cannot be one makes every 'does this verdict "
+             f"still describe the tip?' comparison unfalsifiable")
+    if row["head_sha"] != args.head_sha:
+        fail(f"this verdict ran on {args.head_sha} but pr {pr}'s head is {row['head_sha']} — it describes "
+             f"content that is no longer there. A verdict for a superseded SHA never counts: reconcile the "
+             f"row against `gh` first, and re-review the live tip")
+
+    rounds = counter(row, "review_rounds") + 1   # MONOTONE. Bumped before anything can go wrong below.
+    if args.verdict == SATISFIED:
+        tally, streak = counter(row, "reviews_ok") + 1, 0
+    else:
+        tally, streak = 0, counter(row, "ns_streak") + 1
+    row.update({"review_rounds": str(rounds), "reviews_ok": str(tally), "ns_streak": str(streak)})
     dump(path, header, rows)
     print(json.dumps(row))
     return 0
@@ -262,7 +434,13 @@ def cmd_list(path: Path, args) -> int:
     return 0
 
 
-TABLE_DEFAULT_FIELDS = ("pr", "slug", "tier", "reviews_ok", "ci", "attempts", "status", "head_sha")
+# `review_rounds` is in the DEFAULT view, and that is the point of it. `reviews_ok` is a gate tally that
+# returns to 0 on every NOT SATISFIED, so a PR twenty rounds deep and a PR on its first one render
+# IDENTICALLY — which is exactly what happened: the only reader who could see the spiral was a human who
+# happened to hold every round in one context, and stopping it took them. A round count in the status view
+# is how the next one is visible at a glance.
+TABLE_DEFAULT_FIELDS = ("pr", "slug", "tier", "reviews_ok", "review_rounds", "ci", "attempts", "status",
+                        "head_sha")
 
 # Display-only truncation: a 40-char SHA would dominate the table. The full
 # value stays on disk and in `get`; the table is a projection, not a source.
@@ -443,988 +621,39 @@ def cmd_table(path: Path, args) -> int:
     return 0
 
 
-# --- self-test: the fixtures ARE the contract ---------------------------------
+# --- self-test: the fixtures ARE the contract, and they are a SIBLING ---------
 #
-# `escape_cell` is the one piece of this file that is SECURITY-SHAPED: it exists so that no field value
-# can make the table say something the ledger never did. A sanitizer verified by eye is a sanitizer
-# verified by nothing — it is exactly the class of gap that turned `stage-2-ci.md`'s prose contract into
-# `ci-snapshot.py`'s executable one, for exactly the same reason. So the rules are executed here, with
-# fixtures that FAIL when the rule they pin is removed, and CI runs them.
+# THE SUITE LIVES IN `ledger-test.py`, NOT IN THIS FILE. A self-test that ships inside the thing it tests
+# is a self-test the thing it tests can quietly disarm — and this repo has watched a reviewer do exactly
+# that, twice, by editing a fixture table in memory and watching the suite still report green.
 #
-# EVERY FIXTURE MUST PIN A RULE — it must go red if its rule is deleted or weakened. A fixture that
-# would still pass with its rule gone tests nothing and manufactures false confidence. The `->` column
-# below names the rule each one stands on. (`ci-snapshot.py` has `mutate-ci-snapshot.py` to CHECK that
-# claim mechanically; this suite is small enough that the claim is checked by hand — see the PR.)
-#
-# The GRID checks are MECHANICAL, never by eye: `grid()` parses the printed table BACK and asserts the
-# declared column count and widths. Reading a table and going "looks fine" is how a forged column ships.
-
-# The adversarial values. Every one of them is a value the ledger can genuinely hold (`slug` is a PR
-# title; a branch name is free text), and every one is aimed at the grid's own syntax: the column
-# separator, the row separator, the run-config prefix — or at the ESCAPES THEMSELVES, which is the
-# attack the naive sanitizer misses (escape `|` but not `\`, and `a\|b` and `a|b` collide).
-HOSTILE = {
-    "pipe": "a|b",                          # forge a COLUMN
-    "escaped-pipe": "a\\|b",                # collides with the above unless `\` is doubled
-    "backslash": "\\",
-    "double-backslash": "\\\\",
-    "hex-lookalike": "\\x7c",               # spelled like the escape for U+007C ('|')
-    "newline-lookalike": "a\\nb",           # spelled like the escape for a newline
-    "newline": "a\nb",                      # forge a ROW
-    "crlf": "a\r\nb",
-    "tab": "a\tb",
-    "nul": "a\x00b",
-    "del": "a\x7fb",
-    "esc": "a\x1bb",                        # an ANSI escape: control chars never reach the terminal raw
-    "leading-hash": "#x",                   # forge a RUN-CONFIG line
-    "escaped-hash": "\\#x",                 # collides with the above unless `\` is doubled
-    "row-forge": "x\n1 | pwned | | | | | |",
-    "config-forge": "main\n# run_id: forged",
-    "column-forge": "a | b | c",
-    "empty-marker": "(no rows)",              # forge the EMPTY-LEDGER marker (the old, un-namespaced one)
-    "empty-marker-hash": "# (no rows)",       # …and the marker as it is spelled TODAY
-    "all-hidden-marker": TABLE_ALL_HIDDEN_MARKER,  # forge "the ledger is not empty, it is all hidden"
-    "hidden-notice": "# 99 merged rows hidden — pass --all to show every row",  # forge the HIDDEN COUNT
-    "rule-forge": "--------",                 # spelled like the rule line
-}
-
-# The WHITESPACE family — the attack on the LAYOUT rather than on the escapes. `ljust()` pads a cell with
-# spaces and `cmd_table` rstrips the printed line, so any whitespace at a value's EDGE is eaten by the
-# rendering and DISTINCT values print the same bytes. It is the quietest forgery of all: nothing is
-# fabricated, two rows simply become indistinguishable, and `""` reads as `"   "` reads as a cell that was
-# never there. `\xa0` and `\x85` are in here because `str.rstrip()` eats those too — "whitespace" is not
-# just the space bar.
-WHITESPACE = {
-    "empty": "",
-    "space": " ",
-    "spaces": "   ",
-    "plain": "a",
-    "trailing-space": "a ",
-    "trailing-spaces": "a  ",
-    "leading-space": " a",
-    "surrounded": " a ",
-    "interior-space": "a b",          # …and THIS one must stay byte-identical: it is an ordinary title
-    "nbsp": "a\xa0",                  # U+00A0 — invisible, and rstrip() eats it just the same
-    "nel": "a\x85",                   # U+0085 — a line break to str.splitlines(), whitespace to rstrip()
-    "ideographic-space": "a　",   # U+3000
-    "escaped-space": "a\\x20",        # spelled like the escape for a trailing space
-}
-
-HOSTILE.update(WHITESPACE)
-
-
-class SelfTestFailure(AssertionError):
-    """A rule this file claims to enforce does not hold."""
-
-
-def check(cond: bool, msg: str) -> None:
-    if not cond:
-        raise SelfTestFailure(msg)
-
-
-def run(argv: list[str]) -> "tuple[int, str, str]":
-    """Drive the REAL CLI in-process and capture (exit code, stdout, stderr).
-
-    The subcommands are exercised through `main()` — never by calling their internals — so the argparse
-    wiring (the `--fields` rejection, the dash/underscore aliases, `fail()`'s exit 1) is under test too.
-    """
-    out, err = io.StringIO(), io.StringIO()
-    try:
-        with redirect_stdout(out), redirect_stderr(err):
-            code = main(argv)
-    except SystemExit as exc:  # fail() -> 1; argparse -> 2
-        code = exc.code if isinstance(exc.code, int) else 1
-    return code, out.getvalue(), err.getvalue()
-
-
-def write_lines(path: Path, *lines: str) -> Path:
-    """Write a ledger RAW — bypassing dump(), so a fixture can hold what dump() would never emit."""
-    path.write_text("".join(line + "\n" for line in lines))
-    return path
-
-
-def header_line(**over: str) -> str:
-    return json.dumps({"type": "header", **HEADER_DEFAULTS, **over})
-
-
-def row_line(**over: str) -> str:
-    return json.dumps({"type": "row", **ROW_DEFAULTS, **over})
-
-
-def body_lines(out: str) -> "list[str]":
-    """The table's printed ROW lines, EXACTLY as they came out — the bytes a reader actually sees.
-
-    A `#` line is NOT a row: the markers and the hidden-count notice live in the namespace `escape_cell()`
-    proves no cell can enter, so dropping them here cannot drop a row (and a forged one — which prints as
-    `\\#…` — is still counted, which is the point).
-    """
-    body = out.split("\n\n", 1)[1].split("\n")
-    check(body[-1] == "", "the table output must end in a newline")
-    return [line for line in body[2:-1] if not line.startswith("#")]
-
-
-def notices(out: str) -> "list[str]":
-    """The table's OUT-OF-BAND lines below the grid — the markers and the hidden-count notice."""
-    body = out.split("\n\n", 1)[1].split("\n")[:-1]
-    return [line for line in body[2:] if line.startswith("#")]
-
-
-def grid(out: str, fields: "tuple[str, ...]") -> "tuple[list[str], list[int], list[list[str]]]":
-    """Parse the printed table BACK and assert its INTEGRITY. Returns (config lines, widths, cells).
-
-    Three properties, all checked here because all three are what a hostile value attacks:
-
-      * the run config is EXACTLY len(HEADER_FIELDS) lines, each opening `# <field>: `, and NO grid line
-        opens with `#` — except the out-of-band lines that are ALLOWED to (the empty/all-hidden markers and
-        the hidden-count notice), which must form a CONTIGUOUS TRAILING BLOCK below the rows — so no value
-        can forge a config line, a marker, or the notice, and none of them can hide BETWEEN rows;
-      * every column boundary is EXACTLY where the rule line's widths declare it, and every BARE `|` in
-        the line IS one of those boundaries — so no value can forge a column;
-      * the grid has exactly the lines it should — so no value can forge a row.
-
-    THE CELLS IT RETURNS ARE THE PRINTED BYTES. `cmd_table` writes `content + padding` in each column and
-    then rstrips the line, so this oracle recovers the CONTENT by removing that padding — and that
-    recovery is EXACT, but only because `escape_cell()` guarantees an escaped cell never ends in
-    whitespace, so every trailing space in a printed column IS padding.
-
-    IT MUST NEVER RE-PAD. The oracle this replaced did: it `ljust`ed the printed line back out to the full
-    grid width and handed back PADDED columns, and every fixture then compared them against an equally
-    `ljust`ed expectation. Both sides were re-padded, so a collision CAUSED BY the padding could not
-    appear on either — and one did: `""` and `"   "` printed the same blank cell, `"a"` and `"a "` the
-    same `a`, and this suite stayed green through it. An oracle that normalizes away the thing under test
-    is not an oracle. What it hands back is what was PRINTED; nothing else.
-    """
-    lines = out.split("\n")
-    check(lines[-1] == "", "the table output must end in a newline")
-    lines = lines[:-1]
-    n = len(HEADER_FIELDS)
-    check(len(lines) >= n + 3, f"expected {n} run-config lines, a blank line and a grid; got {lines!r}")
-    config, lines = lines[:n], lines[n:]
-    for f, line in zip(HEADER_FIELDS, config):
-        check(line.startswith(f"# {f}: "), f"run-config line for {f!r} is {line!r}")
-    check(lines[0] == "", f"a blank line must separate the run config from the grid; got {lines[0]!r}")
-    body = lines[1:]
-    check(len(body) >= 3, f"the grid needs a column-header line, a rule line and a body: {body!r}")
-    colhead, rule, rest = body[0], body[1], body[2:]
-    # Split the row region from the out-of-band lines below it. A '#' line is out-of-band BY CONSTRUCTION
-    # (escape_cell() escapes a leading '#', so no cell can open one), and the out-of-band lines are only
-    # ever printed AFTER the rows — so they must be a contiguous TRAILING block. A '#' line found before a
-    # row line, or on the column-header/rule line, means a cell reached the reserved namespace.
-    tail = len(rest)
-    while tail and rest[tail - 1].startswith("#"):
-        tail -= 1
-    rows, out_of_band = rest[:tail], rest[tail:]
-    for line in [colhead, rule, *rows]:
-        check(not line.startswith("#"), f"a GRID line opens with '#' — it reads as out-of-band text: {line!r}")
-    for line in out_of_band:
-        check(line in (TABLE_EMPTY_MARKER, TABLE_ALL_HIDDEN_MARKER) or line.startswith("# ") and "hidden" in line,
-              f"an unrecognised out-of-band line below the grid: {line!r}")
-    # An empty grid must SAY which empty it is — never nothing, and never the wrong one.
-    if not rows:
-        check(bool(out_of_band) and out_of_band[0] in (TABLE_EMPTY_MARKER, TABLE_ALL_HIDDEN_MARKER),
-              f"an empty grid printed no empty-marker at all: {out_of_band!r}")
-
-    runs = rule.split("-+-")
-    check(len(runs) == len(fields), f"the rule line declares {len(runs)} columns, not {len(fields)}: {rule!r}")
-    for r in runs:
-        check(bool(r) and set(r) == {"-"}, f"malformed rule line: {rule!r}")
-    widths = [len(r) for r in runs]
-    # Where each column STARTS, and where each separator's '|' sits — fixed by the declared widths alone.
-    starts = [sum(widths[:i]) + 3 * i for i in range(len(widths))]
-    full = starts[-1] + widths[-1]
-    pipes = {s - 2 for s in starts[1:]}
-
-    def cut(line: str) -> list[str]:
-        check(len(line) <= full, f"line is wider than the declared grid ({full}): {line!r}")
-        check(line == line.rstrip(), f"a printed line ends in whitespace — it was not rstripped: {line!r}")
-        # A BARE '|' anywhere but a declared separator is a forged column boundary. This is the check,
-        # not a column COUNT: it pins the boundary's POSITION, so a raw `|` smuggled into a cell cannot
-        # pass by landing where a separator would have been (a cell's bytes never reach that offset).
-        for j, ch in enumerate(line):
-            if ch == "|" and (j == 0 or line[j - 1] != "\\"):
-                check(j in pipes, f"a BARE '|' at offset {j} is not a declared column boundary: {line!r}")
-        cells = []
-        for i, (s, w) in enumerate(zip(starts, widths)):
-            if i:
-                check(line[s - 3:s - 1] == " |",
-                      f"the separator before column {i} is not where the widths declare it: {line!r}")
-                # rstrip() can reach the separator's TRAILING space — and only that — when every cell
-                # after it is empty. Nothing else of the separator is ever missing.
-                check(line[s - 1:s] in (" ", ""), f"malformed column separator before column {i}: {line!r}")
-            col = line[s:s + w]
-            # A column is printed at its declared width — UNLESS the line stops inside it, which is the
-            # one thing rstrip() can do: it eats the padding of the trailing columns (and, when they are
-            # all empty, the last separator's own trailing space with it). Anything shorter than that is
-            # a line that does not fit the grid it declares.
-            check(len(col) == w or len(line) <= s + w,
-                  f"column {i} is {len(col)} wide, not the declared {w}, and is not the stripped tail: {line!r}")
-            cells.append(col.rstrip())  # remove the PADDING — and only the padding: content never ends in ws
-        return cells
-
-    check(cut(colhead) == list(fields), f"the column-header line does not name the fields: {colhead!r}")
-    return config, widths, [cut(r) for r in rows]
-
-
-# --- the fixtures -------------------------------------------------------------
-#
-# Every fixture takes the same argument — its own scratch directory, handed to it by `self_test()`. A
-# fixture that asserts on a PURE function needs no file, so it names that argument `_tmp`: the signature is
-# fixed by the CASES table, and the leading underscore is how a parameter says it is deliberately unused
-# rather than forgotten.
-
-def t_escape_injective(_tmp: Path) -> None:
-    """Two DIFFERENT values NEVER render as the same cell.
-
-    A non-injective escaping is a NEW LIE inside the code written to stop lies: `a|b` and `a\\|b` are
-    different values, and if both print as `a\\|b` the table has silently merged them. Doubling the
-    BACKSLASH is the whole reason this holds — remove that one branch and the two collide immediately.
-    """
-    values = sorted(set(
-        list(HOSTILE.values())
-        + [chr(c) for c in range(0x20)] + ["\x7f", "|", "#", "\\", "\\\\", "\\|", "\\n", "\\r", "\\t"]
-        + ["\\x00", "\\x1b", "\\#", "-", "a", "pr1"]
-    ))
-    seen: dict[str, str] = {}
-    for raw in values:
-        cell = escape_cell(raw)
-        if cell in seen:
-            raise SelfTestFailure(
-                f"escape_cell is NOT INJECTIVE: {seen[cell]!r} and {raw!r} both render as {cell!r} — "
-                f"the table cannot be telling the truth about both"
-            )
-        seen[cell] = raw
-
-
-def t_render_injective(tmp: Path) -> None:
-    """Two DIFFERENT values never render as the same PRINTED ROW. Asserted on the BYTES, not on cells.
-
-    `t_escape_injective` pins injectivity of the SANITIZER. That is not the property anyone relies on —
-    what a reader sees is the LINE, and between `escape_cell()` and the line sit `ljust()` and `rstrip()`,
-    both of which destroy trailing whitespace. So injectivity was pinned one layer above where it was
-    broken: the sanitizer was injective, the RENDERING was not, and this suite was green. This fixture
-    pins it where it is actually consumed — the printed row lines of a real table must be pairwise
-    DISTINCT — and the WHITESPACE family is what it is aimed at.
-
-    Three shapes, because the layout eats whitespace differently in each: a ONE-COLUMN table (the cell
-    owns the whole line, and `rstrip()` hits it directly), the value in the FIRST of two columns (where
-    `ljust()`'s padding swallows it instead), and the value in the LAST column (both at once). Only `slug`
-    varies; the other column is constant, so a difference between two lines can come from NOTHING but the
-    value.
-    """
-    values = sorted(set(HOSTILE.values()))
-    path = tmp / "inj.jsonl"
-    write_lines(path, header_line(),
-                *(row_line(pr=str(i + 1), slug=v, ci="green") for i, v in enumerate(values)))
-    for fields in (("slug",), ("slug", "ci"), ("ci", "slug")):
-        code, out, err = run(["--file", str(path), "table", "--fields", ",".join(fields)])
-        check(code == 0, f"table exited {code}: {err!r}")
-        lines = body_lines(out)
-        check(len(lines) == len(values),
-              f"{fields}: {len(lines)} row lines printed for {len(values)} rows:\n{out}")
-        seen: dict[str, str] = {}
-        for raw, line in zip(values, lines):
-            if line in seen:
-                raise SelfTestFailure(
-                    f"{fields}: the RENDERING is NOT INJECTIVE: {seen[line]!r} and {raw!r} both print as "
-                    f"the row line {line!r} — the table cannot be telling the truth about both"
-                )
-            seen[line] = raw
-        # …and each line really is that value's escaped cell, not merely something distinct.
-        _, _, cells = grid(out, fields)
-        for raw, row in zip(values, cells):
-            check(row[fields.index("slug")] == escape_cell(raw),
-                  f"{fields}: {raw!r} printed as {row[fields.index('slug')]!r}, not {escape_cell(raw)!r}")
-
-
-def bare(cell: str) -> "list[str]":
-    """The characters in `cell` that are NOT part of an escape sequence and can forge the layout.
-
-    Walk the escaped text the way a reader does: a `\\` opens a two-character escape, so skip both. Every
-    OTHER character stands on its own — and a `|`, a line break or a control character standing on its
-    own is a grid metacharacter the sanitizer failed to defuse.
-
-    This is the check, and NOT `'|' not in cell`: the escaped form of a pipe IS `\\|`, which contains one.
-    What must never appear is a BARE one — and it is the bare one that can spell the ` | ` separator.
-    """
-    out, i = [], 0
-    while i < len(cell):
-        if cell[i] == "\\":
-            i += 2  # an escape sequence: its introducer plus the character it escapes
-            continue
-        if cell[i] == "|" or cell[i] == "\n" or cell[i] == "\r" or ord(cell[i]) < 0x20 or ord(cell[i]) == 0x7F:
-            out.append(cell[i])
-        i += 1
-    return out
-
-
-def t_escape_invariant(_tmp: Path) -> None:
-    """The escaped cell holds NO BARE grid metacharacter: no unescaped `|`, no line break, no control
-    char — and it never opens with `#`. This is what makes the ` | ` separator and the `# ` config prefix
-    mean ONE thing wherever they appear.
-
-    …and NO EDGE WHITESPACE, which is the layout's metacharacter rather than the syntax's: `ljust()` and
-    `rstrip()` eat it, so a cell that ends in whitespace is a cell whose printed bytes do not say what it
-    holds. That guarantee is also what lets `grid()` recover a cell by removing its padding — every
-    trailing space in a printed column IS padding, because content can no longer end in one.
-    """
-    for raw in sorted(set(list(HOSTILE.values()) + [chr(c) for c in range(0x21)]
-                          + ["\x7f", "\x85", "\xa0", " ", "　", " a ", "  ", "a\t"])):
-        cell = escape_cell(raw)
-        check(not bare(cell),
-              f"escape_cell({raw!r}) = {cell!r} still carries a BARE {bare(cell)!r} — it can forge the layout")
-        check(" | " not in cell,
-              f"escape_cell({raw!r}) = {cell!r} spells the column separator — it can forge a COLUMN")
-        check("\n" not in cell and "\r" not in cell,
-              f"escape_cell({raw!r}) = {cell!r} still carries a line break — it can forge a ROW")
-        check(not any(ord(c) < 0x20 or ord(c) == 0x7F for c in cell),
-              f"escape_cell({raw!r}) = {cell!r} still carries a control character")
-        check(not cell.startswith("#"),
-              f"escape_cell({raw!r}) = {cell!r} opens with '#' — it can forge a RUN-CONFIG line")
-        check(cell == cell.strip(),
-              f"escape_cell({raw!r}) = {cell!r} begins or ends with WHITESPACE — the padding eats it and "
-              f"the printed cell no longer says what the value is")
-        check(not any(c.isspace() and c != " " for c in cell),
-              f"escape_cell({raw!r}) = {cell!r} carries whitespace that is not a plain space — it is "
-              f"invisible, and rstrip() eats it")
-
-
-def t_escape_mapping(_tmp: Path) -> None:
-    r"""The escape TABLE itself, character by character — and ordinary text left BYTE-IDENTICAL.
-
-    The invariant above is satisfied by more than one escaping (drop the `\n` branch and a newline still
-    gets defused, as `\x0a`, by the control-char catch-all — safe, but no longer what this file says it
-    prints). The DISPLAY FORM is a promise too: `escape_cell`'s docstring says the value stays readable,
-    and every rule that is real but unpinned is a rule that can be deleted with the suite still green.
-    That is exactly the gap `mutate-ci-snapshot.py` exists to find, and it found this one here.
-    """
-    for raw, want in {
-        "\\": "\\\\",         # doubled — the escape that makes every OTHER escape unambiguous
-        "|": "\\|",
-        "\n": "\\n",
-        "\r": "\\r",
-        "\t": "\\t",
-        "\x00": "\\x00",      # anything else that is a control char: \xNN, lowercase hex
-        "\x1b": "\\x1b",
-        "\x7f": "\\x7f",
-    }.items():
-        check(escape_cell(raw) == want, f"escape_cell({raw!r}) = {escape_cell(raw)!r}, not {want!r}")
-
-    check(escape_cell("#x") == "\\#x", f"a LEADING '#' must be escaped: {escape_cell('#x')!r}")
-    check(escape_cell("a#b") == "a#b", f"a '#' that is not leading needs no escape: {escape_cell('a#b')!r}")
-
-    # Whitespace: escaped at the EDGES, where the layout eats it — and only there.
-    for raw, want in {
-        " ": "\\x20",
-        "   ": "\\x20\\x20\\x20",          # an all-whitespace value is ALL edge
-        "a ": "a\\x20",
-        " a": "\\x20a",
-        " a ": "\\x20a\\x20",
-        "a  b": "a  b",                    # INTERIOR spaces are untouched — a title is not a hex dump
-        "\xa0": "\\xa0",                   # not a plain space: escaped wherever it sits…
-        "a\xa0b": "a\\xa0b",               # …including the interior, where rstrip() would not reach it
-        "\x85": "\\x85",
-        "　": "\\u3000",                   # above 0xff, so \uNNNN
-        "#x ": "\\#x\\x20",                # the '#' escape and the whitespace escape compose
-        " #x": "\\x20#x",                  # …and a '#' behind an escaped space no longer opens the cell
-    }.items():
-        check(escape_cell(raw) == want, f"escape_cell({raw!r}) = {escape_cell(raw)!r}, not {want!r}")
-
-    # …and the whole reason this is escaping and not quoting: an ordinary value is untouched.
-    for plain in ("pr42", "fix/the-thing", "green", "-", "add a table view (#39)", "2026-07-13T10:00:00Z"):
-        check(escape_cell(plain) == plain, f"an ordinary value was mangled: {plain!r} -> {escape_cell(plain)!r}")
-
-
-def t_grid_integrity(tmp: Path) -> None:
-    """EVERY hostile value, in EVERY column, and the grid still parses back to the declared shape.
-
-    Checked MECHANICALLY (`grid()` re-parses the output). The `slug` column carries the hostile value
-    while `pr` sits FIRST — where a leading `#` would open a line — and a second row holds a benign
-    value, so a forged row/column has somewhere to be seen.
-    """
-    fields = ("slug", "pr", "ci")
-    for name, hostile in HOSTILE.items():
-        path = tmp / f"grid-{name}.jsonl"
-        write_lines(path, header_line(), row_line(pr="1", slug=hostile, ci="green"), row_line(pr="2"))
-        code, out, err = run(["--file", str(path), "table", "--fields", ",".join(fields)])
-        check(code == 0, f"[{name}] table exited {code}: {err!r}")
-        _, _, cells = grid(out, fields)
-        check(len(cells) == 2, f"[{name}] the value forged a ROW: {len(cells)} rows printed, not 2\n{out}")
-        check(cells[0] == [escape_cell(v) for v in (hostile, "1", "green")],
-              f"[{name}] the printed row is not the escaped row: {cells[0]!r}\n{out}")
-
-    # …and again with the hostile value FIRST, which is the only position that can open a line — the
-    # leading-'#' rule is pinned HERE (`grid()` rejects a body line starting with '#').
-    for name, hostile in HOSTILE.items():
-        path = tmp / f"first-{name}.jsonl"
-        write_lines(path, header_line(), row_line(pr="1", slug=hostile))
-        code, out, err = run(["--file", str(path), "table", "--fields", "slug,pr"])
-        check(code == 0, f"[{name}] table exited {code}: {err!r}")
-        grid(out, ("slug", "pr"))
-
-    # …and once more in a ONE-COLUMN table — the narrowest grid there is, where the cell has the whole
-    # line to ITSELF and every other line of the table is something it could try to be. This is the shape
-    # the empty-marker forgery lived in, so every hostile value is run through it: the grid must still
-    # parse back to EXACTLY ONE row, never to an empty ledger and never to a fabricated second one.
-    for name, hostile in HOSTILE.items():
-        path = tmp / f"one-{name}.jsonl"
-        write_lines(path, header_line(), row_line(pr="1", slug=hostile))
-        code, out, err = run(["--file", str(path), "table", "--fields", "slug"])
-        check(code == 0, f"[{name}] table exited {code}: {err!r}")
-        _, _, cells = grid(out, ("slug",))
-        check(cells == [[escape_cell(hostile)]],
-              f"[{name}] a one-column grid did not print exactly the one escaped row: {cells!r}\n{out}")
-
-
-def t_widths_from_escaped(tmp: Path) -> None:
-    """Column widths are computed from the ESCAPED text — i.e. from what is actually PRINTED.
-
-    Measure the RAW value and every escape makes its cell WIDER than the column reserved for it, so the
-    ` | ` separators stop lining up and the grid is ragged from the first hostile value on.
-    """
-    raw = "a|b|c|d"                 # 7 raw, 11 escaped: `a\|b\|c\|d`… wider than the field name
-    escaped = escape_cell(raw)
-    check(len(escaped) > len(raw) > len("slug"), "fixture is not measuring anything")
-    path = write_lines(tmp / "w.jsonl", header_line(), row_line(pr="1", slug=raw))
-    code, out, err = run(["--file", str(path), "table", "--fields", "slug,pr"])
-    check(code == 0, f"table exited {code}: {err!r}")
-    _, widths, _ = grid(out, ("slug", "pr"))
-    check(widths[0] == len(escaped),
-          f"the slug column is {widths[0]} wide but prints {len(escaped)} chars ({escaped!r}) — the width "
-          f"was measured on the RAW value ({len(raw)}), not the printed one")
-
-
-def t_config_cannot_be_forged(tmp: Path) -> None:
-    """A hostile header value cannot inject a line that READS AS a run-config line.
-
-    `base_branch` and `run_id` are free text too, and they are printed ABOVE the grid as `# <field>: …`.
-    An unescaped newline in one of them writes any line it likes into that block.
-    """
-    path = write_lines(
-        tmp / "cfg.jsonl",
-        header_line(run_id="real", base_branch="main\n# run_id: forged\n\npr | slug"),
-        row_line(pr="1"),
-    )
-    code, out, err = run(["--file", str(path), "table"])
-    check(code == 0, f"table exited {code}: {err!r}")
-    config, _, cells = grid(out, TABLE_DEFAULT_FIELDS)
-    check(len(cells) == 1, f"the header value forged a ROW: {out}")
-    forged = [line for line in out.split("\n") if line.startswith("# run_id:")]
-    check(forged == ["# run_id: real"],
-          f"a hostile base_branch forged a run-config line — lines opening '# run_id:': {forged!r}\n{out}")
-    check(config[0] == "# run_id: real", f"the real run_id line is {config[0]!r}")
-
-
-def t_truncation_is_display_only(tmp: Path) -> None:
-    """`table` shortens head_sha FOR DISPLAY. The ledger still holds all 40 chars — and `get` still says so.
-
-    A projection that quietly became the source of truth would hand every caller an 8-char prefix, and a
-    prefix is not a commit. Also pinned here: truncation happens BEFORE escaping, so a cut can never land
-    INSIDE an escape sequence and leave a dangling backslash behind.
-    """
-    sha = "abcdefg|" + "9" * 32  # the 8-char cut lands EXACTLY on a character that must be escaped
-    check(len(sha) == 40, "fixture sha is not 40 chars")
-    path = write_lines(tmp / "sha.jsonl", header_line(), row_line(pr="1", head_sha=sha))
-
-    code, out, err = run(["--file", str(path), "table"])
-    check(code == 0, f"table exited {code}: {err!r}")
-    _, _, cells = grid(out, TABLE_DEFAULT_FIELDS)
-    col = TABLE_DEFAULT_FIELDS.index("head_sha")
-    cell = cells[0][col]
-    # truncate(8) THEN escape -> `abcdefg\|` (9 chars). Escape THEN truncate(8) would cut the `\|` in
-    # half and print a DANGLING BACKSLASH — a cell that decodes to something the ledger never held.
-    check(cell == "abcdefg\\|",
-          f"head_sha renders as {cell!r}, not {'abcdefg\\|'!r} — escaping ran BEFORE truncation and the "
-          f"cut landed inside an escape sequence")
-    check((len(cell) - len(cell.rstrip("\\"))) % 2 == 0,
-          f"the rendered head_sha {cell!r} ends in a DANGLING escape — the cut split an escape sequence")
-    check(len(cell) < len(sha), "head_sha was not truncated for display at all")
-
-    # …and the FULL value is still what the ledger holds and what `get` returns.
-    code, out, _ = run(["--file", str(path), "get", "--pr", "1", "--field", "head_sha"])
-    check((code, out) == (0, sha + "\n"), f"get --field head_sha returned {out!r}, not the full 40 chars")
-    code, out, _ = run(["--file", str(path), "get", "--pr", "1"])
-    check(json.loads(out)["head_sha"] == sha, f"get returned a truncated head_sha: {out!r}")
-    check(sha in path.read_text(), "the ON-DISK row does not carry the full head_sha")
-
-
-def t_table_missing_file(tmp: Path) -> None:
-    """A ledger that does not exist yet is a FRESH START, not an error: defaults, and no rows."""
-    code, out, err = run(["--file", str(tmp / "nope.jsonl"), "table"])
-    check(code == 0, f"table on a missing file exited {code}: {err!r}")
-    config, _, cells = grid(out, TABLE_DEFAULT_FIELDS)
-    check(cells == [], f"a missing file produced rows: {cells!r}")
-    check(out.rstrip().endswith(TABLE_EMPTY_MARKER),
-          f"a missing file must still say {TABLE_EMPTY_MARKER!r}: {out!r}")
-    check(config[0] == "# run_id: -", f"a missing file must fall back to the defaults; got {config[0]!r}")
-
-
-def t_table_no_rows(tmp: Path) -> None:
-    """A header-only ledger prints the grid and says so — never an empty, wordless table."""
-    path = write_lines(tmp / "hdr.jsonl", header_line(run_id="r1"))
-    code, out, err = run(["--file", str(path), "table"])
-    check(code == 0, f"table exited {code}: {err!r}")
-    _, _, cells = grid(out, TABLE_DEFAULT_FIELDS)
-    check(cells == [], f"a header-only ledger produced rows: {cells!r}")
-    check(out.rstrip().endswith(TABLE_EMPTY_MARKER),
-          f"a header-only ledger must say {TABLE_EMPTY_MARKER!r}: {out!r}")
-
-
-def t_empty_marker_not_forgeable(tmp: Path) -> None:
-    """A REAL row can NEVER render a body that reads as an EMPTY ledger.
-
-    The marker is the one piece of out-of-band text `table` prints WHERE A ROW WOULD GO, so position
-    cannot distinguish it from a value — only the `#` namespace can, and `escape_cell()` is what keeps
-    values out of it. The attack is a one-column table (`--fields <f>`, the narrowest grid there is,
-    where a cell has the whole line to itself) holding the marker's own text: with an un-namespaced
-    marker the body came out BYTE-IDENTICAL to an empty ledger's, and a reader — human or parser — was
-    told the run had no PRs at all while a PR sat right there in the store.
-
-    Pins TWO rules at once, and goes red if EITHER is weakened: the marker must live in the `#`
-    namespace (drop the `#` and the `(no rows)` case below forges it), and `escape_cell()` must escape a
-    leading `#` (drop that branch and the `# (no rows)` case forges it instead).
-    """
-    empty = write_lines(tmp / "empty.jsonl", header_line(run_id="r1"))
-    for name, forgery in (
-        ("old-marker", "(no rows)"),
-        ("marker", TABLE_EMPTY_MARKER),
-        ("marker-no-space", TABLE_EMPTY_MARKER.replace("# ", "#")),
-        ("marker-padded", TABLE_EMPTY_MARKER + "   "),
-    ):
-        for field in ("reviews_ok", "slug", "pr"):
-            path = write_lines(tmp / f"{name}-{field}.jsonl", header_line(run_id="r1"),
-                               row_line(**{"pr": "1", field: forgery}))
-            code, out, err = run(["--file", str(path), "table", "--fields", field])
-            check(code == 0, f"[{name}/{field}] table exited {code}: {err!r}")
-
-            code, blank, _ = run(["--file", str(empty), "table", "--fields", field])
-            check(code == 0, "table on a header-only ledger must succeed")
-            check(out != blank,
-                  f"[{name}/{field}] a row holding {forgery!r} renders EXACTLY what an EMPTY ledger "
-                  f"renders — the marker is forgeable:\n{out}")
-
-            # …and mechanically: the grid must parse back to ONE row, not to an empty ledger.
-            _, _, cells = grid(out, (field,))
-            check(len(cells) == 1,
-                  f"[{name}/{field}] a row holding {forgery!r} parsed back as an EMPTY ledger "
-                  f"({len(cells)} rows) — the marker is forgeable:\n{out}")
-            check(cells[0] == [escape_cell(forgery)],
-                  f"[{name}/{field}] the printed row is not the escaped row: {cells[0]!r}\n{out}")
-            # …and no LINE of a non-empty table IS the marker. (The escaped cell may well CONTAIN the
-            # marker's text — `\# (no rows)` does — but it can never BE that line: the `\` is in front of
-            # it, which is the whole point of the namespace.)
-            body = out.split("\n\n", 1)[1].split("\n")
-            check(TABLE_EMPTY_MARKER not in body,
-                  f"[{name}/{field}] a line of a NON-EMPTY table is the empty marker:\n{out}")
-
-
-def t_table_hides_merged(tmp: Path) -> None:
-    """The DEFAULT view drops `merged` rows and shows everything else; `--all` shows the whole ledger.
-
-    This is the projection's ROW rule, and it is the mirror of the FIELD rule: a missing row is not a
-    missing PR. Both are pinned here — the default really does hide, and `--all` really does reveal.
-    """
-    path = write_lines(
-        tmp / "mix.jsonl", header_line(),
-        row_line(pr="1", status="merged"),
-        row_line(pr="2", status="in_review"),
-        row_line(pr="3", status="merged"),
-        row_line(pr="4", status="awaiting-user"),
-    )
-    code, out, err = run(["--file", str(path), "table"])
-    check(code == 0, f"table exited {code}: {err!r}")
-    _, _, cells = grid(out, TABLE_DEFAULT_FIELDS)
-    col = TABLE_DEFAULT_FIELDS.index("pr")
-    check([c[col] for c in cells] == ["2", "4"],
-          f"the default view did not hide exactly the merged rows: {[c[col] for c in cells]!r}\n{out}")
-
-    code, out, err = run(["--file", str(path), "table", "--all"])
-    check(code == 0, f"table --all exited {code}: {err!r}")
-    _, _, cells = grid(out, TABLE_DEFAULT_FIELDS)
-    check([c[col] for c in cells] == ["1", "2", "3", "4"],
-          f"--all did not show every row: {[c[col] for c in cells]!r}\n{out}")
-    check(notices(out) == [], f"--all hid nothing, so it must claim nothing was hidden: {notices(out)!r}")
-
-
-def t_table_hidden_count(tmp: Path) -> None:
-    """THE OMISSION IS NEVER SILENT — and the count it states is CORRECT.
-
-    A filtered view that does not say what it hid is a lie by omission: nothing is fabricated, the reader
-    is simply never told they are looking at a SUBSET. This repo has already shipped that bug twice (a
-    summary that quietly dropped its caveats, a `gh pr list` that silently capped at 30). So the notice is
-    pinned on all three counts: it APPEARS whenever a row is dropped, it is ABSENT when none is, and the
-    number in it is the number actually dropped — a notice with a wrong count is a new lie, not a fix.
-    """
-    for merged in range(0, 4):
-        for live in (0, 2):
-            path = write_lines(
-                tmp / f"n{merged}-{live}.jsonl", header_line(),
-                *(row_line(pr=str(i), status="merged") for i in range(1, merged + 1)),
-                *(row_line(pr=str(100 + i), status="in_review") for i in range(live)),
-            )
-            code, out, err = run(["--file", str(path), "table"])
-            check(code == 0, f"table exited {code}: {err!r}")
-            _, _, cells = grid(out, TABLE_DEFAULT_FIELDS)
-            check(len(cells) == live, f"[{merged}/{live}] {len(cells)} rows shown, not {live}\n{out}")
-
-            said = [n for n in notices(out)
-                    if n not in (TABLE_EMPTY_MARKER, TABLE_ALL_HIDDEN_MARKER)]  # the DISCLOSURE line only
-            if not merged:
-                check(said == [], f"[{merged}/{live}] nothing was hidden, yet the table says {said!r}\n{out}")
-                continue
-            check(said == [hidden_notice(merged)],
-                  f"[{merged}/{live}] the table hid {merged} row(s) and reported {said!r} — the omission "
-                  f"must be stated, and stated CORRECTLY\n{out}")
-            check(str(merged) in said[0] and "--all" in said[0],
-                  f"[{merged}/{live}] the notice names neither the count nor the flag: {said[0]!r}")
-            # …and the count is the number of rows `--all` reveals that the default did not. Derived from
-            # the OUTPUT, not from the fixture's own arithmetic — otherwise it only checks itself.
-            code, allout, _ = run(["--file", str(path), "table", "--all"])
-            _, _, allcells = grid(allout, TABLE_DEFAULT_FIELDS)
-            check(len(allcells) - len(cells) == merged,
-                  f"[{merged}/{live}] the notice claims {merged} hidden, but --all reveals "
-                  f"{len(allcells) - len(cells)} more rows")
-
-
-def t_table_all_merged(tmp: Path) -> None:
-    """EVERY row merged is a REAL end-of-run state — and it must NEVER read as an empty ledger.
-
-    The default view shows no rows here, exactly as it does for a ledger that adopted nothing. Those are
-    OPPOSITE facts — "nothing was ever adopted" vs "everything finished" — and printing `# (no rows)` for
-    both would tell the reader at the end of a successful run that their campaign did nothing at all.
-    So the two cases print DIFFERENT markers, and the all-hidden one also carries the count.
-    """
-    done = write_lines(tmp / "done.jsonl", header_line(run_id="r1"),
-                       row_line(pr="1", status="merged"), row_line(pr="2", status="merged"))
-    empty = write_lines(tmp / "none.jsonl", header_line(run_id="r1"))
-
-    code, out, err = run(["--file", str(done), "table"])
-    check(code == 0, f"table exited {code}: {err!r}")
-    _, _, cells = grid(out, TABLE_DEFAULT_FIELDS)
-    check(cells == [], f"an all-merged ledger showed rows by default: {cells!r}\n{out}")
-    check(notices(out) == [TABLE_ALL_HIDDEN_MARKER, hidden_notice(2)],
-          f"an all-merged ledger must say the ledger is NOT empty, and how many rows it hid: "
-          f"{notices(out)!r}\n{out}")
-    check(TABLE_EMPTY_MARKER not in out.split("\n"),
-          f"an all-merged ledger printed the EMPTY-LEDGER marker — it reads as 'no PRs at all':\n{out}")
-
-    code, blank, err = run(["--file", str(empty), "table"])
-    check(code == 0, f"table exited {code}: {err!r}")
-    check(notices(blank) == [TABLE_EMPTY_MARKER],
-          f"a genuinely empty ledger must say exactly {TABLE_EMPTY_MARKER!r}: {notices(blank)!r}\n{blank}")
-    check(out != blank,
-          f"an all-merged ledger renders EXACTLY what an EMPTY ledger renders — the two are "
-          f"indistinguishable:\n{out}")
-
-    # …and `--all` on the all-merged ledger brings every row back, with nothing left to disclose.
-    code, out, err = run(["--file", str(done), "table", "--all"])
-    check(code == 0, f"table --all exited {code}: {err!r}")
-    _, _, cells = grid(out, TABLE_DEFAULT_FIELDS)
-    check(len(cells) == 2, f"--all did not reveal the hidden rows: {cells!r}\n{out}")
-    check(notices(out) == [], f"--all hid nothing, yet the table claims it did: {notices(out)!r}")
-
-
-def t_table_aborted_is_visible(tmp: Path) -> None:
-    """`aborted` STAYS VISIBLE by default — the design call, pinned.
-
-    It is terminal like `merged`, so a rule that hid "terminal" rows would drop it. It must not: an
-    aborted PR is the run's UNFINISHED BUSINESS — left open for its owner, with an `abort-<id>.md` a human
-    is meant to read (`bailout-and-final-report.md`). Hiding the one row that still wants attention is the
-    exact failure a status view exists to prevent. Every non-`merged` status shows; only `merged` hides.
-    """
-    statuses = ("in_review", "aborted", "awaiting-api", "awaiting-user", "pending", "merged")
-    path = write_lines(tmp / "st.jsonl", header_line(),
-                       *(row_line(pr=str(i + 1), status=s) for i, s in enumerate(statuses)))
-    code, out, err = run(["--file", str(path), "table", "--fields", "pr,status"])
-    check(code == 0, f"table exited {code}: {err!r}")
-    _, _, cells = grid(out, ("pr", "status"))
-    shown = [c[1] for c in cells]
-    check(shown == [s for s in statuses if s != "merged"],
-          f"the default view hid something other than `merged` — it shows {shown!r}\n{out}")
-    check("aborted" in shown, "an ABORTED row was hidden — the run's unfinished business is invisible")
-    check(notices(out) == [hidden_notice(1)], f"exactly one merged row should be hidden: {notices(out)!r}")
-
-
-def t_table_all_composes_with_fields(tmp: Path) -> None:
-    """`--all` picks the ROWS, `--fields` picks the COLUMNS, and neither reads the other."""
-    path = write_lines(tmp / "cmp.jsonl", header_line(),
-                       row_line(pr="1", slug="done", status="merged"),
-                       row_line(pr="2", slug="live", status="in_review"))
-    fields = ("slug", "status")
-    code, out, err = run(["--file", str(path), "table", "--fields", ",".join(fields)])
-    check(code == 0, f"table exited {code}: {err!r}")
-    _, _, cells = grid(out, fields)
-    check(cells == [["live", "in_review"]], f"--fields did not hide the merged row: {cells!r}\n{out}")
-    check(notices(out) == [hidden_notice(1)],
-          f"--fields dropped the hidden-count notice: {notices(out)!r}\n{out}")
-
-    code, out, err = run(["--file", str(path), "table", "--all", "--fields", ",".join(fields)])
-    check(code == 0, f"table --all --fields exited {code}: {err!r}")
-    _, _, cells = grid(out, fields)
-    check(cells == [["done", "merged"], ["live", "in_review"]],
-          f"--all --fields did not show every row in the chosen columns: {cells!r}\n{out}")
-    check(notices(out) == [], f"--all hid nothing, yet the table claims it did: {notices(out)!r}")
-
-    # …and a hidden row is still only HIDDEN, never gone: `get` reads it by field name, as always.
-    code, got, _ = run(["--file", str(path), "get", "--pr", "1", "--field", "slug"])
-    check((code, got) == (0, "done\n"), f"a row the table hid is unreadable through `get`: {got!r}")
-
-
-def t_hidden_row_cannot_reach_the_output(tmp: Path) -> None:
-    """A HOSTILE VALUE IN A HIDDEN ROW CANNOT TOUCH THE VISIBLE TABLE — not one byte of it.
-
-    A row that is filtered out must be filtered out of the RENDERING, not merely out of the printed lines.
-    The subtle leak is the COLUMN WIDTHS: measure them over every row and a merged PR with a 40-char slug
-    silently widens a table it does not appear in — a value nobody printed, changing what the reader sees.
-    The blunt one is worse: a merged row carrying a `|`, a newline or a leading `#` could forge a column,
-    a row or a config line from behind the filter, where no one is even looking for it.
-
-    The oracle is EQUALITY AGAINST THE SAME LEDGER WITHOUT THOSE ROWS: every byte of the table — widths,
-    separators, config block, rows — must be identical, and the ONLY difference the hidden rows are allowed
-    to make anywhere in the output is the hidden-count line that discloses them.
-    """
-    live = (row_line(pr="1", slug="live-one", ci="green"), row_line(pr="2", slug="x"))
-    clean = write_lines(tmp / "clean.jsonl", header_line(), *live)
-    poisoned = write_lines(
-        tmp / "poisoned.jsonl", header_line(), *live,
-        *(row_line(pr=str(100 + i), slug=v, branch=v, ci=v, head_sha=v, status="merged")
-          for i, v in enumerate(sorted(set(HOSTILE.values())))),
-    )
-    n = len(set(HOSTILE.values()))
-    for fields in (None, "slug", "pr,slug,ci,head_sha"):
-        argv = ["table"] + (["--fields", fields] if fields else [])
-        code, want, err = run(["--file", str(clean), *argv])
-        check(code == 0, f"[{fields}] table exited {code}: {err!r}")
-        code, got, err = run(["--file", str(poisoned), *argv])
-        check(code == 0, f"[{fields}] table exited {code}: {err!r}")
-        check(notices(got) == [hidden_notice(n)],
-              f"[{fields}] the hidden hostile rows were not disclosed: {notices(got)!r}")
-        # strip ONLY the disclosure line; everything else must be byte-identical to the clean ledger
-        stripped = "".join(l + "\n" for l in got.split("\n")[:-1] if l != hidden_notice(n))
-        check(stripped == want,
-              f"[{fields}] a HIDDEN row changed the VISIBLE output — it reached the widths or the grid.\n"
-              f"--- with hidden rows ---\n{stripped}--- without them ---\n{want}")
-
-    # …and --all still renders every one of them safely: the filter is not what makes them harmless.
-    code, out, err = run(["--file", str(poisoned), "table", "--all", "--fields", "slug,pr"])
-    check(code == 0, f"table --all exited {code}: {err!r}")
-    _, _, cells = grid(out, ("slug", "pr"))
-    check(len(cells) == n + 2, f"--all did not print every row exactly once: {len(cells)} of {n + 2}\n{out}")
-
-
-def t_out_of_band_lines_not_forgeable(tmp: Path) -> None:
-    """No ROW can forge the ALL-HIDDEN marker or the HIDDEN-COUNT notice.
-
-    They are the empty-marker problem again, and they get the same answer: both are printed WHERE A ROW
-    WOULD GO, so position cannot distinguish them from a value — only the `#` namespace can, and
-    `escape_cell()` is what keeps values out of it. A forged `# 0 merged rows hidden` would be the worst
-    of the three: it does not merely misreport the ledger, it tells the reader THE VIEW IS COMPLETE while
-    rows sit hidden behind it — un-disclosing the very omission the notice exists to disclose.
-
-    Pins the `#` namespace for BOTH new lines: drop the leading-`#` escape and every case below forges one.
-    """
-    # a ledger whose default view IS all-hidden, and one that hides a row and says so — the two outputs a
-    # forgery would have to imitate.
-    all_hidden = write_lines(tmp / "ah.jsonl", header_line(run_id="r1"), row_line(pr="9", status="merged"))
-    for name, forgery in (
-        ("all-hidden-marker", TABLE_ALL_HIDDEN_MARKER),
-        ("notice", hidden_notice(1)),
-        ("notice-zero", "# 0 merged rows hidden — pass --all to show every row"),
-        ("notice-padded", hidden_notice(1) + "  "),
-    ):
-        for field in ("slug", "branch", "pr"):
-            path = write_lines(tmp / f"{name}-{field}.jsonl", header_line(run_id="r1"),
-                               row_line(**{"pr": "1", field: forgery}))
-            code, out, err = run(["--file", str(path), "table", "--fields", field])
-            check(code == 0, f"[{name}/{field}] table exited {code}: {err!r}")
-            # the row is VISIBLE and nothing is hidden — so the table must disclose NOTHING…
-            _, _, cells = grid(out, (field,))
-            check(cells == [[escape_cell(forgery)]],
-                  f"[{name}/{field}] the printed row is not the escaped row: {cells!r}\n{out}")
-            check(notices(out) == [],
-                  f"[{name}/{field}] a ROW forged an out-of-band line: {notices(out)!r}\n{out}")
-            # …and no LINE of it IS one of the out-of-band lines (the escaped cell may CONTAIN the text —
-            # `\# 1 merged row hidden…` does — but the `\` in front is exactly what the namespace buys).
-            body = out.split("\n\n", 1)[1].split("\n")
-            for line in (TABLE_ALL_HIDDEN_MARKER, hidden_notice(1), TABLE_EMPTY_MARKER):
-                check(line not in body,
-                      f"[{name}/{field}] a line of a table with a VISIBLE row IS {line!r}:\n{out}")
-
-            code, blank, _ = run(["--file", str(all_hidden), "table", "--fields", field])
-            check(code == 0, "table on an all-hidden ledger must succeed")
-            check(out != blank,
-                  f"[{name}/{field}] a VISIBLE row holding {forgery!r} renders EXACTLY what an ALL-HIDDEN "
-                  f"ledger renders — the marker is forgeable:\n{out}")
-
-
-def t_fields_rejected(tmp: Path) -> None:
-    """`--fields` is CHECKED, and an EMPTY `--fields` is a malformed field list — never 'omitted'.
-
-    `args.fields is not None` is the rule: falsiness would read `--fields ''` as "the user asked for the
-    defaults" and print a table they did not ask for.
-    """
-    path = write_lines(tmp / "f.jsonl", header_line(), row_line(pr="1"))
-    for fields, needle in ((("--fields", ""), "unknown field ''"), (("--fields", "nope"), "unknown field 'nope'")):
-        code, out, err = run(["--file", str(path), "table", *fields])
-        check(code == 1, f"table {fields!r} exited {code}, not 1 — it was ACCEPTED:\n{out}")
-        check(needle in err, f"table {fields!r} failed with {err!r}, which does not mention {needle!r}")
-
-
-def t_fields_duplicate(tmp: Path) -> None:
-    """A field named TWICE prints TWICE — and the grid still declares the columns it actually has."""
-    path = write_lines(tmp / "d.jsonl", header_line(), row_line(pr="1", slug="s"))
-    code, out, err = run(["--file", str(path), "table", "--fields", "pr,pr"])
-    check(code == 0, f"table exited {code}: {err!r}")
-    _, _, cells = grid(out, ("pr", "pr"))
-    check(cells[0] == ["1", "1"], f"a duplicated field did not print twice: {cells!r}")
-
-
-def t_unknown_record_type(tmp: Path) -> None:
-    """A record type we do not recognise is REJECTED, never skipped.
-
-    A skipped row is a row nothing reads — and if the campaign ever writes a type this accessor has not
-    learned, silently dropping it loses a PR's whole state without a word.
-    """
-    path = write_lines(tmp / "u.jsonl", header_line(), json.dumps({"type": "note", "pr": "1"}))
-    code, _, err = run(["--file", str(path), "list"])
-    check(code == 1, f"an unknown record type was ACCEPTED (exit {code})")
-    check("unknown record type" in err, f"failed for the wrong reason: {err!r}")
-
-
-def t_duplicate_row(tmp: Path) -> None:
-    """Two rows for one PR is a CORRUPT ledger — `find_row` would silently read the first and `set` would
-    update the first while the second stayed behind, disagreeing, forever."""
-    path = write_lines(tmp / "dup.jsonl", header_line(), row_line(pr="1"), row_line(pr="1"))
-    code, _, err = run(["--file", str(path), "list"])
-    check(code == 1, f"a duplicate row was ACCEPTED (exit {code})")
-    check("duplicate row for pr 1" in err, f"failed for the wrong reason: {err!r}")
-    # …and the duplicate is caught on the NORMALIZED key: a JSON number 1 and the string "1" are ONE pr.
-    path = write_lines(tmp / "dup2.jsonl", header_line(),
-                       json.dumps({"type": "row", "pr": 1}), row_line(pr="1"))
-    code, _, err = run(["--file", str(path), "list"])
-    check(code == 1, f"a duplicate row keyed 1 vs \"1\" was ACCEPTED (exit {code})")
-    check("duplicate row for pr 1" in err, f"failed for the wrong reason: {err!r}")
-
-
-def t_missing_header(tmp: Path) -> None:
-    """A ledger that EXISTS must carry a header. A missing FILE is a fresh start; a present-but-headerless
-    one is CORRUPT — resetting it to defaults would drop the run config and every row without a word."""
-    path = write_lines(tmp / "nohdr.jsonl", row_line(pr="1"))
-    code, _, err = run(["--file", str(path), "list"])
-    check(code == 1, f"a headerless ledger was ACCEPTED (exit {code})")
-    check("first record must be the header" in err, f"failed for the wrong reason: {err!r}")
-
-    empty = write_lines(tmp / "empty.jsonl", "", "   ")
-    code, _, err = run(["--file", str(empty), "list"])
-    check(code == 1, f"an all-blank ledger was ACCEPTED (exit {code})")
-    check("missing header record" in err, f"failed for the wrong reason: {err!r}")
-
-    two = write_lines(tmp / "two.jsonl", header_line(run_id="a"), row_line(pr="1"), header_line(run_id="b"))
-    code, _, err = run(["--file", str(two), "list"])
-    check(code == 1, f"a SECOND header was ACCEPTED (exit {code})")
-    check("second/out-of-order header" in err, f"failed for the wrong reason: {err!r}")
-
-
-def t_id_is_derived(tmp: Path) -> None:
-    """`id` is ALWAYS `pr<pr>` — recomputed on load, never trusted from the file and never caller-set."""
-    path = write_lines(tmp / "id.jsonl", header_line(), json.dumps({"type": "row", "pr": "7", "id": "pwned"}))
-    code, out, err = run(["--file", str(path), "get", "--pr", "7", "--field", "id"])
-    check((code, out) == (0, "pr7\n"), f"a forged on-disk id survived load(): {out!r} {err!r}")
-
-    fresh = tmp / "id2.jsonl"
-    code, out, err = run(["--file", str(fresh), "add-row", "--pr", "9"])
-    check(code == 0, f"add-row exited {code}: {err!r}")
-    check(json.loads(out)["id"] == "pr9", f"add-row did not derive id from pr: {out!r}")
-    code, out, _ = run(["--file", str(fresh), "get", "--pr", "9", "--field", "id"])
-    check(out == "pr9\n", f"the id did not survive the round trip: {out!r}")
-
-
-def t_defaults_backfill(tmp: Path) -> None:
-    """A row written BEFORE a field existed still reads back complete — every absent field takes its default.
-
-    This is what lets a field be ADDED to the schema without migrating the ledger: an old row is not a
-    broken row. Drop the back-fill and every accessor starts raising KeyError on real, existing state.
-    """
-    path = write_lines(tmp / "old.jsonl", header_line(), json.dumps({"type": "row", "pr": "3", "slug": "old"}))
-    code, out, err = run(["--file", str(path), "get", "--pr", "3"])
-    check(code == 0, f"get on a pre-schema row exited {code}: {err!r}")
-    row = json.loads(out)
-    check(set(row) == set(ROW_FIELDS), f"get did not project onto ROW_FIELDS: {sorted(row)}")
-    for f in ("tier", "status", "ci", "attempts"):
-        check(row[f] == ROW_DEFAULTS[f], f"{f} back-filled as {row[f]!r}, not the default {ROW_DEFAULTS[f]!r}")
-    check(row["slug"] == "old", "the field the row DID carry was overwritten by its default")
-    # A header written before a field existed back-fills the same way.
-    code, out, _ = run(["--file", str(path), "header", "get", "reviewer"])
-    check(out == HEADER_DEFAULTS["reviewer"] + "\n", f"header default did not back-fill: {out!r}")
-
-
-def t_values_are_strings(tmp: Path) -> None:
-    """Every ingested value is coerced to `str`, so the on-disk JSON's type cannot change a comparison."""
-    path = write_lines(tmp / "num.jsonl", header_line(),
-                       json.dumps({"type": "row", "pr": 11, "reviews_ok": 2, "worktree_owned": True}))
-    code, out, err = run(["--file", str(path), "get", "--pr", "11"])
-    check(code == 0, f"get exited {code}: {err!r}")
-    row = json.loads(out)
-    check(all(isinstance(v, str) for v in row.values()), f"a non-string value survived load(): {row!r}")
-    check(row["reviews_ok"] == "2" and row["worktree_owned"] == "True", f"bad coercion: {row!r}")
-    code, out, _ = run(["--file", str(path), "list", "--where", "reviews_ok=2"])
-    check(out == "11\n", f"--where could not match a value that was a JSON number on disk: {out!r}")
-
-
-CASES = [
-    ("escape-injective", "escape_cell is INJECTIVE — no two values collide", t_escape_injective),
-    ("render-injective", "the PRINTED ROWS are injective too — no two values print the same line", t_render_injective),
-    ("escape-invariant", "the escaped cell holds no bare |, newline, control char, or leading #", t_escape_invariant),
-    ("escape-mapping", "the escape table, char by char — and ordinary values left byte-identical", t_escape_mapping),
-    ("grid-integrity", "no hostile value forges a column, a row, or a config line", t_grid_integrity),
-    ("widths-from-escaped", "column widths measure the ESCAPED text — what is printed", t_widths_from_escaped),
-    ("config-not-forgeable", "a hostile header value cannot inject a `# <field>:` line", t_config_cannot_be_forged),
-    ("truncation-display-only", "table truncates head_sha; disk and `get` keep all 40 — and the cut precedes the escape", t_truncation_is_display_only),
-    ("table-missing-file", "a missing ledger is a fresh start: defaults, `# (no rows)`", t_table_missing_file),
-    ("table-no-rows", "a header-only ledger says `# (no rows)`", t_table_no_rows),
-    ("empty-marker-safe", "no ROW can forge the empty-ledger marker — it lives where no cell can reach", t_empty_marker_not_forgeable),
-    ("table-hides-merged", "the default view hides merged rows; --all shows every row", t_table_hides_merged),
-    ("table-hidden-count", "the omission is NEVER silent — the hidden count is stated, and it is correct", t_table_hidden_count),
-    ("table-all-merged", "an all-merged ledger never reads as an EMPTY one — different marker, plus the count", t_table_all_merged),
-    ("table-aborted-visible", "aborted is terminal but STAYS VISIBLE — only `merged` hides", t_table_aborted_is_visible),
-    ("table-all-and-fields", "--all picks the rows, --fields the columns — they compose", t_table_all_composes_with_fields),
-    ("hidden-row-inert", "a hostile value in a HIDDEN row cannot change one byte of the visible table", t_hidden_row_cannot_reach_the_output),
-    ("out-of-band-safe", "no ROW can forge the all-hidden marker or the hidden-count notice", t_out_of_band_lines_not_forgeable),
-    ("fields-rejected", "--fields is checked; an EMPTY --fields is malformed, not omitted", t_fields_rejected),
-    ("fields-duplicate", "a field named twice prints twice, and the grid still parses", t_fields_duplicate),
-    ("unknown-record-type", "an unrecognised record type is REJECTED, never skipped", t_unknown_record_type),
-    ("duplicate-row", "two rows for one pr is a corrupt ledger — on the NORMALIZED key", t_duplicate_row),
-    ("missing-header", "a present ledger must carry exactly one header, FIRST", t_missing_header),
-    ("id-derived", "id is always pr<pr> — never trusted from the file, never caller-set", t_id_is_derived),
-    ("defaults-backfill", "a row written before a field existed still reads back complete", t_defaults_backfill),
-    ("values-are-strings", "every ingested value is coerced to str", t_values_are_strings),
-]
+# `self-test` loads that sibling by a `__file__`-relative path — never the cwd, which is the reviewer's
+# worktree while the skill's scripts live wherever the plugin is installed — and **FAILS LOUDLY IF IT IS
+# NOT THERE.** A check that cannot find the thing it checks must FAIL, never pass: reporting success
+# because zero fixtures ran is a green derived from zero evidence, which is the exact bug the fixtures on
+# the other side of this call exist to prevent.
+
+
+def load_test_module():
+    if not TEST_PY.exists():
+        fail(
+            f"the fixture suite is NOT AT {TEST_PY} — `self-test` has NO SUBJECT, and a check that cannot "
+            f"find the thing it tests must FAIL, never pass. Reporting success here would be a green "
+            f"derived from zero evidence, which is the bug this suite exists to prevent"
+        )
+    spec = importlib.util.spec_from_file_location("ledger_test", TEST_PY)
+    if spec is None or spec.loader is None:  # pragma: no cover - a broken checkout, not a verdict
+        fail(f"cannot load the fixture suite at {TEST_PY} — refusing to report a self-test that never ran")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def self_test() -> int:
-    """Run every fixture. Exit 0 iff every rule this file claims to enforce actually holds."""
-    failures = 0
+    """Run the sibling suite against THIS module. Exit 0 iff every rule this file claims actually holds."""
+    tests = load_test_module()
     with tempfile.TemporaryDirectory() as tmpdir:
-        for name, rule, fn in CASES:
-            work = Path(tmpdir) / name
-            work.mkdir()
-            try:
-                fn(work)
-            except SelfTestFailure as exc:
-                print(f"FAIL     {name:24} -> {rule}\n         {exc}")
-                failures += 1
-            except Exception as exc:  # noqa: BLE001 — a fixture that CRASHES has not passed
-                # A crash is not a verdict. If the accessor raises where a fixture expected an answer,
-                # that fixture has FAILED — it must never be mistaken for a rule nothing tests.
-                print(f"FAIL     {name:24} -> {rule}\n         raised {type(exc).__name__}: {exc}")
-                failures += 1
-            else:
-                print(f"ok       {name:24} -> {rule}")
-    print()
-    if failures:
-        print(f"{failures} check(s) FAILED — the ledger's contract is broken.")
-        return 1
-    print(f"all {len(CASES)} fixtures hold — the ledger's contract is intact.")
-    return 0
+        return tests.run(sys.modules[__name__], Path(tmpdir))
 
 
 # --- cli ----------------------------------------------------------------------
@@ -1444,8 +673,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     def add_row_field_opts(p) -> None:
         for name in ROW_FIELDS:
-            if name in ("pr", "id"):
-                continue  # pr is the row key (via --pr); id is always derived
+            # pr is the row key (via --pr); id is derived; VERDICT_OWNED has no flag AT ALL, at either
+            # door — `review_rounds` is the loop's memory, and the only way to guarantee nothing resets it
+            # is to give nothing a way to write it (`settable`).
+            if not settable(name):
+                continue
             # Canonical flag is dash-form (--reviews-ok); accept the underscore
             # alias too. dest stays the underscore field name so getattr(args,
             # name) in cmd_set/cmd_add_row keeps working.
@@ -1461,6 +693,16 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("set", help="update named fields on the row for --pr")
     s.add_argument("--pr", required=True, help="PR number (row key)")
     add_row_field_opts(s)
+
+    # The ONE door that records a review verdict — and the only writer of `review_rounds`/`ns_streak`.
+    v = sub.add_parser("verdict", help="record ONE landed review verdict: bumps review_rounds, applies "
+                                       "the tally, moves ns_streak — atomically. NEVER set reviews_ok by hand")
+    v.add_argument("--pr", required=True, help="PR number (row key)")
+    v.add_argument("--head-sha", dest="head_sha", required=True,
+                   help="the SHA the review pass RAN on — must equal the row's head_sha, or the verdict "
+                        "describes content that is no longer there and is refused")
+    v.add_argument("--verdict", required=True, choices=VERDICTS,
+                   help="the reviewer's VERDICT line, as the orchestrator read it")
 
     g = sub.add_parser("get", help="print the row for --pr as JSON, or one field")
     g.add_argument("--pr", required=True, help="PR number (row key)")
@@ -1490,7 +732,7 @@ def main(argv: list[str]) -> int:
         parser.error("the following arguments are required: --file")
     path = Path(args.file)
     handlers = {
-        "header": cmd_header, "add-row": cmd_add_row, "set": cmd_set,
+        "header": cmd_header, "add-row": cmd_add_row, "set": cmd_set, "verdict": cmd_verdict,
         "get": cmd_get, "list": cmd_list, "table": cmd_table,
     }
     return handlers[args.cmd](path, args)
