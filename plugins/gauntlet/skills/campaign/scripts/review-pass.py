@@ -22,7 +22,8 @@ So this file is the review pass's artifacts, executed:
   identity    write a pass's `pass_identity` line                 (the SHA stops being a `printf`)
   emit        append ONE progress event                           (what `emit-progress.py` calls)
   verify      READ a pass and answer: DOES THIS PASS COUNT?       (the tally stops being by eye)
-  self-test   the fixtures, and the proof that every rule is pinned by one
+  self-test   the fixtures, the proof that every rule is pinned by one, and every JSON example in the
+              docs fed THROUGH the tool (a documented example the tool refuses is a trap, not a typo)
 
 WHAT `verify` DOES NOT DO — AND THE LINE IS DELIBERATE. It never opens `review-<pr>-<n>.txt`, never
 parses the reviewer's prose, and CANNOT SAY `SATISFIED`. Its whole answer is about the pass's MECHANICS:
@@ -36,12 +37,23 @@ anything. A bug in a tool that can only refuse costs a re-review; a bug in a too
 merge a PR nobody reviewed. **`ok` IS NOT `SATISFIED`.** It means the pass is well-formed enough for its
 verdict to be *read* — a NECESSARY condition for counting it, never a sufficient one.
 
-BOTH DOORS, ALWAYS. Every rule here holds where the COMMANDS enter (`emit`, `identity`, `plan-add`) AND
-where the DATA enters (`verify`). An invariant enforced only at the write door is not enforced: the
-progress file is a plaintext file in a directory the reviewer can write to, the emit-only rule is prose,
-and a hand-written line lands in it just fine. So `verify` re-derives EVERYTHING from the bytes and
-assumes nothing about how they got there — it never trusts that the write tool was used. The write side
-and the read side run the SAME functions, so there is no second implementation to drift.
+BOTH DOORS, ALWAYS — AND ONE IMPLEMENTATION, NEVER TWO. Every rule here holds where the COMMANDS enter
+(`emit`, `identity`, `plan-add`) AND where the DATA enters (`verify`), and it holds by the SAME statement
+at both. Those are two halves of one discipline, and each half has already failed on its own:
+
+  * a rule enforced only at the WRITE door is not enforced. The progress file is a plaintext file in a
+    directory the reviewer can write to, the emit-only rule is prose, and a hand-written line lands in it
+    just fine. So `verify` re-derives EVERYTHING from the bytes and assumes nothing about how they got
+    there — it never trusts that the write tool was used.
+  * a rule enforced only at the READ door is a trap. The SECOND `done` was refused by `verify` and WRITTEN
+    by `emit`: exit 0, and the pass thrown away fifteen minutes later for a defect the tool had just
+    helped the reviewer commit. The reviewer was told it had succeeded.
+  * and a rule enforced at both doors by TWO implementations is a rule waiting to acquire two definitions.
+
+So there are no per-door copies. `check_event`, `check_unit`, `check_identity_shape`, `check_progress` and
+`plan_units` ARE the rules; `emit`, `identity` and `plan-add` call exactly the functions `verify` calls —
+`emit` even replays the file it is appending to through `walk_progress`, the same walk `verify` performs,
+so it can never append a line to a file `verify` would refuse to read.
 
 THE VERDICTS. Exactly one is printed, and there is no "counts, BUT…":
 
@@ -156,7 +168,14 @@ NAME_RE = re.compile(r"^review-(?P<pr>\d+)-(?P<pass>\d+)(?:\.a(?P<attempt>[2-9]\
 # The plan is PER-PASS, not per-attempt: a relaunch reuses it unchanged (stage-2-review-gate.md). So it is
 # DERIVED from the progress path and never passed separately — one fewer door, and no way to point a pass
 # at somebody else's plan.
+#
+# Deriving it means the READ side enforces the plan's name BY CONSTRUCTION: the only plan `verify` can ever
+# open is the one at this name. The WRITE side took a `--file` and wrote wherever it was pointed — so
+# `plan-add --file plan.jsonl` succeeded, and produced a plan NOTHING WILL EVER READ. `verify` would then
+# refuse the pass for a MISSING plan while its units sat on disk a filename away. Enforced by construction
+# at one door and not at all at the other is the same asymmetry as any other; `PLAN_NAME_RE` closes it.
 PLAN_NAME = "review-{pr}-{pass}.plan.jsonl"
+PLAN_NAME_RE = re.compile(r"^review-\d+-\d+\.plan\.jsonl$")
 
 
 class Defect(Exception):
@@ -292,23 +311,37 @@ def check_unit(unit: object, where: str) -> None:
         )
 
 
+def plan_units(records: "list[dict]", name: str) -> "dict[str, dict]":
+    """These plan records' units, by id — each validated, and a REPEATED id refused. ONE implementation,
+    and therefore the same rule at both doors: `load_plan` runs it over the file the reviewer is judged
+    against, and `cmd_plan_add` runs it over that file PLUS the unit it is about to append, so the write
+    door refuses a duplicate id by the SAME statement the read door refuses it with.
+    """
+    units: dict[str, dict] = {}
+    for n, rec in enumerate(records, start=1):
+        check_unit(rec, f"{name} line {n}")
+        if rec["id"] in units:
+            # MUTATE:plan-duplicate-id:pass
+            raise Defect(
+                f"{name} line {n}: duplicate unit id {rec['id']!r} — a `done` naming it would be "
+                f"ambiguous about WHICH unit was checked"
+            )
+        units[rec["id"]] = rec
+    return units
+
+
 def load_plan(path: Path) -> "dict[str, dict]":
     """The plan's units, by id. A plan is what makes `done` MEAN something — so it is validated, not read.
 
     An EMPTY plan is refused, and that rule carries the most weight of any here: "every planned unit is
     done" is VACUOUSLY TRUE of a plan with no units, so a pass that reviewed NOTHING would verify `ok`.
     A completeness check whose input can be empty is not a check.
+
+    Emptiness is the ONE rule here that is deliberately read-only, and it is not one-sided: `plan-add` is
+    how a plan STOPS being empty, so a write door that refused an empty plan could never write the first
+    unit. The rule is about a plan a pass is JUDGED against, and that is the read door's question.
     """
-    units: dict[str, dict] = {}
-    for n, rec in enumerate(read_lines(path, "plan"), start=1):
-        check_unit(rec, f"{path.name} line {n}")
-        if rec["id"] in units:
-            # MUTATE:plan-duplicate-id:pass
-            raise Defect(
-                f"{path.name} line {n}: duplicate unit id {rec['id']!r} — a `done` naming it would be "
-                f"ambiguous about WHICH unit was checked"
-            )
-        units[rec["id"]] = rec
+    units = plan_units(read_lines(path, "plan"), path.name)
     if not units:
         # MUTATE:plan-empty:pass
         raise Defect(
@@ -385,6 +418,78 @@ def check_event(rec: dict, where: str) -> None:
             f"{where}: a {DONE!r} event carries CONCRETE evidence (a file:line, a backticked span, a "
             f"filename) — blank evidence is a claim that a unit was checked, with nothing behind it"
         )
+
+
+def check_progress(rec: dict, units: "dict[str, dict]", announced: "set[str]", done: "dict[str, str]",
+                   where: str) -> None:
+    """ONE unit-progress event, judged against the PLAN and against everything the file ALREADY says.
+
+    **This is the single implementation of the three rules that govern a `started`/`done`, and BOTH doors
+    call it**: `cmd_emit` before it appends, and `walk_progress` — which is what `verify` re-derives from
+    the bytes — as it replays the file. It is one function and not three checks written twice, because the
+    two failures are the same failure: a rule enforced at ONE door is not enforced, and a rule enforced at
+    both doors by TWO implementations is a rule waiting to acquire two definitions.
+
+    The SECOND `done` proved both halves at once. `verify` refused it and `emit` WROTE it — the reviewer
+    got exit 0, the file grew two accounts of one unit, and the pass was thrown away fifteen minutes later
+    for a defect the tool had just helped it commit.
+
+    ORDER IS PART OF THE RULE. Unplanned first: a reviewer self-granting a unit must be told the unit is
+    not in the plan — telling it "no earlier `started`" would be true, and the wrong lesson.
+    """
+    unit = rec["unit"]
+    if unit not in units:
+        # MUTATE:unplanned-unit:pass
+        raise Defect(
+            f"{where}: progress for unit {unit!r}, which is NOT IN THE PLAN — the reviewer never rewrites "
+            f"the plan or self-grants units, and progress counts only when it references a PLANNED unit. "
+            f"Planned: {sorted(units)}. If the plan is missing a dimension, raise a plan_amendment_request "
+            f"instead"
+        )
+    if rec["status"] != DONE:
+        return
+    if unit not in announced:
+        # MUTATE:done-without-started:pass
+        raise Defect(
+            f"{where}: {DONE!r} for unit {unit!r} with no earlier {STARTED!r} for it — a unit that was "
+            f"never begun cannot have been finished. The reviewer emits {STARTED!r} when a unit BEGINS and "
+            f"{DONE!r} when it ends, so a `{DONE}` standing alone (or standing ABOVE its `{STARTED}` in "
+            f"this append-only file) is not the record of a review that happened; it is a file with the "
+            f"right lines in it"
+        )
+    if unit in done:
+        # MUTATE:duplicate-done:pass
+        raise Defect(
+            f"{where}: a SECOND {DONE!r} for unit {unit!r} — the file would offer two accounts of one "
+            f"unit, and nothing says which was read. A unit is finished ONCE; if what you found changed, "
+            f"the pass is what re-runs, not the line"
+        )
+
+
+def walk_progress(events: "list[dict]", units: "dict[str, dict]") -> "tuple[set[str], dict[str, str]]":
+    """Replay a progress file's unit events IN ORDER under `check_progress`, and return what it says: the
+    units ANNOUNCED, and the units DONE with their evidence.
+
+    BY ORDER, never by presence: `announced` only ever holds units a line ALREADY READ announced, so a
+    `started` that appears BELOW its `done` cannot satisfy it. The file is APPEND-ONLY, so its order IS
+    the order the events happened in, and a forger who must fabricate the `started` FIRST has to fabricate
+    the whole sequence — which is precisely the thing the file is evidence of.
+
+    The WRITE door replays this same walk over the bytes already on disk, because it has nothing else to
+    ask: a reviewer is many `emit` invocations, each a fresh process, and the only thing that survives
+    between them is the file. The file is the memory, and this is how `emit` knows what it already says.
+    """
+    announced: set[str] = set()
+    done: dict[str, str] = {}
+    for n, rec in enumerate(events, start=1):
+        if rec["type"] != PROGRESS:
+            continue
+        check_progress(rec, units, announced, done, f"line {n}")
+        if rec["status"] == DONE:
+            done[rec["unit"]] = rec["evidence"]
+        else:
+            announced.add(rec["unit"])
+    return announced, done
 
 
 def check_identity_shape(ident: dict, where: str) -> None:
@@ -478,52 +583,17 @@ def check_identity(events: "list[dict]", pr: str, npass: str, attempt: str, head
 def decide(events: "list[dict]", units: "dict[str, dict]", ruled: int) -> "tuple[str, str]":
     """Given SOUND artifacts: does this pass COUNT? (Its report is still not read. That is the point.)
 
-    A `done` REQUIRES an earlier `started` for the same unit, and this walk enforces it BY ORDER, not by
-    presence: `announced` only ever holds units a line ALREADY READ announced, so a `started` that appears
-    BELOW its `done` cannot satisfy it. Presence alone would be the weaker rule and the wrong one — the
-    file is APPEND-ONLY, so its order IS the order the events happened in, and a forger who has to also
-    fabricate the `started` FIRST has to fabricate the whole sequence, which is precisely the thing the
-    file is evidence of. "u01 finished, then u01 began" is not a review; it is a file with the right lines
-    in it.
+    The per-event rules — planned unit, `done` follows `started`, no SECOND `done` — are `check_progress`,
+    replayed here by `walk_progress`. They are not restated: they are the SAME statements `emit` runs, so
+    what this door refuses to read is exactly what that door refuses to write.
 
-    **This is the rule that was PROSE and enforced by NOBODY, and it is the one the tool most needed.** A
+    **The `started` rule was PROSE and enforced by NOBODY, and it is the one the tool most needed.** A
     progress file with a valid identity and a `done` for EVERY planned unit — and NOT ONE `started` —
     verified `ok`: the tool that exists to prove a review HAPPENED accepted a review that demonstrably did
     not. Skip straight to "done" for every unit and the gate was satisfied on zero evidence of work. A
     `done` with no `started` is not progress, exactly as an empty plan is not a plan.
     """
-    announced: set[str] = set()
-    done: dict[str, str] = {}
-    for n, rec in enumerate(events, start=1):
-        if rec["type"] != PROGRESS:
-            continue
-        unit = rec["unit"]
-        if unit not in units:
-            # MUTATE:unplanned-unit:pass
-            raise Defect(
-                f"line {n}: progress for unit {unit!r}, which is NOT IN THE PLAN — the reviewer never "
-                f"rewrites the plan or self-grants units, and progress counts only when it references a "
-                f"PLANNED unit. Planned: {sorted(units)}"
-            )
-        if rec["status"] != DONE:
-            announced.add(unit)
-            continue
-        if unit not in announced:
-            # MUTATE:done-without-started:pass
-            raise Defect(
-                f"line {n}: {DONE!r} for unit {unit!r} with no earlier {STARTED!r} for it — a unit that "
-                f"was never begun cannot have been finished. The reviewer emits {STARTED!r} when a unit "
-                f"BEGINS and {DONE!r} when it ends, so a `{DONE}` standing alone (or standing ABOVE its "
-                f"`{STARTED}` in this append-only file) is not the record of a review that happened; it is "
-                f"a file with the right lines in it"
-            )
-        if unit in done:
-            # MUTATE:duplicate-done:pass
-            raise Defect(
-                f"line {n}: a SECOND {DONE!r} for unit {unit!r} — the file now offers two accounts of one "
-                f"unit, and nothing says which was read"
-            )
-        done[unit] = rec["evidence"]
+    _announced, done = walk_progress(events, units)
 
     amendments = [e for e in events if e["type"] == AMENDMENT]
     unruled = len(amendments) - ruled
@@ -603,64 +673,35 @@ def append(path: Path, rec: dict) -> str:
     return line
 
 
-def announced_units(path: Path) -> "set[str]":
-    """The units this progress file has ALREADY announced a `started` for — read from the BYTES on disk.
-
-    The write door cannot ask its own process what it emitted: a reviewer is many `emit` invocations, each
-    a fresh process, and the only thing that survives between them is the file. So the file is the memory,
-    and reading it is how `emit` knows whether the `done` it was just handed follows a `started`.
-    """
-    out: set[str] = set()
-    for e in read_lines(path, "progress file"):
-        if e.get("type") == PROGRESS and e.get("status") == STARTED and isinstance(e.get("unit"), str):
-            out.add(e["unit"])
-    return out
-
-
 def cmd_emit(args) -> int:
     """Append one unit-progress event — the ONLY sanctioned way a reviewer records one.
 
-    It refuses an unplanned unit HERE TOO, and not only in `verify`: the reviewer gets a non-zero exit and
-    a message it can act on, at the moment it makes the mistake, instead of a pass silently thrown away
-    fifteen minutes later. Same for a `done` that no `started` precedes.
+    **It runs the READ side's functions, and no others.** The event it is about to append is checked by
+    `check_event` and `check_progress`; the file it is about to append TO is re-read from disk and put
+    through `check_events` and `walk_progress` — the very walk `verify` performs. So `emit` cannot write a
+    line `verify` would refuse, and there is no CLI-shaped second copy of any rule to drift away from the
+    one the verdict is computed with.
+
+    That is not symmetry for its own sake. Every rule this refuses at write, it refuses at the moment the
+    reviewer makes the mistake — with a message it can act on — instead of the pass being thrown away
+    fifteen minutes later by a `verify` the reviewer never sees.
     """
     path = Path(args.file)
     pr, npass, _attempt = parse_name(path)
-    unit = args.unit.strip()
-    if not unit:
-        # MUTATE:emit-empty-unit:pass
-        raise Defect("--unit must be non-empty")
-    if args.status == DONE and (args.evidence is None or not args.evidence.strip()):
-        # MUTATE:emit-done-evidence:pass
-        raise Defect(
-            "--evidence is required and must be non-empty when --status is done: a unit is not done "
-            "because you say so, it is done because you can CITE what you checked"
-        )
-    if args.status == STARTED and args.evidence is not None:
-        # MUTATE:emit-started-evidence:pass
-        raise Defect("--evidence must NOT be provided when --status is started")
-
-    rec = {"type": PROGRESS, "unit": unit, "status": args.status}
-    if args.status == DONE:
+    # The RECORD IS THE FLAGS. `--status done` with no `--evidence` is an event with no `evidence` key, and
+    # `--status started --evidence x` is one carrying a key nothing reads — so the flags are judged by the
+    # same `check_event` that judges a hand-written line, and the evidence rule exists in ONE place. (A CLI
+    # blank `--unit` needs no rule of its own either: it is a unit no plan holds, which is what it is.)
+    rec: "dict[str, object]" = {"type": PROGRESS, "unit": args.unit.strip(), "status": args.status}
+    if args.evidence is not None:
         rec["evidence"] = args.evidence
-    check_event(rec, "the event you asked to emit")
+    check_event(rec, "the event you asked to emit (--unit/--status/--evidence)")
+
     units = load_plan(path.parent / PLAN_NAME.format(pr=pr, **{"pass": npass}))
-    if unit not in units:
-        # MUTATE:emit-unplanned:pass
-        raise Defect(
-            f"unit {unit!r} is NOT IN THE PLAN — you may not self-grant a unit. Planned: {sorted(units)}. "
-            f"If the plan is missing a dimension, raise a plan_amendment_request instead"
-        )
-    # LAST, deliberately: an unplanned `done` must still be refused as UNPLANNED. Were this check first, a
-    # reviewer self-granting a unit would be told "no earlier started" — true, and the wrong lesson.
-    if args.status == DONE and unit not in announced_units(path):
-        # MUTATE:emit-done-without-started:pass
-        raise Defect(
-            f"unit {unit!r} has no earlier `{STARTED}` event in {path.name} — emit `--status {STARTED}` "
-            f"when the unit BEGINS, and `--status {DONE}` when it ends. A unit that was never begun cannot "
-            f"be finished, and `verify` reads this back under the same rule: a `{DONE}` with no `{STARTED}` "
-            f"makes the whole pass unusable, so writing one here would only lose the pass later"
-        )
+    events = read_lines(path, "progress file")
+    check_events(events, path)
+    announced, done = walk_progress(events, units)
+    check_progress(rec, units, announced, done, "the event you asked to emit")
     sys.stdout.write(append(path, rec))
     return 0
 
@@ -691,17 +732,23 @@ def cmd_identity(args) -> int:
 def cmd_plan_add(args) -> int:
     """Append one validated unit to a pass's plan — the artifact that used to be a shell heredoc."""
     path = Path(args.file)
+    if not PLAN_NAME_RE.match(path.name):
+        # MUTATE:plan-name-shape:pass
+        raise Defect(
+            f"{path.name} is not a plan artifact's name — it is `review-<pr>-<n>.plan.jsonl`. `verify` "
+            f"never takes the plan's path: it DERIVES it from the progress file's name, so a plan written "
+            f"under any other name is a plan nothing will ever read. The pass would be refused for a "
+            f"MISSING plan while its units sat on disk one filename away"
+        )
     rec = {
         "type": UNIT, "id": args.id, "kind": args.kind, "target": args.target,
         "checks": list(args.check),
     }
     check_unit(rec, "the unit you asked to add")
-    if path.exists():
-        for existing in read_lines(path, "plan"):
-            check_unit(existing, f"{path.name}")
-            if existing["id"] == rec["id"]:
-                # MUTATE:plan-add-duplicate:break
-                raise Defect(f"the plan already holds a unit {rec['id']!r}")
+    # The plan AS IT WOULD BE, run through the reader's own function: the duplicate-id rule fires from the
+    # one statement `verify` fires it from, never from a second copy that can drift away from it.
+    existing = read_lines(path, "plan") if path.exists() else []
+    plan_units([*existing, rec], path.name)
     sys.stdout.write(append(path, rec))
     return 0
 
@@ -932,19 +979,24 @@ NAME_CASES = [
 # writes `pass_identity`, and what `emit` appends to thereafter.
 EMPTY: "list[str]" = []
 BEGUN = [ident(), started("u01")]  # the file a reviewer has in hand once it has ANNOUNCED u01
+FINISHED = [ident(), started("u01"), done("u01")]  # …and once it has already FINISHED u01
 CLI_CASES = [
     (["emit", "--unit", "u01", "--status", "started"], EMPTY, 0, '"status":"started"', "the call every reviewer prompt makes"),
     (["emit", "--unit", "u01", "--status", "done", "--evidence", "f.py:1"], BEGUN, 0, '"evidence":"f.py:1"',
      "…and its done form, on the file that HAS the matching `started` — the only file the done form was ever meant to be run against"),
-    (["emit", "--unit", "u02", "--status", "done", "--evidence", "f.py:1"], BEGUN, 1, "no earlier `started`",
+    (["emit", "--unit", "u01", "--status", "done", "--evidence", "somewhere else"], FINISHED, 1, "SECOND",
+     "HEADLINE, WRITE DOOR: a SECOND `done` for a unit already finished. `verify` refused it on READ and this door WROTE it (exit 0) — the rule held at one door and not the other, so the reviewer was handed a success and the pass was thrown away later for a defect the tool had just helped it commit. Both doors now run the SAME predicate"),
+    (["emit", "--unit", "u02", "--status", "done", "--evidence", "f.py:1"], BEGUN, 1, "no earlier 'started'",
      "HEADLINE, WRITE DOOR: a `done` for a unit that was never begun. The write door refuses it at the moment the reviewer makes the mistake, instead of the pass being thrown away by `verify` fifteen minutes later"),
     (["emit", "--unit", "u99", "--status", "done", "--evidence", "f.py:1"], EMPTY, 1, "NOT IN THE PLAN",
      "HEADLINE, WRITE DOOR: the tool accepted a self-granted unit. It no longer does — and it says UNPLANNED, not 'no started': an unplanned unit's real defect is that nobody planned it"),
     (["emit", "--unit", "u99", "--status", "started"], EMPTY, 1, "NOT IN THE PLAN", "…and refuses to START one"),
-    (["emit", "--unit", "u01", "--status", "done"], EMPTY, 1, "--evidence is required", "a done with no evidence"),
-    (["emit", "--unit", "u01", "--status", "done", "--evidence", "  "], EMPTY, 1, "--evidence is required", "…or blank evidence"),
-    (["emit", "--unit", "u01", "--status", "started", "--evidence", "x"], EMPTY, 1, "must NOT be provided", "a started carrying evidence"),
-    (["emit", "--unit", "  ", "--status", "started"], EMPTY, 1, "--unit must be non-empty", "an empty unit id"),
+    (["emit", "--unit", "u01", "--status", "done"], EMPTY, 1, "carries EXACTLY", "a done with no evidence — the SAME key rule a hand-written line meets, not a second CLI-shaped copy of it"),
+    (["emit", "--unit", "u01", "--status", "done", "--evidence", "  "], BEGUN, 1, "CONCRETE evidence", "…and blank evidence, on a file where the `started` is not the problem"),
+    (["emit", "--unit", "u01", "--status", "started", "--evidence", "x"], EMPTY, 1, "carries EXACTLY", "a started carrying evidence: the mirror of a done without it, and the same rule"),
+    (["emit", "--unit", "  ", "--status", "started"], EMPTY, 1, "NOT IN THE PLAN", "a blank unit id — a unit no plan holds, which is exactly what it is"),
+    (["emit", "--unit", "u02", "--status", "started"], [ident(), '{"type":"progress","unit_id":"u01","status":"done","evidence":"x"}'], 1, "carries EXACTLY",
+     "the file it is APPENDING TO is evidence too: a hand-written line already in it makes the pass unusable, so `emit` refuses to add a good line to a file `verify` will throw away"),
     (["identity", "--head-sha", SHA, "--dispatched-at", TS], EMPTY, 0, '"launch_attempt":"1"',
      "the line that was a `printf` — pr/pass/attempt now come from the FILENAME, so they cannot disagree with it"),
     (["identity", "--head-sha", SHA[:7], "--dispatched-at", TS], EMPTY, 1, "escaped into this repo's real state",
@@ -963,19 +1015,84 @@ CLI_CASES = [
      "a ruling for an amendment that does not exist would silently clear the NEXT one raised"),
 ]
 
-# `plan-add` gets its own family: its `--check` is repeatable, so its argv do not fit the shape above.
+# `plan-add` gets its own family: its `--check` is repeatable, so its argv do not fit the shape above, and
+# the plan file's NAME is under test too — `(the plan file's name, argv, expected exit, needle, why)`.
+PLAN_FILE = "review-41-1.plan.jsonl"
 PLAN_CLI_CASES = [
-    (["--id", "u03", "--kind", "cross-cutting", "--target", "both doors", "--check", "a", "--check", "b"],
+    (PLAN_FILE, ["--id", "u03", "--kind", "cross-cutting", "--target", "both doors", "--check", "a", "--check", "b"],
      0, '"checks":["a","b"]', "the plan stops being a shell heredoc"),
-    (["--id", "u01", "--kind", "file", "--target", "x.py", "--check", "a"], 1, "already holds a unit",
-     "a duplicate id — a `done` for it would say nothing about which unit was checked"),
-    (["--id", "  ", "--kind", "file", "--target", "x.py", "--check", "a"], 1, "names nothing", "a blank id"),
-    (["--id", "u03", "--kind", "file", "--target", "x.py"], 1, "not a unit", "a unit with NO checks"),
+    (PLAN_FILE, ["--id", "u01", "--kind", "file", "--target", "x.py", "--check", "a"], 1, "duplicate unit id",
+     "a duplicate id — a `done` for it would say nothing about which unit was checked. Refused by the SAME statement `load_plan` refuses it with: the plan as it WOULD be goes through the reader's own function"),
+    (PLAN_FILE, ["--id", "  ", "--kind", "file", "--target", "x.py", "--check", "a"], 1, "names nothing", "a blank id"),
+    (PLAN_FILE, ["--id", "u03", "--kind", "file", "--target", "x.py"], 1, "not a unit", "a unit with NO checks"),
+    ("plan.jsonl", ["--id", "u03", "--kind", "file", "--target", "x.py", "--check", "a"], 1,
+     "not a plan artifact's name",
+     "the plan's name was enforced at the READ door BY CONSTRUCTION (`verify` derives it and takes no plan path) and at the write door NOT AT ALL: this wrote a perfectly valid plan to a name nothing will ever open, and the pass would then be refused for a MISSING plan with its units on disk one filename away"),
 ]
 
 
 class SelfTestFailure(AssertionError):
     """A rule this file claims to enforce does not hold."""
+
+
+# --- the DOCS' examples, fed through the tool ----------------------------------------------------
+#
+# The doc is what a reviewer actually follows. **A documented example the tool REFUSES is not a typo — it
+# is a trap that makes correct behavior impossible**: the `plan_amendment_request` example omitted
+# `"type":"unit"` from its `proposed_unit`, the verifier REQUIRES that key, so a reviewer who copied the
+# documented shape produced a pass the tool then called `unusable`, with nothing telling it why.
+#
+# Eyeballing them is what let that ship. So they are EXECUTED: every JSON example in the campaign skill's
+# docs that claims one of THIS tool's types is parsed out and put through the very functions `verify` runs,
+# and a doc example this tool would reject FAILS THE BUILD. (Routing is by `type`, so the ledger's own
+# examples one file over are not this schema's business. The cost is that an example with a MISSPELLED
+# type would be skipped rather than caught — which is why the type set found is asserted below: a scan
+# that matched nothing, or lost a type, is a check that has quietly stopped checking.)
+
+DOCS = Path(__file__).resolve().parent.parent  # the campaign skill: SKILL.md and references/
+DOC_TYPES = {UNIT, PROGRESS, AMENDMENT, IDENTITY}
+
+
+def doc_examples() -> "list[tuple[str, int, dict]]":
+    """(file, line, record) for every JSON example in the docs that claims one of this tool's types."""
+    found: list[tuple[str, int, dict]] = []
+    for md in sorted(DOCS.rglob("*.md")):
+        for n, line in enumerate(md.read_text(encoding="utf-8").splitlines(), start=1):
+            text = line.strip()
+            if not text.startswith("{") or not text.endswith("}"):
+                continue
+            try:
+                rec = json.loads(text)
+            except json.JSONDecodeError:
+                continue  # a JSON-SHAPED line that is not JSON is some other doc's prose, not an example
+            if isinstance(rec, dict) and rec.get("type") in DOC_TYPES:
+                found.append((str(md.relative_to(DOCS)), n, rec))
+    return found
+
+
+def check_docs() -> int:
+    """Every documented example, through the tool. Returns the number that the tool would REFUSE."""
+    examples = doc_examples()
+    failures = 0
+    for where, n, rec in examples:
+        try:
+            if rec["type"] == UNIT:
+                check_unit(rec, f"{where}:{n}")
+            else:
+                check_event(rec, f"{where}:{n}")
+                if rec["type"] == IDENTITY:
+                    check_identity_shape(rec, f"{where}:{n}")
+            print(f"ok       {where}:{n:<4} {rec['type']:22} the tool accepts its own documented example")
+        except Defect as exc:
+            print(f"FAIL     {where}:{n:<4} the tool REFUSES its own documented example: {exc}")
+            failures += 1
+    seen = {rec["type"] for _w, _n, rec in examples}
+    if seen != DOC_TYPES:
+        print(f"FAIL     the docs no longer show an example of every event type — missing "
+              f"{sorted(DOC_TYPES - seen)}. A scan that matches nothing passes every time and checks "
+              f"nothing; these examples ARE the contract, so their absence is the failure")
+        failures += 1
+    return failures
 
 
 def build(tmp: Path, name: str, plan: "list[str] | None", progress: "list[str] | bytes") -> Path:
@@ -1033,13 +1150,13 @@ def run_cases(mod: types.ModuleType, tmp: Path) -> "dict[str, tuple[str, str]]":
             got[f"[cli] {' '.join(argv)}"] = (f"exit{code}", text)
         except Exception as exc:  # noqa: BLE001
             got[f"[cli] {' '.join(argv)}"] = (f"crash:{type(exc).__name__}", str(exc))
-    for i, (argv, _want, _needle, _why) in enumerate(PLAN_CLI_CASES):
-        plan = build(tmp, f"plan-cli-{i}", PLAN, []).parent / "review-41-1.plan.jsonl"
+    for i, (pname, argv, _want, _needle, _why) in enumerate(PLAN_CLI_CASES):
+        plan = build(tmp, f"plan-cli-{i}", PLAN, []).parent / pname
         try:
             code, text = run_cli(mod, ["plan-add", "--file", str(plan), *argv])
-            got[f"[plan] {' '.join(argv)}"] = (f"exit{code}", text)
+            got[f"[plan] {pname} {' '.join(argv)}"] = (f"exit{code}", text)
         except Exception as exc:  # noqa: BLE001
-            got[f"[plan] {' '.join(argv)}"] = (f"crash:{type(exc).__name__}", str(exc))
+            got[f"[plan] {pname} {' '.join(argv)}"] = (f"crash:{type(exc).__name__}", str(exc))
     return got
 
 
@@ -1048,7 +1165,8 @@ def expectations() -> "dict[str, tuple[str, str, str]]":
     out = {n: (w, needle, why) for n, (_p, _pr, w, needle, why) in CASES.items()}
     out.update({f"[name] {n}": (w, needle, why) for n, w, needle, why in NAME_CASES})
     out.update({f"[cli] {' '.join(a)}": (f"exit{c}", needle, why) for a, _seed, c, needle, why in CLI_CASES})
-    out.update({f"[plan] {' '.join(a)}": (f"exit{c}", needle, why) for a, c, needle, why in PLAN_CLI_CASES})
+    out.update({f"[plan] {p} {' '.join(a)}": (f"exit{c}", needle, why)
+                for p, a, c, needle, why in PLAN_CLI_CASES})
     return out
 
 
@@ -1061,8 +1179,9 @@ MARKER_RE = re.compile(r"^(?P<indent>[ ]*)# MUTATE:(?P<rule>[a-z0-9-]+):(?P<weak
 # The functions that ENFORCE the contract. Every enforcement point inside them must carry a marker.
 # `evaluate` is not one: it MAPS an exception to a verdict; it decides nothing.
 RULE_FUNCTIONS = (
-    "hook", "read_lines", "check_unit", "load_plan", "check_event", "check_identity_shape",
-    "check_identity", "decide", "parse_name", "cmd_emit", "cmd_identity", "cmd_plan_add", "cmd_verify",
+    "hook", "read_lines", "check_unit", "plan_units", "load_plan", "check_event", "check_progress",
+    "walk_progress", "check_identity_shape", "check_identity", "decide", "parse_name",
+    "cmd_emit", "cmd_identity", "cmd_plan_add", "cmd_verify",
 )
 ENFORCING_EXCEPTIONS = ("Defect", "OperatorError")
 # The NAMES as they are spelled in the source, because that is what the AST holds — `return UNUSABLE, …`
@@ -1175,11 +1294,14 @@ def self_test() -> int:
             print(f"FAIL     {case[:44]:44} -> {outcome:11} but nothing mentions {needle!r}\n         got: {text}")
             failures += 1
     print()
+    doc_failures = check_docs()
+    failures += doc_failures
+    print()
     if failures:
         print(f"{failures} check(s) FAILED — the review-pass contract is broken.")
         return 1
     print(f"all {len(CASES)} fixtures + {len(NAME_CASES)} name cases + "
-          f"{len(CLI_CASES) + len(PLAN_CLI_CASES)} CLI cases hold.\n")
+          f"{len(CLI_CASES) + len(PLAN_CLI_CASES)} CLI cases + {len(doc_examples())} DOC examples hold.\n")
 
     # …and now the question the block above CANNOT answer: is any rule pinned by NO fixture?
     marked = marked_statements(source)

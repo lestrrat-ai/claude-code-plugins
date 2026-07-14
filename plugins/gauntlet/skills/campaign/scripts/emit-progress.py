@@ -24,6 +24,15 @@ for a unit with no earlier `started` is refused.** Emit `--status started` when 
 unchanged; what is no longer accepted is a `done` that no `started` precedes. That is deliberate: a
 progress file holding a `done` for every planned unit and NOT ONE `started` used to verify `ok`, which
 made the tool that exists to prove a review HAPPENED accept one that demonstrably did not.
+
+And the THIRD: **a unit is `done` exactly once — a SECOND `done` for it is refused.** `verify` already
+refused to READ one; this door WROTE it, exited 0, and the pass was thrown away later for a defect this
+tool had just helped commit. A rule enforced at one door is not enforced. If what you found changed, the
+pass is what re-runs, not the line.
+
+A REFUSAL here is not a broken CLI. The flags are the contract and they have not moved; what a refusal
+says is that the event you asked for is one `verify` would refuse to read, and writing it would only lose
+the pass. Read the message, fix the call, re-run.
 """
 
 from __future__ import annotations

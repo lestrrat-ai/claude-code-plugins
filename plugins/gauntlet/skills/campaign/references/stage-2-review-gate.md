@@ -128,8 +128,10 @@ The hand-written artifacts are what this replaces, and each had already failed: 
 **was never planned** (the rule was prose, enforced by nobody); and the tally was re-derived by eye with
 an ad-hoc parser written fresh each wake — the same "read it by eye, write down the answer" that produced
 a false `ci = green`. `verify` refuses a short sha, an unplanned unit, an evidence-free `done`, a `done`
-that no `started` precedes, a `pass_identity` that names another commit or another launch attempt, and any
-hand-written line that is not the exact shape below — **whether or not the write tool was used**.
+that no `started` precedes, a SECOND `done` for a unit already finished, a `pass_identity` that names
+another commit or another launch attempt, and any hand-written line that is not the exact shape below —
+**whether or not the write tool was used**. **`emit` refuses every one of those it can see, by calling the
+SAME functions** — one implementation, both doors, so a rule cannot hold at one and not the other.
 
 **Review work-plan ledger — orchestrator-owned, target-generic.** Before launching each review pass,
 write `<rundir>/review-<pr>-<n>.plan.jsonl` (through `review-pass.py plan-add` — one unit per call, each
@@ -163,6 +165,10 @@ Rules:
   the same SHA (or clean base-only rebase, diff unchanged), copy pass 1's plan to
   `review-<pr>-2.plan.jsonl` instead of re-deriving. Re-derive only when PR content changed.
 - Each unit MUST name concrete `target` + concrete `checks`.
+- **The plan's filename is part of the contract: `review-<pr>-<n>.plan.jsonl`, and `plan-add` refuses any
+  other.** `verify` is never given the plan's path — it DERIVES it from the progress file's name — so a
+  plan written under a different name is a plan nothing will ever open, and the pass is then refused for a
+  MISSING plan while its units sit on disk one filename away.
 - For code, include at least one cross-cutting unit when behavior spans files or packages.
 - For non-code, include at least one cross-artifact/whole-piece unit when multiple artifacts/sections
   exist.
@@ -192,6 +198,13 @@ carrying a valid `pass_identity` and a `done` for every planned unit — and not
 review that demonstrably did not happen, and the tool exists to say so. `emit` refuses to write such a
 `done` and `verify` refuses to read one.
 
+**A unit is `done` exactly ONCE — a SECOND `done` for it makes the pass `unusable`, at both doors.** Two
+`done` events for one unit are two accounts of it, and nothing says which was read. If what you found
+changed, the pass is what re-runs, not the line. (This rule held on READ and *not* on write: `emit`
+appended the second `done` and exited 0, so the reviewer was told it had succeeded and the pass was
+thrown away later for a defect the tool had just helped it commit. The three unit-progress rules —
+planned unit, `done` follows `started`, no second `done` — are now ONE predicate that both doors call.)
+
 The `plan_amendment_request` event keeps its existing shape; its `ts` must be a real UTC ISO-8601
 timestamp (the same clock rule `pass_identity.dispatched_at` obeys) and its `reason` must be non-empty —
 an amendment holds a pass back, so it must say something the orchestrator can rule on.
@@ -201,7 +214,8 @@ an amendment holds a pass back, so it must say something the orchestrator can ru
 file directly — no hand-written JSON, no `echo`/`printf`/redirection into it, no editor append. Every
 unit-progress event reaches the file through the tool and no other path. **Its CLI is unchanged**
 (`--file --unit --status --evidence`); it now forwards to `review-pass.py emit`, which **REFUSES a unit
-that is not in the plan** and a `done` with no concrete evidence. And the emit-only rule is no longer
+that is not in the plan**, a `done` with no concrete evidence, a `done` that no `started` precedes, and a
+SECOND `done` for a unit already finished. And the emit-only rule is no longer
 enforced by good faith: `verify` re-derives every rule from the bytes, so a hand-written line that the
 tool would have refused is caught on **READ** — the pass goes `unusable` rather than counting. This emit-only rule applies
 ONLY to the `started`/`done` unit-progress events: the tool does not produce any other event type.
@@ -218,7 +232,7 @@ the tool and is shown only to document its shape. The fourth (`pass_identity`) i
 ```
 {"type":"progress","unit":"u01","status":"started"}
 {"type":"progress","unit":"u01","status":"done","evidence":"validate_idc.go:42 `canonicalizeValue`; edge case tested at validate_idc_test.go:88"}
-{"type":"plan_amendment_request","ts":"2026-07-06T00:05:00Z","reason":"diff changes generated docs; add doc consistency unit","proposed_unit":{"id":"u99","kind":"docs","target":"docs/generated.md","checks":["sync with API behavior"]}}
+{"type":"plan_amendment_request","ts":"2026-07-06T00:05:00Z","reason":"diff changes generated docs; add doc consistency unit","proposed_unit":{"type":"unit","id":"u99","kind":"docs","target":"docs/generated.md","checks":["sync with API behavior"]}}
 {"type":"pass_identity","pr":"41","pass":"1","head_sha":"a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c","launch_attempt":"1","dispatched_at":"2026-07-06T00:00:00Z"}
 ```
 
@@ -445,10 +459,10 @@ pass is a trapdoor, not a disclosure:
 
 | verdict | exit | what it means | what to do |
 |---|---|---|---|
-| `ok` | 0 | the artifacts are sound: a `pass_identity` naming **this** PR, **this** pass, **this** launch attempt and **the live head SHA**; every planned unit `done` with concrete evidence; every `done` for a unit that is **actually in the plan**; no unruled amendment | **now** read the report's `VERDICT:` line and tally it |
+| `ok` | 0 | the artifacts are sound: a `pass_identity` naming **this** PR, **this** pass, **this** launch attempt and **the live head SHA**; every planned unit `done` **once**, with concrete evidence, after a `started` for it; every `done` for a unit that is **actually in the plan**; no unruled amendment | **now** read the report's `VERDICT:` line and tally it |
 | `incomplete` | 1 | sound, but a planned unit has no `done` — the pass has not covered its plan | it is still working (or it stopped early — the meaningful-progress rule decides which). **Never tally a verdict from it** |
 | `amended` | 1 | sound, but the reviewer raised a `plan_amendment_request` nobody has ruled on | fold it into the plan and restart the pass, or ignore it with a note — then re-run with `--amendments-ruled N` |
-| `unusable` | 1 | the artifacts are **defective** — a short SHA, a `done` for an unplanned unit, an evidence-free `done`, a hand-written line of the wrong shape, an identity naming another commit or another attempt | the pass **CANNOT count, whatever its report says.** Treat it as a reviewer system failure (retry / fresh-subagent fallback), never as a verdict |
+| `unusable` | 1 | the artifacts are **defective** — a short SHA, a `done` for an unplanned unit, an evidence-free `done`, a `done` that no `started` precedes, a SECOND `done` for one unit, a hand-written line of the wrong shape, an identity naming another commit or another attempt | the pass **CANNOT count, whatever its report says.** Treat it as a reviewer system failure (retry / fresh-subagent fallback), never as a verdict |
 
 **`ok` IS NOT `SATISFIED`, and the tool will never say `SATISFIED`.** It does not open
 `review-<pr>-<n>.txt` and does not parse the reviewer's prose — the VERDICT is the reviewer's **judgment**
