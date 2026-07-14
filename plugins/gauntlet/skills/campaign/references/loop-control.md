@@ -188,11 +188,18 @@ blocks; each completion is its own wake.
      lying label or a stale row.
    - **Only the user's answer unparks a PR — and EVERY park class names the durable record it is
      answered into.** An answer that lives only in this session is an answer a fresh agent re-asks. On
-     the answer: **record it**, set `status` back to `in_review` via `ledger.py … set --pr <N> --status
-     in_review`, and resume normal dispatch — including any rebase or base refresh the PR has been owed
-     while frozen — from the next wake. A parked PR that has fallen **behind** its base simply **stays
-     behind** until then; it is not dropped from the run, just frozen. The record and the unpark, per
-     cause (`files-and-ledger.md`, `status`):
+     the answer: **record it**, then unpark to the `status` **THAT ANSWER** dictates — the table below is
+     the authority, and it is **NOT always `in_review`**:
+     - a **RESUME** answer (`api_approval` = `approved`, a standoff ruling either way, `blocker_ruling` =
+       `retry`) → `ledger.py … set --pr <N> --status in_review`, and resume normal dispatch — including any
+       rebase or base refresh the PR has been owed while frozen — from the next wake. A parked PR that has
+       fallen **behind** its base simply **stays behind** until then; it is not dropped from the run, just
+       frozen.
+     - a **TERMINAL** answer (`api_approval` = `declined`, `blocker_ruling` = `abort`) → `--status aborted`
+       (terminal), via `bailout-and-final-report.md`'s abort procedure. It **never** returns to
+       `in_review`, and nothing is dispatched for it again.
+
+     The record and the unpark, per cause (`files-and-ledger.md`, `status`):
 
      | Park cause | Durable record | Unpark |
      |---|---|---|

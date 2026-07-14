@@ -163,18 +163,18 @@ Header field notes (the header fields above; per-row fields follow):
   every wake and re-triaged on any content change; drives `required(tier)` and the review depth.
 - `ci` — `green` / `red` / `pending` for `head_sha`. (**There is no `none`.** It was documented but no
   procedure could ever write it.)
-- `ci_fingerprint` — digest of the last **verified** CI snapshot, over its **evidence rows only**
-  (`checkrun` + `status`) and only the fields CLASSIFY reads:
-  `sha256(head_sha + the canonicalized evidence lines, sorted)`. `stage-2-ci.md`, "SETTLED", is the
-  **definition** — never restate the serialization here. **UNCHANGED + nothing RUNNING == SETTLED.**
+- `ci_fingerprint` — digest of the last **verified** CI snapshot. **What it covers and exactly how it is
+  serialized is DEFINED in `stage-2-ci.md`, "SETTLED" — and is NEVER restated here**, because a
+  fingerprint reconstructed from a paraphrase is a different fingerprint. **UNCHANGED + nothing RUNNING
+  == SETTLED.**
 - `settled_strikes` — consecutive derivations seen **SETTLED but not green** *while no machine action was
   due or in flight* for the PR at this `head_sha` (`stage-2-ci.md`, "SETTLED", owns the gate — a PR the
-  driver is actively repairing is never struck). At **2**, escalate: park `awaiting-user` naming the
-  blocker. Reset to `0` on any `head_sha` change or fingerprint change.
+  driver is actively repairing is never struck). At the **STRIKE CAP**, escalate: park `awaiting-user`
+  naming the blocker. Reset to `0` on any `head_sha` change or fingerprint change.
 - `unusable_refetches` — consecutive derivations whose snapshot was **UNUSABLE** at this `head_sha`. An
   UNUSABLE snapshot has **no fingerprint** (its rows were never trusted), so it can never be a
-  `settled_strike`: it gets its own counter. At **3**, escalate the same way. Reset to `0` on any
-  `head_sha` change and on any **VERIFIED** snapshot (`stage-2-ci.md`, "UNUSABLE — the refetch is
+  `settled_strike`: it gets its own counter. At the **REFETCH CAP**, escalate the same way. Reset to `0`
+  on any `head_sha` change and on any **VERIFIED** snapshot (`stage-2-ci.md`, "UNUSABLE — the refetch is
   BOUNDED").
 - `ci_stalled_since` — `-`, or the **UTC ISO-8601 timestamp** of the first derivation that saw the check
   set **RUNNING-STALLED** at this fingerprint: an evidence row still classifies `RUNNING` **and** the
@@ -187,6 +187,10 @@ Header field notes (the header fields above; per-row fields follow):
   due or in flight for this PR at this `head_sha` (a fix that pushes will replace these rows). At the cap,
   escalate: park `awaiting-user`, `ci_reason` naming the check that never finished and how long the check
   set sat unchanged.
+
+  **The three caps above are NAMED here, never numbered.** The **STRIKE CAP**, the **CI STALL CAP** and the
+  **REFETCH CAP** each carry their value at exactly ONE defining site, and `stage-2-ci.md`, "THE LIVENESS
+  COUNTERS", is the one table that maps each counter to its cap and to that site. Never retype a value here.
 - `ci_reason` — **why** `ci` is not green, in a form a human can act on: the DECIDE bullet that matched
   and the row that made it match (which check never registered, which enum value was unrecognized, which
   read was denied, which VERIFY rule the snapshot failed). This is what the escalation reports; a park
@@ -228,7 +232,10 @@ Header field notes (the header fields above; per-row fields follow):
   policy either way** (observing is not mutating): the watch follows `stage-2-ci.md`, "WATCH ONLY WHAT CAN
   MOVE" — alive while a row is still `RUNNING`, **not** relaunched once CI has settled. Parking never
   stops a warranted watch, and never starts an unwarranted one. The other PRs keep being driven; the
-  user's answer sets `status` back to `in_review` and normal dispatch resumes on the next wake.
+  user's answer unparks the PR **to the `status` that answer dictates** — a **RESUME** answer (`approved`,
+  a standoff ruling, `retry`) to `in_review`, with normal dispatch resuming on the next wake; a
+  **TERMINAL** answer (`declined`, `abort`) to `aborted`, which never resumes. Per class, below —
+  and `loop-control.md` step 3, "Only the user's answer unparks a PR", owns the mapping.
   - `awaiting-api` — parked for the user to approve an API-changing fix. Resolves via `api_approval`:
     `approved` returns the PR to the normal flow, `declined` makes it `aborted` (terminal).
   - `awaiting-user` — parked for the user to adjudicate. **Two CLASSES, each with its OWN durable answer

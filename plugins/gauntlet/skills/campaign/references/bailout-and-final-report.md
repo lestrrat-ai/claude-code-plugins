@@ -6,19 +6,33 @@
   the cap on a wake where the row is blocked on an external wait** — `status == awaiting-api` (parked
   for user approval) or `status == awaiting-user` (parked for the user to adjudicate a **review standoff**
   or a **machine blocker** — `files-and-ledger.md`, `status`), or `ci == pending` **while that pending is
-  still BOUNDED**, which is exactly one of two things (`stage-2-ci.md`, "SETTLED" / "RUNNING-STALL"):
-  the fingerprint **CHANGED** since the last derivation (CI is genuinely moving), **or** a `RUNNING` row
-  is stalled and its **`ci_stalled_since` clock has not yet reached the CI STALL CAP** (the wait is
-  timed, and it ends by itself).
-  **`pending` alone is NOT an external wait, and a still-RUNNING row is NOT one either.** A pending PR
-  that has SETTLED is waiting on **nothing**. And a row that is still `RUNNING` is not evidence that
-  anything is coming — **a hung runner keeps a row `RUNNING` forever**; blessing that as "an external wait
-  on its own terms" is what let a PR sit **forever** with the cap disabled and no one told. **An external
-  wait must be a BOUNDED wait, or it is a wedge with a nicer name.** What ends each: `settled_strikes` for
-  a settled PR, the **RUNNING-STALL clock** for a stalled `RUNNING` row, `unusable_refetches` for a
-  snapshot that never verifies — and the park **each of them produces** is then an external wait on its own
-  terms, because a park has a **declared exit** (the user's `retry`/`abort` ruling). Only a wake
-  where `started` is over an hour old *and* the row is agent-controlled (in none of those waits) trips it.
+  still BOUNDED** — i.e. **EVERY bound that applies to it is still running and NONE has yet reached its
+  own cap.** (Every bounded CI wait surfaces as `pending`, an UNUSABLE snapshot included —
+  `stage-2-ci.md`, DECIDE. A **red** PR is not exempt and never was: red is **agent-controlled** work —
+  campaign dispatches the CI fix — and that work is exactly what this cap is for.)
+  **Read the bounds from their owner — `stage-2-ci.md`, "THE LIVENESS COUNTERS", which is the ONE
+  enumeration of the bounded CI waits and names each one's cap. NEVER re-list them here.** A re-listed
+  enumeration goes stale the moment a bound is added — it already did: this line once named **two** of
+  them while **four** existed, so a resumed run whose `started` was already over an hour old could trip
+  this cap while `settled_strikes` or `unusable_refetches` was still **below** its cap, **aborting the PR
+  before the bound could park it**. A bound added to that set must exempt this cap **with no edit to this
+  line**.
+  **The exemption is the BOUND, not the `pending`.** `pending` alone is **NOT** an external wait, and a
+  still-`RUNNING` row is **NOT** one either: a pending PR that has SETTLED is waiting on **nothing**, and a
+  `RUNNING` row is no evidence that anything is coming — **a hung runner keeps a row `RUNNING` forever**.
+  Blessing either as "an external wait on its own terms" is what let a PR sit **forever** with the cap
+  disabled and no one told. What makes them exempt now is that **each is answered by its own liveness
+  counter within that counter's cap**: a SETTLED PR is waiting on nothing external, but its own
+  `settled_strikes` escalates it in at most the STRIKE CAP's worth of derivations, and **THAT** — not any
+  external event — is its bound. **An external wait must be a BOUNDED wait, or it is a wedge with a nicer
+  name.**
+  **Firing this cap inside a live bound would PRE-EMPT the park the bound exists to reach.** Every bound
+  ends at **ESCALATE** (`stage-2-ci.md`), which parks the PR `awaiting-user` for a human to adjudicate —
+  and that park is exempt for its own reason (a **declared exit**: the user's `retry`/`abort` ruling). So a
+  PR waiting on a live CI bound is never aborted out from under it: the bound either resolves, or it
+  reaches the human. This cap's job is the **agent-controlled** row — the task stuck in campaign's own work
+  (a hung review, a red PR whose fix never lands), where nothing else is counting. Only a wake where
+  `started` is over an hour old *and* the row is agent-controlled (in **none** of those waits) trips it.
   When it trips, abort cleanly and **retry once against the SAME adopted PR** (`attempts` += 1, reset
   `started`). The PR is user/externally owned — campaign never closes it and opens a replacement of
   its own. Instead, **rebuild the worktree from the PR's head branch** so the retry runs with fresh

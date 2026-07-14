@@ -621,11 +621,15 @@ MACHINE ACTION due or in flight
                                                                           # (settled_strikes: unchanged).
                                                                           # STOP = evaluate NOTHING below.
 SETTLED and ci in {red, pending}    -> settled_strikes += 1                # nobody is coming — count it
-settled_strikes >= 2                -> ESCALATE
+settled_strikes >= 2                -> ESCALATE                           # 2 == THE STRIKE CAP. This line
+                                                                          # is its ONE defining site; every
+                                                                          # other rule says "the STRIKE CAP".
 RUNNING-STALL and ci_stalled_since == "-"
                                     -> ci_stalled_since = <now, UTC ISO-8601>   # start the clock
-RUNNING-STALL and now - ci_stalled_since >= CI STALL CAP (6h)
-                                    -> ESCALATE                           # not SLOW — DEAD
+RUNNING-STALL and now - ci_stalled_since >= the CI STALL CAP
+                                    -> ESCALATE                           # not SLOW — DEAD. The CI STALL
+                                                                          # CAP's value is defined in
+                                                                          # "RUNNING-STALL" below.
 ```
 
 **`STOP` on the MACHINE ACTION line is load-bearing, and it is the only early exit here.** Without it a
@@ -644,9 +648,9 @@ file kills on sight (CLASSIFY, above).
 **A STRIKE — AND A STALL CLOCK — MEAN "NOBODY IS COMING". NEVER PARK A PR THE DRIVER IS ALREADY
 REPAIRING.** `SETTLED` and `RUNNING-STALL` are about **CI**, not about **campaign**: a **red** PR whose
 rows are all terminal is SETTLED on the **first** derivation, and a CI-fix subagent in flight does **not**
-change `head_sha` until it pushes — so an ungated strike rule would park, after two wakes, the exact PR
-the driver is actively fixing, and an ungated stall clock would start timing a `RUNNING` row the driver is
-about to make irrelevant.
+change `head_sha` until it pushes — so an ungated strike rule would park, within the **STRIKE CAP**'s worth
+of wakes, the exact PR the driver is actively fixing, and an ungated stall clock would start timing a
+`RUNNING` row the driver is about to make irrelevant.
 
 **MACHINE ACTION** = work **campaign dispatches** that can produce a **new `head_sha`** on this PR: a
 CI-fix subagent (either tier, including an escalation from the cheap one), a review-fix subagent, a
@@ -725,8 +729,26 @@ a spent `retry` on the row, and the next park would read it as its own answer. (
 fresh user answer — the exact failure this rule exists to prevent.)
 
 **THE LIVENESS COUNTERS — one name for the set, so a new counter never leaves a stale restatement.** They
-are `ci_fingerprint`, `settled_strikes`, `unusable_refetches`, and `ci_stalled_since`. **Reset them
-TOGETHER** (`-`, `0`, `0`, `-`) at exactly two kinds of site:
+are `ci_fingerprint`, `settled_strikes`, `unusable_refetches`, and `ci_stalled_since`.
+
+**This set is also the ENUMERATION OF THE BOUNDED CI WAITS — every way a non-green `ci` can be waiting,
+and what ends each.** It is the ONE place that enumeration lives: any rule that must reason about "is
+this wait bounded, and by what?" (`bailout-and-final-report.md`'s 1-hour task cap is the one that does)
+reads **this set**, and a counter added here is inherited by it with **no edit to it**. Each bound's
+VALUE lives at its own single defining site, named here and never retyped:
+
+| Counter | Bounds the wait where… | Its cap | Cap's ONE defining site |
+|---|---|---|---|
+| `ci_fingerprint` | CI is genuinely **MOVING** (the fingerprint CHANGED since the last derivation) | *none — motion is not a wait* | — |
+| `settled_strikes` | CI has **SETTLED** and is still not green | **the STRIKE CAP** | "SETTLED", the derivation block above |
+| `ci_stalled_since` | a row still says **RUNNING** but nothing in the check set moves | **the CI STALL CAP** | "RUNNING-STALL", below |
+| `unusable_refetches` | the snapshot never **VERIFIES** | **the REFETCH CAP** | "UNUSABLE — the refetch is BOUNDED", below |
+
+Each ends by itself — in a bounded number of derivations, or a bounded amount of time — and each ends in
+the **same** place: **ESCALATE** (above), the park a human answers. That is what makes every one of them a
+BOUNDED wait rather than a wedge.
+
+**Reset them TOGETHER** (`-`, `0`, `0`, `-`) at exactly two kinds of site:
 
 1. **Any `head_sha` change — whether or not the gate resets with it.** The new head is new evidence, so
    the old head's liveness says nothing about it. Every site that writes a new `head_sha` resets them, and
@@ -761,7 +783,7 @@ moving**), and it is void for exactly the same reasons, at exactly the same site
 is a record too, but it is **not** free-floating: it is cleared at its own park boundaries ("THE RULING IS
 CONSUMED EXACTLY ONCE" above), never by a counter reset.
 
-#### RUNNING-STALL — a row that never finishes is bounded in TIME: `ci_stalled_since`, cap 6h
+#### RUNNING-STALL — a row that never finishes is bounded in TIME: `ci_stalled_since`, the CI STALL CAP
 
 `RUNNING-STALL` (defined above) is the other half of `SETTLED`, and it is the harder half, because the
 rule must tell **NOT MOVING** apart from **SLOW** — and on a fingerprint they look **identical**. A
@@ -792,23 +814,33 @@ It is **"how long NOT ONE row in the whole check set has changed state"** — th
 evidence row's verdict fields, so **any** motion **anywhere** resets it: a queued job starting
 (`QUEUED`→`IN_PROGRESS`), any other check completing, a matrix leg finishing, a new check registering (a
 new row), the slow suite itself finally concluding. A 40-minute suite therefore has to be the **only**
-thing in the check set, and emit **no** transition, for a full **6 hours** before it is timed out — and
-40 minutes is not 6 hours. The clock also starts at the **first derivation that observes no motion**, not
-at the moment the check began, so it errs **later** still.
+thing in the check set, and emit **no** transition, for the **whole CI STALL CAP** before it is timed out.
+The cap (defined below) is set **far above** the longest stretch a legitimately slow check goes without
+emitting *any* state transition, and a 40-minute suite is nowhere near it — a healthy check does not go
+silent for hours. The clock also starts at the **first derivation that observes no motion**, not at the
+moment the check began, so it errs **later** still.
 
 **THE HONEST LIMIT — the cap is a DECLARED CONSTANT, not a proof.** A **GitHub-hosted** job cannot sit
-`IN_PROGRESS` past **6 hours**: that is GitHub's documented per-job execution limit, and when it trips
-GitHub **terminates the job**, which writes a `COMPLETED` row — motion, and therefore a reset, not a park.
+`IN_PROGRESS` past **6 hours**: that is **GITHUB'S documented per-job execution limit — an EXTERNAL API
+constant, NOT this cap** (see the note under the cap's definition below), and when it trips GitHub
+**terminates the job**, which writes a `COMPLETED` row — motion, and therefore a reset, not a park.
 A **self-hosted** runner or an **external** CI posting commit statuses (Jenkins, CircleCI) has **no such
 limit**, so a repo *can* have a check that legitimately sits unchanged past the cap. If one does, this
 rule **parks it** — and that is survivable **only** because ESCALATE is a **park that ASKS THE USER**
 (`retry` / `abort`), never an abort: a false park costs **one prompt**, and `retry` resumes with a fresh
 budget. A wedge costs the run, silently, forever. **NEVER claim the cap proves the check is dead** — it
-proves campaign has waited 6 hours for a check set that did not move once, and is now telling a human
-instead of waiting forever.
+proves campaign has waited the **full CI STALL CAP** for a check set that did not move once, and is now
+telling a human instead of waiting forever.
 
-**The cap is 6h in exactly ONE place — this line.** A repo whose legitimate checks can outlast it raises
-it **here**, and every rule that reads "the CI STALL CAP" follows. Never restate the number elsewhere.
+**THE CI STALL CAP = 6h. This line is its ONE defining site.** A repo whose legitimate checks can outlast
+it raises it **here**, and every rule that reads "the CI STALL CAP" follows. **Never restate the number
+elsewhere** — refer to the cap **by name**.
+
+> **The `6 hours` in "THE HONEST LIMIT" above is NOT a second copy of this cap.** It is **GitHub's**
+> per-job execution limit — an external API constant, which this repo's rules require to be kept
+> **exact** and never swapped for a symbolic reference. That it happens to equal the CI STALL CAP **today
+> is a coincidence**: change the cap to 4h and GitHub's limit still reads **6 hours**. Do not "unify"
+> them, and do not read that literal as a restatement to be swept.
 
 **Where the wake comes from while a stalled row is watched.** A hung `RUNNING` row keeps `gh pr checks
 --watch` **blocked forever**, so the watch never completes and never wakes anyone — the escalation is
@@ -816,7 +848,7 @@ therefore evaluated on the **heartbeat** wake like any other derivation, which i
 heartbeat is scheduled while any non-terminal PR remains (`loop-control.md` step 5). **A bound that could
 only be reached by the event it is waiting for would not be a bound at all.**
 
-#### UNUSABLE — the refetch is BOUNDED: `unusable_refetches`, cap 3
+#### UNUSABLE — the refetch is BOUNDED: `unusable_refetches`, the REFETCH CAP
 
 `UNUSABLE` is the one DECIDE outcome with **no fingerprint** (above), so `settled_strikes` can say nothing
 about it — and "refetch until it works" is an absorbing state with no exit, which the invariant forbids.
@@ -826,7 +858,9 @@ It gets its own counter, on the same shape:
 snapshot for this head_sha is UNUSABLE  -> unusable_refetches += 1 ; refetch on the NEXT wake
 snapshot for this head_sha is VERIFIED  -> unusable_refetches = 0      # any usable outcome, incl. red/pending
 head_sha changed                        -> unusable_refetches = 0
-unusable_refetches >= 3                 -> ESCALATE (above)
+unusable_refetches >= 3                 -> ESCALATE (above)  # 3 == THE REFETCH CAP. This line is its ONE
+                                                             # defining site; every other rule says "the
+                                                             # REFETCH CAP".
 ```
 
 - **The counter counts FETCH ATTEMPTS, never evidence.** It stays consistent with "an UNUSABLE snapshot
@@ -834,15 +868,17 @@ unusable_refetches >= 3                 -> ESCALATE (above)
   three different questions — `settled_strikes`: "trusted evidence stopped moving, and nothing can move
   it"; `ci_stalled_since`: "a row still SAYS it can move, and it has not"; `unusable_refetches`: "we never
   obtained trusted evidence at all."
-- **The bound is 3, not 2** (the strike cap), **on purpose.** UNUSABLE is dominated by **transient**
+- **The REFETCH CAP is HIGHER than the STRIKE CAP, on purpose.** UNUSABLE is dominated by **transient**
   causes — a `gh` call failed, the check set changed mid-fetch so a `source` count no longer matches, the
   snapshot raced a push — and a fresh fetch usually clears them; a SETTLED-but-not-green snapshot is,
-  by construction, **not** transient. Three gives two free retries and still terminates.
+  by construction, **not** transient. The extra headroom buys the transient case free retries, and it
+  still terminates.
 - **The WAKE is the backoff — never sleep inside one.** UNUSABLE gets **no watch** ("WATCH ONLY WHAT CAN
   MOVE" below), so the next attempt arrives on the heartbeat or another task's completion, never in a
   tight loop. At most **one** refetch per wake.
 - On escalation `ci_reason` names **the VERIFY rule that failed and the line/row that failed it** (not
-  "unusable") — a snapshot campaign could not read three times running is a real, actionable blocker: a
+  "unusable") — a snapshot campaign could not read once in the REFETCH CAP's worth of consecutive attempts
+  is a real, actionable blocker: a
   denied read, a wrong-SHA artifact, a fetch that never succeeds.
 
 #### WATCH ONLY WHAT CAN MOVE — the relaunch is not free
@@ -856,7 +892,7 @@ The watch is warranted by **a row that can still move**, never by the `ci` value
 | **red** — but some row still `RUNNING` | **YES** — that row can still move; the CI fix runs regardless. |
 | **red** — every row terminal | **NO.** The CI fix moves it, not the watch. |
 | **UNKNOWN_VALUE** | **NO.** The park is the resolution. |
-| **UNUSABLE** | **NO.** Refetch on the **next wake** (the wake *is* the backoff), **bounded at 3** — then ESCALATE ("UNUSABLE — the refetch is BOUNDED"). |
+| **UNUSABLE** | **NO.** Refetch on the **next wake** (the wake *is* the backoff), **bounded by the REFETCH CAP** — then ESCALATE ("UNUSABLE — the refetch is BOUNDED"). |
 | **green** | **NO.** |
 
 **NEVER relaunch the watch merely because `ci == pending`.** On a settled PR `gh pr checks --watch`

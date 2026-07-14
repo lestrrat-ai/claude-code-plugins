@@ -11,8 +11,11 @@ via `gh`, never a local `git rev-parse HEAD`.)
 `awaiting-user` or `awaiting-api` is parked on a HUMAN: **NEVER merge it**, whatever `reviews_ok` /
 `ci` / `mergeable` say. Merge eligibility is **not** derived from the gate counters alone — a park does
 not lower `reviews_ok`, so a rule that reads only the counters would merge a PR whose disputed finding
-or API change the user has not yet ruled on. Only the user's answer unparks it (`status` back to
-`in_review`); until then it is skipped, never merged.
+or API change the user has not yet ruled on. Only the user's answer unparks it, and **to the `status` that
+answer dictates** — `in_review` for a **resume** answer; terminal `aborted` for a **terminal** one (a
+`declined` API change, a `blocker_ruling` of `abort`), which never returns to `in_review` and is never
+merged (`loop-control.md` step 3, "Only the user's answer unparks a PR", owns the mapping). Until the
+answer lands the PR is skipped, never merged.
 
 ### The merge precondition — TWO enums, and NEITHER of them is a CI signal
 
