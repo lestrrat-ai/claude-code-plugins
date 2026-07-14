@@ -83,6 +83,7 @@ import re
 import sys
 import tempfile
 import unicodedata
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
@@ -2057,6 +2058,76 @@ def t_fields_and_lookup(tmp: Path) -> None:
     check(out == "", f"--where matched a state the entry has left: {out!r}")
 
 
+def t_the_harness_reports_a_fatal_fixture(tmp: Path) -> None:
+    """THE HARNESS ITSELF IS PINNED HERE — a fixture the store KILLS is REPORTED, and the suite goes ON.
+
+    A fixture that calls an accessor DIRECTLY (`load()`, not through `run()`) on a store the tool refuses
+    to load gets `fail()` -> `SystemExit` — a **BaseException**. Uncaught, it does not fail that fixture:
+    it kills the SUITE. Exit 1, no verdict, no rule named, and NOT ONE of the remaining fixtures runs — so
+    every rule after the casualty is silently untested while the run still looks like it "ran".
+
+    `run_case()` catches it and reports it as THAT fixture's failure. That catch was, itself, pinned by
+    NOTHING: changing it to `except RuntimeError` left all fixtures passing, because no fixture in the
+    suite provokes the exit. This one does — through the REAL path, an accessor refusing a corrupt store —
+    and asserts the three things the guard exists to guarantee:
+
+      1. the casualty is REPORTED as a failure, NAMED, with its rule and its exit code (not swallowed);
+      2. the accessor's own message reaches stderr (the report points at it, so it must be there);
+      3. THE NEXT CASE STILL RUNS. That is the whole point. A suite that stops at the first casualty tells
+         you nothing about the rest of the contract — the silence reads exactly like a pass.
+    """
+    ran: "list[str]" = []
+
+    def poison(work: Path) -> None:
+        ran.append("poison")
+        load(write_lines(work / "corrupt.jsonl", "{not json"))  # -> fail() -> SystemExit(1)
+        ran.append("poison-returned")  # unreachable: the accessor exits
+
+    def canary(work: Path) -> None:
+        ran.append("canary")
+
+    err = io.StringIO()
+    with redirect_stderr(err):
+        results = list(run_cases([("poison-case", "a store the accessor REFUSES", poison),
+                                  ("canary-case", "the case AFTER the casualty", canary)], tmp))
+
+    reports = dict(results)
+    check([n for n, _ in results] == ["poison-case", "canary-case"],
+          f"the harness did not report on both cases: {[n for n, _ in results]!r}")
+    fatal = reports["poison-case"]
+    check(fatal is not None,
+          "a fixture the ACCESSOR KILLED (SystemExit) was reported as PASSING — the guard is inverted")
+    check("poison-case" in fatal and "a store the accessor REFUSES" in fatal and "1" in fatal,
+          f"the casualty was not NAMED with its rule and its exit code: {fatal!r}")
+    check("malformed JSON" in err.getvalue(),
+          f"the accessor's own message never reached stderr, so the report points at nothing: "
+          f"{err.getvalue()!r}")
+    check(reports["canary-case"] is None, f"the case after the casualty was failed: {reports['canary-case']!r}")
+    check(ran == ["poison", "canary"],
+          f"the suite STOPPED at the first casualty — the cases that actually ran were {ran!r}")
+
+    # And the OTHER ways this harness could call an untested rule a passing one — each is a route by which
+    # a fixture never runs while the suite still prints its all-clear:
+    names = [name for name, _, _ in CASES]
+    check(len(names) == len(set(names)),
+          f"two fixtures share a name — their reports are indistinguishable: {names!r}")
+
+    # EVERY FIXTURE IS REGISTERED. A `t_*` written but never added to CASES runs NEVER, and the suite
+    # reports every remaining fixture holding — the rule it was written to pin is untested and nothing says
+    # so. The declaration is the registration; this is what makes forgetting it loud.
+    declared = {fn for _, _, fn in CASES}
+    orphans = sorted(n for n, v in globals().items()
+                     if n.startswith("t_") and callable(v) and v not in declared)
+    check(not orphans, f"fixtures defined but NEVER RUN — they are not in CASES: {orphans}")
+
+    # NO FIXTURE PASSES VACUOUSLY ON AN EMPTY CORPUS. Whole fixtures are nothing but a loop over one of
+    # these shared corpora (BLANKS, the hostile values, the graph). Empty one and its loop body never
+    # executes: the fixture passes without testing anything, and the suite is louder about nothing.
+    for corpus, label in ((BLANKS, "BLANKS"), (ledger.HOSTILE, "ledger.HOSTILE"),
+                          (TRANSITIONS, "TRANSITIONS"), (STATES, "STATES"), (FIELDS, "FIELDS")):
+        check(len(corpus) > 0, f"{label} is EMPTY — every fixture that loops over it passes vacuously")
+
+
 CASES = [
     ("user-step-unskippable", "no driver-only path reaches `accepted`, nor any state `publish` leaves from — proved on the graph", t_user_ruling_is_unskippable),
     ("illegal-history", "an entry no legal history produces does NOT LOAD — the guard holds against a hand-written store", t_load_rejects_an_illegal_history),
@@ -2085,41 +2156,75 @@ CASES = [
     ("table-omission-loud", "the omission is never silent, and an all-closed store never reads as empty", t_table_omission_is_never_silent),
     ("table-grid-integrity", "no hostile title/evidence forges a column, an entry, or an out-of-band line", t_table_grid_integrity),
     ("fields-and-lookup", "read by FIELD NAME; an unknown or empty field is rejected", t_fields_and_lookup),
+    ("harness-holds", "THE HARNESS ITSELF: a fixture the ACCESSOR KILLS is reported and the NEXT one still runs; no fixture is unregistered, unnamed, or vacuous — nothing untested can pass as tested", t_the_harness_reports_a_fatal_fixture),
 ]
+
+
+def run_case(name: str, rule: str, fn: "Callable[[Path], None]", work: Path) -> "str | None":
+    """Run ONE fixture. Return None if it held, else the report of HOW it failed.
+
+    EVERY way out of a fixture is caught HERE — this is the only place that decides pass from fail, so a
+    fixture can neither kill the run nor slip through it. Factored out of the loop so `t_the_harness_
+    reports_a_fatal_fixture` can feed it a case and watch what it does with one: as a loop body it was
+    reachable only by the real CASES, and none of them provoke the exit below, so the guard was pinned by
+    nothing (the catch could be changed to `except RuntimeError` with all fixtures still passing).
+    """
+    try:
+        fn(work)
+    except SelfTestFailure as exc:
+        return f"FAIL     {name:24} -> {rule}\n         {exc}"
+    except SystemExit as exc:
+        # A fixture called an accessor DIRECTLY (`load()`, not through `run()`) and it REFUSED —
+        # `fail()` raises SystemExit, which is a BaseException and would otherwise escape every
+        # handler here: the suite would die on the FIRST such fixture, printing no verdict, naming
+        # no rule, and running none of the others. The refusal is usually the very thing under test
+        # (a store that will not load), so it must be reported AS a failure of the fixture that
+        # provoked it, not as the end of the run.
+        return (f"FAIL     {name:24} -> {rule}\n         the accessor REFUSED the store (exit "
+                f"{exc.code}) inside the fixture — its message is on stderr, above")
+    except Exception as exc:  # noqa: BLE001 — a fixture that CRASHES has not passed
+        return f"FAIL     {name:24} -> {rule}\n         raised {type(exc).__name__}: {exc}"
+    return None
+
+
+def run_cases(cases: "list[tuple[str, str, Callable[[Path], None]]]",
+              root: Path) -> "Iterator[tuple[str, str | None]]":
+    """Run every case, each in its OWN directory, and YIELD one result per case, in order.
+
+    A GENERATOR, so the verdict on each case is emitted the moment it is known: were the results collected
+    first and printed after, a fixture that took the whole run down would print NOTHING AT ALL — not even
+    the cases that had already held. Streaming, the run always shows exactly how far it got.
+
+    The directory is keyed by POSITION as well as name, so two same-named cases cannot collide on it (the
+    collision would raise OUTSIDE `run_case()` and take the run down); the name itself is pinned unique by
+    the meta-fixture, because two cases sharing one make their reports indistinguishable.
+
+    One result per case, ALWAYS: the count the verdict prints is the count of cases actually EXECUTED, not
+    `len(CASES)` — a case that never ran can then never be tallied as one that passed.
+    """
+    for i, (name, rule, fn) in enumerate(cases):
+        work = root / f"{i:02d}-{name}"
+        work.mkdir(parents=True)
+        yield name, run_case(name, rule, fn, work)
 
 
 def self_test() -> int:
     """Run every fixture. Exit 0 iff every rule this file claims to enforce actually holds."""
-    failures = 0
+    rules = {name: rule for name, rule, _ in CASES}
+    results: "list[tuple[str, str | None]]" = []
     with tempfile.TemporaryDirectory() as tmpdir:
-        for name, rule, fn in CASES:
-            work = Path(tmpdir) / name
-            work.mkdir()
-            try:
-                fn(work)
-            except SelfTestFailure as exc:
-                print(f"FAIL     {name:24} -> {rule}\n         {exc}")
-                failures += 1
-            except SystemExit as exc:
-                # A fixture called an accessor DIRECTLY (`load()`, not through `run()`) and it REFUSED —
-                # `fail()` raises SystemExit, which is a BaseException and would otherwise escape every
-                # handler here: the suite would die on the FIRST such fixture, printing no verdict, naming
-                # no rule, and running none of the others. The refusal is usually the very thing under test
-                # (a store that will not load), so it must be reported AS a failure of the fixture that
-                # provoked it, not as the end of the run.
-                print(f"FAIL     {name:24} -> {rule}\n         the accessor REFUSED the store (exit "
-                      f"{exc.code}) inside the fixture — its message is on stderr, above")
-                failures += 1
-            except Exception as exc:  # noqa: BLE001 — a fixture that CRASHES has not passed
-                print(f"FAIL     {name:24} -> {rule}\n         raised {type(exc).__name__}: {exc}")
-                failures += 1
-            else:
-                print(f"ok       {name:24} -> {rule}")
+        for name, report in run_cases(CASES, Path(tmpdir)):
+            print(report if report is not None else f"ok       {name:24} -> {rules[name]}")
+            results.append((name, report))
     print()
+    failures = sum(1 for _, report in results if report is not None)
     if failures:
         print(f"{failures} check(s) FAILED — the follow-up store's contract is broken.")
         return 1
-    print(f"all {len(CASES)} fixtures hold — the follow-up store's contract is intact.")
+    if len(results) != len(CASES):  # a case that never ran must NEVER be tallied as one that passed
+        print(f"{len(results)} fixtures ran, but {len(CASES)} are declared — the suite SKIPPED some.")
+        return 1
+    print(f"all {len(results)} fixtures hold — the follow-up store's contract is intact.")
     return 0
 
 
