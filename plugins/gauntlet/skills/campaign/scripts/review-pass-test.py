@@ -409,10 +409,21 @@ class Tables:
                 "the shape the whole design is FOR. The finding is recorded, it becomes a follow-up, and it "
                 "does not block. A rule that refused this would forbid the reviewer to report anything it "
                 "was not willing to block on — which is the 21-round spiral, re-armed"),
-            "verdict-not-passed": (
-                PLAN, WORKED, [R42_23], INTENT, None, OK, "0 gating finding(s)",
-                "`--verdict` is OMITTED — the pass is still in flight, or the driver has not read the "
-                "report yet. The findings are still fully validated; only the coherence rule waits"),
+            "complete-pass-no-verdict": (
+                PLAN, WORKED, [R42_23], INTENT, None, UNUSABLE, "no verdict was given",
+                "**THE COHERENCE RULE'S OWN INPUT COULD BE ABSENT, AND THEN THE RULE NEVER FIRED.** This "
+                "exact pass — COMPLETE, sound, verified with NO verdict — used to come back `ok`, so a "
+                "driver that simply FORGOT the flag switched off the one machine-checked rule about the "
+                "reviewer's own verdict: a SATISFIED returned over a GATING finding sailed straight through "
+                "it. It is the same defect as an intent that could be missing on precisely the passes that "
+                "MERGE a PR, and it is closed the same way — the input is DEMANDED, not hoped for. A gate "
+                "must not depend on an agent remembering to pass something"),
+            "in-flight-no-verdict": (
+                PLAN, [ident(), started("u01")], None, INTENT, None, INCOMPLETE, "has not covered its plan",
+                "…and the case the rule above must NOT catch, which is why it sits BELOW the completeness "
+                "check: a pass still WORKING has no verdict to state, and it is answered `incomplete` — not "
+                "refused for lacking one. `verify` is a door you come to with the report in hand; a pass in "
+                "flight is WATCHED, not verified"),
 
             # --- A PASS IS JUDGED AGAINST AN INTENT — WHATEVER IT FOUND, AND EVEN IF IT FOUND NOTHING ----
             #
@@ -588,12 +599,15 @@ class Tables:
              "a SECOND identity into a live pass's file — how one pass ends up describing two commits"),
             (["identity", "--head-sha", SHA, "--dispatched-at", TS], [""], 1, "NOT EMPTY",
              "HEADLINE, WRITE DOOR: a WHITESPACE-ONLY file. This door decided 'empty' with `.strip()`, wrote the identity below the blank line, exited 0 — and `verify` then refused the artifact FOR THAT BLANK LINE. EMPTY now means NO BYTES, at both doors"),
-            (["verify", "--head-sha", SHA[:7]], EMPTY, 2, "No verdict beats a wrong one",
+            (["verify", "--head-sha", SHA[:7], "--verdict", "satisfied"], EMPTY, 2, "No verdict beats a wrong one",
              "an OPERATOR error is not a snapshot verdict: exit 2"),
-            (["verify", "--head-sha", SHA, "--amendments-ruled", "1"], EMPTY, 2, "raised only 0",
+            (["verify", "--head-sha", SHA, "--amendments-ruled", "1", "--verdict", "satisfied"], EMPTY, 2, "raised only 0",
              "a ruling for an amendment that does not exist would silently clear the NEXT one raised"),
-            (["verify", "--head-sha", SHA, "--amendments-ruled", "-1"], WORKED, 2, "smallest legal value is 0",
+            (["verify", "--head-sha", SHA, "--amendments-ruled", "-1", "--verdict", "satisfied"], WORKED, 2,
+             "smallest legal value is 0",
              "HEADLINE: A NEGATIVE RULING WEDGES A PASS THAT WAS EARNED. `decide` SUBTRACTS the ruling, so `0 - (-1) = 1` amendment 'not yet ruled on' that the reviewer never raised and no ruling can ever clear"),
+            (["verify", "--head-sha", SHA], WORKED, 2, "required: --verdict",
+             "**THE VERIFY DOOR'S OWN MISSING INPUT, REFUSED BY ARGPARSE — AT THE DOOR, NAMING THE FLAG.** This exact call exited 0 on this exact pass: the flag was OPTIONAL, so the coherence rule was OFF for a driver that forgot it, and the gate then merged whatever the report claimed. It is `required=True` now — the same cure `--check` needed one door over, for the same disease: a guard whose input can be ABSENT never fires"),
             (["verify", "--head-sha", SHA, "--verdict", "not-satisfied"], WORKED, 1, "NO GATING finding",
              "**THE NEW ONE, AT THE VERIFY DOOR:** a complete, perfectly sound pass that returns NOT SATISFIED and records nothing that may block. The artifacts are flawless and the pass still cannot count — a verdict that blocks a PR must name what blocks it"),
             (["verify", "--head-sha", SHA, "--verdict", "satisfied"], WORKED, 0, "0 gating finding(s)",
@@ -692,7 +706,9 @@ class Tables:
             "plan-add": (PLAN_FILE, None),              # the first unit lands in a plan that does not exist
             "finding-add": (FINDINGS_FILE, None),       # …and the first finding in a findings file that does not
             FINDING_WRAPPER_DOOR: (FINDINGS_FILE, None),  # the reviewer's OTHER door, through its wrapper
-            "verify": (PROGRESS_FILE, WORKED),          # a COMPLETE, sound pass — it verifies `ok`, so exit 0
+            # a COMPLETE, sound pass — and the minimal invocation now CARRIES a `--verdict` (it is required),
+            # so the door check drives the rule as well as the shape: `satisfied`, 0 gating findings, exit 0
+            "verify": (PROGRESS_FILE, WORKED),
             "self-test": (None, None),                  # no --file, no flags at all
         }
 
@@ -899,6 +915,11 @@ def reads_back(mod: types.ModuleType, artifact: str, path: Path) -> "tuple[bool,
 
     An exception is the loudest failure of all: the read side owes a VERDICT on any bytes, and a crash is
     not a verdict.
+
+    It asks for NO `--verdict`, and the question is why that is sound: a write door has just appended ONE
+    line, so the pass it produced is never a COMPLETE one (`WRITE_COMMANDS` never finishes the plan), and
+    the missing-verdict rule fires only on a complete pass. "Reads back" here means "not `unusable`" —
+    `incomplete` is the honest answer about a pass that is one `emit` old, and it holds.
     """
     try:
         if artifact == PLAN_FILE:
@@ -988,10 +1009,16 @@ def run_cases(mod: types.ModuleType, T: Tables, tmp: Path) -> "dict[str, tuple[s
     A mutant that CRASHES has not returned a verdict, and "no verdict" is itself a deviation — recorded,
     never swallowed."""
     got: dict[str, tuple[str, str]] = {}
+    # **EVERY CASE STATES A VERDICT, and that default is the contract** — exactly as the intent sits beside
+    # every fixture unless one says otherwise. A COMPLETE pass verified with NO verdict is `unusable` (the
+    # coherence rule may not be switched off by omitting its input), so a case that is not ABOUT the verdict
+    # must supply one or it would be asserting the wrong refusal. These cases carry no findings file, so
+    # `satisfied` is the verdict that coheres; the cases that ARE about the verdict live in `FINDING_CASES`,
+    # which passes its own — including `None`.
     for name, (plan, progress, _want, _needle, _why) in T.CASES.items():
         path = build(tmp, f"case-{name}", plan, progress)
         try:
-            got[name] = mod.evaluate(path, SHA)
+            got[name] = mod.evaluate(path, SHA, 0, mod.SATISFIED)
         except Exception as exc:  # noqa: BLE001 - a crash IS the result here
             got[name] = (f"crash:{type(exc).__name__}", str(exc))
     for name, (plan, progress, findings, intent, verdict, _w, _n, _why) in T.FINDING_CASES.items():
@@ -1005,7 +1032,9 @@ def run_cases(mod: types.ModuleType, T: Tables, tmp: Path) -> "dict[str, tuple[s
         path = d / name
         path.write_text("".join(line + "\n" for line in T.WORKED), encoding="utf-8")
         try:
-            got[f"[name] {name}"] = mod.evaluate(path, SHA)
+            # The pass is COMPLETE (`WORKED`) in every one of these, so it states a verdict for the same
+            # reason `CASES` does — the FILENAME is what is under test here, and nothing else may refuse it.
+            got[f"[name] {name}"] = mod.evaluate(path, SHA, 0, mod.SATISFIED)
         except Exception as exc:  # noqa: BLE001
             got[f"[name] {name}"] = (f"crash:{type(exc).__name__}", str(exc))
     for i, (argv, seed, _want, _needle, _why) in enumerate(T.CLI_CASES):

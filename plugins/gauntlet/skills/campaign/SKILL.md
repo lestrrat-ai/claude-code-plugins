@@ -200,7 +200,9 @@ Read stage refs only when that stage/action is due:
   **And the rule runs BOTH ways — it is an if and only if: `NOT SATISFIED` exactly when at least one GATING
   finding stands.** A pass that records a gating finding and returns `SATISFIED` anyway is `unusable`, the
   same as one that blocks with nothing to point at. A finding cannot be blocking in the artifact and
-  ignorable in the verdict.
+  ignorable in the verdict. **The verdict is a REQUIRED input to `verify`** (`--verdict`, what the report's
+  `VERDICT:` line says): a COMPLETE pass verified without one is `unusable`, because a guard whose input
+  can be ABSENT never fires.
 - **Verdicts go through `ledger.py verdict` — NEVER set `reviews_ok` by hand.** It bumps `review_rounds`
   (**monotone, never reset — the loop's only memory across fresh-context wakes**), applies the tally, and
   moves `ns_streak`, atomically. `set` cannot RAISE the tally and no door can write the counters at all.

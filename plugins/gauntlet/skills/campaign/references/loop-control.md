@@ -160,8 +160,10 @@ blocks; each completion is its own wake.
    review verdict is counted, the pass's artifacts must verify** — `scripts/review-pass.py verify --verdict
    <what the report's VERDICT line says>`, never
    an ad-hoc parse; anything but `ok` means the verdict is not tallied (Stage 2a, "Does this pass COUNT?").
-   Passing `--verdict` is what lets the tool check the one rule it can, and that rule is an **if and only
-   if**: **`not-satisfied` exactly when at least one GATING finding stands** — a verdict that blocks a PR
+   **`--verdict` is REQUIRED** — it is what lets the tool check the one rule it can, so a COMPLETE pass
+   verified without it is `unusable`, never `ok` (a rule a driver can switch off by forgetting a flag is
+   not a gate). That rule is an **if and only if**: **`not-satisfied` exactly when at least one GATING
+   finding stands** — a verdict that blocks a PR
    must name what blocks it, and a finding that blocks a PR cannot be waved through by the verdict. Either
    way round is `unusable` (Stage 2a, "Does this pass COUNT?").
    **Then record the verdict with `scripts/ledger.py verdict --pr <N> --head-sha <sha> --verdict …`** — the

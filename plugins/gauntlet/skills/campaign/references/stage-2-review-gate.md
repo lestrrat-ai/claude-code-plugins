@@ -125,7 +125,7 @@ review-pass.py finding-add --file <rundir>/<findings-file> --path <file> --line 
     --writer <enum> --purpose "<a ## Purpose line, VERBATIM, or ->" \
     --repro "<what makes it fail>" --fix "<the concrete fix>"   # what `emit-finding.py` runs
 review-pass.py verify --file <rundir>/<progress-file> --head-sha <the PR's LIVE head> \
-    [--amendments-ruled N] [--verdict satisfied|not-satisfied]  # DOES THIS PASS COUNT?
+    --verdict satisfied|not-satisfied [--amendments-ruled N]    # DOES THIS PASS COUNT?
 review-pass.py self-test                    # the fixtures, and the proof each rule is pinned by one
 ```
 
@@ -511,7 +511,8 @@ it attacks a declared non-goal. The proof machinery had become the thing under r
 
 `review-pass.py verify` **exits non-zero** when: the PR has **no usable intent block** for the pass to be
 measured against (checked for **every** pass — see below); a `NOT SATISFIED` pass records **no gating
-finding**; a `SATISFIED` pass records **one that stands**; a
+finding**; a `SATISFIED` pass records **one that stands**; **no verdict is given at all for a pass that is
+COMPLETE** (`--verdict` is REQUIRED — the rule below cannot be switched off by omitting its input); a
 required field is missing; `writer` is outside the enum; `purpose` is not a verbatim `## Purpose` line; or
 `writer` contradicts the repro. It still **cannot say `SATISFIED`** and still **cannot raise `reviews_ok`**
 — it can only ever **subtract** a pass, never grant one.
@@ -696,25 +697,33 @@ with a parser written fresh each wake. That is precisely how a driver read `gh p
 
 ```
 review-pass.py verify --file <rundir>/<active attempt's progress file> --head-sha <the PR's LIVE head> \
-    [--verdict satisfied|not-satisfied]
+    --verdict satisfied|not-satisfied
 ```
 
 **`--verdict` is what you READ in the report, TOLD to the tool** — the tool still never opens
-`review-<pr>-<n>.txt` and still cannot *say* `SATISFIED`. Pass it once the reviewer's report exists (omit it
-while the pass is still in flight, when there is no verdict to state). It buys exactly one machine-checked
+`review-<pr>-<n>.txt` and still cannot *say* `SATISFIED`. It buys exactly one machine-checked
 rule, and that rule is an **IF AND ONLY IF**: **`not-satisfied` exactly when at least one GATING finding
 stands.** A verdict that blocks a PR must name what blocks it — **and a finding that blocks a PR cannot be
 waved through by the verdict.** Both halves make a pass `unusable`; neither can grant one.
+
+**`--verdict` is REQUIRED, and a COMPLETE pass verified without it is `unusable` — never `ok`.** It used to
+be optional, and that made the only mechanical check on the reviewer's own verdict a guard a driver
+switched off by *forgetting a flag*: a complete pass with no `--verdict` came back `ok`, and a reviewer
+that returned SATISFIED over a GATING finding it had itself recorded sailed through. **A gate must not
+depend on an agent remembering to pass something** — so the input is demanded, exactly as the intent is.
+**You come to this door WITH the report's `VERDICT:` line in hand.** It is not the way to ask whether the
+reviewer has finished: a pass still in flight is **watched**, not verified — its progress file is the
+liveness evidence ("Launch check", above).
 
 It answers with exactly one verdict, and there is **no "counts, but…"** — a disclosure printed beside a
 pass is a trapdoor, not a disclosure:
 
 | verdict | exit | what it means | what to do |
 |---|---|---|---|
-| `ok` | 0 | the artifacts are sound: a `pass_identity` naming **this** PR, **this** pass, **this** launch attempt and **the live head SHA**; a **usable intent block** for this PR; every planned unit `done` **once**, with concrete evidence, after a `started` for it; every `done` for a unit that is **actually in the plan**; no unruled amendment; and — when you passed `--verdict` — a verdict that **coheres** with the findings | **now** read the report's `VERDICT:` line and tally it |
+| `ok` | 0 | the artifacts are sound: a `pass_identity` naming **this** PR, **this** pass, **this** launch attempt and **the live head SHA**; a **usable intent block** for this PR; every planned unit `done` **once**, with concrete evidence, after a `started` for it; every `done` for a unit that is **actually in the plan**; no unruled amendment; and the verdict you gave **coheres** with the findings | **tally the verdict you passed** |
 | `incomplete` | 1 | sound, but a planned unit has no `done` — the pass has not covered its plan | it is still working (or it stopped early — the meaningful-progress rule decides which). **Never tally a verdict from it** |
 | `amended` | 1 | sound, but the reviewer raised a `plan_amendment_request` nobody has ruled on | fold it into the plan and restart the pass, or ignore it with a note — then re-run with `--amendments-ruled N` |
-| `unusable` | 1 | the artifacts are **defective** — a short SHA or any other malformed identifier, a `done` for an unplanned unit, an evidence-free `done`, a `done` that no `started` precedes, a SECOND `done` for one unit, a hand-written line of the wrong shape, an identity naming another commit or another attempt; **no usable intent block for the PR** (`pr-adoption.md` step 3a — checked for **every** pass, including one that found nothing); a **verdict that does not cohere with the findings** in *either* direction (**a `not-satisfied` that recorded no GATING finding**, or a **`satisfied` that recorded one that stands**); a finding missing a field, a `writer` outside the enum, a `purpose` that is not a verbatim `## Purpose` line, or a `writer` its own repro contradicts | the pass **CANNOT count, whatever its report says.** Treat it as a reviewer system failure (retry / fresh-subagent fallback), never as a verdict. **An `unusable` for a missing intent is NOT a reviewer failure** — it means the run skipped `pr-adoption.md` step 3a: write the intent, then re-dispatch the pass |
+| `unusable` | 1 | the artifacts are **defective** — a short SHA or any other malformed identifier, a `done` for an unplanned unit, an evidence-free `done`, a `done` that no `started` precedes, a SECOND `done` for one unit, a hand-written line of the wrong shape, an identity naming another commit or another attempt; **no usable intent block for the PR** (`pr-adoption.md` step 3a — checked for **every** pass, including one that found nothing); a **verdict that does not cohere with the findings** in *either* direction (**a `not-satisfied` that recorded no GATING finding**, or a **`satisfied` that recorded one that stands**); **NO verdict at all on a COMPLETE pass** (the coherence rule's input may not be omitted); a finding missing a field, a `writer` outside the enum, a `purpose` that is not a verbatim `## Purpose` line, or a `writer` its own repro contradicts | the pass **CANNOT count, whatever its report says.** Treat it as a reviewer system failure (retry / fresh-subagent fallback), never as a verdict. **An `unusable` for a missing intent is NOT a reviewer failure** — it means the run skipped `pr-adoption.md` step 3a: write the intent, then re-dispatch the pass. **Neither is one for a missing verdict** — that is YOUR call being wrong, not the pass: read the report's `VERDICT:` line and pass it. (The CLI refuses that call outright — `--verdict` is required — so this verdict is reachable only by an in-process caller) |
 
 **`ok` IS NOT `SATISFIED`, and the tool will never say `SATISFIED`.** It does not open
 `review-<pr>-<n>.txt` and does not parse the reviewer's prose — the VERDICT is the reviewer's **judgment**

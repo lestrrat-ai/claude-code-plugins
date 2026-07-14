@@ -81,10 +81,18 @@ door has a `--head-sha` to compare against. That gap is named there and nowhere 
 
 THE VERDICTS. Exactly one is printed, and there is no "counts, BUT…":
 
-  ok          the artifacts are sound; the pass's verdict may now be read from its report
+  ok          the artifacts are sound AND the verdict you gave coheres with them; it may now be tallied
   incomplete  sound, but a planned unit has no `done` event — the pass did not cover its plan
   amended     sound, but the reviewer raised a plan amendment nobody has ruled on yet
   unusable    the artifacts are defective — this pass CANNOT count, whatever its report says
+
+`--verdict` IS REQUIRED, and that is the whole of what "a gate must not depend on a caller remembering"
+means here. You come to `verify` WITH the report's `VERDICT:` line in hand; you do not come to it to find
+out whether the reviewer is done. A pass still in flight is WATCHED, not verified — its progress file is
+the liveness evidence (stage-2-review-gate.md, "Launch check"). While the flag could be left out, a
+complete pass verified without it returned `ok`, so the one machine-checked rule about the reviewer's own
+verdict was OFF for any driver that forgot a flag — and a driver that forgot it merged a PR whose reviewer
+had returned SATISFIED over a GATING finding it recorded itself.
 
 `amended` is a VERDICT and not a footnote beside `ok` on purpose. A disclosure printed next to a pass is a
 trapdoor, not a disclosure: "this pass counts, but note that the reviewer says the plan is missing a
@@ -1192,6 +1200,14 @@ def decide(events: "list[dict]", units: "dict[str, dict]", ruled: int,
     coherence rule can be checked mechanically. **THE RULE IS AN IF AND ONLY IF, AND IT IS ENFORCED IN BOTH
     DIRECTIONS: NOT SATISFIED exactly when at least one GATING finding stands.**
 
+    **AND ON A COMPLETE PASS THE VERDICT IS NOT OPTIONAL — an ABSENT one is `unusable`, never `ok`.** It
+    was optional, and that made the coherence rule above a guard a caller could switch off by FORGETTING a
+    flag: a complete pass verified with no `--verdict` returned `ok`, so a driver that dropped it merged a
+    PR whose reviewer had returned SATISFIED over a GATING finding it had itself recorded. That is the same
+    defect as the intent that could be missing on exactly the passes that count — **a guard whose input can
+    be ABSENT never fires** — and it is closed the same way: the input is DEMANDED. A verdict a driver has
+    not read yet is not a reason to skip the rule; it is a reason not to be at this door yet.
+
       * NOT SATISFIED and NO gating finding — a verdict that blocks a PR and names nothing that blocks it.
       * SATISFIED and a gating finding that STANDS — the reviewer recorded a defect that anchors to the PR's
         own purpose, or that a named actor can really reach, and then passed the PR anyway. Half the
@@ -1226,6 +1242,20 @@ def decide(events: "list[dict]", units: "dict[str, dict]", ruled: int,
         return INCOMPLETE, (
             f"{len(done)}/{len(units)} planned units are done; no `{DONE}` event for {missing} — the pass "
             f"has not covered its plan"
+        )
+
+    # The pass is COMPLETE from here down — every planned unit is done and no amendment is outstanding — so
+    # there IS a report, and the ONE rule this tool can check mechanically has an input it may not be denied.
+    # Ordered BELOW `incomplete` on purpose: a pass still in flight has no verdict to state, and asking it
+    # for one would refuse a reviewer for being unfinished, which `incomplete` already says better.
+    if verdict is None:
+        # MUTATE:verdict-missing-on-complete:pass
+        return UNUSABLE, (
+            f"all {len(units)} planned units are done, so this pass is FINISHED — and no verdict was given "
+            f"to check it against ({VERDICTS} — what the report's `VERDICT:` line says). The coherence rule "
+            f"is the only thing standing between a reviewer that returns SATISFIED over a GATING finding it "
+            f"recorded itself and a PR that merges anyway, and a rule whose input may be OMITTED is a rule a "
+            f"caller switches off by forgetting a flag. Read the report's VERDICT line and state it"
         )
 
     blocking = [f for f in findings if gating(f)]
@@ -1786,16 +1816,21 @@ def build_parser() -> "tuple[argparse.ArgumentParser, list[str]]":
     v.add_argument("--amendments-ruled", type=int, default=0, metavar="N",
                    help="how many of this pass's plan amendments you have already ruled on — a count, so "
                         "N >= 0, and never more than the pass actually raised (default 0)")
-    # OPTIONAL, and deliberately so: `verify` is also run on a pass that is still WORKING (it answers
-    # `incomplete`), and a pass that has not finished has no verdict to state. Pass it once the reviewer's
-    # report exists, and this tool will check the ONE thing it can — in BOTH directions: NOT SATISFIED
-    # exactly when at least one GATING finding stands.
-    v.add_argument("--verdict", choices=VERDICTS, default=None,
-                   help="the VERDICT line you read in the reviewer's report. Omit while the pass is still "
-                        "in flight. It buys ONE machine-checked rule, an IF AND ONLY IF: the pass is "
-                        "UNUSABLE if `not-satisfied` recorded NO gating finding (a verdict that blocks a PR "
-                        "must name what blocks it), and equally UNUSABLE if `satisfied` recorded ONE (a "
-                        "finding that gates cannot be waved through in the verdict)")
+    # REQUIRED — and it was OPTIONAL, which is the same defect `--check` had one door over, in the shape
+    # that costs the most. The coherence rule is the ONLY mechanical check on the reviewer's own verdict,
+    # and while this flag could be left out, a complete pass verified WITHOUT it came back `ok`: the guard
+    # was OFF for any driver that simply forgot the flag, and the gate merged whatever the report claimed.
+    # A gate MUST NOT depend on an agent remembering to pass something. `verify` is a door you come to with
+    # the report in hand; a pass still in flight is not verified, it is WATCHED (its progress file is the
+    # liveness evidence — `stage-2-review-gate.md`, "Launch check"), and `decide` refuses an absent verdict
+    # only once the pass is COMPLETE, so an in-process caller still gets `incomplete` rather than a scolding.
+    v.add_argument("--verdict", choices=VERDICTS, required=True,
+                   help="REQUIRED: the VERDICT line you read in the reviewer's report. It buys ONE "
+                        "machine-checked rule, an IF AND ONLY IF: the pass is UNUSABLE if `not-satisfied` "
+                        "recorded NO gating finding (a verdict that blocks a PR must name what blocks it), "
+                        "and equally UNUSABLE if `satisfied` recorded ONE (a finding that gates cannot be "
+                        "waved through in the verdict). A pass verified without it is UNUSABLE too — a rule "
+                        "a caller can switch off by omitting a flag is not a gate")
 
     sub.add_parser("self-test", help="run every fixture, then DELETE each rule and prove a fixture notices")
 

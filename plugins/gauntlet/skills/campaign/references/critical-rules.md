@@ -228,7 +228,10 @@
     **including one that found nothing** (that is the ordinary case, and the one that merges a PR);
   - **the VERDICT does not cohere with the FINDINGS** — the rule is an **if and only if**: `not-satisfied`
     exactly when at least one GATING finding stands, so a `not-satisfied` that recorded none is refused,
-    and so is a `satisfied` that recorded one.
+    and so is a `satisfied` that recorded one. **`--verdict` is a REQUIRED input to `verify`**, so a
+    COMPLETE pass verified without one is refused too: a rule whose input may be omitted is a rule the
+    driver switches off by forgetting a flag, and this one is the only mechanical check on the reviewer's
+    own verdict.
   Every one of those rules holds at **both doors** — the same predicate refuses it on write (`emit`) and on
   read (`verify`), so it cannot be enforced at one and not the other. **Every identifier it handles has ONE
   legal form and NO door repairs one** (a unit id is `u01`-shaped; `pr`/`pass`/`launch_attempt` are decimal
