@@ -8,11 +8,10 @@ sounds like what you want to read.
 
 ## The sample
 
----
+````markdown
+# Reporting
 
-### Reporting
-
-#### Interim updates (after tool batches, subagent returns, phase boundaries)
+## Interim updates (after tool batches, subagent returns, phase boundaries)
 
 - State what was learned / what changed in plain language, then next step. NEVER narrate mechanics
   ("grepping now") or use labels/numbering invented mid-task.
@@ -28,12 +27,12 @@ sounds like what you want to read.
 - No meta-commentary about own reporting ("because they're real risks, not mechanics"). Report the work
   only.
 
-#### Final report
+## Final report
 
 - Summary of work + worktree name (`.worktrees/<branch>`) or directory.
 - Action items for user listed explicitly, or state none.
 
-#### Answering direct questions
+## Answering direct questions
 
 - First sentence = the answer. "Does X need action from me?" → "No." / "Yes: `<action>`." BEFORE any
   explanation.
@@ -41,8 +40,7 @@ sounds like what you want to read.
 - NEVER justify/defend past work unasked. Answer the question, don't litigate.
 - Side-findings/plans surfaced while answering → ≤1 sentence mention ("queuing a doc fix separately").
   Details on request.
-
----
+````
 
 ## What each rule is actually buying you
 
