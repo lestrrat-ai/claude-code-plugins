@@ -101,9 +101,15 @@ following line is one adopted PR's row record (`{"type": "row", …}`). Every re
 
 ```
 {"type": "header", "run_id": "g260704-0915-a3f29c1b", "base_branch": "main", "api_changes": "ask", "reviewer": "codex"}
-{"type": "row", "id": "pr41", "slug": "fix-null-deref", "branch": "fix-null-deref", "worktree": ".worktrees/fix-null-deref", "worktree_owned": "yes", "branch_owned": "yes", "pr": "41", "head_sha": "a3f29c1b", "reviews_ok": "2", "ci": "green", "tier": "STANDARD", "attempts": "1", "started": "2026-07-04T09:15:00Z", "api_approval": "-", "status": "in_review"}
-{"type": "row", "id": "pr52", "slug": "add-retry-flag", "branch": "add-retry-flag", "worktree": ".worktrees/add-retry-flag", "worktree_owned": "no", "branch_owned": "no", "pr": "52", "head_sha": "b1c2d3e4", "reviews_ok": "0", "ci": "pending", "tier": "HIGH", "attempts": "0", "started": "-", "api_approval": "-", "status": "in_review"}
+{"type": "row", "id": "pr41", "slug": "fix-null-deref", "branch": "fix-null-deref", "worktree": ".worktrees/fix-null-deref", "worktree_owned": "yes", "branch_owned": "yes", "pr": "41", "head_sha": "a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c", "reviews_ok": "2", "ci": "green", "tier": "STANDARD", "attempts": "1", "started": "2026-07-04T09:15:00Z", "api_approval": "-", "status": "in_review"}
+{"type": "row", "id": "pr52", "slug": "add-retry-flag", "branch": "add-retry-flag", "worktree": ".worktrees/add-retry-flag", "worktree_owned": "no", "branch_owned": "no", "pr": "52", "head_sha": "b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7089a1b", "reviews_ok": "0", "ci": "pending", "tier": "HIGH", "attempts": "0", "started": "-", "api_approval": "-", "status": "in_review"}
 ```
+
+**`head_sha` is ALWAYS the full 40-char `headRefOid` — never an abbreviation.** The examples above spell
+it in full because they are what gets copied. A SHA in the ledger is compared for equality against `gh`'s
+live `headRefOid` and pasted into commands; an abbreviated one silently fails both. **NEVER write a
+shortened SHA into the store, and never reconstruct one from a display.** The ONLY place a SHA is ever
+shortened is `table`'s rendering (below) — that is display-only and does not exist on disk.
 
 Header-record fields: `run_id` (this run's identity — namespaces its dir/label/wakes; set once),
 `base_branch` (the adopted PRs' baseRefName — the branch they merge into & diffs measure against; set
@@ -211,8 +217,24 @@ ledger.py --file <state.jsonl> table [--fields <f>,<f>,…]         # print run 
 ```
 
 `table` is the user-facing status view: the end-of-wake report renders it whenever the run goes back
-to waiting (`loop-control.md`, "Reschedule or exit"). It is a pure projection of the ledger — raw field
-values only (`head_sha` shortened for display), no gate logic.
+to waiting (`loop-control.md`, "Reschedule or exit"). It renders state and decides nothing — no gate
+logic, no derived values.
+
+**`table` is a PROJECTION — NEVER a source to read a value back out of.** Its output is *formatted for a
+human*, and the formatting is lossy in two ways:
+
+- **It shortens the SHA.** `table` prints `head_sha` truncated to its first **8 characters**. This is a
+  **display-only** truncation and applies to **`table` alone** — nothing else in campaign ever shortens a
+  SHA. The stored value, and the one every other subcommand returns, stays the full 40-char `headRefOid`:
+  `ledger.py … get --pr N --field head_sha` prints all 40.
+- **It escapes cell values.** A value carrying a `|`, a newline, or a leading `#` would otherwise forge a
+  column, a row, or a header line, so `table` backslash-escapes those before printing. The escaped text is
+  what you see; the raw value is what is stored.
+
+So **read the ledger by FIELD NAME through `ledger.py get`** (or `list`) — **never by parsing the table**.
+A SHA (or any value) recovered from `table`'s grid is a truncated, escaped rendering, and feeding one back
+into a command or writing it to the store is a bug: this repo has already had a fabricated 8-char SHA
+written into a real ledger, and a truncated SHA escape into a command.
 
 It rejects an unknown field name (listing the valid ones), refuses a duplicate `pr` on `add-row`,
 errors on a missing row for `set`/`get`, and creates the file with the header if it is missing. It also

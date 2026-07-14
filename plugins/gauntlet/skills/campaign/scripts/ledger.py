@@ -227,6 +227,52 @@ TABLE_DEFAULT_FIELDS = ("pr", "slug", "tier", "reviews_ok", "ci", "attempts", "s
 TABLE_SHA_WIDTH = 8
 
 
+def escape_cell(value: str) -> str:
+    """Make a value safe to render inside the grid — no value may forge the layout.
+
+    A field value is free text (`slug` is a PR title; `ci`-style reason fields hold
+    prose), so it can contain the very characters the table's layout is built from.
+    Rendered raw, a value carrying a `|` fabricates extra columns, a newline
+    fabricates extra ROWS, and a leading `# ` mimics the run-config header lines
+    printed above the grid. The table would then say something the ledger never did.
+
+    ESCAPING, not quoting: quoting every cell would widen every column by two chars
+    for the common (harmless) case and STILL need an escape for an embedded quote —
+    so it buys nothing. Backslash escapes leave every ordinary value byte-identical
+    and give the invariant outright: the returned string contains no `|`, no line
+    break, no control character, and never starts with `#`. Each escape is
+    unambiguous (a literal backslash is doubled), so the display stays reversible by
+    eye — but it is still a DISPLAY form. Read values back with `get --field`, never
+    by parsing this table.
+
+    Callers MUST escape BEFORE computing column widths, so the widths measure what is
+    actually printed. (Truncation of `head_sha` happens first, on the raw value, so a
+    cut can never land inside an escape sequence.)
+    """
+    out = []
+    for ch in value:
+        if ch == "\\":
+            out.append("\\\\")
+        elif ch == "|":
+            out.append("\\|")
+        elif ch == "\n":
+            out.append("\\n")
+        elif ch == "\r":
+            out.append("\\r")
+        elif ch == "\t":
+            out.append("\\t")
+        elif ord(ch) < 0x20 or ord(ch) == 0x7F:
+            out.append(f"\\x{ord(ch):02x}")  # any other control char
+        else:
+            out.append(ch)
+    text = "".join(out)
+    # Only a FIRST-column cell can open a line, but escape a leading '#' in every
+    # cell regardless: one value then has one rendering, whatever column it lands in.
+    if text.startswith("#"):
+        text = "\\" + text
+    return text
+
+
 def cmd_table(path: Path, args) -> int:
     header, rows = load(path)
     if args.fields is not None:  # an empty --fields is malformed, not "omitted"
@@ -235,16 +281,20 @@ def cmd_table(path: Path, args) -> int:
             check_field(f, ROW_FIELDS)
     else:
         fields = TABLE_DEFAULT_FIELDS
-    # '#' + blank line keep the run-config lines from reading as table columns
+    # '#' + blank line keep the run-config lines from reading as table columns.
+    # Header values are free text too, so they are escaped on the same terms: an
+    # un-escaped newline here would inject lines that read as part of the grid.
     for f in HEADER_FIELDS:
-        print(f"# {f}: {header[f]}")
+        print(f"# {f}: {escape_cell(header[f])}")
     print()
     cells = []
     for row in rows:
+        # truncate the RAW sha, then escape — so a cut never splits an escape
         cells.append(tuple(
-            row[f][:TABLE_SHA_WIDTH] if f == "head_sha" else row[f]
+            escape_cell(row[f][:TABLE_SHA_WIDTH] if f == "head_sha" else row[f])
             for f in fields
         ))
+    # widths measure the ESCAPED cells — i.e. exactly the text that gets printed
     widths = [max(len(f), *(len(c[i]) for c in cells)) if cells else len(f)
               for i, f in enumerate(fields)]
     print(" | ".join(f.ljust(w) for f, w in zip(fields, widths)).rstrip())

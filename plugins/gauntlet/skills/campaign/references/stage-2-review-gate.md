@@ -172,7 +172,7 @@ the tool and is shown only to document its shape. The fourth (`pass_identity`) i
 {"type":"progress","unit":"u01","status":"started"}
 {"type":"progress","unit":"u01","status":"done","evidence":"validate_idc.go:42 `canonicalizeValue`; edge case tested at validate_idc_test.go:88"}
 {"type":"plan_amendment_request","ts":"2026-07-06T00:05:00Z","reason":"diff changes generated docs; add doc consistency unit","proposed_unit":{"id":"u99","kind":"docs","target":"docs/generated.md","checks":["sync with API behavior"]}}
-{"type":"pass_identity","pr":"41","pass":"1","head_sha":"a3f29c1b","launch_attempt":"1","dispatched_at":"2026-07-06T00:00:00Z"}
+{"type":"pass_identity","pr":"41","pass":"1","head_sha":"a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c","launch_attempt":"1","dispatched_at":"2026-07-06T00:00:00Z"}
 ```
 
 **`pass_identity` is the pass's attempt id and its dispatch clock.** The orchestrator writes it as the
