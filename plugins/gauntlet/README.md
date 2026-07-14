@@ -64,9 +64,7 @@ you see of it. Without a contract, the update that needs your decision reads muc
 don't.
 
 If you don't already have a style you like, [`docs/reporting-style.md`](docs/reporting-style.md) is a
-sample to copy into your `CLAUDE.md` and edit. The rule to steal even if you take nothing else: **end
-every update with an explicit action item, or with "Nothing needed from you."** It makes "blocked on you"
-impossible to miss in a run you aren't watching.
+sample to copy into your `CLAUDE.md` and edit.
 
 ## Scratch files
 
