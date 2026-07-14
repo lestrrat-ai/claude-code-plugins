@@ -23,9 +23,10 @@ for the *shape* of the rules — a recipe does not go stale, a list of files doe
 - **pointers at this file** — `fix-subagent-contract`
 
 Then read each hit and decide: it is a summary of this contract, or it is not. Do not stop when the count
-matches something you were told. And if you ADD a rule here rather than change one, **searching for the
-new rule's own wording finds only the sites you already fixed** — enumerate SEMANTICALLY first and then
-search for the identifiers that enumeration names, exactly as the SWEEP block below requires.
+matches something you were told. Whether you CHANGE a rule here or ADD one, **enumerate SEMANTICALLY first
+and then search for the identifiers that enumeration names**, exactly as the SWEEP block below requires:
+searching for the rule's own wording finds only the sites you already fixed, and searching for an old value
+misses every site that paraphrased it.
 
 The contract has two halves that pull in opposite directions **on purpose**. Ship both, or the fixer
 optimizes the one you gave it:
@@ -55,23 +56,28 @@ the block below in its prompt **verbatim**, because a scoped fixer is exactly th
 the one line it was pointed at and leave the class intact:
 
 > **When your fix changes a DEFINITION (a rule, a command, a schema, a format) or a FACT (a count, a
-> name, an API behavior), you are NOT done until every place that RESTATES it is also correct.** `grep`
-> for the old value, the old spelling, the old command, the old number — across the whole tree, not just
-> the file you were sent to. Restatements hide in **summaries**, **quick-reference bullets**,
-> **cross-references**, **table rows**, **worked examples**, and **other copies of the same command**. A
-> summary that has drifted from its definition is **worse than no summary** — it is the version people
-> actually read. **Report every site you found and its disposition, including the ones you deliberately
-> left alone and why.** If your fix is genuinely local and restates nothing, say so explicitly.
+> name, an API behavior), you are NOT done until every place that RESTATES it is also correct.** Sweep
+> the whole tree, not just the file you were sent to. Restatements hide in **summaries**, **quick-reference
+> bullets**, **cross-references**, **table rows**, **worked examples**, and **other copies of the same
+> command**. A summary that has drifted from its definition is **worse than no summary** — it is the
+> version people actually read. **Report every site you found and its disposition, including the ones you
+> deliberately left alone and why.** If your fix is genuinely local and restates nothing, say so explicitly.
 >
-> This widening is **bounded by the change you are making**: grep for what your own fix invalidated. It
+> This widening is **bounded by the change you are making**: sweep for what your own fix invalidated. It
 > is **not** permission to re-derive the diff, re-review the PR, or fix defects nobody asked you to fix.
 >
-> **GREP CANNOT TELL YOU WHAT TO SEARCH FOR.** When you EDIT an existing rule you have an old string to
-> hunt — the old value, the old spelling, the old number. When you INTRODUCE a rule there is no such
-> string, and **searching for the new rule's own WORDING or NAME is a trap: it matches only the sites you
-> already fixed, so it reports success every time and is wrong every time.** A sentence reading "it only
-> sets `ci = pending`" is a stale restatement of a brand-new counter-reset rule and shares not one word
-> with it.
+> **GREP CANNOT TELL YOU WHAT TO SEARCH FOR — whether you EDIT a rule or INTRODUCE one.** A restatement is
+> greppable only if it COPIED the old value, the old spelling, the old number. One that **PARAPHRASES** the
+> rule contains no old string, and an EDIT has just as many paraphrases as an introduction: the one-line
+> summary *"green means zero failing and zero pending"* outlived THREE rewrites of the rule it summarised
+> and silently dropped both of that rule's disclosed caveats — that rule was EDITED, and no search for an
+> old value would ever have reached that sentence. So **searching for the old value/spelling/command/number
+> is ONE INPUT to the sweep, never the sweep itself.**
+>
+> An INTRODUCED rule is the same trap at its sharpest: there is no old string to hunt at all, and
+> **searching for the new rule's own WORDING or NAME matches only the sites you already fixed, so it
+> reports success every time and is wrong every time.** A sentence reading "it only sets `ci = pending`" is
+> a stale restatement of a brand-new counter-reset rule and shares not one word with it.
 >
 > **This does NOT mean text search is useless** — believing that swaps one incomplete method for another,
 > and makes you skip a search that would have worked. Searching for the **BEHAVIOR IDENTIFIERS the rule
@@ -81,9 +87,10 @@ the one line it was pointed at and leave the class intact:
 > **but only once you knew to look for sites that describe what the bailout keys off.** Nothing in the new
 > rule's wording tells you that.
 >
-> So: **enumerate SEMANTICALLY first, then search for the identifiers the enumeration names.** List every
-> site that **DOES THE THING THE RULE GOVERNS** — writes the field, enters the state, performs the reset,
-> states the cap — search for each of those identifiers, and check every hit against the definition.
+> So, for EVERY definition or fact change alike: **enumerate SEMANTICALLY first, then search for the
+> identifiers the enumeration names.** List every site that **DOES OR STATES THE THING THE RULE GOVERNS** —
+> writes the field, enters the state, performs the reset, states the cap — search for each of those
+> identifiers, and check every hit against the definition.
 > **The enumeration tells you WHAT to search for; the search is how you execute it, never a substitute
 > for it.** Enumerate the BEHAVIOR, not the words. Report the site list.
 >

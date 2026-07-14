@@ -119,16 +119,22 @@ every place that RESTATES it is correct.**
 
 **Sweep for restatements. Every time. Before you call it fixed.**
 
-- `grep` for the old value, the old spelling, the old command, the old number — not just the file you
-  edited. Restatements hide in **summaries**, **quick-reference bullets**, **cross-references**, **table
-  rows**, **worked examples**, and **other copies of the same command**.
-- **`grep` cannot tell you WHAT to search for.** A rule you just INTRODUCED has no old string to hunt, and
-  searching for the new rule's own WORDING or NAME matches only the sites you already fixed: it reports
-  success every time and is wrong every time — *"it only sets `ci = pending`"* restates a brand-new
-  counter-reset rule and shares not one word with it. This is **not** a licence to skip text search:
-  searching for the **behavior identifiers the rule governs** (the field, the state, the command, the cap)
-  still works and is HOW you sweep. So **enumerate semantically first** — every site that **does the thing
-  the rule governs** — **then search for the identifiers that enumeration names**, and check every hit.
+- **Enumerate SEMANTICALLY first, then search for the identifiers that enumeration names.** That is the
+  method for **every** definition or fact change — one you EDITED and one you just INTRODUCED alike. List
+  every site that **does or states the thing the rule governs**, search for those behavior identifiers (the
+  field, the state, the command, the cap), and check every hit. Restatements hide in **summaries**,
+  **quick-reference bullets**, **cross-references**, **table rows**, **worked examples**, and **other
+  copies of the same command** — not just the file you edited.
+- **`grep` for the old value, the old spelling, the old command, the old number is ONE INPUT to that
+  sweep, never the sweep itself** — `grep` cannot tell you WHAT to search for. A restatement is greppable
+  only if it COPIED the old value; one that **PARAPHRASES** the rule contains no old string, and an EDIT
+  has just as many paraphrases as an introduction — the drifted "green" summary below paraphrased a rule
+  that was rewritten three times, and no search for an old value would ever have reached it. An INTRODUCED
+  rule is the same trap at its sharpest: there is no old string at all, and searching for the new rule's
+  own WORDING or NAME matches only the sites you already fixed, so it reports success every time and is
+  wrong every time — *"it only sets `ci = pending`"* restates a brand-new counter-reset rule and shares not
+  one word with it. None of this is a licence to skip text search: searching for the **behavior identifiers
+  the rule governs** is HOW you execute the enumeration.
 - **A pointer with a gloss is still a restatement.** A site that points at the owner and then "just
   briefly" restates it — *"reset the liveness counters (`settled_strikes`, `unusable_refetches`)"* — has
   copied the definition into the gloss. The pointer stays right while the gloss silently goes wrong, and
