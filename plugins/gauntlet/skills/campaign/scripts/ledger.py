@@ -132,7 +132,10 @@ ROW_FIELDS = (
     # THE REPAIR'S OWN BOUND — the mechanism that fixes non-convergence must not itself fail to converge.
     "repair_count",     # reassessment decisions taken. At REPAIR_CAP the only decision left is ABORT.
     "repair_decision",  # - | <decision>@<iso> — durable, so the wake that DISPATCHES a repair can be a
-                        # different agent instance from the one that DECIDED it.
+                        # different agent instance from the one that DECIDED it. RESET to `-` when the row
+                        # RE-ENTERS `repairing` (`cmd_verdict` at a cap), scoping a decision to ONE cap: the
+                        # next repair must be earned by a fresh `decide` (which spends `repair_count`), so
+                        # the budget binds. `abort` is terminal and is never cleared.
 )
 ROW_DEFAULTS = {
     "id": "-", "slug": "-", "branch": "-", "worktree": "-", "worktree_owned": "-",
@@ -539,6 +542,14 @@ def cmd_verdict(path: Path, args) -> int:
     at_cap = args.verdict == NOT_SATISFIED and (rounds >= ROUND_CAP or streak >= NS_STREAK_CAP)
     if at_cap:
         row["status"] = REPAIR_STATUS
+        # Clear any STALE reassessment decision as the row RE-ENTERS `repairing`. `repair_decision` is
+        # written only by `repair-pass.py decide` (which also spends `repair_count`) and by this reset, so a
+        # decision left on the row from a PREVIOUS cap would otherwise satisfy `dispatch-check --action
+        # repair` at THIS cap with no fresh `decide` — dispatching a repair that spends no budget, and
+        # `REPAIR_CAP` would never bind. A verdict only reaches this branch from a non-held (so post-repair
+        # `in_review`) row, so the decision it clears is always a spent one. The next repair here MUST be
+        # earned by a fresh `decide`, which bumps `repair_count` — the bound the mechanism exists to hold.
+        row["repair_decision"] = "-"
     dump(path, header, rows)
     print(json.dumps(row))
     if not at_cap:

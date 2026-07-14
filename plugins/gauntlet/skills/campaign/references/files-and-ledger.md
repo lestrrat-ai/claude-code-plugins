@@ -239,6 +239,10 @@ Header field notes (the header fields above; per-row fields follow):
 - `repair_decision` — `-`, or the last reassessment decision + when: `<decision>@<iso>`. Durable, because
   the wake that dispatches the repair may be a different agent instance from the one that decided it — and
   a repair may not be dispatched at all until this field is set (`ledger.py dispatch-check --action repair`).
+  **DURABLE *and* SPENT EXACTLY ONCE per cap** — it is reset to `-` when the row **re-enters `repairing`**
+  (`ledger.py verdict` at a cap), so a decision answers exactly the cap it was recorded for and a PR that
+  reaches a cap **again** must earn a fresh `decide` (which spends `repair_count`, so the bound holds).
+  `abort@…` is terminal and is never cleared.
 - `tier` — the adaptive review tier derived from `head_sha`: `TRIVIAL` | `STANDARD` | `HIGH`. Re-derived
   every wake and re-triaged on any content change; drives `required(tier)` and the review depth.
 - `ci` — `green` / `red` / `pending` for `head_sha`. (**There is no `none`.** It was documented but no

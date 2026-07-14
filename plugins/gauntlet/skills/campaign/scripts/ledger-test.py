@@ -1530,6 +1530,65 @@ def t_replay_the_real_record(L: ModuleType, tmp: Path) -> None:
                   f"it is the version people read")
 
 
+def t_stale_repair_decision_cleared_at_cap(L: ModuleType, tmp: Path) -> None:
+    """RE-ENTERING `repairing` at a cap CLEARS any stale reassessment decision — so the repair BUDGET binds.
+
+    `repair_decision` is durable and is written by exactly two things: `repair-pass.py decide` (which also
+    SPENDS `repair_count`) and this reset in `cmd_verdict`. A decision recorded for a PREVIOUS cap — left on
+    the row after that repair completed and the row returned to `in_review` — would otherwise still be there
+    when the loop hits a cap AGAIN, and `dispatch-check --action repair` accepts ANY non-`-` decision. A
+    driver would then dispatch a SECOND repair with no fresh `decide`, spending no budget, and `REPAIR_CAP`
+    would never bind: the mechanism that bounds non-convergence would itself fail to converge.
+
+    So a NOT SATISFIED that trips a cap must land the row `repairing` AND wipe the stale decision to `-`.
+    Delete that one write in `cmd_verdict` and this fixture goes red.
+    """
+    # The state a completed FIRST repair leaves behind: budget spent once, its decision still on the row,
+    # and the loop back in review. Written RAW — `repair-pass.py decide` is what produces it, and
+    # `repair_count`/`repair_decision` have NO `set` flag by design (t_the_repair_bound_has_no_door).
+    stale = "rescope@2026-07-14T00:00:00Z"
+    path = write_lines(tmp / "stale.jsonl", header_line(L),
+                       row_line(L, pr="1", head_sha=SHA_A, status="in_review",
+                                pr_origin="gauntlet", repair_count="1", repair_decision=stale))
+    code, out, _ = cli(L, ["--file", str(path), "get", "--pr", "1", "--field", "repair_decision"])
+    check(out.strip() == stale, f"fixture setup is wrong — the row does not carry the stale decision: {out!r}")
+
+    # Hit the cap AGAIN via an independent NS streak — the last verdict trips it and exits EXIT_STOP.
+    landed, code = verdicts(L, path, "N" * L.NS_STREAK_CAP)
+    check(code == L.EXIT_STOP, f"the cap did not fire ({landed} verdicts landed, exit {code})")
+
+    code, out, _ = cli(L, ["--file", str(path), "get", "--pr", "1"])
+    row = json.loads(out)
+    check(row["status"] == L.REPAIR_STATUS, f"the row is {row['status']!r}, not {L.REPAIR_STATUS!r}")
+    # THE PIN: the stale decision is GONE. Without the clear-on-entry write it would still read `stale`.
+    check(row["repair_decision"] == "-",
+          f"a STALE decision survived the re-entry: {row['repair_decision']!r}. `dispatch-check --action "
+          f"repair` accepts any non-`-` decision, so a second repair would dispatch with NO fresh `decide` "
+          f"and REPAIR_CAP would never bind")
+    # The budget was NOT spent by hitting the cap — only a fresh `decide` spends it, which is exactly what
+    # now holds the bound: one `decide` per cap, one `repair_count` per `decide`.
+    check(row["repair_count"] == "1",
+          f"re-entering the cap moved repair_count to {row['repair_count']!r} — the budget is spent by "
+          f"`decide`, never by reaching the cap")
+
+    # The consequence the pin buys: a repair is REFUSED until a fresh reassessment decides one.
+    code, _, err = cli(L, ["--file", str(path), "dispatch-check", "--pr", "1", "--action", "repair"])
+    check(code == L.EXIT_STOP,
+          f"a repair was dispatchable at the SECOND cap with no fresh decision (exit {code}) — the stale "
+          f"decision was not cleared, so the repair budget can be bypassed")
+    check("NO REASSESSMENT DECISION" in err, f"refused for the wrong reason: {err!r}")
+
+    # …until a fresh decision is recorded (the state `repair-pass.py decide` writes: budget now at
+    # REPAIR_CAP). The refusal LIFTS — the guard blocks until a decision exists, not forever.
+    fresh = "rescope@2026-07-14T01:00:00Z"
+    write_lines(path, header_line(L),
+                row_line(L, pr="1", head_sha=SHA_A, status=L.REPAIR_STATUS,
+                         pr_origin="gauntlet", repair_count="2", repair_decision=fresh))
+    code, out, _ = cli(L, ["--file", str(path), "dispatch-check", "--pr", "1", "--action", "repair"])
+    check(code == 0, f"a repair with a FRESH decision recorded was refused (exit {code})")
+    check(fresh in out, f"dispatch-check must name the decision to dispatch: {out!r}")
+
+
 CASES = [
     ("escape-injective", "escape_cell is INJECTIVE — no two values collide", t_escape_injective),
     ("render-injective", "the PRINTED ROWS are injective too — no two values print the same line", t_render_injective),
@@ -1571,6 +1630,7 @@ CASES = [
     ("held-row-no-verdict", "no verdict may land on a held row", t_no_verdict_for_a_held_row),
     ("dispatch-check", "every HELD status refuses a mutating dispatch; a repair needs its decision first", t_dispatch_check_is_the_guard),
     ("repair-bound-no-door", "repair_count has NO flag — a budget you can zero is not a bound", t_the_repair_bound_has_no_door),
+    ("repair-decision-cleared", "re-entering a cap CLEARS the stale reassessment decision — the repair budget binds", t_stale_repair_decision_cleared_at_cap),
     ("pr-origin-default", "an unknown origin is `external` — the fail-safe direction", t_pr_origin_defaults_to_external),
     ("replay-the-record", "the REAL #42/#43 verdict sequences: it fires, never too early, and says what it costs", t_replay_the_real_record),
 ]
