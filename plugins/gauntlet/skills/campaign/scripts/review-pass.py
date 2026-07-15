@@ -1999,9 +1999,17 @@ def status_row(progress: Path, now: datetime, want_verify: bool,
     label = f"{pr}-{npass}" + (f".a{attempt}" if attempt != "1" else "")
     events = read_lenient(progress)
     if events is None:
-        # The progress file itself is unreadable (a real corruption, not a torn tail). Render a row that
-        # says so, and let the other passes print.
-        cells = [label, "?", "-", "-", "-", "unreadable", "-"]
+        # The progress file itself is unreadable (a real corruption, not a torn tail). But a corrupt
+        # PROGRESS file does not make the pass any less TERMINAL: its report may still carry a verdict (the
+        # pass FINISHED) and a later pass or launch attempt may still have superseded it (the reviewer is
+        # GONE) — both facts live in OTHER files. So scrape the verdict and honour `superseded` BEFORE
+        # giving up, reusing `health_of` so `done`-beats-`gone` has ONE owner. Only a pass that is neither
+        # finished nor superseded stays `unreadable`; without this a finished/dead pass rendered a
+        # live-looking `unreadable` that the default view then showed instead of hiding.
+        verdict = scrape_verdict(progress)
+        terminal = verdict != V_NONE or superseded
+        health = health_of([], verdict, None, 0.0, superseded) if terminal else "unreadable"
+        cells = [label, "?", "-", "-", "-", health, verdict]
         if want_verify:
             cells.append("unreadable")
         if ledger_rows is not None:
@@ -2085,10 +2093,12 @@ def cmd_status(args) -> int:
     latest_pass = latest_pass_per_pr(rundir)
     health_col = columns.index("health")
 
-    if args.history:
-        pairs = all_attempts(rundir)
-    else:
-        pairs = [(p, True) for p in active_attempts(rundir)]
+    # BOTH views enumerate EVERY attempt; the default view then hides terminal passes (and counts them in
+    # the footer), while `--history` shows them. Building the default set from `active_attempts` alone
+    # dropped every superseded launch attempt (a relaunched `.a1`) BEFORE the hidden counter ran, so the
+    # table hid it but the footer under-counted. `all_attempts` flags each attempt active/superseded, and the
+    # ONE terminal classification in the render loop below both hides and counts it — no separate count path.
+    pairs = all_attempts(rundir)
     if args.pr is not None:
         pairs = [(p, a) for (p, a) in pairs if parse_name(p)[0] == str(args.pr)]
     pairs.sort(key=lambda pa: tuple(int(x) for x in parse_name(pa[0])[:2]) + (int(parse_name(pa[0])[2]),))
