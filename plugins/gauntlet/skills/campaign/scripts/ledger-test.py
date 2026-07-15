@@ -1356,8 +1356,8 @@ def t_no_verdict_for_a_held_row(L: ModuleType, tmp: Path) -> None:
     """No verdict may land on a HELD row — no review pass should have been running for it at all."""
     for status in L.HELD_STATUSES:
         path = capped_row(L, tmp, f"held-{status}.jsonl", status=status)
-        code, _, err = cli(L, ["--file", str(path), "verdict", "--pr", "1", "--head-sha", SHA_A,
-                               "--verdict", "not-satisfied"])
+        code, _, _ = cli(L, ["--file", str(path), "verdict", "--pr", "1", "--head-sha", SHA_A,
+                             "--verdict", "not-satisfied"])
         check(code == 1, f"[{status}] a verdict on a held row was ACCEPTED (exit {code})")
         code, out, _ = cli(L, ["--file", str(path), "get", "--pr", "1", "--field", "review_rounds"])
         check(out == "0\n", f"[{status}] the REFUSED verdict bumped the counter anyway: {out!r}")
@@ -1382,7 +1382,7 @@ def t_dispatch_check_is_the_guard(L: ModuleType, tmp: Path) -> None:
 
     for status in ("in_review", "pending"):
         path = capped_row(L, tmp, f"live-{status}.jsonl", status=status)
-        code, out, err = cli(L, ["--file", str(path), "dispatch-check", "--pr", "1"])
+        code, _, err = cli(L, ["--file", str(path), "dispatch-check", "--pr", "1"])
         check(code == 0, f"[{status}] a LIVE row was HELD (exit {code}) — the run would stall: {err!r}")
 
     # `--action repair`: refused with no decision recorded, and refused on a row that is not repairing.

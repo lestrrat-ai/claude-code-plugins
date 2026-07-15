@@ -1,0 +1,4 @@
+{
+  "reportUnusedImport": "error",
+  "reportUnusedVariable": "error"
+}

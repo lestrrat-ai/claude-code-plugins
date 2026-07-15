@@ -1525,7 +1525,7 @@ def cmd_emit(args) -> int:
     fifteen minutes later by a `verify` the reviewer never sees.
     """
     path = Path(args.file)
-    pr, npass, _attempt = parse_name(path)
+    _pr, _npass, _attempt = parse_name(path)
     # The RECORD IS THE FLAGS — VERBATIM. `--status done` with no `--evidence` is an event with no
     # `evidence` key, and `--status started --evidence x` is one carrying a key nothing reads, so the flags
     # are judged by the same `check_event` that judges a hand-written line and the evidence rule exists in

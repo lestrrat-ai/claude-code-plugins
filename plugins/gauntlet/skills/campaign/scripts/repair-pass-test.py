@@ -194,7 +194,7 @@ def t_a_decision_needs_a_record(tmp: Path) -> None:
     the context of an agent that has already exited is a decision the next wake — and the user — cannot
     audit, and it would be the one artifact of the mechanism that has no evidence behind it.
     """
-    path, record = setup(tmp, "norec.jsonl", pr_origin="gauntlet")
+    path, _ = setup(tmp, "norec.jsonl", pr_origin="gauntlet")
     missing = path.parent / "nope.md"
     code, _, err = R.run(["--file", str(path), "decide", "--pr", "1", "--decision", "demote",
                           "--record", str(missing)])
