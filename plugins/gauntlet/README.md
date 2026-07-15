@@ -1,6 +1,6 @@
 # gauntlet
 
-Part of the [claude-code-plugins](../../README.md) marketplace.
+Part of the [claude-code-plugins](../../README.md) marketplace for Claude Code and Codex.
 
 Adversarial code review that follows through to a merge.
 
@@ -21,10 +21,21 @@ yourself.
 
 ## Install
 
+### Claude Code
+
 ```
 /plugin marketplace add lestrrat-ai/claude-code-plugins
 /plugin install gauntlet@lestrrat-ai
 ```
+
+### Codex
+
+```
+codex plugin marketplace add lestrrat-ai/claude-code-plugins
+codex plugin add gauntlet@lestrrat-ai
+```
+
+Start a new Codex session after installation.
 
 ## Skills
 
