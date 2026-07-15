@@ -351,11 +351,13 @@ For each `#PR` to adopt:
 
    **The background task does NOT fetch, and does NOT write `<rundir>/ci-<pr>-<head_sha>.txt`.** The watch
    only **blocks** — it is **never evidence**, and its exit code is **never** a CI verdict. The evidence is
-   the SHA-pinned fetch of **both** check families, which the **WAKE** performs, promotes atomically, and
-   verifies against the ledger's current `head_sha` before parsing (Stage 2b, `stage-2-ci.md` — "WHO DOES
-   WHAT" and "FETCH — pinned to the SHA"). Only the wake knows the SHA the ledger currently holds, so only
-   the wake can pin the fetch to it. **NEVER derive CI from `gh pr checks`:** its output carries **NO SHA**,
-   so it can report the **previous** commit's passing checks.
+   the SHA-pinned fetch of **both** check families, which the **WAKE** performs — **by running
+   `scripts/ci-status.py derive`**, which fetches, promotes atomically, verifies against the ledger's
+   current `head_sha`, and decides (Stage 2b, `stage-2-ci.md` — "THE DERIVATION IS A COMMAND" and "WHO DOES
+   WHAT"). Only the wake knows the SHA the ledger currently holds, so only the wake can pin the fetch to it.
+   **NEVER derive CI from `gh pr checks`:** its output carries **NO SHA**, so it can report the **previous**
+   commit's passing checks — and **never by reading a command's output and judging it**, which is how a
+   `ci = green` was once written for a PR with no checks at all.
 
    Don't launch a duplicate watch for a PR that already has a live one (Loop control tracks in-flight
    watches).

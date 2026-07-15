@@ -1,0 +1,60 @@
+{
+  "why": "the same negative control on the OTHER family: the status response describes another commit. Its sha is the response's own top-level `.sha`, so it can disagree — substitute our literal and this verifies GREEN",
+  "required_set": "none",
+  "pr": "35",
+  "api": {
+    "check-runs": {
+      "response": [
+        {
+          "total_count": 1,
+          "check_runs": [
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "Lint scripts",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/29318959841/job/1"
+            }
+          ]
+        }
+      ]
+    },
+    "status": {
+      "response": [
+        {
+          "sha": "e846cd76a783aa1087e221cc0684b84136419404",
+          "state": "success",
+          "total_count": 1,
+          "statuses": [
+            {
+              "context": "ci/jenkins",
+              "state": "success"
+            }
+          ]
+        }
+      ]
+    },
+    "rollup": {
+      "response": {
+        "headRefOid": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+        "statusCheckRollup": [
+          {
+            "__typename": "CheckRun",
+            "name": "Lint scripts",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "detailsUrl": "https://github.com/o/r/actions/runs/29318959841/job/1"
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "verdict": "unusable",
+    "ci": "pending",
+    "needle": "superseded commit"
+  }
+}

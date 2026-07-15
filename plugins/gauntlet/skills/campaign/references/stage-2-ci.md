@@ -7,6 +7,57 @@ code** — then writes the `ci`/`reviews_ok` result through `scripts/ledger.py �
 [--reviews_ok 0]` **by field name** (`files-and-ledger.md`), never by hand-editing the row by column
 position.
 
+#### THE DERIVATION IS A COMMAND — RUN IT. NEVER DERIVE `ci` BY READING TERMINAL OUTPUT.
+
+**The wake derives `ci` by RUNNING `scripts/ci-status.py`, and by nothing else:**
+
+```sh
+python3 <skill>/scripts/ci-status.py derive --pr <N> --head-sha <the LEDGER's head_sha> --rundir <rundir> \
+  --required-set "$(python3 <skill>/scripts/ledger.py --file <rundir>/state.jsonl header get required_set)"
+```
+
+It performs every step below — FETCH (SHA-pinned, paginated, **both** families), PROMOTE (atomic), VERIFY
+(via `scripts/ci-snapshot.py`, which it calls), and DECIDE — and prints **JSON**: the `verdict`, the `ci`
+value to write to the ledger, the `reason` (**which rule fired, and which row made it fire** — this is what
+`ci_reason` is built from), the evidence counts, `head_moved` + `head_sha_now`, the `required_set` state the
+verdict was decided under, and the path to the snapshot it left behind. It exits `0` **only** on green.
+**Write `ci` from that JSON; never from an impression of some command's output.**
+
+**`--required-set` IS MANDATORY, AND IT HAS NO DEFAULT.** It is the ledger header's `required_set`, passed
+straight through (`declared:<json>` | `none` | `unknown` — "WHAT WERE WE EXPECTING TO SEE?", below). The
+evidence can only ever say what **showed up**; what was **supposed** to show up is a property of the base
+branch, and **a required check that never registered is NO ROW AT ALL** — invisible to the counts, to
+containment, and to the rollup cross-check alike. So the tool refuses to guess it: a caller who omits the
+flag gets an error, and a spec it cannot parse is **exit 2**, never a quiet `none`. `unknown` is a legal
+value and **can never go green** — which is what makes a run that never performed the read merge **nothing**
+rather than merge everything with a footnote.
+
+**A MOVED HEAD FAILS CLOSED — `head_moved: true` is NEVER a green, and never a red either.** The fetch is
+pinned to the `head_sha` **the ledger holds**, and a push can land at any moment — including *while the tool
+is fetching*, which is why it reads the PR's current head **LAST**, after both evidence families. If that
+head differs from the one it was pinned to, the snapshot is a **true report about a commit that is no longer
+this PR's head** — so it is not evidence about this PR at all: `verdict = unusable`, **`ci = pending`**, and
+the `reason` **names the new head** (`head_sha_now`). Green would merge a PR on checks that never ran
+against its code; red would blame the new head for the old one's failure. **Do NOT read this as "checks have
+not started"** — that is `verdict = pending` (zero evidence rows), and it means *wait*. This means
+**re-derive**: refresh the PR's `head_sha` into the ledger (`pr-adoption.md`) and derive again, pinned to it.
+
+**EVIDENCE THE TOOL KNOWS IS INCOMPLETE FAILS CLOSED THE SAME WAY, AND FOR THE SAME REASON.** A moved head
+is one way to hold evidence that cannot answer the question; a **short read** and a **rollup entry the REST
+families cannot see** are the others. The FETCH bullets below define them — each is `verdict = unusable`,
+**`ci = pending`**, **refetch**, and **no snapshot is promoted**. There is deliberately **no `notes` field
+in the output**: the tool used to disclose an incomplete read *beside a green verdict*, and a caveat printed
+next to the answer it contradicts is a trapdoor, not a disclosure. **Anything the tool knows is missing is a
+REFUSAL now** — so `ci = green` from this command means the evidence was complete, not merely annotated.
+
+**WHY THIS IS A COMMAND AND NOT A PROCEDURE YOU FOLLOW.** Every rule in this section was already correct,
+and a driver still wrote **`ci = green`** into the ledger for a PR whose checks had **not registered** —
+having run `gh pr checks <pr>`, read a line saying no checks were reported for the branch, and judged it
+green **by eye**. **ZERO EVIDENCE IS NOT GREEN.** The rules did not fail; the one step that was still a
+model **reading output and forming an impression** did. A program cannot get tired, cannot skim, and cannot
+decide that "no checks" is close enough to "passing" — so that step is now a program. **The shell commands
+below are the SPEC the tool implements — they are documentation, NOT a second procedure to hand-run.**
+
 #### WHO DOES WHAT — the background task ONLY WATCHES; the WAKE fetches. This section is the DEFINITION.
 
 **This split is normative, and every other file defers to it** (`pr-adoption.md`, `loop-control.md`):
@@ -14,7 +65,7 @@ position.
 | Actor | Does | Does NOT |
 |---|---|---|
 | **The background task** | **BLOCKS on `gh pr checks <pr> --watch`, and NOTHING else.** Its **ONLY** job is to block, so that **its completion becomes a wake**. | It **NEVER** fetches, **NEVER** writes `ci-<pr>-<head_sha>.txt`, and **NEVER** produces evidence of any kind. |
-| **The wake** | **FETCHES** (SHA-pinned, both families), **PROMOTES** atomically, **VERIFIES** the stamp, **PARSES**, and **DECIDES** `ci`. | — |
+| **The wake** | **RUNS `scripts/ci-status.py derive`** (above), which **FETCHES** (SHA-pinned, both families), **PROMOTES** atomically, **VERIFIES** the stamp, **PARSES**, and **DECIDES** `ci`. | It **NEVER** derives `ci` by READING the output of `gh pr checks` — or of anything else. |
 
 **WHY the fetch cannot live in the background task:** the fetch must be pinned to the `head_sha` **the
 LEDGER currently holds**, and **only the wake knows that**. A background task that fetched at its own
@@ -30,6 +81,11 @@ than by review. Use `gh pr checks --watch` to **wait**; never to decide.
 
 #### FETCH — pinned to the SHA, paginated, BOTH check families, and emitted as JSONL
 
+> **`scripts/ci-status.py derive` DOES ALL OF THIS** ("THE DERIVATION IS A COMMAND", above). The commands
+> in this section are the **SPECIFICATION IT IMPLEMENTS** — read them to understand or to review the tool,
+> and keep them correct. **Do NOT hand-run them to derive `ci`**: a procedure transcribed by hand is a
+> procedure that gets shortcut, and the shortcut is what wrote a false green into the ledger.
+
 A source you never queried reports nothing, and "nothing" parses as "nothing wrong". Read **both** — and
 **each fetch also emits a `source` COMPLETION MARKER, so that "we asked and got nothing" is a thing the
 artifact can SAY.** Each command below emits its evidence rows **and** its marker, from **one** `jq`, over
@@ -44,8 +100,31 @@ the **slurped** pages — so a marker cannot exist for a fetch that did not run:
 #     `sha` comes from GITHUB'S OWN `.head_sha` on each row — NEVER a literal we substitute in, and the
 #     MARKER's sha comes from that same place. The commit oid lives ONLY on the rows here, so a fetch that
 #     returned ZERO rows has no oid to carry: its marker's sha is "-", and inventing one is forbidden.
+#     THE READ MUST BE COMPLETE: `total_count` is GitHub's own count of the rows it holds FOR THE COMMIT —
+#     not for the page — so the SLURPED rows (every page, flattened) are checked against it and a SHORT READ
+#     is a HARD ERROR, never a green with a footnote. It is checked against EVERY page's count, not the first
+#     alone: GitHub recomputes the count per request, so a check that registers mid-fetch makes a later page
+#     report more, and a row we never received would slip past a first-page-only test. A count we cannot READ
+#     is refused too: a rule that cannot fire is not a rule. Same test, same reason, in (2).
 gh api --paginate --slurp "repos/<owner>/<repo>/commits/<head_sha>/check-runs" | jq -c '
-  [.[].check_runs[]] as $r
+  if ([.[] | select((.check_runs|type) != "array")] | length) > 0
+    then error("check-runs: a PAGE carries no check_runs ARRAY — a page that is MISSING the row array is
+      NOT a page that has NO rows. `// []` erases that difference: delete the member from an otherwise-green
+      response, leave total_count 0, and the count agrees with the zero rows collected, containment holds,
+      and the verdict is GREEN. An absence read as nothing-wrong, one field along.")
+    else . end
+  | [.[].check_runs[]] as $r | [.[].total_count] as $totals
+  | if ([$totals[] | select((type) != "number" or (floor) != .)] | length) > 0
+    then error("check-runs: a page carries no integer total_count — that is the count GitHub itself
+      reports for this commit, read off EVERY page, and it is the ONLY thing we can check our read against.
+      Without it we cannot tell a complete read from a truncated one, and cannot-tell is not a green.")
+    elif ([$totals[] | select(. != ($r|length))] | length) > 0
+    then error("check-runs: total_count=\($totals | map(select(. != ($r|length))) | unique | map(tostring)
+      | join(" and ")) but the slurped read collected \($r|length) row(s) — EVIDENCE IS MISSING. total_count
+      is read off EVERY page: a check registered between two page fetches makes a LATER page report more than
+      the first, and a read that trusted page one would miss it. A row GitHub holds for this commit is not in
+      our hands, and it could be the FAILING one. No verdict is derived from a read we KNOW is short.")
+    else . end
   | ($r[] | {row:"checkrun", sha:.head_sha, name:.name, app_id:((.app.id // "-")|tostring),
              status:(.status|ascii_upcase),
              conclusion:((.conclusion // "-")|ascii_upcase),
@@ -53,21 +132,95 @@ gh api --paginate --slurp "repos/<owner>/<repo>/commits/<head_sha>/check-runs" |
     {row:"source", source:"check-runs", sha:(($r[0].head_sha) // "-"), count:($r|length|tostring)}'
 
 # (2) COMMIT STATUSES — the legacy family, which (1) CANNOT SEE.
-#     The response carries the commit ONCE, at the TOP LEVEL (`.sha`) — not on each status — and carries it
-#     EVEN WHEN `.statuses` IS EMPTY. That is what makes the marker below able to PROVE a zero-status
-#     commit: {"source":"status","sha":"<GITHUB'S>","count":"0"} says "we asked this commit, and it has
-#     none". Again GITHUB'S value, NEVER a literal we substitute in.
+#     The response carries the commit ONCE PER PAGE, at the TOP LEVEL (`.sha`) — not on each status — and
+#     carries it EVEN WHEN `.statuses` IS EMPTY. That is what makes the marker below able to PROVE a
+#     zero-status commit: {"source":"status","sha":"<GITHUB'S>","count":"0"} says "we asked this commit, and
+#     it has none". Again GITHUB'S value, NEVER a literal we substitute in.
+#     THE SHA IS GITHUB'S OWN, off the RESPONSE — never a literal we substitute in. That is what lets the
+#     superseded-response rule (VERIFY, below) FAIL: the header carries the sha we ASKED for and the rows
+#     carry the one GitHub NAMED, so the two can disagree, and on a response fetched for a superseded commit
+#     they do. Interpolate our own value here and the comparison is a copy against its own source.
+#     THIS is the family that carries the failing Jenkins status, so a short read HERE is precisely the
+#     evidence gap this section exists to refuse. It gets the SAME completeness test as (1), and the test
+#     is APPLIED PER FAMILY: one family checked and the other not is one family short-read in silence.
 gh api --paginate --slurp "repos/<owner>/<repo>/commits/<head_sha>/status" | jq -c '
-  [.[].statuses[]] as $s | (.[0].sha) as $sha
+  if ([.[] | select((.statuses|type) != "array")] | length) > 0
+    then error("status: a PAGE carries no statuses ARRAY — see (1). A page MISSING the member is not a page
+      with an EMPTY one, and this is the family that carries the FAILING Jenkins status: read the absence as
+      zero statuses and the commit that has a failing one reports none at all.")
+    else . end
+  | [.[].statuses[]] as $s | (.[0].sha) as $sha | [.[].total_count] as $totals
+  | if ([$totals[] | select((type) != "number" or (floor) != .)] | length) > 0
+    then error("status: a page carries no integer total_count — see (1): without it we cannot tell a
+      complete read from a truncated one, and cannot-tell is not a green.")
+    elif ($sha|type) != "string" or ($sha|length) == 0
+    then error("status: the response carries no sha — GitHub names the commit at the TOP LEVEL, even at zero
+      statuses, and a response that does not name it cannot say which commit its rows are about.")
+    elif ([$totals[] | select(. != ($s|length))] | length) > 0
+    then error("status: total_count=\($totals | map(select(. != ($s|length))) | unique | map(tostring)
+      | join(" and ")) but the slurped read collected \($s|length) row(s) — EVIDENCE IS MISSING, and the
+      status we did not get could be the FAILING Jenkins one. total_count is read off EVERY page: a check
+      registered mid-fetch makes a later page report more than the first.")
+    else . end
   | ($s[] | {row:"status", sha:$sha, context:.context, state:(.state|ascii_upcase)}),
     {row:"source", source:"status", sha:$sha, count:($s|length|tostring)}'
 
-# (3) ROLLUP — WITNESSES ONLY (identity, no verdict). Used ONLY for the containment test below.
+# (3) ROLLUP — ITS ROWS ARE WITNESSES ONLY (identity, no verdict): the rollup may NEVER be a verdict
+#     source. That is a rule about the ARTIFACT, and it is NOT a licence to leave the rollup's own verdict
+#     UNREAD — the fetch reads it, and RECONCILES it, and never writes it down. See AGREEMENT, below.
 #     The rollup carries no app.id and no commit oid, so it can NEVER be read as a verdict — and its
 #     marker's sha is therefore "-", ALWAYS. A sha there would be one WE invented.
-gh pr view <pr> --json statusCheckRollup | jq -c '
-  [.statusCheckRollup[]? | select(.__typename=="CheckRun")] as $w
-  | ($w[] | {row:"witness", name:.name, id:.detailsUrl}),
+#     IT RETURNS TWO KINDS OF ENTRY. `CheckRun` entries become the witnesses. `StatusContext` entries are
+#     the ROLLUP'S VIEW OF FAMILY (2), and they do NOT enter the artifact (no oid, no app id — never a
+#     verdict); they are checked AGAINST family (2), and a context family (2) does not report FAILS CLOSED.
+#     NEITHER KIND ENTERS THE ARTIFACT WITH A VERDICT — AND NEITHER IS READ FOR ONE. But the rollup STATES a
+#     verdict for both (a `CheckRun` carries `status` + `conclusion`; a `StatusContext` carries `state`), and
+#     a verdict we were HANDED and never LOOKED AT is a verdict that can CONTRADICT family (1)/(2) in
+#     silence. It did, and it was GREEN. So both are carried out of this fetch to be RECONCILED against the
+#     REST row for the SAME check (see "THE TWO SOURCES MUST AGREE ABOUT WHAT A CHECK SAYS", below) — which
+#     is why the witness rows below still carry IDENTITY ONLY: reconciling is not believing.
+#     ANY OTHER __typename is a HARD ERROR: a row we cannot read is not a row we may drop, and dropping
+#     one is exactly how a required-but-unposted check became invisible.
+#     AND A StatusContext WHOSE `state` IS NOT IN THE StatusState ENUM IS A HARD ERROR TOO. Because it never
+#     enters the artifact, NO rule downstream can ever refuse it — CLASSIFY (below) never sees it — so it is
+#     refused HERE or not at all. Accepted, it green-lights a context whose state nobody has classified: an
+#     unrecognised value is NOT a benign value. The enum is the one declared in the enum block, below.
+#     `headRefOid` rides along on this SAME call — the PR's current head, read LAST, after both evidence
+#     families (see "A MOVED HEAD FAILS CLOSED", above). It never enters the artifact — and a response that
+#     does NOT carry it is a FAILED fetch, because a head we cannot read makes that fail-closed rule unable
+#     to fire. `statusCheckRollup` must be an ARRAY: `// []` here would turn a response we cannot read into
+#     "no witnesses" — see "An EMPTY rollup is a FACT; a MISSING one is NOT EVIDENCE", below.
+#     TWO refusals are NOT expressible here, and they are named rather than quietly omitted — BOTH are
+#     CROSS-SOURCE, and no single-fetch jq can see another fetch's rows: (a) `$sc` (the rollup's
+#     StatusContexts) must be COVERED by family (2); (b) every rollup entry family (1)/(2) DOES report must
+#     AGREE with it about the check's state. The tool does both across the fetches (`build_snapshot`); the
+#     rules are the FETCH bullets on `StatusContext` and on AGREEMENT, below.
+#     `--repo` IS NOT OPTIONAL. `gh pr view <pr>` with no repository resolves the PR IN THE CURRENT
+#     CHECKOUT — so a command without it asks whatever repo you are standing in, which is the one thing this
+#     fetch must never do. (1) and (2) name the repo in the URL; this one names it here, and `ci-status.py`
+#     REFUSES any `gh` argv that names no repository at all.
+gh pr view <pr> --repo <owner>/<repo> --json statusCheckRollup,headRefOid | jq -c '
+  (.statusCheckRollup) as $all
+  | if ($all|type) != "array"
+    then error("rollup: statusCheckRollup is not a list — an EMPTY rollup is a FACT GitHub can state, a
+      MISSING one is a response we cannot read. Taking it for no-witnesses makes containment a claim about
+      the EMPTY SET, which passes trivially: an absence read as nothing-wrong.")
+    else . end
+  | [$all[] | select(.__typename=="CheckRun")]      as $w
+  | [$all[] | select(.__typename=="StatusContext")] as $sc
+  | if (($w|length) + ($sc|length)) != ($all|length)
+    then error("rollup: an entry of an UNRECOGNISED __typename — teach the tool about it; NEVER drop it")
+    elif ([$sc[] | select((.state|ascii_upcase) as $st
+          | ["SUCCESS","PENDING","EXPECTED","FAILURE","ERROR"] | index($st) | not)] | length) > 0
+    then error("rollup: a StatusContext in an UNRECOGNISED state — StatusState is
+      SUCCESS/PENDING/EXPECTED/FAILURE/ERROR, and a state we cannot read is not a state we may drop. It
+      never enters the artifact, so nothing downstream can refuse it: accepted here, it is accepted for
+      good, and the PR goes GREEN on a state nobody has classified.")
+    elif (.headRefOid|type) != "string" or (.headRefOid|length) == 0
+    then error("rollup: the response carries no headRefOid — WE CANNOT TELL which commit is the head, so we
+      cannot tell whether this evidence describes it. That is not a green; it is a fetch we cannot use.")
+    else . end
+  | ($w[] | {row:"witness", name:.name, id:(.detailsUrl // "-")}),
     {row:"source", source:"rollup", sha:"-", count:($w|length|tostring)}'
 ```
 
@@ -107,9 +260,117 @@ machine-read convention as `state.jsonl` and the review plan/progress files (`fi
   (Illustrative, and expected to drift: observed on 2026-07-13 on
   `repos/cli/cli/commits/trunk/status`. Whether *that* commit still carries zero statuses is a **live
   fact that changes**; the API's behavior **at zero** is the permanent point.)
-- **Honest limit, not a proof:** `/check-runs` is capped at the **1000 most recent check suites**.
-  `--paginate` defeats page-size truncation; it does **not** prove completeness at extreme scale. Say
-  that, and never claim more.
+- **A SHORT READ IS NOT A GREEN — CHECK WHAT YOU COLLECTED AGAINST GITHUB'S OWN `total_count`, ON EVERY
+  PAGE.** Both REST families return it, and it counts the rows GitHub holds **for the commit, across ALL
+  pages**, not for the page it sits on (observed 2026-07-14: 27 check runs read at `per_page=5` returns six
+  pages, each reporting `total_count=27`; the *count-is-the-cross-page-total* behavior is the permanent
+  point, the 27 is not). So `total_count` vs the rows the **slurp** collected is a completeness test, and a
+  read that is **short FAILS CLOSED** (`unusable`, refetch): a row GitHub holds and we do not have **could be
+  the failing one**, and a verdict derived from evidence we KNOW has a hole in it is the false green of this
+  whole file wearing a footnote. **Every page's count is checked, not the first alone** — GitHub RECOMPUTES
+  the count per request, so a check that registers between two page fetches makes a **later** page report a
+  higher count than the first (page one says 31, we collect 31, page two says 32), and a rule that trusted
+  page one would wave the missing 32nd row through as green; pages that **disagree** about what the commit
+  holds fail closed for the same reason a short read does. **A note beside a green is not a disclosure, it is
+  a trapdoor** — the tool used to print exactly that, and it shipped a green anyway. **And a count we cannot
+  READ is refused too** (absent, or not an integer), **on any page**: a fail-closed rule that cannot fire is
+  not a rule.
+- **A PAGE MISSING ITS ROW ARRAY IS NOT A PAGE WITH NO ROWS — AND NO FIELD READ MAY DEFAULT.** The rule
+  above was written and *still passed* on a response whose `statuses` member was simply **not there**:
+  `(.statuses // [])` — and `page.get("statuses") or []` in the tool — read the absence as an **empty list**,
+  so `total_count: 0` agreed with the zero rows collected, containment held, and the verdict was **`green`**
+  for a commit whose status rows we never actually received. The row array must be **present and a LIST on
+  every page**, or the fetch fails closed. **The class, not the line:** every field read off a GitHub
+  response **declares the shape it expects** and refuses anything else — `ci-status.py` has exactly one
+  accessor (`field()`), and **it takes no default**. A value that **may** be absent or null (`app`,
+  `conclusion`, `detailsUrl`) **says so at the read**; a value that may not, **cannot become one by
+  accident**. *`x // []` and `x or []` are the same bug in two languages: they erase the difference between
+  "GitHub says there are none" and "GitHub said nothing at all".*
+- **Honest limits, and they are NOT closed by the above.** Say them, and never claim more:
+  - `/check-runs` is capped at the **1000 most recent check suites**. `--paginate` defeats page-size
+    truncation and the `total_count` test defeats a short read — **neither proves completeness at that
+    scale**.
+  - **The rollup (3) carries no total and is a single un-paginated page**, so *its* completeness cannot be
+    proven at all. **That is precisely why it may NEVER be the source of a verdict** — it is a cross-check
+    over families (1) and (2), whose completeness IS proven against GitHub's own counts.
+  - **A SHORT ROLLUP CANNOT HIDE A FAILING ROW — AND IT COULD ONCE HIDE A MISSING ONE. THOSE ARE NOT THE
+    SAME CLAIM, AND THIS FILE USED TO MAKE THE WRONG ONE.** It said a short rollup "can never admit a false
+    green, because a failing row would have to be missing from **both** REST families, and their counts say
+    it is not". Every word of that is true **about a FAILING row**, and it was **FALSE as a guarantee**: the
+    thing a short rollup hides is not a row that failed but **a required check that produced NO ROW AT ALL**
+    — an `EXPECTED` `StatusContext`, which no REST family can express and no `total_count` can miss, because
+    **there is nothing to count**. Delete that one entry from the rollup response and the coverage rule below
+    has nothing to check: all-passing check runs, zero status rows, **GREEN**, on a PR blocked on a check
+    nobody has run. **A GUARD WHOSE INPUT CAN BE ABSENT NEVER FIRES.** What closes it is not the rollup at
+    all — it is the **REQUIRED SET** ("WHAT WERE WE EXPECTING TO SEE?", below), which is **DECLARED by the
+    base branch** and therefore says what must be present *without asking what showed up*. **Never argue
+    from the completeness of the evidence to the completeness of the EXPECTATION.**
+- **An EMPTY rollup is a FACT; a MISSING one is NOT EVIDENCE.** `[]` means GitHub says this head has nothing
+  in the rollup (legitimate — every suite may be dynamic-event). A response with **no entry list at all** is
+  one we cannot read, and taking it for "no witnesses" makes containment a claim about the **empty set**,
+  which passes trivially. Refuse it. This is the artifact's founding rule — *an absence must read as "we do
+  not know", never as "nothing wrong"* — applied one level up, to the **response**.
+- **THE ROLLUP'S `StatusContext` ENTRIES MUST BE VISIBLE IN FAMILY (2), OR THE FETCH FAILS CLOSED.** The
+  rollup lists commit statuses too, and a `StatusContext` in state **`EXPECTED`** is **a required status
+  check that has not been posted yet** — the PR is *blocked* on it. **The REST commit-status API has no
+  `EXPECTED` state at all** (success / pending / failure / error), so family (2) **cannot report it**: the
+  rollup is the only *evidence* source in which it appears at all. So every rollup `StatusContext` must
+  appear among family (2)'s contexts, and one that does not is `unusable`: **the two sources disagree about
+  what exists**, and a snapshot built from evidence that cannot be reconciled is not evidence. **A posted
+  status DOES appear in both** (verified 2026-07-14 against a Prow PR, whose rollup contexts `tide` and
+  `EasyCLA` were both reported by `/status`) — which is why this is a **coverage test** and not a refusal on
+  sight: refusing every `StatusContext` would **wedge every Jenkins/Prow repo forever**.
+  **AND ITS `state` MUST BE IN THE `StatusState` ENUM, OR THE FETCH FAILS CLOSED TOO** — a value outside it
+  is `unusable`, never dropped and never coerced. This is **not** the same rule as the coverage test beside
+  it, and the coverage test **cannot** stand in for it: a context that IS reported by family (2) passes
+  coverage, and the rollup's own state for it was then accepted **unread**. A `StatusContext` **never enters
+  the artifact**, so CLASSIFY (below) — which is what refuses an unknown `.state`, `.status` or
+  `.conclusion` on an artifact row — **can never see it**: the value is refused in the FETCH or it is never
+  refused at all. It was never refused at all, and a reviewer showed the price: an invented
+  `BRAND_NEW_FAILURE` in the rollup, `success` for the SAME context in family (2), verdict **GREEN**. **An
+  unrecognised enum value is not a benign one, in any field, from any source.**
+  **THIS RULE IS NOT WHAT PROVES A REQUIRED CHECK REGISTERED, AND IT MUST NEVER AGAIN BE SOLD AS THAT.** It
+  can only see the contexts the rollup **returned**, and the rollup **cannot be proven complete** ("Honest
+  limits", above): a rollup that simply omits the `EXPECTED` entry leaves this rule **nothing to check**, and
+  the PR goes green. **The REQUIRED SET is the closure** ("WHAT WERE WE EXPECTING TO SEE?", below) — it is
+  declared by the base branch, so it does not depend on the rollup showing up, and `green` requires every
+  declared check to be **present and passing**.
+- **THE TWO SOURCES MUST AGREE ABOUT WHAT A CHECK SAYS, OR THE FETCH FAILS CLOSED.** The rule above asks
+  only whether a check **EXISTS** in both sources. It does **not** ask whether they **SAY THE SAME THING
+  ABOUT IT** — and for as long as nobody asked, the tool believed whichever source it happened to parse. A
+  reviewer set family (2) to `success` and the rollup to **`FAILURE`** for the **same context**: coverage
+  passed (the context is in both), and the verdict was **GREEN**. The check-run family had the identical hole
+  and nobody had looked at it at all: the rollup returns each `CheckRun`'s **`status` and `conclusion`**, the
+  producer kept the **name** and dropped the **verdict**, so a rollup `FAILURE` beside a REST `success` for
+  the same run was green too. **Containment could never have caught either one — existence is not
+  agreement.**
+  **THIS NEEDS NOBODY TO BE LYING.** Families (1) and (2) are fetched **BEFORE** (3). A check that flips to
+  failure **between** those calls — the head never moving, so the MOVED-HEAD rule cannot fire — produces two
+  **honest** sources that **contradict** each other, and that is the one thing this tool must never average
+  out. So: **every rollup entry whose check IS reported by the REST family must land in the SAME BUCKET as
+  the REST row for it** (`CheckRun` → the `checkrun` row with the same `.id`; `StatusContext` → the `status`
+  row with the same context), and one that does not is `unusable` — **refetch**. A settled check reports the
+  same thing to both.
+  **THE CONFLICT IS NEVER RESOLVED, AND THE WAYS OF "RESOLVING" IT ARE ALL THE SAME BUG.** Not by preferring
+  the REST row — it is "right" only by the accident of being fetched **first**, and in the race above it is
+  the **stale** one. Not by preferring the rollup — it carries **no commit oid**, so it may never be a
+  verdict. And **never** by taking the more favourable of the two, which is how a tool ends up optimistic on
+  exactly the evidence it should refuse. **Two sources that disagree about one fact are not evidence, and
+  untrustworthy evidence is not green.**
+  **DISAGREE MEANS A DIFFERENT BUCKET, NOT A DIFFERENT SPELLING.** The two sources use different
+  vocabularies, and a comparison of raw values would refuse **every honest PR**: REST `success` and rollup
+  `SUCCESS` are one fact in two spellings, and REST `pending` and rollup `EXPECTED` are both **RUNNING**. So
+  both sides are mapped through the **CLASSIFY buckets below** (PASS / RUNNING / FAIL) and the **buckets**
+  are compared. A value in **no** bucket is its own answer — `an UNRECOGNISED value` — and it agrees only
+  with **another** unrecognised value: `BRAND_NEW_FAILURE` in the rollup against `success` in REST is a
+  **disagreement**, and it fails closed. (Where **both** sources report the same unrecognised value, the
+  artifact carries family (1)/(2)'s copy of it and **CLASSIFY's catch-all** owns it — `UNKNOWN_VALUE`,
+  escalate, never green.)
+  **A ROLLUP ENTRY WITH NO REST TWIN IS NOT THIS RULE'S BUSINESS** — the coverage rule above owns that for a
+  `StatusContext`, and the containment test below owns it for a `CheckRun`. Each rule keeps the case it can
+  name precisely. **A MOVED HEAD IS NOT A DISAGREEMENT** either: the rollup then describes the **new** head
+  while (1) and (2) describe the old one, so of course they differ — that is the MOVED-HEAD rule's business,
+  and it is the better diagnosis.
 - **EVERY evidence row's `sha` MUST come from the RESPONSE, NEVER from a literal you interpolate.** Both
   APIs return the commit themselves — `.head_sha` on each check run, `.sha` at the top level of the status
   response — so take it from there. Stamping `sha:"<head_sha>"` into the `--jq` filter would copy the value
@@ -140,7 +401,7 @@ printf '{"row":"header","sha":"%s"}\n' "<head_sha>" > "$tmp"
 # RUBBER STAMP this design exists to prevent: it would say "queried" about a fetch that died.
 gh api --paginate --slurp ".../check-runs" | jq -c '...(1) above...' >> "$tmp" || exit 1
 gh api --paginate --slurp ".../status"     | jq -c '...(2) above...' >> "$tmp" || exit 1
-gh pr view <pr> --json statusCheckRollup   | jq -c '...(3) above...' >> "$tmp" || exit 1
+gh pr view <pr> --repo <owner>/<repo> --json statusCheckRollup,headRefOid | jq -c '...(3) above...' >> "$tmp" || exit 1
 
 mv "$tmp" "<rundir>/ci-<pr>-<head_sha>.txt"
 ```
@@ -330,11 +591,60 @@ leaves the suite green — and a hand-written matrix claiming otherwise was **wr
 you change a rule here, change it there; if you add one, mark it (`# MUTATE:<id>:<weakening>`) and give it
 a fixture that goes **GREEN** when it is deleted.
 
+**AND THE PRODUCER'S OWN RULES ARE PINNED THE SAME WAY.** `scripts/ci-status-test.py` — run by
+`ci-status.py self-test`, in CI — drives **recorded API responses** through the **real fetch path**, and
+asserts each fixture's verdict **and the rule that produced it**. Most of those fixtures are **false greens
+the tool actually shipped**: a family never fetched, a rollup `StatusContext` dropped on the floor, a page
+whose row array was absent, two sources contradicting each other, a head that moved under the fetch.
+
+**AND THIS PROSE CANNOT SILENTLY DRIFT FROM THE CODE ANY MORE.** The enums, the CLASSIFY buckets and the
+DECIDE bullet order are written **here**, in prose, **and** encoded in `ci-snapshot.py` as Python —
+**nothing compared them**, so one could rot while the other ran, and the rotted one is the copy a reader
+believes. `scripts/ci-status.py doc-check` **parses this file** — its enum block, both CLASSIFY tables, and
+the order of the DECIDE bullets — and asserts they agree with the sets the code actually classifies with,
+**and that the classification is TOTAL over the enums declared here** (every value in exactly one bucket:
+the property this section claims, which nothing used to check). It runs in CI. **Edit a rule in this file
+without editing the code and the build goes RED** — which is the only kind of "keep them in sync" that has
+ever worked.
+
+**AND THE FETCH COMMANDS ABOVE ARE EXECUTED, NOT MERELY READ — because the version of this check that only
+read the ENUMS is exactly where the drift got in.** Nothing parsed the `gh … | jq` block, so this file went
+on specifying `(.statusCheckRollup // [])` — which turns a **MISSING** rollup into an **EMPTY** one — while
+the tool **refused** that shape. The doc and the code disagreed about **what is refused**, in the one place
+nothing was looking. Two checks close that, and **neither is optional**:
+
+- **`ci-snapshot.py`'s `producer_test` RUNS the filters** (the `--paginate` bullet, above, is the same
+  point). It extracts **all five reads this file prescribes** — (1)(2)(3) here and (a)(b) below — **verbatim,
+  by their command line**, and executes them over recorded, **multi-page** API payloads, asserting **the
+  exact rows**. Drop a `--paginate`, drop `,headRefOid`, drop `--repo`, or write a `//` default on the wrong
+  side of a `tostring`, and it goes **RED**: the read it pins is the one an operator would copy out of this
+  file.
+- **`ci-status.py doc-check` checks every `gh` INVOCATION in this file against the argv the code really
+  issues** — *every copy of them*, not just the spec block (a recap that drops `,headRefOid` reconstructs a
+  fetch the MOVED-HEAD rule can never fire on; that copy had drifted, and this is what caught it). It sweeps
+  **every copy of the `ci-status.py derive` command across every skill doc** for `--required-set`, too — the
+  flag that decides a merge must not be droppable by a recap.
+
+**TWO refusals are CROSS-SOURCE and no single-fetch filter can state them** — the rollup's `StatusContext`
+**coverage**, and the **AGREEMENT** of the two sources about a check they both report. One `jq` filter sees
+ONE fetch, so neither can live in the spec above: the tool does both in `build_snapshot()`, the rules are the
+FETCH bullets on `StatusContext` and on AGREEMENT, and the fixtures that pin them are
+`rollup-expected-status.json`, `rollup-status-conflict.json` and `rollup-checkrun-conflict.json`. **They are
+named here rather than quietly omitted**, because a reader who does not find them in the filters must not
+conclude they do not exist.
+
 #### CROSS-FETCH AGREEMENT — containment on a USABLE `.id`, NOT equality
 
-The fetches are taken at different times, so they can disagree. But the correct test is **containment**,
-not equality — compared on the **per-run identity**, and **only** when that identity can actually tell two
-runs apart:
+**THIS SECTION IS ABOUT WHAT EXISTS, NOT ABOUT WHAT IT SAYS — AND THE TWO ARE DIFFERENT QUESTIONS.** It
+answers *did REST see every check the rollup saw?*, and **nothing more**. Whether the two sources **AGREE
+ABOUT THE STATE** of a check they **both** report is the FETCH rule "THE TWO SOURCES MUST AGREE ABOUT WHAT A
+CHECK SAYS", above, and containment **cannot** stand in for it: a check present in both **passes containment
+by existing**, whatever either source says about it. Read this section as the whole cross-fetch story and you
+will rebuild the false green that rule exists to close.
+
+The fetches are taken at different times, so they can disagree. But the correct test **of existence** is
+**containment**, not equality — compared on the **per-run identity**, and **only** when that identity can
+actually tell two runs apart:
 
 > **FIRST, the identity must be USABLE — a NULL or DUPLICATED witness identity is UNVERIFIABLE, never
 > "fine".** If **any** `witness` row's `.id` is **null/absent** (`"-"`), **or** two `witness` rows share

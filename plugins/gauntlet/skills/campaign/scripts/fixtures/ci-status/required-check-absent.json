@@ -1,0 +1,55 @@
+{
+  "why": "THE REVIEWER'S CASE, AND THE FALSE GREEN THE ROLLUP COVERAGE RULE COULD NOT CLOSE. It is `rollup-expected-status.json` with the EXPECTED StatusContext DELETED FROM THE ROLLUP — a rollup that is merely SHORT, which nothing can detect (it carries no total and cannot be proven complete). The required status `ci/jenkins/pr-merge` has NEVER BEEN POSTED, so REST cannot report it either (there is no EXPECTED state in the commit-status API). Every rule that reads the artifact quantifies over the rows that ARE there: the check run passes, both markers are present, containment holds, the coverage rule has NOTHING TO CHECK — and this used to be GREEN, on a PR blocked on a check nobody has run. What refuses is the one source that does not depend on anything showing up: the BASE BRANCH DECLARED that check REQUIRED, and it is not present and passing. Weaken `required-set-is-passed` and this goes GREEN — which is exactly the kill that matters",
+  "required_set": "declared:[{\"context\": \"ci/jenkins/pr-merge\", \"app\": \"-\"}]",
+  "pr": "35",
+  "api": {
+    "check-runs": {
+      "response": [
+        {
+          "total_count": 1,
+          "check_runs": [
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "Lint scripts",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/29318959841/job/1"
+            }
+          ]
+        }
+      ]
+    },
+    "status": {
+      "response": [
+        {
+          "sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+          "state": "pending",
+          "total_count": 0,
+          "statuses": []
+        }
+      ]
+    },
+    "rollup": {
+      "response": {
+        "headRefOid": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+        "statusCheckRollup": [
+          {
+            "__typename": "CheckRun",
+            "name": "Lint scripts",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "detailsUrl": "https://github.com/o/r/actions/runs/29318959841/job/1"
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "verdict": "pending",
+    "ci": "pending",
+    "needle": "required check absent: ci/jenkins/pr-merge"
+  }
+}

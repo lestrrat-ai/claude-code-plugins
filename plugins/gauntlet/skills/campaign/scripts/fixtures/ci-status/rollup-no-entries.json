@@ -1,0 +1,47 @@
+{
+  "why": "THE ROLLUP RESPONSE WITH NO ENTRY LIST AT ALL — not an EMPTY rollup (a fact GitHub can state, see zero-checks.json), but a response we cannot read. Taken as 'no witnesses' it makes CONTAINMENT VACUOUS: 'REST saw everything the rollup saw' becomes a claim about the empty set and passes trivially, so otherwise-passing check runs go GREEN with the cross-check silently switched off",
+  "required_set": "none",
+  "pr": "35",
+  "api": {
+    "check-runs": {
+      "response": [
+        {
+          "total_count": 1,
+          "check_runs": [
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "Lint scripts",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/29318959841/job/1"
+            }
+          ]
+        }
+      ]
+    },
+    "status": {
+      "response": [
+        {
+          "sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+          "state": "pending",
+          "total_count": 0,
+          "statuses": []
+        }
+      ]
+    },
+    "rollup": {
+      "response": {
+        "headRefOid": "1499c72bf1715e74abb0e28658b515eaa2c0c971"
+      }
+    }
+  },
+  "expect": {
+    "verdict": "unusable",
+    "ci": "pending",
+    "needle": "not a list",
+    "promoted": false
+  }
+}

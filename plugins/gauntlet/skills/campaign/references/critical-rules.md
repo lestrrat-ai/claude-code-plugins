@@ -426,6 +426,14 @@
   error — *not* a real finding list / `VERDICT:` line), retry once, then do the equivalent work with
   your own subagents: a fresh, context-isolated subagent review pass in
   Stage 2a. The gate is unchanged — note any fallback pass in the report. See "The reviewer".
+- **DERIVE `ci` BY RUNNING `scripts/ci-status.py derive --pr <N> --head-sha <the ledger's> --rundir
+  <rundir> --required-set <the ledger header's>`, and by NOTHING ELSE.** It fetches, promotes, verifies and
+  decides, and prints the verdict and the `ci` value as JSON (`stage-2-ci.md`, "THE DERIVATION IS A
+  COMMAND", which owns the exact invocation — **`--required-set` is MANDATORY**: the evidence says what
+  showed up, and only the base branch's declared set says what was SUPPOSED to).  **NEVER derive `ci` by
+  READING the output of a command and judging it.** That is not a style preference: every rule below was already
+  correct when a driver ran `gh pr checks`, saw that no checks were reported, and wrote **`ci = green`** —
+  **zero evidence is not green**. A program cannot decide that "no checks" is close enough to "passing".
 - CI status comes from a **SHA-pinned** snapshot of **BOTH** check families (`commits/<head_sha>/check-runs`
   **and** `commits/<head_sha>/status`), `--paginate`d, promoted atomically, and **SHA-verified before
   parsing**. **NEVER from `gh pr checks`** — its output carries **no SHA**, so it can report the

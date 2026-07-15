@@ -1,0 +1,68 @@
+{
+  "why": "A ROLLUP StatusContext IN A STATE NOBODY HAS CLASSIFIED (invented: there is no `BRAND_NEW_FAILURE` in StatusState today), on a context the REST status family DOES report as SUCCESS. This is the reviewer's reproduction, recorded: the state was ACCEPTED unread, the coverage rule below it saw a covered context and passed, and the PR went GREEN while the two sources DISAGREED about that very context. A rollup StatusContext never enters the artifact, so NO rule downstream can refuse it — it dies in the producer or it never dies. An unrecognised enum value is NOT a benign one",
+  "required_set": "none",
+  "pr": "35",
+  "api": {
+    "check-runs": {
+      "response": [
+        {
+          "total_count": 1,
+          "check_runs": [
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "Lint scripts",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/29318959841/job/1"
+            }
+          ]
+        }
+      ]
+    },
+    "status": {
+      "response": [
+        {
+          "sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+          "state": "success",
+          "total_count": 1,
+          "statuses": [
+            {
+              "context": "ci/jenkins/pr-merge",
+              "state": "success"
+            }
+          ]
+        }
+      ]
+    },
+    "rollup": {
+      "response": {
+        "headRefOid": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+        "statusCheckRollup": [
+          {
+            "__typename": "CheckRun",
+            "name": "Lint scripts",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "detailsUrl": "https://github.com/o/r/actions/runs/29318959841/job/1"
+          },
+          {
+            "__typename": "StatusContext",
+            "context": "ci/jenkins/pr-merge",
+            "state": "BRAND_NEW_FAILURE",
+            "targetUrl": "https://jenkins.example/job/pr-merge/1",
+            "startedAt": "2026-07-14T09:32:37Z"
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "verdict": "unusable",
+    "ci": "pending",
+    "needle": "UNRECOGNISED state",
+    "promoted": false
+  }
+}

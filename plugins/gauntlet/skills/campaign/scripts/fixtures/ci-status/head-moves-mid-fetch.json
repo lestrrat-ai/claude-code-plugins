@@ -1,0 +1,76 @@
+{
+  "why": "THE NEAR-MISS: the push lands BETWEEN the check-runs fetch and the rollup. No snapshot of a moving thing is atomic, so the ONLY defence is the ORDER — read the evidence first and the head LAST, and every push that could have staled the evidence is visible in the head. Read the head FIRST and `headRefOid` still equals the sha we asked for while the URL-pinned check-runs call returns the OLD head's green runs: two moments spliced into one GREEN verdict. This fixture is that push, recorded — it is the only one whose answer DEPENDS on the fetch order",
+  "required_set": "none",
+  "pr": "35",
+  "push": {
+    "after": "check-runs",
+    "head": "e846cd76a783aa1087e221cc0684b84136419404"
+  },
+  "api": {
+    "check-runs": {
+      "response": [
+        {
+          "total_count": 2,
+          "check_runs": [
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "Lint scripts",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/29318959841/job/1"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "Validate plugins",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/29318959841/job/2"
+            }
+          ]
+        }
+      ]
+    },
+    "status": {
+      "response": [
+        {
+          "sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+          "state": "pending",
+          "total_count": 0,
+          "statuses": []
+        }
+      ]
+    },
+    "rollup": {
+      "response": {
+        "headRefOid": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+        "statusCheckRollup": [
+          {
+            "__typename": "CheckRun",
+            "name": "Lint scripts",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "detailsUrl": "https://github.com/o/r/actions/runs/29318959841/job/1"
+          },
+          {
+            "__typename": "CheckRun",
+            "name": "Validate plugins",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "detailsUrl": "https://github.com/o/r/actions/runs/29318959841/job/2"
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "verdict": "unusable",
+    "ci": "pending",
+    "needle": "HEAD MOVED"
+  }
+}

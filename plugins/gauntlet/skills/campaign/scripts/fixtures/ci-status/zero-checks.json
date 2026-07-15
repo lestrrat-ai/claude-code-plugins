@@ -1,0 +1,36 @@
+{
+  "why": "THE FALSE GREEN THAT MOTIVATED THIS TOOL. No checks have registered on the commit. `gh pr checks` says so in prose and the driver read it as green. ZERO EVIDENCE IS NOT GREEN — and the status marker still carries GitHub's OWN sha, which is what PROVES we asked and it had none",
+  "required_set": "none",
+  "pr": "35",
+  "api": {
+    "check-runs": {
+      "response": [
+        {
+          "total_count": 0,
+          "check_runs": []
+        }
+      ]
+    },
+    "status": {
+      "response": [
+        {
+          "sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+          "state": "pending",
+          "total_count": 0,
+          "statuses": []
+        }
+      ]
+    },
+    "rollup": {
+      "response": {
+        "headRefOid": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+        "statusCheckRollup": []
+      }
+    }
+  },
+  "expect": {
+    "verdict": "pending",
+    "ci": "pending",
+    "needle": "zero evidence rows"
+  }
+}

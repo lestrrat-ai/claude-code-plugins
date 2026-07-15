@@ -1,0 +1,68 @@
+{
+  "why": "THE TWO SOURCES CONTRADICT EACH OTHER ABOUT ONE COMMIT STATUS. REST reports `ci/jenkins/pr-merge` as success; the ROLLUP reports the SAME context as FAILURE. The coverage rule beside this one is SATISFIED — the context exists in both — and the tool then believed the source it could parse and returned GREEN. Reachable with nobody lying: the REST families are fetched BEFORE the rollup, so a check that flips to failure between the two calls lands exactly here, and the head never moves, so the moved-head rule cannot fire. EVIDENCE WE CANNOT RECONCILE IS NOT EVIDENCE",
+  "required_set": "none",
+  "pr": "35",
+  "api": {
+    "check-runs": {
+      "response": [
+        {
+          "total_count": 1,
+          "check_runs": [
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "Lint scripts",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/29318959841/job/1"
+            }
+          ]
+        }
+      ]
+    },
+    "status": {
+      "response": [
+        {
+          "sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+          "state": "success",
+          "total_count": 1,
+          "statuses": [
+            {
+              "context": "ci/jenkins/pr-merge",
+              "state": "success"
+            }
+          ]
+        }
+      ]
+    },
+    "rollup": {
+      "response": {
+        "headRefOid": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+        "statusCheckRollup": [
+          {
+            "__typename": "CheckRun",
+            "name": "Lint scripts",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "detailsUrl": "https://github.com/o/r/actions/runs/29318959841/job/1"
+          },
+          {
+            "__typename": "StatusContext",
+            "context": "ci/jenkins/pr-merge",
+            "state": "FAILURE",
+            "targetUrl": "https://jenkins.example/job/pr-merge/1",
+            "startedAt": "2026-07-14T09:32:37Z"
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "verdict": "unusable",
+    "ci": "pending",
+    "needle": "ci/jenkins/pr-merge",
+    "promoted": false
+  }
+}

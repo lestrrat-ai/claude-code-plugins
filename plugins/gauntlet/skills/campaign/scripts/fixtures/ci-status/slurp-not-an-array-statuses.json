@@ -1,0 +1,54 @@
+{
+  "why": "THE SAME WRONG SHAPE, ON THE FAMILY /check-runs CANNOT SEE. A bare object where the slurped array belongs is a response we cannot read \u2014 and this is the family that carries the failing Jenkins status, so reading it wrong is the false green this file exists to refuse",
+  "required_set": "none",
+  "pr": "35",
+  "api": {
+    "check-runs": {
+      "response": [
+        {
+          "total_count": 1,
+          "check_runs": [
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "Lint scripts",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/29318959841/job/1"
+            }
+          ]
+        }
+      ]
+    },
+    "status": {
+      "response": {
+        "sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+        "state": "pending",
+        "total_count": 0,
+        "statuses": []
+      }
+    },
+    "rollup": {
+      "response": {
+        "headRefOid": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+        "statusCheckRollup": [
+          {
+            "__typename": "CheckRun",
+            "name": "Lint scripts",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "detailsUrl": "https://github.com/o/r/actions/runs/29318959841/job/1"
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "verdict": "unusable",
+    "ci": "pending",
+    "needle": "status: expected a NON-EMPTY array of pages",
+    "promoted": false
+  }
+}

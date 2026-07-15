@@ -1,0 +1,55 @@
+{
+  "why": "WE DO NOT KNOW WHAT WAS REQUIRED, SO WE CANNOT SAY THIS IS GREEN. The evidence is the same bytes as `green.json` — every registered check passed, both families queried, containment holds — and the ONLY thing that differs is the input: the base branch's required set could not be READ (`unknown`, which is also ledger.py's DEFAULT, so a run that never performed the read merges NOTHING). A required check may exist, be missing, and this snapshot cannot tell. INCOMPLETE EVIDENCE IS NOT GREEN, exactly as ZERO evidence is not — and a green printed beside `but we could not read what was required` is a trapdoor with a sign on it, not a disclosure. Weaken `required-set-is-passed` and this goes GREEN",
+  "required_set": "unknown",
+  "pr": "35",
+  "api": {
+    "check-runs": {
+      "response": [
+        {
+          "total_count": 1,
+          "check_runs": [
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "Lint scripts",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/29318959841/job/1"
+            }
+          ]
+        }
+      ]
+    },
+    "status": {
+      "response": [
+        {
+          "sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+          "state": "pending",
+          "total_count": 0,
+          "statuses": []
+        }
+      ]
+    },
+    "rollup": {
+      "response": {
+        "headRefOid": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+        "statusCheckRollup": [
+          {
+            "__typename": "CheckRun",
+            "name": "Lint scripts",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "detailsUrl": "https://github.com/o/r/actions/runs/29318959841/job/1"
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "verdict": "pending",
+    "ci": "pending",
+    "needle": "required_set=unknown"
+  }
+}

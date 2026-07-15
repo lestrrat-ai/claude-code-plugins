@@ -1,0 +1,55 @@
+{
+  "why": "GITHUB'S OWN COUNT IS ABSENT, so the completeness test CANNOT BE MADE \u2014 and a fail-closed rule that cannot fire is not a rule, it is a hole with a comment above it. `total_count` is the ONLY thing we can check our read against, so a response that does not state it is one we cannot tell a complete read from a truncated one in. An absent count is NOT a count of zero: 'we cannot tell whether the read was short' has exactly one safe answer, and it is not green. Same reasoning as a rollup response with no headRefOid",
+  "required_set": "none",
+  "pr": "35",
+  "api": {
+    "check-runs": {
+      "response": [
+        {
+          "check_runs": [
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "Lint scripts",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/29318959841/job/1"
+            }
+          ]
+        }
+      ]
+    },
+    "status": {
+      "response": [
+        {
+          "sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+          "state": "pending",
+          "total_count": 0,
+          "statuses": []
+        }
+      ]
+    },
+    "rollup": {
+      "response": {
+        "headRefOid": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+        "statusCheckRollup": [
+          {
+            "__typename": "CheckRun",
+            "name": "Lint scripts",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "detailsUrl": "https://github.com/o/r/actions/runs/29318959841/job/1"
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "verdict": "unusable",
+    "ci": "pending",
+    "needle": "check-runs: the response STATES NO 'total_count'",
+    "promoted": false
+  }
+}
