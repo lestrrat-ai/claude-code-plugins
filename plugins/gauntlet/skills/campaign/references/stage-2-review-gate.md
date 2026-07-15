@@ -498,7 +498,7 @@ the pass if you say otherwise, because that repro describes a developer with a t
 > **A finding whose `purpose` is `-` AND whose `writer` is one of `driver-only` / `hand-edit` / `dev-time`
 > is NON-GATING.** It anchors to nothing: no line of the PR's stated purpose is served by fixing it, and
 > nobody outside the machine can supply the input. It **MUST NOT** produce `NOT SATISFIED`, the driver
-> **MUST NOT** dispatch a fix for it, and it is recorded as a follow-up (`.gauntlet/followups.md`).
+> **MUST NOT** dispatch a fix for it, and it is recorded as a follow-up (`.gauntlet/followups.jsonl`, written through `scripts/followups.py`).
 
 **NOT EVERY TRUE STATEMENT ABOUT THE CODE IS A REASON TO BLOCK IT.** A non-gating finding is not refuted,
 not dismissed, and not necessarily wrong. It is simply not worth another round.
