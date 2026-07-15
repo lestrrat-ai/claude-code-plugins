@@ -1,0 +1,27 @@
+{
+  "name": "gauntlet",
+  "version": "0.2.0",
+  "description": "Adversarial review-to-merge pipeline: sweep, verify, fan out, gate, merge.",
+  "author": {
+    "name": "lestrrat",
+    "url": "https://github.com/lestrrat-ai"
+  },
+  "homepage": "https://github.com/lestrrat-ai/claude-code-plugins",
+  "repository": "https://github.com/lestrrat-ai/claude-code-plugins",
+  "license": "MIT",
+  "keywords": ["code-review", "adversarial-review", "pull-request", "ci", "codex"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Gauntlet",
+    "shortDescription": "Adversarial review-to-merge workflows",
+    "longDescription": "Review code, address Copilot feedback, and gate pull requests through independent reviews and CI.",
+    "developerName": "lestrrat",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": [
+      "Review this change with Gauntlet.",
+      "Gate these pull requests through review and CI.",
+      "Address Copilot review comments on this pull request."
+    ]
+  }
+}

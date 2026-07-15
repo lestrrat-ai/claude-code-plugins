@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Validate the marketplace manifest, every plugin it lists, and skill layout.
+# Validate both marketplace formats, every plugin they list, and skill layout.
 #
 # Runs fully offline: `claude plugin validate` needs no credentials, so this is
 # safe on forked pull requests.
@@ -16,24 +16,29 @@ fail() {
   status=1
 }
 
-for tool in claude jq; do
+for tool in claude codex jq; do
   command -v "$tool" >/dev/null || {
     printf 'error: required tool not found: %s\n' "$tool" >&2
     exit 127
   }
 done
 
-manifest=.claude-plugin/marketplace.json
-[[ -f $manifest ]] || {
-  printf 'error: missing %s\n' "$manifest" >&2
+claude_marketplace=.claude-plugin/marketplace.json
+codex_marketplace=.agents/plugins/marketplace.json
+[[ -f $claude_marketplace ]] || {
+  printf 'error: missing %s\n' "$claude_marketplace" >&2
+  exit 1
+}
+[[ -f $codex_marketplace ]] || {
+  printf 'error: missing %s\n' "$codex_marketplace" >&2
   exit 1
 }
 
-echo "==> marketplace manifest"
+echo "==> Claude marketplace manifest"
 claude plugin validate . --strict || status=1
 
 echo
-echo "==> plugin sources"
+echo "==> Claude plugin sources"
 while IFS=$'\t' read -r name source kind; do
   # Remote sources (github/git objects) resolve at install time, not here.
   if [[ $kind != string ]]; then
@@ -63,7 +68,61 @@ while IFS=$'\t' read -r name source kind; do
 
   echo "--> $name ($source)"
   claude plugin validate "$source" --strict || status=1
-done < <(jq -r '.plugins[] | [.name, (.source | tostring), (.source | type)] | @tsv' "$manifest")
+done < <(jq -r '.plugins[] | [.name, (.source | tostring), (.source | type)] | @tsv' "$claude_marketplace")
+
+echo
+echo "==> Codex marketplace manifest"
+jq -e '
+  (.name | type == "string" and length > 0) and
+  (.plugins | type == "array" and length > 0) and
+  all(.plugins[];
+    (.name | type == "string" and length > 0) and
+    (.source.source == "local") and
+    (.source.path | type == "string" and startswith("./")) and
+    (.policy.installation | IN("NOT_AVAILABLE", "AVAILABLE", "INSTALLED_BY_DEFAULT")) and
+    (.policy.authentication | IN("ON_INSTALL", "ON_USE")) and
+    (.category | type == "string" and length > 0)
+  )
+' "$codex_marketplace" >/dev/null || fail "$codex_marketplace: invalid Codex marketplace shape"
+
+while IFS=$'\t' read -r name source; do
+  [[ -d $source ]] || {
+    fail "$name: Codex source directory '$source' does not exist"
+    continue
+  }
+
+  claude_plugin=$source/.claude-plugin/plugin.json
+  codex_plugin=$source/.codex-plugin/plugin.json
+  [[ -f $codex_plugin ]] || {
+    fail "$name: '$source' has no .codex-plugin/plugin.json"
+    continue
+  }
+
+  codex_name=$(jq -r '.name // ""' "$codex_plugin")
+  [[ $codex_name == "$name" ]] ||
+    fail "$name: Codex plugin.json declares name '$codex_name'"
+
+  claude_version=$(jq -r '.version // ""' "$claude_plugin")
+  codex_version=$(jq -r '.version // ""' "$codex_plugin")
+  [[ $codex_version == "$claude_version" ]] ||
+    fail "$name: manifest versions differ (Claude $claude_version, Codex $codex_version)"
+done < <(jq -r '.plugins[] | [.name, .source.path] | @tsv' "$codex_marketplace")
+
+mkdir -p "$root/.tmp"
+codex_home=$(mktemp -d "$root/.tmp/codex-validate.XXXXXX")
+trap 'rm -rf "$codex_home"' EXIT
+CODEX_HOME=$codex_home codex plugin marketplace add . --json >"$codex_home/marketplace-add.json" || status=1
+marketplace_name=$(jq -r '.name' "$codex_marketplace")
+while IFS= read -r name; do
+  CODEX_HOME=$codex_home codex plugin add "$name@$marketplace_name" --json >"$codex_home/plugin-$name.json" || {
+    fail "$name: Codex could not install the plugin"
+    continue
+  }
+
+  installed=$(jq -r '.installedPath // ""' "$codex_home/plugin-$name.json")
+  [[ -f $installed/skills/review/SKILL.md ]] ||
+    fail "$name: installed Codex plugin is missing skills/review/SKILL.md"
+done < <(jq -r '.plugins[].name' "$codex_marketplace")
 
 echo
 echo "==> skill directories"

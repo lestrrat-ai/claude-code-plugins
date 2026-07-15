@@ -1,8 +1,10 @@
 # claude-code-plugins
 
-Claude Code plugins by [lestrrat](https://github.com/lestrrat-ai), published as a plugin marketplace.
+Claude Code and Codex plugins by [lestrrat](https://github.com/lestrrat-ai), published as a plugin marketplace.
 
 ## Install
+
+### Claude Code
 
 Add the marketplace once:
 
@@ -16,6 +18,22 @@ Then install whichever plugins you want:
 /plugin install gauntlet@lestrrat-ai
 ```
 
+### Codex
+
+Add the marketplace once:
+
+```
+codex plugin marketplace add lestrrat-ai/claude-code-plugins
+```
+
+Then install whichever plugins you want:
+
+```
+codex plugin add gauntlet@lestrrat-ai
+```
+
+Start a new Codex session after installation so its bundled skills are loaded.
+
 ## Prerequisites
 
 The plugins shell out to a few external tools. Have these available before installing.
@@ -28,7 +46,7 @@ Required:
 - **`jq`** — parses `gh` JSON in the Copilot review-item fetcher.
 - **`bash`** — runs the bundled shell scripts (standard on macOS/Linux).
 
-Optional:
+Optional when Claude Code is the orchestrator:
 
 - **Codex CLI (`codex`)** — an independent external reviewer for `gauntlet:campaign`. Recommended for a stronger gauntlet, since a different engine than the orchestrator catches defects a same-model re-roll can miss, but not required: without it, campaign falls back to Claude's own subagents as the reviewer.
 
