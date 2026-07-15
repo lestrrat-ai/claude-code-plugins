@@ -106,13 +106,14 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import re
 import sys
 import tempfile
 import types
 from collections import Counter
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import NoReturn
 
@@ -1698,6 +1699,393 @@ def cmd_verify(args) -> int:
     return 0 if verdict == OK else 1
 
 
+# --- the status view: an ADVISORY, READ-ONLY glance across a run ---------------------------------
+#
+# **`status` DECIDES NOTHING** (`CLAUDE.md`, "Dogfood the branch's behavior — but NEVER let it gate
+# itself"). It renders one aligned row per in-flight review pass and is invoked on demand or from the
+# ScheduleWakeup heartbeat. It never calls `write_line`, never mutates a pass's artifacts, and never
+# touches the ledger except `ledger.load()`. The authoritative "does this pass count?" answer stays
+# `verify`/`evaluate`, which `status` can SURFACE verbatim (`--verify`) but never overrides.
+#
+# It reuses THIS FILE's own readers and predicates — `parse_name`, `parse_lines`, `plan_path`,
+# `findings_path`, `gating`, `evaluate`, and the type/status constants — so there is no second parser for
+# these artifacts (`review-pass.py`'s docstring: "one implementation, never two"). The one thing it does
+# NOT reuse for the default tally is the strict verdict layer (`load_plan`/`walk_progress`/`decide`): those
+# RAISE `Defect` on the first anomaly because they are the gate, and a live monitor must render a partial,
+# mid-write, or imperfect pass rather than crash on it. So the default tally is TOLERANT (`read_lenient`),
+# and `evaluate()`'s strict verdict is an opt-in column.
+
+# The deadlines the skill already defines (references/stage-2-review-gate.md → "Launch check" and
+# "Meaningful progress"). `status` reads them; it does not own them.
+LAUNCH_DEADLINE_S = 5 * 60      # launch evidence must be present by ~5 min from dispatch
+PROGRESS_DEADLINE_S = 15 * 60   # meaningful progress (a planned-unit done / accepted amendment) by ~15 min
+
+# The six health states (§4 of the design). The three ATTENTION states are upper-cased so they stand out
+# in a column of lower-case `working`/`launching`.
+H_LAUNCHING, H_WORKING, H_DONE = "launching", "working", "done"
+H_STALLED, H_NO_LAUNCH = "STALLED", "NO-LAUNCH!"
+
+# The report scrape's three outcomes (advisory: the authoritative verdict for gating is the ledger's).
+V_SAT, V_NOT_SAT, V_NONE = "SAT", "NOT-SAT", "-"
+
+NOW_ENV = "REVIEW_PASS_NOW"     # the deterministic "now" seam — a fixture sets it so elapsed/health are fixed
+
+
+def read_lenient(path: Path) -> "list[dict] | None":
+    """Records from a possibly-mid-write JSONL file. NEVER raises. status-only; NOT on the accept path.
+
+    A JSONL file's complete records are exactly the text UP TO AND INCLUDING its last newline; anything
+    after is a partial append in flight. So this truncates at the last `\\n` and feeds only that prefix to
+    the reused `parse_lines` — the same reasoning `write_line` already uses about trailing newlines, not a
+    second lenient JSON parser. `verify`/`evaluate` do NOT call this; they keep strict `read_lines`, so a
+    torn or corrupt file is still `unusable` at the gate.
+
+    Returns `[]` for an absent or newline-free file, the parsed records for a readable one, and `None` for
+    a real (non-torn) corruption — which `status` renders as `unreadable` on that one row, never a crash.
+    """
+    if not path.exists():
+        return []
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    cut = text.rfind("\n")
+    prefix = text[: cut + 1] if cut >= 0 else ""   # drop a torn trailing append
+    try:
+        return parse_lines(prefix, path.name)      # reuse the schema owner's reader
+    except Defect:
+        return None                                # a real corruption — render as "unreadable"
+
+
+def status_now(args) -> datetime:
+    """The render clock, as a naive UTC datetime. `--now`/`REVIEW_PASS_NOW` is the determinism seam so a
+    fixture can fix elapsed/health without the wall clock; absent both, it is the real now."""
+    raw = getattr(args, "now", None) or os.environ.get(NOW_ENV)
+    if raw:
+        return datetime.strptime(raw, "%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def active_attempts(rundir: Path) -> "list[Path]":
+    """Every pass's progress file, grouped by (pr, pass), keeping only the highest launch_attempt — the
+    ACTIVE attempt. A file whose name `parse_name` refuses is skipped (it is not a progress artifact)."""
+    best: dict[tuple[str, str], tuple[int, Path]] = {}
+    for path in sorted(rundir.glob("review-*-*" + PROGRESS_SUFFIX)):
+        try:
+            pr, npass, attempt = parse_name(path)
+        except Defect:
+            continue
+        key = (pr, npass)
+        k = int(attempt)
+        if key not in best or k > best[key][0]:
+            best[key] = (k, path)
+    return [path for _k, path in best.values()]
+
+
+def all_attempts(rundir: Path) -> "list[tuple[Path, bool]]":
+    """Every progress file, each flagged active (highest attempt for its (pr, pass)) or superseded."""
+    active = set(active_attempts(rundir))
+    out: list[tuple[Path, bool]] = []
+    for path in sorted(rundir.glob("review-*-*" + PROGRESS_SUFFIX)):
+        try:
+            parse_name(path)
+        except Defect:
+            continue
+        out.append((path, path in active))
+    return out
+
+
+def report_path(progress: Path) -> Path:
+    """The reviewer's report (`review-<pr>-<n>.txt`) — per PASS, beside the progress file. `status` scrapes
+    its `VERDICT:` tail for a convenience read; `verify` never opens it and neither does the gate."""
+    pr, npass, _attempt = parse_name(progress)
+    return progress.parent / f"review-{pr}-{npass}.txt"
+
+
+def scrape_verdict(progress: Path) -> str:
+    """The report's last `VERDICT:` line, mapped to SAT / NOT-SAT / - . Advisory only."""
+    path = report_path(progress)
+    if not path.exists():
+        return V_NONE
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return V_NONE
+    verdict = V_NONE
+    for line in text.splitlines():
+        if "VERDICT:" in line.upper():
+            rest = line.upper().split("VERDICT:", 1)[1]
+            # NOT SATISFIED contains SATISFIED, so test the negative spelling first.
+            if "NOT" in rest and "SATISF" in rest:
+                verdict = V_NOT_SAT
+            elif "SATISF" in rest:
+                verdict = V_SAT
+    return verdict
+
+
+def plan_total(progress: Path) -> str:
+    """`<n>` planned units, or `?` when the plan is absent or unreadable. Counts `unit` records only, so a
+    hand-authored `{"type":"plan",...}` header line (if one is present) is ignored and the count is right
+    either way — which is exactly why `status` does NOT reuse the strict `load_plan` for the tally."""
+    plan = plan_path(progress)
+    if not plan.exists():
+        return "?"
+    recs = read_lenient(plan)
+    if recs is None:
+        return "?"
+    return str(sum(1 for r in recs if r.get("type") == UNIT))
+
+
+def progress_tally(events: "list[dict]") -> "tuple[int, str]":
+    """(done count, in-progress unit id or `-`) from a tolerant replay of the progress events.
+
+    `done` = distinct units with a `done` event; `now` = the last unit that has a `started` and no `done`.
+    Neither raises: a monitor renders what the file says so far."""
+    done: list[str] = []
+    started: list[str] = []
+    for rec in events:
+        if rec.get("type") != PROGRESS:
+            continue
+        unit, status = rec.get("unit"), rec.get("status")
+        if not isinstance(unit, str):
+            continue
+        if status == DONE and unit not in done:
+            done.append(unit)
+        elif status == STARTED and unit not in started:
+            started.append(unit)
+    now = "-"
+    for unit in reversed(started):
+        if unit not in done:
+            now = unit
+            break
+    return len(done), now
+
+
+def finding_counts(progress: Path) -> str:
+    """`<gating>/<non-gating>` via the ONE `gating()` predicate. A record missing the keys `gating()` reads
+    is SKIPPED, not crashed on (advisory divergence from `verify`, which would reject it)."""
+    recs = read_lenient(findings_path(progress))
+    if not recs:
+        return "0/0"
+    g = ng = 0
+    for rec in recs:
+        if not isinstance(rec, dict) or "purpose" not in rec or "writer" not in rec:
+            continue
+        try:
+            (g := g + 1) if gating(rec) else (ng := ng + 1)  # noqa: F841 - walrus updates the counters
+        except Exception:  # noqa: BLE001 - a malformed finding is skipped by an advisory view, never fatal
+            continue
+    return f"{g}/{ng}"
+
+
+def fmt_elapsed(seconds: float) -> str:
+    """Age since dispatch: whole minutes under an hour (`6m`), else one decimal of hours (`1.2h`)."""
+    if seconds < 0:
+        seconds = 0
+    minutes = seconds / 60
+    if minutes < 60:
+        return f"{int(minutes + 0.5)}m"
+    return f"{minutes / 60:.1f}h"
+
+
+def pass_identity_of(events: "list[dict]") -> "dict | None":
+    for rec in events:
+        if rec.get("type") == IDENTITY:
+            return rec
+    return None
+
+
+def health_of(events: "list[dict]", verdict: str, elapsed_s: "float | None",
+              mtime_age_s: float) -> str:
+    """The liveness read (§4). First match wins; the ATTENTION states sort above the calm ones.
+
+    `done` is the report's VERDICT line; `AMEND(n)` is any raised `plan_amendment_request` (an amendment IS
+    launch evidence and is the more actionable fact, so it outranks liveness); then the launch-evidence
+    split (`NO-LAUNCH!`/`launching`); then the progress-file mtime split (`STALLED`/`working`)."""
+    if verdict != V_NONE:
+        return H_DONE
+    amendments = sum(1 for r in events if r.get("type") == AMENDMENT)
+    if amendments:
+        return f"AMEND({amendments})"
+    # Launch evidence: ANY reviewer-written line after the identity — a progress event or an amendment
+    # (amendments are already handled above, so here it reduces to a progress event).
+    has_evidence = any(r.get("type") in (PROGRESS, AMENDMENT) for r in events)
+    if not has_evidence:
+        if elapsed_s is not None and elapsed_s > LAUNCH_DEADLINE_S:
+            return H_NO_LAUNCH
+        return H_LAUNCHING
+    if mtime_age_s > PROGRESS_DEADLINE_S:
+        return H_STALLED
+    return H_WORKING
+
+
+def verify_column(progress: Path, events: "list[dict]", verdict: str) -> str:
+    """`evaluate()`'s authoritative verdict for this attempt — the opt-in `--verify` read. It uses the
+    pass's OWN recorded `head_sha` as the comparison target (a stateless render knows no other head), and
+    feeds the scraped report verdict so a complete, sound pass reads `ok` rather than `unusable`."""
+    ident = pass_identity_of(events)
+    head = ident.get("head_sha") if isinstance(ident, dict) else None
+    if not isinstance(head, str):
+        head = "0" * 40   # no usable identity → evaluate() will say `unusable`, which is the honest answer
+    told = {V_SAT: SATISFIED, V_NOT_SAT: NOT_SATISFIED}.get(verdict)
+    try:
+        return evaluate(progress, head, 0, told)[0]
+    except Exception:  # noqa: BLE001 - the opt-in column never crashes the table
+        return "unreadable"
+
+
+def required_reviews(tier: str) -> int:
+    """The tier's SATISFIED-verdict floor, as `references/stage-3-merge.md` defines it (1 for TRIVIAL, else
+    2). **Advisory restatement for display only** — the merge precondition itself lives in the gate, and
+    `status` decides nothing; it just annotates a pass with its PR's tally."""
+    return 1 if tier == "TRIVIAL" else 2
+
+
+def load_ledger_module() -> types.ModuleType:
+    """The sibling ledger accessor, loaded by a `__file__`-relative path (never the cwd). `status` calls
+    only its `load`/`find_row` READERS; it never writes the ledger."""
+    path = Path(__file__).resolve().parent / "ledger.py"
+    spec = importlib.util.spec_from_file_location("ledger", path)
+    if spec is None or spec.loader is None:
+        raise Defect(f"cannot load the ledger accessor at {path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def status_row(progress: Path, now: datetime, want_verify: bool,
+               ledger_rows: "list[dict] | None") -> "list[str]":
+    """One pass's cells, rendered in isolation so ONE malformed pass cannot crash the whole table."""
+    pr, npass, attempt = parse_name(progress)
+    label = f"{pr}-{npass}" + (f".a{attempt}" if attempt != "1" else "")
+    events = read_lenient(progress)
+    if events is None:
+        # The progress file itself is unreadable (a real corruption, not a torn tail). Render a row that
+        # says so, and let the other passes print.
+        cells = [label, "?", "-", "-", "-", "unreadable", "-"]
+        if want_verify:
+            cells.append("unreadable")
+        if ledger_rows is not None:
+            cells.append(_ledger_cell(pr, ledger_rows))
+        return cells
+
+    total = plan_total(progress)
+    done, now_unit = progress_tally(events)
+    verdict = scrape_verdict(progress)
+    ident = pass_identity_of(events)
+    elapsed_s: "float | None" = None
+    if isinstance(ident, dict) and isinstance(ident.get("dispatched_at"), str):
+        try:
+            elapsed_s = (now - datetime.strptime(ident["dispatched_at"], "%Y-%m-%dT%H:%M:%SZ")).total_seconds()
+        except ValueError:
+            elapsed_s = None
+    try:
+        mtime = datetime.fromtimestamp(progress.stat().st_mtime, timezone.utc).replace(tzinfo=None)
+        mtime_age_s = (now - mtime).total_seconds()
+    except OSError:
+        mtime_age_s = 0.0
+    health = health_of(events, verdict, elapsed_s, mtime_age_s)
+    elapsed = fmt_elapsed(elapsed_s) if elapsed_s is not None else "-"
+
+    cells = [label, f"{done}/{total}", now_unit, finding_counts(progress), elapsed, health, verdict]
+    if want_verify:
+        cells.append(verify_column(progress, events, verdict))
+    if ledger_rows is not None:
+        cells.append(_ledger_cell(pr, ledger_rows))
+    return cells
+
+
+def _ledger_cell(pr: str, ledger_rows: "list[dict]") -> str:
+    row = next((r for r in ledger_rows if r.get("pr") == pr), None)
+    if row is None:
+        return "-"
+    return f"{row.get('reviews_ok', '0')}/{required_reviews(row.get('tier', '-'))}"
+
+
+def render_status(header: str, columns: "list[str]", rows: "list[list[str]]") -> str:
+    """The run header line, a blank line, then aligned columns — `ledger table`'s idiom, two-space gutters.
+
+    Each data line is rstripped so a trailing `-` cell has no padding after it; the rule line never ends in
+    whitespace by construction."""
+    widths = [len(col) for col in columns]
+    for row in rows:
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], len(cell))
+    out = [header, ""]
+    out.append("  ".join(col.ljust(widths[i]) for i, col in enumerate(columns)).rstrip())
+    out.append("  ".join("-" * w for w in widths))
+    for row in rows:
+        out.append("  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)).rstrip())
+    return "\n".join(out) + "\n"
+
+
+DIM, RESET = "\x1b[2m", "\x1b[0m"
+
+
+def cmd_status(args) -> int:
+    """Render live review-pass progress across a run. READ-ONLY: it opens files for reading only."""
+    rundir = Path(args.run)
+    now = status_now(args)
+
+    ledger_rows: "list[dict] | None" = None
+    reviewer: "str | None" = None
+    if args.ledger:
+        L = load_ledger_module()
+        _header, ledger_rows = L.load(Path(args.ledger))
+        reviewer = _header.get("reviewer")
+
+    columns = ["pass", "units", "now", "find", "elapsed", "health", "verdict"]
+    if args.verify:
+        columns.append("counts(--verify)")
+    if ledger_rows is not None:
+        columns.append("tally(--ledger)")
+
+    if args.all_attempts:
+        pairs = all_attempts(rundir)
+    else:
+        pairs = [(p, True) for p in active_attempts(rundir)]
+    if args.pr is not None:
+        pairs = [(p, a) for (p, a) in pairs if parse_name(p)[0] == str(args.pr)]
+    pairs.sort(key=lambda pa: tuple(int(x) for x in parse_name(pa[0])[:2]) + (int(parse_name(pa[0])[2]),))
+
+    dim_dead = args.all_attempts and sys.stdout.isatty()
+    rows: list[list[str]] = []
+    dead_flags: list[bool] = []
+    for progress, is_active in pairs:
+        try:
+            rows.append(status_row(progress, now, args.verify, ledger_rows))
+        except Exception as exc:  # noqa: BLE001 - one bad pass must never crash the whole table
+            row = [progress.name, "?", "-", "-", "-", f"error:{type(exc).__name__}", "-"]
+            while len(row) < len(columns):
+                row.append("-")
+            rows.append(row)
+        dead_flags.append(not is_active)
+
+    scope = ("all attempts" if args.all_attempts else "active attempts only")
+    segs = [f"run {rundir.name or str(rundir)}"]
+    if reviewer:
+        segs.append(f"reviewer={reviewer}")
+    segs.append(scope)
+    segs.append(f"as-of {now.strftime('%Y-%m-%dT%H:%M:%SZ')}")
+    header = "# " + "   ".join(segs)
+
+    if not rows:
+        sys.stdout.write(header + "\n\n")
+        sys.stdout.write(f"# (no review passes in {rundir})\n")
+        return 0
+
+    text = render_status(header, columns, rows)
+    if dim_dead and any(dead_flags):
+        lines = text.split("\n")
+        body_start = 4  # header, blank, column header, rule, then rows
+        for i, dead in enumerate(dead_flags):
+            if dead:
+                lines[body_start + i] = f"{DIM}{lines[body_start + i]}{RESET}"
+        text = "\n".join(lines)
+    sys.stdout.write(text)
+    return 0
+
+
 # --- self-test: the fixtures ARE the contract, and they are a SIBLING ----------------------------
 #
 # **THE SUITE LIVES IN `review-pass-test.py`, NOT IN THIS FILE.** A fixture table that ships inside the tool
@@ -1855,6 +2243,18 @@ def build_parser() -> "tuple[argparse.ArgumentParser, list[str]]":
                         "waved through in the verdict). A pass verified without it is UNUSABLE too — a rule "
                         "a caller can switch off by omitting a flag is not a gate")
 
+    # status is ADVISORY and READ-ONLY: it renders live progress and DECIDES NOTHING. Its flags are all
+    # about the VIEW, never about a verdict — there is no `--head-sha`, no `--verdict`, and it writes no file.
+    st = sub.add_parser("status", help="ADVISORY read-only glance at every in-flight review pass in a run")
+    st.add_argument("--run", required=True, help="the run directory to glob for review passes")
+    st.add_argument("--pr", help="show only this PR's passes")
+    st.add_argument("--verify", action="store_true",
+                    help="add evaluate()'s authoritative verdict column (ok/incomplete/amended/unusable)")
+    st.add_argument("--ledger", help="a state.jsonl — adds a reviews_ok/required(tier) tally column")
+    st.add_argument("--all-attempts", dest="all_attempts", action="store_true",
+                    help="show superseded launch attempts too (dimmed on a TTY), not just the active one")
+    st.add_argument("--now", help="UTC ISO-8601 render clock (or REVIEW_PASS_NOW) — a determinism seam")
+
     sub.add_parser("self-test", help="run every fixture, then DELETE each rule and prove a fixture notices")
 
     return p, sorted(str(name) for name in (sub.choices or {}))
@@ -1872,7 +2272,7 @@ def dispatch(args) -> int:
         return self_test()
     try:
         return {"emit": cmd_emit, "identity": cmd_identity, "plan-add": cmd_plan_add,
-                "finding-add": cmd_finding_add, "verify": cmd_verify}[args.cmd](args)
+                "finding-add": cmd_finding_add, "verify": cmd_verify, "status": cmd_status}[args.cmd](args)
     except Defect as exc:
         fail(str(exc), 1)
     except OperatorError as exc:
