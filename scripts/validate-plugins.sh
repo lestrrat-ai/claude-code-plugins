@@ -108,6 +108,7 @@ while IFS=$'\t' read -r name source; do
     fail "$name: manifest versions differ (Claude $claude_version, Codex $codex_version)"
 done < <(jq -r '.plugins[] | [.name, .source.path] | @tsv' "$codex_marketplace")
 
+mkdir -p "$root/.tmp"
 codex_home=$(mktemp -d "$root/.tmp/codex-validate.XXXXXX")
 trap 'rm -rf "$codex_home"' EXIT
 CODEX_HOME=$codex_home codex plugin marketplace add . --json >"$codex_home/marketplace-add.json" || status=1
