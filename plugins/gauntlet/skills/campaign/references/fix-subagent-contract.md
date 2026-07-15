@@ -1,7 +1,7 @@
 ## The fix-subagent contract — SCOPE the reading, SWEEP the writing
 
-**This file is the DEFINITION, and it is COMPLETE.** Every fix subagent campaign dispatches — the cheap
-CI-fix, the session-model CI-fix, and the review-fix — is dispatched under it. If you are dispatching a
+**This file is the DEFINITION, and it is COMPLETE.** Every fix worker campaign dispatches — the economy
+CI-fix, the `session`-class CI-fix, and the review-fix — is dispatched under it. If you are dispatching a
 fixer, read this.
 
 **Other files carry NON-AUTHORITATIVE summaries of the rules below**, so each dispatch site reads on its

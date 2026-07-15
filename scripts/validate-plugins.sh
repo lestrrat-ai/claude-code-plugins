@@ -168,6 +168,29 @@ if [[ -n $host_specific_review_terms ]]; then
   fail "shared review skills contain Claude-only agent calls: $host_specific_review_terms"
 fi
 
+campaign=plugins/gauntlet/skills/campaign
+[[ -f $campaign/references/runtime-adapter.md ]] ||
+  fail "campaign is missing references/runtime-adapter.md"
+[[ -f $campaign/references/cross-agent-reviewers.md ]] ||
+  fail "campaign is missing references/cross-agent-reviewers.md"
+grep -Fq 'references/runtime-adapter.md' "$campaign/SKILL.md" ||
+  fail "campaign SKILL.md does not load the runtime adapter"
+grep -Fq 'user option, never a campaign rule' "$campaign/references/cross-agent-reviewers.md" ||
+  fail "cross-agent review must remain an explicit user option"
+grep -Fq 'codex exec --sandbox workspace-write' "$campaign/references/cross-agent-reviewers.md" ||
+  fail "cross-agent reviewer map is missing the Codex command"
+grep -Fq 'claude -p --no-session-persistence' "$campaign/references/cross-agent-reviewers.md" ||
+  fail "cross-agent reviewer map is missing the Claude Code command"
+
+campaign_host_leaks=$(
+  grep -rnE 'ScheduleWakeup|\$\{CLAUDE_PLUGIN_ROOT\}|Subagent Dispatch|fresh-subagent' \
+    "$campaign" --include='*.md' |
+    grep -v '/references/runtime-adapter.md:' || true
+)
+if [[ -n $campaign_host_leaks ]]; then
+  fail "shared campaign docs bypass the runtime adapter: $campaign_host_leaks"
+fi
+
 echo
 echo "==> bundled script invocations"
 # Bundled scripts are invoked through their interpreter with an absolute path

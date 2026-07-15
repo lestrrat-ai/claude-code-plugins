@@ -5,7 +5,7 @@ Part of the [gauntlet](../../README.md) plugin.
 Point it at existing pull requests and it drives each one to merge: it re-reviews the PR against a
 strict quality bar, waits for CI to go green, and merges — all on its own, hands-off. It doesn't go
 hunting for problems and it doesn't write fixes from scratch; it **gates PRs that already exist**
-(yours, or ones [`/gauntlet:review`](../review/README.md) opened for you) and merges each only once it
+(yours, or ones [`gauntlet:review`](../review/README.md) opened for you) and merges each only once it
 clears the bar.
 
 Think of it as an automated senior reviewer that follows through: it defends each PR through repeated
@@ -17,10 +17,12 @@ CI, and ships.
 - Driving a batch of open pull requests to merge under one strict, repeatable quality gate.
 - Following up on a `gauntlet:review` report — turning its confirmed findings (opened as PRs) into
   actual merged fixes.
-- Gating agent-facing changes (a `SKILL.md`, `CLAUDE.md`, prompt or reference file) with the same
+- Gating agent-facing changes (a `SKILL.md`, `AGENTS.md`, `CLAUDE.md`, prompt or reference file) with the same
   two-pass rigor as source code — those never get the lighter docs-only treatment.
 
 ## How to use it
+
+Claude Code:
 
 ```
 /gauntlet:campaign #12          # adopt PR #12 into a run, gate it, merge it
@@ -29,12 +31,21 @@ CI, and ships.
 /gauntlet:campaign --new #20    # start a fresh run for a new set of PRs
 ```
 
+Codex:
+
+```
+$gauntlet:campaign #12
+$gauntlet:campaign #12 #15
+$gauntlet:campaign
+$gauntlet:campaign --new #20
+```
+
 Give it one or more PR numbers and it **adopts** them into a run: it labels each PR so the run owns
 it, classifies the change by the *kind* of files it touches — human-facing docs vs code vs
 agent-consumed docs vs sensitive surfaces — to pick a review tier (the change's size never enters
-into it), then starts gating. Run it **once** — it schedules its
-own follow-ups and keeps working until every adopted PR is merged or set aside; you don't need to
-keep it open or re-run it.
+into it), then starts gating. Run it **once** — it uses the host's wake scheduler when available and
+keeps the current invocation alive with bounded waits otherwise. It keeps working until every adopted
+PR is merged or set aside; you don't need to re-run it.
 
 Run it plain, with no arguments, and it picks up the PRs already under this run and continues where
 it left off. If there's nothing left to gate it doesn't invent work — it tells you so and points you
@@ -53,11 +64,12 @@ re-litigate the same ground.
 
 ## Where the PRs come from: the review handoff
 
-Campaign gates PRs; it doesn't find the problems. [`/gauntlet:review`](../review/README.md) is the
+Campaign gates PRs; it doesn't find the problems. [`gauntlet:review`](../review/README.md) is the
 other half. Review runs its two-pass adversarial pass and, by default, only reports — it makes no
 source/tracked-file or GitHub changes (it may write ephemeral `.gauntlet/tmp` review scratch). But at
 the end of a confirmed-findings report it offers an opt-in step: open one pull request per
-confirmed fix, then invoke `/gauntlet:campaign #PRs` on exactly those PRs. That handoff is where a
+confirmed fix, then invoke `/gauntlet:campaign #PRs` in Claude Code or `$gauntlet:campaign #PRs` in
+Codex on exactly those PRs. That handoff is where a
 finding turns into code and a PR; campaign takes it from there and drives each PR to merge. Decline
 the offer and review stays report-only — no source or GitHub changes are written. So the usual
 progression is **`gauntlet:review` to find and confirm, then `gauntlet:campaign` to gate and merge**.
@@ -68,7 +80,7 @@ You can also skip review entirely and hand campaign PR numbers you opened yourse
 It drives each adopted PR to merge and merges it itself once the PR passes the reviews its tier
 requires and CI is green. How many reviews depends on what the PR touches: a documentation-only PR
 (human-facing prose alone) needs **one**; anything touching code or agent-facing files — source,
-`SKILL.md`, `CLAUDE.md`, prompts, CI, scripts — always gets the full **two-pass** gate. (Two reviews
+`SKILL.md`, `AGENTS.md`, `CLAUDE.md`, prompts, CI, scripts — always gets the full **two-pass** gate. (Two reviews
 rather than one because a single stochastic review can miss a defect — not because two runs are
 statistically independent; reading the same diff under the same review task makes their verdicts
 correlated.) Aside from the public-API confirmation described below, there's no approval step along
@@ -145,7 +157,7 @@ anything it left for you to weigh in on.
 
 ```mermaid
 flowchart TD
-    A(["invoke /gauntlet:campaign #PRs"]) --> B{PR numbers, no args, or --new?}
+    A(["invoke gauntlet:campaign #PRs"]) --> B{PR numbers, no args, or --new?}
     B -- "#PRs / --new #PRs" --> C[adopt each PR: ledger row + run label,<br/>CI watch only if a check can still move]
     B -- "no args" --> D{PRs already under this run?}
     D -- yes --> C
@@ -208,13 +220,13 @@ never the place to look them up.
   gets interrupted, another agent can pick it up right where it left
   off: it can tell a run that's still being actively driven from one that's been abandoned, so it only
   ever resumes an orphaned run and never doubles up on one already in progress.
-- By default the reviewer is Claude's own subagents, so it runs with nothing extra installed. For a
-  stronger gauntlet you can point it at a reviewer that runs a different agent/model than the
-  orchestrator — Codex CLI (`codex exec`) is the recommended example, since an independent engine
-  catches defects a same-model re-roll can miss. Name it when you invoke the campaign ("review with
-  codex") or record it as your preferred reviewer (memory or `CLAUDE.md`). If an external reviewer
+- By default the reviewer is a fresh native worker, so it runs with nothing extra installed. As a user
+  option, you can select the other agent for engine diversity: Claude Code can launch Codex with
+  `codex exec`, and Codex can launch Claude Code with `claude -p`. Name it when you invoke the campaign
+  (for example, “review with claude”) or record it in memory, `AGENTS.md`, or `CLAUDE.md`. Campaign never
+  selects the other agent merely because its CLI is installed. If an external reviewer
   can't return a verdict because of a system problem — quota or rate limits, auth, a timeout — it
-  retries once and then falls back to its own subagents, so a transient outage slows a run down but
+  retries once and then falls back to a fresh native worker, so a transient outage slows a run down but
   doesn't stall it. A reviewer that never gets going at all — hung on input, a bad path, a sandbox
   denial — is caught the same way: every review pass has to write *something* to its progress file
   within about five minutes of being dispatched, and one that writes nothing at all is killed and
@@ -225,8 +237,9 @@ never the place to look them up.
   GitHub Copilot review comments, fixes failing CI, and rebases a PR that has fallen into conflict
   with the base branch — then reviews the clean result.
 - Not every CI failure needs a full-strength model. A **formatting or lint failure** — the kind a standard
-  formatter fixes — goes to a deliberately **cheap** fix subagent (Sonnet; Haiku when the failure is
-  trivially mechanical). Its job is narrow and it is *in the loop*, not bypassed: work out what failed, run
+  formatter fixes — goes to the host's deliberately cheaper model class when one is configured. Claude
+  Code maps that class to Sonnet, or Haiku when trivially mechanical; Codex uses a configured cheaper
+  model or the session model. Its job is narrow and it is *in the loop*, not bypassed: work out what failed, run
   the formatter, **read the diff that formatter produced**, and check it — that the diff contains only the
   change it was supposed to produce, that no file it didn't mean to touch was touched, that no test, check,
   or config was weakened, and that the exact check that failed now passes. Only then does it commit. If any

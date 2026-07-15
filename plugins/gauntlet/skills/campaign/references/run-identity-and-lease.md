@@ -47,7 +47,7 @@ in-context memory for it — a wake may be a fresh agent instance. It flows into
 | PR owner label   | `gauntlet-run-<run-id>` — the **authoritative "mine" marker**. Every adopted PR is tagged with it; it, not any branch name, is what makes a PR this run's. |
 | branch           | the **adopted PR's own `headRefName`** — campaign reuses the PR's existing branch and does NOT mint a `fix-<run-id>-...` branch, so ownership can't be read off the branch name (that's the label's job). |
 | worktree         | the ledger-recorded `worktree` path — the created default `$PROJECT/.worktrees/<headRefName>` when campaign runs `git worktree add`, or a reused existing checkout when the branch was already checked out elsewhere — resolved from the PR's head branch during adoption / before its first review, and reused for review/CI fixes. Only a campaign-created worktree (`worktree_owned = yes`) is ever removed; a reused checkout (the root/main checkout or a user worktree) and a reused local branch are **always** left in place (see "PR adoption" / Stage 3). |
-| self-wake prompt | `/gauntlet:campaign --run <run-id> --token <agent-token>` — **only** these two flags (carries the id **and** the driver token so a summarized wake re-proves ownership without guessing). It **never** carries `--new` or the original `#PR` adoption args: those are **start-time-only** (they *create/adopt*), whereas `--run` **resumes** an existing run — replaying `--new` on a self-wake would mint a fresh run every heartbeat. |
+| self-wake prompt | `<campaign-invocation> --run <run-id> --token <agent-token>` — resolve the host form through `runtime-adapter.md`; carry **only** these two flags so a summarized wake re-proves ownership without guessing. It **never** carries `--new` or the original `#PR` adoption args: those are **start-time-only** (they *create/adopt*), whereas `--run` **resumes** an existing run — replaying `--new` on a self-wake would mint a fresh run every heartbeat. |
 
 **Isolation invariant — a run touches ONLY its own work.** It reads/writes only its `<rundir>`, only
 its `state.jsonl`, and only PRs carrying its `gauntlet-run-<run-id>` label (adopted PRs keep their own
@@ -62,7 +62,8 @@ the per-run label, never a status label. Refuse to adopt a PR already carrying a
 file per run — see "Fresh runs and carryover"), the follow-up store `.gauntlet/followups.jsonl` (**one
 file, many writers** — kept race-free by a lock inside `scripts/followups.py`, which is why it is never
 hand-edited; see `followups.md`), the two status labels, and the Copilot precondition's
-scratch file `.gauntlet/tmp/copilot-review-items.json` (written by `/gauntlet:copilot-address-reviews`) — treat that
+scratch file `.gauntlet/tmp/copilot-review-items.json` (written by the host form of
+`gauntlet:copilot-address-reviews`) — treat that
 last one as ephemeral to a single fetch→address cycle and re-fetch rather than trusting a stale
 snapshot another run may have overwritten.
 
@@ -119,12 +120,12 @@ Each run has `<rundir>/lease.json`:
    for a **manual** `--run` with no matching token, another agent appears active, so **confirm takeover
    with the user** before adopting.
 2. **Bare invocation** → the arg decides intent:
-   - **`#PR` args are given** (`/gauntlet:campaign #12 #15`, no `--run`) → **start a NEW run** that
+   - **`#PR` args are given** (`<campaign-invocation> #12 #15`, no `--run`) → **start a NEW run** that
      **adopts those PRs** (see "PR adoption"). Passing PRs is an explicit "gate these now", so it never
      silently resumes an existing run — this is how you launch a second concurrent run (one PR set
      alongside another). To resume a specific run instead, pass `--run <id>`. A **non-PR** arg (e.g.
      `auth`) is not a scope any more — treat it like the no-arg idle case below and prompt.
-   - **No arg at all** (`/gauntlet:campaign`) → resume-oriented: **discover runs** and bucket by lease —
+   - **No arg at all** (`<campaign-invocation>`) → resume-oriented: **discover runs** and bucket by lease —
      the distinct `gauntlet-run-*` ids present on open PRs — list PRs **with their labels** and extract
      the ids, since no id is known yet to query by (`gh pr list --state open --limit 1000 --json
      number,labels`, then pick labels matching `gauntlet-run-*`; **`--limit` is mandatory** — `gh pr list`

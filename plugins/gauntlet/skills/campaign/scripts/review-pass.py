@@ -1730,9 +1730,9 @@ def cmd_verify(args) -> int:
 
 # --- the status view: an ADVISORY, READ-ONLY glance across a run ---------------------------------
 #
-# **`status` DECIDES NOTHING** (`CLAUDE.md`, "Dogfood the branch's behavior — but NEVER let it gate
+# **`status` DECIDES NOTHING** (the active `AGENTS.md` or `CLAUDE.md`, "Dogfood the branch's behavior — but NEVER let it gate
 # itself"). It renders one aligned row per in-flight review pass and is invoked on demand or from the
-# ScheduleWakeup heartbeat. It never calls `write_line`, never mutates a pass's artifacts, and never
+# runtime adapter's heartbeat or bounded-wait path. It never calls `write_line`, never mutates a pass's artifacts, and never
 # touches the ledger except `ledger.load()`. The authoritative "does this pass count?" answer stays
 # `verify`/`evaluate`, which `status` can SURFACE verbatim (`--verify`) but never overrides.
 #
