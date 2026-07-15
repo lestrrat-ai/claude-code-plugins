@@ -69,9 +69,12 @@ repo root, `.gauntlet/` (git-ignored; add `.gauntlet/` to `.gitignore` if missin
 |------|----------|
 | `.gauntlet/tmp/<run-id>/` | Ephemeral scratch. A **terminal** run's dir is kept so a later bare invocation can detect the *finished* run and offer the finished-run prompt (Loop control step 1); it is otherwise disposable — wiping it only loses that prompt (discovery then falls back to the generic "pass PR numbers" prompt), never carryover, which lives in `history/`. Not wiped mid-run. |
 | `.gauntlet/history/<run-id>.md` | Durable. The carryover ledger — the one thing a *new* run needs to remember from old ones. |
+| `.gauntlet/followups.jsonl` | Durable, and **not run-scoped** — one store, shared by every run. The **follow-up ledger**: work the campaign FOUND and deliberately did not do. Unlike `state.jsonl` it is a **source of truth, not a cache** (nothing can rebuild a lost entry), and it has **many writers** (every concurrent run), so its accessor locks the read-modify-write. Every entry is a **CANDIDATE, never an issue** — **nothing in it may be published without the user's agreement on that specific item**. It is a **WORK QUEUE, not an archive**: an entry is **deleted** once a durable record of it exists elsewhere, and kept when nothing else would remember it (`followups.md` owns when). Owned by `scripts/followups.py`; see `followups.md`. |
 
-**Only `.gauntlet/tmp/` is disposable — never `rm -rf .gauntlet/` itself.** That would take the
-carryover history with it. Scratch cleanup targets `.gauntlet/tmp/**` and nothing above it.
+**Only `.gauntlet/tmp/` is disposable — never `rm -rf .gauntlet/` itself.** That would take **every
+durable store in the table above** with it — the carryover history, and the follow-up ledger, which
+(unlike `state.jsonl`, a cache that re-derives itself from `gh` every wake) **nothing can rebuild**.
+Scratch cleanup targets `.gauntlet/tmp/**` and nothing above it.
 
 The history tree keeps **one file per run** (`<run-id>.md`) so concurrent runs never clobber a shared
 file. Everything else stays ephemeral under the per-run `<rundir>`. See "Fresh runs and carryover".
@@ -419,10 +422,13 @@ against ground truth every wake (above) — the accessor changes *how* records a
 ledger means.
 
 Resolve its absolute path as `<skill-dir>/scripts/ledger.py` (skill dir = the directory holding the
-campaign `SKILL.md`) and pass that path to subtasks, exactly as with `emit-progress.py`. Subcommands
+campaign `SKILL.md`), run it as **`python3 <that path>`** (`SKILL.md`, "Bundled Scripts" — never bare),
+and pass that path to subtasks, exactly as with `emit-progress.py`. Subcommands
 (`<state.jsonl>` = this run's `<rundir>/state.jsonl`):
 
 ```
+# Run: python3 <skill-dir>/scripts/ledger.py --file <state.jsonl> <subcommand> …
+# The synopsis abbreviates that `python3 <skill-dir>/scripts/ledger.py` prefix to `ledger.py`.
 ledger.py --file <state.jsonl> header get <field>                 # read a run-config header field
 ledger.py --file <state.jsonl> header set <field> <value>         # set a run-config header field
 ledger.py --file <state.jsonl> add-row --pr N [--<field> <val> …] # register a row (refuses a duplicate pr; unset fields default)

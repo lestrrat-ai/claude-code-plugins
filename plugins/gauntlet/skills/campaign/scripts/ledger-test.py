@@ -183,8 +183,16 @@ def notices(out: str) -> "list[str]":
     return [line for line in body[2:] if line.startswith("#")]
 
 
-def grid(L: ModuleType, out: str, fields: "tuple[str, ...]") -> "tuple[list[str], list[int], list[list[str]]]":
+def grid(L: ModuleType, out: str, fields: "tuple[str, ...]",
+         config_fields: "tuple[str, ...] | None" = None,
+         markers: "tuple[str, ...] | None" = None) -> "tuple[list[str], list[int], list[list[str]]]":
     """Parse the printed table BACK and assert its INTEGRITY. Returns (config lines, widths, cells).
+
+    `config_fields` and `markers` name the out-of-band text the store under test prints; they default to
+    the LEDGER's own (`L.HEADER_FIELDS`, and its empty/all-hidden markers). The sibling store
+    (`followups.py`) renders through the same `config_lines()`/`grid_lines()` and asserts its output with
+    THIS same oracle, passing ITS two — so the layout is verified by ONE parser and a second store cannot
+    be checked by a weaker copy of it.
 
     Three properties, all checked here because all three are what a hostile value attacks:
 
@@ -208,13 +216,15 @@ def grid(L: ModuleType, out: str, fields: "tuple[str, ...]") -> "tuple[list[str]
     same `a`, and this suite stayed green through it. An oracle that normalizes away the thing under test
     is not an oracle. What it hands back is what was PRINTED; nothing else.
     """
+    cfg_fields: "tuple[str, ...]" = L.HEADER_FIELDS if config_fields is None else config_fields
+    mk: "tuple[str, ...]" = (L.TABLE_EMPTY_MARKER, L.TABLE_ALL_HIDDEN_MARKER) if markers is None else markers
     lines = out.split("\n")
     check(lines[-1] == "", "the table output must end in a newline")
     lines = lines[:-1]
-    n = len(L.HEADER_FIELDS)
+    n = len(cfg_fields)
     check(len(lines) >= n + 3, f"expected {n} run-config lines, a blank line and a grid; got {lines!r}")
     config, lines = lines[:n], lines[n:]
-    for f, line in zip(L.HEADER_FIELDS, config):
+    for f, line in zip(cfg_fields, config):
         check(line.startswith(f"# {f}: "), f"run-config line for {f!r} is {line!r}")
     check(lines[0] == "", f"a blank line must separate the run config from the grid; got {lines[0]!r}")
     body = lines[1:]
@@ -231,12 +241,12 @@ def grid(L: ModuleType, out: str, fields: "tuple[str, ...]") -> "tuple[list[str]
     for line in [colhead, rule, *rows]:
         check(not line.startswith("#"), f"a GRID line opens with '#' — it reads as out-of-band text: {line!r}")
     for line in out_of_band:
-        check(line in (L.TABLE_EMPTY_MARKER, L.TABLE_ALL_HIDDEN_MARKER)
+        check(line in mk
               or line.startswith("# ") and "hidden" in line,
               f"an unrecognised out-of-band line below the grid: {line!r}")
     # An empty grid must SAY which empty it is — never nothing, and never the wrong one.
     if not rows:
-        check(bool(out_of_band) and out_of_band[0] in (L.TABLE_EMPTY_MARKER, L.TABLE_ALL_HIDDEN_MARKER),
+        check(bool(out_of_band) and out_of_band[0] in mk,
               f"an empty grid printed no empty-marker at all: {out_of_band!r}")
 
     runs = rule.split("-+-")

@@ -16,7 +16,7 @@ Given a GitHub PR link, process Copilot review items one at a time. NEVER assume
 ## Workflow
 
 1. Resolve bundled scripts relative to directory containing this `SKILL.md`, not current working directory. NEVER `cd` to skill directory — script's relative `.gauntlet/tmp/` default would land output inside skill directory.
-2. From project root, run `<skill-dir>/scripts/fetch-review-items.sh --tmp-dir "$PROJECT/.gauntlet/tmp" <pr-url>` (absolute script path). The script creates the dir if missing.
+2. From project root, run `bash <skill-dir>/scripts/fetch-review-items.sh --tmp-dir "$PROJECT/.gauntlet/tmp" <pr-url>` (absolute script path). Invoke bundled scripts through their interpreter — `bash` for `.sh`, `python3` for `.py` — NEVER bare: a bare invocation depends on the executable bit and the shebang surviving every checkout, archive and install path. The script creates the dir if missing.
 3. Read `$PROJECT/.gauntlet/tmp/copilot-review-items.json` as primary worklist of unresolved items only.
 4. Inspect `$PROJECT/.gauntlet/tmp/copilot-review-items.raw.json`, `.gauntlet/tmp/gh-pr-view.json`, and `.gauntlet/tmp/gh-pr-review-threads.json` when dedup or extraction needs verification.
 5. Select next unhandled unresolved item from worklist. NEVER work resolved items.
@@ -71,7 +71,7 @@ Resolve bundled resources relative to this `SKILL.md`. Script directory = `scrip
 
 ## Fetch Review Items
 
-- Start with `scripts/fetch-review-items.sh <pr-url>`.
+- Start with `bash <skill-dir>/scripts/fetch-review-items.sh <pr-url>` (step 2 above owns the invocation form).
 - Treat `.gauntlet/tmp/copilot-review-items.json` as candidate worklist of unresolved items, not truth.
 - Inspect Copilot review submissions as well as inline discussion comments. Do not assume a `#pullrequestreview-...` URL is represented directly in normalized output.
 - If user points to review submission URL or review id, map it to attached inline review comments and confirm those comments are present in worklist before proceeding.

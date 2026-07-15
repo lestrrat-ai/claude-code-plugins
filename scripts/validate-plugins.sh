@@ -91,6 +91,33 @@ while IFS= read -r skill; do
 done < <(find plugins -path '*/skills/*/SKILL.md' -type f | sort)
 
 echo
+echo "==> bundled script invocations"
+# Bundled scripts are invoked through their interpreter with an absolute path
+# (`python3 <skill-dir>/scripts/x.py …`) — campaign SKILL.md, "Bundled Scripts" owns the
+# rule. A doc that prescribes the *path* form without an interpreter (`<skill-dir>/scripts/x.py
+# --file …`) is telling an agent to rely on the executable bit and the shebang surviving every
+# checkout, archive and install path. Most bundled scripts are not committed executable, so that
+# instruction dies with "Permission denied" in someone else's run — which is exactly how this
+# check was born.
+#
+# Scope: only a script PATH followed by arguments — i.e. an actual prescribed command line.
+# Prose that merely NAMES the tool (`scripts/ledger.py` is the accessor; `ledger.py … set`) is
+# shorthand, not an invocation, and is left alone.
+bare_invocations=$(
+  # shellcheck disable=SC2016  # `\$\{CLAUDE_PLUGIN_ROOT\}` is REGEX TEXT matched in the docs, not an
+  # expansion: single quotes are what keeps it a pattern. Double quotes would expand it (to empty) here and
+  # the check would silently stop matching that whole form.
+  grep -rnE '(^|[^a-zA-Z0-9_/.-])((\./|<skill-dir>/|\$\{CLAUDE_PLUGIN_ROOT\}[^ `]*/)scripts/)[A-Za-z0-9_-]+\.(py|sh)[[:space:]]+[^`]' \
+    plugins --include='*.md' |
+    grep -vE '(python3|bash)[[:space:]]+[^`]*scripts/' || true
+)
+if [[ -n $bare_invocations ]]; then
+  while IFS= read -r hit; do
+    fail "prescribes a bundled script without an interpreter (use 'python3 <path>' / 'bash <path>'): $hit"
+  done <<<"$bare_invocations"
+fi
+
+echo
 if ((status == 0)); then
   echo "all checks passed"
 else

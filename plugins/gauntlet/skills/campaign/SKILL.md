@@ -40,6 +40,25 @@ resumes and takes no `#PR`/`--new`; `#PR` args alone start/adopt into a run. Inv
 Bundled scripts live in `scripts/`, resolved relative to the directory holding this `SKILL.md` (not
 the current working directory) — installed as `${CLAUDE_PLUGIN_ROOT}/skills/campaign/scripts/`, or in
 the repo at `plugins/gauntlet/skills/campaign/scripts/`. Pass their absolute paths to subtasks.
+
+**HOW TO RUN ONE — always through the interpreter, with the absolute path:**
+
+```
+python3 <skill-dir>/scripts/<name>.py …      # every bundled Python script
+bash    <skill-dir>/scripts/<name>.sh …      # every bundled shell script
+```
+
+**NEVER invoke a bundled script bare** — no `followups.py …`, no `./scripts/ledger.py`. A bare invocation
+needs the file to be **executable** *and* its shebang to resolve, and needs that to survive every
+checkout, archive, copy and install path between this repo and the machine running it — most of these
+scripts are not even committed executable, so it fails outright with `Permission denied`. The
+interpreter form needs **neither the executable bit nor the shebang** and behaves identically
+everywhere. It is the only sanctioned form; a new script added here inherits it with no further note.
+
+Prose and synopsis blocks throughout these docs write `ledger.py … set --pr <N>`, `followups.py … table`
+and the like. **That is SHORTHAND naming the tool — it always means the full form above**, never a
+literal command line to paste.
+
 `scripts/review-pass.py` is the schema-owning accessor for a review pass's artifacts — the plan, the
 `pass_identity`, the unit-progress events, **the findings**, and the READ that answers "does this pass
 COUNT?", which
@@ -57,12 +76,18 @@ position (see `references/files-and-ledger.md`); pass its absolute path to subta
 owns the **review loop's memory and its caps**: `ledger.py verdict` is the **only** sanctioned way to
 record a review verdict (it bumps `review_rounds`/`ns_streak`, applies the tally, and **at a cap holds the
 PR `repairing` and exits non-zero**), and `ledger.py dispatch-check` is the guard you run before **any**
-action that mutates a PR. `scripts/repair-pass.py` records the reassessment pass's decision for a PR that
+action that mutates a PR.
+`scripts/followups.py` is the schema-owning accessor for the **follow-up** store
+(`.gauntlet/followups.jsonl`) — the durable **work queue** of what the campaign FOUND and deliberately did
+not do. It is a queue, not an archive: an entry is **deleted** once a durable record of it exists elsewhere
+(a merged PR, an issue), and **kept** when nothing else would remember it — `references/followups.md` owns
+when. Same rules: by field name, never hand-edited.
+`scripts/repair-pass.py` records the reassessment pass's decision for a PR that
 has stopped converging — the closed enum, the ownership guardrail, and the repair cap
 (`references/repair-pass.md`).
 
 Each script's fixtures live in a **sibling `*-test.py`** (`review-pass-test.py`, `ledger-test.py`,
-`repair-pass-test.py`); the `self-test` subcommand loads it and **fails loudly if it is missing**.
+`followups-test.py`, `repair-pass-test.py`); the `self-test` subcommand loads it and **fails loudly if it is missing**.
 
 **At run startup, record which version of these rules is actually running:** read `version` from the
 running plugin's `plugin.json` and write it to the ledger header —
@@ -163,6 +188,7 @@ Read stage refs only when that stage/action is due:
 | A PR at a review-loop cap (`status = repairing`) / a verdict that exits non-zero | `references/repair-pass.md` |
 | CI watch, check polling, CI fix | `references/stage-2-ci.md` |
 | Merge candidate / base refresh / cleanup | `references/stage-3-merge.md` |
+| Recording / investigating / acting on a follow-up (work found but not done) | `references/followups.md` |
 | Stuck task, abort, final report | `references/bailout-and-final-report.md` |
 | Rule lookup / uncertainty | `references/critical-rules.md` |
 
@@ -253,6 +279,12 @@ Read stage refs only when that stage/action is due:
   (`check-runs` **and** commit `status`), verified against `head_sha` before parsing. **NEVER from `gh pr
   checks`** — its output carries **no SHA** (`references/stage-2-ci.md`).
 - **Public API changes require user confirmation** unless the ledger's `api_changes` field is `allowed`.
+- **Work FOUND is work RECORDED:** a defect the run discovers and deliberately does not do — out of scope
+  for the PR in hand, pre-existing, or a site a fix subagent reported it left alone — is written to the
+  durable follow-up store through `scripts/followups.py` **the moment it is noticed**, never left in the
+  driver's prose, which dies with the driver's context. Every entry is a **CANDIDATE, not an issue**, and
+  recording one **NEVER** discharges a finding — a CONFIRMED finding is still fixed
+  (`references/followups.md`).
 
 ## Wake Skeleton
 
@@ -303,4 +335,9 @@ Read stage refs only when that stage/action is due:
   driver bookkeeping, not repo content. Stage only the specific source files a fix touches, by explicit
   path; never `git add -A`/`git add .`. Ensure `.gauntlet/` is git-ignored (add it if missing). Campaign has
   **no committed file of its own** — no repo-root config (`files-and-ledger.md`).
-- NEVER `rm -rf .gauntlet/`; only `.gauntlet/tmp/**` is disposable — the rest is carryover history.
+- **What the driver may do with a follow-up WITHOUT ASKING is the THREE-TIER AUTONOMY THRESHOLD**, owned by
+  `references/followups.md` — investigate freely, ACT only on a corroborated claim that meets every one of
+  its conditions, and **NEVER PUBLISH** (a GitHub issue, a release) without the USER's agreement on that
+  specific item. Read the threshold before touching one; do not reconstruct it from here.
+- NEVER `rm -rf .gauntlet/`; only `.gauntlet/tmp/**` is disposable — **everything else under
+  `.gauntlet/` is durable**, and some of it nothing can rebuild (`references/files-and-ledger.md`).

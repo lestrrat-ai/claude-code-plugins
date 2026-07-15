@@ -21,17 +21,30 @@
   (no live writer/lease), never a file an actively-driven run owns — so there's still no write
   contention with a live writer.
 - Run-owned git/GitHub operations are authorized by invocation: `add`, `commit`, `push`, and — on
-  adopted PRs — PR update, labels/checks/comments, and merge. Campaign never opens its own PR (PR
-  creation lives only in the `gauntlet:review` handoff); it ADOPTS existing PRs. Ask only for public
-  API changes, active-run takeover, uncertain carryover pruning, or out-of-scope/destructive work.
-- NEVER commit the run's own bookkeeping — the whole `.gauntlet/**` tree: the `<rundir>` under
-  `.gauntlet/tmp/**` (ledger, plans, progress, review/CI outputs, lease) and the carryover tree
-  `.gauntlet/history/**`. A fix commit stages ONLY the specific source files it changes, by explicit
+  adopted PRs — PR update, labels/checks/comments, and merge. Campaign ADOPTS existing PRs; it does not
+  invent work. It opens a PR of its own in exactly ONE case: a **follow-up it has TAKEN UP** under the
+  autonomy threshold (`followups.md`) — which requires a corroborated claim and every ACT condition
+  evidenced, and whose PR is then gated by the review gauntlet like any other. Otherwise PR creation lives
+  only in the `gauntlet:review` handoff. Ask for public API changes, active-run takeover, uncertain
+  carryover pruning, or out-of-scope/destructive work.
+- NEVER commit the run's own bookkeeping — **the whole `.gauntlet/**` tree**, run scratch and every
+  durable store alike (`files-and-ledger.md` owns what lives there; do not reconstruct the list from
+  here). A fix commit stages ONLY the specific source files it changes, by explicit
   path — never `git add -A` / `git add .`, which would sweep in run state. The tree must be
   git-ignored; add `.gauntlet/` to `.gitignore` if missing. Campaign has **NO committed file of its own** —
   no repo-root config.
-- NEVER `rm -rf .gauntlet/` — that destroys the durable carryover history. Only `.gauntlet/tmp/**` is
-  disposable.
+- NEVER `rm -rf .gauntlet/`. **Only `.gauntlet/tmp/**` is disposable; everything else under
+  `.gauntlet/` is DURABLE** — and some of it, unlike `state.jsonl`, nothing can rebuild (`files-and-ledger.md`).
+- Work the run FINDS but deliberately does NOT do — out of scope, pre-existing, or a site a fix subagent
+  reported it left alone — is recorded in the durable follow-up store through `scripts/followups.py` the
+  moment it is noticed. The driver's prose dies with the driver's context (`followups.md`).
+- NEVER PUBLISH a follow-up — open a GitHub issue, cut a release — without the USER's agreement on that
+  SPECIFIC item. An issue is a PUBLISHED claim, and a follow-up is the **driver's own** uncorroborated
+  claim: filing one launders an unvalidated self-diagnosis into a public statement of fact. What the driver
+  MAY do on its own (investigate freely; ACT on a corroborated claim that meets every condition) is the
+  **three-tier autonomy threshold**, owned by `followups.md` — read it there, never reconstruct it here.
+  Recording a follow-up **NEVER** discharges a finding — a CONFIRMED finding is still fixed ("I'll file a
+  follow-up instead" is refuting by deferral).
 - NEVER pass destructive instructions (delete, force-push, reset) to an external reviewer command
   (e.g. `codex exec`).
 - NEVER use `--dangerously-bypass-approvals-and-sandbox` with an external reviewer; always

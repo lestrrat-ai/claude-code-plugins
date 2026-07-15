@@ -59,7 +59,9 @@ the per-run label, never a status label. Refuse to adopt a PR already carrying a
 `gauntlet-run-*` label — never steal or transfer another run's marker (see "PR adoption").
 
 **Shared across runs:** the carryover ledger tree `.gauntlet/history/` (kept race-free by one
-file per run — see "Fresh runs and carryover"), the two status labels, and the Copilot precondition's
+file per run — see "Fresh runs and carryover"), the follow-up store `.gauntlet/followups.jsonl` (**one
+file, many writers** — kept race-free by a lock inside `scripts/followups.py`, which is why it is never
+hand-edited; see `followups.md`), the two status labels, and the Copilot precondition's
 scratch file `.gauntlet/tmp/copilot-review-items.json` (written by `/gauntlet:copilot-address-reviews`) — treat that
 last one as ephemeral to a single fetch→address cycle and re-fetch rather than trusting a stale
 snapshot another run may have overwritten.

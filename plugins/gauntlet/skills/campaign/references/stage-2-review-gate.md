@@ -498,7 +498,7 @@ the pass if you say otherwise, because that repro describes a developer with a t
 > **A finding whose `purpose` is `-` AND whose `writer` is one of `driver-only` / `hand-edit` / `dev-time`
 > is NON-GATING.** It anchors to nothing: no line of the PR's stated purpose is served by fixing it, and
 > nobody outside the machine can supply the input. It **MUST NOT** produce `NOT SATISFIED`, the driver
-> **MUST NOT** dispatch a fix for it, and it is recorded as a follow-up (`.gauntlet/followups.md`).
+> **MUST NOT** dispatch a fix for it, and it is recorded as a follow-up (`.gauntlet/followups.jsonl`, written through `scripts/followups.py`).
 
 **NOT EVERY TRUE STATEMENT ABOUT THE CODE IS A REASON TO BLOCK IT.** A non-gating finding is not refuted,
 not dismissed, and not necessarily wrong. It is simply not worth another round.
@@ -874,6 +874,18 @@ TRUE?**, and it is right: a defect in code that handles a CI log is real even th
 content. It is **not** saying "never ask who can write the input" — that is the *other* question, the
 `writer` field answers it, and it decides whether the finding is worth a round at all. **Truth first is
 backwards here: a finding must MATTER before anyone spends an audit on whether it is true.**
+
+**When the audit turns up something real that is NOT the finding — record it as a FOLLOW-UP before you
+move on** (a pre-existing defect at the same site; a wider class an ADJUSTED finding only clipped the edge
+of). It goes into the durable store via `scripts/followups.py`, never into the driver's prose, which dies
+with the driver's context (`followups.md`).
+
+**A follow-up is NOT a fourth verdict, and recording one NEVER discharges a finding.** It cannot subtract
+from the fix list: a CONFIRMED finding is **fixed**, always. *"I'll file a follow-up instead"* is
+**REFUTING BY DEFERRAL** — precisely what "Refuting is NOT declining" (below) forbids, wearing a different
+hat. A follow-up records what the audit found **beside** the finding, never the finding it declined to
+fix. And it is a **CANDIDATE, not an issue**: it stays local, and nothing in that store is published
+without the user's agreement on that specific item.
 
 #### The reachability test — CAN THE MECHANISM THE FINDING DESCRIBES ACTUALLY OCCUR?
 

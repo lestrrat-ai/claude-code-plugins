@@ -81,11 +81,13 @@ jobs:
             plugins/gauntlet/skills/campaign/scripts/review-pass-test.py \
             plugins/gauntlet/skills/campaign/scripts/emit-finding.py \
             plugins/gauntlet/skills/campaign/scripts/repair-pass.py \
-            plugins/gauntlet/skills/campaign/scripts/repair-pass-test.py | tee pyright.json
+            plugins/gauntlet/skills/campaign/scripts/repair-pass-test.py \
+            plugins/gauntlet/skills/campaign/scripts/followups.py \
+            plugins/gauntlet/skills/campaign/scripts/followups-test.py | tee pyright.json
           analyzed=$(jq '.summary.filesAnalyzed' pyright.json)
           echo "filesAnalyzed=${analyzed}"
-          if [ "${analyzed}" != "8" ]; then
-            echo "::error::pyright analysed ${analyzed} file(s), not the 8 it was pointed at — it checked" \
+          if [ "${analyzed}" != "10" ]; then
+            echo "::error::pyright analysed ${analyzed} file(s), not the 10 it was pointed at — it checked" \
                  "nothing and said so quietly. Fix the paths above; a silent no-op is not a passing gate."
             exit 1
           fi
@@ -129,3 +131,18 @@ jobs:
       # fails if no fixture notices — so "N rules pinned" is DERIVED here, never a claim in a report.
       - name: Review-pass contract (every rule pinned by a fixture)
         run: python3 plugins/gauntlet/skills/campaign/scripts/review-pass.py self-test
+
+      # The FOLLOW-UP store's contract, executed. Three rules here are not merely correctness rules:
+      # the lifecycle graph is what makes the USER's agreement unskippable — no driver-only path reaches
+      # `accepted`, and `publish` leaves from nowhere else, so an autonomous driver cannot file a GitHub
+      # issue for its own uncorroborated claim; DELETION happens only once a durable record exists
+      # elsewhere (a merged PR, an issue), never when work merely starts, or a PR that dies would take the
+      # follow-up down with it; and the lock is what stops two concurrent runs from silently dropping an
+      # entry that NOTHING can rebuild. Weaken any of them and a fixture goes red. It renders through the
+      # ledger's escaping and is checked by the ledger's own grid oracle, so a hostile PR title cannot
+      # forge a column here either.
+      #
+      # The fixtures themselves live in the sibling `followups-test.py`, which `self-test` loads by path.
+      # A MISSING sibling fails loudly — it can never report an all-clear over a suite it did not run.
+      - name: Follow-up store contract
+        run: python3 plugins/gauntlet/skills/campaign/scripts/followups.py self-test

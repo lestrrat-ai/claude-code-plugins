@@ -119,6 +119,20 @@ the one line it was pointed at and leave the class intact:
 
 This is a **report** requirement, not just a search requirement: a sweep nobody can audit did not happen.
 
+**THE ORCHESTRATOR RECORDS EVERY SITE THE FIXER LEFT ALONE — as a follow-up, in the same wake it reads the
+report.** The block above makes the subagent report the sites it deliberately did not touch (and any
+pre-existing defect it noticed and declined to fix); **that report dies with the subagent**, so a
+disposition nobody wrote down is a defect nobody will ever see again. Record each one through
+`scripts/followups.py` — the subagent's own report is the entry's evidence, and why the fixer left it
+alone is why it was deferred. They are **CANDIDATES, not issues**: local, and never published without the
+user's agreement on that specific item (`followups.md`).
+
+**BUT NEVER THE ASSIGNED FINDING — a follow-up is not a verdict, and it CANNOT discharge one.** The
+CONFIRMED/ADJUSTED findings the fixer was dispatched at are **fixed, or they stay blocking**: recording one
+as a follow-up settles nothing, and a fixer that defers the very defect it was sent to fix has done
+nothing. This block records what the fixer left **beside** the fix, never the fix it declined to make
+(`followups.md`, "RECORDING A FOLLOW-UP NEVER DISCHARGES A FINDING").
+
 **Prefer ONE OWNER over another copy.** When the fixer finds a definition restated in N places, the best
 repair is usually to leave the definition in one place and make the others point at it — a fifth copy of
 a rule is a fifth thing that can go stale. A pointer is only valid if what it points at is **complete**;
