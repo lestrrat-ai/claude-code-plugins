@@ -1,0 +1,89 @@
+name: Release
+
+# Cuts a GitHub release when a version bump lands on main. The bump PR is the
+# trigger — no separate manual step. Notes are GitHub's auto-generated PR list,
+# prepended with the curated blurb in release-notes/<version>.md when present.
+on:
+  push:
+    branches: [main]
+    paths:
+      - plugins/gauntlet/.claude-plugin/plugin.json
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release, e.g. 0.1.6 (defaults to plugin.json)
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version, skip if already released
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${{ github.event.inputs.version }}"
+          if [ -z "$version" ]; then
+            version="$(jq -r '.version' plugins/gauntlet/.claude-plugin/plugin.json)"
+          fi
+          tag="gauntlet-v$version"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release $tag already exists — nothing to do"
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Compose notes — curated blurb over GitHub's auto-generated list
+        if: steps.gate.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${{ steps.gate.outputs.version }}"
+          tag="${{ steps.gate.outputs.tag }}"
+          prev="$(git tag -l 'gauntlet-v*' | sort -V | grep -vx "$tag" | tail -1 || true)"
+          if [ -n "$prev" ]; then
+            auto="$(gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+              -f tag_name="$tag" -f target_commitish="$GITHUB_SHA" \
+              -f previous_tag_name="$prev" --jq '.body')"
+          else
+            auto="$(gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+              -f tag_name="$tag" -f target_commitish="$GITHUB_SHA" --jq '.body')"
+          fi
+          summary="release-notes/$version.md"
+          if [ -f "$summary" ]; then
+            cat "$summary" > notes.md
+            printf '\n\n---\n\n' >> notes.md
+          else
+            echo "::warning::no release-notes/$version.md — shipping auto-generated notes only"
+            : > notes.md
+          fi
+          printf '%s\n' "$auto" >> notes.md
+
+      - name: Create tag and release
+        if: steps.gate.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${{ steps.gate.outputs.tag }}" \
+            --target "$GITHUB_SHA" \
+            --title "gauntlet ${{ steps.gate.outputs.version }}" \
+            --notes-file notes.md \
+            --latest
