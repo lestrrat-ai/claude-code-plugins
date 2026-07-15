@@ -1,0 +1,160 @@
+## The reassessment pass — when a PR stops converging, REPAIR IT
+
+**This file owns the definition. `scripts/ledger.py` and `scripts/repair-pass.py` own the enforcement.**
+Everything below is a command that exits non-zero, not a rule an attentive agent has to remember — which
+is the entire point, and is explained by the section that ends this file.
+
+### Why this exists
+
+The review gate had **no memory and could not see its own non-convergence.** Every wake is a fresh agent
+instance; `reviews_ok` is zeroed on every `NOT SATISFIED`; and nothing counted rounds. So the ledger after
+21 review rounds was **indistinguishable from the ledger after 1**, and the skill's stopping rules — "run
+the root-cause pass on the 2nd `NOT SATISFIED`", the 1-hour cap — were rules with **no sensor**. They sat
+in the skill, unfired, for 8.5 hours.
+
+Two PRs ran **21** and **14** adversarial review rounds. Nearly every round produced a **true** finding, a
+fix was dispatched, the fix added code, and the next round found more — in the late rounds, more *in the
+guards the loop itself had just added*. Neither PR converged. A human stopped it, and could only do so by
+holding all 21 rounds in mind **at once**. That view is what no wake had, and it is what this pass restores.
+
+**The reviewer was not malfunctioning.** It was doing exactly what it was asked, and what it was asked has
+**no fixed point**: an open-ended adversarial mandate over a growing surface always has one more true thing
+to say. Do not look for a bug in the reviewer. The bug is that nothing could **count**.
+
+### The trigger — the loop's memory, and the caps on it
+
+`ledger.py` carries the memory. Two counters, and `ledger.py verdict` is the **ONLY** sanctioned way to
+record a verdict — it bumps them, applies the tally, and evaluates the caps **atomically**:
+
+```
+ledger.py --file <state.jsonl> verdict --pr <N> --head-sha <the live head> --verdict satisfied|not-satisfied
+```
+
+- **`review_rounds`** — landed verdicts. **NEVER reset** — not by a fix, a rebase, or a content change.
+  This is the loop's only memory. Reset it and every round looks like round 1 again, which is precisely how
+  21 of them passed unnoticed.
+- **`ns_streak`** — consecutive `NOT SATISFIED`. Reset **only** by a `SATISFIED`.
+
+**Hand-setting `reviews_ok` for a verdict is FORBIDDEN** — it applies the tally and silently skips the
+counters, restoring the amnesia. **But a gate RESET is not a verdict**: a content change (a fix commit, a
+CI fix, a conflict-resolving rebase, a bot push) still writes `reviews_ok = 0` through `ledger.py … set`,
+exactly as it always has. `verdict` records what a **reviewer decided**; `set` records what a **commit
+did**. Do not convert the reset sites into `verdict` calls.
+
+**When a cap is reached on a `NOT SATISFIED`, `ledger.py verdict` sets `status = repairing` and EXITS
+NON-ZERO.** The driver **MUST NOT** dispatch another targeted fix and **MUST NOT** launch another review
+pass for that PR. It runs the reassessment pass below.
+
+**The caps are evaluated ONLY on a `NOT SATISFIED`** — a `SATISFIED` is the gate *moving*, and a PR one
+corroborating pass from merging must never be torn up. (On the real record this is not hypothetical: PR
+#42's 10th landed verdict was a `SATISFIED`.)
+
+**The cap values live in `ledger.py` and are named, never numbered, anywhere else** — `ROUND_CAP`,
+`NS_STREAK_CAP`, `REPAIR_CAP`. A value retyped in prose is a value that goes stale the day it is tuned,
+and the prose is the copy people read. `ledger.py`'s comment defends each number against the real record,
+and `ledger-test.py` **replays that record** so a re-tuned cap states, in its own failure message, what the
+new number would have done to two PRs that really ran.
+
+### A cap is a MODE SWITCH, not a doorbell
+
+**It does not stop and ask the user.** The driver stops dispatching targeted fixes and **repairs the PR
+itself, autonomously.** Asking a human is one of the five outcomes, and it is the last resort — not the
+first.
+
+### The reassessment pass — give the loop the memory it never had
+
+Dispatch **one context-isolated agent** on the **session model** (it decides the acceptance path — never
+downgrade it; `SKILL.md`, "Subagent Dispatch"), and hand it **THE WHOLE HISTORY AT ONCE**. This is the
+crux: **no wake has ever had this view**, which is exactly why 21 rounds could pass unnoticed.
+
+It receives, in one prompt:
+
+- **every round's verdict and finding** — all of `<rundir>/review-<pr>-*.txt`, in order, with each one's
+  verdict. Not a summary: the findings themselves.
+- **the diff-growth curve** — what the PR's main files measured at each of this run's commits:
+  `git log --oneline origin/<base>..HEAD` and, per commit, `git show <sha>:<file> | wc -l`.
+- **the PR's intent artifact** — its Purpose / Non-goals / Threat model.
+- **the current diff** — `git diff origin/<base>...HEAD`.
+- **the permitted decisions** — from `repair-pass.py --file <state.jsonl> permitted --pr <N>`, which
+  derives them from the row. **Build the prompt from that output; never retype the enum**, or the prompt
+  will drift from the rule the tool enforces.
+
+It returns **exactly ONE decision from a CLOSED enum**, and the driver executes it **without asking the
+user**:
+
+| Decision | When | What the driver does |
+|---|---|---|
+| **RESCOPE** | the diff has **outgrown its stated purpose** — the findings may all be true, and most of the lines now defend the guards the loop itself added | dispatch a shrink back to intent, then re-gate |
+| **REPAIR-INTENT** | the intent artifact is **missing, vague or wrong**, so the reviewer has nothing to measure against and **nothing can be out of scope** | re-author it (Purpose / Non-goals / Threat model), then re-gate |
+| **DEMOTE** | the findings **anchor to no Purpose line and no Threat-model actor** — true, and not reasons to block this PR | record them as follow-ups, **do NOT fix them**, re-gate |
+| **ROOT-CAUSE** | the findings **share one cause** | run the root-cause pass — **`root-cause-pass.md` already defines it; REUSE it, do not reinvent it** — and fix at the chokepoint |
+| **ABORT** | unsalvageable | the **existing** bailout procedure (`bailout-and-final-report.md`): **leave the PR OPEN**, drop this run's labels, write `abort-<id>.md` |
+
+The decision is recorded through the tool, and **only** through the tool:
+
+```
+repair-pass.py --file <state.jsonl> decide --pr <N> --decision <one of the five> --record <rundir>/repair-<pr>-<k>.md
+```
+
+`--record` is **refused if it does not exist or is empty**. The reasoning — the history the pass saw, the
+decision, and why — must be **on disk**: every wake is a fresh agent instance, and a justification that
+lives only in the context of an agent that has already exited is one nobody can audit.
+
+### The repair is dispatched only after its decision is recorded
+
+While `status = repairing`, **ordinary gate work on that PR is refused** — no review pass, no review fix,
+no CI fix, no merge, no rebase, no relabel. The repair itself is the one thing that may run, and it is
+gated on the decision existing:
+
+```
+ledger.py --file <state.jsonl> dispatch-check --pr <N>                    # before ANY action that mutates the PR
+ledger.py --file <state.jsonl> dispatch-check --pr <N> --action repair    # before dispatching the decided repair
+```
+
+Without that second gate the guard would have a hole exactly where it matters: a driver could call its next
+targeted fix "the repair", dispatch it, and **go on whacking moles under a new name**. `--action repair`
+refuses until a decision is on the row, and prints **which** decision, so the work that follows is the work
+that was decided.
+
+When the repair has landed, return the row to the gate (`ledger.py … set --pr <N> --status in_review`) and
+let the review gauntlet run again from the top. **`review_rounds` is not reset** — it never is. A PR that
+comes back to a cap has spent another repair.
+
+### Bound the repair itself — it must not become the new spiral
+
+**`repair_count`, capped at `REPAIR_CAP`.** At the cap, the **only** permitted decision is **ABORT** —
+`repair-pass.py` refuses every other one, and `permitted` says so before the agent is even asked. **A
+second failed repair leaves the PR OPEN for a human rather than looping.** The irony would be fatal: a
+mechanism that fixes non-convergence must not itself fail to converge.
+
+### The ownership guardrail — autonomous repair NEVER rewrites a PR it does not own
+
+Campaign **adopts** PRs. They may be the user's, or a third party's. **RESCOPE** and **ROOT-CAUSE** reshape
+branch content wholesale, and doing that to someone else's work uninvited is not a repair — it is a hijack.
+
+`pr_origin` is the ledger's answer, set at adoption (`pr-adoption.md`):
+
+| `pr_origin` | Meaning | Permitted repairs |
+|---|---|---|
+| `gauntlet` | this pipeline opened the PR — it carries the `gauntlet-authored` label, applied by `gauntlet:review`'s handoff when it opens a PR | **all five** |
+| `external` | anything else: the user's PR, a teammate's, a PR adopted by number — **and the DEFAULT** | **DEMOTE / REPAIR-INTENT / ABORT only** |
+
+**The default is `external`, and it is load-bearing.** A row whose origin was never established can never
+have its owner's branch reshaped. *"I do not know who wrote this"* must never resolve to *"I wrote this"*.
+
+**This does NOT restrict targeted per-finding fixes.** Campaign has always pushed those to adopted PRs, and
+that is the workflow the user asked for. What is forbidden on an `external` PR is the **wholesale rewrite**,
+never the ordinary fix.
+
+### Why every part of this is a command and not a paragraph
+
+The rules that failed on 2026-07-14 did not fail by being ignored. **They failed by being unevaluable.**
+The 2nd-`NOT SATISFIED` backstop triggers on a fact about history that nothing recorded, read by a wake
+that remembers nothing. The 1-hour cap was never computed by anything, and its own word — *"stuck"* — did
+not describe a loop that produced a real finding and a real fix every single round. It **looked like
+progress**, one round at a time, all night.
+
+So: the counters are **on disk**, the caps are **evaluated by the tool that records the verdict**, the
+dispatch guard is **a command that exits non-zero**, and the decision enum is **closed and enforced**. A
+driver that ignores this mechanism has a **failed command in its transcript**, not a defensible judgment
+call. That is the only kind of rule that was ever going to work here.

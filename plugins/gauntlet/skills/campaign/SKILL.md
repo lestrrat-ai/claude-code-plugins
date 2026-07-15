@@ -53,11 +53,16 @@ PR's intent (a `## Purpose` line quoted verbatim, or the actor who can actually 
 finding that anchors to neither is **NON-GATING** — recorded as a follow-up, never a `NOT SATISFIED`, never
 a fix. `scripts/ledger.py` is the schema-owning accessor for
 `state.jsonl` — read/write the ledger header and per-PR rows **by field name** through it, never by column
-position (see `references/files-and-ledger.md`); pass its absolute path to subtasks the same way. Its
-`verdict` subcommand is the **only** sanctioned way to record a review verdict.
+position (see `references/files-and-ledger.md`); pass its absolute path to subtasks the same way. It also
+owns the **review loop's memory and its caps**: `ledger.py verdict` is the **only** sanctioned way to
+record a review verdict (it bumps `review_rounds`/`ns_streak`, applies the tally, and **at a cap holds the
+PR `repairing` and exits non-zero**), and `ledger.py dispatch-check` is the guard you run before **any**
+action that mutates a PR. `scripts/repair-pass.py` records the reassessment pass's decision for a PR that
+has stopped converging — the closed enum, the ownership guardrail, and the repair cap
+(`references/repair-pass.md`).
 
-Each script's fixtures live in a **sibling `*-test.py`** (`review-pass-test.py`, `ledger-test.py`); the
-`self-test` subcommand loads it and **fails loudly if it is missing**.
+Each script's fixtures live in a **sibling `*-test.py`** (`review-pass-test.py`, `ledger-test.py`,
+`repair-pass-test.py`); the `self-test` subcommand loads it and **fails loudly if it is missing**.
 
 **At run startup, record which version of these rules is actually running:** read `version` from the
 running plugin's `plugin.json` and write it to the ledger header —
@@ -77,6 +82,7 @@ a silent cost decision, taken by default, on every subagent this skill launches.
 | Fresh-subagent fallback review | **session model** | Same job as a review pass; counts toward the gate identically. |
 | Review-fix (after `NOT SATISFIED`) | **session model** | Authors code from scratch, judged only by another full review pass. A cheap bad fix burns a whole review pass and a gate reset — it *costs* more than the tier saves. |
 | Root-cause **mapper** | **session model** | Read-only, but NOT low-judgment: it enumerates a full matrix and confirms each gap with a repro. A weaker model **under-maps**, which is the exact failure the mapper exists to prevent (`root-cause-pass.md`). "Read-only" is not a licence to downgrade. |
+| **Reassessment pass** (a PR at a review-loop cap) | **session model** | It reads a PR's ENTIRE history at once and decides the **acceptance path** — rescope, re-intent, demote, root-cause, or abort. It is gate machinery, and it is the one judgment no wake in the failed run was ever able to make. A weaker model here mis-diagnoses the loop and repairs the wrong thing (`repair-pass.md`). |
 | **CI-fix — formatting/lint failure** | **`sonnet`** (**`haiku`** only when trivially mechanical) | **Downgraded ON PURPOSE.** It does not author a fix: it runs a deterministic formatter, **READS the resulting diff**, verifies it, and **escalates** anything it cannot verify (`references/stage-2-ci.md`). |
 | **CI-fix — everything else**, and every **escalation** from the cheap tier | **session model** | Authors code that gets merged. CI does **not** validate it: a wrong fix can turn CI green — by weakening a check, or by being plain wrong in product code that no check covers. |
 
@@ -154,6 +160,7 @@ Read stage refs only when that stage/action is due:
 | PR review gauntlet / progress ledger | `references/stage-2-review-gate.md` |
 | Dispatching ANY fix subagent (CI-fix or review-fix) | `references/fix-subagent-contract.md` |
 | Repeated sibling findings / shared root cause | `references/root-cause-pass.md` |
+| A PR at a review-loop cap (`status = repairing`) / a verdict that exits non-zero | `references/repair-pass.md` |
 | CI watch, check polling, CI fix | `references/stage-2-ci.md` |
 | Merge candidate / base refresh / cleanup | `references/stage-3-merge.md` |
 | Stuck task, abort, final report | `references/bailout-and-final-report.md` |
@@ -177,6 +184,14 @@ Read stage refs only when that stage/action is due:
 - **Remote branch cleanup isn't campaign's job:** campaign never passes `--delete-branch`; the repo's *Automatically delete head branches* setting governs the remote head branch. Local worktree/branch cleanup follows the per-PR `worktree_owned`/`branch_owned` flags.
 - **Review gate is tier-dependent:** `required(tier)` fresh, context-isolated `SATISFIED` verdicts on
   same live PR content + green CI — **1 if TRIVIAL, else 2** (any code/agent-doc/sensitive change is 2).
+- **The review loop has MEMORY, and it is capped:** record every verdict with `ledger.py verdict` (never
+  hand-set `reviews_ok` for one) — it bumps `review_rounds` (**NEVER reset**) and `ns_streak`. At a cap it
+  holds the PR `repairing` and **exits non-zero**: stop dispatching targeted fixes, hand the PR's **whole
+  history at once** to a context-isolated reassessment pass, and execute the ONE decision it returns —
+  **RESCOPE / REPAIR-INTENT / DEMOTE / ROOT-CAUSE / ABORT** — **without asking the user**. A cap is a
+  **mode switch, not a doorbell** (`references/repair-pass.md`). **Autonomous repair NEVER rewrites a PR
+  campaign does not own**: on `pr_origin = external` (the default) only DEMOTE / REPAIR-INTENT / ABORT are
+  permitted, and a second failed repair **aborts** rather than looping.
 - **Sequential same-PR reviews:** launch review 2 only after review 1 is `SATISFIED` (TRIVIAL needs
   only one).
 - **Progress ledger:** reviewer progress means planned unit `done` or accepted amendment, not vague
@@ -218,11 +233,13 @@ Read stage refs only when that stage/action is due:
   reviewers verify such comments, and a wrong claim is a finding. Refute a finding **once** — if the
   fresh reviewer re-raises it, that is a standoff → park `awaiting-user` for the USER to adjudicate
   (`references/stage-2-review-gate.md`).
-- **A parked PR is FROZEN — take no action that MUTATES it.** `status = awaiting-user` / `awaiting-api`
-  waits on a HUMAN. The test is "does this mutate the PR?", **not** "is it on a list": never review,
+- **A HELD PR is FROZEN — take no action that MUTATES it. `ledger.py … dispatch-check --pr <N>` exits
+  non-zero for one.** Two kinds: **parked** (`awaiting-user` / `awaiting-api` — waits on a HUMAN) and
+  **`repairing`** (at a review-loop cap; waits on the reassessment pass, **not** on a human). The test is
+  "does this mutate the PR?", **not** "is it on a list": never review,
   CI-fix, review-fix, merge, rebase, base-refresh, push to, or relabel it — nor anything else that
-  changes it (a park does NOT lower `reviews_ok`, so guard on `status` at every dispatch AND mutation
-  site). Sole exception: the park does not change the CI watch either way — observing is not mutating, so
+  changes it (being held does NOT lower `reviews_ok`, so guard on `status` at every dispatch AND mutation
+  site). `HELD_STATUSES` in `scripts/ledger.py` is the one enumeration — never retype it. Sole exception: the park does not change the CI watch either way — observing is not mutating, so
   the watch follows the normal policy (alive only while a check can still move). Keep driving the other
   PRs; unpark only on the user's answer — **recorded DURABLY, per park class** (`api_approval`; the
   standoff's audit record; `blocker_ruling` = `retry`/`abort` for a machine blocker, where `retry` clears
@@ -230,7 +247,7 @@ Read stage refs only when that stage/action is due:
   park entry and on consumption, so a previous park's answer can never unpark a later one;
   `references/stage-2-ci.md`, "THE RULING IS CONSUMED EXACTLY ONCE"). **Every park names the event that
   leaves it** (`references/loop-control.md`,
-  "parked-status guard" and "Only the user's answer unparks a PR").
+  "held-status guard" and "Only the user's answer unparks a PR").
 - **No green by watch exit:** derive CI from a **SHA-pinned** snapshot of **both** check families
   (`check-runs` **and** commit `status`), verified against `head_sha` before parsing. **NEVER from `gh pr
   checks`** — its output carries **no SHA** (`references/stage-2-ci.md`).
@@ -244,11 +261,13 @@ Read stage refs only when that stage/action is due:
    every PR carrying this run's `gauntlet-run-<run-id>` label from a batched snapshot. Treat `state.jsonl`
    as cache.
 3. **Fold completed review / CI / fix tasks** against the SHA each ran on.
-4. **Triage tier per PR, then launch due gate work up to caps — skipping PARKED PRs entirely** (`status`
-   `awaiting-user` / `awaiting-api`: FROZEN, no action that mutates the PR — no review, CI fix, review
-   fix, merge, rebase, base refresh, or relabel, and nothing else that changes it; the CI watch is
-   unaffected by the park and follows the normal policy).
-   Re-derive each non-parked PR's tier from its
+4. **Triage tier per PR, then launch due gate work up to caps — skipping HELD PRs** (`ledger.py …
+   dispatch-check --pr <N>` exits non-zero: FROZEN, no action that mutates the PR — no review, CI fix,
+   review fix, merge, rebase, base refresh, or relabel, and nothing else that changes it; the CI watch is
+   unaffected and follows the normal policy). **A `repairing` PR is the one held PR that still has machine
+   work due**: run its reassessment pass, then dispatch the decision it returns — and never a plain fix
+   (`references/repair-pass.md`).
+   Re-derive each non-held PR's tier from its
    `head_sha` (deterministic file-class triage), then launch reviews up to `required(tier)`, CI
    watches/fixes, precondition clearing (Copilot items / red CI / base conflict), and base refresh;
    stop in-flight reviews doomed by a content change.

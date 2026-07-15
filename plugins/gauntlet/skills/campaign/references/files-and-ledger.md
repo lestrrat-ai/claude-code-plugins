@@ -18,6 +18,7 @@ files from colliding — see "Run identity and concurrency".
 | `review-<pr>-<n>.a<k>.txt` / `.a<k>.progress.jsonl` / `.a<k>.findings.jsonl` | The same three per-attempt artifacts for **launch attempt `k ≥ 2`** — a relaunched pass writes here, never over attempt 1's files, so a killed-but-alive attempt can't corrupt the live one. Only the attempt named in the active `pass_identity` is read or counted (see `stage-2-review-gate.md`). The plan and the intent are **not** per-attempt: the plan is per-pass, the intent per-PR |
 | `ci-<pr>-<head_sha>.txt` | Latest **SHA-pinned** CI snapshot for a PR — check runs **AND** commit statuses, fetched **BY THE WAKE** after the watch completes (**the watch never writes it**), promoted atomically, and **stamped with the `head_sha` it describes** (verify the stamp before parsing). Carries a **`source` completion marker per mandatory source**, so a source that was **never queried** is `unusable`, not a silent green (`stage-2-ci.md`). Never the watch stream, and never `gh pr checks` — its output carries **no SHA** |
 | `audit-<pr>-<n>.md` | The orchestrator's audit of round `n`'s findings — CONFIRMED / ADJUSTED / REFUTED, each with evidence. A REFUTED finding's reasoning is recorded here **and** written into the tree as an inline comment at the site, committed like any other change (`stage-2-review-gate.md`, "Audit every finding before you fix it") |
+| `repair-<pr>-<k>.md` | The **reassessment pass**'s decision record for repair `k`: the whole round-by-round history it was handed, the ONE decision it returned, and why (`repair-pass.md`). Written **before** the decision is recorded — `repair-pass.py decide` refuses a `--record` that is missing or empty, because a wake is a fresh agent instance and a justification held only in a dead agent's context can never be audited |
 | `abort-<id>.md` | Detailed log for an aborted PR-task |
 
 **The canonical `prs.json` command — this block is THE definition.** Every other site defers to it, and
@@ -104,8 +105,8 @@ following line is one adopted PR's row record (`{"type": "row", …}`). Every re
 
 ```
 {"type": "header", "run_id": "g260704-0915-a3f29c1b", "base_branch": "main", "api_changes": "ask", "reviewer": "codex", "required_set": "declared:[{\"context\": \"build\", \"app\": \"-\"}, {\"context\": \"test (3.12, ubuntu)\", \"app\": \"15368\"}]", "skill_version": "0.1.4"}
-{"type": "row", "id": "pr41", "slug": "fix-null-deref", "branch": "fix-null-deref", "worktree": ".worktrees/fix-null-deref", "worktree_owned": "yes", "branch_owned": "yes", "pr": "41", "head_sha": "a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c", "reviews_ok": "2", "ci": "green", "tier": "STANDARD", "attempts": "1", "started": "2026-07-04T09:15:00Z", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:9f2c\u2026", "settled_strikes": "0", "unusable_refetches": "0", "ci_stalled_since": "-", "ci_reason": "-", "blocker_ruling": "-", "review_rounds": "3", "ns_streak": "0", "intent": "stated@2026-07-04T09:15:00Z"}
-{"type": "row", "id": "pr52", "slug": "add-retry-flag", "branch": "add-retry-flag", "worktree": ".worktrees/add-retry-flag", "worktree_owned": "no", "branch_owned": "no", "pr": "52", "head_sha": "b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7089a1b", "reviews_ok": "0", "ci": "pending", "tier": "HIGH", "attempts": "0", "started": "-", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:4a71\u2026", "settled_strikes": "1", "unusable_refetches": "0", "ci_stalled_since": "-", "ci_reason": "required check absent: integration-tests", "blocker_ruling": "-", "review_rounds": "5", "ns_streak": "2", "intent": "authored@2026-07-04T09:20:00Z"}
+{"type": "row", "id": "pr41", "slug": "fix-null-deref", "branch": "fix-null-deref", "worktree": ".worktrees/fix-null-deref", "worktree_owned": "yes", "branch_owned": "yes", "pr": "41", "head_sha": "a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c", "reviews_ok": "2", "ci": "green", "tier": "STANDARD", "attempts": "1", "started": "2026-07-04T09:15:00Z", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:9f2c\u2026", "settled_strikes": "0", "unusable_refetches": "0", "ci_stalled_since": "-", "ci_reason": "-", "blocker_ruling": "-", "review_rounds": "3", "ns_streak": "0", "intent": "stated@2026-07-04T09:15:00Z", "pr_origin": "gauntlet", "repair_count": "0", "repair_decision": "-"}
+{"type": "row", "id": "pr52", "slug": "add-retry-flag", "branch": "add-retry-flag", "worktree": ".worktrees/add-retry-flag", "worktree_owned": "no", "branch_owned": "no", "pr": "52", "head_sha": "b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7089a1b", "reviews_ok": "0", "ci": "pending", "tier": "HIGH", "attempts": "0", "started": "-", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:4a71\u2026", "settled_strikes": "1", "unusable_refetches": "0", "ci_stalled_since": "-", "ci_reason": "required check absent: integration-tests", "blocker_ruling": "-", "review_rounds": "5", "ns_streak": "2", "intent": "authored@2026-07-04T09:20:00Z", "pr_origin": "external", "repair_count": "0", "repair_decision": "-"}
 ```
 
 Read those two rows together and the sensor's whole point is visible: **`pr41` and `pr52` both read
@@ -206,9 +207,14 @@ Header field notes (the header fields above; per-row fields follow):
 - `ns_streak` — consecutive NOT SATISFIED verdicts. Cleared **only** by a SATISFIED — never by a fix, a
   rebase or a content change. Same owner, same absent flag, same reason.
 
-  **Nothing in this release READS either counter** — there is no cap and no escalation here. They are
-  **sensors**; the autonomous reassessment that consumes them lands separately. A counter that is reset by
-  the thing that consumes it is not a counter.
+  **What READS these counters is `ledger.py verdict` itself, and at a cap it STOPS THE LOOP.** They are
+  sensors, and the reader is fused into the one door that cannot be skipped — deliberately: a cap
+  evaluated by a *separate* command is a cap a driver can forget to run, which is exactly how a "hard
+  backstop" sat unfired through 35 review rounds. The hazard that argues for keeping a reader out of a
+  sensor — that the reader comes to reset what it consumes — is structurally absent here: the cap path
+  writes `status` and **nothing else**, so `review_rounds` stays monotone whatever it decides. At a cap the
+  row goes **`repairing`** and the command **exits non-zero** (`repair-pass.md` owns the caps, the
+  reassessment, and the repair).
 - `intent` — the PROVENANCE of `<rundir>/intent-<pr>.md` (the file itself is markdown, so it lives in the
   run dir, not in this one-object-per-line store): `-` (not adopted yet) | `stated@<iso>` (the PR body
   already carried a usable intent block, copied verbatim) | `authored@<iso>` (the driver **inferred** it
@@ -218,6 +224,25 @@ Header field notes (the header fields above; per-row fields follow):
   The distinction is the honest one and the final report states it: an `authored` intent is **the driver's
   CLAIM about what the PR is for**, not the author's, and a wrong intent block silently **narrows** a
   review.
+- `pr_origin` — who authored this PR: `gauntlet` (this pipeline opened it — it carries the
+  `gauntlet-authored` label) | `external` (the user's, a teammate's, or any PR adopted by number). Set at
+  adoption (`pr-adoption.md`). It decides **which autonomous repairs are permitted**: an `external` PR may
+  never have its branch content rewritten by a repair (`repair-pass.md`, "The ownership guardrail").
+  **The default is `external` and it is LOAD-BEARING, not a placeholder** — a row whose origin was never
+  established can never have its owner's work reshaped. This is **separate from `worktree_owned` /
+  `branch_owned`**, which say whether campaign created the local checkout and branch for cleanup purposes;
+  a PR can have a campaign-created worktree and still belong to someone else.
+- `repair_count` — reassessment decisions taken for this PR (`repair-pass.md`). At **`REPAIR_CAP`** the
+  only permitted decision is **ABORT**: a second failed repair leaves the PR open for a human rather than
+  looping. The mechanism that fixes non-convergence must not itself fail to converge. Like `review_rounds`,
+  it has **no flag at any door** — a budget you can zero is not a bound.
+- `repair_decision` — `-`, or the last reassessment decision + when: `<decision>@<iso>`. Durable, because
+  the wake that dispatches the repair may be a different agent instance from the one that decided it — and
+  a repair may not be dispatched at all until this field is set (`ledger.py dispatch-check --action repair`).
+  **DURABLE *and* SPENT EXACTLY ONCE per cap** — it is reset to `-` when the row **re-enters `repairing`**
+  (`ledger.py verdict` at a cap), so a decision answers exactly the cap it was recorded for and a PR that
+  reaches a cap **again** must earn a fresh `decide` (which spends `repair_count`, so the bound holds).
+  `abort@…` is terminal and is never cleared.
 - `tier` — the adaptive review tier derived from `head_sha`: `TRIVIAL` | `STANDARD` | `HIGH`. Re-derived
   every wake and re-triaged on any content change; drives `required(tier)` and the review depth.
 - `ci` — `green` / `red` / `pending` for `head_sha`. (**There is no `none`.** It was documented but no
@@ -296,21 +321,37 @@ Header field notes (the header fields above; per-row fields follow):
   live position, so the two never contradict: `approved` pairs with the PR back in normal
   gate flow, `declined` with a terminal `aborted`. A one-off approval lands here only; it never flips
   the run-wide `api_changes` header.
-- `status` — `in_review` → `merged`, or `aborted`; plus two **user-parked** (non-terminal)
-  statuses. **BOTH parked statuses FREEZE that PR until the user answers**: while `status` is
-  `awaiting-api` or `awaiting-user`, take **no action that MUTATES the PR** — never launch a review
-  pass, a CI fix, a review fix, or a merge for it, and never rebase it, refresh its base, push to it, or
-  relabel it (`loop-control.md` step 3, "parked-status guard" — the property, of which those are only
-  examples; `stage-3-merge.md` binds both the merge and the post-merge reconcile). The park does
-  not raise `reviews_ok`, so the guard reads **`status`** — never `reviews_ok`/`ci`/`mergeable` alone,
-  which would re-review a parked PR and merge it without the ruling. **The park does not change the watch
-  policy either way** (observing is not mutating): the watch follows `stage-2-ci.md`, "WATCH ONLY WHAT CAN
-  MOVE" — alive while a row is still `RUNNING`, **not** relaunched once CI has settled. Parking never
-  stops a warranted watch, and never starts an unwarranted one. The other PRs keep being driven; the
-  user's answer unparks the PR **to the `status` that answer dictates** — a **RESUME** answer (`approved`,
-  a standoff ruling, `retry`) to `in_review`, with normal dispatch resuming on the next wake; a
-  **TERMINAL** answer (`declined`, `abort`) to `aborted`, which never resumes. Per class, below —
-  and `loop-control.md` step 3, "Only the user's answer unparks a PR", owns the mapping.
+- `status` — `in_review` → `merged`, or `aborted`; plus the **HELD** (non-terminal) statuses below.
+
+  **HELD is the PROPERTY the dispatch guard is keyed on: campaign takes NO action that MUTATES a held
+  PR.** Never launch a review pass, a CI fix, a review fix, or a merge for it, and never rebase it, refresh
+  its base, push to it, or relabel it (`loop-control.md` step 3, "held-status guard" — the property, of
+  which those are only examples; `stage-3-merge.md` binds both the merge and the post-merge reconcile).
+  Being held does not raise `reviews_ok`, so the guard reads **`status`** — never `reviews_ok`/`ci`/
+  `mergeable` alone, which would re-review a held PR and merge it without its question ever being answered.
+  **It is a command, not a memory exercise**: `ledger.py … dispatch-check --pr <N>` exits non-zero on
+  every held status, and the members are `HELD_STATUSES` in `scripts/ledger.py` — **the one place they are
+  enumerated. Never retype that list; ask the tool.** A status added to it is enforced everywhere with no
+  edit to any of the sites that consult it.
+
+  **Holding does not change the watch policy either way** (observing is not mutating): the watch follows
+  `stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE" — alive while a row is still `RUNNING`, **not** relaunched
+  once CI has settled. Nor does it stop **reconcile** from reading the PR and recording what it read. The
+  other PRs keep being driven: **a held PR never blocks the loop.**
+
+  Held statuses come in **two kinds, and they are cleared by DIFFERENT events — do not collapse them:**
+
+  1. **PARKED — waiting on a HUMAN** (`awaiting-api`, `awaiting-user`). No amount of machine work can
+     resolve it. The user's answer unparks the PR **to the `status` that answer dictates** — a **RESUME**
+     answer (`approved`, a standoff ruling, `retry`) to `in_review`, with normal dispatch resuming on the
+     next wake; a **TERMINAL** answer (`declined`, `abort`) to `aborted`, which never resumes. Per class,
+     below — and `loop-control.md` step 3, "Only the user's answer unparks a PR", owns the mapping.
+  2. **`repairing` — waiting on the REASSESSMENT PASS, not on a human.** The PR reached a review-loop cap
+     (`review_rounds` or `ns_streak`), so it has stopped converging and **must not take another targeted
+     fix or another review pass**. `ledger.py verdict` sets it, and it is **NOT a park**: campaign clears it
+     itself, by reassessing the PR and executing the one decision that comes back (`repair-pass.md` — the
+     owner). **A cap is a MODE SWITCH, not a doorbell**: the driver repairs the PR autonomously and asks the
+     user nothing. Only the ABORT decision involves a human at all, and it is the last resort of five.
   - `awaiting-api` — parked for the user to approve an API-changing fix. Resolves via `api_approval`:
     `approved` returns the PR to the normal flow, `declined` makes it `aborted` (terminal).
   - `awaiting-user` — parked for the user to adjudicate. **Two CLASSES, each with its OWN durable answer
@@ -391,7 +432,24 @@ ledger.py --file <state.jsonl> verdict --pr N --head-sha <sha> --verdict satisfi
 ledger.py --file <state.jsonl> get --pr N [--field <f>]           # print the row as JSON, or one field
 ledger.py --file <state.jsonl> list [--where <field>=<val>]       # print matching rows' pr numbers (all if no filter)
 ledger.py --file <state.jsonl> table [--all] [--fields <f>,<f>,…] # print run header + the live rows as an aligned table (read-only)
+ledger.py --file <state.jsonl> verdict --pr N --head-sha <sha> --verdict satisfied|not-satisfied
+ledger.py --file <state.jsonl> dispatch-check --pr N [--action ordinary|repair]
 ```
+
+**`verdict` is the ONLY sanctioned way to record a review verdict**, and it is not a convenience: it bumps
+the loop's memory (`review_rounds`, `ns_streak`), applies the tally (`reviews_ok`), and evaluates the
+review-loop caps — **atomically**. Hand-setting `reviews_ok` for a verdict does the tally and silently
+skips the rest, which is exactly how a PR ran 21 review rounds while its row still read `reviews_ok=0`,
+indistinguishable from a PR on its first. At a cap it sets `status = repairing` and **exits non-zero**
+(`repair-pass.md`). **A gate RESET is not a verdict**: a content change still writes `reviews_ok = 0`
+through `set`, exactly as it always has — `verdict` records what a *reviewer decided*, `set` records what
+a *commit did*.
+
+**`dispatch-check` is the guard, and it is a COMMAND, not a rule to remember.** Run it before **any**
+action that MUTATES a PR; it exits non-zero when the row is HELD (`status`, above). `--action repair` is
+the one kind of work a `repairing` row accepts, and it is refused until the reassessment's decision is on
+the row — otherwise a driver could call its next targeted fix "the repair" and go on whacking moles under
+a new name.
 
 `table` is the user-facing status view: the end-of-wake report renders it whenever the run goes back
 to waiting (`loop-control.md`, "Reschedule or exit"). It renders state and decides nothing — no gate

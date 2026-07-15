@@ -176,12 +176,30 @@ blocks; each completion is its own wake.
    Launch only what is actually due *and not already in flight* (check ground truth first, never the
    ledger alone).
 
-   **PARKED-STATUS GUARD — a PROPERTY, not a list. Apply it BEFORE every bullet below, and before
-   every other action this skill takes on a PR.** While a PR's `status` is **`awaiting-user`** or
-   **`awaiting-api`** the PR is **FROZEN: take NO action that MUTATES it.** It is waiting on a
-   **HUMAN**, and no amount of machine work can resolve it. **Skip it and keep driving the run's other
-   PRs** — the run stays live and the park NEVER blocks the loop (`run-identity-and-lease.md`, "Never
-   hold the run hostage on a user prompt").
+   **HELD-STATUS GUARD — a PROPERTY, not a list, and now a COMMAND. Apply it BEFORE every bullet below,
+   and before every other action this skill takes on a PR.** While a PR's `status` is **HELD** the PR is
+   **FROZEN: take NO action that MUTATES it.** **Skip it and keep driving the run's other PRs** — the run
+   stays live and a held PR NEVER blocks the loop (`run-identity-and-lease.md`, "Never hold the run hostage
+   on a user prompt").
+
+   **Ask the tool, never a memorized list:**
+
+   ```
+   ledger.py --file <state.jsonl> dispatch-check --pr <N>     # non-zero => do NOT act on this PR
+   ```
+
+   `HELD_STATUSES` in `scripts/ledger.py` is the **one place** the members are enumerated, and
+   `files-and-ledger.md`, `status`, is their definition. **Never retype that list here or anywhere else** —
+   a status added to it must be enforced at every site with no edit to any of them. Today it holds two
+   kinds, held for **different reasons** and cleared by **different events**:
+
+   - **PARKED** (`awaiting-user`, `awaiting-api`) — waiting on a **HUMAN**. No amount of machine work can
+     resolve it; only the user's answer unparks it (below).
+   - **`repairing`** — the PR reached a **review-loop cap** and has stopped converging. It is **NOT waiting
+     on a human**: campaign clears it **itself**, by running the reassessment pass and executing the one
+     decision that comes back (`repair-pass.md`). **A cap is a mode switch, not a doorbell — do NOT prompt
+     the user.** Ordinary gate work is refused for it; the **decided repair** is the one thing that may be
+     dispatched, and only once the decision is recorded (`dispatch-check --action repair`).
 
    **The test is "does this MUTATE the PR?" — NOT "is this action named in a list?"** *Mutate* = change
    the PR or dispatch work that will: its content, its head commit, its base, its labels, its
@@ -190,9 +208,9 @@ blocks; each completion is its own wake.
    relabel, no gate reset, no content change of any kind — **and nothing absent from this list either.**
    The list is **illustrative; the property governs.** An enumeration of dispatch sites WILL miss one —
    it already did: this guard once listed four (review, CI fix, review fix, merge) and missed
-   `stage-3-merge.md` step 6, whose post-merge rebase of PRs that fell behind would have moved a parked
+   `stage-3-merge.md` step 6, whose post-merge rebase of PRs that fell behind would have moved a held
    PR's `head_sha`, reset its gate, and **changed the very PR content the user was parked to
-   adjudicate**. Any site the skill grows later is covered the moment it would mutate a parked PR, with
+   adjudicate**. Any site the skill grows later is covered the moment it would mutate a held PR, with
    no edit to this list. When unsure whether an action mutates, treat it as mutating and skip it.
    - **The ONE exception is the CI watch: OBSERVING a PR is not mutating it.** The park **does not change
      the watch either way** — it follows the normal policy, `stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE":
@@ -249,7 +267,22 @@ blocks; each completion is its own wake.
      park exists to close. **The park MUST be enforced wherever the PR is ACTED ON — every dispatch site
      and every mutation site — not merely recorded in the ledger.**
 
-   Then, for each **non-parked** PR:
+   **A `repairing` PR is the ONE held PR that still has machine work due — and it is NOT the work the
+   other bullets describe.** Do not skip it and do not prompt the user; drive its repair to completion:
+
+   - **no `repair_decision` yet** → dispatch the **reassessment pass** (`repair-pass.md`): a
+     context-isolated agent, on the **session model**, handed **every round's verdict and finding, the
+     diff-growth curve, the intent artifact, and the current diff — all at once**. No wake has ever had
+     that view; it is why 21 rounds passed unnoticed. It returns ONE decision from a closed enum, recorded
+     with `repair-pass.py decide` (which refuses a decision this PR may not take — see the ownership
+     guardrail).
+   - **a `repair_decision` is recorded** → `ledger.py dispatch-check --pr <N> --action repair`, then
+     execute **that** decision and no other work. When the repair has landed, return the row to the gate
+     (`ledger.py … set --pr <N> --status in_review`). `review_rounds` is **not** reset — it never is.
+   - **`repair_decision` is `abort@…`** → the row is already terminal (`aborted`): run the abort procedure
+     (`bailout-and-final-report.md`) — leave the PR **OPEN**, drop this run's labels, write `abort-<id>.md`.
+
+   Then, for each PR that is **not held at all**:
    - any newly-adopted PR whose ledger row lacks a `tier`, or any PR whose `head_sha` changed since it
      was last triaged → **re-triage its tier** (deterministic file-class classification of the changed
      files at that `head_sha`; agent-docs = code; default STANDARD on uncertainty — see the tiers
@@ -328,7 +361,7 @@ blocks; each completion is its own wake.
    and none is in flight (no-arg idle), do not spin: **PROMPT** "No PRs under a campaign. Run
    gauntlet:review to find issues, or pass PR numbers to gate."
 4. **Merge** queued PRs as a serialized drain: re-confirm one candidate against the live SHA **and
-   re-check it is not parked** (the parked-status guard binds the merge too — Stage 3), merge
+   re-check it is not parked** (the held-status guard binds the merge too — Stage 3), merge
    it, sync `<base>`, reconcile remaining candidates, and repeat while another PR is immediately
    mergeable (Stage 3).
 5. **Reschedule or exit.**

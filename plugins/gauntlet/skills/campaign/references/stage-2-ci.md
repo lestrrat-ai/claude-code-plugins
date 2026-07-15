@@ -503,9 +503,12 @@ ever re-ordered again.
 - **red** → **any** evidence row classifies `FAIL`. Other rows still `RUNNING` does **not** change this —
   a failure is actionable now.
 
-  **If the PR is PARKED** (`status` = `awaiting-user` / `awaiting-api`), record `ci = red` and
-  **dispatch NO fix** — a parked PR dispatches nothing until the user answers (`loop-control.md` step 3).
-  **The park does not change the watch either way** — watching is observation, not work-dispatch, so the
+  **If the PR is HELD** (`ledger.py … dispatch-check --pr <N>` exits non-zero — it is parked on a human,
+  or `repairing` after a review-loop cap), record `ci = red` and
+  **dispatch NO fix** — a held PR dispatches nothing until its question is answered (`loop-control.md`
+  step 3, "held-status guard"). A CI fix on a PR whose diff the reassessment pass is about to rescope is
+  work thrown away twice over.
+  **Being held does not change the watch either way** — watching is observation, not work-dispatch, so the
   watch follows the normal policy below ("WATCH ONLY WHAT CAN MOVE"): alive while a row can still move,
   and **not** relaunched once nothing can. Parking never stops a warranted watch and never starts an
   unwarranted one. Otherwise → any failing row → **stop any review pass in flight on that PR first** (Loop control
@@ -845,7 +848,7 @@ missing. That, too, is a **property, not a fixed list of scans**: whichever rule
 one that says so. For a CI fix it is `loop-control.md` step 3's dispatch scan; for a rebase it is the rule
 that owns the rebase (Stage 2a's preconditions, `stage-2-review-gate.md`; the step-6 reconcile,
 `stage-3-merge.md`) finding the PR behind/conflicting on this wake. A PR **frozen by a park** has **no**
-machine action due — the parked-status guard forbids every one of them (`loop-control.md`), so nothing is
+machine action due — the held-status guard forbids every one of them (`loop-control.md`), so nothing is
 coming, which is why the park is the terminus and not another wait.
 
 **IT STILL TERMINATES — a liveness rule that can be suppressed forever is not a liveness rule.** The STOP

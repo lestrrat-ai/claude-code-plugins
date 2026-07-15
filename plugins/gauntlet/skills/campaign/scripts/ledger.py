@@ -115,6 +115,27 @@ ROW_FIELDS = (
     # nothing the reviewer was measured against before — but a WRONG intent block silently NARROWS a
     # review, so which kind it is has to be visible rather than buried.
     "intent",
+    # WHO AUTHORED THIS PR — it decides which autonomous repairs are permitted (`repair-pass.md`, "The
+    # ownership guardrail"). `gauntlet` = this pipeline opened the PR (it carries the `gauntlet-authored`
+    # label, applied by gauntlet:review's handoff). `external` = anything else: the user's PR, a
+    # teammate's, a PR adopted by number.
+    #
+    # The default is `external` and it is LOAD-BEARING, not a placeholder: the repairs that REWRITE branch
+    # content (RESCOPE, ROOT-CAUSE) are refused on an `external` PR, so a row whose origin was never
+    # established can never have its owner's work reshaped. "I do not know who wrote this" and "I wrote
+    # this" are different facts, and the default is the one that claims nothing.
+    #
+    # NOT `worktree_owned`/`branch_owned`: those say whether campaign created the local checkout and
+    # branch, which is a CLEANUP question. A PR can have a campaign-created worktree and still belong
+    # entirely to someone else.
+    "pr_origin",
+    # THE REPAIR'S OWN BOUND — the mechanism that fixes non-convergence must not itself fail to converge.
+    "repair_count",     # reassessment decisions taken. At REPAIR_CAP the only decision left is ABORT.
+    "repair_decision",  # - | <decision>@<iso> — durable, so the wake that DISPATCHES a repair can be a
+                        # different agent instance from the one that DECIDED it. RESET to `-` when the row
+                        # RE-ENTERS `repairing` (`cmd_verdict` at a cap), scoping a decision to ONE cap: the
+                        # next repair must be earned by a fresh `decide` (which spends `repair_count`), so
+                        # the budget binds. `abort` is terminal and is never cleared.
 )
 ROW_DEFAULTS = {
     "id": "-", "slug": "-", "branch": "-", "worktree": "-", "worktree_owned": "-",
@@ -123,6 +144,7 @@ ROW_DEFAULTS = {
     "ci_fingerprint": "-", "settled_strikes": "0", "unusable_refetches": "0",
     "ci_stalled_since": "-", "ci_reason": "-", "blocker_ruling": "-",
     "review_rounds": "0", "ns_streak": "0", "intent": "-",
+    "pr_origin": "external", "repair_count": "0", "repair_decision": "-",
 }
 
 # The two fields `verdict` OWNS — and the ONLY reason they are not settable through `set`/`add-row` is
@@ -135,8 +157,64 @@ ROW_DEFAULTS = {
 # must stay. What `set` may NOT do is RAISE it: see `check_tally`.)
 VERDICT_OWNED = ("review_rounds", "ns_streak")
 
+# The repair's own fields, owned by `repair-pass.py` and settable through NO flag — the same mechanism as
+# VERDICT_OWNED, for the same reason. `repair_count` is the bound on the repair itself: a door that can
+# write it is a door that can zero it, and a driver that could zero its own repair budget could repair
+# forever. The tool that decides a repair is the only thing that writes what it spent.
+REPAIR_OWNED = ("repair_count", "repair_decision")
+
 SATISFIED, NOT_SATISFIED = "satisfied", "not-satisfied"
 VERDICTS = (SATISFIED, NOT_SATISFIED)
+
+# --- the review loop's caps (this file is their ONE defining site) ------------
+#
+# Numbered here and NOWHERE ELSE. Every reference that needs one names the CAP, never its value — a value
+# retyped in prose goes stale the day it is tuned, and the prose is the copy people read.
+#
+# The numbers are DEFENDED AGAINST THE REAL RECORD (`repair-pass.md`, "The thresholds"), and
+# `ledger-test.py` REPLAYS that record so a re-tuned cap states, in its own failure message, what the new
+# number would have done to two PRs that really ran:
+#
+#   ROUND_CAP = 11    PR #43's last GENUINE defect (a false green reachable from a real GitHub response —
+#                     the exact thing that PR existed to prevent) landed on its 10th verdict and was
+#                     corroborated by its 11th. A cap of 11 is the smallest that lets a PR doing real work
+#                     finish it. It then fires on #43's 12th verdict — its FIRST spiral round — and on
+#                     #42's 11th of 21.
+#   NS_STREAK_CAP = 6 #43 ran FIVE consecutive NOT SATISFIEDs that were still producing genuine, purpose-
+#                     serving findings, so 5 must NOT trigger. 6 is the smallest number the record does not
+#                     refute. It catches the shape neither PR had — a PR that NEVER scores a SATISFIED —
+#                     several rounds before ROUND_CAP would.
+#   REPAIR_CAP = 2    A second failed repair aborts rather than looping.
+#
+# A wrong threshold is SURVIVABLE, and that is what licenses picking one at all: the trigger is a MODE
+# SWITCH, not a rejection. Firing early costs one reassessment pass and a re-gate; nothing is merged, and
+# nothing is closed. Firing late costs 8.5 hours.
+ROUND_CAP = 11
+NS_STREAK_CAP = 6
+REPAIR_CAP = 2
+
+# Where a PR goes when it reaches a cap. It is NOT a park: a park waits on a HUMAN and only the user's
+# answer leaves it, while this waits on the reassessment pass and the driver clears it itself.
+REPAIR_STATUS = "repairing"
+
+# HELD — the statuses in which campaign MUST NOT dispatch ordinary gate work on a PR (a review pass, a
+# review fix, a CI fix, a merge, a rebase, a relabel — anything that MUTATES it). THE ONE ENUMERATION;
+# `dispatch-check` is what makes it a command that can FAIL rather than a rule an attentive agent must
+# remember. The members are held for DIFFERENT reasons and cleared by DIFFERENT events — never collapse
+# them:
+#
+#   awaiting-api / awaiting-user   parked on a HUMAN. Only the user's answer unparks.
+#   repairing                      at a review-loop cap. The reassessment pass and the repair it decides
+#                                  clear it — no human is waited on.
+#
+# The ONE exception, for every member alike: OBSERVING a PR is not mutating it, so the CI watch follows
+# its normal policy, and reconcile still READS a held PR and records what it read.
+HELD_STATUSES = ("awaiting-api", "awaiting-user", REPAIR_STATUS)
+
+# `fail()` keeps 1 for "your input was rejected". A HELD/AT-CAP answer is NOT an input error — the command
+# did its job and the answer is STOP — so it gets its own code. A driver that proceeds anyway has a FAILED
+# COMMAND in its transcript, not a defensible judgment call.
+EXIT_STOP = 3
 
 # A git object id, as git writes one: 40 LOWERCASE hex — the same rule `review-pass.py` and
 # `ci-snapshot.py` hold a SHA to, and for the same reason. A verdict is recorded AGAINST a commit, so a
@@ -317,8 +395,10 @@ def settable(name: str) -> bool:
     `pr` is the row key (passed via --pr) and `id` is derived from it. `VERDICT_OWNED` is the new
     exclusion, and it is the mechanism behind "`review_rounds` is NEVER reset": a door that can write a
     counter is a door that can zero it, so those two fields simply have NO flag. `verdict` writes them.
+    `REPAIR_OWNED` is the same mechanism for the repair's bound: a driver that could zero `repair_count`
+    could repair forever, so only `repair-pass.py decide` writes what a PR has spent.
     """
-    return name not in ("pr", "id") and name not in VERDICT_OWNED
+    return name not in ("pr", "id") and name not in VERDICT_OWNED and name not in REPAIR_OWNED
 
 
 def _named_field_values(args) -> dict:
@@ -418,15 +498,31 @@ def cmd_verdict(path: Path, args) -> int:
     door, so a late verdict from a superseded attempt can never reach the tally through a driver that
     skipped the check.
 
-    **It sets no cap and escalates nothing.** These are SENSORS. What reads them is a separate concern,
-    and building the reader into the sensor is how a counter comes to be reset by the thing that consumes
-    it.
+    **The counters are SENSORS, and this door NEVER WRITES THEM BACKWARDS — but it does READ them, and at
+    a cap it STOPS THE LOOP.** The hazard in fusing a reader into a sensor is that the reader comes to
+    reset the counter it consumes; that hazard is structurally absent here, because the cap path writes
+    `status` and NOTHING ELSE — `review_rounds` stays monotone whatever it decides.
+
+    And the trigger MUST live here, because this is the one door that cannot be skipped. A cap evaluated
+    by a separate command is a cap a driver can forget to run — which is precisely the failure this whole
+    mechanism exists to end: the skill's "hard backstop" on the 2nd NOT SATISFIED never fired once in 35
+    review rounds, because nothing computed it. So at a cap this sets `status = repairing` and **exits
+    non-zero** (`EXIT_STOP`), and the driver that ignores it has a failed command in its transcript.
+
+    **The caps are evaluated ONLY on a NOT SATISFIED.** A SATISFIED is the gate MOVING — the PR may be one
+    corroborating pass from merging, and tearing it up for a repair would be the mechanism destroying the
+    very outcome it exists to protect. (On the real record: PR #42's TENTH landed verdict was a SATISFIED.)
+    A PR is interrupted only when a verdict says the content is STILL WRONG *and* the loop's own history
+    says it is no longer converging.
     """
     header, rows = load(path)
     pr = str(args.pr)
     row = find_row(rows, pr)
     if row is None:
         fail(f"no row for pr {pr}; use `add-row` to create it")
+    if row["status"] in HELD_STATUSES:
+        fail(f"pr {pr} is {row['status']} — no review pass should have been running for it, so this "
+             f"verdict describes work that was never due ({held_reason(row['status'])})")
     if not SHA_RE.match(args.head_sha):
         fail(f"--head-sha {args.head_sha!r} is not a git object id (40 LOWERCASE hex) — a verdict is "
              f"recorded AGAINST a commit, and a value that cannot be one makes every 'does this verdict "
@@ -442,9 +538,110 @@ def cmd_verdict(path: Path, args) -> int:
     else:
         tally, streak = 0, counter(row, "ns_streak") + 1
     row.update({"review_rounds": str(rounds), "reviews_ok": str(tally), "ns_streak": str(streak)})
+
+    at_cap = args.verdict == NOT_SATISFIED and (rounds >= ROUND_CAP or streak >= NS_STREAK_CAP)
+    if at_cap:
+        row["status"] = REPAIR_STATUS
+        # Clear any STALE reassessment decision as the row RE-ENTERS `repairing`. `repair_decision` is
+        # written only by `repair-pass.py decide` (which also spends `repair_count`) and by this reset, so a
+        # decision left on the row from a PREVIOUS cap would otherwise satisfy `dispatch-check --action
+        # repair` at THIS cap with no fresh `decide` — dispatching a repair that spends no budget, and
+        # `REPAIR_CAP` would never bind. A verdict only reaches this branch from a non-held (so post-repair
+        # `in_review`) row, so the decision it clears is always a spent one. The next repair here MUST be
+        # earned by a fresh `decide`, which bumps `repair_count` — the bound the mechanism exists to hold.
+        row["repair_decision"] = "-"
     dump(path, header, rows)
     print(json.dumps(row))
-    return 0
+    if not at_cap:
+        return 0
+
+    which = []
+    if rounds >= ROUND_CAP:
+        which.append(f"review_rounds={rounds} (cap {ROUND_CAP})")
+    if streak >= NS_STREAK_CAP:
+        which.append(f"ns_streak={streak} (cap {NS_STREAK_CAP})")
+    spent = counter(row, "repair_count") >= REPAIR_CAP
+    print(
+        f"ledger: pr {pr} is NOT CONVERGING — {', '.join(which)}. The verdict IS recorded, and the row is "
+        f"now `{REPAIR_STATUS}`.\n"
+        f"ledger: DO NOT dispatch a fix subagent and DO NOT launch another review pass for it. Run the "
+        f"REASSESSMENT PASS (`repair-pass.md`): hand a context-isolated agent the WHOLE history at once — "
+        f"every round's verdict and finding, the diff-growth curve, the intent, the current diff — and "
+        f"record the ONE decision it returns with `repair-pass.py decide`.\n"
+        f"ledger: repair_count={counter(row, 'repair_count')} of {REPAIR_CAP}"
+        + (" — SPENT: this PR's repair budget is exhausted, so the only permitted decision is `abort`."
+           if spent else "."),
+        file=sys.stderr,
+    )
+    return EXIT_STOP
+
+
+def held_reason(status: str) -> str:
+    """Why a held row is held, and WHAT CLEARS IT — never merely that it is on a list.
+
+    A guard that says only "refused" teaches the driver nothing and invites it to route around the guard.
+    DERIVED from the status, so a new member of HELD_STATUSES cannot silently inherit a wrong explanation.
+    """
+    if status == REPAIR_STATUS:
+        return ("at a review-loop cap and awaiting its REASSESSMENT PASS — the reassessment's decision and "
+                "the repair it dispatches clear it (`repair-pass.md`); NO human is waited on")
+    if status == "awaiting-api":
+        return "parked for the user to approve an API-changing fix — only the user's answer unparks it"
+    if status == "awaiting-user":
+        return ("parked for the user to adjudicate a review standoff or a machine blocker — only the "
+                "user's answer unparks it")
+    return "held"
+
+
+def cmd_dispatch_check(path: Path, args) -> int:
+    """MAY campaign act on this PR? Run it BEFORE every action that MUTATES a PR — and obey a non-zero exit.
+
+    This is the mechanical form of a rule that already existed in prose and was already obeyed only by
+    attention: **a HELD PR is FROZEN**. The park has always said so; `repairing` says so too. A rule an
+    attentive agent must remember is exactly the kind that failed here.
+
+    The test is the PROPERTY — "does this MUTATE the PR?" — not membership of a list of actions. Review
+    pass, review fix, CI fix, copilot-address, precondition fix, merge, rebase, base refresh, push,
+    relabel: all mutate, all are `ordinary`, all must check. **OBSERVING is not mutating**: the CI watch
+    follows its normal policy, and reconcile still reads a held PR and records what it read.
+
+    **`--action repair` is the ONE kind of work a `repairing` row accepts** — and it is refused until a
+    reassessment DECISION is on the row. Without that second half the guard would have a hole exactly
+    where it matters: a driver could call its next fix "the repair", dispatch it, and go right on whacking
+    moles under a new name. The decision must exist first, and the tool prints WHICH one, so the work that
+    follows is the work that was decided.
+    """
+    _, rows = load(path)
+    pr = str(args.pr)
+    row = find_row(rows, pr)
+    if row is None:
+        fail(f"no row for pr {pr}")
+    status, decision = row["status"], row["repair_decision"]
+
+    if args.action == "repair":
+        if status != REPAIR_STATUS:
+            print(f"refused: pr {pr} is {status}, not {REPAIR_STATUS} — it is not at a review-loop cap, so "
+                  f"there is no repair to dispatch. Ordinary gate work is what this PR is owed.",
+                  file=sys.stderr)
+            return EXIT_STOP
+        if decision == "-":
+            print(f"refused: pr {pr} is {REPAIR_STATUS} but NO REASSESSMENT DECISION is recorded. Run the "
+                  f"reassessment pass and record its decision with `repair-pass.py decide` FIRST — a repair "
+                  f"dispatched without one is just the next targeted fix wearing a new name, which is the "
+                  f"loop this mechanism exists to stop.", file=sys.stderr)
+            return EXIT_STOP
+        print(f"ok: pr {pr} is {REPAIR_STATUS} with decision {decision} — dispatch THAT repair, and no "
+              f"other work")
+        return 0
+
+    if status not in HELD_STATUSES:
+        print(f"ok: pr {pr} is {status} — campaign may act on it")
+        return 0
+    print(f"held: pr {pr} is {status} — {held_reason(status)}", file=sys.stderr)
+    print(f"held: take NO action that MUTATES this PR (no review pass, review fix, CI fix, merge, rebase, "
+          f"push or relabel). Observing it is fine: the CI watch and reconcile are unaffected. Keep "
+          f"driving the run's OTHER PRs — a held PR never blocks the loop.", file=sys.stderr)
+    return EXIT_STOP
 
 
 def cmd_get(path: Path, args) -> int:
@@ -744,6 +941,14 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--verdict", required=True, choices=VERDICTS,
                    help="the reviewer's VERDICT line, as the orchestrator read it")
 
+    d = sub.add_parser("dispatch-check", help="may campaign ACT on this PR? run before every action that "
+                                              f"MUTATES a PR; exits {EXIT_STOP} when the row is HELD")
+    d.add_argument("--pr", required=True, help="PR number (row key)")
+    d.add_argument("--action", choices=("ordinary", "repair"), default="ordinary",
+                   help="'ordinary' (default) = any action that mutates the PR — review, fix, merge, "
+                        "rebase, relabel. 'repair' = the reassessment's decided repair, the only work a "
+                        "`repairing` row accepts (and only once its decision is recorded)")
+
     g = sub.add_parser("get", help="print the row for --pr as JSON, or one field")
     g.add_argument("--pr", required=True, help="PR number (row key)")
     g.add_argument("--field", help="print only this field")
@@ -774,6 +979,7 @@ def main(argv: list[str]) -> int:
     handlers = {
         "header": cmd_header, "add-row": cmd_add_row, "set": cmd_set, "verdict": cmd_verdict,
         "get": cmd_get, "list": cmd_list, "table": cmd_table,
+        "dispatch-check": cmd_dispatch_check,
     }
     return handlers[args.cmd](path, args)
 

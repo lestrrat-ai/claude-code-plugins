@@ -114,7 +114,21 @@ For each `#PR` to adopt:
      `tier` = triage per `head_sha` (Stage **2a-triage**); `attempts` = `0` (no attempt has run yet —
      `attempts` counts attempts **so far**, and seeding it at `1` silently spends half the retry-once
      budget before any work is dispatched); `started` = now;
-     `api_approval` = `-`; `blocker_ruling` = `-`; `status` = `in_review`.
+     `api_approval` = `-`; `blocker_ruling` = `-`; `status` = `in_review`;
+     `review_rounds` = `0`; `ns_streak` = `0`; `repair_count` = `0`; `repair_decision` = `-`.
+   - **`pr_origin` — WHO WROTE THIS PR. Read it from the PR's LABELS, and default to `external`.**
+     `gauntlet` **only** when the PR carries the **`gauntlet-authored`** label, which `gauntlet:review`'s
+     handoff applies to every PR it opens; **`external` for everything else** — the user's PR, a
+     teammate's, any PR adopted by number. The label is already in the adoption snapshot's `labels` field,
+     so this costs no extra call.
+
+     It decides **which autonomous repairs may ever run on this PR** (`repair-pass.md`, "The ownership
+     guardrail"): an `external` PR may be demoted, re-intented or aborted, but its **branch content is
+     never rewritten** by a repair. **The default is the SAFE one and that is load-bearing** — a PR whose
+     origin cannot be established must never be treated as campaign's own work to reshape. *"I do not know
+     who wrote this"* is not *"I wrote this"*. It is **NOT** `worktree_owned`/`branch_owned`: those say
+     whether campaign created the local checkout and branch, which is a **cleanup** question, and a PR can
+     have a campaign-created worktree and still belong entirely to someone else.
    - **On a REFRESH of an existing row, PRESERVE EVERY FIELD THIS STEP DOES NOT EXPLICITLY RECOMPUTE.**
      That is a **property, not a list** — and deliberately so, because the list that stood here was one:
      `ledger.py … set` writes only the fields it **NAMES**, so preservation is the **default**, and this

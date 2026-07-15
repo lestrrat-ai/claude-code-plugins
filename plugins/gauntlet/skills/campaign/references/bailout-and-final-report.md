@@ -3,12 +3,18 @@
 - **1-hour cap per task** — one hour of wall-clock since `started` without merging. The cap catches a
   *stuck* task, not a slow external system, and the ledger records no separately-metered work time — so
   key it off recorded row state, not a running subtraction of durations nothing stores: **do not fire
-  the cap on a wake where the row is in a BOUNDED wait.** There are exactly two kinds, and **neither is
+  the cap on a wake where the row is in a BOUNDED wait.** There are exactly three kinds, and **none is
   a `ci` value**:
   - **a PARK** — `status == awaiting-api` (parked for user approval) or `status == awaiting-user` (parked
     for the user to adjudicate a **review standoff** or a **machine blocker** — `files-and-ledger.md`,
     `status`). Its exit is **declared**: the user's answer (`approved`/`declined`, a standoff ruling, a
     `blocker_ruling` of `retry`/`abort`).
+  - **a REPAIR — `status == repairing`** (`repair-pass.md`). The PR has reached a review-loop cap and is
+    being reassessed and repaired. It is **bounded by `repair_count`/`REPAIR_CAP`**, and its exit is
+    **declared**: the reassessment's decision, and — at the cap — **ABORT**, which lands on this very
+    procedure. **Firing the 1-hour cap here would PRE-EMPT the repair the cap exists to reach**, aborting a
+    PR that the mechanism was in the middle of saving — the same mistake as firing it inside a live CI
+    liveness bound, for the same reason. A repairing PR always terminates: it repairs, or it aborts.
   - **a LIVE Stage 2 CI LIVENESS BOUND, still below its cap.** **Read the bounds from their owner —
     `stage-2-ci.md`, "THE LIVENESS COUNTERS", which is the ONE enumeration of the bounded CI waits and
     names each one's cap. NEVER re-list them here, and NEVER key this exemption on a `ci` value.** A bound
@@ -54,8 +60,9 @@
   bound is never aborted out from under it: the bound either resolves, or it reaches the human. This cap's
   job is the **agent-controlled** row — the task stuck in campaign's own work (a hung review, a red PR
   whose fix never lands), where nothing else is counting. Only a wake where
-  `started` is over an hour old *and* the row is agent-controlled (**NO** bound of the owner's set is live
-  for it — never a count of them, which rots the moment the set gains a member) trips it.
+  `started` is over an hour old *and* the row is agent-controlled — **it is in NONE of the three bounded
+  waits above**: not parked, not `repairing`, and **NO** bound of the CI owner's set live for it (never a
+  count of them, which rots the moment a set gains a member) — trips it.
   When it trips, abort cleanly and **retry once against the SAME adopted PR** (`attempts` += 1, reset
   `started`). The PR is user/externally owned — campaign never closes it and opens a replacement of
   its own. Instead, **rebuild the worktree from the PR's head branch** so the retry runs with fresh
@@ -74,12 +81,30 @@
   longer carries it and can no longer block terminal exit — an aborted row is terminal and lacks its
   `required(tier)` SATISFIED verdicts, so reconcile will never merge or keep driving it, and the
   un-labelled open PR is simply left for its owner.
-- **Converging-but-expensively → escalate to the root-cause pass.** The bailouts above catch a *stuck*
-  task; this catches one that's *progressing by whack-a-mole*. A targeted per-finding fix is right for
-  the **first** `NOT SATISFIED` on a PR, or for genuinely independent findings. But on the **second**
-  `NOT SATISFIED` on the same PR, **stop targeted patching and run the §2a-deep root-cause pass** — map
-  the whole space with a dedicated read-only mapper and fix at one chokepoint. This is a hard backstop:
-  even if the archetype wasn't obvious on finding 1, the 2nd sibling finding forces the pass no later.
+- **Not converging → the REASSESSMENT PASS takes over. `repair-pass.md` owns this, and it SUPERSEDES the
+  rule that used to live here.** The bailouts above catch a *stuck* task; this catches one that is
+  *progressing by whack-a-mole* — a loop that produces a real finding and a real fix every single round and
+  never finishes.
+
+  **The rule this replaces was "stop targeted patching on the 2nd `NOT SATISFIED` and run the root-cause
+  pass", and it NEVER FIRED — not once, across 35 review rounds on two PRs.** It was not skipped in bad
+  faith: it was **unevaluable**. Its trigger is a fact about *history* ("the second `NOT SATISFIED` on this
+  PR"), the ledger recorded no history, and every wake is a fresh agent instance holding exactly one
+  finding. It called itself a hard backstop; it was a hard backstop **with no sensor**. Do not restore it.
+
+  What replaces it is a **counter with a cap**, on disk, evaluated by the tool that records the verdict:
+  `ledger.py verdict` bumps `review_rounds` / `ns_streak`, and at a cap it sets `status = repairing` and
+  **exits non-zero**. The driver then hands the PR's **whole history at once** to a context-isolated
+  reassessment pass, which returns ONE decision — **RESCOPE / REPAIR-INTENT / DEMOTE / ROOT-CAUSE /
+  ABORT** — and the driver executes it **without asking the user**. **A cap is a MODE SWITCH, not a
+  doorbell.** The root-cause pass is still exactly the right answer when the findings share one cause —
+  it is now **one of five decisions an agent that can see all the rounds gets to choose between**, rather
+  than a rule nothing could trigger.
+
+  **ABORT is the only decision that ends the PR, and it lands on the procedure below** (leave the PR OPEN,
+  drop this run's labels, write `abort-<id>.md`) — reused, not reinvented. A **second failed repair**
+  aborts rather than looping (`repair_count`, capped): the mechanism that fixes non-convergence must not
+  itself fail to converge.
 
   **THIS BACKSTOP HAD NO SENSOR, AND THAT IS WHY IT NEVER FIRED.** Its trigger — *"the second `NOT
   SATISFIED` on the same PR"* — is a **fact about history**, and nothing recorded any history: `reviews_ok`
@@ -90,13 +115,18 @@
 
   The ledger now records that history — `ns_streak` (consecutive `NOT SATISFIED`, cleared only by a
   `SATISFIED`) and `review_rounds` (landed verdicts, **never** reset) — so the trigger is, for the first
-  time, a value a fresh wake can **read** (`files-and-ledger.md`). **This release adds the sensors and
-  nothing that consumes them**: no cap, no new escalation, and no change to when this pass fires. The
-  autonomous reassessment that acts on them lands separately. Adding the reader in the same change as the
-  counter is how a counter comes to be reset by the thing that reads it.
+  time, a value a fresh wake can **read** (`files-and-ledger.md`). **And it IS read: `ledger.py verdict`
+  evaluates the caps as it records the verdict, and at a cap it holds the PR `repairing` and exits
+  non-zero.** The reader lives in the one door that cannot be skipped, because a cap evaluated by a
+  *separate* command is a cap a driver can forget to run — which is the failure being cured, not a fresh
+  instance of it. The counters are never written backwards by it: the cap path writes `status` and nothing
+  else.
 
 Other stop conditions — escalate rather than loop: a worktree won't build, the reviewer keeps
-returning the same unactionable verdict, or CI fails identically after a fix attempt.
+returning the same unactionable verdict, or CI fails identically after a fix attempt. **Note what is NOT
+on that list: a reviewer that is RIGHT every time and still never lets the PR through.** Those conditions
+all describe a **broken** reviewer, and the reviewer that ran 21 rounds was **working perfectly** — that is
+exactly what made it lethal. That case is the reassessment pass's, above, and no rule here catches it.
 
 ---
 
@@ -130,6 +160,11 @@ When the loop exits, summarize:
   merely unobserved. **NEVER report `unknown` as "no required checks"**: it means campaign **could not
   read** them, nothing merged on it, and any PR that reached it **escalated** — say which read failed, so
   the user can fix the access rather than wonder why the run stalled.
+- **Repaired** — every PR that reached a review-loop cap: its `review_rounds`, the decision the
+  reassessment pass returned, and a pointer to `repair-<pr>-<k>.md` (`repair-pass.md`). **Report a DEMOTE's
+  demoted findings explicitly** — they are true findings that were deliberately **not fixed**, and burying
+  that is how a report becomes a false claim of cleanliness. This is the run telling the user, in the one
+  place they will read, that it stopped whacking moles and what it did instead.
 - **Aborted** — PR number + slug, why, pointer to `abort-<id>.md`.
 - **Skipped (API-declined)** — any PR whose API-changing fix the user was asked about and declined,
   with the change each would have needed.
