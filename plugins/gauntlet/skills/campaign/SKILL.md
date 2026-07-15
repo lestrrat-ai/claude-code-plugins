@@ -161,11 +161,11 @@ gauntlet** — which is itself a miss-catcher. **NEVER justify the cheap tier wi
 review gate will catch it."** This is a small, bounded risk the user has accepted, for a workflow that is
 cheaper **and** more capable than a full-strength subagent on every formatting failure.
 
-**The biggest lever is not the model — it is the reviewer.** Review passes re-read the whole PR diff,
-`required(tier)` times per SHA, and re-run from scratch on every gate reset, so they dominate campaign's
-subagent spend. Running an **external reviewer** (e.g. `codex exec`, see `references/reviewer.md`) moves
-that cost off the subagent pool entirely — the quality argument (reviewer diversity) and the cost
-argument point the same way.
+**A user-selected external reviewer can reduce native-worker cost.** Review passes re-read the whole PR
+diff, `required(tier)` times per SHA, and re-run from scratch on every gate reset, so they dominate
+campaign's native-worker spend. When the user selects this option, an external reviewer moves that work
+off the native-worker pool. Never select one solely for this reason; `references/reviewer.md` owns the
+opt-in choice.
 
 **Every fix subagent — CI or review — is dispatched under one contract**, and
 `references/fix-subagent-contract.md` is its complete definition. Two halves, both mandatory:

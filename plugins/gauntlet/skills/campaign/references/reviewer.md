@@ -27,8 +27,8 @@ preference. Claude Code can use Codex CLI (`codex exec`) for that diversity;
 Codex must not claim diversity from another Codex process. It is never mandatory: the default
 native-worker path is a complete, valid reviewer.
 
-**An external reviewer can also be the single biggest cost lever.**
-Review passes dominate campaign's subagent spend: each one re-reads the **whole** `origin/<base>...HEAD`
+**A user-selected external reviewer can also reduce native-worker cost.**
+Review passes dominate campaign's native-worker spend: each one re-reads the **whole** `origin/<base>...HEAD`
 diff, runs `required(tier)` times per SHA, and re-runs **from scratch** on every gate reset (a content
 change voids the tally). A PR that takes several fix rounds can therefore spend many full-diff passes.
 An external reviewer moves all of that off the native-worker pool. When describing this user option,
@@ -38,9 +38,9 @@ note that it can reduce native-worker token use more than changing one worker's 
 worker fallback for a failed external reviewer, the pass runs in the **`session` class** — it *is* the
 gate, and a weaker verdict is simply a worse gate (`SKILL.md`, "Worker Dispatch"). The **one** deliberate
 downgrade in this skill is the CI-fix subagent for a **formatting/lint** failure (`stage-2-ci.md`), which
-runs a formatter and **verifies its diff** rather than authoring a fix — never a review pass. Save tokens on
-review by moving passes to an external reviewer and by scoping every fix subagent — never by cheapening a
-verdict.
+runs a formatter and **verifies its diff** rather than authoring a fix — never a review pass. If the user
+selects an external reviewer, it can reduce native-worker token use; it never changes the required model
+class or review contract.
 
 ### Running the default reviewer — native workers
 

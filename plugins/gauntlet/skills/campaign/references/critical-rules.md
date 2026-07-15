@@ -417,9 +417,8 @@
   touches**. **SWEEP** the writing — the contract's sweep-and-report block goes into the prompt **verbatim**:
   a fix that changes a DEFINITION or a FACT is not done until every site that RESTATES it is correct, and
   every site found is reported. Read narrowly to UNDERSTAND, sweep widely to FINISH — the contract, not
-  this bullet, defines how to sweep; neither half excuses skipping the other. Scoping (not a cheaper model), plus an **external reviewer** taking review passes off
-  the subagent pool (**the single biggest cost lever** — review passes dominate campaign's spend), is where
-  savings live when the user selects that option.
+  this bullet, defines how to sweep; neither half excuses skipping the other. Scope every fix regardless
+  of model or reviewer choice.
 - Default reviewer is the active host's native workers; no external tool is required. Use the user's preferred
   reviewer when one is set (explicit invocation, or a preference in memory/`AGENTS.md`/`CLAUDE.md`/carryover). A
   user may choose a different-model reviewer for diversity. Apply the same-engine rule in
