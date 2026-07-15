@@ -1720,10 +1720,18 @@ def cmd_verify(args) -> int:
 LAUNCH_DEADLINE_S = 5 * 60      # launch evidence must be present by ~5 min from dispatch
 PROGRESS_DEADLINE_S = 15 * 60   # meaningful progress (a planned-unit done / accepted amendment) by ~15 min
 
-# The six health states (§4 of the design). The three ATTENTION states are upper-cased so they stand out
-# in a column of lower-case `working`/`launching`.
+# The health states (§4 of the design). The three ATTENTION states are upper-cased so they stand out in a
+# column of lower-case `working`/`launching`.
+#
+# TWO of them are TERMINAL — the reviewer does not exist anymore — and the mtime-based liveness states
+# (`launching`/`working`/`STALLED`/`NO-LAUNCH!`) apply to NEITHER: only a genuinely-CURRENT pass can be
+# live. `done` is a finished pass (its report carries a `VERDICT:` line). `gone` is a pass whose reviewer
+# left with NO verdict — it was SUPERSEDED (a later pass number exists for its PR) or RELAUNCHED (a later
+# launch attempt exists). Without this split a completed or abandoned pass from hours ago rendered as
+# `STALLED`/`AMEND(n)`, so the table listed "reviewers" that were long gone (`health_of`).
 H_LAUNCHING, H_WORKING, H_DONE = "launching", "working", "done"
 H_STALLED, H_NO_LAUNCH = "STALLED", "NO-LAUNCH!"
+H_GONE = "gone"                 # TERMINAL, no verdict: superseded or relaunched — the reviewer is gone
 
 # The report scrape's three outcomes (advisory: the authoritative verdict for gating is the ledger's).
 V_SAT, V_NOT_SAT, V_NONE = "SAT", "NOT-SAT", "-"
@@ -1793,6 +1801,23 @@ def all_attempts(rundir: Path) -> "list[tuple[Path, bool]]":
             continue
         out.append((path, path in active))
     return out
+
+
+def latest_pass_per_pr(rundir: Path) -> "dict[str, int]":
+    """The highest pass NUMBER seen for each PR across the run. A pass whose number is below its PR's max
+    was SUPERSEDED — the PR moved on to a later review round — so its reviewer is gone. Computed over EVERY
+    progress file (not just the shown ones), the same glob+`parse_name` the attempt readers use, so there is
+    no second parser: a name `parse_name` refuses is not a progress artifact and is skipped."""
+    latest: dict[str, int] = {}
+    for path in sorted(rundir.glob("review-*-*" + PROGRESS_SUFFIX)):
+        try:
+            pr, npass, _attempt = parse_name(path)
+        except Defect:
+            continue
+        n = int(npass)
+        if n > latest.get(pr, 0):
+            latest[pr] = n
+    return latest
 
 
 def report_path(progress: Path) -> Path:
@@ -1896,14 +1921,23 @@ def pass_identity_of(events: "list[dict]") -> "dict | None":
 
 
 def health_of(events: "list[dict]", verdict: str, elapsed_s: "float | None",
-              mtime_age_s: float) -> str:
+              mtime_age_s: float, terminal: bool = False) -> str:
     """The liveness read (§4). First match wins; the ATTENTION states sort above the calm ones.
 
-    `done` is the report's VERDICT line; `AMEND(n)` is any raised `plan_amendment_request` (an amendment IS
-    launch evidence and is the more actionable fact, so it outranks liveness); then the launch-evidence
-    split (`NO-LAUNCH!`/`launching`); then the progress-file mtime split (`STALLED`/`working`)."""
+    **THE TWO TERMINAL STATES COME FIRST, AND LIVENESS APPLIES TO NEITHER.** `done` is the report's VERDICT
+    line — the pass FINISHED. `gone` is a pass whose reviewer left with NO verdict because it was SUPERSEDED
+    or RELAUNCHED (`terminal`) — the reviewer is gone, and a table that showed it `STALLED`/`AMEND(n)` would
+    claim a reviewer is stuck RIGHT NOW when none exists. So `gone` is decided BEFORE amendments and before
+    the mtime split: a terminal pass is never live, whatever its progress file's age or amendments say.
+
+    Only a genuinely-CURRENT pass (not terminal, no verdict) reaches the liveness reads: `AMEND(n)` for any
+    raised `plan_amendment_request` (an amendment IS launch evidence and the more actionable fact, so it
+    outranks liveness); then the launch-evidence split (`NO-LAUNCH!`/`launching`); then the progress-file
+    mtime split (`STALLED`/`working`). `STALLED`/`NO-LAUNCH!` therefore flag ONLY a genuinely-current pass."""
     if verdict != V_NONE:
         return H_DONE
+    if terminal:
+        return H_GONE
     amendments = sum(1 for r in events if r.get("type") == AMENDMENT)
     if amendments:
         return f"AMEND({amendments})"
@@ -1954,15 +1988,28 @@ def load_ledger_module() -> types.ModuleType:
 
 
 def status_row(progress: Path, now: datetime, want_verify: bool,
-               ledger_rows: "list[dict] | None") -> "list[str]":
-    """One pass's cells, rendered in isolation so ONE malformed pass cannot crash the whole table."""
+               ledger_rows: "list[dict] | None", superseded: bool = False) -> "list[str]":
+    """One pass's cells, rendered in isolation so ONE malformed pass cannot crash the whole table.
+
+    `superseded` is TRUE when a later pass number or a later launch attempt exists for this (pr, pass) — the
+    reviewer is gone. It reaches `health_of` as `terminal`, so a superseded pass with no verdict renders
+    `gone`, never a live-looking `STALLED`/`AMEND(n)`. A superseded pass that DID finish still reads `done`
+    (the verdict wins in `health_of`)."""
     pr, npass, attempt = parse_name(progress)
     label = f"{pr}-{npass}" + (f".a{attempt}" if attempt != "1" else "")
     events = read_lenient(progress)
     if events is None:
-        # The progress file itself is unreadable (a real corruption, not a torn tail). Render a row that
-        # says so, and let the other passes print.
-        cells = [label, "?", "-", "-", "-", "unreadable", "-"]
+        # The progress file itself is unreadable (a real corruption, not a torn tail). But a corrupt
+        # PROGRESS file does not make the pass any less TERMINAL: its report may still carry a verdict (the
+        # pass FINISHED) and a later pass or launch attempt may still have superseded it (the reviewer is
+        # GONE) — both facts live in OTHER files. So scrape the verdict and honour `superseded` BEFORE
+        # giving up, reusing `health_of` so `done`-beats-`gone` has ONE owner. Only a pass that is neither
+        # finished nor superseded stays `unreadable`; without this a finished/dead pass rendered a
+        # live-looking `unreadable` that the default view then showed instead of hiding.
+        verdict = scrape_verdict(progress)
+        terminal = verdict != V_NONE or superseded
+        health = health_of([], verdict, None, 0.0, superseded) if terminal else "unreadable"
+        cells = [label, "?", "-", "-", "-", health, verdict]
         if want_verify:
             cells.append("unreadable")
         if ledger_rows is not None:
@@ -1984,7 +2031,7 @@ def status_row(progress: Path, now: datetime, want_verify: bool,
         mtime_age_s = (now - mtime).total_seconds()
     except OSError:
         mtime_age_s = 0.0
-    health = health_of(events, verdict, elapsed_s, mtime_age_s)
+    health = health_of(events, verdict, elapsed_s, mtime_age_s, superseded)
     elapsed = fmt_elapsed(elapsed_s) if elapsed_s is not None else "-"
 
     cells = [label, f"{done}/{total}", now_unit, finding_counts(progress), elapsed, health, verdict]
@@ -2040,28 +2087,47 @@ def cmd_status(args) -> int:
     if ledger_rows is not None:
         columns.append("tally(--ledger)")
 
-    if args.all_attempts:
-        pairs = all_attempts(rundir)
-    else:
-        pairs = [(p, True) for p in active_attempts(rundir)]
+    # SUPERSESSION is a fact about the WHOLE run: a pass is superseded when its PR has a later pass number.
+    # It is computed over every progress file, once, before any view filtering (a `--pr` filter or the
+    # default hide must not change whether a pass counts as superseded).
+    latest_pass = latest_pass_per_pr(rundir)
+    health_col = columns.index("health")
+
+    # BOTH views enumerate EVERY attempt; the default view then hides terminal passes (and counts them in
+    # the footer), while `--history` shows them. Building the default set from `active_attempts` alone
+    # dropped every superseded launch attempt (a relaunched `.a1`) BEFORE the hidden counter ran, so the
+    # table hid it but the footer under-counted. `all_attempts` flags each attempt active/superseded, and the
+    # ONE terminal classification in the render loop below both hides and counts it — no separate count path.
+    pairs = all_attempts(rundir)
     if args.pr is not None:
         pairs = [(p, a) for (p, a) in pairs if parse_name(p)[0] == str(args.pr)]
     pairs.sort(key=lambda pa: tuple(int(x) for x in parse_name(pa[0])[:2]) + (int(parse_name(pa[0])[2]),))
 
-    dim_dead = args.all_attempts and sys.stdout.isatty()
+    # A pass is TERMINAL when its rendered health is `done` (finished) or `gone` (superseded/relaunched, no
+    # verdict). The DEFAULT view hides terminal passes so the table shows only what is genuinely in flight;
+    # `--history` shows everything (terminal passes and superseded attempts, dimmed on a TTY). Nothing is
+    # ever silently dropped: the count of hidden passes is printed, and `--history` reveals them all.
+    dim_terminal = args.history and sys.stdout.isatty()
     rows: list[list[str]] = []
-    dead_flags: list[bool] = []
+    terminal_flags: list[bool] = []
+    hidden = 0
     for progress, is_active in pairs:
+        pr, npass, _attempt = parse_name(progress)
+        superseded = (not is_active) or (int(npass) < latest_pass.get(pr, 0))
         try:
-            rows.append(status_row(progress, now, args.verify, ledger_rows))
+            row = status_row(progress, now, args.verify, ledger_rows, superseded)
         except Exception as exc:  # noqa: BLE001 - one bad pass must never crash the whole table
             row = [progress.name, "?", "-", "-", "-", f"error:{type(exc).__name__}", "-"]
             while len(row) < len(columns):
                 row.append("-")
-            rows.append(row)
-        dead_flags.append(not is_active)
+        is_terminal = row[health_col] in (H_DONE, H_GONE)
+        if is_terminal and not args.history:
+            hidden += 1
+            continue
+        rows.append(row)
+        terminal_flags.append(is_terminal)
 
-    scope = ("all attempts" if args.all_attempts else "active attempts only")
+    scope = ("all passes (history)" if args.history else "in-flight passes only")
     segs = [f"run {rundir.name or str(rundir)}"]
     if reviewer:
         segs.append(f"reviewer={reviewer}")
@@ -2069,19 +2135,24 @@ def cmd_status(args) -> int:
     segs.append(f"as-of {now.strftime('%Y-%m-%dT%H:%M:%SZ')}")
     header = "# " + "   ".join(segs)
 
+    hidden_note = (f"# {hidden} terminal pass(es) hidden (done/gone) — --history to show them"
+                   if hidden else None)
+
     if not rows:
         sys.stdout.write(header + "\n\n")
-        sys.stdout.write(f"# (no review passes in {rundir})\n")
+        sys.stdout.write(hidden_note + "\n" if hidden_note else f"# (no review passes in {rundir})\n")
         return 0
 
     text = render_status(header, columns, rows)
-    if dim_dead and any(dead_flags):
+    if dim_terminal and any(terminal_flags):
         lines = text.split("\n")
         body_start = 4  # header, blank, column header, rule, then rows
-        for i, dead in enumerate(dead_flags):
-            if dead:
+        for i, terminal in enumerate(terminal_flags):
+            if terminal:
                 lines[body_start + i] = f"{DIM}{lines[body_start + i]}{RESET}"
         text = "\n".join(lines)
+    if hidden_note:
+        text += hidden_note + "\n"
     sys.stdout.write(text)
     return 0
 
@@ -2251,8 +2322,10 @@ def build_parser() -> "tuple[argparse.ArgumentParser, list[str]]":
     st.add_argument("--verify", action="store_true",
                     help="add evaluate()'s authoritative verdict column (ok/incomplete/amended/unusable)")
     st.add_argument("--ledger", help="a state.jsonl — adds a reviews_ok/required(tier) tally column")
-    st.add_argument("--all-attempts", dest="all_attempts", action="store_true",
-                    help="show superseded launch attempts too (dimmed on a TTY), not just the active one")
+    st.add_argument("--history", dest="history", action="store_true",
+                    help="show TERMINAL passes too — done (finished) and gone (superseded/relaunched) — plus "
+                         "superseded launch attempts, dimmed on a TTY. The default hides them and prints a "
+                         "count, so the table shows only what is genuinely in flight")
     st.add_argument("--now", help="UTC ISO-8601 render clock (or REVIEW_PASS_NOW) — a determinism seam")
 
     sub.add_parser("self-test", help="run every fixture, then DELETE each rule and prove a fixture notices")

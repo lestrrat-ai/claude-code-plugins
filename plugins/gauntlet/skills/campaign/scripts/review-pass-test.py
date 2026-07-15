@@ -739,10 +739,10 @@ class Tables:
             "--purpose": [PURPOSE_GREEN], "--repro": ["a reply with no rows"], "--fix": ["refuse it"],
             # status's view flags. `--run .` drives the minimal invocation the door check executes; the
             # OPTIONAL flags are never in a minimal call, so their values are only here to satisfy the
-            # "every advertised flag has a supplied value" reconciliation. `--verify`/`--all-attempts` are
+            # "every advertised flag has a supplied value" reconciliation. `--verify`/`--history` are
             # store_true, so their value list is empty and never iterated.
             "--run": ["."], "--pr": ["41"], "--ledger": ["state.jsonl"], "--now": [TS],
-            "--verify": [], "--all-attempts": [],
+            "--verify": [], "--history": [],
         }
 
         # --- the DOMAINS -------------------------------------------------------------------------
@@ -840,6 +840,7 @@ class Tables:
         # NOT appear. `mtimes` maps a filename to the UTC time `os.utime` stamps on it.
         TORN = ident() + "\n" + started("u01") + "\n" + done("u01") + "\n" + \
             '{"type":"progress","unit":"u02","status":"star'   # a half-written append, NO trailing newline
+        UNREADABLE = "this is not valid json at all\n"   # a REAL corruption (has a newline; not a torn tail)
         PLAN3 = [unit("u01"), unit("u02", target="b.py", checks=["c"]),
                  unit("u03", target="c.py", checks=["c"]), unit("u04", target="d.py", checks=["c"])]
         NG1 = finding(writer="dev-time", purpose="-",
@@ -896,9 +897,11 @@ class Tables:
                 "files": {PROGRESS_FILE: self.WORKED, PLAN_FILE: self.PLAN,
                           "review-41-1.txt": "Report body.\nVERDICT: NOT SATISFIED\n"},
                 "now": "2026-07-06T00:03:00Z",
+                "flags": ["--history"],   # `done` is TERMINAL, so the default hides it; --history shows it
                 "expect": {"41-1": {"units": "2/2", "health": "done", "verdict": "NOT-SAT"}},
-                "why": "the report `.txt` carries a VERDICT line, so health is `done` and the verdict is "
-                       "scraped as NOT-SAT (NOT SATISFIED is tested before SATISFIED, which it contains)",
+                "why": "the report `.txt` carries a VERDICT line, so health is `done` (terminal, hidden by "
+                       "default) and the verdict is scraped as NOT-SAT (NOT SATISFIED is tested before "
+                       "SATISFIED, which it contains)",
             },
             "find-gating-split": {
                 "files": {PROGRESS_FILE: self.WORKED, PLAN_FILE: self.PLAN,
@@ -950,11 +953,98 @@ class Tables:
                 "files": {PROGRESS_FILE: self.WORKED, PLAN_FILE: self.PLAN, INTENT_FILE: INTENT,
                           "review-41-1.txt": "VERDICT: SATISFIED\n"},
                 "now": "2026-07-06T00:03:00Z",
-                "flags": ["--verify"],
+                "flags": ["--verify", "--history"],   # `done` is terminal — --history reveals it
                 "expect": {"41-1": {"units": "2/2", "verdict": "SAT", "counts(--verify)": "ok"}},
                 "why": "the opt-in `--verify` column runs the AUTHORITATIVE `evaluate()` verdict verbatim "
                        "(complete, sound, SATISFIED, zero gating findings) — `ok`, distinct from the "
                        "advisory tally",
+            },
+
+            # --- TERMINAL vs LIVE: a pass whose reviewer is GONE must never render live-looking ---------
+            "superseded-gone": {
+                "files": {"review-41-1.progress.jsonl": [ident(), started("u01"), done("u01"),
+                                                         started("u02")],
+                          "review-41-2.progress.jsonl": [ident(**{"pass": "2"}), started("u01")],
+                          PLAN_FILE: self.PLAN},
+                "mtimes": {"review-41-1.progress.jsonl": "2026-07-06T00:00:00Z"},
+                "now": "2026-07-06T00:20:00Z",
+                "flags": ["--history"],
+                "expect": {"41-1": {"units": "1/2", "health": "gone", "verdict": "-"},
+                           "41-2": {"health": "working"}},
+                "why": "pass 1 has launch evidence AND a 20-min-stale mtime — but pass 2 exists, so pass 1 "
+                       "was SUPERSEDED and its reviewer is gone: `gone`, NEVER the `STALLED` this mtime "
+                       "alone would show. Only the current pass 2 stays live (`working`)",
+            },
+            "superseded-hidden-by-default": {
+                "files": {"review-41-1.progress.jsonl": [ident(), started("u01"), done("u01"),
+                                                         started("u02")],
+                          "review-41-2.progress.jsonl": [ident(**{"pass": "2"}), started("u01")],
+                          PLAN_FILE: self.PLAN},
+                "mtimes": {"review-41-1.progress.jsonl": "2026-07-06T00:00:00Z"},
+                "now": "2026-07-06T00:20:00Z",
+                "expect": {"41-2": {"health": "working"}},
+                "absent": ["41-1"],
+                "why": "the SAME run in the DEFAULT view: the superseded (gone) pass 1 is a terminal pass, "
+                       "so it is HIDDEN and the table shows only the in-flight pass 2. Nothing is dropped "
+                       "silently — a footer counts what was hidden and `--history` shows it",
+            },
+            "relaunched-attempt-gone": {
+                "files": {"review-7-1.progress.jsonl": [ident7(), started("u01")],
+                          "review-7-1.a2.progress.jsonl": [ident7(launch_attempt="2"), started("u01")],
+                          "review-7-1.plan.jsonl": self.PLAN},
+                "now": "2026-07-06T00:03:00Z",
+                "flags": ["--history"],
+                "expect": {"7-1": {"health": "gone"},
+                           "7-1.a2": {"health": "working"}},
+                "why": "attempt 1 was RELAUNCHED — attempt 2 (`a2`) exists for the same (pr, pass) — so its "
+                       "reviewer is gone: attempt 1 reads `gone`, never live, while the active attempt 2 "
+                       "stays `working`",
+            },
+
+            # --- A TORN/CORRUPT progress file does not hide a pass's TERMINALITY (read from OTHER files) --
+            "unreadable-done": {
+                "files": {PROGRESS_FILE: UNREADABLE, PLAN_FILE: self.PLAN,
+                          "review-41-1.txt": "Report body.\nVERDICT: SATISFIED\n"},
+                "now": "2026-07-06T00:03:00Z",
+                "flags": ["--history"],   # `done` is terminal — --history reveals the row
+                "expect": {"41-1": {"units": "?", "health": "done", "verdict": "SAT"}},
+                "why": "the PROGRESS file is a real corruption, but its REPORT carries a VERDICT: the pass "
+                       "FINISHED. The verdict is scraped and `done` wins BEFORE the unreadable give-up, so "
+                       "the row reads `done`/`SAT`, never a live-looking `unreadable`",
+            },
+            "unreadable-done-hidden": {
+                "files": {PROGRESS_FILE: UNREADABLE, PLAN_FILE: self.PLAN,
+                          "review-41-1.txt": "Report body.\nVERDICT: SATISFIED\n"},
+                "now": "2026-07-06T00:03:00Z",
+                "absent": ["41-1"],
+                "footer": "1 terminal pass(es) hidden",
+                "why": "the SAME corrupt-but-finished pass in the DEFAULT view: `done` is terminal, so it is "
+                       "HIDDEN and the footer counts it — a torn progress file no longer forces a dead pass "
+                       "to show as in-flight",
+            },
+            "unreadable-superseded-gone": {
+                "files": {"review-41-1.progress.jsonl": UNREADABLE,
+                          "review-41-2.progress.jsonl": [ident(**{"pass": "2"}), started("u01")],
+                          PLAN_FILE: self.PLAN},
+                "now": "2026-07-06T00:03:00Z",
+                "flags": ["--history"],
+                "expect": {"41-1": {"health": "gone", "verdict": "-"},
+                           "41-2": {"health": "working"}},
+                "why": "pass 1's progress file is corrupt AND pass 2 exists, so pass 1 was SUPERSEDED — its "
+                       "reviewer is gone. `gone` is honoured before the unreadable give-up, so it reads "
+                       "`gone` (no verdict), never `unreadable`; the current pass 2 stays `working`",
+            },
+            "relaunched-footer": {
+                "files": {"review-7-1.progress.jsonl": [ident7(), started("u01")],
+                          "review-7-1.a2.progress.jsonl": [ident7(launch_attempt="2"), started("u01")],
+                          "review-7-1.plan.jsonl": self.PLAN},
+                "now": "2026-07-06T00:03:00Z",
+                "expect": {"7-1.a2": {"health": "working"}},
+                "absent": ["7-1"],
+                "footer": "1 terminal pass(es) hidden",
+                "why": "the DEFAULT view of a RELAUNCHED pass: the superseded attempt 1 (`gone`) is hidden AND "
+                       "COUNTED in the footer — it is a terminal launch attempt, not silently dropped, even "
+                       "though only the active attempt 2 renders",
             },
         }
 
@@ -1703,9 +1793,14 @@ def run_status_cases(mod: types.ModuleType, T: Tables, tmp: Path) -> int:
         try:
             _cols, rows = status_parse(out)
         except SelfTestFailure as exc:
-            print(f"FAIL     [status] {name}: {exc}")
-            failures += 1
-            continue
+            # A view whose every pass is hidden prints a header + footer and NO table (no dash rule line).
+            # That is legitimate for an `absent`/`footer`-only case; only a case that expects rendered rows
+            # needs a table to parse.
+            if case.get("expect"):
+                print(f"FAIL     [status] {name}: {exc}")
+                failures += 1
+                continue
+            rows = {}
         ok = True
         for label, want in case.get("expect", {}).items():
             got = rows.get(label)
@@ -1721,6 +1816,17 @@ def run_status_cases(mod: types.ModuleType, T: Tables, tmp: Path) -> int:
         for label in case.get("absent", []):
             if label in rows:
                 print(f"FAIL     [status] {name}: {label!r} must be suppressed but it rendered\n{out}")
+                ok = False
+        # `footer` pins the hidden-terminal count line (a `#` line status_parse skips as non-row): a
+        # substring that MUST appear verbatim in the printed output, or `""` to assert NO footer at all.
+        footer = case.get("footer")
+        if footer is not None:
+            has_footer = "terminal pass(es) hidden" in out
+            if footer == "" and has_footer:
+                print(f"FAIL     [status] {name}: expected NO hidden-count footer, but one printed\n{out}")
+                ok = False
+            elif footer and footer not in out:
+                print(f"FAIL     [status] {name}: hidden-count footer {footer!r} not in output\n{out}")
                 ok = False
         if ok:
             print(f"ok       [status] {name:24} {case['why'][:58]}")
