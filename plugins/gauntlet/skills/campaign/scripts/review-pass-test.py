@@ -739,10 +739,10 @@ class Tables:
             "--purpose": [PURPOSE_GREEN], "--repro": ["a reply with no rows"], "--fix": ["refuse it"],
             # status's view flags. `--run .` drives the minimal invocation the door check executes; the
             # OPTIONAL flags are never in a minimal call, so their values are only here to satisfy the
-            # "every advertised flag has a supplied value" reconciliation. `--verify`/`--all-attempts` are
+            # "every advertised flag has a supplied value" reconciliation. `--verify`/`--history` are
             # store_true, so their value list is empty and never iterated.
             "--run": ["."], "--pr": ["41"], "--ledger": ["state.jsonl"], "--now": [TS],
-            "--verify": [], "--all-attempts": [],
+            "--verify": [], "--history": [],
         }
 
         # --- the DOMAINS -------------------------------------------------------------------------
@@ -896,9 +896,11 @@ class Tables:
                 "files": {PROGRESS_FILE: self.WORKED, PLAN_FILE: self.PLAN,
                           "review-41-1.txt": "Report body.\nVERDICT: NOT SATISFIED\n"},
                 "now": "2026-07-06T00:03:00Z",
+                "flags": ["--history"],   # `done` is TERMINAL, so the default hides it; --history shows it
                 "expect": {"41-1": {"units": "2/2", "health": "done", "verdict": "NOT-SAT"}},
-                "why": "the report `.txt` carries a VERDICT line, so health is `done` and the verdict is "
-                       "scraped as NOT-SAT (NOT SATISFIED is tested before SATISFIED, which it contains)",
+                "why": "the report `.txt` carries a VERDICT line, so health is `done` (terminal, hidden by "
+                       "default) and the verdict is scraped as NOT-SAT (NOT SATISFIED is tested before "
+                       "SATISFIED, which it contains)",
             },
             "find-gating-split": {
                 "files": {PROGRESS_FILE: self.WORKED, PLAN_FILE: self.PLAN,
@@ -950,11 +952,52 @@ class Tables:
                 "files": {PROGRESS_FILE: self.WORKED, PLAN_FILE: self.PLAN, INTENT_FILE: INTENT,
                           "review-41-1.txt": "VERDICT: SATISFIED\n"},
                 "now": "2026-07-06T00:03:00Z",
-                "flags": ["--verify"],
+                "flags": ["--verify", "--history"],   # `done` is terminal — --history reveals it
                 "expect": {"41-1": {"units": "2/2", "verdict": "SAT", "counts(--verify)": "ok"}},
                 "why": "the opt-in `--verify` column runs the AUTHORITATIVE `evaluate()` verdict verbatim "
                        "(complete, sound, SATISFIED, zero gating findings) — `ok`, distinct from the "
                        "advisory tally",
+            },
+
+            # --- TERMINAL vs LIVE: a pass whose reviewer is GONE must never render live-looking ---------
+            "superseded-gone": {
+                "files": {"review-41-1.progress.jsonl": [ident(), started("u01"), done("u01"),
+                                                         started("u02")],
+                          "review-41-2.progress.jsonl": [ident(**{"pass": "2"}), started("u01")],
+                          PLAN_FILE: self.PLAN},
+                "mtimes": {"review-41-1.progress.jsonl": "2026-07-06T00:00:00Z"},
+                "now": "2026-07-06T00:20:00Z",
+                "flags": ["--history"],
+                "expect": {"41-1": {"units": "1/2", "health": "gone", "verdict": "-"},
+                           "41-2": {"health": "working"}},
+                "why": "pass 1 has launch evidence AND a 20-min-stale mtime — but pass 2 exists, so pass 1 "
+                       "was SUPERSEDED and its reviewer is gone: `gone`, NEVER the `STALLED` this mtime "
+                       "alone would show. Only the current pass 2 stays live (`working`)",
+            },
+            "superseded-hidden-by-default": {
+                "files": {"review-41-1.progress.jsonl": [ident(), started("u01"), done("u01"),
+                                                         started("u02")],
+                          "review-41-2.progress.jsonl": [ident(**{"pass": "2"}), started("u01")],
+                          PLAN_FILE: self.PLAN},
+                "mtimes": {"review-41-1.progress.jsonl": "2026-07-06T00:00:00Z"},
+                "now": "2026-07-06T00:20:00Z",
+                "expect": {"41-2": {"health": "working"}},
+                "absent": ["41-1"],
+                "why": "the SAME run in the DEFAULT view: the superseded (gone) pass 1 is a terminal pass, "
+                       "so it is HIDDEN and the table shows only the in-flight pass 2. Nothing is dropped "
+                       "silently — a footer counts what was hidden and `--history` shows it",
+            },
+            "relaunched-attempt-gone": {
+                "files": {"review-7-1.progress.jsonl": [ident7(), started("u01")],
+                          "review-7-1.a2.progress.jsonl": [ident7(launch_attempt="2"), started("u01")],
+                          "review-7-1.plan.jsonl": self.PLAN},
+                "now": "2026-07-06T00:03:00Z",
+                "flags": ["--history"],
+                "expect": {"7-1": {"health": "gone"},
+                           "7-1.a2": {"health": "working"}},
+                "why": "attempt 1 was RELAUNCHED — attempt 2 (`a2`) exists for the same (pr, pass) — so its "
+                       "reviewer is gone: attempt 1 reads `gone`, never live, while the active attempt 2 "
+                       "stays `working`",
             },
         }
 
