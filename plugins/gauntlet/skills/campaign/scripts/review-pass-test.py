@@ -331,7 +331,7 @@ class Tables:
         # its citation, bound its writer, or ask what it DEFENDED — and therefore nothing could ever decline
         # one. Every finding became a fix; every fix added surface; the next reviewer hunted the surface.
         F = self.finding
-        NS, SAT = R.NOT_SATISFIED, R.SATISFIED
+        NS, SAT, DEF = R.NOT_SATISFIED, R.SATISFIED, R.DEFERRED
 
         # THE THREE REGRESSION FIXTURES, FROM THE REAL RECORD. They are the acceptance test for the gating
         # rule, and they are quoted from the actual review artifacts of the two PRs that never converged.
@@ -425,6 +425,31 @@ class Tables:
                 "check: a pass still WORKING has no verdict to state, and it is answered `incomplete` — not "
                 "refused for lacking one. `verify` is a door you come to with the report in hand; a pass in "
                 "flight is WATCHED, not verified"),
+
+            # --- `deferred` is NOT a verdict: it routes to the progress-file state --------------------
+            #
+            # A reviewer that raised a separate request the orchestrator must handle first — a
+            # `plan_amendment_request`, or a broken-dispatch stop — ends its report with `VERDICT: DEFERRED`
+            # and the orchestrator passes `--verdict deferred`. That value NEVER reaches the coherence rule;
+            # the progress file is authoritative, and `decide` answers amended / incomplete / unusable.
+            "deferred-with-amendment": (
+                PLAN, [ident(), started("u01"), done("u01"), amendment(), started("u02"), done("u02")],
+                [], INTENT, DEF, AMENDED, "not yet ruled on",
+                "**THE CASE THE MARKER EXISTS FOR.** The reviewer raised a `plan_amendment_request` and ended "
+                "`VERDICT: DEFERRED` instead of ruling. `deferred` is not weighed against anything — the "
+                "unruled amendment is found FIRST and returns `amended`, exactly as it would with no verdict "
+                "at all. The orchestrator folds the amendment and re-runs the pass"),
+            "deferred-nothing-outstanding": (
+                PLAN, WORKED, [], INTENT, DEF, UNUSABLE, "nothing to defer to",
+                "**THE SPURIOUS DEFERRAL.** Every planned unit is done and no `plan_amendment_request` is "
+                "outstanding, so a `deferred` here points at NOTHING — there is no request for the "
+                "orchestrator to handle first. A deferral must name what it defers to; this pass is FINISHED "
+                "and owes a binary verdict, so it is refused"),
+            "deferred-incomplete": (
+                PLAN, [ident(), started("u01")], [], INTENT, DEF, INCOMPLETE, "has not covered its plan",
+                "…and a `deferred` on a pass STILL WORKING is answered by the completeness check, not the "
+                "deferral rule: a broken-dispatch stop before the plan is covered reads as `incomplete`, "
+                "which relaunches. `deferred` changed nothing about which state the progress file is in"),
 
             # --- A PASS IS JUDGED AGAINST AN INTENT — WHATEVER IT FOUND, AND EVEN IF IT FOUND NOTHING ----
             #
@@ -624,6 +649,11 @@ class Tables:
              "**THE NEW ONE, AT THE VERIFY DOOR:** a complete, perfectly sound pass that returns NOT SATISFIED and records nothing that may block. The artifacts are flawless and the pass still cannot count — a verdict that blocks a PR must name what blocks it"),
             (["verify", "--head-sha", SHA, "--verdict", "satisfied"], WORKED, 0, "0 gating finding(s)",
              "…and the same pass returning SATISFIED, which needs no finding at all"),
+            (["verify", "--head-sha", SHA, "--verdict", "deferred"], WORKED, 1, "nothing to defer to",
+             "**THE THIRD `--verdict` VALUE, AT THE DOOR.** argparse ACCEPTS `deferred` (it is a "
+             "`VERDICT_CHOICES` member, not an exit-2 rejection) and routes it to the progress file. On this "
+             "complete pass with no amendment there is nothing to defer to, so it comes back UNUSABLE — "
+             "proving the flag parses AND that `deferred` is never silently treated as a passing verdict"),
         ]
 
         # `plan-add` and `finding-add` get their own families: their flags do not fit the shape above (a

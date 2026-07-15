@@ -166,6 +166,11 @@ blocks; each completion is its own wake.
    finding stands** — a verdict that blocks a PR
    must name what blocks it, and a finding that blocks a PR cannot be waved through by the verdict. Either
    way round is `unusable` (Stage 2a, "Does this pass COUNT?").
+   **A pass that raised a separate request instead of ruling passes `verify --verdict deferred`** (the
+   report's terminal line is `VERDICT: DEFERRED`, or the progress file holds an unruled
+   `plan_amendment_request`): `deferred` is not a verdict, so it is **never tallied** — the tool routes on
+   the progress file and returns `amended` (fold the amendment, re-run the pass) or `incomplete`
+   (relaunch), and only a binary `satisfied`/`not-satisfied` ever reaches the ledger below.
    **Then record the verdict with `scripts/ledger.py verdict --pr <N> --head-sha <sha> --verdict …`** — the
    ONLY sanctioned path, and the only thing that bumps `review_rounds` (Stage 2a, "Recording a verdict");
    never set `reviews_ok` by hand.

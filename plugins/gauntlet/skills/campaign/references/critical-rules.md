@@ -251,7 +251,9 @@
     and so is a `satisfied` that recorded one. **`--verdict` is a REQUIRED input to `verify`**, so a
     COMPLETE pass verified without one is refused too: a rule whose input may be omitted is a rule the
     driver switches off by forgetting a flag, and this one is the only mechanical check on the reviewer's
-    own verdict.
+    own verdict. (`--verdict` takes a third value, `deferred`, when the reviewer raised a separate request
+    instead of ruling — it is not a verdict, routes on the progress file to `amended`/`incomplete`, and is
+    itself `unusable` if the pass is complete with nothing outstanding.)
   Every one of those rules holds at **both doors** — the same predicate refuses it on write (`emit`) and on
   read (`verify`), so it cannot be enforced at one and not the other. **Every identifier it handles has ONE
   legal form and NO door repairs one** (a unit id is `u01`-shaped; `pr`/`pass`/`launch_attempt` are decimal

@@ -102,7 +102,9 @@ control step 3).
 If the selected reviewer is external (e.g. `codex exec`) and a pass can't return a verdict
 (quota/rate-limit, auth, timeout, or other system error — see "The reviewer"), retry it once, then run
 that pass as a **fresh subagent** reviewing the whole `origin/<base>...HEAD` diff under the same output
-contract — a `RESIDUAL-RISK` line on SATISFIED immediately above exactly one final `VERDICT:` line. A
+contract — a `RESIDUAL-RISK` line on SATISFIED immediately above exactly one final `VERDICT:` line (that
+terminal line may instead read `VERDICT: DEFERRED — <reason>` when the pass raised a separate request
+rather than ruling; `RESIDUAL-RISK` is a SATISFIED-only line and never accompanies a DEFERRED one). A
 subagent fallback pass counts toward the review gate exactly like an external pass —
 it's another fresh, context-isolated re-roll in its own context. (When the reviewer is already Claude
 subagents, this *is* the normal path, not a fallback.)
@@ -128,7 +130,7 @@ review-pass.py finding-add --file <rundir>/<findings-file> --path <file> --line 
     --writer <enum> --purpose "<a ## Purpose line, VERBATIM, or ->" \
     --repro "<what makes it fail>" --fix "<the concrete fix>"   # what `emit-finding.py` runs
 review-pass.py verify --file <rundir>/<progress-file> --head-sha <the PR's LIVE head> \
-    --verdict satisfied|not-satisfied [--amendments-ruled N]    # DOES THIS PASS COUNT?
+    --verdict satisfied|not-satisfied|deferred [--amendments-ruled N]   # DOES THIS PASS COUNT? (deferred = reviewer raised a request, not a verdict)
 review-pass.py self-test                    # the fixtures, and the proof each rule is pinned by one
 ```
 
@@ -516,8 +518,9 @@ it attacks a declared non-goal. The proof machinery had become the thing under r
 measured against (checked for **every** pass — see below); a `NOT SATISFIED` pass records **no gating
 finding**; a `SATISFIED` pass records **one that stands**; **no verdict is given at all for a pass that is
 COMPLETE** (`--verdict` is REQUIRED — the rule below cannot be switched off by omitting its input); a
-required field is missing; `writer` is outside the enum; `purpose` is not a verbatim `## Purpose` line; or
-`writer` contradicts the repro. It still **cannot say `SATISFIED`** and still **cannot raise `reviews_ok`**
+`deferred` pass is **complete with no outstanding `plan_amendment_request`** (a deferral that points at
+nothing — it owes a binary verdict); a required field is missing; `writer` is outside the enum; `purpose`
+is not a verbatim `## Purpose` line; or `writer` contradicts the repro. It still **cannot say `SATISFIED`** and still **cannot raise `reviews_ok`**
 — it can only ever **subtract** a pass, never grant one.
 
 **THE VERDICT/FINDINGS RULE IS AN IF AND ONLY IF, AND BOTH HALVES ARE ENFORCED: `NOT SATISFIED` exactly
@@ -637,7 +640,8 @@ codex exec --sandbox workspace-write -c "sandbox_workspace_write.network_access=
    It also refuses to append to a progress file that could not be read back — most often one holding no \
    pass_identity, which is written for you before you are launched. That refusal is about the FILE, not \
    your event: it means the pass was not dispatched properly, so do not retry and do not create the file \
-   yourself — say so in your report and stop. \
+   yourself — say so in your report and stop, and make your report's terminal line \
+   'VERDICT: DEFERRED — <one-line reason>' so the orchestrator has a matchable line to route on. \
    After every planned unit is done, do a brief UNSTRUCTURED ADVERSARIAL SWEEP: deliberately hunt for \
    defects no plan unit would naturally catch — cross-unit interactions, unstated assumptions, edge \
    cases, and whole categories the plan did not enumerate. This complements the plan, never replaces \
@@ -681,7 +685,12 @@ codex exec --sandbox workspace-write -c "sandbox_workspace_write.network_access=
    certainty relative to the rest. It is a calibration signal, NOT a finding, and does not weaken your \
    SATISFIED — do not manufacture a concern to fill it; if identifying it surfaces a real GATING defect, \
    record it with the tool and return NOT SATISFIED instead. End with exactly one line: \
-   'VERDICT: SATISFIED' or 'VERDICT: NOT SATISFIED'." < /dev/null   # run in background
+   'VERDICT: SATISFIED' or 'VERDICT: NOT SATISFIED'. \
+   The ONE exception is when you did NOT render a verdict because you raised a separate request the \
+   orchestrator must handle FIRST — you appended a plan_amendment_request naming a plan gap, or the \
+   dispatch was broken and you are stopping: then end with 'VERDICT: DEFERRED — <one-line reason>' and do \
+   NOT fabricate SATISFIED or NOT SATISFIED. A deferral is a REQUEST, not a verdict; the orchestrator \
+   routes it to the tool, which reads the progress file and decides what to do next." < /dev/null   # run in background
 ```
 
 **Redirect stdin from `/dev/null` (`< /dev/null`).** `codex exec` reads stdin and, when a prompt is
@@ -700,7 +709,7 @@ with a parser written fresh each wake. That is precisely how a driver read `gh p
 
 ```
 review-pass.py verify --file <rundir>/<active attempt's progress file> --head-sha <the PR's LIVE head> \
-    --verdict satisfied|not-satisfied
+    --verdict satisfied|not-satisfied|deferred
 ```
 
 **`--verdict` is what you READ in the report, TOLD to the tool** — the tool still never opens
@@ -708,6 +717,16 @@ review-pass.py verify --file <rundir>/<active attempt's progress file> --head-sh
 rule, and that rule is an **IF AND ONLY IF**: **`not-satisfied` exactly when at least one GATING finding
 stands.** A verdict that blocks a PR must name what blocks it — **and a finding that blocks a PR cannot be
 waved through by the verdict.** Both halves make a pass `unusable`; neither can grant one.
+
+**When the report's terminal line is `VERDICT: DEFERRED`** — the reviewer raised a separate request the
+orchestrator must handle first (it appended a `plan_amendment_request`, or the dispatch was broken and it
+stopped) instead of rendering a verdict — **OR** there is no binary verdict but the progress file holds an
+unruled `plan_amendment_request`, **pass `--verdict deferred`.** `deferred` is **not** a verdict and never
+reaches the coherence rule; it hands control to the progress file, and the tool answers with the same
+routing verdicts as any other pass — **`amended`** (fold the amendment and re-run), **`incomplete`**
+(the pass stopped early — relaunch), or **`unusable`** (a spurious deferral: nothing was outstanding, so
+it owes a binary verdict). **NEVER fabricate a binary `satisfied`/`not-satisfied` for the reviewer** — if
+it did not rule, you do not rule for it.
 
 **`--verdict` is REQUIRED, and a COMPLETE pass verified without it is `unusable` — never `ok`.** It used to
 be optional, and that made the only mechanical check on the reviewer's own verdict a guard a driver
@@ -726,7 +745,7 @@ pass is a trapdoor, not a disclosure:
 | `ok` | 0 | the artifacts are sound: a `pass_identity` naming **this** PR, **this** pass, **this** launch attempt and **the live head SHA**; a **usable intent block** for this PR; every planned unit `done` **once**, with concrete evidence, after a `started` for it; every `done` for a unit that is **actually in the plan**; no unruled amendment; and the verdict you gave **coheres** with the findings | **tally the verdict you passed** |
 | `incomplete` | 1 | sound, but a planned unit has no `done` — the pass has not covered its plan | it is still working (or it stopped early — the meaningful-progress rule decides which). **Never tally a verdict from it** |
 | `amended` | 1 | sound, but the reviewer raised a `plan_amendment_request` nobody has ruled on | fold it into the plan and restart the pass, or ignore it with a note — then re-run with `--amendments-ruled N` |
-| `unusable` | 1 | the artifacts are **defective** — a short SHA or any other malformed identifier, a `done` for an unplanned unit, an evidence-free `done`, a `done` that no `started` precedes, a SECOND `done` for one unit, a hand-written line of the wrong shape, an identity naming another commit or another attempt; **no usable intent block for the PR** (`pr-adoption.md` step 3a — checked for **every** pass, including one that found nothing); a **verdict that does not cohere with the findings** in *either* direction (**a `not-satisfied` that recorded no GATING finding**, or a **`satisfied` that recorded one that stands**); **NO verdict at all on a COMPLETE pass** (the coherence rule's input may not be omitted); a finding missing a field, a `writer` outside the enum, a `purpose` that is not a verbatim `## Purpose` line, or a `writer` its own repro contradicts | the pass **CANNOT count, whatever its report says.** Treat it as a reviewer system failure (retry / fresh-subagent fallback), never as a verdict. **An `unusable` for a missing intent is NOT a reviewer failure** — it means the run skipped `pr-adoption.md` step 3a: write the intent, then re-dispatch the pass. **Neither is one for a missing verdict** — that is YOUR call being wrong, not the pass: read the report's `VERDICT:` line and pass it. (The CLI refuses that call outright — `--verdict` is required — so this verdict is reachable only by an in-process caller) |
+| `unusable` | 1 | the artifacts are **defective** — a short SHA or any other malformed identifier, a `done` for an unplanned unit, an evidence-free `done`, a `done` that no `started` precedes, a SECOND `done` for one unit, a hand-written line of the wrong shape, an identity naming another commit or another attempt; **no usable intent block for the PR** (`pr-adoption.md` step 3a — checked for **every** pass, including one that found nothing); a **verdict that does not cohere with the findings** in *either* direction (**a `not-satisfied` that recorded no GATING finding**, or a **`satisfied` that recorded one that stands**); **NO verdict at all on a COMPLETE pass** (the coherence rule's input may not be omitted); **a spurious `deferred`** (`--verdict deferred` on a pass that is complete with **no** outstanding `plan_amendment_request` — a deferral that points at nothing); a finding missing a field, a `writer` outside the enum, a `purpose` that is not a verbatim `## Purpose` line, or a `writer` its own repro contradicts | the pass **CANNOT count, whatever its report says.** Treat it as a reviewer system failure (retry / fresh-subagent fallback), never as a verdict. **An `unusable` for a missing intent is NOT a reviewer failure** — it means the run skipped `pr-adoption.md` step 3a: write the intent, then re-dispatch the pass. **Neither is one for a missing verdict** — that is YOUR call being wrong, not the pass: read the report's `VERDICT:` line and pass it. (The CLI refuses that call outright — `--verdict` is required — so the *absent*-verdict case is reachable only by an in-process caller; a spurious `deferred` reaches it from the CLI too, and means the reviewer owes a binary verdict or the request it meant to raise) |
 
 **`ok` IS NOT `SATISFIED`, and the tool will never say `SATISFIED`.** It does not open
 `review-<pr>-<n>.txt` and does not parse the reviewer's prose — the VERDICT is the reviewer's **judgment**
