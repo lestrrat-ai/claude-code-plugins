@@ -1246,7 +1246,7 @@ def decide(events: "list[dict]", units: "dict[str, dict]", ruled: int,
     a NOT SATISFIED into a pass, raise `reviews_ok`, or merge anything; a tool that could accept would merge
     a PR nobody reviewed, and a bug in one that can only refuse costs a re-review.
     """
-    _announced, done = walk_progress(events, units)
+    _, done = walk_progress(events, units)  # drops the announced set
 
     amendments = [e for e in events if e["type"] == AMENDMENT]
     unruled = len(amendments) - ruled
@@ -1335,7 +1335,7 @@ def plan_path(progress: Path) -> Path:
     One derivation, so `emit` cannot be judged against a plan `verify` will not open. (The plan is
     per-PASS, not per-attempt: a relaunch reuses it unchanged, so the attempt is not in its name.)
     """
-    pr, npass, _attempt = parse_name(progress)
+    pr, npass, _ = parse_name(progress)  # drops the attempt
     return progress.parent / PLAN_NAME.format(pr=pr, **{"pass": npass})
 
 
@@ -1361,7 +1361,7 @@ def evaluate(progress: Path, head_sha: str, ruled: int = 0,
     """
     try:
         plan = plan_path(progress)
-        pr, _npass, _attempt = parse_name(progress)
+        pr, _, _ = parse_name(progress)  # drops npass, attempt
         events, units = check_progress_file(text=read_text(progress, "progress file"), path=progress,
                                             plan=lambda: load_plan(plan), head_sha=head_sha)
         # MUTATE:intent-required:pass
@@ -1525,7 +1525,7 @@ def cmd_emit(args) -> int:
     fifteen minutes later by a `verify` the reviewer never sees.
     """
     path = Path(args.file)
-    _pr, _npass, _attempt = parse_name(path)
+    parse_name(path)  # validates the filename; return discarded
     # The RECORD IS THE FLAGS — VERBATIM. `--status done` with no `--evidence` is an event with no
     # `evidence` key, and `--status started --evidence x` is one carrying a key nothing reads, so the flags
     # are judged by the same `check_event` that judges a hand-written line and the evidence rule exists in
@@ -1787,7 +1787,7 @@ def active_attempts(rundir: Path) -> "list[Path]":
         k = int(attempt)
         if key not in best or k > best[key][0]:
             best[key] = (k, path)
-    return [path for _k, path in best.values()]
+    return [path for _, path in best.values()]  # drops the attempt key
 
 
 def all_attempts(rundir: Path) -> "list[tuple[Path, bool]]":
@@ -1811,7 +1811,7 @@ def latest_pass_per_pr(rundir: Path) -> "dict[str, int]":
     latest: dict[str, int] = {}
     for path in sorted(rundir.glob("review-*-*" + PROGRESS_SUFFIX)):
         try:
-            pr, npass, _attempt = parse_name(path)
+            pr, npass, _ = parse_name(path)  # drops the attempt
         except Defect:
             continue
         n = int(npass)
@@ -1823,7 +1823,7 @@ def latest_pass_per_pr(rundir: Path) -> "dict[str, int]":
 def report_path(progress: Path) -> Path:
     """The reviewer's report (`review-<pr>-<n>.txt`) — per PASS, beside the progress file. `status` scrapes
     its `VERDICT:` tail for a convenience read; `verify` never opens it and neither does the gate."""
-    pr, npass, _attempt = parse_name(progress)
+    pr, npass, _ = parse_name(progress)  # drops the attempt
     return progress.parent / f"review-{pr}-{npass}.txt"
 
 
@@ -2112,7 +2112,7 @@ def cmd_status(args) -> int:
     terminal_flags: list[bool] = []
     hidden = 0
     for progress, is_active in pairs:
-        pr, npass, _attempt = parse_name(progress)
+        pr, npass, _ = parse_name(progress)  # drops the attempt
         superseded = (not is_active) or (int(npass) < latest_pass.get(pr, 0))
         try:
             row = status_row(progress, now, args.verify, ledger_rows, superseded)
@@ -2353,7 +2353,7 @@ def dispatch(args) -> int:
 
 
 def main(argv: "list[str] | None" = None) -> int:
-    p, _cmds = build_parser()
+    p, _ = build_parser()  # drops the commands map
     return dispatch(p.parse_args(argv))
 
 

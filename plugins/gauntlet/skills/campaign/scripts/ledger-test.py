@@ -293,11 +293,13 @@ def grid(L: ModuleType, out: str, fields: "tuple[str, ...]",
 # --- the fixtures -------------------------------------------------------------
 #
 # Every fixture takes the ACCESSOR under test and its own scratch directory, handed to it by `run()`. A
-# fixture that asserts on a PURE function needs no file, so it names that argument `_tmp`: the signature is
-# fixed by the CASES table, and the leading underscore is how a parameter says it is deliberately unused
-# rather than forgotten.
+# fixture that asserts on a PURE function needs no file, so it names that argument `_`: the signature is
+# fixed by the CASES table (`run` calls `fn(L, work)` positionally, so the name is free), and a bare `_` is
+# how a parameter says it is deliberately unused rather than forgotten. It must be a BARE `_`, not a
+# descriptive `_tmp`: pyright's language server grays a named-underscore parameter as "not accessed", and
+# only a bare `_` is silent.
 
-def t_escape_injective(L: ModuleType, _tmp: Path) -> None:
+def t_escape_injective(L: ModuleType, _: Path) -> None:
     """Two DIFFERENT values NEVER render as the same cell.
 
     A non-injective escaping is a NEW LIE inside the code written to stop lies: `a|b` and `a\\|b` are
@@ -382,7 +384,7 @@ def bare(cell: str) -> "list[str]":
     return out
 
 
-def t_escape_invariant(L: ModuleType, _tmp: Path) -> None:
+def t_escape_invariant(L: ModuleType, _: Path) -> None:
     """The escaped cell holds NO BARE grid metacharacter: no unescaped `|`, no line break, no control
     char — and it never opens with `#`. This is what makes the ` | ` separator and the `# ` config prefix
     mean ONE thing wherever they appear.
@@ -413,7 +415,7 @@ def t_escape_invariant(L: ModuleType, _tmp: Path) -> None:
               f"invisible, and rstrip() eats it")
 
 
-def t_escape_mapping(L: ModuleType, _tmp: Path) -> None:
+def t_escape_mapping(L: ModuleType, _: Path) -> None:
     r"""The escape TABLE itself, character by character — and ordinary text left BYTE-IDENTICAL.
 
     The invariant above is satisfied by more than one escaping (drop the `\n` branch and a newline still
