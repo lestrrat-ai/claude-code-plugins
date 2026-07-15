@@ -47,7 +47,8 @@ Given a GitHub PR link, process Copilot review items one at a time. NEVER assume
 Resolve bundled resources relative to this `SKILL.md`. Script directory = `scripts/` next to this file.
 
 - Installed skill layout: skill directory contains `SKILL.md` + `scripts/` as siblings. When installed
-  as part of the `gauntlet` plugin it lives under `${CLAUDE_PLUGIN_ROOT}/skills/copilot-address-reviews/`.
+  as part of the `gauntlet` plugin, derive its absolute path from the active `SKILL.md` path supplied by
+  the host. Do not depend on a plugin-root environment variable.
 - Repository layout: skill directory = `plugins/gauntlet/skills/copilot-address-reviews/`.
 - Run scripts by absolute path from project root. ALWAYS pass `--tmp-dir "$PROJECT/.gauntlet/tmp"` so output lands in project `.gauntlet/tmp/`, never skill directory.
 - NEVER assume current working directory already is skill directory.

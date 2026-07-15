@@ -27,6 +27,8 @@ to do with the findings.
 
 ## How to use it
 
+Invoke it as `/gauntlet:review <target>` in Claude Code or `$gauntlet:review <target>` in Codex.
+
 Point it at what you want reviewed — a pull request, a branch, a directory, a single file, or the
 whole repository — and it works out how deep to go from the size of the target. A small target gets a
 single thorough pass across all three lenses; a
@@ -66,7 +68,8 @@ confirmed fix and run them through the gauntlet.
 Say **no** (or say nothing) and it stops there: report-only, no side effects. Say **yes** and it
 implements each Confirmed or Adjusted fix — the change that finding describes and no other defects —
 on its own branch, opens one pull request per finding, and hands those PRs to
-[`/gauntlet:campaign`](../campaign/README.md). Campaign takes it from there: it adopts the PRs, gates
+[`gauntlet:campaign`](../campaign/README.md). Invoke it as `/gauntlet:campaign` in Claude Code or
+`$gauntlet:campaign` in Codex. Campaign takes it from there: it adopts the PRs, gates
 each one through the reviews its tier requires plus CI, and merges. Refuted and Uncertain findings
 are left alone.
 

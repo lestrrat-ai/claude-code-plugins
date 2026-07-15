@@ -24,7 +24,8 @@ already correct, the item is rejected with the reasoning recorded and no fix mad
 
 ## How to use it
 
-Invoke it with a GitHub PR URL:
+Invoke it with a GitHub PR URL. Use `/gauntlet:copilot-address-reviews` in Claude Code or
+`$gauntlet:copilot-address-reviews` in Codex:
 
 ```
 address the Copilot reviews on https://github.com/owner/repo/pull/42

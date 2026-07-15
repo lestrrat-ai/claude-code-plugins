@@ -59,15 +59,15 @@ reviewer that runs a **different agent/model** — e.g. [Codex CLI](https://gith
 (`codex exec`). A different engine catches defects a same-model re-roll can miss.
 
 To use one, either name it when you invoke the campaign ("review with codex") or record it as your
-preferred reviewer (in memory or `CLAUDE.md`) and the pipeline will pick it up. If an external
+preferred reviewer (in memory, `AGENTS.md`, or `CLAUDE.md`) and the pipeline will pick it up. If an external
 reviewer can't return a verdict because of a system problem (quota, auth, timeout), the pipeline
 retries once and then falls back to its own subagents, so an outage slows a run rather than stalling
 it.
 
 ### Optional — tell it how to report to you
 
-The plugin deliberately does **not** set how Claude talks to you. That is your environment's business
-(`CLAUDE.md`, an output style), not a plugin's, and a skill that dictated tone would just fight whatever
+The plugin deliberately does **not** set how the host talks to you. That is your environment's business
+(`AGENTS.md`, `CLAUDE.md`, or an output style), not a plugin's, and a skill that dictated tone would just fight whatever
 you had already configured.
 
 It's still worth setting something. A campaign reports on every wake, for hours, and those updates are all
@@ -75,7 +75,7 @@ you see of it. Without a contract, the update that needs your decision reads muc
 don't.
 
 If you don't already have a style you like, [`docs/reporting-style.md`](docs/reporting-style.md) is a
-sample to copy into your `CLAUDE.md` and edit.
+sample to copy into your `AGENTS.md` or `CLAUDE.md` and edit.
 
 ## Scratch files
 

@@ -125,6 +125,16 @@ while IFS= read -r name; do
 done < <(jq -r '.plugins[].name' "$codex_marketplace")
 
 echo
+echo "==> shared agent instructions"
+[[ -f AGENTS.md ]] || fail "missing AGENTS.md"
+[[ -L CLAUDE.md ]] || fail "CLAUDE.md must be a symlink to AGENTS.md"
+[[ $(readlink CLAUDE.md) == AGENTS.md ]] ||
+  fail "CLAUDE.md must target AGENTS.md"
+grep -Fq '## Keep Claude Code and Codex compatible' AGENTS.md ||
+  fail "AGENTS.md is missing the cross-runtime compatibility contract"
+[[ -f docs/runtime-compatibility.md ]] || fail "missing docs/runtime-compatibility.md"
+
+echo
 echo "==> skill directories"
 while IFS= read -r skill; do
   dir=${skill%/SKILL.md}
@@ -148,6 +158,15 @@ while IFS= read -r skill; do
   grep -Eq '^description:[[:space:]]*\S' "$skill" ||
     fail "$skill: frontmatter is missing a non-empty 'description'"
 done < <(find plugins -path '*/skills/*/SKILL.md' -type f | sort)
+
+host_specific_review_terms=$(
+  grep -nE 'subagent_type:|Agent-tool block|Use the Agent tool' \
+    plugins/gauntlet/skills/review/SKILL.md \
+    plugins/gauntlet/skills/copilot-address-reviews/SKILL.md || true
+)
+if [[ -n $host_specific_review_terms ]]; then
+  fail "shared review skills contain Claude-only agent calls: $host_specific_review_terms"
+fi
 
 echo
 echo "==> bundled script invocations"
