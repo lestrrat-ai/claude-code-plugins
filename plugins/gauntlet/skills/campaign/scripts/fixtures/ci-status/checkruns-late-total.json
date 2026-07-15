@@ -1,0 +1,353 @@
+{
+  "why": "A LATER check-runs page reports total_count=32 while page one reported 31 and the slurped read collected 31 rows. Reading total_count off the FIRST page only, the completeness test compared 31 == 31 and returned GREEN \u2014 the 32nd row GitHub holds (perhaps the FAILING one) was never in our hands. total_count is GitHub's per-commit count, RECOMPUTED per request, so a check that registers between two page fetches makes a later page report more: the same between-calls race the moved-head and cross-source rules already fail closed on. Every page's count is now checked against the collected rows; a page that disagrees is a short read and not a green. This pins the check-runs family; the status family gets the same test in read_pages",
+  "required_set": "none",
+  "pr": "35",
+  "api": {
+    "check-runs": {
+      "response": [
+        {
+          "total_count": 31,
+          "check_runs": [
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "rest-only-0",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/late/job/0"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "rest-only-1",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/late/job/1"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "rest-only-2",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/late/job/2"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "rest-only-3",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/late/job/3"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "rest-only-4",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/late/job/4"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "rest-only-5",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/late/job/5"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "rest-only-6",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/late/job/6"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "rest-only-7",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/late/job/7"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "rest-only-8",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/late/job/8"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "rest-only-9",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/late/job/9"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "rest-only-10",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/late/job/10"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "rest-only-11",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/late/job/11"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "rest-only-12",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/late/job/12"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "rest-only-13",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/late/job/13"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "rest-only-14",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/late/job/14"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "rest-only-15",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/late/job/15"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "rest-only-16",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/late/job/16"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "rest-only-17",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/late/job/17"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "rest-only-18",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/late/job/18"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "rest-only-19",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/late/job/19"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "rest-only-20",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/late/job/20"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "rest-only-21",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/late/job/21"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "rest-only-22",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/late/job/22"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "rest-only-23",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/late/job/23"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "rest-only-24",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/late/job/24"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "rest-only-25",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/late/job/25"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "rest-only-26",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/late/job/26"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "rest-only-27",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/late/job/27"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "rest-only-28",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/late/job/28"
+            },
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "rest-only-29",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/late/job/29"
+            }
+          ]
+        },
+        {
+          "total_count": 32,
+          "check_runs": [
+            {
+              "head_sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+              "name": "rest-only-30",
+              "app": {
+                "id": 15368
+              },
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": "https://github.com/o/r/actions/runs/late/job/30"
+            }
+          ]
+        }
+      ]
+    },
+    "status": {
+      "response": [
+        {
+          "sha": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+          "state": "pending",
+          "total_count": 0,
+          "statuses": []
+        }
+      ]
+    },
+    "rollup": {
+      "response": {
+        "headRefOid": "1499c72bf1715e74abb0e28658b515eaa2c0c971",
+        "statusCheckRollup": []
+      }
+    }
+  },
+  "expect": {
+    "verdict": "unusable",
+    "ci": "pending",
+    "needle": "check-runs: GitHub reported total_count=32",
+    "promoted": false
+  }
+}

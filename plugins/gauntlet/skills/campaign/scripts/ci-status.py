@@ -633,10 +633,13 @@ def read_pages(fetch: Fetch, source: str, argv: list[str], rows_key: str) -> tup
     A VERDICT FROM IT.**
 
     `total_count` is GitHub's own count of the rows it holds FOR THE COMMIT — not for the page — and it is
-    read off the first page and compared against the rows collected across ALL of them, which is exactly what
-    `--slurp` gives us. **The honest limit** (`stage-2-ci.md`, "Honest limits"): this catches a read that came
-    up SHORT of what GitHub said it holds. It does not, and cannot, prove that GitHub told us the truth, and
-    `/check-runs` is capped at the 1000 most recent check suites regardless.
+    read off EVERY page and each value compared against the rows collected across ALL of them, which is
+    exactly what `--slurp` gives us. Reading only the first page's count was itself a false green: GitHub
+    RECOMPUTES the count per request, so a check registered mid-fetch makes a later page report MORE than the
+    first, and a row we never received slips through. **The honest limit** (`stage-2-ci.md`, "Honest limits"):
+    this catches a read that came up SHORT of what GitHub said it holds, or pages that DISAGREE about it. It
+    does not, and cannot, prove that GitHub told us the truth, and `/check-runs` is capped at the 1000 most
+    recent check suites regardless.
     """
     pages = fetch(source, argv)
     # A `--slurp` that did not yield an ARRAY is a response we cannot read — and the row loop below would
@@ -676,21 +679,36 @@ def read_pages(fetch: Fetch, source: str, argv: list[str], rows_key: str) -> tup
     # A COUNT WE CANNOT READ IS REFUSED, for the same reason `headRefOid` is: the completeness test below
     # cannot be MADE without it, and a fail-closed rule that cannot fire is not a rule — it is a hole with a
     # comment above it. An absent count is NOT a count of zero.
-    total = field(source, first, "total_count", int, why=(
+    #
+    # AND IT IS READ OFF EVERY PAGE, NOT JUST THE FIRST — that was a false green (a `network`-writer finding
+    # on a paginated read). `total_count` is GitHub's per-commit count, RECOMPUTED per request, so a check
+    # that registers BETWEEN two page fetches makes a LATER page report a HIGHER count than the first: page
+    # one says 31, we collect 31, page two says 32, and a rule that trusted page one alone waves the missing
+    # 32nd row (perhaps the FAILING one) through as green. This is the same between-calls race the moved-head
+    # and cross-source rules already fail closed on. So the count is read off every page (`field` refuses an
+    # absent/non-integer count on ANY page, not only the first), and the collected rows are checked against
+    # ALL of them.
+    totals = [field(source, page, "total_count", int, why=(
         "That is GitHub's own count of the rows it holds for this commit, and it is the ONLY thing we can "
         "check our read against: without it we cannot tell a complete read from a truncated one, and "
-        "cannot-tell is not a green."))
+        "cannot-tell is not a green. It is read off EVERY page — a later page reporting a different count is "
+        "a check that registered mid-fetch, and the row it added could be the failing one.")) for page in pages]
 
-    # WHAT WE COLLECTED MUST BE WHAT GITHUB SAYS IT HOLDS. A short read is a hole we KNOW about, and a hole
-    # we know about is never green. (This is not the marker's `count` rule, which asks a DIFFERENT question,
+    # WHAT WE COLLECTED MUST BE WHAT GITHUB SAYS IT HOLDS, ON EVERY PAGE. A page whose count disagrees with
+    # the rows we collected is a short read (or a response whose pages contradict each other), and a hole we
+    # KNOW about is never green. (This is not the marker's `count` rule, which asks a DIFFERENT question,
     # downstream: "did every row this fetch produced survive into the file?")
-    if total != len(rows):
+    off = sorted({t for t in totals if t != len(rows)})
+    if off:
         raise FetchError(
-            f"{source}: GitHub reported total_count={total} but the paginated read collected "
-            f"{len(rows)} row(s) — EVIDENCE IS MISSING. A row GitHub holds for this commit is not in our "
-            f"hands, and it could be the FAILING one. No verdict is derived from a read we KNOW is short. "
-            f"(/check-runs is also capped at the 1000 most recent check suites; --paginate defeats page-size "
-            f"truncation, and this count defeats a short read — neither proves completeness at that scale.)"
+            f"{source}: GitHub reported total_count={' and '.join(str(t) for t in off)} but the paginated "
+            f"read collected {len(rows)} row(s) — EVIDENCE IS MISSING. A row GitHub holds for this commit is "
+            f"not in our hands, and it could be the FAILING one. total_count is read off EVERY page: a check "
+            f"registered between two page fetches makes a LATER page report more than the first, and a read "
+            f"that trusted page one would miss it. No verdict is derived from a read we KNOW is short, or a "
+            f"response whose pages DISAGREE about what the commit holds. (/check-runs is also capped at the "
+            f"1000 most recent check suites; --paginate defeats page-size truncation, and this count defeats "
+            f"a short read — neither proves completeness at that scale.)"
         )
     return rows, first
 
@@ -772,6 +790,16 @@ def fetch_statuses(fetch: Fetch, head_sha: str) -> tuple[list[dict], dict, list[
     # two being INDEPENDENT: the header carries ours, the rows carry GitHub's, so they CAN disagree, and on a
     # response fetched for a superseded commit they WILL. It is the response's own top-level `.sha`, and it
     # is present even at zero statuses, which is what makes the marker able to prove we asked.
+    #
+    # READ OFF THE FIRST PAGE, AND THAT IS CORRECT — unlike `total_count` (read off every page in
+    # `read_pages`, because GitHub RECOMPUTES it per request and a later page can report more). `.sha` is not
+    # a volatile count; it is the commit the endpoint's ref resolves to, and this endpoint —
+    # `commits/<head_sha>/status`, the COMBINED status — is pinned to an IMMUTABLE 40-hex oid (`check_head_sha`).
+    # An immutable commit always resolves to itself, so GitHub returns that SAME `.sha` on every page of the
+    # SAME request. Verified live: `gh api repos/<repo>/commits/89739ae/status` returns `.sha` =
+    # `89739ae4ba3a95…` (the ref echoed back). A page carrying a DIFFERENT `.sha` is therefore not a response
+    # this endpoint produces — it would require the commit id to change mid-pagination, which cannot happen —
+    # so cross-page sha agreement is a guard against an input the real API cannot emit, and is not added.
     sha = s(field("status", first, "sha", str))
     rows = []
     seen: list[RestStatus] = []

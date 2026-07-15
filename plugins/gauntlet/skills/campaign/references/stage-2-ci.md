@@ -102,8 +102,10 @@ the **slurped** pages — so a marker cannot exist for a fetch that did not run:
 #     returned ZERO rows has no oid to carry: its marker's sha is "-", and inventing one is forbidden.
 #     THE READ MUST BE COMPLETE: `total_count` is GitHub's own count of the rows it holds FOR THE COMMIT —
 #     not for the page — so the SLURPED rows (every page, flattened) are checked against it and a SHORT READ
-#     is a HARD ERROR, never a green with a footnote. A count we cannot READ is refused too: a rule that
-#     cannot fire is not a rule. Same test, same reason, in (2).
+#     is a HARD ERROR, never a green with a footnote. It is checked against EVERY page's count, not the first
+#     alone: GitHub recomputes the count per request, so a check that registers mid-fetch makes a later page
+#     report more, and a row we never received would slip past a first-page-only test. A count we cannot READ
+#     is refused too: a rule that cannot fire is not a rule. Same test, same reason, in (2).
 gh api --paginate --slurp "repos/<owner>/<repo>/commits/<head_sha>/check-runs" | jq -c '
   if ([.[] | select((.check_runs|type) != "array")] | length) > 0
     then error("check-runs: a PAGE carries no check_runs ARRAY — a page that is MISSING the row array is
@@ -111,15 +113,17 @@ gh api --paginate --slurp "repos/<owner>/<repo>/commits/<head_sha>/check-runs" |
       response, leave total_count 0, and the count agrees with the zero rows collected, containment holds,
       and the verdict is GREEN. An absence read as nothing-wrong, one field along.")
     else . end
-  | [.[].check_runs[]] as $r | (.[0].total_count) as $total
-  | if ($total|type) != "number" or ($total|floor) != $total
-    then error("check-runs: the response carries no integer total_count — that is the count GitHub itself
-      reports for this commit, and it is the ONLY thing we can check our read against. Without it we cannot
-      tell a complete read from a truncated one, and cannot-tell is not a green.")
-    elif $total != ($r|length)
-    then error("check-runs: total_count=\($total) but the slurped read collected \($r|length) row(s) —
-      EVIDENCE IS MISSING. A row GitHub holds for this commit is not in our hands, and it could be the
-      FAILING one. No verdict is derived from a read we KNOW is short.")
+  | [.[].check_runs[]] as $r | [.[].total_count] as $totals
+  | if ([$totals[] | select((type) != "number" or (floor) != .)] | length) > 0
+    then error("check-runs: a page carries no integer total_count — that is the count GitHub itself
+      reports for this commit, read off EVERY page, and it is the ONLY thing we can check our read against.
+      Without it we cannot tell a complete read from a truncated one, and cannot-tell is not a green.")
+    elif ([$totals[] | select(. != ($r|length))] | length) > 0
+    then error("check-runs: total_count=\($totals | map(select(. != ($r|length))) | unique | map(tostring)
+      | join(" and ")) but the slurped read collected \($r|length) row(s) — EVIDENCE IS MISSING. total_count
+      is read off EVERY page: a check registered between two page fetches makes a LATER page report more than
+      the first, and a read that trusted page one would miss it. A row GitHub holds for this commit is not in
+      our hands, and it could be the FAILING one. No verdict is derived from a read we KNOW is short.")
     else . end
   | ($r[] | {row:"checkrun", sha:.head_sha, name:.name, app_id:((.app.id // "-")|tostring),
              status:(.status|ascii_upcase),
@@ -145,16 +149,18 @@ gh api --paginate --slurp "repos/<owner>/<repo>/commits/<head_sha>/status" | jq 
       with an EMPTY one, and this is the family that carries the FAILING Jenkins status: read the absence as
       zero statuses and the commit that has a failing one reports none at all.")
     else . end
-  | [.[].statuses[]] as $s | (.[0].sha) as $sha | (.[0].total_count) as $total
-  | if ($total|type) != "number" or ($total|floor) != $total
-    then error("status: the response carries no integer total_count — see (1): without it we cannot tell a
+  | [.[].statuses[]] as $s | (.[0].sha) as $sha | [.[].total_count] as $totals
+  | if ([$totals[] | select((type) != "number" or (floor) != .)] | length) > 0
+    then error("status: a page carries no integer total_count — see (1): without it we cannot tell a
       complete read from a truncated one, and cannot-tell is not a green.")
     elif ($sha|type) != "string" or ($sha|length) == 0
     then error("status: the response carries no sha — GitHub names the commit at the TOP LEVEL, even at zero
       statuses, and a response that does not name it cannot say which commit its rows are about.")
-    elif $total != ($s|length)
-    then error("status: total_count=\($total) but the slurped read collected \($s|length) row(s) —
-      EVIDENCE IS MISSING, and the status we did not get could be the FAILING Jenkins one.")
+    elif ([$totals[] | select(. != ($s|length))] | length) > 0
+    then error("status: total_count=\($totals | map(select(. != ($s|length))) | unique | map(tostring)
+      | join(" and ")) but the slurped read collected \($s|length) row(s) — EVIDENCE IS MISSING, and the
+      status we did not get could be the FAILING Jenkins one. total_count is read off EVERY page: a check
+      registered mid-fetch makes a later page report more than the first.")
     else . end
   | ($s[] | {row:"status", sha:$sha, context:.context, state:(.state|ascii_upcase)}),
     {row:"source", source:"status", sha:$sha, count:($s|length|tostring)}'
@@ -254,16 +260,21 @@ machine-read convention as `state.jsonl` and the review plan/progress files (`fi
   (Illustrative, and expected to drift: observed on 2026-07-13 on
   `repos/cli/cli/commits/trunk/status`. Whether *that* commit still carries zero statuses is a **live
   fact that changes**; the API's behavior **at zero** is the permanent point.)
-- **A SHORT READ IS NOT A GREEN — CHECK WHAT YOU COLLECTED AGAINST GITHUB'S OWN `total_count`.** Both REST
-  families return it, and it counts the rows GitHub holds **for the commit, across ALL pages**, not for the
-  page it sits on (observed 2026-07-14: 27 check runs read at `per_page=5` returns six pages, each reporting
-  `total_count=27`; the *count-is-the-cross-page-total* behavior is the permanent point, the 27 is not). So
-  `total_count` vs the rows the **slurp** collected is a completeness test, and a read that is **short FAILS
-  CLOSED** (`unusable`, refetch): a row GitHub holds and we do not have **could be the failing one**, and a
-  verdict derived from evidence we KNOW has a hole in it is the false green of this whole file wearing a
-  footnote. **A note beside a green is not a disclosure, it is a trapdoor** — the tool used to print exactly
-  that, and it shipped a green anyway. **And a count we cannot READ is refused too** (absent, or not an
-  integer): a fail-closed rule that cannot fire is not a rule.
+- **A SHORT READ IS NOT A GREEN — CHECK WHAT YOU COLLECTED AGAINST GITHUB'S OWN `total_count`, ON EVERY
+  PAGE.** Both REST families return it, and it counts the rows GitHub holds **for the commit, across ALL
+  pages**, not for the page it sits on (observed 2026-07-14: 27 check runs read at `per_page=5` returns six
+  pages, each reporting `total_count=27`; the *count-is-the-cross-page-total* behavior is the permanent
+  point, the 27 is not). So `total_count` vs the rows the **slurp** collected is a completeness test, and a
+  read that is **short FAILS CLOSED** (`unusable`, refetch): a row GitHub holds and we do not have **could be
+  the failing one**, and a verdict derived from evidence we KNOW has a hole in it is the false green of this
+  whole file wearing a footnote. **Every page's count is checked, not the first alone** — GitHub RECOMPUTES
+  the count per request, so a check that registers between two page fetches makes a **later** page report a
+  higher count than the first (page one says 31, we collect 31, page two says 32), and a rule that trusted
+  page one would wave the missing 32nd row through as green; pages that **disagree** about what the commit
+  holds fail closed for the same reason a short read does. **A note beside a green is not a disclosure, it is
+  a trapdoor** — the tool used to print exactly that, and it shipped a green anyway. **And a count we cannot
+  READ is refused too** (absent, or not an integer), **on any page**: a fail-closed rule that cannot fire is
+  not a rule.
 - **A PAGE MISSING ITS ROW ARRAY IS NOT A PAGE WITH NO ROWS — AND NO FIELD READ MAY DEFAULT.** The rule
   above was written and *still passed* on a response whose `statuses` member was simply **not there**:
   `(.statuses // [])` — and `page.get("statuses") or []` in the tool — read the absence as an **empty list**,
