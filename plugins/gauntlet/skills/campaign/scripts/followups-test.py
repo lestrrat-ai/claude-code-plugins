@@ -7,15 +7,16 @@ the entry point that owns the exit code. This module is loaded from there, BY PA
 EVERY FIXTURE MUST PIN A RULE — it must go red if its rule is deleted or weakened. A fixture that would
 still pass with its rule gone tests nothing and manufactures false confidence.
 
-The rendering fixtures lean on the LEDGER's oracle (`ledger.grid`) and its HOSTILE corpus on purpose:
-the store prints through the ledger's `escape_cell()`/`grid_lines()`, so it must be checked by the same
-parser that checks the ledger — a second, weaker copy of the oracle would be free to bless output the
+The rendering fixtures lean on the LEDGER's oracle (`ledger-test.py`'s `grid`) and its hostile corpus on
+purpose: the store prints through the ledger's `escape_cell()`/`grid_lines()`, so it must be checked by the
+same parser that checks the ledger — a second, weaker copy of the oracle would be free to bless output the
 real one rejects.
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import io
 import json
 import re
@@ -26,7 +27,22 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ledger  # noqa: E402
-from ledger import SelfTestFailure, check, escape_cell, hidden_notice  # noqa: E402
+from ledger import escape_cell, hidden_notice  # noqa: E402
+
+# The ledger's test ORACLE — `grid`, `notices`, `check`, `SelfTestFailure`, and the hostile corpus — lives
+# in the ledger's SIBLING suite, `ledger-test.py`, loaded BY PATH (its name is not a legal module name).
+# The follow-up store prints through the ledger's `escape_cell()`/`grid_lines()`, so its output MUST be
+# parsed back by the ledger's OWN oracle — not a friendlier copy, which would be free to bless what the
+# real one rejects. `grid` takes the store's own config-field names and markers; the ledger module is
+# handed in as `L` only for the fixed grid syntax it shares with every store.
+_ledger_test_path = Path(__file__).resolve().parent / "ledger-test.py"
+_spec = importlib.util.spec_from_file_location("ledger_test", _ledger_test_path)
+if _spec is None or _spec.loader is None:  # a broken install — never an input error
+    raise SystemExit(f"followups-test: cannot load the ledger's oracle at {_ledger_test_path}")
+ledger_test = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(ledger_test)
+SelfTestFailure = ledger_test.SelfTestFailure
+check = ledger_test.check
 
 # The module under test. `followups.py` registers itself under this name before it loads these fixtures, so
 # this resolves to the module that is actually RUNNING — not a second copy of the same file.
@@ -657,7 +673,7 @@ def t_refutation_stays_in_the_store(tmp: Path) -> None:
     check(out == f"{fid}\n", f"a refuted follow-up was DROPPED from the store: {out!r}")
     code, out, err = run(["--file", str(path), "table", "--fields", "id,state"])
     check(code == 0, f"table exited {code}: {err!r}")
-    _, _, cells = ledger.grid(out, ("id", "state"), ("store", "rule"), TABLE_MARKERS)
+    _, _, cells = ledger_test.grid(ledger, out, ("id", "state"), ("store", "rule"), TABLE_MARKERS)
     check(cells == [[fid, "refuted"]],
           f"a refuted follow-up is HIDDEN by the default view — the driver's own refutation is unauditable "
           f"unless the user already knows to look: {cells!r}\n{out}")
@@ -837,10 +853,10 @@ def t_a_rejection_is_never_deleted(tmp: Path) -> None:
     # shows it, and it is still there after the store is rewritten by the next write.
     code, shown, err = run(["--file", str(path), "table", "--fields", "id,state"])
     check(code == 0, f"table exited {code}: {err!r}")
-    _, _, cells = ledger.grid(shown, ("id", "state"), ("store", "rule"), TABLE_MARKERS)
+    _, _, cells = ledger_test.grid(ledger, shown, ("id", "state"), ("store", "rule"), TABLE_MARKERS)
     check([c[0] for c in cells] == [b], f"the default view did not hide the rejected entry: {cells!r}")
     code, everything, _ = run(["--file", str(path), "table", "--all", "--fields", "id,state"])
-    _, _, cells = ledger.grid(everything, ("id", "state"), ("store", "rule"), TABLE_MARKERS)
+    _, _, cells = ledger_test.grid(ledger, everything, ("id", "state"), ("store", "rule"), TABLE_MARKERS)
     check([c[0] for c in cells] == [a, b], f"`--all` does not reveal the rejected entry: {cells!r}")
 
     seed(path)  # any write rewrites the WHOLE store — the rejection must come through it
@@ -939,7 +955,7 @@ def t_self_accepted_is_never_mistaken_for_accepted(tmp: Path) -> None:
     for path, fid in ((driven, a), (ruled, b)):
         code, out, err = run(["--file", str(path), "table", "--fields", "id,state"])
         check(code == 0, f"table exited {code}: {err!r}")
-        _, _, cells = ledger.grid(out, ("id", "state"), ("store", "rule"), TABLE_MARKERS)
+        _, _, cells = ledger_test.grid(ledger, out, ("id", "state"), ("store", "rule"), TABLE_MARKERS)
         check(cells and cells[0][1] == state_of(path, fid),
               f"the default view does not show WHO accepted it: {cells!r}\n{out}")
     check(state_of(driven, a) != state_of(ruled, b),
@@ -1196,7 +1212,7 @@ def t_table_hides_closed(tmp: Path) -> None:
     write_lines(path, *(entry_line(id=f"fu{i + 1}", state=s) for i, s in enumerate(STATES)))
     code, out, err = run(["--file", str(path), "table", "--fields", "id,state"])
     check(code == 0, f"table exited {code}: {err!r}")
-    _, _, cells = ledger.grid(out, ("id", "state"), ("store", "rule"), TABLE_MARKERS)
+    _, _, cells = ledger_test.grid(ledger, out, ("id", "state"), ("store", "rule"), TABLE_MARKERS)
     shown = [c[1] for c in cells]
     check(shown == [s for s in STATES if s not in TABLE_HIDDEN_STATES],
           f"the default view hid something other than the closed states — it shows {shown!r}\n{out}")
@@ -1210,9 +1226,9 @@ def t_table_hides_closed(tmp: Path) -> None:
 
     code, out, err = run(["--file", str(path), "table", "--all", "--fields", "id,state"])
     check(code == 0, f"table --all exited {code}: {err!r}")
-    _, _, cells = ledger.grid(out, ("id", "state"), ("store", "rule"), TABLE_MARKERS)
+    _, _, cells = ledger_test.grid(ledger, out, ("id", "state"), ("store", "rule"), TABLE_MARKERS)
     check([c[1] for c in cells] == list(STATES), f"--all did not show every entry: {cells!r}\n{out}")
-    check(ledger.notices(out) == [], f"--all hid nothing, so it must claim nothing was hidden\n{out}")
+    check(ledger_test.notices(out) == [], f"--all hid nothing, so it must claim nothing was hidden\n{out}")
 
 
 def t_table_omission_is_never_silent(tmp: Path) -> None:
@@ -1232,9 +1248,9 @@ def t_table_omission_is_never_silent(tmp: Path) -> None:
             )
             code, out, err = run(["--file", str(path), "table"])
             check(code == 0, f"table exited {code}: {err!r}")
-            _, _, cells = ledger.grid(out, TABLE_DEFAULT_FIELDS, ("store", "rule"), TABLE_MARKERS)
+            _, _, cells = ledger_test.grid(ledger, out, TABLE_DEFAULT_FIELDS, ("store", "rule"), TABLE_MARKERS)
             check(len(cells) == live, f"[{closed}/{live}] {len(cells)} rows shown, not {live}\n{out}")
-            said = [n for n in ledger.notices(out) if n not in TABLE_MARKERS]
+            said = [n for n in ledger_test.notices(out) if n not in TABLE_MARKERS]
             if not closed:
                 check(said == [], f"[{closed}/{live}] nothing was hidden, yet the table says {said!r}")
                 continue
@@ -1242,7 +1258,7 @@ def t_table_omission_is_never_silent(tmp: Path) -> None:
                   f"[{closed}/{live}] the table hid {closed} and reported {said!r}\n{out}")
             # …and the count is what `--all` reveals — derived from the OUTPUT, not the fixture's arithmetic
             _, allout, _ = run(["--file", str(path), "table", "--all"])
-            _, _, allcells = ledger.grid(allout, TABLE_DEFAULT_FIELDS, ("store", "rule"), TABLE_MARKERS)
+            _, _, allcells = ledger_test.grid(ledger, allout, TABLE_DEFAULT_FIELDS, ("store", "rule"), TABLE_MARKERS)
             check(len(allcells) - len(cells) == closed,
                   f"[{closed}/{live}] the notice claims {closed} hidden, --all reveals "
                   f"{len(allcells) - len(cells)} more")
@@ -1251,11 +1267,11 @@ def t_table_omission_is_never_silent(tmp: Path) -> None:
     closed_only = write_lines(tmp / "closed.jsonl", entry_line(id="fu1", state="rejected"),
                               entry_line(id="fu2", state="rejected"))
     code, blank, _ = run(["--file", str(empty), "table"])
-    check(ledger.notices(blank) == [TABLE_EMPTY_MARKER],
-          f"an empty store must say exactly {TABLE_EMPTY_MARKER!r}: {ledger.notices(blank)!r}")
+    check(ledger_test.notices(blank) == [TABLE_EMPTY_MARKER],
+          f"an empty store must say exactly {TABLE_EMPTY_MARKER!r}: {ledger_test.notices(blank)!r}")
     code, out, _ = run(["--file", str(closed_only), "table"])
-    check(ledger.notices(out) == [TABLE_ALL_HIDDEN_MARKER, hidden_notice(2, TABLE_HIDDEN_STATES)],
-          f"an all-closed store must say it is NOT empty, and how many it hid: {ledger.notices(out)!r}")
+    check(ledger_test.notices(out) == [TABLE_ALL_HIDDEN_MARKER, hidden_notice(2, TABLE_HIDDEN_STATES)],
+          f"an all-closed store must say it is NOT empty, and how many it hid: {ledger_test.notices(out)!r}")
     check(out != blank,
           f"an ALL-CLOSED store renders EXACTLY what an EMPTY one renders — 'every follow-up resolved' "
           f"and 'no follow-up ever found' are indistinguishable:\n{out}")
@@ -1276,7 +1292,7 @@ def t_table_grid_integrity(tmp: Path) -> None:
     wrapped in visible ones; what is dropped is only the claim that a cell can be empty. Derived from
     `is_blank()`, so a spelling of blank added tomorrow is handled here with no edit.
     """
-    for name, hostile in ledger.HOSTILE.items():
+    for name, hostile in ledger_test.hostile(followups).items():
         cells = {f: hostile for f in ("title", "evidence", "published")}
         if is_blank(hostile):  # …then NO column may hold it: keep the characters, drop the blankness
             cells = {f: f"x{hostile}x" for f in cells}
@@ -1285,12 +1301,12 @@ def t_table_grid_integrity(tmp: Path) -> None:
         for fields in (("id", "title", "state"), ("title",), ("published", "id")):
             code, out, err = run(["--file", str(path), "table", "--fields", ",".join(fields)])
             check(code == 0, f"[{name}] table exited {code}: {err!r}")
-            _, _, got = ledger.grid(out, fields, ("store", "rule"), TABLE_MARKERS)
+            _, _, got = ledger_test.grid(ledger, out, fields, ("store", "rule"), TABLE_MARKERS)
             check(len(got) == 2, f"[{name}] the value forged an ENTRY: {len(got)} rows, not 2\n{out}")
             check(got[0] == [escape_cell({**cells, "id": "fu1", "state": "candidate"}[f]) for f in fields],
                   f"[{name}] the printed row is not the escaped row: {got[0]!r}\n{out}")
-            check(ledger.notices(out) == [],
-                  f"[{name}] a VISIBLE row forged an out-of-band line: {ledger.notices(out)!r}\n{out}")
+            check(ledger_test.notices(out) == [],
+                  f"[{name}] a VISIBLE row forged an out-of-band line: {ledger_test.notices(out)!r}\n{out}")
 
 
 def t_fields_and_lookup(tmp: Path) -> None:

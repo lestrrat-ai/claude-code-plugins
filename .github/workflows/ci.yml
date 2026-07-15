@@ -81,11 +81,13 @@ jobs:
             plugins/gauntlet/skills/campaign/scripts/review-pass-test.py \
             plugins/gauntlet/skills/campaign/scripts/emit-finding.py \
             plugins/gauntlet/skills/campaign/scripts/repair-pass.py \
-            plugins/gauntlet/skills/campaign/scripts/repair-pass-test.py | tee pyright.json
+            plugins/gauntlet/skills/campaign/scripts/repair-pass-test.py \
+            plugins/gauntlet/skills/campaign/scripts/followups.py \
+            plugins/gauntlet/skills/campaign/scripts/followups-test.py | tee pyright.json
           analyzed=$(jq '.summary.filesAnalyzed' pyright.json)
           echo "filesAnalyzed=${analyzed}"
-          if [ "${analyzed}" != "8" ]; then
-            echo "::error::pyright analysed ${analyzed} file(s), not the 8 it was pointed at — it checked" \
+          if [ "${analyzed}" != "10" ]; then
+            echo "::error::pyright analysed ${analyzed} file(s), not the 10 it was pointed at — it checked" \
                  "nothing and said so quietly. Fix the paths above; a silent no-op is not a passing gate."
             exit 1
           fi
