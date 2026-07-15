@@ -3,7 +3,7 @@
 Nothing here is loaded or enforced by the plugin — see the
 [README](../README.md#optional--tell-it-how-to-report-to-you) for why it's a sample and not a setting.
 
-One set of rules that works. Opinionated on purpose. Copy it into your `CLAUDE.md` and edit until it
+One set of rules that works. Opinionated on purpose. Copy it into your `AGENTS.md` or `CLAUDE.md` and edit until it
 sounds like what you want to read. It is a snapshot to copy and adapt, not a record of anyone's live
 configuration, and it is not kept in sync with any other file.
 
