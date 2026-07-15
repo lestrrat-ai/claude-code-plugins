@@ -1,17 +1,17 @@
 name: Release
 
-# Cuts a GitHub release when a version bump lands on main. The bump PR is the
-# trigger — no separate manual step. Notes are GitHub's auto-generated PR list,
-# prepended with the curated blurb in release-notes/<version>.md when present.
+# Manually cut a GitHub release for the current plugin version. Nothing fires on
+# merge — run this from the Actions tab (or `gh workflow run release.yml`) when
+# you're ready. Notes are GitHub's auto-generated PR list, optionally prepended
+# with the highlights you type into the `highlights` input.
 on:
-  push:
-    branches: [main]
-    paths:
-      - plugins/gauntlet/.claude-plugin/plugin.json
   workflow_dispatch:
     inputs:
       version:
         description: Version to release, e.g. 0.1.6 (defaults to plugin.json)
+        required: false
+      highlights:
+        description: Optional highlights, prepended above the auto-generated notes
         required: false
 
 permissions:
@@ -33,9 +33,10 @@ jobs:
         id: gate
         env:
           GH_TOKEN: ${{ github.token }}
+          IN_VERSION: ${{ github.event.inputs.version }}
         run: |
           set -euo pipefail
-          version="${{ github.event.inputs.version }}"
+          version="$IN_VERSION"
           if [ -z "$version" ]; then
             version="$(jq -r '.version' plugins/gauntlet/.claude-plugin/plugin.json)"
           fi
@@ -49,13 +50,13 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "proceed=true" >> "$GITHUB_OUTPUT"
 
-      - name: Compose notes — curated blurb over GitHub's auto-generated list
+      - name: Compose notes — highlights (if given) over GitHub's auto-generated list
         if: steps.gate.outputs.proceed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          HIGHLIGHTS: ${{ github.event.inputs.highlights }}
         run: |
           set -euo pipefail
-          version="${{ steps.gate.outputs.version }}"
           tag="${{ steps.gate.outputs.tag }}"
           prev="$(git tag -l 'gauntlet-v*' | sort -V | grep -vx "$tag" | tail -1 || true)"
           if [ -n "$prev" ]; then
@@ -66,12 +67,9 @@ jobs:
             auto="$(gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
               -f tag_name="$tag" -f target_commitish="$GITHUB_SHA" --jq '.body')"
           fi
-          summary="release-notes/$version.md"
-          if [ -f "$summary" ]; then
-            cat "$summary" > notes.md
-            printf '\n\n---\n\n' >> notes.md
+          if [ -n "${HIGHLIGHTS:-}" ]; then
+            printf '%s\n\n---\n\n' "$HIGHLIGHTS" > notes.md
           else
-            echo "::warning::no release-notes/$version.md — shipping auto-generated notes only"
             : > notes.md
           fi
           printf '%s\n' "$auto" >> notes.md
