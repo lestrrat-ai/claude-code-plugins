@@ -87,12 +87,15 @@ THE VERDICTS. Exactly one is printed, and there is no "counts, BUT…":
   unusable    the artifacts are defective — this pass CANNOT count, whatever its report says
 
 `--verdict` IS REQUIRED, and that is the whole of what "a gate must not depend on a caller remembering"
-means here. You come to `verify` WITH the report's `VERDICT:` line in hand; you do not come to it to find
-out whether the reviewer is done. A pass still in flight is WATCHED, not verified — its progress file is
-the liveness evidence (stage-2-review-gate.md, "Launch check"). While the flag could be left out, a
-complete pass verified without it returned `ok`, so the one machine-checked rule about the reviewer's own
-verdict was OFF for any driver that forgot a flag — and a driver that forgot it merged a PR whose reviewer
-had returned SATISFIED over a GATING finding it recorded itself.
+means here. It takes THREE values: `satisfied`/`not-satisfied` is the reviewer's binary verdict (the
+coherence rule below checks it); `deferred` is NOT a verdict — the reviewer raised a separate request
+instead (an amendment, or a broken-dispatch stop), so control routes to the progress file and the pass
+comes back amended/incomplete/unusable. You come to `verify` WITH the report's `VERDICT:` line in hand;
+you do not come to it to find out whether the reviewer is done. A pass still in flight is WATCHED, not
+verified — its progress file is the liveness evidence (stage-2-review-gate.md, "Launch check"). While the
+flag could be left out, a complete pass verified without it returned `ok`, so the one machine-checked rule
+about the reviewer's own verdict was OFF for any driver that forgot a flag — and a driver that forgot it
+merged a PR whose reviewer had returned SATISFIED over a GATING finding it recorded itself.
 
 `amended` is a VERDICT and not a footnote beside `ok` on purpose. A disclosure printed next to a pass is a
 trapdoor, not a disclosure: "this pass counts, but note that the reviewer says the plan is missing a
@@ -145,6 +148,14 @@ STATUSES = (STARTED, DONE)
 # doors by the same driver in the same step, and two spellings of one verdict is a bug waiting for a wake.
 SATISFIED, NOT_SATISFIED = "satisfied", "not-satisfied"
 VERDICTS = (SATISFIED, NOT_SATISFIED)
+# `deferred` is NOT a verdict — it is the reviewer saying "I did not render a verdict, I raised a separate
+# request the orchestrator must handle first" (a `plan_amendment_request`, or the broken-dispatch "say so
+# and stop"). It is deliberately BLANKET: the reviewer does not self-classify why. It NEVER enters `VERDICTS`
+# (the binary coherence set) and is NEVER tallied by the ledger — `--verdict deferred` routes control to the
+# progress file, which `evaluate()` reads and answers with amended/incomplete/unusable. `VERDICT_CHOICES` is
+# what the CLI accepts, so the report marker `DEFERRED` and the flag `deferred` are isomorphic.
+DEFERRED = "deferred"
+VERDICT_CHOICES = (SATISFIED, NOT_SATISFIED, DEFERRED)
 
 # The EXACT key set each event carries — every key it requires, and NOT ONE MORE. "Every required key is
 # present" admits an event that ALSO carries a key nothing reads, and a key nothing reads is evidence that
@@ -1222,7 +1233,11 @@ def decide(events: "list[dict]", units: "dict[str, dict]", ruled: int,
     function still does not open `review-<pr>-<n>.txt` and still cannot SAY `SATISFIED`. The orchestrator
     reads the reviewer's VERDICT line, exactly as before, and passes what it read (`--verdict`) so that ONE
     coherence rule can be checked mechanically. **THE RULE IS AN IF AND ONLY IF, AND IT IS ENFORCED IN BOTH
-    DIRECTIONS: NOT SATISFIED exactly when at least one GATING finding stands.**
+    DIRECTIONS: NOT SATISFIED exactly when at least one GATING finding stands.** The orchestrator may also
+    pass `deferred` — the report's terminal line was `VERDICT: DEFERRED`, meaning the reviewer raised a
+    separate request instead of ruling; that value is not a verdict and never reaches the coherence rule,
+    it just routes to the progress-file state (an unruled amendment returns `amended` above; a spurious
+    deferral with nothing outstanding is `unusable`).
 
     **AND ON A COMPLETE PASS THE VERDICT IS NOT OPTIONAL — an ABSENT one is `unusable`, never `ok`.** It
     was optional, and that made the coherence rule above a guard a caller could switch off by FORGETTING a
@@ -1272,6 +1287,20 @@ def decide(events: "list[dict]", units: "dict[str, dict]", ruled: int,
     # there IS a report, and the ONE rule this tool can check mechanically has an input it may not be denied.
     # Ordered BELOW `incomplete` on purpose: a pass still in flight has no verdict to state, and asking it
     # for one would refuse a reviewer for being unfinished, which `incomplete` already says better.
+
+    # `deferred` says "I did not render a verdict — I raised a separate request first." But the two clauses
+    # that HOST a real request are already behind us: an unruled amendment returned `amended` above, and a
+    # pass that stopped early returned `incomplete`. Reaching HERE means the pass is COMPLETE with NO unruled
+    # amendment — so a `deferred` here points at nothing. It is spurious, and refusing it is the honest answer.
+    if verdict == DEFERRED:
+        # MUTATE:deferred-with-nothing-outstanding:pass
+        return UNUSABLE, (
+            f"this pass returned DEFERRED, but every planned unit is done and no `{AMENDMENT}` is "
+            f"outstanding — there is nothing to defer to. A deferral must point at a request the "
+            f"orchestrator handles first: an amendment to fold, or a stop before the plan was covered. This "
+            f"pass raised neither, so it is FINISHED and owes a binary verdict. Give one ({VERDICTS}), or "
+            f"raise the request you meant to"
+        )
     if verdict is None:
         # MUTATE:verdict-missing-on-complete:pass
         return UNUSABLE, (
@@ -1828,7 +1857,8 @@ def report_path(progress: Path) -> Path:
 
 
 def scrape_verdict(progress: Path) -> str:
-    """The report's last `VERDICT:` line, mapped to SAT / NOT-SAT / - . Advisory only."""
+    """The report's last `VERDICT:` line, mapped to SAT / NOT-SAT / - . Advisory only. A `VERDICT: DEFERRED`
+    line reads as "no binary verdict" (V_NONE): the reviewer raised a separate request instead of ruling."""
     path = report_path(progress)
     if not path.exists():
         return V_NONE
@@ -1840,8 +1870,12 @@ def scrape_verdict(progress: Path) -> str:
     for line in text.splitlines():
         if "VERDICT:" in line.upper():
             rest = line.upper().split("VERDICT:", 1)[1]
-            # NOT SATISFIED contains SATISFIED, so test the negative spelling first.
-            if "NOT" in rest and "SATISF" in rest:
+            # DEFERRED is not a binary verdict — test it FIRST, before the SATISF spelling tests. Its reason
+            # text (`DEFERRED — <reason>`) can itself contain "satisf…", which would otherwise mis-scrape as
+            # SATISFIED; and NOT SATISFIED contains SATISFIED, so the negative spelling comes before SATISF.
+            if "DEFER" in rest:
+                verdict = V_NONE
+            elif "NOT" in rest and "SATISF" in rest:
                 verdict = V_NOT_SAT
             elif "SATISF" in rest:
                 verdict = V_SAT
@@ -2306,13 +2340,17 @@ def build_parser() -> "tuple[argparse.ArgumentParser, list[str]]":
     # the report in hand; a pass still in flight is not verified, it is WATCHED (its progress file is the
     # liveness evidence — `stage-2-review-gate.md`, "Launch check"), and `decide` refuses an absent verdict
     # only once the pass is COMPLETE, so an in-process caller still gets `incomplete` rather than a scolding.
-    v.add_argument("--verdict", choices=VERDICTS, required=True,
-                   help="REQUIRED: the VERDICT line you read in the reviewer's report. It buys ONE "
-                        "machine-checked rule, an IF AND ONLY IF: the pass is UNUSABLE if `not-satisfied` "
-                        "recorded NO gating finding (a verdict that blocks a PR must name what blocks it), "
-                        "and equally UNUSABLE if `satisfied` recorded ONE (a finding that gates cannot be "
-                        "waved through in the verdict). A pass verified without it is UNUSABLE too — a rule "
-                        "a caller can switch off by omitting a flag is not a gate")
+    v.add_argument("--verdict", choices=VERDICT_CHOICES, required=True,
+                   help="REQUIRED: the VERDICT line you read in the reviewer's report. `satisfied` / "
+                        "`not-satisfied` is the reviewer's BINARY verdict, and it buys ONE machine-checked "
+                        "rule, an IF AND ONLY IF: the pass is UNUSABLE if `not-satisfied` recorded NO gating "
+                        "finding (a verdict that blocks a PR must name what blocks it), and equally UNUSABLE "
+                        "if `satisfied` recorded ONE (a finding that gates cannot be waved through in the "
+                        "verdict). `deferred` when the report's terminal line is `VERDICT: DEFERRED` — the "
+                        "reviewer raised a separate request (an amendment, or a broken-dispatch stop) INSTEAD "
+                        "of a verdict; the tool then reads the progress file and returns amended / incomplete "
+                        "/ unusable. A pass verified without any of these is UNUSABLE too — a rule a caller "
+                        "can switch off by omitting a flag is not a gate")
 
     # status is ADVISORY and READ-ONLY: it renders live progress and DECIDES NOTHING. Its flags are all
     # about the VIEW, never about a verdict — there is no `--head-sha`, no `--verdict`, and it writes no file.

@@ -251,7 +251,10 @@ Read stage refs only when that stage/action is due:
   same as one that blocks with nothing to point at. A finding cannot be blocking in the artifact and
   ignorable in the verdict. **The verdict is a REQUIRED input to `verify`** (`--verdict`, what the report's
   `VERDICT:` line says): a COMPLETE pass verified without one is `unusable`, because a guard whose input
-  can be ABSENT never fires.
+  can be ABSENT never fires. The line may instead read `VERDICT: DEFERRED` — the reviewer raised a separate
+  request (an amendment, or a broken-dispatch stop) rather than ruling; pass `--verdict deferred` (still
+  required, the third accepted value), which is not a verdict and routes on the progress file to
+  `amended`/`incomplete`/`unusable`, never a tally.
 - **Verdicts go through `ledger.py verdict` — NEVER set `reviews_ok` by hand.** It bumps `review_rounds`
   (**monotone, never reset — the loop's only memory across fresh-context wakes**), applies the tally, and
   moves `ns_streak`, atomically. `set` cannot RAISE the tally and no door can write the counters at all.
