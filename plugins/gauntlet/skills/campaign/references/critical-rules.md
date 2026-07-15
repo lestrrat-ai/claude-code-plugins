@@ -147,13 +147,16 @@
   it is not broken.** Walk the causal chain and check every link, exactly as you would for a reviewer's
   claim. **The tell that you have invented one: each fix creates the next finding.** When that happens,
   stop patching and re-derive whether the original thing was ever broken.
-- **A reviewer's finding is a CLAIM, not a fact — AUDIT it before you fix it.** On every `NOT
-  SATISFIED`, verdict each **GATING** finding against the source *before* dispatching a fix (a NON-GATING
-  finding is never fixed, so there is nothing to audit — it is recorded as a follow-up) — NEVER dispatch a
-  fix for an unaudited finding: **CONFIRMED** (real, and its mechanism can occur → fix), **ADJUSTED** (a real
+- **A reviewer's finding is a CLAIM, not a fact — AUDIT it before you fix it. The orchestrator does NOT
+  audit inline; it dispatches a context-isolated AUDIT SUBAGENT to do it** — exactly as it dispatches a
+  separate subagent for the fix, and for the same reason: a fresh, independent observer renders the audit,
+  not the context that just read the verdict. On every `NOT SATISFIED`, that subagent verdicts each
+  **GATING** finding against the source *before* any fix is dispatched (a NON-GATING finding is never
+  fixed, so there is nothing to audit — it is recorded as a follow-up) — NEVER dispatch a fix for an
+  unaudited finding: **CONFIRMED** (real, and its mechanism can occur → fix), **ADJUSTED** (a real
   defect, but not the one described → fix the real one), or **REFUTED** (false, or its **mechanism cannot
-  occur** → do NOT fix; refute in the tree). Record the audit in `<rundir>/audit-<pr>-<n>.md`; only
-  CONFIRMED + ADJUSTED reach the fix subagent. The **reachability test is NOT about where the trigger
+  occur** → do NOT fix; refute in the tree). **One audit subagent handles that PR's gating findings** and
+  records the audit in `<rundir>/audit-<pr>-<n>.md`; only CONFIRMED + ADJUSTED reach the fix subagent. The **reachability test is NOT about where the trigger
   comes from** — it asks **can the mechanism the finding describes actually occur?** Walk the finding's
   own causal chain and check every link. A defect is reachable if the code/docs THIS PR SHIPS can exhibit
   it on ANY input campaign consumes — PR content, reviewer output, CI logs/snapshots, ledger and run

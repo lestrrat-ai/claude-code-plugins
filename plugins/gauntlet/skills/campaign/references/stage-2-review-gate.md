@@ -787,9 +787,11 @@ Then, per verdict:
   NOT SATISFIED must never still read `gauntlet-accepted` on GitHub. **Only GATING findings reach the fix
   path at all** — a non-gating finding is recorded as a follow-up and no fix is dispatched for it (the
   gating rule, above; `verify` has already refused the pass if a `not-satisfied` recorded none). **Then —
-  unless `verdict` just held the PR for repair, in which case NO fix is dispatched at all — AUDIT
+  unless `verdict` just held the PR for repair, in which case NO fix is dispatched at all — dispatch a
+  context-isolated AUDIT SUBAGENT to AUDIT
   the gating findings — see
-  "Audit every finding before you fix it" below; NEVER dispatch a fix for an unaudited finding — and
+  "Audit every finding before you fix it" below; NEVER dispatch a fix for an unaudited finding — and, for
+  its CONFIRMED/ADJUSTED verdicts,
   dispatch a scoped fix subagent** into `<worktree>` (the PR row's ledger `worktree` column value) with
   the **audited** issue list (**CONFIRMED + ADJUSTED only**); it
   commits + pushes → HEAD advances (a second gate reset — relabel again if the first was somehow
@@ -835,8 +837,17 @@ filters; skipping phase 2 means delivering noise* — and `gauntlet:copilot-addr
 item against source before changing code. Campaign is the skill that acts on findings **autonomously**,
 so it needs the filter most.
 
-**On every `NOT SATISFIED`, audit each finding against the source BEFORE any fix subagent is
-dispatched.** Give each one a verdict, with evidence, and record the audit in `<rundir>/audit-<pr>-<n>.md`:
+**The audit is itself a DISPATCHED, CONTEXT-ISOLATED SUBAGENT — the orchestrator does NOT audit
+inline.** On every `NOT SATISFIED`, dispatch an **audit subagent** to verdict the gating findings, exactly
+as the orchestrator dispatches a separate subagent for the fix and for the same reason: an independent
+observer, not the context that just read the verdict, is both the right division of labour and better for
+correctness. **One audit subagent handles that round's gating findings for the PR.** The orchestrator's
+role stays narrow — read verdicts, record them via `ledger.py verdict`, dispatch the audit subagent and
+(for CONFIRMED/ADJUSTED findings) the fix subagent, watch CI, and merge.
+
+**On every `NOT SATISFIED`, the audit subagent verdicts each finding against the source BEFORE any fix
+subagent is dispatched.** It gives each one a verdict, with evidence, and records the audit in
+`<rundir>/audit-<pr>-<n>.md`:
 
 | verdict | meaning | what to do |
 |---|---|---|
@@ -856,7 +867,7 @@ They are orthogonal, and **both** must pass before a fix is dispatched:
 | | asks | asked of | a NO means |
 |---|---|---|---|
 | **The gating rule** (`writer` / `purpose`) | **does it MATTER?** — can anyone outside the machine trigger it, or does it defend something the PR promised? | **every** finding, by the reviewer, enforced by `review-pass.py` | it is a **follow-up**. It is not refuted, not wrong, and not fixed |
-| **The audit** (CONFIRMED / ADJUSTED / REFUTED) | **is it TRUE?** — can the mechanism it describes actually occur? | the **gating** findings that survive, by the orchestrator | it is **REFUTED** — the mechanism is impossible, and the refutation is written into the tree |
+| **The audit** (CONFIRMED / ADJUSTED / REFUTED) | **is it TRUE?** — can the mechanism it describes actually occur? | the **gating** findings that survive, by the dispatched context-isolated audit subagent | it is **REFUTED** — the mechanism is impossible, and the refutation is written into the tree |
 
 So when the reachability test below says *"provenance is the wrong question"*, it is answering **is it
 TRUE?**, and it is right: a defect in code that handles a CI log is real even though the trigger is not PR
