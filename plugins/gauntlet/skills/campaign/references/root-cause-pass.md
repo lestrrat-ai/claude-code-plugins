@@ -46,13 +46,13 @@ itself; the reassessment REUSES it and never reimplements it.**
    handle on. A mapper carries no fix pressure, so it maps the space exhaustively — which is the point.
    Enumeration and fix are two subagents, in that order, always.
 
-   **Run the mapper on the session model — do NOT downgrade it because it is "read-only."**
+   **Run the mapper in the `session` class — do NOT downgrade it because it is "read-only."**
    Read-only is not low-judgment: this subagent derives the axes, enumerates every cell, and confirms
    each gap with a `file:line` and a working repro. A weaker model **under-maps** — it returns a
    plausible, tidy, *incomplete* table — which is precisely the failure this whole two-subagent split
    exists to prevent, and an under-map is invisible: the gaps it misses look exactly like cells that
    were never there. The cheap version of this subagent defeats its own purpose (`SKILL.md`,
-   "Subagent Dispatch").
+   "Worker Dispatch").
 3. **One batch-fix round** for all confirmed gaps. Route every site through **ONE shared
    chokepoint/helper** so the cells can't diverge again. Add a test per cell.
 4. **Resume the gauntlet** on the batched result — the review gate's `required(tier)` fresh,
@@ -70,7 +70,6 @@ Caveats:
 - A whole AXIS can be missed. When a later finding reveals a dimension the enumeration didn't have,
   RE-RUN it on the expanded space rather than patching the single new cell.
 
-Pairs with the default Claude-subagent reviewer, and — when the user authorizes the spend for a large
-PR — a **parallel adversarial reviewer** running the same enumeration independently for breadth while
-the gate reviewer runs; reviewer diversity (especially a different-model reviewer such as Codex)
-catches different cells.
+Pairs with the default native-worker reviewer. When the user selects a second agent for a large PR, a
+**parallel adversarial reviewer** may run the same enumeration independently for breadth while the gate
+reviewer runs. Use `cross-agent-reviewers.md` for that optional transport.

@@ -823,7 +823,7 @@ ever re-ordered again.
   and **not** relaunched once nothing can. Parking never stops a warranted watch and never starts an
   unwarranted one. Otherwise → any failing row → **stop any review pass in flight on that PR first** (Loop control
   step 3 — the fix will replace its SHA, so the verdict is already void; free the slot), then
-  **CLASSIFY the failure** from the check logs ("Classify, then set the model" below) **before
+  **CLASSIFY the failure** from the check logs ("Classify, then set the model class" below) **before
   dispatching anything**, and dispatch a **scoped CI-fix subagent** into `<worktree>` — the PR row's
   ledger `worktree` column value, the single source of truth for this PR's checkout path (created at
   adoption/pre-review per `pr-adoption.md`; default `.worktrees/<headRefName>` when campaign creates
@@ -1440,7 +1440,7 @@ every second or two, forever**, doing nothing. Watch only when at least one row 
 #### Any campaign commit to the PR head resets the gate
 
 **THE RULE — every commit campaign pushes to a PR's head branch is a PR-content change, whatever wrote
-it: a cheap CI-fix subagent, a session-model CI-fix subagent, a review-fix subagent, or an inline
+it: an economy-class CI-fix worker, a `session`-class CI-fix worker, a review-fix worker, or an inline
 REFUTATION of a review finding (`stage-2-review-gate.md`, "Audit every finding before you fix it").**
 Every one of them MUST, in the same step:
 
@@ -1459,16 +1459,15 @@ Every one of them MUST, in the same step:
 The verdicts on the old SHA describe content that no longer exists, and a `gauntlet-accepted` label on
 it is a false public claim. NEVER exempt a commit because it "only reformatted".
 
-#### Classify, then set the model — never dispatch straight off a red check
+#### Classify, then set the model class — never dispatch straight off a red check
 
-**Set the model EXPLICITLY on every dispatch** (`SKILL.md`, "Subagent Dispatch"). An unset model
-silently inherits the session model — a cost decision taken by default. Classify the failure from the
-check logs FIRST; the class picks the model:
+**Select the logical model class on every dispatch** (`SKILL.md`, "Worker Dispatch";
+`runtime-adapter.md`). Classify the failure from the check logs FIRST; the failure class picks it:
 
-| Failure class | Model | Why |
+| Failure class | Model class | Why |
 |---|---|---|
-| **Formatting / lint** — the fix is exactly what a standard formatter or autofixer produces | **`sonnet`** (**`haiku`** only when the failure is trivially mechanical) | It does NOT author a fix from scratch: it runs a deterministic tool, **READS the resulting diff**, verifies it, and **escalates** anything it cannot verify. Downgraded **on purpose**. |
-| **Everything else** — failing product test, compile error, flake, anything needing judgment — **and every escalation from the cheap subagent** | **session model** | It authors code that gets merged, and nothing downstream validates it. |
+| **Formatting / lint** — the fix is exactly what a standard formatter or autofixer produces | **`economy`** | It does NOT author a fix from scratch: it runs a deterministic tool, **READS the resulting diff**, verifies it, and **escalates** anything it cannot verify. Downgraded **on purpose** when the host has an economy mapping. |
+| **Everything else** — failing product test, compile error, flake, anything needing judgment — **and every escalation from the economy worker** | **`session`** | It authors code that gets merged, and nothing downstream validates it. |
 
 **Dispatch both tiers under the fix-subagent contract** (`fix-subagent-contract.md` — the complete
 DEFINITION for every fix subagent, CI or review; **read it before dispatching**). The CI-specific inputs
@@ -1498,7 +1497,7 @@ Its job, in order:
 4. **COMMIT** only if every one of those holds — then apply the gate reset above.
 5. **ESCALATE, never patch.** If the check still fails, the diff contains anything it cannot explain, it
    needed to change product logic, or it cannot verify the result → **STOP**, commit nothing, reset the
-   worktree to the PR head, and hand the failure to a **session-model** CI-fix subagent. **Escalation is
+   worktree to the PR head, and hand the failure to a **`session`-class** CI-fix worker. **Escalation is
    the correct outcome, not a failure** — it is what the tier is for.
 
 **HARD RULES — give these to the cheap subagent VERBATIM in its prompt:**
@@ -1550,7 +1549,7 @@ What backs it: the **exact failing check must pass**; the subagent **must escala
 verify**; and **every commit campaign pushes is still gated by the full review gauntlet** — any campaign
 commit to the PR head resets `reviews_ok` to 0, restores `gauntlet-reviewing`, resets the liveness
 counters ("THE LIVENESS COUNTERS"), re-derives CI for the new tip and watches it **only if a row can still
-move** ("WATCH ONLY WHAT CAN MOVE"), and re-enters Stage 2a on the session model.
+move** ("WATCH ONLY WHAT CAN MOVE"), and re-enters Stage 2a in the `session` class.
 
 This trades a **small, bounded risk** for a workflow that is **cheaper AND more capable** than either a
 full-strength subagent on every formatting failure or a hermetic no-model tool path. **The user accepts

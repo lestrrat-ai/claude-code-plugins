@@ -12,7 +12,7 @@ never in a scratch note, never only in the reply to the user.
 ### EVERY ENTRY IS A CANDIDATE, NEVER AN ISSUE
 
 **These are things the DRIVER noticed. They are CLAIMS, not facts** — and the driver's own diagnosis is a
-claim needing corroboration exactly like a reviewer's (`CLAUDE.md`, "Your OWN diagnosis is a claim too";
+claim needing corroboration exactly like a reviewer's (`AGENTS.md`/`CLAUDE.md`, "Your OWN diagnosis is a claim too";
 `stage-2-review-gate.md`, "Audit every finding before you fix it").
 
 **THE DRIVER MUST NOT ACTION AN UNCORROBORATED CLAIM.** That is the whole guarantee, and everything below
@@ -31,7 +31,7 @@ tracked-file edits, no PRs, nothing published — and its only product is **EVID
 
 **AN INVESTIGATION CAN REFUTE THE CLAIM AS EASILY AS CONFIRM IT — and refuting is its most valuable
 outcome.** This repo has already burned four review rounds "fixing" an invented bug that was never real
-(`CLAUDE.md`, "Your OWN diagnosis is a claim too"). An investigation that can only ever say *yes* is not
+(`AGENTS.md`/`CLAUDE.md`, "Your OWN diagnosis is a claim too"). An investigation that can only ever say *yes* is not
 an investigation; it is a rubber stamp with a longer runtime.
 
 So the outcome is **recorded**, either way, with the evidence that produced it:
@@ -56,8 +56,9 @@ holds. They are not a checklist to feel good about; each is **EVIDENCED IN THE E
 1. **`corroborated`** — an independent reviewer confirmed it, **or** the driver reproduced the failure.
    This one is structural: `take-up` leaves **only** from the `corroborated` state, so a claim nobody
    investigated cannot be taken up at all, and the investigation's own `finding` is its evidence.
-2. **`not-gate-machinery`** (`--act-not-gate`) — it does not decide whether a PR may merge. `CLAUDE.md`
-   defines the gate; do not reconstruct that definition here. **WHEN IT IS UNCLEAR, IT IS GATE
+2. **`not-gate-machinery`** (`--act-not-gate`) — it does not decide whether a PR may merge. The active
+   repository instruction file (`AGENTS.md` or `CLAUDE.md`) defines the gate; do not reconstruct that
+   definition here. **WHEN IT IS UNCLEAR, IT IS GATE
    MACHINERY** — the ambiguous case resolves toward **ask**, never toward act.
 3. **`behavior-preserved`** (`--act-behavior`) — it preserves user-facing behavior. If it **has** a
    behavioral surface, **name the test that proves it**. If it has **none**, say so and name why — *an

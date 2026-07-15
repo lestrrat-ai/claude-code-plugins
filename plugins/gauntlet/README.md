@@ -4,14 +4,14 @@ Part of the [claude-code-plugins](../../README.md) marketplace for Claude Code a
 
 Adversarial code review that follows through to a merge.
 
-The centerpiece is [`/gauntlet:campaign`](skills/campaign/README.md): hand it existing pull requests
-(`/gauntlet:campaign #12 #15`) and it gates each one to merge — defending that PR through repeated
+The centerpiece is [`gauntlet:campaign`](skills/campaign/README.md): hand it existing pull requests
+(`/gauntlet:campaign #12 #15` in Claude Code or `$gauntlet:campaign #12 #15` in Codex) and it gates each one to merge — defending that PR through repeated
 context-isolated review rounds until it passes a strict bar with green CI, fixing up whatever review
 or CI turns up on the PR itself, and then merging. It doesn't hunt for problems or write fixes from
-scratch; it drives PRs that already exist. Run it once — it schedules its own follow-ups and keeps
-working unattended.
+scratch; it drives PRs that already exist. Run it once — it uses scheduled wakes where available and
+bounded waits otherwise, then keeps working unattended.
 
-Where do those PRs come from? [`/gauntlet:review`](skills/review/README.md) is the front half. By
+Where do those PRs come from? [`gauntlet:review`](skills/review/README.md) is the front half. By
 default it runs a two-pass adversarial review and only reports — it makes no source/tracked-file or
 GitHub changes (it may write ephemeral `.gauntlet/tmp` review scratch). But at the end
 it can, opt-in, open one PR per confirmed fix and hand them straight to a campaign. So the
@@ -41,27 +41,27 @@ Start a new Codex session after installation.
 
 | Skill | What it does |
 |-------|--------------|
-| [`/gauntlet:campaign`](skills/campaign/README.md) | The PR-gating pipeline. Adopts existing pull requests and drives each through review + CI to merge. |
-| [`/gauntlet:review`](skills/review/README.md) | A standalone two-pass hostile review: pass 1 surfaces everything, pass 2 neutrally confirms or refutes each finding. Reports only by default; can opt-in to open PRs and hand them to a campaign. |
-| [`/gauntlet:copilot-address-reviews`](skills/copilot-address-reviews/README.md) | Verify and address GitHub Copilot's PR review comments, one at a time. |
+| [`gauntlet:campaign`](skills/campaign/README.md) | The PR-gating pipeline. Adopts existing pull requests and drives each through review + CI to merge. |
+| [`gauntlet:review`](skills/review/README.md) | A standalone two-pass hostile review: pass 1 surfaces everything, pass 2 neutrally confirms or refutes each finding. Reports only by default; can opt-in to open PRs and hand them to a campaign. |
+| [`gauntlet:copilot-address-reviews`](skills/copilot-address-reviews/README.md) | Verify and address GitHub Copilot's PR review comments, one at a time. |
 
 ## Requirements
 
 - A GitHub remote — the pipeline works through PRs via the `gh` CLI.
 
-That's it. By default the adversarial reviewer is Claude's own subagents, so nothing else is needed.
+That's it. By default the adversarial reviewer is a fresh native worker, so nothing else is needed.
 
-### Recommended — a second-opinion reviewer
+### Optional — use the other agent as reviewer
 
 The gate's strength comes from re-reviewing each change with a *fresh, independent* reviewer. Two
-Claude subagents share the orchestrator's model, so for a tougher gauntlet point the pipeline at a
-reviewer that runs a **different agent/model** — e.g. [Codex CLI](https://github.com/openai/codex)
-(`codex exec`). A different engine catches defects a same-model re-roll can miss.
+native workers share the orchestrator's model. If you want engine diversity, Claude Code can launch
+Codex with `codex exec`, and Codex can launch Claude Code with `claude -p`.
 
-To use one, either name it when you invoke the campaign ("review with codex") or record it as your
-preferred reviewer (in memory, `AGENTS.md`, or `CLAUDE.md`) and the pipeline will pick it up. If an external
+This is a user option, not a campaign rule. Name the reviewer when you invoke the campaign, or record it
+as your preference in memory, `AGENTS.md`, or `CLAUDE.md`. The campaign never launches the other agent merely
+because its CLI is installed. If an external
 reviewer can't return a verdict because of a system problem (quota, auth, timeout), the pipeline
-retries once and then falls back to its own subagents, so an outage slows a run rather than stalling
+retries once and then falls back to a fresh native worker, so an outage slows a run rather than stalling
 it.
 
 ### Optional — tell it how to report to you

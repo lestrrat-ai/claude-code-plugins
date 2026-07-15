@@ -8,8 +8,8 @@
   take/adopt a run only inside the claim lock, and adopt ONLY when its lease is absent or stale
   (`now - updated` > ~30 min); refresh the lease every wake AND around long foreground ops; on a
   self-wake whose lease is fresh but bears a different token, **stand down** — never double-drive a ledger.
-- Every self-wake carries `--run <run-id> --token <agent-token>` (ScheduleWakeup + background
-  completions); the token re-proves lease ownership so a summarized wake never mistakes its own run for
+- Every self-wake carries `--run <run-id> --token <agent-token>` (the runtime adapter's heartbeat or
+  bounded-wait path plus background completions); the token re-proves lease ownership so a summarized wake never mistakes its own run for
   another's. Re-read `run_id` from the ledger each wake, never from memory.
 - Resume is intent-scoped: a fresh instance resumes via `--run <id>` or an **arg-less** bare invocation
   (adopts the sole orphaned run). A bare invocation **with `#PR` args** and `--new` start an independent
@@ -93,7 +93,7 @@
   `api_changes` flag lives in the ledger header and is re-read every wake — never trust memory, never
   auto-merge an unapproved API break.
 - Before queueing a review pass on a PR, clear its preconditions on the current tip: address any
-  GitHub Copilot review items (`/gauntlet:copilot-address-reviews <pr>`), fix any CI failures (one at a time,
+  GitHub Copilot review items (the active host form of `gauntlet:copilot-address-reviews <pr>`), fix any CI failures (one at a time,
   prefer a scoped subagent), and rebase away any conflict with `<base>`. PR-content changes reset
   verdicts. Clean base-only rebase with unchanged PR diff keeps `reviews_ok`, sets `ci = pending`, and —
   because the head still moved — **resets the liveness counters** (`stage-2-ci.md`, "THE LIVENESS
@@ -229,8 +229,8 @@
   it, so the watch follows the normal policy (`stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE"): alive while a
   row can still move, **not** relaunched once CI has SETTLED. Parking neither stops a warranted watch nor
   starts an unwarranted one — and it dispatches no CI fix.
-- Reviews are fresh, context-isolated re-rolls: a separate reviewer invocation each pass (Claude
-  subagent by default, or the user's preferred reviewer), no shared context. A second pass re-rolls a
+- Reviews are fresh, context-isolated re-rolls: a separate reviewer invocation each pass (native worker
+  by default, or the user's preferred reviewer), no shared context. A second pass re-rolls a
   stochastic reviewer to catch a missed defect — the two are NOT statistically independent (the same
   diff, task, and protocol correlate them; same-reviewer passes also share model/prompt), so the gate
   is a miss-catcher, not a proof of correctness.
@@ -276,7 +276,7 @@
   check. **Meaningful progress** is the stronger bar (`done`/accepted amendment) — stale for ~15 min →
   suspicious review → retry/fallback per Stage 2a. Both bars judge a **live** process. A pass whose
   task is **dead** with no verdict (killed session) ignores launch evidence entirely and dispatches on
-  `launch_attempt` alone: `1` → relaunch once; `2` → fresh-subagent fallback. Never leave a dead pass
+  `launch_attempt` alone: `1` → relaunch once; `2` → fresh-worker fallback. Never leave a dead pass
   on neither branch.
 - Reviewers do not own the plan but must not treat it as presumptively complete: critically evaluate
   its coverage first, and raise any omitted dimension or materially wrong unit via a
@@ -337,25 +337,25 @@
 - Prune `.gauntlet/history/` at every fresh run: drop only entries unambiguously moot against
   current `<base>`; for anything uncertain, list it and ask the user before deleting. Never silently
   prune an entry you're unsure about.
-- **Set the model EXPLICITLY on EVERY subagent dispatch** (`SKILL.md`, "Subagent Dispatch"). An unset model
-  silently inherits the session model — a cost decision taken by default.
+- **Select a logical model class on EVERY worker dispatch** (`SKILL.md`, "Worker Dispatch";
+  `runtime-adapter.md`). Never guess a model name from the other host.
 - **Model policy — NEVER DOWNGRADED: review passes, the subagent-fallback review, review-fixes, and the
-  root-cause mapper.** A review pass *is* the gate; a review-fix authors code from scratch; a session-model
+  root-cause mapper.** A review pass *is* the gate; a review-fix authors code from scratch; a `session`-class
   CI-fix authors code that gets merged; the mapper's under-map is **invisible** ("read-only" is not
   low-judgment). NEVER claim CI catches a bad fix — a wrong fix can turn CI green, and the review gate is a
   miss-catcher, not a proof of correctness.
-- **Model policy — DOWNGRADED ON PURPOSE: the CI-fix subagent for a FORMATTING/LINT failure** — `sonnet`,
-  or `haiku` only when the failure is trivially mechanical (`stage-2-ci.md`). It does **not** author a fix:
+- **Model policy — DOWNGRADED ON PURPOSE when available: the CI-fix worker for a FORMATTING/LINT failure**
+  uses the runtime adapter's `economy` class (`stage-2-ci.md`). It does **not** author a fix:
   it runs a deterministic formatter, **READS the resulting diff**, verifies it, and **escalates** anything
   it cannot verify. **Everything else — failing product test, compile error, anything needing judgment — and
-  every ESCALATION from the cheap tier → the session model**, set explicitly.
+  every ESCALATION from the economy tier → the `session` class**.
 - **CLASSIFY the failure from the check logs BEFORE dispatching anything** — never dispatch straight off a
   red check (`loop-control.md` step 3, `stage-2-ci.md`). The class picks the model.
 - **The cheap CI-fix subagent's job, in order:** classify → run the formatter (**it** picks the tool;
   campaign hands it no argv) → **READ THE RESULTING DIFF** and verify that it contains ONLY what the fix
   should have produced, that no unintended file was touched, that no check definition/config/test was
   weakened, and that **re-running the exact failing check now PASSES** → commit **only** then → otherwise
-  **STOP, commit nothing, reset the worktree to the PR head, and ESCALATE** to a session-model CI-fix
+  **STOP, commit nothing, reset the worktree to the PR head, and ESCALATE** to a `session`-class CI-fix
   subagent. **NEVER patch a failed cheap run in place.** Escalation is the correct outcome, not a failure.
 - **NO-WEAKENING PROHIBITION — verbatim into EVERY CI-fix subagent's prompt.** NEVER make CI pass by
   weakening the check: NEVER delete or loosen an assertion, NEVER add `skip`/`xfail`, NEVER disable or
@@ -390,7 +390,7 @@
   workflow that is cheaper AND more capable than either a full-strength subagent on every formatting failure
   or a hermetic no-model tool path.
 - **ANY campaign commit to the PR head resets the gate** (`stage-2-ci.md`, "Any campaign commit to the PR
-  head resets the gate") — cheap CI-fix, session-model CI-fix, review-fix, or **refutation commit** alike. In the SAME step: reset
+  head resets the gate") — economy-class CI-fix, `session`-class CI-fix, review-fix, or **refutation commit** alike. In the SAME step: reset
   `reviews_ok` to 0 AND restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`, **reset the
   liveness counters** (`stage-2-ci.md`, "THE LIVENESS COUNTERS" — the new head is new evidence), re-derive CI
   for the new tip and watch it **only if a row can still move** (`stage-2-ci.md`, "WATCH ONLY WHAT CAN
@@ -417,16 +417,16 @@
   touches**. **SWEEP** the writing — the contract's sweep-and-report block goes into the prompt **verbatim**:
   a fix that changes a DEFINITION or a FACT is not done until every site that RESTATES it is correct, and
   every site found is reported. Read narrowly to UNDERSTAND, sweep widely to FINISH — the contract, not
-  this bullet, defines how to sweep; neither half excuses skipping the other. Scoping (not a cheaper model), plus an **external reviewer** taking review passes off
-  the subagent pool (**the single biggest cost lever** — review passes dominate campaign's spend), is where
-  savings live.
-- Default reviewer is Claude's own subagents; no external tool is required. Use the user's preferred
-  reviewer when one is set (explicit invocation, or a preference in memory/`CLAUDE.md`/carryover). A
-  different-model reviewer (e.g. Codex) is recommended for diversity but never required. See
+  this bullet, defines how to sweep; neither half excuses skipping the other. Scope every fix regardless
+  of model or reviewer choice.
+- Default reviewer is the active host's native workers; no external tool is required. Use the user's preferred
+  reviewer when one is set (explicit invocation, or a preference in memory/`AGENTS.md`/`CLAUDE.md`/carryover). A
+  user may choose a different-model reviewer for diversity. Apply the same-engine rule in
+  `runtime-adapter.md`. See
   "The reviewer".
 - If an *external* reviewer can't deliver a verdict (quota/rate-limit, auth, timeout, or other system
   error — *not* a real finding list / `VERDICT:` line), retry once, then do the equivalent work with
-  your own subagents: a fresh, context-isolated subagent review pass in
+  your own native workers: a fresh, context-isolated worker review pass in
   Stage 2a. The gate is unchanged — note any fallback pass in the report. See "The reviewer".
 - **DERIVE `ci` BY RUNNING `scripts/ci-status.py derive --pr <N> --head-sha <the ledger's> --rundir
   <rundir> --required-set <the ledger header's>`, and by NOTHING ELSE.** It fetches, promotes, verifies and

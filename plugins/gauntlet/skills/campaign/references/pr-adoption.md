@@ -5,8 +5,8 @@ drives each through the gates to merge. This file is the adoption procedure: giv
 them into the run and start their gate work.
 
 Two entry paths feed it (see "Run identity and concurrency" for the full grammar):
-- **explicit `#PR` args** (`/gauntlet:campaign #12 #15`) — adopt exactly those PRs.
-- **no-arg discovery** (`/gauntlet:campaign`, resume) — reconcile the PRs already labelled for this run:
+- **explicit `#PR` args** (`<campaign-invocation> #12 #15`) — adopt exactly those PRs.
+- **no-arg discovery** (`<campaign-invocation>`, resume) — reconcile the PRs already labelled for this run:
 
   ```
   # THE canonical run snapshot — the SAME command loop-control's per-wake PR scan (the `prs.json`
@@ -268,7 +268,7 @@ For each `#PR` to adopt:
    pre-check for the label's presence — only for the gate's state.)
 
 5. **Create the PR-head worktree before the first review pass — off the PR's OWN head, never `<base>`.**
-   The review itself needs a real checkout: the review command runs `codex exec -C <worktree>` (the
+   The review itself needs a real checkout: the selected reviewer runs in `<worktree>` (the
    ledger `worktree` column — the authoritative checkout path, which may be a reused checkout outside
    `.worktrees/`, per `loop-control.md` / `stage-2-review-gate.md`) and diffs `origin/<base>...HEAD`, so
    the worktree MUST exist **before the PR's first review pass dispatches** — create it here as part of adoption, or as a guaranteed pre-review
