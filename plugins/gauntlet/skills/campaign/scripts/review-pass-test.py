@@ -765,7 +765,7 @@ class Tables:
             R.check_ruled(value)
 
         self.DOMAINS: "dict[str, tuple[Callable[[object], None], str]]" = {
-            **{name: (probe_id(name), spec) for name, (_re, spec, _why) in R.ID_FORMATS.items()},
+            **{name: (probe_id(name), spec) for name, (_, spec, _) in R.ID_FORMATS.items()},  # drops regex, why
             "filename pr": (probe_name("pr"), "a decimal number from 1 up, as the progress file's NAME carries it"),
             "filename pass": (probe_name("pass"), "a decimal number from 1 up, as the NAME carries it"),
             "filename attempt": (probe_name("attempt"),
@@ -1263,19 +1263,19 @@ def run_cases(mod: types.ModuleType, T: Tables, tmp: Path) -> "dict[str, tuple[s
     # must supply one or it would be asserting the wrong refusal. These cases carry no findings file, so
     # `satisfied` is the verdict that coheres; the cases that ARE about the verdict live in `FINDING_CASES`,
     # which passes its own — including `None`.
-    for name, (plan, progress, _want, _needle, _why) in T.CASES.items():
+    for name, (plan, progress, _, _, _) in T.CASES.items():  # drops want, needle, why
         path = build(tmp, f"case-{name}", plan, progress)
         try:
             got[name] = mod.evaluate(path, SHA, 0, mod.SATISFIED)
         except Exception as exc:  # noqa: BLE001 - a crash IS the result here
             got[name] = (f"crash:{type(exc).__name__}", str(exc))
-    for name, (plan, progress, findings, intent, verdict, _w, _n, _why) in T.FINDING_CASES.items():
+    for name, (plan, progress, findings, intent, verdict, _, _, _) in T.FINDING_CASES.items():  # drops want, needle, why
         path = build(tmp, f"find-{name}", plan, progress, findings, intent)
         try:
             got[f"[finding] {name}"] = mod.evaluate(path, SHA, 0, verdict)
         except Exception as exc:  # noqa: BLE001
             got[f"[finding] {name}"] = (f"crash:{type(exc).__name__}", str(exc))
-    for i, (name, _want, _needle, _why) in enumerate(T.NAME_CASES):
+    for i, (name, _, _, _) in enumerate(T.NAME_CASES):  # drops want, needle, why
         d = build(tmp, f"name-{i}", T.PLAN, T.WORKED).parent
         path = d / name
         path.write_text("".join(line + "\n" for line in T.WORKED), encoding="utf-8")
@@ -1285,21 +1285,21 @@ def run_cases(mod: types.ModuleType, T: Tables, tmp: Path) -> "dict[str, tuple[s
             got[f"[name] {name}"] = mod.evaluate(path, SHA, 0, mod.SATISFIED)
         except Exception as exc:  # noqa: BLE001
             got[f"[name] {name}"] = (f"crash:{type(exc).__name__}", str(exc))
-    for i, (argv, seed, _want, _needle, _why) in enumerate(T.CLI_CASES):
+    for i, (argv, seed, _, _, _) in enumerate(T.CLI_CASES):  # drops want, needle, why
         path = build(tmp, f"cli-{i}", T.PLAN, seed)
         try:
             code, text = run_cli(mod, [argv[0], "--file", str(path), *argv[1:]])
             got[cli_key(i, argv)] = (f"exit{code}", text)
         except Exception as exc:  # noqa: BLE001
             got[cli_key(i, argv)] = (f"crash:{type(exc).__name__}", str(exc))
-    for i, (pname, argv, _want, _needle, _why) in enumerate(T.PLAN_CLI_CASES):
+    for i, (pname, argv, _, _, _) in enumerate(T.PLAN_CLI_CASES):  # drops want, needle, why
         plan = build(tmp, f"plan-cli-{i}", T.PLAN, []).parent / pname
         try:
             code, text = run_cli(mod, ["plan-add", "--file", str(plan), *argv])
             got[f"[plan] {pname} {' '.join(argv)}"] = (f"exit{code}", text)
         except Exception as exc:  # noqa: BLE001
             got[f"[plan] {pname} {' '.join(argv)}"] = (f"crash:{type(exc).__name__}", str(exc))
-    for i, (fname, argv, _want, _needle, _why) in enumerate(T.FINDING_CLI_CASES):
+    for i, (fname, argv, _, _, _) in enumerate(T.FINDING_CLI_CASES):  # drops want, needle, why
         d = build(tmp, f"find-cli-{i}", T.PLAN, T.DISPATCHED, None, INTENT).parent
         try:
             code, text = run_cli(mod, ["finding-add", "--file", str(d / fname), *argv])
@@ -1313,16 +1313,16 @@ def run_cases(mod: types.ModuleType, T: Tables, tmp: Path) -> "dict[str, tuple[s
 
 def expectations(T: Tables) -> "dict[str, tuple[str, str, str]]":
     """case -> (expected outcome, needle its output must contain, why the case exists)."""
-    out = {n: (w, needle, why) for n, (_p, _pr, w, needle, why) in T.CASES.items()}
+    out = {n: (w, needle, why) for n, (_, _, w, needle, why) in T.CASES.items()}  # drops plan, progress
     out.update({f"[finding] {n}": (w, needle, why)
-                for n, (_p, _pr, _f, _i, _v, w, needle, why) in T.FINDING_CASES.items()})
+                for n, (_, _, _, _, _, w, needle, why) in T.FINDING_CASES.items()})  # drops plan, progress, findings, intent, verdict
     out.update({f"[name] {n}": (w, needle, why) for n, w, needle, why in T.NAME_CASES})
     out.update({cli_key(i, a): (f"exit{c}", needle, why)
-                for i, (a, _seed, c, needle, why) in enumerate(T.CLI_CASES)})
+                for i, (a, _, c, needle, why) in enumerate(T.CLI_CASES)})  # drops seed
     out.update({f"[plan] {p} {' '.join(a)}": (f"exit{c}", needle, why)
                 for p, a, c, needle, why in T.PLAN_CLI_CASES})
     out.update({find_key(i, p): (f"exit{c}", needle, why)
-                for i, (p, _a, c, needle, why) in enumerate(T.FINDING_CLI_CASES)})
+                for i, (p, _, c, needle, why) in enumerate(T.FINDING_CLI_CASES)})  # drops argv
     # The two PROPERTIES. Their expectation IS the property and not a particular rule — demanding a needle
     # would be demanding a specific defect where the case only demands a sound outcome.
     out.update({f"[round-trip] {cmd} on a {state} file": (
@@ -1364,7 +1364,7 @@ def check_boundaries(R: types.ModuleType, T: Tables) -> int:
                   f"value IS. `a10` was refused by a pattern whose own error message said `k >= 2`")
             failures += 1
 
-    for name, (_probe, spec) in T.DOMAINS.items():
+    for name, (_, spec) in T.DOMAINS.items():  # drops the probe callable
         probed = sides.get(name, set())
         if probed == {True, False}:
             continue
@@ -1433,7 +1433,7 @@ def check_docs(R: types.ModuleType) -> int:
         except R.Defect as exc:
             print(f"FAIL     {where}:{n:<4} the tool REFUSES its own documented example: {exc}")
             failures += 1
-    seen = {rec["type"] for _w, _n, rec in examples}
+    seen = {rec["type"] for _, _, rec in examples}  # drops want, needle
     if seen != want:
         print(f"FAIL     the docs no longer show an example of every record type — missing "
               f"{sorted(want - seen)}. A scan that matches nothing passes every time and checks nothing; "
@@ -1488,7 +1488,7 @@ def door_parsers(R: types.ModuleType) -> "dict[str, argparse.ArgumentParser]":
     actually EXECUTED for them is the real script, as a subprocess, so a replica cannot hide a wrapper that
     has drifted from it.
     """
-    p, _cmds = R.build_parser()
+    p, _ = R.build_parser()  # drops the commands map
     doors: dict[str, argparse.ArgumentParser] = {}
     for action in p._actions:  # noqa: SLF001 - the subparser map is where the doors are
         choices = getattr(action, "choices", None)
@@ -1676,7 +1676,7 @@ def unmarked(source: str, marked: "dict[str, tuple[str, ast.stmt]]") -> "list[st
     mutated, so nothing ever asks whether a fixture would notice its absence — it is reported "pinned" by
     nobody having looked. THE COUNT IS A CLAIM, and this is what makes the claim checkable.
     """
-    lines = {stmt.lineno for _w, stmt in marked.values()}
+    lines = {stmt.lineno for _, stmt in marked.values()}  # drops the weakening
     problems: list[str] = []
     for fn in ast.walk(ast.parse(source)):
         if not isinstance(fn, ast.FunctionDef) or fn.name not in RULE_FUNCTIONS:
@@ -1723,7 +1723,7 @@ def check_commands_covered(R: types.ModuleType, T: Tables) -> "list[str]":
     the parser and in neither set below — so the suite goes red the day it is added, and stays red until
     someone says which it is.
     """
-    _parser, commands = R.build_parser()
+    _, commands = R.build_parser()  # drops the parser
     problems = []
     for cmd in commands:
         if cmd not in T.WRITE_COMMANDS and cmd not in T.READ_ONLY_COMMANDS:
@@ -1791,7 +1791,7 @@ def run_status_cases(mod: types.ModuleType, T: Tables, tmp: Path) -> int:
             failures += 1
             continue
         try:
-            _cols, rows = status_parse(out)
+            _, rows = status_parse(out)  # drops the header cols
         except SelfTestFailure as exc:
             # A view whose every pass is hidden prints a header + footer and NO table (no dash rule line).
             # That is legitimate for an `absent`/`footer`-only case; only a case that expects rendered rows
@@ -1920,12 +1920,12 @@ def run(R: types.ModuleType, tmp: Path) -> int:
         # A mutation only ever REMOVES a rule, so it can never turn a PASSING case into a failing one.
         # If it does, the mutation is bogus — a harness bug, never a pinned rule.
         wrong = [f"{c} expected {w} but the mutant returned {mutant[c][0]}"
-                 for c, (w, _n, _y) in expect.items() if w in PASSING and mutant[c][0] != w]
+                 for c, (w, _, _) in expect.items() if w in PASSING and mutant[c][0] != w]  # drops needle, why
         if wrong:
             broken.append(f"{rule}: BOGUS MUTATION — {'; '.join(wrong)}")
             continue
         killers = []
-        for case, (want, needle, _why) in expect.items():
+        for case, (want, needle, _) in expect.items():  # drops why
             if want in PASSING:
                 continue  # a case that PASSES cannot kill a rule; it is a canary (checked above)
             outcome, text = mutant[case]

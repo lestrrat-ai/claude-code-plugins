@@ -293,11 +293,13 @@ def grid(L: ModuleType, out: str, fields: "tuple[str, ...]",
 # --- the fixtures -------------------------------------------------------------
 #
 # Every fixture takes the ACCESSOR under test and its own scratch directory, handed to it by `run()`. A
-# fixture that asserts on a PURE function needs no file, so it names that argument `_tmp`: the signature is
-# fixed by the CASES table, and the leading underscore is how a parameter says it is deliberately unused
-# rather than forgotten.
+# fixture that asserts on a PURE function needs no file, so it names that argument `_`: the signature is
+# fixed by the CASES table (`run` calls `fn(L, work)` positionally, so the name is free), and a bare `_` is
+# how a parameter says it is deliberately unused rather than forgotten. It must be a BARE `_`, not a
+# descriptive `_tmp`: pyright's language server grays a named-underscore parameter as "not accessed", and
+# only a bare `_` is silent.
 
-def t_escape_injective(L: ModuleType, _tmp: Path) -> None:
+def t_escape_injective(L: ModuleType, _: Path) -> None:
     """Two DIFFERENT values NEVER render as the same cell.
 
     A non-injective escaping is a NEW LIE inside the code written to stop lies: `a|b` and `a\\|b` are
@@ -382,7 +384,7 @@ def bare(cell: str) -> "list[str]":
     return out
 
 
-def t_escape_invariant(L: ModuleType, _tmp: Path) -> None:
+def t_escape_invariant(L: ModuleType, _: Path) -> None:
     """The escaped cell holds NO BARE grid metacharacter: no unescaped `|`, no line break, no control
     char — and it never opens with `#`. This is what makes the ` | ` separator and the `# ` config prefix
     mean ONE thing wherever they appear.
@@ -413,7 +415,7 @@ def t_escape_invariant(L: ModuleType, _tmp: Path) -> None:
               f"invisible, and rstrip() eats it")
 
 
-def t_escape_mapping(L: ModuleType, _tmp: Path) -> None:
+def t_escape_mapping(L: ModuleType, _: Path) -> None:
     r"""The escape TABLE itself, character by character — and ordinary text left BYTE-IDENTICAL.
 
     The invariant above is satisfied by more than one escaping (drop the `\n` branch and a newline still
@@ -1356,8 +1358,8 @@ def t_no_verdict_for_a_held_row(L: ModuleType, tmp: Path) -> None:
     """No verdict may land on a HELD row — no review pass should have been running for it at all."""
     for status in L.HELD_STATUSES:
         path = capped_row(L, tmp, f"held-{status}.jsonl", status=status)
-        code, _, err = cli(L, ["--file", str(path), "verdict", "--pr", "1", "--head-sha", SHA_A,
-                               "--verdict", "not-satisfied"])
+        code, _, _ = cli(L, ["--file", str(path), "verdict", "--pr", "1", "--head-sha", SHA_A,
+                             "--verdict", "not-satisfied"])
         check(code == 1, f"[{status}] a verdict on a held row was ACCEPTED (exit {code})")
         code, out, _ = cli(L, ["--file", str(path), "get", "--pr", "1", "--field", "review_rounds"])
         check(out == "0\n", f"[{status}] the REFUSED verdict bumped the counter anyway: {out!r}")
@@ -1382,7 +1384,7 @@ def t_dispatch_check_is_the_guard(L: ModuleType, tmp: Path) -> None:
 
     for status in ("in_review", "pending"):
         path = capped_row(L, tmp, f"live-{status}.jsonl", status=status)
-        code, out, err = cli(L, ["--file", str(path), "dispatch-check", "--pr", "1"])
+        code, _, err = cli(L, ["--file", str(path), "dispatch-check", "--pr", "1"])
         check(code == 0, f"[{status}] a LIVE row was HELD (exit {code}) — the run would stall: {err!r}")
 
     # `--action repair`: refused with no decision recorded, and refused on a row that is not repairing.
