@@ -149,25 +149,225 @@ run_self_test() {
     rc=1
   fi
 
+  # --- path-resolution guard: manifest-declared path fields must resolve inside the plugin root ---
+  # These prove the NEW checks catch drift. Gutting resolve_plugin_path (making it always succeed)
+  # makes (f)/(g)/(h)/(j)/(l) start passing when they must fail, so this returns non-zero.
+  local proot=$dir/plugin mf=$dir/codex-plugin.json
+  mkdir -p "$proot/skills/demo"
+  : >"$proot/skills/demo/SKILL.md"
+
+  # (e) a valid in-root skills path -> must RESOLVE
+  if ! resolve_plugin_path "$proot" "./skills/" >/dev/null 2>&1; then
+    printf 'error: self-test(e): resolve_plugin_path rejected a valid in-root skills path\n' >&2
+    rc=1
+  fi
+
+  # (f) a declared path that points nowhere (the reported finding: Codex skills: ./missing-skills/)
+  #     -> must FAIL to resolve
+  if resolve_plugin_path "$proot" "./missing-skills/" >/dev/null 2>&1; then
+    printf 'error: self-test(f): resolve_plugin_path accepted a non-existent skills path\n' >&2
+    rc=1
+  fi
+
+  # (g) a path that escapes the plugin root via `..` -> must FAIL
+  if resolve_plugin_path "$proot" "../outside" >/dev/null 2>&1; then
+    printf 'error: self-test(g): resolve_plugin_path accepted a root-escaping (..) path\n' >&2
+    rc=1
+  fi
+
+  # (h) an absolute path -> must FAIL
+  if resolve_plugin_path "$proot" "/etc" >/dev/null 2>&1; then
+    printf 'error: self-test(h): resolve_plugin_path accepted an absolute path\n' >&2
+    rc=1
+  fi
+
+  # (i) resolve_skills_dir reads the Codex `skills` field and resolves it -> must RESOLVE
+  printf '%s\n' '{"name":"x","skills":"./skills/"}' >"$mf"
+  if ! resolve_skills_dir Codex "$proot" "$mf" >/dev/null 2>&1; then
+    printf 'error: self-test(i): resolve_skills_dir rejected a valid declared Codex skills path\n' >&2
+    rc=1
+  fi
+
+  # (j) a Codex manifest whose `skills` path is missing -> resolve_skills_dir must FAIL
+  printf '%s\n' '{"name":"x","skills":"./missing-skills/"}' >"$mf"
+  if resolve_skills_dir Codex "$proot" "$mf" >/dev/null 2>&1; then
+    printf 'error: self-test(j): resolve_skills_dir accepted a missing declared Codex skills path\n' >&2
+    rc=1
+  fi
+
+  # (k) validate_manifest_paths: a present field with a good path -> must PASS
+  printf '%s\n' '{"name":"x","assets":"./skills/"}' >"$mf"
+  if ! validate_manifest_paths Codex "$proot" "$mf" assets 2>/dev/null; then
+    printf 'error: self-test(k): validate_manifest_paths rejected a valid path field\n' >&2
+    rc=1
+  fi
+
+  # (l) validate_manifest_paths: a present field with a root-escaping path -> must FAIL
+  printf '%s\n' '{"name":"x","assets":"../escape"}' >"$mf"
+  if validate_manifest_paths Codex "$proot" "$mf" assets 2>/dev/null; then
+    printf 'error: self-test(l): validate_manifest_paths accepted a root-escaping path field\n' >&2
+    rc=1
+  fi
+
+  # (m) validate_manifest_paths: an ABSENT field is optional -> must PASS
+  printf '%s\n' '{"name":"x"}' >"$mf"
+  if ! validate_manifest_paths Codex "$proot" "$mf" assets 2>/dev/null; then
+    printf 'error: self-test(m): validate_manifest_paths failed on an absent (optional) path field\n' >&2
+    rc=1
+  fi
+
   rm -rf -- "$dir"
   return "$rc"
 }
 
+# Resolve a manifest-DECLARED, plugin-root-relative path to a real location that provably stays
+# inside the plugin root, and print its canonical absolute path. This is the primitive that closes
+# the "un-validated path field" class directly: a field whose value is a path is only accepted if it
+# resolves to something that EXISTS and cannot escape the plugin root. On any violation it prints
+# nothing and returns non-zero (so a caller runs fail()) — never a raw `set -e` abort.
+# Rejections, in order: empty; absolute (`/…`); any `..` component — checked LEXICALLY before the
+# filesystem is touched, because a symlink could otherwise map an in-tree spelling to an out-of-tree
+# target; then the path must actually exist, and its realpath must be the root itself or a strict
+# descendant of it (the final containment backstop even if a symlink slipped past the lexical check).
+resolve_plugin_path() {
+  local root=$1 declared=$2 root_real rel target target_real
+  root_real=$(cd -- "$root" 2>/dev/null && pwd -P) || return 1
+  [[ -n $declared ]] || return 1
+  [[ $declared == /* ]] && return 1              # absolute path escapes the root
+  rel=${declared#./}                             # strip one leading ./
+  rel=${rel%/}                                   # strip trailing slashes
+  rel=${rel%/}
+  [[ -n $rel ]] || return 1
+  case "/$rel/" in                               # any `..` component escapes the root
+    */../*) return 1 ;;
+  esac
+  target=$root/$rel
+  [[ -e $target ]] || return 1
+  if [[ -d $target ]]; then
+    # Canonicalise the directory itself (follows symlinks fully).
+    target_real=$(cd -- "$target" 2>/dev/null && pwd -P) || return 1
+  else
+    # A file: canonicalise its parent dir, then re-append the leaf name.
+    target_real=$(cd -- "$(dirname -- "$target")" 2>/dev/null && pwd -P)/$(basename -- "$target") || return 1
+  fi
+  [[ $target_real == "$root_real" || $target_real == "$root_real"/* ]] || return 1
+  printf '%s\n' "$target_real"
+}
+
+# Validate every path-bearing manifest field in `$4…` for one host: a field that is ABSENT is fine
+# (the schema makes these optional), a field that is PRESENT must hold a path that resolve_plugin_path
+# accepts. Prints diagnostics and returns non-zero on any violation; mutates no global state, so the
+# self-test can drive it on fixtures and main-flow callers attach `|| status=1`. `skills` is NOT
+# listed here — resolve_skills_dir owns it because the entrypoint check needs the resolved dir anyway;
+# this helper covers any OTHER path field a manifest grows, so a new one is validated automatically.
+validate_manifest_paths() {
+  local host=$1 plugin_root=$2 manifest=$3
+  shift 3
+  local field present declared rc=0
+  jq empty "$manifest" 2>/dev/null || {
+    printf 'error: %s: %s is not valid JSON\n' "$host" "$manifest" >&2
+    return 1
+  }
+  for field in "$@"; do
+    present=$(jq -r "has(\"$field\")" "$manifest" 2>/dev/null) || { rc=1; continue; }
+    [[ $present == true ]] || continue
+    declared=$(jq -r ".${field} // \"\"" "$manifest" 2>/dev/null)
+    if ! resolve_plugin_path "$plugin_root" "$declared" >/dev/null; then
+      printf "error: %s: manifest field '%s' path '%s' does not resolve to an existing location inside the plugin root\n" \
+        "$host" "$field" "$declared" >&2
+      rc=1
+    fi
+  done
+  return "$rc"
+}
+
+# Resolve the directory a host discovers skills in, printing its canonical absolute path. Codex
+# DECLARES it in the manifest `skills` field — resolve THAT, never a hard-coded `skills/`, so a
+# drifted Codex `skills` path fails instead of being silently ignored (the exact finding this closes).
+# Claude auto-discovers `skills/` with no manifest field, so its default is `./skills`. Silent: returns
+# non-zero with nothing printed if the declared/default path does not resolve inside the plugin root,
+# and the caller fails loudly rather than falling back to a wrong dir.
+resolve_skills_dir() {
+  local host=$1 plugin_root=$2 manifest=$3 declared
+  case $host in
+    Codex)
+      declared=$(jq_field '.skills // ""' "$manifest") || return 1   # malformed manifest
+      [[ -n $declared ]] || declared=./skills                        # field absent -> Codex default
+      ;;
+    Claude)
+      declared=./skills                                              # auto-discovered, no field
+      ;;
+    *) return 1 ;;
+  esac
+  resolve_plugin_path "$plugin_root" "$declared"
+}
+
+# Verify every source skills/*/SKILL.md entrypoint is present in the installed copy. `skills_dir` and
+# `plugin_root` are the RESOLVED absolute paths (from resolve_skills_dir); entrypoints are named
+# relative to the plugin root so they match the installed layout regardless of what subdir the
+# manifest pointed `skills` at.
 verify_gauntlet_skill_entrypoints() {
-  local host source installed skill entrypoint
+  local host plugin_root skills_dir installed skill entrypoint
   local count=0
   host=$1
-  source=$2
-  installed=$3
+  plugin_root=$2
+  skills_dir=$3
+  installed=$4
 
   while IFS= read -r skill; do
     count=$((count + 1))
-    entrypoint=${skill#"$source/"}
+    entrypoint=${skill#"$plugin_root/"}
     [[ -f $installed/$entrypoint ]] ||
       fail "gauntlet: installed $host plugin is missing $entrypoint"
-  done < <(find "$source/skills" -mindepth 2 -maxdepth 2 -name SKILL.md -type f | sort)
+  done < <(find "$skills_dir" -mindepth 2 -maxdepth 2 -name SKILL.md -type f | sort)
 
   ((count > 0)) || fail "gauntlet: source plugin contains no skills/*/SKILL.md entrypoints"
+}
+
+# Structural class-closer: after BOTH hosts install from this checkout, prove the two installed copies
+# carry the IDENTICAL set of skill entrypoints AND byte-identical content for each. Any manifest field
+# whose drift changes what actually gets installed (a wrong/missing `skills` path that installs empty
+# or divergent content, or any un-enumerated field with the same effect) fails HERE without the check
+# having to name that field — that is what stops the "round N finds yet another un-validated field"
+# loop. Prints diagnostics and calls fail() on any mismatch.
+assert_installed_skill_parity() {
+  local name=$1 claude_root=$2 codex_root=$3
+  local claude_list codex_list rel
+
+  claude_list=$(cd -- "$claude_root" 2>/dev/null &&
+    find . -path '*/skills/*/SKILL.md' -type f | sed 's,^\./,,' | LC_ALL=C sort) || {
+    fail "$name: cannot enumerate installed Claude skills under '$claude_root'"
+    return
+  }
+  codex_list=$(cd -- "$codex_root" 2>/dev/null &&
+    find . -path '*/skills/*/SKILL.md' -type f | sed 's,^\./,,' | LC_ALL=C sort) || {
+    fail "$name: cannot enumerate installed Codex skills under '$codex_root'"
+    return
+  }
+
+  if [[ -z $claude_list ]]; then
+    fail "$name: installed Claude copy has no skills/*/SKILL.md entrypoints"
+    return
+  fi
+  if [[ $claude_list != "$codex_list" ]]; then
+    fail "$name: installed skill entrypoint sets differ between hosts
+  Claude: $(printf '%s' "$claude_list" | tr '\n' ' ')
+  Codex:  $(printf '%s' "$codex_list" | tr '\n' ' ')"
+    return
+  fi
+
+  # Same entrypoint set -> compare bytes of each entrypoint.
+  while IFS= read -r rel; do
+    [[ -n $rel ]] || continue
+    cmp -s "$claude_root/$rel" "$codex_root/$rel" ||
+      fail "$name: installed skill content differs at '$rel' between hosts"
+  done <<<"$claude_list"
+
+  # Full-tree parity of the shared skills/ dir (references/ and scripts/ too, not just SKILL.md).
+  if [[ -d $claude_root/skills && -d $codex_root/skills ]]; then
+    diff -rq "$claude_root/skills" "$codex_root/skills" >/dev/null 2>&1 ||
+      fail "$name: installed skills/ trees differ between hosts (run: diff -rq '$claude_root/skills' '$codex_root/skills')"
+  fi
 }
 
 for tool in claude codex jq; do
@@ -314,7 +514,16 @@ else
       fail "$name: installed Claude manifest version '$installed_version', source has '$source_version'"
 
     if [[ $name == gauntlet ]]; then
-      verify_gauntlet_skill_entrypoints Claude "$source" "$installed_real"
+      source_real=$(cd -- "$source" && pwd -P)
+      # Claude's manifest declares no path-bearing field (it auto-discovers skills/); any it grows
+      # later is validated automatically. The skills dir itself is resolved below.
+      validate_manifest_paths Claude "$source_real" "$source_manifest" || status=1
+      if skills_real=$(resolve_skills_dir Claude "$source_real" "$source_manifest"); then
+        verify_gauntlet_skill_entrypoints Claude "$source_real" "$skills_real" "$installed_real"
+        claude_gauntlet_installed=$installed_real
+      else
+        fail "$name: Claude skills directory does not resolve to an existing dir inside the plugin root"
+      fi
     fi
   done < <(jq -r '.plugins[] | select(.source | type == "string") | [.name, .source] | @tsv' "$claude_marketplace")
 fi
@@ -403,9 +612,28 @@ while IFS=$'\t' read -r name source; do
     fail "$name: installed Codex manifest version '$installed_version', source has '$source_version'"
 
   if [[ $name == gauntlet ]]; then
-    verify_gauntlet_skill_entrypoints Codex "$source" "$installed_real"
+    source_real=$(cd -- "$source" && pwd -P)
+    # Validate every OTHER path-bearing field the Codex manifest carries (the schema currently
+    # carries none beyond `skills`; a future one is validated automatically). `skills` itself is
+    # resolved below from its DECLARED value, never a hard-coded `skills/`.
+    validate_manifest_paths Codex "$source_real" "$codex_plugin" || status=1
+    if skills_real=$(resolve_skills_dir Codex "$source_real" "$codex_plugin"); then
+      verify_gauntlet_skill_entrypoints Codex "$source_real" "$skills_real" "$installed_real"
+      codex_gauntlet_installed=$installed_real
+    else
+      fail "$name: Codex declared skills path does not resolve to an existing dir inside the plugin root"
+    fi
   fi
 done < <(jq -r '.plugins[] | [.name, .source.path] | @tsv' "$codex_marketplace")
+
+echo
+echo "==> installed skill-content equivalence (both hosts)"
+# The structural class-closer: both isolated installs must yield byte-identical skill content.
+if [[ -n ${claude_gauntlet_installed:-} && -n ${codex_gauntlet_installed:-} ]]; then
+  assert_installed_skill_parity gauntlet "$claude_gauntlet_installed" "$codex_gauntlet_installed"
+else
+  fail "install-content equivalence: one or both hosts did not report a gauntlet install path; cannot prove identical installed skills"
+fi
 
 echo
 echo "==> cross-marketplace equivalence"

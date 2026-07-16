@@ -40,4 +40,7 @@ Campaign's exact cross-agent command lines live in
 - Cross-engine review is the default per host, launched at native-limitation level; explicit or saved
   user selection overrides it.
 - Run both plugin install validators after changing shared plugin content.
+- `scripts/validate-plugins.sh` resolves every path a manifest declares (e.g. Codex `skills`) against
+  its plugin root and rejects any that is missing or escapes the root, then proves both isolated
+  installs yield identical skill content. Keep declared paths pointing at real in-tree directories.
 - Bump both plugin manifest versions after changing `plugins/**`.
