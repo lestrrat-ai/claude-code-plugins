@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Validate both marketplace formats, every plugin they list, and skill layout.
 #
-# Runs fully offline: `claude plugin validate` needs no credentials, so this is
-# safe on forked pull requests.
+# Runs fully offline: both CLIs install only from this checkout and need no
+# credentials, so this is safe on forked pull requests.
 #
 # Usage: scripts/validate-plugins.sh
 set -euo pipefail
@@ -70,6 +70,92 @@ while IFS=$'\t' read -r name source kind; do
   claude plugin validate "$source" --strict || status=1
 done < <(jq -r '.plugins[] | [.name, (.source | tostring), (.source | type)] | @tsv' "$claude_marketplace")
 
+mkdir -p "$root/.tmp"
+claude_config_dir=
+codex_home=
+cleanup() {
+  [[ -z $claude_config_dir ]] || rm -rf -- "$claude_config_dir"
+  [[ -z $codex_home ]] || rm -rf -- "$codex_home"
+}
+trap cleanup EXIT
+claude_config_dir=$(mktemp -d "$root/.tmp/claude-validate.XXXXXX")
+codex_home=$(mktemp -d "$root/.tmp/codex-validate.XXXXXX")
+
+echo
+echo "==> Claude isolated plugin installation"
+claude_marketplace_name=$(jq -r '.name' "$claude_marketplace")
+if ! CLAUDE_CONFIG_DIR=$claude_config_dir \
+  claude plugin marketplace add "$root" --scope user; then
+  fail "Claude could not add the local marketplace"
+else
+  while IFS=$'\t' read -r name source; do
+    CLAUDE_CONFIG_DIR=$claude_config_dir \
+      claude plugin install "$name@$claude_marketplace_name" --scope user ||
+      fail "$name: Claude could not install the plugin"
+  done < <(jq -r '.plugins[] | select(.source | type == "string") | [.name, .source] | @tsv' "$claude_marketplace")
+fi
+
+claude_plugin_list=$claude_config_dir/plugin-list.json
+if ! CLAUDE_CONFIG_DIR=$claude_config_dir claude plugin list --json >"$claude_plugin_list"; then
+  fail "Claude could not list the isolated plugins"
+elif ! jq -e 'type == "array"' "$claude_plugin_list" >/dev/null; then
+  fail "Claude isolated plugin list is not a JSON array"
+else
+  while IFS=$'\t' read -r name source; do
+    expected_id=$name@$claude_marketplace_name
+    match_count=$(jq --arg id "$expected_id" '[.[] | select(.id == $id)] | length' "$claude_plugin_list")
+    if [[ $match_count != 1 ]]; then
+      fail "$name: expected exactly one installed Claude plugin '$expected_id', found $match_count"
+      continue
+    fi
+
+    listed_version=$(jq -r --arg id "$expected_id" '.[] | select(.id == $id) | .version // ""' "$claude_plugin_list")
+    listed_scope=$(jq -r --arg id "$expected_id" '.[] | select(.id == $id) | .scope // ""' "$claude_plugin_list")
+    installed=$(jq -r --arg id "$expected_id" '.[] | select(.id == $id) | .installPath // ""' "$claude_plugin_list")
+    source_manifest=$source/.claude-plugin/plugin.json
+    source_name=$(jq -r '.name // ""' "$source_manifest")
+    source_version=$(jq -r '.version // ""' "$source_manifest")
+
+    [[ $listed_scope == user ]] ||
+      fail "$name: installed Claude plugin has scope '$listed_scope', expected 'user'"
+    [[ $listed_version == "$source_version" ]] ||
+      fail "$name: installed Claude metadata has version '$listed_version', source has '$source_version'"
+
+    if [[ ! -d $installed ]]; then
+      fail "$name: installed Claude path '$installed' is not a directory"
+      continue
+    fi
+    installed_real=$(cd -- "$installed" && pwd -P)
+    cache_real=$(cd -- "$claude_config_dir/plugins/cache" && pwd -P)
+    [[ $installed_real == "$cache_real"/* ]] || {
+      fail "$name: installed Claude path '$installed_real' is outside '$cache_real'"
+      continue
+    }
+
+    installed_manifest=$installed/.claude-plugin/plugin.json
+    [[ -f $installed_manifest ]] || {
+      fail "$name: installed Claude plugin is missing .claude-plugin/plugin.json"
+      continue
+    }
+    installed_name=$(jq -r '.name // ""' "$installed_manifest")
+    installed_version=$(jq -r '.version // ""' "$installed_manifest")
+    [[ $installed_name == "$source_name" ]] ||
+      fail "$name: installed Claude manifest name '$installed_name', source has '$source_name'"
+    [[ $installed_version == "$source_version" ]] ||
+      fail "$name: installed Claude manifest version '$installed_version', source has '$source_version'"
+
+    if [[ $name == gauntlet ]]; then
+      for entrypoint in \
+        skills/campaign/SKILL.md \
+        skills/review/SKILL.md \
+        skills/copilot-address-reviews/SKILL.md; do
+        [[ -f $installed/$entrypoint ]] ||
+          fail "$name: installed Claude plugin is missing $entrypoint"
+      done
+    fi
+  done < <(jq -r '.plugins[] | select(.source | type == "string") | [.name, .source] | @tsv' "$claude_marketplace")
+fi
+
 echo
 echo "==> Codex marketplace manifest"
 jq -e '
@@ -108,9 +194,6 @@ while IFS=$'\t' read -r name source; do
     fail "$name: manifest versions differ (Claude $claude_version, Codex $codex_version)"
 done < <(jq -r '.plugins[] | [.name, .source.path] | @tsv' "$codex_marketplace")
 
-mkdir -p "$root/.tmp"
-codex_home=$(mktemp -d "$root/.tmp/codex-validate.XXXXXX")
-trap 'rm -rf "$codex_home"' EXIT
 CODEX_HOME=$codex_home codex plugin marketplace add . --json >"$codex_home/marketplace-add.json" || status=1
 marketplace_name=$(jq -r '.name' "$codex_marketplace")
 while IFS= read -r name; do
