@@ -27,10 +27,12 @@ So the matrix is DERIVED, here, every CI run:
 Step 5 is the whole point: **"which rules are unpinned?" is a question the SUITE answers, not one a
 reviewer has to discover.**
 
-And the inventory cannot silently rot either. `--check-coverage` (run first, always) parses the rule
+And the inventory cannot silently rot either. Coverage is checked FIRST, in EVERY mode: it parses the rule
 functions and asserts that EVERY enforcement point in them — every `raise SnapshotError` / `raise
 Unverifiable`, every `return RED/PENDING/UNCLASSIFIED` — sits under a marker. Add a rule without a marker
-and this fails: an unmarked rule is an untested rule, and it does not get to hide by being invisible.
+and this fails — the bare full-matrix run and `--check-coverage` alike; the flag only skips the mutants,
+never the coverage gate. An unmarked rule is an untested rule, and it does not get to hide by being
+invisible: the matrix iterates marked rules only, so a gap is invisible to it and must be fatal on its own.
 
 KILL STRENGTH, reported per rule, because not all kills are equal:
 
@@ -48,7 +50,7 @@ KILL STRENGTH, reported per rule, because not all kills are equal:
   CRASH    the mutant raises instead of returning a verdict. A kill (a crash is not a verdict), and
            reported as such.
 
-Usage:  python3 mutate-ci-snapshot.py            # the full matrix; exits 1 if ANY rule is unpinned
+Usage:  python3 mutate-ci-snapshot.py            # coverage + full matrix; exits 1 if any rule is UNMARKED or unpinned
         python3 mutate-ci-snapshot.py --check-coverage   # marker coverage only, no mutants run
 """
 
@@ -302,10 +304,15 @@ def main() -> int:
     gaps = check_coverage(source, marked)
     for gap in gaps:
         print(f"UNMARKED {gap}")
+    # Coverage is checked FIRST, in EVERY mode — not only under --check-coverage. CI runs the bare
+    # full-matrix invocation, so gating the failure on the flag let a new unmarked rule pass the build
+    # while merely PRINTING `UNMARKED`. An unmarked rule is never mutated (the matrix below iterates
+    # `marked` only), so the matrix can never report it unpinned: the gap itself IS the failure, and it
+    # must be fatal wherever coverage runs. (`review-pass-test.py` fails on its gaps the same way.)
+    if gaps:
+        print(f"\n{len(gaps)} enforcement point(s) carry NO marker.")
+        return 1
     if args.check_coverage:
-        if gaps:
-            print(f"\n{len(gaps)} enforcement point(s) carry NO marker.")
-            return 1
         print(f"every enforcement point in {SCRIPT.name} carries a # MUTATE marker ({len(marked)} rules).")
         return 0
 
