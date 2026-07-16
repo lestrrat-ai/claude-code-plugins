@@ -17,8 +17,9 @@ validation.
 - Resolve bundled resources from the directory containing the active `SKILL.md`. NEVER depend on
   `CLAUDE_PLUGIN_ROOT` or `PLUGIN_ROOT` being available to a worker.
 - When invocation syntax matters, document both forms: Claude Code `/plugin:skill`; Codex `$plugin:skill`.
-- Cross-agent review is opt-in: Claude Code may run `codex exec`, and Codex may run `claude -p`, only
-  when the user selects it explicitly or has saved that preference.
+- Cross-agent review is the DEFAULT: Claude Code reviews with `codex exec`, Codex reviews with
+  `claude -p`, launched at native-limitation level, falling back to a fresh native worker when the other
+  engine's CLI is absent; explicit user selection or a saved preference overrides it.
 - Keep `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json` names and versions synchronized.
 - Validate both marketplace formats and both plugin install paths before merging.
 

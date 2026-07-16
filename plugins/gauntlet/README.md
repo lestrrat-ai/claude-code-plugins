@@ -49,27 +49,26 @@ Start a new Codex session after installation.
 
 - A GitHub remote — the pipeline works through PRs via the `gh` CLI.
 
-That's it. By default the adversarial reviewer is a fresh native worker, so nothing else is needed.
+That's it — the campaign always runs, falling back to a fresh native worker whenever the default
+cross-engine reviewer's CLI is absent (see below), so nothing else is required.
 Fresh means a separate conversational context. Native task APIs may still share the repository cwd and
 writable filesystem and inherit repository startup instructions; campaign does not call that an OS or
 security boundary. The installed campaign rules remain the stage-0 acceptance authority, and candidate
 copies of gate or instruction files remain review evidence.
 
-### Optional — use the other agent as reviewer
+### The reviewer — cross-engine by default
 
 The gate's strength comes from re-reviewing each change with a *fresh, independent* reviewer. Two
-native workers share the orchestrator's model. When an adapter proves the required external capability,
-Claude Code can launch Codex with `codex exec`, and Codex can launch Claude Code with `claude -p`.
+native workers share the orchestrator's model, so by default campaign reviews with a **different engine**:
+Claude Code reviews with Codex (`codex exec`), Codex reviews with Claude Code (`claude -p`). It launches at
+native-limitation level whenever the paired CLI is present — engine diversity needs no OS sandbox.
 
-This is a user option, not a campaign rule. Name the reviewer when you invoke the campaign, or record it
-as your preference in memory, `AGENTS.md`, or `CLAUDE.md`. The campaign never launches the other agent merely
-because its CLI is installed. If an external
-reviewer can't return a verdict because of a system problem (quota, auth, timeout), the pipeline
-retries once and then falls back to a fresh native worker. Campaign launches an external transport only
-after the runtime adapter proves its complete isolation capability. Current adapters cannot, so they
-report the selection unavailable and take the native fallback without launching or immediately parking;
-that fallback keeps fresh conversational context and discloses the host's filesystem/startup-instruction
-limitations.
+You can override the default: name a reviewer when you invoke the campaign (including a native worker), or
+record a preference in memory, `AGENTS.md`, or `CLAUDE.md`. If the paired CLI is absent, or a cross-engine
+reviewer can't return a verdict because of a system problem (quota, auth, timeout), the pipeline retries
+once and then falls back to a fresh native worker — so the campaign runs with or without the other engine.
+The cross-engine and native routes both keep fresh conversational context and disclose the host's
+filesystem/startup-instruction limitations; a future adapter that proves an OS boundary can claim more.
 
 ### Optional — tell it how to report to you
 

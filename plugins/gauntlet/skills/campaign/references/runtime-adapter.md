@@ -99,24 +99,46 @@ consumer prose and command flags never upgrade its result:
 ReviewIsolationCapability {
   route: "native" | "external-codex" | "external-claude",
   fresh_conversation: Bool,
-  instruction_neutral_startup: Bool,
-  candidate_read_only: Bool,
-  artifacts_only_writable: Bool,
+  launch_mechanism_present: Bool,
+  os_filesystem_isolation: {
+    instruction_neutral_startup: Bool,
+    candidate_read_only: Bool,
+    artifacts_only_writable: Bool
+  },
   evidence: list[Text]
 }
 ```
 
-An external capability is `available` only when **all four** properties are true and `evidence` names
-the host/OS operation that materialized and tested an outside-instruction-ancestry view, exposed the
-candidate read-only, and confined writes to the artifact view. A CLI flag, cwd field, prompt prohibition,
-or record path is not that evidence. The current Claude Code and Codex adapters expose no such
-materialize/test operation, so their `external-claude` and `external-codex` records are explicitly
-`unavailable`; campaign MUST NOT build or launch either external process under that result. A future
-adapter may return `available` only after it implements and tests every property.
+Separate two properties this record used to conflate. **Engine diversity** — a cross-engine route runs a
+*different* engine than the orchestrator (Claude Code host → Codex reviewer; Codex host → Claude Code
+reviewer). It is real and valuable and does **not** require an OS sandbox. **OS/filesystem isolation** —
+the three `os_filesystem_isolation` properties — is an optional *stronger-boundary claim* a future
+adapter may prove; its absence must never block launching a reviewer.
 
-The native record has `fresh_conversation = true`; its other three properties are false on a native API
-without startup/cwd/mount/sandbox controls. That is an available native route with the disclosed
-behavioral constraints below, not an external-strength boundary.
+A route is `available` to **launch** when `fresh_conversation = true` and `launch_mechanism_present =
+true`. `fresh_conversation` is the gate's real isolation requirement — a fresh, conversationally-isolated
+context, the one property that decides whether a route may render a verdict. `launch_mechanism_present`
+is the active host's fresh native-worker mechanism for the `native` route, and the **paired engine's
+CLI/launch mechanism** for a cross-engine route (`codex exec` under Claude Code as `external-codex`;
+`claude -p` under Codex as `external-claude`).
+
+The three `os_filesystem_isolation` properties gate **only** whether a route may be reported or relied on
+as a security boundary against a malicious repository. **Their absence NEVER blocks launch** and is the
+ordinary shipped state, not `unavailable`. The current Claude Code and Codex adapters set all three
+`false` and `evidence` makes no such claim, so every launched route — native or cross-engine — runs at
+the disclosed native-limitation level below. A cross-engine route still launches whenever its paired CLI
+is present; engine diversity does not require an OS sandbox. A CLI flag, cwd field, prompt prohibition, or
+record path is never evidence of the stronger boundary; a future adapter may set the three properties true
+only after it implements and tests each (materializing and testing an outside-instruction-ancestry view,
+exposing the candidate read-only, and confining writes to the artifact view). `unavailable` now means
+only: the paired CLI is absent or unlaunchable (cross-engine), or no fresh native-worker mechanism exists
+(native).
+
+The native record has `fresh_conversation = true` and `launch_mechanism_present = true` when the host can
+create a fresh worker; its three `os_filesystem_isolation` properties are false on a native API without
+startup/cwd/mount/sandbox controls. A cross-engine record is identical in shape: `fresh_conversation =
+true`, `launch_mechanism_present = true` when the paired CLI is present, the three properties false, no
+stronger-boundary claim. Both are available routes with the disclosed behavioral constraints below.
 
 ```text
 review_transition(
@@ -131,16 +153,16 @@ This operation owns every route change:
 
 | Input | Action |
 |---|---|
-| selected external route, capability available | `launch-external` |
+| selected cross-engine route, paired CLI available | `launch-external` at native-limitation level (no stronger-boundary claim) |
 | `external-system-failure`, external retry not spent | re-evaluate capability, then `retry-external` only if still available |
-| selected external route unavailable before launch, or `external-system-failure` after retry | report the capability/system failure, then `fallback-native` |
+| selected cross-engine route unavailable before launch (paired CLI absent), or `external-system-failure` after retry | report the failure, then `fallback-native` (disclosed) |
 | native route/fallback can follow the installed contract | `launch-native` with the native limitations below |
 | native attempts cannot follow the installed contract or produce valid artifacts and their budget is exhausted | `park-machine-blocker` |
 
-A pre-launch external capability miss has no process to relaunch, so it consumes no retry and takes the
-fresh native fallback immediately. Missing native OS/startup controls alone never select
-`park-machine-blocker`; only actual inability to complete the installed contract after its budget does.
-`reviewer.md` owns the retry budget, while this table owns the transition meaning.
+A pre-launch cross-engine capability miss (the paired CLI is absent) has no process to relaunch, so it
+consumes no retry and takes the fresh native fallback immediately.
+Missing native OS/startup controls alone never select `park-machine-blocker`; only actual inability to
+complete the installed contract after its budget does. `reviewer.md` owns the retry budget, while this table owns the transition meaning.
 
 ### Review transport record and report ownership
 
@@ -158,9 +180,10 @@ ReviewTransport {
 }
 ```
 
-For a native action, `review_root` is the absolute active run-artifact directory and makes no isolation
-claim. For an external action, every path is an alias inside the adapter-proved view; an unavailable
-external route never constructs this record. The JSON encoding is the prompt's `<TRANSPORT-RECORD>` data
+For a native action **and for a native-level cross-engine action** (the normal case now), `review_root`
+is the absolute active run-artifact directory and makes no isolation claim. Only a future OS-proving
+adapter that returns the three `os_filesystem_isolation` properties true uses aliases inside its proved
+view. A cross-engine route whose paired CLI is absent is `unavailable` and never constructs this record. The JSON encoding is the prompt's `<TRANSPORT-RECORD>` data
 block and the intent is its `<INTENT>` block;
 `bind_review_prompt` binds both without rescanning inserted bytes. Do not substitute record fields into
 prose commands. The active attempt's prompt/progress/findings/report basenames keep the `a<k>` identity
@@ -210,20 +233,21 @@ repository cwd and `AGENTS.md`/`CLAUDE.md`, and can share a writable workspace. 
   load repository startup instructions before dispatch, so this path is **not an independent security
   boundary against a malicious repository** and must never be reported as one.
 
-That native limitation does not by itself park every pass. The fresh worker remains the default reviewer,
-and the orchestrator validates its artifacts and applies acceptance using the **installed, known-good
-campaign rules**. Candidate copies of `SKILL.md`, gate references, `AGENTS.md`, or `CLAUDE.md` never become
-stage-0 gate authority. If inherited instructions actually prevent the worker from following the
-installed review contract or producing valid artifacts, treat that attempt as a reviewer system failure;
-after the documented retry/fallback budget is exhausted, park the PR as a machine blocker.
+That native limitation does not by itself park every pass. A fresh native worker is a valid reviewer at
+this level, and the orchestrator validates its artifacts and applies acceptance using the **installed,
+known-good campaign rules**. Candidate copies of `SKILL.md`, gate references, `AGENTS.md`, or `CLAUDE.md`
+never become stage-0 gate authority. If inherited instructions actually prevent the worker from following
+the installed review contract or producing valid artifacts, treat that attempt as a reviewer system
+failure; after the documented retry/fallback budget is exhausted, park the PR as a machine blocker.
 
-An external verdict-rendering process may claim a stronger boundary only from an `available`
-`ReviewIsolationCapability`. A prompt saying "do not edit" does not create that boundary. Under the
-current adapters both external routes are unavailable and take `fallback-native`; do not launch them and
-do not park merely because the stronger boundary is absent. For Codex specifically, `--ignore-rules`
-disables execpolicy `.rules`; it does **not** disable `AGENTS.md` discovery. Capability-gated external
-argv is retained in `cross-agent-reviewers.md` for a future/actual adapter that proves the complete
-capability.
+A cross-engine verdict-rendering process launches at this **same native-limitation level** whenever its
+paired CLI is present; it renders a diverse-engine verdict but is **not** a stronger security boundary
+than the native worker, and must never be reported as one. It may claim a stronger OS/filesystem boundary
+**only** from an `available` `ReviewIsolationCapability` whose three `os_filesystem_isolation` properties
+are proved true. A prompt saying "do not edit" does not create that boundary, and its absence never blocks
+the launch or parks the pass. For Codex specifically, `--ignore-rules` disables execpolicy `.rules`; it
+does **not** disable `AGENTS.md` discovery. The external argv in `cross-agent-reviewers.md` launches at
+native level today, and the same argv serves a future adapter that additionally proves the OS properties.
 
 - Use a background or otherwise asynchronous worker whenever the host supports one.
 - Preserve each role's read/write limits and output artifact paths exactly.
@@ -267,16 +291,23 @@ the skill does not pretend a wake was scheduled when none was.
 
 ## Reviewer selection and diversity
 
-The default reviewer is a fresh native worker on the active host. No external command is required.
-Using the other agent is an opt-in user choice; never launch it solely because its CLI is installed.
+The **default reviewer is the cross-engine route for the active host**: under Claude Code the reviewer is
+Codex (`codex exec`); under Codex the reviewer is Claude Code (`claude -p`). Engine diversity catches
+defects a same-engine re-roll misses, and it moves review cost off the native-worker pool. The
+cross-engine route launches at the **same native-limitation level** as a native worker whenever the paired
+CLI is present; it needs no OS sandbox and makes no stronger-boundary claim.
 
-- When Claude Code orchestrates, a user may select `codex exec` for model diversity.
-- When Codex orchestrates, a user may select `claude -p` for model diversity.
-- Another process from the active host provides context isolation but not engine diversity. Use one
-  only when the user selected it or when isolation, rather than diversity, is the stated reason.
-- An explicitly selected or saved user preference wins. Record the exact selection in the ledger and
+- When Claude Code orchestrates, the default reviewer is `codex exec`.
+- When Codex orchestrates, the default reviewer is `claude -p`.
+- **Fallback:** when the paired CLI is absent (cross-engine `unavailable`), or the cross-engine process
+  fails after its one retry, the reviewer is a fresh native worker on the active host, disclosed in the
   final report.
+- Another process from the **same** engine (Codex → `codex exec`, Claude Code → `claude -p`) provides
+  context isolation but **not** engine diversity. Use one only when the user selected it, and never report
+  it as diversity.
+- An explicitly selected or saved user preference **overrides** the default — the user may force a native
+  worker or a specific engine. Record the exact selection in the ledger and final report.
 
-Capability-gated other-agent argv lives in `cross-agent-reviewers.md`. External-reviewer retry budget
-remains in `reviewer.md`; the transition itself is owned by `ReviewIsolationCapability` above.
-“Fallback to the default reviewer” always means a fresh native worker on the active host.
+Capability-gated cross-engine argv lives in `cross-agent-reviewers.md`. External-reviewer retry budget
+remains in `reviewer.md`; the transition itself is owned by `ReviewIsolationCapability` above. “Fallback”
+always means a fresh native worker on the active host.

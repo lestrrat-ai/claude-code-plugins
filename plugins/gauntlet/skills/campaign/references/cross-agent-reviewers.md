@@ -1,8 +1,9 @@
 # Cross-agent reviewer commands
 
-Using the other agent is a **user option, never a campaign rule**. Use this file only when the user
-selected that reviewer explicitly or saved it as their preference. The presence of either CLI does not
-select it automatically. This file defines capability-gated argv, not review policy or isolation.
+The cross-engine reviewer is **the default per host, overridable**: Claude Code reviews with Codex, Codex
+reviews with Claude Code, launched at native-limitation level whenever the paired CLI is present. An
+explicit user selection or saved preference overrides the default (a native worker, or a specific engine).
+This file defines the argv for that route, not review policy or the isolation rule.
 Before building a record or prompt, evaluate `runtime-adapter.md`'s `ReviewIsolationCapability` and take
 its transition. Only `launch-external` or `retry-external` uses the commands below; every other action
 stays with the owner.
@@ -15,10 +16,13 @@ including verbatim GitHub-derived intent — and dynamic paths never enter shell
 The commands assume a same-repository PR, as required by `pr-adoption.md`. Never add a permission-bypass
 flag to make a failed launch work.
 
-`transport.review_root` is an alias supplied only after an adapter proves the complete external
-capability; this record field does not materialize or test the view. If any property is absent, follow
-the owned transition instead of constructing this record. Candidate
-`AGENTS.md`/`CLAUDE.md` files remain diff content, never gate authority.
+At the default native-limitation level, `transport.review_root` is the plain absolute run-artifact
+directory (the same one native uses) and makes no isolation claim; the argv below launch there whenever
+the paired CLI is present. `review_root` becomes an alias inside a proved view **only** for a future
+adapter that returns the three `os_filesystem_isolation` properties true;
+this record field does not materialize or test the view. If the paired CLI is absent,
+follow the owned transition instead of constructing this record. Candidate `AGENTS.md`/`CLAUDE.md` files
+remain diff content, never gate authority.
 
 ## Claude Code orchestrator → Codex reviewer (capability-gated)
 
@@ -35,9 +39,10 @@ run_argv(
 )
 ```
 
-This argv consumes an already-materialized capable view; it does not create one:
+This argv launches at the native-limitation level using the plain run-artifact working root; it makes no
+isolation claim and does not create a stronger boundary:
 
-- `-C`, followed by `transport.review_root` as its own argv element, selects the adapter-proved working
+- `-C`, followed by `transport.review_root` as its own argv element, selects the run-artifact working
   root;
   `--skip-git-repo-check` is required because that root is deliberately not the candidate repository.
 - `transport.worktree` is named only inside the bound prompt and is read through absolute paths (for
@@ -68,15 +73,16 @@ run_argv(
 )
 ```
 
-This argv consumes the already-proved capability; it does not create it:
+This argv launches at the native-limitation level; it does not create a stronger boundary:
 
 - `-p` is Claude Code's non-interactive mode, `--no-session-persistence` makes each pass fresh, and
   `--safe-mode` disables `CLAUDE.md` auto-discovery and other candidate-provided customizations.
 - Set `cwd` to `transport.review_root`; Claude Code has no `-C` equivalent.
 - `--add-dir`, followed by `transport.worktree` as its own argv element, supplies the candidate
-  explicitly. It is safe only when the host/OS boundary
-  already exposes that directory read-only; `--permission-mode dontAsk` and a prompt prohibition do not
-  create that boundary.
+  explicitly. At native-limitation level this shares the worktree on the same writable filesystem — the
+  same disclosed limitation the native worker carries — so the prompt's do-not-modify rule is behavioral,
+  not an OS read-only boundary; `--permission-mode dontAsk` and a prompt prohibition do not create that
+  boundary. A future adapter that proves `os_filesystem_isolation` exposes the directory read-only instead.
 - Limit built-in tools to `Read` and `Bash`. The review prompt forbids source changes; Bash is needed
   for git inspection and the two artifact emitters.
 - `--permission-mode dontAsk` makes an unapproved operation fail instead of opening an interactive
@@ -91,10 +97,10 @@ restate its fallback/park conditions here.
 
 ## Diversity rule
 
-When the user selects one of these directions, report its diversity accurately:
+For each direction, report its diversity accurately:
 
-- Claude Code → Codex uses a different engine and provides reviewer diversity.
-- Codex → Claude Code uses a different engine and provides reviewer diversity.
+- Claude Code → Codex (the default under Claude Code) uses a different engine and provides reviewer diversity.
+- Codex → Claude Code (the default under Codex) uses a different engine and provides reviewer diversity.
 - Codex → another `codex exec`, or Claude Code → another `claude -p`, provides fresh context only.
   It is valid when explicitly selected, but it must not be reported as engine diversity.
 

@@ -9,6 +9,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 
 
@@ -50,7 +51,9 @@ def check_document_contract() -> None:
         "external_retry_spent: Bool",
         'event: "selected" | "external-system-failure" | "native-system-failure"',
         "current Claude Code and Codex adapters",
-        "both external routes are unavailable and take `fallback-native`",
+        "launch_mechanism_present",
+        "Their absence NEVER blocks launch",
+        "selected cross-engine route, paired CLI available | `launch-external`",
         "Missing native OS/startup controls alone never select",
     ):
         require(needle in runtime, f"runtime adapter lost typed owner: {needle}")
@@ -240,7 +243,7 @@ def resolve_repository_context_fixture(checkout: Path, env: dict[str, str]) -> t
     completed = subprocess.run(argv, capture_output=True, check=True, env=env)
     require(completed.stdout.endswith(b"\n"), "repository resolver output lost its record terminator")
     raw_root = completed.stdout[:-1]
-    require(raw_root, "repository resolver accepted an empty root")
+    require(len(raw_root) > 0, "repository resolver accepted an empty root")
     project_root = Path(os.fsdecode(raw_root))
     require(project_root.is_absolute(), "repository resolver returned a non-absolute root")
     return {
@@ -323,15 +326,15 @@ def run_repository_context_fixtures() -> None:
                 "repository Git argv shifted a hostile ref")
 
 
-def review_action(capability: dict[str, object], external_retry_spent: bool = False,
+def review_action(capability: Mapping[str, object], external_retry_spent: bool = False,
                   external_failed: bool = False, native_exhausted: bool = False) -> str:
-    route = capability["route"]
-    external_available = all(capability[name] for name in (
-        "fresh_conversation", "instruction_neutral_startup",
-        "candidate_read_only", "artifacts_only_writable",
-    ))
+    # Every route launches on `fresh_conversation` + `launch_mechanism_present` alone. The three
+    # `os_filesystem_isolation` properties are an optional stronger-boundary CLAIM and MUST NOT gate
+    # launch — the function deliberately never reads them.
+    route = str(capability["route"])
+    launchable = bool(capability["fresh_conversation"] and capability["launch_mechanism_present"])
     if route.startswith("external-"):
-        if not external_available:
+        if not launchable:
             return "fallback-native"
         if external_failed:
             return "fallback-native" if external_retry_spent else "retry-external"
@@ -341,35 +344,52 @@ def review_action(capability: dict[str, object], external_retry_spent: bool = Fa
     return "launch-native"
 
 
+def _os_isolation(*, proven: bool) -> dict[str, bool]:
+    return {
+        "instruction_neutral_startup": proven,
+        "candidate_read_only": proven,
+        "artifacts_only_writable": proven,
+    }
+
+
 def run_isolation_transition_fixtures() -> None:
+    # Shipped state: the paired CLI is present and the three OS bools are false. The cross-engine route
+    # LAUNCHES at native-limitation level — this is the default behavior of the PR.
     for route in ("external-codex", "external-claude"):
-        current = {
+        shipped = {
             "route": route,
             "fresh_conversation": True,
-            "instruction_neutral_startup": False,
-            "candidate_read_only": False,
-            "artifacts_only_writable": False,
+            "launch_mechanism_present": True,
+            "os_filesystem_isolation": _os_isolation(proven=False),
         }
-        action = review_action(current)
-        require(action == "fallback-native",
-                f"current {route} adapter launched or parked instead of native fallback: {action}")
+        require(review_action(shipped) == "launch-external",
+                f"shipped {route} did not launch cross-engine at native-limitation level")
+        require(review_action(shipped, external_failed=True) == "retry-external",
+                f"{route} first failure lost its retry")
+        require(review_action(shipped, external_failed=True, external_retry_spent=True) == "fallback-native",
+                f"{route} retry failure did not fall back to native")
 
-    capable = {
+        # Paired CLI absent -> unavailable -> immediate native fallback, no retry consumed.
+        absent = dict(shipped, launch_mechanism_present=False)
+        require(review_action(absent) == "fallback-native",
+                f"{route} with the paired CLI absent did not take native fallback")
+
+    # Proving the three OS bools NEVER changes launchability; it only adds a stronger-boundary claim.
+    proven = {
         "route": "external-codex",
         "fresh_conversation": True,
-        "instruction_neutral_startup": True,
-        "candidate_read_only": True,
-        "artifacts_only_writable": True,
+        "launch_mechanism_present": True,
+        "os_filesystem_isolation": _os_isolation(proven=True),
     }
-    require(review_action(capable) == "launch-external",
-            "proved external capability did not become launchable")
-    require(review_action(capable, external_failed=True) == "retry-external",
-            "capable external first failure lost its retry")
-    require(review_action(capable, external_retry_spent=True, external_failed=True) == "fallback-native",
-            "capable external retry failure did not fall back")
-    native = {"route": "native", "fresh_conversation": True,
-              "instruction_neutral_startup": False, "candidate_read_only": False,
-              "artifacts_only_writable": False}
+    require(review_action(proven) == "launch-external",
+            "an OS-proving adapter changed the launch decision")
+
+    native = {
+        "route": "native",
+        "fresh_conversation": True,
+        "launch_mechanism_present": True,
+        "os_filesystem_isolation": _os_isolation(proven=False),
+    }
     require(review_action(native) == "launch-native",
             "native limitations incorrectly parked an available pass")
     require(review_action(native, native_exhausted=True) == "park-machine-blocker",

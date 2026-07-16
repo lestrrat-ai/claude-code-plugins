@@ -220,21 +220,18 @@ never the place to look them up.
   gets interrupted, another agent can pick it up right where it left
   off: it can tell a run that's still being actively driven from one that's been abandoned, so it only
   ever resumes an orphaned run and never doubles up on one already in progress.
-- By default the reviewer is a fresh native worker, so it runs with nothing extra installed. As a user
-  option, you can select the other agent for engine diversity; when an adapter proves the required
-  external capability, Claude Code can launch Codex with `codex exec`, and Codex can launch Claude Code
-  with `claude -p`. Fresh native means a separate
-  conversational context; the task API may still share the repository cwd and writable filesystem and
-  inherit repository startup instructions. Campaign discloses that limitation and keeps the installed
-  campaign rules as stage-0 authority rather than claiming a native OS boundary. Name the other
+- By default the reviewer is the **other engine**: under Claude Code the reviewer is Codex (`codex exec`),
+  under Codex it is Claude Code (`claude -p`), launched for engine diversity whenever the paired CLI is
+  present. It launches at native-limitation level — a separate conversational context, but the task/CLI may
+  still share the repository cwd and writable filesystem and inherit repository startup instructions.
+  Campaign discloses that limitation and keeps the installed campaign rules as stage-0 authority rather than
+  claiming an OS boundary; engine diversity needs no OS sandbox. You can override the default — name a
   reviewer when you invoke the campaign
-  (for example, “review with claude”) or record it in memory, `AGENTS.md`, or `CLAUDE.md`. Campaign never
-  selects the other agent merely because its CLI is installed. If an external reviewer
+  (for example, “review with claude”, or a native worker) or record it in memory, `AGENTS.md`, or `CLAUDE.md`.
+  If the paired CLI is absent, or a cross-engine reviewer
   can't return a verdict because of a system problem — quota or rate limits, auth, a timeout — it
-  retries once and then falls back to a fresh native worker. Campaign launches an external transport
-  only after the runtime adapter proves its complete isolation capability; current adapters cannot, so
-  they report the selection unavailable and take the native fallback without launching or immediately
-  parking. The fallback uses the disclosed native isolation contract. A reviewer that never
+  retries once and then falls back to a fresh native worker, so the campaign runs with or without the other
+  engine. The fallback uses the disclosed native isolation contract. A reviewer that never
   gets going at all — hung on input, a bad path, a sandbox
   denial — is caught the same way: every review pass has to write *something* to its progress file
   within about five minutes of being dispatched, and one that writes nothing at all is killed and

@@ -11,14 +11,15 @@ Self-looping, reactive PR-review-to-merge pipeline.
 The active host is orchestrator + gatekeeper. Read `references/runtime-adapter.md` at entry, resolve the
 supplied checkout through its typed `RepositoryContext` owner exactly once per invocation/resume, and
 carry that record for every repository path and Git cwd. Read the same adapter before the first dispatch
-or wait. The **adversarial reviewer** is a selectable role: by default a fresh native worker
-(no external tool required); use the user's preferred reviewer when one is set (explicit invocation, or
-a preference in memory/`AGENTS.md`/`CLAUDE.md`/carryover). The user may choose a reviewer running a
-different agent/model than the orchestrator for engine diversity — see `references/reviewer.md`.
-Every verdict-rendering transport follows the runtime adapter's capability/transition owner: native
-workers guarantee fresh conversational context but may lack a filesystem boundary, while an external
-transport launches only after a host/OS adapter proves every stronger isolation property. Current
-adapters report both external routes unavailable and take the fresh native fallback. Installed campaign
+or wait. The **adversarial reviewer** is a selectable role: by default the cross-engine route for the
+active host (Claude Code reviews with `codex exec`, Codex reviews with `claude -p`), which launches at
+native-limitation level whenever the paired CLI is present and falls back to a fresh native worker when it
+is absent or fails; an explicit invocation or a saved preference (memory/`AGENTS.md`/`CLAUDE.md`/carryover)
+overrides the default — see `references/reviewer.md`.
+Every verdict-rendering transport follows the runtime adapter's capability/transition owner: every route
+guarantees fresh conversational context and launches on that alone; the three OS/filesystem properties are
+an optional stronger-boundary claim that never blocks launch, and the current adapters make no such claim,
+so native and cross-engine routes run at the same native-limitation level. Installed campaign
 rules remain the stage-0 gate authority. The same adapter owns the typed process/data boundary: dynamic
 values cross as argv, byte-file, or native-message data, and each review attempt's record assigns exactly
 one final-report producer.
@@ -173,11 +174,11 @@ gauntlet** — which is itself a miss-catcher. **NEVER justify the cheap tier wi
 review gate will catch it."** This is a small, bounded risk the user has accepted, for a workflow that is
 cheaper **and** more capable than a full-strength subagent on every formatting failure.
 
-**A capable user-selected external reviewer can reduce native-worker cost.** Review passes re-read the whole PR
+**The default cross-engine reviewer reduces native-worker cost.** Review passes re-read the whole PR
 diff, `required(tier)` times per SHA, and re-run from scratch on every gate reset, so they dominate
-campaign's native-worker spend. When the selected route is available, it moves that work off the
-native-worker pool; current unavailable adapters take native fallback and do not. Never select one
-solely for this reason; `references/reviewer.md` owns the opt-in choice.
+campaign's native-worker spend. The default cross-engine route moves that work off the native-worker pool
+whenever the paired CLI is present; a native-worker fallback does not. `references/reviewer.md` owns the
+reviewer choice.
 
 **Every fix subagent — CI or review — is dispatched under one contract**, and
 `references/fix-subagent-contract.md` is its complete definition. Two halves, both mandatory:

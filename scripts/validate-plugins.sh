@@ -16,6 +16,19 @@ fail() {
   status=1
 }
 
+# Read a jq field from a JSON file without aborting the whole script under `set -euo pipefail`.
+# A valid path that holds invalid JSON makes a bare `x=$(jq -r … "$file")` exit non-zero with a raw
+# jq error, which `set -e` turns into a full abort — skipping the clean fail() and every later check.
+# This checks the parse first and returns non-zero (with no raw jq noise) on a malformed/missing file,
+# so a caller attaches `|| fail "…"`: the `||` keeps `set -e` from aborting, and fail() runs in the
+# caller (not this command-substitution subshell) so its status=1 actually sticks. A malformed manifest
+# then yields a clear fail() and the script keeps running its other checks.
+jq_field() {
+  local filter=$1 file=$2
+  jq empty "$file" 2>/dev/null || return 1
+  jq -r "$filter" "$file"
+}
+
 verify_gauntlet_skill_entrypoints() {
   local host source installed skill entrypoint
   local count=0
@@ -79,7 +92,8 @@ while IFS=$'\t' read -r name source kind; do
     continue
   }
 
-  declared=$(jq -r '.name // ""' "$source/.claude-plugin/plugin.json")
+  declared=$(jq_field '.name // ""' "$source/.claude-plugin/plugin.json") ||
+    fail "$name: $source/.claude-plugin/plugin.json is not valid JSON"
   [[ $declared == "$name" ]] ||
     fail "$name: plugin.json declares name '$declared'; marketplace entry says '$name'"
 
@@ -101,7 +115,8 @@ codex_home=$(mktemp -d "$root/.tmp/codex-validate.XXXXXX")
 
 echo
 echo "==> Claude isolated plugin installation"
-claude_marketplace_name=$(jq -r '.name' "$claude_marketplace")
+claude_marketplace_name=$(jq_field '.name' "$claude_marketplace") ||
+  fail "$claude_marketplace is not valid JSON"
 if ! CLAUDE_CONFIG_DIR=$claude_config_dir \
   claude plugin marketplace add "$root" --scope user; then
   fail "Claude could not add the local marketplace"
@@ -131,8 +146,8 @@ else
     listed_scope=$(jq -r --arg id "$expected_id" '.[] | select(.id == $id) | .scope // ""' "$claude_plugin_list")
     installed=$(jq -r --arg id "$expected_id" '.[] | select(.id == $id) | .installPath // ""' "$claude_plugin_list")
     source_manifest=$source/.claude-plugin/plugin.json
-    source_name=$(jq -r '.name // ""' "$source_manifest")
-    source_version=$(jq -r '.version // ""' "$source_manifest")
+    source_name=$(jq_field '.name // ""' "$source_manifest") || fail "$name: $source_manifest is not valid JSON"
+    source_version=$(jq_field '.version // ""' "$source_manifest") || fail "$name: $source_manifest is not valid JSON"
 
     [[ $listed_scope == user ]] ||
       fail "$name: installed Claude plugin has scope '$listed_scope', expected 'user'"
@@ -155,8 +170,8 @@ else
       fail "$name: installed Claude plugin is missing .claude-plugin/plugin.json"
       continue
     }
-    installed_name=$(jq -r '.name // ""' "$installed_manifest")
-    installed_version=$(jq -r '.version // ""' "$installed_manifest")
+    installed_name=$(jq_field '.name // ""' "$installed_manifest") || fail "$name: $installed_manifest is not valid JSON"
+    installed_version=$(jq_field '.version // ""' "$installed_manifest") || fail "$name: $installed_manifest is not valid JSON"
     [[ $installed_name == "$source_name" ]] ||
       fail "$name: installed Claude manifest name '$installed_name', source has '$source_name'"
     [[ $installed_version == "$source_version" ]] ||
@@ -196,28 +211,29 @@ while IFS=$'\t' read -r name source; do
     continue
   }
 
-  codex_name=$(jq -r '.name // ""' "$codex_plugin")
+  codex_name=$(jq_field '.name // ""' "$codex_plugin") || fail "$name: $codex_plugin is not valid JSON"
   [[ $codex_name == "$name" ]] ||
     fail "$name: Codex plugin.json declares name '$codex_name'"
 
-  claude_version=$(jq -r '.version // ""' "$claude_plugin")
-  codex_version=$(jq -r '.version // ""' "$codex_plugin")
+  claude_version=$(jq_field '.version // ""' "$claude_plugin") || fail "$name: $claude_plugin is not valid JSON"
+  codex_version=$(jq_field '.version // ""' "$codex_plugin") || fail "$name: $codex_plugin is not valid JSON"
   [[ $codex_version == "$claude_version" ]] ||
     fail "$name: manifest versions differ (Claude $claude_version, Codex $codex_version)"
 done < <(jq -r '.plugins[] | [.name, .source.path] | @tsv' "$codex_marketplace")
 
 CODEX_HOME=$codex_home codex plugin marketplace add . --json >"$codex_home/marketplace-add.json" || status=1
-marketplace_name=$(jq -r '.name' "$codex_marketplace")
+marketplace_name=$(jq_field '.name' "$codex_marketplace") || fail "$codex_marketplace is not valid JSON"
 while IFS=$'\t' read -r name source; do
   CODEX_HOME=$codex_home codex plugin add "$name@$marketplace_name" --json >"$codex_home/plugin-$name.json" || {
     fail "$name: Codex could not install the plugin"
     continue
   }
 
-  installed=$(jq -r '.installedPath // ""' "$codex_home/plugin-$name.json")
+  installed=$(jq_field '.installedPath // ""' "$codex_home/plugin-$name.json") ||
+    fail "$name: $codex_home/plugin-$name.json is not valid JSON"
   source_manifest=$source/.codex-plugin/plugin.json
-  source_name=$(jq -r '.name // ""' "$source_manifest")
-  source_version=$(jq -r '.version // ""' "$source_manifest")
+  source_name=$(jq_field '.name // ""' "$source_manifest") || fail "$name: $source_manifest is not valid JSON"
+  source_version=$(jq_field '.version // ""' "$source_manifest") || fail "$name: $source_manifest is not valid JSON"
 
   if [[ ! -d $installed ]]; then
     fail "$name: installed Codex path '$installed' is not a directory"
@@ -239,8 +255,8 @@ while IFS=$'\t' read -r name source; do
     fail "$name: installed Codex plugin is missing .codex-plugin/plugin.json"
     continue
   }
-  installed_name=$(jq -r '.name // ""' "$installed_manifest")
-  installed_version=$(jq -r '.version // ""' "$installed_manifest")
+  installed_name=$(jq_field '.name // ""' "$installed_manifest") || fail "$name: $installed_manifest is not valid JSON"
+  installed_version=$(jq_field '.version // ""' "$installed_manifest") || fail "$name: $installed_manifest is not valid JSON"
   [[ $installed_name == "$source_name" ]] ||
     fail "$name: installed Codex manifest name '$installed_name', source has '$source_name'"
   [[ $installed_version == "$source_version" ]] ||
@@ -302,8 +318,8 @@ campaign=plugins/gauntlet/skills/campaign
   fail "campaign is missing references/cross-agent-reviewers.md"
 grep -Fq 'references/runtime-adapter.md' "$campaign/SKILL.md" ||
   fail "campaign SKILL.md does not load the runtime adapter"
-grep -Fq 'user option, never a campaign rule' "$campaign/references/cross-agent-reviewers.md" ||
-  fail "cross-agent review must remain an explicit user option"
+grep -Fq 'the default per host, overridable' "$campaign/references/cross-agent-reviewers.md" ||
+  fail "cross-agent review must document the cross-engine default per host"
 grep -Fq '"codex", "exec", "--sandbox", "workspace-write"' "$campaign/references/cross-agent-reviewers.md" ||
   fail "cross-agent reviewer map is missing the typed Codex argv"
 grep -Fq '"claude", "-p", "--safe-mode", "--no-session-persistence"' "$campaign/references/cross-agent-reviewers.md" ||

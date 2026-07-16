@@ -231,8 +231,9 @@
   it, so the watch follows the normal policy (`stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE"): alive while a
   row can still move, **not** relaunched once CI has SETTLED. Parking neither stops a warranted watch nor
   starts an unwarranted one — and it dispatches no CI fix.
-- Reviews are fresh, context-isolated re-rolls: a separate reviewer invocation each pass (native worker
-  by default, or the user's preferred reviewer), no shared context. `runtime-adapter.md`'s
+- Reviews are fresh, context-isolated re-rolls: a separate reviewer invocation each pass (the default
+  cross-engine reviewer or the user's preferred reviewer, with a native-worker fallback), no shared
+  context. `runtime-adapter.md`'s
   `ReviewIsolationCapability` and transition own all transport claims and route changes; consumers do
   not unpack them.
   Candidate gate content never replaces the installed stage-0 rules. A second pass re-rolls a
@@ -428,9 +429,10 @@
   every site found is reported. Read narrowly to UNDERSTAND, sweep widely to FINISH — the contract, not
   this bullet, defines how to sweep; neither half excuses skipping the other. Scope every fix regardless
   of model or reviewer choice.
-- Default reviewer is the active host's native workers; no external tool is required. Use the user's preferred
-  reviewer when one is set (explicit invocation, or a preference in memory/`AGENTS.md`/`CLAUDE.md`/carryover). A
-  user may choose a different-model reviewer for diversity. Apply the same-engine rule in
+- Default reviewer is the cross-engine route for the active host (Claude Code → Codex, Codex → Claude
+  Code), which falls back to a fresh native worker when the paired CLI is absent; no external tool is
+  required to run. Use the user's preferred reviewer when one is set (explicit invocation, or a preference
+  in memory/`AGENTS.md`/`CLAUDE.md`/carryover), which overrides the default. Apply the same-engine rule in
   `runtime-adapter.md`. See
   "The reviewer".
 - Apply `reviewer.md`'s external-review retry budget, then take `runtime-adapter.md`'s owned transition.

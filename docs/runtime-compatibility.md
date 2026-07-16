@@ -14,7 +14,7 @@ adapter; keep workflow rules shared.
 | Agent dispatch | Agent tool and configured agent types | Available Codex multi-agent controls | Describe worker scope, permissions, model class, and output; do not require a host tool name. |
 | Model selection | Claude model aliases may be available | Session model or configured Codex agents | State required capability; map named models only inside host adapter. |
 | Wake/resume | `ScheduleWakeup` where available | Thread wake where available; bounded foreground wait otherwise | Persist state before waiting and provide an exact resume path. |
-| Other-agent reviewer | A user may select `codex exec` | A user may select `claude -p` | This is opt-in. Honor explicit or saved user choice; otherwise choose a fresh host worker. |
+| Other-agent reviewer | Default: review with `codex exec` | Default: review with `claude -p` | Cross-engine is the default, launched at native-limitation level when the paired CLI is present. Fall back to a fresh native worker when it is absent or fails. Explicit or saved user choice overrides. |
 
 Campaign's exact cross-agent command lines live in
 [`plugins/gauntlet/skills/campaign/references/cross-agent-reviewers.md`](../plugins/gauntlet/skills/campaign/references/cross-agent-reviewers.md).
@@ -31,11 +31,13 @@ Campaign's exact cross-agent command lines live in
   `RepositoryContext`; carry its absolute paths and every dynamic ref/payload through typed
   argv/byte/message fields, never an ambient project variable or shell splice. Its per-attempt record
   also assigns one final-report producer.
-- Evaluate external reviewers through the runtime adapter's `ReviewIsolationCapability` transition.
-  The current adapters do not materialize/test the required view, so external selection falls back to a
-  fresh native worker without external launch or immediate park.
+- Evaluate cross-engine reviewers through the runtime adapter's `ReviewIsolationCapability` transition.
+  A cross-engine route launches at native-limitation level whenever the paired CLI is present; the three
+  `os_filesystem_isolation` properties are an optional stronger-boundary claim that never blocks launch.
+  When the paired CLI is absent, or the process fails after its retry, fall back to a fresh native worker.
 - NEVER silently skip a required capability. Report the missing capability and use the documented fallback.
 - Keep host-specific examples paired unless a section is explicitly host-only.
-- Treat cross-agent review as a user option, never an automatic default.
+- Cross-engine review is the default per host, launched at native-limitation level; explicit or saved
+  user selection overrides it.
 - Run both plugin install validators after changing shared plugin content.
 - Bump both plugin manifest versions after changing `plugins/**`.

@@ -129,7 +129,7 @@ shortened is `table`'s rendering (below) — that is display-only and does not e
 Header-record fields: `run_id` (this run's identity — namespaces its dir/label/wakes; set once),
 `base_branch` (the adopted PRs' baseRefName — the branch they merge into & diffs measure against; set
 once, see "Base branch"), `api_changes` (`ask` | `allowed`, run-wide; set once from the invocation),
-`reviewer` (`default` (active host's native workers) | `codex` | `claude` | `<other>` — the selected reviewer; set once, see
+`reviewer` (`default` (per-host cross-engine route with native fallback — see "The reviewer") | `codex` | `claude` | `<other>` — the selected reviewer; set once, see
 "The reviewer"), `required_set` (what `base_branch` **requires** — `stage-2-ci.md`, "What were we
 expecting to see?", owns the three states, the format, and the reads that produce them; re-read every
 wake while it is `unknown`), `skill_version` (**which copy of the rules actually governed this run**).

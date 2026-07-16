@@ -11,28 +11,35 @@ Resolve once at run start and record the choice as the ledger `reviewer` header 
 run — re-reads it before launching any review pass and never silently reverts to the default; also
 note it in the final report. Resolve in priority order:
 
-1. **Explicit invocation.** User named a reviewer for this run (e.g. "review with codex") → use it.
+1. **Explicit invocation.** User named a reviewer for this run (e.g. "review with codex", or "review
+   natively") → use it. This **overrides** the default below.
 2. **User preference from memory.** A recorded preference (memory entry, `AGENTS.md`, `CLAUDE.md`, or a prior
    run's carryover) naming a preferred reviewer → use it. Do NOT invent a preference; use one only
-   when it actually exists.
-3. **Default — native workers.** No preference → the reviewer is the active host's native workers, run
-   fresh and context-isolated. **No external tool is required for the campaign to run.**
+   when it actually exists. It also overrides the default.
+3. **Default — the cross-engine route for the active host.** No preference → Claude Code reviews with
+   Codex (`codex exec`) and Codex reviews with Claude Code (`claude -p`), launched at native-limitation
+   level whenever the paired CLI is present. When the paired CLI is absent, or the cross-engine process
+   fails after its one retry, fall back to a fresh, context-isolated **native worker** on the active host,
+   disclosed in the final report. **No paired CLI is required for the campaign to run** — the native
+   fallback is always available.
 
-**Reviewer diversity is a user option, not a requirement.** The gate's two passes are already
-fresh, context-isolated re-rolls, but two native workers share the orchestrator's model, so they
-are less independent than a *different* engine would be. When available, a reviewer running a
-**different agent/model than the orchestrator** catches defects a
-same-model re-roll can miss. Use it only when the user selects it explicitly or has saved it as a
-preference. When the runtime capability is available, Claude Code can use Codex CLI (`codex exec`) for
-that diversity; Codex must not claim diversity from another Codex process. It is never mandatory: the
-default native-worker path is a complete, valid reviewer.
+**Reviewer diversity is the default, not an add-on.** The gate's passes are already fresh,
+context-isolated re-rolls, but two native workers share the orchestrator's model, so they are less
+independent than a *different* engine would be. So the default reviewer runs a **different engine than the
+orchestrator**: Claude Code reviews with `codex exec`, Codex reviews with `claude -p`. It launches at
+native-limitation level whenever the paired CLI is present — engine diversity needs no OS sandbox. A
+same-engine process (Codex → another `codex exec`, Claude Code → another `claude -p`) provides fresh
+context only and must not be reported as diversity. A fresh native worker on the active host is the
+complete, valid **fallback** when the paired CLI is absent or the cross-engine process fails after its
+retry.
 
-**A capable user-selected external reviewer can also reduce native-worker cost.**
+**The default cross-engine reviewer also reduces native-worker cost.**
 Review passes dominate campaign's native-worker spend: each one re-reads the **whole** `origin/<base>...HEAD`
 diff, runs `required(tier)` times per SHA, and re-runs **from scratch** on every gate reset (a content
 change voids the tally). A PR that takes several fix rounds can therefore spend many full-diff passes.
-An available external route moves all of that off the native-worker pool; an unavailable selection
-takes native fallback and does not. When describing this user option, note that capability condition.
+The default cross-engine route moves all of that off the native-worker pool; a native-worker fallback
+(paired CLI absent) does not. That is a benefit of the default, not a separate knob — the reviewer choice
+is owned above.
 
 **A REVIEW PASS IS NEVER RUN ON A DOWNGRADED MODEL.** Whether the reviewer is a native worker or the
 worker fallback for a failed external reviewer, the pass runs in the **`session` class** — it *is* the
@@ -42,11 +49,13 @@ runs a formatter and **verifies its diff** rather than authoring a fix — never
 selects an available external reviewer, it can reduce native-worker token use; it never changes the required model
 class or review contract.
 
-### Running the default reviewer — native workers
+### Running a native-worker reviewer
 
-**THE DEFAULT REVIEWER RUNS THE SAME REVIEW PASS AS EVERY OTHER REVIEWER — the one `stage-2-review-gate.md`
-defines, whole.** “Native workers” names **who executes it**, and nothing else. It does not name a
-lighter contract, a shorter prompt, or an older protocol, and there is no such thing to name.
+**A NATIVE-WORKER REVIEWER RUNS THE SAME REVIEW PASS AS EVERY OTHER REVIEWER — the one `stage-2-review-gate.md`
+defines, whole.** “Native worker” names **who executes it**, and nothing else. It does not name a
+lighter contract, a shorter prompt, or an older protocol, and there is no such thing to name. It is the
+**fallback** for an absent or failed cross-engine reviewer, and it is what an explicit user selection of a
+native reviewer runs.
 
 It is also a verdict renderer, so use `runtime-adapter.md`'s **native-worker** isolation contract, not the
 stronger external-process contract. The worker MUST be a fresh conversational context, but the native API
@@ -62,8 +71,8 @@ RECORDS, not prose", "Does this pass COUNT?"), and the one time this section car
 the summary went stale: it still described a plan/progress/verdict protocol with **no intent, no findings
 artifact and no gating rule**, months after those became the contract. Following it recreated exactly the
 open-ended review — *"is anything wrong with this code?"* — that the intent block exists to kill, **on the
-DEFAULT path**, which is the one that runs whenever no external reviewer is configured. A stale summary is
-worse than no summary: it is the version people actually read, and it is believed.
+native-worker path**, which is the fallback whenever a cross-engine reviewer is absent or fails. A stale
+summary is worse than no summary: it is the version people actually read, and it is believed.
 
 **Dispatch it by taking the review prompt from `stage-2-review-gate.md` and calling
 `bind_review_prompt` for its two data bindings**: `<INTENT>` receives the intent block **verbatim**, while `<TRANSPORT-RECORD>` receives the
@@ -88,13 +97,13 @@ producer rule applies to initial launch, relaunch, and native fallback. Run it i
 launch review 2 only after review 1 is SATISFIED, one at a time per PR (see Stage 2a-triage for the per-tier
 pass count).
 
-### Running an external reviewer (e.g. Codex CLI)
+### Running the cross-engine reviewer (the default path — e.g. Codex CLI)
 
-For the capability result and transition, read `runtime-adapter.md`. For the conditional Claude Code →
+For the capability result and transition, read `runtime-adapter.md`. For the default per-host Claude Code →
 Codex and Codex → Claude Code argv, read `cross-agent-reviewers.md`. The stage review contract remains
 the prompt authority. Only `launch-external` or `retry-external` uses external argv.
 
-When a selected external reviewer has an available capability, invoke it with
+When the cross-engine reviewer (the default, or a user-selected engine) has an available capability, invoke it with
 `runtime-adapter.md`'s typed `run_argv` operation and the complete argv in the stage refs; set
 `report.producer` to `external-process-capture`. NEVER pass destructive
 instructions (delete, force-push, reset) to an external reviewer command, and NEVER use
@@ -111,9 +120,9 @@ is the absence of a verdict.
 
 **On a capable external process failure, retry once. If it still can't deliver a verdict, take
 `runtime-adapter.md`'s fresh native fallback transition** rather than stalling, looping, or skipping the
-gate. A pre-launch capability miss has no process to retry and takes that fallback immediately. Note in
-the final report which selected external routes were unavailable and which passes ran on the worker
-fallback. The gate is unchanged: a worker pass is a fresh, context-isolated re-roll that counts toward
+gate. A pre-launch capability miss (the paired CLI is absent) has no process to retry and takes that
+fallback immediately. Note in the final report which cross-engine routes were unavailable and which passes
+ran on the native-worker fallback. The gate is unchanged: a worker pass is a fresh, context-isolated re-roll that counts toward
 the review gate exactly like an external pass. The runtime owner defines the native limitations and the
 only machine-blocker transition; do not restate them here.
 
