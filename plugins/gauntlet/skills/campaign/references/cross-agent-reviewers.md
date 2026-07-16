@@ -9,44 +9,60 @@ path, and launch the process as a background task whose completion triggers a re
 The commands assume a same-repository PR, as required by `pr-adoption.md`. Never add a permission-bypass
 flag to make a failed launch work.
 
+Both commands use `<review-root>`, a trusted, instruction-neutral view of the active run-artifact
+directory that is outside the candidate checkout and its instruction-discovery ancestry. The host or OS
+sandbox MUST make `<review-root>` the only writable directory and `<worktree>` explicit read-only input.
+If it cannot guarantee that split, this transport is unavailable: park as a machine blocker rather than
+running a contaminated verdict renderer. Candidate `AGENTS.md`/`CLAUDE.md` files are still reviewed as
+diff content; they are never startup authority.
+
 ## Claude Code orchestrator → Codex reviewer
 
 Use the external-reviewer command in `stage-2-review-gate.md`:
 
 ```sh
-codex exec --sandbox workspace-write -c "sandbox_workspace_write.network_access=true" -C <worktree> \
-  --add-dir $PROJECT/<rundir> \
-  -o $PROJECT/<rundir>/<review-output> \
+codex exec --sandbox workspace-write -c "sandbox_workspace_write.network_access=true" \
+  --skip-git-repo-check -C <review-root> \
+  -o <review-root>/<review-output> \
   "<complete substituted review prompt>" < /dev/null
 ```
 
 Required transport properties:
 
-- `-C <worktree>` makes the PR checkout the working root.
-- `--add-dir` permits the reviewer to write only its run artifacts outside that root.
+- `-C <review-root>` makes only the instruction-neutral run-artifact view the writable working root;
+  `--skip-git-repo-check` is required because that root is deliberately not the candidate repository.
+- `<worktree>` is named only inside the substituted prompt and is read through absolute paths (for
+  example, `git -C <worktree> ...`). Do not pass it through `-C` or `--add-dir`: either makes candidate
+  content part of the writable workspace, and `-C` also enables candidate `AGENTS.md` discovery.
 - `-o` writes the final report to the active attempt's output file.
 - `< /dev/null` prevents a non-interactive `codex exec` from waiting on inherited stdin.
 - `--sandbox workspace-write` is mandatory. Never use
   `--dangerously-bypass-approvals-and-sandbox`.
+- `--ignore-rules` is irrelevant here: it suppresses execpolicy `.rules`, not project agent
+  instructions, and MUST NOT be used as the isolation control.
 
 ## Codex orchestrator → Claude Code reviewer
 
-Start the process with its **working directory set to `<worktree>`** through the host's process API,
-then run:
+Start the process with its **working directory set to `<review-root>`** through the host's process API,
+with `<worktree>` mounted or exposed read-only, then run:
 
 ```sh
-claude -p --no-session-persistence --output-format text \
+claude -p --safe-mode --no-session-persistence --output-format text \
   --permission-mode dontAsk \
   --tools "Read,Bash" --allowedTools "Read,Bash" \
-  --add-dir $PROJECT/<rundir> \
+  --add-dir <worktree> \
   "<complete substituted review prompt>" \
-  < /dev/null > $PROJECT/<rundir>/<review-output>
+  < /dev/null > <review-root>/<review-output>
 ```
 
 Required transport properties:
 
-- `-p` is Claude Code's non-interactive mode, and `--no-session-persistence` makes each pass fresh.
-- Set the process working directory externally; Claude Code has no `-C` equivalent.
+- `-p` is Claude Code's non-interactive mode, `--no-session-persistence` makes each pass fresh, and
+  `--safe-mode` disables `CLAUDE.md` auto-discovery and other candidate-provided customizations.
+- Set the process working directory externally to `<review-root>`; Claude Code has no `-C` equivalent.
+- `--add-dir <worktree>` supplies the candidate explicitly. It is safe only when the host/OS boundary
+  already exposes that directory read-only; `--permission-mode dontAsk` and a prompt prohibition do not
+  create that boundary.
 - Limit built-in tools to `Read` and `Bash`. The review prompt forbids source changes; Bash is needed
   for git inspection and the two artifact emitters.
 - `--permission-mode dontAsk` makes an unapproved operation fail instead of opening an interactive
@@ -56,7 +72,8 @@ Required transport properties:
 
 The user's Claude Code settings still control sandboxing and policy. Do not widen them from campaign.
 If the command cannot run the required read-only review and artifact writes under those settings, use
-the normal retry and native-worker fallback.
+the normal retry and native-worker fallback only when that fallback satisfies `runtime-adapter.md`;
+otherwise park as a machine blocker.
 
 ## Diversity rule
 

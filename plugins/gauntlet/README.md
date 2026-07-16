@@ -61,8 +61,10 @@ This is a user option, not a campaign rule. Name the reviewer when you invoke th
 as your preference in memory, `AGENTS.md`, or `CLAUDE.md`. The campaign never launches the other agent merely
 because its CLI is installed. If an external
 reviewer can't return a verdict because of a system problem (quota, auth, timeout), the pipeline
-retries once and then falls back to a fresh native worker, so an outage slows a run rather than stalling
-it.
+retries once and then falls back to a fresh native worker. Every verdict renderer must exclude the
+candidate checkout's startup instructions and keep that checkout read-only; if the native transport
+cannot enforce that boundary, the run parks with a machine blocker instead of running a contaminated
+gate.
 
 ### Optional — tell it how to report to you
 

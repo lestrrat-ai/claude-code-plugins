@@ -48,7 +48,12 @@ Required:
 
 Optional when Claude Code is the orchestrator:
 
-- **Codex CLI (`codex`)** — an independent external reviewer for `gauntlet:campaign`. Recommended for a stronger gauntlet, since a different engine than the orchestrator catches defects a same-model re-roll can miss, but not required: without it, campaign falls back to Claude's own subagents as the reviewer.
+- **Codex CLI (`codex`)** — an optional independent external reviewer for `gauntlet:campaign`. The
+  default is a fresh native worker whether or not Codex is installed; Codex is used only when you select
+  it for a run or have saved that reviewer preference. A different engine can catch defects a same-model
+  re-roll misses, so that opt-in diversity is recommended. If a selected Codex reviewer cannot return a
+  verdict, campaign retries it once and then uses a fresh native worker fallback when the host can
+  isolate that worker from candidate instructions; otherwise it parks with a machine blocker.
 
 ## Plugins
 

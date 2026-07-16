@@ -23,6 +23,8 @@ Campaign's exact cross-agent command lines live in
 
 - Preserve workflow outcomes across hosts. Adapt execution only.
 - NEVER claim a fallback preserves context isolation when it runs in the current context.
+- Every verdict-rendering transport must exclude candidate `AGENTS.md`/`CLAUDE.md` from instruction
+  authority and expose the candidate checkout read-only; `runtime-adapter.md` owns the complete rule.
 - NEVER silently skip a required capability. Report the missing capability and use the documented fallback.
 - Keep host-specific examples paired unless a section is explicitly host-only.
 - Treat cross-agent review as a user option, never an automatic default.

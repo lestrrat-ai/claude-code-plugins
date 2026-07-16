@@ -16,6 +16,23 @@ fail() {
   status=1
 }
 
+verify_gauntlet_skill_entrypoints() {
+  local host source installed skill entrypoint
+  local count=0
+  host=$1
+  source=$2
+  installed=$3
+
+  while IFS= read -r skill; do
+    count=$((count + 1))
+    entrypoint=${skill#"$source/"}
+    [[ -f $installed/$entrypoint ]] ||
+      fail "gauntlet: installed $host plugin is missing $entrypoint"
+  done < <(find "$source/skills" -mindepth 2 -maxdepth 2 -name SKILL.md -type f | sort)
+
+  ((count > 0)) || fail "gauntlet: source plugin contains no skills/*/SKILL.md entrypoints"
+}
+
 for tool in claude codex jq; do
   command -v "$tool" >/dev/null || {
     printf 'error: required tool not found: %s\n' "$tool" >&2
@@ -146,13 +163,7 @@ else
       fail "$name: installed Claude manifest version '$installed_version', source has '$source_version'"
 
     if [[ $name == gauntlet ]]; then
-      for entrypoint in \
-        skills/campaign/SKILL.md \
-        skills/review/SKILL.md \
-        skills/copilot-address-reviews/SKILL.md; do
-        [[ -f $installed/$entrypoint ]] ||
-          fail "$name: installed Claude plugin is missing $entrypoint"
-      done
+      verify_gauntlet_skill_entrypoints Claude "$source" "$installed_real"
     fi
   done < <(jq -r '.plugins[] | select(.source | type == "string") | [.name, .source] | @tsv' "$claude_marketplace")
 fi
@@ -197,16 +208,48 @@ done < <(jq -r '.plugins[] | [.name, .source.path] | @tsv' "$codex_marketplace")
 
 CODEX_HOME=$codex_home codex plugin marketplace add . --json >"$codex_home/marketplace-add.json" || status=1
 marketplace_name=$(jq -r '.name' "$codex_marketplace")
-while IFS= read -r name; do
+while IFS=$'\t' read -r name source; do
   CODEX_HOME=$codex_home codex plugin add "$name@$marketplace_name" --json >"$codex_home/plugin-$name.json" || {
     fail "$name: Codex could not install the plugin"
     continue
   }
 
   installed=$(jq -r '.installedPath // ""' "$codex_home/plugin-$name.json")
-  [[ -f $installed/skills/review/SKILL.md ]] ||
-    fail "$name: installed Codex plugin is missing skills/review/SKILL.md"
-done < <(jq -r '.plugins[].name' "$codex_marketplace")
+  source_manifest=$source/.codex-plugin/plugin.json
+  source_name=$(jq -r '.name // ""' "$source_manifest")
+  source_version=$(jq -r '.version // ""' "$source_manifest")
+
+  if [[ ! -d $installed ]]; then
+    fail "$name: installed Codex path '$installed' is not a directory"
+    continue
+  fi
+  if [[ ! -d $codex_home/plugins/cache ]]; then
+    fail "$name: isolated Codex plugin cache '$codex_home/plugins/cache' is not a directory"
+    continue
+  fi
+  installed_real=$(cd -- "$installed" && pwd -P)
+  cache_real=$(cd -- "$codex_home/plugins/cache" && pwd -P)
+  [[ $installed_real == "$cache_real"/* ]] || {
+    fail "$name: installed Codex path '$installed_real' is outside '$cache_real'"
+    continue
+  }
+
+  installed_manifest=$installed_real/.codex-plugin/plugin.json
+  [[ -f $installed_manifest ]] || {
+    fail "$name: installed Codex plugin is missing .codex-plugin/plugin.json"
+    continue
+  }
+  installed_name=$(jq -r '.name // ""' "$installed_manifest")
+  installed_version=$(jq -r '.version // ""' "$installed_manifest")
+  [[ $installed_name == "$source_name" ]] ||
+    fail "$name: installed Codex manifest name '$installed_name', source has '$source_name'"
+  [[ $installed_version == "$source_version" ]] ||
+    fail "$name: installed Codex manifest version '$installed_version', source has '$source_version'"
+
+  if [[ $name == gauntlet ]]; then
+    verify_gauntlet_skill_entrypoints Codex "$source" "$installed_real"
+  fi
+done < <(jq -r '.plugins[] | [.name, .source.path] | @tsv' "$codex_marketplace")
 
 echo
 echo "==> shared agent instructions"
@@ -263,8 +306,10 @@ grep -Fq 'user option, never a campaign rule' "$campaign/references/cross-agent-
   fail "cross-agent review must remain an explicit user option"
 grep -Fq 'codex exec --sandbox workspace-write' "$campaign/references/cross-agent-reviewers.md" ||
   fail "cross-agent reviewer map is missing the Codex command"
-grep -Fq 'claude -p --no-session-persistence' "$campaign/references/cross-agent-reviewers.md" ||
-  fail "cross-agent reviewer map is missing the Claude Code command"
+grep -Fq 'claude -p --safe-mode --no-session-persistence' "$campaign/references/cross-agent-reviewers.md" ||
+  fail "cross-agent reviewer map is missing candidate-instruction-safe Claude Code command"
+grep -Fq -- '--skip-git-repo-check -C <review-root>' "$campaign/references/cross-agent-reviewers.md" ||
+  fail "cross-agent reviewer map is missing the instruction-neutral Codex working root"
 
 campaign_host_leaks=$(
   grep -rnE 'ScheduleWakeup|\$\{CLAUDE_PLUGIN_ROOT\}|Subagent Dispatch|fresh-subagent' \

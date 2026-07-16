@@ -13,6 +13,8 @@ dispatch or wait. The **adversarial reviewer** is a selectable role: by default 
 (no external tool required); use the user's preferred reviewer when one is set (explicit invocation, or
 a preference in memory/`AGENTS.md`/`CLAUDE.md`/carryover). The user may choose a reviewer running a
 different agent/model than the orchestrator for engine diversity — see `references/reviewer.md`.
+Every verdict-rendering transport must first satisfy the runtime adapter's candidate-instruction
+exclusion; an unavailable safe transport parks as a machine blocker.
 Reviews and CI watches run as background
 tasks; gates and merges stay centralized. Campaign gates **existing** PRs; it never writes fixes from
 scratch — to find issues first, use `gauntlet:review`, which after its report offers to open one PR per

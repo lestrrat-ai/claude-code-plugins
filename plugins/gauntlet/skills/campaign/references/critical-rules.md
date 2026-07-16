@@ -230,7 +230,9 @@
   row can still move, **not** relaunched once CI has SETTLED. Parking neither stops a warranted watch nor
   starts an unwarranted one — and it dispatches no CI fix.
 - Reviews are fresh, context-isolated re-rolls: a separate reviewer invocation each pass (native worker
-  by default, or the user's preferred reviewer), no shared context. A second pass re-rolls a
+  by default, or the user's preferred reviewer), no shared context. Every verdict-rendering transport
+  also satisfies the candidate-instruction exclusion owned by `runtime-adapter.md`; if the active host
+  cannot guarantee it, park as a machine blocker. A second pass re-rolls a
   stochastic reviewer to catch a missed defect — the two are NOT statistically independent (the same
   diff, task, and protocol correlate them; same-reviewer passes also share model/prompt), so the gate
   is a miss-catcher, not a proof of correctness.
@@ -427,7 +429,8 @@
 - If an *external* reviewer can't deliver a verdict (quota/rate-limit, auth, timeout, or other system
   error — *not* a real finding list / `VERDICT:` line), retry once, then do the equivalent work with
   your own native workers: a fresh, context-isolated worker review pass in
-  Stage 2a. The gate is unchanged — note any fallback pass in the report. See "The reviewer".
+  Stage 2a, provided its transport satisfies `runtime-adapter.md`; otherwise park as a machine blocker.
+  The gate is unchanged — note any fallback pass in the report. See "The reviewer".
 - **DERIVE `ci` BY RUNNING `scripts/ci-status.py derive --pr <N> --head-sha <the ledger's> --rundir
   <rundir> --required-set <the ledger header's>`, and by NOTHING ELSE.** It fetches, promotes, verifies and
   decides, and prints the verdict and the `ci` value as JSON (`stage-2-ci.md`, "THE DERIVATION IS A

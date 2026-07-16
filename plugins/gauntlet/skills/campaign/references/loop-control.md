@@ -303,7 +303,8 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      If the file is
      missing (a wiped `<rundir>`), write it **per `pr-adoption.md` step 3a** and record its provenance in
      the row's `intent`. Then **ensure the PR-head worktree exists**
-     (the reviewer runs in `<worktree>` — the PR row's ledger `worktree` column value, the
+     (the reviewer receives `<worktree>` as explicit read-only input from the trusted review root — the
+     PR row's ledger `worktree` column value, the
      single source of truth for this PR's checkout path (created at adoption/pre-review per
      `pr-adoption.md`; the ledger-recorded `<worktree>` path — default `.worktrees/<headRefName>` when
      campaign creates it, else a reused existing checkout) — and diffs
@@ -315,7 +316,8 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      review dispatch** (`git fetch origin refs/heads/<base>:refs/remotes/origin/<base>`) — the review
      diffs `origin/<base>...HEAD`, a remote-tracking ref that always exists, since adoption fetches only
      the PR head and a local `<base>` may be absent or stale (see `pr-adoption.md` / Stage 2a). Then
-     launch **one** review pass as a **background**
+     confirm the verdict transport satisfies `runtime-adapter.md`'s candidate-instruction exclusion;
+     if it does not, park as a machine blocker. Otherwise launch **one** review pass as a **background**
      task (one at a time per PR — the second, when the tier requires two, only after the first is
      SATISFIED; Stage 2a). If a precondition is dirty, clear it first (address Copilot items / fix CI /
      rebase) instead of spending a review;

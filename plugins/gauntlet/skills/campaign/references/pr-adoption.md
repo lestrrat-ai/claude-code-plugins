@@ -268,9 +268,10 @@ For each `#PR` to adopt:
    pre-check for the label's presence — only for the gate's state.)
 
 5. **Create the PR-head worktree before the first review pass — off the PR's OWN head, never `<base>`.**
-   The review itself needs a real checkout: the selected reviewer runs in `<worktree>` (the
-   ledger `worktree` column — the authoritative checkout path, which may be a reused checkout outside
-   `.worktrees/`, per `loop-control.md` / `stage-2-review-gate.md`) and diffs `origin/<base>...HEAD`, so
+   The review itself needs a real checkout: the selected reviewer receives `<worktree>` as explicit
+   read-only input (the ledger `worktree` column — the authoritative checkout path, which may be a reused
+   checkout outside `.worktrees/`, per `loop-control.md` / `stage-2-review-gate.md`) and diffs
+   `origin/<base>...HEAD` with path-addressed commands, so
    the worktree MUST exist **before the PR's first review pass dispatches** — create it here as part of adoption, or as a guaranteed pre-review
    step (Loop control makes it a precondition of the review launch). It is NOT created lazily only on a
    fix; a review always needs it. Branch it from the **PR's head branch/SHA**, not `<base>` (branching

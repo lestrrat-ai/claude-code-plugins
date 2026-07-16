@@ -226,8 +226,10 @@ never the place to look them up.
   (for example, “review with claude”) or record it in memory, `AGENTS.md`, or `CLAUDE.md`. Campaign never
   selects the other agent merely because its CLI is installed. If an external reviewer
   can't return a verdict because of a system problem — quota or rate limits, auth, a timeout — it
-  retries once and then falls back to a fresh native worker, so a transient outage slows a run down but
-  doesn't stall it. A reviewer that never gets going at all — hung on input, a bad path, a sandbox
+  retries once and then falls back to a fresh native worker. Every verdict renderer must exclude the
+  candidate checkout's startup instructions and receive that checkout read-only; if the native
+  transport cannot guarantee that boundary, the run parks with a machine blocker. A reviewer that never
+  gets going at all — hung on input, a bad path, a sandbox
   denial — is caught the same way: every review pass has to write *something* to its progress file
   within about five minutes of being dispatched, and one that writes nothing at all is killed and
   relaunched rather than left hanging. The bar there is just "is it alive", so anything the reviewer
