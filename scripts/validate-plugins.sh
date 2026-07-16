@@ -73,6 +73,7 @@ done < <(jq -r '.plugins[] | [.name, (.source | tostring), (.source | type)] | @
 mkdir -p "$root/.tmp"
 claude_config_dir=
 codex_home=
+# shellcheck disable=SC2317  # Invoked indirectly by the EXIT trap below.
 cleanup() {
   [[ -z $claude_config_dir ]] || rm -rf -- "$claude_config_dir"
   [[ -z $codex_home ]] || rm -rf -- "$codex_home"
