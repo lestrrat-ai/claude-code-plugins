@@ -902,6 +902,14 @@ and `unknown` can never go green: **`GET /repos/{o}/{r}/branches/{b}` needs `Con
 "Get rules for a branch"). **BOTH are mandatory** — neither can see what the other sees:
 
 ```sh
+# The base branch name is UNTRUSTED — a git ref may legally contain shell metacharacters ($(), backticks,
+# quotes), and it originates in a PR's `baseRefName`. Capture it ONCE into a shell variable — command
+# substitution OUTPUT is never re-parsed — and reference it double-quoted as "$base" inside the URL. NEVER
+# splice a raw <base> into the command string, where a branch named `main$(…)` would EXECUTE at parse time.
+# (`<owner>`/`<repo>` are this repo's OWN slug, not PR-supplied.) The jq filters below are unchanged, and
+# `ci-snapshot.py` still extracts them verbatim — only the URL's base ref moved out of shell reach.
+base=$(python3 <skill>/scripts/ledger.py --file <rundir>/state.jsonl header get base_branch)
+
 # (a) CLASSIC branch protection — AND the field that disambiguates its absence. Needs `Contents: read`
 #     (NOT Metadata — on a private repo a Metadata-only token 404s here and the required set reads
 #     `unknown`, which can never go green).
@@ -910,7 +918,7 @@ and `unknown` can never go green: **`GET /repos/{o}/{r}/branches/{b}` needs `Con
 #     is the same set WITHOUT it, and is deprecated — read `.checks[]`, never `.contexts`.
 #     `.app_id` is NULLABLE — the DEFAULT GOES BEFORE `tostring` (FETCH above owns that rule; get it
 #     backwards and every unbound required check binds to an app named "null" and can NEVER be matched).
-gh api "repos/<owner>/<repo>/branches/<base>" --jq '
+gh api "repos/<owner>/<repo>/branches/$base" --jq '
   {classic_enabled: (.protection.enabled // false),
    checks: [(.protection.required_status_checks.checks // [])[]
             | {context: .context, app: ((.app_id // "-") | tostring)}]}'
@@ -924,7 +932,7 @@ gh api "repos/<owner>/<repo>/branches/<base>" --jq '
 #     That is the exact false green this whole section exists to close, reintroduced by a missing flag.
 #     `--slurp` hands jq ONE array OF PAGES (and is mutually exclusive with gh's own `--jq`, hence the
 #     pipe) — so the filter flattens with `.[][]`: pages, then rules.
-gh api --paginate --slurp "repos/<owner>/<repo>/rules/branches/<base>" | jq -c '
+gh api --paginate --slurp "repos/<owner>/<repo>/rules/branches/$base" | jq -c '
   [.[][] | select(.type=="required_status_checks")
          | .parameters.required_status_checks[]
          | {context: .context, app: ((.integration_id // "-") | tostring)}]'

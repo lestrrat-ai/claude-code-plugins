@@ -1149,9 +1149,12 @@ READS = {
     # bare `gh pr view <pr>` resolves the PR in the CURRENT CHECKOUT, so the command asks whichever repo the
     # reader is standing in — the only one of the five reads that could not say what it was about.
     "rollup": "gh pr view <pr> --repo <owner>/<repo> --json statusCheckRollup,headRefOid | jq -c '",
-    # The TWO required-set reads (WHAT WERE WE EXPECTING TO SEE?).
-    "classic": 'gh api "repos/<owner>/<repo>/branches/<base>" --jq \'',
-    "ruleset": 'gh api --paginate --slurp "repos/<owner>/<repo>/rules/branches/<base>" | jq -c \'',
+    # The TWO required-set reads (WHAT WERE WE EXPECTING TO SEE?). The base ref rides in as the shell var
+    # `$base` (captured in stage-2-ci.md, never spliced raw — a branch name is untrusted), so the opener
+    # ends `.../branches/$base" --jq '` verbatim; only the URL changed, the jq filter is still delimited by
+    # the trailing single quote exactly as before.
+    "classic": 'gh api "repos/<owner>/<repo>/branches/$base" --jq \'',
+    "ruleset": 'gh api --paginate --slurp "repos/<owner>/<repo>/rules/branches/$base" | jq -c \'',
 }
 
 # `gh api --paginate --slurp` hands jq ONE ARRAY OF PAGES. `jq -s` over N recorded page files builds exactly
