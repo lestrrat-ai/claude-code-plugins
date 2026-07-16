@@ -64,7 +64,8 @@ Claude Code reviews with Codex (`codex exec`), Codex reviews with Claude Code (`
 native-limitation level whenever the paired CLI is present — engine diversity needs no OS sandbox.
 
 You can override the default: name a reviewer when you invoke the campaign (including a native worker), or
-record a preference in memory, `AGENTS.md`, or `CLAUDE.md`. If the paired CLI is absent, or a cross-engine
+record a preference in the orchestrator's own trusted state — never in the checkout under review
+(`skills/campaign/references/reviewer.md`, "Selecting the reviewer", owns which sources count). If the paired CLI is absent, or a cross-engine
 reviewer can't return a verdict because of a system problem (quota, auth, timeout), the pipeline retries
 once and then falls back to a fresh native worker — so the campaign runs with or without the other engine.
 The cross-engine and native routes both keep fresh conversational context and disclose the host's

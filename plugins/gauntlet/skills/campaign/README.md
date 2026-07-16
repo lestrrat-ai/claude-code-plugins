@@ -227,7 +227,8 @@ never the place to look them up.
   Campaign discloses that limitation and keeps the installed campaign rules as stage-0 authority rather than
   claiming an OS boundary; engine diversity needs no OS sandbox. You can override the default — name a
   reviewer when you invoke the campaign
-  (for example, “review with claude”, or a native worker) or record it in memory, `AGENTS.md`, or `CLAUDE.md`.
+  (for example, “review with claude”, or a native worker) or record a preference in the orchestrator's own
+  trusted state — never in the checkout under review (`references/reviewer.md`, "Selecting the reviewer", owns which sources count).
   If the paired CLI is absent, or a cross-engine reviewer
   can't return a verdict because of a system problem — quota or rate limits, auth, a timeout — it
   retries once and then falls back to a fresh native worker, so the campaign runs with or without the other

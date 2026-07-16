@@ -408,6 +408,10 @@ def review_action(capability: Mapping[str, object], external_retry_spent: bool =
         if external_failed:
             return "fallback-native" if external_retry_spent else "retry-external"
         return "launch-external"
+    # Native is the last-resort route: if it cannot launch (unavailable — no fresh conversation or no
+    # launch mechanism), there is nothing left to fall back to, which is exactly `park-machine-blocker`.
+    if not launchable:
+        return "park-machine-blocker"
     if native_exhausted:
         return "park-machine-blocker"
     return "launch-native"
@@ -463,6 +467,15 @@ def run_isolation_transition_fixtures() -> None:
             "native limitations incorrectly parked an available pass")
     require(review_action(native, native_exhausted=True) == "park-machine-blocker",
             "exhausted invalid native route did not park")
+
+    # A native route that is `unavailable` (no launch mechanism, or no fresh conversation) CANNOT launch.
+    # Native is the last-resort route, so an unavailable one parks the machine blocker — it never launches.
+    native_no_mechanism = dict(native, launch_mechanism_present=False)
+    require(review_action(native_no_mechanism) == "park-machine-blocker",
+            "native route with no launch mechanism was launched instead of parked")
+    native_no_fresh = dict(native, fresh_conversation=False)
+    require(review_action(native_no_fresh) == "park-machine-blocker",
+            "native route without a fresh conversation was launched instead of parked")
 
 
 def main() -> int:
