@@ -215,6 +215,10 @@ while IFS=$'\t' read -r name source; do
   [[ $codex_name == "$name" ]] ||
     fail "$name: Codex plugin.json declares name '$codex_name'"
 
+  claude_name=$(jq_field '.name // ""' "$claude_plugin") || fail "$name: $claude_plugin is not valid JSON"
+  [[ $codex_name == "$claude_name" ]] ||
+    fail "$name: manifest names differ (Claude $claude_name, Codex $codex_name)"
+
   claude_version=$(jq_field '.version // ""' "$claude_plugin") || fail "$name: $claude_plugin is not valid JSON"
   codex_version=$(jq_field '.version // ""' "$codex_plugin") || fail "$name: $codex_plugin is not valid JSON"
   [[ $codex_version == "$claude_version" ]] ||
