@@ -21,20 +21,25 @@ up a run a prior instance left mid-flight — but **never two agents driving the
 (that is the bug this guards against). Two mechanisms: a **run ID** that namespaces everything a run
 owns, and a **run lease** that marks whether an agent is actively driving that run right now.
 
+At every campaign entry or resume, first call `runtime-adapter.md`'s
+`resolve_repository_context(checkout)` exactly once with the supplied checkout. Carry that
+`RepositoryContext` through run discovery, adoption, review, and merge; never reconstruct a repository
+root from cwd or an ambient variable. Fresh-run creation below and resumed-run lookup both derive their
+absolute run path through that owner.
+
 ### Run ID — namespacing
 
 Minted once at the start of a fresh run — compact, filesystem- and label-safe. Create the run dir
-**atomically** (`mkdir` fails if it already exists) so a run-id collision can't silently share a dir;
-retry with a fresh id on the rare clash:
+**atomically** so a run-id collision can't silently share a dir; retry with a fresh id on the rare
+clash:
 
-```
+```text
 run_id="g$(date +%y%m%d-%H%M)-$(openssl rand -hex 4)"   # e.g. g260704-0915-a3f29c1b (32 bits entropy)
-mkdir -p "$PROJECT/.gauntlet/tmp"                    # parent only; -p is safe here
-mkdir "$PROJECT/.gauntlet/tmp/$run_id" || run_id=…   # NO -p: must fail on collision
+rundir = create_run_directory(repository, run_id) || run_id=…
 ```
 
-The run dir's `mkdir` carries **no `-p`** on purpose — it must fail if the id is already taken. Create
-the `.gauntlet/tmp` parent in its own `-p` call, never by `-p`-ing the run dir itself.
+`runtime-adapter.md`'s `create_run_directory` owns the parent creation, exact argv, absolute path
+derivation, and bare atomic create. Do not unpack that operation here.
 
 Record it in the ledger header field `run_id` (`ledger.py --file <state.jsonl> header set run_id
 <run-id>`) and re-read it every wake (`ledger.py … header get run_id`, like `base_branch`); never trust
@@ -42,12 +47,12 @@ in-context memory for it — a wake may be a fresh agent instance. It flows into
 
 | Owned by the run | Namespaced form |
 |------------------|-----------------|
-| tmp working dir  | `<rundir>` = `.gauntlet/tmp/<run-id>/` (all state/pr/review/ci/abort/lease files) |
+| tmp working dir  | `<rundir>` from the runtime adapter's run-directory operation (all state/pr/review/ci/abort/lease files) |
 | ledger header    | the `run_id` header field (set/read via `ledger.py … header set/get run_id`) |
 | PR owner label   | `gauntlet-run-<run-id>` — the **authoritative "mine" marker**. Every adopted PR is tagged with it; it, not any branch name, is what makes a PR this run's. |
 | branch           | the **adopted PR's own `headRefName`** — campaign reuses the PR's existing branch and does NOT mint a `fix-<run-id>-...` branch, so ownership can't be read off the branch name (that's the label's job). |
-| worktree         | the ledger-recorded `worktree` path — the created default `$PROJECT/.worktrees/<headRefName>` when campaign runs `git worktree add`, or a reused existing checkout when the branch was already checked out elsewhere — resolved from the PR's head branch during adoption / before its first review, and reused for review/CI fixes. Only a campaign-created worktree (`worktree_owned = yes`) is ever removed; a reused checkout (the root/main checkout or a user worktree) and a reused local branch are **always** left in place (see "PR adoption" / Stage 3). |
-| self-wake prompt | `/gauntlet:campaign --run <run-id> --token <agent-token>` — **only** these two flags (carries the id **and** the driver token so a summarized wake re-proves ownership without guessing). It **never** carries `--new` or the original `#PR` adoption args: those are **start-time-only** (they *create/adopt*), whereas `--run` **resumes** an existing run — replaying `--new` on a self-wake would mint a fresh run every heartbeat. |
+| worktree         | the ledger-recorded `worktree` path resolved by the repository-context-aware adoption operation; only a campaign-created worktree (`worktree_owned = yes`) is ever removed (see "PR adoption" / Stage 3) |
+| self-wake prompt | `<campaign-invocation> --run <run-id> --token <agent-token>` — resolve the host form through `runtime-adapter.md`; carry **only** these two flags so a summarized wake re-proves ownership without guessing. It **never** carries `--new` or the original `#PR` adoption args: those are **start-time-only** (they *create/adopt*), whereas `--run` **resumes** an existing run — replaying `--new` on a self-wake would mint a fresh run every heartbeat. |
 
 **Isolation invariant — a run touches ONLY its own work.** It reads/writes only its `<rundir>`, only
 its `state.jsonl`, and only PRs carrying its `gauntlet-run-<run-id>` label (adopted PRs keep their own
@@ -61,8 +66,9 @@ the per-run label, never a status label. Refuse to adopt a PR already carrying a
 **Shared across runs:** the carryover ledger tree `.gauntlet/history/` (kept race-free by one
 file per run — see "Fresh runs and carryover"), the follow-up store `.gauntlet/followups.jsonl` (**one
 file, many writers** — kept race-free by a lock inside `scripts/followups.py`, which is why it is never
-hand-edited; see `followups.md`), the two status labels, and the Copilot precondition's
-scratch file `.gauntlet/tmp/copilot-review-items.json` (written by `/gauntlet:copilot-address-reviews`) — treat that
+hand-edited; see `followups.md`), the two status labels, and the Copilot precondition's primary
+worklist under the repository scratch root (written by the host form of
+`gauntlet:copilot-address-reviews`) — treat that
 last one as ephemeral to a single fetch→address cycle and re-fetch rather than trusting a stale
 snapshot another run may have overwritten.
 
@@ -119,12 +125,12 @@ Each run has `<rundir>/lease.json`:
    for a **manual** `--run` with no matching token, another agent appears active, so **confirm takeover
    with the user** before adopting.
 2. **Bare invocation** → the arg decides intent:
-   - **`#PR` args are given** (`/gauntlet:campaign #12 #15`, no `--run`) → **start a NEW run** that
+   - **`#PR` args are given** (`<campaign-invocation> #12 #15`, no `--run`) → **start a NEW run** that
      **adopts those PRs** (see "PR adoption"). Passing PRs is an explicit "gate these now", so it never
      silently resumes an existing run — this is how you launch a second concurrent run (one PR set
      alongside another). To resume a specific run instead, pass `--run <id>`. A **non-PR** arg (e.g.
      `auth`) is not a scope any more — treat it like the no-arg idle case below and prompt.
-   - **No arg at all** (`/gauntlet:campaign`) → resume-oriented: **discover runs** and bucket by lease —
+   - **No arg at all** (`<campaign-invocation>`) → resume-oriented: **discover runs** and bucket by lease —
      the distinct `gauntlet-run-*` ids present on open PRs — list PRs **with their labels** and extract
      the ids, since no id is known yet to query by (`gh pr list --state open --limit 1000 --json
      number,labels`, then pick labels matching `gauntlet-run-*`; **`--limit` is mandatory** — `gh pr list`

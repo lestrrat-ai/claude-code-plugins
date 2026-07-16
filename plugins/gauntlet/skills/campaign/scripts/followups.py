@@ -12,7 +12,8 @@ hardened against a hostile or hand-edited store file — it is an accessor with 
 a work queue's lifetime. What it DOES defend is the one thing a driver can get wrong on its own:
 
   EVERY ENTRY IS A CANDIDATE, NEVER AN ISSUE. These are things the DRIVER noticed — claims, not facts,
-  and the repo already holds that a driver's own diagnosis is a claim needing corroboration (`CLAUDE.md`,
+  and the repo already holds that a driver's own diagnosis is a claim needing corroboration (`AGENTS.md`
+  or `CLAUDE.md`,
   "Your OWN diagnosis is a claim too"). So the store is LOCAL and stays local, and the one thing the
   driver may NEVER do on its own is PUBLISH one: filing an issue would launder an unvalidated
   self-diagnosis into a public statement of fact, made in the user's name.
@@ -112,7 +113,7 @@ ACT_CONDITIONS = (
      "This one is enforced by the GRAPH (`take-up` leaves only from `corroborated`) and its witness is the "
      "investigation's own `finding`, so it takes no flag: the evidence is already in the entry."),
     ("not-gate-machinery", "act_not_gate",
-     "It does not decide whether a PR may merge (`CLAUDE.md` defines the gate). WHEN UNCLEAR IT IS GATE "
+     "It does not decide whether a PR may merge (the active `AGENTS.md` or `CLAUDE.md` defines the gate). WHEN UNCLEAR IT IS GATE "
      "MACHINERY — the ambiguous case resolves toward ASK, never toward act."),
     ("behavior-preserved", "act_behavior",
      "It preserves user-facing behavior. If it HAS a behavioral surface, name the TEST that proves so. If "

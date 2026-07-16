@@ -63,8 +63,8 @@ first.
 
 ### The reassessment pass — give the loop the memory it never had
 
-Dispatch **one context-isolated agent** on the **session model** (it decides the acceptance path — never
-downgrade it; `SKILL.md`, "Subagent Dispatch"), and hand it **THE WHOLE HISTORY AT ONCE**. This is the
+Dispatch **one context-isolated worker** in the **`session` class** (it decides the acceptance path — never
+downgrade it; `SKILL.md`, "Worker Dispatch"), and hand it **THE WHOLE HISTORY AT ONCE**. This is the
 crux: **no wake has ever had this view**, which is exactly why 21 rounds could pass unnoticed.
 
 It receives, in one prompt:

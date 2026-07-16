@@ -29,8 +29,13 @@ jobs:
       - name: Install Claude Code
         run: npm install -g '@anthropic-ai/claude-code@2.1.206'
 
-      # `claude plugin validate` is offline and needs no credentials, so this
-      # step works unchanged on pull requests from forks.
+      # Pinned for the same reason as Claude Code above. These commands only
+      # inspect and install the local marketplace; they do not require auth.
+      - name: Install Codex CLI
+        run: npm install -g '@openai/codex@0.144.4'
+
+      # The validator reads only the checkout and exercises both CLIs' isolated
+      # install paths. It needs no credentials, so this works on forks.
       - name: Validate marketplace, plugins, and skills
         run: ./scripts/validate-plugins.sh
 

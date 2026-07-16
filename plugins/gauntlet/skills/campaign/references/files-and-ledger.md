@@ -1,8 +1,9 @@
 ## File locations
 
-Everything under the run's own dir `<rundir>` = `.gauntlet/tmp/<run-id>/` (create at the start
-of a fresh run; on resume, reuse the run's existing dir). Per-run dirs are what keep concurrent runs'
-files from colliding — see "Run identity and concurrency".
+Everything below is under the run's own absolute `<rundir>`, derived from the invocation's typed
+`RepositoryContext` by `runtime-adapter.md`'s run-directory operation (create at fresh-run start; on
+resume, reuse the existing dir). Per-run dirs are what keep concurrent runs' files from colliding — see
+"Run identity and concurrency".
 
 | File (under `<rundir>`) | Contents |
 |------|----------|
@@ -10,12 +11,13 @@ files from colliding — see "Run identity and concurrency".
 | `pr-<pr>.json` | `gh pr view` snapshot captured at adoption (PR facts the ledger row is built from) |
 | `prs.json` | Batched `gh pr list` snapshot of this run's PRs — the per-wake reconcile input, and the adoption/discovery input. **ONE path, ONE schema, ONE command**: the canonical command is spelled in full in **"The canonical `prs.json` command"**, the command block directly below this table, and that block is its ONLY definition |
 | `lease.json` | This run's active-driver lease (`{agent, updated}`; see "Run lease") |
-| `review-<pr>-<n>.txt` | The reviewer's PR review output, round `n` (launch attempt 1) |
+| `review-<pr>-<n>.prompt.txt` | The reviewer prompt for round `n`, launch attempt 1, with the verbatim intent and JSON-encoded typed transport record bound as data. Written through `runtime-adapter.md`'s `write_bytes` and passed through `dispatch_native` or `run_argv` — never embedded in shell source (`stage-2-review-gate.md`) |
+| `review-<pr>-<n>.txt` | The reviewer's PR review output, round `n` (launch attempt 1), written by the sole producer assigned in `runtime-adapter.md`'s typed review record |
 | `review-<pr>-<n>.plan.jsonl` | Orchestrator-authored review work units for round `n` (per-pass — a relaunch reuses it). Written through `scripts/review-pass.py plan-add`, never a heredoc |
 | `review-<pr>-<n>.progress.jsonl` | Reviewer progress events against the plan for round `n` (launch attempt 1), opened by the orchestrator's `pass_identity` line. **Every line is READ and validated through `scripts/review-pass.py` — and not every line is WRITTEN by it.** The `pass_identity` (`review-pass.py identity`) and the unit-progress events (the reviewer's `emit-progress.py`) are; a `plan_amendment_request` the reviewer appends **directly** is not — it is the one event the emit-only rule exempts. `stage-2-review-gate.md` owns that rule; see "Review-pass artifacts" below |
 | `review-<pr>-<n>.findings.jsonl` | The pass's FINDINGS, round `n` (launch attempt 1) — one validated record per finding, written **only** through `scripts/emit-finding.py`. A finding used to be prose in the report, so nothing could check its citation, bound its writer, or ask what it DEFENDED — and therefore nothing could ever **decline** one. Each record ANCHORS to the PR's intent: a `## Purpose` line quoted verbatim, or the actor who can actually write the bad input. `stage-2-review-gate.md` owns the schema and the gating rule |
 | `intent-<pr>.md` | **What this PR is FOR** — `## Purpose` / `## Non-goals` / `## Threat model`. Written at adoption (`pr-adoption.md`), from the PR body when it carries one and **authored by the driver** from the diff/title/body when it does not; re-read every wake, never re-derived. It is passed to the reviewer **verbatim**, and it is what the **pass** is measured against: `review-pass.py verify` loads it for **every** pass it judges — including one that found nothing — so a PR with no usable block here earns **no verdicts at all** (`stage-2-review-gate.md`, "Does this pass COUNT?"). **LOCAL and git-ignored — campaign NEVER writes it back to the PR** |
-| `review-<pr>-<n>.a<k>.txt` / `.a<k>.progress.jsonl` / `.a<k>.findings.jsonl` | The same three per-attempt artifacts for **launch attempt `k ≥ 2`** — a relaunched pass writes here, never over attempt 1's files, so a killed-but-alive attempt can't corrupt the live one. Only the attempt named in the active `pass_identity` is read or counted (see `stage-2-review-gate.md`). The plan and the intent are **not** per-attempt: the plan is per-pass, the intent per-PR |
+| `review-<pr>-<n>.a<k>.prompt.txt` / `.a<k>.txt` / `.a<k>.progress.jsonl` / `.a<k>.findings.jsonl` | The same four per-attempt artifacts for **launch attempt `k ≥ 2`** — a relaunched pass writes here, never over attempt 1's files, so a killed-but-alive attempt can't corrupt the live one. Only the attempt named in the active `pass_identity` is read or counted as gate output (see `stage-2-review-gate.md`). The plan and the intent are **not** per-attempt: the plan is per-pass, the intent per-PR |
 | `ci-<pr>-<head_sha>.txt` | Latest **SHA-pinned** CI snapshot for a PR — check runs **AND** commit statuses, written **BY THE WAKE** running **`scripts/ci-status.py derive`** after the watch completes (**the watch never writes it**), promoted atomically, and **stamped with the `head_sha` it describes** (verify the stamp before parsing). Carries a **`source` completion marker per mandatory source**, so a source that was **never queried** is `unusable`, not a silent green (`stage-2-ci.md`). Never the watch stream, and never `gh pr checks` — its output carries **no SHA** |
 | `audit-<pr>-<n>.md` | A dispatched context-isolated audit subagent's verdicts on round `n`'s gating findings — CONFIRMED / ADJUSTED / REFUTED, each with evidence. A REFUTED finding's reasoning is recorded here **and** written into the tree as an inline comment at the site, committed like any other change (`stage-2-review-gate.md`, "Audit every finding before you fix it") |
 | `repair-<pr>-<k>.md` | The **reassessment pass**'s decision record for repair `k`: the whole round-by-round history it was handed, the ONE decision it returned, and why (`repair-pass.md`). Written **before** the decision is recorded — `repair-pass.py decide` refuses a `--record` that is missing or empty, because a wake is a fresh agent instance and a justification held only in a dead agent's context can never be audited |
@@ -23,13 +25,21 @@ files from colliding — see "Run identity and concurrency".
 
 **The canonical `prs.json` command — this block is THE definition.** Every other site defers to it, and
 **NO site may spell a variant of it** — differing spellings are how a reader of `prs.json` ends up with
-a file that is scoped wrong or missing the fields it reads. Copy it whole, including the `--label`
-filter and the output path:
+a file that is scoped wrong or missing the fields it reads. It is the typed `run_argv` operation from
+`runtime-adapter.md`: every `gh pr list` option is its own argv element, and the output path is a typed
+`Path` in `stdout_file` — never a shell redirection, so it keeps dynamic paths out of shell source and a
+`<rundir>` containing a space stays one intact path. Copy it whole, including the `--label` filter and the
+`stdout_file` path:
 
-```
-gh pr list --label gauntlet-run-<run-id> --state open --limit 1000 \
-  --json number,headRefName,headRefOid,title,baseRefName,state,mergeable,mergeStateStatus,labels \
-  > <rundir>/prs.json
+```text
+run_argv(
+  argv: ["gh", "pr", "list", "--label", concat("gauntlet-run-", run_id),
+         "--state", "open", "--limit", "1000",
+         "--json", "number,headRefName,headRefOid,title,baseRefName,state,mergeable,mergeStateStatus,labels"],
+  cwd: repository.project_root,
+  stdin_file: null,
+  stdout_file: path_join(<rundir>, "prs.json")
+)
 ```
 
 `pr-adoption.md` (discovery) and `loop-control.md`'s per-wake PR scan (the `prs.json` block in step 1)
@@ -47,8 +57,10 @@ Every part is load-bearing:
   reconcile reads as the complete run snapshot.
 - **Without `--json <the field set above>`** the reader finds no `labels`/`mergeable`/`headRefOid` —
   two writers with different field sets silently hand the reader a file missing the fields it reads.
-- **Without `> <rundir>/prs.json`** the snapshot lands somewhere nobody reads, and reconcile reads a
-  file nobody wrote.
+- **Without the `stdout_file` `Path` (`path_join(<rundir>, "prs.json")`)** the snapshot lands somewhere
+  nobody reads, and reconcile reads a file nobody wrote. It is a typed `Path`, never a shell redirection,
+  so a `<rundir>` carrying a space stays one intact path instead of triggering a bash "ambiguous
+  redirect".
 
 **`prs.json` is a BOUNDED snapshot, not a proof of completeness.** `--limit 1000` defeats the default-30
 truncation; it does **not** make the snapshot provably complete — a run with more than 1000 labelled PRs
@@ -67,7 +79,7 @@ repo root, `.gauntlet/` (git-ignored; add `.gauntlet/` to `.gitignore` if missin
 
 | Path | Lifetime |
 |------|----------|
-| `.gauntlet/tmp/<run-id>/` | Ephemeral scratch. A **terminal** run's dir is kept so a later bare invocation can detect the *finished* run and offer the finished-run prompt (Loop control step 1); it is otherwise disposable — wiping it only loses that prompt (discovery then falls back to the generic "pass PR numbers" prompt), never carryover, which lives in `history/`. Not wiped mid-run. |
+| `<rundir>/` | Ephemeral scratch, derived by the runtime adapter's owned operation. A **terminal** run's dir is kept so a later bare invocation can detect the *finished* run and offer the finished-run prompt (Loop control step 1); it is otherwise disposable — wiping it only loses that prompt (discovery then falls back to the generic "pass PR numbers" prompt), never carryover, which lives in `history/`. Not wiped mid-run. |
 | `.gauntlet/history/<run-id>.md` | Durable. The carryover ledger — the one thing a *new* run needs to remember from old ones. |
 | `.gauntlet/followups.jsonl` | Durable, and **not run-scoped** — one store, shared by every run. The **follow-up ledger**: work the campaign FOUND and deliberately did not do. Unlike `state.jsonl` it is a **source of truth, not a cache** (nothing can rebuild a lost entry), and it has **many writers** (every concurrent run), so its accessor locks the read-modify-write. Every entry is a **CANDIDATE, never an issue** — **nothing in it may be published without the user's agreement on that specific item**. It is a **WORK QUEUE, not an archive**: an entry is **deleted** once a durable record of it exists elsewhere, and kept when nothing else would remember it (`followups.md` owns when). Owned by `scripts/followups.py`; see `followups.md`. |
 
@@ -108,8 +120,8 @@ following line is one adopted PR's row record (`{"type": "row", …}`). Every re
 
 ```
 {"type": "header", "run_id": "g260704-0915-a3f29c1b", "base_branch": "main", "api_changes": "ask", "reviewer": "codex", "required_set": "declared:[{\"context\": \"build\", \"app\": \"-\"}, {\"context\": \"test (3.12, ubuntu)\", \"app\": \"15368\"}]", "skill_version": "0.1.4"}
-{"type": "row", "id": "pr41", "slug": "fix-null-deref", "branch": "fix-null-deref", "worktree": ".worktrees/fix-null-deref", "worktree_owned": "yes", "branch_owned": "yes", "pr": "41", "head_sha": "a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c", "reviews_ok": "2", "ci": "green", "tier": "STANDARD", "attempts": "1", "started": "2026-07-04T09:15:00Z", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:9f2c\u2026", "settled_strikes": "0", "unusable_refetches": "0", "ci_stalled_since": "-", "ci_reason": "-", "blocker_ruling": "-", "review_rounds": "3", "ns_streak": "0", "intent": "stated@2026-07-04T09:15:00Z", "pr_origin": "gauntlet", "repair_count": "0", "repair_decision": "-"}
-{"type": "row", "id": "pr52", "slug": "add-retry-flag", "branch": "add-retry-flag", "worktree": ".worktrees/add-retry-flag", "worktree_owned": "no", "branch_owned": "no", "pr": "52", "head_sha": "b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7089a1b", "reviews_ok": "0", "ci": "pending", "tier": "HIGH", "attempts": "0", "started": "-", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:4a71\u2026", "settled_strikes": "1", "unusable_refetches": "0", "ci_stalled_since": "-", "ci_reason": "required check absent: integration-tests", "blocker_ruling": "-", "review_rounds": "5", "ns_streak": "2", "intent": "authored@2026-07-04T09:20:00Z", "pr_origin": "external", "repair_count": "0", "repair_decision": "-"}
+{"type": "row", "id": "pr41", "slug": "fix-null-deref", "branch": "fix-null-deref", "worktree": "/srv/example-repo/.worktrees/fix-null-deref", "worktree_owned": "yes", "branch_owned": "yes", "pr": "41", "head_sha": "a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c", "reviews_ok": "2", "ci": "green", "tier": "STANDARD", "attempts": "1", "started": "2026-07-04T09:15:00Z", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:9f2c\u2026", "settled_strikes": "0", "unusable_refetches": "0", "ci_stalled_since": "-", "ci_reason": "-", "blocker_ruling": "-", "review_rounds": "3", "ns_streak": "0", "intent": "stated@2026-07-04T09:15:00Z", "pr_origin": "gauntlet", "repair_count": "0", "repair_decision": "-"}
+{"type": "row", "id": "pr52", "slug": "add-retry-flag", "branch": "add-retry-flag", "worktree": "/home/example/checkouts/add-retry-flag", "worktree_owned": "no", "branch_owned": "no", "pr": "52", "head_sha": "b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7089a1b", "reviews_ok": "0", "ci": "pending", "tier": "HIGH", "attempts": "0", "started": "-", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:4a71\u2026", "settled_strikes": "1", "unusable_refetches": "0", "ci_stalled_since": "-", "ci_reason": "required check absent: integration-tests", "blocker_ruling": "-", "review_rounds": "5", "ns_streak": "2", "intent": "authored@2026-07-04T09:20:00Z", "pr_origin": "external", "repair_count": "0", "repair_decision": "-"}
 ```
 
 Read those two rows together and the sensor's whole point is visible: **`pr41` and `pr52` both read
@@ -127,7 +139,7 @@ shortened is `table`'s rendering (below) — that is display-only and does not e
 Header-record fields: `run_id` (this run's identity — namespaces its dir/label/wakes; set once),
 `base_branch` (the adopted PRs' baseRefName — the branch they merge into & diffs measure against; set
 once, see "Base branch"), `api_changes` (`ask` | `allowed`, run-wide; set once from the invocation),
-`reviewer` (`default` (Claude subagents) | `codex` | `<other>` — the selected reviewer; set once, see
+`reviewer` (`default` (per-host cross-engine route with native fallback — see "The reviewer") | `codex` | `claude` | `<other>` — the selected reviewer; set once, see
 "The reviewer"), `required_set` (what `base_branch` **requires** — `stage-2-ci.md`, "What were we
 expecting to see?", owns the three states, the format, and the reads that produce them; re-read every
 wake while it is `unknown`), `skill_version` (**which copy of the rules actually governed this run**).
@@ -164,10 +176,9 @@ Header field notes (the header fields above; per-row fields follow):
   label is the ownership marker**, not the branch prefix.
 - `worktree` — the **actual** checkout path for this PR, resolved off the PR's head branch during
   adoption (or as a guaranteed pre-review step, before its first review pass) and reused for any
-  review/CI fix — not created lazily only on fix (see "PR adoption"). This is the **created default**
-  `$PROJECT/.worktrees/<headRefName>` when campaign runs `git worktree add`, **or** a **reused existing
-  checkout** (the root checkout or a prior worktree) when the branch was already checked out elsewhere
-  — in which case the path is wherever that checkout already lives, not `.worktrees/<headRefName>`.
+  review/CI fix — not created lazily only on fix (see "PR adoption"). The repository-context-aware
+  adoption operation owns created-default derivation and existing-checkout discovery; this field records
+  whichever absolute path that operation returned.
 - `worktree_owned` — whether **campaign created** this worktree: `yes` (campaign ran `git worktree
   add`, so cleanup may remove it) | `no` (campaign **reused** a pre-existing checkout it did not
   create, so Stage 3 leaves it in place) | `-` (not yet resolved). Set at adoption alongside

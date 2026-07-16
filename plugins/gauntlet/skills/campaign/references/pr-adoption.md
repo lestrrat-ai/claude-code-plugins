@@ -5,17 +5,22 @@ drives each through the gates to merge. This file is the adoption procedure: giv
 them into the run and start their gate work.
 
 Two entry paths feed it (see "Run identity and concurrency" for the full grammar):
-- **explicit `#PR` args** (`/gauntlet:campaign #12 #15`) — adopt exactly those PRs.
-- **no-arg discovery** (`/gauntlet:campaign`, resume) — reconcile the PRs already labelled for this run:
+- **explicit `#PR` args** (`<campaign-invocation> #12 #15`) — adopt exactly those PRs.
+- **no-arg discovery** (`<campaign-invocation>`, resume) — reconcile the PRs already labelled for this run:
 
-  ```
+  ```text
   # THE canonical run snapshot — the SAME command loop-control's per-wake PR scan (the `prs.json`
   # block in step 1) runs. ONE path, ONE schema.
   # Owning definition: "The canonical `prs.json` command" in files-and-ledger.md. Copy it whole;
   # never spell a variant.
-  gh pr list --label gauntlet-run-<run-id> --state open --limit 1000 \
-    --json number,headRefName,headRefOid,title,baseRefName,state,mergeable,mergeStateStatus,labels \
-    > <rundir>/prs.json
+  run_argv(
+    argv: ["gh", "pr", "list", "--label", concat("gauntlet-run-", run_id),
+           "--state", "open", "--limit", "1000",
+           "--json", "number,headRefName,headRefOid,title,baseRefName,state,mergeable,mergeStateStatus,labels"],
+    cwd: repository.project_root,
+    stdin_file: null,
+    stdout_file: path_join(<rundir>, "prs.json")
+  )
   ```
 
   Every open PR carrying this run's owner label is already ours — refresh its row from that snapshot.
@@ -52,8 +57,17 @@ For each `#PR` to adopt:
 1. **Read the PR** — one `gh pr view` for the facts the ledger row needs, **including the cross-repo
    field** so the refusal check below can reject fork PRs:
 
-   ```
-   gh pr view <pr> --json number,title,body,headRefName,headRefOid,baseRefName,labels,state,isCrossRepository,headRepositoryOwner,headRepository > <rundir>/pr-<pr>.json
+   The typed `run_argv` operation from `runtime-adapter.md` — every option its own argv element, the
+   output path a typed `Path` in `stdout_file`, never a shell redirection:
+
+   ```text
+   run_argv(
+     argv: ["gh", "pr", "view", pr,
+            "--json", "number,title,body,headRefName,headRefOid,baseRefName,labels,state,isCrossRepository,headRepositoryOwner,headRepository"],
+     cwd: repository.project_root,
+     stdin_file: null,
+     stdout_file: path_join(<rundir>, concat("pr-", pr, ".json"))
+   )
    ```
 
    `isCrossRepository` is `true` when the head branch lives in a **fork**, not `origin`; in that case
@@ -104,8 +118,8 @@ For each `#PR` to adopt:
    - `id` = `pr<N>`; `slug` = slugified PR title; `branch` = the PR's **own** `headRefName` (adopted PRs
      keep their branch — do NOT mint a `fix-<run-id>-...` branch); `worktree` = `-`,
      `worktree_owned` = `-`, and `branch_owned` = `-` until the head worktree is resolved in step 5
-     (before its first review pass), then the **actual** resolved `$worktree` (the created default
-     `$PROJECT/.worktrees/<headRefName>`, or a reused existing checkout's path) with `worktree_owned` =
+     (before its first review pass), then the **actual** resolved `$worktree` returned by the
+     repository-context-aware operation (created default or reused existing checkout) with `worktree_owned` =
      `yes` when campaign created the worktree / `no` when it reused a pre-existing checkout, and
      `branch_owned` = `yes` **only** when campaign created the local branch (the `-b` path) / `no` when
      it reused a pre-existing local branch or checkout;
@@ -268,9 +282,11 @@ For each `#PR` to adopt:
    pre-check for the label's presence — only for the gate's state.)
 
 5. **Create the PR-head worktree before the first review pass — off the PR's OWN head, never `<base>`.**
-   The review itself needs a real checkout: the review command runs `codex exec -C <worktree>` (the
-   ledger `worktree` column — the authoritative checkout path, which may be a reused checkout outside
-   `.worktrees/`, per `loop-control.md` / `stage-2-review-gate.md`) and diffs `origin/<base>...HEAD`, so
+   The review itself needs a real checkout: the selected reviewer receives `<worktree>` as explicit
+   review input under `runtime-adapter.md`'s transport-specific isolation contract (the ledger `worktree`
+   column — the authoritative checkout path, which may be a reused
+   checkout outside `.worktrees/`, per `loop-control.md` / `stage-2-review-gate.md`) and diffs
+   `origin/<base>...HEAD` with path-addressed commands, so
    the worktree MUST exist **before the PR's first review pass dispatches** — create it here as part of adoption, or as a guaranteed pre-review
    step (Loop control makes it a precondition of the review launch). It is NOT created lazily only on a
    fix; a review always needs it. Branch it from the **PR's head branch/SHA**, not `<base>` (branching
@@ -282,48 +298,58 @@ For each `#PR` to adopt:
    elsewhere (as does `git fetch origin <hrn>:<hrn>` updating a checked-out branch). So update the
    remote ref (always safe), then **reuse an existing checkout if there is one, else add a worktree**:
 
-   ```
-   git fetch origin refs/heads/<base>:refs/remotes/origin/<base>                 # refresh origin/<base> — the review diffs origin/<base>...HEAD, and adoption otherwise fetches only the PR head, not <base>
-   git fetch origin refs/heads/<headRefName>:refs/remotes/origin/<headRefName>   # explicit refspec: refresh origin/<headRefName> regardless of local branch/upstream configuration
-   # is <headRefName> already checked out somewhere? (root or a worktree)
-   existing=$(git worktree list --porcelain | awk -v b="refs/heads/<headRefName>" '$1=="worktree"{p=$2} $1=="branch" && $2==b{print p}')
-   if [ -n "$existing" ]; then
-     worktree=$existing                                 # REUSE it; do NOT add another
-     worktree_owned=no                                  # pre-existing checkout — campaign did NOT create it
-     branch_owned=no                                    # pre-existing local branch — campaign did NOT create it
-     # Ensure the reused checkout is CLEAN and AT the PR head, else review/CI would run on stale local
-     # content while the ledger pins the live GitHub SHA. Fast-forward only; never reset a checkout we
-     # don't own — bail on a dirty tree or divergence:
-     [ -z "$(git -C "$existing" status --porcelain --untracked-files=all)" ] || { echo "reused checkout $existing is dirty (tracked, staged, OR untracked) — bail"; exit 1; }
-     git -C "$existing" merge --ff-only origin/<headRefName> || { echo "reused checkout $existing diverges from PR head — bail"; exit 1; }
-     # (equivalently, verify git -C "$existing" rev-parse HEAD == <headRefOid>)
-   else
-     # Not checked out anywhere. Create the worktree WITHOUT resetting an existing local branch
-     # (never use `-B`, which resets the branch and could drop the user's local commits):
-     if git show-ref --verify --quiet refs/heads/<headRefName>; then
-       git worktree add $PROJECT/.worktrees/<headRefName> <headRefName>          # existing local branch — checkout, no reset
-       git -C $PROJECT/.worktrees/<headRefName> merge --ff-only origin/<headRefName>  # fast-forward to PR head; STOP/bail on divergence (never reset)
-       branch_owned=no                                  # reused a PRE-EXISTING local branch — campaign did NOT create it
-     else
-       git worktree add -b <headRefName> $PROJECT/.worktrees/<headRefName> origin/<headRefName>  # new local branch at PR head
-       branch_owned=yes                                 # campaign CREATED this local branch — safe to delete at cleanup
-     fi
-     worktree=$PROJECT/.worktrees/<headRefName>         # created default path: .worktrees/<headRefName>
-     worktree_owned=yes                                 # campaign created the worktree — safe to remove at cleanup
-   fi
-   # record via the accessor, by field name (never by column position):
-   #   python3 <skill-dir>/scripts/ledger.py --file <state.jsonl> set --pr <N> --worktree "$worktree" \
-   #     --worktree_owned "$worktree_owned" --branch_owned "$branch_owned"
-   # (worktree ownership and branch ownership are tracked separately)
+   Use the invocation's single `RepositoryContext` and `runtime-adapter.md`'s typed `run_argv` boundary
+   for this whole algorithm. The names below are data fields from the PR snapshot; `concat` produces one
+   argv value and never shell source. For compactness, `run_argv(argv, cwd)` below sets both file fields
+   to null and reads its `ProcessResult`:
+
+   ```text
+   run_argv(["git", "fetch", "origin",
+             concat("refs/heads/", base, ":refs/remotes/origin/", base)], repository.project_root)
+   run_argv(["git", "fetch", "origin",
+             concat("refs/heads/", headRefName, ":refs/remotes/origin/", headRefName)], repository.project_root)
+
+   listing = run_argv(["git", "worktree", "list", "--porcelain", "-z"], repository.project_root).stdout
+   existing = parse_nul_porcelain_for_exact_branch(listing, concat("refs/heads/", headRefName))
+   if existing is present:
+     worktree = existing
+     worktree_owned = "no"
+     branch_owned = "no"
+     status = run_argv(["git", "-C", existing, "status", "--porcelain",
+                        "--untracked-files=all"], repository.project_root).stdout
+     require status is empty; otherwise bail without changing the checkout
+     require run_argv(["git", "-C", existing, "merge", "--ff-only",
+                       concat("refs/remotes/origin/", headRefName)], repository.project_root) succeeds
+   else:
+     # Never use -B: it can reset a pre-existing local branch.
+     worktree = default_worktree(repository, headRefName)
+     local = run_argv(["git", "show-ref", "--verify", "--quiet",
+                       concat("refs/heads/", headRefName)], repository.project_root)
+     if local exited 0:
+       require run_argv(["git", "worktree", "add", worktree, headRefName], repository.project_root) succeeds
+       require run_argv(["git", "-C", worktree, "merge", "--ff-only",
+                         concat("refs/remotes/origin/", headRefName)], repository.project_root) succeeds
+       branch_owned = "no"
+     else if local reports only "ref absent":
+       require run_argv(["git", "worktree", "add", "-b", headRefName, worktree,
+                         concat("refs/remotes/origin/", headRefName)], repository.project_root) succeeds
+       branch_owned = "yes"
+     else:
+       bail on the unexpected show-ref failure
+     worktree_owned = "yes"
+
+   run_argv(["python3", ledger_script, "--file", state_file, "set", "--pr", pr,
+             "--worktree", worktree, "--worktree_owned", worktree_owned,
+             "--branch_owned", branch_owned], repository.project_root)
    ```
 
-   (Do **not** substitute `git fetch origin pull/<pr>/head:<headRefName>` here — that form writes the
-   local branch directly and is **refused** when `<headRefName>` already exists or is checked out. Use
-   the remote-tracking fetch above, then let the create/reuse logic handle the local branch.)
+   (Do **not** replace the typed remote-tracking fetch with a direct PR-head-to-local-branch fetch: that
+   form writes the local branch directly and is **refused** when the branch already exists or is checked
+   out. Let the create/reuse logic above handle the local branch.)
 
-   Record the **actual** resolved `$worktree` — `$PROJECT/.worktrees/<headRefName>` is only the
-   **created default** used on the `git worktree add` path; a reused checkout sits at some **other**
-   path — in the row's `worktree` (via `ledger.py … set --pr <N> --worktree …`), record
+   Record the **actual** resolved `worktree`; `default_worktree(repository, headRefName)` is only the
+   **created default** used on the `git worktree add` path, while a reused checkout sits at some other
+   absolute path. In the row's `worktree` (via `ledger.py … set --pr <N> --worktree …`), record
    `$worktree_owned` (`yes` = campaign created the worktree, `no` = reused a pre-existing checkout) in
    the row's `worktree_owned`, and record `$branch_owned` (`yes` = campaign created the local branch
    via `-b`, `no` = reused a pre-existing local branch or checkout) in the row's `branch_owned` — all

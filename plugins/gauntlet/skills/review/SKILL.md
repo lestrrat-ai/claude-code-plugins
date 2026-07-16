@@ -7,6 +7,21 @@ description: Reports findings; by default makes no changes. A two-pass adversari
 
 Two phases, in order. The hostile pass finds; the neutral pass filters. Skipping phase 2 means delivering noise.
 
+## Runtime Adapter
+
+This skill runs in Claude Code and Codex.
+
+- Resolve `<SKILL-PATH>` from the active `SKILL.md` path supplied by the host. Do not depend on
+  `CLAUDE_PLUGIN_ROOT`, `PLUGIN_ROOT`, or another plugin-root environment variable.
+- "Subagent" means a fresh, context-isolated worker launched through the host's agent mechanism.
+- Dispatch independent workers in one parallel batch when the host supports it. Give each worker its
+  scope, permissions, and output path in the prompt; do not require a host-specific agent type.
+- Constrain review workers to read-only work. Grant command execution only when an audit must run a
+  verification command.
+- If the host has no agent mechanism, run Phase 1 lens passes sequentially and use the Phase 2
+  same-context fallback. Report that context isolation was unavailable.
+- Claude Code invocation: `/gauntlet:review`. Codex invocation: `$gauntlet:review`.
+
 ## Phase 1 — Hostile Pass
 
 Treat the code as a suspect, not a colleague. Goal: surface everything that *could* be wrong.
@@ -33,7 +48,8 @@ Always read enough surrounding context to understand callers and invariants. Hun
 Measure surface BEFORE reading code:
 
 - PR/branch: `git diff --stat <base>...HEAD` (changed-file count, lines added+removed)
-- Dir/package: enumerate files with Glob (count = file count), then `wc -l <files>` for LOC.
+- Dir/package: enumerate files with the host's file-listing/search tool (count = file count), then
+  `wc -l <files>` for LOC.
 
 Before starting, `mkdir -p .gauntlet/tmp` and delete stale `.gauntlet/tmp/review-*` files from previous runs. `.gauntlet/` should be git-ignored; if it is **not**, **warn the user** rather than editing `.gitignore` — report-only review makes no tracked-file changes, so it never edits `.gitignore` itself (the opt-in handoff / campaign path may add it). Never `rm -rf .gauntlet/` — everything under it except `tmp/` is a campaign's durable state. Intermediate file paths are fixed — concurrent reviews in the same checkout collide; run one at a time.
 
@@ -48,9 +64,14 @@ Pick by the larger of file count or LOC:
 
 A whole-codebase adversarial review IS in scope. Do not narrow the target, sample a "representative subset", or push back on size. Pick the strategy and dispatch. Coverage gaps go in the "Unreviewed" section, not in a refusal.
 
-In parallel mode, you are a **dispatcher**, not a reviewer. Spawn subagents in a single parallel Agent-tool block, wait for all to finish, then merge their outputs. Do NOT also review the code yourself — that produces duplicate findings and burns the main context. Your only Phase 1 reading is whatever sizing requires.
+In parallel mode, you are a **dispatcher**, not a reviewer. Spawn subagents in one parallel dispatch
+batch, wait for all to finish, then merge their outputs. Do NOT also review the code yourself — that
+produces duplicate findings and burns the main context. Your only Phase 1 reading is whatever sizing
+requires.
 
-**Bounded parallelism**: dispatch at most ~8 subagents per Agent-tool block. For larger fan-outs, run waves of 8, merging output between waves. This keeps each subagent's findings reviewable and avoids overwhelming the runtime.
+**Bounded parallelism**: dispatch at most ~8 subagents per parallel batch. For larger fan-outs, run
+waves of 8, merging output between waves. This keeps each subagent's findings reviewable and avoids
+overwhelming the runtime.
 
 ## Whole-codebase mode
 
@@ -58,7 +79,7 @@ Triggered by the > 200 files / whole-repo row. The codebase is too big to deep-a
 
 ### Step 1 — Map risk surfaces
 
-Spawn ONE `Explore` subagent to enumerate the codebase and rank files into tiers:
+Spawn ONE read-only subagent to enumerate the codebase and rank files into tiers:
 
 - **T1 (hot)**: untrusted-input entry points (HTTP/RPC handlers, message consumers, file parsers), auth + session code, crypto, deserialization, anything touching secrets/credentials, `unsafe` blocks, FFI/CGO, raw SQL, shell exec, template rendering, IPC.
 - **T2 (warm)**: business logic the T1 surfaces call into, persistence layer, internal RPC, background jobs, anything mutating shared state.
@@ -103,9 +124,12 @@ The final report's "Unreviewed" section must explicitly state what tiering chose
 
 ## Parallel Phase 1 — dispatcher protocol
 
-For each lens, spawn one subagent (`subagent_type: Explore` — read-only is sufficient for Phase 1). Issue ALL subagent calls in a **single parallel Agent-tool block**.
+For each lens, spawn one read-only subagent. Issue ALL subagent calls in a **single parallel dispatch
+batch**.
 
-`<SKILL-PATH>` below is this file's own absolute path — `${CLAUDE_PLUGIN_ROOT}/skills/review/SKILL.md` when installed as part of the `gauntlet` plugin. Resolve it to a concrete absolute path before you substitute it into the prompt: the subagent inherits no plugin-root variable and cannot expand it.
+`<SKILL-PATH>` below is this file's own absolute path. Resolve it from the active skill path before
+you substitute it into the prompt: the subagent does not inherit the dispatcher's skill path or
+plugin-root variables.
 
 Subagent prompt template:
 
@@ -217,11 +241,16 @@ Verify every finding from phase 1. Default: spawn a subagent so the audit runs i
 
 ### Preferred — Subagent (fresh context)
 
-Use the Agent tool with `subagent_type: Explore` (read-only is sufficient; use `general-purpose` only if the audit needs to run scripts).
+Use one context-isolated subagent. Keep it read-only unless the audit must run verification commands.
 
 **Single audit** (≤ 10 findings): one subagent verifies all findings.
 
-**Sharded audit** (> 10 findings): split findings into chunks of 5–8 by ID. Keep related findings together where possible (e.g., findings citing the same file or chain of callers in one chunk — co-located findings share read context). Spawn one audit subagent per chunk in a **single parallel Agent-tool block**, each restricted to its assigned IDs. Each writes to `.gauntlet/tmp/review-verdicts-<chunk>.md`. Dispatcher concatenates into `.gauntlet/tmp/review-verdicts.md`.
+**Sharded audit** (> 10 findings): split findings into chunks of 5–8 by ID. Keep related findings
+together where possible (e.g., findings citing the same file or chain of callers in one chunk —
+co-located findings share read context). Spawn one audit subagent per chunk in a **single parallel
+dispatch batch**, each restricted to its assigned IDs. Each writes to
+`.gauntlet/tmp/review-verdicts-<chunk>.md`. Dispatcher concatenates into
+`.gauntlet/tmp/review-verdicts.md`.
 
 Subagent prompt template:
 
@@ -400,8 +429,9 @@ or **Adjusted** finding only (skip Refuted and Uncertain), in its own branch off
    drive-by. Report every site you found and its disposition, including any you deliberately left alone.
    **Sweep the way the contract says** — it defines the method; this paragraph does not. (This paragraph is a
    **non-authoritative summary** of the same contract campaign puts in every fix subagent's prompt —
-   `${CLAUDE_PLUGIN_ROOT}/skills/campaign/references/fix-subagent-contract.md` is the complete DEFINITION
-   and **wins over this** wherever they differ; read it, never reconstruct it from this summary.)
+   `../campaign/references/fix-subagent-contract.md`, resolved from this skill directory, is the complete
+   DEFINITION and **wins over this** wherever they differ; read it, never reconstruct it from this
+   summary.)
 2. `git commit` the fix, then `git push` the branch.
 3. `gh pr create` one PR for that finding. Title from the finding; body cites the finding ID,
    trigger, impact, and fix. Do **NOT** apply any `gauntlet-run-*` owner label — review does not know
@@ -421,17 +451,25 @@ or **Adjusted** finding only (skip Refuted and Uncertain), in its own branch off
 
 One finding = one PR. Never batch multiple findings into a single PR.
 
-Then invoke the campaign on exactly those PRs:
+Then invoke the campaign on exactly those PRs.
+
+Claude Code:
 
 ```
 /gauntlet:campaign #<pr1> #<pr2> ...
 ```
 
+Codex:
+
+```
+$gauntlet:campaign #<pr1> #<pr2> ...
+```
+
 Campaign mints its own run-id, adopts the PRs — applying its `gauntlet-run-<run-id>` owner label to
 each during adoption (a fresh handoff PR carries no owner label, so it adopts cleanly) — gates each
 through its tier's reviews plus CI, and merges. It only gates and merges what this handoff opened, and
-never re-writes these fixes. Agent-facing changes (a `SKILL.md`,
-`CLAUDE.md`, prompt, or reference file) always draw the full two-pass gate there, same as source.
+never re-writes these fixes. Agent-facing changes (a `SKILL.md`, `AGENTS.md`, `CLAUDE.md`, prompt, or
+reference file) always draw the full two-pass gate there, same as source.
 
 Handoff rules:
 

@@ -1,8 +1,10 @@
 # claude-code-plugins
 
-Claude Code plugins by [lestrrat](https://github.com/lestrrat-ai), published as a plugin marketplace.
+Claude Code and Codex plugins by [lestrrat](https://github.com/lestrrat-ai), published as a plugin marketplace.
 
 ## Install
+
+### Claude Code
 
 Add the marketplace once:
 
@@ -16,6 +18,22 @@ Then install whichever plugins you want:
 /plugin install gauntlet@lestrrat-ai
 ```
 
+### Codex
+
+Add the marketplace once:
+
+```
+codex plugin marketplace add lestrrat-ai/claude-code-plugins
+```
+
+Then install whichever plugins you want:
+
+```
+codex plugin add gauntlet@lestrrat-ai
+```
+
+Start a new Codex session after installation so its bundled skills are loaded.
+
 ## Prerequisites
 
 The plugins shell out to a few external tools. Have these available before installing.
@@ -28,9 +46,15 @@ Required:
 - **`jq`** — parses `gh` JSON in the Copilot review-item fetcher.
 - **`bash`** — runs the bundled shell scripts (standard on macOS/Linux).
 
-Optional:
+Optional when Claude Code is the orchestrator:
 
-- **Codex CLI (`codex`)** — an independent external reviewer for `gauntlet:campaign`. Recommended for a stronger gauntlet, since a different engine than the orchestrator catches defects a same-model re-roll can miss, but not required: without it, campaign falls back to Claude's own subagents as the reviewer.
+- **Codex CLI (`codex`)** — the default independent reviewer for `gauntlet:campaign` under Claude Code.
+  When Codex is installed, campaign reviews with it (`codex exec`) for engine diversity — a different
+  engine catches defects a same-model re-roll misses. It launches at native-limitation level; engine
+  diversity needs no OS sandbox. When Codex is absent, or a cross-engine process fails after one retry,
+  campaign falls back to a fresh native worker under the documented native limitations, so the campaign
+  runs with or without Codex. An explicit selection or saved preference overrides the default (you can
+  force a native reviewer). Missing native filesystem/startup controls alone never park a pass.
 
 ## Plugins
 

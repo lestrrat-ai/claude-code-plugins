@@ -1,13 +1,14 @@
 ## Loop control
 
-The skill is **event-driven**. Wakes come from three sources, all handled identically: the first
-invocation, a `ScheduleWakeup` firing (heartbeat fallback), and a **background task completing** — a
-CI watch, a review, *or* a CI/review fix. All long work runs as background tasks, so the driver never
-blocks; each completion is its own wake.
+The skill is **event-driven**. Read `runtime-adapter.md` before waiting. Reconciles come from the first
+invocation, a scheduled heartbeat when the host provides one, a **background task completing**, or the
+bounded-wait fallback returning. A completion may be a CI watch, a review, or a CI/review fix.
 
 **Every wake — reconcile, dispatch, reschedule:**
 
-1. **Resolve the run + lease, then init / resume / start fresh.** First bind **which run this wake is
+1. **Resolve repository context, then the run + lease, then init / resume / start fresh.** Call
+   `runtime-adapter.md`'s repository-context resolver exactly once with the supplied checkout and carry
+   that record for every path and Git cwd on this wake. Then bind **which run this wake is
    for** and confirm you may drive it, per "Run identity and concurrency": a `--run <id>` self-wake
    presents its `--token` and, under the run's claim lock, continues if the token matches the lease,
    adopts if the lease is absent/stale, or **stands down** if a fresh lease bears a different token; a
@@ -30,7 +31,7 @@ blocks; each completion is its own wake.
      their session. A **review** whose output file is missing is NOT simply re-launched: resolve its
      **active launch attempt** first (Stage 2a) — read the highest-numbered attempt's `pass_identity`
      and dispatch on `launch_attempt` **alone**: `1` → relaunch once (as attempt `2`); `2` → the
-     relaunch is spent, so take the **fresh-subagent fallback**. **Launch evidence is irrelevant on
+     relaunch is spent, so take the **fresh-worker fallback**. **Launch evidence is irrelevant on
      this path** — the task is already dead, so whether it managed to write a `started` line before
      dying says nothing about whether it will ever produce a verdict. A missing output file must never
      re-arm the relaunch budget, and a dead attempt `2` must never be left un-dispatched):
@@ -63,10 +64,15 @@ blocks; each completion is its own wake.
      definition is the block **"The canonical `prs.json` command"** in `files-and-ledger.md`; copy it
      whole, never a variant:
 
-     ```
-     gh pr list --label gauntlet-run-<run-id> --state open --limit 1000 \
-       --json number,headRefName,headRefOid,title,baseRefName,state,mergeable,mergeStateStatus,labels \
-       > <rundir>/prs.json
+     ```text
+     run_argv(
+       argv: ["gh", "pr", "list", "--label", concat("gauntlet-run-", run_id),
+              "--state", "open", "--limit", "1000",
+              "--json", "number,headRefName,headRefOid,title,baseRefName,state,mergeable,mergeStateStatus,labels"],
+       cwd: repository.project_root,
+       stdin_file: null,
+       stdout_file: path_join(<rundir>, "prs.json")
+     )
      ```
 
      — and drive reconcile from that file; fall back to per-PR `gh pr view` only where the snapshot
@@ -105,7 +111,7 @@ blocks; each completion is its own wake.
      silently restart. **Ask the user** whether to gate more PRs — e.g. "gauntlet run
      <run-id> finished (N merged, M aborted). Gate more PRs? Pass PR numbers (or run gauntlet:review
      first)." A new run needs a `#PR` set, so collect PR numbers (equivalently direct the user to
-     `/gauntlet:campaign --new #PR...`); on a PR set, start a fresh run **with carryover** (see "Fresh
+     `<campaign-invocation> --new #PR...`); on a PR set, start a fresh run **with carryover** (see "Fresh
      runs and carryover") — **no run-id/lease/`state.jsonl` is created until that set passes preflight**.
      With no PR numbers (or "no"), emit that run's final report and stop. This prompt is the *only* wake
      that asks the user about scope.
@@ -154,8 +160,8 @@ blocks; each completion is its own wake.
    **never** decided from the watch's exit code (Stage 2b, "WHO DOES WHAT" and "VERIFY THE STAMP BEFORE
    PARSING"); review →
    the **active launch attempt's** output file, with its progress file as liveness evidence — attempt 1
-   writes `review-<pr>-<n>.txt` / `.progress.jsonl` / `.findings.jsonl`, a relaunch writes
-   `review-<pr>-<n>.a<k>.*`, and
+   uses `.prompt.txt` and writes `review-<pr>-<n>.txt` / `.progress.jsonl` / `.findings.jsonl`; a
+   relaunch uses and writes `review-<pr>-<n>.a<k>.*`, and
    only the attempt named in the current `pass_identity` is read or counted (Stage 2a). **Before a
    review verdict is counted, the pass's artifacts must verify** — `scripts/review-pass.py verify --verdict
    <what the report's VERDICT line says>`, never
@@ -276,7 +282,7 @@ blocks; each completion is its own wake.
    other bullets describe.** Do not skip it and do not prompt the user; drive its repair to completion:
 
    - **no `repair_decision` yet** → dispatch the **reassessment pass** (`repair-pass.md`): a
-     context-isolated agent, on the **session model**, handed **every round's verdict and finding, the
+     context-isolated worker in the **`session`** class, handed **every round's verdict and finding, the
      diff-growth curve, the intent artifact, and the current diff — all at once**. No wake has ever had
      that view; it is why 21 rounds passed unnoticed. It returns ONE decision from a closed enum, recorded
      with `repair-pass.py decide` (which refuses a decision this PR may not take — see the ownership
@@ -304,19 +310,24 @@ blocks; each completion is its own wake.
      If the file is
      missing (a wiped `<rundir>`), write it **per `pr-adoption.md` step 3a** and record its provenance in
      the row's `intent`. Then **ensure the PR-head worktree exists**
-     (the review runs `codex exec -C <worktree>` — the PR row's ledger `worktree` column value, the
+     (the reviewer receives `<worktree>` as explicit review input under the transport-specific isolation
+     contract in `runtime-adapter.md` — the
+     PR row's ledger `worktree` column value, the
      single source of truth for this PR's checkout path (created at adoption/pre-review per
-     `pr-adoption.md`; the ledger-recorded `<worktree>` path — default `.worktrees/<headRefName>` when
-     campaign creates it, else a reused existing checkout) — and diffs
+     `pr-adoption.md`; the ledger-recorded `<worktree>` path from that repository-context-aware
+     operation) — and diffs
      `origin/<base>...HEAD`, so a real checkout must be present): if that `<worktree>` is missing, create it
      from the PR head **per `pr-adoption.md` step 5** — which reuses an existing checkout of that branch
      if one exists (root or another worktree), else adds a fresh worktree, since `git worktree add`
      refuses a branch checked out elsewhere — and record its path in the row's `worktree`. This is an
      explicit precondition of the review launch. **Also fetch `origin/<base>` fresh before the first
-     review dispatch** (`git fetch origin refs/heads/<base>:refs/remotes/origin/<base>`) — the review
+     review dispatch through the typed Stage 2a pre-review operation** — the review
      diffs `origin/<base>...HEAD`, a remote-tracking ref that always exists, since adoption fetches only
      the PR head and a local `<base>` may be absent or stale (see `pr-adoption.md` / Stage 2a). Then
-     launch **one** review pass as a **background**
+     evaluate the verdict transport through `runtime-adapter.md`'s capability/transition owner before
+     building its record and take only the action it returns;
+     missing native cwd/mount/sandbox controls alone are not a machine blocker. Then launch **one**
+     review pass as a **background**
      task (one at a time per PR — the second, when the tier requires two, only after the first is
      SATISFIED; Stage 2a). If a precondition is dirty, clear it first (address Copilot items / fix CI /
      rebase) instead of spending a review;
@@ -325,31 +336,31 @@ blocks; each completion is its own wake.
      *or* a `plan_amendment_request` all count) — past its **~5-min launch deadline** (measured from
      that file's `pass_identity.dispatched_at`) →
      it **never started** (Stage 2a launch check — a reviewer hung on stdin, a bad path, a sandbox
-     denial). Kill the task, re-check the command for the known launch faults (above all `< /dev/null`
-     on `codex exec`), and re-dispatch the pass once into **attempt-scoped artifacts**
+     denial). Kill the task, re-check the command for the known launch faults (above all the quoted
+     prompt-file stdin redirect), and re-dispatch the pass once into **attempt-scoped artifacts**
      (`review-<pr>-<n>.a2.*`, fresh `pass_identity` with `launch_attempt: 2` — never the dead attempt's
      files, which a surviving process could still write to); a dead `launch_attempt: 2` →
-     fresh-subagent fallback. A failed launch yields no verdict: it never touches `reviews_ok` and
+     fresh-worker fallback. A failed launch yields no verdict: it never touches `reviews_ok` and
      never bumps the row's `attempts`;
    - CI red and no fix is already in flight for that PR/SHA → **CLASSIFY the failure from the check logs
-     first (Stage 2b, "Classify, then set the model") — never dispatch a subagent straight off a red
-     check.** The class picks the model, set **explicitly**: a **formatting/lint** failure → a scoped CI-fix
-     subagent on a **cheap** model (`sonnet`; `haiku` only when trivially mechanical), which runs a
+     first (Stage 2b, "Classify, then set the model class") — never dispatch a worker straight off a red
+     check.** The class picks the logical model class: a **formatting/lint** failure → a scoped CI-fix
+     worker in the runtime adapter's **`economy`** class, which runs a
      formatter, **reads the resulting diff**, and **escalates** anything it cannot verify; **everything
-     else** — and every **escalation** — → a scoped CI-fix subagent on the **session model**. Either way the
+     else** — and every **escalation** — → a scoped CI-fix worker in the **`session`** class. Either way the
      resulting commit **resets the gate** (Stage 2b, "Any campaign commit to the PR head resets the gate").
-     The subagent's job order, the no-weakening prohibition, and the denylist live in `stage-2-ci.md` —
+     The worker's job order, the no-weakening prohibition, and the denylist live in `stage-2-ci.md` —
      follow them there; do NOT restate them here. Different PRs may fix CI concurrently within the cap.
    - CI snapshot holds a **still-RUNNING** evidence row (an evidence row that classifies `RUNNING` under
      Stage 2b CLASSIFY — never "a row that is not terminal") for a PR whose watch task has already exited →
      **relaunch the watch in this same wake**. A PR with a row that can still move must never sit
-     unwatched until the heartbeat; the heartbeat is a fallback, not the mechanism. **But NEVER relaunch
+     unwatched until the fallback wake; the fallback lifecycle is not the mechanism. **But NEVER relaunch
      it merely because `ci == pending`** — once CI has SETTLED nothing can move, `gh pr checks --watch`
      exits in about a second, and its completion is itself a wake: that is a wake per second, forever
      (Stage 2b, "WATCH ONLY WHAT CAN MOVE"). A settled PR is resolved by the `settled_strikes`
      escalation, not by watching it harder. **And a row that never leaves `RUNNING` is resolved by
      RUNNING-STALL** (Stage 2b): its watch blocks forever and completes never, so the escalation lands on
-     **this heartbeat wake**, once `ci_stalled_since` has stood at the same fingerprint for the CI STALL
+     **this fallback wake**, once `ci_stalled_since` has stood at the same fingerprint for the CI STALL
      CAP. **A watch is never a bound.**
    - about to dispatch content-changing work on a PR (review fix, CI fix, copilot-address,
      conflict-resolving rebase) while a review is in flight on that PR → **stop that review task
@@ -372,31 +383,37 @@ blocks; each completion is its own wake.
 5. **Reschedule or exit.**
    - Any non-terminal PR remains (in review, pending CI, or awaiting a user ruling on a review-finding
      standoff / API approval / precondition) →
-     refresh this run's lease, then set a `ScheduleWakeup` heartbeat
-     (`prompt: "/gauntlet:campaign --run <run-id> --token <agent-token>"` — exactly those two flags:
-     `--run` rebinds the wake to this run and `--token` re-proves ownership of its lease). A self-wake
-     **never replays `--new` or the original `#PR` adoption args** — the run is *resumed* by `--run`,
-     not re-created, and carrying `--new` would mint a brand-new run every heartbeat. This heartbeat is a
-     **fallback wake, not a poll**: background completions are the primary wake and normally fire
-     first, so the heartbeat forces a wake in the cases **no completion ever arrives** — a background
-     task that **hangs** (e.g. a reviewer stuck on input) and never completes, or a **killed/orphaned
-     session** whose in-flight tasks died with it, so a later self-wake reconciles and resumes/adopts
-     the run (see "Resume after a killed session"). **Size the delay to the nearest stall it guards:**
+     refresh this run's lease, then choose the runtime adapter's scheduled-heartbeat or bounded-wait
+     branch. A scheduled self-wake uses `<campaign-invocation> --run <run-id> --token <agent-token>` —
+     exactly those two flags: `--run` rebinds the wake to this run and `--token` re-proves ownership of
+     its lease. It **never replays `--new` or the original `#PR` adoption args** — the run is resumed,
+     not re-created, and carrying `--new` would mint a new run every heartbeat. A scheduler-less bounded
+     wait retains the current invocation and token instead of constructing a self-wake. Both are a
+     **fallback lifecycle, not a tight poll**: background completions are the primary wake. A scheduled
+     heartbeat also recovers a killed/orphaned session through a later self-wake; if a scheduler-less
+     invocation is killed, durable state permits a later explicit resume (see "Resume after a killed
+     session"). **Size the scheduled delay or bounded wait to the nearest stall it guards:**
      **~5 min** while any dispatched review pass is still awaiting its first line of **launch evidence**
      — its Stage 2a launch deadline is then the soonest thing that can fire, and a hung launch must not
-     sit undetected for a full heartbeat — otherwise **~15 min**, matching the Stage 2a meaningful-progress
+     sit undetected for a full normal interval — otherwise **~15 min**, matching the Stage 2a meaningful-progress
      threshold: with no launch deadline pending, nothing can declare a review stalled before then, so a
      shorter interval only re-reconciles git/gh with no new signal (and pays a fresh-context cost per
-     wake). ALWAYS schedule a heartbeat whenever non-terminal work remains — skipping it means a hung
-     or orphaned run wakes no one. Then **end the turn showing the user where the run stands**: run
-     `ledger.py --file <state.jsonl> table` and include its output verbatim, fenced, in the end-of-turn
+     wake). ALWAYS keep a heartbeat or bounded wait active whenever non-terminal work remains — skipping
+     both means a hung or orphaned run wakes no one. Run
+     `ledger.py --file <state.jsonl> table` and include its output verbatim, fenced, in the status
      message. **Verbatim means WHOLE** — including every `#` line it prints below the grid. The default
      view is a **filtered** one and those lines are what disclose the filtering
      (`files-and-ledger.md`, "`table` is a PROJECTION"); drop them and the user is shown a subset
      presented as the whole ledger. Never re-type, trim, or re-align it. Then one line per remaining
-     wait naming what it waits on (review in flight, CI
-     watch, parked on the user's answer). Render it after every ledger write of the wake — the ledger
-     was reconciled this wake, so the table is the state the next wake resumes from. Return.
+     wait naming what it waits on (review in flight, CI watch, parked on the user's answer). Render it
+     after every ledger write of the wake — the ledger was reconciled this wake, so the table is the
+     state the next reconcile resumes from. Then take exactly one runtime branch:
+     - **Scheduled-wake host:** schedule the self-wake, render the status above, and return. The scheduled
+       invocation begins again at step 1.
+     - **Scheduler-less bounded-wait host:** render the same status, wait only until the first task
+       completion or the nearest protected deadline, then go directly back to step 1 and reconcile.
+       Repeat this status/wait/reconcile cycle while non-terminal work remains. Do **not** execute the
+       scheduled-host return after the bounded wait.
    - All this run's PRs `merged` or `aborted` → **distill the run into the carryover ledger** (write
      this run's block to its own file `.gauntlet/history/<run-id>.md` — merged PRs, aborted
      PRs + why, and declined-API PRs; per-run files never
@@ -422,7 +439,7 @@ git/gh and continues — completed work is never redone (existing PRs, landed ve
 whose output file is missing re-launches, and a **review** with no verdict and no live task goes through
 **Stage 2a active-attempt resolution** rather than a blind re-launch: read the highest-numbered launch
 attempt's `pass_identity` and dispatch on `launch_attempt` alone — `1` → relaunch once as attempt `2`;
-`2` → fresh-subagent fallback. **The relaunch budget lives on disk, not in the session**, so it survives
+`2` → fresh-worker fallback. **The relaunch budget lives on disk, not in the session**, so it survives
 the death of the agent that spent it — otherwise each new instance would rediscover a missing output
 file, relaunch the same hung reviewer, die, and repeat forever.
 

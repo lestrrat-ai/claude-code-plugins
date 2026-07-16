@@ -1,28 +1,44 @@
 ---
 name: campaign
 description: >-
-  Gates PRs to merge. A self-looping review-to-merge campaign: existing PRs are adopted into a run (pass PR numbers, or discover this run's labelled PRs), each PR is triaged to a review tier, and a per-PR review gauntlet (tier-dependent fresh, context-isolated SATISFIED verdicts on the whole PR diff, reviewed one at a time) plus event-driven CI monitoring gate an auto-merge. Multiple isolated runs (each keyed by a run-id, with a lease so only one agent drives each) can run concurrently in one repo. Drives its own loop via ScheduleWakeup — invoke once, no /loop wrapper. Campaign never writes fixes from scratch; to find issues first use gauntlet:review. Args (distinct modes): #PR... | --new #PR... | --run <id> | no args
+  Gates PRs to merge. A self-looping review-to-merge campaign: existing PRs are adopted into a run (pass PR numbers, or discover this run's labelled PRs), each PR is triaged to a review tier, and a per-PR review gauntlet (tier-dependent fresh, context-isolated SATISFIED verdicts on the whole PR diff, reviewed one at a time) plus event-driven CI monitoring gate an auto-merge. Multiple isolated runs (each keyed by a run-id, with a lease so only one agent drives each) can run concurrently in one repo. Drives its own loop through the active host's wake or bounded-wait mechanism — invoke once. Campaign never writes fixes from scratch; to find issues first use gauntlet:review. Args (distinct modes): #PR... | --new #PR... | --run ID | no args
 ---
 
 # Campaign
 
 Self-looping, reactive PR-review-to-merge pipeline.
 
-Claude Code is orchestrator + gatekeeper. The **adversarial reviewer** is a selectable role: by
-default Claude's own subagents (no external tool required); use the user's preferred reviewer when one
-is set (explicit invocation, or a preference in memory/`CLAUDE.md`/carryover). A reviewer running a
-different agent/model than the orchestrator (e.g. Codex CLI) is recommended for stronger reviewer
-diversity but never required — see `references/reviewer.md`. Reviews and CI watches run as background
+The active host is orchestrator + gatekeeper. Read `references/runtime-adapter.md` at entry, resolve the
+supplied checkout through its typed `RepositoryContext` owner exactly once per invocation/resume, and
+carry that record for every repository path and Git cwd. Read the same adapter before the first dispatch
+or wait. The **adversarial reviewer** is a selectable role: by default the cross-engine route for the
+active host (Claude Code reviews with `codex exec`, Codex reviews with `claude -p`), which launches at
+native-limitation level whenever the paired CLI is present and falls back to a fresh native worker when it
+is absent or fails; an explicit invocation or a TRUSTED saved preference (the orchestrator's own out-of-checkout user
+memory / global user instructions — NEVER a file inside the candidate checkout, including `.gauntlet/history/`
+carryover) overrides the default — see `references/reviewer.md`.
+Every verdict-rendering transport follows the runtime adapter's capability/transition owner: every route
+guarantees fresh conversational context and launches on that alone; the three OS/filesystem properties are
+an optional stronger-boundary claim that never blocks launch, and the current adapters make no such claim,
+so native and cross-engine routes run at the same native-limitation level. Installed campaign
+rules remain the stage-0 gate authority. The same adapter owns the typed process/data boundary: dynamic
+values cross as argv, byte-file, or native-message data, and each review attempt's record assigns exactly
+one final-report producer.
+Reviews and CI watches run as background
 tasks; gates and merges stay centralized. Campaign gates **existing** PRs; it never writes fixes from
 scratch — to find issues first, use `gauntlet:review`, which after its report offers to open one PR per
-confirmed fix and hand them straight here (`/gauntlet:campaign #PRs`). That opt-in handoff is a common
+confirmed fix and hand them straight here (`/gauntlet:campaign #PRs` in Claude Code or
+`$gauntlet:campaign #PRs` in Codex). That opt-in handoff is a common
 way PRs enter a campaign; you can also open them yourself.
 
-Invoke once. This skill drives its own loop via `ScheduleWakeup`; do NOT wrap it in `/loop`.
+Invoke once. This skill drives its own loop through the runtime adapter. In Claude Code, do not wrap it
+in `/loop`; in Codex, keep the invocation alive when no wake scheduler is available.
 
 ## Args
 
-`/gauntlet:campaign  #PR... | --new #PR... | --run <id> | (no args)`
+Claude Code: `/gauntlet:campaign #PR... | --new #PR... | --run <id> | (no args)`
+
+Codex: `$gauntlet:campaign #PR... | --new #PR... | --run <id> | (no args)`
 
 These are **distinct modes**, not freely-composable flags: `--new` requires a `#PR` set; `--run <id>`
 resumes and takes no `#PR`/`--new`; `#PR` args alone start/adopt into a run. Invalid combinations
@@ -37,9 +53,9 @@ resumes and takes no `#PR`/`--new`; `#PR` args alone start/adopt into a run. Inv
 
 ## Bundled Scripts
 
-Bundled scripts live in `scripts/`, resolved relative to the directory holding this `SKILL.md` (not
-the current working directory) — installed as `${CLAUDE_PLUGIN_ROOT}/skills/campaign/scripts/`, or in
-the repo at `plugins/gauntlet/skills/campaign/scripts/`. Pass their absolute paths to subtasks.
+Bundled scripts live in `scripts/`, resolved relative to the actual path of this active `SKILL.md`
+(not the current working directory or a host-specific root variable). Pass their absolute paths to
+workers.
 
 **HOW TO RUN ONE — always through the interpreter, with the absolute path:**
 
@@ -88,6 +104,9 @@ has stopped converging — the closed enum, the ownership guardrail, and the rep
 
 Each script's fixtures live in a **sibling `*-test.py`** (`review-pass-test.py`, `ledger-test.py`,
 `followups-test.py`, `repair-pass-test.py`); the `self-test` subcommand loads it and **fails loudly if it is missing**.
+`scripts/transport-contract-test.py` is the standalone exception: the plugin validator runs it directly
+to pin the runtime adapter's typed review/adoption boundary; it owns no run state and has no accessor
+`self-test` subcommand.
 
 **At run startup, record which version of these rules is actually running:** read `version` from the
 running plugin's `plugin.json` and write it to the ledger header —
@@ -103,34 +122,34 @@ MANDATORY), printing the verdict and the ledger `ci` value as JSON
 **NEVER derive `ci` by reading a command's output and judging it by eye** — that is what once wrote
 `ci = green` for a PR whose checks had not registered at all.
 
-## Subagent Dispatch — model per class
+## Worker Dispatch — logical model class
 
-Campaign spawns subagents for several jobs. **Set the model explicitly on every dispatch.** With no
-model set, a subagent inherits the session model (often the most expensive one) — so an unset model is
-a silent cost decision, taken by default, on every subagent this skill launches.
+Campaign creates fresh workers for several jobs. **Select a logical model class on every dispatch.**
+`references/runtime-adapter.md` maps `session` and `economy` to the active host. Never copy a model name
+from one host into another.
 
-| Subagent | Model | Why |
+| Worker | Model class | Why |
 |---|---|---|
-| Review pass (default reviewer) | **session model** | It *is* the gate. A weaker verdict is a worse gate — the one thing never worth cheapening. |
-| Fresh-subagent fallback review | **session model** | Same job as a review pass; counts toward the gate identically. |
-| Review-fix (after `NOT SATISFIED`) | **session model** | Authors code from scratch, judged only by another full review pass. A cheap bad fix burns a whole review pass and a gate reset — it *costs* more than the tier saves. |
-| Root-cause **mapper** | **session model** | Read-only, but NOT low-judgment: it enumerates a full matrix and confirms each gap with a repro. A weaker model **under-maps**, which is the exact failure the mapper exists to prevent (`root-cause-pass.md`). "Read-only" is not a licence to downgrade. |
-| **Reassessment pass** (a PR at a review-loop cap) | **session model** | It reads a PR's ENTIRE history at once and decides the **acceptance path** — rescope, re-intent, demote, root-cause, or abort. It is gate machinery, and it is the one judgment no wake in the failed run was ever able to make. A weaker model here mis-diagnoses the loop and repairs the wrong thing (`repair-pass.md`). |
-| **CI-fix — formatting/lint failure** | **`sonnet`** (**`haiku`** only when trivially mechanical) | **Downgraded ON PURPOSE.** It does not author a fix: it runs a deterministic formatter, **READS the resulting diff**, verifies it, and **escalates** anything it cannot verify (`references/stage-2-ci.md`). |
-| **CI-fix — everything else**, and every **escalation** from the cheap tier | **session model** | Authors code that gets merged. CI does **not** validate it: a wrong fix can turn CI green — by weakening a check, or by being plain wrong in product code that no check covers. |
+| Review pass (default reviewer) | **`session`** | It *is* the gate. A weaker verdict is a worse gate — the one thing never worth cheapening. |
+| Fresh-worker fallback review | **`session`** | Same job as a review pass; counts toward the gate identically. |
+| Review-fix (after `NOT SATISFIED`) | **`session`** | Authors code from scratch, judged only by another full review pass. A cheap bad fix burns a whole review pass and a gate reset — it *costs* more than the tier saves. |
+| Root-cause **mapper** | **`session`** | Read-only, but NOT low-judgment: it enumerates a full matrix and confirms each gap with a repro. A weaker model **under-maps**, which is the exact failure the mapper exists to prevent (`root-cause-pass.md`). "Read-only" is not a licence to downgrade. |
+| **Reassessment pass** (a PR at a review-loop cap) | **`session`** | It reads a PR's ENTIRE history at once and decides the **acceptance path** — rescope, re-intent, demote, root-cause, or abort. It is gate machinery, and it is the one judgment no wake in the failed run was ever able to make. A weaker model here mis-diagnoses the loop and repairs the wrong thing (`repair-pass.md`). |
+| **CI-fix — formatting/lint failure** | **`economy`** | **Downgraded ON PURPOSE when the host has a configured economy mapping.** It does not author a fix: it runs a deterministic formatter, **READS the resulting diff**, verifies it, and **escalates** anything it cannot verify (`references/stage-2-ci.md`). |
+| **CI-fix — everything else**, and every **escalation** from the cheap tier | **`session`** | Authors code that gets merged. CI does **not** validate it: a wrong fix can turn CI green — by weakening a check, or by being plain wrong in product code that no check covers. |
 
 **The gate, the from-scratch fixes, and the mapper are NEVER downgraded**: a review pass *is* the gate; a
-review-fix and a session-model CI-fix author code; the mapper's under-map is invisible. **The formatting
+review-fix and a `session`-class CI-fix author code; the mapper's under-map is invisible. **The formatting
 CI-fix tier IS downgraded, deliberately** — it does something narrower: run a tool and VERIFY its output.
 
 ### The cheap CI-fix tier — a model that runs a tool and READS the diff
 
-A formatting/lint failure goes to a **cheap** CI-fix subagent (`sonnet`; `haiku` only for a trivially
-mechanical failure), scoped to the failing check's logs, the failing file(s), and the worktree path. In
+A formatting/lint failure goes to an **economy-class** CI-fix worker when that class is available,
+scoped to the failing check's logs, the failing file(s), and the worktree path. In
 order it: **classifies** the failure → **runs the formatter** (it picks the tool; campaign hands it no
 argv) → **READS THE RESULTING DIFF** and verifies it contains **only** what the fix should have produced,
 touched **no** file it did not intend, weakened **no** check/config/test, and that **re-running the exact
-failing check now passes** → **commits only then** → otherwise **ESCALATES to a session-model CI-fix
+failing check now passes** → **commits only then** → otherwise **ESCALATES to a `session`-class CI-fix
 subagent and patches nothing**. Escalation is a correct outcome, not a failure.
 
 Its prompt carries these **verbatim** (full text in `references/stage-2-ci.md`):
@@ -156,11 +175,11 @@ gauntlet** — which is itself a miss-catcher. **NEVER justify the cheap tier wi
 review gate will catch it."** This is a small, bounded risk the user has accepted, for a workflow that is
 cheaper **and** more capable than a full-strength subagent on every formatting failure.
 
-**The biggest lever is not the model — it is the reviewer.** Review passes re-read the whole PR diff,
-`required(tier)` times per SHA, and re-run from scratch on every gate reset, so they dominate campaign's
-subagent spend. Running an **external reviewer** (e.g. `codex exec`, see `references/reviewer.md`) moves
-that cost off the subagent pool entirely — the quality argument (reviewer diversity) and the cost
-argument point the same way.
+**The default cross-engine reviewer reduces native-worker cost.** Review passes re-read the whole PR
+diff, `required(tier)` times per SHA, and re-run from scratch on every gate reset, so they dominate
+campaign's native-worker spend. The default cross-engine route moves that work off the native-worker pool
+whenever the paired CLI is present; a native-worker fallback does not. `references/reviewer.md` owns the
+reviewer choice.
 
 **Every fix subagent — CI or review — is dispatched under one contract**, and
 `references/fix-subagent-contract.md` is its complete definition. Two halves, both mandatory:
@@ -214,7 +233,9 @@ Read stage refs only when that stage/action is due:
 - **One active driver:** lease controls ownership; never double-drive one run.
 - **Base branch is data:** read `base_branch` from ledger every wake; never assume `main`.
 - **Reviewer is data:** read `reviewer` from ledger every wake before dispatching any review; set once at run start, never re-derived from memory (else an explicit/preferred reviewer silently reverts to default on a self-wake or adoption).
-- **Model is set explicitly on every subagent dispatch:** never let a dispatch inherit the session model by default. CI-fix on a formatting failure is cheap **by design**; review passes, review-fixes, and the mapper are never downgraded ("Subagent Dispatch").
+- **A logical model class is selected on every worker dispatch:** use `session` for gate and authored-code
+  roles, and `economy` only for the bounded formatting/lint role. The runtime adapter owns the host
+  mapping.
 - **Remote branch cleanup isn't campaign's job:** campaign never passes `--delete-branch`; the repo's *Automatically delete head branches* setting governs the remote head branch. Local worktree/branch cleanup follows the per-PR `worktree_owned`/`branch_owned` flags.
 - **Review gate is tier-dependent:** `required(tier)` fresh, context-isolated `SATISFIED` verdicts on
   same live PR content + green CI — **1 if TRIVIAL, else 2** (any code/agent-doc/sensitive change is 2).
@@ -317,7 +338,7 @@ Read stage refs only when that stage/action is due:
    stop in-flight reviews doomed by a content change.
 5. **Merge ready PRs** (never a parked one) one at a time until no candidate remains immediately ready
    after base refresh.
-6. **Launch audit + heartbeat — before sleeping, verify every due launch actually happened.** Re-run
+6. **Launch audit + fallback wake — before sleeping, verify every due launch actually happened.** Re-run
    step 4's dispatch scan across both concurrency pools (CI-fix subagents and review passes each have
    their own cap): confirm every due review pass was launched, a CI watch is live for every PR with a
    **still-RUNNING** check (**not** for one whose CI has settled — that is the hot-spin bug), that every
@@ -325,12 +346,13 @@ Read stage refs only when that stage/action is due:
    place (`references/stage-2-ci.md`, "THE LIVENESS COUNTERS"; a PR whose check has been `RUNNING` with an
    unchanged fingerprint past the CI STALL CAP is at a cap too, and its watch will never wake anyone) —
    and — whenever any
-   non-terminal work remains — a `ScheduleWakeup` heartbeat is actually
-   scheduled. If any due launch or the heartbeat is missing, launch it and re-audit. NEVER sleep with
-   due work un-launched or the heartbeat unscheduled.
-7. **Terminal -> carryover/report;** otherwise refresh lease, show the user where the run stands
-   (`ledger.py … table` output plus what each wait is on — `references/loop-control.md`, "Reschedule
-   or exit"), and return (step 6 has already ensured the heartbeat is scheduled).
+   non-terminal work remains — the runtime adapter's heartbeat or bounded wait is actually active. If
+   any due launch or fallback wake is missing, launch it and re-audit. NEVER sleep with due work
+   un-launched or no path to the next reconcile.
+7. **Terminal -> carryover/report;** otherwise refresh the lease and follow `references/loop-control.md`,
+   "Reschedule or exit", exactly. A scheduled-wake host renders status after scheduling and returns. A
+   scheduler-less host renders status, performs one bounded wait, then returns to step 1 to reconcile and
+   repeats while non-terminal work remains; it does not take the scheduled-host return.
 
 ## Critical Rules
 

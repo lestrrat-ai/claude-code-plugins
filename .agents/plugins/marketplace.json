@@ -1,0 +1,20 @@
+{
+  "name": "lestrrat-ai",
+  "interface": {
+    "displayName": "lestrrat.ai"
+  },
+  "plugins": [
+    {
+      "name": "gauntlet",
+      "source": {
+        "source": "local",
+        "path": "./plugins/gauntlet"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

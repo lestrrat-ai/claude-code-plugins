@@ -823,12 +823,11 @@ ever re-ordered again.
   and **not** relaunched once nothing can. Parking never stops a warranted watch and never starts an
   unwarranted one. Otherwise → any failing row → **stop any review pass in flight on that PR first** (Loop control
   step 3 — the fix will replace its SHA, so the verdict is already void; free the slot), then
-  **CLASSIFY the failure** from the check logs ("Classify, then set the model" below) **before
+  **CLASSIFY the failure** from the check logs ("Classify, then set the model class" below) **before
   dispatching anything**, and dispatch a **scoped CI-fix subagent** into `<worktree>` — the PR row's
-  ledger `worktree` column value, the single source of truth for this PR's checkout path (created at
-  adoption/pre-review per `pr-adoption.md`; default `.worktrees/<headRefName>` when campaign creates
-  it, else a reused existing checkout). Its fix commits + pushes to the PR's **own head branch** →
-  **apply the gate reset** below.
+  ledger `worktree` column value, the single source of truth for this PR's checkout path (resolved by
+  `pr-adoption.md`'s repository-context-aware operation). Its fix commits + pushes to the PR's **own
+  head branch** → **apply the gate reset** below.
 - **UNKNOWN_VALUE → escalate, NEVER guess** → **no evidence row classifies `FAIL`** (else `red` above
   already won) and an evidence row carries a value not in the enums above (GitHub added one, or a
   `COMPLETED` `checkrun` row carries no `.conclusion`). **Do NOT** map it to green or pending, and do
@@ -849,7 +848,7 @@ ever re-ordered again.
 - **pending** → any evidence row classifies `RUNNING` → leave `ci = pending`. **This is the ONLY outcome
   that warrants a watch** ("WATCH ONLY WHAT CAN MOVE" below): a row can still move on its own, so if the
   watch task has exited, **relaunch it in this same wake** — a PR with a still-RUNNING row must never sit
-  unwatched waiting for the heartbeat. **It is also BOUNDED**: "a row can still move" is a claim the row
+  unwatched waiting for the fallback wake. **It is also BOUNDED**: "a row can still move" is a claim the row
   makes, not a promise it keeps, so if the whole check set then sits unchanged for the CI STALL CAP, the
   PR escalates ("RUNNING-STALL", below). `pending` is not a place a PR may live forever.
 - **pending (nothing registered)** → the snapshot lists **zero evidence rows**. **Zero evidence rows is NOT
@@ -1328,8 +1327,9 @@ the healthy build**, and a rule that parks healthy PRs gets turned off, which le
 **THE BOUND IS A DURATION, NOT A DERIVATION COUNT. This is a deliberate choice and it is the crux.**
 
 - **A derivation count measures the RUN'S LOAD, not this PR's CI.** Derivations are driven by **wakes**,
-  and a wake is the heartbeat (**~5–15 min**, `loop-control.md` step 5) **or any background task, on ANY
-  PR, completing**. So on a busy run three derivations can land within seconds of one another — a
+  and a wake is the fallback lifecycle (**a ~5–15 min scheduled heartbeat or bounded wait returning**,
+  `loop-control.md` step 5) **or any background task, on ANY PR, completing**. So on a busy run three
+  derivations can land within seconds of one another — a
   derivation bound would park a 40-minute build that had barely started, for no reason but that **other**
   PRs were finishing work. On a quiet one-PR run the same bound is worth an hour or more. **The same
   number means a different amount of waiting on every run**, and none of it is a property of the check
@@ -1378,9 +1378,10 @@ elsewhere** — refer to the cap **by name**.
 
 **Where the wake comes from while a stalled row is watched.** A hung `RUNNING` row keeps `gh pr checks
 --watch` **blocked forever**, so the watch never completes and never wakes anyone — the escalation is
-therefore evaluated on the **heartbeat** wake like any other derivation, which is exactly why the
-heartbeat is scheduled while any non-terminal PR remains (`loop-control.md` step 5). **A bound that could
-only be reached by the event it is waiting for would not be a bound at all.**
+therefore evaluated by the fallback lifecycle like any other derivation. A scheduled-wake host uses a
+heartbeat; a scheduler-less host keeps the invocation alive and loops after each bounded wait
+(`loop-control.md` step 5). **A bound that could only be reached by the event it is waiting for would not
+be a bound at all.**
 
 #### UNUSABLE — the refetch is BOUNDED: `unusable_refetches`, the REFETCH CAP
 
@@ -1408,9 +1409,9 @@ unusable_refetches >= 3                 -> ESCALATE (above)  # 3 == THE REFETCH 
   snapshot raced a push — and a fresh fetch usually clears them; a SETTLED-but-not-green snapshot is,
   by construction, **not** transient. The extra headroom buys the transient case free retries, and it
   still terminates.
-- **The WAKE is the backoff — never sleep inside one.** UNUSABLE gets **no watch** ("WATCH ONLY WHAT CAN
-  MOVE" below), so the next attempt arrives on the heartbeat or another task's completion, never in a
-  tight loop. At most **one** refetch per wake.
+- **The WAKE is the backoff — never tight-loop inside one.** UNUSABLE gets **no watch** ("WATCH ONLY WHAT
+  CAN MOVE" below), so the next attempt arrives on the scheduled heartbeat, after one bounded wait, or
+  on another task's completion. At most **one** refetch per reconcile.
 - On escalation `ci_reason` names **the VERIFY rule that failed and the line/row that failed it** (not
   "unusable") — a snapshot campaign could not read once in the REFETCH CAP's worth of consecutive attempts
   is a real, actionable blocker: a
@@ -1422,7 +1423,7 @@ The watch is warranted by **a row that can still move**, never by the `ci` value
 
 | DECIDE outcome | Watch? |
 |---|---|
-| **pending** — an evidence row classifies `RUNNING` | **YES** — ensure a watch task is alive; relaunch it in this same wake if it has exited. **The watch is not the bound**: if that row never finishes, the watch blocks forever and RUNNING-STALL is what ends it, on the heartbeat. |
+| **pending** — an evidence row classifies `RUNNING` | **YES** — ensure a watch task is alive; relaunch it in this same wake if it has exited. **The watch is not the bound**: if that row never finishes, the watch blocks forever and RUNNING-STALL is what ends it, on the fallback wake. |
 | **pending (nothing registered)** — zero evidence rows | **NO.** Nothing to block on. SETTLED escalates it. |
 | **pending (required check missing)** — a declared check has no row | **NO.** Every row present is terminal (a running one would have matched plain `pending` above), so nothing can move. SETTLED escalates it, naming the check. |
 | **pending (required set unreadable)** — `required_set` is `unknown` | **NO.** The open question is what the base branch REQUIRES; no row finishing would answer it. Re-attempt the read each wake; SETTLED escalates it. |
@@ -1440,7 +1441,7 @@ every second or two, forever**, doing nothing. Watch only when at least one row 
 #### Any campaign commit to the PR head resets the gate
 
 **THE RULE — every commit campaign pushes to a PR's head branch is a PR-content change, whatever wrote
-it: a cheap CI-fix subagent, a session-model CI-fix subagent, a review-fix subagent, or an inline
+it: an economy-class CI-fix worker, a `session`-class CI-fix worker, a review-fix worker, or an inline
 REFUTATION of a review finding (`stage-2-review-gate.md`, "Audit every finding before you fix it").**
 Every one of them MUST, in the same step:
 
@@ -1459,16 +1460,15 @@ Every one of them MUST, in the same step:
 The verdicts on the old SHA describe content that no longer exists, and a `gauntlet-accepted` label on
 it is a false public claim. NEVER exempt a commit because it "only reformatted".
 
-#### Classify, then set the model — never dispatch straight off a red check
+#### Classify, then set the model class — never dispatch straight off a red check
 
-**Set the model EXPLICITLY on every dispatch** (`SKILL.md`, "Subagent Dispatch"). An unset model
-silently inherits the session model — a cost decision taken by default. Classify the failure from the
-check logs FIRST; the class picks the model:
+**Select the logical model class on every dispatch** (`SKILL.md`, "Worker Dispatch";
+`runtime-adapter.md`). Classify the failure from the check logs FIRST; the failure class picks it:
 
-| Failure class | Model | Why |
+| Failure class | Model class | Why |
 |---|---|---|
-| **Formatting / lint** — the fix is exactly what a standard formatter or autofixer produces | **`sonnet`** (**`haiku`** only when the failure is trivially mechanical) | It does NOT author a fix from scratch: it runs a deterministic tool, **READS the resulting diff**, verifies it, and **escalates** anything it cannot verify. Downgraded **on purpose**. |
-| **Everything else** — failing product test, compile error, flake, anything needing judgment — **and every escalation from the cheap subagent** | **session model** | It authors code that gets merged, and nothing downstream validates it. |
+| **Formatting / lint** — the fix is exactly what a standard formatter or autofixer produces | **`economy`** | It does NOT author a fix from scratch: it runs a deterministic tool, **READS the resulting diff**, verifies it, and **escalates** anything it cannot verify. Downgraded **on purpose** when the host has an economy mapping. |
+| **Everything else** — failing product test, compile error, flake, anything needing judgment — **and every escalation from the economy worker** | **`session`** | It authors code that gets merged, and nothing downstream validates it. |
 
 **Dispatch both tiers under the fix-subagent contract** (`fix-subagent-contract.md` — the complete
 DEFINITION for every fix subagent, CI or review; **read it before dispatching**). The CI-specific inputs
@@ -1498,7 +1498,7 @@ Its job, in order:
 4. **COMMIT** only if every one of those holds — then apply the gate reset above.
 5. **ESCALATE, never patch.** If the check still fails, the diff contains anything it cannot explain, it
    needed to change product logic, or it cannot verify the result → **STOP**, commit nothing, reset the
-   worktree to the PR head, and hand the failure to a **session-model** CI-fix subagent. **Escalation is
+   worktree to the PR head, and hand the failure to a **`session`-class** CI-fix worker. **Escalation is
    the correct outcome, not a failure** — it is what the tier is for.
 
 **HARD RULES — give these to the cheap subagent VERBATIM in its prompt:**
@@ -1550,7 +1550,7 @@ What backs it: the **exact failing check must pass**; the subagent **must escala
 verify**; and **every commit campaign pushes is still gated by the full review gauntlet** — any campaign
 commit to the PR head resets `reviews_ok` to 0, restores `gauntlet-reviewing`, resets the liveness
 counters ("THE LIVENESS COUNTERS"), re-derives CI for the new tip and watches it **only if a row can still
-move** ("WATCH ONLY WHAT CAN MOVE"), and re-enters Stage 2a on the session model.
+move** ("WATCH ONLY WHAT CAN MOVE"), and re-enters Stage 2a in the `session` class.
 
 This trades a **small, bounded risk** for a workflow that is **cheaper AND more capable** than either a
 full-strength subagent on every formatting failure or a hermetic no-model tool path. **The user accepts
