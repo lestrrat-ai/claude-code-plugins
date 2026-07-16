@@ -50,6 +50,10 @@ Start a new Codex session after installation.
 - A GitHub remote — the pipeline works through PRs via the `gh` CLI.
 
 That's it. By default the adversarial reviewer is a fresh native worker, so nothing else is needed.
+Fresh means a separate conversational context. Native task APIs may still share the repository cwd and
+writable filesystem and inherit repository startup instructions; campaign does not call that an OS or
+security boundary. The installed campaign rules remain the stage-0 acceptance authority, and candidate
+copies of gate or instruction files remain review evidence.
 
 ### Optional — use the other agent as reviewer
 
@@ -61,10 +65,10 @@ This is a user option, not a campaign rule. Name the reviewer when you invoke th
 as your preference in memory, `AGENTS.md`, or `CLAUDE.md`. The campaign never launches the other agent merely
 because its CLI is installed. If an external
 reviewer can't return a verdict because of a system problem (quota, auth, timeout), the pipeline
-retries once and then falls back to a fresh native worker. Every verdict renderer must exclude the
-candidate checkout's startup instructions and keep that checkout read-only; if the native transport
-cannot enforce that boundary, the run parks with a machine blocker instead of running a contaminated
-gate.
+retries once and then falls back to a fresh native worker. An external transport may claim an
+instruction-neutral cwd and read-only candidate checkout only when the host or OS enforces both; an
+unavailable external boundary falls back rather than silently weakening that claim. The native fallback
+keeps fresh conversational context and discloses the host's filesystem/startup-instruction limitations.
 
 ### Optional — tell it how to report to you
 

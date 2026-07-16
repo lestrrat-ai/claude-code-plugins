@@ -269,7 +269,8 @@ For each `#PR` to adopt:
 
 5. **Create the PR-head worktree before the first review pass — off the PR's OWN head, never `<base>`.**
    The review itself needs a real checkout: the selected reviewer receives `<worktree>` as explicit
-   read-only input (the ledger `worktree` column — the authoritative checkout path, which may be a reused
+   review input under `runtime-adapter.md`'s transport-specific isolation contract (the ledger `worktree`
+   column — the authoritative checkout path, which may be a reused
    checkout outside `.worktrees/`, per `loop-control.md` / `stage-2-review-gate.md`) and diffs
    `origin/<base>...HEAD` with path-addressed commands, so
    the worktree MUST exist **before the PR's first review pass dispatches** — create it here as part of adoption, or as a guaranteed pre-review

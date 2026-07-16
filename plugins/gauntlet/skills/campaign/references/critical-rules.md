@@ -8,9 +8,10 @@
   take/adopt a run only inside the claim lock, and adopt ONLY when its lease is absent or stale
   (`now - updated` > ~30 min); refresh the lease every wake AND around long foreground ops; on a
   self-wake whose lease is fresh but bears a different token, **stand down** — never double-drive a ledger.
-- Every self-wake carries `--run <run-id> --token <agent-token>` (the runtime adapter's heartbeat or
-  bounded-wait path plus background completions); the token re-proves lease ownership so a summarized wake never mistakes its own run for
-  another's. Re-read `run_id` from the ledger each wake, never from memory.
+- Every **scheduled** self-wake carries `--run <run-id> --token <agent-token>`; the token re-proves lease
+  ownership so a summarized wake never mistakes its own run for another's. A scheduler-less bounded wait
+  retains the current invocation and token, then loops directly back to reconcile. Re-read `run_id` from
+  the ledger each wake, never from memory.
 - Resume is intent-scoped: a fresh instance resumes via `--run <id>` or an **arg-less** bare invocation
   (adopts the sole orphaned run). A bare invocation **with `#PR` args** and `--new` start an independent
   new run (adopting those PRs) and never pre-empt other live runs; a **non-PR** arg starts nothing —
@@ -72,8 +73,9 @@
 - **And the watch is NEVER the bound.** A row that stays `RUNNING` forever (a hung runner, a dead
   reporter) keeps `gh pr checks --watch` blocked forever, so the watch wakes no one and `pending` would
   absorb the PR — the exact wedge. **RUNNING-STALL** ends it: a `RUNNING` row plus a fingerprint that has
-  not changed for the **CI STALL CAP** escalates on the heartbeat, timed by `ci_stalled_since` **on disk**
-  (`stage-2-ci.md`, "RUNNING-STALL"). It bounds **TIME**, not derivations, because a derivation count
+  not changed for the **CI STALL CAP** escalates on the fallback wake (a scheduled heartbeat or bounded
+  wait returning), timed by `ci_stalled_since` **on disk** (`stage-2-ci.md`, "RUNNING-STALL"). It bounds
+  **TIME**, not derivations, because a derivation count
   tracks the run's load and would park a healthy slow build; and it does not park one, because **any**
   motion anywhere in the check set moves the fingerprint and resets the clock.
 - Stop a PR's in-flight review before dispatching content-changing work on it (review fix, CI fix,
@@ -230,9 +232,10 @@
   row can still move, **not** relaunched once CI has SETTLED. Parking neither stops a warranted watch nor
   starts an unwarranted one — and it dispatches no CI fix.
 - Reviews are fresh, context-isolated re-rolls: a separate reviewer invocation each pass (native worker
-  by default, or the user's preferred reviewer), no shared context. Every verdict-rendering transport
-  also satisfies the candidate-instruction exclusion owned by `runtime-adapter.md`; if the active host
-  cannot guarantee it, park as a machine blocker. A second pass re-rolls a
+  by default, or the user's preferred reviewer), no shared context. `runtime-adapter.md` owns the
+  transport-specific isolation contract: native workers may disclose a shared writable workspace and
+  inherited startup instructions, while stronger external isolation may be claimed only when enforced.
+  Candidate gate content never replaces the installed stage-0 rules. A second pass re-rolls a
   stochastic reviewer to catch a missed defect — the two are NOT statistically independent (the same
   diff, task, and protocol correlate them; same-reviewer passes also share model/prompt), so the gate
   is a miss-catcher, not a proof of correctness.
@@ -268,7 +271,9 @@
   your work and then tell you the work does not count (it did — see Stage 2a). `ok` is **not** `SATISFIED` — the
   tool never reads the report and never says SATISFIED; it can only ever *refuse* a pass, never accept one.
 - Before each review, write an orchestrator-owned `review-<pr>-<n>.plan.jsonl` (per-pass — a relaunch
-  reuses it; written through the tool above, never a heredoc); reviewers append progress events against planned units to the **active launch attempt's**
+  reuses it; written through the tool above, never a heredoc). Materialize the fully substituted prompt
+  as the active attempt's `.prompt.txt` through a byte-safe host file API, then pass it as native-message
+  data or quoted stdin — never shell source. Reviewers append progress events against planned units to the **active launch attempt's**
   progress file (`review-<pr>-<n>.progress.jsonl` for attempt 1, `review-<pr>-<n>.a<k>.progress.jsonl`
   for a relaunch — only the attempt named in the active `pass_identity` is read or counted). Meaningful
   progress = planned unit `done` or accepted plan amendment, not vague "still working" output. Two
@@ -428,8 +433,9 @@
   "The reviewer".
 - If an *external* reviewer can't deliver a verdict (quota/rate-limit, auth, timeout, or other system
   error — *not* a real finding list / `VERDICT:` line), retry once, then do the equivalent work with
-  your own native workers: a fresh, context-isolated worker review pass in
-  Stage 2a, provided its transport satisfies `runtime-adapter.md`; otherwise park as a machine blocker.
+  your own native workers: a fresh, context-isolated worker review pass in Stage 2a under
+  `runtime-adapter.md`'s native-worker contract. Missing native cwd/mount/sandbox controls alone do not
+  park the pass.
   The gate is unchanged — note any fallback pass in the report. See "The reviewer".
 - **DERIVE `ci` BY RUNNING `scripts/ci-status.py derive --pr <N> --head-sha <the ledger's> --rundir
   <rundir> --required-set <the ledger header's>`, and by NOTHING ELSE.** It fetches, promotes, verifies and

@@ -13,8 +13,10 @@ dispatch or wait. The **adversarial reviewer** is a selectable role: by default 
 (no external tool required); use the user's preferred reviewer when one is set (explicit invocation, or
 a preference in memory/`AGENTS.md`/`CLAUDE.md`/carryover). The user may choose a reviewer running a
 different agent/model than the orchestrator for engine diversity — see `references/reviewer.md`.
-Every verdict-rendering transport must first satisfy the runtime adapter's candidate-instruction
-exclusion; an unavailable safe transport parks as a machine blocker.
+Every verdict-rendering transport follows the runtime adapter's isolation contract: native workers
+guarantee fresh conversational context but may lack a filesystem boundary, while an external transport
+may claim stronger isolation only when the host or OS enforces it. Installed campaign rules remain the
+stage-0 gate authority.
 Reviews and CI watches run as background
 tasks; gates and merges stay centralized. Campaign gates **existing** PRs; it never writes fixes from
 scratch — to find issues first, use `gauntlet:review`, which after its report offers to open one PR per
@@ -326,7 +328,7 @@ Read stage refs only when that stage/action is due:
    stop in-flight reviews doomed by a content change.
 5. **Merge ready PRs** (never a parked one) one at a time until no candidate remains immediately ready
    after base refresh.
-6. **Launch audit + heartbeat — before sleeping, verify every due launch actually happened.** Re-run
+6. **Launch audit + fallback wake — before sleeping, verify every due launch actually happened.** Re-run
    step 4's dispatch scan across both concurrency pools (CI-fix subagents and review passes each have
    their own cap): confirm every due review pass was launched, a CI watch is live for every PR with a
    **still-RUNNING** check (**not** for one whose CI has settled — that is the hot-spin bug), that every
@@ -337,9 +339,10 @@ Read stage refs only when that stage/action is due:
    non-terminal work remains — the runtime adapter's heartbeat or bounded wait is actually active. If
    any due launch or fallback wake is missing, launch it and re-audit. NEVER sleep with due work
    un-launched or no path to the next reconcile.
-7. **Terminal -> carryover/report;** otherwise refresh lease, show the user where the run stands
-   (`ledger.py … table` output plus what each wait is on — `references/loop-control.md`, "Reschedule
-   or exit"), and return (step 6 has already ensured the heartbeat is scheduled).
+7. **Terminal -> carryover/report;** otherwise refresh the lease and follow `references/loop-control.md`,
+   "Reschedule or exit", exactly. A scheduled-wake host renders status after scheduling and returns. A
+   scheduler-less host renders status, performs one bounded wait, then returns to step 1 to reconcile and
+   repeats while non-terminal work remains; it does not take the scheduled-host return.
 
 ## Critical Rules
 

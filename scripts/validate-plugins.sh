@@ -308,7 +308,7 @@ grep -Fq 'codex exec --sandbox workspace-write' "$campaign/references/cross-agen
   fail "cross-agent reviewer map is missing the Codex command"
 grep -Fq 'claude -p --safe-mode --no-session-persistence' "$campaign/references/cross-agent-reviewers.md" ||
   fail "cross-agent reviewer map is missing candidate-instruction-safe Claude Code command"
-grep -Fq -- '--skip-git-repo-check -C <review-root>' "$campaign/references/cross-agent-reviewers.md" ||
+grep -Fq -- '--skip-git-repo-check -C "<review-root>"' "$campaign/references/cross-agent-reviewers.md" ||
   fail "cross-agent reviewer map is missing the instruction-neutral Codex working root"
 
 campaign_host_leaks=$(

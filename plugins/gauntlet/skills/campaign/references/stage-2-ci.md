@@ -849,7 +849,7 @@ ever re-ordered again.
 - **pending** → any evidence row classifies `RUNNING` → leave `ci = pending`. **This is the ONLY outcome
   that warrants a watch** ("WATCH ONLY WHAT CAN MOVE" below): a row can still move on its own, so if the
   watch task has exited, **relaunch it in this same wake** — a PR with a still-RUNNING row must never sit
-  unwatched waiting for the heartbeat. **It is also BOUNDED**: "a row can still move" is a claim the row
+  unwatched waiting for the fallback wake. **It is also BOUNDED**: "a row can still move" is a claim the row
   makes, not a promise it keeps, so if the whole check set then sits unchanged for the CI STALL CAP, the
   PR escalates ("RUNNING-STALL", below). `pending` is not a place a PR may live forever.
 - **pending (nothing registered)** → the snapshot lists **zero evidence rows**. **Zero evidence rows is NOT
@@ -1328,8 +1328,9 @@ the healthy build**, and a rule that parks healthy PRs gets turned off, which le
 **THE BOUND IS A DURATION, NOT A DERIVATION COUNT. This is a deliberate choice and it is the crux.**
 
 - **A derivation count measures the RUN'S LOAD, not this PR's CI.** Derivations are driven by **wakes**,
-  and a wake is the heartbeat (**~5–15 min**, `loop-control.md` step 5) **or any background task, on ANY
-  PR, completing**. So on a busy run three derivations can land within seconds of one another — a
+  and a wake is the fallback lifecycle (**a ~5–15 min scheduled heartbeat or bounded wait returning**,
+  `loop-control.md` step 5) **or any background task, on ANY PR, completing**. So on a busy run three
+  derivations can land within seconds of one another — a
   derivation bound would park a 40-minute build that had barely started, for no reason but that **other**
   PRs were finishing work. On a quiet one-PR run the same bound is worth an hour or more. **The same
   number means a different amount of waiting on every run**, and none of it is a property of the check
@@ -1378,9 +1379,10 @@ elsewhere** — refer to the cap **by name**.
 
 **Where the wake comes from while a stalled row is watched.** A hung `RUNNING` row keeps `gh pr checks
 --watch` **blocked forever**, so the watch never completes and never wakes anyone — the escalation is
-therefore evaluated on the **heartbeat** wake like any other derivation, which is exactly why the
-heartbeat is scheduled while any non-terminal PR remains (`loop-control.md` step 5). **A bound that could
-only be reached by the event it is waiting for would not be a bound at all.**
+therefore evaluated by the fallback lifecycle like any other derivation. A scheduled-wake host uses a
+heartbeat; a scheduler-less host keeps the invocation alive and loops after each bounded wait
+(`loop-control.md` step 5). **A bound that could only be reached by the event it is waiting for would not
+be a bound at all.**
 
 #### UNUSABLE — the refetch is BOUNDED: `unusable_refetches`, the REFETCH CAP
 
@@ -1408,9 +1410,9 @@ unusable_refetches >= 3                 -> ESCALATE (above)  # 3 == THE REFETCH 
   snapshot raced a push — and a fresh fetch usually clears them; a SETTLED-but-not-green snapshot is,
   by construction, **not** transient. The extra headroom buys the transient case free retries, and it
   still terminates.
-- **The WAKE is the backoff — never sleep inside one.** UNUSABLE gets **no watch** ("WATCH ONLY WHAT CAN
-  MOVE" below), so the next attempt arrives on the heartbeat or another task's completion, never in a
-  tight loop. At most **one** refetch per wake.
+- **The WAKE is the backoff — never tight-loop inside one.** UNUSABLE gets **no watch** ("WATCH ONLY WHAT
+  CAN MOVE" below), so the next attempt arrives on the scheduled heartbeat, after one bounded wait, or
+  on another task's completion. At most **one** refetch per reconcile.
 - On escalation `ci_reason` names **the VERIFY rule that failed and the line/row that failed it** (not
   "unusable") — a snapshot campaign could not read once in the REFETCH CAP's worth of consecutive attempts
   is a real, actionable blocker: a
@@ -1422,7 +1424,7 @@ The watch is warranted by **a row that can still move**, never by the `ci` value
 
 | DECIDE outcome | Watch? |
 |---|---|
-| **pending** — an evidence row classifies `RUNNING` | **YES** — ensure a watch task is alive; relaunch it in this same wake if it has exited. **The watch is not the bound**: if that row never finishes, the watch blocks forever and RUNNING-STALL is what ends it, on the heartbeat. |
+| **pending** — an evidence row classifies `RUNNING` | **YES** — ensure a watch task is alive; relaunch it in this same wake if it has exited. **The watch is not the bound**: if that row never finishes, the watch blocks forever and RUNNING-STALL is what ends it, on the fallback wake. |
 | **pending (nothing registered)** — zero evidence rows | **NO.** Nothing to block on. SETTLED escalates it. |
 | **pending (required check missing)** — a declared check has no row | **NO.** Every row present is terminal (a running one would have matched plain `pending` above), so nothing can move. SETTLED escalates it, naming the check. |
 | **pending (required set unreadable)** — `required_set` is `unknown` | **NO.** The open question is what the base branch REQUIRES; no row finishing would answer it. Re-attempt the read each wake; SETTLED escalates it. |

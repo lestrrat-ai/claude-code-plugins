@@ -153,8 +153,8 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
    **never** decided from the watch's exit code (Stage 2b, "WHO DOES WHAT" and "VERIFY THE STAMP BEFORE
    PARSING"); review →
    the **active launch attempt's** output file, with its progress file as liveness evidence — attempt 1
-   writes `review-<pr>-<n>.txt` / `.progress.jsonl` / `.findings.jsonl`, a relaunch writes
-   `review-<pr>-<n>.a<k>.*`, and
+   uses `.prompt.txt` and writes `review-<pr>-<n>.txt` / `.progress.jsonl` / `.findings.jsonl`; a
+   relaunch uses and writes `review-<pr>-<n>.a<k>.*`, and
    only the attempt named in the current `pass_identity` is read or counted (Stage 2a). **Before a
    review verdict is counted, the pass's artifacts must verify** — `scripts/review-pass.py verify --verdict
    <what the report's VERDICT line says>`, never
@@ -303,7 +303,8 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      If the file is
      missing (a wiped `<rundir>`), write it **per `pr-adoption.md` step 3a** and record its provenance in
      the row's `intent`. Then **ensure the PR-head worktree exists**
-     (the reviewer receives `<worktree>` as explicit read-only input from the trusted review root — the
+     (the reviewer receives `<worktree>` as explicit review input under the transport-specific isolation
+     contract in `runtime-adapter.md` — the
      PR row's ledger `worktree` column value, the
      single source of truth for this PR's checkout path (created at adoption/pre-review per
      `pr-adoption.md`; the ledger-recorded `<worktree>` path — default `.worktrees/<headRefName>` when
@@ -316,8 +317,9 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      review dispatch** (`git fetch origin refs/heads/<base>:refs/remotes/origin/<base>`) — the review
      diffs `origin/<base>...HEAD`, a remote-tracking ref that always exists, since adoption fetches only
      the PR head and a local `<base>` may be absent or stale (see `pr-adoption.md` / Stage 2a). Then
-     confirm the verdict transport satisfies `runtime-adapter.md`'s candidate-instruction exclusion;
-     if it does not, park as a machine blocker. Otherwise launch **one** review pass as a **background**
+     confirm the verdict transport follows `runtime-adapter.md`'s transport-specific isolation contract;
+     missing native cwd/mount/sandbox controls alone are not a machine blocker. Then launch **one**
+     review pass as a **background**
      task (one at a time per PR — the second, when the tier requires two, only after the first is
      SATISFIED; Stage 2a). If a precondition is dirty, clear it first (address Copilot items / fix CI /
      rebase) instead of spending a review;
@@ -326,8 +328,8 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      *or* a `plan_amendment_request` all count) — past its **~5-min launch deadline** (measured from
      that file's `pass_identity.dispatched_at`) →
      it **never started** (Stage 2a launch check — a reviewer hung on stdin, a bad path, a sandbox
-     denial). Kill the task, re-check the command for the known launch faults (above all `< /dev/null`
-     on `codex exec`), and re-dispatch the pass once into **attempt-scoped artifacts**
+     denial). Kill the task, re-check the command for the known launch faults (above all the quoted
+     prompt-file stdin redirect), and re-dispatch the pass once into **attempt-scoped artifacts**
      (`review-<pr>-<n>.a2.*`, fresh `pass_identity` with `launch_attempt: 2` — never the dead attempt's
      files, which a surviving process could still write to); a dead `launch_attempt: 2` →
      fresh-worker fallback. A failed launch yields no verdict: it never touches `reviews_ok` and
@@ -344,13 +346,13 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
    - CI snapshot holds a **still-RUNNING** evidence row (an evidence row that classifies `RUNNING` under
      Stage 2b CLASSIFY — never "a row that is not terminal") for a PR whose watch task has already exited →
      **relaunch the watch in this same wake**. A PR with a row that can still move must never sit
-     unwatched until the heartbeat; the heartbeat is a fallback, not the mechanism. **But NEVER relaunch
+     unwatched until the fallback wake; the fallback lifecycle is not the mechanism. **But NEVER relaunch
      it merely because `ci == pending`** — once CI has SETTLED nothing can move, `gh pr checks --watch`
      exits in about a second, and its completion is itself a wake: that is a wake per second, forever
      (Stage 2b, "WATCH ONLY WHAT CAN MOVE"). A settled PR is resolved by the `settled_strikes`
      escalation, not by watching it harder. **And a row that never leaves `RUNNING` is resolved by
      RUNNING-STALL** (Stage 2b): its watch blocks forever and completes never, so the escalation lands on
-     **this heartbeat wake**, once `ci_stalled_since` has stood at the same fingerprint for the CI STALL
+     **this fallback wake**, once `ci_stalled_since` has stood at the same fingerprint for the CI STALL
      CAP. **A watch is never a bound.**
    - about to dispatch content-changing work on a PR (review fix, CI fix, copilot-address,
      conflict-resolving rebase) while a review is in flight on that PR → **stop that review task
@@ -373,32 +375,37 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
 5. **Reschedule or exit.**
    - Any non-terminal PR remains (in review, pending CI, or awaiting a user ruling on a review-finding
      standoff / API approval / precondition) →
-     refresh this run's lease, then activate the runtime adapter's heartbeat or bounded wait
-     (`<campaign-invocation> --run <run-id> --token <agent-token>` — exactly those two flags:
-     `--run` rebinds the wake to this run and `--token` re-proves ownership of its lease). A self-wake
-     **never replays `--new` or the original `#PR` adoption args** — the run is *resumed* by `--run`,
-     not re-created, and carrying `--new` would mint a brand-new run every heartbeat. This heartbeat is a
-     **fallback wake, not a poll**: background completions are the primary wake and normally fire
-     first, so the heartbeat forces a wake in the cases **no completion ever arrives** — a background
-     task that **hangs** (e.g. a reviewer stuck on input) and never completes, or a **killed/orphaned
-     session** whose in-flight tasks died with it, so a later self-wake reconciles and resumes/adopts
-     the run (see "Resume after a killed session"). **Size the delay to the nearest stall it guards:**
+     refresh this run's lease, then choose the runtime adapter's scheduled-heartbeat or bounded-wait
+     branch. A scheduled self-wake uses `<campaign-invocation> --run <run-id> --token <agent-token>` —
+     exactly those two flags: `--run` rebinds the wake to this run and `--token` re-proves ownership of
+     its lease. It **never replays `--new` or the original `#PR` adoption args** — the run is resumed,
+     not re-created, and carrying `--new` would mint a new run every heartbeat. A scheduler-less bounded
+     wait retains the current invocation and token instead of constructing a self-wake. Both are a
+     **fallback lifecycle, not a tight poll**: background completions are the primary wake. A scheduled
+     heartbeat also recovers a killed/orphaned session through a later self-wake; if a scheduler-less
+     invocation is killed, durable state permits a later explicit resume (see "Resume after a killed
+     session"). **Size the scheduled delay or bounded wait to the nearest stall it guards:**
      **~5 min** while any dispatched review pass is still awaiting its first line of **launch evidence**
      — its Stage 2a launch deadline is then the soonest thing that can fire, and a hung launch must not
-     sit undetected for a full heartbeat — otherwise **~15 min**, matching the Stage 2a meaningful-progress
+     sit undetected for a full normal interval — otherwise **~15 min**, matching the Stage 2a meaningful-progress
      threshold: with no launch deadline pending, nothing can declare a review stalled before then, so a
      shorter interval only re-reconciles git/gh with no new signal (and pays a fresh-context cost per
      wake). ALWAYS keep a heartbeat or bounded wait active whenever non-terminal work remains — skipping
-     both means a hung or orphaned run wakes no one. On a scheduled-wake host, **end the turn showing the
-     user where the run stands**; on a bounded-wait host, show the same status before waiting. Run
-     `ledger.py --file <state.jsonl> table` and include its output verbatim, fenced, in the end-of-turn
+     both means a hung or orphaned run wakes no one. Run
+     `ledger.py --file <state.jsonl> table` and include its output verbatim, fenced, in the status
      message. **Verbatim means WHOLE** — including every `#` line it prints below the grid. The default
      view is a **filtered** one and those lines are what disclose the filtering
      (`files-and-ledger.md`, "`table` is a PROJECTION"); drop them and the user is shown a subset
      presented as the whole ledger. Never re-type, trim, or re-align it. Then one line per remaining
-     wait naming what it waits on (review in flight, CI
-     watch, parked on the user's answer). Render it after every ledger write of the wake — the ledger
-     was reconciled this wake, so the table is the state the next wake resumes from. Return.
+     wait naming what it waits on (review in flight, CI watch, parked on the user's answer). Render it
+     after every ledger write of the wake — the ledger was reconciled this wake, so the table is the
+     state the next reconcile resumes from. Then take exactly one runtime branch:
+     - **Scheduled-wake host:** schedule the self-wake, render the status above, and return. The scheduled
+       invocation begins again at step 1.
+     - **Scheduler-less bounded-wait host:** render the same status, wait only until the first task
+       completion or the nearest protected deadline, then go directly back to step 1 and reconcile.
+       Repeat this status/wait/reconcile cycle while non-terminal work remains. Do **not** execute the
+       scheduled-host return after the bounded wait.
    - All this run's PRs `merged` or `aborted` → **distill the run into the carryover ledger** (write
      this run's block to its own file `.gauntlet/history/<run-id>.md` — merged PRs, aborted
      PRs + why, and declined-API PRs; per-run files never

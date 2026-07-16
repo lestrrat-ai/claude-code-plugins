@@ -23,8 +23,10 @@ Campaign's exact cross-agent command lines live in
 
 - Preserve workflow outcomes across hosts. Adapt execution only.
 - NEVER claim a fallback preserves context isolation when it runs in the current context.
-- Every verdict-rendering transport must exclude candidate `AGENTS.md`/`CLAUDE.md` from instruction
-  authority and expose the candidate checkout read-only; `runtime-adapter.md` owns the complete rule.
+- Distinguish fresh conversational context from filesystem/security isolation. Native task APIs may
+  share cwd, writable files, and repository startup instructions; disclose that limitation and keep the
+  installed campaign rules as stage-0 authority. Claim instruction-neutral/read-only isolation only for
+  a transport whose host or OS enforces it; `runtime-adapter.md` owns the complete rule.
 - NEVER silently skip a required capability. Report the missing capability and use the documented fallback.
 - Keep host-specific examples paired unless a section is explicitly host-only.
 - Treat cross-agent review as a user option, never an automatic default.
