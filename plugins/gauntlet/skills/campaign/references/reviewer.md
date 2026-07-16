@@ -65,11 +65,11 @@ open-ended review — *"is anything wrong with this code?"* — that the intent 
 DEFAULT path**, which is the one that runs whenever no external reviewer is configured. A stale summary is
 worse than no summary: it is the version people actually read, and it is believed.
 
-**Dispatch it by taking the review prompt from `stage-2-review-gate.md` and substituting every placeholder
-exactly as the external-reviewer form does** — the intent block `<INTENT>` **verbatim**, both script paths
-(`<SCRIPT>`, `<FINDING-SCRIPT>`), `<worktree>`, `<base>`, `<pr>`, `<n>`, and the active attempt's
-`<progress-file>` / `<findings-file>`; separately resolve `<prompt-file>` / `<review-output>` for the
-transport. **The prompt IS the
+**Dispatch it by taking the review prompt from `stage-2-review-gate.md` and calling
+`bind_review_prompt` for its two data bindings**: `<INTENT>` receives the intent block **verbatim**, while `<TRANSPORT-RECORD>` receives the
+JSON encoding of `runtime-adapter.md`'s typed record for the active attempt. That one record carries the
+worktree, base, emitter paths, attempt identity, progress/findings paths, and report ownership; no field
+is interpolated into shell source. **The prompt IS the
 contract**: whatever it
 requires of a `codex exec` reviewer it requires of a native worker — the same question ("does this PR achieve its
 stated Purpose…"), the same emit-only rule, the same anchored findings, the same `RESIDUAL-RISK` +
@@ -78,10 +78,12 @@ single-`VERDICT:` ending. Its verdict is read and its artifacts verified by the 
 an `unusable` one.
 
 Only the **transport** differs from the external-reviewer form: it is a **background native-worker task**
-rather than a shell command. Materialize the attempt-scoped prompt artifact through the host's byte-safe
-file API, then pass those exact bytes through the native task API's message field (a true data argument,
-never shell source). The worker is told to **write its report to `<review-root>/<review-output>` itself**
-(same instructions, same output file). Run it in the **`session` class**
+rather than a process. Set `report.producer` to `native-worker-write`, materialize the attempt-scoped
+prompt at `transport.prompt_path` with `write_bytes`, and pass those exact bytes through
+`dispatch_native`. The prompt explicitly
+requires the worker to write the complete report to the record's `report.path` through the host file API
+before returning the same text; the orchestrator does not persist the returned task message. This exact
+producer rule applies to initial launch, relaunch, and native fallback. Run it in the **`session` class**
 (above) and give each pass a **fresh, context-isolated** worker, so the gate holds: for a two-pass tier,
 launch review 2 only after review 1 is SATISFIED, one at a time per PR (see Stage 2a-triage for the per-tier
 pass count).
@@ -91,16 +93,15 @@ pass count).
 For the exact Claude Code → Codex and Codex → Claude Code transports, read
 `cross-agent-reviewers.md`. The stage review contract remains the prompt authority.
 
-When the selected reviewer is an external command like `codex exec`, invoke it as the stage refs show
-(`codex exec --sandbox workspace-write … < "<review-root>/<prompt-file>"`, from the trusted review root
-and output to the run's file — the full command is
-in `stage-2-review-gate.md`; build it from there, never from this abbreviation). NEVER pass destructive
+When the selected reviewer is an external process like `codex exec`, invoke it with
+`runtime-adapter.md`'s typed `run_argv` operation and the complete argv in the stage refs; set
+`report.producer` to `external-process-capture`. NEVER pass destructive
 instructions (delete, force-push, reset) to an external reviewer command, and NEVER use
 `--dangerously-bypass-approvals-and-sandbox`.
 
-**ALWAYS give `codex exec` prompt stdin an immediate EOF by redirecting the complete attempt-scoped
-prompt artifact.** Never pass the substituted prompt as a shell argument and never redirect inherited
-stdin: the former reparses GitHub-derived text as shell source, while the latter can stay open forever.
+**ALWAYS give `codex exec` prompt stdin an immediate EOF by setting `stdin_file` to the complete
+attempt-scoped prompt artifact.** Never pass the prompt as a command argument and never inherit stdin:
+the former puts untrusted bytes at the wrong boundary, while the latter can stay open forever.
 
 An external reviewer can fail in a way that yields **no usable verdict**: quota/rate-limit
 exhaustion, auth failures, timeouts, or other system errors. Distinguish this from a real review — a

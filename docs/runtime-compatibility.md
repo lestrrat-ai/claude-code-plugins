@@ -27,6 +27,8 @@ Campaign's exact cross-agent command lines live in
   share cwd, writable files, and repository startup instructions; disclose that limitation and keep the
   installed campaign rules as stage-0 authority. Claim instruction-neutral/read-only isolation only for
   a transport whose host or OS enforces it; `runtime-adapter.md` owns the complete rule.
+- Carry dynamic paths, refs and payloads through the runtime adapter's typed argv/byte/message boundary;
+  never splice them into shell source. Its per-attempt record also assigns one final-report producer.
 - NEVER silently skip a required capability. Report the missing capability and use the documented fallback.
 - Keep host-specific examples paired unless a section is explicitly host-only.
 - Treat cross-agent review as a user option, never an automatic default.

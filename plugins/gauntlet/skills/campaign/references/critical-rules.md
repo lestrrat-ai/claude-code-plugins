@@ -271,9 +271,11 @@
   your work and then tell you the work does not count (it did — see Stage 2a). `ok` is **not** `SATISFIED` — the
   tool never reads the report and never says SATISFIED; it can only ever *refuse* a pass, never accept one.
 - Before each review, write an orchestrator-owned `review-<pr>-<n>.plan.jsonl` (per-pass — a relaunch
-  reuses it; written through the tool above, never a heredoc). Materialize the fully substituted prompt
-  as the active attempt's `.prompt.txt` through a byte-safe host file API, then pass it as native-message
-  data or quoted stdin — never shell source. Reviewers append progress events against planned units to the **active launch attempt's**
+  reuses it; written through the tool above, never a heredoc). Build `runtime-adapter.md`'s one typed
+  transport record, JSON-bind it and the verbatim intent into the active `.prompt.txt` through
+  `write_bytes`, then pass it through `dispatch_native` or `run_argv` — never shell source. The record
+  carries the runtime adapter's final-report ownership assignment.
+  Reviewers append progress events against planned units to the **active launch attempt's**
   progress file (`review-<pr>-<n>.progress.jsonl` for attempt 1, `review-<pr>-<n>.a<k>.progress.jsonl`
   for a relaunch — only the attempt named in the active `pass_identity` is read or counted). Meaningful
   progress = planned unit `done` or accepted plan amendment, not vague "still working" output. Two

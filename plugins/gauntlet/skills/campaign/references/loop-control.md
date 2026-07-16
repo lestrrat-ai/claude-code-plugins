@@ -314,7 +314,7 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      if one exists (root or another worktree), else adds a fresh worktree, since `git worktree add`
      refuses a branch checked out elsewhere — and record its path in the row's `worktree`. This is an
      explicit precondition of the review launch. **Also fetch `origin/<base>` fresh before the first
-     review dispatch** (`git fetch origin refs/heads/<base>:refs/remotes/origin/<base>`) — the review
+     review dispatch through the typed Stage 2a pre-review operation** — the review
      diffs `origin/<base>...HEAD`, a remote-tracking ref that always exists, since adoption fetches only
      the PR head and a local `<base>` may be absent or stale (see `pr-adoption.md` / Stage 2a). Then
      confirm the verdict transport follows `runtime-adapter.md`'s transport-specific isolation contract;

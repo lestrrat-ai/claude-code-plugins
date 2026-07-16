@@ -304,12 +304,15 @@ grep -Fq 'references/runtime-adapter.md' "$campaign/SKILL.md" ||
   fail "campaign SKILL.md does not load the runtime adapter"
 grep -Fq 'user option, never a campaign rule' "$campaign/references/cross-agent-reviewers.md" ||
   fail "cross-agent review must remain an explicit user option"
-grep -Fq 'codex exec --sandbox workspace-write' "$campaign/references/cross-agent-reviewers.md" ||
-  fail "cross-agent reviewer map is missing the Codex command"
-grep -Fq 'claude -p --safe-mode --no-session-persistence' "$campaign/references/cross-agent-reviewers.md" ||
-  fail "cross-agent reviewer map is missing candidate-instruction-safe Claude Code command"
-grep -Fq -- '--skip-git-repo-check -C "<review-root>"' "$campaign/references/cross-agent-reviewers.md" ||
-  fail "cross-agent reviewer map is missing the instruction-neutral Codex working root"
+grep -Fq '"codex", "exec", "--sandbox", "workspace-write"' "$campaign/references/cross-agent-reviewers.md" ||
+  fail "cross-agent reviewer map is missing the typed Codex argv"
+grep -Fq '"claude", "-p", "--safe-mode", "--no-session-persistence"' "$campaign/references/cross-agent-reviewers.md" ||
+  fail "cross-agent reviewer map is missing the candidate-instruction-safe typed Claude Code argv"
+grep -Fq -- '"-C", transport.review_root' "$campaign/references/cross-agent-reviewers.md" ||
+  fail "cross-agent reviewer map is missing the instruction-neutral Codex working root argv"
+grep -Fq '## Typed data/process boundary' "$campaign/references/runtime-adapter.md" ||
+  fail "runtime adapter is missing the typed data/process boundary"
+python3 "$campaign/scripts/transport-contract-test.py" || status=1
 
 campaign_host_leaks=$(
   grep -rnE 'ScheduleWakeup|\$\{CLAUDE_PLUGIN_ROOT\}|Subagent Dispatch|fresh-subagent' \

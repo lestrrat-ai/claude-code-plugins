@@ -23,6 +23,72 @@ Resolve `<skill-dir>` from the actual path of the active `SKILL.md`, then resolv
 directory, or a repository-relative path. Installed plugin caches differ between hosts and can differ
 between installations of the same host.
 
+## Typed data/process boundary
+
+This section is the **single owner** for values crossing a host, process, or shell boundary in review
+transport and PR worktree creation. Those procedures name one of these operations instead of publishing
+a command-source template:
+
+- `write_bytes(path: Path, content: Bytes)` writes exactly `content` through the host's file API.
+- `bind_review_prompt(template: Bytes, intent: Bytes, transport: ReviewTransport) -> Bytes` binds the
+  template's two original slots in one pass. It JSON-encodes `transport`, inserts `intent` verbatim, and
+  never rescans either inserted value for slot syntax.
+- `run_argv(argv: list[Text], cwd: Path | null, stdin_file: Path | null,
+  stdout_file: Path | null) -> ProcessResult` starts exactly `argv[0]` with the remaining list members as
+  distinct argv elements. `cwd`, stdin and stdout are separate typed fields, not fragments of `argv` and
+  not shell redirections. `ProcessResult` carries exit status and captured stdout/stderr when the
+  corresponding file field is null.
+- `dispatch_native(message: Bytes, class: ModelClass)` sends exactly `message` as task data to a fresh
+  native worker. It never puts message bytes in command source.
+
+`Path`, `Text`, `Bytes`, and `ModelClass` above are data types, not angle-bracket substitution syntax.
+Composition such as `concat("refs/heads/", base)` happens **before** the operation and produces one
+`Text` value. The host adapter MUST preserve every value as one field/argv element, including whitespace,
+newlines, quotes, backticks, `$()` and leading dashes. Prefer a process API that accepts argv directly.
+If the only available command tool accepts shell source, mechanically encode **every** argv element as
+one complete shell token (for example, Python `shlex.join(argv)` or the exact POSIX single-quote
+algorithm), including program and script paths; never splice a value into hand-written source, inside
+double quotes, or into a redirection. Set `cwd` through the host API where available. If stdin/stdout
+also require shell syntax, mechanically encode their complete `Path` tokens through the same encoder.
+
+### Review transport record and report ownership
+
+For each launch attempt, build one typed review record in memory and serialize it with a real JSON
+encoder while materializing the prompt:
+
+```text
+ReviewTransport {
+  attempt: { pr: PositiveInt, pass: PositiveInt, launch_attempt: PositiveInt },
+  review_root: Path, worktree: Path, base: Text,
+  prompt_path: Path, plan_path: Path, progress_path: Path, findings_path: Path,
+  emit_progress_path: Path, emit_finding_path: Path,
+  report: { producer: "native-worker-write" | "external-process-capture", path: Path }
+}
+```
+
+The JSON encoding is the prompt's `<TRANSPORT-RECORD>` data block and the intent is its `<INTENT>` block;
+`bind_review_prompt` binds both without rescanning inserted bytes. Do not substitute record fields into
+prose commands. The active attempt's prompt/progress/findings/report basenames keep the `a<k>` identity
+defined by `stage-2-review-gate.md`; derive every path in one record from that same attempt.
+
+Exactly one producer owns the final report:
+
+- Native initial launch, native relaunch, and native fallback use `native-worker-write`. The dispatched
+  prompt requires the worker to write the **complete** final report to `report.path` with `write_bytes`
+  before returning the same text as its native task result. The orchestrator does not persist the result
+  a second time. A missing report is an unusable attempt.
+- External Codex and external Claude initial launches and relaunches use
+  `external-process-capture`. The reviewer returns the report on the process's designated final-output
+  channel; `run_argv` captures that channel at `report.path` (`codex -o` for Codex, `stdout_file` for
+  Claude). The reviewer MUST NOT write the path itself.
+
+Progress belongs to `emit-progress.py`, findings to `emit-finding.py`, and prompt bytes to the
+orchestrator's `write_bytes`. No transport adds a second writer. `reviewer.md`,
+`stage-2-review-gate.md`, `cross-agent-reviewers.md`, and `pr-adoption.md` point here for the boundary;
+they may define argv values or workflow order, but they must not redefine quoting or artifact ownership.
+The plugin validator runs `scripts/transport-contract-test.py` to pin these mappings with hostile
+path/ref/payload and exact-byte fixtures.
+
 ## Fresh workers
 
 A **worker** is a fresh, conversationally isolated execution created through the active host's native

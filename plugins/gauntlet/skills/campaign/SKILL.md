@@ -16,7 +16,9 @@ different agent/model than the orchestrator for engine diversity — see `refere
 Every verdict-rendering transport follows the runtime adapter's isolation contract: native workers
 guarantee fresh conversational context but may lack a filesystem boundary, while an external transport
 may claim stronger isolation only when the host or OS enforces it. Installed campaign rules remain the
-stage-0 gate authority.
+stage-0 gate authority. The same adapter owns the typed process/data boundary: dynamic values cross as
+argv, byte-file, or native-message data, and each review attempt's record assigns exactly one final-report
+producer.
 Reviews and CI watches run as background
 tasks; gates and merges stay centralized. Campaign gates **existing** PRs; it never writes fixes from
 scratch — to find issues first, use `gauntlet:review`, which after its report offers to open one PR per
@@ -97,6 +99,9 @@ has stopped converging — the closed enum, the ownership guardrail, and the rep
 
 Each script's fixtures live in a **sibling `*-test.py`** (`review-pass-test.py`, `ledger-test.py`,
 `followups-test.py`, `repair-pass-test.py`); the `self-test` subcommand loads it and **fails loudly if it is missing**.
+`scripts/transport-contract-test.py` is the standalone exception: the plugin validator runs it directly
+to pin the runtime adapter's typed review/adoption boundary; it owns no run state and has no accessor
+`self-test` subcommand.
 
 **At run startup, record which version of these rules is actually running:** read `version` from the
 running plugin's `plugin.json` and write it to the ledger header —

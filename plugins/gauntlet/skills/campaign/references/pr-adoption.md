@@ -284,46 +284,56 @@ For each `#PR` to adopt:
    elsewhere (as does `git fetch origin <hrn>:<hrn>` updating a checked-out branch). So update the
    remote ref (always safe), then **reuse an existing checkout if there is one, else add a worktree**:
 
-   ```
-   git fetch origin refs/heads/<base>:refs/remotes/origin/<base>                 # refresh origin/<base> — the review diffs origin/<base>...HEAD, and adoption otherwise fetches only the PR head, not <base>
-   git fetch origin refs/heads/<headRefName>:refs/remotes/origin/<headRefName>   # explicit refspec: refresh origin/<headRefName> regardless of local branch/upstream configuration
-   # is <headRefName> already checked out somewhere? (root or a worktree)
-   existing=$(git worktree list --porcelain | awk -v b="refs/heads/<headRefName>" '$1=="worktree"{p=$2} $1=="branch" && $2==b{print p}')
-   if [ -n "$existing" ]; then
-     worktree=$existing                                 # REUSE it; do NOT add another
-     worktree_owned=no                                  # pre-existing checkout — campaign did NOT create it
-     branch_owned=no                                    # pre-existing local branch — campaign did NOT create it
-     # Ensure the reused checkout is CLEAN and AT the PR head, else review/CI would run on stale local
-     # content while the ledger pins the live GitHub SHA. Fast-forward only; never reset a checkout we
-     # don't own — bail on a dirty tree or divergence:
-     [ -z "$(git -C "$existing" status --porcelain --untracked-files=all)" ] || { echo "reused checkout $existing is dirty (tracked, staged, OR untracked) — bail"; exit 1; }
-     git -C "$existing" merge --ff-only origin/<headRefName> || { echo "reused checkout $existing diverges from PR head — bail"; exit 1; }
-     # (equivalently, verify git -C "$existing" rev-parse HEAD == <headRefOid>)
-   else
-     # Not checked out anywhere. Create the worktree WITHOUT resetting an existing local branch
-     # (never use `-B`, which resets the branch and could drop the user's local commits):
-     if git show-ref --verify --quiet refs/heads/<headRefName>; then
-       git worktree add $PROJECT/.worktrees/<headRefName> <headRefName>          # existing local branch — checkout, no reset
-       git -C $PROJECT/.worktrees/<headRefName> merge --ff-only origin/<headRefName>  # fast-forward to PR head; STOP/bail on divergence (never reset)
-       branch_owned=no                                  # reused a PRE-EXISTING local branch — campaign did NOT create it
-     else
-       git worktree add -b <headRefName> $PROJECT/.worktrees/<headRefName> origin/<headRefName>  # new local branch at PR head
-       branch_owned=yes                                 # campaign CREATED this local branch — safe to delete at cleanup
-     fi
-     worktree=$PROJECT/.worktrees/<headRefName>         # created default path: .worktrees/<headRefName>
-     worktree_owned=yes                                 # campaign created the worktree — safe to remove at cleanup
-   fi
-   # record via the accessor, by field name (never by column position):
-   #   python3 <skill-dir>/scripts/ledger.py --file <state.jsonl> set --pr <N> --worktree "$worktree" \
-   #     --worktree_owned "$worktree_owned" --branch_owned "$branch_owned"
-   # (worktree ownership and branch ownership are tracked separately)
+   Use `runtime-adapter.md`'s typed `run_argv` boundary for this whole algorithm. The names below are
+   data fields from the PR snapshot; `concat` and `path_join` produce one argv/path value and never shell
+   source. For compactness, `run_argv(argv, cwd)` below sets both file fields to null and reads its
+   `ProcessResult`:
+
+   ```text
+   run_argv(["git", "fetch", "origin",
+             concat("refs/heads/", base, ":refs/remotes/origin/", base)], project_root)
+   run_argv(["git", "fetch", "origin",
+             concat("refs/heads/", headRefName, ":refs/remotes/origin/", headRefName)], project_root)
+
+   listing = run_argv(["git", "worktree", "list", "--porcelain", "-z"], project_root).stdout
+   existing = parse_nul_porcelain_for_exact_branch(listing, concat("refs/heads/", headRefName))
+   if existing is present:
+     worktree = existing
+     worktree_owned = "no"
+     branch_owned = "no"
+     status = run_argv(["git", "-C", existing, "status", "--porcelain",
+                        "--untracked-files=all"], project_root).stdout
+     require status is empty; otherwise bail without changing the checkout
+     require run_argv(["git", "-C", existing, "merge", "--ff-only",
+                       concat("refs/remotes/origin/", headRefName)], project_root) succeeds
+   else:
+     # Never use -B: it can reset a pre-existing local branch.
+     worktree = path_join(project_root, ".worktrees", headRefName)
+     local = run_argv(["git", "show-ref", "--verify", "--quiet",
+                       concat("refs/heads/", headRefName)], project_root)
+     if local exited 0:
+       require run_argv(["git", "worktree", "add", worktree, headRefName], project_root) succeeds
+       require run_argv(["git", "-C", worktree, "merge", "--ff-only",
+                         concat("refs/remotes/origin/", headRefName)], project_root) succeeds
+       branch_owned = "no"
+     else if local reports only "ref absent":
+       require run_argv(["git", "worktree", "add", "-b", headRefName, worktree,
+                         concat("refs/remotes/origin/", headRefName)], project_root) succeeds
+       branch_owned = "yes"
+     else:
+       bail on the unexpected show-ref failure
+     worktree_owned = "yes"
+
+   run_argv(["python3", ledger_script, "--file", state_file, "set", "--pr", pr,
+             "--worktree", worktree, "--worktree_owned", worktree_owned,
+             "--branch_owned", branch_owned], project_root)
    ```
 
-   (Do **not** substitute `git fetch origin pull/<pr>/head:<headRefName>` here — that form writes the
-   local branch directly and is **refused** when `<headRefName>` already exists or is checked out. Use
-   the remote-tracking fetch above, then let the create/reuse logic handle the local branch.)
+   (Do **not** replace the typed remote-tracking fetch with a direct PR-head-to-local-branch fetch: that
+   form writes the local branch directly and is **refused** when the branch already exists or is checked
+   out. Let the create/reuse logic above handle the local branch.)
 
-   Record the **actual** resolved `$worktree` — `$PROJECT/.worktrees/<headRefName>` is only the
+   Record the **actual** resolved `worktree` — `path_join(project_root, ".worktrees", headRefName)` is only the
    **created default** used on the `git worktree add` path; a reused checkout sits at some **other**
    path — in the row's `worktree` (via `ledger.py … set --pr <N> --worktree …`), record
    `$worktree_owned` (`yes` = campaign created the worktree, `no` = reused a pre-existing checkout) in
