@@ -7,7 +7,7 @@ adapter; keep workflow rules shared.
 |---|---|---|---|
 | Repository instructions | `CLAUDE.md` | `AGENTS.md` | `CLAUDE.md` is a relative symlink to `AGENTS.md`; edit `AGENTS.md` only. |
 | Plugin manifest | `.claude-plugin/plugin.json` | `.codex-plugin/plugin.json` | Keep `name` and `version` equal. |
-| Marketplace | `.claude-plugin/marketplace.json` | `.agents/plugins/marketplace.json` | Keep plugin names and source directories equal. |
+| Marketplace | `.claude-plugin/marketplace.json` | `.agents/plugins/marketplace.json` | Keep the marketplace `name`, the plugin names, and their source directories equal. |
 | Skill invocation | `/gauntlet:<skill>` | `$gauntlet:<skill>` | Show both forms when exact invocation matters. |
 | Installed cache | `~/.claude/plugins/cache/...` | `~/.codex/plugins/cache/...` | Never assume working-tree skill files are active. |
 | Skill resources | May expose `CLAUDE_PLUGIN_ROOT` | Active skill path is supplied to the agent | Resolve from the directory containing active `SKILL.md`; pass absolute paths to workers. |

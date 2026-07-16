@@ -29,6 +29,130 @@ jq_field() {
   jq -r "$filter" "$file"
 }
 
+# Emit a marketplace's {plugin-name -> source-path} map as canonical, sorted, compact JSON.
+# The two hosts store the source differently, so the caller passes the jq path that extracts it:
+# Claude keeps a bare string in `.source`, Codex nests it under `.source.path`. Normalization is
+# part of the check, not a nicety: source paths are canonicalized (one leading `./` and any
+# trailing slashes stripped) so a cosmetic `./x` vs `x` difference is not a false diff AND a real
+# `x` vs `y` difference is not hidden; keys are `-S`-sorted and entries `sort_by(.name)`-ordered
+# so equal maps in any spelling/order produce byte-identical output. A duplicate plugin name
+# within one marketplace is rejected here (jq `error`), else two entries could collapse and let a
+# divergent map compare equal. Parse first (jq_field pattern) so a malformed file returns non-zero
+# — not a raw `set -e` abort — and the caller attaches `|| fail`.
+marketplace_source_map() {
+  local file=$1 src=$2 filter
+  jq empty "$file" 2>/dev/null || return 1
+  # shellcheck disable=SC2016  # This is a jq program, not shell: `$names` and `error(...)` are jq
+  # syntax and MUST stay literal. Single quotes keep them so; the only shell substitution is the
+  # `SRC` placeholder, swapped for the host's source path via `${filter/SRC/$src}` on the next line.
+  filter='
+    def canon: sub("^[.]/"; "") | sub("/+$"; "");
+    (.plugins | map(.name)) as $names
+    | if ($names | length) != ($names | unique | length)
+      then error("duplicate plugin name within a single marketplace")
+      else [ .plugins[] | {name: .name, source: (SRC | canon)} ] | sort_by(.name)
+      end
+  '
+  jq -S -c "${filter/SRC/$src}" "$file" 2>/dev/null || return 1
+}
+
+# ONE cross-host equivalence assertion that closes the whole packaging-drift class: same
+# marketplace `.name` + identical canonical {plugin-name -> source-path} map => `<plugin>@<name>`
+# resolves to the SAME source directory on both hosts => identical manifests and skills. It
+# therefore subsumes both drift classes (a lone marketplace-name change, or a lone source-path
+# change) rather than checking them as two ad-hoc rules. Prints its own diagnostics and returns
+# non-zero on any mismatch, malformed JSON, or duplicate name; it mutates no global state, so the
+# self-test can exercise it against fixture files. Callers in the main flow do `|| status=1`.
+check_marketplace_equivalence() {
+  local claude_mp=$1 codex_mp=$2 rc=0
+  local claude_name codex_name claude_map codex_map
+
+  claude_name=$(jq_field '.name // ""' "$claude_mp") || {
+    printf 'error: %s is not valid JSON\n' "$claude_mp" >&2
+    return 1
+  }
+  codex_name=$(jq_field '.name // ""' "$codex_mp") || {
+    printf 'error: %s is not valid JSON\n' "$codex_mp" >&2
+    return 1
+  }
+  if [[ -z $claude_name || $claude_name != "$codex_name" ]]; then
+    printf "error: marketplace names differ (Claude '%s', Codex '%s'); breaks the '<plugin>@%s' install\n" \
+      "$claude_name" "$codex_name" "$claude_name" >&2
+    rc=1
+  fi
+
+  claude_map=$(marketplace_source_map "$claude_mp" '.source') || {
+    printf 'error: %s: cannot build plugin->source map (invalid JSON or duplicate plugin name)\n' "$claude_mp" >&2
+    rc=1
+  }
+  codex_map=$(marketplace_source_map "$codex_mp" '.source.path') || {
+    printf 'error: %s: cannot build plugin->source map (invalid JSON or duplicate plugin name)\n' "$codex_mp" >&2
+    rc=1
+  }
+  if [[ $rc -eq 0 && $claude_map != "$codex_map" ]]; then
+    printf 'error: marketplaces map plugins to different sources\n  Claude: %s\n  Codex:  %s\n' \
+      "$claude_map" "$codex_map" >&2
+    rc=1
+  fi
+  return "$rc"
+}
+
+# Regression guard: a scratch two-marketplace fixture that PROVES check_marketplace_equivalence
+# catches both drift classes and fails loudly. Case (a) also proves normalization — the two
+# fixtures differ in plugin order, in `./x` vs `x`, and in a trailing slash, yet must compare
+# equal. Cases (b)/(c) prove the two drift classes fail; (d) proves the duplicate-name guard.
+# If the equivalence check is ever gutted, (b)/(c)/(d) start passing when they must fail and this
+# returns non-zero. Runs as a preamble on every invocation, so CI's plain run exercises it.
+run_self_test() {
+  local dir rc=0 claude_mp codex_mp
+  local base_claude base_codex
+  dir=$(mktemp -d "${TMPDIR:-/tmp}/validate-selftest.XXXXXX") || {
+    printf 'error: self-test could not create a temp dir\n' >&2
+    return 1
+  }
+  claude_mp=$dir/claude-marketplace.json
+  codex_mp=$dir/codex-marketplace.json
+
+  # Deliberately cosmetically different: order, leading `./`, and a trailing slash all vary.
+  base_claude='{"name":"mp","plugins":[{"name":"a","source":"./plugins/a"},{"name":"b","source":"plugins/b/"}]}'
+  base_codex='{"name":"mp","plugins":[{"name":"b","source":{"source":"local","path":"./plugins/b"}},{"name":"a","source":{"source":"local","path":"plugins/a"}}]}'
+
+  # (a) equivalent under normalization -> must PASS
+  printf '%s\n' "$base_claude" >"$claude_mp"
+  printf '%s\n' "$base_codex" >"$codex_mp"
+  if ! check_marketplace_equivalence "$claude_mp" "$codex_mp" 2>/dev/null; then
+    printf 'error: self-test(a): equivalence check rejected equivalent marketplaces\n' >&2
+    rc=1
+  fi
+
+  # (b) marketplace .name drift -> must FAIL
+  printf '%s\n' "$base_claude" >"$claude_mp"
+  printf '%s\n' "${base_codex/\"name\":\"mp\"/\"name\":\"mp2\"}" >"$codex_mp"
+  if check_marketplace_equivalence "$claude_mp" "$codex_mp" 2>/dev/null; then
+    printf 'error: self-test(b): equivalence check accepted a marketplace .name drift\n' >&2
+    rc=1
+  fi
+
+  # (c) plugin source-map drift (one host points a plugin at a divergent dir) -> must FAIL
+  printf '%s\n' "$base_claude" >"$claude_mp"
+  printf '%s\n' "${base_codex/plugins\/a/plugins\/DIVERGENT}" >"$codex_mp"
+  if check_marketplace_equivalence "$claude_mp" "$codex_mp" 2>/dev/null; then
+    printf 'error: self-test(c): equivalence check accepted a plugin source-map drift\n' >&2
+    rc=1
+  fi
+
+  # (d) duplicate plugin name within one marketplace -> must FAIL
+  printf '%s\n' '{"name":"mp","plugins":[{"name":"a","source":"./plugins/a"},{"name":"a","source":"./plugins/a"}]}' >"$claude_mp"
+  printf '%s\n' "$base_codex" >"$codex_mp"
+  if check_marketplace_equivalence "$claude_mp" "$codex_mp" 2>/dev/null; then
+    printf 'error: self-test(d): equivalence check accepted a duplicate plugin name\n' >&2
+    rc=1
+  fi
+
+  rm -rf -- "$dir"
+  return "$rc"
+}
+
 verify_gauntlet_skill_entrypoints() {
   local host source installed skill entrypoint
   local count=0
@@ -52,6 +176,18 @@ for tool in claude codex jq; do
     exit 127
   }
 done
+
+# Prove the cross-marketplace equivalence check works before trusting it below. `--self-test`
+# runs only this and exits; otherwise it runs as a preamble so the plain CI invocation exercises
+# it. A gutted equivalence check makes this fail loudly rather than silently passing everything.
+if [[ ${1:-} == --self-test ]]; then
+  run_self_test
+  exit $?
+fi
+run_self_test || {
+  printf 'error: cross-marketplace equivalence self-test failed; the check is broken\n' >&2
+  exit 1
+}
 
 claude_marketplace=.claude-plugin/marketplace.json
 codex_marketplace=.agents/plugins/marketplace.json
@@ -270,6 +406,13 @@ while IFS=$'\t' read -r name source; do
     verify_gauntlet_skill_entrypoints Codex "$source" "$installed_real"
   fi
 done < <(jq -r '.plugins[] | [.name, .source.path] | @tsv' "$codex_marketplace")
+
+echo
+echo "==> cross-marketplace equivalence"
+# Same marketplace name + same {plugin-name -> source-path} map => both hosts install from one
+# directory => identical manifests and skills. This subsumes the per-marketplace name and
+# source-map drift classes in a single assertion.
+check_marketplace_equivalence "$claude_marketplace" "$codex_marketplace" || status=1
 
 echo
 echo "==> shared agent instructions"
