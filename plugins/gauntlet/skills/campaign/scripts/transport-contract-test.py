@@ -36,7 +36,55 @@ def check_document_contract() -> None:
     run_identity = read("run-identity-and-lease.md")
     merge = read("stage-3-merge.md")
     root_cause = read("root-cause-pass.md")
+    files_ledger = read("files-and-ledger.md")
+    loop_control = read("loop-control.md")
     copilot = (COPILOT / "SKILL.md").read_text(encoding="utf-8")
+
+    # The canonical prs.json snapshot command is the typed run_argv operation, spelled IDENTICALLY at all
+    # three sites — the owning block plus the two mandated copies. The output path is a typed Path in
+    # stdout_file, never a shell redirection (`> <rundir>/prs.json`), so dynamic paths stay out of shell
+    # source and a run directory containing a space stays one intact Path. Compare on whitespace-collapsed
+    # text so the sites' differing code-fence indentation does not read as a variant spelling.
+    prs_json_argv = (
+        'argv: ["gh", "pr", "list", "--label", concat("gauntlet-run-", run_id), '
+        '"--state", "open", "--limit", "1000", '
+        '"--json", "number,headRefName,headRefOid,title,baseRefName,state,mergeable,mergeStateStatus,labels"],'
+    )
+    prs_json_stdout = 'stdout_file: path_join(<rundir>, "prs.json")'
+    prs_json_argv_flat = " ".join(prs_json_argv.split())
+    for name, text in (("files-and-ledger.md", files_ledger),
+                       ("pr-adoption.md", adoption),
+                       ("loop-control.md", loop_control)):
+        require(prs_json_argv_flat in " ".join(text.split()),
+                f"{name} lost the typed prs.json argv (--label concat / --state / --limit / --json)")
+        require(prs_json_stdout in text,
+                f"{name} lost the typed prs.json stdout_file Path")
+        require("> <rundir>/prs.json" not in text,
+                f"{name} restored the prs.json shell redirection")
+
+    # The per-PR `gh pr view` adoption snapshot is the same class: typed run_argv, its output path a
+    # Path in stdout_file via path_join, never `> <rundir>/pr-<pr>.json`.
+    pr_view_argv = " ".join((
+        'argv: ["gh", "pr", "view", pr, "--json", '
+        '"number,title,body,headRefName,headRefOid,baseRefName,labels,state,'
+        'isCrossRepository,headRepositoryOwner,headRepository"],'
+    ).split())
+    require(pr_view_argv in " ".join(adoption.split()),
+            "pr-adoption.md lost the typed `gh pr view` adoption-snapshot argv")
+    require('stdout_file: path_join(<rundir>, concat("pr-", pr, ".json"))' in adoption,
+            "pr-adoption.md lost the typed pr-<pr>.json stdout_file Path")
+    require("> <rundir>/pr-<pr>.json" not in adoption,
+            "pr-adoption.md restored the pr-<pr>.json shell redirection")
+
+    # CLASS INVARIANT: no live reference command block routes a dynamic path through a shell redirection.
+    # Every driver-run command spec uses the typed run_argv stdout_file Path instead. (The stage-2-ci.md
+    # snapshot block redirects to a `$tmp` shell var and `mv`s it — it documents ci-status.py's internal
+    # promote algorithm, not a driver-run command, and carries no `> <rundir>/` / `> $PROJECT/` form.)
+    for reference in sorted(REFS.glob("*.md")):
+        body = reference.read_text(encoding="utf-8")
+        for redirect in ("> <rundir>/", "> $" + "PROJECT/"):
+            require(redirect not in body,
+                    f"{reference.name} restored a dynamic-path shell redirection: {redirect!r}")
 
     for needle in (
         "## Typed repository context and data/process boundary",
@@ -288,6 +336,27 @@ def run_repository_context_fixtures() -> None:
                     f"{cell} escaped the repository: {derived!s}")
         require(scratch_root != Path("/.gauntlet/tmp"),
                 "absent PROJECT regressed to the root-level scratch path")
+
+        # The canonical prs.json snapshot path is produced via stdout_file/path_join, a typed Path — never
+        # a shell redirection. With the repository root carrying a space and a newline, path_join keeps the
+        # snapshot ONE intact Path under <rundir>; it is never shell-split and never triggers a bash
+        # "ambiguous redirect".
+        prs_json_path = rundir / "prs.json"
+        require(prs_json_path.parent == rundir and prs_json_path.name == "prs.json",
+                "prs.json path_join did not stay under the run directory")
+        require(" " in os.fspath(prs_json_path) and "\n" in os.fspath(prs_json_path),
+                "prs.json fixture lost the hostile whitespace it exists to pin")
+        require(prs_json_path.is_absolute() and
+                (prs_json_path == repository_root or repository_root in prs_json_path.parents),
+                f"prs.json snapshot path escaped the repository: {prs_json_path!s}")
+        # As one stdout_file argv element into a shell-only adapter, the space/newline-bearing path stays a
+        # single token — exactly one Path, never split by the shell.
+        prs_json_probe = [sys.executable, "-c",
+                          "import json,sys; print(json.dumps(sys.argv[1:]))", os.fspath(prs_json_path)]
+        prs_json_done = subprocess.run(["sh", "-c", shlex.join(prs_json_probe)],
+                                       text=True, capture_output=True, check=True)
+        require(json.loads(prs_json_done.stdout) == [os.fspath(prs_json_path)],
+                "prs.json stdout_file path was shell-split by the mechanical encoder")
 
         mkdir_parent = ["mkdir", "-p", "--", os.fspath(scratch_root)]
         mkdir_run = ["mkdir", "--", os.fspath(rundir)]

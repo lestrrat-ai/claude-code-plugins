@@ -8,14 +8,19 @@ Two entry paths feed it (see "Run identity and concurrency" for the full grammar
 - **explicit `#PR` args** (`<campaign-invocation> #12 #15`) — adopt exactly those PRs.
 - **no-arg discovery** (`<campaign-invocation>`, resume) — reconcile the PRs already labelled for this run:
 
-  ```
+  ```text
   # THE canonical run snapshot — the SAME command loop-control's per-wake PR scan (the `prs.json`
   # block in step 1) runs. ONE path, ONE schema.
   # Owning definition: "The canonical `prs.json` command" in files-and-ledger.md. Copy it whole;
   # never spell a variant.
-  gh pr list --label gauntlet-run-<run-id> --state open --limit 1000 \
-    --json number,headRefName,headRefOid,title,baseRefName,state,mergeable,mergeStateStatus,labels \
-    > <rundir>/prs.json
+  run_argv(
+    argv: ["gh", "pr", "list", "--label", concat("gauntlet-run-", run_id),
+           "--state", "open", "--limit", "1000",
+           "--json", "number,headRefName,headRefOid,title,baseRefName,state,mergeable,mergeStateStatus,labels"],
+    cwd: repository.project_root,
+    stdin_file: null,
+    stdout_file: path_join(<rundir>, "prs.json")
+  )
   ```
 
   Every open PR carrying this run's owner label is already ours — refresh its row from that snapshot.
@@ -52,8 +57,17 @@ For each `#PR` to adopt:
 1. **Read the PR** — one `gh pr view` for the facts the ledger row needs, **including the cross-repo
    field** so the refusal check below can reject fork PRs:
 
-   ```
-   gh pr view <pr> --json number,title,body,headRefName,headRefOid,baseRefName,labels,state,isCrossRepository,headRepositoryOwner,headRepository > <rundir>/pr-<pr>.json
+   The typed `run_argv` operation from `runtime-adapter.md` — every option its own argv element, the
+   output path a typed `Path` in `stdout_file`, never a shell redirection:
+
+   ```text
+   run_argv(
+     argv: ["gh", "pr", "view", pr,
+            "--json", "number,title,body,headRefName,headRefOid,baseRefName,labels,state,isCrossRepository,headRepositoryOwner,headRepository"],
+     cwd: repository.project_root,
+     stdin_file: null,
+     stdout_file: path_join(<rundir>, concat("pr-", pr, ".json"))
+   )
    ```
 
    `isCrossRepository` is `true` when the head branch lives in a **fork**, not `origin`; in that case

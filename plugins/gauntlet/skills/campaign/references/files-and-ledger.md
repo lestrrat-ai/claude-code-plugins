@@ -25,13 +25,21 @@ resume, reuse the existing dir). Per-run dirs are what keep concurrent runs' fil
 
 **The canonical `prs.json` command — this block is THE definition.** Every other site defers to it, and
 **NO site may spell a variant of it** — differing spellings are how a reader of `prs.json` ends up with
-a file that is scoped wrong or missing the fields it reads. Copy it whole, including the `--label`
-filter and the output path:
+a file that is scoped wrong or missing the fields it reads. It is the typed `run_argv` operation from
+`runtime-adapter.md`: every `gh pr list` option is its own argv element, and the output path is a typed
+`Path` in `stdout_file` — never a shell redirection, so it keeps dynamic paths out of shell source and a
+`<rundir>` containing a space stays one intact path. Copy it whole, including the `--label` filter and the
+`stdout_file` path:
 
-```
-gh pr list --label gauntlet-run-<run-id> --state open --limit 1000 \
-  --json number,headRefName,headRefOid,title,baseRefName,state,mergeable,mergeStateStatus,labels \
-  > <rundir>/prs.json
+```text
+run_argv(
+  argv: ["gh", "pr", "list", "--label", concat("gauntlet-run-", run_id),
+         "--state", "open", "--limit", "1000",
+         "--json", "number,headRefName,headRefOid,title,baseRefName,state,mergeable,mergeStateStatus,labels"],
+  cwd: repository.project_root,
+  stdin_file: null,
+  stdout_file: path_join(<rundir>, "prs.json")
+)
 ```
 
 `pr-adoption.md` (discovery) and `loop-control.md`'s per-wake PR scan (the `prs.json` block in step 1)
@@ -49,8 +57,10 @@ Every part is load-bearing:
   reconcile reads as the complete run snapshot.
 - **Without `--json <the field set above>`** the reader finds no `labels`/`mergeable`/`headRefOid` —
   two writers with different field sets silently hand the reader a file missing the fields it reads.
-- **Without `> <rundir>/prs.json`** the snapshot lands somewhere nobody reads, and reconcile reads a
-  file nobody wrote.
+- **Without the `stdout_file` `Path` (`path_join(<rundir>, "prs.json")`)** the snapshot lands somewhere
+  nobody reads, and reconcile reads a file nobody wrote. It is a typed `Path`, never a shell redirection,
+  so a `<rundir>` carrying a space stays one intact path instead of triggering a bash "ambiguous
+  redirect".
 
 **`prs.json` is a BOUNDED snapshot, not a proof of completeness.** `--limit 1000` defeats the default-30
 truncation; it does **not** make the snapshot provably complete — a run with more than 1000 labelled PRs

@@ -64,10 +64,15 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      definition is the block **"The canonical `prs.json` command"** in `files-and-ledger.md`; copy it
      whole, never a variant:
 
-     ```
-     gh pr list --label gauntlet-run-<run-id> --state open --limit 1000 \
-       --json number,headRefName,headRefOid,title,baseRefName,state,mergeable,mergeStateStatus,labels \
-       > <rundir>/prs.json
+     ```text
+     run_argv(
+       argv: ["gh", "pr", "list", "--label", concat("gauntlet-run-", run_id),
+              "--state", "open", "--limit", "1000",
+              "--json", "number,headRefName,headRefOid,title,baseRefName,state,mergeable,mergeStateStatus,labels"],
+       cwd: repository.project_root,
+       stdin_file: null,
+       stdout_file: path_join(<rundir>, "prs.json")
+     )
      ```
 
      — and drive reconcile from that file; fall back to per-PR `gh pr view` only where the snapshot
