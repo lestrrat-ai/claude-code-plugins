@@ -232,9 +232,9 @@
   row can still move, **not** relaunched once CI has SETTLED. Parking neither stops a warranted watch nor
   starts an unwarranted one — and it dispatches no CI fix.
 - Reviews are fresh, context-isolated re-rolls: a separate reviewer invocation each pass (native worker
-  by default, or the user's preferred reviewer), no shared context. `runtime-adapter.md` owns the
-  transport-specific isolation contract: native workers may disclose a shared writable workspace and
-  inherited startup instructions, while stronger external isolation may be claimed only when enforced.
+  by default, or the user's preferred reviewer), no shared context. `runtime-adapter.md`'s
+  `ReviewIsolationCapability` and transition own all transport claims and route changes; consumers do
+  not unpack them.
   Candidate gate content never replaces the installed stage-0 rules. A second pass re-rolls a
   stochastic reviewer to catch a missed defect — the two are NOT statistically independent (the same
   diff, task, and protocol correlate them; same-reviewer passes also share model/prompt), so the gate
@@ -433,12 +433,9 @@
   user may choose a different-model reviewer for diversity. Apply the same-engine rule in
   `runtime-adapter.md`. See
   "The reviewer".
-- If an *external* reviewer can't deliver a verdict (quota/rate-limit, auth, timeout, or other system
-  error — *not* a real finding list / `VERDICT:` line), retry once, then do the equivalent work with
-  your own native workers: a fresh, context-isolated worker review pass in Stage 2a under
-  `runtime-adapter.md`'s native-worker contract. Missing native cwd/mount/sandbox controls alone do not
-  park the pass.
-  The gate is unchanged — note any fallback pass in the report. See "The reviewer".
+- Apply `reviewer.md`'s external-review retry budget, then take `runtime-adapter.md`'s owned transition.
+  The gate is unchanged; record the selected route and resulting reviewer in the report. See "The
+  reviewer".
 - **DERIVE `ci` BY RUNNING `scripts/ci-status.py derive --pr <N> --head-sha <the ledger's> --rundir
   <rundir> --required-set <the ledger header's>`, and by NOTHING ELSE.** It fetches, promotes, verifies and
   decides, and prints the verdict and the `ci` value as JSON (`stage-2-ci.md`, "THE DERIVATION IS A

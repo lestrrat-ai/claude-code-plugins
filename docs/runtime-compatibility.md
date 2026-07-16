@@ -27,8 +27,13 @@ Campaign's exact cross-agent command lines live in
   share cwd, writable files, and repository startup instructions; disclose that limitation and keep the
   installed campaign rules as stage-0 authority. Claim instruction-neutral/read-only isolation only for
   a transport whose host or OS enforces it; `runtime-adapter.md` owns the complete rule.
-- Carry dynamic paths, refs and payloads through the runtime adapter's typed argv/byte/message boundary;
-  never splice them into shell source. Its per-attempt record also assigns one final-report producer.
+- Resolve the supplied checkout once per workflow entry/resume through the runtime adapter's typed
+  `RepositoryContext`; carry its absolute paths and every dynamic ref/payload through typed
+  argv/byte/message fields, never an ambient project variable or shell splice. Its per-attempt record
+  also assigns one final-report producer.
+- Evaluate external reviewers through the runtime adapter's `ReviewIsolationCapability` transition.
+  The current adapters do not materialize/test the required view, so external selection falls back to a
+  fresh native worker without external launch or immediate park.
 - NEVER silently skip a required capability. Report the missing capability and use the documented fallback.
 - Keep host-specific examples paired unless a section is explicitly host-only.
 - Treat cross-agent review as a user option, never an automatic default.

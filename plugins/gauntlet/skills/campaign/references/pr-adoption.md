@@ -104,8 +104,8 @@ For each `#PR` to adopt:
    - `id` = `pr<N>`; `slug` = slugified PR title; `branch` = the PR's **own** `headRefName` (adopted PRs
      keep their branch — do NOT mint a `fix-<run-id>-...` branch); `worktree` = `-`,
      `worktree_owned` = `-`, and `branch_owned` = `-` until the head worktree is resolved in step 5
-     (before its first review pass), then the **actual** resolved `$worktree` (the created default
-     `$PROJECT/.worktrees/<headRefName>`, or a reused existing checkout's path) with `worktree_owned` =
+     (before its first review pass), then the **actual** resolved `$worktree` returned by the
+     repository-context-aware operation (created default or reused existing checkout) with `worktree_owned` =
      `yes` when campaign created the worktree / `no` when it reused a pre-existing checkout, and
      `branch_owned` = `yes` **only** when campaign created the local branch (the `-b` path) / `no` when
      it reused a pre-existing local branch or checkout;
@@ -284,41 +284,41 @@ For each `#PR` to adopt:
    elsewhere (as does `git fetch origin <hrn>:<hrn>` updating a checked-out branch). So update the
    remote ref (always safe), then **reuse an existing checkout if there is one, else add a worktree**:
 
-   Use `runtime-adapter.md`'s typed `run_argv` boundary for this whole algorithm. The names below are
-   data fields from the PR snapshot; `concat` and `path_join` produce one argv/path value and never shell
-   source. For compactness, `run_argv(argv, cwd)` below sets both file fields to null and reads its
-   `ProcessResult`:
+   Use the invocation's single `RepositoryContext` and `runtime-adapter.md`'s typed `run_argv` boundary
+   for this whole algorithm. The names below are data fields from the PR snapshot; `concat` produces one
+   argv value and never shell source. For compactness, `run_argv(argv, cwd)` below sets both file fields
+   to null and reads its `ProcessResult`:
 
    ```text
    run_argv(["git", "fetch", "origin",
-             concat("refs/heads/", base, ":refs/remotes/origin/", base)], project_root)
+             concat("refs/heads/", base, ":refs/remotes/origin/", base)], repository.project_root)
    run_argv(["git", "fetch", "origin",
-             concat("refs/heads/", headRefName, ":refs/remotes/origin/", headRefName)], project_root)
+             concat("refs/heads/", headRefName, ":refs/remotes/origin/", headRefName)], repository.project_root)
 
-   listing = run_argv(["git", "worktree", "list", "--porcelain", "-z"], project_root).stdout
+   listing = run_argv(["git", "worktree", "list", "--porcelain", "-z"], repository.project_root).stdout
    existing = parse_nul_porcelain_for_exact_branch(listing, concat("refs/heads/", headRefName))
    if existing is present:
      worktree = existing
      worktree_owned = "no"
      branch_owned = "no"
      status = run_argv(["git", "-C", existing, "status", "--porcelain",
-                        "--untracked-files=all"], project_root).stdout
+                        "--untracked-files=all"], repository.project_root).stdout
      require status is empty; otherwise bail without changing the checkout
      require run_argv(["git", "-C", existing, "merge", "--ff-only",
-                       concat("refs/remotes/origin/", headRefName)], project_root) succeeds
+                       concat("refs/remotes/origin/", headRefName)], repository.project_root) succeeds
    else:
      # Never use -B: it can reset a pre-existing local branch.
-     worktree = path_join(project_root, ".worktrees", headRefName)
+     worktree = default_worktree(repository, headRefName)
      local = run_argv(["git", "show-ref", "--verify", "--quiet",
-                       concat("refs/heads/", headRefName)], project_root)
+                       concat("refs/heads/", headRefName)], repository.project_root)
      if local exited 0:
-       require run_argv(["git", "worktree", "add", worktree, headRefName], project_root) succeeds
+       require run_argv(["git", "worktree", "add", worktree, headRefName], repository.project_root) succeeds
        require run_argv(["git", "-C", worktree, "merge", "--ff-only",
-                         concat("refs/remotes/origin/", headRefName)], project_root) succeeds
+                         concat("refs/remotes/origin/", headRefName)], repository.project_root) succeeds
        branch_owned = "no"
      else if local reports only "ref absent":
        require run_argv(["git", "worktree", "add", "-b", headRefName, worktree,
-                         concat("refs/remotes/origin/", headRefName)], project_root) succeeds
+                         concat("refs/remotes/origin/", headRefName)], repository.project_root) succeeds
        branch_owned = "yes"
      else:
        bail on the unexpected show-ref failure
@@ -326,16 +326,16 @@ For each `#PR` to adopt:
 
    run_argv(["python3", ledger_script, "--file", state_file, "set", "--pr", pr,
              "--worktree", worktree, "--worktree_owned", worktree_owned,
-             "--branch_owned", branch_owned], project_root)
+             "--branch_owned", branch_owned], repository.project_root)
    ```
 
    (Do **not** replace the typed remote-tracking fetch with a direct PR-head-to-local-branch fetch: that
    form writes the local branch directly and is **refused** when the branch already exists or is checked
    out. Let the create/reuse logic above handle the local branch.)
 
-   Record the **actual** resolved `worktree` — `path_join(project_root, ".worktrees", headRefName)` is only the
-   **created default** used on the `git worktree add` path; a reused checkout sits at some **other**
-   path — in the row's `worktree` (via `ledger.py … set --pr <N> --worktree …`), record
+   Record the **actual** resolved `worktree`; `default_worktree(repository, headRefName)` is only the
+   **created default** used on the `git worktree add` path, while a reused checkout sits at some other
+   absolute path. In the row's `worktree` (via `ledger.py … set --pr <N> --worktree …`), record
    `$worktree_owned` (`yes` = campaign created the worktree, `no` = reused a pre-existing checkout) in
    the row's `worktree_owned`, and record `$branch_owned` (`yes` = campaign created the local branch
    via `-b`, `no` = reused a pre-existing local branch or checkout) in the row's `branch_owned` — all

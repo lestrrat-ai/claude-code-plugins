@@ -70,6 +70,5 @@ Caveats:
 - A whole AXIS can be missed. When a later finding reveals a dimension the enumeration didn't have,
   RE-RUN it on the expanded space rather than patching the single new cell.
 
-Pairs with the default native-worker reviewer. When the user selects a second agent for a large PR, a
-**parallel adversarial reviewer** may run the same enumeration independently for breadth while the gate
-reviewer runs. Use `cross-agent-reviewers.md` for that optional transport.
+This acceptance-path mapper remains the mandatory dedicated native session-class role above. It is
+never filled by Stage 2 cross-agent reviewer transport and never renders or replaces a gate verdict.

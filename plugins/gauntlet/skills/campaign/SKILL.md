@@ -8,17 +8,20 @@ description: >-
 
 Self-looping, reactive PR-review-to-merge pipeline.
 
-The active host is orchestrator + gatekeeper. Read `references/runtime-adapter.md` before the first
-dispatch or wait. The **adversarial reviewer** is a selectable role: by default a fresh native worker
+The active host is orchestrator + gatekeeper. Read `references/runtime-adapter.md` at entry, resolve the
+supplied checkout through its typed `RepositoryContext` owner exactly once per invocation/resume, and
+carry that record for every repository path and Git cwd. Read the same adapter before the first dispatch
+or wait. The **adversarial reviewer** is a selectable role: by default a fresh native worker
 (no external tool required); use the user's preferred reviewer when one is set (explicit invocation, or
 a preference in memory/`AGENTS.md`/`CLAUDE.md`/carryover). The user may choose a reviewer running a
 different agent/model than the orchestrator for engine diversity — see `references/reviewer.md`.
-Every verdict-rendering transport follows the runtime adapter's isolation contract: native workers
-guarantee fresh conversational context but may lack a filesystem boundary, while an external transport
-may claim stronger isolation only when the host or OS enforces it. Installed campaign rules remain the
-stage-0 gate authority. The same adapter owns the typed process/data boundary: dynamic values cross as
-argv, byte-file, or native-message data, and each review attempt's record assigns exactly one final-report
-producer.
+Every verdict-rendering transport follows the runtime adapter's capability/transition owner: native
+workers guarantee fresh conversational context but may lack a filesystem boundary, while an external
+transport launches only after a host/OS adapter proves every stronger isolation property. Current
+adapters report both external routes unavailable and take the fresh native fallback. Installed campaign
+rules remain the stage-0 gate authority. The same adapter owns the typed process/data boundary: dynamic
+values cross as argv, byte-file, or native-message data, and each review attempt's record assigns exactly
+one final-report producer.
 Reviews and CI watches run as background
 tasks; gates and merges stay centralized. Campaign gates **existing** PRs; it never writes fixes from
 scratch — to find issues first, use `gauntlet:review`, which after its report offers to open one PR per
@@ -170,11 +173,11 @@ gauntlet** — which is itself a miss-catcher. **NEVER justify the cheap tier wi
 review gate will catch it."** This is a small, bounded risk the user has accepted, for a workflow that is
 cheaper **and** more capable than a full-strength subagent on every formatting failure.
 
-**A user-selected external reviewer can reduce native-worker cost.** Review passes re-read the whole PR
+**A capable user-selected external reviewer can reduce native-worker cost.** Review passes re-read the whole PR
 diff, `required(tier)` times per SHA, and re-run from scratch on every gate reset, so they dominate
-campaign's native-worker spend. When the user selects this option, an external reviewer moves that work
-off the native-worker pool. Never select one solely for this reason; `references/reviewer.md` owns the
-opt-in choice.
+campaign's native-worker spend. When the selected route is available, it moves that work off the
+native-worker pool; current unavailable adapters take native fallback and do not. Never select one
+solely for this reason; `references/reviewer.md` owns the opt-in choice.
 
 **Every fix subagent — CI or review — is dispatched under one contract**, and
 `references/fix-subagent-contract.md` is its complete definition. Two halves, both mandatory:

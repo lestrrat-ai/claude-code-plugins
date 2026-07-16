@@ -62,7 +62,7 @@ review gate"), and the review re-starts on the clean tip:
   with the active host form of `gauntlet:copilot-address-reviews <pr>` before reviewing (that skill verifies each item against source
   before changing code, works them one at a time, and resolves the threads). Detect them from a
   stored `gh` snapshot — the copilot skill's `fetch-review-items.sh` normalizes unresolved
-  Copilot-authored comments into `.gauntlet/tmp/copilot-review-items.json` — never scrape HTML. That path is
+  Copilot-authored comments into its repository-context-owned primary worklist — never scrape HTML. That worklist is
   **shared across runs**, so treat it as ephemeral: fetch immediately before acting and **verify the
   JSON is for THIS PR** (re-fetch if a concurrent run overwrote it), and don't interleave two runs'
   copilot-address cycles. No items → no-op.
@@ -99,17 +99,11 @@ verdict can only describe a SHA that is about to be replaced, so letting it run 
 tokens and the review slot. The freed slot immediately refills with the next due review (Loop
 control step 3).
 
-If the selected reviewer is external (e.g. `codex exec`) and a pass can't return a verdict
-(quota/rate-limit, auth, timeout, or other system error — see "The reviewer"), retry it once, then run
-that pass as a **fresh native worker** reviewing the whole `origin/<base>...HEAD` diff under the same output
-contract — a `RESIDUAL-RISK` line on SATISFIED immediately above exactly one final `VERDICT:` line (that
-terminal line may instead read `VERDICT: DEFERRED — <reason>` when the pass raised a separate request
-rather than ruling; `RESIDUAL-RISK` is a SATISFIED-only line and never accompanies a DEFERRED one). A
-native-worker fallback pass counts toward the review gate exactly like an external pass —
-it's another fresh, context-isolated re-roll in its own context. (When the reviewer is already the
-active host's native workers, this *is* the normal path, not a fallback.) Apply the transport-specific
-isolation contract in `runtime-adapter.md`: native dispatch does not claim external-process cwd,
-mount, or startup-instruction controls that its task API does not provide.
+Route every selected reviewer through `runtime-adapter.md`'s capability/transition owner and
+`reviewer.md`'s retry budget. Any resulting native-worker pass receives this same complete review
+contract and counts toward the gate exactly like an external pass; when native workers are already the
+selected reviewer, that is the normal path rather than a fallback. Do not restate transport properties
+or park conditions here.
 
 **A REVIEW PASS'S ARTIFACTS HAVE A TOOL — `scripts/review-pass.py`. NEVER hand-parse one, and never
 hand-write a line the tool writes.** The plan, the `pass_identity`, every unit-progress event, and the read
@@ -411,9 +405,7 @@ events and vague "still working" lines prove only process liveness and MUST NOT 
 progress timer. The reviewer MUST append progress events immediately as units complete, not batch them
 at final output. If no meaningful progress lands for ~15 min while the review process is still alive,
 mark the review suspicious; if it remains stale on the next wake, treat it as a reviewer system
-failure: for an external reviewer, retry once then use the fresh-worker fallback; for a native-worker
-reviewer, re-roll a fresh worker pass. Either native dispatch remains subject to `runtime-adapter.md`'s
-native-worker contract; missing cwd/mount/sandbox controls alone are not a machine blocker. Ignore any
+failure: apply `reviewer.md`'s retry budget and `runtime-adapter.md`'s owned transition. Ignore any
 late verdict from a stale/superseded attempt unless its attempt id still matches the active review pass.
 
 ### What the review is MEASURED AGAINST — the PR's intent
@@ -550,8 +542,9 @@ makes the pass `unusable` and no verdict is tallied from it. **What "usable" mea
 definition. A missing intent is the one `unusable` that is **not** a reviewer failure: write the block,
 then re-dispatch.
 
-The reviewer runs the following review contract. Select the reviewer through `reviewer.md` and build
-its typed transport through `runtime-adapter.md` first. The default native-worker and optional external
+The reviewer runs the following review contract. Select the reviewer through `reviewer.md`, evaluate its
+`ReviewIsolationCapability`, and take the resulting `review_transition` through `runtime-adapter.md`
+before building a typed transport. The default native-worker and capability-gated optional external
 paths receive the same prompt, with one transport record that assigns artifact ownership and carries
 every dynamic value as data. Conversational isolation is mandatory; filesystem and startup-instruction
 isolation claims depend on the selected transport's actual capabilities.
@@ -588,11 +581,12 @@ Leaving the active findings path out of the record is the same defect in its cru
 has nowhere valid to write it. The single record exists so dispatch, artifact ownership, and
 attempt-isolation cannot drift apart.
 
-**Note:** an external review starts in the trusted `<review-root>`, never in `<worktree>`; a native task
-API may not expose a cwd control and must not be described as doing so. The PR row's ledger `worktree`
+**Note:** build an external record only when the runtime transition returns `launch-external` or
+`retry-external`; every other action stays with that owner. A native task API may not expose a cwd
+control and must not be described as doing so. The PR row's ledger `worktree`
 column remains the single source of truth for the candidate checkout path (created at
-adoption/pre-review per `pr-adoption.md`; default `.worktrees/<headRefName>` when campaign creates it,
-else a reused existing checkout). That worktree is guaranteed to exist before dispatch and is supplied
+adoption/pre-review per `pr-adoption.md`'s repository-context-aware operation). That worktree is
+guaranteed to exist before dispatch and is supplied
 as explicit review input. Review commands address it by absolute path with `run_argv` and never `cd` into
 it. `runtime-adapter.md` owns the transport-specific isolation semantics,
 including the native path's disclosed lack of an OS boundary when the host supplies none.
@@ -607,7 +601,7 @@ ref so the diff always has a base to measure against:
 run_argv(
   argv: ["git", "fetch", "origin",
          concat("refs/heads/", base, ":refs/remotes/origin/", base)],
-  cwd: project_root, stdin_file: null, stdout_file: null
+  cwd: repository.project_root, stdin_file: null, stdout_file: null
 )
 ```
 
@@ -729,8 +723,10 @@ THE QUESTION YOU ARE ANSWERING IS: does this PR achieve its stated Purpose, with
    TRANSPORT.report.path yourself; the orchestrator's typed process transport captures it.
 ```
 
-Pass that artifact as data. For the external Codex transport, `-` tells `codex exec` to read prompt
-bytes from `stdin_file`, which supplies immediate EOF. Launch this typed operation in the background:
+Pass that artifact as data. Use the following external Codex argv only when the runtime transition
+returns `launch-external` or `retry-external`; no other action constructs this external record or
+launches this operation. On that route, `-` tells `codex exec` to read prompt bytes from `stdin_file`,
+which supplies immediate EOF; launch the typed operation in the background:
 
 ```text
 run_argv(
@@ -746,8 +742,8 @@ run_argv(
 Never embed the bound prompt in a shell argument or shell source. Also: NEVER pass destructive
 instructions (delete, force-push, reset) to `codex exec`, and NEVER use
 `--dangerously-bypass-approvals-and-sandbox` — always `--sandbox workspace-write`. The external
-transport's `-C` argv value and host/OS-enforced read-only candidate boundary are mandatory;
-`--ignore-rules` does not disable candidate `AGENTS.md` discovery and cannot replace them.
+argv consumes an already-proved view; its `-C` field does not materialize one. The complete capability
+is mandatory, and `--ignore-rules` does not disable candidate `AGENTS.md` discovery or replace it.
 
 ### Does this pass COUNT? — ASK THE TOOL, never the eye
 

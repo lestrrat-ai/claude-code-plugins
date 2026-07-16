@@ -108,18 +108,32 @@ subagent at a check that is merely **still running**.
    force it.
 
    **Run the fast-forward from wherever `<base>` is actually checked out** — don't assume it's the
-   root checkout. A branch can be checked out in at most one working tree, so first locate that tree
-   (`git worktree list` shows the branch per path; the root package counts as one), then fast-forward
-   there. If `<base>` is checked out **nowhere**, update the ref directly instead — a plain `fetch`
-   into the local branch (this form is refused while the branch is checked out, which is why it's the
-   no-working-tree case):
+   root checkout. Use the invocation's single `RepositoryContext` and the typed process boundary from
+   `runtime-adapter.md`. A branch can be checked out in at most one working tree, so first locate that
+   tree (`git worktree list` shows the branch per path; the root package counts as one), then
+   fast-forward there. If `<base>` is checked out **nowhere**, update the ref directly instead — a plain
+   `fetch` into the local branch (this form is refused while the branch is checked out, which is why
+   it's the no-working-tree case):
 
-   ```
-   git -C $PROJECT fetch origin refs/heads/<base>:refs/remotes/origin/<base>   # explicit refspec: refresh origin/<base> even when <base> has no local branch and no upstream configured
-   # case A — <base> is checked out in some working tree <dir> (root or a worktree):
-   git -C <dir> merge --ff-only origin/<base>
+   ```text
+   # Always refresh origin/<base>, even with no local branch or configured upstream.
+   run_argv(
+     argv: ["git", "fetch", "origin",
+            concat("refs/heads/", base, ":refs/remotes/origin/", base)],
+     cwd: repository.project_root, stdin_file: null, stdout_file: null
+   )
+
+   # case A — <base> is checked out in discovered absolute worktree <dir>:
+   run_argv(
+     argv: ["git", "merge", "--ff-only", concat("origin/", base)],
+     cwd: dir, stdin_file: null, stdout_file: null
+   )
+
    # case B — <base> is checked out in no working tree:
-   git -C $PROJECT fetch origin <base>:<base>
+   run_argv(
+     argv: ["git", "fetch", "origin", concat(base, ":", base)],
+     cwd: repository.project_root, stdin_file: null, stdout_file: null
+   )
    ```
 
    Fast-forward only — never a merge commit or reset. If the fast-forward fails (local `<base>` somehow
@@ -146,7 +160,7 @@ subagent at a check that is merely **still running**.
    - **NEVER `git worktree remove` the root/main checkout** (the repo's primary working tree) under any
      circumstances — even were it somehow flagged owned. Removing/replacing the main checkout is
      destructive and, for the primary working tree, impossible; `worktree_owned = yes` only ever names a
-     `.worktrees/<...>` worktree campaign itself created via `git worktree add`.
+     repository-context-derived worktree campaign itself created via `git worktree add`.
    - **`branch_owned = yes`** → campaign created the local branch (the `-b` path), so delete it (e.g.
      via `git-cleanup-merged` **with that same `<base>`**, or `git branch -d` the ledger-recorded
      `branch` after the worktree is gone). **`branch_owned = no`** → campaign reused a pre-existing

@@ -221,8 +221,9 @@ never the place to look them up.
   off: it can tell a run that's still being actively driven from one that's been abandoned, so it only
   ever resumes an orphaned run and never doubles up on one already in progress.
 - By default the reviewer is a fresh native worker, so it runs with nothing extra installed. As a user
-  option, you can select the other agent for engine diversity: Claude Code can launch Codex with
-  `codex exec`, and Codex can launch Claude Code with `claude -p`. Fresh native means a separate
+  option, you can select the other agent for engine diversity; when an adapter proves the required
+  external capability, Claude Code can launch Codex with `codex exec`, and Codex can launch Claude Code
+  with `claude -p`. Fresh native means a separate
   conversational context; the task API may still share the repository cwd and writable filesystem and
   inherit repository startup instructions. Campaign discloses that limitation and keeps the installed
   campaign rules as stage-0 authority rather than claiming a native OS boundary. Name the other
@@ -230,9 +231,10 @@ never the place to look them up.
   (for example, “review with claude”) or record it in memory, `AGENTS.md`, or `CLAUDE.md`. Campaign never
   selects the other agent merely because its CLI is installed. If an external reviewer
   can't return a verdict because of a system problem — quota or rate limits, auth, a timeout — it
-  retries once and then falls back to a fresh native worker. An external transport may claim an
-  instruction-neutral cwd and read-only candidate checkout only when the host or OS enforces both; the
-  native fallback uses the disclosed native isolation contract instead. A reviewer that never
+  retries once and then falls back to a fresh native worker. Campaign launches an external transport
+  only after the runtime adapter proves its complete isolation capability; current adapters cannot, so
+  they report the selection unavailable and take the native fallback without launching or immediately
+  parking. The fallback uses the disclosed native isolation contract. A reviewer that never
   gets going at all — hung on input, a bad path, a sandbox
   denial — is caught the same way: every review pass has to write *something* to its progress file
   within about five minutes of being dispatched, and one that writes nothing at all is killed and

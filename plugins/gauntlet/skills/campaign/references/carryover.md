@@ -67,8 +67,8 @@ snapshot path.
    `state.jsonl`. If any PR is refused or the bases disagree, **prompt and create nothing** — a rejected
    set must never leave an orphan run behind.
 2. **Only once preflight passes: mint the run-id + token, atomically create the clean `<rundir>`, and
-   record the run.** A bare `mkdir` (no `-p`) of `.gauntlet/tmp/<new-run-id>/` starts empty and fails
-   loudly on the rare id clash (retry with a fresh id). Write the lease and the `state.jsonl` header —
+   record the run.** Use `runtime-adapter.md`'s repository-context-owned run-directory operation; it
+   owns path derivation and collision behavior. Write the lease and the `state.jsonl` header —
    with `base_branch` filled from the agreed `baseRefName` (known from preflight) — then adopt each PR
    (ledger row + labels + worktree, and a CI watch **only when one is due** — `pr-adoption.md` owns what
    adoption produces and when the watch is warranted); a death mid-adoption still leaves a discoverable run.

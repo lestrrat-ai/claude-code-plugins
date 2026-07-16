@@ -58,17 +58,18 @@ copies of gate or instruction files remain review evidence.
 ### Optional — use the other agent as reviewer
 
 The gate's strength comes from re-reviewing each change with a *fresh, independent* reviewer. Two
-native workers share the orchestrator's model. If you want engine diversity, Claude Code can launch
-Codex with `codex exec`, and Codex can launch Claude Code with `claude -p`.
+native workers share the orchestrator's model. When an adapter proves the required external capability,
+Claude Code can launch Codex with `codex exec`, and Codex can launch Claude Code with `claude -p`.
 
 This is a user option, not a campaign rule. Name the reviewer when you invoke the campaign, or record it
 as your preference in memory, `AGENTS.md`, or `CLAUDE.md`. The campaign never launches the other agent merely
 because its CLI is installed. If an external
 reviewer can't return a verdict because of a system problem (quota, auth, timeout), the pipeline
-retries once and then falls back to a fresh native worker. An external transport may claim an
-instruction-neutral cwd and read-only candidate checkout only when the host or OS enforces both; an
-unavailable external boundary falls back rather than silently weakening that claim. The native fallback
-keeps fresh conversational context and discloses the host's filesystem/startup-instruction limitations.
+retries once and then falls back to a fresh native worker. Campaign launches an external transport only
+after the runtime adapter proves its complete isolation capability. Current adapters cannot, so they
+report the selection unavailable and take the native fallback without launching or immediately parking;
+that fallback keeps fresh conversational context and discloses the host's filesystem/startup-instruction
+limitations.
 
 ### Optional — tell it how to report to you
 

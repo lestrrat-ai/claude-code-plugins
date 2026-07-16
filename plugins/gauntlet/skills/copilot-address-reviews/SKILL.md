@@ -15,10 +15,29 @@ Given a GitHub PR link, process Copilot review items one at a time. NEVER assume
 
 ## Workflow
 
-1. Resolve bundled scripts relative to directory containing this `SKILL.md`, not current working directory. NEVER `cd` to skill directory — script's relative `.gauntlet/tmp/` default would land output inside skill directory.
-2. From project root, run `bash <skill-dir>/scripts/fetch-review-items.sh --tmp-dir "$PROJECT/.gauntlet/tmp" <pr-url>` (absolute script path). Invoke bundled scripts through their interpreter — `bash` for `.sh`, `python3` for `.py` — NEVER bare: a bare invocation depends on the executable bit and the shebang surviving every checkout, archive and install path. The script creates the dir if missing.
-3. Read `$PROJECT/.gauntlet/tmp/copilot-review-items.json` as primary worklist of unresolved items only.
-4. Inspect `$PROJECT/.gauntlet/tmp/copilot-review-items.raw.json`, `.gauntlet/tmp/gh-pr-view.json`, and `.gauntlet/tmp/gh-pr-review-threads.json` when dedup or extraction needs verification.
+1. Resolve bundled scripts relative to the directory containing this `SKILL.md`, not the current
+   working directory. Resolve the shared typed runtime owner at
+   `../campaign/references/runtime-adapter.md` from that same skill directory. NEVER `cd` to the skill
+   directory — the fetcher's relative scratch default would land output there.
+2. At workflow entry, call the runtime owner's `resolve_repository_context(checkout)` exactly once with
+   the supplied local checkout. Then call `run_argv` with these distinct fields (the script creates the
+   scratch directory if missing):
+
+   ```text
+   run_argv(
+     argv: ["bash", fetch_review_items_script, "--tmp-dir", repository.scratch_root, pr_url],
+     cwd: repository.project_root, stdin_file: null, stdout_file: null
+   )
+   ```
+
+   `fetch_review_items_script` is the absolute path resolved in step 1. Invoke bundled scripts through
+   their interpreter — `bash` for `.sh`, `python3` for `.py` — NEVER bare: a bare invocation depends on
+   the executable bit and the shebang surviving every checkout, archive, and install path.
+3. Read `path_join(repository.scratch_root, "copilot-review-items.json")` through `read_bytes` as the
+   primary worklist of unresolved items only.
+4. Inspect the sibling paths under `repository.scratch_root` named
+   `copilot-review-items.raw.json`, `gh-pr-view.json`, and `gh-pr-review-threads.json` through
+   `read_bytes` when dedup or extraction needs verification. Never resolve these from cwd.
 5. Select next unhandled unresolved item from worklist. NEVER work resolved items.
 6. For current item, choose exactly one outcome before moving on:
    - valid → fix
@@ -50,17 +69,19 @@ Resolve bundled resources relative to this `SKILL.md`. Script directory = `scrip
   as part of the `gauntlet` plugin, derive its absolute path from the active `SKILL.md` path supplied by
   the host. Do not depend on a plugin-root environment variable.
 - Repository layout: skill directory = `plugins/gauntlet/skills/copilot-address-reviews/`.
-- Run scripts by absolute path from project root. ALWAYS pass `--tmp-dir "$PROJECT/.gauntlet/tmp"` so output lands in project `.gauntlet/tmp/`, never skill directory.
+- Run scripts by absolute path with the `RepositoryContext` fields established at workflow entry. The
+  fetch operation in step 2 owns the invocation and scratch operand; do not restate its path formula.
 - NEVER assume current working directory already is skill directory.
 
 ### `scripts/fetch-review-items.sh`
 
 - Entry point for PR review item discovery.
 - Use `gh` CLI only. NEVER scrape HTML.
-- Save raw GitHub output to `.gauntlet/tmp/` first.
+- Save raw GitHub output under `repository.scratch_root` first.
 - Fetch PR metadata + all pages of review threads/comments.
-- Normalize unresolved Copilot-authored review comments into `.gauntlet/tmp/copilot-review-items.raw.json`.
-- Invoke `scripts/dedup_review_items.py` to write `.gauntlet/tmp/copilot-review-items.json`.
+- Normalize unresolved Copilot-authored review comments into the raw-worklist sibling named in workflow
+  step 4.
+- Invoke `scripts/dedup_review_items.py` to write the primary worklist named in workflow step 3.
 - If GitHub response shape is incomplete for current PR, extend GraphQL query or inspect raw JSON before changing code.
 
 ### `scripts/dedup_review_items.py`
@@ -72,8 +93,9 @@ Resolve bundled resources relative to this `SKILL.md`. Script directory = `scrip
 
 ## Fetch Review Items
 
-- Start with `bash <skill-dir>/scripts/fetch-review-items.sh <pr-url>` (step 2 above owns the invocation form).
-- Treat `.gauntlet/tmp/copilot-review-items.json` as candidate worklist of unresolved items, not truth.
+- Start with the typed operation in workflow step 2; that step owns the invocation form and every
+  dynamic operand.
+- Treat the primary worklist from workflow step 3 as unresolved-item candidates, not truth.
 - Inspect Copilot review submissions as well as inline discussion comments. Do not assume a `#pullrequestreview-...` URL is represented directly in normalized output.
 - If user points to review submission URL or review id, map it to attached inline review comments and confirm those comments are present in worklist before proceeding.
 - Filter results to authors that represent GitHub Copilot review bots. Do not assume exact login string is stable if raw output shows another Copilot variant.

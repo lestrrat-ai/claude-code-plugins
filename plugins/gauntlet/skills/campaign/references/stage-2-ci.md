@@ -825,10 +825,9 @@ ever re-ordered again.
   step 3 — the fix will replace its SHA, so the verdict is already void; free the slot), then
   **CLASSIFY the failure** from the check logs ("Classify, then set the model class" below) **before
   dispatching anything**, and dispatch a **scoped CI-fix subagent** into `<worktree>` — the PR row's
-  ledger `worktree` column value, the single source of truth for this PR's checkout path (created at
-  adoption/pre-review per `pr-adoption.md`; default `.worktrees/<headRefName>` when campaign creates
-  it, else a reused existing checkout). Its fix commits + pushes to the PR's **own head branch** →
-  **apply the gate reset** below.
+  ledger `worktree` column value, the single source of truth for this PR's checkout path (resolved by
+  `pr-adoption.md`'s repository-context-aware operation). Its fix commits + pushes to the PR's **own
+  head branch** → **apply the gate reset** below.
 - **UNKNOWN_VALUE → escalate, NEVER guess** → **no evidence row classifies `FAIL`** (else `red` above
   already won) and an evidence row carries a value not in the enums above (GitHub added one, or a
   `COMPLETED` `checkrun` row carries no `.conclusion`). **Do NOT** map it to green or pending, and do

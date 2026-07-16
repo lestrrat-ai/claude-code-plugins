@@ -65,6 +65,8 @@ applies.
 
 - It only works **unresolved** items and never re-touches ones that are already resolved.
 - It reads review data through the `gh` CLI only — it never scrapes GitHub HTML.
-- It writes its scratch files under `.gauntlet/tmp/` at the repo root, not inside the skill directory.
+- It resolves the supplied checkout once through the shared typed repository-context owner, then writes
+  its scratch files under that repository's scratch root, never inside the skill directory or from an
+  ambient project variable.
 - It never posts comments or replies on your behalf; decisions are reported to you locally.
 - Full mechanics live in [`SKILL.md`](./SKILL.md).

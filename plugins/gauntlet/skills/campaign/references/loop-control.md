@@ -6,7 +6,9 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
 
 **Every wake — reconcile, dispatch, reschedule:**
 
-1. **Resolve the run + lease, then init / resume / start fresh.** First bind **which run this wake is
+1. **Resolve repository context, then the run + lease, then init / resume / start fresh.** Call
+   `runtime-adapter.md`'s repository-context resolver exactly once with the supplied checkout and carry
+   that record for every path and Git cwd on this wake. Then bind **which run this wake is
    for** and confirm you may drive it, per "Run identity and concurrency": a `--run <id>` self-wake
    presents its `--token` and, under the run's claim lock, continues if the token matches the lease,
    adopts if the lease is absent/stale, or **stands down** if a fresh lease bears a different token; a
@@ -307,8 +309,8 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      contract in `runtime-adapter.md` — the
      PR row's ledger `worktree` column value, the
      single source of truth for this PR's checkout path (created at adoption/pre-review per
-     `pr-adoption.md`; the ledger-recorded `<worktree>` path — default `.worktrees/<headRefName>` when
-     campaign creates it, else a reused existing checkout) — and diffs
+     `pr-adoption.md`; the ledger-recorded `<worktree>` path from that repository-context-aware
+     operation) — and diffs
      `origin/<base>...HEAD`, so a real checkout must be present): if that `<worktree>` is missing, create it
      from the PR head **per `pr-adoption.md` step 5** — which reuses an existing checkout of that branch
      if one exists (root or another worktree), else adds a fresh worktree, since `git worktree add`
@@ -317,7 +319,8 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      review dispatch through the typed Stage 2a pre-review operation** — the review
      diffs `origin/<base>...HEAD`, a remote-tracking ref that always exists, since adoption fetches only
      the PR head and a local `<base>` may be absent or stale (see `pr-adoption.md` / Stage 2a). Then
-     confirm the verdict transport follows `runtime-adapter.md`'s transport-specific isolation contract;
+     evaluate the verdict transport through `runtime-adapter.md`'s capability/transition owner before
+     building its record and take only the action it returns;
      missing native cwd/mount/sandbox controls alone are not a machine blocker. Then launch **one**
      review pass as a **background**
      task (one at a time per PR — the second, when the tier requires two, only after the first is

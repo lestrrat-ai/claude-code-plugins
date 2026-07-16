@@ -309,9 +309,11 @@ grep -Fq '"codex", "exec", "--sandbox", "workspace-write"' "$campaign/references
 grep -Fq '"claude", "-p", "--safe-mode", "--no-session-persistence"' "$campaign/references/cross-agent-reviewers.md" ||
   fail "cross-agent reviewer map is missing the candidate-instruction-safe typed Claude Code argv"
 grep -Fq -- '"-C", transport.review_root' "$campaign/references/cross-agent-reviewers.md" ||
-  fail "cross-agent reviewer map is missing the instruction-neutral Codex working root argv"
-grep -Fq '## Typed data/process boundary' "$campaign/references/runtime-adapter.md" ||
-  fail "runtime adapter is missing the typed data/process boundary"
+  fail "cross-agent reviewer map is missing the capability-gated Codex working-root argv"
+grep -Fq '## Typed repository context and data/process boundary' "$campaign/references/runtime-adapter.md" ||
+  fail "runtime adapter is missing the typed repository/data boundary"
+grep -Fq 'ReviewIsolationCapability' "$campaign/references/runtime-adapter.md" ||
+  fail "runtime adapter is missing the review-isolation capability owner"
 python3 "$campaign/scripts/transport-contract-test.py" || status=1
 
 campaign_host_leaks=$(

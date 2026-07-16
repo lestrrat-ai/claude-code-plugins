@@ -23,23 +23,23 @@ fresh, context-isolated re-rolls, but two native workers share the orchestrator'
 are less independent than a *different* engine would be. When available, a reviewer running a
 **different agent/model than the orchestrator** catches defects a
 same-model re-roll can miss. Use it only when the user selects it explicitly or has saved it as a
-preference. Claude Code can use Codex CLI (`codex exec`) for that diversity;
-Codex must not claim diversity from another Codex process. It is never mandatory: the default
-native-worker path is a complete, valid reviewer.
+preference. When the runtime capability is available, Claude Code can use Codex CLI (`codex exec`) for
+that diversity; Codex must not claim diversity from another Codex process. It is never mandatory: the
+default native-worker path is a complete, valid reviewer.
 
-**A user-selected external reviewer can also reduce native-worker cost.**
+**A capable user-selected external reviewer can also reduce native-worker cost.**
 Review passes dominate campaign's native-worker spend: each one re-reads the **whole** `origin/<base>...HEAD`
 diff, runs `required(tier)` times per SHA, and re-runs **from scratch** on every gate reset (a content
 change voids the tally). A PR that takes several fix rounds can therefore spend many full-diff passes.
-An external reviewer moves all of that off the native-worker pool. When describing this user option,
-note that it can reduce native-worker token use more than changing one worker's model tier.
+An available external route moves all of that off the native-worker pool; an unavailable selection
+takes native fallback and does not. When describing this user option, note that capability condition.
 
 **A REVIEW PASS IS NEVER RUN ON A DOWNGRADED MODEL.** Whether the reviewer is a native worker or the
 worker fallback for a failed external reviewer, the pass runs in the **`session` class** — it *is* the
 gate, and a weaker verdict is simply a worse gate (`SKILL.md`, "Worker Dispatch"). The **one** deliberate
 downgrade in this skill is the CI-fix subagent for a **formatting/lint** failure (`stage-2-ci.md`), which
 runs a formatter and **verifies its diff** rather than authoring a fix — never a review pass. If the user
-selects an external reviewer, it can reduce native-worker token use; it never changes the required model
+selects an available external reviewer, it can reduce native-worker token use; it never changes the required model
 class or review contract.
 
 ### Running the default reviewer — native workers
@@ -90,10 +90,11 @@ pass count).
 
 ### Running an external reviewer (e.g. Codex CLI)
 
-For the exact Claude Code → Codex and Codex → Claude Code transports, read
-`cross-agent-reviewers.md`. The stage review contract remains the prompt authority.
+For the capability result and transition, read `runtime-adapter.md`. For the conditional Claude Code →
+Codex and Codex → Claude Code argv, read `cross-agent-reviewers.md`. The stage review contract remains
+the prompt authority. Only `launch-external` or `retry-external` uses external argv.
 
-When the selected reviewer is an external process like `codex exec`, invoke it with
+When a selected external reviewer has an available capability, invoke it with
 `runtime-adapter.md`'s typed `run_argv` operation and the complete argv in the stage refs; set
 `report.producer` to `external-process-capture`. NEVER pass destructive
 instructions (delete, force-push, reset) to an external reviewer command, and NEVER use
@@ -108,12 +109,13 @@ exhaustion, auth failures, timeouts, or other system errors. Distinguish this fr
 run that returns an actual finding list or a `VERDICT: …` line is a *result*, act on it. A *failure*
 is the absence of a verdict.
 
-**On external-reviewer failure, retry once. If it still can't deliver a verdict, fall back to the
-default native workers** (the per-PR procedure above) rather than stalling, looping, or skipping the
-gate — then note in the final report which passes ran on the worker fallback. The gate is unchanged:
-a worker pass is a fresh, context-isolated re-roll that counts toward the review gate exactly like an
-external pass. The fallback uses the native-worker isolation contract in `runtime-adapter.md`; absence of
-native cwd/mount/sandbox controls is disclosed, not mistaken for an external-process boundary.
+**On a capable external process failure, retry once. If it still can't deliver a verdict, take
+`runtime-adapter.md`'s fresh native fallback transition** rather than stalling, looping, or skipping the
+gate. A pre-launch capability miss has no process to retry and takes that fallback immediately. Note in
+the final report which selected external routes were unavailable and which passes ran on the worker
+fallback. The gate is unchanged: a worker pass is a fresh, context-isolated re-roll that counts toward
+the review gate exactly like an external pass. The runtime owner defines the native limitations and the
+only machine-blocker transition; do not restate them here.
 
 A reviewer that **never starts** is a distinct failure — it produces not even a partial result — and
 has its own guard: the Stage 2a **launch check** kills any pass that has written **no launch evidence**
