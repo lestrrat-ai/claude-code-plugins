@@ -51,15 +51,24 @@ catch-all and parks a PR that nothing was wrong with.
 | `.isDraft = true` | a **draft** PR — GitHub blocks the merge regardless of CI | **NEVER merge.** Park `awaiting-user`. |
 | `.mergeable = MERGEABLE` | the branches **can** be combined — **the ONLY non-blocking `.mergeable` value, and the one EVERY healthy PR carries** | **NOT a licence to merge.** The `.mergeable` precondition is satisfied and **nothing else is decided**: fall through to the `.mergeStateStatus` rows below, which decide whether the merge may actually run. |
 | `.mergeable = CONFLICTING` | conflicts with the base | refresh the PR per step 6 |
-| `.mergeable = UNKNOWN` | **not computed yet** (GitHub computes mergeability lazily) | **re-poll with backoff**, bounded; **never** read as a verdict |
+| `.mergeable = UNKNOWN` | **not computed yet** (GitHub computes mergeability lazily) | **re-poll, bounded** — see **"The UNKNOWN re-poll bound"** below; **never** read as a verdict |
 | `.mergeStateStatus = CLEAN` | mergeable, everything green | **merge** |
 | `.mergeStateStatus = HAS_HOOKS` | mergeable; the repo has pre-receive hooks | **merge** |
 | `.mergeStateStatus = BEHIND` | base has moved ahead | refresh the PR per step 6 → gate reset |
 | `.mergeStateStatus = DIRTY` | conflicts | refresh the PR per step 6 |
 | `.mergeStateStatus = UNSTABLE` | a check is **non-passing** — which **INCLUDES STILL RUNNING** | **do not merge.** Do **NOT** touch `ci` and do **NOT** dispatch a CI-fix — campaign's own snapshot decides that. |
 | `.mergeStateStatus = BLOCKED` | the merge is blocked — **cause NOT enumerable** | **do not merge.** Park `awaiting-user`. **NEVER** map it to `ci = pending`. |
-| `.mergeStateStatus = UNKNOWN` | not computed yet | re-poll with backoff, bounded |
+| `.mergeStateStatus = UNKNOWN` | not computed yet | **re-poll, bounded** — see **"The UNKNOWN re-poll bound"** below |
 | **any other value** | GitHub added one | **park `awaiting-user`**, naming the value. Never guess. |
+
+**The UNKNOWN re-poll bound.** `UNKNOWN` is a value GitHub has **not computed yet** — it is not a verdict,
+and it resolves within seconds once GitHub finishes computing mergeability lazily. Re-poll it **in-wake up
+to 3 times, with a short backoff** (a few seconds between reads). If it is **still** `UNKNOWN` after the
+third read, do **NOT** merge on this wake — leave the PR and let the **next wake** re-evaluate it: **the
+wake is the backoff** (`stage-2-ci.md`, "The WAKE is the backoff — never tight-loop inside one"). A value
+that stays `UNKNOWN` across wakes is bounded by the wake cadence, so **no persisted counter is needed** —
+the in-wake cap is a fixed 3, and the coarse retry is the wake loop itself. Never read `UNKNOWN` as
+`MERGEABLE`, and never let a perpetually-`UNKNOWN` PR either merge or wedge.
 
 **EVERY `awaiting-user` park in this table is a MACHINE-BLOCKER park, and it MUST declare its exit** — a
 park whose exit event never comes is the same wedge it was meant to prevent. So, in the same step: write
