@@ -21,6 +21,7 @@ import tempfile
 from pathlib import Path
 from typing import NoReturn
 
+from _gauntlet.jsonl import JsonlError, object_lines
 from _gauntlet.table import config_lines, escape_cell as _shared_escape_cell, grid_lines
 from _gauntlet.table import hidden_notice as _shared_hidden_notice
 
@@ -286,42 +287,37 @@ def load(path: Path) -> "tuple[dict, list[dict]]":
         return header, rows
     seen_pr: set[str] = set()
     saw_first = False
-    for n, line in enumerate(path.read_text().splitlines(), start=1):
-        if not line.strip():
-            continue
-        try:
-            rec = json.loads(line)
-        except json.JSONDecodeError as e:
-            fail(f"malformed JSON on line {n}: {e}")
-        if not isinstance(rec, dict):
-            fail(f"line {n}: record is not a JSON object")
-        kind = rec.get("type")
-        if kind not in ("header", "row"):
-            fail(f"line {n}: missing or unknown record type {kind!r}")
-        # Header must be the first non-blank record and appear exactly once.
-        if not saw_first:
-            if kind != "header":
-                fail(f"line {n}: first record must be the header")
-            saw_first = True
-        elif kind == "header":
-            fail(f"line {n}: unexpected second/out-of-order header record")
-        if kind == "header":
-            # coerce every value to str, matching dump()'s write side (null -> default, not "None")
-            for f in HEADER_FIELDS:
-                header[f] = _coerce_field(rec.get(f), HEADER_DEFAULTS[f])
-        else:  # kind == "row"
-            row = dict(ROW_DEFAULTS)
-            # coerce every value to str first, so 11 and "11" are one key (null -> default, not "None")
-            for f in ROW_FIELDS:
-                row[f] = _coerce_field(rec.get(f), ROW_DEFAULTS[f])
-            pr = row["pr"]
-            # id is derived, never trusted from the file: recompute from pr
-            row["id"] = f"pr{pr}"
-            # duplicate detection runs on the normalized (string) pr key
-            if pr in seen_pr:
-                fail(f"line {n}: duplicate row for pr {pr}")
-            seen_pr.add(pr)
-            rows.append(row)
+    try:
+        for n, rec in object_lines(path.read_text()):
+            kind = rec.get("type")
+            if kind not in ("header", "row"):
+                fail(f"line {n}: missing or unknown record type {kind!r}")
+            # Header must be the first non-blank record and appear exactly once.
+            if not saw_first:
+                if kind != "header":
+                    fail(f"line {n}: first record must be the header")
+                saw_first = True
+            elif kind == "header":
+                fail(f"line {n}: unexpected second/out-of-order header record")
+            if kind == "header":
+                # coerce every value to str, matching dump()'s write side (null -> default, not "None")
+                for f in HEADER_FIELDS:
+                    header[f] = _coerce_field(rec.get(f), HEADER_DEFAULTS[f])
+            else:  # kind == "row"
+                row = dict(ROW_DEFAULTS)
+                # coerce every value to str first, so 11 and "11" are one key (null -> default, not "None")
+                for f in ROW_FIELDS:
+                    row[f] = _coerce_field(rec.get(f), ROW_DEFAULTS[f])
+                pr = row["pr"]
+                # id is derived, never trusted from the file: recompute from pr
+                row["id"] = f"pr{pr}"
+                # duplicate detection runs on the normalized (string) pr key
+                if pr in seen_pr:
+                    fail(f"line {n}: duplicate row for pr {pr}")
+                seen_pr.add(pr)
+                rows.append(row)
+    except JsonlError as exc:
+        fail(str(exc))
     # A present file must carry a header record. A genuinely MISSING file is a
     # fresh start (returned defaults above); a present-but-headerless file (empty,
     # all-blank, or truncated) is corrupt — reject it rather than silently reset to
