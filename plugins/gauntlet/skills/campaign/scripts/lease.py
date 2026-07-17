@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import secrets
 import sys
 import tempfile
@@ -52,6 +53,26 @@ DESCRIPTION = "Schema-owning accessor for the campaign run lease (lease.json)."
 
 SIBLING = Path(__file__).resolve().parent / "lease-test.py"
 
+# --- scope: a single shared, roughly-monotonic system clock -------------------
+#
+# This lease assumes ONE system clock, shared by every driver of a given run. Concurrent drivers are
+# same-machine — two sessions, or a resume of the same run — reading the same `time.time()`. That is the
+# whole threat model, and the user has ruled it so.
+#
+# A cross-host deployment where two INDEPENDENT, unsynchronized clocks disagree by more than the staleness
+# window is OUT OF SCOPE, and cannot be made sound here: the claim lock is a bare `mkdir` with no PID (kept
+# that way for interop, see `claim_lock`), so mtime is the ONLY cross-driver liveness signal, and a live
+# owner whose clock is behind is indistinguishable ON DISK from a dead one. No threshold separates them. It
+# is a declared non-goal, not a defect to fix — do NOT add clock-skew heuristics chasing it.
+#
+# On the ONE shared clock, the residual is BOUNDED but not zero. `is_stale`'s signed `>` reads a backward
+# step / future `updated` as FRESH (never manufacturing an adoption), and `cmd_acquire` samples the clock
+# exactly once so a step mid-decision cannot split one record two ways. What remains is a large FORWARD step
+# on that shared clock landing between an owner's refreshes (or inside a claim's sub-second critical
+# section): CLAIM_LOCK_STALE_AFTER's 30-min scale means only an implausibly large forward step could sweep a
+# live claim. This tool does NOT claim complete mutual exclusion under an arbitrarily misbehaving clock — it
+# bounds the shared-clock hazards it can, and names the cross-host one it cannot.
+#
 # --- constants: ONE defining site ---------------------------------------------
 #
 # `references/run-identity-and-lease.md` and `references/critical-rules.md` each state "~30 min" in prose
@@ -109,6 +130,21 @@ class Corrupt(Exception):
     """The lease exists and cannot be trusted. NEVER treated as absent."""
 
 
+def _reject_duplicate_keys(pairs: "list[tuple[str, object]]") -> dict:
+    """`object_pairs_hook` that raises on a repeated member name, at any object depth.
+
+    `json.loads` silently keeps the LAST of duplicate keys, so `{"agent":"other","agent":"mine"}` resolves
+    to `mine` — while a driver hand-rolling a parser that keeps the FIRST reads `other`. That cross-parser
+    disagreement is a two-driver seam, so a duplicate-keyed lease is Corrupt, not a value to guess at.
+    """
+    seen: set = set()
+    for key, _val in pairs:
+        if key in seen:
+            raise ValueError(f"duplicate key {key!r}")
+        seen.add(key)
+    return dict(pairs)
+
+
 def read_lease(path: Path) -> "dict | None":
     """Return the lease, or None if ABSENT. Raise Corrupt if present and untrustworthy.
 
@@ -124,9 +160,14 @@ def read_lease(path: Path) -> "dict | None":
     if not raw.strip():
         raise Corrupt(f"{path} is empty — a driver may hold this run; refusing to read that as 'absent'")
     try:
-        rec = json.loads(raw)
+        rec = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
     except json.JSONDecodeError as exc:
         raise Corrupt(f"{path} is not valid JSON ({exc}) — refusing to read that as 'absent'") from exc
+    except ValueError as exc:
+        # `_reject_duplicate_keys` raises a plain ValueError; JSONDecodeError (a ValueError subclass) is
+        # already handled above, so this only catches the duplicate-key case.
+        raise Corrupt(f"{path} has a {exc} — a lease that two parsers read differently cannot tell us who "
+                      f"is driving; refusing to read that as 'absent'") from exc
     if not isinstance(rec, dict):
         raise Corrupt(f"{path} holds {type(rec).__name__}, not a JSON object")
     agent = rec.get("agent")
@@ -143,24 +184,31 @@ def write_lease(path: Path, rec: dict) -> None:
     replace_text(path, json.dumps(rec) + "\n", temp_prefix=".lease.", encoding="utf-8")
 
 
-def age_of(rec: dict) -> int:
+def age_of(rec: dict, now_ts: "int | None" = None) -> int:
     """Seconds since the lease was refreshed, floored at 0 so a skewed clock cannot report a negative age.
+
+    Pass `now_ts` to measure against a clock value sampled ONCE by the caller; omit it for a fresh read.
+    A single decision (see `cmd_acquire`) MUST pass one sampled value, so a clock step mid-decision cannot
+    split one record into two verdicts.
 
     The floor is PRESENTATION ONLY — it is `is_stale`'s signed comparison that makes a future `updated`
     read fresh, not this clamp. Do not credit it with more than it does.
     """
-    return max(0, now() - int(rec["updated"]))
+    ref = now() if now_ts is None else now_ts
+    return max(0, ref - int(rec["updated"]))
 
 
-def is_stale(rec: dict) -> bool:
+def is_stale(rec: dict, now_ts: "int | None" = None) -> bool:
     """A lease is stale only once it is OLDER than the window.
+
+    Pass `now_ts` to decide against a clock value sampled ONCE; omit it for a fresh read. See `age_of`.
 
     The comparison is deliberately SIGNED and deliberately `>`: a future `updated` (clock skew) yields a
     negative age, which is not greater than the window, so it reads FRESH. That is the fail-closed
     direction and it is the rule doing the work — never `abs()` this, and never widen `>` to `>=`.
     Manufacturing an adoption out of a skewed clock is the one error that puts two drivers on one run.
     """
-    return age_of(rec) > LEASE_STALE_AFTER
+    return age_of(rec, now_ts) > LEASE_STALE_AFTER
 
 
 @contextmanager
@@ -184,11 +232,23 @@ def claim_lock(path: Path):
         fail(f"lease: {lock} is held — another agent is claiming this run right now. Retry shortly.")
     except OSError as exc:
         fail(f"lease: cannot create {lock}: {exc}")
+    # Record the identity of the EXACT directory this call just created. If the stale-sweep of a LATER
+    # process removes our lock and re-creates its own (the documented forward-skew entry hole), the dir
+    # named `claim.lock` at cleanup time is a DIFFERENT one — a foreign process's live lock. Removing it
+    # would cascade a third driver in. So cleanup rmdirs only when the inode still matches ours. Inode
+    # identity needs no marker file inside the dir, so a hand-rolled `rmdir claim.lock` still interoperates.
+    try:
+        st = os.stat(lock)
+        mine = (st.st_dev, st.st_ino)
+    except OSError:
+        mine = None
     try:
         yield
     finally:
         try:
-            lock.rmdir()
+            st = os.stat(lock)
+            if mine is not None and (st.st_dev, st.st_ino) == mine:
+                lock.rmdir()
         except OSError:
             pass
 
@@ -249,6 +309,10 @@ def cmd_acquire(path: Path, args) -> int:
         fail(NO_HEARTBEAT)
     token = args.token
     with claim_lock(path):
+        # Sample the wall clock EXACTLY ONCE for this whole decision. Reading it again mid-decision let a
+        # backward step classify one record as both stale and fresh and fall through to `owned`, overwriting
+        # a lease a DIFFERENT token holds. Every staleness branch below reads this one value.
+        acquired_at = now()
         try:
             rec = read_lease(path)
         except Corrupt as exc:
@@ -256,16 +320,20 @@ def cmd_acquire(path: Path, args) -> int:
                  f"lease: A lease that cannot be parsed is NOT an absent lease. Adopting it could put two "
                  f"agents on one run; refusing only stalls this one. Nothing was written.\n"
                  f"lease: Inspect {path} and, if the run is genuinely orphaned, remove it by hand.")
-        if rec is not None and not is_stale(rec) and rec["agent"] != token:
+        # One staleness verdict, computed once off the single `acquired_at` sample, drives every branch.
+        # `owned` is therefore reachable ONLY when the record's token is ours; a different-token record is
+        # always `superseded` or (with --allow-takeover / staleness) `adopted`, never `owned`.
+        if rec is None or is_stale(rec, acquired_at):
+            verdict = "adopted"
+        elif rec["agent"] != token:
             if not args.allow_takeover:
                 emit("superseded", rec, held_by=rec["agent"])
-                print(f"lease: REFUSED — a DIFFERENT agent holds this run (lease age {age_of(rec)}s). "
-                      f"You are not the driver: do not review, fix, merge, or relabel anything.\n"
+                print(f"lease: REFUSED — a DIFFERENT agent holds this run (lease age "
+                      f"{age_of(rec, acquired_at)}s). You are not the driver: do not review, fix, merge, or "
+                      f"relabel anything.\n"
                       f"lease: If a human has agreed this run should be taken over, re-run with "
                       f"--allow-takeover.", file=sys.stderr)
                 return EXIT_REFUSED
-            verdict = "adopted"
-        elif rec is None or is_stale(rec):
             verdict = "adopted"
         else:
             verdict = "owned"
@@ -317,6 +385,10 @@ def cmd_release(path: Path, args) -> int:
 
     The prose says "delete lease.json". A superseded driver that follows that literally deletes the LIVE
     owner's lease and hands the run to anyone.
+
+    An ABSENT lease fails closed too: with no lease present there is no token to match against, so we
+    cannot confirm this caller was ever the owner. Symmetric with `refresh` and with the Purpose line "a
+    release refuses unless the token matches".
     """
     if not (args.token or "").strip():
         fail(NO_TOKEN)
@@ -327,11 +399,13 @@ def cmd_release(path: Path, args) -> int:
             fail(f"lease: REFUSED — {exc}\nlease: Refusing to delete a lease we cannot read. Nothing was "
                  f"written.")
         if rec is None:
-            # Release is idempotent: an already-absent lease is release's goal state, so there is no token
-            # to match and nothing to undo. The token check below guards a PRESENT live lease from deletion
-            # by a non-owner; absent is terminal cleanup already complete, reported, not refused.
+            # Release fails closed on an absent lease: with nothing present, no token can be matched.
             emit("absent", None)
-            return EXIT_OK
+            print("lease: REFUSED — there is no lease here to match your token against. Nothing was "
+                  "deleted. A release proves ownership by matching the token IN the lease; with no lease "
+                  "present there is nothing to match, so it fails closed — the same as refresh.",
+                  file=sys.stderr)
+            return EXIT_REFUSED
         if rec["agent"] != args.token:
             emit("superseded", rec, held_by=rec["agent"])
             print("lease: REFUSED — this lease belongs to a DIFFERENT agent. Deleting it would hand a live "

@@ -198,6 +198,29 @@ def t_future_updated_is_fresh_not_stale(work: Path) -> None:
             "a FUTURE `updated` must read FRESH — a skewed clock must not hand us someone's live run")
 
 
+def t_exact_boundary_is_not_stale(work: Path) -> None:
+    """A lease at age EXACTLY LEASE_STALE_AFTER is NOT stale — the boundary is `>`, never `>=`.
+
+    `>` and `>=` differ ONLY at exact equality, which wall-clock timing can never hit deterministically, so
+    a frozen clock is the only way to pin it. `is_stale`'s docstring says "never widen `>` to `>=`"; this
+    makes that regression go red. At the boundary the owner is BUSY, not dead, so a different token must be
+    superseded — widening to `>=` would adopt a live run.
+    """
+    frozen = 2_000_000_000
+    put(work, {"agent": "other", "heartbeat": "w0", "updated": frozen - L.LEASE_STALE_AFTER})
+    p = lease_path(work)
+    before = p.read_bytes()
+    original = L.now
+    setattr(L, "now", lambda: frozen)  # freeze the clock so age is EXACTLY the window
+    try:
+        code, out, _err = acquire(work, token="mine", heartbeat="w1")
+    finally:
+        setattr(L, "now", original)
+    L.check(code != 0 and verdict_of(out) == "superseded",
+            "age == LEASE_STALE_AFTER is a BUSY owner, not a dead one — `>=` would flip it to `adopted`")
+    L.check(p.read_bytes() == before, "a superseded acquire at the boundary must leave the lease unchanged")
+
+
 # --- corrupt is not absent ----------------------------------------------------
 
 def t_malformed_is_corrupt_never_adopted(work: Path) -> None:
@@ -234,6 +257,32 @@ def t_read_reports_corrupt_without_deciding(work: Path) -> None:
     L.check(code != 0 and verdict_of(out) == "corrupt", "`read` reports corruption rather than guessing")
 
 
+def t_duplicate_json_key_is_corrupt(work: Path) -> None:
+    """A lease that repeats a key reads two ways across parsers — reject it, never guess.
+
+    `json.loads` keeps the LAST duplicate, so `{"agent":"other","agent":"mine"}` resolves to `mine`; a
+    driver whose parser keeps the FIRST reads `other`. That cross-parser disagreement over WHO is driving
+    is a two-driver seam, so a duplicate key is `corrupt`, the same fail-closed direction as every other
+    unreadable lease. If this regresses (the hook dropped), the last-wins `agent` matches and the lease is
+    silently adopted / released.
+    """
+    for name, raw in (
+        ("dup-agent", '{"agent": "other", "agent": "mine", "heartbeat": "w0", "updated": 1}'),
+        ("dup-updated", '{"agent": "t1", "updated": 1, "updated": 2}'),
+    ):
+        p = put(work, None, raw=raw)
+        before = p.read_bytes()
+        code, _out, err = acquire(work, token="mine", heartbeat="w1")
+        L.check(code != 0, f"a {name} lease must REFUSE — a duplicate key is corrupt, not a value to guess")
+        L.check(p.read_bytes() == before, f"a {name} lease must not be overwritten")
+        L.check("cannot" in err.lower() or "two" in err.lower(),
+                f"the {name} refusal must explain why we will not guess who is driving")
+        rcode, rout, _ = L.run(["--file", str(p), "read"])
+        L.check(rcode != 0 and verdict_of(rout) == "corrupt", f"`read` must report a {name} lease corrupt")
+        dcode, _dout, _derr = L.run(["--file", str(p), "release", "--token", "mine"])
+        L.check(dcode != 0 and p.exists(), f"release must not delete a {name} lease it cannot trust")
+
+
 # --- release: the token check the prose forgot --------------------------------
 
 def t_release_refuses_someone_elses_lease(work: Path) -> None:
@@ -258,6 +307,23 @@ def t_release_of_a_corrupt_lease_refuses(work: Path) -> None:
     code, _out, _err = L.run(["--file", str(p), "release", "--token", "mine"])
     L.check(code != 0, "refuse to delete a lease we cannot read — it may belong to a live driver")
     L.check(p.exists(), "the unreadable lease must survive for a human to inspect")
+
+
+def t_release_of_an_absent_lease_refuses(work: Path) -> None:
+    """Release fails CLOSED on an absent lease — symmetric with refresh and the Purpose line.
+
+    A release proves ownership by matching the token in the lease. With no lease present there is nothing
+    to match, so it cannot confirm this caller ever owned the run: it must refuse, not exit 0. (This
+    reverses an earlier idempotency choice.)
+    """
+    p = lease_path(work)
+    L.check(not p.exists(), "fixture precondition: no lease")
+    code, out, err = L.run(["--file", str(p), "release", "--token", "mine"])
+    L.check(code != 0, "an absent lease must REFUSE release — there is no token to match against")
+    L.check(verdict_of(out) == "absent", "the verdict still names the absent state")
+    L.check(not p.exists(), "a refused release must conjure nothing")
+    L.check("no lease" in err.lower() and "match" in err.lower(),
+            "the refusal must say there is no lease to match the token against")
 
 
 # --- refresh ------------------------------------------------------------------
@@ -332,27 +398,62 @@ def t_the_lock_is_released_on_the_refusal_paths(work: Path) -> None:
 
 
 def t_only_one_of_two_racing_claimers_wins(work: Path) -> None:
-    """Real processes, real lock. The property the whole file exists for."""
+    """Real processes, real lock. The property the whole file exists for.
+
+    TEETH: this must FAIL if the critical section is unlocked, not merely if nobody wins. Several racers
+    are released together against an ABSENT lease by a shared barrier file. Under a real lock they
+    SERIALIZE: exactly one reads absent and adopts (owning the run AS ITSELF, exit 0); every other reads
+    that fresh lease and stands down (`superseded`/`lost-race`). Unlock the read/decide/write (e.g. move
+    `claim_lock`'s rmdir before the yield) and two or more racers read absent before anyone writes, each
+    commits its OWN token and reads it back — TWO self-believed owners of one run. The check below counts
+    self-owners and demands exactly one, so that regression goes red; several rounds make the interleave
+    reliable to catch.
+    """
     p = lease_path(work)
+    barrier = work / "go"
     prog = (
-        "import sys;"
+        "import sys, os, time;"
         f"sys.path.insert(0, {str(OWNER.parent)!r});"
         "from _gauntlet.modules import load_module_from_path;"
         f"m = load_module_from_path('lease_race', {str(OWNER)!r});"
+        f"b = {str(barrier)!r};"
+        "\nwhile not os.path.exists(b): time.sleep(0.002)\n"
         f"raise SystemExit(m.main(['--file', {str(p)!r}, 'acquire', '--token', sys.argv[1],"
         " '--heartbeat-id', 'w']))"
     )
-    procs = [subprocess.Popen([sys.executable, "-c", prog, tok],
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-             for tok in ("racer-a", "racer-b")]
-    codes = [p_.wait() for p_ in procs]
-    L.check(p.exists(), "one of the racers must have taken the lease")
-    winner = json.loads(p.read_text())["agent"]
-    L.check(winner in ("racer-a", "racer-b"), f"the lease must name a real racer, got {winner!r}")
-    L.check(not (work / L.LOCK_NAME).exists(), "neither racer may leak the lock")
-    # Both may legitimately exit 0: the loser can arrive after the winner's lease went in and read it as a
-    # normal `superseded`/adopt-by-stale... but it must NEVER be that BOTH think they own it as themselves.
-    L.check(codes.count(0) >= 1, "at least one racer must succeed")
+    tokens = [f"racer-{i}" for i in range(5)]
+    for _round in range(4):
+        if p.exists():
+            p.unlink()
+        if barrier.exists():
+            barrier.unlink()
+        procs = [subprocess.Popen([sys.executable, "-c", prog, tok],
+                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                 for tok in tokens]
+        time.sleep(0.15)          # let every racer reach its spin loop before...
+        barrier.touch()           # ...releasing them as simultaneously as the OS allows
+        outs = [(tok, pr.communicate()[0].decode()) for tok, pr in zip(tokens, procs)]
+
+        L.check(p.exists(), "one of the racers must have taken the lease")
+        winner = json.loads(p.read_text())["agent"]
+        L.check(winner in tokens, f"the lease must name a real racer, got {winner!r}")
+        L.check(not (work / L.LOCK_NAME).exists(), "neither racer may leak the lock")
+
+        self_owners = []
+        for tok, out in outs:
+            try:
+                rec = json.loads(out)
+            except json.JSONDecodeError:
+                continue
+            # "I own this run AS MYSELF" = a fresh acquire that wrote and read back my own token.
+            if rec.get("verdict") in ("owned", "adopted") and rec.get("token") == tok:
+                self_owners.append(tok)
+        L.check(len(self_owners) == 1,
+                f"EXACTLY ONE racer may own the run as itself; got {self_owners!r}. Two or more means the "
+                f"read/decide/write was NOT serialized — the lock is broken and both drivers believe they "
+                f"own the run.")
+        L.check(self_owners == [winner],
+                f"the self-believed owner {self_owners!r} must be the token actually in the lease {winner!r}")
 
 
 CASES = [
@@ -376,14 +477,20 @@ CASES = [
     ("stale-adopted", "a lease past the window has a dead driver", t_stale_is_adopted),
     ("inside-window-busy", "a lease inside the window is BUSY, not dead", t_just_inside_the_window_is_not_stale),
     ("future-is-fresh", "clock skew must not manufacture an adoption", t_future_updated_is_fresh_not_stale),
+    ("exact-boundary-fresh", "age == LEASE_STALE_AFTER is NOT stale — the boundary is `>`, not `>=`",
+     t_exact_boundary_is_not_stale),
     ("corrupt-not-absent", "an unreadable lease is CORRUPT — adopting it would double-drive a live run",
      t_malformed_is_corrupt_never_adopted),
     ("read-reports-corrupt", "`read` reports corruption rather than guessing",
      t_read_reports_corrupt_without_deciding),
+    ("duplicate-key-corrupt", "a duplicate JSON key reads two ways — corrupt, never guessed",
+     t_duplicate_json_key_is_corrupt),
     ("release-refuses-theirs", "release refuses a lease we do not own — the prose's missing check",
      t_release_refuses_someone_elses_lease),
     ("release-mine", "release with the right token releases", t_release_deletes_my_own),
     ("release-corrupt", "refuse to delete a lease we cannot read", t_release_of_a_corrupt_lease_refuses),
+    ("release-absent", "release fails closed on an absent lease — no token to match",
+     t_release_of_an_absent_lease_refuses),
     ("refresh-bumps", "refresh bumps, preserves the proof, and keeps unknown fields",
      t_refresh_bumps_and_preserves),
     ("refresh-superseded", "refresh refuses once superseded", t_refresh_refuses_when_superseded),
