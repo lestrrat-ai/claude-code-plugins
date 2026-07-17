@@ -10,21 +10,21 @@ rewrite a PR belonging to someone else, and repair forever.
 
 from __future__ import annotations
 
-import importlib.util
 import io
 import json
+import sys
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+
+from _gauntlet.modules import load_module_from_path
 
 OWNER = Path(__file__).resolve().parent / "repair-pass.py"
 
 
 def _load_owner():
-    spec = importlib.util.spec_from_file_location("repair_pass_owner", OWNER)
-    if spec is None or spec.loader is None:
+    mod = load_module_from_path("repair_pass_owner", OWNER)
+    if mod is None:
         raise RuntimeError(f"cannot load the repair pass at {OWNER}")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
     return mod
 
 
@@ -258,6 +258,50 @@ def t_the_repair_dispatch_gate(tmp: Path) -> None:
     check(code == L.EXIT_STOP, "a repair was still dispatchable after the PR returned to the gate")
 
 
+def t_shared_module_loader_preserves_importlib_semantics(tmp: Path) -> None:
+    """The shared loader preserves registration choices and lets execution exceptions pass through."""
+    plain_name = "gauntlet_loader_plain"
+    plain_path = tmp / "plain.py"
+    plain_path.write_text("VALUE = 42\n")
+    sys.modules.pop(plain_name, None)
+    plain = load_module_from_path(plain_name, plain_path)
+    check(plain is not None, "a Python source file returned no module")
+    assert plain is not None
+    check(plain.VALUE == 42, "the helper did not execute an unregistered module")
+    check(plain_name not in sys.modules, "register=False added the module to sys.modules")
+
+    registered_name = "gauntlet_loader_registered"
+    registered_path = tmp / "registered.py"
+    registered_path.write_text("import sys\nSEES_SELF = sys.modules[__name__] is sys.modules.get(__name__)\n")
+    sys.modules.pop(registered_name, None)
+    try:
+        registered = load_module_from_path(registered_name, registered_path, register=True)
+        check(registered is not None, "a Python source file returned no module")
+        assert registered is not None
+        check(registered.SEES_SELF, "registration happened after module execution")
+        check(sys.modules.get(registered_name) is registered, "register=True stored a different module")
+    finally:
+        sys.modules.pop(registered_name, None)
+
+    broken_name = "gauntlet_loader_broken"
+    broken_path = tmp / "broken.py"
+    broken_path.write_text("raise RuntimeError('module execution failed')\n")
+    sys.modules.pop(broken_name, None)
+    try:
+        try:
+            load_module_from_path(broken_name, broken_path, register=True)
+        except RuntimeError as exc:
+            check(str(exc) == "module execution failed", f"the execution exception changed: {exc!r}")
+        else:
+            check(False, "an exception from module execution was swallowed")
+        check(broken_name in sys.modules, "a failed registered load removed its sys.modules entry")
+    finally:
+        sys.modules.pop(broken_name, None)
+
+    check(load_module_from_path("gauntlet_loader_no_spec", tmp / "no-extension") is None,
+          "a path with no executable module spec was accepted")
+
+
 CASES = [
     ("external-not-rewritten", "an external PR refuses RESCOPE and ROOT-CAUSE, and takes the other three", t_external_pr_is_never_rewritten),
     ("gauntlet-takes-all", "a campaign-authored PR may take every decision", t_gauntlet_pr_takes_every_repair),
@@ -268,4 +312,5 @@ CASES = [
     ("decision-needs-record", "no decision without its reasoning on disk", t_a_decision_needs_a_record),
     ("enum-is-closed", "the decision enum is closed, and each member is defined", t_decision_enum_is_closed),
     ("repair-dispatch-gate", "a repair needs a recorded decision; ordinary work stays frozen", t_the_repair_dispatch_gate),
+    ("shared-module-loader", "path loading preserves registration and exception behavior", t_shared_module_loader_preserves_importlib_semantics),
 ]
