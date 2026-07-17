@@ -47,7 +47,6 @@ text editor can reach them).
 from __future__ import annotations
 
 import argparse
-import ast
 import importlib.util
 import io
 import json
@@ -62,6 +61,13 @@ from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
+
+from _gauntlet.mutation import (
+    load_source_module,
+    marked_statements,
+    mutate_source,
+    unmarked_enforcements,
+)
 
 HERE = Path(__file__).resolve().parent
 OWNER = HERE / "review-pass.py"
@@ -1107,8 +1113,6 @@ FALSE_PASS, VERDICT_KILL, MESSAGE_KILL, CRASH_KILL = "FALSE-PASS", "VERDICT", "M
 # the loudest possible failure — the weakened tool says "ship it" about artifacts that are defective.
 PASSING = ("ok", "exit0")
 
-MARKER_RE = re.compile(r"^(?P<indent>[ ]*)# MUTATE:(?P<rule>[a-z0-9-]+):(?P<weakening>.+?)\s*$")
-
 # The functions that ENFORCE the contract. Every enforcement point inside them must carry a marker.
 #
 # `evaluate` is NOT one, and it is the interesting exclusion: it RAISES nothing and REFUSES nothing — it
@@ -1673,78 +1677,6 @@ def check_doors(R: types.ModuleType, T: Tables, tmp: Path) -> int:
 
 # --- the MUTATION MATRIX: is any rule pinned by NOTHING? ------------------------------------------
 
-def markers(source: str) -> "list[tuple[str, str, int]]":
-    out = []
-    for n, line in enumerate(source.splitlines(), 1):
-        m = MARKER_RE.match(line)
-        if m:
-            out.append((m.group("rule"), m.group("weakening"), n))
-    return out
-
-
-def marked_statements(source: str) -> "dict[str, tuple[str, ast.stmt]]":
-    """rule id -> (weakening, the statement the marker sits directly above)."""
-    tree = ast.parse(source)
-    stmts = {node.lineno: node for node in ast.walk(tree) if isinstance(node, ast.stmt)}
-    out: dict[str, tuple[str, ast.stmt]] = {}
-    for rule, weakening, line in markers(source):
-        stmt = stmts.get(line + 1)
-        if stmt is None:
-            raise SelfTestFailure(f"# MUTATE:{rule} on line {line} sits above no statement")
-        if rule in out:
-            raise SelfTestFailure(f"duplicate rule id {rule!r} — every rule is marked exactly once")
-        out[rule] = (weakening, stmt)
-    if not out:
-        raise SelfTestFailure("no MUTATE markers — the rules cannot mark themselves absent")
-    return out
-
-
-def unmarked(source: str, marked: "dict[str, tuple[str, ast.stmt]]") -> "list[str]":
-    """EVERY refusal and every non-OK return in a rule function must sit under a marker.
-
-    This is the half of the question fixtures can NEVER answer. A rule added without a marker is never
-    mutated, so nothing ever asks whether a fixture would notice its absence — it is reported "pinned" by
-    nobody having looked. THE COUNT IS A CLAIM, and this is what makes the claim checkable.
-    """
-    lines = {stmt.lineno for _, stmt in marked.values()}  # drops the weakening
-    problems: list[str] = []
-    for fn in ast.walk(ast.parse(source)):
-        if not isinstance(fn, ast.FunctionDef) or fn.name not in RULE_FUNCTIONS:
-            continue
-        for node in ast.walk(fn):
-            if isinstance(node, ast.Raise):
-                exc = node.exc
-                enforcing = (isinstance(exc, ast.Call) and isinstance(exc.func, ast.Name)
-                             and exc.func.id in ENFORCING_EXCEPTIONS)
-                what = "raise"
-            elif isinstance(node, ast.Return):
-                val = node.value
-                enforcing = (isinstance(val, ast.Tuple) and bool(val.elts)
-                             and isinstance(val.elts[0], ast.Name)
-                             and val.elts[0].id in ENFORCING_VERDICT_NAMES)
-                what = "return"
-            else:
-                continue  # `node` is now an ast.stmt, so `lineno` below is one it really has
-            if enforcing and node.lineno not in lines:
-                problems.append(
-                    f"review-pass.py:{node.lineno}: {fn.name}() enforces a rule ({what}) with NO "
-                    f"# MUTATE marker — an unmarked rule is never mutated, so nothing can report it unpinned"
-                )
-    return problems
-
-
-def mutate(source: str, rule: str, weakening: str, stmt: ast.stmt) -> str:
-    lines = source.splitlines()
-    body = [f"{' ' * stmt.col_offset}{weakening}  # MUTANT:{rule}"]
-    return "\n".join(lines[: stmt.lineno - 1] + body + lines[stmt.end_lineno:]) + "\n"
-
-
-def load_module(source: str, name: str) -> types.ModuleType:
-    mod = types.ModuleType(name)
-    mod.__file__ = str(OWNER)
-    exec(compile(source, f"<{name}>", "exec"), mod.__dict__)  # noqa: S102 - the whole job
-    return mod
-
 
 def check_commands_covered(R: types.ModuleType, T: Tables) -> "list[str]":
     """Is EVERY subcommand the parser has either driven by the round trip or declared to write nothing?
@@ -1928,8 +1860,19 @@ def run(R: types.ModuleType, tmp: Path) -> int:
           f"hold — and {doors}.\n")
 
     # …and now the question the block above CANNOT answer: is any rule pinned by NO fixture?
-    marked = marked_statements(source)
-    gaps = unmarked(source, marked)
+    marked = marked_statements(
+        source,
+        error_factory=SelfTestFailure,
+        no_markers_message="no MUTATE markers — the rules cannot mark themselves absent",
+    )
+    gaps = unmarked_enforcements(
+        source,
+        marked,
+        rule_functions=RULE_FUNCTIONS,
+        enforcing_exceptions=ENFORCING_EXCEPTIONS,
+        enforcing_verdicts=ENFORCING_VERDICT_NAMES,
+        source_name="review-pass.py",
+    )
     for gap in gaps:
         print(f"UNMARKED {gap}")
     if gaps:
@@ -1941,7 +1884,11 @@ def run(R: types.ModuleType, tmp: Path) -> int:
     unpinned, broken, tally = [], [], Counter()
     for rule, (weakening, stmt) in marked.items():
         try:
-            mod = load_module(mutate(source, rule, weakening, stmt), f"rp_mutant_{rule.replace('-', '_')}")
+            mod = load_source_module(
+                mutate_source(source, rule, weakening, stmt),
+                f"rp_mutant_{rule.replace('-', '_')}",
+                OWNER,
+            )
         except SyntaxError as exc:
             broken.append(f"{rule}: the weakening {weakening!r} does not compile ({exc})")
             continue
