@@ -73,28 +73,9 @@ wrapper — in the shape its own `--help` advertises.
 
 from __future__ import annotations
 
-import argparse
 import sys
-from pathlib import Path
 
-from _gauntlet.modules import load_module_from_path
-
-OWNER = Path(__file__).resolve().parent / "review-pass.py"
-PROG = Path(__file__).name
-
-
-def load_owner():
-    """Load `review-pass.py` BY PATH, from this script's own directory.
-
-    Not by import: `review-pass` is not a legal module name, and the cwd is the reviewer's WORKTREE while
-    the skill's scripts live wherever the plugin is installed. `__file__` is the only thing that knows
-    where its sibling is.
-    """
-    mod = load_module_from_path("review_pass", OWNER)
-    if mod is None:  # a broken install — never an input error
-        print(f"emit-progress: cannot load its owner at {OWNER}", file=sys.stderr)
-        raise SystemExit(1)
-    return mod
+from _gauntlet.review_door import dispatch_progress_door
 
 
 def main(argv: "list[str] | None" = None) -> int:
@@ -106,11 +87,7 @@ def main(argv: "list[str] | None" = None) -> int:
     it came to advertise a command it then refused. And the parsed args go to the owner's `dispatch`, so
     the refusal-to-exit-code mapping is the owner's too: a non-zero exit means your inputs were rejected.
     """
-    owner = load_owner()
-    p = argparse.ArgumentParser(prog=PROG, description=(__doc__ or "").splitlines()[0])
-    owner.add_emit_args(p)
-    p.set_defaults(cmd="emit")
-    return owner.dispatch(p.parse_args(argv))
+    return dispatch_progress_door(__file__, __doc__, argv)
 
 
 if __name__ == "__main__":

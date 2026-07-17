@@ -75,6 +75,10 @@ WRAPPER = HERE / "emit-progress.py"
 FINDING_WRAPPER = HERE / "emit-finding.py"
 WRAPPER_DOOR = "emit-progress.py"
 FINDING_WRAPPER_DOOR = "emit-finding.py"
+WRAPPER_OWNER_COMMANDS = {
+    WRAPPER_DOOR: "emit",
+    FINDING_WRAPPER_DOOR: "finding-add",
+}
 
 # The `self-test` door is a door like any other, and EXECUTING it is what the door check does to every door
 # — so probing it means self-test runs self-test. This is what stops that being infinite: the nested run
@@ -1637,6 +1641,29 @@ def check_door(T: Tables, door: str, parser: argparse.ArgumentParser, tmp: Path)
         failures += 1
     else:
         print(f"ok       [door] the advertised MINIMAL invocation RUNS: `{shown}` -> exit 0")
+
+    # The wrappers fix their owner's command internally. Passing that command word explicitly must remain
+    # an error: accepting it would restore the old CLI that advertised a subcommand the wrapper did not need.
+    owner_command = WRAPPER_OWNER_COMMANDS.get(door)
+    if owner_command is not None:
+        hidden_argv = [owner_command]
+        for flag in sorted(required):
+            if flag == "--file":
+                hidden_argv += seed_door(T, tmp, door, "hidden-command")
+            else:
+                hidden_argv += [arg for value in T.FLAG_VALUES[flag] for arg in (flag, value)]
+        hidden = subprocess.run(
+            [sys.executable, str(script), *hidden_argv],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if hidden.returncode == 0:
+            print(f"FAIL     [door] `{door}` ACCEPTED its owner's hidden `{owner_command}` command word — "
+                  "the wrapper's public CLI has grown an extra command layer")
+            failures += 1
+        else:
+            print(f"ok       [door] `{door}` keeps its owner's `{owner_command}` command word hidden")
 
     # …and the other direction: a flag the help calls REQUIRED must really be refused when it is absent.
     for flag in sorted(required):

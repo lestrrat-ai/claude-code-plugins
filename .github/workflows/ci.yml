@@ -84,6 +84,7 @@ jobs:
             plugins/gauntlet/skills/campaign/scripts/_gauntlet/modules.py \
             plugins/gauntlet/skills/campaign/scripts/_gauntlet/jsonl.py \
             plugins/gauntlet/skills/campaign/scripts/_gauntlet/mutation.py \
+            plugins/gauntlet/skills/campaign/scripts/_gauntlet/review_door.py \
             plugins/gauntlet/skills/campaign/scripts/_gauntlet/table.py \
             plugins/gauntlet/skills/campaign/scripts/_gauntlet/testing.py \
             plugins/gauntlet/skills/campaign/scripts/ledger.py \
