@@ -7,7 +7,7 @@ import io
 import subprocess
 import tempfile
 from contextlib import redirect_stderr, redirect_stdout
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 def check(condition: bool, message: str) -> None:
@@ -27,6 +27,9 @@ def run(T) -> int:
         ("human docs", [classified(T, "docs/guide.md")], False, T.TRIVIAL),
         ("agent frontmatter", [classified(
             T, "docs/skill.md", content=b"---\nname: demo\ndescription: agent work\n---\n")], False, T.STANDARD),
+        ("frontmatter delimiter prefix", [classified(
+            T, "docs/helper.md", content=b"---\nname: demo\ndescription: agent work\n---oops\n")],
+         False, T.TRIVIAL),
         ("skill instructions", [classified(T, "plugins/x/skills/y/SKILL.md")], False, T.STANDARD),
         ("source", [classified(T, "src/main.py")], False, T.STANDARD),
         ("script", [classified(T, "scripts/check.py")], False, T.HIGH),
@@ -45,6 +48,18 @@ def run(T) -> int:
             failures += 1
         else:
             print(f"ok       {name:24} -> {got}")
+
+    try:
+        rename = T.Change("100644", "100644", "R100", "docs/run-notes.md", "scripts/run.sh")
+        renamed = T.classify_change(rename, lambda _path, _old: b"")
+        check(renamed.path == "scripts/run.sh -> docs/run-notes.md",
+              f"rename path rendered as {renamed.path!r}")
+        rename_tier, _ = T.tier_for([renamed], False)
+        check(rename_tier == T.HIGH, f"rename tier is {rename_tier}")
+        print("ok       rename evidence           -> old path -> new path, HIGH")
+    except Exception as exc:  # noqa: BLE001
+        print(f"FAIL     rename evidence           -> {type(exc).__name__}: {exc}")
+        failures += 1
 
     raw = (
         b":100644 100755 " + b"1" * 40 + b" " + b"2" * 40 + b" R100\0"
@@ -87,6 +102,28 @@ def run(T) -> int:
             print(f"FAIL     git integration           -> {type(exc).__name__}: {exc}")
             failures += 1
 
+        crlf_content = b"---\r\nname: demo\r\ndescription: agent work\r\n---\r\n"
+        (repo / "docs").mkdir()
+        (repo / "docs" / "helper.md").write_bytes(crlf_content)
+        subprocess.run(["git", "add", "docs/helper.md"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-qm", "agent docs"], cwd=repo, check=True)
+        crlf_head = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=repo, text=True
+        ).strip()
+        try:
+            result = T.derive(repo, head, crlf_head)
+            check(T.agent_doc(PurePosixPath("docs/helper.md"), crlf_content),
+                  "CRLF frontmatter was not detected as agent content")
+            check(result["files"][0]["class"] == T.CODE,
+                  f"CRLF agent doc classified as {result['files'][0]['class']}")
+            check(result["tier"] == T.STANDARD, f"CRLF agent doc tier is {result['tier']}")
+            check(result["required_reviews"] == 2,
+                  f"CRLF agent doc requires {result['required_reviews']} reviews")
+            print("ok       CRLF agent frontmatter     -> CODE, STANDARD, 2 reviews")
+        except Exception as exc:  # noqa: BLE001
+            print(f"FAIL     CRLF agent frontmatter     -> {type(exc).__name__}: {exc}")
+            failures += 1
+
         out, err = io.StringIO(), io.StringIO()
         try:
             with redirect_stdout(out), redirect_stderr(err):
@@ -102,5 +139,5 @@ def run(T) -> int:
     if failures:
         print(f"{failures} triage fixture(s) failed")
         return 1
-    print(f"all {len(cases) + 3} triage fixtures hold")
+    print(f"all {len(cases) + 5} triage fixtures hold")
     return 0

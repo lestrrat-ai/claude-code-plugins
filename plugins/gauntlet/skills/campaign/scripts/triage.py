@@ -129,18 +129,25 @@ def words(path: PurePosixPath) -> set[str]:
 
 
 def agent_frontmatter(content: bytes | None) -> bool:
-    if content is None or not content.startswith(b"---\n"):
+    if content is None:
+        return False
+    if content.startswith(b"---\n"):
+        body_start = 4
+    elif content.startswith(b"---\r\n"):
+        body_start = 5
+    else:
         return False
     try:
         text = content.decode("utf-8")
     except UnicodeDecodeError:
         return True  # uncertain human prose defaults to CODE
-    end = text.find("\n---", 4)
-    if end < 0:
+    body = text[body_start:]
+    end = re.search(r"^---(?:\r?\n|\Z)", body, re.MULTILINE)
+    if end is None:
         return False
     keys = {
         line.split(":", 1)[0].strip().lower()
-        for line in text[4:end].splitlines()
+        for line in body[:end.start()].splitlines()
         if ":" in line
     }
     return bool(keys & AGENT_FRONTMATTER_KEYS) or {"name", "description"} <= keys
@@ -199,10 +206,8 @@ def classify_change(change: Change, read_content: ContentReader) -> Classified:
         candidates.append((change.old_path, True))
     best_class = HUMAN_DOC
     reasons: list[str] = []
-    rendered_paths: list[str] = []
     for raw, old in candidates:
         path = PurePosixPath(raw)
-        rendered_paths.append(raw)
         content = read_content(raw, old or change.status.startswith("D"))
         sensitive_reasons = sensitive(path, change.old_mode, change.new_mode)
         if sensitive_reasons:
@@ -215,7 +220,8 @@ def classify_change(change: Change, read_content: ContentReader) -> Classified:
             reasons.append(f"{raw}: {reason}")
         elif best_class == HUMAN_DOC:
             reasons.append(f"{raw}: human-facing prose")
-    return Classified(" -> ".join(rendered_paths), best_class, tuple(dict.fromkeys(reasons)))
+    rendered_path = f"{change.old_path} -> {change.path}" if change.old_path else change.path
+    return Classified(rendered_path, best_class, tuple(dict.fromkeys(reasons)))
 
 
 def tier_for(files: list[Classified], systemic: bool) -> tuple[str, list[str]]:
