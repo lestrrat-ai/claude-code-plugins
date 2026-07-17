@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import re
 import sys
 import tempfile
@@ -1193,6 +1194,58 @@ def t_concurrent_writers_lose_nothing(tmp: Path) -> None:
     check(len(set(ids)) == len(ids), f"an id was handed out twice under concurrency: {ids!r}")
 
 
+def t_write_is_atomic_and_private(tmp: Path) -> None:
+    """A failed replacement leaves the old store intact; a successful one keeps the store private."""
+    path = write_lines(tmp / "atomic.jsonl", entry_line(id="fu1"))
+    path.chmod(0o644)
+    before = path.read_bytes()
+
+    fsyncs = 0
+    src: "Path | None" = None
+    dst: "Path | None" = None
+    real_fsync, real_replace = os.fsync, os.replace
+
+    def spy_fsync(fd: int) -> None:
+        nonlocal fsyncs
+        fsyncs += 1
+        real_fsync(fd)
+
+    def dying_replace(a: str, b: str) -> None:
+        nonlocal src, dst
+        src, dst = Path(a), Path(b)
+        raise OSError("the machine died between the write and the rename")
+
+    os.fsync, os.replace = spy_fsync, dying_replace
+    try:
+        code, _, err = run(["--file", str(path), "set", "--id", "fu1", "--title", "changed"])
+    finally:
+        os.fsync, os.replace = real_fsync, real_replace
+
+    check(code == 1, f"a failed replacement exited {code}, not the follow-up CLI's refusal code")
+    check("cannot write the store to" in err and "Nothing was touched." in err,
+          f"the replacement failure escaped the follow-up CLI's clean I/O error: {err!r}")
+    check(path.read_bytes() == before, "a failed replacement changed the follow-up store")
+    check(path.stat().st_mode & 0o777 == 0o644,
+          "a failed replacement changed the old store's permissions")
+    check(src is not None and src.parent == path.parent,
+          f"the replacement staged bytes outside the store directory: {src}")
+    check(dst == path, f"the replacement targeted {dst}, not {path}")
+    check(fsyncs >= 1, "the replacement reached rename without fsyncing its bytes")
+    temps = sorted(p.name for p in path.parent.glob(".followups-*.tmp"))
+    check(not temps, f"the failed replacement left temporary files behind: {temps}")
+
+    old_mask = os.umask(0o022)
+    try:
+        code, _, err = run(["--file", str(path), "set", "--id", "fu1", "--title", "changed"])
+    finally:
+        os.umask(old_mask)
+    check(code == 0, f"the unsabotaged follow-up write exited {code}: {err!r}")
+    check(path.stat().st_mode & 0o777 == 0o600,
+          f"the replacement made the follow-up store {path.stat().st_mode & 0o777:o}, not 600")
+    temps = sorted(p.name for p in path.parent.glob(".followups-*.tmp"))
+    check(not temps, f"the successful replacement left temporary files behind: {temps}")
+
+
 def t_table_hides_closed(tmp: Path) -> None:
     """The default view hides ONLY the CLOSED entries; everything still owed to someone stays visible.
 
@@ -1349,6 +1402,7 @@ CASES = [
     ("defaults-backfill", "an entry written before a field existed reads back complete — as a CANDIDATE", t_defaults_backfill),
     ("values-are-strings", "every value in a follow-up is a STRING — a `null` or a number is refused, never coerced", t_every_value_is_a_string),
     ("concurrent-writers", "concurrent runs lose NOTHING — the read-modify-write is locked", t_concurrent_writers_lose_nothing),
+    ("write-atomic-private", "replacement failure preserves the old store; successful writes stay mode 0600", t_write_is_atomic_and_private),
     ("table-hides-closed", "the default view hides only CLOSED entries; a candidate always shows", t_table_hides_closed),
     ("table-omission-loud", "the omission is never silent, and an all-closed store never reads as empty", t_table_omission_is_never_silent),
     ("table-grid-integrity", "no hostile title/evidence forges a column, an entry, or an out-of-band line", t_table_grid_integrity),

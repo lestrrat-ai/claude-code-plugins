@@ -80,6 +80,7 @@ jobs:
           set -o pipefail
           npx --yes pyright@1.1.410 --outputjson \
             plugins/gauntlet/skills/campaign/scripts/_gauntlet/__init__.py \
+            plugins/gauntlet/skills/campaign/scripts/_gauntlet/atomic.py \
             plugins/gauntlet/skills/campaign/scripts/_gauntlet/modules.py \
             plugins/gauntlet/skills/campaign/scripts/_gauntlet/jsonl.py \
             plugins/gauntlet/skills/campaign/scripts/_gauntlet/mutation.py \

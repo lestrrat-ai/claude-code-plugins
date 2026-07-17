@@ -75,10 +75,8 @@ import argparse
 import fcntl
 import importlib.util
 import json
-import os
 import re
 import sys
-import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -87,6 +85,7 @@ from typing import NoReturn
 
 # The grid is NOT reimplemented here. The private campaign package owns escaping, layout, and omission
 # notices; this file owns only the follow-up schema, lifecycle, and store lifetime.
+from _gauntlet.atomic import replace_text
 from _gauntlet.jsonl import JsonlError, object_lines
 from _gauntlet.table import config_lines, grid_lines, hidden_notice
 
@@ -579,16 +578,7 @@ def dump(path: Path, entries: "list[dict]", high: int) -> None:
     body += "".join(json.dumps({"type": ENTRY_TYPE, **record}) + "\n" for record in records)
     with clean_io("write the store to", path):
         path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".followups-", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w") as fh:
-                fh.write(body)
-                fh.flush()
-                os.fsync(fh.fileno())
-            os.replace(tmp, path)
-        except BaseException:
-            Path(tmp).unlink(missing_ok=True)
-            raise
+        replace_text(path, body, temp_prefix=".followups-")
 
 
 @contextmanager

@@ -21,6 +21,7 @@ import tempfile
 from pathlib import Path
 from typing import NoReturn
 
+from _gauntlet.atomic import replace_text
 from _gauntlet.jsonl import JsonlError, object_lines
 from _gauntlet.table import config_lines, escape_cell as _shared_escape_cell, grid_lines
 from _gauntlet.table import hidden_notice as _shared_hidden_notice
@@ -360,20 +361,13 @@ def dump(path: Path, header: dict, rows: list[dict]) -> None:
     # on the same breath.
     mask = os.umask(0)
     os.umask(mask)
-    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
-    tmp = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:  # fdopen OWNS the descriptor: `with` closes it
-            fh.write("\n".join(out) + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())  # the bytes are DURABLE before the rename makes them the ledger
-        os.chmod(tmp, 0o644 & ~mask)
-        os.replace(tmp, path)      # atomic within the filesystem: the swap is all-or-nothing
-    except BaseException:
-        # Nothing was replaced, so the ledger on disk is still the last COMPLETE one. Do not leave the
-        # half-written temp behind to be mistaken for a store.
-        tmp.unlink(missing_ok=True)
-        raise
+    replace_text(
+        path,
+        "\n".join(out) + "\n",
+        temp_prefix=f".{path.name}.",
+        encoding="utf-8",
+        mode=0o644 & ~mask,
+    )
 
 
 def find_row(rows: list[dict], pr: str) -> "dict | None":
