@@ -297,6 +297,20 @@ def t_a_held_lock_blocks(work: Path) -> None:
     L.check("held" in err, "the refusal must say the lock is held")
 
 
+def t_claim_lock_sweep_stays_on_the_lease_scale(work: Path) -> None:
+    """A short sweep timeout re-opens the clock-skew mutual-exclusion hole.
+
+    The claim.lock is a bare `mkdir` with no PID, so mtime is the ONLY cross-driver signal and the sweep
+    threshold is the only lever against a forward clock jump sweeping a LIVE sub-second claim. If a future
+    edit lowers it back toward the critical-section scale (the old `5 * 60`), a modest forward jump could
+    sweep a live lock and let a second driver in — two owners of one run. Pin it to the lease-staleness
+    scale so that regression goes RED here.
+    """
+    L.check(L.CLAIM_LOCK_STALE_AFTER >= L.LEASE_STALE_AFTER,
+            f"CLAIM_LOCK_STALE_AFTER ({L.CLAIM_LOCK_STALE_AFTER}s) must be >= LEASE_STALE_AFTER "
+            f"({L.LEASE_STALE_AFTER}s): a shorter claim-lock sweep re-opens the clock-skew two-driver hole")
+
+
 def t_a_stale_lock_is_swept(work: Path) -> None:
     lock = work / L.LOCK_NAME
     lock.mkdir()
@@ -375,6 +389,8 @@ CASES = [
     ("refresh-superseded", "refresh refuses once superseded", t_refresh_refuses_when_superseded),
     ("refresh-absent", "refresh does not conjure a lease", t_refresh_of_an_absent_lease_does_not_recreate_it),
     ("lock-blocks", "a held claim.lock blocks the check-and-set", t_a_held_lock_blocks),
+    ("lock-sweep-scale", "a short claim-lock sweep re-opens the clock-skew mutual-exclusion hole",
+     t_claim_lock_sweep_stays_on_the_lease_scale),
     ("lock-swept", "a lock from a crashed claim is swept", t_a_stale_lock_is_swept),
     ("lock-released", "the lock is released on the refusal paths", t_the_lock_is_released_on_the_refusal_paths),
     ("race", "two real racing claimers, one lease", t_only_one_of_two_racing_claimers_wins),

@@ -60,12 +60,28 @@ SIBLING = Path(__file__).resolve().parent / "lease-test.py"
 #
 #   LEASE_STALE_AFTER      a lease older than this has a DEAD driver, so the run may be adopted. Long
 #                          enough that a busy driver is never mistaken for a dead one.
-#   CLAIM_LOCK_STALE_AFTER a claim.lock older than this was left by a process that died mid-claim. The
-#                          critical section is a read plus a write — sub-second — so this is far beyond any
-#                          live claim and far below LEASE_STALE_AFTER. The prose said "a few minutes",
-#                          which is not a number and cannot be implemented.
+#   CLAIM_LOCK_STALE_AFTER a claim.lock older than this is swept as abandoned by a process that died
+#                          mid-claim. The prose said "a few minutes", which is not a number and cannot be
+#                          implemented — but the number matters more than it looks, because mtime is the
+#                          ONLY cross-driver signal here. The lock is a bare `mkdir claim.lock` kept
+#                          DELIBERATELY (see `claim_lock`) for interop with drivers that hand-roll it from
+#                          prose, and a hand-rolled lock carries no PID — so a liveness/PID check, the only
+#                          COMPLETE fix for a stale-sweep racing a live claim, is unavailable. The
+#                          threshold is the only lever left.
+#
+#                          If the system clock jumps FORWARD by more than this while a live driver is
+#                          inside its sub-second critical section (a read plus a write), a second driver
+#                          would sweep the LIVE lock and enter too, and the read-back does NOT catch a
+#                          serialized both-succeeded pair — TWO owners of one run. Setting this to the
+#                          lease-staleness SCALE (30 min, same magnitude as LEASE_STALE_AFTER, deliberately
+#                          — they are independent facts that happen to share it, NOT one aliased to the
+#                          other) means only an implausibly large forward clock jump could sweep a live
+#                          claim, while a genuinely crashed claim is still recovered on the same timescale
+#                          the lease already tolerates a dead driver. This MITIGATES the clock-skew
+#                          two-driver hole; it does NOT eliminate it. The residual risk is a forward clock
+#                          jump larger than 30 min landing inside a sub-second window — small, not zero.
 LEASE_STALE_AFTER = 30 * 60
-CLAIM_LOCK_STALE_AFTER = 5 * 60
+CLAIM_LOCK_STALE_AFTER = 30 * 60
 
 LOCK_NAME = "claim.lock"
 FIELDS = ("agent", "heartbeat", "updated")
@@ -311,6 +327,9 @@ def cmd_release(path: Path, args) -> int:
             fail(f"lease: REFUSED — {exc}\nlease: Refusing to delete a lease we cannot read. Nothing was "
                  f"written.")
         if rec is None:
+            # Release is idempotent: an already-absent lease is release's goal state, so there is no token
+            # to match and nothing to undo. The token check below guards a PRESENT live lease from deletion
+            # by a non-owner; absent is terminal cleanup already complete, reported, not refused.
             emit("absent", None)
             return EXIT_OK
         if rec["agent"] != args.token:
