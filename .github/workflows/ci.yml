@@ -130,6 +130,9 @@ jobs:
       - name: CI-status derivation contract (+ stage-2-ci.md agrees with the code)
         run: python3 plugins/gauntlet/skills/campaign/scripts/ci-status.py self-test
 
+      - name: Triage contract
+        run: python3 plugins/gauntlet/skills/campaign/scripts/triage.py self-test
+
       # The ledger's contract, executed — including the shared table renderer it imports. `escape_cell` is
       # security-shaped: it stops a PR title from forging a column, row, or run-config line. The fixtures
       # assert injective escaping and re-parse the printed grid back to its declared columns and widths.
