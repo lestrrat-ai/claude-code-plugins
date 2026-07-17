@@ -16,17 +16,16 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
-import io
 import json
 import re
 import sys
 import tempfile
-from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ledger  # noqa: E402
 from _gauntlet.table import escape_cell, hidden_notice  # noqa: E402
+from _gauntlet.testing import capture_cli  # noqa: E402
 
 # The ledger's test ORACLE — `grid`, `notices`, `check`, `SelfTestFailure`, and the hostile corpus — lives
 # in the ledger's SIBLING suite, `ledger-test.py`, loaded BY PATH (its name is not a legal module name).
@@ -56,13 +55,7 @@ from followups import (  # noqa: E402
 
 def run(argv: "list[str]") -> "tuple[int, str, str]":
     """Drive the REAL CLI in-process and capture (exit code, stdout, stderr)."""
-    out, err = io.StringIO(), io.StringIO()
-    try:
-        with redirect_stdout(out), redirect_stderr(err):
-            code = followups.main(argv)
-    except SystemExit as exc:  # fail() -> 1; argparse -> 2
-        code = exc.code if isinstance(exc.code, int) else 1
-    return code, out.getvalue(), err.getvalue()
+    return capture_cli(followups.main, argv)
 
 
 def entry_line(**over: object) -> str:

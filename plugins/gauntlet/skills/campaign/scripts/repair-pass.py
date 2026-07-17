@@ -37,16 +37,15 @@ Three refusals this tool exists to make, all of them things a well-meaning drive
 from __future__ import annotations
 
 import argparse
-import io
 import json
 import sys
 import tempfile
-from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import NoReturn
 
 from _gauntlet.modules import load_module_from_path
+from _gauntlet.testing import capture_cli
 
 DESCRIPTION = "Record the reassessment pass's decision for a PR that has stopped converging."
 
@@ -245,13 +244,7 @@ def check(cond: bool, msg: str) -> None:
 
 def run(argv: "list[str]") -> "tuple[int, str, str]":
     """Drive the REAL CLI in-process and capture (exit code, stdout, stderr)."""
-    out, err = io.StringIO(), io.StringIO()
-    try:
-        with redirect_stdout(out), redirect_stderr(err):
-            code = main(argv)
-    except SystemExit as exc:  # fail() -> 1; argparse -> 2
-        code = exc.code if isinstance(exc.code, int) else 1
-    return code, out.getvalue(), err.getvalue()
+    return capture_cli(main, argv)
 
 
 def sibling_cases() -> list:
