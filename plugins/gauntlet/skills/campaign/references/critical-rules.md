@@ -443,6 +443,10 @@
 - Apply `reviewer.md`'s external-review retry budget, then take `runtime-adapter.md`'s owned transition.
   The gate is unchanged; record the selected route and resulting reviewer in the report. See "The
   reviewer".
+- **RUN `scripts/ci-status.py required-set --ledger <rundir>/state.jsonl` before CI derivation on every
+  wake.** It owns both base-branch declaration reads, their strict parse and union, and the atomic ledger
+  write. A settled value is reused; only `unknown` is retried. See `stage-2-ci.md`, "WHAT WERE WE EXPECTING
+  TO SEE?".
 - **DERIVE `ci` BY RUNNING `scripts/ci-status.py derive --pr <N> --head-sha <the ledger's> --rundir
   <rundir> --required-set <the ledger header's>`, and by NOTHING ELSE.** It fetches, promotes, verifies and
   decides, and prints the verdict and the `ci` value as JSON (`stage-2-ci.md`, "THE DERIVATION IS A

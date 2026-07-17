@@ -1017,7 +1017,6 @@ def self_test(fixtures: Path) -> int:
     failures += filename_test(fixtures)
     failures += required_test(fixtures)
     failures += fetch_test()
-    failures += producer_test(fixtures)
     failures += spec_test()
     print()
     if failures:
@@ -1025,7 +1024,6 @@ def self_test(fixtures: Path) -> int:
         return 1
     print(f"all {len(EXPECTED)} fixtures + {len(FILENAME_CASES)} filename cases + "
           f"{len(REQUIRED_CASES)} required-set cases + {len(FETCH_CASES)} fetch-read cases + "
-          f"{len(PRODUCER_CASES)} producer cases + "
           f"{len(SPEC_CASES)} spec cases hold — the contract is intact.")
     print("`mutate-ci-snapshot.py` is what proves each of them pins its OWN rule. Run it too.")
     return 0
@@ -1121,18 +1119,11 @@ def required_test(fixtures: Path) -> int:
 # but the OTHER failure, the one that files no report. And it was not exotic: `repos/cli/cli/branches/trunk`
 # returns `app_id: null` for EVERY required check it has.
 #
-# So the filters are NOT retyped here — they are EXTRACTED FROM stage-2-ci.md AND EXECUTED. A copy in this
-# file is exactly what could NOT have caught this: the bug was in the DOC, which is the only place these
-# reads live and the only place an operator reads them from. A test of a copy would have passed, forever.
-#
-# AND THE SAME ARGUMENT COVERS EVERY FILTER THE DOC PRESCRIBES, not only the required-set pair. It did not,
-# once: the `.app.id` fix in the FETCH read was pinned by NOTHING — a reviewer reverted it in the doc, ran
-# `self-test`, and the suite stayed GREEN, because this harness extracted only the two required-set reads
-# and the FETCH reads were merely eyeballed. A rule that is FIXED but PINNED BY NOTHING can be silently
-# reverted forever. So all FIVE reads are extracted here: the three FETCH reads and the two required-set
-# reads.
+# The three snapshot filters are NOT retyped here — they are EXTRACTED FROM stage-2-ci.md AND EXECUTED. A
+# copy in this file is exactly what could NOT have caught a bug in the DOC, which is where an operator reads
+# them. The required-set reads are now production Python in `ci-status.py required-set`; its sibling fixture
+# suite drives that code over the same recorded API responses instead of testing copied shell.
 DOC = Path(__file__).resolve().parents[1] / "references" / "stage-2-ci.md"
-PAYLOADS = Path(__file__).parent / "fixtures" / "required-set"  # payloads for the required-set reads
 FETCH_PAYLOADS = Path(__file__).parent / "fixtures" / "fetch"   # payloads for the evidence reads
 
 # Each read is identified by the COMMAND LINE that introduces it, VERBATIM — the pipeline included, so a
@@ -1147,20 +1138,13 @@ READS = {
     # prescribes a fetch that rule can never fire on. Pinned verbatim here, so dropping it goes RED.
     # `--repo` IS PART OF THE IDENTITY FOR THE SAME REASON, and it is the one this read shipped WITHOUT: a
     # bare `gh pr view <pr>` resolves the PR in the CURRENT CHECKOUT, so the command asks whichever repo the
-    # reader is standing in — the only one of the five reads that could not say what it was about.
+    # reader is standing in — the only one of the three reads that could not say what it was about.
     "rollup": "gh pr view <pr> --repo <owner>/<repo> --json statusCheckRollup,headRefOid | jq -c '",
-    # The TWO required-set reads (WHAT WERE WE EXPECTING TO SEE?). The base ref rides in as the shell var
-    # `$base` (captured in stage-2-ci.md, never spliced raw — a branch name is untrusted), so the opener
-    # ends `.../branches/$base" --jq '` verbatim; only the URL changed, the jq filter is still delimited by
-    # the trailing single quote exactly as before.
-    "classic": 'gh api "repos/<owner>/<repo>/branches/$base" --jq \'',
-    "ruleset": 'gh api --paginate --slurp "repos/<owner>/<repo>/rules/branches/$base" | jq -c \'',
 }
 
 # `gh api --paginate --slurp` hands jq ONE ARRAY OF PAGES. `jq -s` over N recorded page files builds exactly
 # that — so an N-page fetch is reproducible offline, and a filter that forgets to flatten the pages (or a
-# doc that drops the `--paginate`) goes RED here rather than in production, where it would silently record a
-# truncated required set and let a missing required check pass as green.
+# doc that drops the `--paginate`) goes RED here rather than silently producing a short snapshot.
 SLURPED = {which for which, opener in READS.items() if "--slurp" in opener}
 
 
@@ -1203,47 +1187,6 @@ def run_read(which: str, payloads: tuple[Path, ...]) -> list:
         raise DocDrift(f"the {which} read FAILED on {names}: {proc.stderr.strip()}")
     return [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
 
-
-def required_set_from(which: str, payloads: tuple[Path, ...]) -> list:
-    """Run the DOC's required-set read over recorded page(s) and return the declared checks it produces."""
-    emitted = run_read(which, payloads)
-    if len(emitted) != 1:
-        raise DocDrift(f"the {which} read must emit exactly ONE value, got {len(emitted)}")
-    out = emitted[0]
-    if which == "classic":
-        if not isinstance(out, dict) or not isinstance(out.get("checks"), list):
-            raise DocDrift(f"the classic read no longer produces a `checks` array: {out!r}")
-        out = out["checks"]
-    if not isinstance(out, list):
-        raise DocDrift(f"the {which} read did not produce an array: {out!r}")
-    return out
-
-
-# (payload pages, read, the checks the read MUST produce, snapshot, verdict, needle, why)
-PRODUCER_CASES = [
-    (("classic-protection.json",), "classic",
-     [("Lint scripts", "15368"), ("Validate plugins", ANY_APP)],
-     "green.jsonl", GREEN, "required set satisfied: Lint scripts, Validate plugins",
-     "CLASSIC PROTECTION carrying a NULL app binding — the shape cli/cli's trunk really returns. The unbound "
-     "check must read `-`, be satisfied by a row WHATEVER its producer, and go GREEN — while the BOUND check "
-     "keeps its id, because a default that fires when a binding IS there is the mirror bug"),
-    (("ruleset-null-app.json",), "ruleset", [("ci/jenkins", ANY_APP)],
-     "status-passing.jsonl", GREEN, "required set satisfied: ci/jenkins",
-     "a RULESET whose `integration_id` is explicitly NULL, satisfied by a COMMIT STATUS — a row with NO "
-     "producer field at all, which is precisely what an unbound declaration can be proven by"),
-    (("ruleset-no-app.json",), "ruleset", [("ci/jenkins", ANY_APP)],
-     "status-passing.jsonl", GREEN, "required set satisfied: ci/jenkins",
-     "the same ruleset with `integration_id` ABSENT rather than null — jq reads a missing field as null, and "
-     "this pins that the read defaults it the same way instead of emitting a key it never saw"),
-    (("ruleset-paged-p1.json", "ruleset-paged-p2.json"), "ruleset",
-     [("Lint scripts", "15368"), ("Validate plugins", ANY_APP)],
-     "green.jsonl", GREEN, "required set satisfied: Lint scripts, Validate plugins",
-     "THE PAGINATION CASE. /rules/branches is a PAGED LIST (per_page 30 by default) and the "
-     "`required_status_checks` rule is on PAGE 2. Without `--paginate --slurp` the doc's read sees page 1 "
-     "only, finds no required rule, and records the required set as `none` — `the base branch requires "
-     "nothing` — which is the FALSE GREEN this whole section exists to close, reintroduced by a missing "
-     "flag. The read must produce BOTH checks from BOTH pages"),
-]
 
 # (payload pages, read, the EXACT JSONL rows the read must emit, why)
 # The three FETCH reads, executed. These emit the snapshot's own rows, so the assertion is the rows
@@ -1311,43 +1254,6 @@ def fetch_test() -> int:
             failures += 1
             continue
         print(f"ok       {label:44} -> {len(got_rows)} rows ({why})")
-    return failures
-
-
-def producer_test(fixtures: Path) -> int:
-    """The doc's read -> the spec -> the parser -> a verdict. The whole chain, on payloads with a NULL app
-    binding, because the chain is where the wedge lived and no link of it could see the wedge alone."""
-    failures = 0
-    for pages, which, want_checks, snapshot, want, needle, why in PRODUCER_CASES:
-        label = f"{pages[0]}{f' +{len(pages) - 1}p' if len(pages) > 1 else ''} -> {which} read"
-        try:
-            produced = required_set_from(which, tuple(PAYLOADS / p for p in pages))
-        except DocDrift as exc:
-            print(f"FAIL     {label:44} -> {exc}")
-            failures += 1
-            continue
-        got_checks = [(c.get("context"), c.get("app")) for c in produced]
-        if got_checks != want_checks:
-            print(f"FAIL     {label:44} -> the read produced {got_checks}, expected {want_checks}")
-            failures += 1
-            continue
-        spec = DECLARED_PREFIX + json.dumps([{"context": c, "app": a} for c, a in got_checks])
-        try:
-            required = parse_required_set(spec)
-        except SpecError as exc:
-            # The read produced a required set ITS OWN PARSER refuses. Exactly what `app: "null"` does.
-            print(f"FAIL     {label:44} -> the read produced a spec the parser REJECTS: {exc}")
-            failures += 1
-            continue
-        got, reason = evaluate(
-            fixtures / snapshot, FIXTURE_SHA, required=required, expect_filename_sha=False
-        )
-        if got == want and needle in reason:
-            print(f"ok       {label:44} -> {got:8} ({why})")
-        else:
-            print(f"FAIL     {label:44} -> {got:8} expected {want} mentioning {needle!r}"
-                  f"\n         reason: {reason}")
-            failures += 1
     return failures
 
 

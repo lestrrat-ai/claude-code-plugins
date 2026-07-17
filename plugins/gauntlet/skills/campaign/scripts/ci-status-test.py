@@ -235,6 +235,95 @@ def check_seams(ci, tmp: Path) -> list[str]:
     return bad
 
 
+def required_set_cases(ci, tmp: Path) -> list[str]:
+    """Drive the required-set producer through recorded GitHub responses and the real ledger accessor."""
+    problems: list[str] = []
+    fixtures = ci.HERE / "fixtures" / "required-set"
+
+    def payload(name: str):
+        return json.loads((fixtures / name).read_text(encoding="utf-8"))
+
+    classic = ci.classic_required_set(payload("classic-protection.json"))
+    expected_classic = [("Lint scripts", "15368"), ("Validate plugins", ci.SNAP.ANY_APP)]
+    if classic != expected_classic:
+        problems.append(f"[required-set] classic protection produced {classic!r}, expected {expected_classic!r}")
+
+    for name in ("ruleset-null-app.json", "ruleset-no-app.json"):
+        got = ci.ruleset_required_set([payload(name)])
+        if got != [("ci/jenkins", ci.SNAP.ANY_APP)]:
+            problems.append(f"[required-set] {name} produced {got!r}, expected an unbound ci/jenkins")
+
+    pages = [payload("ruleset-paged-p1.json"), payload("ruleset-paged-p2.json")]
+    got_paged = ci.ruleset_required_set(pages)
+    if got_paged != expected_classic:
+        problems.append(f"[required-set] paged rules produced {got_paged!r}, expected {expected_classic!r}")
+
+    seen: list[tuple[str, list[str]]] = []
+
+    def recorded_fetch(source: str, argv: list[str]):
+        seen.append((source, argv))
+        return payload("classic-protection.json") if source.endswith("classic") else pages
+
+    spec, reason = ci.fetch_required_set(recorded_fetch, "o/r", "feature/x$(unsafe)")
+    expected_spec = ci.canonical_required_set(expected_classic)
+    if spec != expected_spec:
+        problems.append(f"[required-set] union produced {spec!r}, expected {expected_spec!r}: {reason}")
+    encoded = "feature%2Fx%24%28unsafe%29"
+    if len(seen) != 2 or any(encoded not in argv[-1] for _source, argv in seen):
+        problems.append(f"[required-set] base branch was not URL-encoded in both scoped reads: {seen!r}")
+
+    no_checks, _ = ci.fetch_required_set(
+        lambda source, _argv: {"protection": {"enabled": False}} if source.endswith("classic") else [[]],
+        "o/r", "main",
+    )
+    if no_checks != ci.SNAP.NONE_DECLARED:
+        problems.append(f"[required-set] two complete empty reads produced {no_checks!r}, expected `none`")
+
+    def failed_fetch(source: str, _argv: list[str]):
+        if source.endswith("ruleset"):
+            raise ci.FetchError("ruleset denied")
+        return {"protection": {"enabled": False}}
+
+    unknown, unknown_reason = ci.fetch_required_set(failed_fetch, "o/r", "main")
+    if unknown != ci.SNAP.CANNOT_READ or "denied" not in unknown_reason:
+        problems.append(f"[required-set] one failed source produced {unknown!r}: {unknown_reason}")
+
+    malformed, malformed_reason = ci.fetch_required_set(
+        lambda source, _argv: {} if source.endswith("classic") else [[]], "o/r", "main"
+    )
+    if malformed != ci.SNAP.CANNOT_READ or "ABSENT" not in malformed_reason:
+        problems.append(f"[required-set] an absent required field produced {malformed!r}: {malformed_reason}")
+
+    ledger = tmp / "required-set-state.jsonl"
+    header = dict(ci.LEDGER.HEADER_DEFAULTS)
+    header.update({"run_id": "test", "base_branch": "feature/x$(unsafe)"})
+    ci.LEDGER.dump(ledger, header, [])
+    settled = ci.refresh_required_set(recorded_fetch, ledger, "o/r")
+    persisted, _rows = ci.LEDGER.load(ledger)
+    if not settled["settled"] or persisted["required_set"] != expected_spec:
+        problems.append(f"[required-set] the canonical union was not settled atomically: {settled!r}")
+
+    def must_not_fetch(_source: str, _argv: list[str]):
+        raise AssertionError("a settled ledger was fetched again")
+
+    try:
+        reused = ci.refresh_required_set(must_not_fetch, ledger, "o/r")
+        if reused["required_set"] != expected_spec:
+            problems.append(f"[required-set] settled reuse changed the value: {reused!r}")
+    except Exception as exc:  # noqa: BLE001 - a fetch here is the behavior this case detects
+        problems.append(f"[required-set] settled ledger was not reused: {type(exc).__name__}: {exc}")
+
+    snapshot_fixtures = ci.SNAPSHOT_PY.parent / "fixtures" / "ci-snapshot"
+    required = ci.SNAP.parse_required_set(expected_spec)
+    verdict, verdict_reason = ci.SNAP.evaluate(
+        snapshot_fixtures / "green.jsonl", ci.FIXTURE_SHA, required=required, expect_filename_sha=False
+    )
+    if verdict != ci.SNAP.GREEN or "required set satisfied" not in verdict_reason:
+        problems.append(f"[required-set] producer-to-verifier chain returned {verdict}: {verdict_reason}")
+
+    return problems
+
+
 def run(ci, tmp: Path) -> int:
     """Every fixture, then the seams, then `doc-check`. Non-zero on any failure.
 
@@ -265,6 +354,13 @@ def run(ci, tmp: Path) -> int:
     if not problems:
         print(f"ok       {'the seams no fixture reaches':32} -> {len(SEAM_EXPECT)} cases: gh_fetch's own two "
               f"rules, the CLI's operator-error guards, and the repo-scoping refusal")
+
+    required_problems = required_set_cases(ci, tmp)
+    for problem in required_problems:
+        failures += 1
+        print(f"FAIL     {problem}")
+    if not required_problems:
+        print(f"ok       {'required-set producer':32} -> 10 cases: both APIs, strict shapes, canonical ledger state")
 
     print()
     print(f"--- doc-check: {ci.DOC.name} vs the code that runs ---")

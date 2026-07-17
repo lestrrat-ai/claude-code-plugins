@@ -119,10 +119,11 @@ Drift is a RED BUILD, not a discovery.
 zero rules are extracted, `doc-check` FAILS. An extractor that silently matches nothing and reports success
 is the false green of this whole story, one level up, in the tool written to prevent it.
 
-(The doc's `gh … | jq` FETCH filters are EXECUTED — by `ci-snapshot.py`'s `producer_test`, which extracts
-all five reads the doc prescribes VERBATIM and runs them over recorded, multi-page API payloads. That is
-its job and it owns it; this file does not keep a second copy of that machinery.)
+(The doc's three `gh … | jq` snapshot filters are EXECUTED by `ci-snapshot.py` over recorded, multi-page
+API payloads. The required-set reads are production functions in this file and its sibling suite drives
+them over their recorded API payloads.)
 
+  required-set  read branch protection and rulesets, then persist their complete union in the ledger
   derive     fetch a PR's checks, promote the snapshot, verify it, and print the verdict as JSON
   doc-check  assert stage-2-ci.md's enums / CLASSIFY / DECIDE order agree with the code that runs
   self-test  run every fixture, assert its verdict AND the rule that produced it, then run doc-check
@@ -146,9 +147,11 @@ import sys
 import textwrap
 from pathlib import Path
 from typing import Callable, NamedTuple, NoReturn
+from urllib.parse import quote
 
 HERE = Path(__file__).resolve().parent
 SNAPSHOT_PY = HERE / "ci-snapshot.py"
+LEDGER_PY = HERE / "ledger.py"
 TEST_PY = HERE / "ci-status-test.py"     # the fixture suite — this tool's executable contract
 DOC = HERE.parent / "references" / "stage-2-ci.md"
 FIXTURES = HERE / "fixtures" / "ci-status"
@@ -179,6 +182,19 @@ def load_snapshot_module():
 
 
 SNAP = load_snapshot_module()
+
+
+def load_ledger_module():
+    """Import the schema-owning ledger accessor instead of copying its file format or write rules."""
+    spec = importlib.util.spec_from_file_location("campaign_ledger_for_ci", LEDGER_PY)
+    if spec is None or spec.loader is None:  # pragma: no cover - a broken checkout, not a verdict
+        fail(f"cannot load {LEDGER_PY} — required-set persistence belongs to that accessor")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+LEDGER = load_ledger_module()
 
 # `StatusState`, as the ROLLUP hands it to us — and it is NOT a fourth copy of those values, it is the UNION
 # OF THE THREE BUCKETS `ci-snapshot.py` CLASSIFIES WITH. That file owns the enum; this file only asks whether
@@ -340,6 +356,122 @@ def check_required_set(spec: str):
             f"guessing at it would say 'the base branch requires nothing' on the strength of a value we "
             f"failed to parse."
         )
+
+
+# --- REQUIRED SET -------------------------------------------------------------------------------
+
+def required_check(source: str, value: object, app_key: str) -> tuple[str, str]:
+    """Parse one GitHub required-check declaration without turning absence into an empty value."""
+    context = field(source, value, "context", str)
+    app = field(source, value, app_key, int, NULL, ABSENT)
+    if app is None:
+        app = SNAP.ANY_APP
+    else:
+        app = str(app)
+    return context, app
+
+
+def classic_required_set(payload: object) -> list[tuple[str, str]]:
+    """Read classic branch protection from the complete branch object."""
+    source = "required-set-classic"
+    protection = field(source, payload, "protection", dict)
+    enabled = field(source, protection, "enabled", bool)
+    if not enabled:
+        return []
+    status_checks = field(source, protection, "required_status_checks", dict)
+    checks = field(source, status_checks, "checks", list)
+    return [required_check(source, check, "app_id") for check in checks]
+
+
+def ruleset_required_set(payload: object) -> list[tuple[str, str]]:
+    """Read every page returned by `gh api --paginate --slurp` for rules on the base branch."""
+    source = "required-set-ruleset"
+    if not isinstance(payload, list):
+        raise FetchError(f"{source}: the paginated response is not a list of pages")
+    checks: list[tuple[str, str]] = []
+    for page in payload:
+        if not isinstance(page, list):
+            raise FetchError(f"{source}: a page is not a list of rules: {page!r}")
+        for rule in page:
+            rule_type = field(source, rule, "type", str)
+            if rule_type != "required_status_checks":
+                continue
+            parameters = field(source, rule, "parameters", dict)
+            declared = field(source, parameters, "required_status_checks", list)
+            checks.extend(required_check(source, check, "integration_id") for check in declared)
+    return checks
+
+
+def canonical_required_set(checks: list[tuple[str, str]]) -> str:
+    """Return the one ledger spelling for a complete union of both declaration sources."""
+    unique = sorted(set(checks))
+    if not unique:
+        return SNAP.NONE_DECLARED
+    payload = [{"context": context, "app": app} for context, app in unique]
+    spec = SNAP.DECLARED_PREFIX + json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+    SNAP.parse_required_set(spec)  # the verifier's parser has the final word on what may be persisted
+    return spec
+
+
+def fetch_required_set(fetch: Fetch, repo: str, base_branch: str) -> tuple[str, str]:
+    """Fetch both mandatory declaration sources. Any incomplete read stays `unknown`."""
+    scoped = repo_scoped(fetch, repo)
+    encoded = quote(base_branch, safe="")
+    try:
+        classic = scoped(
+            "required-set-classic",
+            ["gh", "api", f"repos/{REPO_SLOT}/branches/{encoded}"],
+        )
+        rules = scoped(
+            "required-set-ruleset",
+            ["gh", "api", "--paginate", "--slurp", f"repos/{REPO_SLOT}/rules/branches/{encoded}"],
+        )
+        value = canonical_required_set(classic_required_set(classic) + ruleset_required_set(rules))
+        return value, "both required-check sources were read completely"
+    except (FetchError, SNAP.SpecError) as exc:
+        return SNAP.CANNOT_READ, str(exc)
+
+
+def refresh_required_set(fetch: Fetch, ledger_path: Path, repo: str | None = None) -> dict:
+    """Settle the ledger header once, retrying only while its value is `unknown`."""
+    header, rows = LEDGER.load(ledger_path)
+    current_spec = header["required_set"]
+    try:
+        current = SNAP.parse_required_set(current_spec)
+    except SNAP.SpecError as exc:
+        fail(f"ledger required_set {current_spec!r} is malformed ({exc}); refusing to overwrite it")
+
+    if current.state != SNAP.CANNOT_READ:
+        return {
+            "base_branch": header["base_branch"],
+            "repo": repo,
+            "required_set": current_spec,
+            "state": current.state,
+            "settled": True,
+            "reason": "the ledger already holds a settled required set; no GitHub read was made",
+        }
+
+    base_branch = header["base_branch"]
+    if not base_branch or base_branch == "-":
+        fail("ledger base_branch is not set; required checks cannot be read without it")
+    if repo is None:
+        try:
+            repo = resolve_repo(fetch)
+        except FetchError as exc:
+            fail(f"cannot determine the repo ({exc}) — pass --repo owner/name")
+
+    value, reason = fetch_required_set(fetch, repo, base_branch)
+    header["required_set"] = value
+    LEDGER.dump(ledger_path, header, rows)
+    parsed = SNAP.parse_required_set(value)
+    return {
+        "base_branch": base_branch,
+        "repo": repo,
+        "required_set": value,
+        "state": parsed.state,
+        "settled": parsed.state != SNAP.CANNOT_READ,
+        "reason": reason,
+    }
 
 
 # --- FETCH ---------------------------------------------------------------------------------------
@@ -1553,6 +1685,31 @@ def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]
     return problems, copies
 
 
+def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list[str]]:
+    """Every runnable required-set copy names the ledger whose header the command owns."""
+    problems, copies = [], []
+    for md in sorted((root or HERE.parent).rglob("*.md")):
+        text = md.read_text(encoding="utf-8")
+        for match in re.finditer(r"ci-status\.py required-set", text):
+            end = text.find("\n\n", match.start())
+            command = text[match.start(): end if end > 0 else len(text)]
+            if "--ledger" not in command:
+                continue  # prose that names the subcommand, not a runnable copy
+            line = text.count("\n", 0, match.start()) + 1
+            copies.append(f"{md.name}:{line}")
+            if "state.jsonl" not in command:
+                problems.append(
+                    f"{md.name}:{line} runs `ci-status.py required-set` without the run ledger's "
+                    f"`state.jsonl` — the command must persist the value it read before the value exists"
+                )
+    if not copies:
+        problems.append(
+            "ZERO runnable copies of `ci-status.py required-set` were found in the skill's docs — finding "
+            "nothing means this check has lost its subject"
+        )
+    return problems, copies
+
+
 def doc_check(doc: Path) -> int:
     """Assert the DOC, the CODE, and this tool's DECIDE_ORDER all say the same thing.
 
@@ -1566,11 +1723,10 @@ def doc_check(doc: Path) -> int:
          paragraphs. A value in a hole matches NO branch: not green, not red, not pending — the PR can never
          resolve, and it WEDGES. This is the check that catches that, and nothing else in the repo does.
       4. the doc's `gh` INVOCATIONS, in every copy of them, against the argv the code really issues — plus
-         every copy of the derive command, for `--required-set`.
+         every copy of the derive and required-set commands and their required ledger inputs.
 
-    (The doc's `jq` FILTERS are executed by `ci-snapshot.py`'s `producer_test`, which extracts all five
-    reads this doc prescribes VERBATIM and runs them over recorded, multi-page API payloads. That check owns
-    them; a second copy of it here would be a second owner, free to disagree.)
+    (The doc's three snapshot `jq` filters are executed by `ci-snapshot.py` over recorded, multi-page API
+    payloads. The required-set reads are production functions here, covered by `ci-status-test.py`.)
     """
     if not doc.exists():
         print(f"FAIL     the doc is not at {doc} — a check that cannot find its subject NEVER passes")
@@ -1648,6 +1804,11 @@ def doc_check(doc: Path) -> int:
     if not derive_problems:
         held.append(f"{'the derive invocations':32} {len(derive_copies)} copies across the skill's docs, "
                     f"every one of them passing --required-set")
+    required_problems, required_copies = check_required_set_copies()
+    problems += required_problems
+    if not required_problems:
+        held.append(f"{'the required-set invocations':32} {len(required_copies)} runnable copies, every one "
+                    f"persisting to state.jsonl")
     for line in held:
         print(f"ok       {line}")
     for problem in problems:
@@ -1751,6 +1912,13 @@ def main() -> int:
     d.add_argument("--required-set", required=True,
                    help="the ledger header's `required_set`: `declared:<json>` | `none` | `unknown`")
 
+    r = sub.add_parser(
+        "required-set",
+        help="read both required-check sources and persist their canonical union in the ledger",
+    )
+    r.add_argument("--ledger", required=True, type=Path, help="the run's state.jsonl")
+    r.add_argument("--repo", help="owner/name (default: the current checkout's, via `gh repo view`)")
+
     c = sub.add_parser("doc-check", help="assert stage-2-ci.md agrees with the code that runs — enums, "
                                          "CLASSIFY, DECIDE order, and every copy of every command")
     c.add_argument("--doc", type=Path, default=DOC)
@@ -1764,6 +1932,11 @@ def main() -> int:
 
     if args.cmd == "self-test":
         return self_test()
+
+    if args.cmd == "required-set":
+        out = refresh_required_set(gh_fetch, args.ledger, args.repo)
+        print(json.dumps(out, indent=2, ensure_ascii=False))
+        return 0 if out["settled"] else 1
 
     # EVERY OPERATOR ERROR IS NAMED BEFORE THE FIRST FETCH. A caller's mistake surfacing later — as a crash
     # during promotion, or as a verdict about the PR — is a defect reported against the wrong thing.
