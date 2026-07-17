@@ -102,7 +102,7 @@ when. Same rules: by field name, never hand-edited.
 has stopped converging — the closed enum, the ownership guardrail, and the repair cap
 (`references/repair-pass.md`).
 `scripts/triage.py derive` is the only way to derive a PR's file-class risk tier. It reads the pinned
-`base...head_sha` diff, classifies every path and executable-mode change, and prints the tier plus its
+`base...head_sha` diff, classifies every path and Git-mode change, and prints the tier plus its
 evidence as JSON. Pass `--systemic` only when the change is systemic, cross-package, or root-cause.
 
 Each script's fixtures live in a **sibling `*-test.py`** (`review-pass-test.py`, `ledger-test.py`,

@@ -19,11 +19,12 @@ Default to **STANDARD** only when the command itself cannot classify with confid
 
 **File classes (`triage.py` owns the executable classification; this is its contract).**
 
-- **HUMAN-DOC** — human-facing prose only: top-level `README.md`, human `docs/**`, `CHANGELOG`,
-  `LICENSE`.
-- **CODE** — source files **and agent-consumed docs**: `SKILL.md`, a skill's `references/**`,
-  `CLAUDE.md`/`AGENTS.md`, `.claude/**`, prompt / agent-instruction files, any `.md` carrying
-  skill/agent frontmatter. Agent-docs are CODE, never HUMAN-DOC.
+- **HUMAN-DOC** — human-facing prose in regular blobs only: top-level `README.md`, human `docs/**`,
+  `CHANGELOG`, `LICENSE`.
+- **CODE** — source files, non-regular entries (including symlinks/gitlinks), and **agent-consumed
+  docs**: `SKILL.md`, a skill's `references/**`, `CLAUDE.md`/`AGENTS.md`, `.claude/**`, prompt /
+  agent-instruction files, exact `docs/**` paths referenced in inline code by root `AGENTS.md` or
+  `CLAUDE.md`, and any `.md` carrying skill/agent frontmatter. Agent-docs are CODE, never HUMAN-DOC.
 - **SENSITIVE** (a CODE subset) — CI (`.github/**`), `scripts/**`, executables (`+x`),
   `Dockerfile`/`Makefile`, dependency manifests/lockfiles, IaC, auth/crypto/secret paths.
 

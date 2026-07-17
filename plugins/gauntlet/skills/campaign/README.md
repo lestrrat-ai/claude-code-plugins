@@ -79,8 +79,8 @@ You can also skip review entirely and hand campaign PR numbers you opened yourse
 
 It drives each adopted PR to merge and merges it itself once the PR passes the reviews its tier
 requires and CI is green. How many reviews depends on what the PR touches: a documentation-only PR
-(human-facing prose alone) needs **one**; anything touching code or agent-facing files — source,
-`SKILL.md`, `AGENTS.md`, `CLAUDE.md`, prompts, CI, scripts — always gets the full **two-pass** gate. (Two reviews
+(human-facing prose alone) needs **one**; anything touching code or agent-facing files always gets the
+full **two-pass** gate. (Two reviews
 rather than one because a single stochastic review can miss a defect — not because two runs are
 statistically independent; reading the same diff under the same review task makes their verdicts
 correlated.) Aside from the public-API confirmation described below, there's no approval step along

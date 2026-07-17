@@ -19,8 +19,11 @@ from _gauntlet.modules import load_module_from_path
 TRIVIAL, STANDARD, HIGH = "TRIVIAL", "STANDARD", "HIGH"
 HUMAN_DOC, CODE, SENSITIVE = "HUMAN-DOC", "CODE", "SENSITIVE"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+ROOT_DOC_REFERENCE_RE = re.compile(r"`(docs/[^`\r\n]+)`")
 
 PROSE_SUFFIXES = {".md", ".mdx", ".rst", ".txt", ".adoc"}
+REGULAR_MODES = {"100644", "100755"}
+ROOT_INSTRUCTION_PATHS = ("AGENTS.md", "CLAUDE.md")
 DEPENDENCY_NAMES = {
     "package.json", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml",
     "bun.lock", "bun.lockb", "deno.json", "deno.lock", "pyproject.toml", "poetry.lock", "pdm.lock",
@@ -115,6 +118,44 @@ def parse_raw(data: bytes) -> list[Change]:
     return changes
 
 
+def root_agent_doc_paths(worktree: Path, revision: str) -> frozenset[str]:
+    """Read exact `docs/**` path references from root instructions at one pinned revision."""
+    data = git(worktree, "ls-tree", "-z", revision, "--", *ROOT_INSTRUCTION_PATHS)
+    if not data:
+        return frozenset()
+    if not data.endswith(b"\0"):
+        raise TriageError("git ls-tree returned an unterminated root instruction entry")
+    references: set[str] = set()
+    for record in data[:-1].split(b"\0"):
+        try:
+            metadata, raw_path = record.split(b"\t", 1)
+        except ValueError as exc:
+            raise TriageError(f"cannot parse root instruction entry {record!r}") from exc
+        parts = metadata.split()
+        if len(parts) != 3:
+            raise TriageError(f"cannot parse root instruction metadata {metadata!r}")
+        _mode, object_type, _oid = parts
+        path = os.fsdecode(raw_path)
+        if path not in ROOT_INSTRUCTION_PATHS or object_type != b"blob":
+            raise TriageError(f"root instruction {path!r} is not a readable blob")
+        content = git(worktree, "show", f"{revision}:{path}")
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise TriageError(f"root instruction {path!r} is not UTF-8") from exc
+        for match in ROOT_DOC_REFERENCE_RE.finditer(text):
+            reference = match.group(1)
+            parsed = PurePosixPath(reference)
+            if (
+                parsed.parts[:1] == ("docs",)
+                and parsed.as_posix() == reference
+                and not any(char in reference for char in "*?[]")
+                and not ({".", ".."} & set(parsed.parts))
+            ):
+                references.add(reference)
+    return frozenset(references)
+
+
 def executable(mode: str) -> bool:
     try:
         return bool(int(mode, 8) & 0o111)
@@ -153,9 +194,13 @@ def agent_frontmatter(content: bytes | None) -> bool:
     return bool(keys & AGENT_FRONTMATTER_KEYS) or {"name", "description"} <= keys
 
 
-def agent_doc(path: PurePosixPath, content: bytes | None) -> bool:
+def agent_doc(
+    path: PurePosixPath, content: bytes | None, referenced_paths: frozenset[str] = frozenset()
+) -> bool:
     lower_parts = tuple(part.lower() for part in path.parts)
     name = path.name.lower()
+    if path.as_posix() in referenced_paths:
+        return True
     if name in {"skill.md", "agents.md", "claude.md"}:
         return True
     if ".claude" in lower_parts or "references" in lower_parts:
@@ -165,8 +210,10 @@ def agent_doc(path: PurePosixPath, content: bytes | None) -> bool:
     return path.suffix.lower() in {".md", ".mdx"} and agent_frontmatter(content)
 
 
-def human_doc(path: PurePosixPath, content: bytes | None) -> bool:
-    if agent_doc(path, content):
+def human_doc(
+    path: PurePosixPath, content: bytes | None, referenced_paths: frozenset[str] = frozenset()
+) -> bool:
+    if agent_doc(path, content, referenced_paths):
         return False
     if len(path.parts) == 1 and (
         path.name == "README.md" or path.name.upper().startswith("CHANGELOG")
@@ -200,7 +247,11 @@ def sensitive(path: PurePosixPath, old_mode: str, new_mode: str) -> list[str]:
 ContentReader = Callable[[str, bool], bytes | None]
 
 
-def classify_change(change: Change, read_content: ContentReader) -> Classified:
+def classify_change(
+    change: Change,
+    read_content: ContentReader,
+    referenced_paths: frozenset[str] = frozenset(),
+) -> Classified:
     candidates = [(change.path, False)]
     if change.old_path is not None:
         candidates.append((change.old_path, True))
@@ -208,15 +259,29 @@ def classify_change(change: Change, read_content: ContentReader) -> Classified:
     reasons: list[str] = []
     for raw, old in candidates:
         path = PurePosixPath(raw)
-        content = read_content(raw, old or change.status.startswith("D"))
+        use_old = old or change.status.startswith("D")
+        mode = change.old_mode if use_old else change.new_mode
         sensitive_reasons = sensitive(path, change.old_mode, change.new_mode)
         if sensitive_reasons:
             best_class = SENSITIVE
             reasons.extend(f"{raw}: {reason}" for reason in sensitive_reasons)
             continue
-        if not human_doc(path, content) and best_class != SENSITIVE:
+        if mode not in REGULAR_MODES:
+            if best_class != SENSITIVE:
+                best_class = CODE
+            reasons.append(f"{raw}: non-regular mode {mode}")
+            continue
+        content = read_content(raw, use_old)
+        if content is None:
+            side = "base" if use_old else "head"
+            raise TriageError(f"cannot read regular blob {raw!r} from {side}")
+        if not human_doc(path, content, referenced_paths) and best_class != SENSITIVE:
             best_class = CODE
-            reason = "agent-consumed document" if agent_doc(path, content) else "not human-facing prose"
+            reason = (
+                "agent-consumed document"
+                if agent_doc(path, content, referenced_paths)
+                else "not human-facing prose"
+            )
             reasons.append(f"{raw}: {reason}")
         elif best_class == HUMAN_DOC:
             reasons.append(f"{raw}: human-facing prose")
@@ -249,17 +314,16 @@ def derive(worktree: Path, base: str, head_sha: str, systemic: bool = False) -> 
         raise TriageError(f"worktree HEAD is {live}, not ledger head_sha {head_sha}")
     merge_base = os.fsdecode(one_lf(git(worktree, "merge-base", base, head_sha), "git merge-base"))
     changes = parse_raw(git(worktree, "diff", "--raw", "-z", "--no-abbrev", merge_base, head_sha))
+    referenced_paths = root_agent_doc_paths(worktree, head_sha)
 
     def read_content(path: str, old: bool) -> bytes | None:
         revision = merge_base if old else head_sha
-        proc = subprocess.run(
-            ["git", "-C", os.fspath(worktree), "show", f"{revision}:{path}"],
-            capture_output=True,
-            check=False,
-        )
-        return proc.stdout if proc.returncode == 0 else None
+        return git(worktree, "show", f"{revision}:{path}")
 
-    files = sorted((classify_change(change, read_content) for change in changes), key=lambda item: item.path)
+    files = sorted(
+        (classify_change(change, read_content, referenced_paths) for change in changes),
+        key=lambda item: item.path,
+    )
     tier, reasons = tier_for(files, systemic)
     return {
         "base": base,

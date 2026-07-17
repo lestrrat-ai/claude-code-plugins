@@ -76,6 +76,20 @@ def run(T) -> int:
         print(f"FAIL     raw rename               -> {type(exc).__name__}: {exc}")
         failures += 1
 
+    try:
+        unreadable = T.Change("100644", "100644", "M", "docs/unreadable.md")
+        try:
+            unreadable_result = T.classify_change(unreadable, lambda _path, _old: None)
+        except T.TriageError:
+            unreadable_result = None
+        if unreadable_result is not None:
+            check(unreadable_result.file_class != T.HUMAN_DOC,
+                  "failed regular-blob read classified as HUMAN-DOC")
+        print("ok       failed regular read       -> closed to CODE or error")
+    except Exception as exc:  # noqa: BLE001
+        print(f"FAIL     failed regular read       -> {type(exc).__name__}: {exc}")
+        failures += 1
+
     with tempfile.TemporaryDirectory(prefix="gauntlet-triage-") as raw_tmp:
         repo = Path(raw_tmp)
         commands = [
@@ -85,8 +99,20 @@ def run(T) -> int:
         ]
         for argv in commands:
             subprocess.run(argv, cwd=repo, check=True)
+        (repo / "docs").mkdir()
         (repo / "README.md").write_text("base\n", encoding="utf-8")
-        subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+        (repo / "AGENTS.md").write_text(
+            "Read `docs/runtime-compatibility.md` before changing validation.\n",
+            encoding="utf-8",
+        )
+        (repo / "docs" / "runtime-compatibility.md").write_text(
+            "# Runtime compatibility\n\nKeep workflow rules shared.\n", encoding="utf-8"
+        )
+        subprocess.run(
+            ["git", "add", "README.md", "AGENTS.md", "docs/runtime-compatibility.md"],
+            cwd=repo,
+            check=True,
+        )
         subprocess.run(["git", "commit", "-qm", "base"], cwd=repo, check=True)
         base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
         (repo / "README.md").write_text("base\nmore prose\n", encoding="utf-8")
@@ -103,7 +129,6 @@ def run(T) -> int:
             failures += 1
 
         crlf_content = b"---\r\nname: demo\r\ndescription: agent work\r\n---\r\n"
-        (repo / "docs").mkdir()
         (repo / "docs" / "helper.md").write_bytes(crlf_content)
         subprocess.run(["git", "add", "docs/helper.md"], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-qm", "agent docs"], cwd=repo, check=True)
@@ -124,6 +149,82 @@ def run(T) -> int:
             print(f"FAIL     CRLF agent frontmatter     -> {type(exc).__name__}: {exc}")
             failures += 1
 
+        (repo / "docs" / "runtime-compatibility.md").write_text(
+            "# Runtime compatibility\n\nKeep workflow rules shared and pinned.\n", encoding="utf-8"
+        )
+        subprocess.run(["git", "add", "docs/runtime-compatibility.md"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-qm", "runtime instructions"], cwd=repo, check=True)
+        instruction_head = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=repo, text=True
+        ).strip()
+        try:
+            result = T.derive(repo, crlf_head, instruction_head)
+            check(result["files"][0]["path"] == "docs/runtime-compatibility.md",
+                  f"instruction fixture classified {result['files'][0]['path']}")
+            check(result["files"][0]["class"] == T.CODE,
+                  f"referenced runtime instructions classified as {result['files'][0]['class']}")
+            check(result["tier"] == T.STANDARD, f"referenced instruction tier is {result['tier']}")
+            check(result["required_reviews"] == 2,
+                  f"referenced instruction requires {result['required_reviews']} reviews")
+            print("ok       root AGENTS reference      -> agent doc, STANDARD, 2 reviews")
+        except Exception as exc:  # noqa: BLE001
+            print(f"FAIL     root AGENTS reference      -> {type(exc).__name__}: {exc}")
+            failures += 1
+
+        missing_oid = "0123456789abcdef0123456789abcdef01234567"
+        subprocess.run(
+            ["git", "update-index", "--add", "--cacheinfo",
+             f"160000,{missing_oid},docs/gitlink.md"],
+            cwd=repo,
+            check=True,
+        )
+        tree = subprocess.check_output(["git", "write-tree"], cwd=repo, text=True).strip()
+        gitlink_head = subprocess.check_output(
+            ["git", "commit-tree", tree, "-p", instruction_head, "-m", "gitlink"],
+            cwd=repo,
+            text=True,
+        ).strip()
+        subprocess.run(["git", "reset", "--hard", "-q", gitlink_head], cwd=repo, check=True)
+        try:
+            result = T.derive(repo, instruction_head, gitlink_head)
+            check(result["files"][0]["class"] == T.CODE,
+                  f"missing-object gitlink classified as {result['files'][0]['class']}")
+            check(any("160000" in reason for reason in result["files"][0]["reasons"]),
+                  f"gitlink evidence omitted its mode: {result['files'][0]['reasons']}")
+            check(result["tier"] == T.STANDARD, f"gitlink tier is {result['tier']}")
+            print("ok       missing-object gitlink     -> CODE, STANDARD")
+        except Exception as exc:  # noqa: BLE001
+            print(f"FAIL     missing-object gitlink     -> {type(exc).__name__}: {exc}")
+            failures += 1
+
+        target_oid = subprocess.check_output(
+            ["git", "hash-object", "-w", "--stdin"], cwd=repo, input=b"../scripts/run.sh"
+        ).decode("ascii").strip()
+        subprocess.run(
+            ["git", "update-index", "--add", "--cacheinfo",
+             f"120000,{target_oid},docs/link.md"],
+            cwd=repo,
+            check=True,
+        )
+        tree = subprocess.check_output(["git", "write-tree"], cwd=repo, text=True).strip()
+        symlink_head = subprocess.check_output(
+            ["git", "commit-tree", tree, "-p", gitlink_head, "-m", "symlink"],
+            cwd=repo,
+            text=True,
+        ).strip()
+        subprocess.run(["git", "reset", "--hard", "-q", symlink_head], cwd=repo, check=True)
+        try:
+            result = T.derive(repo, gitlink_head, symlink_head)
+            check(result["files"][0]["class"] == T.CODE,
+                  f"docs symlink classified as {result['files'][0]['class']}")
+            check(any("120000" in reason for reason in result["files"][0]["reasons"]),
+                  f"symlink evidence omitted its mode: {result['files'][0]['reasons']}")
+            check(result["tier"] == T.STANDARD, f"symlink tier is {result['tier']}")
+            print("ok       docs symlink               -> CODE, STANDARD")
+        except Exception as exc:  # noqa: BLE001
+            print(f"FAIL     docs symlink               -> {type(exc).__name__}: {exc}")
+            failures += 1
+
         out, err = io.StringIO(), io.StringIO()
         try:
             with redirect_stdout(out), redirect_stderr(err):
@@ -139,5 +240,5 @@ def run(T) -> int:
     if failures:
         print(f"{failures} triage fixture(s) failed")
         return 1
-    print(f"all {len(cases) + 5} triage fixtures hold")
+    print(f"all {len(cases) + 9} triage fixtures hold")
     return 0
