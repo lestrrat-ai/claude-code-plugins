@@ -84,6 +84,7 @@ jobs:
             plugins/gauntlet/skills/campaign/scripts/_gauntlet/modules.py \
             plugins/gauntlet/skills/campaign/scripts/_gauntlet/jsonl.py \
             plugins/gauntlet/skills/campaign/scripts/_gauntlet/mutation.py \
+            plugins/gauntlet/skills/campaign/scripts/_gauntlet/review_door.py \
             plugins/gauntlet/skills/campaign/scripts/_gauntlet/table.py \
             plugins/gauntlet/skills/campaign/scripts/_gauntlet/testing.py \
             plugins/gauntlet/skills/campaign/scripts/ledger.py \
@@ -98,8 +99,8 @@ jobs:
             plugins/gauntlet/skills/campaign/scripts/followups-test.py | tee pyright.json
           analyzed=$(jq '.summary.filesAnalyzed' pyright.json)
           echo "filesAnalyzed=${analyzed}"
-          if [ "${analyzed}" != "16" ]; then
-            echo "::error::pyright analysed ${analyzed} file(s), not the 16 it was pointed at — it checked" \
+          if [ "${analyzed}" != "18" ]; then
+            echo "::error::pyright analysed ${analyzed} file(s), not the 18 it was pointed at — it checked" \
                  "nothing and said so quietly. Fix the paths above; a silent no-op is not a passing gate."
             exit 1
           fi
