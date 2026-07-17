@@ -1,6 +1,6 @@
 {
   "name": "gauntlet",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "description": "Adversarial review-to-merge pipeline: sweep, verify, fan out, gate, merge.",
   "author": {
     "name": "lestrrat",
