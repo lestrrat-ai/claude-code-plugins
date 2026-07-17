@@ -504,10 +504,11 @@ human*, and the formatting is lossy in four ways:
   extra column, an extra row, a run-config line, the empty-ledger marker — or, carrying whitespace at its
   edges, be eaten by the column padding and come out looking like a DIFFERENT value. So `table`
   backslash-escapes before printing: the escaped text is what you see, the raw value is what is stored.
-  **`escape_cell()` in `scripts/ledger.py` owns which characters are escaped and how, and its `self-test`
-  fixtures pin it** — that function is the definition, and this page deliberately does not restate it (a
-  list here goes stale the moment one is added). What you may rely on: the rendering is **injective** — two
-  different values NEVER print as the same cell, so one row can never be read as another — and it reserves
+  **`escape_cell()` in `scripts/_gauntlet/table.py` owns which characters are escaped and how, and the
+  `ledger.py self-test` fixtures pin it** — that function is the definition, and this page deliberately
+  does not restate it (a list here goes stale the moment one is added). What you may rely on: the rendering
+  is **injective** — two different values NEVER print as the same cell, so one row can never be read as
+  another — and it reserves
   the leading-`#` namespace for **every** out-of-band line the table prints (the `# <field>: …` run-config
   block, the empty-grid markers, the hidden-count line), so **no row can ever forge one**. That is what
   makes the omission notice trustworthy, and it is why an empty grid always **says which empty it is** —

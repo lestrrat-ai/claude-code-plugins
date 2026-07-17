@@ -21,6 +21,12 @@ import tempfile
 from pathlib import Path
 from typing import NoReturn
 
+from _gauntlet.table import config_lines, escape_cell as _shared_escape_cell, grid_lines
+from _gauntlet.table import hidden_notice as _shared_hidden_notice
+
+# Compatibility export for existing test and script consumers. New consumers import `_gauntlet.table`.
+escape_cell = _shared_escape_cell
+
 DESCRIPTION = "Schema-owning accessor for the campaign ledger (state.jsonl)."
 
 HERE = Path(__file__).resolve().parent
@@ -727,137 +733,9 @@ TABLE_ALL_HIDDEN_MARKER = "# (no rows shown — the ledger is NOT empty; every r
 TABLE_HIDDEN_STATUSES = ("merged",)
 
 
-def _hex_escape(ch: str) -> str:
-    """`\\xNN` for a byte-sized code point, `\\uNNNN` above it — the same spelling Python's own repr uses."""
-    return f"\\x{ord(ch):02x}" if ord(ch) < 0x100 else f"\\u{ord(ch):04x}"
-
-
-def escape_cell(value: str) -> str:
-    r"""Make a value safe to render inside the grid — no value may forge the layout, and no two
-    values may render THE SAME.
-
-    A field value is free text (`slug` is a PR title; `ci`-style reason fields hold
-    prose), so it can contain the very characters the table's layout is built from.
-    Rendered raw, a value carrying a `|` fabricates extra columns, a newline
-    fabricates extra ROWS, and a leading `# ` mimics the run-config header lines
-    printed above the grid. The table would then say something the ledger never did.
-
-    ESCAPING, not quoting: quoting every cell would widen every column by two chars
-    for the common (harmless) case and STILL need an escape for an embedded quote —
-    so it buys nothing. Backslash escapes leave every ordinary value byte-identical
-    and give the invariant outright: the returned string contains no BARE `|` (every
-    one is escaped to `\|`, and a `|` preceded by a backslash can never spell the
-    ` | ` column separator), no line break, no control character, and never starts
-    with `#`. Each escape is
-    unambiguous (a literal backslash is doubled), so the display stays reversible by
-    eye — but it is still a DISPLAY form. Read values back with `get --field`, never
-    by parsing this table.
-
-    WHITESPACE IS ESCAPED AT THE EDGES, and that is not cosmetic — it is what makes the
-    escaping INJECTIVE ONCE PRINTED. The layout pads each cell with `ljust()` and then
-    `rstrip()`s the line, and BOTH of those EAT trailing whitespace: with it left raw,
-    `""` and `"   "` printed the same blank cell and `"a"` and `"a "` printed the same
-    `a`. The sanitizer was injective and the RENDERING was not — which is the same lie,
-    one layer down. So a leading or trailing whitespace run is escaped (`\x20` for a
-    space) and it survives display. INTERIOR spaces are left alone: escaping them would
-    turn every PR title into `add\x20a\x20table`, and nothing eats them.
-
-    Whitespace that is NOT a plain space is escaped WHEREVER it appears: it is invisible
-    or line-break-ish, `str.rstrip()` eats every bit of it (NBSP and NEL included, not
-    just ASCII), and nothing ordinary contains it. So the guarantee is flat: the escaped
-    text NEVER starts or ends with whitespace, and holds no whitespace but the plain
-    interior space — which is exactly what lets the printed cell be read back off the
-    line by stripping its padding (see `grid()` in the self-test).
-
-    Callers MUST escape BEFORE computing column widths, so the widths measure what is
-    actually printed. (Truncation of `head_sha` happens first, on the raw value, so a
-    cut can never land inside an escape sequence.)
-    """
-    # The RAW value's whitespace edges — `lstrip`/`rstrip` here use exactly the definition of
-    # whitespace that `cmd_table`'s `rstrip()` will apply to the printed line, so what is escaped is
-    # precisely what the layout would otherwise eat.
-    lead = len(value) - len(value.lstrip())
-    trail = len(value.rstrip())  # index where the trailing whitespace run starts
-    out = []
-    for i, ch in enumerate(value):
-        if ch == "\\":
-            out.append("\\\\")
-        elif ch == "|":
-            out.append("\\|")
-        elif ch == "\n":
-            out.append("\\n")
-        elif ch == "\r":
-            out.append("\\r")
-        elif ch == "\t":
-            out.append("\\t")
-        elif ord(ch) < 0x20 or ord(ch) == 0x7F:
-            out.append(f"\\x{ord(ch):02x}")  # any other control char
-        elif ch.isspace() and ch != " ":
-            out.append(_hex_escape(ch))  # NBSP, NEL, U+2028, ideographic space…: invisible, and rstrip() eats it
-        elif ch == " " and (i < lead or i >= trail):
-            out.append("\\x20")  # a LEADING or TRAILING space: the padding would swallow it
-        else:
-            out.append(ch)
-    text = "".join(out)
-    # Only a FIRST-column cell can open a line, but escape a leading '#' in every
-    # cell regardless: one value then has one rendering, whatever column it lands in.
-    # (A leading whitespace run is already escaped above, so a '#' here can only be the
-    # value's own first character.)
-    if text.startswith("#"):
-        text = "\\" + text
-    return text
-
-
 def hidden_notice(n: int, hidden: "tuple[str, ...]" = TABLE_HIDDEN_STATUSES) -> str:
-    """The line that makes the omission LOUD — printed whenever the default view drops a row.
-
-    A FILTERED VIEW THAT DOES NOT SAY WHAT IT HID IS A LIE BY OMISSION, and it is the same lie as a
-    truncated `gh pr list` reporting 30 of 200 PRs without a word: nothing is fabricated, the reader is
-    simply never told that what they are looking at is a SUBSET. So the count is stated, and so is the flag
-    that reveals the rest — a reader can always get from the filtered view to the whole ledger without
-    knowing this file exists.
-
-    The wording is DERIVED from the set of hidden states, never spelled beside it: change what the default
-    hides and this line follows by construction, instead of becoming a stale restatement of the rule it
-    is supposed to summarise. `hidden` defaults to this store's own `TABLE_HIDDEN_STATUSES`; the sibling
-    store (`followups.py`) passes ITS set and gets the same derivation, so neither can drift.
-    """
-    what = "/".join(hidden)
-    return f"# {n} {what} row{'' if n == 1 else 's'} hidden — pass --all to show every row"
-
-
-def config_lines(pairs: "list[tuple[str, str]]") -> "list[str]":
-    """The `# <name>: <value>` block printed ABOVE a grid.
-
-    The `#` prefix and the blank line after the block are what keep these lines from reading as table
-    columns — and the values are free text, so they are escaped on exactly the same terms as a cell: an
-    un-escaped newline here would inject lines that read as part of the grid. Shared with `followups.py`
-    so the reserved `#` namespace has ONE definition, not one per store.
-    """
-    return [f"# {name}: {escape_cell(value)}" for name, value in pairs]
-
-
-def grid_lines(fields: "tuple[str, ...]", rows: "list[list[str]]") -> "list[str]":
-    """Render RAW cell values as the aligned grid: column-header line, rule line, then one line per row.
-
-    THE LAYOUT IS OWNED HERE, ONCE, for every table the campaign's scripts print (`followups.py` renders
-    through this function too). A second copy of the ` | ` separator, the width arithmetic and the
-    `rstrip()` would be a second definition of the very syntax `escape_cell()` exists to protect — and the
-    day one copy changed, its store's escaping would still be defending the OTHER one's grid.
-
-    Cells arrive RAW and are escaped here (`escape_cell()` owns HOW), so a caller can never render an
-    unescaped value by forgetting to. Widths are measured on the ESCAPED text — i.e. on exactly the bytes
-    that get printed; measure the raw value and every escape makes its cell wider than the column reserved
-    for it. Any display-only truncation is the CALLER's job and must happen on the raw value BEFORE it is
-    handed over, so a cut can never land inside an escape sequence.
-    """
-    cells = [tuple(escape_cell(v) for v in row) for row in rows]
-    widths = [max(len(f), *(len(c[i]) for c in cells)) if cells else len(f)
-              for i, f in enumerate(fields)]
-    out = [" | ".join(f.ljust(w) for f, w in zip(fields, widths)).rstrip(),
-           "-+-".join("-" * w for w in widths)]
-    out += [" | ".join(v.ljust(w) for v, w in zip(c, widths)).rstrip() for c in cells]
-    return out
+    """Keep the ledger's default hidden set while delegating shared rendering."""
+    return _shared_hidden_notice(n, hidden)
 
 
 def cmd_table(path: Path, args) -> int:

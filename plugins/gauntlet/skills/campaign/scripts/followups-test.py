@@ -8,9 +8,8 @@ EVERY FIXTURE MUST PIN A RULE — it must go red if its rule is deleted or weake
 still pass with its rule gone tests nothing and manufactures false confidence.
 
 The rendering fixtures lean on the LEDGER's oracle (`ledger-test.py`'s `grid`) and its hostile corpus on
-purpose: the store prints through the ledger's `escape_cell()`/`grid_lines()`, so it must be checked by the
-same parser that checks the ledger — a second, weaker copy of the oracle would be free to bless output the
-real one rejects.
+purpose: both stores print through the shared table renderer, so both must be checked by the same parser.
+A second, weaker copy of the oracle would be free to bless output the real one rejects.
 """
 
 from __future__ import annotations
@@ -27,14 +26,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ledger  # noqa: E402
-from ledger import escape_cell, hidden_notice  # noqa: E402
+from _gauntlet.table import escape_cell, hidden_notice  # noqa: E402
 
 # The ledger's test ORACLE — `grid`, `notices`, `check`, `SelfTestFailure`, and the hostile corpus — lives
 # in the ledger's SIBLING suite, `ledger-test.py`, loaded BY PATH (its name is not a legal module name).
-# The follow-up store prints through the ledger's `escape_cell()`/`grid_lines()`, so its output MUST be
-# parsed back by the ledger's OWN oracle — not a friendlier copy, which would be free to bless what the
-# real one rejects. `grid` takes the store's own config-field names and markers; the ledger module is
-# handed in as `L` only for the fixed grid syntax it shares with every store.
+# The follow-up store and ledger print through the same renderer, so follow-up output MUST be parsed back
+# by the ledger test's oracle — not a friendlier copy. `grid` takes the store's config-field names and
+# markers; the ledger module is handed in as `L` for the compatibility exports used by that oracle.
 _ledger_test_path = Path(__file__).resolve().parent / "ledger-test.py"
 _spec = importlib.util.spec_from_file_location("ledger_test", _ledger_test_path)
 if _spec is None or _spec.loader is None:  # a broken install — never an input error
@@ -1283,7 +1281,7 @@ def t_table_grid_integrity(tmp: Path) -> None:
 
     A follow-up's `title` and `evidence` are free text written from a REVIEWER'S OUTPUT. Rendered raw, one
     carrying a `|` fabricates a column, a newline fabricates an entry, a leading `#` fabricates the rule
-    line or the omission notice. This store prints through the ledger's `escape_cell()`/`grid_lines()`, and
+    line or the omission notice. This store prints through the shared `escape_cell()`/`grid_lines()`, and
     it is checked by the LEDGER'S OWN ORACLE — the same parser, not a friendlier copy of it.
 
     A BLANK hostile (`''`, `'   '`) is put in NO column at all, and that is not a gap: no column of this
