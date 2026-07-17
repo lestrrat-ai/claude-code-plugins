@@ -1008,6 +1008,36 @@ def t_values_are_strings(L: ModuleType, tmp: Path) -> None:
     check(out == "11\n", f"--where could not match a value that was a JSON number on disk: {out!r}")
 
 
+def t_null_reads_as_default(L: ModuleType, tmp: Path) -> None:
+    """A present JSON `null` is NOT the string "None" — it reads back as that field's DEFAULT, both ways.
+
+    load() coerces every ingested value to `str` (t_values_are_strings) so a number and its spelling are one
+    key. But `str(None)` is "None" — a plausible-looking, WRONG non-blank value on a gate field (`ci`,
+    `status`, `reviews_ok`). A null means "absent", and absent is the default. dump() must round-trip it the
+    same way, never writing "None" (or a bare null) back onto disk.
+    """
+    path = write_lines(tmp / "null.jsonl",
+                       json.dumps({"type": "header", **L.HEADER_DEFAULTS, "reviewer": None}),
+                       json.dumps({"type": "row", **L.ROW_DEFAULTS, "pr": "7", "ci": None, "status": None}))
+    code, out, err = cli(L, ["--file", str(path), "get", "--pr", "7"])
+    check(code == 0, f"get on a null-bearing row exited {code}: {err!r}")
+    row = json.loads(out)
+    check(row["ci"] == L.ROW_DEFAULTS["ci"], f"a null ci read back as {row['ci']!r}, not the default")
+    check(row["status"] == L.ROW_DEFAULTS["status"], f"a null status read back as {row['status']!r}, not the default")
+    check("None" not in row.values(), f'a JSON null coerced to the string "None": {row!r}')
+    code, out, _ = cli(L, ["--file", str(path), "header", "get", "reviewer"])
+    check(out == L.HEADER_DEFAULTS["reviewer"] + "\n", f"a null header field read back as {out!r}, not the default")
+    # dump() round-trips it the same way: a `set` rewrites the store — the on-disk bytes must carry the
+    # default, never "None" and never a bare null. This is the write side of the same guard.
+    code, _, err = cli(L, ["--file", str(path), "set", "--pr", "7", "--slug", "x"])
+    check(code == 0, f"set on a null-bearing row exited {code}: {err!r}")
+    raw = path.read_text()
+    check('"None"' not in raw, f'dump() wrote the string "None" for a null field: {raw!r}')
+    rewritten = json.loads([ln for ln in raw.splitlines() if '"type": "row"' in ln][0])
+    check(rewritten["ci"] == L.ROW_DEFAULTS["ci"] and rewritten["ci"] is not None,
+          f"dump() did not normalise a null ci to its default: {rewritten['ci']!r}")
+
+
 # --- the TALLY and the COUNTERS: the review loop's only memory ----------------
 #
 # `reviews_ok` decides whether a PR may merge. `review_rounds` is the only thing in this schema that can
@@ -1628,6 +1658,7 @@ CASES = [
     ("id-derived", "id is always pr<pr> — never trusted from the file, never caller-set", t_id_is_derived),
     ("defaults-backfill", "a row written before a field existed still reads back complete", t_defaults_backfill),
     ("values-are-strings", "every ingested value is coerced to str", t_values_are_strings),
+    ("null-reads-as-default", "a present JSON null reads back as the field default, not the string \"None\"", t_null_reads_as_default),
     ("verdict-counts-rounds", "`verdict` bumps review_rounds on EVERY verdict and applies the tally atomically", t_verdict_counts_rounds),
     ("rounds-never-reset", "NOTHING resets review_rounds/ns_streak — there is no flag, at any door", t_review_rounds_never_reset),
     ("tally-floor-only", "`set` may VOID reviews_ok, NEVER raise it — only a verdict adds a verdict", t_set_cannot_raise_the_tally),

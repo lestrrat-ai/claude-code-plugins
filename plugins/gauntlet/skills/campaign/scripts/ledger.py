@@ -251,6 +251,18 @@ def counter(row: dict, field: str) -> int:
 
 # --- parse / serialize --------------------------------------------------------
 
+def _coerce_field(value: object, default: str) -> str:
+    """Coerce an ingested field value to `str`, mirroring `dump()`'s write side, with ONE guard: a
+    JSON `null` reads back as the field's DEFAULT, never the string `"None"`.
+
+    `.get(f)` returns `None` for BOTH a missing key and a present `null`; `str(None)` is the non-blank
+    `"None"` — a value no writer produced, then indistinguishable from a real one and, on a gate field,
+    acted on. So `None` takes the default; every other value (a string, or an on-disk number/bool) still
+    coerces to its string key, so `11` and `"11"` remain one key.
+    """
+    return default if value is None else str(value)
+
+
 def load(path: Path) -> "tuple[dict, list[dict]]":
     """Return (header, rows). A missing file yields defaults + no rows.
 
@@ -288,14 +300,14 @@ def load(path: Path) -> "tuple[dict, list[dict]]":
         elif kind == "header":
             fail(f"line {n}: unexpected second/out-of-order header record")
         if kind == "header":
-            # coerce every value to str, matching dump()'s write side
+            # coerce every value to str, matching dump()'s write side (null -> default, not "None")
             for f in HEADER_FIELDS:
-                header[f] = str(rec.get(f, HEADER_DEFAULTS[f]))
+                header[f] = _coerce_field(rec.get(f), HEADER_DEFAULTS[f])
         else:  # kind == "row"
             row = dict(ROW_DEFAULTS)
-            # coerce every value to str first, so 11 and "11" are one key
+            # coerce every value to str first, so 11 and "11" are one key (null -> default, not "None")
             for f in ROW_FIELDS:
-                row[f] = str(rec.get(f, ROW_DEFAULTS[f]))
+                row[f] = _coerce_field(rec.get(f), ROW_DEFAULTS[f])
             pr = row["pr"]
             # id is derived, never trusted from the file: recompute from pr
             row["id"] = f"pr{pr}"
@@ -333,9 +345,11 @@ def dump(path: Path, header: dict, rows: list[dict]) -> None:
     and never a byte of anything else. A failure at any point leaves the ORIGINAL untouched and takes the
     temp file with it.
     """
-    out = [json.dumps({"type": "header", **{f: header.get(f, HEADER_DEFAULTS[f]) for f in HEADER_FIELDS}})]
+    out = [json.dumps({"type": "header",
+                       **{f: _coerce_field(header.get(f), HEADER_DEFAULTS[f]) for f in HEADER_FIELDS}})]
     for row in rows:
-        out.append(json.dumps({"type": "row", **{f: str(row.get(f, ROW_DEFAULTS[f])) for f in ROW_FIELDS}}))
+        out.append(json.dumps({"type": "row",
+                               **{f: _coerce_field(row.get(f), ROW_DEFAULTS[f]) for f in ROW_FIELDS}}))
     path.parent.mkdir(parents=True, exist_ok=True)
     # `mkstemp` creates the file 0600. That is the right default for a TEMP file and the wrong one for the
     # store it is about to become: the ledger is `cat`-able bookkeeping, and making it atomic must not
