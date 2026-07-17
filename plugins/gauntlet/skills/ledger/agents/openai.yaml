@@ -1,0 +1,4 @@
+interface:
+  display_name: "Gauntlet Ledger"
+  short_description: "Show a campaign ledger table"
+  default_prompt: "Use $gauntlet:ledger to show the current campaign ledger."

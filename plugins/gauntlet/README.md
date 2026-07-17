@@ -44,6 +44,8 @@ Start a new Codex session after installation.
 | [`gauntlet:campaign`](skills/campaign/README.md) | The PR-gating pipeline. Adopts existing pull requests and drives each through review + CI to merge. |
 | [`gauntlet:review`](skills/review/README.md) | A standalone two-pass hostile review: pass 1 surfaces everything, pass 2 neutrally confirms or refutes each finding. Reports only by default; can opt-in to open PRs and hand them to a campaign. |
 | [`gauntlet:copilot-address-reviews`](skills/copilot-address-reviews/README.md) | Verify and address GitHub Copilot's PR review comments, one at a time. |
+| [`gauntlet:ledger`](skills/ledger/SKILL.md) | Show one campaign run's ledger as the script-owned read-only table. |
+| [`gauntlet:followups`](skills/followups/SKILL.md) | Show the durable follow-up queue as the script-owned read-only table. |
 
 ## Requirements
 
@@ -86,7 +88,7 @@ sample to copy into your `AGENTS.md` or `CLAUDE.md` and edit.
 
 ## Scratch files
 
-Both skills keep working state under `.gauntlet/` at the repo root, which is git-ignored. Run scratch
+Gauntlet keeps working state under `.gauntlet/` at the repo root, which is git-ignored. Run scratch
 lives in `.gauntlet/tmp/` and is mostly safe to delete — a just-finished run's dir is kept so campaign
 can still offer to gate more PRs, but deleting it only loses that prompt, not your history.
 Everything else under `.gauntlet/` is durable, so don't remove `.gauntlet/` wholesale: `history/` holds
