@@ -10,13 +10,12 @@ rewrite a PR belonging to someone else, and repair forever.
 
 from __future__ import annotations
 
-import io
 import json
 import sys
-from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 from _gauntlet.modules import load_module_from_path
+from _gauntlet.testing import capture_cli
 
 OWNER = Path(__file__).resolve().parent / "repair-pass.py"
 
@@ -41,13 +40,7 @@ def check(cond: bool, msg: str) -> None:
 
 def ledger_cli(argv: "list[str]") -> "tuple[int, str, str]":
     """Drive the LEDGER's real CLI in-process — the guard and the row reads live there, not here."""
-    out, err = io.StringIO(), io.StringIO()
-    try:
-        with redirect_stdout(out), redirect_stderr(err):
-            code = L.main(argv)
-    except SystemExit as exc:
-        code = exc.code if isinstance(exc.code, int) else 1
-    return code, out.getvalue(), err.getvalue()
+    return capture_cli(L.main, argv)
 
 
 def setup(tmp: Path, name: str = "state.jsonl", **row) -> "tuple[Path, Path]":

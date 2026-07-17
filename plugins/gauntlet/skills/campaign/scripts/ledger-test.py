@@ -36,14 +36,14 @@ What the fixtures are aimed at, in two families:
 from __future__ import annotations
 
 import importlib.util
-import io
 import json
 import os
 import sys
 import tempfile
-from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import ModuleType
+
+from _gauntlet.testing import capture_cli
 
 HERE = Path(__file__).resolve().parent
 LEDGER_PY = HERE / "ledger.py"
@@ -142,13 +142,7 @@ def cli(L: ModuleType, argv: "list[str]") -> "tuple[int, str, str]":
     wiring (the `--fields` rejection, the dash/underscore aliases, the ABSENCE of a `--review-rounds` flag,
     `fail()`'s exit 1) is under test too.
     """
-    out, err = io.StringIO(), io.StringIO()
-    try:
-        with redirect_stdout(out), redirect_stderr(err):
-            code = L.main(argv)
-    except SystemExit as exc:  # fail() -> 1; argparse -> 2
-        code = exc.code if isinstance(exc.code, int) else 1
-    return code, out.getvalue(), err.getvalue()
+    return capture_cli(L.main, argv)
 
 
 def write_lines(path: Path, *lines: str) -> Path:
