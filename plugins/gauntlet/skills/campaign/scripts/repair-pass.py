@@ -37,7 +37,6 @@ Three refusals this tool exists to make, all of them things a well-meaning drive
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import io
 import json
 import sys
@@ -46,6 +45,8 @@ from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import NoReturn
+
+from _gauntlet.modules import load_module_from_path
 
 DESCRIPTION = "Record the reassessment pass's decision for a PR that has stopped converging."
 
@@ -59,12 +60,10 @@ def load_ledger():
     installed. Re-declaring the field names or the caps here would be a second copy of the schema, which is
     the exact defect `ledger.py` exists to prevent.
     """
-    spec = importlib.util.spec_from_file_location("ledger", OWNER)
-    if spec is None or spec.loader is None:  # a broken install — never an input error
+    mod = load_module_from_path("ledger", OWNER)
+    if mod is None:  # a broken install — never an input error
         print(f"repair-pass: cannot load its schema owner at {OWNER}", file=sys.stderr)
         raise SystemExit(1)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
     return mod
 
 
@@ -268,12 +267,9 @@ def sibling_cases() -> list:
             f"the fixture file {SIBLING} IS MISSING — this suite has no fixtures to run and CANNOT report "
             f"health. Every rule this file enforces is now unpinned."
         )
-    spec = importlib.util.spec_from_file_location("repair_pass_test", SIBLING)
-    if spec is None or spec.loader is None:
+    mod = load_module_from_path("repair_pass_test", SIBLING, register=True)
+    if mod is None:
         raise SelfTestFailure(f"{SIBLING} exists but cannot be loaded as a module")
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["repair_pass_test"] = mod
-    spec.loader.exec_module(mod)
     cases = getattr(mod, "CASES", None)
     if not cases:
         raise SelfTestFailure(f"{SIBLING} exports no CASES — every rule in this file is unpinned while the "
