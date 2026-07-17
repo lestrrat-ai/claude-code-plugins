@@ -153,6 +153,10 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
    reaches this point wearing a stale `gauntlet-accepted` — or both labels at once — means some reset
    site skipped its relabel: fix the label here, and treat it as a bug in that site, not as normal
    operation.
+
+   **Settle the base branch's required-check set before any CI derivation:** run `scripts/ci-status.py
+   required-set --ledger <rundir>/state.jsonl`. Run it every wake; the command reuses a settled value and
+   only retries `unknown`. `stage-2-ci.md`, "WHAT WERE WE EXPECTING TO SEE?", owns its states and behavior.
 2. **Fold in completions.** For any background task that finished (CI watch → **a WAKE, not an artifact**:
    the watch **only blocks** and produces **nothing**, so **this wake** performs the SHA-pinned fetch of
    both check families, **promotes** it atomically to `ci-<pr>-<head_sha>.txt` and **verifies** its stamp

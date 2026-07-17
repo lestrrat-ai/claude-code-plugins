@@ -234,19 +234,17 @@ machine-read convention as `state.jsonl` and the review plan/progress files (`fi
 - **EVERY `//` DEFAULT GOES BEFORE THE CONVERSION, NEVER AFTER — `((.x // "-") | tostring)`, and
   NEVER `((.x | tostring) // "-")`.** In jq, `null | tostring` is the **STRING `"null"`**, which is
   **TRUTHY**, so a default placed after the conversion **NEVER FIRES** and the field carries the
-  four letters `null` where `-` was meant. This applies to **every nullable field read anywhere in
-  this file** — `.app.id` above (a check run need not come from an app) and the required-set reads'
-  `.app_id` / `.integration_id` below. **It is not cosmetic there: it is a WEDGE.** An unbound
+  four letters `null` where `-` was meant. This applies to `.app.id` above (a check run need not come
+  from an app). The required-set command applies the same rule in Python to `.app_id` and
+  `.integration_id`. **It is not cosmetic there: it is a WEDGE.** An unbound
   required check would come out bound to a producer named `"null"`, no evidence row could ever match
   it, and the PR would report `pending (required check absent)` **forever, for a reason nobody can
   see** — which is the failure this file's own SETTLED rule exists to prevent, arriving by the back
   door. `cli/cli`'s `trunk` returns `app_id: null` for **every** one of its required checks, so this
-  is the **common** configuration, not an exotic one. `ci-snapshot.py`'s `producer_test` **extracts
-  EVERY jq filter this file prescribes — all five reads, (1)(2)(3) here and (a)(b) below — and RUNS
-  them** against recorded API payloads that carry null bindings and span MULTIPLE PAGES: write the order
-  backwards in **any** of them, or drop a `--paginate`, and it goes red. **A filter this file prescribes
-  that no test EXECUTES is a filter that can rot** — (1)'s `.app.id` default was fixed once and pinned by
-  nothing, and could have been reverted forever without a single test noticing.
+  is the **common** configuration, not an exotic one. `ci-snapshot.py`'s `fetch_test` extracts and runs
+  the three snapshot filters against recorded, multi-page payloads. `ci-status.py self-test` drives the
+  required-set production functions against recorded classic and ruleset payloads with null bindings and
+  multiple pages. Drop pagination or mishandle a null binding in either path and its test goes red.
 - **BOTH families are MANDATORY, AND THE ARTIFACT MUST PROVE BOTH WERE READ.** A failing Jenkins/CircleCI
   **commit status is genuinely invisible** to `/check-runs`: a commit can carry **live commit statuses**
   while `/check-runs` reports `check_runs.total_count = 0` for that very commit. Read only one family and
@@ -611,14 +609,14 @@ ever worked.
 read the ENUMS is exactly where the drift got in.** Nothing parsed the `gh … | jq` block, so this file went
 on specifying `(.statusCheckRollup // [])` — which turns a **MISSING** rollup into an **EMPTY** one — while
 the tool **refused** that shape. The doc and the code disagreed about **what is refused**, in the one place
-nothing was looking. Two checks close that, and **neither is optional**:
+nothing was looking. Three checks close that, and **none is optional**:
 
-- **`ci-snapshot.py`'s `producer_test` RUNS the filters** (the `--paginate` bullet, above, is the same
-  point). It extracts **all five reads this file prescribes** — (1)(2)(3) here and (a)(b) below — **verbatim,
-  by their command line**, and executes them over recorded, **multi-page** API payloads, asserting **the
-  exact rows**. Drop a `--paginate`, drop `,headRefOid`, drop `--repo`, or write a `//` default on the wrong
-  side of a `tostring`, and it goes **RED**: the read it pins is the one an operator would copy out of this
-  file.
+- **`ci-snapshot.py`'s `fetch_test` RUNS the three snapshot filters** (the `--paginate` bullet, above, is
+  the same point). It extracts (1)(2)(3) verbatim by their command line and executes them over recorded,
+  multi-page API payloads, asserting the exact rows.
+- **`ci-status.py self-test` RUNS the required-set producer** over recorded classic-protection and paged
+  ruleset payloads. It asserts strict field handling, nullable app bindings, URL encoding, the complete
+  union, and the atomic ledger result.
 - **`ci-status.py doc-check` checks every `gh` INVOCATION in this file against the argv the code really
   issues** — *every copy of them*, not just the spec block (a recap that drops `,headRefOid` reconstructs a
   fetch the MOVED-HEAD rule can never fire on; that copy had drifted, and this is what caught it). It sweeps
@@ -895,48 +893,29 @@ TOKEN's grants** — so a fine-grained token owned by an admin reads `admin: tru
 `Administration: read`. **A rule keyed on that probe declares "proven unprotected" on a branch it simply
 cannot see.**
 
-Two reads, and **they do NOT need the same permission** — name them per endpoint, because a token
-provisioned for only one of them fails the other on a **private** repo, the required set reads `unknown`,
-and `unknown` can never go green: **`GET /repos/{o}/{r}/branches/{b}` needs `Contents: read`**;
-**`GET /repos/{o}/{r}/rules/branches/{b}` needs `Metadata: read`** (GitHub REST docs, "Get a branch" /
-"Get rules for a branch"). **BOTH are mandatory** — neither can see what the other sees:
+Run the required-set command before CI derivation on every wake:
 
 ```sh
-# The base branch name is UNTRUSTED — a git ref may legally contain shell metacharacters ($(), backticks,
-# quotes), and it originates in a PR's `baseRefName`. Capture it ONCE into a shell variable — command
-# substitution OUTPUT is never re-parsed — and reference it double-quoted as "$base" inside the URL. NEVER
-# splice a raw <base> into the command string, where a branch named `main$(…)` would EXECUTE at parse time.
-# (`<owner>`/`<repo>` are this repo's OWN slug, not PR-supplied.) The jq filters below are unchanged, and
-# `ci-snapshot.py` still extracts them verbatim — only the URL's base ref moved out of shell reach.
-base=$(python3 <skill>/scripts/ledger.py --file <rundir>/state.jsonl header get base_branch)
-
-# (a) CLASSIC branch protection — AND the field that disambiguates its absence. Needs `Contents: read`
-#     (NOT Metadata — on a private repo a Metadata-only token 404s here and the required set reads
-#     `unknown`, which can never go green).
-#     `.protection.enabled` tells you whether classic protection EXISTS, so you never have to guess
-#     what a 404 from /branches/<b>/protection meant. `.checks[]` carries the app binding; `.contexts`
-#     is the same set WITHOUT it, and is deprecated — read `.checks[]`, never `.contexts`.
-#     `.app_id` is NULLABLE — the DEFAULT GOES BEFORE `tostring` (FETCH above owns that rule; get it
-#     backwards and every unbound required check binds to an app named "null" and can NEVER be matched).
-gh api "repos/<owner>/<repo>/branches/$base" --jq '
-  {classic_enabled: (.protection.enabled // false),
-   checks: [(.protection.required_status_checks.checks // [])[]
-            | {context: .context, app: ((.app_id // "-") | tostring)}]}'
-
-# (b) RULESETS — the rules actually in force on the branch. The CLASSIC endpoint CANNOT SEE THESE.
-#     Needs `Metadata: read`.
-#     `--paginate` IS MANDATORY HERE: this endpoint returns a PAGED LIST of rules (`page`/`per_page`,
-#     default 30 — GitHub REST docs, "Get rules for a branch"), and a repo can carry more rules than that.
-#     Read page one only and a `required_status_checks` rule sitting on page two is NEVER SEEN — the
-#     required set is recorded as if that check were not required, and a snapshot MISSING it goes GREEN.
-#     That is the exact false green this whole section exists to close, reintroduced by a missing flag.
-#     `--slurp` hands jq ONE array OF PAGES (and is mutually exclusive with gh's own `--jq`, hence the
-#     pipe) — so the filter flattens with `.[][]`: pages, then rules.
-gh api --paginate --slurp "repos/<owner>/<repo>/rules/branches/$base" | jq -c '
-  [.[][] | select(.type=="required_status_checks")
-         | .parameters.required_status_checks[]
-         | {context: .context, app: ((.integration_id // "-") | tostring)}]'
+python3 <skill>/scripts/ci-status.py required-set --ledger <rundir>/state.jsonl [--repo <owner>/<repo>]
 ```
+
+The command reads `base_branch` through `ledger.py`, URL-encodes it as an API path segment, scopes every
+GitHub call to one repository, reads both declaration sources, validates every response field, unions and
+sorts the declarations, validates the result through `ci-snapshot.py`'s strict parser, and writes the
+canonical value through `ledger.py`'s atomic store. It exits 0 for a settled `declared:…` or `none`, 1 for
+`unknown`, and 2 for a caller or ledger error. A settled value is returned without another GitHub read, so
+the same command is safe to run on every wake and retries only an `unknown` value.
+
+The command owns two mandatory reads. They do **not** need the same permission: **`GET
+/repos/{o}/{r}/branches/{b}` needs `Contents: read`**, while **`GET
+/repos/{o}/{r}/rules/branches/{b}` needs `Metadata: read`** (GitHub REST docs, "Get a branch" / "Get rules
+for a branch"). A token provisioned for only one endpoint leaves the complete set unknown.
+
+The classic branch read uses `.protection.enabled` to distinguish disabled classic protection, then reads
+`.protection.required_status_checks.checks`; `.contexts` drops app bindings and is not used. The ruleset
+read uses `--paginate --slurp` because the endpoint returns a paged list and a required-status-check rule
+may be on a later page. Nullable or absent app bindings become `"-"` before conversion; missing required
+response fields make the entire result `unknown`.
 
 **Read (a) is NOT paginated, and that is not an oversight** — `GET /repos/{o}/{r}/branches/{b}` returns a
 **single branch object**, not a list: it takes no `page`/`per_page`, and its
@@ -953,12 +932,8 @@ it is not optional.
 
 ##### THREE states, NEVER two — "I CANNOT SEE ANY" IS NOT "THERE ARE NONE"
 
-Persist the outcome in the ledger header as `required_set` — **a state you cannot persist is a state you do
-not have** (`files-and-ledger.md` owns the field; this block owns its meaning and its format):
-
-```sh
-ledger.py --file <state.jsonl> header set required_set '<declared:<json> | none | unknown>'
-```
+The command persists the outcome in the ledger header as `required_set` — **a state it cannot persist is a
+state it does not have** (`files-and-ledger.md` owns the field; this block owns its meaning and format).
 
 **WHEN: read it once per run, before the first CI derivation** — it is a property of `base_branch`, which is
 itself set once (`files-and-ledger.md`, "Base branch"), so one read serves every PR in the run. **And read

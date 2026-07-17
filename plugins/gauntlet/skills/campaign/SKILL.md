@@ -121,6 +121,8 @@ PR's checks (SHA-pinned, both families), promotes the snapshot, verifies it (thr
 and decides **against the base branch's required set** (`--required-set`, from the ledger header —
 MANDATORY), printing the verdict and the ledger `ci` value as JSON
 (`references/stage-2-ci.md`, "THE DERIVATION IS A COMMAND", which owns the exact invocation).
+Run `scripts/ci-status.py required-set --ledger <rundir>/state.jsonl` before derivation on every wake. It
+owns both GitHub reads and the atomic ledger write, retries only `unknown`, and reuses a settled value.
 **NEVER derive `ci` by reading a command's output and judging it by eye** — that is what once wrote
 `ci = green` for a PR whose checks had not registered at all.
 
