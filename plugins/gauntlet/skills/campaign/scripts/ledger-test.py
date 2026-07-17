@@ -908,6 +908,28 @@ def t_fields_duplicate(L: ModuleType, tmp: Path) -> None:
     check(cells[0] == ["1", "1"], f"a duplicated field did not print twice: {cells!r}")
 
 
+def t_jsonl_records_are_objects(L: ModuleType, tmp: Path) -> None:
+    """Malformed JSON and non-object records are rejected with the caller prefix and source line."""
+    header = header_line(L)
+    for name, record, needle in (
+        ("malformed", "{not json", "ledger: malformed JSON on line 3"),
+        ("not-object", '["row"]', "ledger: line 3: record is not a JSON object"),
+    ):
+        path = write_lines(tmp / f"{name}.jsonl", header, "", record)
+        code, _, err = cli(L, ["--file", str(path), "list"])
+        check(code == 1, f"[{name}] an invalid JSONL record was ACCEPTED (exit {code})")
+        check(needle in err, f"[{name}] failed for the wrong reason: {err!r}")
+
+
+def t_json_duplicate_keys_use_the_default(L: ModuleType, tmp: Path) -> None:
+    """Duplicate JSON keys keep ``json.loads``' default last-value-wins behavior."""
+    row = '{"type":"row","pr":"first","pr":"last"}'
+    path = write_lines(tmp / "duplicate-key.jsonl", header_line(L), row)
+    code, out, err = cli(L, ["--file", str(path), "list"])
+    check(code == 0, f"a duplicate JSON key changed from default decoding: exit {code}: {err!r}")
+    check(out == "last\n", f"a duplicate JSON key did not keep its last value: {out!r}")
+
+
 def t_unknown_record_type(L: ModuleType, tmp: Path) -> None:
     """A record type we do not recognise is REJECTED, never skipped.
 
@@ -1652,6 +1674,8 @@ CASES = [
     ("out-of-band-safe", "no ROW can forge the all-hidden marker or the hidden-count notice", t_out_of_band_lines_not_forgeable),
     ("fields-rejected", "--fields is checked; an EMPTY --fields is malformed, not omitted", t_fields_rejected),
     ("fields-duplicate", "a field named twice prints twice, and the grid still parses", t_fields_duplicate),
+    ("jsonl-object-records", "malformed JSON and non-object records name their source line", t_jsonl_records_are_objects),
+    ("json-default-duplicates", "duplicate JSON keys keep json.loads' last-value-wins behavior", t_json_duplicate_keys_use_the_default),
     ("unknown-record-type", "an unrecognised record type is REJECTED, never skipped", t_unknown_record_type),
     ("duplicate-row", "two rows for one pr is a corrupt ledger — on the NORMALIZED key", t_duplicate_row),
     ("missing-header", "a present ledger must carry exactly one header, FIRST", t_missing_header),

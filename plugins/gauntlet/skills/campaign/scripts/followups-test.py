@@ -1070,8 +1070,8 @@ def t_store_is_validated(tmp: Path) -> None:
     mark = json.dumps({"type": SEQ_TYPE, "high": 3})
     ok = entry_line(id="fu1")
     for name, lines, needle in (
-        ("bad-json", (ok, "{not json"), "malformed JSON on line 2"),
-        ("not-object", (ok, '["followup"]'), "line 2: record is not a JSON object"),
+        ("bad-json", (ok, "{not json"), "followups: malformed JSON on line 2"),
+        ("not-object", (ok, '["followup"]'), "followups: line 2: record is not a JSON object"),
         ("unknown-type", (ok, json.dumps({"type": "note", "id": "fu2"})), "line 2: missing or unknown"),
         ("no-type", (ok, json.dumps({"id": "fu2"})), "line 2: missing or unknown"),
         ("unknown-state", (ok, entry_line(id="fu2", state="approved")), "line 2: unknown state"),

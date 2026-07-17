@@ -87,6 +87,7 @@ from typing import NoReturn
 
 # The grid is NOT reimplemented here. The private campaign package owns escaping, layout, and omission
 # notices; this file owns only the follow-up schema, lifecycle, and store lifetime.
+from _gauntlet.jsonl import JsonlError, object_lines
 from _gauntlet.table import config_lines, grid_lines, hidden_notice
 
 DESCRIPTION = "Schema-owning accessor for the follow-up ledger (.gauntlet/followups.jsonl)."
@@ -514,40 +515,35 @@ def read_store(path: Path) -> "tuple[list[dict], int]":
         return entries, high
     with clean_io("read the store at", path):
         text = path.read_text()
-    for n, line in enumerate(text.splitlines(), start=1):
-        if not line.strip():
-            continue
-        try:
-            rec = json.loads(line)
-        except json.JSONDecodeError as e:
-            fail(f"malformed JSON on line {n}: {e}")
-        if not isinstance(rec, dict):
-            fail(f"line {n}: record is not a JSON object")
-        if rec.get("type") == SEQ_TYPE:
-            if marked:
-                fail(f"line {n}: a second {SEQ_TYPE} record — the store holds ONE high-water mark")
-            marked = True
-            unknown = sorted(set(rec) - SEQ_KEYS)
-            if unknown:
-                fail(f"line {n}: {SEQ_TYPE} carries unknown key(s) "
-                     f"{', '.join(repr(k) for k in unknown)} — it holds {', '.join(sorted(SEQ_KEYS))} and "
-                     f"nothing else.")
-            mark = rec.get("high")
-            if isinstance(mark, bool) or not isinstance(mark, int):
-                fail(f"line {n}: {SEQ_TYPE} carries a non-numeric high-water mark {mark!r} — it is a whole "
-                     f"number of follow-ups ever handed out, and this accessor writes it as one.")
-            high = mark
-            continue
-        if rec.get("type") != ENTRY_TYPE:
-            fail(f"line {n}: missing or unknown record type {rec.get('type')!r}")
-        entry = project(rec, f"line {n}: ")
-        why = entry_error(entry)
-        if why is not None:
-            fail(f"line {n}: {why}")
-        if entry["id"] in seen:
-            fail(f"line {n}: duplicate entry for {entry['id']}")
-        seen.add(entry["id"])
-        entries.append(entry)
+    try:
+        for n, rec in object_lines(text):
+            if rec.get("type") == SEQ_TYPE:
+                if marked:
+                    fail(f"line {n}: a second {SEQ_TYPE} record — the store holds ONE high-water mark")
+                marked = True
+                unknown = sorted(set(rec) - SEQ_KEYS)
+                if unknown:
+                    fail(f"line {n}: {SEQ_TYPE} carries unknown key(s) "
+                         f"{', '.join(repr(k) for k in unknown)} — it holds {', '.join(sorted(SEQ_KEYS))} and "
+                         f"nothing else.")
+                mark = rec.get("high")
+                if isinstance(mark, bool) or not isinstance(mark, int):
+                    fail(f"line {n}: {SEQ_TYPE} carries a non-numeric high-water mark {mark!r} — it is a whole "
+                         f"number of follow-ups ever handed out, and this accessor writes it as one.")
+                high = mark
+                continue
+            if rec.get("type") != ENTRY_TYPE:
+                fail(f"line {n}: missing or unknown record type {rec.get('type')!r}")
+            entry = project(rec, f"line {n}: ")
+            why = entry_error(entry)
+            if why is not None:
+                fail(f"line {n}: {why}")
+            if entry["id"] in seen:
+                fail(f"line {n}: duplicate entry for {entry['id']}")
+            seen.add(entry["id"])
+            entries.append(entry)
+    except JsonlError as exc:
+        fail(str(exc))
     return entries, high_water(entries, high)
 
 
