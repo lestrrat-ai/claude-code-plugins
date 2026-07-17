@@ -456,6 +456,46 @@ def t_only_one_of_two_racing_claimers_wins(work: Path) -> None:
                 f"the self-believed owner {self_owners!r} must be the token actually in the lease {winner!r}")
 
 
+def t_lost_race_readback_refuses(work: Path) -> None:
+    """Post-write read-back: our write landed, but ANOTHER token is on disk when we read back — stand down.
+
+    The `race` fixture above pins the LOCK: real processes serialize through the `mkdir` claim, so the
+    post-write read-back always sees our own token there and the lost-race branch is never reached. That
+    fixture proves the lock works; it does NOT prove the guard behind it. This one does. It constructs the
+    exact state the read-back exists to catch — the cases the `mkdir` lock cannot cover (a forward-skew
+    sweep of a live claim, or a hand-rolled non-interoperating lock letting a second writer in): our write
+    lands, then a competitor stamps a DIFFERENT token before we read back. `write_lease` is wrapped to do
+    that once, so no real concurrency is needed.
+
+    With the read-back/lost-race block present -> `lost-race`, exit 1, we stand down. Delete that block
+    (emit our own `fresh` record without reading back) and this goes RED: `acquire` returns `adopted`,
+    exit 0, claiming ownership while `other` sits on disk — two self-believed drivers of one run.
+    """
+    p = lease_path(work)
+    L.check(not p.exists(), "fixture precondition: absent lease")
+    original_write = L.write_lease
+
+    def racing_write(path, rec):
+        original_write(path, rec)  # our real write lands (agent="mine")...
+        # ...then a competitor stamps a DIFFERENT token before acquire reads back. Only the first write
+        # races; restore immediately so nothing else is disturbed.
+        setattr(L, "write_lease", original_write)
+        original_write(path, {"agent": "other", "heartbeat": "w0", "updated": L.now()})
+
+    setattr(L, "write_lease", racing_write)
+    try:
+        code, out, err = acquire(work, token="mine", heartbeat="w1")
+    finally:
+        setattr(L, "write_lease", original_write)
+    L.check(code != 0 and verdict_of(out) == "lost-race",
+            "our write landed but the read-back shows ANOTHER token — the guard must return `lost-race` and "
+            "refuse, never claim ownership; without the read-back acquire falsely reports `adopted`/exit 0")
+    L.check(json.loads(p.read_text())["agent"] == "other",
+            "the competitor's token must remain on disk — the loser must not overwrite it")
+    L.check("lost the race" in err.lower() and "stand down" in err.lower(),
+            "the refusal must tell the loser it lost the race and to stand down")
+
+
 CASES = [
     ("no-heartbeat", "no proof of arming, no lease — the entire mechanism", t_no_heartbeat_refuses),
     ("no-heartbeat-absent", "an ABSENT lease refuses too — a fresh run has no wake yet",
@@ -501,4 +541,6 @@ CASES = [
     ("lock-swept", "a lock from a crashed claim is swept", t_a_stale_lock_is_swept),
     ("lock-released", "the lock is released on the refusal paths", t_the_lock_is_released_on_the_refusal_paths),
     ("race", "two real racing claimers, one lease", t_only_one_of_two_racing_claimers_wins),
+    ("lost-race-readback", "the post-write read-back refuses when a competitor's token won the disk",
+     t_lost_race_readback_refuses),
 ]

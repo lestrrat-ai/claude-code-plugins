@@ -312,6 +312,14 @@ def cmd_acquire(path: Path, args) -> int:
         # Sample the wall clock EXACTLY ONCE for this whole decision. Reading it again mid-decision let a
         # backward step classify one record as both stale and fresh and fall through to `owned`, overwriting
         # a lease a DIFFERENT token holds. Every staleness branch below reads this one value.
+        #
+        # No fixture pins this single sample, and none can, because in this single-branch table it changes no
+        # (exit, verdict, token) outcome: `owned` is reachable ONLY through the `rec["agent"] == token`
+        # equality below, so the feared "fall through to `owned` overwriting a different token" is
+        # unreachable however many times the clock is read. Reverting to per-call reads alters only the
+        # cosmetic age printed in the `superseded` message — a display number, no behavioral surface. The
+        # single sample is cleanliness, not a pinnable rule; check that claim by reverting it and running
+        # self-test, which stays all-green.
         acquired_at = now()
         try:
             rec = read_lease(path)
