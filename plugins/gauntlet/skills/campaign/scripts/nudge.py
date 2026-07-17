@@ -109,9 +109,13 @@ def reminders(header: dict, rows: list, n_followups: int, rundir: "Path | None")
             out.append(f"PR {pr}: no intent-{pr}.md — write it before reviewing.")
         if status == "in_review" and ci == "pending":
             out.append(f"PR {pr}: CI pending — re-derive it.")
-        if (status == "in_review" and ok < need and ci != "red"
-                and rundir_has(rundir, f"review-{pr}-{r['review_rounds']}.progress.jsonl")):
-            out.append(f"PR {pr}: review unfinished — check the reviewer is alive.")
+        if status == "in_review" and ok < need and ci != "red":
+            # Work is DUE. The nudge cannot tell from disk whether a review/audit/fix is actually running
+            # (that liveness lives in the session, not the ledger) or which KIND is running — so it does not
+            # try. It reminds to make sure SOMETHING is live, or to launch one. An earlier version probed
+            # review-<pr>-<review_rounds>.progress.jsonl and missed a first review (review_rounds=0) — the
+            # exact miss dogfooding and the review both caught (fu25).
+            out.append(f"PR {pr}: work due — make sure a dispatched review/audit/fix is live, or launch one.")
         if status == "in_review" and ok >= need and ci == "green":
             out.append(f"PR {pr}: mergeable by counters — check merge-readiness.")
 

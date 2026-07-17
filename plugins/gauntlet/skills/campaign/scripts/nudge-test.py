@@ -107,7 +107,7 @@ def t_parked_pr_fires_only_its_own_reminder():
     check(has(lines, "PR 7: parked"), "a parked PR must nudge that it is parked")
     check(has(lines, "settled but not green"), "the park reminder must carry ci_reason")
     check(not has(lines, "PR 7: CI pending") and not has(lines, "PR 7: mergeable")
-          and not has(lines, "PR 7: review unfinished"),
+          and not has(lines, "PR 7: work due"),
           "a HELD PR must fire ONLY its held reminder — never review/CI/merge nudges")
 
 
@@ -140,16 +140,22 @@ def t_ci_pending_fires():
           "a green PR must NOT fire the CI-pending nudge")
 
 
-def t_review_alive_fires_only_with_a_progress_file():
+def t_work_due_fires_whenever_review_is_due():
+    """The work-due reminder fires whenever a PR needs review and isn't blocked — NOT keyed to any
+    progress file. This pins fu25: a first review (review_rounds=0) must fire, and it must not claim to
+    know the work is a 'review' specifically (an audit or fix may be what's live)."""
     with tempfile.TemporaryDirectory() as d:
         rd = Path(d)
         (rd / "intent-9.md").write_text("x", encoding="utf-8")  # keep the intent nudge quiet
-        r = [row(9, "in_review", reviews_ok=0, tier="HIGH", ci="green", review_rounds=2)]
-        check(not has(fire(r, rundir=rd), "reviewer is alive"),
-              "no progress file → no dispatched review → no liveness nudge")
-        (rd / "review-9-2.progress.jsonl").write_text("{}", encoding="utf-8")
-        check(has(fire(r, rundir=rd), "reviewer is alive"),
-              "a progress file for the current round → nudge to check the reviewer is alive")
+        # review_rounds=0, no progress file at all → the OLD rule missed this; the new one must fire.
+        r = [row(9, "in_review", reviews_ok=0, tier="HIGH", ci="green", review_rounds=0)]
+        check(has(fire(r, rundir=rd), "work due — make sure a dispatched review/audit/fix is live"),
+              "a first review (review_rounds=0) must fire the work-due nudge — the fu25 miss")
+        # not review-due → silent: enough verdicts (mergeable), or CI red.
+        check(not has(fire([row(9, "in_review", reviews_ok=2, tier="HIGH", ci="green")]), "work due"),
+              "a PR with its verdicts is NOT work-due — no work-due nudge")
+        check(not has(fire([row(9, "in_review", reviews_ok=0, tier="HIGH", ci="red")]), "work due"),
+              "a red-CI PR is not review-due — fix CI first, no work-due nudge")
 
 
 def t_mergeable_fires_when_counters_are_met():
@@ -188,7 +194,7 @@ CASES = [
     ("repairing-splits", "repairing splits on whether a decision is recorded", t_repairing_splits_on_decision),
     ("intent-missing", "intent nudge fires only without the file", t_intent_missing_fires_only_without_the_file),
     ("ci-pending", "pending CI nudges to re-derive", t_ci_pending_fires),
-    ("review-alive", "the liveness nudge needs a dispatched progress file", t_review_alive_fires_only_with_a_progress_file),
+    ("work-due", "the work-due nudge fires whenever review is due (fu25)", t_work_due_fires_whenever_review_is_due),
     ("mergeable", "mergeable nudge respects required(tier)", t_mergeable_fires_when_counters_are_met),
     ("terminal-quiet", "a terminal PR fires no per-PR line", t_terminal_pr_fires_no_per_pr_line),
     ("never-blocks", "a nudge always exits 0", t_a_nudge_never_blocks),
