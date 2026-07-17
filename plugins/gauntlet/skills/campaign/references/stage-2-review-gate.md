@@ -2,14 +2,22 @@
 
 ### 2a-triage. PR triage — file class & risk tier (deterministic, per `head_sha`)
 
-Before the review gauntlet, triage each PR to a **risk tier**. Triage is **deterministic** and
-**size-agnostic** — there are **NO line-count or file-count thresholds**; only *what kind* of file the
-PR touches and whether the change is systemic. Re-derive the tier **every wake** from the PR's current
-`head_sha` and pin it there; record it in the ledger `tier` column via `scripts/ledger.py … set --pr
-<N> --tier <tier>` (by field name — the schema-owning accessor, `files-and-ledger.md`; never hand-edit
-the row by column position). Default to **STANDARD** whenever you are unsure. `reviews_ok` target = `required(tier)`: **1 if `tier==TRIVIAL`, else 2**.
+Before the review gauntlet, derive each PR's **risk tier** with the bundled command:
 
-**File classes (classify every changed file; default CODE when unsure).**
+```
+python3 <skill-dir>/scripts/triage.py derive \
+  --worktree <worktree> --base origin/<base> --head-sha <head_sha> [--systemic]
+```
+
+The command is **deterministic** and **size-agnostic** — there are **NO line-count or file-count
+thresholds**. It refuses a worktree whose live HEAD differs from the ledger's full `head_sha`, reads the
+`base...head_sha` diff, and prints the tier plus file-by-file evidence as JSON. Pass `--systemic` only for
+a systemic / cross-package / root-cause change; that semantic fact is the one input file paths cannot
+derive. Re-run it every wake, then record its `tier` through `ledger.py … set --pr <N> --tier <tier>`.
+Default to **STANDARD** only when the command itself cannot classify with confidence. `reviews_ok` target
+= `required(tier)`: **1 if `tier==TRIVIAL`, else 2**.
+
+**File classes (`triage.py` owns the executable classification; this is its contract).**
 
 - **HUMAN-DOC** — human-facing prose only: top-level `README.md`, human `docs/**`, `CHANGELOG`,
   `LICENSE`.

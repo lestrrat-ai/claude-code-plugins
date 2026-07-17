@@ -101,9 +101,12 @@ when. Same rules: by field name, never hand-edited.
 `scripts/repair-pass.py` records the reassessment pass's decision for a PR that
 has stopped converging — the closed enum, the ownership guardrail, and the repair cap
 (`references/repair-pass.md`).
+`scripts/triage.py derive` is the only way to derive a PR's file-class risk tier. It reads the pinned
+`base...head_sha` diff, classifies every path and executable-mode change, and prints the tier plus its
+evidence as JSON. Pass `--systemic` only when the change is systemic, cross-package, or root-cause.
 
 Each script's fixtures live in a **sibling `*-test.py`** (`review-pass-test.py`, `ledger-test.py`,
-`followups-test.py`, `repair-pass-test.py`); the `self-test` subcommand loads it and **fails loudly if it is missing**.
+`followups-test.py`, `repair-pass-test.py`, `triage-test.py`); the `self-test` subcommand loads it and **fails loudly if it is missing**.
 `scripts/transport-contract-test.py` is the standalone exception: the plugin validator runs it directly
 to pin the runtime adapter's typed review/adoption boundary; it owns no run state and has no accessor
 `self-test` subcommand.

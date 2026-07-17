@@ -295,9 +295,9 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
 
    Then, for each PR that is **not held at all**:
    - any newly-adopted PR whose ledger row lacks a `tier`, or any PR whose `head_sha` changed since it
-     was last triaged → **re-triage its tier** (deterministic file-class classification of the changed
-     files at that `head_sha`; agent-docs = code; default STANDARD on uncertainty — see the tiers
-     spec) and write it back with `ledger.py … set --pr <N> --tier <tier>`. The tier is pinned to
+     was last triaged → run `triage.py derive --worktree <worktree> --base origin/<base> --head-sha
+     <head_sha> [--systemic]` and write its JSON `tier` back with `ledger.py … set --pr <N> --tier <tier>`.
+     `stage-2-review-gate.md`, "PR triage", owns when `--systemic` applies. The tier is pinned to
      `head_sha` and sets `required(tier)` = **1 if TRIVIAL else 2**.
    - current tip has `reviews_ok < required(tier)`, its **review preconditions are clear** (no
      unaddressed Copilot review items, CI not red, no merge conflict with `<base>` — see Stage 2a
