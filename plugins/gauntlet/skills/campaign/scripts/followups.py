@@ -85,15 +85,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import NoReturn
 
-DESCRIPTION = "Schema-owning accessor for the follow-up ledger (.gauntlet/followups.jsonl)."
+# The grid is NOT reimplemented here. The private campaign package owns escaping, layout, and omission
+# notices; this file owns only the follow-up schema, lifecycle, and store lifetime.
+from _gauntlet.table import config_lines, grid_lines, hidden_notice
 
-# The grid is NOT reimplemented here. `escape_cell()` is what stops a value from forging a column, a row,
-# or an out-of-band line — and a second copy of it would be a second definition of the same guarantee,
-# free to rot away from the one the fixtures pin. So the escaping, the layout and the omission notice are
-# IMPORTED from the ledger, which owns them; this file owns only what is its own: the schema, the
-# lifecycle, and the store's lifetime.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from ledger import config_lines, grid_lines, hidden_notice  # noqa: E402
+DESCRIPTION = "Schema-owning accessor for the follow-up ledger (.gauntlet/followups.jsonl)."
 
 # --- the ACT conditions (owned here, once) ------------------------------------
 #

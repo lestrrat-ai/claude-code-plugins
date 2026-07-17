@@ -79,6 +79,8 @@ jobs:
         run: |
           set -o pipefail
           npx --yes pyright@1.1.410 --outputjson \
+            plugins/gauntlet/skills/campaign/scripts/_gauntlet/__init__.py \
+            plugins/gauntlet/skills/campaign/scripts/_gauntlet/table.py \
             plugins/gauntlet/skills/campaign/scripts/ledger.py \
             plugins/gauntlet/skills/campaign/scripts/ledger-test.py \
             plugins/gauntlet/skills/campaign/scripts/mutate-ci-snapshot.py \
@@ -91,8 +93,8 @@ jobs:
             plugins/gauntlet/skills/campaign/scripts/followups-test.py | tee pyright.json
           analyzed=$(jq '.summary.filesAnalyzed' pyright.json)
           echo "filesAnalyzed=${analyzed}"
-          if [ "${analyzed}" != "10" ]; then
-            echo "::error::pyright analysed ${analyzed} file(s), not the 10 it was pointed at — it checked" \
+          if [ "${analyzed}" != "12" ]; then
+            echo "::error::pyright analysed ${analyzed} file(s), not the 12 it was pointed at — it checked" \
                  "nothing and said so quietly. Fix the paths above; a silent no-op is not a passing gate."
             exit 1
           fi
@@ -122,12 +124,9 @@ jobs:
       - name: CI-status derivation contract (+ stage-2-ci.md agrees with the code)
         run: python3 plugins/gauntlet/skills/campaign/scripts/ci-status.py self-test
 
-      # The ledger's contract, executed — same reason, one file over. `escape_cell` is security-shaped: it
-      # is what stops a PR title from forging a column, a row, or a run-config line in the `table` view, and
-      # a sanitizer verified by eye is a sanitizer verified by NOTHING. The fixtures assert the escaping is
-      # INJECTIVE (two values that differ can never print as one cell) and re-parse the printed grid back to
-      # its declared columns and widths — mechanically, never by looking at it. Weaken any escape and one of
-      # them goes red.
+      # The ledger's contract, executed — including the shared table renderer it imports. `escape_cell` is
+      # security-shaped: it stops a PR title from forging a column, row, or run-config line. The fixtures
+      # assert injective escaping and re-parse the printed grid back to its declared columns and widths.
       - name: Ledger contract
         run: python3 plugins/gauntlet/skills/campaign/scripts/ledger.py self-test
 
@@ -155,7 +154,7 @@ jobs:
       # elsewhere (a merged PR, an issue), never when work merely starts, or a PR that dies would take the
       # follow-up down with it; and the lock is what stops two concurrent runs from silently dropping an
       # entry that NOTHING can rebuild. Weaken any of them and a fixture goes red. It renders through the
-      # ledger's escaping and is checked by the ledger's own grid oracle, so a hostile PR title cannot
+      # shared table package and is checked by the ledger test's grid oracle, so a hostile PR title cannot
       # forge a column here either.
       #
       # The fixtures themselves live in the sibling `followups-test.py`, which `self-test` loads by path.
