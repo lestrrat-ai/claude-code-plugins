@@ -102,18 +102,28 @@ capacity** and the gated PRs do not need the driver right now (the nudge's "star
 is one prompt for it). It is **work-conserving, never blocking**: it runs *alongside* gating the campaign's
 PRs, never instead of them, and it holds the run hostage on nothing.
 
-**One follow-up at a time. Never a grab-bag.** Pick a single open entry (a `candidate` or a `corroborated`
-one) and take it through the steps below to a terminal state before starting another. A PR that bundles
-several follow-ups is one no reviewer can reason about and one whose partial rejection strands the rest.
+**One follow-up at a time. Never a grab-bag.** Pick a single open entry and resume it **by its lifecycle
+state** (the graph is in "THE LIFETIME OF AN ENTRY" below). Release the slot once that entry reaches an
+**actionable outcome** — refuted, taken up and opened as a PR now being gated (`in-pr`), or surfaced and
+awaiting the user — never "a terminal state": only `rejected` is terminal, and it is the user's ruling, so
+the loop never reaches it on its own. A PR that bundles several follow-ups is one no reviewer can reason
+about and one whose partial rejection strands the rest.
 
-1. **VERIFY — dispatch a context-isolated INVESTIGATION subagent (Tier 1, read-only).** A follow-up is a
-   CLAIM, and the driver's own diagnosis needs corroboration exactly like a reviewer's finding does
-   (`AGENTS.md`/`CLAUDE.md`, "Your OWN diagnosis is a claim too"). So the driver does **not** verify inline
-   and does **not** skip to a fix: it dispatches a **separate, context-isolated** subagent whose sole job
-   is to **reproduce the claim** — read the code, run the commands, walk the causal chain — and record the
-   outcome with evidence through `followups.py corroborate` / `refute`. This is the same audit-before-fix
-   discipline the review gate keeps (`stage-2-review-gate.md`); the investigation and any later fix are
-   **two different subagents, in that order, always**.
+1. **VERIFY — but only from a state that still needs it.** Route the picked entry by its lifecycle state:
+   - **`candidate` / `refuted` / `reopened`** → not yet corroborated (or being re-investigated), so
+     **dispatch a context-isolated INVESTIGATION subagent (Tier 1, read-only)** to VERIFY it. A follow-up
+     is a CLAIM, and the driver's own diagnosis needs corroboration exactly like a reviewer's finding does
+     (`AGENTS.md`/`CLAUDE.md`, "Your OWN diagnosis is a claim too"). So the driver does **not** verify
+     inline and does **not** skip to a fix: the subagent's sole job is to **reproduce the claim** — read
+     the code, run the commands, walk the causal chain — and record the outcome with evidence through
+     `followups.py corroborate` / `refute`. This is the same audit-before-fix discipline the review gate
+     keeps (`stage-2-review-gate.md`); the investigation and any later fix are **two different subagents,
+     in that order, always**.
+   - **`corroborated`** → already verified. A second `corroborate` cannot even run from here (it leaves
+     only from `candidate`/`refuted`/`reopened`), so skip verification and resume at the Tier-2 `take-up`
+     decision (step 3).
+   - **`self-accepted` / `accepted`** → already past the decision (the driver took it up, or the user
+     agreed), with no PR open yet. Resume at opening and adopting the PR (steps 3–4).
 
 2. **NOT APPLICABLE → `refute`.** If the investigation cannot reproduce the claim, or shows the mechanism
    cannot occur, it is **refuted** — and that is its **most valuable** outcome, not a failure. A refuted
@@ -125,19 +135,24 @@ several follow-ups is one no reviewer can reason about and one whose partial rej
    **and every Tier-2 condition holds and is evidenced** (`corroborated`, `not-gate-machinery`,
    `behavior-preserved`, `reversible` — `take-up` refuses without them), the driver takes it up
    (→ `self-accepted`) and dispatches a **scoped fix subagent under the fix-subagent contract**
-   (`fix-subagent-contract.md`) that authors the fix **and opens a PR** for it. Record the PR with
-   `followups.py open-pr --id fuN --pr <ref>`; the entry stays `in-pr` and names which PR is addressing it.
+   (`fix-subagent-contract.md`) that authors the fix **and opens a PR** for it. That PR is opened
+   **`gauntlet-authored`** and adopted into the current run so `pr-adoption.md` reads it as
+   `pr_origin=gauntlet` — without the label it defaults to `external`, which then blocks campaign's own
+   later autonomous repair of the very PR it authored. Record the PR with `followups.py open-pr --id fuN
+   --pr <ref>`; the entry stays `in-pr` and names which PR is addressing it.
 
 4. **FOLD THE PR INTO THE CURRENT CAMPAIGN.** The follow-up's PR is **adopted into this run** like any other
-   (`pr-adoption.md` — label, ledger row, intent, CI) and **gated by the same review gauntlet**. This is the
+   (`pr-adoption.md` — the `gauntlet-authored` label, ledger row, intent, CI) and **gated by the same
+   review gauntlet**. This is the
    whole point of "self-accepted, not accepted": the driver may take a follow-up up on its own, but the PR
    it produces is **judged by the independent gate, not self-approved** — the driver is not its own gate
    authority. When that PR **merges**, run `followups.py merged --id fuN`: the merged PR is the durable
    record now, so the entry is deleted (`closed-unmerged` if the PR dies instead — back to open work).
 
 5. **ANY TIER-2 CONDITION FAILS OR IS UNCLEAR → SURFACE AND ASK.** If the fix would touch gate machinery,
-   change user-facing behavior without a test, be irreversible — or you are simply unsure — it is **not**
-   the driver's to take up. Surface it in the report and let the user rule (`accept` / `reject`). That is
+   **change user-facing behavior at all** (Tier-2 condition 3 requires it **preserved** — a named test is
+   evidence the behavior is unchanged, never licence to change it), be irreversible — or you are simply
+   unsure — it is **not** the driver's to take up. Surface it in the report and let the user rule (`accept` / `reject`). That is
    the normal case, not a failure. And **publishing is never on the autonomous path**: an issue or a
    release always waits for the user's agreement on that specific item (Tier 3).
 
