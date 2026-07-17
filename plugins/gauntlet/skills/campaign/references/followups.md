@@ -94,6 +94,59 @@ in-edge, and that edge is the user's `accept` — the graph has no other way the
 The promotion path for publication is **raise → consensus with the user → publish**. Nothing skips the
 middle step.
 
+## WORKING A FOLLOW-UP — the active loop, one entry at a time
+
+The threshold above says what the driver **may** do. This is the **procedure** that does it — the loop
+that turns an open follow-up into either a refutation or a merged PR. Run it when a wake has **spare
+capacity** and the gated PRs do not need the driver right now (the nudge's "start on follow-ups" reminder
+is one prompt for it). It is **work-conserving, never blocking**: it runs *alongside* gating the campaign's
+PRs, never instead of them, and it holds the run hostage on nothing.
+
+**One follow-up at a time. Never a grab-bag.** Pick a single open entry (a `candidate` or a `corroborated`
+one) and take it through the steps below to a terminal state before starting another. A PR that bundles
+several follow-ups is one no reviewer can reason about and one whose partial rejection strands the rest.
+
+1. **VERIFY — dispatch a context-isolated INVESTIGATION subagent (Tier 1, read-only).** A follow-up is a
+   CLAIM, and the driver's own diagnosis needs corroboration exactly like a reviewer's finding does
+   (`AGENTS.md`/`CLAUDE.md`, "Your OWN diagnosis is a claim too"). So the driver does **not** verify inline
+   and does **not** skip to a fix: it dispatches a **separate, context-isolated** subagent whose sole job
+   is to **reproduce the claim** — read the code, run the commands, walk the causal chain — and record the
+   outcome with evidence through `followups.py corroborate` / `refute`. This is the same audit-before-fix
+   discipline the review gate keeps (`stage-2-review-gate.md`); the investigation and any later fix are
+   **two different subagents, in that order, always**.
+
+2. **NOT APPLICABLE → `refute`.** If the investigation cannot reproduce the claim, or shows the mechanism
+   cannot occur, it is **refuted** — and that is its **most valuable** outcome, not a failure. A refuted
+   entry is **not deleted**: it stays visible with its evidence so the user (or a later, better
+   investigation) can overturn it. The driver then moves on. **Refuting is not declining** — refute only on
+   evidence the claim is false, never because a fix is inconvenient.
+
+3. **APPLICABLE → `take-up`, then a FIX SUBAGENT that opens a PR.** If the investigation `corroborated` it
+   **and every Tier-2 condition holds and is evidenced** (`corroborated`, `not-gate-machinery`,
+   `behavior-preserved`, `reversible` — `take-up` refuses without them), the driver takes it up
+   (→ `self-accepted`) and dispatches a **scoped fix subagent under the fix-subagent contract**
+   (`fix-subagent-contract.md`) that authors the fix **and opens a PR** for it. Record the PR with
+   `followups.py open-pr --id fuN --pr <ref>`; the entry stays `in-pr` and names which PR is addressing it.
+
+4. **FOLD THE PR INTO THE CURRENT CAMPAIGN.** The follow-up's PR is **adopted into this run** like any other
+   (`pr-adoption.md` — label, ledger row, intent, CI) and **gated by the same review gauntlet**. This is the
+   whole point of "self-accepted, not accepted": the driver may take a follow-up up on its own, but the PR
+   it produces is **judged by the independent gate, not self-approved** — the driver is not its own gate
+   authority. When that PR **merges**, run `followups.py merged --id fuN`: the merged PR is the durable
+   record now, so the entry is deleted (`closed-unmerged` if the PR dies instead — back to open work).
+
+5. **ANY TIER-2 CONDITION FAILS OR IS UNCLEAR → SURFACE AND ASK.** If the fix would touch gate machinery,
+   change user-facing behavior without a test, be irreversible — or you are simply unsure — it is **not**
+   the driver's to take up. Surface it in the report and let the user rule (`accept` / `reject`). That is
+   the normal case, not a failure. And **publishing is never on the autonomous path**: an issue or a
+   release always waits for the user's agreement on that specific item (Tier 3).
+
+**The two subagents are the load-bearing part.** The investigation reproduces before anything is changed,
+and the fix authors code that the gauntlet judges — never the same worker doing both, and never the driver
+doing either inline. That is what keeps an *invented* follow-up from becoming a *merged* regression, which
+is the exact death-spiral this repo has already suffered (`AGENTS.md`/`CLAUDE.md`, "when each fix creates
+the next finding").
+
 ## THE LIFETIME OF AN ENTRY — delete once a durable record exists ELSEWHERE; KEEP what prevents repeated work
 
 **This store is a WORK QUEUE, not an archive.** It is **local** and **git-ignored**: it does not survive a
