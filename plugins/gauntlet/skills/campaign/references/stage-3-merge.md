@@ -63,8 +63,9 @@ catch-all and parks a PR that nothing was wrong with.
 
 **The UNKNOWN re-poll bound.** `UNKNOWN` is a value GitHub has **not computed yet** — it is not a verdict,
 and it resolves within seconds once GitHub finishes computing mergeability lazily. Re-poll it **in-wake up
-to 3 times, with a short backoff** (a few seconds between reads). If it is **still** `UNKNOWN` after the
-third read, do **NOT** merge on this wake — leave the PR and let the **next wake** re-evaluate it: **the
+to 3 times**, with a short backoff between re-polls (a few seconds) — the initial Stage-3 fetch that
+returned `UNKNOWN` is what triggers this loop and is **not** one of the three. If it is **still** `UNKNOWN`
+after the third re-poll, do **NOT** merge on this wake — leave the PR and let the **next wake** re-evaluate it: **the
 wake is the backoff** (`stage-2-ci.md`, "The WAKE is the backoff — never tight-loop inside one"). A value
 that stays `UNKNOWN` across wakes is bounded by the wake cadence, so **no persisted counter is needed** —
 the in-wake cap is a fixed 3, and the coarse retry is the wake loop itself. Never read `UNKNOWN` as
