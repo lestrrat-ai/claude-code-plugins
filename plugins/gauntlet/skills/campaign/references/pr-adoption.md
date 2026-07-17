@@ -219,6 +219,11 @@ For each `#PR` to adopt:
    **A block that fails that test is NOT a usable intent, and copying it is worse than authoring one** — the
    pass would be refused as `unusable` on the first `verify`, and the PR would sit there earning no verdicts.
 
+   **Validate the artifact immediately after writing it:** run
+   `review-pass.py intent-check --file <rundir>/intent-<pr>.md`. A non-zero exit refuses adoption for that
+   PR until the artifact is corrected. This is the same parser `verify` uses, moved before review dispatch;
+   never spend a review to learn that its intent could not be read.
+
    **A PR whose body already carries a usable intent block** (by the test above) → **COPY IT VERBATIM** into
    `intent-<pr>.md`. Record `intent = stated@<iso>`.
 

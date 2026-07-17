@@ -1728,6 +1728,18 @@ def cmd_verify(args) -> int:
     return 0 if verdict == OK else 1
 
 
+def cmd_intent_check(args) -> int:
+    """Refuse an intent artifact now, before a reviewer is launched against it."""
+    path = Path(args.file)
+    sections = load_intent(path)
+    print(
+        f"ok: {path} is a usable intent block "
+        f"({len(sections[PURPOSE_H])} purpose, {len(sections[NON_GOALS_H])} non-goal, "
+        f"{len(sections[THREAT_H])} threat-model bullet(s))"
+    )
+    return 0
+
+
 # --- the status view: an ADVISORY, READ-ONLY glance across a run ---------------------------------
 #
 # **`status` DECIDES NOTHING** (the active `AGENTS.md` or `CLAUDE.md`, "Dogfood the branch's behavior — but NEVER let it gate
@@ -2326,6 +2338,10 @@ def build_parser() -> "tuple[argparse.ArgumentParser, list[str]]":
     add_finding_args(sub.add_parser(
         "finding-add", help="record ONE finding, anchored to the PR's intent (what emit-finding.py calls)"))
 
+    intent = sub.add_parser(
+        "intent-check", help="refuse a missing or malformed intent block before review dispatch")
+    intent.add_argument("--file", required=True, help="the PR's intent-<pr>.md artifact")
+
     v = sub.add_parser("verify", help="DOES THIS PASS COUNT? (it never reads the reviewer's report)")
     v.add_argument("--file", required=True, help="the ACTIVE launch attempt's progress.jsonl")
     v.add_argument("--head-sha", required=True, help="the PR's LIVE head — the pass must have run on it")
@@ -2383,7 +2399,8 @@ def dispatch(args) -> int:
         return self_test()
     try:
         return {"emit": cmd_emit, "identity": cmd_identity, "plan-add": cmd_plan_add,
-                "finding-add": cmd_finding_add, "verify": cmd_verify, "status": cmd_status}[args.cmd](args)
+                "finding-add": cmd_finding_add, "intent-check": cmd_intent_check,
+                "verify": cmd_verify, "status": cmd_status}[args.cmd](args)
     except Defect as exc:
         fail(str(exc), 1)
     except OperatorError as exc:

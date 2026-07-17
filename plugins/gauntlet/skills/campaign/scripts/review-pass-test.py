@@ -60,7 +60,7 @@ from collections import Counter
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Sequence
 
 from _gauntlet.mutation import (
     load_source_module,
@@ -751,16 +751,17 @@ class Tables:
         # `status` writes NOTHING — it is an ADVISORY read-only view — so the round trip does not drive it
         # (there is no produced artifact to read back), and it is declared read-only here so the
         # command-coverage check is satisfied the day the subcommand is added.
-        self.READ_ONLY_COMMANDS = frozenset({"verify", "self-test", "status"})
+        self.READ_ONLY_COMMANDS = frozenset({"intent-check", "verify", "self-test", "status"})
 
         # --- the DOORS ---------------------------------------------------------------------------
-        self.DOOR_SEEDS: "dict[str, tuple[str | None, list[str] | None]]" = {
+        self.DOOR_SEEDS: "dict[str, tuple[str | None, Sequence[str] | None]]" = {
             "emit": (PROGRESS_FILE, DISPATCHED),        # the reviewer's door: the identity is already there
             WRAPPER_DOOR: (PROGRESS_FILE, DISPATCHED),  # …and the same door, through the wrapper it runs
             "identity": (PROGRESS_FILE, None),          # it writes into a file that must hold NO BYTES
             "plan-add": (PLAN_FILE, None),              # the first unit lands in a plan that does not exist
             "finding-add": (FINDINGS_FILE, None),       # …and the first finding in a findings file that does not
             FINDING_WRAPPER_DOOR: (FINDINGS_FILE, None),  # the reviewer's OTHER door, through its wrapper
+            "intent-check": (INTENT_FILE, INTENT.splitlines()),
             # a COMPLETE, sound pass — and the minimal invocation now CARRIES a `--verdict` (it is required),
             # so the door check drives the rule as well as the shape: `satisfied`, 0 gating findings, exit 0
             "verify": (PROGRESS_FILE, WORKED),
@@ -1727,6 +1728,29 @@ def check_commands_covered(R: types.ModuleType, T: Tables) -> "list[str]":
     return problems
 
 
+def check_intent_door(R: types.ModuleType, tmp: Path) -> int:
+    """Drive intent-check through its real CLI with one sound and one malformed artifact."""
+    cases = {
+        "usable": (INTENT, 0, "usable intent block"),
+        "missing-threat-model": (
+            "## Purpose\n- do the work\n\n## Non-goals\n",
+            1,
+            "missing ['## Threat model']",
+        ),
+    }
+    failures = 0
+    for name, (content, want, needle) in cases.items():
+        path = tmp / f"intent-door-{name}.md"
+        path.write_text(content, encoding="utf-8")
+        code, output = run_cli(R, ["intent-check", "--file", str(path)])
+        if code != want or needle not in output:
+            print(f"FAIL     [intent-check] {name}: exit {code}, expected {want}; output: {output.strip()}")
+            failures += 1
+        else:
+            print(f"ok       [intent-check] {name:24} exit {code}: {needle}")
+    return failures
+
+
 def status_parse(out: str) -> "tuple[list[str], dict[str, dict[str, str]]]":
     """Parse `status`'s printed table BACK: (column names, {pass label -> {column -> cell}}).
 
@@ -1868,6 +1892,8 @@ def run(R: types.ModuleType, tmp: Path) -> int:
     failures += check_boundaries(R, T)
     print()
     failures += check_docs(R)
+    print()
+    failures += check_intent_door(R, tmp)
     print()
     failures += run_status_cases(R, T, tmp)
     print()

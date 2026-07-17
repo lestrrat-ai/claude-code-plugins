@@ -80,7 +80,9 @@ literal command line to paste.
 COUNT?", which
 validates every line of those files, including the one event the emit-only rule exempts from tool-writing
 (see `references/stage-2-review-gate.md`); never hand-parse one of those files, and never hand-write a
-line the tool writes.
+line the tool writes. Run `review-pass.py intent-check --file <rundir>/intent-<pr>.md` immediately after writing
+an intent artifact and before dispatching its first review; this uses the same parser every pass later
+loads, so a malformed intent fails before review work is spent.
 `scripts/emit-progress.py` is the reviewer's door into it — **its CLI is unchanged**, and it is the only
 sanctioned way to record a unit-progress event. **`scripts/emit-finding.py` is the reviewer's other door,
 and the only sanctioned way to report a FINDING**: every finding is a validated record that ANCHORS to the
