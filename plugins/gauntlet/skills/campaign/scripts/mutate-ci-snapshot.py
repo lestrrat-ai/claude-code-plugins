@@ -57,19 +57,21 @@ Usage:  python3 mutate-ci-snapshot.py            # coverage + full matrix; exits
 from __future__ import annotations
 
 import argparse
-import ast
-import re
 import shutil
 import sys
 import tempfile
 import types
 from pathlib import Path
 
+from _gauntlet.mutation import (
+    load_source_module,
+    marked_statements,
+    mutate_source,
+    unmarked_enforcements,
+)
+
 SCRIPT = Path(__file__).parent / "ci-snapshot.py"
 FIXTURES = Path(__file__).parent / "fixtures" / "ci-snapshot"
-
-# `    # MUTATE:blank-line:continue` — the rule id, and the statement that REPLACES the enforcement.
-MARKER_RE = re.compile(r"^(?P<indent>[ ]*)# MUTATE:(?P<rule>[a-z0-9-]+):(?P<weakening>.+?)\s*$")
 
 # The functions that ENFORCE the contract. Every enforcement point inside them must carry a marker.
 # `evaluate` is not one: it MAPS an exception to a verdict, it does not decide anything.
@@ -86,108 +88,50 @@ class HarnessError(Exception):
     """The harness itself cannot run — never confuse this with a rule being unpinned."""
 
 
-def load(source: str, name: str) -> types.ModuleType:
-    """Exec a (possibly mutated) copy of ci-snapshot.py as a module. `__name__` is not `__main__`,
-    so the CLI at the bottom does not fire."""
-    mod = types.ModuleType(name)
-    mod.__file__ = str(SCRIPT)
-    exec(compile(source, f"<{name}>", "exec"), mod.__dict__)  # noqa: S102 - the whole job
-    return mod
-
-
-def markers(source: str) -> list[tuple[str, str, int]]:
-    """(rule, weakening, line number of the marker). Order = source order."""
-    out = []
-    for n, line in enumerate(source.splitlines(), 1):
-        m = MARKER_RE.match(line)
-        if m:
-            out.append((m.group("rule"), m.group("weakening"), n))
-    return out
-
-
-def marked_statements(source: str) -> dict[str, tuple[str, ast.stmt]]:
-    """Map each rule id to (weakening, the statement the marker sits directly above).
-
-    The marked statement is the one the rule is MADE of, so its line span is what gets replaced.
-    """
-    tree = ast.parse(source)
-    stmts = {node.lineno: node for node in ast.walk(tree) if isinstance(node, ast.stmt)}
-    out: dict[str, tuple[str, ast.stmt]] = {}
-    for rule, weakening, line in markers(source):
-        stmt = stmts.get(line + 1)
-        if stmt is None:
-            raise HarnessError(f"# MUTATE:{rule} on line {line} sits above no statement")
-        if rule in out:
-            raise HarnessError(f"duplicate rule id {rule!r} — every rule is marked exactly once")
-        out[rule] = (weakening, stmt)
-    if not out:
-        raise HarnessError("no # MUTATE markers found — the rules cannot mark themselves absent")
-    return out
-
-
-def bare_name(node: ast.expr | None) -> str | None:
-    """The identifier this expression IS, or None if it is not a bare name.
-
-    `ast.expr` declares no `id` — only `ast.Name` does. Asking for `.id` through the base class (or through
-    a `getattr`) reads as "any expression might be a name", which is false, and it silently answers None for
-    an expression whose shape was never considered. This asks the question the node type can actually
-    answer, and every caller below has to handle the None.
-    """
-    return node.id if isinstance(node, ast.Name) else None
-
-
-def is_enforcing_raise(node: ast.Raise) -> bool:
-    """`raise SnapshotError(...)` / `raise Unverifiable(...)` — a rule REJECTING the evidence."""
-    return isinstance(node.exc, ast.Call) and bare_name(node.exc.func) in ENFORCING_EXCEPTIONS
-
-
-def is_enforcing_return(node: ast.Return) -> bool:
-    """`return RED/PENDING/UNCLASSIFIED, ...` — a rule DECIDING a non-green verdict."""
-    return (
-        isinstance(node.value, ast.Tuple)
-        and bool(node.value.elts)
-        and bare_name(node.value.elts[0]) in ENFORCING_VERDICTS
+def check_shared_mechanics() -> None:
+    """Pin the shared helper edge that an all-marked real subject cannot exercise."""
+    source = (
+        "def decide():\n"
+        "    # MUTATE:keep:pass\n"
+        "    keep()\n"
+        "    raise SnapshotError('refused')\n"
+        "    return RED, 'failed'\n"
+        "\n"
+        "def ignored():\n"
+        "    raise SnapshotError('outside configured functions')\n"
     )
+    marked = marked_statements(
+        source,
+        error_factory=HarnessError,
+        no_markers_message="synthetic subject lost its mutation marker",
+    )
+    weakening, statement = marked.get("keep", ("", None))
+    if weakening != "pass" or statement is None or statement.lineno != 3:
+        raise HarnessError("the shared marker parser did not bind a marker to the following statement")
 
+    gaps = unmarked_enforcements(
+        source,
+        marked,
+        rule_functions=("decide",),
+        enforcing_exceptions=("SnapshotError",),
+        enforcing_verdicts=("RED",),
+        source_name="synthetic.py",
+    )
+    suffix = "with NO # MUTATE marker — an unmarked rule is never mutated, so nothing can report it unpinned"
+    expected = [
+        f"synthetic.py:4: decide() enforces a rule (raise) {suffix}",
+        f"synthetic.py:5: decide() enforces a rule (return) {suffix}",
+    ]
+    if gaps != expected:
+        raise HarnessError(f"the shared enforcement scan returned {gaps!r}, expected {expected!r}")
 
-def check_coverage(source: str, marked: dict[str, tuple[str, ast.stmt]]) -> list[str]:
-    """EVERY enforcement point in a rule function must sit under a marker.
-
-    This is the half of the coverage question that fixtures can never answer: a rule ADDED without a
-    marker would never be mutated, so it would be reported "pinned" by nobody ever asking. An unmarked
-    rule is an untested rule.
-    """
-    marked_lines = {stmt.lineno for _, stmt in marked.values()}
-    tree = ast.parse(source)
-    problems = []
-    for fn in ast.walk(tree):
-        if not isinstance(fn, ast.FunctionDef) or fn.name not in RULE_FUNCTIONS:
-            continue
-        for node in ast.walk(fn):
-            # `ast.walk` yields `ast.AST`, and `AST` carries NO position — `lineno` lives on the concrete
-            # node types. So the enforcement point is narrowed to the two node types it can actually BE,
-            # and the line number is read off THOSE. That narrowing is the whole point: it is what makes
-            # `what` follow from the node's type instead of being re-derived from it afterwards.
-            if isinstance(node, ast.Raise):
-                what, enforcing = "raise", is_enforcing_raise(node)
-            elif isinstance(node, ast.Return):
-                what, enforcing = "return", is_enforcing_return(node)
-            else:
-                continue
-            if enforcing and node.lineno not in marked_lines:
-                problems.append(
-                    f"{SCRIPT.name}:{node.lineno}: {fn.name}() enforces a rule ({what}) with NO "
-                    f"# MUTATE marker — an unmarked rule is never mutated, so nothing can report it unpinned"
-                )
-    return problems
-
-
-def mutate(source: str, rule: str, weakening: str, stmt: ast.stmt) -> str:
-    """Replace the enforcing statement with its weakening, at the same indent."""
-    lines = source.splitlines()
-    indent = " " * (stmt.col_offset)
-    body = [f"{indent}{weakening}  # MUTANT:{rule}"]
-    return "\n".join(lines[: stmt.lineno - 1] + body + lines[stmt.end_lineno :]) + "\n"
+    mutant = mutate_source(source, "keep", weakening, statement)
+    if "    pass  # MUTANT:keep\n" not in mutant or "    keep()\n" in mutant:
+        raise HarnessError("the shared source mutator did not replace the marked statement")
+    origin = Path("synthetic.py")
+    module = load_source_module(mutant, "synthetic_mutant", origin)
+    if module.__file__ != str(origin):
+        raise HarnessError("the shared source loader did not preserve the subject's origin")
 
 
 def required_case_id(name: str, spec: str) -> str:
@@ -296,12 +240,24 @@ def main() -> int:
 
     source = SCRIPT.read_text(encoding="utf-8")
     try:
-        marked = marked_statements(source)
+        check_shared_mechanics()
+        marked = marked_statements(
+            source,
+            error_factory=HarnessError,
+            no_markers_message="no # MUTATE markers found — the rules cannot mark themselves absent",
+        )
     except HarnessError as exc:
         print(f"HARNESS BROKEN: {exc}", file=sys.stderr)
         return 2
 
-    gaps = check_coverage(source, marked)
+    gaps = unmarked_enforcements(
+        source,
+        marked,
+        rule_functions=RULE_FUNCTIONS,
+        enforcing_exceptions=ENFORCING_EXCEPTIONS,
+        enforcing_verdicts=ENFORCING_VERDICTS,
+        source_name=SCRIPT.name,
+    )
     for gap in gaps:
         print(f"UNMARKED {gap}")
     # Coverage is checked FIRST, in EVERY mode — not only under --check-coverage. CI runs the bare
@@ -316,7 +272,7 @@ def main() -> int:
         print(f"every enforcement point in {SCRIPT.name} carries a # MUTATE marker ({len(marked)} rules).")
         return 0
 
-    baseline = load(source, "ci_snapshot_baseline")
+    baseline = load_source_module(source, "ci_snapshot_baseline", SCRIPT)
     expect = expectations(baseline)
     got = run_cases(baseline)
     stale = [f"{c}: expected {w}/{n!r}, got {got[c]}" for c, (w, n) in expect.items()
@@ -334,7 +290,11 @@ def main() -> int:
     unpinned, broken, tally = [], [], {GREEN_KILL: 0, VERDICT_KILL: 0, MESSAGE_KILL: 0, CRASH_KILL: 0}
     for rule, (weakening, stmt) in marked.items():
         try:
-            mod = load(mutate(source, rule, weakening, stmt), f"ci_snapshot_mutant_{rule.replace('-', '_')}")
+            mod = load_source_module(
+                mutate_source(source, rule, weakening, stmt),
+                f"ci_snapshot_mutant_{rule.replace('-', '_')}",
+                SCRIPT,
+            )
         except SyntaxError as exc:
             broken.append(f"{rule}: the weakening {weakening!r} does not compile ({exc})")
             continue
