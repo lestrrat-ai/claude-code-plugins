@@ -60,7 +60,7 @@ from collections import Counter
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Sequence
 
 from _gauntlet.mutation import (
     load_source_module,
@@ -754,7 +754,7 @@ class Tables:
         self.READ_ONLY_COMMANDS = frozenset({"intent-check", "verify", "self-test", "status"})
 
         # --- the DOORS ---------------------------------------------------------------------------
-        self.DOOR_SEEDS: "dict[str, tuple[str | None, list[str] | None]]" = {
+        self.DOOR_SEEDS: "dict[str, tuple[str | None, Sequence[str] | None]]" = {
             "emit": (PROGRESS_FILE, DISPATCHED),        # the reviewer's door: the identity is already there
             WRAPPER_DOOR: (PROGRESS_FILE, DISPATCHED),  # …and the same door, through the wrapper it runs
             "identity": (PROGRESS_FILE, None),          # it writes into a file that must hold NO BYTES
