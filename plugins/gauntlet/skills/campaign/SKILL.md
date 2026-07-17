@@ -104,8 +104,11 @@ when. Same rules: by field name, never hand-edited.
 has stopped converging — the closed enum, the ownership guardrail, and the repair cap
 (`references/repair-pass.md`).
 
-Each script's fixtures live in a **sibling `*-test.py`** (`review-pass-test.py`, `ledger-test.py`,
-`followups-test.py`, `repair-pass-test.py`); the `self-test` subcommand loads it and **fails loudly if it is missing**.
+Each script's fixtures live in a **sibling `*-test.py`** — the accessor's own filename with `-test`
+appended, in the same directory; the `self-test` subcommand loads it by path and **fails loudly if it is
+missing**. That is the rule, and it is deliberately **not** an enumeration: a list of the suites that exist
+today is a restatement, and it goes stale the next time one is added — by an author who never reads this
+line.
 `scripts/transport-contract-test.py` is the standalone exception: the plugin validator runs it directly
 to pin the runtime adapter's typed review/adoption boundary; it owns no run state and has no accessor
 `self-test` subcommand.
