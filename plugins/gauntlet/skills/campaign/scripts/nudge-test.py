@@ -62,34 +62,34 @@ def t_heartbeat_always_fires():
 
 
 def t_header_reread_always_fires():
-    check(has(fire([]), "re-read the ledger header FRESH"),
+    check(has(fire([]), "re-read the ledger header"),
           "the header-reread reminder must fire every wake")
 
 
 # --- PR labels ----------------------------------------------------------------
 
 def t_labels_fire_only_with_an_active_pr():
-    check(has(fire([row(1, "in_review")]), "labels still mirror its gate state"),
+    check(has(fire([row(1, "in_review")]), "labels match its gate state"),
           "the labels reminder must fire when a PR is active")
-    check(not has(fire([]), "labels still mirror"),
+    check(not has(fire([]), "labels match"),
           "the labels reminder must NOT fire with no PRs — nothing to relabel")
-    check(not has(fire([row(1, "merged"), row(2, "aborted")]), "labels still mirror"),
+    check(not has(fire([row(1, "merged"), row(2, "aborted")]), "labels match"),
           "the labels reminder must NOT fire when every PR is terminal")
 
 
 # --- run-level ----------------------------------------------------------------
 
 def t_required_set_unknown():
-    check(has(fire([], hdr=header(required_set="unknown")), "required_set is UNKNOWN"),
+    check(has(fire([], hdr=header(required_set="unknown")), "required_set is unknown"),
           "an unknown required_set must nudge to derive it")
-    check(not has(fire([], hdr=header(required_set="none")), "required_set is UNKNOWN"),
+    check(not has(fire([], hdr=header(required_set="none")), "required_set is unknown"),
           "a known required_set must NOT fire the derive nudge")
 
 
 def t_fanout_fires_only_with_open_work():
-    check(has(fire([row(1, "in_review")]), "fan out more work"),
+    check(has(fire([row(1, "in_review")]), "fan out work"),
           "an open PR must nudge to fan out")
-    check(not has(fire([row(1, "merged")]), "fan out more work"),
+    check(not has(fire([row(1, "merged")]), "fan out work"),
           "no open PR must NOT nudge to fan out")
 
 
@@ -104,20 +104,20 @@ def t_followups_fire_only_when_open():
 
 def t_parked_pr_fires_only_its_own_reminder():
     lines = fire([row(7, "awaiting-user", ci_reason="settled but not green")])
-    check(has(lines, "PR 7: PARKED"), "a parked PR must nudge that it is parked")
+    check(has(lines, "PR 7: parked"), "a parked PR must nudge that it is parked")
     check(has(lines, "settled but not green"), "the park reminder must carry ci_reason")
-    check(not has(lines, "PR 7: CI is pending") and not has(lines, "PR 7: reads mergeable")
-          and not has(lines, "PR 7: a review looks dispatched"),
+    check(not has(lines, "PR 7: CI pending") and not has(lines, "PR 7: mergeable")
+          and not has(lines, "PR 7: review unfinished"),
           "a HELD PR must fire ONLY its held reminder — never review/CI/merge nudges")
 
 
 def t_repairing_splits_on_decision():
     no_dec = fire([row(7, "repairing", repair_decision="-")])
-    check(has(no_dec, "repairing with NO decision"), "repairing + no decision → reassess nudge")
-    check(not has(no_dec, "dispatch that repair"), "no-decision repairing must not say dispatch")
+    check(has(no_dec, "repairing, no decision"), "repairing + no decision → reassess nudge")
+    check(not has(no_dec, "dispatch decision"), "no-decision repairing must not say dispatch")
     with_dec = fire([row(7, "repairing", repair_decision="demote@2026-01-01T00:00:00Z")])
-    check(has(with_dec, "dispatch that repair"), "repairing + decision → dispatch nudge")
-    check(not has(with_dec, "NO decision"), "decided repairing must not say NO decision")
+    check(has(with_dec, "dispatch decision"), "repairing + decision → dispatch nudge")
+    check(not has(with_dec, "no decision"), "decided repairing must not say NO decision")
 
 
 # --- per-PR in-flight ---------------------------------------------------------
@@ -134,9 +134,9 @@ def t_intent_missing_fires_only_without_the_file():
 
 
 def t_ci_pending_fires():
-    check(has(fire([row(9, "in_review", ci="pending")]), "PR 9: CI is pending"),
+    check(has(fire([row(9, "in_review", ci="pending")]), "PR 9: CI pending"),
           "a pending-CI PR must nudge to re-derive")
-    check(not has(fire([row(9, "in_review", ci="green")]), "PR 9: CI is pending"),
+    check(not has(fire([row(9, "in_review", ci="green")]), "PR 9: CI pending"),
           "a green PR must NOT fire the CI-pending nudge")
 
 
@@ -145,20 +145,20 @@ def t_review_alive_fires_only_with_a_progress_file():
         rd = Path(d)
         (rd / "intent-9.md").write_text("x", encoding="utf-8")  # keep the intent nudge quiet
         r = [row(9, "in_review", reviews_ok=0, tier="HIGH", ci="green", review_rounds=2)]
-        check(not has(fire(r, rundir=rd), "review agent is still alive"),
+        check(not has(fire(r, rundir=rd), "reviewer is alive"),
               "no progress file → no dispatched review → no liveness nudge")
         (rd / "review-9-2.progress.jsonl").write_text("{}", encoding="utf-8")
-        check(has(fire(r, rundir=rd), "review agent is still alive"),
+        check(has(fire(r, rundir=rd), "reviewer is alive"),
               "a progress file for the current round → nudge to check the reviewer is alive")
 
 
 def t_mergeable_fires_when_counters_are_met():
-    check(has(fire([row(9, "in_review", reviews_ok=2, tier="HIGH", ci="green")]), "reads mergeable"),
+    check(has(fire([row(9, "in_review", reviews_ok=2, tier="HIGH", ci="green")]), "mergeable"),
           "reviews_ok >= required and green → nudge to check merge-readiness")
-    check(not has(fire([row(9, "in_review", reviews_ok=1, tier="HIGH", ci="green")]), "reads mergeable"),
+    check(not has(fire([row(9, "in_review", reviews_ok=1, tier="HIGH", ci="green")]), "mergeable"),
           "short of required verdicts → NOT mergeable, no merge nudge")
     # TRIVIAL needs only 1
-    check(has(fire([row(9, "in_review", reviews_ok=1, tier="TRIVIAL", ci="green")]), "reads mergeable"),
+    check(has(fire([row(9, "in_review", reviews_ok=1, tier="TRIVIAL", ci="green")]), "mergeable"),
           "a TRIVIAL PR needs only 1 verdict to read mergeable")
 
 

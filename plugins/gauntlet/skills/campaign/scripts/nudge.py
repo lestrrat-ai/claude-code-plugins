@@ -71,25 +71,18 @@ def reminders(header: dict, rows: list, n_followups: int, rundir: "Path | None")
     active = [r for r in rows if r["status"] not in TERMINAL]
 
     # --- always-fire floor -----------------------------------------------------
-    out.append("check the fallback heartbeat/wake is armed — a task-notification only fires while "
-               "something is watching.")
-    out.append("re-read the ledger header FRESH this wake (base_branch, reviewer, required_set, "
-               "skill_version) — never from memory.")
+    out.append("check the heartbeat/wake is armed.")
+    out.append("re-read the ledger header (base_branch, reviewer, required_set, skill_version).")
     if active:
-        out.append("check each active PR's labels still mirror its gate state "
-                   "(gauntlet-reviewing while under review, gauntlet-accepted once it passes) — easy to "
-                   "forget the swap on a long run.")
+        out.append("check each active PR's labels match its gate state.")
 
     # --- run-level -------------------------------------------------------------
     if header.get("required_set") == "unknown":
-        out.append("required_set is UNKNOWN — derive the base branch's required set; nothing can go green "
-                   "until you do.")
+        out.append("required_set is unknown — derive it.")
     if active:
-        out.append(f"{len(active)} PR(s) still open — reconcile against ground truth and check if you can "
-                   f"fan out more work up to caps; don't drive off the ledger alone.")
+        out.append(f"{len(active)} PR(s) open — reconcile and fan out work up to caps.")
     if n_followups:
-        out.append(f"{n_followups} open follow-up(s) — check if you can start on any (investigate freely; "
-                   f"act only on a corroborated one; never publish without the user).")
+        out.append(f"{n_followups} open follow-up(s) — start any you can.")
 
     # --- per-PR reminders ------------------------------------------------------
     # A HELD PR (parked or repairing) fires ONLY its held reminder. That exclusion is enforced by the
@@ -100,34 +93,27 @@ def reminders(header: dict, rows: list, n_followups: int, rundir: "Path | None")
         status = r["status"]
         if status == REPAIRING:
             if r.get("repair_decision", "-") == "-":
-                out.append(f"PR {pr}: repairing with NO decision — run its reassessment pass; do NOT "
-                           f"dispatch a plain fix.")
+                out.append(f"PR {pr}: repairing, no decision — run the reassessment pass.")
             else:
-                out.append(f"PR {pr}: repairing with a recorded decision "
-                           f"({r['repair_decision']}) — dispatch that repair and nothing else.")
+                out.append(f"PR {pr}: repairing — dispatch decision ({r['repair_decision']}), nothing else.")
         elif status in HELD:  # awaiting-user / awaiting-api
             why = r.get("ci_reason", "-")
             tail = f" ({why})" if why and why != "-" else ""
-            out.append(f"PR {pr}: PARKED on the user{tail} — check its question was surfaced, and take "
-                       f"NO action that mutates it.")
+            out.append(f"PR {pr}: parked{tail} — surface the question, don't mutate it.")
 
         # in-flight rules — each gated on in_review, so held PRs above fire none of them
         need = required(r["tier"])
         ok = int(r["reviews_ok"]) if r["reviews_ok"].isdigit() else 0
         ci = r["ci"]
         if status == "in_review" and ok < need and not rundir_has(rundir, f"intent-{pr}.md"):
-            out.append(f"PR {pr}: no intent-{pr}.md — write it before any review pass (a pass with no "
-                       f"intent is unusable).")
+            out.append(f"PR {pr}: no intent-{pr}.md — write it before reviewing.")
         if status == "in_review" and ci == "pending":
-            out.append(f"PR {pr}: CI is pending for the current head — re-derive CI (the derivation is a "
-                       f"command; never judge checks by eye).")
+            out.append(f"PR {pr}: CI pending — re-derive it.")
         if (status == "in_review" and ok < need and ci != "red"
                 and rundir_has(rundir, f"review-{pr}-{r['review_rounds']}.progress.jsonl")):
-            out.append(f"PR {pr}: a review looks dispatched but unfinished — check the review agent is "
-                       f"still alive (a dead reviewer leaves the progress file frozen).")
+            out.append(f"PR {pr}: review unfinished — check the reviewer is alive.")
         if status == "in_review" and ok >= need and ci == "green":
-            out.append(f"PR {pr}: reads mergeable by the counters — check if it's ready to merge "
-                       f"(re-confirm against the live head + base first).")
+            out.append(f"PR {pr}: mergeable by counters — check merge-readiness.")
 
     return out
 
