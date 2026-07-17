@@ -43,4 +43,5 @@ Campaign's exact cross-agent command lines live in
 - `scripts/validate-plugins.sh` resolves every path a manifest declares (e.g. Codex `skills`) against
   its plugin root and rejects any that is missing or escapes the root, then proves both isolated
   installs yield identical skill content. Keep declared paths pointing at real in-tree directories.
-- Bump both plugin manifest versions after changing `plugins/**`.
+- NEVER change plugin manifest versions unless the user explicitly asks for a version bump. When asked,
+  update both host manifests together.

@@ -188,7 +188,9 @@ generalised; the author did not.** That is a defect in how the work was done, no
 
 ## Version is the plugin cache key
 
-`plugin.json`'s `version` decides whether an installed copy refreshes. Changing skill content **without**
-bumping it means installed copies stay stale at the old content while claiming to be current — this has
-already happened once across several releases. Bump the version in the same PR as any `plugins/**`
-content change, or in a release PR that batches several.
+`plugin.json`'s `version` decides whether an installed copy refreshes.
+
+**NEVER change a plugin version unless the user explicitly asks for that version bump.** Ordinary
+`plugins/**` changes leave both manifest versions unchanged. When the user does request a bump, update
+the Claude Code and Codex manifests together. A release PR may batch several plugin changes under one
+user-approved bump.
