@@ -1,0 +1,4 @@
+interface:
+  display_name: "Gauntlet Follow-ups"
+  short_description: "Show the durable follow-up queue"
+  default_prompt: "Use $gauntlet:followups to show the current follow-up queue."

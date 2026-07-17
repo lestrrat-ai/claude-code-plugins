@@ -1,6 +1,6 @@
 {
   "name": "gauntlet",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Adversarial review-to-merge pipeline: sweep, verify, fan out, gate, merge.",
   "author": {
     "name": "lestrrat",
@@ -21,7 +21,9 @@
     "defaultPrompt": [
       "Review this change with Gauntlet.",
       "Gate these pull requests through review and CI.",
-      "Address Copilot review comments on this pull request."
+      "Address Copilot review comments on this pull request.",
+      "Show the current Gauntlet campaign ledger.",
+      "Show the durable Gauntlet follow-up queue."
     ]
   }
 }
