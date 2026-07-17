@@ -225,6 +225,28 @@ def run(T) -> int:
             print(f"FAIL     docs symlink               -> {type(exc).__name__}: {exc}")
             failures += 1
 
+        (repo / symlink_head).write_text("not a revision\n", encoding="utf-8")
+        (repo / "docs" / "plain.md").write_text("# Plain\n\nProse.\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", "--", symlink_head, "docs/plain.md"], cwd=repo, check=True
+        )
+        subprocess.run(["git", "commit", "-qm", "sha-named path"], cwd=repo, check=True)
+        ambiguous_head = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=repo, text=True
+        ).strip()
+        try:
+            result = T.derive(repo, symlink_head, ambiguous_head)
+            named = {item["path"]: item["class"] for item in result["files"]}
+            check(named.get(symlink_head) == T.CODE,
+                  f"SHA-named path classified as {named.get(symlink_head)!r}")
+            check(named.get("docs/plain.md") == T.HUMAN_DOC,
+                  f"sibling prose classified as {named.get('docs/plain.md')!r}")
+            check(result["tier"] == T.STANDARD, f"SHA-named path tier is {result['tier']}")
+            print("ok       SHA-named path             -> classified, not read as a revision")
+        except Exception as exc:  # noqa: BLE001
+            print(f"FAIL     SHA-named path             -> {type(exc).__name__}: {exc}")
+            failures += 1
+
         out, err = io.StringIO(), io.StringIO()
         try:
             with redirect_stdout(out), redirect_stderr(err):
@@ -240,5 +262,5 @@ def run(T) -> int:
     if failures:
         print(f"{failures} triage fixture(s) failed")
         return 1
-    print(f"all {len(cases) + 9} triage fixtures hold")
+    print(f"all {len(cases) + 10} triage fixtures hold")
     return 0

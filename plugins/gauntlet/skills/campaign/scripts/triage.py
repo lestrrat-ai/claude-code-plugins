@@ -313,7 +313,9 @@ def derive(worktree: Path, base: str, head_sha: str, systemic: bool = False) -> 
     if live != head_sha:
         raise TriageError(f"worktree HEAD is {live}, not ledger head_sha {head_sha}")
     merge_base = os.fsdecode(one_lf(git(worktree, "merge-base", base, head_sha), "git merge-base"))
-    changes = parse_raw(git(worktree, "diff", "--raw", "-z", "--no-abbrev", merge_base, head_sha))
+    changes = parse_raw(
+        git(worktree, "diff", "--raw", "-z", "--no-abbrev", merge_base, head_sha, "--")
+    )
     referenced_paths = root_agent_doc_paths(worktree, head_sha)
 
     def read_content(path: str, old: bool) -> bytes | None:
