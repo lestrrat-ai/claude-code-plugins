@@ -1289,9 +1289,16 @@ def t_write_is_atomic(L: ModuleType, tmp: Path) -> None:
                     f"the next reader can mistake for one")
 
     # …and with nothing sabotaged, the same write LANDS: the point is atomicity, not refusal.
-    code, _, err = cli(L, ["--file", str(path), "verdict", "--pr", "1",
-                           "--head-sha", SHA_A, "--verdict", "satisfied"])
+    old_mask = os.umask(0o022)
+    try:
+        code, _, err = cli(L, ["--file", str(path), "verdict", "--pr", "1",
+                               "--head-sha", SHA_A, "--verdict", "satisfied"])
+    finally:
+        os.umask(old_mask)
     check(code == 0, f"the unsabotaged verdict exited {code}: {err!r}")
+    check(path.stat().st_mode & 0o777 == 0o644,
+          f"the replacement changed the ledger's create mode to {path.stat().st_mode & 0o777:o}, not 644 "
+          "under umask 022")
     code, out, _ = cli(L, ["--file", str(path), "get", "--pr", "1", "--field", "review_rounds"])
     check((code, out) == (0, "1\n"), f"the verdict did not land: review_rounds is {out!r}")
     left = sorted(p.name for p in path.parent.iterdir() if p != path)
