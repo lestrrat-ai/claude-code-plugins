@@ -232,8 +232,8 @@ a line the tool writes.
 | `reviewer-liveness.py` | Probe whether a dispatched reviewer's output stream is still moving; decides nothing, always exits 0 | `references/stage-2-review-gate.md` |
 | `base-preflight.py` | Decide proceed / rebase-first / recheck from a PR's live merge-state before review or fix; performs no rebase | `references/stage-2-review-gate.md` |
 | `ci-status.py` | `derive` — how `ci` is DERIVED, always, the only way — `liveness` — the recorder: writes `ci` + the liveness counters, parks at any cap — and `required-set` | `references/stage-2-ci.md` |
-| `ci-snapshot.py` | Executable contract for the SHA-pinned CI snapshot artifact (used by `derive`) | `references/stage-2-ci.md` |
-| `mutate-ci-snapshot.py` | Mutation harness proving `ci-snapshot.py`'s rules are fixture-pinned; run by validation/CI, not the driver | `references/stage-2-ci.md` |
+| `ci-snapshot.py` | Executable contract for the SHA-pinned CI snapshot artifact (used by `derive`) | `references/ci-derivation-spec.md` |
+| `mutate-ci-snapshot.py` | Mutation harness proving `ci-snapshot.py`'s rules are fixture-pinned; run by validation/CI, not the driver | `references/ci-derivation-spec.md` |
 | `merge-check.py` | `check` — decide merge-readiness (`merge` / `not-yet <reason>`) from the ledger row + live PR view, crossing the ledger preconditions and both GitHub merge enums in one place | `references/stage-3-merge.md` |
 | `repair-pass.py` | Reassessment pass's door: `permitted` / `decide` — the closed decision enum, ownership guardrail, repair cap | `references/repair-pass.md` |
 | `followups.py` | Schema-owning accessor for the follow-up store (`.gauntlet/followups.jsonl`) — a durable work QUEUE, not an archive: entries are deleted once recorded elsewhere, kept when nothing else would remember | `references/followups.md` |
@@ -306,6 +306,7 @@ Read stage refs only when that stage/action is due:
 | Repeated sibling findings / shared root cause | `references/root-cause-pass.md` |
 | A PR at a review-loop cap (`status = repairing`) / a verdict that exits non-zero | `references/repair-pass.md` |
 | CI watch, check polling, CI fix | `references/stage-2-ci.md` |
+| Reviewing or changing the CI derivation tools themselves (`ci-status.py`, `ci-snapshot.py`) — never needed to drive | `references/ci-derivation-spec.md` |
 | Merge candidate / base refresh / cleanup | `references/stage-3-merge.md` |
 | Recording / investigating / acting on a follow-up (work found but not done) | `references/followups.md` |
 | Stuck task, abort, final report | `references/bailout-and-final-report.md` |

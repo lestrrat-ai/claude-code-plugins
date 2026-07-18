@@ -59,8 +59,8 @@
 - Work-conserving dispatch is mandatory: every heartbeat scans all PRs and launches every due
   action that fits a free slot before returning. Waiting is allowed only when no useful action is
   launchable anywhere in the run.
-- A PR with a **still-RUNNING** check must ALWAYS have a live watch: if **any evidence row classifies
-  `RUNNING` under CLASSIFY** (`stage-2-ci.md`, "CLASSIFY every row" — an EXPLICIT membership test, and
+- A PR with a **still-RUNNING** check must ALWAYS have a live watch: if **`derive`'s `buckets.RUNNING`
+  is > 0** (the CLASSIFY tally — `ci-derivation-spec.md`, "CLASSIFY every row" — an EXPLICIT membership test, and
   **NEVER** "any row is not yet terminal" / `.status != COMPLETED`, which is a negated test: it sweeps up
   every value GitHub adds tomorrow and silently watches it instead of letting it fall to the
   `UNKNOWN_VALUE` escalation) and the watch task has exited (including after any rebase/push), relaunch
@@ -463,7 +463,7 @@
   parsing**. **NEVER from `gh pr checks`** — its output carries **no SHA**, so it can report the
   **previous** commit's passing checks. **NEVER from the `--watch` exit code** — it can exit 0 with
   checks unregistered. No green, no merge.
-  **The CLASSIFY + DECIDE rules in `stage-2-ci.md` ("CLASSIFY every row" / "DECIDE — first match wins")
+  **The CLASSIFY + DECIDE rules in `ci-derivation-spec.md` ("CLASSIFY every row" / "DECIDE — first match wins")
   are THE definition of green — do not restate them, read them.** What a summary must never lose: green
   needs **≥1 registered evidence row** — **zero rows is NOT green** (nothing has registered yet), and
   **every** observed row must classify `PASS` **under the current CLASSIFY rules** — which is **NOT** the

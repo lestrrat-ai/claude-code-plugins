@@ -591,8 +591,8 @@ def run(ci, tmp: Path) -> int:
               f"stale-head refusal")
 
     print()
-    print(f"--- doc-check: {ci.DOC.name} vs the code that runs ---")
-    failures += ci.doc_check(ci.DOC)
+    print(f"--- doc-check: {ci.SPEC_DOC.name} + {ci.DRIVER_DOC.name} vs the code that runs ---")
+    failures += ci.doc_check()
     if failures:
         print(f"\n{failures} check(s) FAILED.")
         return 1

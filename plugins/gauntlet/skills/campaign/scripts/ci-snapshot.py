@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Executable contract for the CI snapshot artifact (stage-2-ci.md).
+"""Executable contract for the CI snapshot artifact (ci-derivation-spec.md).
 
-The rules in `stage-2-ci.md` are prose, and prose cannot be run. Three defects shipped in that
+The rules in `ci-derivation-spec.md` are prose, and prose cannot be run. Three defects shipped in that
 prose anyway, and every one of them would have died instantly against a round-trip:
 
   * the artifact was space-delimited while check names CONTAIN spaces (`Lint scripts` parsed as
@@ -122,7 +122,7 @@ from collections import Counter
 from pathlib import Path
 from typing import NamedTuple, NoReturn
 
-# --- the contract (stage-2-ci.md) ---------------------------------------------------------------
+# --- the contract (ci-derivation-spec.md) ---------------------------------------------------------------
 #
 # CLASSIFICATION IS TOTAL OVER THE REAL ENUMS. The sets below are ENUMERATED FROM GitHub's GraphQL schema,
 # never from memory, and every value of every enum lands in exactly one of them. A rule that names only the
@@ -262,7 +262,7 @@ def parse_required_set(spec: str) -> RequiredSet:
             raise SpecError(f"`context` and `app` must be strings, and `context` non-empty: {entry!r}")
         # AN APP BINDING IS A GITHUB APP ID — DECIMAL DIGITS — OR `ANY_APP`. THERE IS NO THIRD SHAPE, and
         # the one that keeps trying to be one is the STRING "null": jq's `tostring` applied to a null
-        # binding BEFORE the `// "-"` default, which is exactly what the producer read shipped (stage-2-ci.md
+        # binding BEFORE the `// "-"` default, which is exactly what the producer read shipped (ci-derivation-spec.md
         # FETCH owns the rule; `cli/cli` returns `app_id: null` for every required check on `trunk`, so it is
         # the COMMON case). Bound to an app that DOES NOT EXIST, the check can never be matched by any row:
         # the PR reports `pending (required check absent)` FOREVER, for a reason nobody can see. That is a
@@ -288,7 +288,7 @@ def satisfied_by(rows: list[dict], context: str, app: str) -> bool:
     a rule that compares only the name would let any app in the world satisfy it by naming a job the same.
 
     A `status` row can satisfy only an UNBOUND declaration. The commit-status family carries NO producer
-    field at all (the response has none to give — see the FETCH block in stage-2-ci.md), so an app-bound
+    field at all (the response has none to give — see the FETCH block in ci-derivation-spec.md), so an app-bound
     declaration CANNOT BE PROVEN by one. It stays unsatisfied, the PR goes `pending (required check
     missing)`, and SETTLED escalates it with the check named. That is FAIL-CLOSED ON PURPOSE: the
     alternative is to accept a status from an app we never identified as proof of a check that named one —
@@ -313,7 +313,7 @@ class SnapshotError(Exception):
     """The artifact is not evidence."""
 
 
-# The FIVE row types stage-2-ci.md defines, and the EXACT field set each one carries. There is no sixth
+# The FIVE row types ci-derivation-spec.md defines, and the EXACT field set each one carries. There is no sixth
 # type, and a row of a type we do not recognise is NOT nothing — it is something we FAILED TO UNDERSTAND,
 # and failing to understand a row is never grounds to ignore it. An ignored row is invisible to
 # `verify_sha` and to `decide`, so a FAILING one parses as "nothing wrong" — which is the exact false-green
@@ -364,7 +364,7 @@ NO_OID = "-"
 # we may assume. (`int()` would also accept `" 2 "`, `"+2"` and `"２"` — and then CRASH on `"two"`.)
 COUNT_RE = re.compile(r"^(0|[1-9][0-9]*)$")
 
-# The artifact's EXACT name, from stage-2-ci.md's PROMOTE step: `ci-<pr>-<head_sha>.txt`. Matching the
+# The artifact's EXACT name, from ci-derivation-spec.md's PROMOTE step: `ci-<pr>-<head_sha>.txt`. Matching the
 # SHAPE — one PR number, ONE sha, that extension — is the whole point. Asking only whether the expected sha
 # appears SOMEWHERE in the name is not a check: `ci-35-<head_sha>-<old_sha>.txt` names TWO commits and
 # would sail through it, the second sha present and uncounted.
@@ -395,7 +395,7 @@ def parse(path: Path) -> list[dict]:
     with an EXTRA field is not evidence either, for the mirror-image reason: nothing reads that field, so
     whatever it asserts is neither verified nor refuted — it is present and not counted.
 
-    Structure is part of the shape: the header is "Exactly one, first line" (stage-2-ci.md). A file whose
+    Structure is part of the shape: the header is "Exactly one, first line" (ci-derivation-spec.md). A file whose
     header is not the first row, or which carries a SECOND header, is rejected here — a later header is a
     row nothing reads, and if it named a different commit, the file would describe two.
 
@@ -539,7 +539,7 @@ def parse(path: Path) -> list[dict]:
 def verify_filename(path: Path, expected_sha: str) -> None:
     """The FILENAME must be EXACTLY `ci-<pr>-<head_sha>.txt`, for the expected head_sha.
 
-    stage-2-ci.md's VERIFY rule names THREE things that must equal the ledger's head_sha: the header, every
+    ci-derivation-spec.md's VERIFY rule names THREE things that must equal the ledger's head_sha: the header, every
     evidence row's sha, AND the filename. The filename is OURS, like the header, so it cannot catch a
     wrong-commit FETCH — what it catches is a MISFILED artifact: a stale `ci-<pr>-<old_sha>.txt` still
     sitting in the rundir, read as if it described the current head. Verifying the bytes of a file while
@@ -609,7 +609,7 @@ def verify_sources(rows: list[dict], expected_sha: str) -> None:
     only a fetch that RAN could satisfy:
 
       * **It cannot exist without its fetch.** The marker is emitted by the SAME `jq` filter, in the SAME
-        command, as the rows it describes (stage-2-ci.md, PROMOTE), and only after `--paginate --slurp` has
+        command, as the rows it describes (ci-derivation-spec.md, PROMOTE), and only after `--paginate --slurp` has
         collected every page. A fetch that fails writes NEITHER its rows nor its marker, and the snapshot is
         never promoted. There is no way to write a marker for a fetch that did not happen.
       * **`count` must EQUAL the rows of that source actually present.** A marker claiming 5 where 3 are in
@@ -875,8 +875,8 @@ def evaluate(
 # --- the liveness fingerprint --------------------------------------------------------------------
 
 # The canonical line per EVIDENCE row type — the row kind, then exactly the fields CLASSIFY reads
-# (`stage-2-ci.md`, "The FINGERPRINT is computed over the VERIFIED snapshot's EVIDENCE ROWS", which owns
-# the spec; `doc-check` asserts the doc's line formats match these tuples). `header`/`source`/`witness`
+# (`stage-2-ci.md`, SETTLED — its FINGERPRINT block owns the spec, and `doc-check` asserts the block's
+# line formats match these tuples). `header`/`source`/`witness`
 # rows carry no verdict and are EXCLUDED; so are the row's `sha` (already proven equal to the ledger's
 # head_sha, which is hashed in once, at the front) and its `id` (a re-run under a new job id is not
 # CI moving).
@@ -1144,7 +1144,7 @@ def required_test(fixtures: Path) -> int:
     return failures
 
 
-# --- THE PRODUCER, EXECUTED — the FIVE reads in stage-2-ci.md, RUN over recorded API payloads -----------
+# --- THE PRODUCER, EXECUTED — the THREE evidence reads in ci-derivation-spec.md, RUN over recorded API payloads -----------
 #
 # Every rule above takes the required set AS GIVEN. So a required set the DOC READS WRONG is a defect that
 # NOTHING above could see — and one shipped: both reads defaulted a null app binding AFTER converting it,
@@ -1157,11 +1157,11 @@ def required_test(fixtures: Path) -> int:
 # but the OTHER failure, the one that files no report. And it was not exotic: `repos/cli/cli/branches/trunk`
 # returns `app_id: null` for EVERY required check it has.
 #
-# The three snapshot filters are NOT retyped here — they are EXTRACTED FROM stage-2-ci.md AND EXECUTED. A
+# The three snapshot filters are NOT retyped here — they are EXTRACTED FROM ci-derivation-spec.md AND EXECUTED. A
 # copy in this file is exactly what could NOT have caught a bug in the DOC, which is where an operator reads
 # them. The required-set reads are now production Python in `ci-status.py required-set`; its sibling fixture
 # suite drives that code over the same recorded API responses instead of testing copied shell.
-DOC = Path(__file__).resolve().parents[1] / "references" / "stage-2-ci.md"
+DOC = Path(__file__).resolve().parents[1] / "references" / "ci-derivation-spec.md"
 FETCH_PAYLOADS = Path(__file__).parent / "fixtures" / "fetch"   # payloads for the evidence reads
 
 # Each read is identified by the COMMAND LINE that introduces it, VERBATIM — the pipeline included, so a
@@ -1192,7 +1192,7 @@ class DocDrift(Exception):
 
 
 def doc_read(which: str) -> str:
-    """The jq program stage-2-ci.md tells the operator to run. Extracted, never retyped."""
+    """The jq program ci-derivation-spec.md documents. Extracted, never retyped."""
     text = DOC.read_text(encoding="utf-8")
     opener = READS[which]
     start = text.find(opener)
@@ -1271,7 +1271,7 @@ FETCH_CASES = [
 
 
 def fetch_test() -> int:
-    """The three FETCH reads in stage-2-ci.md, EXTRACTED AND RUN over recorded API pages.
+    """The three FETCH reads in ci-derivation-spec.md, EXTRACTED AND RUN over recorded API pages.
 
     Nothing else in this file could catch a bug in them: every rule above takes the SNAPSHOT as given, and
     these reads are what PRODUCE it. The `.app.id` ordering fix lived here, fixed and pinned by nothing —

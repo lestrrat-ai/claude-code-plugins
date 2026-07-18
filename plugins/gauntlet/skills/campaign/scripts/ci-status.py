@@ -72,7 +72,7 @@ GitHub ITSELF told us was short, called green". Each of these now FAILS CLOSED:
 
     **AND THAT COVERAGE RULE IS NOT WHAT CLOSES THE `EXPECTED` FALSE GREEN. IT CANNOT BE.** It quantifies
     over the `StatusContext` entries THE ROLLUP RETURNED, and the rollup carries NO total: unlike both REST
-    families it cannot be proven complete (`stage-2-ci.md`, "Honest limits"). Delete the one `EXPECTED` entry
+    families it cannot be proven complete (`ci-derivation-spec.md`, "Honest limits"). Delete the one `EXPECTED` entry
     from a rollup response and the guard has NOTHING TO CHECK, and the PR — blocked on a check nobody has run
     — goes GREEN. **A GUARD WHOSE INPUT CAN BE ABSENT NEVER FIRES.** The closure is the REQUIRED SET, above:
     it is DECLARED BY THE BASE BRANCH, so what must be present does not depend on what showed up. What the
@@ -92,7 +92,7 @@ GitHub ITSELF told us was short, called green". Each of these now FAILS CLOSED:
 **THERE IS NO `notes` CHANNEL, ON PURPOSE.** A field that says "this evidence may be incomplete" BESIDE a
 green verdict is the trapdoor, not the disclosure — it was read by nobody, and it let the tool ship the one
 thing it exists to prevent. Every gap the tool can DETECT is a REFUSAL. What CANNOT be known is stated where
-it belongs (`stage-2-ci.md`, "Honest limits"), never emitted as reassurance beside a verdict.
+it belongs (`ci-derivation-spec.md`, "Honest limits"), never emitted as reassurance beside a verdict.
 
 EVIDENCE ABOUT A COMMIT THAT IS NO LONGER THE HEAD IS NOT EVIDENCE ABOUT THE PR. The fetch is pinned to the
 LEDGER's `head_sha`, and a push can land at any time — including WHILE this tool is fetching. So the tool
@@ -107,7 +107,7 @@ watch, dispatch a CI fix, or park the PR. Those rules live in `stage-2-ci.md`. E
 create a SECOND owner of a rule that is moving under it.
 
 THE DOC AND THIS TOOL CANNOT SILENTLY DISAGREE — `doc-check` is what makes that true.
-The enums, the CLASSIFY buckets and the DECIDE order are stated in `stage-2-ci.md` as prose AND encoded in
+The enums, the CLASSIFY buckets and the DECIDE order are stated in `ci-derivation-spec.md` as prose AND encoded in
 `ci-snapshot.py` as Python. NOTHING compared them, so they could drift, and the drifted copy would be the
 one a reader believed. `doc-check` PARSES the doc's own enum block, its two CLASSIFY tables and its DECIDE
 bullet order, and asserts they agree with the sets `ci-snapshot.py` actually classifies with — and that the
@@ -125,7 +125,7 @@ them over their recorded API payloads.)
 
   required-set  read branch protection and rulesets, then persist their complete union in the ledger
   derive     fetch a PR's checks, promote the snapshot, verify it, and print the verdict as JSON
-  doc-check  assert stage-2-ci.md's enums / CLASSIFY / DECIDE order agree with the code that runs
+  doc-check  assert the CI docs (ci-derivation-spec.md + stage-2-ci.md) agree with the code that runs
   self-test  run every fixture, assert its verdict AND the rule that produced it, then run doc-check
 
 THE FIXTURE SUITE IS THE SIBLING `ci-status-test.py`, and it is this tool's EXECUTABLE CONTRACT — every rule
@@ -154,7 +154,11 @@ HERE = Path(__file__).resolve().parent
 SNAPSHOT_PY = HERE / "ci-snapshot.py"
 LEDGER_PY = HERE / "ledger.py"
 TEST_PY = HERE / "ci-status-test.py"     # the fixture suite — this tool's executable contract
-DOC = HERE.parent / "references" / "stage-2-ci.md"
+# The CI docs, split by audience: the SPEC (what the tools implement — enums, CLASSIFY, DECIDE, the
+# fetch commands) and the DRIVER doc (the commands a heartbeat runs, the caps, the fingerprint block).
+# `doc-check` reads BOTH; each element is parsed from the file that owns it.
+SPEC_DOC = HERE.parent / "references" / "ci-derivation-spec.md"
+DRIVER_DOC = HERE.parent / "references" / "stage-2-ci.md"
 FIXTURES = HERE / "fixtures" / "ci-status"
 
 # A git object id, as GitHub returns it: 40 LOWERCASE hex. Same rule, same reason, as `ci-snapshot.py` —
@@ -314,7 +318,7 @@ def ledger_ci(verdict: str) -> str | None:
     return LEDGER_CI.get(verdict)
 
 
-# The DECIDE order, as a NAME PER BULLET, in the order `stage-2-ci.md` evaluates them. This is a THIRD
+# The DECIDE order, as a NAME PER BULLET, in the order `ci-derivation-spec.md` evaluates them. This is a THIRD
 # statement of an order that is already owned twice (the doc's bullets; `ci-snapshot.decide()`'s branches),
 # and it is only allowed to exist because it is MECHANICALLY CHECKED AGAINST BOTH:
 #
@@ -799,7 +803,7 @@ def read_pages(fetch: Fetch, source: str, argv: list[str], rows_key: str) -> tup
     read off EVERY page and each value compared against the rows collected across ALL of them, which is
     exactly what `--slurp` gives us. Reading only the first page's count was itself a false green: GitHub
     RECOMPUTES the count per request, so a check registered mid-fetch makes a later page report MORE than the
-    first, and a row we never received slips through. **The honest limit** (`stage-2-ci.md`, "Honest limits"):
+    first, and a row we never received slips through. **The honest limit** (`ci-derivation-spec.md`, "Honest limits"):
     this catches a read that came up SHORT of what GitHub said it holds, or pages that DISAGREE about it. It
     does not, and cannot, prove that GitHub told us the truth, and `/check-runs` is capped at the 1000 most
     recent check suites regardless.
@@ -2027,7 +2031,7 @@ def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list
     return problems, copies
 
 
-def doc_check(doc: Path) -> int:
+def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) -> int:
     """Assert the DOC, the CODE, and this tool's DECIDE_ORDER all say the same thing.
 
     Five things are checked, and the last two are the ones no reader ever does by hand:
@@ -2048,20 +2052,26 @@ def doc_check(doc: Path) -> int:
     (The doc's three snapshot `jq` filters are executed by `ci-snapshot.py` over recorded, multi-page API
     payloads. The required-set reads are production functions here, covered by `ci-status-test.py`.)
     """
-    if not doc.exists():
-        print(f"FAIL     the doc is not at {doc} — a check that cannot find its subject NEVER passes")
-        return 1
+    spec_doc = spec_doc or SPEC_DOC
+    driver_doc = driver_doc or DRIVER_DOC
+    for doc in (spec_doc, driver_doc):
+        if not doc.exists():
+            print(f"FAIL     the doc is not at {doc} — a check that cannot find its subject NEVER passes")
+            return 1
 
-    text = doc.read_text(encoding="utf-8")
+    spec_text = spec_doc.read_text(encoding="utf-8")
+    driver_text = driver_doc.read_text(encoding="utf-8")
+    # Each element is parsed from the file that OWNS it (enums/CLASSIFY/DECIDE/fetches: the spec;
+    # the fingerprint block: the driver doc) — except the caps, parsed over BOTH texts, because a cap
+    # RETYPED in the other file is exactly the drift `parse_caps` exists to refuse.
     try:
-        blocks = fenced_blocks(text)
-        enums = parse_enums(blocks)
-        classify = parse_classify(blocks)
-        order = parse_decide_order(text)
-        fp_spec = parse_fingerprint_spec(blocks)
-        caps = parse_caps(text)
+        enums = parse_enums(fenced_blocks(spec_text))
+        classify = parse_classify(fenced_blocks(spec_text))
+        order = parse_decide_order(spec_text)
+        fp_spec = parse_fingerprint_spec(fenced_blocks(driver_text))
+        caps = parse_caps(spec_text + "\n" + driver_text)
     except DocError as exc:
-        print(f"FAIL     {doc.name} cannot be read: {exc}")
+        print(f"FAIL     the CI docs cannot be read: {exc}")
         return 1
 
     # The doc's enum block is restated a THIRD time, as a comment in `ci-snapshot.py`. A comment cannot be
@@ -2122,10 +2132,10 @@ def doc_check(doc: Path) -> int:
               f"         missing from the doc: {fmt(missing) or '—'}   only in the doc: {fmt(extra) or '—'}"
               + (f"\n         {why}" if why else ""))
 
-    # AND THE `gh` COMMANDS, IN EVERY COPY — the class, not the instance.
+    # AND THE `gh` COMMANDS, IN EVERY COPY, IN BOTH DOCS — the class, not the instance.
     held: list[str] = []
     argv = code_argv()
-    problems = check_gh_invocations(text, argv)
+    problems = check_gh_invocations(spec_text + "\n" + driver_text, argv)
     if not problems:
         json_fields = argv["rollup"][argv["rollup"].index("--json") + 1]
         held.append(f"{'the gh invocations':32} every copy in the doc: --paginate --slurp, "
@@ -2158,9 +2168,9 @@ def doc_check(doc: Path) -> int:
         print(f"{failures} disagreement(s) between {doc.name} and the code that runs. "
               f"ONE of them is wrong and a reader will believe the other.")
         return 1
-    print(f"{len(checks) + len(held)} checks: {doc.name}, ci-snapshot.py and ci-status.py agree — enums, "
-          f"CLASSIFY buckets, TOTALITY, the DECIDE order, the FINGERPRINT lines, and every copy of "
-          f"every command.")
+    print(f"{len(checks) + len(held)} checks: {spec_doc.name}, {driver_doc.name}, ci-snapshot.py and "
+          f"ci-status.py agree — enums, CLASSIFY buckets, TOTALITY, the DECIDE order, the caps, the "
+          f"FINGERPRINT lines, and every copy of every command.")
     return 0
 
 
@@ -2272,16 +2282,18 @@ def main() -> int:
                          "(stage-2-ci.md, MACHINE ACTION — the one judgment the caller supplies)")
     lv.add_argument("--now", help="ISO-8601 override of the clock (tests and reproduction only)")
 
-    c = sub.add_parser("doc-check", help="assert stage-2-ci.md agrees with the code that runs — enums, "
-                                         "CLASSIFY, DECIDE order, and every copy of every command")
-    c.add_argument("--doc", type=Path, default=DOC)
+    c = sub.add_parser("doc-check", help="assert the CI docs (ci-derivation-spec.md + stage-2-ci.md) "
+                                         "agree with the code that runs — enums, CLASSIFY, DECIDE order, "
+                                         "caps, the fingerprint block, and every copy of every command")
+    c.add_argument("--spec-doc", type=Path, default=SPEC_DOC)
+    c.add_argument("--driver-doc", type=Path, default=DRIVER_DOC)
 
     sub.add_parser("self-test", help="run every fixture (ci-status-test.py), then doc-check")
 
     args = p.parse_args()
 
     if args.cmd == "doc-check":
-        return doc_check(args.doc)
+        return doc_check(args.spec_doc, args.driver_doc)
 
     if args.cmd == "self-test":
         return self_test()
