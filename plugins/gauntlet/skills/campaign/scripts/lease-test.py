@@ -252,6 +252,34 @@ def t_malformed_is_corrupt_never_adopted(work: Path) -> None:
                 f"the {name} refusal must explain why we will not guess")
 
 
+def t_legacy_lease_with_no_heartbeat_is_accepted(work: Path) -> None:
+    """A prose-era lease with NO `heartbeat` field is a VALID held lease, never corrupt — interop.
+
+    `read_lease` requires only `agent` and `updated`; `heartbeat` is OPTIONAL. A driver that hand-rolled
+    its lease from the prose (an older cache, a Codex session) wrote no `heartbeat`. Reading such a lease
+    as corrupt would refuse to see a LIVE legacy driver and let this tool adopt on top of it — the exact
+    double-drive this tool exists to prevent, in reverse. Contrast `t_malformed_is_corrupt`'s `no-updated`
+    case: a missing `updated` IS corrupt (we cannot tell staleness); a missing `heartbeat` is NOT.
+
+    `updated` is a fixed FUTURE stamp so the lease reads FRESH whenever the suite runs.
+
+    TEETH: add a "reject a lease with no heartbeat" check to read_lease and this goes red — read_lease
+    raises Corrupt, and the same-token acquire/refresh stop returning `owned`.
+    """
+    rec = {"agent": "legacy-driver", "updated": 2_000_000_000}
+    p = put(work, rec)
+    got = L.read_lease(p)
+    L.check(got is not None and got.get("agent") == "legacy-driver",
+            "a legacy lease with no `heartbeat` must read as a VALID held lease, never None/Corrupt")
+    L.check(got is not None and "heartbeat" not in got, "read_lease must not invent a `heartbeat` the legacy lease never had")
+    code, out, _err = acquire(work, token="legacy-driver", heartbeat="w1")
+    L.check(code == 0 and verdict_of(out) == "owned",
+            "a same-token acquire over a heartbeat-less legacy lease must be `owned`, not refused")
+    rcode, rout, _ = L.run(["--file", str(p), "refresh", "--token", "legacy-driver"])
+    L.check(rcode == 0 and verdict_of(rout) == "owned",
+            "a plain refresh of a heartbeat-less legacy lease by its own token must be `owned`")
+
+
 def t_read_reports_corrupt_without_deciding(work: Path) -> None:
     put(work, None, raw="{oops")
     code, out, _err = L.run(["--file", str(lease_path(work)), "read"])
@@ -329,6 +357,34 @@ def t_non_finite_is_corrupt(work: Path) -> None:
         L.check(p.read_bytes() == before, f"a {name} lease must not be overwritten")
         rcode, rout, _ = L.run(["--file", str(p), "read"])
         L.check(rcode != 0 and verdict_of(rout) == "corrupt", f"`read` must report a {name} lease corrupt")
+
+
+def t_lease_path_is_a_directory_is_corrupt(work: Path) -> None:
+    """An OS-level read failure must FAIL CLOSED as Corrupt, never fall open to absent/None.
+
+    Make the lease path unreadable in the most direct way a real filesystem allows: create a DIRECTORY
+    where `lease.json` belongs. `path.read_text` then raises `IsADirectoryError` — an `OSError`, so it is
+    NOT `FileNotFoundError` (absent) and NOT `UnicodeDecodeError` (the decode boundary). It lands in
+    read_lease's generic `except OSError` branch, which must raise Corrupt. If that branch is changed to
+    return None (fail OPEN), a live run gets adopted on top of an OS-level read failure.
+
+    TEETH: change read_lease's `except OSError` branch to return None and this goes red — read_lease
+    stops raising Corrupt, `read` reports absent, and acquire adopts instead of refusing.
+    """
+    p = lease_path(work)
+    p.mkdir()  # a directory at the lease path -> read_text raises IsADirectoryError (an OSError)
+    raised = False
+    try:
+        L.read_lease(p)
+    except L.Corrupt:
+        raised = True
+    L.check(raised, "read_lease must raise Corrupt on an OS-level read error (a directory at the lease "
+                    "path), never return None/absent through the generic `except OSError` branch")
+    rcode, rout, _ = L.run(["--file", str(p), "read"])
+    L.check(rcode != 0 and verdict_of(rout) == "corrupt",
+            "`read` must report an unreadable lease path as corrupt, not absent")
+    code, _out, _err = acquire(work, token="mine", heartbeat="w1")
+    L.check(code != 0, "acquire must REFUSE when the lease path cannot be read, never adopt on top of it")
 
 
 def t_write_lease_never_writes_non_finite(work: Path) -> None:
@@ -470,6 +526,28 @@ def t_a_held_lock_blocks(work: Path) -> None:
     (work / L.LOCK_NAME).mkdir()
     code, _out, err = acquire(work, token="t1", heartbeat="w1")
     L.check(code != 0, "a held claim.lock must block the check-and-set")
+    L.check("held" in err, "the refusal must say the lock is held")
+
+
+def t_lock_name_is_the_literal_claim_lock(work: Path) -> None:
+    """The lock name must be the LITERAL string "claim.lock" — the interop contract with prose drivers.
+
+    An older, prose-driven driver serializes the check-and-set by `mkdir claim.lock`. If this tool locked
+    under any OTHER name it would NOT mutually exclude that driver: both would "win" and drive one run.
+    So the name is asserted as a LITERAL here, deliberately NOT derived from `L.LOCK_NAME` — deriving the
+    fixture from the constant is exactly how a rename slips past (both sides move together and the suite
+    stays green), which is why the existing `t_a_held_lock_blocks` (built from `L.LOCK_NAME`) cannot catch
+    it.
+
+    TEETH: change LOCK_NAME to anything but "claim.lock" and this goes red twice — the literal constant
+    check fails, and a hand-rolled `mkdir claim.lock` no longer blocks this tool's acquire.
+    """
+    L.check(L.LOCK_NAME == "claim.lock",
+            f"the lock name must be the literal 'claim.lock' for interop with prose `mkdir claim.lock` "
+            f"drivers, got {L.LOCK_NAME!r}")
+    (work / "claim.lock").mkdir()  # a prose driver's literal lock — NOT built from L.LOCK_NAME
+    code, _out, err = acquire(work, token="t1", heartbeat="w1")
+    L.check(code != 0, "a literal `claim.lock` held by a prose driver must block this tool's check-and-set")
     L.check("held" in err, "the refusal must say the lock is held")
 
 
@@ -631,6 +709,8 @@ CASES = [
      t_exact_boundary_is_not_stale),
     ("corrupt-not-absent", "an unreadable lease is CORRUPT — adopting it would double-drive a live run",
      t_malformed_is_corrupt_never_adopted),
+    ("legacy-no-heartbeat", "a prose-era lease with no `heartbeat` field is a VALID held lease — interop",
+     t_legacy_lease_with_no_heartbeat_is_accepted),
     ("read-reports-corrupt", "`read` reports corruption rather than guessing",
      t_read_reports_corrupt_without_deciding),
     ("duplicate-key-corrupt", "a duplicate JSON key reads two ways — corrupt, never guessed",
@@ -638,6 +718,8 @@ CASES = [
     ("invalid-utf8-corrupt", "undecodable bytes fail closed to corrupt, never crash", t_invalid_utf8_is_corrupt),
     ("non-finite-corrupt", "NaN/Infinity anywhere is corrupt, not a value to round-trip",
      t_non_finite_is_corrupt),
+    ("lease-is-a-directory-corrupt", "an OS read error (a directory at the lease path) fails closed to "
+     "corrupt", t_lease_path_is_a_directory_is_corrupt),
     ("strict-json-on-disk", "write_lease writes strict JSON and refuses a non-finite value",
      t_write_lease_never_writes_non_finite),
     ("refresh-preserves-mode", "refresh preserves the lease's prior mode, never narrows to 0600",
@@ -655,6 +737,8 @@ CASES = [
     ("refresh-superseded", "refresh refuses once superseded", t_refresh_refuses_when_superseded),
     ("refresh-absent", "refresh does not conjure a lease", t_refresh_of_an_absent_lease_does_not_recreate_it),
     ("lock-blocks", "a held claim.lock blocks the check-and-set", t_a_held_lock_blocks),
+    ("lock-name-literal", "the lock name is the LITERAL 'claim.lock' — interop with prose `mkdir` drivers",
+     t_lock_name_is_the_literal_claim_lock),
     ("lock-sweep-scale", "a short claim-lock sweep re-opens the clock-skew mutual-exclusion hole",
      t_claim_lock_sweep_stays_on_the_lease_scale),
     ("lock-swept", "a lock from a crashed claim is swept", t_a_stale_lock_is_swept),
