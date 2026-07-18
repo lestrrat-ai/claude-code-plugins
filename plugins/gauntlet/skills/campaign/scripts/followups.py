@@ -565,7 +565,7 @@ def load(path: Path) -> "list[dict]":
 def dump(path: Path, entries: "list[dict]", high: int) -> None:
     """Write the whole store ATOMICALLY — a temp file in the same directory, then `os.replace()`.
 
-    A partial write here is not a corrupt cache that the next wake heals: it is data that exists NOWHERE
+    A partial write here is not a corrupt cache that the next heartbeat heals: it is data that exists NOWHERE
     else. `os.replace()` is atomic on POSIX, so a reader (or a crash) sees either the old store or the
     new one, never half of one.
 

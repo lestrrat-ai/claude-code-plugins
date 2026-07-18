@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""The nudge printer — sticky-note reminders the campaign orchestrator prints at the top of every wake.
+"""The nudge printer — sticky-note reminders the campaign orchestrator prints at the top of every heartbeat.
 
-Every wake is a fresh agent instance, and the campaign's obligations live in prose it re-derives by hand.
+Every heartbeat is a fresh agent instance, and the campaign's obligations live in prose it re-derives by hand.
 So it forgets: it forgets to arm the fallback heartbeat, it drives off a stale ledger instead of fanning
 out, it lets a review agent die unnoticed, it forgets to swap a PR's labels as the gate moves. This tool
-reads the durable state and PRINTS what the orchestrator should CHECK — the same audit the wake skeleton
-describes in prose, computed from disk so an amnesiac wake is handed it rather than told to remember it.
+reads the durable state and PRINTS what the orchestrator should CHECK — the same audit the heartbeat skeleton
+describes in prose, computed from disk so an amnesiac heartbeat is handed it rather than told to remember it.
 
 **It is a REMINDER, not a supervisor.** Every rule is a CHEAP read (ledger fields, an open-follow-up
 count, whether a `<rundir>` file exists) → a short "check X" string. It NEVER derives CI, counts verdicts,
 decides merge-readiness, evaluates a liveness cap, or judges whether a review agent is actually alive —
 those tools already exist and it only reminds the orchestrator to run them. It decides nothing about
 whether a PR may merge; it is branch-owned, dogfoodable, and always exits 0. A reminder you can ignore is
-the point: its value is being DELIVERED at the wake, computed and concrete, not forcing anything.
+the point: its value is being DELIVERED at the heartbeat, computed and concrete, not forcing anything.
 
 The design and the full obligation inventory it was trimmed from live in `.gauntlet/DESIGN-nudge-printer.md`.
 """
@@ -25,7 +25,7 @@ from pathlib import Path
 
 from _gauntlet.modules import load_module_from_path
 
-DESCRIPTION = "Print per-wake reminders for the campaign orchestrator (sticky notes, not a supervisor)."
+DESCRIPTION = "Print per-heartbeat reminders for the campaign orchestrator (sticky notes, not a supervisor)."
 
 _HERE = Path(__file__).resolve().parent
 SIBLING = _HERE / "nudge-test.py"
@@ -71,7 +71,7 @@ def reminders(header: dict, rows: list, n_followups: int, rundir: "Path | None")
     active = [r for r in rows if r["status"] not in TERMINAL]
 
     # --- always-fire floor -----------------------------------------------------
-    out.append("check the heartbeat/wake is armed.")
+    out.append("check the heartbeat is armed.")
     out.append("re-read the ledger header (base_branch, reviewer, required_set, skill_version).")
     if active:
         out.append("check each active PR's labels match its gate state.")

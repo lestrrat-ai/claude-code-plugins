@@ -4,12 +4,12 @@ The skill is **event-driven**. Read `runtime-adapter.md` before waiting. Reconci
 invocation, a scheduled heartbeat when the host provides one, a **background task completing**, or the
 bounded-wait fallback returning. A completion may be a CI watch, a review, or a CI/review fix.
 
-**Every wake — reconcile, dispatch, reschedule:**
+**Every heartbeat — reconcile, dispatch, reschedule:**
 
 1. **Resolve repository context, then the run + lease, then init / resume / start fresh.** Call
    `runtime-adapter.md`'s repository-context resolver exactly once with the supplied checkout and carry
-   that record for every path and Git cwd on this wake. Then bind **which run this wake is
-   for** and confirm you may drive it, per "Run identity and concurrency": a `--run <id>` self-wake
+   that record for every path and Git cwd on this heartbeat. Then bind **which run this heartbeat is
+   for** and confirm you may drive it, per "Run identity and concurrency": a `--run <id>` scheduled heartbeat
    presents its `--token` and, under the run's claim lock, continues if the token matches the lease,
    adopts if the lease is absent/stale, or **stands down** if a fresh lease bears a different token; a
    bare invocation **with `#PR` args** starts a NEW run adopting those PRs, while an **arg-less** bare
@@ -58,7 +58,7 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      moment the set gains a member (this line's did, when `ci_stalled_since` joined).
 
      Do the PR scan as
-     **one batched snapshot per wake** — the **same canonical command** `pr-adoption.md` runs, writing the
+     **one batched snapshot per heartbeat** — the **same canonical command** `pr-adoption.md` runs, writing the
      **same path with the same schema** (they are the same scan; two spellings of it is how a reader of
      `prs.json` ends up with fields that are not there, or a snapshot scoped to the wrong PRs). Its owning
      definition is the block **"The canonical `prs.json` command"** in `files-and-ledger.md`; copy it
@@ -77,16 +77,16 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
 
      — and drive reconcile from that file; fall back to per-PR `gh pr view` only where the snapshot
      isn't enough (merge-gate CI truth stays the SHA-pinned, SHA-verified snapshot of **both** check
-     families, Stage 2b). Wake
+     families, Stage 2b). Heartbeat
      turnaround is throughput: every serial `gh` call in reconcile delays every dispatch behind it. Re-read
      **the ledger header's run config — EVERY field of it, whatever they are** (`files-and-ledger.md` owns
-     that set; do NOT keep a copy of it here, a list beside a property goes stale the wake a field is
+     that set; do NOT keep a copy of it here, a list beside a property goes stale the heartbeat a field is
      added). It governs the run, and must be
-     consulted fresh each wake, never from memory (a wake may be a fresh agent instance that just
+     consulted fresh each heartbeat, never from memory (a heartbeat may be a fresh agent instance that just
      adopted the run, so an explicit/preferred reviewer would otherwise
      be lost and silently revert to the default; Constraints, Base branch, "The reviewer",
      "PR adoption"). Refresh
-     the lease. This is the path every `--run` self-wake takes.
+     the lease. This is the path every `--run` scheduled heartbeat takes.
    - **No run bound and none live (no `gauntlet-run-*` PR, no non-terminal `<rundir>`) → first run.**
      **Check there is something to adopt BEFORE creating any run state.** If the invocation carries no
      `#PR` args (a bare or non-`#PR` invocation that found no live run to resume — likewise `--new`
@@ -113,7 +113,7 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      first)." A new run needs a `#PR` set, so collect PR numbers (equivalently direct the user to
      `<campaign-invocation> --new #PR...`); on a PR set, start a fresh run **with carryover** (see "Fresh
      runs and carryover") — **no run-id/lease/`state.jsonl` is created until that set passes preflight**.
-     With no PR numbers (or "no"), emit that run's final report and stop. This prompt is the *only* wake
+     With no PR numbers (or "no"), emit that run's final report and stop. This prompt is the *only* heartbeat
      that asks the user about scope.
 
    **The `--new` fresh-run signal short-circuits the above — but only WITH `#PR` args:** `--new #PR...`
@@ -155,10 +155,10 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
    operation.
 
    **Settle the base branch's required-check set before any CI derivation:** run `scripts/ci-status.py
-   required-set --ledger <rundir>/state.jsonl`. Run it every wake; the command reuses a settled value and
+   required-set --ledger <rundir>/state.jsonl`. Run it every heartbeat; the command reuses a settled value and
    only retries `unknown`. `stage-2-ci.md`, "WHAT WERE WE EXPECTING TO SEE?", owns its states and behavior.
-2. **Fold in completions.** For any background task that finished (CI watch → **a WAKE, not an artifact**:
-   the watch **only blocks** and produces **nothing**, so **this wake** performs the SHA-pinned fetch of
+2. **Fold in completions.** For any background task that finished (CI watch → **a HEARTBEAT, not an artifact**:
+   the watch **only blocks** and produces **nothing**, so **this heartbeat** performs the SHA-pinned fetch of
    both check families, **promotes** it atomically to `ci-<pr>-<head_sha>.txt` and **verifies** its stamp
    against the ledger's **current** `head_sha` before parsing a single line of it — the CI state is
    **never** decided from the watch's exit code (Stage 2b, "WHO DOES WHAT" and "VERIFY THE STAMP BEFORE
@@ -230,7 +230,7 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
    - **The ONE exception is the CI watch: OBSERVING a PR is not mutating it.** The park **does not change
      the watch either way** — it follows the normal policy, `stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE":
      alive while an evidence row can still `RUN`, **not** relaunched once CI has SETTLED (relaunching a
-     settled PR's watch burns a wake per second and observes nothing). Parking never stops a warranted
+     settled PR's watch burns a heartbeat per second and observes nothing). Parking never stops a warranted
      watch and never starts an unwarranted one. But do **NOT** dispatch a CI *fix*.
    - **Recording ground truth is not mutating either.** Reconcile still READS a parked PR (live SHA, CI,
      labels) and writes what it read to the ledger — including a `reviews_ok` reset, and its label
@@ -243,7 +243,7 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      the authority, and it is **NOT always `in_review`**:
      - a **RESUME** answer (`api_approval` = `approved`, a standoff ruling either way, `blocker_ruling` =
        `retry`) → `ledger.py … set --pr <N> --status in_review`, and resume normal dispatch — including any
-       rebase or base refresh the PR has been owed while frozen — from the next wake. A parked PR that has
+       rebase or base refresh the PR has been owed while frozen — from the next heartbeat. A parked PR that has
        fallen **behind** its base simply **stays behind** until then; it is not dropped from the run, just
        frozen.
      - a **TERMINAL** answer (`api_approval` = `declined`, `blocker_ruling` = `abort`) → `--status aborted`
@@ -256,7 +256,7 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      |---|---|---|
      | **`awaiting-api`** — an API-changing fix | `api_approval` = `approved@<iso>` / `declined@<iso>` | `approved` → `in_review`; `declined` → terminal `aborted` |
      | **`awaiting-user`, review standoff** — a REFUTED finding the fresh reviewer re-raised | the ruling in `<rundir>/audit-<pr>-<n>.md` | `in_review`; ruled **valid** → the finding is fixed like a CONFIRMED one, ruled **invalid** → normal flow |
-     | **`awaiting-user`, machine blocker** — campaign cannot move this PR without a human; that **property** IS the class, **never a list of cases** (one illustration: CI has SETTLED and is still not green). Do not enumerate the members here — `files-and-ledger.md`, `status`, `awaiting-user` class 2, **owns** the class, and `ci_reason` names the blocker at every one of them, present or future | `blocker_ruling` = `retry@<iso>` / `abort@<iso>` | `retry` → `in_review`, **RESET THE LIVENESS COUNTERS**, and **SPEND the ruling: `blocker_ruling` = `-`** (`stage-2-ci.md`, "THE LIVENESS COUNTERS" / "THE RULING IS CONSUMED EXACTLY ONCE"), then re-derive CI on the next wake; `abort` → terminal `aborted` (the ruling **stays** — it is the record of why) |
+     | **`awaiting-user`, machine blocker** — campaign cannot move this PR without a human; that **property** IS the class, **never a list of cases** (one illustration: CI has SETTLED and is still not green). Do not enumerate the members here — `files-and-ledger.md`, `status`, `awaiting-user` class 2, **owns** the class, and `ci_reason` names the blocker at every one of them, present or future | `blocker_ruling` = `retry@<iso>` / `abort@<iso>` | `retry` → `in_review`, **RESET THE LIVENESS COUNTERS**, and **SPEND the ruling: `blocker_ruling` = `-`** (`stage-2-ci.md`, "THE LIVENESS COUNTERS" / "THE RULING IS CONSUMED EXACTLY ONCE"), then re-derive CI on the next heartbeat; `abort` → terminal `aborted` (the ruling **stays** — it is the record of why) |
 
      **A `retry` that clears nothing re-escalates on its first derivation** — the strikes are still at
      the cap — so the counter reset is **part of the unpark, not an optimization**. It buys the PR a
@@ -287,7 +287,7 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
 
    - **no `repair_decision` yet** → dispatch the **reassessment pass** (`repair-pass.md`): a
      context-isolated worker in the **`session`** class, handed **every round's verdict and finding, the
-     diff-growth curve, the intent artifact, and the current diff — all at once**. No wake has ever had
+     diff-growth curve, the intent artifact, and the current diff — all at once**. No heartbeat has ever had
      that view; it is why 21 rounds passed unnoticed. It returns ONE decision from a closed enum, recorded
      with `repair-pass.py decide` (which refuses a decision this PR may not take — see the ownership
      guardrail).
@@ -357,14 +357,14 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      follow them there; do NOT restate them here. Different PRs may fix CI concurrently within the cap.
    - CI snapshot holds a **still-RUNNING** evidence row (an evidence row that classifies `RUNNING` under
      Stage 2b CLASSIFY — never "a row that is not terminal") for a PR whose watch task has already exited →
-     **relaunch the watch in this same wake**. A PR with a row that can still move must never sit
-     unwatched until the fallback wake; the fallback lifecycle is not the mechanism. **But NEVER relaunch
+     **relaunch the watch in this same heartbeat**. A PR with a row that can still move must never sit
+     unwatched until the fallback heartbeat; the fallback lifecycle is not the mechanism. **But NEVER relaunch
      it merely because `ci == pending`** — once CI has SETTLED nothing can move, `gh pr checks --watch`
-     exits in about a second, and its completion is itself a wake: that is a wake per second, forever
+     exits in about a second, and its completion is itself a heartbeat: that is a heartbeat per second, forever
      (Stage 2b, "WATCH ONLY WHAT CAN MOVE"). A settled PR is resolved by the `settled_strikes`
      escalation, not by watching it harder. **And a row that never leaves `RUNNING` is resolved by
      RUNNING-STALL** (Stage 2b): its watch blocks forever and completes never, so the escalation lands on
-     **this fallback wake**, once `ci_stalled_since` has stood at the same fingerprint for the CI STALL
+     **this fallback heartbeat**, once `ci_stalled_since` has stood at the same fingerprint for the CI STALL
      CAP. **A watch is never a bound.**
    - about to dispatch content-changing work on a PR (review fix, CI fix, copilot-address,
      conflict-resolving rebase) while a review is in flight on that PR → **stop that review task
@@ -388,13 +388,13 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
    - Any non-terminal PR remains (in review, pending CI, or awaiting a user ruling on a review-finding
      standoff / API approval / precondition) →
      refresh this run's lease, then choose the runtime adapter's scheduled-heartbeat or bounded-wait
-     branch. A scheduled self-wake uses `<campaign-invocation> --run <run-id> --token <agent-token>` —
-     exactly those two flags: `--run` rebinds the wake to this run and `--token` re-proves ownership of
+     branch. A scheduled heartbeat uses `<campaign-invocation> --run <run-id> --token <agent-token>` —
+     exactly those two flags: `--run` rebinds the heartbeat to this run and `--token` re-proves ownership of
      its lease. It **never replays `--new` or the original `#PR` adoption args** — the run is resumed,
      not re-created, and carrying `--new` would mint a new run every heartbeat. A scheduler-less bounded
-     wait retains the current invocation and token instead of constructing a self-wake. Both are a
-     **fallback lifecycle, not a tight poll**: background completions are the primary wake. A scheduled
-     heartbeat also recovers a killed/orphaned session through a later self-wake; if a scheduler-less
+     wait retains the current invocation and token instead of constructing a scheduled heartbeat. Both are a
+     **fallback lifecycle, not a tight poll**: background completions are the primary heartbeat. A scheduled
+     heartbeat also recovers a killed/orphaned session through a later scheduled heartbeat; if a scheduler-less
      invocation is killed, durable state permits a later explicit resume (see "Resume after a killed
      session"). **Size the scheduled delay or bounded wait to the nearest stall it guards:**
      **~5 min** while any dispatched review pass is still awaiting its first line of **launch evidence**
@@ -402,7 +402,7 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      sit undetected for a full normal interval — otherwise **~15 min**, matching the Stage 2a meaningful-progress
      threshold: with no launch deadline pending, nothing can declare a review stalled before then, so a
      shorter interval only re-reconciles git/gh with no new signal (and pays a fresh-context cost per
-     wake). **One exception carries new signal:** a background-task review watched via its stdout stream
+     heartbeat). **One exception carries new signal:** a background-task review watched via its stdout stream
      can be declared hung before that cap once the stream falls quiet (`stage-2-review-gate.md`, the
      stdout-stream liveness signal), so while such a review is streaming, a shorter poll toward that
      quiet window is a real check, not a bare re-reconcile. ALWAYS keep a heartbeat or bounded wait active whenever non-terminal work remains — skipping
@@ -413,9 +413,9 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      (`files-and-ledger.md`, "`table` is a PROJECTION"); drop them and the user is shown a subset
      presented as the whole ledger. Never re-type, trim, or re-align it. Then one line per remaining
      wait naming what it waits on (review in flight, CI watch, parked on the user's answer). Render it
-     after every ledger write of the wake — the ledger was reconciled this wake, so the table is the
+     after every ledger write during this heartbeat — the ledger was reconciled this heartbeat, so the table is the
      state the next reconcile resumes from. Then take exactly one runtime branch:
-     - **Scheduled-wake host:** schedule the self-wake, render the status above, and return. The scheduled
+     - **Scheduled-heartbeat host:** schedule the heartbeat, render the status above, and return. The scheduled
        invocation begins again at step 1.
      - **Scheduler-less bounded-wait host:** render the same status, wait only until the first task
        completion or the nearest protected deadline, then go directly back to step 1 and reconcile.
@@ -433,11 +433,11 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      silent exit. (A stale heartbeat firing after exit harmlessly re-hits the finished-run branch via
      its `--run <run-id>`; with the lease released it reads as an un-driven finished run.)
 
-**Idempotency is the load-bearing property.** Because every wake re-derives from git/gh and launches
+**Idempotency is the load-bearing property.** Because every heartbeat re-derives from git/gh and launches
 only work not already in flight, a relaunch after a killed session — or two completions landing close
 together — cannot corrupt state or act on a stale verdict (PR-content pinning rejects stale verdicts
 at the gate). The worst case is a wasted duplicate review, which is harmless: it's just another fresh,
-context-isolated re-roll anyway. The agent is also single-threaded per turn, so wake *decisions* never truly race — only
+context-isolated re-roll anyway. The agent is also single-threaded per turn, so heartbeat *decisions* never truly race — only
 in-flight tasks do.
 
 **Resume after a killed session — including by a different agent instance:** in-flight background
@@ -457,7 +457,7 @@ and the PR would stall forever, which is the very failure this feature exists to
 evidence answers "is this **live** process working?" and is meaningful **only** for the in-flight
 ~5-min launch check; once the task is gone, the only question is how much relaunch budget remains. It
 binds to the run via
-`--run <id>` (what every self-wake carries, so a fresh instance adopting an orphaned run's heartbeat
+`--run <id>` (what every scheduled heartbeat carries, so a fresh instance adopting an orphaned run's heartbeat
 just works) or, for a bare re-invocation, by discovering live runs and adopting the sole **orphaned**
 one (asking among several). Adoption is gated on the **run lease**: an agent takes over only a run
 whose lease is absent or stale, so it can always tell whether another agent is still driving that

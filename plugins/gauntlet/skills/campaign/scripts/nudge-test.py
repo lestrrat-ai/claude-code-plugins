@@ -57,13 +57,13 @@ def check(cond, msg):
 
 def t_heartbeat_always_fires():
     for rows in ([], [row(1, "in_review")], [row(1, "merged")]):
-        check(has(fire(rows), "heartbeat/wake is armed"),
-              "the heartbeat reminder must fire EVERY wake, whatever the ledger holds")
+        check(has(fire(rows), "heartbeat is armed"),
+              "the heartbeat reminder must fire EVERY heartbeat, whatever the ledger holds")
 
 
 def t_header_reread_always_fires():
     check(has(fire([]), "re-read the ledger header"),
-          "the header-reread reminder must fire every wake")
+          "the header-reread reminder must fire every heartbeat")
 
 
 # --- PR labels ----------------------------------------------------------------
@@ -184,8 +184,8 @@ def t_a_nudge_never_blocks():
 
 
 CASES = [
-    ("heartbeat-always", "the heartbeat reminder fires every wake", t_heartbeat_always_fires),
-    ("header-always", "the header-reread reminder fires every wake", t_header_reread_always_fires),
+    ("heartbeat-always", "the heartbeat reminder fires every heartbeat", t_heartbeat_always_fires),
+    ("header-always", "the header-reread reminder fires every heartbeat", t_header_reread_always_fires),
     ("labels-active-only", "the labels reminder fires only with an active PR", t_labels_fire_only_with_an_active_pr),
     ("required-set-unknown", "unknown required_set nudges to derive it", t_required_set_unknown),
     ("fanout-open-only", "fan-out nudges only with open work", t_fanout_fires_only_with_open_work),

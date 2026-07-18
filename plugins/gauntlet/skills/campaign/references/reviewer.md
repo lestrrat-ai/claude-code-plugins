@@ -9,7 +9,7 @@ reviewer is chosen per run. Map host operations through `runtime-adapter.md`.
 **Reviewer selection IS gate machinery, so the choice is resolved from TRUSTED state ONLY** — never from
 a file inside the checkout under review (see priority 2). Resolve once **at run start, and record the
 choice as the ledger `reviewer` header field BEFORE any candidate evidence is read** (see
-`files-and-ledger.md`) so every later wake — including a self-wake or a fresh agent that adopted the
+`files-and-ledger.md`) so every later heartbeat — including a scheduled heartbeat or a fresh agent that adopted the
 run — re-reads it before launching any review pass and never silently reverts to the default; also
 note it in the final report. Resolve in priority order:
 

@@ -76,14 +76,14 @@ ROW_FIELDS = (
     "api_approval", "status",
     # Liveness (stage-2-ci.md, "SETTLED" and "UNUSABLE — the refetch is BOUNDED"). A non-green `ci` is
     # not enough to know whether CI is still MOVING or has STOPPED — these carry that, and they must
-    # survive a context loss (a wake may be a fresh agent instance), so they live on disk and not in the
+    # survive a context loss (a heartbeat may be a fresh agent instance), so they live on disk and not in the
     # driver's head. A counter that dies with the context never reaches its cap.
     "ci_fingerprint",     # digest of the last VERIFIED CI snapshot; UNCHANGED + nothing running == SETTLED
     "settled_strikes",    # consecutive derivations seen SETTLED-but-not-green; at the cap -> escalate
     "unusable_refetches", # consecutive UNUSABLE snapshots (they have NO fingerprint); at the cap -> escalate
     # UNCHANGED + a row still RUNNING == RUNNING-STALL: something CLAIMS it can still move, and nothing in
     # the check set has. A TIMESTAMP, not a tally, and that is the point: SLOW and DEAD look identical on a
-    # fingerprint, and derivations are driven by wakes whose cadence tracks the RUN'S LOAD, not this PR's
+    # fingerprint, and derivations are driven by heartbeats whose cadence tracks the RUN'S LOAD, not this PR's
     # CI — so a derivation count would park a healthy 40-minute build on a busy run. Only elapsed TIME
     # tells them apart. On disk so `now - ci_stalled_since` needs nothing but the ledger.
     "ci_stalled_since",   # UTC ISO-8601 of the first derivation that saw this stall; at the cap -> escalate
@@ -104,7 +104,7 @@ ROW_FIELDS = (
     # NOT SATISFIED — which means the ledger after 21 rounds is INDISTINGUISHABLE from the ledger after
     # one, and every stopping rule that says "on the second NOT SATISFIED…" is a backstop with no sensor.
     #
-    # A wake is a fresh agent instance. A counter that lives in the driver's head does not exist.
+    # A heartbeat is a fresh agent instance. A counter that lives in the driver's head does not exist.
     "review_rounds",   # landed verdicts, ever, for this PR. MONOTONE — NEVER reset, by anything.
     "ns_streak",       # consecutive NOT SATISFIED. Reset ONLY by a SATISFIED.
     # WHERE THIS PR'S INTENT CAME FROM — the PROVENANCE of `<rundir>/intent-<pr>.md`:
@@ -139,7 +139,7 @@ ROW_FIELDS = (
     "pr_origin",
     # THE REPAIR'S OWN BOUND — the mechanism that fixes non-convergence must not itself fail to converge.
     "repair_count",     # reassessment decisions taken. At REPAIR_CAP the only decision left is ABORT.
-    "repair_decision",  # - | <decision>@<iso> — durable, so the wake that DISPATCHES a repair can be a
+    "repair_decision",  # - | <decision>@<iso> — durable, so the heartbeat that DISPATCHES a repair can be a
                         # different agent instance from the one that DECIDED it. RESET to `-` when the row
                         # RE-ENTERS `repairing` (`cmd_verdict` at a cap), scoping a decision to ONE cap: the
                         # next repair must be earned by a fresh `decide` (which spends `repair_count`), so
@@ -158,7 +158,7 @@ ROW_DEFAULTS = {
 # The two fields `verdict` OWNS — and the ONLY reason they are not settable through `set`/`add-row` is
 # that a door which can write them is a door that can RESET them.
 #
-# `review_rounds` is the loop's only memory across fresh-context wakes, and its whole value is that it is
+# `review_rounds` is the loop's only memory across fresh-context heartbeats, and its whole value is that it is
 # MONOTONE. A rule stating "never reset it" is an exhortation; REMOVING THE DOOR is a mechanism. So there
 # is no `--review-rounds` flag to type: `verdict` increments them, and nothing else writes them at all.
 # (`reviews_ok` is different — a content change legitimately voids the tally, so `set --reviews-ok 0`
@@ -332,7 +332,7 @@ def dump(path: Path, header: dict, rows: list[dict]) -> None:
     """Write the WHOLE store — ATOMICALLY. The ledger is never partly written, ever.
 
     This used to be `path.write_text(...)`, which is a TRUNCATE-then-write: the target is emptied first and
-    the bytes go in after. Interrupt it — a crash, a full disk, a killed wake — and what is left on disk is
+    the bytes go in after. Interrupt it — a crash, a full disk, a killed heartbeat — and what is left on disk is
     a ledger that is empty or cut in half, and `load()` (correctly) refuses a headerless file. The run's
     ONLY memory would be gone, and nothing could tell that from a run that had never started.
 
@@ -496,7 +496,7 @@ def cmd_verdict(path: Path, args) -> int:
       * bumps `review_rounds` — **always, on every verdict, and it is NEVER reset.** This is the loop's
         only memory. Not the fix that follows, not a rebase, not a content change, not a re-triage may
         take it back, because every one of those is a thing that HAPPENED and a round that HAPPENED is a
-        round the next wake must be able to see. There is no `--review-rounds` flag anywhere in this
+        round the next heartbeat must be able to see. There is no `--review-rounds` flag anywhere in this
         tool to argue with;
       * applies the TALLY — `satisfied` adds one to `reviews_ok`; `not-satisfied` VOIDS it (the SHA's
         verdicts are worthless the moment one pass says the content is wrong);

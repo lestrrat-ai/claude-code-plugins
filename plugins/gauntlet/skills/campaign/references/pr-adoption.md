@@ -9,7 +9,7 @@ Two entry paths feed it (see "Run identity and concurrency" for the full grammar
 - **no-arg discovery** (`<campaign-invocation>`, resume) — reconcile the PRs already labelled for this run:
 
   ```text
-  # THE canonical run snapshot — the SAME command loop-control's per-wake PR scan (the `prs.json`
+  # THE canonical run snapshot — the SAME command loop-control's per-heartbeat PR scan (the `prs.json`
   # block in step 1) runs. ONE path, ONE schema.
   # Owning definition: "The canonical `prs.json` command" in files-and-ledger.md. Copy it whole;
   # never spell a variant.
@@ -24,7 +24,7 @@ Two entry paths feed it (see "Run identity and concurrency" for the full grammar
   ```
 
   Every open PR carrying this run's owner label is already ours — refresh its row from that snapshot.
-  A PR with the label but no row is a re-adoption after an amnesiac wake; a row whose PR is gone
+  A PR with the label but no row is a re-adoption after an amnesiac heartbeat; a row whose PR is gone
   (merged/closed) reconciles to its terminal status.
 
   **`--limit` is NOT optional** — `gh pr list` silently caps at **30** items without it, and a truncated
@@ -146,7 +146,7 @@ For each `#PR` to adopt:
    - **On a REFRESH of an existing row, PRESERVE EVERY FIELD THIS STEP DOES NOT EXPLICITLY RECOMPUTE.**
      That is a **property, not a list** — and deliberately so, because the list that stood here was one:
      `ledger.py … set` writes only the fields it **NAMES**, so preservation is the **default**, and this
-     step's job is to name nothing it must not clobber. Everything a previous wake wrote and a later one
+     step's job is to name nothing it must not clobber. Everything a previous heartbeat wrote and a later one
      still needs therefore survives untouched — **including every field added to the schema after this
      line was written**. **The members are NOT retyped here, and marking a retyped list "examples" would
      not save it**: a member missing from such a list is a field a refresh silently clobbers, and the
@@ -159,7 +159,7 @@ For each `#PR` to adopt:
      **Preserving `blocker_ruling` here is safe because it is cleared at its
      own park boundaries** — at park **entry** and when a `retry` is **consumed** (`stage-2-ci.md`, "THE
      RULING IS CONSUMED EXACTLY ONCE") — so a ruling this refresh can see is either still **awaiting its
-     park's exit** (preserving it is the whole point: a wake may be a fresh agent instance) or the
+     park's exit** (preserving it is the whole point: a heartbeat may be a fresh agent instance) or the
      **terminal** record of an `abort`. A **spent** ruling is never on the row for this step to resurrect.
      Only re-read `head_sha`/`ci` from ground truth; reset
      `reviews_ok` to `0` and re-triage `tier` **only if** reconciliation detects a PR-content change
@@ -259,7 +259,7 @@ For each `#PR` to adopt:
      CLI arguments"* / *"nobody else — the store is a git-ignored local file only the driver writes"*.
 
    **On a RE-ADOPTION, do not re-author.** `intent` is one of the fields the refresh **preserves** (step 3),
-   and `intent-<pr>.md` is re-read, never re-derived — a wake is a fresh agent instance, and an intent
+   and `intent-<pr>.md` is re-read, never re-derived — a heartbeat is a fresh agent instance, and an intent
    invented twice is two intents. Re-author only if the file is **gone** (a wiped `<rundir>`), and say so.
 
 4. **Label it ours, and set the status label from the LIVE gate.** Add this run's owner label, then
@@ -370,10 +370,10 @@ For each `#PR` to adopt:
 6. **Ensure a live CI watch when — and ONLY when — a check can still move.** The warrant for a watch is a
    **still-RUNNING evidence row** in the PR's snapshot, **never the `ci` value** (Stage 2b, `stage-2-ci.md`
    — "WATCH ONLY WHAT CAN MOVE"): a PR whose CI has **SETTLED** gets **no watch**, because
-   `gh pr checks --watch` on it exits in about a second and its completion is itself a wake — a wake per
+   `gh pr checks --watch` on it exits in about a second and its completion is itself a heartbeat — a heartbeat per
    second, forever, observing nothing. A watch on a run that is still moving wakes the driver when it
    settles. **The backgrounded command is the watch and NOTHING ELSE** — its **ONLY** job is to **block**
-   until the run settles, so that **its completion becomes a wake**:
+   until the run settles, so that **its completion becomes a heartbeat**:
 
    ```
    # run in background. This is the WHOLE command: it BLOCKS, and that is all it does.
@@ -382,10 +382,10 @@ For each `#PR` to adopt:
 
    **The background task does NOT fetch, and does NOT write `<rundir>/ci-<pr>-<head_sha>.txt`.** The watch
    only **blocks** — it is **never evidence**, and its exit code is **never** a CI verdict. The evidence is
-   the SHA-pinned fetch of **both** check families, which the **WAKE** performs — **by running
+   the SHA-pinned fetch of **both** check families, which the **HEARTBEAT** performs — **by running
    `scripts/ci-status.py derive`**, which fetches, promotes atomically, verifies against the ledger's
    current `head_sha`, and decides (Stage 2b, `stage-2-ci.md` — "THE DERIVATION IS A COMMAND" and "WHO DOES
-   WHAT"). Only the wake knows the SHA the ledger currently holds, so only the wake can pin the fetch to it.
+   WHAT"). Only the heartbeat knows the SHA the ledger currently holds, so only the heartbeat can pin the fetch to it.
    **NEVER derive CI from `gh pr checks`:** its output carries **NO SHA**, so it can report the **previous**
    commit's passing checks — and **never by reading a command's output and judging it**, which is how a
    `ci = green` was once written for a PR with no checks at all.
@@ -394,6 +394,6 @@ For each `#PR` to adopt:
    watches).
 
 Adoption produces only the registered, labelled row (and a CI watch when due). Reviews, CI fixes, and
-merges are driven by Loop control on later wakes — this file just gets each PR **into** the run.
+merges are driven by Loop control on later heartbeats — this file just gets each PR **into** the run.
 
 ---

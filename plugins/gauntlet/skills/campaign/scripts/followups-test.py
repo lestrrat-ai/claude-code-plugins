@@ -354,7 +354,7 @@ def t_transition_graph(tmp: Path) -> None:
 def t_ruling_is_recorded(tmp: Path) -> None:
     """The USER'S RULING is stamped into `decided`; the driver's own bookkeeping is NOT.
 
-    A ruling that is not durable gets re-asked by the next wake — a fresh agent never saw the
+    A ruling that is not durable gets re-asked by the next heartbeat — a fresh agent never saw the
     conversation. It is the same reason the ledger's `api_approval` records `approved@<iso>` rather than
     living in the driver's head. `publish`/`open-pr` are the driver's own steps and must NOT stamp it: a
     `decided` written by anything but the user would launder the driver's action into the user's consent.

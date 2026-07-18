@@ -1,7 +1,7 @@
 ### 2b. CI (event-driven)
 
 Each PR has a background task that waits on `gh pr checks --watch`. **The watch only BLOCKS — it is
-never evidence.** When the task completes, a wake **fetches a fresh snapshot pinned to the PR's current
+never evidence.** When the task completes, a heartbeat **fetches a fresh snapshot pinned to the PR's current
 `head_sha`**, verifies it, and decides `ci` **from the snapshot's contents — NEVER from the watch's exit
 code** — then writes the `ci`/`reviews_ok` result through `scripts/ledger.py … set --pr <N> --ci <state>
 [--reviews_ok 0]` **by field name** (`files-and-ledger.md`), never by hand-editing the row by column
@@ -9,7 +9,7 @@ position.
 
 #### THE DERIVATION IS A COMMAND — RUN IT. NEVER DERIVE `ci` BY READING TERMINAL OUTPUT.
 
-**The wake derives `ci` by RUNNING `scripts/ci-status.py`, and by nothing else:**
+**The heartbeat derives `ci` by RUNNING `scripts/ci-status.py`, and by nothing else:**
 
 ```sh
 python3 <skill>/scripts/ci-status.py derive --pr <N> --head-sha <the LEDGER's head_sha> --rundir <rundir> \
@@ -58,20 +58,20 @@ model **reading output and forming an impression** did. A program cannot get tir
 decide that "no checks" is close enough to "passing" — so that step is now a program. **The shell commands
 below are the SPEC the tool implements — they are documentation, NOT a second procedure to hand-run.**
 
-#### WHO DOES WHAT — the background task ONLY WATCHES; the WAKE fetches. This section is the DEFINITION.
+#### WHO DOES WHAT — the background task ONLY WATCHES; the HEARTBEAT fetches. This section is the DEFINITION.
 
 **This split is normative, and every other file defers to it** (`pr-adoption.md`, `loop-control.md`):
 
 | Actor | Does | Does NOT |
 |---|---|---|
-| **The background task** | **BLOCKS on `gh pr checks <pr> --watch`, and NOTHING else.** Its **ONLY** job is to block, so that **its completion becomes a wake**. | It **NEVER** fetches, **NEVER** writes `ci-<pr>-<head_sha>.txt`, and **NEVER** produces evidence of any kind. |
-| **The wake** | **RUNS `scripts/ci-status.py derive`** (above), which **FETCHES** (SHA-pinned, both families), **PROMOTES** atomically, **VERIFIES** the stamp, **PARSES**, and **DECIDES** `ci`. | It **NEVER** derives `ci` by READING the output of `gh pr checks` — or of anything else. |
+| **The background task** | **BLOCKS on `gh pr checks <pr> --watch`, and NOTHING else.** Its **ONLY** job is to block, so that **its completion becomes a heartbeat**. | It **NEVER** fetches, **NEVER** writes `ci-<pr>-<head_sha>.txt`, and **NEVER** produces evidence of any kind. |
+| **The heartbeat** | **RUNS `scripts/ci-status.py derive`** (above), which **FETCHES** (SHA-pinned, both families), **PROMOTES** atomically, **VERIFIES** the stamp, **PARSES**, and **DECIDES** `ci`. | It **NEVER** derives `ci` by READING the output of `gh pr checks` — or of anything else. |
 
 **WHY the fetch cannot live in the background task:** the fetch must be pinned to the `head_sha` **the
-LEDGER currently holds**, and **only the wake knows that**. A background task that fetched at its own
+LEDGER currently holds**, and **only the heartbeat knows that**. A background task that fetched at its own
 completion time would pin to whatever SHA *it* saw and could **promote an artifact for a SHA the ledger has
 already moved past** — the exact false-green this section exists to prevent, smuggled back in through the
-producer. **A watch completion yields a WAKE, never an artifact.**
+producer. **A watch completion yields a HEARTBEAT, never an artifact.**
 
 **NEVER derive CI from `gh pr checks`.** Its output **carries no SHA at all** (`--json headSha` →
 *Unknown JSON field*), so you can never prove which commit it describes — right after a push it can
@@ -845,8 +845,8 @@ ever re-ordered again.
     dropped**, and it outranks `pending`: a still-running row does **not** postpone the park.
 - **pending** → any evidence row classifies `RUNNING` → leave `ci = pending`. **This is the ONLY outcome
   that warrants a watch** ("WATCH ONLY WHAT CAN MOVE" below): a row can still move on its own, so if the
-  watch task has exited, **relaunch it in this same wake** — a PR with a still-RUNNING row must never sit
-  unwatched waiting for the fallback wake. **It is also BOUNDED**: "a row can still move" is a claim the row
+  watch task has exited, **relaunch it in this same heartbeat** — a PR with a still-RUNNING row must never sit
+  unwatched waiting for the fallback heartbeat. **It is also BOUNDED**: "a row can still move" is a claim the row
   makes, not a promise it keeps, so if the whole check set then sits unchanged for the CI STALL CAP, the
   PR escalates ("RUNNING-STALL", below). `pending` is not a place a PR may live forever.
 - **pending (nothing registered)** → the snapshot lists **zero evidence rows**. **Zero evidence rows is NOT
@@ -857,7 +857,7 @@ ever re-ordered again.
   SEE?" below). We do not know what this commit was supposed to show, so **no snapshot of it can be
   green** — not even an all-`PASS` one. **Do NOT watch it**: no row moving would answer the question that
   is open. It is **bounded like every other `pending`**: nothing is RUNNING, so SETTLED below strikes it
-  and escalates at the STRIKE CAP, naming the read that failed. Re-attempt the read each wake while it is
+  and escalates at the STRIKE CAP, naming the read that failed. Re-attempt the read each heartbeat while it is
   `unknown` — a transient failure clears itself well inside that budget.
 - **pending (required check missing)** → `required_set` is **DECLARED** and a declared required check has
   **no row** in the snapshot (matched on name **and** producer — below). **A check that has not registered
@@ -893,7 +893,7 @@ TOKEN's grants** — so a fine-grained token owned by an admin reads `admin: tru
 `Administration: read`. **A rule keyed on that probe declares "proven unprotected" on a branch it simply
 cannot see.**
 
-Run the required-set command before CI derivation on every wake:
+Run the required-set command before CI derivation on every heartbeat:
 
 ```sh
 python3 <skill>/scripts/ci-status.py required-set --ledger <rundir>/state.jsonl [--repo <owner>/<repo>]
@@ -904,7 +904,7 @@ GitHub call to one repository, reads both declaration sources, validates every r
 sorts the declarations, validates the result through `ci-snapshot.py`'s strict parser, and writes the
 canonical value through `ledger.py`'s atomic store. It exits 0 for a settled `declared:…` or `none`, 1 for
 `unknown`, and 2 for a caller or ledger error. A settled value is returned without another GitHub read, so
-the same command is safe to run on every wake and retries only an `unknown` value.
+the same command is safe to run on every heartbeat and retries only an `unknown` value.
 
 The command owns two mandatory reads. They do **not** need the same permission: **`GET
 /repos/{o}/{r}/branches/{b}` needs `Contents: read`**, while **`GET
@@ -937,7 +937,7 @@ state it does not have** (`files-and-ledger.md` owns the field; this block owns 
 
 **WHEN: read it once per run, before the first CI derivation** — it is a property of `base_branch`, which is
 itself set once (`files-and-ledger.md`, "Base branch"), so one read serves every PR in the run. **And read
-it AGAIN, every wake, for as long as it is `unknown`** — that is the whole of its retry policy, and it is
+it AGAIN, every heartbeat, for as long as it is `unknown`** — that is the whole of its retry policy, and it is
 what keeps a transient failure (a network blip, a rate limit) from parking PRs that were never really
 blocked: a read that recovers before the STRIKE CAP costs the run nothing at all. **Once it is `declared:…`
 or `none`, it is SETTLED — do not re-read it**, and never overwrite a successful read with a later failure.
@@ -1102,7 +1102,7 @@ file kills on sight (CLASSIFY, above).
 REPAIRING.** `SETTLED` and `RUNNING-STALL` are about **CI**, not about **campaign**: a **red** PR whose
 rows are all terminal is SETTLED on the **first** derivation, and a CI-fix subagent in flight does **not**
 change `head_sha` until it pushes — so an ungated strike rule would park, within the **STRIKE CAP**'s worth
-of wakes, the exact PR the driver is actively fixing, and an ungated stall clock would start timing a
+of heartbeats, the exact PR the driver is actively fixing, and an ungated stall clock would start timing a
 `RUNNING` row the driver is about to make irrelevant.
 
 **MACHINE ACTION** = **any work campaign dispatches that can produce a new `head_sha` on this PR.** That
@@ -1135,11 +1135,11 @@ test `loop-control.md` step 3 already applies** to suppress a duplicate dispatch
 already in flight for that PR/SHA"). The strike rule and the stall clock read that same fact; they do not
 invent a second one.
 
-**Due** = **this wake would launch it** — it is not in flight, and nothing but a free concurrency slot is
+**Due** = **this heartbeat would launch it** — it is not in flight, and nothing but a free concurrency slot is
 missing. That, too, is a **property, not a fixed list of scans**: whichever rule OWNS that dispatch is the
 one that says so. For a CI fix it is `loop-control.md` step 3's dispatch scan; for a rebase it is the rule
 that owns the rebase (Stage 2a's preconditions, `stage-2-review-gate.md`; the step-6 reconcile,
-`stage-3-merge.md`) finding the PR behind/conflicting on this wake. A PR **frozen by a park** has **no**
+`stage-3-merge.md`) finding the PR behind/conflicting on this heartbeat. A PR **frozen by a park** has **no**
 machine action due — the held-status guard forbids every one of them (`loop-control.md`), so nothing is
 coming, which is why the park is the terminus and not another wait.
 
@@ -1186,17 +1186,17 @@ too.** A park whose exit event never comes is the same wedge, one level up. So t
 - **Records that answer DURABLY in the ledger's `blocker_ruling`** (`files-and-ledger.md`) the moment it
   lands, and unparks per `loop-control.md` step 3, "Only the user's answer unparks a PR" — which also
   **clears the liveness counters**, so the retry gets a fresh budget instead of re-escalating on its first
-  derivation. A wake may be a fresh agent instance: an answer that lives only in the driver's head is an
+  derivation. A heartbeat may be a fresh agent instance: an answer that lives only in the driver's head is an
   answer that gets re-asked.
 
 **NOTHING THIS SECTION RELIES ON LIVES IN THE DRIVER'S HEAD — and that is a PROPERTY, not the list that
-used to stand here.** A wake may be a fresh agent instance, so: **if a LATER derivation, the escalation
+used to stand here.** A heartbeat may be a fresh agent instance, so: **if a LATER derivation, the escalation
 prompt, or the unpark has to read it, it is a LEDGER FIELD.** The durable set is therefore **the ledger row
 schema itself** — `files-and-ledger.md`'s row-field definitions, and the `ROW_FIELDS`/`ROW_DEFAULTS` in
 `scripts/ledger.py` that own it — and a field added there is durable **with no edit to this section**. A
 list retyped here rots the next time one is added, and the one that stood here rotted **twice**: it first
 dropped `ci_reason`, the very thing the park asks the user about, and its replacement dropped
-`ci_fingerprint`, without which every wake sees CI as having moved and **no bound ever fires at all**.
+`ci_fingerprint`, without which every heartbeat sees CI as having moved and **no bound ever fires at all**.
 There is no third attempt: **the members are not retyped here, in any form, marked or not.** Write every
 one of them through `scripts/ledger.py … set --pr <N>` **by field name**, like every other field
 (`files-and-ledger.md`).
@@ -1207,11 +1207,11 @@ added to the schema tomorrow is already covered here:
 - **A COUNTER that dies never reaches its cap.** A fresh instance restarts the count from zero, so the
   bound never fires.
 - **A CLOCK is worse**: it does not merely lose the elapsed time, it **silently restarts** it. Every clock
-  is therefore a **timestamp on disk**, so that **any** wake computes the elapsed time from the ledger
+  is therefore a **timestamp on disk**, so that **any** heartbeat computes the elapsed time from the ledger
   alone, remembering nothing.
 - **EVIDENCE OF WHAT CI LOOKED LIKE LAST TIME is worse still, because losing it looks like SUCCESS.** The
   derivation decides that CI **moved** by comparing this snapshot against what the row says it saw before;
-  with that gone, **every** wake sees motion, **every** wake resets the counters and the clock, and the
+  with that gone, **every** heartbeat sees motion, **every** heartbeat resets the counters and the clock, and the
   bounds never fire — the wedge this whole section exists to close, reopened silently and with no error.
 - **A REASON that dies leaves the park UNANSWERABLE.** The escalation prompt above is built from the
   blocker the human is being asked to rule on; a fresh agent that lost it cannot even ask the question, so
@@ -1223,7 +1223,7 @@ itself.** `blocker_ruling` must be **DURABLE** (it survives a context loss) **AN
 answers the park it was written for, and no other). Both halves, or neither holds:
 
 - **ENTERING a machine-blocker park sets `blocker_ruling` = `-`** (ESCALATE above), in the **same**
-  `ledger.py … set` call that writes `status = awaiting-user` — one atomic row write, so no wake can ever
+  `ledger.py … set` call that writes `status = awaiting-user` — one atomic row write, so no heartbeat can ever
   observe a freshly parked row still carrying the previous park's answer.
 - **CONSUMING a `retry` sets it back to `-`** in the same call that unparks the PR (`loop-control.md`
   step 3).
@@ -1309,8 +1309,8 @@ the healthy build**, and a rule that parks healthy PRs gets turned off, which le
 
 **THE BOUND IS A DURATION, NOT A DERIVATION COUNT. This is a deliberate choice and it is the crux.**
 
-- **A derivation count measures the RUN'S LOAD, not this PR's CI.** Derivations are driven by **wakes**,
-  and a wake is the fallback lifecycle (**a ~5–15 min scheduled heartbeat or bounded wait returning**,
+- **A derivation count measures the RUN'S LOAD, not this PR's CI.** Derivations are driven by **heartbeats**,
+  and a heartbeat is the fallback lifecycle (**a ~5–15 min scheduled heartbeat or bounded wait returning**,
   `loop-control.md` step 5) **or any background task, on ANY PR, completing**. So on a busy run three
   derivations can land within seconds of one another — a
   derivation bound would park a 40-minute build that had barely started, for no reason but that **other**
@@ -1323,7 +1323,7 @@ the healthy build**, and a rule that parks healthy PRs gets turned off, which le
   SETTLED PR has **nothing that could move** — there is no slow-vs-dead question to answer.
 - **It is computed FROM DISK, never from the driver's memory of when it last looked.** `ci_stalled_since`
   is a UTC ISO-8601 timestamp in the **ledger**; `now - ci_stalled_since` is a subtraction any fresh agent
-  instance can do on its first wake. A duration accumulated in context is a duration that resets to zero
+  instance can do on its first heartbeat. A duration accumulated in context is a duration that resets to zero
   every time the session dies — which is the failure that made these counters durable in the first place.
 
 **WHY IT DOES NOT PARK A HEALTHY SLOW CHECK.** The clock is **not** "how long the build has been running".
@@ -1359,9 +1359,9 @@ elsewhere** — refer to the cap **by name**.
 > is a coincidence**: change the cap to 4h and GitHub's limit still reads **6 hours**. Do not "unify"
 > them, and do not read that literal as a restatement to be swept.
 
-**Where the wake comes from while a stalled row is watched.** A hung `RUNNING` row keeps `gh pr checks
+**Where the heartbeat comes from while a stalled row is watched.** A hung `RUNNING` row keeps `gh pr checks
 --watch` **blocked forever**, so the watch never completes and never wakes anyone — the escalation is
-therefore evaluated by the fallback lifecycle like any other derivation. A scheduled-wake host uses a
+therefore evaluated by the fallback lifecycle like any other derivation. A scheduled-heartbeat host uses a
 heartbeat; a scheduler-less host keeps the invocation alive and loops after each bounded wait
 (`loop-control.md` step 5). **A bound that could only be reached by the event it is waiting for would not
 be a bound at all.**
@@ -1373,7 +1373,7 @@ about it — and "refetch until it works" is an absorbing state with no exit, wh
 It gets its own counter, on the same shape:
 
 ```
-snapshot for this head_sha is UNUSABLE  -> unusable_refetches += 1 ; refetch on the NEXT wake
+snapshot for this head_sha is UNUSABLE  -> unusable_refetches += 1 ; refetch on the NEXT heartbeat
 snapshot for this head_sha is VERIFIED  -> unusable_refetches = 0      # any usable outcome, incl. red/pending
 head_sha changed                        -> unusable_refetches = 0
 unusable_refetches >= 3                 -> ESCALATE (above)  # 3 == THE REFETCH CAP. This line is its ONE
@@ -1392,7 +1392,7 @@ unusable_refetches >= 3                 -> ESCALATE (above)  # 3 == THE REFETCH 
   snapshot raced a push — and a fresh fetch usually clears them; a SETTLED-but-not-green snapshot is,
   by construction, **not** transient. The extra headroom buys the transient case free retries, and it
   still terminates.
-- **The WAKE is the backoff — never tight-loop inside one.** UNUSABLE gets **no watch** ("WATCH ONLY WHAT
+- **The HEARTBEAT is the backoff — never tight-loop inside one.** UNUSABLE gets **no watch** ("WATCH ONLY WHAT
   CAN MOVE" below), so the next attempt arrives on the scheduled heartbeat, after one bounded wait, or
   on another task's completion. At most **one** refetch per reconcile.
 - On escalation `ci_reason` names **the VERIFY rule that failed and the line/row that failed it** (not
@@ -1406,19 +1406,19 @@ The watch is warranted by **a row that can still move**, never by the `ci` value
 
 | DECIDE outcome | Watch? |
 |---|---|
-| **pending** — an evidence row classifies `RUNNING` | **YES** — ensure a watch task is alive; relaunch it in this same wake if it has exited. **The watch is not the bound**: if that row never finishes, the watch blocks forever and RUNNING-STALL is what ends it, on the fallback wake. |
+| **pending** — an evidence row classifies `RUNNING` | **YES** — ensure a watch task is alive; relaunch it in this same heartbeat if it has exited. **The watch is not the bound**: if that row never finishes, the watch blocks forever and RUNNING-STALL is what ends it, on the fallback heartbeat. |
 | **pending (nothing registered)** — zero evidence rows | **NO.** Nothing to block on. SETTLED escalates it. |
 | **pending (required check missing)** — a declared check has no row | **NO.** Every row present is terminal (a running one would have matched plain `pending` above), so nothing can move. SETTLED escalates it, naming the check. |
-| **pending (required set unreadable)** — `required_set` is `unknown` | **NO.** The open question is what the base branch REQUIRES; no row finishing would answer it. Re-attempt the read each wake; SETTLED escalates it. |
+| **pending (required set unreadable)** — `required_set` is `unknown` | **NO.** The open question is what the base branch REQUIRES; no row finishing would answer it. Re-attempt the read each heartbeat; SETTLED escalates it. |
 | **red** — but some row still `RUNNING` | **YES** — that row can still move; the CI fix runs regardless. |
 | **red** — every row terminal | **NO.** The CI fix moves it, not the watch. |
 | **UNKNOWN_VALUE** | **NO.** The park is the resolution. |
-| **UNUSABLE** | **NO.** Refetch on the **next wake** (the wake *is* the backoff), **bounded by the REFETCH CAP** — then ESCALATE ("UNUSABLE — the refetch is BOUNDED"). |
+| **UNUSABLE** | **NO.** Refetch on the **next heartbeat** (the heartbeat *is* the backoff), **bounded by the REFETCH CAP** — then ESCALATE ("UNUSABLE — the refetch is BOUNDED"). |
 | **green** | **NO.** |
 
 **NEVER relaunch the watch merely because `ci == pending`.** On a settled PR `gh pr checks --watch`
 **exits in about a second** — there is nothing left to block on — and a task completion is **itself a
-wake**. So "pending → relaunch the watch" on a settled-but-not-green PR burns a **fresh-context wake
+heartbeat**. So "pending → relaunch the watch" on a settled-but-not-green PR burns a **fresh-context heartbeat
 every second or two, forever**, doing nothing. Watch only when at least one row can still move.
 
 #### Any campaign commit to the PR head resets the gate
@@ -1437,7 +1437,7 @@ Every one of them MUST, in the same step:
   **resets the liveness counters** ("THE LIVENESS COUNTERS" above), so the PR gets a clean budget.
   **NEVER launch the watch unconditionally on the push**: at that instant the checks may not have
   registered yet, the snapshot holds **zero evidence rows**, and `gh pr checks --watch` would exit in
-  about a second — a wake per second, forever, on a PR nothing is watching *for*;
+  about a second — a heartbeat per second, forever, on a PR nothing is watching *for*;
 - **re-enter Stage 2a.**
 
 The verdicts on the old SHA describe content that no longer exists, and a `gauntlet-accepted` label on

@@ -33,12 +33,12 @@ Handling depends on the run's `api_changes` flag, stored in the ledger header:
   break, and ask whether to proceed. Keep working the other PRs meanwhile. On approval, apply it
   and set `api_approval: approved@<iso>` (the PR resumes normal gating); if the user declines,
   set `api_approval: declined@<iso>`, set the PR aside as skipped (status `aborted`), and report
-  it. Both decisions are durable: before re-asking on a later wake, check `api_approval` — a PR
+  it. Both decisions are durable: before re-asking on a later heartbeat, check `api_approval` — a PR
   already approved or declined is settled, never re-ask it.
 - **`allowed`** — proceed without asking. Set this *only* when the user, at invocation, explicitly
   said API breakage is acceptable (e.g. "allow API changes" / "ignore breakage").
 
-**Store the flag in the ledger and re-consult it every wake.** Derive the `api_changes` header field
+**Store the flag in the ledger and re-consult it every heartbeat.** Derive the `api_changes` header field
 (`ask` | `allowed`) once from the invocation and record it via `ledger.py --file <state.jsonl> header
 set api_changes <ask|allowed>`. A run is long, so NEVER trust in-context
 memory for this — re-read the flag from the ledger before any API-affecting change, so the behavior

@@ -4,7 +4,7 @@
 
 Before the review gauntlet, triage each PR to a **risk tier**. Triage is **deterministic** and
 **size-agnostic** — there are **NO line-count or file-count thresholds**; only *what kind* of file the
-PR touches and whether the change is systemic. Re-derive the tier **every wake** from the PR's current
+PR touches and whether the change is systemic. Re-derive the tier **every heartbeat** from the PR's current
 `head_sha` and pin it there; record it in the ledger `tier` column via `scripts/ledger.py … set --pr
 <N> --tier <tier>` (by field name — the schema-owning accessor, `files-and-ledger.md`; never hand-edit
 the row by column position). Default to **STANDARD** whenever you are unsure. `reviews_ok` target = `required(tier)`: **1 if `tier==TRIVIAL`, else 2**.
@@ -33,7 +33,7 @@ the row by column position). Default to **STANDARD** whenever you are unsure. `r
 - Re-triage and **escalate** (never de-escalate below what the content warrants) when: a `NOT
   SATISFIED` lands, a `plan_amendment_request` is raised, or a content change **adds a
   CODE/agent-doc/SENSITIVE file** to a PR that was TRIVIAL.
-- Tier is pinned to `head_sha` and re-derived every wake; on any uncertainty default STANDARD.
+- Tier is pinned to `head_sha` and re-derived every heartbeat; on any uncertainty default STANDARD.
 
 ### 2a. The review gauntlet
 
@@ -45,7 +45,7 @@ precondition fix (including the conflict rebase below), no CI fix, no review fix
 else that changes it (`loop-control.md` step 3, "held-status guard" — the governing property; these
 are only examples). Held leaves
 `reviews_ok < required(tier)`, so the review-launch rule MUST read `status` too — otherwise the next
-wake re-reviews a PR that is **waiting on a HUMAN** (a park) and a `SATISFIED` verdict merges it **without
+heartbeat re-reviews a PR that is **waiting on a HUMAN** (a park) and a `SATISFIED` verdict merges it **without
 the user's ruling**, or re-reviews a PR that has **stopped converging** (`repairing`) and spends round 22
 of a loop that has already been told to stop. The park does **not** change its CI watch either way — observing is not mutating, so the
 watch follows the normal policy (`stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE": alive while a row can still
@@ -82,9 +82,9 @@ Only launch a review pass once all three are clear for the current tip.
 
 Run reviews **one at a time per PR** — never two at once for the same SHA. When a PR's tip
 (`head_sha`) has fewer than `required(tier)` SATISFIED verdicts (2, or 1 for TRIVIAL) and no review
-already running for it, the wake's dispatch step launches **one** review pass by the selected reviewer
+already running for it, the heartbeat's dispatch step launches **one** review pass by the selected reviewer
 (see "The reviewer") — a **fresh**, context-isolated pass over the whole `origin/<base>...HEAD` diff, run as
-a **background** task (its completion is a wake; the loop folds the verdict in at step 2). For a
+a **background** task (its completion is a heartbeat; the loop folds the verdict in at step 2). For a
 `required==2` tier the second, corroborating review is launched only **after** the first comes back
 SATISFIED — so a still-broken commit never burns the second review before the first has said "fix it"
 (a TRIVIAL PR needs no second pass). (Reviews for *different* PRs still run concurrently, up to the ~8
@@ -135,7 +135,7 @@ file is a plaintext file in a directory the reviewer can write to.
 The hand-written artifacts are what this replaces, and each had already failed: a `printf`-ed
 `pass_identity` put a **TRUNCATED SHA** into real state; the emit tool accepted a `done` for a unit that
 **was never planned** (the rule was prose, enforced by nobody); and the tally was re-derived by eye with
-an ad-hoc parser written fresh each wake — the same "read it by eye, write down the answer" that produced
+an ad-hoc parser written fresh each heartbeat — the same "read it by eye, write down the answer" that produced
 a false `ci = green`. `verify` refuses a short sha, a malformed identifier of any kind, an unplanned unit,
 an evidence-free `done`, a `done`
 that no `started` precedes, a SECOND `done` for a unit already finished, a `pass_identity` that names
@@ -225,7 +225,7 @@ Rules:
   event naming the gap rather than silently reviewing only the listed units — an unraised omission is a
   reviewer failure. Requesting an amendment is the *only* sanctioned response: the reviewer never
   rewrites the plan or self-grants units, and unapproved amendments do NOT count as plan units. The
-  orchestrator folds that request on the next wake and either updates the plan + restarts the review
+  orchestrator folds that request on the next heartbeat and either updates the plan + restarts the review
   pass, or ignores it with a note; the reviewer completes the existing units meanwhile.
 
 Progress JSONL schema. Unit-progress events use the REQUIRED exact key names verbatim; `type` is
@@ -310,7 +310,7 @@ fires — **and unless it PARSES as a real moment**: `2026-99-99T99:99:99Z` has 
 a month 99 is not a month; the deadline is arithmetic on this value, so a shape check alone cannot protect
 it). Three rules depend on it: a late verdict is ignored unless its attempt
 id still matches the active pass; `dispatched_at` is the clock the launch check below measures against;
-and `launch_attempt` (`1`, then `2` on a relaunch) is how a *later wake* — possibly a fresh agent —
+and `launch_attempt` (`1`, then `2` on a relaunch) is how a *later heartbeat* — possibly a fresh agent —
 knows whether this pass has already been relaunched once. A progress file holding **only** this line is
 therefore evidence that the reviewer has produced nothing — not evidence of a missing file.
 
@@ -404,7 +404,7 @@ Meaningful progress = a `done` event for a planned unit, or an accepted plan ame
 events and vague "still working" lines prove only process liveness and MUST NOT reset the meaningful
 progress timer. The reviewer MUST append progress events immediately as units complete, not batch them
 at final output. If no meaningful progress lands for ~15 min while the review process is still alive,
-mark the review suspicious; if it remains stale on the next wake, treat it as a reviewer system
+mark the review suspicious; if it remains stale on the next heartbeat, treat it as a reviewer system
 failure: apply `reviewer.md`'s retry budget and `runtime-adapter.md`'s owned transition. Ignore any
 late verdict from a stale/superseded attempt unless its attempt id still matches the active review pass.
 
@@ -458,7 +458,7 @@ So the question changes, and every rule below follows from it:
 > THREAT MODEL?**
 
 The intent block is `<rundir>/intent-<pr>.md`, written at adoption (`pr-adoption.md`) and re-read every
-wake — never re-derived, because a wake is a fresh agent instance and an intent invented twice is two
+heartbeat — never re-derived, because a heartbeat is a fresh agent instance and an intent invented twice is two
 intents. It is **local, git-ignored driver bookkeeping**: campaign never writes it back to the PR.
 
 ```markdown
@@ -780,7 +780,7 @@ boundary; a future adapter that proves `os_filesystem_isolation` supplies aliase
 
 **Before a verdict is tallied at all, verify the pass's artifacts.** A verdict is only worth as much as
 the pass that produced it, and "was this pass real?" was, until now, decided by reading three files by eye
-with a parser written fresh each wake. That is precisely how a driver read `gh pr checks` by eye and wrote
+with a parser written fresh each heartbeat. That is precisely how a driver read `gh pr checks` by eye and wrote
 `ci = green` on zero evidence — the same hole, one layer up.
 
 ```
@@ -849,7 +849,7 @@ indistinguishable from an earned one, so the door is simply not there.
 not a verdict — no round happened — and the table below lists every site that owes it.)
 
 **`review_rounds` is the loop's only memory, and it is NEVER reset** — not by a fix, not by a rebase, not by
-a content change, not by a re-triage. Every wake is a fresh context: without it, **no rule that depends on
+a content change, not by a re-triage. Every heartbeat is a fresh context: without it, **no rule that depends on
 "how many rounds has this PR taken" can ever fire.** That is not hypothetical. It is how PR #42 ran **21
 review rounds** while a "hard backstop" that triggers on the *second* `NOT SATISFIED` sat in this skill,
 unfired — the trigger is a fact about history, and nothing recorded any history. The final ledger row read
@@ -890,7 +890,7 @@ Then, per verdict:
   dispatch a scoped fix subagent** into `<worktree>` (the PR row's ledger `worktree` column value) with
   the **audited** issue list (**CONFIRMED + ADJUSTED only**); it
   commits + pushes → HEAD advances (a second gate reset — relabel again if the first was somehow
-  skipped). A later wake starts a fresh review on the new tip. (Because reviews are sequential, no
+  skipped). A later heartbeat starts a fresh review on the new tip. (Because reviews are sequential, no
   second review was spent on this broken commit.) Any **REFUTED** finding is **written into the tree** —
   an inline comment at the site stating why the mechanism cannot occur — and committed like any other
   change, so the next reviewer reads it and can flag it if it is wrong. That commit is PR content: it
@@ -919,7 +919,7 @@ Then, per verdict:
   --reviews-ok`, which refuses to raise the tally). It **never** trips a review-loop cap. The gate is met
   once this SHA holds `required(tier)` SATISFIED verdicts
   (2, or 1 for TRIVIAL). If the tally is still short of the target — e.g. the **first** SATISFIED on a
-  `required==2` PR — the next wake launches the next (corroborating) review on the same SHA. When the
+  `required==2` PR — the next heartbeat launches the next (corroborating) review on the same SHA. When the
   tally **reaches** `required(tier)` on the same SHA, the review gate is met for this HEAD — swap the
   PR's label: `gh pr edit <pr> --remove-label gauntlet-reviewing --add-label gauntlet-accepted`.
 
@@ -1069,7 +1069,7 @@ worker reviewer and a `codex exec` reviewer both receive it.
   review pass, a CI fix, a review fix, or a merge for that PR (`loop-control.md` step 3;
   `stage-3-merge.md`) — `reviews_ok` stays 0, so a re-review would let a `SATISFIED` verdict merge the PR
   with the disputed finding never adjudicated. Only the user's answer unparks it (`status` →
-  `in_review`), and **the ruling is recorded durably in `<rundir>/audit-<pr>-<n>.md`** — a wake may be a
+  `in_review`), and **the ruling is recorded durably in `<rundir>/audit-<pr>-<n>.md`** — a heartbeat may be a
   fresh agent instance, and an answer held only in context is one the user is asked for twice
   (`loop-control.md` step 3, "Only the user's answer unparks a PR"). Ruling the finding **invalid** → drop
   it and return to the normal flow; **valid** → fix it exactly like a CONFIRMED finding.
@@ -1152,7 +1152,7 @@ is only ever as true as the moment it was last written.
 gh pr edit <pr> --remove-label gauntlet-accepted --add-label gauntlet-reviewing
 ```
 
-Never write the ledger reset and defer the label to "the next wake". A `gauntlet-accepted` label on a
+Never write the ledger reset and defer the label to "the next heartbeat". A `gauntlet-accepted` label on a
 PR whose live content no longer holds `required(tier)` verdicts is a **false public claim that the PR
 passed its gauntlet** — the label is what a human reads on GitHub, and it is the one part of this
 run's state that is visible to people who will never see the ledger. Between the reset and the next
@@ -1169,7 +1169,7 @@ that drop `reviews_ok` to 0):
 | Copilot-item fix pushed | Stage 2a preconditions, above |
 | Conflict-resolving rebase — at **either** of the two sites that rebase a PR | **Stage 2a preconditions, above** (the pre-review rebase of a `CONFLICTING`/`DIRTY`/`BEHIND` PR) **and** `stage-3-merge.md`'s step-6 reconcile. Naming only one of them is how the relabel goes missing at the other; the *event* owes the relabel, wherever it happens |
 | Re-adoption refresh detects changed content | `pr-adoption.md` step 3 (step 4 then sets the status label from the **live** gate — `gauntlet-reviewing` here, but `gauntlet-accepted` for a re-adoption whose content did **not** change and whose verdicts step 3 preserved; either way it removes the other label) |
-| Any other PR-content change on the head branch — formatter/bot commit, manual push | **Loop control step 1's ledger refresh** — the wake that *detects* it resets the gate, so it relabels there |
+| Any other PR-content change on the head branch — formatter/bot commit, manual push | **Loop control step 1's ledger refresh** — the heartbeat that *detects* it resets the gate, so it relabels there |
 
 **Every row names a place where `reviews_ok` is written to 0 — never "the reconcile pass".** The
 label-reconcile in Loop control is the backstop that *heals* a missed swap; naming it as the mechanism
@@ -1187,5 +1187,5 @@ resets the liveness counters** (`stage-2-ci.md`, "THE LIVENESS COUNTERS") — th
 off **different** events, and this row is exactly where they part company.
 
 **Reconcile is the backstop, not the mechanism.** Loop control re-derives every label from the live
-gate each wake so a missed swap self-heals, exactly as the CI-watch heartbeat backstops a missed watch.
+gate each heartbeat so a missed swap self-heals, exactly as the CI-watch heartbeat backstops a missed watch.
 Relying on it as the primary path is the bug this rule exists to prevent.

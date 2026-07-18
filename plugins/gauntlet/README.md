@@ -8,7 +8,7 @@ The centerpiece is [`gauntlet:campaign`](skills/campaign/README.md): hand it exi
 (`/gauntlet:campaign #12 #15` in Claude Code or `$gauntlet:campaign #12 #15` in Codex) and it gates each one to merge — defending that PR through repeated
 context-isolated review rounds until it passes a strict bar with green CI, fixing up whatever review
 or CI turns up on the PR itself, and then merging. It doesn't hunt for problems or write fixes from
-scratch; it drives PRs that already exist. Run it once — it uses scheduled wakes where available and
+scratch; it drives PRs that already exist. Run it once — it uses scheduled heartbeats where available and
 bounded waits otherwise, then keeps working unattended.
 
 Where do those PRs come from? [`gauntlet:review`](skills/review/README.md) is the front half. By
@@ -79,7 +79,7 @@ The plugin deliberately does **not** set how the host talks to you. That is your
 (`AGENTS.md`, `CLAUDE.md`, or an output style), not a plugin's, and a skill that dictated tone would just fight whatever
 you had already configured.
 
-It's still worth setting something. A campaign reports on every wake, for hours, and those updates are all
+It's still worth setting something. A campaign reports on every heartbeat, for hours, and those updates are all
 you see of it. Without a contract, the update that needs your decision reads much like the twenty that
 don't.
 

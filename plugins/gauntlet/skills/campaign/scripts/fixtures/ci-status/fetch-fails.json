@@ -1,5 +1,5 @@
 {
-  "why": "a `gh` call that FAILED. There is no evidence, so there is no verdict from evidence — and NOTHING is promoted: a partial artifact left in the rundir is what a later wake would read as a snapshot. Treat it as fine and it derives GREEN off a fetch that never happened",
+  "why": "a `gh` call that FAILED. There is no evidence, so there is no verdict from evidence — and NOTHING is promoted: a partial artifact left in the rundir is what a later heartbeat would read as a snapshot. Treat it as fine and it derives GREEN off a fetch that never happened",
   "required_set": "none",
   "pr": "35",
   "api": {

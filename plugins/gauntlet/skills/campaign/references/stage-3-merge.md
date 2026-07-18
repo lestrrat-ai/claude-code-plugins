@@ -62,13 +62,13 @@ catch-all and parks a PR that nothing was wrong with.
 | **any other value** | GitHub added one | **park `awaiting-user`**, naming the value. Never guess. |
 
 **The UNKNOWN re-poll bound.** `UNKNOWN` is a value GitHub has **not computed yet** — it is not a verdict,
-and it resolves within seconds once GitHub finishes computing mergeability lazily. Re-poll it **in-wake up
+and it resolves within seconds once GitHub finishes computing mergeability lazily. Re-poll it **in-heartbeat up
 to 3 times**, with a short backoff between re-polls (a few seconds) — the initial Stage-3 fetch that
 returned `UNKNOWN` is what triggers this loop and is **not** one of the three. If it is **still** `UNKNOWN`
-after the third re-poll, do **NOT** merge on this wake — leave the PR and let the **next wake** re-evaluate it: **the
-wake is the backoff** (`stage-2-ci.md`, "The WAKE is the backoff — never tight-loop inside one"). A value
-that stays `UNKNOWN` across wakes is bounded by the wake cadence, so **no persisted counter is needed** —
-the in-wake cap is a fixed 3, and the coarse retry is the wake loop itself. Never read `UNKNOWN` as
+after the third re-poll, do **NOT** merge on this heartbeat — leave the PR and let the **next heartbeat** re-evaluate it: **the
+heartbeat is the backoff** (`stage-2-ci.md`, "The HEARTBEAT is the backoff — never tight-loop inside one"). A value
+that stays `UNKNOWN` across heartbeats is bounded by the heartbeat cadence, so **no persisted counter is needed** —
+the in-heartbeat cap is a fixed 3, and the coarse retry is the heartbeat loop itself. Never read `UNKNOWN` as
 `MERGEABLE`, and never let a perpetually-`UNKNOWN` PR either merge or wedge.
 
 **EVERY `awaiting-user` park in this table is a MACHINE-BLOCKER park, and it MUST declare its exit** — a
@@ -92,7 +92,7 @@ blocker instead.**
 **`UNSTABLE` means non-*passing*, which includes *pending*.** Treating it as red would dispatch a CI-fix
 subagent at a check that is merely **still running**.
 
-1. **Serialize merge operations, not wakes.** A wake may merge multiple PRs, but only one at a time.
+1. **Serialize merge operations, not heartbeats.** A heartbeat may merge multiple PRs, but only one at a time.
    Before each merge, re-confirm the PR is still **not parked** and that both gates still hold against the live PR head SHA
    (`gh pr view <pr> --json headRefOid --jq .headRefOid`, PR number from the ledger row) — a late push
    may have moved the tip past the recorded `head_sha` and reset the gates —
@@ -200,7 +200,7 @@ subagent at a check that is merely **still running**.
    "THE LIVENESS COUNTERS"); a conflict-resolving rebase would reset
    `reviews_ok`, relabel, and relaunch work — and would **change the PR's content**, which can invalidate
    the very refutation or API change the user was parked to adjudicate. **A parked PR that has fallen
-   behind simply STAYS behind** until the user answers; it is re-reconciled normally on the wake after it
+   behind simply STAYS behind** until the user answers; it is re-reconciled normally on the heartbeat after it
    unparks. **Do NOT drop its row** — it stays in the run, and the park **does not change its CI watch
    either way** (observation, not mutation): the watch follows the normal policy (`stage-2-ci.md`, "WATCH
    ONLY WHAT CAN MOVE") — relaunched while a row is still RUNNING, **not** relaunched once CI has settled.
@@ -211,7 +211,7 @@ subagent at a check that is merely **still running**.
      **keep its status label as-is** (the gate did not reset, so an accepted PR stays
      `gauntlet-accepted`), update `head_sha` to the new tip, set `ci = pending`, **reset the liveness
      counters** (new commit, new evidence — `stage-2-ci.md`, "THE LIVENESS COUNTERS"), **and re-derive CI
-     from a snapshot of the new tip in the same wake, launching a watch only if that snapshot holds a
+     from a snapshot of the new tip in the same heartbeat, launching a watch only if that snapshot holds a
      still-RUNNING row** ("WATCH ONLY WHAT CAN MOVE"). A rebased PR must not sit unwatched until the
      heartbeat while its checks are running — but it must not be watched when **nothing** is running
      either, which right after a push is the common case (no check has registered yet). CI must return
@@ -227,7 +227,7 @@ subagent at a check that is merely **still running**.
      Stage 2.
    - Still open, **not parked**, mergeable, not behind/dirty/conflicting, same live `head_sha`,
      `reviews_ok >= required(tier)`, and `ci == green` → still immediately mergeable; return to step 1
-     in the same wake.
+     in the same heartbeat.
 
 Stop the merge loop only when no remaining PR is immediately mergeable after the latest base refresh.
 

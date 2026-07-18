@@ -43,7 +43,7 @@ $gauntlet:campaign --new #20
 Give it one or more PR numbers and it **adopts** them into a run: it labels each PR so the run owns
 it, classifies the change by the *kind* of files it touches — human-facing docs vs code vs
 agent-consumed docs vs sensitive surfaces — to pick a review tier (the change's size never enters
-into it), then starts gating. Run it **once** — it uses the host's wake scheduler when available and
+into it), then starts gating. Run it **once** — it uses the host's heartbeat scheduler when available and
 keeps the current invocation alive with bounded waits otherwise. It keeps working until every adopted
 PR is merged or set aside; you don't need to re-run it.
 

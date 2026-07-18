@@ -145,7 +145,7 @@ STATUSES = (STARTED, DONE)
 # machine-checked, and that rule is an IF AND ONLY IF (`decide`): **NOT SATISFIED exactly when at least one
 # GATING finding stands.** Both halves of it refuse a pass and neither can grant one. The spelling is the
 # ledger's (`ledger.py verdict --verdict satisfied|not-satisfied`), because the same string is typed at both
-# doors by the same driver in the same step, and two spellings of one verdict is a bug waiting for a wake.
+# doors by the same driver in the same step, and two spellings of one verdict is a bug waiting for a heartbeat.
 SATISFIED, NOT_SATISFIED = "satisfied", "not-satisfied"
 VERDICTS = (SATISFIED, NOT_SATISFIED)
 # `deferred` is NOT a verdict — it is the reviewer saying "I did not render a verdict, I raised a separate
@@ -379,7 +379,7 @@ ID_FORMATS: "dict[str, tuple[re.Pattern[str], str, str]]" = {
     "pass": (re.compile(rf"^{COUNT}\Z"), "a decimal number from 1 up",
              "it is COMPARED to the number in the FILENAME, and a value we cannot compare proves nothing"),
     "launch_attempt": (re.compile(rf"^{COUNT}\Z"), "a decimal number from 1 up",
-                       "it is COMPARED to the attempt in the FILENAME — it is how a later wake knows the "
+                       "it is COMPARED to the attempt in the FILENAME — it is how a later heartbeat knows the "
                        "pass was already relaunched — and a value we cannot compare proves nothing"),
     "head_sha": (SHA_RE, "40 LOWERCASE hex — `git rev-parse HEAD`, NEVER an abbreviation",
                  "A short sha has escaped into this repo's real state TWICE, once through a hand-written "
@@ -463,8 +463,8 @@ PLAN_NAME_RE = re.compile(rf"^review-{COUNT}-{COUNT}\.plan\.jsonl\Z")
 PROGRESS_SUFFIX, FINDINGS_SUFFIX = ".progress.jsonl", ".findings.jsonl"
 FINDINGS_NAME_RE = re.compile(rf"^review-(?P<pr>{COUNT})-{COUNT}(?:\.a{ATTEMPT})?\.findings\.jsonl\Z")
 
-# The INTENT — what this PR is FOR. One per PR, written at adoption (`pr-adoption.md`), re-read every wake
-# and never re-derived: a wake is a fresh agent instance, and an intent held only in context is one that
+# The INTENT — what this PR is FOR. One per PR, written at adoption (`pr-adoption.md`), re-read every heartbeat
+# and never re-derived: a heartbeat is a fresh agent instance, and an intent held only in context is one that
 # gets invented a second time, differently.
 #
 # **EVERY PASS IS JUDGED AGAINST ONE — `evaluate` loads it whatever the pass found, and that is the whole
@@ -1124,7 +1124,7 @@ def check_identity_shape(ident: dict, where: str) -> None:
 
     The identity is the pass's attempt id and its dispatch clock, and three rules downstream depend on it:
     a late verdict is ignored unless its attempt id still matches; the ~5-minute launch deadline is
-    measured from `dispatched_at`; `launch_attempt` is how a *later* wake — possibly a fresh agent — knows
+    measured from `dispatched_at`; `launch_attempt` is how a *later* heartbeat — possibly a fresh agent — knows
     the pass was already relaunched once. Every one of those is a COMPARISON, and a comparison against a
     malformed value is not one.
     """

@@ -50,7 +50,7 @@ remove. Never silently drop an entry you're uncertain about.
 
 **The question must not stall the run.** Keep every uncertain entry in place and start the run's work
 immediately — surface the candidate list to the user in the same message and fold the answer in when
-it lands as its own wake (prune then). Same principle as "never hold the run hostage on a user prompt"
+it lands as its own heartbeat (prune then). Same principle as "never hold the run hostage on a user prompt"
 (Run lease). Note what was pruned (and what the user kept) so the decision is auditable next run.
 
 A run is distilled into the ledger **exactly once**, on its **normal exit** (all its PRs terminal) —

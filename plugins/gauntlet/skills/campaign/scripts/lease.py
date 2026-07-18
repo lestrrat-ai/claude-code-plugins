@@ -7,7 +7,7 @@ guards against". It was also the ONLY durable store in the campaign with no sche
 have `ci-snapshot.py`. The lease had four reference docs and an `echo`.
 
 And it is not a value-write — it is a CHECK-AND-SET: take a lock, read, decide, write, read back, unlock,
-plus a stale-lock sweep and a staleness rule. Hand-rolled from prose, on every wake, by a fresh agent
+plus a stale-lock sweep and a staleness rule. Hand-rolled from prose, on every heartbeat, by a fresh agent
 instance that remembers nothing. In run `g260717-1748-d76f0acb` a driver hand-rolled it with
 `mkdir`/`openssl`/`echo`/`rmdir`, eyeballed the read-back instead of comparing tokens, and skipped the
 stale-lock sweep entirely. It was safe only because the lease was absent and nobody else was driving.
@@ -23,11 +23,11 @@ would otherwise do:
    superseded driver following that literally deletes the LIVE OWNER'S lease.
 3. **No `--heartbeat-id`, no lease.** The caller must hand over its proof that it has ALREADY armed the
    heartbeat. This tool never inspects the proof and takes the caller's word for it — which is exactly why
-   it must name something already done. Arming was step 6 of the wake skeleton, after all the interesting
+   it must name something already done. Arming was step 6 of the heartbeat skeleton, after all the interesting
    work, when an agent believes it is finished; it was skipped for an entire session and nothing noticed.
    Requiring it here moves the failure from "forgot at the end", which nothing catches, to "cannot start".
-4. **No `--token`, no lease** — and `acquire` never mints one. The wake carries `--token`, so a caller
-   without one demonstrably never armed a wake that identifies it: its proof cannot be real.
+4. **No `--token`, no lease** — and `acquire` never mints one. The heartbeat carries `--token`, so a caller
+   without one demonstrably never armed a heartbeat that identifies it: its proof cannot be real.
 
 A future `updated` (clock skew) reads as FRESH, not stale — fail closed, same direction as (1).
 """
@@ -339,17 +339,17 @@ lease: acquire requires --heartbeat-id: your PROOF that you have ALREADY armed t
        run. This tool never inspects it and takes your word for it — which is exactly why it must be
        something you already did, not something you intend to do.
 lease: DO THIS, IN THIS ORDER: (1) arm the heartbeat for this run. `runtime-adapter.md` owns your host's
-       mechanism and tells you what your proof is; the wake's own invocation must carry
+       mechanism and tells you what your proof is; the heartbeat's own invocation must carry
        --run <id> --token <tok> --heartbeat-id <proof> so it can present the proof it was armed with.
        (2) Re-run this command with that proof.
-lease: DO NOT take the lease first and arm afterwards. An arm at the end of a wake is the step that gets
+lease: DO NOT take the lease first and arm afterwards. An arm at the end of a heartbeat is the step that gets
        forgotten — that is the entire reason this door refuses."""
 
 NO_TOKEN = """\
 lease: REFUSED — the lease was NOT taken. Nothing was written, and this run is still UNDRIVEN.
-lease: acquire requires --token, and it does NOT mint one for you. The wake carries `--token <tok>`, so
-       the token must exist BEFORE you arm: a caller without one cannot have armed a wake that identifies
-       it, which means its --heartbeat-id cannot name a real wake.
+lease: acquire requires --token, and it does NOT mint one for you. The heartbeat carries `--token <tok>`, so
+       the token must exist BEFORE you arm: a caller without one cannot have armed a heartbeat that identifies
+       it, which means its --heartbeat-id cannot name a real heartbeat.
 lease: DO THIS: run `lease.py mint` for a token, arm the heartbeat with it, then acquire with both."""
 
 
@@ -575,17 +575,17 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("mint", help="print a fresh agent token. Step ONE: the token must exist before you arm "
-                                "the heartbeat, because the wake carries it")
+                                "the heartbeat, because the heartbeat carries it")
 
     # NOTE: --token and --heartbeat-id are deliberately NOT argparse-`required`. They ARE required, and
     # this file refuses without them — but argparse's "the following arguments are required:
     # --heartbeat-id" is a DIAGNOSIS, and the whole mechanism here is the INSTRUCTION the refusal carries
     # (NO_HEARTBEAT / NO_TOKEN). Letting argparse win the race would keep the exit code and throw away the
     # only part that teaches the caller what to do. `lease-test.py` pins this.
-    a = sub.add_parser("acquire", help="take or refresh ownership of this run — the door every wake goes "
+    a = sub.add_parser("acquire", help="take or refresh ownership of this run — the door every heartbeat goes "
                                        "through first")
     a.add_argument("--token", help="REQUIRED. Your agent token (from `mint`). NEVER minted here: a caller "
-                                   "without one cannot have armed a wake that names it")
+                                   "without one cannot have armed a heartbeat that names it")
     a.add_argument("--heartbeat-id",
                    help="REQUIRED. Your PROOF that you have ALREADY armed the heartbeat. Never inspected — "
                         "taken on your word, which is why it must name something already done. "
