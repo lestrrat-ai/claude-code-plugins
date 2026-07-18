@@ -228,7 +228,8 @@ Header field notes (the header fields above; per-row fields follow):
   sensor — that the reader comes to reset what it consumes — is structurally absent here: the cap path
   writes `status` and **nothing else**, so `review_rounds` stays monotone whatever it decides. At a cap the
   row goes **`repairing`** and the command **exits non-zero** (`repair-pass.md` owns the caps, the
-  reassessment, and the repair).
+  reassessment, and the repair). **This paragraph is the owner of the sensors-and-fused-reader design
+  rationale** — the procedure docs point here rather than restate it.
 - `intent` — the PROVENANCE of `<rundir>/intent-<pr>.md` (the file itself is markdown, so it lives in the
   run dir, not in this one-object-per-line store): `-` (not adopted yet) | `stated@<iso>` (the PR body
   already carried a usable intent block, copied verbatim) | `authored@<iso>` (the driver **inferred** it
