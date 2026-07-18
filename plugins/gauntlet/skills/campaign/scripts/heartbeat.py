@@ -73,12 +73,18 @@ def main(argv: "list[str] | None" = None) -> int:
         return self_test()
 
     if args.cmd == "callback":
-        # Fail closed: a blank required value must never be assembled into the callback. Refuse loudly on
-        # stderr, print NOTHING on stdout, and return non-zero so a caller cannot schedule a broken command.
+        # Fail closed: a required value that is empty OR contains ANY whitespace must never be assembled
+        # into the callback. Whitespace is the argument-injection seam — a `--run "g1 --new #99"` would
+        # smuggle extra tokens (`--new`, `#PR`, `--heartbeat-id`) past the two-flag guarantee once the
+        # printed line is re-split into argv. No legitimate value (a `g<date>-<rand>` run-id, a hex token,
+        # a `/gauntlet:campaign` invocation) contains whitespace. Refuse loudly on stderr, print NOTHING on
+        # stdout, and return non-zero so a caller cannot schedule a broken or injected command.
         for flag, val in (("--run", args.run), ("--token", args.token), ("--invocation", args.invocation)):
-            if not (val or "").strip():
-                print(f"heartbeat: REFUSED — {flag} is empty or whitespace-only. A blank required value "
-                      f"cannot go into the scheduled-heartbeat callback. Nothing was printed.",
+            if not val or any(ch.isspace() for ch in val):
+                print(f"heartbeat: REFUSED — {flag} must not be empty or contain whitespace. A value that "
+                      f"is blank or carries any whitespace character (space, tab, newline) cannot go into "
+                      f"the scheduled-heartbeat callback: whitespace would smuggle extra argv tokens past "
+                      f"the two-flag guarantee. Nothing was printed.",
                       file=sys.stderr)
                 return 1
         print(callback_command(args.invocation, args.run, args.token))

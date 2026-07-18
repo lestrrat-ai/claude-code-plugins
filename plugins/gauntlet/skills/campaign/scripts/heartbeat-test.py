@@ -79,6 +79,53 @@ def t_host_neutral_invocation():
           "`/` Claude Code form is not hardcoded")
 
 
+def _assert_refused(argv, what):
+    code, out, err = capture_cli(H.main, ["callback", *argv])
+    check(code != 0, f"a {what} must fail closed with a non-zero exit, got {code}")
+    check(out.strip() == "", f"a refused callback ({what}) must print NOTHING on stdout, got {out.strip()!r}")
+    check("REFUSED" in err, f"the refusal ({what}) must say REFUSED on stderr, got {err!r}")
+    return out
+
+
+def t_cli_refuses_whitespace_run():
+    # A `--run` value carrying whitespace is the argument-injection seam: `g1 --new #99` would smuggle
+    # `--new #99` into the scheduled callback once the printed line is re-split into argv.
+    _assert_refused(["--run", "g1 --new #99", "--token", "tok", "--invocation", "/gauntlet:campaign"],
+                    "whitespace-containing --run")
+
+
+def t_cli_refuses_whitespace_token():
+    _assert_refused(["--run", "g1", "--token", "aa bb", "--invocation", "/gauntlet:campaign"],
+                    "whitespace-containing --token")
+
+
+def t_cli_refuses_whitespace_invocation():
+    _assert_refused(["--run", "g1", "--token", "tok", "--invocation", "/gauntlet:campaign --new"],
+                    "whitespace-containing --invocation")
+
+
+def t_cli_refuses_tab_and_newline():
+    # Whitespace is not only the space character: a tab or a newline is the same injection seam and must
+    # be refused too. A newline could split the printed line into two scheduled commands.
+    _assert_refused(["--run", "g1\ttok", "--token", "tok", "--invocation", "/gauntlet:campaign"],
+                    "tab-containing --run")
+    _assert_refused(["--run", "g1", "--token", "aa\nbb", "--invocation", "/gauntlet:campaign"],
+                    "newline-containing --token")
+
+
+def t_smuggled_args_cannot_reach_stdout():
+    # The whole point: forbidden start-time/acquire-time tokens (`--new`, `#PR`, `--heartbeat-id`) hidden
+    # behind whitespace must NEVER survive to stdout, because a scheduler would then re-split them into argv
+    # and mint a fresh run (or re-present a stale proof) every heartbeat.
+    for smuggle in ("g1 --new #99", "g1 #12", "g1 --heartbeat-id deadbeef"):
+        out = _assert_refused(["--run", smuggle, "--token", "tok", "--invocation", "/gauntlet:campaign"],
+                              f"smuggled {smuggle!r}")
+        for forbidden in ("--new", "#", "--heartbeat-id"):
+            if forbidden in smuggle:
+                check(forbidden not in out,
+                      f"a refused callback must not leak {forbidden!r} to stdout, got {out!r}")
+
+
 CASES = [
     ("callback-two-flags", "the callback is exactly `<invocation> --run <id> --token <tok>`",
      t_callback_is_two_flags),
@@ -92,4 +139,14 @@ CASES = [
      t_cli_fails_closed_on_blank),
     ("host-neutral", "the invocation is passed in — no `/` host form is hardcoded",
      t_host_neutral_invocation),
+    ("refuse-whitespace-run", "a --run carrying whitespace is refused (argument-injection seam)",
+     t_cli_refuses_whitespace_run),
+    ("refuse-whitespace-token", "a --token carrying whitespace is refused",
+     t_cli_refuses_whitespace_token),
+    ("refuse-whitespace-invocation", "an --invocation carrying whitespace is refused",
+     t_cli_refuses_whitespace_invocation),
+    ("refuse-tab-and-newline", "tab and newline count as whitespace and are refused too",
+     t_cli_refuses_tab_and_newline),
+    ("smuggle-blocked", "--new/#PR/--heartbeat-id hidden behind whitespace never reach stdout",
+     t_smuggled_args_cannot_reach_stdout),
 ]
