@@ -259,26 +259,29 @@ Header field notes (the header fields above; per-row fields follow):
   `abort@…` is terminal and is never cleared.
 - `tier` — the adaptive review tier derived from `head_sha`: `TRIVIAL` | `STANDARD` | `HIGH`. Re-derived
   every heartbeat and re-triaged on any content change; drives `required(tier)` and the review depth.
-- `ci` — `green` / `red` / `pending` for `head_sha`. (**There is no `none`.** It was documented but no
-  procedure could ever write it.)
-- `ci_fingerprint` — digest of the last **verified** CI snapshot, written **verbatim from the
-  `fingerprint` field of `ci-status.py derive`'s JSON** (`null` there → the derivation was not verified
-  and this field is not written). **What it covers and exactly how it is serialized is DEFINED in
+- `ci` — `green` / `red` / `pending` for `head_sha`. Recorded by `ci-status.py liveness` from `derive`'s
+  JSON (`stage-2-ci.md`, "THE BOOKKEEPING IS A COMMAND"). (**There is no `none`.** It was documented but
+  no procedure could ever write it.)
+- `ci_fingerprint` — digest of the last **verified** CI snapshot, written by `ci-status.py liveness`
+  **verbatim from the `fingerprint` field of `derive`'s JSON** (`null` there → the derivation was not
+  verified and this field is not written). **What it covers and exactly how it is serialized is DEFINED in
   `stage-2-ci.md`, "SETTLED" — and is NEVER restated here**, because a fingerprint reconstructed from a
   paraphrase is a different fingerprint. **UNCHANGED + nothing RUNNING == SETTLED.**
 - `settled_strikes` — consecutive derivations seen **SETTLED but not green** *while no machine action was
   due or in flight* for the PR at this `head_sha` (`stage-2-ci.md`, "SETTLED", owns the gate — a PR the
-  driver is actively repairing is never struck). At the **STRIKE CAP**, escalate: park `awaiting-user`
+  driver is actively repairing is never struck). Counted by `ci-status.py liveness`, never by hand. At
+  the **STRIKE CAP**, escalate: park `awaiting-user`
   naming the blocker. Reset to `0` on any `head_sha` change or fingerprint change.
 - `unusable_refetches` — consecutive derivations whose snapshot was **UNUSABLE** at this `head_sha`. An
   UNUSABLE snapshot has **no fingerprint** (its rows were never trusted), so it can never be a
-  `settled_strike`: it gets its own counter. At the **REFETCH CAP**, escalate the same way. Reset to `0`
+  `settled_strike`: it gets its own counter, counted by `ci-status.py liveness`. At the **REFETCH CAP**,
+  escalate the same way. Reset to `0`
   on any `head_sha` change and on any **VERIFIED** snapshot (`stage-2-ci.md`, "UNUSABLE — the refetch is
   BOUNDED").
 - `ci_stalled_since` — `-`, or the **UTC ISO-8601 timestamp** of the first derivation that saw the check
   set **RUNNING-STALLED** at this fingerprint: an evidence row still classifies `RUNNING` **and** the
   fingerprint did **not** change (`stage-2-ci.md`, "RUNNING-STALL" — the definition; the cap lives there
-  and nowhere else). A **clock, not a tally**, and that is deliberate: a `RUNNING` row that is merely
+  and nowhere else). Started and cleared by `ci-status.py liveness`. A **clock, not a tally**, and that is deliberate: a `RUNNING` row that is merely
   **SLOW** and one that is **DEAD** are indistinguishable on a fingerprint, and derivations are driven by
   heartbeats whose cadence depends on the run's load — so only elapsed **TIME** separates them. It is on disk
   precisely so `now - ci_stalled_since` is computable by a fresh agent instance that remembers nothing.

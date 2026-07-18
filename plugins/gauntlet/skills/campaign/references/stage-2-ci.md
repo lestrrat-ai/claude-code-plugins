@@ -3,11 +3,12 @@
 Each PR has a background task that waits on `gh pr checks --watch`. **The watch only BLOCKS — it is
 never evidence.** When the task completes, a heartbeat **fetches a fresh snapshot pinned to the PR's current
 `head_sha`**, verifies it, and decides `ci` **from the snapshot's contents — NEVER from the watch's exit
-code** — then writes the `ci`/`reviews_ok` result through `scripts/ledger.py … set --pr <N> --ci <state>
-[--reviews_ok 0]` **by field name** (`files-and-ledger.md`), never by hand-editing the row by column
-position. (`--reviews_ok 0` rides in that call **only** when a campaign commit just landed on the PR head —
-"Any campaign commit to the PR head resets the gate", below. An ordinary derivation writes `ci` alone and
-**never touches `reviews_ok`**: deriving CI is observation, not a content change.)
+code** — and records the result by handing `derive`'s JSON to `ci-status.py liveness` ("THE BOOKKEEPING
+IS A COMMAND", below), which writes `ci` and the liveness counters through the ledger accessor **by field
+name** (`files-and-ledger.md`), never by hand-editing the row by column position. (`reviews_ok` is a
+different write: its `0`-reset belongs **only** to a campaign commit landing on the PR head — "Any
+campaign commit to the PR head resets the gate", below, through `scripts/ledger.py … set --pr <N>
+--reviews_ok 0`. An ordinary derivation is observation, not a content change, and never touches it.)
 
 #### THE DERIVATION IS A COMMAND — RUN IT. NEVER DERIVE `ci` BY READING TERMINAL OUTPUT.
 
@@ -22,10 +23,13 @@ It performs every step below — FETCH (SHA-pinned, paginated, **both** families
 (via `scripts/ci-snapshot.py`, which it calls), and DECIDE — and prints **JSON**: the `verdict`, the `ci`
 value to write to the ledger, the `reason` (**which rule fired, and which row made it fire** — this is what
 `ci_reason` is built from), the evidence counts, `head_moved` + `head_sha_now`, the `required_set` state the
-verdict was decided under, the `fingerprint` of the verified snapshot's evidence rows (`null` when the
-snapshot never verified — the liveness rules below consume it, and its spec lives at "The FINGERPRINT
-COMES OUT OF `derive`"), and the path to the snapshot it left behind. It exits `0` **only** on green.
-**Write `ci` from that JSON; never from an impression of some command's output.**
+verdict was decided under, the `fingerprint` of the verified snapshot's evidence rows, the `buckets`
+CLASSIFY tally (`PASS`/`RUNNING`/`FAIL`/`UNKNOWN_VALUE` — `buckets.RUNNING > 0` is the one fact the
+watch policy reads; both `null` when the snapshot never verified), and the path to the snapshot it left
+behind. It exits `0` **only** on green.
+**Write `ci` from that JSON; never from an impression of some command's output** — and then hand that
+same JSON to `ci-status.py liveness` ("THE BOOKKEEPING IS A COMMAND", below), which records it and does
+the counter arithmetic.
 
 **`--required-set` IS MANDATORY, AND IT HAS NO DEFAULT.** It is the ledger header's `required_set`, passed
 straight through (`declared:<json>` | `none` | `unknown` — "WHAT WERE WE EXPECTING TO SEE?", below). The
@@ -69,7 +73,7 @@ below are the SPEC the tool implements — they are documentation, NOT a second 
 | Actor | Does | Does NOT |
 |---|---|---|
 | **The background task** | **BLOCKS on `gh pr checks <pr> --watch`, and NOTHING else.** Its **ONLY** job is to block, so that **its completion becomes a heartbeat**. | It **NEVER** fetches, **NEVER** writes `ci-<pr>-<head_sha>.txt`, and **NEVER** produces evidence of any kind. |
-| **The heartbeat** | **RUNS `scripts/ci-status.py derive`** (above), which **FETCHES** (SHA-pinned, both families), **PROMOTES** atomically, **VERIFIES** the stamp, **PARSES**, and **DECIDES** `ci`. | It **NEVER** derives `ci` by READING the output of `gh pr checks` — or of anything else. |
+| **The heartbeat** | **RUNS `scripts/ci-status.py derive`** (above), which **FETCHES** (SHA-pinned, both families), **PROMOTES** atomically, **VERIFIES** the stamp, **PARSES**, and **DECIDES** `ci` — then **RUNS `scripts/ci-status.py liveness`** on that JSON, which **RECORDS** `ci` and the counters and **PARKS at any cap** ("THE BOOKKEEPING IS A COMMAND", below). | It **NEVER** derives `ci` by READING the output of `gh pr checks` — or of anything else — and **NEVER** applies the counter arithmetic by hand. |
 
 **WHY the fetch cannot live in the background task:** the fetch must be pinned to the `head_sha` **the
 LEDGER currently holds**, and **only the heartbeat knows that**. A background task that fetched at its own
@@ -850,8 +854,10 @@ ever re-ordered again.
   **NOT** invent a red for it: **ESCALATE** it — park the PR (`status = awaiting-user`) naming the
   offending value and the row it came from, through the **ESCALATE** definition below ("`pending` MUST NOT
   BE AN ABSORBING STATE"), which is the one place park entry is defined: it writes `ci_reason` and clears
-  `blocker_ruling`. A value nobody has classified is not evidence of anything, and guessing a bucket for
-  it is how a hole becomes a wedge or a false green.
+  `blocker_ruling`. **`liveness` performs this park itself** when handed an `unclassified` derivation
+  ("THE BOOKKEEPING IS A COMMAND", below) — prompting the user stays with the driver. A value nobody has
+  classified is not evidence of anything, and guessing a bucket for it is how a hole becomes a wedge or a
+  false green.
 
   **State the invariant EXACTLY, because the `red`-first order narrows it.** It is **NOT** "an unknown
   value is never bucketed" — a snapshot that also holds a `FAIL` is recorded `red`, and that is correct
@@ -1085,18 +1091,45 @@ strike, and never escalates — `pending` is **absorbing** for it, and half (b) 
 **unanswered**. `RUNNING-STALL` is the rule that answers it. It is bounded in **TIME** — see "RUNNING-STALL
 — a row that never finishes is bounded in TIME" below, which is where the bound and its rationale live.
 
-`RUNNING` in both definitions is **the CLASSIFY bucket above, verbatim** — a `checkrun` whose `.status` is
-`QUEUED`/`IN_PROGRESS`/`WAITING`/`PENDING`/`REQUESTED`, or a `status` row whose `.state` is
-`PENDING`/`EXPECTED`. Do **not** re-derive it from `ci`: `red` outranks `pending` in DECIDE, so a snapshot
-recorded `red` can still hold a **RUNNING** row, and that PR is still moving.
+`RUNNING` in both definitions is **the CLASSIFY bucket above, verbatim**, and `derive` emits its tally:
+**`buckets.RUNNING > 0` is the whole test** — never a hand classification of snapshot rows. Do **not**
+re-derive it from `ci` either: `red` outranks `pending` in DECIDE, so a snapshot recorded `red` can still
+hold a **RUNNING** row, and that PR is still moving.
 
-Per derivation **on a VERIFIED snapshot** — `fp` below is **the `fingerprint` field of `derive`'s JSON**,
-never a value assembled by hand (an `UNUSABLE` one prints `fingerprint: null`, has no `fp` at all, is
-handled entirely by "UNUSABLE — the refetch is BOUNDED" below, and touches **no liveness counter but its
-own**) — in this order:
+##### THE BOOKKEEPING IS A COMMAND — RUN IT. NEVER APPLY THE DERIVATION BLOCK BY HAND.
+
+```sh
+python3 <skill>/scripts/ci-status.py liveness --ledger <rundir>/state.jsonl --pr <N> \
+  --derive-json <the JSON derive printed, saved to a file — or - for stdin> \
+  --machine-action <due | in-flight | none>
+```
+
+It applies **every line of the block below** to the PR's row and writes the result through the ledger
+accessor in **ONE atomic row update**: `ci`, the fingerprint comparison, the strike, the stall clock, the
+refetch counter, and — at any cap — **the ESCALATE park itself** (`status = awaiting-user`, `ci_reason`
+naming the blocker, `blocker_ruling = -`, one write). It exits `0` when it recorded and nothing parked,
+**`3` when it parked the PR on the user** (tell them — that half of ESCALATE is still yours), `2` when
+its input was refused. **`--machine-action` is the ONE judgment it asks of the caller** — *"is work that
+can move this PR's `head_sha` due or in flight?"* (the MACHINE ACTION property, below); everything
+downstream of that answer is arithmetic, and hand-run arithmetic is what this command exists to remove.
+The same reason the derivation is a command: a driver that reassembles the counters from this spec
+reassembles them slightly differently every time, and every difference silently resets a bound.
+
+Two rules the tool enforces that the block's lines cannot show:
+
+- **A STALE derivation is REFUSED, never recorded** — `derive` pinned to a `head_sha` the row no longer
+  holds exits `2` and writes **nothing**: the site that moved the head already reset the counters
+  ("THE LIVENESS COUNTERS", below), and recording the old head's evidence would spend the new head's
+  budget. Re-derive against the ledger's head.
+- **A HELD row is OBSERVED, never struck** — `ci` is still recorded (observation is not mutation,
+  `ledger.py`'s HELD_STATUSES), but on a held row the bounds neither accrue nor fire: a parked row's
+  `ci_reason` is the **open question** a human is being asked, and no second park may overwrite it.
+
+Per derivation **on a VERIFIED snapshot** — `fp` below is **the `fingerprint` field of `derive`'s JSON**
+(an `UNUSABLE` one prints `fingerprint: null`, has no `fp` at all, is handled entirely by "UNUSABLE — the
+refetch is BOUNDED" below, and touches **no liveness counter but its own**) — in this order:
 
 ```
-head_sha changed          -> reset the LIVENESS COUNTERS (below) ; then ci_fingerprint = fp   # new evidence
 fp != ci_fingerprint      -> ci_fingerprint = fp ; settled_strikes = 0 ; ci_stalled_since = -
                                                                           # still MOVING — be patient
 # --- Everything below this line runs ONLY when fp == ci_fingerprint: NOTHING in the check set moved. ---
@@ -1196,8 +1229,10 @@ like any other settled or stalled PR. The gate suppresses a bound **only while w
 **ESCALATE** = park the PR (`status = awaiting-user`, `ci_reason` = the blocker **named**: which check
 never registered, **which check has been `RUNNING` since when without the check set moving**, which value
 was unrecognized, which read was denied), **and `blocker_ruling` = `-` in
-that same `ledger.py … set` call** ("THE RULING IS CONSUMED EXACTLY ONCE" below — a ruling already on the
-row answers the **previous** park, never this one), and tell the user. It does **not**
+that same row write** ("THE RULING IS CONSUMED EXACTLY ONCE" below — a ruling already on the
+row answers the **previous** park, never this one), and tell the user. **For the three liveness bounds,
+`ci-status.py liveness` performs that row write itself** (exit `3` — "THE BOOKKEEPING IS A COMMAND",
+above); telling the user is the half that stays with the driver. It does **not**
 abort the run or close the PR — the run's other PRs keep going. At **this** park — a CI one — `ci_reason` is
 **the DECIDE reason for this snapshot**: the bullet that matched and the row that made it match, never a
 bare restatement of `ci`. (The field itself is **wider than CI**: it is the durable machine-blocker reason,
@@ -1229,8 +1264,10 @@ schema itself** — `files-and-ledger.md`'s row-field definitions, and the `ROW_
 list retyped here rots the next time one is added, and the one that stood here rotted **twice**: it first
 dropped `ci_reason`, the very thing the park asks the user about, and its replacement dropped
 `ci_fingerprint`, without which every heartbeat sees CI as having moved and **no bound ever fires at all**.
-There is no third attempt: **the members are not retyped here, in any form, marked or not.** Write every
-one of them through `scripts/ledger.py … set --pr <N>` **by field name**, like every other field
+There is no third attempt: **the members are not retyped here, in any form, marked or not.** Every write
+goes through the owning tool, **by field name**, never by hand-editing the row: the derivation-driven
+fields are `ci-status.py liveness`'s ("THE BOOKKEEPING IS A COMMAND", above), and everything else —
+the unpark, the reset sites, the non-CI parks — is `scripts/ledger.py … set --pr <N>`
 (`files-and-ledger.md`).
 
 **HOW state dies with the context is a CLASS, and it is stated as one — never per field**, so a field
@@ -1309,11 +1346,12 @@ exactly two kinds of site:
    **outside** the PR (they re-ran the workflow, killed the hung runner, registered the missing check), so
    the strikes and the stall clock that measured the old attempt are void.
 
-**The DECIDE loop's own `head_sha changed -> reset` line ("SETTLED", above) is NOT a substitute for the
-site doing it.** That line fires only for a derivation that can still SEE the change — and the sites above
-**write the new `head_sha` to the row**, so by the time CI is re-derived the ledger already reads the new
-head and there is no change left to detect. The reset belongs **at the site that moves `head_sha`**; the
-derivation's line covers only a head that moved under a derivation that had not yet recorded it.
+**`liveness`'s stale-derivation refusal ("THE BOOKKEEPING IS A COMMAND", above) is NOT a substitute for
+the site doing it — it is the seam that makes the site's reset SAFE.** The sites above **write the new
+`head_sha` to the row**, so by the time CI is re-derived the ledger already reads the new head and there
+is nothing left to detect. The reset belongs **at the site that moves `head_sha`**; what `liveness` adds
+is the other half: a derivation still pinned to the OLD head is refused outright, so stale evidence can
+never spend the budget the site just reset.
 
 **A gate reset is NOT the trigger — a `head_sha` change is.** The two are not the same set and never map
 onto each other: a `NOT SATISFIED` verdict resets the gate with **no** new head (the counters stay — CI
@@ -1402,7 +1440,9 @@ be a bound at all.**
 
 `UNUSABLE` is the one DECIDE outcome with **no fingerprint** (above), so `settled_strikes` can say nothing
 about it — and "refetch until it works" is an absorbing state with no exit, which the invariant forbids.
-It gets its own counter, on the same shape:
+It gets its own counter, on the same shape — **applied by the same `liveness` command** ("THE BOOKKEEPING
+IS A COMMAND", above), except the `head_sha changed` line, which belongs to the sites that write a new
+head ("THE LIVENESS COUNTERS"):
 
 ```
 snapshot for this head_sha is UNUSABLE  -> unusable_refetches += 1 ; refetch on the NEXT heartbeat
@@ -1434,7 +1474,9 @@ unusable_refetches >= 3                 -> ESCALATE (above)  # 3 == THE REFETCH 
 
 #### WATCH ONLY WHAT CAN MOVE — the relaunch is not free
 
-The watch is warranted by **a row that can still move**, never by the `ci` value:
+The watch is warranted by **a row that can still move**, never by the `ci` value — and "a row can still
+move" is read off **`derive`'s JSON: `buckets.RUNNING > 0`**, never off a hand classification of the
+snapshot:
 
 | DECIDE outcome | Watch? |
 |---|---|

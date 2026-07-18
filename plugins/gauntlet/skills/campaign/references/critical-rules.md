@@ -455,6 +455,9 @@
   READING the output of a command and judging it.** That is not a style preference: every rule below was already
   correct when a driver ran `gh pr checks`, saw that no checks were reported, and wrote **`ci = green`** —
   **zero evidence is not green**. A program cannot decide that "no checks" is close enough to "passing".
+  **Then RECORD it by handing that JSON to `ci-status.py liveness`** (`stage-2-ci.md`, "THE BOOKKEEPING IS
+  A COMMAND", which owns the invocation): it writes `ci` and the liveness counters, and parks at any cap —
+  **never apply the strike/stall/refetch arithmetic by hand.**
 - CI status comes from a **SHA-pinned** snapshot of **BOTH** check families (`commits/<head_sha>/check-runs`
   **and** `commits/<head_sha>/status`), `--paginate`d, promoted atomically, and **SHA-verified before
   parsing**. **NEVER from `gh pr checks`** — its output carries **no SHA**, so it can report the
