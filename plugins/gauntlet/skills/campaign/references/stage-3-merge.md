@@ -27,6 +27,13 @@ answer lands the PR is skipped, never merged.
 else. Campaign's own SHA-pinned snapshot (`stage-2-ci.md`) is the **only** source of `ci`. Crossing these
 two wires is what turns a blocked merge into an infinite CI watch.
 
+**The merge-readiness decision is COMPUTED by `scripts/merge-check.py`, not read by eye.** It reads the
+ledger row plus the live PR view (`gh pr view <pr> --json mergeable,mergeStateStatus,isDraft,state,headRefOid`)
+and prints `merge` or `not-yet <reason>` — crossing the held/open/draft/head/ci/reviews preconditions and
+then **both** enums in ONE place, so the miscross above cannot recur. **The two-enum table below is the
+mapping it implements**, and a `doc-check` in that script FAILS the build if this table and the code stop
+enumerating the same value sets — so the table stays the spec and can never silently drift from the tool.
+
 `gh pr view <pr> --json mergeable,mergeStateStatus,isDraft` returns **two different enums** — say which
 field a value came from, and map **every** value of each (introspected from the schema, not recalled):
 

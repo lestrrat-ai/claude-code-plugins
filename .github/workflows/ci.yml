@@ -102,11 +102,13 @@ jobs:
             plugins/gauntlet/skills/campaign/scripts/reviewer-liveness.py \
             plugins/gauntlet/skills/campaign/scripts/reviewer-liveness-test.py \
             plugins/gauntlet/skills/campaign/scripts/lease.py \
-            plugins/gauntlet/skills/campaign/scripts/lease-test.py | tee pyright.json
+            plugins/gauntlet/skills/campaign/scripts/lease-test.py \
+            plugins/gauntlet/skills/campaign/scripts/merge-check.py \
+            plugins/gauntlet/skills/campaign/scripts/merge-check-test.py | tee pyright.json
           analyzed=$(jq '.summary.filesAnalyzed' pyright.json)
           echo "filesAnalyzed=${analyzed}"
-          if [ "${analyzed}" != "24" ]; then
-            echo "::error::pyright analysed ${analyzed} file(s), not the 24 it was pointed at — it checked" \
+          if [ "${analyzed}" != "26" ]; then
+            echo "::error::pyright analysed ${analyzed} file(s), not the 26 it was pointed at — it checked" \
                  "nothing and said so quietly. Fix the paths above; a silent no-op is not a passing gate."
             exit 1
           fi
@@ -209,3 +211,13 @@ jobs:
       # MISSING sibling fails loudly, so this can never report an all-clear over a suite it did not run.
       - name: Run lease contract
         run: python3 plugins/gauntlet/skills/campaign/scripts/lease.py self-test
+
+      # The merge-readiness decider's contract, executed. It is the ONE place the two GitHub merge enums
+      # (`.mergeable`, `.mergeStateStatus`) are crossed with the ledger's preconditions to decide `merge`
+      # vs `not-yet` — the miscross this replaces once turned a blocked merge into an infinite CI watch.
+      # Its fixtures (`merge-check-test.py`, loaded by path; a MISSING sibling fails loudly) pin the exact
+      # verdict AND reason for every branch, and its `doc-check` FAILS if stage-3-merge.md's two-enum table
+      # and the code stop enumerating the same value sets — so the doc that owns the mapping can never
+      # silently drift from the tool that implements it. It NEVER performs the merge; it only decides.
+      - name: Merge-check contract (+ stage-3-merge.md agrees with the code)
+        run: python3 plugins/gauntlet/skills/campaign/scripts/merge-check.py self-test
