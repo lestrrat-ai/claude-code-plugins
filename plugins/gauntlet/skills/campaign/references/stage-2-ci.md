@@ -5,7 +5,9 @@ never evidence.** When the task completes, a heartbeat **fetches a fresh snapsho
 `head_sha`**, verifies it, and decides `ci` **from the snapshot's contents — NEVER from the watch's exit
 code** — then writes the `ci`/`reviews_ok` result through `scripts/ledger.py … set --pr <N> --ci <state>
 [--reviews_ok 0]` **by field name** (`files-and-ledger.md`), never by hand-editing the row by column
-position.
+position. (`--reviews_ok 0` rides in that call **only** when a campaign commit just landed on the PR head —
+"Any campaign commit to the PR head resets the gate", below. An ordinary derivation writes `ci` alone and
+**never touches `reviews_ok`**: deriving CI is observation, not a content change.)
 
 #### THE DERIVATION IS A COMMAND — RUN IT. NEVER DERIVE `ci` BY READING TERMINAL OUTPUT.
 
@@ -951,12 +953,16 @@ it is not optional.
 The command persists the outcome in the ledger header as `required_set` — **a state it cannot persist is a
 state it does not have** (`files-and-ledger.md` owns the field; this block owns its meaning and format).
 
-**WHEN: read it once per run, before the first CI derivation** — it is a property of `base_branch`, which is
-itself set once (`files-and-ledger.md`, "Base branch"), so one read serves every PR in the run. **And read
-it AGAIN, every heartbeat, for as long as it is `unknown`** — that is the whole of its retry policy, and it is
-what keeps a transient failure (a network blip, a rate limit) from parking PRs that were never really
-blocked: a read that recovers before the STRIKE CAP costs the run nothing at all. **Once it is `declared:…`
-or `none`, it is SETTLED — do not re-read it**, and never overwrite a successful read with a later failure.
+**WHEN: run the COMMAND every heartbeat, and let IT decide whether GitHub is read** — that split is the
+whole policy, and it is why the two sentences that follow do not conflict. The GitHub **read** happens once
+per run, before the first CI derivation — the set is a property of `base_branch`, which is itself set once
+(`files-and-ledger.md`, "Base branch"), so one read serves every PR in the run — **and is retried, every
+heartbeat, for as long as the value is `unknown`**: that is the whole of its retry policy, and it is what
+keeps a transient failure (a network blip, a rate limit) from parking PRs that were never really blocked —
+a read that recovers before the STRIKE CAP costs the run nothing at all. **Once it is `declared:…` or
+`none`, it is SETTLED — the command returns the ledger's value without touching GitHub**, and never
+overwrites a successful read with a later failure. So there is no "should I run it this time?" question:
+always run it; a settled value makes it a cheap local no-op.
 
 | State | `required_set` | When | What `green` may claim |
 |---|---|---|---|
