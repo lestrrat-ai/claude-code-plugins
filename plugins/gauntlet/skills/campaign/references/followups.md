@@ -109,21 +109,25 @@ awaiting the user — never "a terminal state": only `rejected` is terminal, and
 the loop never reaches it on its own. A PR that bundles several follow-ups is one no reviewer can reason
 about and one whose partial rejection strands the rest.
 
-1. **VERIFY — but only from a state that still needs it.** Route the picked entry by its lifecycle state:
-   - **`candidate` / `refuted` / `reopened`** → not yet corroborated (or being re-investigated), so
-     **dispatch a context-isolated INVESTIGATION subagent (Tier 1, read-only)** to VERIFY it. A follow-up
-     is a CLAIM, and the driver's own diagnosis needs corroboration exactly like a reviewer's finding does
-     (`AGENTS.md`/`CLAUDE.md`, "Your OWN diagnosis is a claim too"). So the driver does **not** verify
-     inline and does **not** skip to a fix: the subagent's sole job is to **reproduce the claim** — read
-     the code, run the commands, walk the causal chain — and record the outcome with evidence through
-     `followups.py corroborate` / `refute`. This is the same audit-before-fix discipline the review gate
-     keeps (`stage-2-review-gate.md`); the investigation and any later fix are **two different subagents,
-     in that order, always**.
-   - **`corroborated`** → already verified. A second `corroborate` cannot even run from here (it leaves
-     only from `candidate`/`refuted`/`reopened`), so skip verification and resume at the Tier-2 `take-up`
-     decision (step 3).
-   - **`self-accepted` / `accepted`** → already past the decision (the driver took it up, or the user
-     agreed), with no PR open yet. Resume at opening and adopting the PR (steps 3–4).
+1. **VERIFY the claim — the main line, and where a fresh `candidate` starts.** The common path is one line:
+   a `candidate` → **INVESTIGATE** (dispatch a context-isolated Tier-1, read-only subagent) → `corroborate`
+   or `refute` → if corroborated and every Tier-2 condition holds, `take-up` → a fix subagent opens a PR →
+   `open-pr` → adopt into the run → `merged`. A follow-up is a CLAIM, and the driver's own diagnosis needs
+   corroboration exactly like a reviewer's finding does (`AGENTS.md`/`CLAUDE.md`, "Your OWN diagnosis is a
+   claim too"). So the driver does **not** verify inline and does **not** skip to a fix: the investigation
+   subagent's sole job is to **reproduce the claim** — read the code, run the commands, walk the causal
+   chain — and record the outcome with evidence through `followups.py corroborate` / `refute`. This is the
+   same audit-before-fix discipline the review gate keeps (`stage-2-review-gate.md`); the investigation and
+   any later fix are **two different subagents, in that order, always**.
+
+   **An entry that is NOT a fresh candidate resumes at the step its lifecycle state has already reached — it
+   does not restart.** The transition graph in "THE LIFETIME OF AN ENTRY" below — owned by `followups.py`,
+   with each command's exact from-set printed live by `<cmd> --help` — is the authority on which step each
+   state resumes at; **read the edges there, do not re-derive them here.** As intuition only: an
+   already-`corroborated` entry skips investigation and resumes at the `take-up` decision (step 3); a
+   `reopened` one already carries the decision it earned before its PR died, so it resumes at opening the
+   replacement PR, not at re-deciding. (A `refuted` entry is re-investigated only when new evidence may
+   overturn it, and that re-investigation succeeds by `corroborate` — never `refute`.)
 
 2. **NOT APPLICABLE → `refute`.** If the investigation cannot reproduce the claim, or shows the mechanism
    cannot occur, it is **refuted** — and that is its **most valuable** outcome, not a failure. A refuted
