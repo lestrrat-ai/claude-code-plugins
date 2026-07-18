@@ -15,12 +15,12 @@ stale-lock sweep entirely. It was safe only because the lease was absent and nob
 Four refusals this file exists to make, each one a thing the prose left undefined or a well-meaning driver
 would otherwise do:
 
-1. **A MALFORMED lease is `corrupt`, never `adopt`.** The prose says adopt when the lease is "absent or
-   stale" and says nothing about unparseable. A reader that lets "cannot parse" fall through to "absent"
-   ADOPTS A LIVE RUN. The asymmetry decides it: wrongly adopting gives two drivers on one ledger; wrongly
-   refusing an orphan stalls a run, which staleness and a human both recover.
-2. **`release` refuses unless the token matches.** The prose says "delete lease.json on normal exit" — a
-   superseded driver following that literally deletes the LIVE OWNER'S lease.
+1. **A MALFORMED lease is `corrupt`, never `adopt`.** The prose once said only adopt when the lease is
+   "absent or stale", leaving unparseable undefined. A reader that lets "cannot parse" fall through to
+   "absent" ADOPTS A LIVE RUN. The asymmetry decides it: wrongly adopting gives two drivers on one ledger;
+   wrongly refusing an orphan stalls a run, which staleness and a human both recover.
+2. **`release` refuses unless the token matches.** The prose once said "delete lease.json on normal
+   exit" — a superseded driver following that literally deletes the LIVE OWNER'S lease.
 3. **No `--heartbeat-id`, no lease.** The caller must hand over its proof that it has ALREADY armed the
    heartbeat. This tool never inspects the proof and takes the caller's word for it — which is exactly why
    it must name something already done. Arming was step 6 of the heartbeat skeleton, after all the interesting
@@ -76,9 +76,9 @@ SIBLING = Path(__file__).resolve().parent / "lease-test.py"
 #
 # --- constants: ONE defining site ---------------------------------------------
 #
-# `references/run-identity-and-lease.md` and `references/critical-rules.md` each state "~30 min" in prose
-# today — two sources of truth for one constant, which is what this repo's own rule forbids. Landing this
-# file means those sites NAME this constant instead of restating the number.
+# `references/run-identity-and-lease.md` NAMES `LEASE_STALE_AFTER` instead of restating the number, and
+# `references/critical-rules.md` defers to it. Keep it that way: a prose copy of the value is a second
+# source of truth for one constant, which is what this repo's own rule forbids.
 #
 #   LEASE_STALE_AFTER      a lease older than this has a DEAD driver, so the run may be adopted. Long
 #                          enough that a busy driver is never mistaken for a dead one.
@@ -450,8 +450,8 @@ def cmd_refresh(path: Path, args) -> int:
 def cmd_release(path: Path, args) -> int:
     """Release on normal exit — and ONLY if the token matches.
 
-    The prose says "delete lease.json". A superseded driver that follows that literally deletes the LIVE
-    owner's lease and hands the run to anyone.
+    The prose once said "delete lease.json". A superseded driver that follows that literally deletes the
+    LIVE owner's lease and hands the run to anyone.
 
     An ABSENT lease fails closed too: with no lease present there is no token to match against, so we
     cannot confirm this caller was ever the owner. Symmetric with `refresh` and with the Purpose line "a
