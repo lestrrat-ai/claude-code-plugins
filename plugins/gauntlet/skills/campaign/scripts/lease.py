@@ -338,10 +338,11 @@ lease: REFUSED — the lease was NOT taken. Nothing was written, and this run is
 lease: acquire requires --heartbeat-id: your PROOF that you have ALREADY armed the heartbeat for this
        run. This tool never inspects it and takes your word for it — which is exactly why it must be
        something you already did, not something you intend to do.
-lease: DO THIS, IN THIS ORDER: (1) arm the heartbeat for this run. `runtime-adapter.md` owns your host's
-       mechanism and tells you what your proof is; the heartbeat's own invocation must carry
-       --run <id> --token <tok> --heartbeat-id <proof> so it can present the proof it was armed with.
-       (2) Re-run this command with that proof.
+lease: DO THIS, IN THIS ORDER: (1) arm the heartbeat for this run — schedule its callback via your host's
+       mechanism (`runtime-adapter.md` owns it, and `heartbeat.py callback` prints the exact command). The
+       callback carries ONLY --run <id> --token <tok>; a resuming heartbeat REFRESHES and needs no proof,
+       so --heartbeat-id is NOT part of it. (2) Re-run THIS command with --heartbeat-id <proof> — the id you
+       recorded for that arming, presented to acquire here, never carried in the callback.
 lease: DO NOT take the lease first and arm afterwards. An arm at the end of a heartbeat is the step that gets
        forgotten — that is the entire reason this door refuses."""
 

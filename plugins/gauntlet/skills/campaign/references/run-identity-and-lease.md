@@ -29,17 +29,19 @@ absolute run path through that owner.
 
 ### Run ID — namespacing
 
-Minted once at the start of a fresh run — compact, filesystem- and label-safe. Create the run dir
-**atomically** so a run-id collision can't silently share a dir; retry with a fresh id on the rare
-clash:
+Minted once at the start of a fresh run — compact, filesystem- and label-safe. The run-id and its
+directory are created together by `scripts/run-id.py`: it mints `g<YYMMDD>-<HHMM>-<rand>`, creates the
+parent `scratch_root` if absent, and creates `<scratch_root>/<run-id>` with a bare atomic `mkdir` —
+retrying with a FRESH id on the rare collision and failing closed if it cannot, so two fresh runs can
+never silently share a directory:
 
 ```text
-run_id="g$(date +%y%m%d-%H%M)-$(openssl rand -hex 4)"   # e.g. g260704-0915-a3f29c1b (32 bits entropy)
-rundir = create_run_directory(repository, run_id) || run_id=…
+run-id.py new --runs-dir <repository.scratch_root>   # -> {"run_id": "g260704-0915-a3f29c1b", "rundir": "…"}
 ```
 
-`runtime-adapter.md`'s `create_run_directory` owns the parent creation, exact argv, absolute path
-derivation, and bare atomic create. Do not unpack that operation here.
+Invoke it through `runtime-adapter.md`'s `create_run_directory(repository)`, which resolves the
+host-specific `repository.scratch_root` and owns that invocation. The atomic create and the collision
+retry live in `run-id.py`; the caller no longer mints an id or retries. Do not unpack that operation here.
 
 Record it in the ledger header field `run_id` (`ledger.py --file <state.jsonl> header set run_id
 <run-id>`) and re-read it every heartbeat (`ledger.py … header get run_id`, like `base_branch`); never trust
@@ -52,7 +54,7 @@ in-context memory for it — a heartbeat may be a fresh agent instance. It flows
 | PR owner label   | `gauntlet-run-<run-id>` — the **authoritative "mine" marker**. Every adopted PR is tagged with it; it, not any branch name, is what makes a PR this run's. |
 | branch           | the **adopted PR's own `headRefName`** — campaign reuses the PR's existing branch and does NOT mint a `fix-<run-id>-...` branch, so ownership can't be read off the branch name (that's the label's job). |
 | worktree         | the ledger-recorded `worktree` path resolved by the repository-context-aware adoption operation; only a campaign-created worktree (`worktree_owned = yes`) is ever removed (see "PR adoption" / Stage 3) |
-| scheduled heartbeat prompt | `<campaign-invocation> --run <run-id> --token <agent-token>` — resolve the host form through `runtime-adapter.md`; carry **only** these two flags so a summarized heartbeat re-proves ownership without guessing. It **never** carries `--new` or the original `#PR` adoption args: those are **start-time-only** (they *create/adopt*), whereas `--run` **resumes** an existing run — replaying `--new` on a scheduled heartbeat would mint a fresh run every heartbeat. |
+| scheduled heartbeat prompt | `<campaign-invocation> --run <run-id> --token <agent-token>` (`heartbeat.py callback` prints this exact command) — resolve the host form through `runtime-adapter.md`; carry **only** these two flags so a summarized heartbeat re-proves ownership without guessing. It **never** carries `--new` or the original `#PR` adoption args: those are **start-time-only** (they *create/adopt*), whereas `--run` **resumes** an existing run — replaying `--new` on a scheduled heartbeat would mint a fresh run every heartbeat. |
 
 **Isolation invariant — a run touches ONLY its own work.** It reads/writes only its `<rundir>`, only
 its `state.jsonl`, and only PRs carrying its `gauntlet-run-<run-id>` label (adopted PRs keep their own

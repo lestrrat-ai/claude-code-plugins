@@ -66,10 +66,12 @@ snapshot path.
    verify all share a common `baseRefName`. This touches **no** run-id, `<rundir>`, lease, or
    `state.jsonl`. If any PR is refused or the bases disagree, **prompt and create nothing** — a rejected
    set must never leave an orphan run behind.
-2. **Only once preflight passes: mint the run-id + token, atomically create the clean `<rundir>`, and
-   record the run.** Use `runtime-adapter.md`'s repository-context-owned run-directory operation; it
-   owns path derivation and collision behavior. Write the lease and the `state.jsonl` header —
-   with `base_branch` filled from the agreed `baseRefName` (known from preflight) — then adopt each PR
+2. **Only once preflight passes: create the run directory first, then record the run.** Call
+   `runtime-adapter.md`'s `create_run_directory(repository)` **first** — it mints the run-id and
+   atomically creates the clean `<rundir>` (it owns path derivation and collision behavior); derive
+   `run_id` from the returned directory's final path component. **Then** mint the agent token (separate,
+   run-id-independent). Write the lease and the `state.jsonl` header — with `run_id` set and `base_branch`
+   filled from the agreed `baseRefName` (known from preflight) — then adopt each PR
    (ledger row + labels + worktree, and a CI watch **only when one is due** — `pr-adoption.md` owns what
    adoption produces and when the watch is warranted); a death mid-adoption still leaves a discoverable run.
    Any already-live run keeps its own dir, lease, and heartbeat; a fresh run never closes, merges, or
