@@ -200,9 +200,10 @@ Prose and synopsis blocks throughout these docs write `ledger.py … set --pr <N
 table` and the like. **That is SHORTHAND naming the tool — it always means the full form above**,
 never a literal command line to paste.
 
-**The inventory below is COMPLETE by contract** — one row per script in `scripts/` (sibling `*-test.py`
-suites and internals aside); a new script gets a row here in the same change that adds it. The rules
-owner, not this table, defines each tool's behavior. A schema-owning accessor is the ONLY door to its
+**The inventory below is COMPLETE by contract, and the contract is checked** — one row per script in
+`scripts/` (sibling `*-test.py` suites and internals aside); a new script gets a row here in the same
+change that adds it, and `script-table-test.py` fails CI on a missing, stale, or duplicate row. The
+rules owner, not this table, defines each tool's behavior. A schema-owning accessor is the ONLY door to its
 file: read and write **by field name** through it — never hand-parse, never hand-edit, never hand-write
 a line the tool writes.
 
@@ -223,6 +224,7 @@ a line the tool writes.
 | `followups.py` | Schema-owning accessor for the follow-up store (`.gauntlet/followups.jsonl`) — a durable work QUEUE, not an archive: entries are deleted once recorded elsewhere, kept when nothing else would remember | `references/followups.md` |
 | `nudge.py` | Advisory reminder printer for heartbeat start; always exits 0 | its own module docstring |
 | `transport-contract-test.py` | Standalone suite the plugin validator runs directly to pin the typed review/adoption boundary; owns no run state | `references/runtime-adapter.md` |
+| `script-table-test.py` | Standalone suite CI runs directly to prove this table and `scripts/` agree; owns no run state | this section |
 
 Each schema-owning accessor that carries a sibling suite keeps its fixtures in a **sibling
 `*-test.py`** — the accessor's own filename with `-test` appended, in the same directory; its
@@ -230,8 +232,9 @@ Each schema-owning accessor that carries a sibling suite keeps its fixtures in a
 and it is deliberately **not** an enumeration: a list of the suites that exist today is a restatement,
 and it goes stale the next time one is added — by an author who never reads this line. Not every script
 follows it, so do not assume a sibling for one you have not checked: `ci-snapshot.py` has a `self-test`
-whose fixtures are in-file plus golden files under `scripts/fixtures/`, not a sibling module; and
-`transport-contract-test.py` is the standalone case above, with no accessor `self-test` subcommand.
+whose fixtures are in-file plus golden files under `scripts/fixtures/`, not a sibling module; and the
+standalone suites above (`transport-contract-test.py`, `script-table-test.py`) are run directly, with
+no accessor `self-test` subcommand.
 
 ## Worker Dispatch — logical model class
 
