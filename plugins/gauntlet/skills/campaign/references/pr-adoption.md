@@ -176,8 +176,7 @@ For each `#PR` to adopt:
      `reviews_ok` to `0` and re-triage `tier` **only if** reconciliation detects a PR-content change
      since the recorded `head_sha` (per the gate's SHA-pinning rules). **That reset is a gate-reset
      site: in the same step, restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`**
-     (`gh pr edit <pr> --remove-label gauntlet-accepted --add-label gauntlet-reviewing` —
-     `stage-2-review-gate.md`, "Status labels mirror the review gate"). Step 4's `--add-label
+     (`stage-2-review-gate.md`, "Status labels mirror the review gate"). Step 4's `--add-label
      gauntlet-reviewing` alone is NOT sufficient: it would leave the stale `gauntlet-accepted` in
      place, so the PR would carry **both** status labels and still publicly claim it passed.
    - **Whenever this refresh writes a NEW `head_sha`, RESET THE LIVENESS COUNTERS** (`stage-2-ci.md`,

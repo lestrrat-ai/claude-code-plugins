@@ -716,10 +716,9 @@ it: an economy-class CI-fix worker, a `session`-class CI-fix worker, a review-fi
 REFUTATION of a review finding (`finding-audit.md`, "Audit every finding before you fix it").**
 Every one of them MUST, in the same step:
 
-- **reset `reviews_ok` to 0 AND restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`**
-  (`gh pr edit <pr> --remove-label gauntlet-accepted --add-label gauntlet-reviewing`) — the gate and its
-  label move together, never one without the other (`stage-2-review-gate.md`, "Status labels mirror the
-  review gate");
+- **reset `reviews_ok` to 0 AND restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`** —
+  the gate and its label move together, never one without the other (`stage-2-review-gate.md`, "Status
+  labels mirror the review gate");
 - **re-derive `ci` from a fresh snapshot for the NEW `head_sha`, and launch a watch if — and only if —
   that snapshot holds a row that can still move** ("WATCH ONLY WHAT CAN MOVE" above). The new commit
   **resets the liveness counters** ("THE LIVENESS COUNTERS" above), so the PR gets a clean budget.
