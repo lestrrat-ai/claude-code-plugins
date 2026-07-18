@@ -261,23 +261,30 @@ def t_legacy_lease_with_no_heartbeat_is_accepted(work: Path) -> None:
     double-drive this tool exists to prevent, in reverse. Contrast `t_malformed_is_corrupt`'s `no-updated`
     case: a missing `updated` IS corrupt (we cannot tell staleness); a missing `heartbeat` is NOT.
 
-    `updated` is a fixed FUTURE stamp so the lease reads FRESH whenever the suite runs.
+    The clock is FROZEN to `updated` so the legacy lease reads FRESH regardless of the wall-clock date —
+    the outcome is anchored to the frozen clock, never to a stamp being in the future.
 
     TEETH: add a "reject a lease with no heartbeat" check to read_lease and this goes red — read_lease
     raises Corrupt, and the same-token acquire/refresh stop returning `owned`.
     """
-    rec = {"agent": "legacy-driver", "updated": 2_000_000_000}
+    frozen = 2_000_000_000
+    rec = {"agent": "legacy-driver", "updated": frozen}
     p = put(work, rec)
     got = L.read_lease(p)
     L.check(got is not None and got.get("agent") == "legacy-driver",
             "a legacy lease with no `heartbeat` must read as a VALID held lease, never None/Corrupt")
     L.check(got is not None and "heartbeat" not in got, "read_lease must not invent a `heartbeat` the legacy lease never had")
-    code, out, _err = acquire(work, token="legacy-driver", heartbeat="w1")
-    L.check(code == 0 and verdict_of(out) == "owned",
-            "a same-token acquire over a heartbeat-less legacy lease must be `owned`, not refused")
-    rcode, rout, _ = L.run(["--file", str(p), "refresh", "--token", "legacy-driver"])
-    L.check(rcode == 0 and verdict_of(rout) == "owned",
-            "a plain refresh of a heartbeat-less legacy lease by its own token must be `owned`")
+    original = L.now
+    setattr(L, "now", lambda: frozen)  # freeze the clock so the legacy lease reads FRESH (age 0), independent of wall-clock date
+    try:
+        code, out, _err = acquire(work, token="legacy-driver", heartbeat="w1")
+        L.check(code == 0 and verdict_of(out) == "owned",
+                "a same-token acquire over a heartbeat-less legacy lease must be `owned`, not refused")
+        rcode, rout, _ = L.run(["--file", str(p), "refresh", "--token", "legacy-driver"])
+        L.check(rcode == 0 and verdict_of(rout) == "owned",
+                "a plain refresh of a heartbeat-less legacy lease by its own token must be `owned`")
+    finally:
+        setattr(L, "now", original)
 
 
 def t_read_reports_corrupt_without_deciding(work: Path) -> None:
