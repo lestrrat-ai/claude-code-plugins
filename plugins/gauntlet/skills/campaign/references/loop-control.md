@@ -158,12 +158,12 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
 ### Step 2 — Fold in completions
 
 2. **Fold in completions.** For any background task that finished (CI watch → **a HEARTBEAT, not an artifact**:
-   the watch **only blocks** and produces **nothing**, so **this heartbeat** performs the SHA-pinned fetch of
-   both check families, **promotes** it atomically to `ci-<pr>-<head_sha>.txt` and **verifies** its stamp
-   against the ledger's **current** `head_sha` before parsing a single line of it — the CI state is
-   **never** decided from the watch's exit code (Stage 2b, "WHO DOES WHAT" and "VERIFY THE STAMP BEFORE
+   the watch only blocks and produces nothing, so this heartbeat performs the SHA-pinned fetch of
+   both check families, promotes it atomically to `ci-<pr>-<head_sha>.txt` and verifies its stamp
+   against the ledger's current `head_sha` before parsing a single line of it — the CI state is
+   never decided from the watch's exit code (Stage 2b, "WHO DOES WHAT" and "VERIFY THE STAMP BEFORE
    PARSING"); review →
-   the **active launch attempt's** output file, with its progress file as liveness evidence — attempt 1
+   the active launch attempt's output file, with its progress file as liveness evidence — attempt 1
    uses `.prompt.txt` and writes `review-<pr>-<n>.txt` / `.progress.jsonl` / `.findings.jsonl`; a
    relaunch uses and writes `review-<pr>-<n>.a<k>.*`, and
    only the attempt named in the current `pass_identity` is read or counted (Stage 2a). **Before a
@@ -172,13 +172,13 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
    an ad-hoc parse; anything but `ok` means the verdict is not tallied (Stage 2a, "Does this pass COUNT?").
    **`--verdict` is REQUIRED** — it is what lets the tool check the one rule it can, so a COMPLETE pass
    verified without it is `unusable`, never `ok` (a rule a driver can switch off by forgetting a flag is
-   not a gate). That rule is an **if and only if**: **`not-satisfied` exactly when at least one GATING
-   finding stands** — a verdict that blocks a PR
+   not a gate). That rule is an if and only if: `not-satisfied` exactly when at least one GATING
+   finding stands — a verdict that blocks a PR
    must name what blocks it, and a finding that blocks a PR cannot be waved through by the verdict. Either
    way round is `unusable` (Stage 2a, "Does this pass COUNT?").
    **A pass that raised a separate request instead of ruling passes `verify --verdict deferred`** (the
    report's terminal line is `VERDICT: DEFERRED`, or the progress file holds an unruled
-   `plan_amendment_request`): `deferred` is not a verdict, so it is **never tallied** — the tool routes on
+   `plan_amendment_request`): `deferred` is not a verdict, so it is never tallied — the tool routes on
    the progress file and returns `amended` (fold the amendment, re-run the pass) or `incomplete`
    (relaunch), and only a binary `satisfied`/`not-satisfied` ever reaches the ledger below.
    **Then record the verdict with `scripts/ledger.py verdict --pr <N> --head-sha <sha> --verdict …`** — the
