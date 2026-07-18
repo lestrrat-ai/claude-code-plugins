@@ -26,38 +26,31 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
    `awaiting-user`).
    Three cases:
 
-   - **This run has live work → resume.** **A dead review pass — no verdict and no live task — is
-     dispatched by its relaunch budget alone:** read the highest-numbered attempt's `pass_identity`
-     and dispatch on `launch_attempt` **alone**: `1` → relaunch once (as attempt `2`); `2` → the
-     relaunch is spent, so take the **fresh-worker fallback** (Stage 2a). **Reconcile against ground
-     truth** (do NOT redo *completed* work — a CI task whose output file is missing may be re-launched,
-     since in-flight tasks die with their session. A **review** whose output file is missing is NOT
-     simply re-launched: resolve its **active launch attempt** first (Stage 2a) by that algorithm.
-     **Launch evidence is irrelevant on this path** — the task is already dead, so whether it managed
-     to write a `started` line before dying says nothing about whether it will ever produce a verdict.
-     A missing output file must never re-arm the relaunch budget, and a dead attempt `2` must never be
-     left un-dispatched):
-     for each of this run's branches/PRs read the live SHA, CI status, and verdict files, and refresh
-     the ledger — write every ledger update through `scripts/ledger.py … set/header set` **by field
-     name** (`files-and-ledger.md`), never by hand-editing rows by column position.
+   - **This run has live work → resume.** A dead review pass — no verdict, no live task — is resolved by
+     its relaunch budget alone (highest-numbered `launch_attempt`: `1` → relaunch once as attempt `2`;
+     `2` → **fresh-worker fallback**), **NOT by a blind re-launch**; the full algorithm and why launch
+     evidence is irrelevant on this path live in **"Resume after a killed session"** below (Stage 2a).
+     **Reconcile against ground truth** — do NOT redo *completed* work; a CI task whose output file is
+     missing may be re-launched, since in-flight tasks die with their session — then, for each of this
+     run's branches/PRs read the live SHA, CI status, and verdict files, and refresh the ledger: write
+     every ledger update through `scripts/ledger.py … set/header set` **by field name**
+     (`files-and-ledger.md`), never by hand-editing rows by column position.
 
      **This refresh is itself a gate-reset site — relabel here, in this step.** When it detects that a
      PR's live `head_sha` has moved with the PR diff changed (a formatter/bot commit, a manual push,
      any content change this run did not dispatch), it resets `reviews_ok` to 0 — and MUST, in the same
      step, relabel a PR carrying `gauntlet-accepted` back to `gauntlet-reviewing`
      (`stage-2-review-gate.md`, "Status labels mirror the review gate").
-     Do NOT leave this to the label-reconcile pass below: that pass is the **backstop**, and a reset
-     site that defers to it is the exact bug this rule forbids. (A clean base-only advance with the PR
+     Do NOT defer this to the label-reconcile pass below — that pass is only the **backstop** ("This
+     reconcile is a backstop, not the mechanism", below). (A clean base-only advance with the PR
      diff unchanged does not reset the gate, so it keeps `gauntlet-accepted`.)
 
      **And whenever this refresh writes a NEW `head_sha` — gate reset or not — RESET THE LIVENESS
-     COUNTERS** (`stage-2-ci.md`, "THE LIVENESS COUNTERS"), in the same `ledger.py … set` call. This
-     covers **both** cases above: the content change that resets the gate, **and** the clean base-only
-     advance that does not. The new head is new evidence, so the old head's liveness counters describe
-     nothing — carried forward, they park a healthy PR early, on a budget it never spent at this SHA.
-     **NAME the set; do NOT unpack it here.** A gloss that lists the set's members is a **restatement**,
-     even standing next to a correct pointer — it is the part a reader believes, and it goes stale the
-     moment the set gains a member (this line's did, when `ci_stalled_since` joined).
+     COUNTERS** (`stage-2-ci.md`, "THE LIVENESS COUNTERS", which owns why), in the same `ledger.py … set`
+     call. This covers **both** cases above: the content change that resets the gate, **and** the clean
+     base-only advance that does not. **NAME the set; do NOT unpack it here** — a gloss that lists the
+     set's members is a **restatement** that goes stale the moment the set gains a member (this line's
+     did, when `ci_stalled_since` joined).
 
      Do the PR scan as
      **one batched snapshot per heartbeat** — the **same canonical command** `pr-adoption.md` runs, writing the
@@ -272,12 +265,10 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      | **`awaiting-user`, review standoff** — a REFUTED finding the fresh reviewer re-raised | the ruling in `<rundir>/audit-<pr>-<n>.md` | `in_review`; ruled **valid** → the finding is fixed like a CONFIRMED one, ruled **invalid** → normal flow |
      | **`awaiting-user`, machine blocker** — campaign cannot move this PR without a human; that **property** IS the class, **never a list of cases** (one illustration: CI has SETTLED and is still not green). Do not enumerate the members here — `files-and-ledger.md`, `status`, `awaiting-user` class 2, **owns** the class, and `ci_reason` names the blocker at every one of them, present or future | `blocker_ruling` = `retry@<iso>` / `abort@<iso>` | `retry` → `in_review`, **RESET THE LIVENESS COUNTERS**, and **SPEND the ruling: `blocker_ruling` = `-`** (`stage-2-ci.md`, "THE LIVENESS COUNTERS" / "THE RULING IS CONSUMED EXACTLY ONCE"), then re-derive CI on the next heartbeat; `abort` → terminal `aborted` (the ruling **stays** — it is the record of why) |
 
-     **A `retry` that clears nothing re-escalates on its first derivation** — the strikes are still at
-     the cap — so the counter reset is **part of the unpark, not an optimization**. It buys the PR a
-     fresh liveness budget and no more: if CI still does not move, the same bound re-parks it, this time
-     reporting that the retry did not move CI (`stage-2-ci.md`, "SETTLED" / "UNUSABLE — the refetch is
-     BOUNDED"). The loop is bounded by the **human**: campaign never re-asks unprompted, and every park
-     is a fresh question backed by a fresh snapshot.
+     **The counter reset is part of the unpark, not an optimization**: a `retry` that clears nothing
+     re-escalates on its first derivation (`stage-2-ci.md`, "THE LIVENESS COUNTERS" / "SETTLED" /
+     "UNUSABLE — the refetch is BOUNDED", own why). The loop is bounded by the **human**: campaign never
+     re-asks unprompted, and every park is a fresh question backed by a fresh snapshot.
 
      **A `retry` is SPENT when it is consumed — one ruling answers exactly ONE park.** Write `status =
      in_review`, the counter reset, and `blocker_ruling` = `-` in the **same** `ledger.py … set --pr <N>`

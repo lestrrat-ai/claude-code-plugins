@@ -480,8 +480,8 @@ too.** A park whose exit event never comes is the same wedge, one level up. So t
 - **Records that answer DURABLY in the ledger's `blocker_ruling`** (`files-and-ledger.md`) the moment it
   lands, and unparks per `loop-control.md` step 3, "Only the user's answer unparks a PR" — which also
   **clears the liveness counters**, so the retry gets a fresh budget instead of re-escalating on its first
-  derivation. A heartbeat may be a fresh agent instance: an answer that lives only in the driver's head is an
-  answer that gets re-asked.
+  derivation. A heartbeat may be a fresh agent instance, so the answer must be durable ("HOW state dies
+  with the context is a CLASS" below).
 
 **NOTHING THIS SECTION RELIES ON LIVES IN THE DRIVER'S HEAD — and that is a PROPERTY, not the list that
 used to stand here.** A heartbeat may be a fresh agent instance, so: **if a LATER derivation, the escalation
@@ -490,7 +490,7 @@ schema itself** — `files-and-ledger.md`'s row-field definitions, and the `ROW_
 `scripts/ledger.py` that own it — and a field added there is durable **with no edit to this section**. A
 list retyped here rots the next time one is added, and the one that stood here rotted **twice**: it first
 dropped `ci_reason`, the very thing the park asks the user about, and its replacement dropped
-`ci_fingerprint`, without which every heartbeat sees CI as having moved and **no bound ever fires at all**.
+`ci_fingerprint`, whose loss silently reopens the wedge ("HOW state dies with the context is a CLASS" below).
 There is no third attempt: **the members are not retyped here, in any form, marked or not.** Every write
 goes through the owning tool, **by field name**, never by hand-editing the row: the derivation-driven
 fields are `ci-status.py liveness`'s ("THE BOOKKEEPING IS A COMMAND", above), and everything else —
@@ -624,8 +624,8 @@ the healthy build**, and a rule that parks healthy PRs gets turned off, which le
   SETTLED PR has **nothing that could move** — there is no slow-vs-dead question to answer.
 - **It is computed FROM DISK, never from the driver's memory of when it last looked.** `ci_stalled_since`
   is a UTC ISO-8601 timestamp in the **ledger**; `now - ci_stalled_since` is a subtraction any fresh agent
-  instance can do on its first heartbeat. A duration accumulated in context is a duration that resets to zero
-  every time the session dies — which is the failure that made these counters durable in the first place.
+  instance can do on its first heartbeat (why a clock lives on disk, not in context: "HOW state dies with
+  the context is a CLASS" above).
 
 **WHY IT DOES NOT PARK A HEALTHY SLOW CHECK.** The clock is **not** "how long the build has been running".
 It is **"how long NOT ONE row in the whole check set has changed state"** — the fingerprint covers every
@@ -740,8 +740,8 @@ Every one of them MUST, in the same step:
   that snapshot holds a row that can still move** ("WATCH ONLY WHAT CAN MOVE" above). The new commit
   **resets the liveness counters** ("THE LIVENESS COUNTERS" above), so the PR gets a clean budget.
   **NEVER launch the watch unconditionally on the push**: at that instant the checks may not have
-  registered yet, the snapshot holds **zero evidence rows**, and `gh pr checks --watch` would exit in
-  about a second — a heartbeat per second, forever, on a PR nothing is watching *for*;
+  registered yet, so watch only if the fresh snapshot holds a row that can still move ("WATCH ONLY WHAT
+  CAN MOVE" above);
 - **re-enter Stage 2a.**
 
 The verdicts on the old SHA describe content that no longer exists, and a `gauntlet-accepted` label on
@@ -837,10 +837,9 @@ Its job, in order:
 A cheap model verifying a tool's diff is a **MISS-CATCHER, NOT A PROOF.** It can miss a semantic change.
 
 What backs it: the **exact failing check must pass**; the subagent **must escalate anything it cannot
-verify**; and **every commit campaign pushes is still gated by the full review gauntlet** — any campaign
-commit to the PR head resets `reviews_ok` to 0, restores `gauntlet-reviewing`, resets the liveness
-counters ("THE LIVENESS COUNTERS"), re-derives CI for the new tip and watches it **only if a row can still
-move** ("WATCH ONLY WHAT CAN MOVE"), and re-enters Stage 2a in the `session` class.
+verify**; and **every commit campaign pushes is still gated by the full review gauntlet** — it resets the
+gate and re-enters Stage 2a in the `session` class ("Any campaign commit to the PR head resets the gate"
+above owns the full action list).
 
 This trades a **small, bounded risk** for a workflow that is **cheaper AND more capable** than either a
 full-strength subagent on every formatting failure or a hermetic no-model tool path. **The user accepts

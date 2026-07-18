@@ -233,8 +233,9 @@ Header field notes (the header fields above; per-row fields follow):
 - `intent` — the PROVENANCE of `<rundir>/intent-<pr>.md` (the file itself is markdown, so it lives in the
   run dir, not in this one-object-per-line store): `-` (not adopted yet) | `stated@<iso>` (the PR body
   already carried a usable intent block, copied verbatim) | `authored@<iso>` (the driver **inferred** it
-  from the PR's title, body and diff). Set at adoption (`pr-adoption.md` step 3a) and **preserved** by every
-  refresh — a heartbeat is a fresh agent instance, and an intent invented twice is two intents.
+  from the PR's title, body and diff). Set at adoption (`pr-adoption.md` step 3a) and **preserved** — never
+  re-derived — by every refresh (a heartbeat is a fresh agent instance; `blocker_ruling` below owns the
+  durability rule).
 
   The distinction is the honest one and the final report states it: an `authored` intent is **the driver's
   CLAIM about what the PR is for**, not the author's, and a wrong intent block silently **narrows** a
@@ -252,7 +253,7 @@ Header field notes (the header fields above; per-row fields follow):
   looping. The mechanism that fixes non-convergence must not itself fail to converge. Like `review_rounds`,
   it has **no flag at any door** — a budget you can zero is not a bound.
 - `repair_decision` — `-`, or the last reassessment decision + when: `<decision>@<iso>`. Durable, because
-  the heartbeat that dispatches the repair may be a different agent instance from the one that decided it — and
+  a heartbeat may be a fresh agent instance (`blocker_ruling` below owns why) — and
   a repair may not be dispatched at all until this field is set (`ledger.py dispatch-check --action repair`).
   **DURABLE *and* SPENT EXACTLY ONCE per cap** — it is reset to `-` when the row **re-enters `repairing`**
   (`ledger.py verdict` at a cap), so a decision answers exactly the cap it was recorded for and a PR that
@@ -321,12 +322,9 @@ Header field notes (the header fields above; per-row fields follow):
   unparks with the liveness counters cleared; `abort` goes terminal `aborted`. The unpark is
   `loop-control.md` step 3, "Only the user's answer unparks a PR".
 
-  **DURABLE *and* SPENT EXACTLY ONCE — one ruling answers exactly ONE park.** It is set back to `-` when a
-  machine-blocker park is **ENTERED** and when a `retry` is **CONSUMED** (`stage-2-ci.md`, "THE RULING IS
-  CONSUMED EXACTLY ONCE" — that is the owning definition). That is what **scopes** a ruling to its park: a
-  ruling sitting on a **parked** row can only have been written while **that** park was open, so a stale
-  `retry` can never unpark a **later** blocker with no fresh user answer. `abort@<iso>` is **never**
-  cleared — it goes terminal, and a terminal row is never re-parked, so it stays as the record of why.
+  **DURABLE *and* SPENT EXACTLY ONCE — one ruling answers exactly ONE park** (`stage-2-ci.md`, "THE RULING
+  IS CONSUMED EXACTLY ONCE", is the owning definition: the clears at park **entry** and `retry` **consume**,
+  the scoping that keeps a stale `retry` off a later park, and why terminal `abort@<iso>` is never cleared).
   A **counter reset never touches it**: it is not one of the liveness counters.
 
   These live **on disk, not in the driver's head**: a heartbeat may be a fresh agent instance, and a counter —

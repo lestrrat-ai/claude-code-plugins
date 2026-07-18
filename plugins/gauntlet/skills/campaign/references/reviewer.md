@@ -36,23 +36,20 @@ note it in the final report. Resolve in priority order:
    disclosed in the final report. **No paired CLI is required for the campaign to run** — the native
    fallback is always available.
 
-**Reviewer diversity is the default, not an add-on.** The gate's passes are already fresh,
-context-isolated re-rolls, but two native workers share the orchestrator's model, so they are less
-independent than a *different* engine would be. So the default reviewer runs a **different engine than the
-orchestrator**: Claude Code reviews with `codex exec`, Codex reviews with `claude -p`. It launches at
-native-limitation level whenever the paired CLI is present — engine diversity needs no OS sandbox. A
-same-engine process (Codex → another `codex exec`, Claude Code → another `claude -p`) provides fresh
-context only and must not be reported as diversity. A fresh native worker on the active host is the
-complete, valid **fallback** when the paired CLI is absent or the cross-engine process fails after its
-retry.
-
-**The default cross-engine reviewer also reduces native-worker cost.**
-Review passes dominate campaign's native-worker spend: each one re-reads the **whole** `origin/<base>...HEAD`
-diff, runs `required(tier)` times per SHA, and re-runs **from scratch** on every gate reset (a content
-change voids the tally). A PR that takes several fix rounds can therefore spend many full-diff passes.
-The default cross-engine route moves all of that off the native-worker pool; a native-worker fallback
-(paired CLI absent) does not. That is a benefit of the default, not a separate knob — the reviewer choice
-is owned above.
+**Reviewer diversity is the default, not an add-on — and it also reduces native-worker cost.** The gate's
+passes are already fresh, context-isolated re-rolls, but two native workers share the orchestrator's model,
+so they are less independent than a *different* engine would be. So the default reviewer runs a
+**different engine than the orchestrator**: Claude Code reviews with `codex exec`, Codex reviews with
+`claude -p`. It launches at native-limitation level whenever the paired CLI is present — engine diversity
+needs no OS sandbox. A same-engine process (Codex → another `codex exec`, Claude Code → another `claude
+-p`) provides fresh context only and must not be reported as diversity. A fresh native worker on the
+active host is the complete, valid **fallback** when the paired CLI is absent or the cross-engine process
+fails after its retry. The cost benefit compounds the diversity one: review passes dominate campaign's
+native-worker spend — each re-reads the **whole** `origin/<base>...HEAD` diff, runs `required(tier)` times
+per SHA, and re-runs **from scratch** on every gate reset (a content change voids the tally), so a PR that
+takes several fix rounds can spend many full-diff passes — and the default cross-engine route moves all of
+that off the native-worker pool, while a native-worker fallback (paired CLI absent) does not. Both are
+benefits of the default, not separate knobs — the reviewer choice is owned above.
 
 **A REVIEW PASS IS NEVER RUN ON A DOWNGRADED MODEL.** Whether the reviewer is a native worker or the
 worker fallback for a failed external reviewer, the pass runs in the **`session` class** — it *is* the

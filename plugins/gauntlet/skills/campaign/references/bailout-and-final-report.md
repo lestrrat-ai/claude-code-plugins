@@ -109,12 +109,9 @@ LOCAL state against that same PR / its head; the PR itself is left in place.
   aborts rather than looping (`repair_count`, capped): the mechanism that fixes non-convergence must not
   itself fail to converge.
 
-  **THIS BACKSTOP HAD NO SENSOR, AND THAT IS WHY IT NEVER FIRED.** Its trigger — *"the second `NOT
-  SATISFIED` on the same PR"* — is a **fact about history**, and nothing recorded any history: `reviews_ok`
-  is zeroed on every `NOT SATISFIED`, so the ledger after twenty-one rounds read exactly as it did after
-  one. Each heartbeat is a **fresh agent instance** holding a single round, so it could not know a second one
-  had ever happened. The rule called itself a hard backstop; it was a hard backstop **with no input**, and
-  one PR ran **21 review rounds** underneath it.
+  **THIS BACKSTOP HAD NO SENSOR — that is why it never fired** (the full account is above: its trigger was
+  a fact about *history* the ledger did not record, and each fresh-agent heartbeat held a single round, so
+  one PR ran **21 review rounds** underneath it).
 
   The ledger now records that history in durable state — `ns_streak` and `review_rounds` — evaluated by
   `ledger.py verdict` itself as it records each verdict, and at a cap it holds the PR `repairing` and exits

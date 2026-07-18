@@ -88,9 +88,9 @@ review gate"), and the review re-starts on the clean tip:
   UNKNOWN or unrecognized value returns `recheck` FIRST, before any rebase-first classification, so re-poll
   and re-run rather than rebase on a half-computed view (`base-preflight.py` is the owner of the full
   mapping). It is the enforced form of this rule and it is also the pre-flight gate before any fix subagent
-  is dispatched (`fix-subagent-contract.md`, PRE-FLIGHT). Clean rebase with the PR diff unchanged keeps `reviews_ok` but
-  sets `ci = pending` **and resets the liveness counters** — the gate does not reset, but the `head_sha`
-  **moved**, and **every** `head_sha` change resets them (`stage-2-ci.md`, "THE LIVENESS COUNTERS");
+  is dispatched (`fix-subagent-contract.md`, PRE-FLIGHT). Clean base-only rebase with the PR diff unchanged keeps `reviews_ok` but still moves `head_sha`, so it
+  sets `ci = pending` **and resets the liveness counters** ("Status labels mirror the review gate"
+  Exception, below, owns this rule; `stage-2-ci.md`, "THE LIVENESS COUNTERS");
   conflict-resolving rebase changes PR content, so it resets the gate **as well** — here, at this site,
   exactly as the step-6 reconcile does at its own (`stage-3-merge.md`), and it therefore **relabels in the
   same step** ("Status labels mirror the review gate", below).
@@ -547,13 +547,10 @@ real defect — the PR #43 round-11 finding shown above sat in code an earlier r
 it **GATES** (`writer=network`, and it quotes the PR's purpose). The same PR's round-15 finding — proof
 machinery that misses an input **nobody can write**, attacking a declared non-goal — does not.
 
-`review-pass.py verify` **exits non-zero** when: the PR has **no usable intent block** for the pass to be
-measured against (checked for **every** pass — see below); a `NOT SATISFIED` pass records **no gating
-finding**; a `SATISFIED` pass records **one that stands**; **no verdict is given at all for a pass that is
-COMPLETE** (`--verdict` is REQUIRED — the rule below cannot be switched off by omitting its input); a
-`deferred` pass is **complete with no outstanding `plan_amendment_request`** (a deferral that points at
-nothing — it owes a binary verdict); a required field is missing; `writer` is outside the enum; `purpose`
-is not a verbatim `## Purpose` line; or `writer` contradicts the repro. It still **cannot say `SATISFIED`** and still **cannot raise `reviews_ok`**
+`review-pass.py verify` **exits non-zero** on any defect in the pass's artifacts — a missing intent block,
+a verdict that does not cohere with the findings (in either direction), a missing verdict on a COMPLETE
+pass, a spurious `deferred`, or a malformed finding record — the `unusable` row of the verify table below
+enumerates them in full. It still **cannot say `SATISFIED`** and still **cannot raise `reviews_ok`**
 — it can only ever **subtract** a pass, never grant one.
 
 **THE VERDICT/FINDINGS RULE IS AN IF AND ONLY IF, AND BOTH HALVES ARE ENFORCED: `NOT SATISFIED` exactly
@@ -774,8 +771,7 @@ prose. Record the reviewed SHA
 (`git rev-parse HEAD`) with each pass. A verdict counts while its SHA equals the live tip. It also
 continues to count after `<base>` advances if the PR is still non-conflicting and the PR diff/content
 is unchanged (e.g. clean base-only rebase); carry `reviews_ok` forward to the new `head_sha`, set
-`ci = pending`, and **reset the liveness counters** — the head moved, so the old head's CI liveness
-describes nothing (`stage-2-ci.md`, "THE LIVENESS COUNTERS"). The moment PR content changes — review fix, CI fix, conflict-resolving rebase, a
+`ci = pending`, and **reset the liveness counters** (`stage-2-ci.md`, "THE LIVENESS COUNTERS"). The moment PR content changes — review fix, CI fix, conflict-resolving rebase, a
 formatter/bot commit on the PR branch, or manual push — earlier verdicts are stale and `reviews_ok`
 drops to 0. Pinning to SHA plus the clean-base-only exception makes the gate verifiable from git while
 not burning reviews merely because another PR merged cleanly. A `NOT SATISFIED` invalidates that

@@ -110,9 +110,8 @@
 - Before queueing a review pass on a PR, clear its preconditions on the current tip: address any
   GitHub Copilot review items (the active host form of `gauntlet:copilot-address-reviews <pr>`), fix any CI failures (one at a time,
   prefer a scoped subagent), and rebase away any conflict with `<base>`. PR-content changes reset
-  verdicts. Clean base-only rebase with unchanged PR diff keeps `reviews_ok`, sets `ci = pending`, and —
-  because the head still moved — **resets the liveness counters** (`stage-2-ci.md`, "THE LIVENESS
-  COUNTERS").
+  verdicts. Clean base-only rebase with unchanged PR diff keeps `reviews_ok`, sets `ci = pending`, and
+  **resets the liveness counters** (`stage-2-ci.md`, "THE LIVENESS COUNTERS").
   Never spend a review over open Copilot items, a red check, or a conflicting PR (Stage 2a).
 - The review gate is **tier-dependent**: `required(tier)` fresh, context-isolated `SATISFIED` verdicts
   on the same live PR content — **one if TRIVIAL, two otherwise** (any code / agent-doc / sensitive
@@ -150,7 +149,8 @@
   `reviews_ok` (only a verdict adds a verdict). Without that counter, the ledger after 21 review rounds is
   **indistinguishable** from the ledger after one, and every stopping rule of the form "on the second NOT
   SATISFIED…" is a backstop with **no sensor** — which is exactly how one sat in this skill, unfired,
-  through 21 of them.
+  through 21 of them. A gate **reset** from a content change is still `set --reviews-ok 0`: **`verdict`
+  records what a reviewer *decided*, `set` records what a commit *did*.**
 - **NEVER leave `gauntlet-accepted` on a PR whose live content no longer holds `required(tier)`
   SATISFIED verdicts.** The label is a projection of `reviews_ok`, and it is the only run state a human
   sees on GitHub — a stale `gauntlet-accepted` publicly claims a PR passed a gauntlet it did not. So the
@@ -160,7 +160,7 @@
   `gauntlet-accepted`. Never defer the swap to the next heartbeat — that leaves the label lying
   until reconcile, and lying forever if the session dies first. A **clean base-only rebase** with an
   unchanged PR diff does NOT reset the gate, so it correctly KEEPS `gauntlet-accepted` — it sets
-  `ci = pending` and, because the head still **moved**, **resets the liveness counters** (`stage-2-ci.md`,
+  `ci = pending` and **resets the liveness counters** (`stage-2-ci.md`,
   "THE LIVENESS COUNTERS"). Per-heartbeat label reconcile is the self-healing backstop, never the mechanism
   (`stage-2-review-gate.md`, "Status labels mirror the review gate").
 - **YOUR OWN diagnosis is a claim too — REPRODUCE the failure before you "fix" working code.** The rule
@@ -217,14 +217,11 @@
   (`status = awaiting-user`), surface finding + refutation + evidence + the reviewer's counter, let the
   USER adjudicate, and keep driving the other PRs. A REFUTED finding does **NOT** park by itself — only
   the **re-raise** parks (`finding-audit.md`, "Audit every finding before you fix it"). The standoff
-  is **one of TWO `awaiting-user` classes**, and each has its own durable answer record: the standoff is
-  answered into `audit-<pr>-<n>.md`; a **machine blocker** — campaign cannot move the PR without a human,
-  which is the **property** that defines the class and the whole of it, **never a list of cases** (one
-  illustration: CI has SETTLED and is still not green; `ci_reason` names the blocker, whatever it is, and
-  `files-and-ledger.md`, `status`, `awaiting-user` class 2, **owns** the class) — is answered into
-  `blocker_ruling` = `retry`/`abort` (`files-and-ledger.md`, `status`;
-  `loop-control.md` step 3, "Only the user's answer unparks a PR"). **NEVER park into a state whose exit
-  is undefined.**
+  is **one of TWO `awaiting-user` classes**, each with its own durable answer record: the standoff is
+  answered into `audit-<pr>-<n>.md`; a **machine blocker** (campaign cannot move the PR without a human) is
+  answered into `blocker_ruling` = `retry`/`abort`. `files-and-ledger.md`, `status`, `awaiting-user`
+  class 2, **owns** the machine-blocker class; `loop-control.md` step 3, "Only the user's answer unparks a
+  PR", owns the unpark. **NEVER park into a state whose exit is undefined.**
 
 ### Held and parked PRs
 
@@ -328,12 +325,10 @@
   backstop is GONE — it triggered on history nothing recorded and NEVER FIRED, across 35 review rounds
   on two PRs.** The backstop now is a **counter with a cap** (`repair-pass.md`), and the root-cause pass
   is one of the five decisions it can reach.
-- **RECORD EVERY VERDICT WITH `ledger.py verdict` — NEVER hand-set `reviews_ok` for one.** It bumps the
-  loop's memory (`review_rounds`, **never** reset; `ns_streak`), applies the tally, and evaluates the
-  review-loop caps, **atomically**. Hand-setting the tally silently skips the counters and restores the
-  amnesia that let a PR run **21** review rounds while its row still read `reviews_ok=0`. (A gate **reset**
-  from a content change is still `set --reviews-ok 0` — `verdict` records what a reviewer *decided*, `set`
-  records what a commit *did*.)
+- **RECORD EVERY VERDICT WITH `ledger.py verdict` — NEVER hand-set `reviews_ok` for one.** The one atomic
+  write also **evaluates the review-loop caps** (at a cap → `status = repairing`, exit non-zero;
+  `repair-pass.md`). What else it bumps, why `set` cannot stand in, and the 21-round amnesia it prevents:
+  "Verdict accounting and labels" above.
 - **A PR THAT STOPS CONVERGING IS REPAIRED, NOT PROMPTED.** At a review-loop cap `ledger.py verdict` sets
   `status = repairing` and **exits non-zero**: dispatch **no** further targeted fix and **no** further
   review pass. Hand the PR's **whole history at once** to a context-isolated reassessment pass, which
@@ -354,8 +349,8 @@
 - Verdicts are pinned to reviewed PR content: any PR-content change (review fix / CI fix /
   conflict-resolving rebase / bot or manual PR-branch commit) makes prior verdicts stale. Base
   advancement with no conflict and unchanged PR diff does NOT invalidate verdicts; carry `reviews_ok`
-  forward, update `head_sha`, **reset the liveness counters** (the head moved, so the old head's evidence
-  is gone — `stage-2-ci.md`, "THE LIVENESS COUNTERS"), and require fresh CI.
+  forward, update `head_sha`, **reset the liveness counters** (`stage-2-ci.md`, "THE LIVENESS COUNTERS"),
+  and require fresh CI.
 - Resume vs. fresh run is decided by **liveness**, not by `state.jsonl` existing: live work → resume;
   a finished prior run → ask the user before a fresh run; `--new` → fresh run with
   carryover (Loop control step 1). A finished run must never silently exit "all done" or silently
@@ -396,7 +391,7 @@
 - **ANY campaign commit to the PR head resets the gate** (`stage-2-ci.md`, "Any campaign commit to the PR
   head resets the gate") — economy-class CI-fix, `session`-class CI-fix, review-fix, or **refutation commit** alike. In the SAME step: reset
   `reviews_ok` to 0 AND restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`, **reset the
-  liveness counters** (`stage-2-ci.md`, "THE LIVENESS COUNTERS" — the new head is new evidence), re-derive CI
+  liveness counters** (`stage-2-ci.md`, "THE LIVENESS COUNTERS"), re-derive CI
   for the new tip and watch it **only if a row can still move** (`stage-2-ci.md`, "WATCH ONLY WHAT CAN
   MOVE" — a watch launched on a tip whose checks have not registered yet has nothing to block on and
   exits in about a second), and re-enter Stage 2a. NEVER exempt a commit because it "only reformatted".

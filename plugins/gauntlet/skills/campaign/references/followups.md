@@ -180,11 +180,9 @@ about and one whose partial rejection strands the rest.
    `accepted`, and `reopened`.** A heartbeat that dies **after** the fix subagent opens the PR but **before**
    `open-pr` records it leaves the entry in `self-accepted` (or `accepted`/`reopened`) with **no durable
    fuN→PR key** to reconcile against — so the next heartbeat re-dispatches and can open a **duplicate PR within
-   one run**. Making that dispatch idempotent needs a durable key: a `followups.py` PR-reference field
-   written before `open-pr`, or a deterministic fuN-keyed branch required by the fix contract — **both are
-   deliberate NON-GOALS here** (one is a `followups.py` store change, the other a fix-subagent-contract
-   change), tracked as **a follow-up**. This is the same-run analogue of the cross-run race scoped out under
-   "Scope: one run's driver" above; **neither is solved by this documentation.**
+   one run**. This is the same-run analogue of the cross-run race scoped out under "Scope: one run's driver"
+   above — a non-goal for the same reason (the fix needs a `followups.py` store change or a fix-contract
+   change), tracked as **a follow-up**, not solved by this documentation.
 
 2. **NOT APPLICABLE → `refute`.** If the investigation cannot reproduce the claim, or shows the mechanism
    cannot occur, it is **refuted** — and that is its **most valuable** outcome, not a failure. A refuted
