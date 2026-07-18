@@ -61,26 +61,14 @@ snapshot path.
 
 ### Starting a fresh run
 
-1. **Preflight the `#PR` set FIRST — read-only, before any run state.** Read every PR's metadata
-   (`gh pr view`), run the refusal checks (foreign-owned, cross-repo/fork per `pr-adoption.md`), and
-   verify all share a common `baseRefName`. This touches **no** run-id, `<rundir>`, lease, or
-   `state.jsonl`. If any PR is refused or the bases disagree, **prompt and create nothing** — a rejected
-   set must never leave an orphan run behind.
-2. **Only once preflight passes: create the run directory first, then record the run.** Call
-   `runtime-adapter.md`'s `create_run_directory(repository)` **first** — it mints the run-id and
-   atomically creates the clean `<rundir>` (it owns path derivation and collision behavior); derive
-   `run_id` from the returned directory's final path component. **Then** mint the agent token (separate,
-   run-id-independent). Write the lease and the `state.jsonl` header — with `run_id` set and `base_branch`
-   filled from the agreed `baseRefName` (known from preflight) — then adopt each PR
-   (ledger row + labels + worktree, and a CI watch **only when one is due** — `pr-adoption.md` owns what
-   adoption produces and when the watch is warranted); a death mid-adoption still leaves a discoverable run.
-   Any already-live run keeps its own dir, lease, and heartbeat; a fresh run never closes, merges, or
-   stops driving another run's PRs.
-3. **Read every file in `.gauntlet/history/`, then prune against the resolved `base_branch`** (drop
+1. **Start the run per `loop-control.md` step 1's fresh-run path** — preflight the `#PR` set read-only
+   first, and only then create run state and adopt. That step owns the ordering and the refusal
+   behavior; never restate it here.
+2. **Read every file in `.gauntlet/history/`, then prune against the resolved `base_branch`** (drop
    entries no longer applicable to that base; uncertain deletions are asked about **without blocking**
    — keep the entries and proceed, see "Pruning the ledger"). Pruning only ever edits **finished**
    runs' own files (no live writer), so there's nothing to race.
-4. Enter the loop as normal, on the clean `<rundir>`. Carryover is advisory historical context only —
+3. Enter the loop as normal, on the clean `<rundir>`. Carryover is advisory historical context only —
    it de-dups against already-merged/aborted work and reminds the user of parked API-declined changes;
    it never auto-adopts or auto-skips a PR.
 
