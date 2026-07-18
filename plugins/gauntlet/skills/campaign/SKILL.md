@@ -302,6 +302,7 @@ Read stage refs only when that stage/action is due:
 | Selecting the reviewer; external-reviewer failure/fallback | `references/reviewer.md` |
 | Adopting PRs into a run (worktree/labels/ledger row) | `references/pr-adoption.md` |
 | PR review gauntlet / progress ledger | `references/stage-2-review-gate.md` |
+| Auditing gating findings after a NOT SATISFIED (CONFIRMED/ADJUSTED/REFUTED) | `references/finding-audit.md` |
 | Dispatching ANY fix subagent (CI-fix or review-fix) | `references/fix-subagent-contract.md` |
 | Repeated sibling findings / shared root cause | `references/root-cause-pass.md` |
 | A PR at a review-loop cap (`status = repairing`) / a verdict that exits non-zero | `references/repair-pass.md` |

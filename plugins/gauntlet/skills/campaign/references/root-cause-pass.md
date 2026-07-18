@@ -9,7 +9,7 @@ enumeration's whole job is to find **all N sites, including the ones no reviewer
 each review finding as a *symptom of the shared decision*, not a new problem.
 
 **Trigger on the finding's SHAPE, not on a round count.** Only an **audited** finding triggers it —
-CONFIRMED or ADJUSTED (`stage-2-review-gate.md`, "Audit every finding before you fix it"); a REFUTED
+CONFIRMED or ADJUSTED (`finding-audit.md`, "Audit every finding before you fix it"); a REFUTED
 claim describes no defect, so it maps no space. Fire this the moment the **first** audited finding
 takes the form "this check / resolution / classification is missing (or wrong) at site X" — i.e. a
 decision applied independently at more than one site. Do **NOT** wait for the reviewer to surface
