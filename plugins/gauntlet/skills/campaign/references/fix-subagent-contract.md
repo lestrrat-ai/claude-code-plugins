@@ -42,8 +42,8 @@ licence to ignore the other. A fixer that sweeps the tree to find the sites its 
 ### PRE-FLIGHT — the base must be current before ANY fix is dispatched
 
 **BEFORE dispatching ANY fix subagent (review-fix or CI-fix) for a PR, run
-`scripts/base-preflight.py check --pr <N>`.** It prints ONE of three verdicts, and the action **splits by
-verdict** — only `proceed` clears the dispatch, and the other two are NOT the same response:
+`python3 scripts/base-preflight.py check --pr <N>`.** It prints ONE of three verdicts, and the action
+**splits by verdict** — only `proceed` clears the dispatch, and the other two are NOT the same response:
 
 - **`proceed`** → the base is current; **dispatch the fix**.
 - **`rebase-first`** → the branch conflicts with its base or the base has moved ahead; do **NOT** dispatch.

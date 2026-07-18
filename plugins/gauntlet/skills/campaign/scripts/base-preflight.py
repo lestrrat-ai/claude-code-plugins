@@ -155,8 +155,15 @@ def load_view(pr: str, repo: "str | None", view_json: "str | None",
     if repo:
         argv += ["--repo", repo]
     argv += ["--json", VIEW_FIELDS]
-    proc = subprocess.run(  # noqa: S603
-        argv, capture_output=True, text=True, check=False, cwd=project_root)
+    try:
+        proc = subprocess.run(  # noqa: S603
+            argv, capture_output=True, text=True, check=False, cwd=project_root)
+    except OSError as exc:
+        # subprocess.run RAISES before it ever produces a returncode when the executable is missing
+        # (FileNotFoundError) or `--project-root` is not a usable directory (NotADirectoryError) — both are
+        # OSError. Uncaught, that prints a traceback and never fails closed; turn it into a ViewError so the
+        # caller emits a structured `recheck` and exits non-zero, exactly like a non-zero `gh` exit.
+        raise ViewError(f"could not run `gh pr view {pr}`: {exc}") from exc
     if proc.returncode != 0:
         raise ViewError(f"`gh pr view {pr}` exited {proc.returncode}: {proc.stderr.strip()}")
     try:

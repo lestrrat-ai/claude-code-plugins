@@ -183,6 +183,24 @@ def t_cli_malformed():
               f"the reason must say which field is missing, got {result['reason']!r}")
 
 
+def t_cli_bad_project_root_fails_closed():
+    # An invalid --project-root makes subprocess.run raise OSError (NotADirectoryError/FileNotFoundError)
+    # BEFORE any returncode exists. That must be caught and turned into a fail-closed `recheck` with a
+    # NON-ZERO exit and NO traceback — never proceed, never crash. No --view-json, so load_view takes the
+    # gh/subprocess path; the bad cwd trips it before gh is ever consulted.
+    bad_root = Path(tempfile.gettempdir()) / "base-preflight-no-such-dir-xyz-000"
+    check(not bad_root.exists(), f"the test's bogus --project-root must not exist: {bad_root}")
+    code, out, err = capture_cli(
+        M.main, ["check", "--pr", "9", "--project-root", str(bad_root)])
+    check(code != 0, f"a bad --project-root must exit non-zero (fail closed), got {code} (stderr: {err})")
+    check(err == "", f"a bad --project-root must NOT print a traceback, got stderr {err!r}")
+    result = json.loads(out)
+    check(result["verdict"] == "recheck",
+          f"a bad --project-root must decide recheck, never proceed, got {result!r}")
+    check(result["reason"].startswith("could not fetch PR view:"),
+          f"the reason must name the fetch failure, got {result['reason']!r}")
+
+
 CASES = [
     ("clean-proceeds", "CLEAN -> proceed", t_clean_proceeds),
     ("has-hooks-proceeds", "HAS_HOOKS -> proceed", t_has_hooks_proceeds),
@@ -208,4 +226,6 @@ CASES = [
     ("cli-proceed", "check --view-json on a CLEAN view exits 0 with proceed", t_cli_proceed),
     ("cli-rebase-first", "check --view-json on a DIRTY view exits non-zero with rebase-first", t_cli_rebase_first),
     ("cli-malformed", "a view missing a field fails closed to recheck, never KeyError", t_cli_malformed),
+    ("cli-bad-project-root", "an invalid --project-root fails closed to recheck, no traceback",
+     t_cli_bad_project_root_fails_closed),
 ]

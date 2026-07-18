@@ -72,9 +72,12 @@ review gate"), and the review re-starts on the clean tip:
 - **Merge conflicts with `<base>`.** If GitHub flags the PR conflicting/behind
   (`gh pr view <pr> --json mergeable,mergeStateStatus` → `CONFLICTING` / `DIRTY` / `BEHIND`), rebase
   it onto `<base>` before reviewing. This CONFLICTING/DIRTY/BEHIND condition is now DECIDED by
-  `scripts/base-preflight.py check --pr <pr>`, which prints `rebase-first` for exactly these states (and
-  `proceed` when the base is current); it is the enforced form of this rule and it is also the pre-flight
-  gate before any fix subagent is dispatched (`fix-subagent-contract.md`, PRE-FLIGHT). Clean rebase with the PR diff unchanged keeps `reviews_ok` but
+  `python3 scripts/base-preflight.py check --pr <pr>`, which prints `rebase-first` for exactly these states
+  (and `proceed` when the base is current) — but only once BOTH enum values are recognized and computed; an
+  UNKNOWN or unrecognized value returns `recheck` FIRST, before any rebase-first classification, so re-poll
+  and re-run rather than rebase on a half-computed view (`base-preflight.py` is the owner of the full
+  mapping). It is the enforced form of this rule and it is also the pre-flight gate before any fix subagent
+  is dispatched (`fix-subagent-contract.md`, PRE-FLIGHT). Clean rebase with the PR diff unchanged keeps `reviews_ok` but
   sets `ci = pending` **and resets the liveness counters** — the gate does not reset, but the `head_sha`
   **moved**, and **every** `head_sha` change resets them (`stage-2-ci.md`, "THE LIVENESS COUNTERS");
   conflict-resolving rebase changes PR content, so it resets the gate **as well** — here, at this site,
