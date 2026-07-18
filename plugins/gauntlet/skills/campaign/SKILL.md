@@ -47,8 +47,8 @@ These are **distinct modes**, not freely-composable flags; `references/run-ident
 "Resolving a heartbeat", owns resolution.
 
 - `#12` / `#12 #15` -> adopt those existing PRs into a run; gate + merge them.
-- No argument -> discover this run's labelled PRs and continue. If none and nothing to do, PROMPT:
-  "No PRs under a campaign. Run gauntlet:review to find issues, or pass PR numbers to gate."
+- No argument -> discover this run's labelled PRs and continue. If none and nothing to do, show the
+  idle prompt (`references/run-identity-and-lease.md`, "Resolving a heartbeat", owns its wording).
 - Non-PR arg (e.g. `auth`) -> same prompt (the old area/topic sweep arg is REMOVED).
 - `--run <id>` -> resume that run; takes no `#PR`/`--new`. Scheduled heartbeats also carry internal
   `--token`.

@@ -160,8 +160,9 @@ the verdict the tool prints.
        that run alone (see "Adopt only an orphaned run");
      - only **finished** → the finished-run prompt (Loop control step 1), per run;
      - **none at all** (idle — nothing to drive) → **prompt**: "No PRs under a campaign. Run
-       `gauntlet:review` to find issues, or pass PR numbers to gate." Campaign never sweeps or mints
-       PRs itself, so with no run and no `#PR` args there is nothing to do.
+       `gauntlet:review` to find issues, or pass PR numbers to gate." (This wording is **CANONICAL** —
+       every other site shows the idle prompt by pointing here, not by retyping it.) Campaign never
+       sweeps or mints PRs itself, so with no run and no `#PR` args there is nothing to do.
 3. **`--new #PR...`** (or "fresh run" / "start over" with PR numbers) → mint a NEW run-id + token and
    start a fresh run adopting those PRs; it creates an independent run and does **not** pre-empt other
    runs (they keep their own drivers). **`--new` with no `#PR` args mints nothing** — it falls through
