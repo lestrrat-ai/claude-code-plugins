@@ -468,6 +468,9 @@ hid and the flag that reveals them. Read a value back with `get --field`, **neve
 Surfacing an entry to the user *is* how consensus gets reached, and it must never hold the run hostage
 (`run-identity-and-lease.md`, "Never hold the run hostage on a user prompt"): raise them alongside the
 report and fold any answer in as its own wake. **A `candidate` is a question, not a task**: the driver has
-not investigated it yet, so it has nothing to act on and nothing to say — surface it and ask.
+not investigated it yet, so it has nothing to act on and nothing to say. The FIRST move on a fresh
+candidate is to INVESTIGATE it — the active loop above, when there is spare capacity — because that is
+how the question gets answered. Surfacing it to the user is the THRESHOLD fallback (when the driver
+cannot act autonomously or a user ruling is required), never a substitute for investigating it.
 
 ---
