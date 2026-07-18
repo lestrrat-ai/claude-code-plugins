@@ -102,11 +102,13 @@ jobs:
             plugins/gauntlet/skills/campaign/scripts/reviewer-liveness.py \
             plugins/gauntlet/skills/campaign/scripts/reviewer-liveness-test.py \
             plugins/gauntlet/skills/campaign/scripts/lease.py \
-            plugins/gauntlet/skills/campaign/scripts/lease-test.py | tee pyright.json
+            plugins/gauntlet/skills/campaign/scripts/lease-test.py \
+            plugins/gauntlet/skills/campaign/scripts/heartbeat.py \
+            plugins/gauntlet/skills/campaign/scripts/heartbeat-test.py | tee pyright.json
           analyzed=$(jq '.summary.filesAnalyzed' pyright.json)
           echo "filesAnalyzed=${analyzed}"
-          if [ "${analyzed}" != "24" ]; then
-            echo "::error::pyright analysed ${analyzed} file(s), not the 24 it was pointed at — it checked" \
+          if [ "${analyzed}" != "26" ]; then
+            echo "::error::pyright analysed ${analyzed} file(s), not the 26 it was pointed at — it checked" \
                  "nothing and said so quietly. Fix the paths above; a silent no-op is not a passing gate."
             exit 1
           fi
@@ -209,3 +211,11 @@ jobs:
       # MISSING sibling fails loudly, so this can never report an all-clear over a suite it did not run.
       - name: Run lease contract
         run: python3 plugins/gauntlet/skills/campaign/scripts/lease.py self-test
+
+      # The scheduled-heartbeat callback command, pinned. The rule it protects is the resume contract:
+      # the callback carries ONLY --run and --token — never --heartbeat-id (acquire-time proof) and never
+      # --new/#PR (start-time args that would mint a fresh run every heartbeat). The sibling
+      # `heartbeat-test.py` is loaded by path and a MISSING sibling fails loudly, so this can never report
+      # an all-clear over a suite it did not run.
+      - name: Heartbeat callback contract
+        run: python3 plugins/gauntlet/skills/campaign/scripts/heartbeat.py self-test
