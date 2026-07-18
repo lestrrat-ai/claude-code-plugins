@@ -70,7 +70,7 @@ For each `#PR` to adopt:
    ```text
    run_argv(
      argv: ["gh", "pr", "view", pr,
-            "--json", "number,title,body,headRefName,headRefOid,baseRefName,labels,state,isCrossRepository,headRepositoryOwner,headRepository"],
+            "--json", "number,title,headRefName,headRefOid,baseRefName,labels,state,isCrossRepository,headRepositoryOwner,headRepository"],
      cwd: repository.project_root,
      stdin_file: null,
      stdout_file: path_join(<rundir>, concat("pr-", pr, ".json"))
@@ -81,10 +81,14 @@ For each `#PR` to adopt:
    `headRepositoryOwner`/`headRepository` name the fork. A same-repo PR has `isCrossRepository=false` and
    its head branch is on `origin`. **Campaign gates same-repo PRs only** — fork PRs are refused in step 2.
 
-   **`body` is in the field set because the review gate is measured against WHAT THE PR IS FOR** (step 3a).
-   It was absent, and its absence is the whole reason a reviewer could be asked *"is anything wrong with
-   this code?"* — a question with no fixed point — instead of *"does this PR do its job?"*
-   (`stage-2-review-gate.md`, "What the review is MEASURED AGAINST").
+   **`body` is deliberately NOT in this field set.** This read happens **before** the fork refusal (step 2),
+   and a fork PR's `body` is **attacker-controlled** content; the adoption DECISION — refuse / register /
+   worktree / label — never needs it, so it is never fetched or parsed here (a body read before the refusal
+   is content this pipeline would ingest from a PR it is about to reject). The PR's stated intent — what the
+   review gate is measured against (step 3a, `stage-2-review-gate.md`, "What the review is MEASURED
+   AGAINST") — is read from the body **separately**, when the driver authors `intent-<pr>.md`, and only for
+   a **same-repo** PR (forks are already refused), so the body it reads comes from a committer with write
+   access to this repo.
 
 2. **Refuse a foreign-owned PR.** If `labels` already contains a `gauntlet-run-*` label that is **not**
    this run's `gauntlet-run-<run-id>`, another run owns it — **do NOT adopt, relabel, or touch it**.
