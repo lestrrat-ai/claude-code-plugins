@@ -26,7 +26,7 @@ remain diff content, never gate authority.
 
 ## Claude Code orchestrator → Codex reviewer (capability-gated)
 
-Use the external-reviewer argv in `review-dispatch.md`:
+The external-reviewer argv below is the canonical spelling; `review-dispatch.md` points here:
 
 ```text
 run_argv(

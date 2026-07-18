@@ -453,7 +453,6 @@ ledger.py --file <state.jsonl> verdict --pr N --head-sha <sha> --verdict satisfi
 ledger.py --file <state.jsonl> get --pr N [--field <f>]           # print the row as JSON, or one field
 ledger.py --file <state.jsonl> list [--where <field>=<val>]       # print matching rows' pr numbers (all if no filter)
 ledger.py --file <state.jsonl> table [--all] [--fields <f>,<f>,…] # print run header + the live rows as an aligned table (read-only)
-ledger.py --file <state.jsonl> verdict --pr N --head-sha <sha> --verdict satisfied|not-satisfied
 ledger.py --file <state.jsonl> dispatch-check --pr N [--action ordinary|repair]
 ```
 

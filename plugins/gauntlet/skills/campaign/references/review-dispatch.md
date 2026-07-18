@@ -167,21 +167,12 @@ THE QUESTION YOU ARE ANSWERING IS: does this PR achieve its stated Purpose, with
    TRANSPORT.report.path yourself; the orchestrator's typed process transport captures it.
 ```
 
-Pass that artifact as data. Use the following external Codex argv only when the runtime transition
+Pass that artifact as data. Build the external Codex record only when the runtime transition
 returns `launch-external` or `retry-external`; no other action constructs this external record or
-launches this operation. On that route, `-` tells `codex exec` to read prompt bytes from `stdin_file`,
-which supplies immediate EOF; launch the typed operation in the background:
-
-```text
-run_argv(
-  argv: ["codex", "exec", "--sandbox", "workspace-write", "-c",
-         "sandbox_workspace_write.network_access=true", "--skip-git-repo-check",
-         "-C", transport.review_root, "-o", transport.report.path, "-"],
-  cwd: transport.review_root,
-  stdin_file: transport.prompt_path,
-  stdout_file: null
-)
-```
+launches this operation. Its argv is the canonical block in `cross-agent-reviewers.md` ("Claude Code
+orchestrator → Codex reviewer") — this file does not re-spell it. On that route, `-` tells `codex exec`
+to read prompt bytes from `stdin_file`, which supplies immediate EOF; launch the typed operation in the
+background.
 
 Never embed the bound prompt in a shell argument or shell source. Also: NEVER pass destructive
 instructions (delete, force-push, reset) to `codex exec`, and NEVER use
