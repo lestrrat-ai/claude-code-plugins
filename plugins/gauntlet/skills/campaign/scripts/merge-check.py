@@ -172,6 +172,31 @@ class ViewError(Exception):
     """The live PR view could not be obtained. The decision fails CLOSED — never `merge`."""
 
 
+# Every field `decide` reads off the view, with the JSON type it requires. `isDraft` is a bool; the other
+# four are strings. `validate_view` pins this at the boundary so `decide` may assume a shaped view and never
+# raises `KeyError`/`TypeError` on a value the caller handed in.
+_VIEW_STR_FIELDS = ("mergeable", "mergeStateStatus", "state", "headRefOid")
+
+
+def validate_view(view: object) -> "str | None":
+    """`None` if `view` is a JSON object carrying every field `decide` consumes at the right JSON type;
+    otherwise a short description of the FIRST thing wrong. PURE — no I/O. The CLI turns a non-`None` result
+    into a fail-closed not-yet, so `decide` is never reached with a malformed view."""
+    if not isinstance(view, dict):
+        return f"view is not a JSON object (got {type(view).__name__})"
+    for field in _VIEW_STR_FIELDS:
+        if field not in view:
+            return f"missing field {field!r}"
+        # bool is a subclass of int, not str, so a JSON string is the only thing that passes here.
+        if not isinstance(view[field], str):
+            return f"field {field!r} must be a string, got {type(view[field]).__name__}"
+    if "isDraft" not in view:
+        return "missing field 'isDraft'"
+    if not isinstance(view["isDraft"], bool):
+        return f"field 'isDraft' must be a bool, got {type(view['isDraft']).__name__}"
+    return None
+
+
 def load_view(pr: str, repo: "str | None", view_json: "str | None") -> dict:
     """The PR's live view — from a recorded `gh pr view` JSON (`--view-json`, testable without gh) or from
     `gh pr view` itself. Any failure raises `ViewError`, which the caller turns into a fail-closed not-yet.
@@ -206,6 +231,12 @@ def check(pr: str, ledger_path: Path, repo: "str | None", view_json: "str | None
         view = load_view(pr, repo, view_json)
     except ViewError as exc:
         print(json.dumps(_not_yet(f"could not fetch PR view: {exc}")))
+        return 1
+    # A syntactically valid but INCOMPLETE/WRONG-TYPED view must fail CLOSED here, never crash `decide` with
+    # a KeyError/TypeError and never say `merge`. Mirrors the fetch-failure not-yet above.
+    problem = validate_view(view)
+    if problem is not None:
+        print(json.dumps(_not_yet(f"malformed PR view: {problem}")))
         return 1
     print(json.dumps(decide(row, view, required=REQUIRED)))
     return 0

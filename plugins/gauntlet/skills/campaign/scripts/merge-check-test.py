@@ -188,6 +188,41 @@ def t_cli_no_ledger_row():
               f"a missing row must decide `no ledger row` without ever reading the view, got {out!r}")
 
 
+def _cli_malformed_view(bad_view: dict, missing_or_wrong: str) -> None:
+    """Drive the real CLI with a syntactically valid but malformed `--view-json`. It must fail CLOSED: a
+    structured not-yet naming the malformed view, a NON-ZERO exit, and NO traceback — never a KeyError and
+    never `merge`."""
+    with tempfile.TemporaryDirectory() as d:
+        led = Path(d) / "state.jsonl"
+        L.dump(led, dict(L.HEADER_DEFAULTS, run_id="g1"), [row()])
+        vjson = Path(d) / "view.json"
+        vjson.write_text(json.dumps(bad_view), encoding="utf-8")
+        code, out, err = capture_cli(
+            M.main, ["check", "--pr", "9", "--file", str(led), "--view-json", str(vjson)])
+        check(code != 0, f"a malformed view must exit non-zero (fail closed), got {code} (stderr: {err})")
+        result = json.loads(out)
+        check(result["verdict"] == "not-yet",
+              f"a malformed view must decide not-yet, never merge, got {result!r}")
+        check(result["reason"].startswith("malformed PR view:"),
+              f"the reason must name the malformed view, got {result['reason']!r}")
+        check(missing_or_wrong in result["reason"],
+              f"the reason must say what is wrong ({missing_or_wrong!r}), got {result['reason']!r}")
+
+
+def t_cli_view_missing_field():
+    # A valid JSON object MISSING mergeStateStatus — decide() would KeyError on it; the boundary parks it.
+    v = view()
+    del v["mergeStateStatus"]
+    _cli_malformed_view(v, "mergeStateStatus")
+
+
+def t_cli_view_wrong_type_field():
+    # isDraft handed in as a STRING, not a bool — a wrong JSON type must fail closed like a missing field.
+    v = view()
+    v["isDraft"] = "false"
+    _cli_malformed_view(v, "isDraft")
+
+
 # --- the drift guard has teeth ------------------------------------------------
 
 def t_doc_check_agrees_with_the_shipped_doc():
@@ -314,6 +349,8 @@ CASES = [
     ("mergeable-unknown-value-parks", "an unrecognised mergeable value parks", t_unknown_mergeable_value_parks),
     ("cli-injected-view", "check --view-json decides without gh and exits 0", t_cli_injected_view),
     ("cli-no-row", "a PR absent from the ledger decides `no ledger row`", t_cli_no_ledger_row),
+    ("cli-view-missing-field", "a view missing a field fails closed, never KeyError", t_cli_view_missing_field),
+    ("cli-view-wrong-type", "a view field of the wrong JSON type fails closed", t_cli_view_wrong_type_field),
     ("doc-agrees", "the shipped doc agrees with the code", t_doc_check_agrees_with_the_shipped_doc),
     ("doc-drift-caught", "doc-check FAILS when the doc drops a value", t_doc_check_detects_a_dropped_value),
     ("doc-prose-cant-mask", "prose outside the table can't mask a dropped table row",
