@@ -53,10 +53,17 @@ These repository operations consume that record; no consumer reconstructs their 
 - `default_worktree(repository: RepositoryContext, head_ref_name: Text) -> Path` returns
   `path_join(repository.worktrees_root, head_ref_name)`. A reused checkout remains its discovered
   absolute path instead.
-- `create_run_directory(repository: RepositoryContext, run_id: Text) -> Path` first calls
-  `run_argv(["mkdir", "-p", "--", repository.scratch_root], null, null, null)`, then calls
-  `run_argv(["mkdir", "--", run_directory(repository, run_id)], null, null, null)`. The second call has
-  no `-p`, so collision remains an atomic failure; on failure the caller mints a new id and retries.
+- `create_run_directory(repository: RepositoryContext) -> Path` invokes the bundled `run-id.py` (resolved
+  from the active `SKILL.md`'s `scripts/`, per `SKILL.md`'s bundled-script rule) through
+  `run_argv(["python3", <that run-id.py path>, "new", "--runs-dir", repository.scratch_root], null, null,
+  null)` — `cwd`/`stdin_file`/`stdout_file` all null, so the returned `ProcessResult` carries the tool's
+  stdout — then REQUIRES a zero exit and parses the `{run_id, rundir}` JSON from `ProcessResult.stdout`,
+  returning the `rundir`. `run-id.py`
+  OWNS the mint and the atomic create: it generates the id, creates `repository.scratch_root` if absent,
+  and creates `run_directory(repository, run_id)` with a bare `mkdir` (no `-p`, so a collision is an atomic
+  failure) — retrying with a FRESH id on the rare clash and failing closed if it cannot. It takes NO
+  pre-minted `run_id` (it produces one) and the caller no longer mints or retries; the run-id is the
+  returned directory's final path component.
 
 Campaign entry/resume, Copilot address-review entry, adoption/pre-review, and merge all carry the
 resulting `RepositoryContext` as typed data. Every repository Git process uses either
@@ -277,9 +284,16 @@ completion into the same reconcile loop regardless of the host mechanism that re
 
 For the heartbeat fallback, choose exactly one lifecycle:
 
-1. **Scheduled-heartbeat host:** schedule `<campaign-invocation> --run <run-id> --token <agent-token>` at the
-   delay selected by `loop-control.md`, render status, and return. The future invocation begins at the
-   heartbeat/reconcile entry.
+1. **Scheduled-heartbeat host:** do NOT hand-assemble the callback. Run `scripts/heartbeat.py callback`
+   (resolve `scripts/` from the active `SKILL.md`, per **Bundled resources** above) with the host
+   invocation, run-id, and token — `heartbeat.py callback --run <run-id> --token <agent-token>
+   --invocation <campaign-invocation>` — and schedule its **stdout** (the `<campaign-invocation> --run
+   <run-id> --token <agent-token>` line the tool prints) at the delay selected by `loop-control.md`, then
+   render status and return. Letting the tool build the line is what enforces the guarantee: the callback
+   carries **only** `--run` and `--token` and **never** `--new`/`#PR` (start-time args that would mint a
+   fresh run each heartbeat) or `--heartbeat-id` (an acquire-time proof) — and the tool refuses any value
+   that is empty or carries whitespace, closing the argument-injection seam. The future invocation begins
+   at the heartbeat/reconcile entry.
 2. **Scheduler-less host:** keep the current campaign invocation alive, render status, and use the host's
    bounded wait/poll mechanism until the first task completion or protected 5-minute/15-minute deadline.
    When that wait returns, go directly back to the heartbeat/reconcile entry and repeat while non-terminal
