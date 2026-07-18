@@ -408,6 +408,35 @@ mark the review suspicious; if it remains stale on the next wake, treat it as a 
 failure: apply `reviewer.md`'s retry budget and `runtime-adapter.md`'s owned transition. Ignore any
 late verdict from a stale/superseded attempt unless its attempt id still matches the active review pass.
 
+**A finer liveness signal for a background-task reviewer whose stdout is captured INCREMENTALLY: its
+OUTPUT STREAM.** The meaningful-progress
+timer above is unit-granular — a `done` event fires only when a whole unit completes, minutes apart — so
+BETWEEN units a live reviewer grinding one unit and a hung one look identical until the ~15-min cap. A
+background-task reviewer whose stdout is captured as it is produced writes a stream that grows CONTINUOUSLY
+while the model emits, which is a far finer **process-liveness** signal. Read it with
+`reviewer-liveness.py probe --stream <task-output-file>`, which **stats the file only — never reads its
+content** (the transcript is large enough to flood the driver's context). Use its verdict two ways: a
+stream written within the quiet window (`alive`) means the process is emitting, so do **not** declare a
+false stall while the progress file is merely coarse-stale; a stream unwritten past the window (`quiet`),
+**and an `absent` stream, corroborate a hang ONLY AFTER launch evidence exists** — the reviewer wrote at
+least one line after `pass_identity` (a `started` event or an amendment) and then went quiet —
+in which case apply `reviewer.md`'s retry budget without waiting the full meaningful-progress cap.
+**BEFORE launch evidence, a `quiet`/`absent` stream is NOT a hang signal:** the launch-evidence gate (the
+Stage 2a launch deadline, above) still owns that window, and triggering the retry budget there would kill a
+healthy warming-up reviewer or pre-empt the launch-evidence recovery. **This is process liveness, NOT
+meaningful progress** — exactly like the `started`/"still working"
+lines above, a growing stream **MUST NOT reset the meaningful-progress timer**: a reviewer that streams
+forever without completing a unit is still stalled at that cap. The stream signal makes a dead process
+caught sooner; it never extends patience for one that will not converge. **The signal needs the stdout to
+be captured INCREMENTALLY**, so it applies only to a background-task reviewer whose stream grows as the
+model emits — the Claude-Code→codex route qualifies (codex streams its reasoning to the captured stdout).
+A reviewer whose output is BUFFERED until completion exposes no growing stream: `claude -p --output-format
+text` (the Codex→claude route) writes nothing until the end (realtime streaming needs `--output-format
+stream-json`), so a HEALTHY such reviewer's file stays unwritten and the probe reads a FALSE `quiet` — the
+driver MUST NOT rely on its `quiet` verdict for that route. A native-worker reviewer's transcript is not
+safely pollable either, so that route likewise keeps the progress-file-plus-completion model
+(`reviewer.md`, native-worker path).
+
 ### What the review is MEASURED AGAINST — the PR's intent
 
 **THE REVIEWER USED TO BE TOLD WHAT THE CODE WAS. IT WAS NEVER TOLD WHAT THE CODE WAS FOR.** The dispatch

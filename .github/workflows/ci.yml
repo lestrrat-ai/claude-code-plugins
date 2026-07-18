@@ -98,11 +98,13 @@ jobs:
             plugins/gauntlet/skills/campaign/scripts/followups.py \
             plugins/gauntlet/skills/campaign/scripts/followups-test.py \
             plugins/gauntlet/skills/campaign/scripts/nudge.py \
-            plugins/gauntlet/skills/campaign/scripts/nudge-test.py | tee pyright.json
+            plugins/gauntlet/skills/campaign/scripts/nudge-test.py \
+            plugins/gauntlet/skills/campaign/scripts/reviewer-liveness.py \
+            plugins/gauntlet/skills/campaign/scripts/reviewer-liveness-test.py | tee pyright.json
           analyzed=$(jq '.summary.filesAnalyzed' pyright.json)
           echo "filesAnalyzed=${analyzed}"
-          if [ "${analyzed}" != "20" ]; then
-            echo "::error::pyright analysed ${analyzed} file(s), not the 20 it was pointed at — it checked" \
+          if [ "${analyzed}" != "22" ]; then
+            echo "::error::pyright analysed ${analyzed} file(s), not the 22 it was pointed at — it checked" \
                  "nothing and said so quietly. Fix the paths above; a silent no-op is not a passing gate."
             exit 1
           fi
@@ -180,3 +182,13 @@ jobs:
       # neither.
       - name: Nudge printer contract
         run: python3 plugins/gauntlet/skills/campaign/scripts/nudge.py --self-test
+
+      # The reviewer-liveness probe's rules, executed. It reports whether a background reviewer's stdout
+      # stream is still growing — a finer PROCESS-liveness signal than the unit-granular progress file —
+      # by stat'ing the file only, never reading it. Like the nudge printer it decides nothing and always
+      # exits 0; each fixture pins a verdict on BOTH sides of a boundary (a constant-returning probe would
+      # go red). The sibling `reviewer-liveness-test.py` is loaded by path; a MISSING sibling fails loudly,
+      # so this can never report health over a suite it did not run. As with the suites above, the point of
+      # this step is that `py_compile` parses these files and runs neither.
+      - name: Reviewer liveness probe contract
+        run: python3 plugins/gauntlet/skills/campaign/scripts/reviewer-liveness.py self-test

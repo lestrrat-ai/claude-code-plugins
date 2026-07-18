@@ -402,7 +402,10 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      sit undetected for a full normal interval — otherwise **~15 min**, matching the Stage 2a meaningful-progress
      threshold: with no launch deadline pending, nothing can declare a review stalled before then, so a
      shorter interval only re-reconciles git/gh with no new signal (and pays a fresh-context cost per
-     wake). ALWAYS keep a heartbeat or bounded wait active whenever non-terminal work remains — skipping
+     wake). **One exception carries new signal:** a background-task review watched via its stdout stream
+     can be declared hung before that cap once the stream falls quiet (`stage-2-review-gate.md`, the
+     stdout-stream liveness signal), so while such a review is streaming, a shorter poll toward that
+     quiet window is a real check, not a bare re-reconcile. ALWAYS keep a heartbeat or bounded wait active whenever non-terminal work remains — skipping
      both means a hung or orphaned run wakes no one. Run
      `ledger.py --file <state.jsonl> table` and include its output verbatim, fenced, in the status
      message. **Verbatim means WHOLE** — including every `#` line it prints below the grid. The default
