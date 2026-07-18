@@ -408,6 +408,23 @@ mark the review suspicious; if it remains stale on the next wake, treat it as a 
 failure: apply `reviewer.md`'s retry budget and `runtime-adapter.md`'s owned transition. Ignore any
 late verdict from a stale/superseded attempt unless its attempt id still matches the active review pass.
 
+**A finer liveness signal for a background-task reviewer: its OUTPUT STREAM.** The meaningful-progress
+timer above is unit-granular — a `done` event fires only when a whole unit completes, minutes apart — so
+BETWEEN units a live reviewer grinding one unit and a hung one look identical until the ~15-min cap. A
+cross-engine reviewer launched as a background task also writes a stdout stream that grows CONTINUOUSLY
+while the model emits, which is a far finer **process-liveness** signal. Read it with
+`reviewer-liveness.py probe --stream <task-output-file>`, which **stats the file only — never reads its
+content** (the transcript is large enough to flood the driver's context). Use its verdict two ways: a
+stream written within the quiet window (`alive`) means the process is emitting, so do **not** declare a
+false stall while the progress file is merely coarse-stale; a stream unwritten past the window (`quiet`)
+**corroborates** a hang, so apply `reviewer.md`'s retry budget without waiting the full meaningful-progress
+cap. **This is process liveness, NOT meaningful progress** — exactly like the `started`/"still working"
+lines above, a growing stream **MUST NOT reset the meaningful-progress timer**: a reviewer that streams
+forever without completing a unit is still stalled at that cap. The stream signal makes a dead process
+caught sooner; it never extends patience for one that will not converge. It applies **only** to the
+background-task (cross-engine) route — a native-worker reviewer's transcript is not safely pollable, so
+that route keeps the progress-file-plus-completion model (`reviewer.md`, native-worker path).
+
 ### What the review is MEASURED AGAINST — the PR's intent
 
 **THE REVIEWER USED TO BE TOLD WHAT THE CODE WAS. IT WAS NEVER TOLD WHAT THE CODE WAS FOR.** The dispatch
