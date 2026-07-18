@@ -142,34 +142,20 @@ file is a plaintext file in a directory the reviewer can write to.
 ["python3", review_pass_script, "self-test"]
 ```
 
-The hand-written artifacts are what this replaces, and each had already failed: a `printf`-ed
-`pass_identity` put a **TRUNCATED SHA** into real state; the emit tool accepted a `done` for a unit that
-**was never planned** (the rule was prose, enforced by nobody); and the tally was re-derived by eye with
-an ad-hoc parser written fresh each heartbeat — the same "read it by eye, write down the answer" that produced
-a false `ci = green`. `verify` refuses a short sha, a malformed identifier of any kind, an unplanned unit,
-an evidence-free `done`, a `done`
-that no `started` precedes, a SECOND `done` for a unit already finished, a `pass_identity` that names
-another commit or another launch attempt, and any hand-written line that is not the exact shape below —
-**whether or not the write tool was used**. **`emit` refuses every one of those it can see, by calling the
-SAME functions** — one implementation, both doors, so a rule cannot hold at one and not the other.
+`verify` re-derives every rule below from the bytes and refuses a pass whose artifacts break any of them
+— **whether or not the write tool was used**; the `unusable` row of the verify table (below) is the
+refusal list. **`emit` refuses every one of those it can see, by calling the SAME functions** — one
+implementation, both doors, so a rule cannot hold at one and not the other.
 
 **EVERY IDENTIFIER HAS ONE LEGAL FORM, AND NO DOOR REPAIRS ONE.** A unit `id`/`unit` is lowercase letters
 then digits (`u01`); `pr`, `pass` and `launch_attempt` are decimal numbers from 1 up; `head_sha` is 40
-lowercase hex. A value outside its form is an ERROR, not a variant to be trimmed into shape — and that
-distinction is the point, not pedantry. The tool used to strip `emit`'s `--unit` while `plan-add` took its
-`--id` verbatim, so `plan-add --id ' u01 '` exited 0 and `emit --unit ' u01 '` then failed with NOT IN THE
-PLAN, printing `Planned: [' u01 ']`: two doors, two ideas of one id, and a planned unit no reviewer could
-ever record progress against. Trimming at *both* doors would have fixed that call and kept the disease —
-two spellings of one id, and every future door obliged to remember the conversion. A FORMAT leaves nothing
-to convert. It is also the only rule that could ever have caught the **truncated sha** that reached real
-state: `a3f29c1` is perfectly clean, and simply not a commit id.
+lowercase hex. A value outside its form is an ERROR, never a variant to be trimmed or normalized into
+shape: a door that repairs an identifier creates a second spelling of it that every other door must then
+remember, and a FORMAT leaves nothing to convert. A format also refuses what cleanliness cannot —
+`a3f29c1` is perfectly clean, and simply not a commit id.
 
 **ANYTHING THE TOOL WRITES, IT CAN READ BACK — a write is REFUSED unless the file it would produce
-verifies.** Every rule holding at both doors is not enough on its own, and that gap was real: `emit` on an
-empty progress file exited 0 (it never checked that the identity was there) and `verify` then called that
-same file `unusable: NO pass_identity`; `identity` treated a whitespace-only file as fresh and `verify`
-then refused the artifact for the blank line. The tool accepted the work and then said the work did not
-count. So every write command now runs the READ side's whole-file check on the bytes it is about to
+verifies.** Every write command runs the READ side's whole-file check on the bytes it is about to
 produce — the file it writes INTO and the file it would LEAVE — and writes nothing if that check refuses.
 Two consequences you can see from the outside: **`emit` refuses a progress file with no valid
 `pass_identity`** (the orchestrator writes it before the reviewer is launched, so an empty one means the
@@ -211,16 +197,10 @@ Rules:
   the same SHA (or clean base-only rebase, diff unchanged), copy pass 1's plan to
   `review-<pr>-2.plan.jsonl` instead of re-deriving. Re-derive only when PR content changed.
 - Each unit MUST name concrete `target` + concrete `checks`.
-- **A unit `id` has ONE legal form: lowercase letters then digits (`u01`, `u02`) — and anything else is an
-  ERROR, never a variant to be repaired.** `U01`, `u 01`, ` u01 ` are not other ways of spelling `u01`;
-  they are not ids, and `plan-add` refuses them. This is the id every progress event MATCHES the unit by,
-  so a second spelling of it is a unit the reviewer's `emit` cannot name: the tool once accepted
-  `plan-add --id ' u01 '` and then told the reviewer that ` u01 ` was NOT IN THE PLAN — while printing
-  `Planned: [' u01 ']` — because the emit door trimmed the value and the plan door had not. The plan held a
-  unit whose progress could never be recorded, and the pass could never complete. **No door trims,
-  normalizes or repairs an identifier**; each is refused where it enters, so the plan can never come to
-  hold an id the other doors cannot match. The same holds for every other identifier the tool touches
-  (`pr`, `pass`, `launch_attempt` — decimal, from 1 up; `head_sha` — 40 lowercase hex).
+- **A unit `id` has ONE legal form — "EVERY IDENTIFIER HAS ONE LEGAL FORM" above — and `plan-add`
+  refuses anything else.** `U01`, `u 01`, ` u01 ` are not other ways of spelling `u01`; they are not ids.
+  This is the id every progress event MATCHES the unit by, so a second spelling of it would be a planned
+  unit whose progress the reviewer's `emit` could never record.
 - **The plan's filename is part of the contract: `review-<pr>-<n>.plan.jsonl`, and `plan-add` refuses any
   other.** `verify` is never given the plan's path — it DERIVES it from the progress file's name — so a
   plan written under a different name is a plan nothing will ever open, and the pass is then refused for a
@@ -249,17 +229,14 @@ other event types for unit progress. Unit-progress events carry ONLY the exact r
 
 **A `done` REQUIRES an earlier `started` for the same unit — enforced by ORDER, at both doors.** A unit
 that was never begun cannot have been finished, so a `done` standing alone, or standing *above* its
-`started` in this append-only file, makes the pass `unusable`. This is not bookkeeping: a progress file
-carrying a valid `pass_identity` and a `done` for every planned unit — and not one `started` — is a
-review that demonstrably did not happen, and the tool exists to say so. `emit` refuses to write such a
-`done` and `verify` refuses to read one.
+`started` in this append-only file, makes the pass `unusable`: a progress file carrying a `done` for
+every planned unit and not one `started` is a review that demonstrably did not happen, and the tool
+exists to say so. `emit` refuses to write such a `done` and `verify` refuses to read one.
 
 **A unit is `done` exactly ONCE — a SECOND `done` for it makes the pass `unusable`, at both doors.** Two
 `done` events for one unit are two accounts of it, and nothing says which was read. If what you found
-changed, the pass is what re-runs, not the line. (This rule held on READ and *not* on write: `emit`
-appended the second `done` and exited 0, so the reviewer was told it had succeeded and the pass was
-thrown away later for a defect the tool had just helped it commit. The three unit-progress rules —
-planned unit, `done` follows `started`, no second `done` — are now ONE predicate that both doors call.)
+changed, the pass is what re-runs, not the line. (The three unit-progress rules — planned unit, `done`
+follows `started`, no second `done` — are ONE predicate that both doors call.)
 
 The `plan_amendment_request` event keeps its existing shape; its `ts` must be a real UTC ISO-8601
 timestamp (the same clock rule `pass_identity.dispatched_at` obeys) and its `reason` must be non-empty —
@@ -269,12 +246,10 @@ an amendment holds a pass back, so it must say something the orchestrator can ru
 (`started`/`done`).** The reviewer MUST NOT ever write those unit-progress events into the progress
 file directly — no hand-written JSON, no `echo`/`printf`/redirection into it, no editor append. Every
 unit-progress event reaches the file through the tool and no other path. **Its CLI is unchanged**
-(`--file --unit --status --evidence`); it now forwards to `review-pass.py emit`, which **REFUSES a unit
-that is not in the plan**, **a `--unit` that is not a well-formed unit id** (it is NOT trimmed — pass the
-id exactly as the plan spells it), a `done` with no concrete evidence, a `done` that no `started`
-precedes, a
-SECOND `done` for a unit already finished, and — the refusal that is not about the event at all — **a
-progress file `verify` could not read**, which most often means one carrying no `pass_identity` yet. And the emit-only rule is no longer
+(`--file --unit --status --evidence`); it now forwards to `review-pass.py emit`, which enforces the
+unit-progress rules above at the write door (the `--unit` is NOT trimmed — pass the id exactly as the
+plan spells it) and — the refusal that is not about the event at all — refuses **a progress file
+`verify` could not read**, which most often means one carrying no `pass_identity` yet. The emit-only rule is not
 enforced by good faith: `verify` re-derives every rule from the bytes, so a hand-written line that the
 tool would have refused is caught on **READ** — the pass goes `unusable` rather than counting. This emit-only rule applies
 ONLY to the `started`/`done` unit-progress events: the tool does not produce any other event type.
@@ -313,11 +288,9 @@ an actor who can really send that reply, and it quotes the PR's purpose verbatim
 **first line** of the launch attempt's progress file **before** launching the reviewer process, so that
 file exists from dispatch onward. `pr`, `pass` and `launch_attempt` are taken **from the progress file's
 own name**, so the identity and the file it sits in can never disagree; the only values passed in are the
-head SHA (refused unless it is 40 lowercase hex — **a short SHA has escaped into this repo's real state
-twice**, once through exactly this line) and `dispatched_at` (refused unless it is a UTC ISO-8601
-timestamp — it is the launch deadline's clock, and a deadline measured from a time nobody can parse never
-fires — **and unless it PARSES as a real moment**: `2026-99-99T99:99:99Z` has the exact right shape, and
-a month 99 is not a month; the deadline is arithmetic on this value, so a shape check alone cannot protect
+head SHA (refused unless it is 40 lowercase hex) and `dispatched_at` (refused unless it is a UTC ISO-8601
+timestamp **that PARSES as a real moment**: `2026-99-99T99:99:99Z` has the exact right shape, and a month
+99 is not a month — the launch deadline is arithmetic on this value, so a shape check alone cannot protect
 it). Three rules depend on it: a late verdict is ignored unless its attempt
 id still matches the active pass; `dispatched_at` is the clock the launch check below measures against;
 and `launch_attempt` (`1`, then `2` on a relaunch) is how a *later heartbeat* — possibly a fresh agent —
@@ -561,20 +534,16 @@ is not a verbatim `## Purpose` line; or `writer` contradicts the repro. It still
 — it can only ever **subtract** a pass, never grant one.
 
 **THE VERDICT/FINDINGS RULE IS AN IF AND ONLY IF, AND BOTH HALVES ARE ENFORCED: `NOT SATISFIED` exactly
-when at least one GATING finding stands.** Only the first half used to be, so a pass could record a
-blocking defect — one anchored to the PR's own purpose, or reachable by an actor it named — and return
-`SATISFIED` anyway, and the gate took it. The reviewer decided the finding gates **when it chose that
+when at least one GATING finding stands.** The reviewer decided the finding gates **when it chose that
 `writer` and that `purpose`**; the verdict may not then ignore it. A finding the reviewer does **not**
 intend to block on is said so where it is **said**: `purpose = -` and a no-adversary `writer`, which is
 what makes it NON-GATING — and `emit-finding.py` prints `NON-GATING` when it writes one, so the reviewer
 learns it in time to act. A `SATISFIED` pass carrying only non-gating findings is the ordinary, intended
 shape and passes untouched.
 
-**AND THE INTENT IS CHECKED FOR EVERY PASS — whatever it found, and even when it found nothing.** It used
-to be loaded only where a **finding** needed anchoring, so a pass with **no findings** never looked for it:
-a `SATISFIED` pass on a PR whose intent was never written verified `ok`, and that is the ordinary case —
-the one that **merges the PR**. The guard's input could simply be **absent** on precisely the passes that
-count, and a guard whose input can be absent never fires. `verify` now derives the PR from the progress
+**AND THE INTENT IS CHECKED FOR EVERY PASS — whatever it found, and even when it found nothing.** A
+guard whose input can be absent never fires, and the pass with no findings is precisely the ordinary
+case — the one that **merges the PR**. `verify` derives the PR from the progress
 file's own name and loads `<rundir>/intent-<pr>.md` on **every** pass; anything short of a **usable** block
 makes the pass `unusable` and no verdict is tallied from it. **What "usable" means is NOT restated here** —
 `pr-adoption.md` step 3a states it for the human writing the file, and `review-pass.py`'s parser IS the
@@ -787,9 +756,8 @@ boundary; a future adapter that proves `os_filesystem_isolation` supplies aliase
 ### Does this pass COUNT? — ASK THE TOOL, never the eye
 
 **Before a verdict is tallied at all, verify the pass's artifacts.** A verdict is only worth as much as
-the pass that produced it, and "was this pass real?" was, until now, decided by reading three files by eye
-with a parser written fresh each heartbeat. That is precisely how a driver read `gh pr checks` by eye and wrote
-`ci = green` on zero evidence — the same hole, one layer up.
+the pass that produced it, and deciding "was this pass real?" by eye is the same hole that once produced
+a false `ci = green` — one layer up.
 
 ```
 review-pass.py verify --file <rundir>/<active attempt's progress file> --head-sha <the PR's LIVE head> \
@@ -812,11 +780,9 @@ routing verdicts as any other pass — **`amended`** (fold the amendment and re-
 it owes a binary verdict). **NEVER fabricate a binary `satisfied`/`not-satisfied` for the reviewer** — if
 it did not rule, you do not rule for it.
 
-**`--verdict` is REQUIRED, and a COMPLETE pass verified without it is `unusable` — never `ok`.** It used to
-be optional, and that made the only mechanical check on the reviewer's own verdict a guard a driver
-switched off by *forgetting a flag*: a complete pass with no `--verdict` came back `ok`, and a reviewer
-that returned SATISFIED over a GATING finding it had itself recorded sailed through. **A gate must not
-depend on an agent remembering to pass something** — so the input is demanded, exactly as the intent is.
+**`--verdict` is REQUIRED, and a COMPLETE pass verified without it is `unusable` — never `ok`.** A gate
+must not depend on an agent remembering to pass something — so the input is demanded, exactly as the
+intent is.
 **You come to this door WITH the report's `VERDICT:` line in hand.** It is not the way to ask whether the
 reviewer has finished: a pass still in flight is **watched**, not verified — its progress file is the
 liveness evidence ("Launch check", above).
@@ -858,18 +824,15 @@ not a verdict — no round happened — and the table below lists every site tha
 
 **`review_rounds` is the loop's only memory, and it is NEVER reset** — not by a fix, not by a rebase, not by
 a content change, not by a re-triage. Every heartbeat is a fresh context: without it, **no rule that depends on
-"how many rounds has this PR taken" can ever fire.** That is not hypothetical. It is how PR #42 ran **21
-review rounds** while a "hard backstop" that triggers on the *second* `NOT SATISFIED` sat in this skill,
-unfired — the trigger is a fact about history, and nothing recorded any history. The final ledger row read
-`reviews_ok=0 attempts=0`, exactly as it had after round one. `ns_streak` (consecutive `NOT SATISFIED`,
-cleared **only** by a `SATISFIED`) is the same sensor one derivative down.
+"how many rounds has this PR taken" can ever fire** — the 21-round PR ran under a backstop that triggers
+on the *second* `NOT SATISFIED`, unfired, because nothing recorded any history. `ns_streak` (consecutive
+`NOT SATISFIED`, cleared **only** by a `SATISFIED`) is the same sensor one derivative down.
 
 **What READS these counters is `verdict` itself, and at a cap it STOPS THE LOOP.** They are sensors, and
-the reader is fused into the one door that cannot be skipped — deliberately. A cap evaluated by a
-*separate* command is a cap a driver can forget to run, and that is precisely how the "hard backstop" above
-sat unfired through 35 review rounds. The hazard that normally argues for keeping a reader out of a sensor
-— that the reader comes to reset what it consumes — is structurally absent here: **the cap path writes
-`status` and nothing else**, so `review_rounds` stays monotone whatever it decides.
+the reader is fused into the one door that cannot be skipped — deliberately: a cap evaluated by a
+*separate* command is a cap a driver can forget to run. The hazard that normally argues for keeping a
+reader out of a sensor — that the reader comes to reset what it consumes — is structurally absent here:
+**the cap path writes `status` and nothing else**, so `review_rounds` stays monotone whatever it decides.
 
 **At a review-loop cap, `verdict` sets `status = repairing` and EXITS NON-ZERO.** The PR has stopped
 converging: **do NOT dispatch a fix subagent and do NOT launch another review pass for it.** Hand its
