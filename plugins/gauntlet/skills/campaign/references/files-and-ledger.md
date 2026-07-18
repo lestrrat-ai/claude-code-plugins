@@ -18,7 +18,7 @@ resume, reuse the existing dir). Per-run dirs are what keep concurrent runs' fil
 | `review-<pr>-<n>.findings.jsonl` | The pass's FINDINGS, round `n` (launch attempt 1) — one validated record per finding, written **only** through `scripts/emit-finding.py`. A finding used to be prose in the report, so nothing could check its citation, bound its writer, or ask what it DEFENDED — and therefore nothing could ever **decline** one. Each record ANCHORS to the PR's intent: a `## Purpose` line quoted verbatim, or the actor who can actually write the bad input. `stage-2-review-gate.md` owns the schema and the gating rule |
 | `intent-<pr>.md` | **What this PR is FOR** — `## Purpose` / `## Non-goals` / `## Threat model`. Written at adoption (`pr-adoption.md`), from the PR body when it carries one and **authored by the driver** from the diff/title/body when it does not; re-read every heartbeat, never re-derived. It is passed to the reviewer **verbatim**, and it is what the **pass** is measured against: `review-pass.py verify` loads it for **every** pass it judges — including one that found nothing — so a PR with no usable block here earns **no verdicts at all** (`stage-2-review-gate.md`, "Does this pass COUNT?"). **LOCAL and git-ignored — campaign NEVER writes it back to the PR** |
 | `review-<pr>-<n>.a<k>.prompt.txt` / `.a<k>.txt` / `.a<k>.progress.jsonl` / `.a<k>.findings.jsonl` | The same four per-attempt artifacts for **launch attempt `k ≥ 2`** — a relaunched pass writes here, never over attempt 1's files, so a killed-but-alive attempt can't corrupt the live one. Only the attempt named in the active `pass_identity` is read or counted as gate output (see `stage-2-review-gate.md`). The plan and the intent are **not** per-attempt: the plan is per-pass, the intent per-PR |
-| `ci-<pr>-<head_sha>.txt` | Latest **SHA-pinned** CI snapshot for a PR — check runs **AND** commit statuses, written **BY THE HEARTBEAT** running **`scripts/ci-status.py derive`** after the watch completes (**the watch never writes it**), promoted atomically, and **stamped with the `head_sha` it describes** (verify the stamp before parsing). Carries a **`source` completion marker per mandatory source**, so a source that was **never queried** is `unusable`, not a silent green (`stage-2-ci.md`). Never the watch stream, and never `gh pr checks` — its output carries **no SHA** |
+| `ci-<pr>-<head_sha>.txt` | Latest **SHA-pinned** CI snapshot for a PR — check runs **AND** commit statuses, written **BY THE HEARTBEAT** running **`scripts/ci-status.py derive`** after the watch completes (**the watch never writes it**), promoted atomically, and **stamped with the `head_sha` it describes** (verify the stamp before parsing). Carries a **`source` completion marker per mandatory source**, so a source that was **never queried** is `unusable`, not a silent green (`ci-derivation-spec.md`). Never the watch stream, and never `gh pr checks` — its output carries **no SHA** |
 | `audit-<pr>-<n>.md` | A dispatched context-isolated audit subagent's verdicts on round `n`'s gating findings — CONFIRMED / ADJUSTED / REFUTED, each with evidence. A REFUTED finding's reasoning is recorded here **and** written into the tree as an inline comment at the site, committed like any other change (`stage-2-review-gate.md`, "Audit every finding before you fix it") |
 | `repair-<pr>-<k>.md` | The **reassessment pass**'s decision record for repair `k`: the whole round-by-round history it was handed, the ONE decision it returned, and why (`repair-pass.md`). Written **before** the decision is recorded — `repair-pass.py decide` refuses a `--record` that is missing or empty, because a heartbeat is a fresh agent instance and a justification held only in a dead agent's context can never be audited |
 | `abort-<id>.md` | Detailed log for an aborted PR-task |
@@ -259,25 +259,29 @@ Header field notes (the header fields above; per-row fields follow):
   `abort@…` is terminal and is never cleared.
 - `tier` — the adaptive review tier derived from `head_sha`: `TRIVIAL` | `STANDARD` | `HIGH`. Re-derived
   every heartbeat and re-triaged on any content change; drives `required(tier)` and the review depth.
-- `ci` — `green` / `red` / `pending` for `head_sha`. (**There is no `none`.** It was documented but no
-  procedure could ever write it.)
-- `ci_fingerprint` — digest of the last **verified** CI snapshot. **What it covers and exactly how it is
-  serialized is DEFINED in `stage-2-ci.md`, "SETTLED" — and is NEVER restated here**, because a
-  fingerprint reconstructed from a paraphrase is a different fingerprint. **UNCHANGED + nothing RUNNING
-  == SETTLED.**
+- `ci` — `green` / `red` / `pending` for `head_sha`. Recorded by `ci-status.py liveness` from `derive`'s
+  JSON (`stage-2-ci.md`, "THE BOOKKEEPING IS A COMMAND"). (**There is no `none`.** It was documented but
+  no procedure could ever write it.)
+- `ci_fingerprint` — digest of the last **verified** CI snapshot, written by `ci-status.py liveness`
+  **verbatim from the `fingerprint` field of `derive`'s JSON** (`null` there → the derivation was not
+  verified and this field is not written). **What it covers and exactly how it is serialized is DEFINED in
+  `stage-2-ci.md`, "SETTLED" — and is NEVER restated here**, because a fingerprint reconstructed from a
+  paraphrase is a different fingerprint. **UNCHANGED + nothing RUNNING == SETTLED.**
 - `settled_strikes` — consecutive derivations seen **SETTLED but not green** *while no machine action was
   due or in flight* for the PR at this `head_sha` (`stage-2-ci.md`, "SETTLED", owns the gate — a PR the
-  driver is actively repairing is never struck). At the **STRIKE CAP**, escalate: park `awaiting-user`
+  driver is actively repairing is never struck). Counted by `ci-status.py liveness`, never by hand. At
+  the **STRIKE CAP**, escalate: park `awaiting-user`
   naming the blocker. Reset to `0` on any `head_sha` change or fingerprint change.
 - `unusable_refetches` — consecutive derivations whose snapshot was **UNUSABLE** at this `head_sha`. An
   UNUSABLE snapshot has **no fingerprint** (its rows were never trusted), so it can never be a
-  `settled_strike`: it gets its own counter. At the **REFETCH CAP**, escalate the same way. Reset to `0`
+  `settled_strike`: it gets its own counter, counted by `ci-status.py liveness`. At the **REFETCH CAP**,
+  escalate the same way. Reset to `0`
   on any `head_sha` change and on any **VERIFIED** snapshot (`stage-2-ci.md`, "UNUSABLE — the refetch is
   BOUNDED").
 - `ci_stalled_since` — `-`, or the **UTC ISO-8601 timestamp** of the first derivation that saw the check
   set **RUNNING-STALLED** at this fingerprint: an evidence row still classifies `RUNNING` **and** the
   fingerprint did **not** change (`stage-2-ci.md`, "RUNNING-STALL" — the definition; the cap lives there
-  and nowhere else). A **clock, not a tally**, and that is deliberate: a `RUNNING` row that is merely
+  and nowhere else). Started and cleared by `ci-status.py liveness`. A **clock, not a tally**, and that is deliberate: a `RUNNING` row that is merely
   **SLOW** and one that is **DEAD** are indistinguishable on a fingerprint, and derivations are driven by
   heartbeats whose cadence depends on the run's load — so only elapsed **TIME** separates them. It is on disk
   precisely so `now - ci_stalled_since` is computable by a fresh agent instance that remembers nothing.

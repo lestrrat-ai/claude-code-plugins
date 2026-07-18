@@ -151,8 +151,11 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
 20. `ci-status.py derive`: how `ci` is DERIVED — always, the only way ("THE DERIVATION IS A COMMAND"
     owns the exact invocation): a SHA-pinned snapshot of BOTH check families, verified before parsing,
     decided against the header's required set. NEVER from `gh pr checks` (its output carries no SHA),
-    NEVER by reading command output and judging it by eye.
-21. A PR with a still-RUNNING check always has a live watch; a PR whose CI has SETTLED never does
+    NEVER by reading command output and judging it by eye. `ci-status.py liveness` then RECORDS that
+    JSON — `ci`, the fingerprint, the strike/stall/refetch counters, and any cap park ("THE BOOKKEEPING
+    IS A COMMAND" owns the invocation): the arithmetic is never applied by hand.
+21. A PR with a still-RUNNING check (`derive`'s `buckets.RUNNING > 0`) always has a live watch; a PR
+    whose CI has SETTLED never does
     ("WATCH ONLY WHAT CAN MOVE"). Completions are heartbeats — the driver never blocks. The bounded
     CI waits and their caps are named in ONE place ("THE LIVENESS COUNTERS"); at any cap, escalate or
     park — never leave a PR spinning on a watch that will never wake anyone.
@@ -228,9 +231,9 @@ a line the tool writes.
 | `emit-finding.py` | Reviewer's door: record one FINDING (the only sanctioned way; findings must anchor or they do not gate) | `references/stage-2-review-gate.md` |
 | `reviewer-liveness.py` | Probe whether a dispatched reviewer's output stream is still moving; decides nothing, always exits 0 | `references/stage-2-review-gate.md` |
 | `base-preflight.py` | Decide proceed / rebase-first / recheck from a PR's live merge-state before review or fix; performs no rebase | `references/stage-2-review-gate.md` |
-| `ci-status.py` | `derive` — how `ci` is DERIVED, always, the only way — and `required-set` | `references/stage-2-ci.md` |
-| `ci-snapshot.py` | Executable contract for the SHA-pinned CI snapshot artifact (used by `derive`) | `references/stage-2-ci.md` |
-| `mutate-ci-snapshot.py` | Mutation harness proving `ci-snapshot.py`'s rules are fixture-pinned; run by validation/CI, not the driver | `references/stage-2-ci.md` |
+| `ci-status.py` | `derive` — how `ci` is DERIVED, always, the only way — `liveness` — the recorder: writes `ci` + the liveness counters, parks at any cap — and `required-set` | `references/stage-2-ci.md` |
+| `ci-snapshot.py` | Executable contract for the SHA-pinned CI snapshot artifact (used by `derive`) | `references/ci-derivation-spec.md` |
+| `mutate-ci-snapshot.py` | Mutation harness proving `ci-snapshot.py`'s rules are fixture-pinned; run by validation/CI, not the driver | `references/ci-derivation-spec.md` |
 | `merge-check.py` | `check` — decide merge-readiness (`merge` / `not-yet <reason>`) from the ledger row + live PR view, crossing the ledger preconditions and both GitHub merge enums in one place | `references/stage-3-merge.md` |
 | `repair-pass.py` | Reassessment pass's door: `permitted` / `decide` — the closed decision enum, ownership guardrail, repair cap | `references/repair-pass.md` |
 | `followups.py` | Schema-owning accessor for the follow-up store (`.gauntlet/followups.jsonl`) — a durable work QUEUE, not an archive: entries are deleted once recorded elsewhere, kept when nothing else would remember | `references/followups.md` |
@@ -303,6 +306,7 @@ Read stage refs only when that stage/action is due:
 | Repeated sibling findings / shared root cause | `references/root-cause-pass.md` |
 | A PR at a review-loop cap (`status = repairing`) / a verdict that exits non-zero | `references/repair-pass.md` |
 | CI watch, check polling, CI fix | `references/stage-2-ci.md` |
+| Reviewing or changing the CI derivation tools themselves (`ci-status.py`, `ci-snapshot.py`) — never needed to drive | `references/ci-derivation-spec.md` |
 | Merge candidate / base refresh / cleanup | `references/stage-3-merge.md` |
 | Recording / investigating / acting on a follow-up (work found but not done) | `references/followups.md` |
 | Stuck task, abort, final report | `references/bailout-and-final-report.md` |

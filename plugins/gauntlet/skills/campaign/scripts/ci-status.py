@@ -72,7 +72,7 @@ GitHub ITSELF told us was short, called green". Each of these now FAILS CLOSED:
 
     **AND THAT COVERAGE RULE IS NOT WHAT CLOSES THE `EXPECTED` FALSE GREEN. IT CANNOT BE.** It quantifies
     over the `StatusContext` entries THE ROLLUP RETURNED, and the rollup carries NO total: unlike both REST
-    families it cannot be proven complete (`stage-2-ci.md`, "Honest limits"). Delete the one `EXPECTED` entry
+    families it cannot be proven complete (`ci-derivation-spec.md`, "Honest limits"). Delete the one `EXPECTED` entry
     from a rollup response and the guard has NOTHING TO CHECK, and the PR — blocked on a check nobody has run
     — goes GREEN. **A GUARD WHOSE INPUT CAN BE ABSENT NEVER FIRES.** The closure is the REQUIRED SET, above:
     it is DECLARED BY THE BASE BRANCH, so what must be present does not depend on what showed up. What the
@@ -92,7 +92,7 @@ GitHub ITSELF told us was short, called green". Each of these now FAILS CLOSED:
 **THERE IS NO `notes` CHANNEL, ON PURPOSE.** A field that says "this evidence may be incomplete" BESIDE a
 green verdict is the trapdoor, not the disclosure — it was read by nobody, and it let the tool ship the one
 thing it exists to prevent. Every gap the tool can DETECT is a REFUSAL. What CANNOT be known is stated where
-it belongs (`stage-2-ci.md`, "Honest limits"), never emitted as reassurance beside a verdict.
+it belongs (`ci-derivation-spec.md`, "Honest limits"), never emitted as reassurance beside a verdict.
 
 EVIDENCE ABOUT A COMMIT THAT IS NO LONGER THE HEAD IS NOT EVIDENCE ABOUT THE PR. The fetch is pinned to the
 LEDGER's `head_sha`, and a push can land at any time — including WHILE this tool is fetching. So the tool
@@ -107,7 +107,7 @@ watch, dispatch a CI fix, or park the PR. Those rules live in `stage-2-ci.md`. E
 create a SECOND owner of a rule that is moving under it.
 
 THE DOC AND THIS TOOL CANNOT SILENTLY DISAGREE — `doc-check` is what makes that true.
-The enums, the CLASSIFY buckets and the DECIDE order are stated in `stage-2-ci.md` as prose AND encoded in
+The enums, the CLASSIFY buckets and the DECIDE order are stated in `ci-derivation-spec.md` as prose AND encoded in
 `ci-snapshot.py` as Python. NOTHING compared them, so they could drift, and the drifted copy would be the
 one a reader believed. `doc-check` PARSES the doc's own enum block, its two CLASSIFY tables and its DECIDE
 bullet order, and asserts they agree with the sets `ci-snapshot.py` actually classifies with — and that the
@@ -125,7 +125,7 @@ them over their recorded API payloads.)
 
   required-set  read branch protection and rulesets, then persist their complete union in the ledger
   derive     fetch a PR's checks, promote the snapshot, verify it, and print the verdict as JSON
-  doc-check  assert stage-2-ci.md's enums / CLASSIFY / DECIDE order agree with the code that runs
+  doc-check  assert the CI docs (ci-derivation-spec.md + stage-2-ci.md) agree with the code that runs
   self-test  run every fixture, assert its verdict AND the rule that produced it, then run doc-check
 
 THE FIXTURE SUITE IS THE SIBLING `ci-status-test.py`, and it is this tool's EXECUTABLE CONTRACT — every rule
@@ -145,6 +145,7 @@ import re
 import subprocess
 import sys
 import textwrap
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, NamedTuple, NoReturn
 from urllib.parse import quote
@@ -153,7 +154,11 @@ HERE = Path(__file__).resolve().parent
 SNAPSHOT_PY = HERE / "ci-snapshot.py"
 LEDGER_PY = HERE / "ledger.py"
 TEST_PY = HERE / "ci-status-test.py"     # the fixture suite — this tool's executable contract
-DOC = HERE.parent / "references" / "stage-2-ci.md"
+# The CI docs, split by audience: the SPEC (what the tools implement — enums, CLASSIFY, DECIDE, the
+# fetch commands) and the DRIVER doc (the commands a heartbeat runs, the caps, the fingerprint block).
+# `doc-check` reads BOTH; each element is parsed from the file that owns it.
+SPEC_DOC = HERE.parent / "references" / "ci-derivation-spec.md"
+DRIVER_DOC = HERE.parent / "references" / "stage-2-ci.md"
 FIXTURES = HERE / "fixtures" / "ci-status"
 
 # A git object id, as GitHub returns it: 40 LOWERCASE hex. Same rule, same reason, as `ci-snapshot.py` —
@@ -224,6 +229,20 @@ STATUS_STATES = SNAP.STATUS_PASS | SNAP.STATUS_RUNNING | SNAP.STATUS_FAIL
 # demonstrated with an invented `BRAND_NEW_FAILURE`.
 PASS, RUNNING, FAIL, UNKNOWN_VALUE = "PASS", "RUNNING", "FAIL", "an UNRECOGNISED value"
 
+# The JSON spelling of each bucket — `UNKNOWN_VALUE`'s prose spelling ("an UNRECOGNISED value") is built
+# for `reason` strings, not for a key a driver programs against.
+BUCKET_KEYS = {PASS: "PASS", RUNNING: "RUNNING", FAIL: "FAIL", UNKNOWN_VALUE: "UNKNOWN_VALUE"}
+
+# --- the liveness caps -----------------------------------------------------------------------------
+#
+# Each VALUE's one defining site is `stage-2-ci.md` — "SETTLED" (the derivation block) for the STRIKE CAP,
+# "UNUSABLE — the refetch is BOUNDED" for the REFETCH CAP, "THE CI STALL CAP = 6h" for the stall bound —
+# and `doc-check` compares these constants against those sites, so the doc and the tool cannot drift.
+# `liveness()` below is what fires them.
+STRIKE_CAP = 2
+REFETCH_CAP = 3
+STALL_CAP_HOURS = 6
+
 
 def status_bucket(state: object) -> str:
     """A commit status's `state` -> the bucket `ci-snapshot.decide()` would put it in."""
@@ -256,6 +275,22 @@ def checkrun_bucket(status: object, conclusion: object) -> str:
     return UNKNOWN_VALUE
 
 
+def bucket_counts(rows: list[dict]) -> dict[str, int]:
+    """Every EVIDENCE row's CLASSIFY bucket, tallied — all four keys always present.
+
+    This is what lets the driver and `liveness()` answer "can any row still move?" (`RUNNING > 0` — the
+    watch policy and the SETTLED/RUNNING-STALL split both read exactly that) WITHOUT hand-classifying
+    snapshot rows, which is the by-eye judgment this tool exists to remove.
+    """
+    counts = {key: 0 for key in BUCKET_KEYS.values()}
+    for row in rows:
+        if row["row"] == "checkrun":
+            counts[BUCKET_KEYS[checkrun_bucket(row["status"], row["conclusion"])]] += 1
+        elif row["row"] == "status":
+            counts[BUCKET_KEYS[status_bucket(row["state"])]] += 1
+    return counts
+
+
 # The LEDGER's `ci` column is a THREE-VALUE enum (`green`/`red`/`pending` — `files-and-ledger.md`), while
 # DECIDE has SIX outcomes. So the mapping is LOSSY, and that is exactly why this tool emits BOTH: `ci` (what
 # the driver writes to the ledger) and `verdict` (what the evidence actually said). Collapsing them into one
@@ -283,7 +318,7 @@ def ledger_ci(verdict: str) -> str | None:
     return LEDGER_CI.get(verdict)
 
 
-# The DECIDE order, as a NAME PER BULLET, in the order `stage-2-ci.md` evaluates them. This is a THIRD
+# The DECIDE order, as a NAME PER BULLET, in the order `ci-derivation-spec.md` evaluates them. This is a THIRD
 # statement of an order that is already owned twice (the doc's bullets; `ci-snapshot.decide()`'s branches),
 # and it is only allowed to exist because it is MECHANICALLY CHECKED AGAINST BOTH:
 #
@@ -768,7 +803,7 @@ def read_pages(fetch: Fetch, source: str, argv: list[str], rows_key: str) -> tup
     read off EVERY page and each value compared against the rows collected across ALL of them, which is
     exactly what `--slurp` gives us. Reading only the first page's count was itself a false green: GitHub
     RECOMPUTES the count per request, so a check registered mid-fetch makes a later page report MORE than the
-    first, and a row we never received slips through. **The honest limit** (`stage-2-ci.md`, "Honest limits"):
+    first, and a row we never received slips through. **The honest limit** (`ci-derivation-spec.md`, "Honest limits"):
     this catches a read that came up SHORT of what GitHub said it holds, or pages that DISAGREE about it. It
     does not, and cannot, prove that GitHub told us the truth, and `/check-runs` is capped at the 1000 most
     recent check suites regardless.
@@ -1323,7 +1358,8 @@ def derive(fetch: Fetch, repo: str, pr: str, head_sha: str, rundir: Path, requir
         # A source that could not be read leaves NO artifact — there is nothing on disk for a later heartbeat to
         # mistake for evidence, and no verdict is derived from a fetch we know to be incomplete. The
         # `promote` below is NEVER reached, and that is the whole of the "no partial artifact" rule.
-        return result(pr, head_sha, SNAP.UNUSABLE, f"FETCH FAILED — {exc}", None, {}, None, required)
+        return result(pr, head_sha, SNAP.UNUSABLE, f"FETCH FAILED — {exc}", None, {}, None, required,
+                      None, None)
 
     path = promote(rows, rundir, pr, head_sha)
 
@@ -1355,11 +1391,25 @@ def derive(fetch: Fetch, repo: str, pr: str, head_sha: str, rundir: Path, requir
             f"(what the stale snapshot said, for the record: {verdict} — {reason})"
         )
 
-    return result(pr, head_sha, verdict, reason, path, evidence, head_now, decided_under)
+    # THE FINGERPRINT IS COMPUTED HERE, NEVER BY THE DRIVER — a hash a driver reassembles by hand from the
+    # doc's spec is a hash that drifts, and every drifted byte reads as "CI moved", which resets the very
+    # counters the fingerprint exists to feed. Only a VERIFIED snapshot has one: `unusable`/`unverifiable`
+    # rows were never trusted (the moved-head override above lands here too), and hashing rejected evidence
+    # would let a strike accrue against rows nobody believed. The rows come off the PROMOTED ARTIFACT, like
+    # the verdict — never from the dicts still in memory.
+    fp = None
+    buckets = None
+    if verdict not in (SNAP.UNUSABLE, SNAP.UNVERIFIABLE):
+        trusted = SNAP.parse(path)
+        fp = SNAP.fingerprint(trusted, head_sha)
+        buckets = bucket_counts(trusted)
+
+    return result(pr, head_sha, verdict, reason, path, evidence, head_now, decided_under, fp, buckets)
 
 
 def result(pr: str, head_sha: str, verdict: str, reason: str, path: Path | None,
-           evidence: dict, head_now: object, required) -> dict:
+           evidence: dict, head_now: object, required, fingerprint: str | None,
+           buckets: "dict[str, int] | None") -> dict:
     """The machine-readable verdict — everything the driver needs, and NOTHING it has to interpret.
 
     `ci` is what goes into the ledger. `verdict` is what the evidence said. They are separate because the
@@ -1380,7 +1430,7 @@ def result(pr: str, head_sha: str, verdict: str, reason: str, path: Path | None,
         "pr": pr,
         "head_sha": head_sha,          # the commit we PINNED to (the ledger's) — what the fetch asked for
         "verdict": verdict,            # the DECIDE outcome, in full
-        "ci": column,                  # the LEDGER value — write this to `ledger.py … set --pr <N> --ci`
+        "ci": column,                  # the LEDGER value — recorded by `liveness`, which takes this JSON
         "reason": reason,              # WHICH rule fired and WHICH row made it fire
         "snapshot": str(path) if path else None,   # the evidence, on disk, re-verifiable by hand
         "evidence": evidence,          # counts per row type — `{}` when nothing was ever fetched
@@ -1396,12 +1446,192 @@ def result(pr: str, head_sha: str, verdict: str, reason: str, path: Path | None,
         # channel: `unknown` NEVER accompanies a green (it is a `pending` bullet in `decide()`), so this can
         # never become "green, but note that we could not read what was required".
         "required_set": required.state,
+        # THE LIVENESS DIGEST of the verified snapshot's evidence rows (`ci-snapshot.py fingerprint()`;
+        # the spec is `stage-2-ci.md`, "SETTLED"). `liveness` compares it to the ledger's `ci_fingerprint`
+        # and applies the SETTLED/RUNNING-STALL rules — nobody recomputes the hash by hand. `null`
+        # exactly when the snapshot never VERIFIED (fetch failed, unusable, unverifiable, head moved):
+        # an untrusted snapshot has no fingerprint, and a derivation that got none touches no liveness
+        # counter but `unusable_refetches`.
+        "fingerprint": fingerprint,
+        # THE CLASSIFY TALLY of the verified evidence rows — {"PASS","RUNNING","FAIL","UNKNOWN_VALUE"},
+        # every key always present. `RUNNING > 0` is the ONE fact the watch policy ("WATCH ONLY WHAT CAN
+        # MOVE") and `liveness`'s SETTLED/RUNNING-STALL split need, and emitting it is what spares the
+        # driver from ever classifying snapshot rows by eye. `null` exactly when `fingerprint` is: an
+        # unverified snapshot has no trusted rows to tally.
+        "buckets": buckets,
         # THERE IS NO `notes` FIELD, and its absence is a RULE, not an oversight. It used to carry "the
         # evidence may be incomplete" NEXT TO A GREEN VERDICT — a disclosure nobody read, attached to the
         # one answer it contradicted. Every gap we can DETECT is now a REFUSAL (`read_pages`, the rollup
         # coverage rule, the moved head), so nothing is left to footnote; and what we CANNOT detect belongs
         # in `stage-2-ci.md`, stated once, not re-emitted as reassurance beside each verdict.
         # NEVER re-add a channel that can print a caveat beside a green: fail closed instead.
+    }
+
+
+# --- liveness: the SETTLED / RUNNING-STALL / UNUSABLE bookkeeping, as a command -------------------
+
+MACHINE_ACTIONS = ("due", "in-flight", "none")
+LEDGER_CI_VALUES = ("green", "red", "pending")
+
+
+def check_now(source: str, value: str) -> datetime:
+    """An ISO-8601 timestamp WITH a timezone — `ci_stalled_since` is UTC by contract, and subtracting a
+    naive timestamp from an aware one raises, which would be a crash where a bound was owed."""
+    try:
+        ts = datetime.fromisoformat(value)
+    except ValueError:
+        fail(f"{source}: {value!r} is not an ISO-8601 timestamp")
+    if ts.tzinfo is None:
+        fail(f"{source}: {value!r} carries no timezone — the stall clock is UTC ISO-8601 "
+             f"(stage-2-ci.md, 'RUNNING-STALL'), and a naive value cannot be compared to it")
+    return ts
+
+
+def derive_output(raw: object) -> dict:
+    """Validate the derive JSON handed to `liveness` — the UNEDITED output of `derive`, nothing else.
+
+    The same fail-closed posture as every other input: a field missing or of the wrong shape is refused
+    at the door, because a liveness pass run on a hand-assembled approximation of `derive`'s output is
+    the hand-run bookkeeping this command exists to remove, wearing the command as a costume.
+    """
+    if not isinstance(raw, dict):
+        fail("liveness: the derive JSON is not an object — hand this command the JSON `derive` printed, "
+             "unedited")
+    out: dict = {}
+    for key in ("head_sha", "verdict", "ci", "reason"):
+        value = raw.get(key)
+        if not isinstance(value, str) or not value:
+            fail(f"liveness: the derive JSON carries no usable {key!r} — it is not `derive`'s output")
+        out[key] = value
+    if out["ci"] not in LEDGER_CI_VALUES:
+        fail(f"liveness: derive JSON `ci` is {out['ci']!r}, not one of {'/'.join(LEDGER_CI_VALUES)}")
+    fp, buckets = raw.get("fingerprint"), raw.get("buckets")
+    verified = out["verdict"] not in (SNAP.UNUSABLE, SNAP.UNVERIFIABLE)
+    if verified:
+        if not isinstance(fp, str) or not re.fullmatch(r"[0-9a-f]{64}", fp):
+            fail(f"liveness: a VERIFIED derivation must carry a 64-hex `fingerprint`; got {fp!r}")
+        if (not isinstance(buckets, dict) or set(buckets) != set(BUCKET_KEYS.values())
+                or any(not isinstance(v, int) or v < 0 for v in buckets.values())):
+            fail(f"liveness: a VERIFIED derivation must carry the four-key `buckets` tally; got {buckets!r}")
+    elif fp is not None or buckets is not None:
+        fail(f"liveness: verdict {out['verdict']!r} is not a verified snapshot, yet the JSON carries "
+             f"fingerprint={fp!r} buckets={buckets!r} — that is not `derive`'s output")
+    out["fingerprint"], out["buckets"], out["verified"] = fp, buckets, verified
+    return out
+
+
+def liveness(ledger_path: Path, pr: str, derived: dict, machine_action: str, now: datetime) -> dict:
+    """Apply the liveness rules to one derivation and write the row — ONE atomic row update.
+
+    THE SPEC IS THE DERIVATION BLOCK IN `stage-2-ci.md` ("SETTLED", "RUNNING-STALL", "UNUSABLE — the
+    refetch is BOUNDED"). What stays the CALLER's: `--machine-action` — "is work that can move this PR's
+    `head_sha` due or in flight?" is a property judgment about the run's dispatch state, which no ledger
+    field records; the caller asserts it, this command does every piece of arithmetic that follows from it.
+
+    Two rules here are not in the doc's pseudocode lines and are stated in its prose instead:
+
+      * A STALE DERIVATION IS REFUSED, NOT RECORDED. `derive` was pinned to a `head_sha` the row no longer
+        holds — the site that moved it already reset the counters, so recording anything from the old
+        head's evidence would poison the new head's budget. Exit 2, write nothing, re-derive.
+      * A HELD ROW IS OBSERVED, NEVER STRUCK. Observation is not mutation (`ledger.py`, HELD_STATUSES), so
+        `ci` is still recorded — but a parked row's `ci_reason` is the OPEN QUESTION a human is being
+        asked, and its counters are cleared at unpark anyway: bounds neither accrue nor fire, and this
+        command never overwrites an open park with a new one.
+    """
+    header, rows = LEDGER.load(ledger_path)
+    row = LEDGER.find_row(rows, pr)
+    if row is None:
+        fail(f"liveness: no ledger row for PR {pr}")
+    if derived["head_sha"] != row["head_sha"]:
+        fail(f"liveness: this derivation is pinned to {derived['head_sha']} but the row now holds "
+             f"{row['head_sha']} — a head that moved past the derivation. Nothing is recorded: re-derive "
+             f"against the ledger's head (the site that moved it already reset the liveness counters)")
+
+    held = row["status"] in LEDGER.HELD_STATUSES
+    wrote: dict = {}
+
+    def put(field: str, value: object) -> None:
+        text = str(value)
+        if row[field] != text:
+            row[field] = text
+            wrote[field] = text
+
+    put("ci", derived["ci"])
+    escalate_reason = None
+
+    if held:
+        state = "held"
+    elif not derived["verified"]:
+        refetches = LEDGER.counter(row, "unusable_refetches") + 1
+        put("unusable_refetches", refetches)
+        state = "unusable"
+        if refetches >= REFETCH_CAP:
+            escalate_reason = (f"UNUSABLE at the REFETCH CAP — {refetches} consecutive derivations at "
+                               f"head {row['head_sha']} yielded no verifiable snapshot. Last refusal: "
+                               f"{derived['reason']}")
+    else:
+        put("unusable_refetches", 0)
+        if derived["fingerprint"] != row["ci_fingerprint"]:
+            put("ci_fingerprint", derived["fingerprint"])
+            put("settled_strikes", 0)
+            put("ci_stalled_since", "-")
+            state = "moving"
+        elif machine_action in ("due", "in-flight"):
+            put("ci_stalled_since", "-")
+            state = "machine-action"
+        elif derived["buckets"]["RUNNING"] == 0:
+            state = "settled"
+            if derived["ci"] in ("red", "pending"):
+                strikes = LEDGER.counter(row, "settled_strikes") + 1
+                put("settled_strikes", strikes)
+                if strikes >= STRIKE_CAP:
+                    escalate_reason = (f"SETTLED at the STRIKE CAP — {strikes} derivations saw this exact "
+                                       f"check set, nothing RUNNING, and ci={derived['ci']}; nobody is "
+                                       f"coming. Last DECIDE reason: {derived['reason']}")
+        else:
+            state = "running-stall"
+            if row["ci_stalled_since"] == "-":
+                put("ci_stalled_since", now.isoformat(timespec="seconds"))
+            else:
+                since = check_now("ledger ci_stalled_since", row["ci_stalled_since"])
+                stalled_hours = (now - since).total_seconds() / 3600
+                if stalled_hours >= STALL_CAP_HOURS:
+                    escalate_reason = (f"RUNNING-STALL at the CI STALL CAP — a row still claims RUNNING "
+                                       f"and NOT ONE row in the check set has changed state since "
+                                       f"{row['ci_stalled_since']} ({stalled_hours:.1f}h). Last DECIDE "
+                                       f"reason: {derived['reason']}")
+
+    # UNKNOWN_VALUE parks ON THIS DERIVATION, not at a cap: `decide()` only returns `unclassified` when no
+    # FAIL outranked the value (red would have won), and the doc's rule is "escalate, NEVER guess" — an
+    # immediate park, which outranks a strike-cap reason because the unknown value IS the blocker.
+    if not held and derived["verdict"] == SNAP.UNCLASSIFIED:
+        state = "unknown-value"
+        escalate_reason = (f"UNKNOWN VALUE — an evidence row carries a value nobody has classified; "
+                           f"guessing a bucket for it is how a hole becomes a wedge or a false green. "
+                           f"{derived['reason']}")
+
+    if escalate_reason is not None:
+        # ESCALATE (stage-2-ci.md): park, name the blocker, void any previous ruling — ONE row write, so
+        # no heartbeat can observe a freshly parked row still carrying the previous park's answer.
+        put("status", "awaiting-user")
+        put("ci_reason", escalate_reason)
+        put("blocker_ruling", "-")
+
+    LEDGER.dump(ledger_path, header, rows)
+    return {
+        "pr": pr,
+        "head_sha": row["head_sha"],
+        "ci": derived["ci"],
+        "verdict": derived["verdict"],
+        "state": state,             # moving | settled | running-stall | machine-action | unusable | held
+        "held": held,
+        "machine_action": machine_action,
+        "wrote": wrote,             # exactly the fields this call changed, with the values written
+        "escalated": escalate_reason is not None,
+        "ci_reason": escalate_reason if escalate_reason is not None else "-",
+        "settled_strikes": row["settled_strikes"],
+        "unusable_refetches": row["unusable_refetches"],
+        "ci_stalled_since": row["ci_stalled_since"],
     }
 
 
@@ -1514,6 +1744,64 @@ def parse_classify(blocks: list[str]) -> dict[str, set[str]]:
             f"CLASSIFY table. The catch-all is what makes classification TOTAL; without it an enum value "
             f"GitHub adds tomorrow falls into a HOLE, matches no branch, and the PR wedges forever."
         )
+    return out
+
+
+def parse_fingerprint_spec(blocks: list[str]) -> dict[str, tuple[str, ...]]:
+    """The doc's FINGERPRINT block -> {row kind: the fields its canonical line carries, in order}.
+
+    The block is the SPEC `ci-snapshot.fingerprint()` implements, and it is executable prose of the same
+    kind as the enums: nothing compared it to the code until this parser existed, and a drifted copy is
+    the one a reader believes. The line format is `checkrun  ->  "checkrun\\t<name>\\t…"` — the quoted
+    template's first token must be the row kind itself, and every later token is one `<field>`.
+    """
+    for block in blocks:
+        if "fingerprint = sha256" not in block:
+            continue
+        out: dict[str, tuple[str, ...]] = {}
+        for kind, quoted in re.findall(r"^(checkrun|status)\s+->\s+\"([^\"]+)\"", block, re.MULTILINE):
+            parts = quoted.split("\\t")
+            if parts[0] != kind:
+                raise DocError(f"the FINGERPRINT line for {kind!r} does not begin with the row kind: "
+                               f"{quoted!r} — the line must carry which row it is, or two kinds with the "
+                               f"same fields would hash identically")
+            fields = []
+            for part in parts[1:]:
+                m = re.fullmatch(r"<([a-z_]+)>", part)
+                if not m:
+                    raise DocError(f"the FINGERPRINT line for {kind!r} carries {part!r}, which is not a "
+                                   f"`<field>` placeholder — a literal there would be a value the doc "
+                                   f"invented, hashed into every fingerprint")
+                fields.append(m.group(1))
+            out[kind] = tuple(fields)
+        if set(out) != {"checkrun", "status"}:
+            raise DocError(f"the FINGERPRINT block defines lines for {sorted(out)!r}, expected exactly "
+                           f"['checkrun', 'status'] — the two evidence row types and no other")
+        return out
+    raise DocError("no FINGERPRINT block (`fingerprint = sha256`) — the spec this tool implements is "
+                   "not where it was")
+
+
+def parse_caps(text: str) -> dict[str, int]:
+    """The three liveness caps, off their ONE defining site each — `settled_strikes >= N` and
+    `unusable_refetches >= N` in the derivation blocks, `THE CI STALL CAP = Nh` in prose.
+
+    Every occurrence is collected and must agree: a second, different value anywhere in the doc is
+    exactly the retyped-cap drift the "name the cap, never the number" rule forbids, and this is the
+    check that makes that rule mechanical.
+    """
+    out: dict[str, int] = {}
+    for name, pattern in (("STRIKE", r"settled_strikes\s*>=\s*(\d+)"),
+                          ("REFETCH", r"unusable_refetches\s*>=\s*(\d+)"),
+                          ("STALL_HOURS", r"THE CI STALL CAP = (\d+)h")):
+        values = {int(v) for v in re.findall(pattern, text)}
+        if not values:
+            raise DocError(f"the {name} cap's defining site was not found ({pattern!r}) — a cap this "
+                           f"tool fires must be declared in the doc, at one site, by value")
+        if len(values) > 1:
+            raise DocError(f"the {name} cap is stated with TWO different values ({sorted(values)}) — "
+                           f"one of them is a retyped copy that has drifted")
+        out[name] = values.pop()
     return out
 
 
@@ -1685,6 +1973,39 @@ def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]
     return problems, copies
 
 
+def check_liveness_copies(root: Path | None = None) -> tuple[list[str], list[str]]:
+    """Every runnable liveness copy carries `--machine-action` — the judgment flag a recap must not drop.
+
+    Same class as `check_derive_copies`: a copy without the flag is a command the tool refuses, and a
+    reader who "fixes" it by inventing a default answers the one question the tool deliberately asks.
+    """
+    problems, copies = [], []
+    for md in sorted((root or HERE.parent).rglob("*.md")):
+        text = md.read_text(encoding="utf-8")
+        for match in re.finditer(r"ci-status\.py liveness", text):
+            end = text.find("\n\n", match.start())
+            command = text[match.start(): end if end > 0 else len(text)]
+            # `--ledger`, not `--pr`, is the runnable-copy gate here: prose about liveness routinely sits
+            # in the same paragraph as a `ledger.py … set --pr` command, and `--pr` alone would condemn
+            # every such mention as a flagless invocation.
+            if "--ledger" not in command:
+                continue  # prose that names the subcommand, not a runnable copy
+            line = text.count("\n", 0, match.start()) + 1
+            copies.append(f"{md.name}:{line}")
+            if "--machine-action" not in command:
+                problems.append(
+                    f"{md.name}:{line} runs `ci-status.py liveness` WITHOUT `--machine-action` — the one "
+                    f"judgment the command asks of its caller. The tool refuses the invocation; a reader "
+                    f"who drops the flag's question strikes the very PR a fix is about to move."
+                )
+    if not copies:
+        problems.append(
+            "ZERO runnable copies of `ci-status.py liveness` were found in the skill's docs — the command "
+            "is prescribed by stage-2-ci.md, so finding none means this check has lost its subject"
+        )
+    return problems, copies
+
+
 def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list[str]]:
     """Every runnable required-set copy names the ledger whose header the command owns."""
     problems, copies = [], []
@@ -1710,36 +2031,47 @@ def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list
     return problems, copies
 
 
-def doc_check(doc: Path) -> int:
+def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) -> int:
     """Assert the DOC, the CODE, and this tool's DECIDE_ORDER all say the same thing.
 
-    Four things are checked, and the last two are the ones no reader ever does by hand:
+    Five things are checked, and the last two are the ones no reader ever does by hand:
 
       1. the doc's CLASSIFY buckets == the sets `ci-snapshot.py` actually classifies with;
       2. the doc's DECIDE bullet order == DECIDE_ORDER (which the fixtures pin behaviourally);
-      3. **CLASSIFICATION IS TOTAL over the doc's OWN enums** — every declared value lands in exactly one
+      3. the doc's FINGERPRINT canonical lines == `ci-snapshot.FINGERPRINT_FIELDS`, the fields the hash
+         `derive` emits is actually built from — a drifted line format is a DIFFERENT fingerprint, and a
+         reader who trusts the doc's copy sees motion that never happened;
+      4. **CLASSIFICATION IS TOTAL over the doc's OWN enums** — every declared value lands in exactly one
          bucket, no bucket holds a value the enum does not declare. A rule set can agree with the doc's
          tables line for line and still leave a HOLE, because the tables and the enum list are two different
          paragraphs. A value in a hole matches NO branch: not green, not red, not pending — the PR can never
          resolve, and it WEDGES. This is the check that catches that, and nothing else in the repo does.
-      4. the doc's `gh` INVOCATIONS, in every copy of them, against the argv the code really issues — plus
+      5. the doc's `gh` INVOCATIONS, in every copy of them, against the argv the code really issues — plus
          every copy of the derive and required-set commands and their required ledger inputs.
 
     (The doc's three snapshot `jq` filters are executed by `ci-snapshot.py` over recorded, multi-page API
     payloads. The required-set reads are production functions here, covered by `ci-status-test.py`.)
     """
-    if not doc.exists():
-        print(f"FAIL     the doc is not at {doc} — a check that cannot find its subject NEVER passes")
-        return 1
+    spec_doc = spec_doc or SPEC_DOC
+    driver_doc = driver_doc or DRIVER_DOC
+    for doc in (spec_doc, driver_doc):
+        if not doc.exists():
+            print(f"FAIL     the doc is not at {doc} — a check that cannot find its subject NEVER passes")
+            return 1
 
-    text = doc.read_text(encoding="utf-8")
+    spec_text = spec_doc.read_text(encoding="utf-8")
+    driver_text = driver_doc.read_text(encoding="utf-8")
+    # Each element is parsed from the file that OWNS it (enums/CLASSIFY/DECIDE/fetches: the spec;
+    # the fingerprint block: the driver doc) — except the caps, parsed over BOTH texts, because a cap
+    # RETYPED in the other file is exactly the drift `parse_caps` exists to refuse.
     try:
-        blocks = fenced_blocks(text)
-        enums = parse_enums(blocks)
-        classify = parse_classify(blocks)
-        order = parse_decide_order(text)
+        enums = parse_enums(fenced_blocks(spec_text))
+        classify = parse_classify(fenced_blocks(spec_text))
+        order = parse_decide_order(spec_text)
+        fp_spec = parse_fingerprint_spec(fenced_blocks(driver_text))
+        caps = parse_caps(spec_text + "\n" + driver_text)
     except DocError as exc:
-        print(f"FAIL     {doc.name} cannot be read: {exc}")
+        print(f"FAIL     the CI docs cannot be read: {exc}")
         return 1
 
     # The doc's enum block is restated a THIRD time, as a comment in `ci-snapshot.py`. A comment cannot be
@@ -1774,6 +2106,17 @@ def doc_check(doc: Path) -> int:
          enums.get("CheckStatusState"), "the doc and the script's own comment disagree"),
         ("DECIDE order", order, DECIDE_ORDER,
          "the doc evaluates the bullets in a different order than this tool pins"),
+        ("FINGERPRINT line: checkrun", fp_spec.get("checkrun"), SNAP.FINGERPRINT_FIELDS["checkrun"],
+         "the doc's canonical line and the hash `derive` emits disagree — every driver comparing "
+         "`fingerprint` against `ci_fingerprint` would see motion that never happened, or none that did"),
+        ("FINGERPRINT line: status", fp_spec.get("status"), SNAP.FINGERPRINT_FIELDS["status"],
+         "same: a drifted line format is a different fingerprint"),
+        ("the STRIKE CAP", caps.get("STRIKE"), STRIKE_CAP,
+         "the bound `liveness` fires at and the bound the doc promises are different numbers"),
+        ("the REFETCH CAP", caps.get("REFETCH"), REFETCH_CAP,
+         "same: the tool escalates at one count while the doc promises another"),
+        ("the CI STALL CAP (hours)", caps.get("STALL_HOURS"), STALL_CAP_HOURS,
+         "same: a stalled check would park earlier or later than the doc says it will"),
     ]
 
     failures = 0
@@ -1789,10 +2132,10 @@ def doc_check(doc: Path) -> int:
               f"         missing from the doc: {fmt(missing) or '—'}   only in the doc: {fmt(extra) or '—'}"
               + (f"\n         {why}" if why else ""))
 
-    # AND THE `gh` COMMANDS, IN EVERY COPY — the class, not the instance.
+    # AND THE `gh` COMMANDS, IN EVERY COPY, IN BOTH DOCS — the class, not the instance.
     held: list[str] = []
     argv = code_argv()
-    problems = check_gh_invocations(text, argv)
+    problems = check_gh_invocations(spec_text + "\n" + driver_text, argv)
     if not problems:
         json_fields = argv["rollup"][argv["rollup"].index("--json") + 1]
         held.append(f"{'the gh invocations':32} every copy in the doc: --paginate --slurp, "
@@ -1809,6 +2152,11 @@ def doc_check(doc: Path) -> int:
     if not required_problems:
         held.append(f"{'the required-set invocations':32} {len(required_copies)} runnable copies, every one "
                     f"persisting to state.jsonl")
+    liveness_problems, liveness_copies = check_liveness_copies()
+    problems += liveness_problems
+    if not liveness_problems:
+        held.append(f"{'the liveness invocations':32} {len(liveness_copies)} runnable copies, every one "
+                    f"answering --machine-action")
     for line in held:
         print(f"ok       {line}")
     for problem in problems:
@@ -1820,8 +2168,9 @@ def doc_check(doc: Path) -> int:
         print(f"{failures} disagreement(s) between {doc.name} and the code that runs. "
               f"ONE of them is wrong and a reader will believe the other.")
         return 1
-    print(f"{len(checks) + len(held)} checks: {doc.name}, ci-snapshot.py and ci-status.py agree — enums, "
-          f"CLASSIFY buckets, TOTALITY, the DECIDE order, and every copy of every command.")
+    print(f"{len(checks) + len(held)} checks: {spec_doc.name}, {driver_doc.name}, ci-snapshot.py and "
+          f"ci-status.py agree — enums, CLASSIFY buckets, TOTALITY, the DECIDE order, the caps, the "
+          f"FINGERPRINT lines, and every copy of every command.")
     return 0
 
 
@@ -1919,16 +2268,32 @@ def main() -> int:
     r.add_argument("--ledger", required=True, type=Path, help="the run's state.jsonl")
     r.add_argument("--repo", help="owner/name (default: the current checkout's, via `gh repo view`)")
 
-    c = sub.add_parser("doc-check", help="assert stage-2-ci.md agrees with the code that runs — enums, "
-                                         "CLASSIFY, DECIDE order, and every copy of every command")
-    c.add_argument("--doc", type=Path, default=DOC)
+    lv = sub.add_parser(
+        "liveness",
+        help="apply the SETTLED/RUNNING-STALL/UNUSABLE liveness rules to one derive result: update the "
+             "row's counters through the ledger accessor, and escalate (park) at a cap",
+    )
+    lv.add_argument("--ledger", required=True, type=Path, help="the run's state.jsonl")
+    lv.add_argument("--pr", required=True, help="the PR the derivation is about")
+    lv.add_argument("--derive-json", required=True,
+                    help="path to the JSON `derive` printed, UNEDITED — or `-` to read it from stdin")
+    lv.add_argument("--machine-action", required=True, choices=list(MACHINE_ACTIONS),
+                    help="is work that can put a new commit on this PR's head due or in flight? "
+                         "(stage-2-ci.md, MACHINE ACTION — the one judgment the caller supplies)")
+    lv.add_argument("--now", help="ISO-8601 override of the clock (tests and reproduction only)")
+
+    c = sub.add_parser("doc-check", help="assert the CI docs (ci-derivation-spec.md + stage-2-ci.md) "
+                                         "agree with the code that runs — enums, CLASSIFY, DECIDE order, "
+                                         "caps, the fingerprint block, and every copy of every command")
+    c.add_argument("--spec-doc", type=Path, default=SPEC_DOC)
+    c.add_argument("--driver-doc", type=Path, default=DRIVER_DOC)
 
     sub.add_parser("self-test", help="run every fixture (ci-status-test.py), then doc-check")
 
     args = p.parse_args()
 
     if args.cmd == "doc-check":
-        return doc_check(args.doc)
+        return doc_check(args.spec_doc, args.driver_doc)
 
     if args.cmd == "self-test":
         return self_test()
@@ -1937,6 +2302,25 @@ def main() -> int:
         out = refresh_required_set(gh_fetch, args.ledger, args.repo)
         print(json.dumps(out, indent=2, ensure_ascii=False))
         return 0 if out["settled"] else 1
+
+    if args.cmd == "liveness":
+        if args.derive_json == "-":
+            raw_text = sys.stdin.read()
+        else:
+            try:
+                raw_text = Path(args.derive_json).read_text(encoding="utf-8")
+            except OSError as exc:
+                fail(f"liveness: cannot read --derive-json {args.derive_json!r}: {exc}")
+        try:
+            raw = json.loads(raw_text)
+        except ValueError as exc:
+            fail(f"liveness: --derive-json is not JSON ({exc}) — hand it the JSON `derive` printed")
+        now = check_now("--now", args.now) if args.now else datetime.now(timezone.utc)
+        out = liveness(args.ledger, args.pr, derive_output(raw), args.machine_action, now)
+        print(json.dumps(out, indent=2, ensure_ascii=False))
+        # 3, not 1: the command DID its job and the answer is "this PR is now parked on you" — the same
+        # STOP semantics as `ledger.py dispatch-check` (EXIT_STOP), distinct from an input error's 2.
+        return 3 if out["escalated"] else 0
 
     # EVERY OPERATOR ERROR IS NAMED BEFORE THE FIRST FETCH. A caller's mistake surfacing later — as a crash
     # during promotion, or as a verdict about the PR — is a defect reported against the wrong thing.

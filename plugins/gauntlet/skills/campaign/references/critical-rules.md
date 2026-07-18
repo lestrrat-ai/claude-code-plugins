@@ -59,8 +59,8 @@
 - Work-conserving dispatch is mandatory: every heartbeat scans all PRs and launches every due
   action that fits a free slot before returning. Waiting is allowed only when no useful action is
   launchable anywhere in the run.
-- A PR with a **still-RUNNING** check must ALWAYS have a live watch: if **any evidence row classifies
-  `RUNNING` under CLASSIFY** (`stage-2-ci.md`, "CLASSIFY every row" — an EXPLICIT membership test, and
+- A PR with a **still-RUNNING** check must ALWAYS have a live watch: if **`derive`'s `buckets.RUNNING`
+  is > 0** (the CLASSIFY tally — `ci-derivation-spec.md`, "CLASSIFY every row" — an EXPLICIT membership test, and
   **NEVER** "any row is not yet terminal" / `.status != COMPLETED`, which is a negated test: it sweeps up
   every value GitHub adds tomorrow and silently watches it instead of letting it fall to the
   `UNKNOWN_VALUE` escalation) and the watch task has exited (including after any rebase/push), relaunch
@@ -449,18 +449,21 @@
   TO SEE?".
 - **DERIVE `ci` BY RUNNING `scripts/ci-status.py derive --pr <N> --head-sha <the ledger's> --rundir
   <rundir> --required-set <the ledger header's>`, and by NOTHING ELSE.** It fetches, promotes, verifies and
-  decides, and prints the verdict and the `ci` value as JSON (`stage-2-ci.md`, "THE DERIVATION IS A
-  COMMAND", which owns the exact invocation — **`--required-set` is MANDATORY**: the evidence says what
+  decides, and prints the verdict, the `ci` value and the liveness `fingerprint` as JSON (`stage-2-ci.md`,
+  "THE DERIVATION IS A COMMAND", which owns the exact invocation — **`--required-set` is MANDATORY**: the evidence says what
   showed up, and only the base branch's declared set says what was SUPPOSED to).  **NEVER derive `ci` by
   READING the output of a command and judging it.** That is not a style preference: every rule below was already
   correct when a driver ran `gh pr checks`, saw that no checks were reported, and wrote **`ci = green`** —
   **zero evidence is not green**. A program cannot decide that "no checks" is close enough to "passing".
+  **Then RECORD it by handing that JSON to `ci-status.py liveness`** (`stage-2-ci.md`, "THE BOOKKEEPING IS
+  A COMMAND", which owns the invocation): it writes `ci` and the liveness counters, and parks at any cap —
+  **never apply the strike/stall/refetch arithmetic by hand.**
 - CI status comes from a **SHA-pinned** snapshot of **BOTH** check families (`commits/<head_sha>/check-runs`
   **and** `commits/<head_sha>/status`), `--paginate`d, promoted atomically, and **SHA-verified before
   parsing**. **NEVER from `gh pr checks`** — its output carries **no SHA**, so it can report the
   **previous** commit's passing checks. **NEVER from the `--watch` exit code** — it can exit 0 with
   checks unregistered. No green, no merge.
-  **The CLASSIFY + DECIDE rules in `stage-2-ci.md` ("CLASSIFY every row" / "DECIDE — first match wins")
+  **The CLASSIFY + DECIDE rules in `ci-derivation-spec.md` ("CLASSIFY every row" / "DECIDE — first match wins")
   are THE definition of green — do not restate them, read them.** What a summary must never lose: green
   needs **≥1 registered evidence row** — **zero rows is NOT green** (nothing has registered yet), and
   **every** observed row must classify `PASS` **under the current CLASSIFY rules** — which is **NOT** the
