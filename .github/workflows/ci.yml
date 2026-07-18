@@ -106,11 +106,13 @@ jobs:
             plugins/gauntlet/skills/campaign/scripts/heartbeat.py \
             plugins/gauntlet/skills/campaign/scripts/heartbeat-test.py \
             plugins/gauntlet/skills/campaign/scripts/run-id.py \
-            plugins/gauntlet/skills/campaign/scripts/run-id-test.py | tee pyright.json
+            plugins/gauntlet/skills/campaign/scripts/run-id-test.py \
+            plugins/gauntlet/skills/campaign/scripts/base-preflight.py \
+            plugins/gauntlet/skills/campaign/scripts/base-preflight-test.py | tee pyright.json
           analyzed=$(jq '.summary.filesAnalyzed' pyright.json)
           echo "filesAnalyzed=${analyzed}"
-          if [ "${analyzed}" != "28" ]; then
-            echo "::error::pyright analysed ${analyzed} file(s), not the 28 it was pointed at — it checked" \
+          if [ "${analyzed}" != "30" ]; then
+            echo "::error::pyright analysed ${analyzed} file(s), not the 30 it was pointed at — it checked" \
                  "nothing and said so quietly. Fix the paths above; a silent no-op is not a passing gate."
             exit 1
           fi
@@ -231,3 +233,13 @@ jobs:
       # so this can never report an all-clear over a suite it did not run.
       - name: Run-id contract
         run: python3 plugins/gauntlet/skills/campaign/scripts/run-id.py self-test
+
+      # The base-preflight decider's contract, executed. It turns stage-2-review-gate.md's prose
+      # "rebase before you review/fix if CONFLICTING/DIRTY/BEHIND" precondition into a tested check: it
+      # DECIDES proceed / rebase-first / recheck from the live PR view and performs no rebase. Its fixtures
+      # pin the mapping TOTALLY over both GitHub enums (one per mergeStateStatus value, plus an unrecognised
+      # value that must re-poll, never guess) and drive the CLI's fail-closed `recheck` on a malformed view.
+      # `py_compile` above only parses it; the sibling `base-preflight-test.py` is loaded by path and a
+      # MISSING sibling fails loudly, so this can never report an all-clear over a suite it did not run.
+      - name: Base-preflight contract
+        run: python3 plugins/gauntlet/skills/campaign/scripts/base-preflight.py self-test
