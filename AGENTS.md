@@ -4,6 +4,30 @@ This repo **authors** the agent instructions: `plugins/**` defines the skills th
 current session. The skills actually running in a session are the **installed** copies, not the working
 tree. The consequences below are all non-obvious:
 
+## This is a SINGLE-USER, advisory workflow — calibrate severity to that
+
+The gauntlet campaign, its lease, its wake / adoption / refresh machinery, and these plugin skills serve
+**ONE user driving their own runs.** Do NOT chase airtight consistency or distributed-systems-grade
+correctness in the wake / lease / adoption / refresh paths. A momentary inconsistency the single user
+creates is one the single user notices and resolves — an **ACCEPTED RESIDUAL, not a gating defect.** (The
+user's stated policy.)
+
+- **The lease is advisory and LOOSE by design.** Its heartbeat-proof precondition gates the **FIRST
+  acquire — taking a run**; an owner's `refresh` — **including refresh of its own STALE lease** — is not
+  required to re-present proof. Findings of the form *"a stale/matching refresh revives a run without
+  re-proof"*, *"two agents could briefly both drive one run"*, or *"wake/adoption/refresh could be made
+  more consistent/airtight"* are **accepted residuals, NOT defects** — the tool never promised otherwise.
+- **Calibrate finding severity to what the artifact IS.** A same-machine, single-user skill helper is not
+  a web server facing millions of hostile requests. A guard being incomplete against an input only the one
+  user could hand-edit into their own git-ignored state (e.g. a `1e99999` float in their own `lease.json`)
+  is **not, by itself, a defect** — the user shooting their own foot is the user's call. Document the
+  boundary; do not build machinery to defend against the single user.
+- **This does NOT lower the bar on REAL guarantees.** Fail-closed on malformed input, refusing a
+  **non-owner's** destructive op, and **accurate agent-consumed docs** still gate. The line is: *"a real
+  guarantee is broken"* gates; *"consistency could be more airtight for the one user"* is an accepted
+  residual. When a review keeps generating true-but-that-kind-of finding, it is over-reaching on scope,
+  not finding defects — bound the intent (`repair-pass.md`, REPAIR-INTENT) rather than fixing them.
+
 ## Keep Claude Code and Codex compatible
 
 This repository ships the same plugin skills to Claude Code and Codex. Treat every file under
