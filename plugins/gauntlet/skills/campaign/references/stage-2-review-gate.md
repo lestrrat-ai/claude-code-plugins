@@ -419,7 +419,7 @@ content** (the transcript is large enough to flood the driver's context). Use it
 stream written within the quiet window (`alive`) means the process is emitting, so do **not** declare a
 false stall while the progress file is merely coarse-stale; a stream unwritten past the window (`quiet`),
 **and an `absent` stream, corroborate a hang ONLY AFTER launch evidence exists** — the reviewer wrote at
-least one line after `pass_identity` (a `started` event, a finding, or an amendment) and then went quiet —
+least one line after `pass_identity` (a `started` event or an amendment) and then went quiet —
 in which case apply `reviewer.md`'s retry budget without waiting the full meaningful-progress cap.
 **BEFORE launch evidence, a `quiet`/`absent` stream is NOT a hang signal:** the launch-evidence gate (the
 Stage 2a launch deadline, above) still owns that window, and triggering the retry budget there would kill a
