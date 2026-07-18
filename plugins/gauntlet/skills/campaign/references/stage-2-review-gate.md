@@ -1,5 +1,11 @@
 ## Stage 2 — Gates (orchestrator-owned, reactive)
 
+> **Jump by question (navigation, not authority — the sections below govern):**
+> - a NOT SATISFIED verdict landed → "Recording a verdict"
+> - launching a review pass → "Preconditions — clear Copilot items, CI, and conflicts before reviewing" + `review-dispatch.md`
+> - did the pass count → "Does this pass COUNT?"
+> - the status labels look wrong → "Status labels mirror the review gate"
+
 ### 2a-triage. PR triage — file class & risk tier (deterministic, per `head_sha`)
 
 Before the review gauntlet, triage each PR to a **risk tier**. Triage is **deterministic** and
@@ -37,6 +43,8 @@ the row by column position). Default to **STANDARD** whenever you are unsure. `r
 
 ### 2a. The review gauntlet
 
+#### A HELD PR IS NOT REVIEWABLE — check `status` FIRST, and check it with the TOOL
+
 **A HELD PR IS NOT REVIEWABLE — check `status` FIRST, and check it with the TOOL.** Run `ledger.py …
 dispatch-check --pr <N>`: it exits non-zero on every **HELD** status (`files-and-ledger.md`, `status` —
 the owner; `HELD_STATUSES` in `scripts/ledger.py` is the one place they are enumerated, so **never retype
@@ -50,6 +58,8 @@ the user's ruling**, or re-reviews a PR that has **stopped converging** (`repair
 of a loop that has already been told to stop. The park does **not** change its CI watch either way — observing is not mutating, so the
 watch follows the normal policy (`stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE": alive while a row can still
 move, **not** relaunched once CI has SETTLED). Everything else waits for the user's answer.
+
+#### Preconditions — clear Copilot items, CI, and conflicts before reviewing
 
 **Preconditions — clear Copilot items, CI, and conflicts before reviewing.** A review pass is
 expensive and is invalidated by any PR-content change, so never spend one on a PR whose current tip
@@ -98,6 +108,8 @@ cap; it's only the two reviews for the same PR that serialize.) Each pass is a s
 shared context, so the second verdict is a fresh, context-isolated execution rather than a
 continuation influenced by the first.
 
+#### Kill doomed passes — don't let them finish
+
 **Kill doomed passes — don't let them finish.** If a precondition goes dirty while a review is in
 flight on a PR — CI turns red, Copilot items land, a conflict appears — or any content-changing fix
 is about to be dispatched for it, **stop the in-flight review task before dispatching the fix**: its
@@ -110,6 +122,8 @@ Route every selected reviewer through `runtime-adapter.md`'s capability/transiti
 contract and counts toward the gate exactly like an external pass; when native workers are already the
 selected reviewer, that is the normal path rather than a fallback. Do not restate transport properties
 or park conditions here.
+
+#### A REVIEW PASS'S ARTIFACTS HAVE A TOOL — `scripts/review-pass.py`
 
 **A REVIEW PASS'S ARTIFACTS HAVE A TOOL — `scripts/review-pass.py`. NEVER hand-parse one, and never
 hand-write a line the tool writes.** The plan, the `pass_identity`, every unit-progress event, and the read
@@ -147,12 +161,16 @@ file is a plaintext file in a directory the reviewer can write to.
 refusal list. **`emit` refuses every one of those it can see, by calling the SAME functions** — one
 implementation, both doors, so a rule cannot hold at one and not the other.
 
+#### EVERY IDENTIFIER HAS ONE LEGAL FORM, AND NO DOOR REPAIRS ONE
+
 **EVERY IDENTIFIER HAS ONE LEGAL FORM, AND NO DOOR REPAIRS ONE.** A unit `id`/`unit` is lowercase letters
 then digits (`u01`); `pr`, `pass` and `launch_attempt` are decimal numbers from 1 up; `head_sha` is 40
 lowercase hex. A value outside its form is an ERROR, never a variant to be trimmed or normalized into
 shape: a door that repairs an identifier creates a second spelling of it that every other door must then
 remember, and a FORMAT leaves nothing to convert. A format also refuses what cleanliness cannot —
 `a3f29c1` is perfectly clean, and simply not a commit id.
+
+#### ANYTHING THE TOOL WRITES, IT CAN READ BACK
 
 **ANYTHING THE TOOL WRITES, IT CAN READ BACK — a write is REFUSED unless the file it would produce
 verifies.** Every write command runs the READ side's whole-file check on the bytes it is about to
@@ -164,6 +182,8 @@ holds ANY BYTES**, not merely any non-blank text. **EMPTY MEANS NO BYTES**: a fi
 is not empty, it is a file with a blank line, and `verify` refuses the pass for exactly that. The one
 read-side rule no write can enforce is the LIVE HEAD comparison — the tip can move after a sound file is
 written, which is the whole reason a tally is voided when PR content changes.
+
+#### Review work-plan ledger — orchestrator-owned, target-generic
 
 **Review work-plan ledger — orchestrator-owned, target-generic.** Before launching each review pass,
 write `<rundir>/review-<pr>-<n>.plan.jsonl` (through `review-pass.py plan-add` — one unit per call, each
@@ -227,6 +247,8 @@ backticked span, or a filename). Do NOT rename to `unit_done`/`unit_id`/`id`/`no
 other event types for unit progress. Unit-progress events carry ONLY the exact required keys above
 (no extra keys such as `ts`); each event's required keys must be present and named exactly.
 
+#### A `done` REQUIRES an earlier `started` — enforced by ORDER, at both doors
+
 **A `done` REQUIRES an earlier `started` for the same unit — enforced by ORDER, at both doors.** A unit
 that was never begun cannot have been finished, so a `done` standing alone, or standing *above* its
 `started` in this append-only file, makes the pass `unusable`: a progress file carrying a `done` for
@@ -241,6 +263,8 @@ follows `started`, no second `done` — are ONE predicate that both doors call.)
 The `plan_amendment_request` event keeps its existing shape; its `ts` must be a real UTC ISO-8601
 timestamp (the same clock rule `pass_identity.dispatched_at` obeys) and its `reason` must be non-empty —
 an amendment holds a pass back, so it must say something the orchestrator can rule on.
+
+#### Calling `emit-progress.py` is the ONLY sanctioned way to record a unit-progress event
 
 **Calling `emit-progress.py` is the ONLY sanctioned way to record a unit-progress event
 (`started`/`done`).** The reviewer MUST NOT ever write those unit-progress events into the progress
@@ -283,6 +307,8 @@ That example is **the real PR #43 round-11 finding**, and it is the one to keep 
 was **added by an earlier fix round of this very gauntlet**, and it still **GATES** — because `network` names
 an actor who can really send that reply, and it quotes the PR's purpose verbatim.
 
+#### `pass_identity` is the pass's attempt id and its dispatch clock
+
 **`pass_identity` is the pass's attempt id and its dispatch clock.** The orchestrator writes it — with
 `review-pass.py identity`, **never** a `printf` — as the
 **first line** of the launch attempt's progress file **before** launching the reviewer process, so that
@@ -300,6 +326,8 @@ therefore evidence that the reviewer has produced nothing — not evidence of a 
 **The attempt id is `pr` + `pass` + `head_sha` + `launch_attempt` — all four.** A relaunch keeps the
 first three, so without `launch_attempt` the two launch attempts of one pass are indistinguishable and
 a killed-but-not-dead attempt could be mistaken for the live one.
+
+#### Each launch attempt owns its own artifacts — a relaunch NEVER reuses the dead attempt's files
 
 **Each launch attempt owns its own artifacts — a relaunch NEVER reuses the dead attempt's files.**
 A process that survived its kill still writes to the paths it was given, so reusing them would let a
@@ -332,6 +360,8 @@ in the typed review record, so the reviewer receives concrete data rather than s
 reviewer MUST invoke that argv through `runtime-adapter.md`'s typed boundary to emit each event, which
 writes the canonical shape by construction; a non-zero exit means the inputs were rejected and must be
 fixed and re-run.
+
+#### Launch check — prove the reviewer actually started
 
 **Launch check — prove the reviewer actually started.** A dispatch can fail in a way that produces
 **no events at all**: an external reviewer launched without the prompt-file stdin redirect,
@@ -381,6 +411,8 @@ rule is sized for a reviewer working slowly, not one that never woke up. Gate ev
   the PR-level retry-once bailout, and charging a reviewer's failure to launch against it could abort
   a perfectly good PR for a fault that was never in its diff.
 
+#### Meaningful progress — the stronger bar
+
 Meaningful progress = a `done` event for a planned unit, or an accepted plan amendment. `started`
 events and vague "still working" lines prove only process liveness and MUST NOT reset the meaningful
 progress timer. The reviewer MUST append progress events immediately as units complete, not batch them
@@ -388,6 +420,8 @@ at final output. If no meaningful progress lands for ~15 min while the review pr
 mark the review suspicious; if it remains stale on the next heartbeat, treat it as a reviewer system
 failure: apply `reviewer.md`'s retry budget and `runtime-adapter.md`'s owned transition. Ignore any
 late verdict from a stale/superseded attempt unless its attempt id still matches the active review pass.
+
+#### A finer liveness signal — the reviewer's OUTPUT STREAM
 
 **A finer liveness signal for a background-task reviewer whose stdout is captured INCREMENTALLY: its
 OUTPUT STREAM.** The meaningful-progress
@@ -641,6 +675,8 @@ never be torn up for a repair.
 
 Then, per verdict:
 
+#### NOT SATISFIED
+
 - **NOT SATISFIED** → the SHA's tally is void (`ledger.py verdict … --verdict not-satisfied` does it) **and,
   in the same step, restore
   `gauntlet-reviewing` if the PR carries `gauntlet-accepted`** ("Status labels mirror the review gate",
@@ -681,6 +717,8 @@ Then, per verdict:
   contract's **sweep-and-report block into the prompt verbatim** — a review defect whose fix changes a
   definition or a fact is not done until every site that restates it is correct, and every site found is
   reported. Scope bounds the READING; the sweep bounds the WRITING; the fixer owes you both.
+#### SATISFIED
+
 - **SATISFIED** → record it (`ledger.py … verdict --pr <N> --head-sha <sha> --verdict satisfied`, which
   bumps `reviews_ok` and `review_rounds` and clears `ns_streak` in one write — **never** `set
   --reviews-ok`, which refuses to raise the tally). It **never** trips a review-loop cap. The gate is met
@@ -721,6 +759,8 @@ STANDARD/HIGH PR, one for a TRIVIAL PR). Its only aggregate use (when a PR has �
 when **both** accepting passes on the same content name the same area, note that convergence in the
 report, and the orchestrator MAY add a plan unit covering it the next time the PR content changes and a
 fresh review round starts — but it never blocks the current gate.
+
+#### Gate is `required(tier)` fresh, context-isolated SATISFIED verdicts on the same PR content
 
 **Gate is `required(tier)` fresh, context-isolated SATISFIED verdicts on the same PR content** —
 2a-triage owns the formula and the file classes. A `NOT SATISFIED`, a `plan_amendment_request`, or a

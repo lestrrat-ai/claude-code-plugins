@@ -1,5 +1,7 @@
 ## Bailout
 
+### 1-hour cap per task
+
 - **1-hour cap per task** — one hour of wall-clock since `started` without merging. The cap catches a
   *stuck* task, not a slow external system, and the ledger records no separately-metered work time — so
   key it off recorded row state, not a running subtraction of durations nothing stores: **do not fire

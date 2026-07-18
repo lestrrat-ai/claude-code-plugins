@@ -342,6 +342,8 @@ Header field notes (the header fields above; per-row fields follow):
   the run-wide `api_changes` header.
 - `status` — `in_review` → `merged`, or `aborted`; plus the **HELD** (non-terminal) statuses below.
 
+### `status` held and parked taxonomy
+
   **HELD is the PROPERTY the dispatch guard is keyed on: campaign takes NO action that MUTATES a held
   PR.** Never launch a review pass, a CI fix, a review fix, or a merge for it, and never rebase it, refresh
   its base, push to it, or relabel it (`loop-control.md` step 3, "held-status guard" — the property, of

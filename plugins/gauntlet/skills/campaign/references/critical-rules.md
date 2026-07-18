@@ -1,5 +1,9 @@
 ## Rules
 
+> **Quick reference (navigation, not authority):** every bullet points at its owner — the file or tool that owns the definition. The `###` groups below follow the rules' existing order.
+
+### Run identity and lease
+
 - Runs are isolated by `run_id`: a run touches ONLY its own `<rundir>`, its `state.jsonl`, and the PRs
   carrying its `gauntlet-run-<run-id>` label. Adopted PRs keep their OWN head branch, so ownership is
   scoped by that LABEL only (never a branch prefix). NEVER reconcile, review, fix, merge, relabel, or
@@ -21,6 +25,9 @@
   while pruning history, MAY edit or remove OTHER runs' files — but only those of **finished** runs
   (no live writer/lease), never a file an actively-driven run owns — so there's still no write
   contention with a live writer.
+
+### Scope, bookkeeping and follow-ups
+
 - Run-owned git/GitHub operations are authorized by invocation: `add`, `commit`, `push`, and — on
   adopted PRs — PR update, labels/checks/comments, and merge. Campaign ADOPTS existing PRs; it does not
   invent work. It opens a PR of its own in exactly ONE case: a **follow-up it has TAKEN UP** under the
@@ -51,6 +58,9 @@
 - NEVER use `--dangerously-bypass-approvals-and-sandbox` with an external reviewer; always
   `--sandbox workspace-write`.
 - One PR = one unit. Campaign gates whole adopted PRs; do not split or bundle them.
+
+### Loop, watches and CI truth
+
 - PR-gating loop is mandatory: adopt PR → triage tier → watch CI + review PR HEAD → merge. Campaign
   gates **existing** PRs; it NEVER writes fixes from scratch (only review/CI fixes on an adopted PR).
 - Concurrency is a **rolling cap (~8 in flight), never a barrier wave**: keep up to ~8 review passes
@@ -94,6 +104,9 @@
 - Public API surface/behavior changes need user confirmation by default (see Constraints). The
   `api_changes` flag lives in the ledger header and is re-read every heartbeat — never trust memory, never
   auto-merge an unapproved API break.
+
+### Review gate and findings
+
 - Before queueing a review pass on a PR, clear its preconditions on the current tip: address any
   GitHub Copilot review items (the active host form of `gauntlet:copilot-address-reviews <pr>`), fix any CI failures (one at a time,
   prefer a scoped subagent), and rebase away any conflict with `<base>`. PR-content changes reset
@@ -127,6 +140,9 @@
   reachability test says *"provenance is the wrong question"*, it is answering **is it TRUE?**, and it is
   right; it is **not** saying "never ask who can write the input" — that is the other question, and the
   `writer` field is what answers it.
+
+### Verdict accounting and labels
+
 - **Record every verdict with `ledger.py verdict` — NEVER set `reviews_ok` by hand.** It bumps
   `review_rounds`, applies the tally, and moves `ns_streak` in one atomic write. **`review_rounds` is the
   review loop's only memory across fresh-context heartbeats and is NEVER reset** — not by a fix, a rebase, a
@@ -209,6 +225,9 @@
   `blocker_ruling` = `retry`/`abort` (`files-and-ledger.md`, `status`;
   `loop-control.md` step 3, "Only the user's answer unparks a PR"). **NEVER park into a state whose exit
   is undefined.**
+
+### Held and parked PRs
+
 - **A HELD PR IS FROZEN — TAKE NO ACTION THAT MUTATES IT. ASK THE TOOL: `ledger.py … dispatch-check --pr
   <N>` exits non-zero.** A PR is **HELD** when it is **parked on a HUMAN** (`status = awaiting-user`, a
   standoff; `awaiting-api`, API approval) **or `repairing`** — it reached a review-loop cap, has stopped
@@ -347,6 +366,9 @@
 - Prune `.gauntlet/history/` at every fresh run: drop only entries unambiguously moot against
   current `<base>`; for anything uncertain, list it and ask the user before deleting. Never silently
   prune an entry you're unsure about.
+
+### Fix dispatch and worker models
+
 - **Select a logical model class on EVERY worker dispatch** (`SKILL.md`, "Worker Dispatch";
   `runtime-adapter.md`). Never guess a model name from the other host.
 - **Model policy — NEVER DOWNGRADED: review passes, the subagent-fallback review, review-fixes, and the
@@ -451,6 +473,9 @@
   SEE?"). **A required set campaign could not read is NEVER green** — it is a `pending` outcome that
   escalates, because a check that never registered is **no row**, and no count of passing rows can rule it
   out. **NEVER claim more from a green than those rules allow.**
+
+### Merge and base hygiene
+
 - The run targets a **base branch** (`base_branch` in the ledger header), which is **not assumed to
   be `main`** — it is the `baseRefName` of the adopted PRs (must agree across them, else prompt).
   Reviews diff `origin/<base>...HEAD` and PRs merge into `<base>`; a fix worktree branches off the PR's OWN

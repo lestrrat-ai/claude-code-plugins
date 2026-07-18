@@ -239,6 +239,9 @@ machine-read convention as `state.jsonl` and the review plan/progress files (`fi
   one we cannot read, and taking it for "no witnesses" makes containment a claim about the **empty set**,
   which passes trivially. Refuse it. This is the artifact's founding rule — *an absence must read as "we do
   not know", never as "nothing wrong"* — applied one level up, to the **response**.
+
+##### THE ROLLUP'S `StatusContext` ENTRIES MUST BE VISIBLE IN FAMILY (2)
+
 - **THE ROLLUP'S `StatusContext` ENTRIES MUST BE VISIBLE IN FAMILY (2), OR THE FETCH FAILS CLOSED.** The
   rollup lists commit statuses too, and a `StatusContext` in state **`EXPECTED`** is **a required status
   check that has not been posted yet** — the PR is *blocked* on it. **The REST commit-status API has no
@@ -264,6 +267,9 @@ machine-read convention as `state.jsonl` and the review plan/progress files (`fi
   the PR goes green. **The REQUIRED SET is the closure** (`stage-2-ci.md`, "WHAT WERE WE EXPECTING TO SEE?") — it is
   declared by the base branch, so it does not depend on the rollup showing up, and `green` requires every
   declared check to be **present and passing**.
+
+##### THE TWO SOURCES MUST AGREE ABOUT WHAT A CHECK SAYS
+
 - **THE TWO SOURCES MUST AGREE ABOUT WHAT A CHECK SAYS, OR THE FETCH FAILS CLOSED.** The rule above asks
   only whether a check **EXISTS** in both sources. It does **not** ask whether they **SAY THE SAME THING
   ABOUT IT** — and for as long as nobody asked, the tool believed whichever source it happened to parse. A

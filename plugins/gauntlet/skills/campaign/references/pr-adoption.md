@@ -61,6 +61,8 @@ gh label create gauntlet-run-<run-id> --color 5319E7 --description "gauntlet: ru
 
 For each `#PR` to adopt:
 
+#### Step 1 — Read the PR
+
 1. **Read the PR** — one `gh pr view` for the facts the ledger row needs, **including the cross-repo
    field** so the refusal check below can reject fork PRs:
 
@@ -90,6 +92,8 @@ For each `#PR` to adopt:
    a **same-repo** PR (forks are already refused), so the body it reads comes from a committer with write
    access to this repo.
 
+#### Step 2 — Refuse a foreign-owned PR
+
 2. **Refuse a foreign-owned PR.** If `labels` already contains a `gauntlet-run-*` label that is **not**
    this run's `gauntlet-run-<run-id>`, another run owns it — **do NOT adopt, relabel, or touch it**.
    Tell the user that PR is owned by that other run and to let that run finish or release it first.
@@ -112,6 +116,8 @@ For each `#PR` to adopt:
    label. Tell the user fork PRs aren't supported: push a same-repo branch and open the PR from it (or
    re-open from a branch in this repo) so campaign can adopt it. Only a same-repo PR
    (`isCrossRepository=false`) adopts normally.
+
+#### Step 3 — Register the ledger row — refresh, never duplicate
 
 3. **Register the ledger row — refresh, never duplicate.** Write the row through
    `scripts/ledger.py` (the schema-owning accessor — `references/files-and-ledger.md`), addressing
@@ -190,6 +196,8 @@ For each `#PR` to adopt:
 
    The ownership marker for an adopted PR is the **label**, not the branch name (its branch won't match
    the `fix-<run-id>-` prefix) — so labelling in step 4 is what makes the PR ours.
+
+#### Step 3a — Write the PR's INTENT
 
 3a. **Write the PR's INTENT — `<rundir>/intent-<pr>.md`.** This is the input the review gate is measured
    against, and the reviewer receives it **verbatim** (`stage-2-review-gate.md`, "What the review is
@@ -272,6 +280,8 @@ For each `#PR` to adopt:
    and `intent-<pr>.md` is re-read, never re-derived — a heartbeat is a fresh agent instance, and an intent
    invented twice is two intents. Re-author only if the file is **gone** (a wiped `<rundir>`), and say so.
 
+#### Step 4 — Label it ours, and set the status label from the LIVE gate
+
 4. **Label it ours, and set the status label from the LIVE gate.** Add this run's owner label, then
    apply the status label that matches the PR's gate state **as it stands after step 3** — never a
    hardcoded `gauntlet-reviewing`.
@@ -295,6 +305,8 @@ For each `#PR` to adopt:
    of leaving a stale `gauntlet-accepted` in place. The label tracks the gate in **both** directions.
    (`--remove-label` on a label the PR does not carry is a harmless no-op, so neither form needs a
    pre-check for the label's presence — only for the gate's state.)
+
+#### Step 5 — Create the PR-head worktree before the first review pass
 
 5. **Create the PR-head worktree before the first review pass — off the PR's OWN head, never `<base>`.**
    The review itself needs a real checkout: the selected reviewer receives `<worktree>` as explicit
@@ -362,6 +374,8 @@ For each `#PR` to adopt:
    form writes the local branch directly and is **refused** when the branch already exists or is checked
    out. Let the create/reuse logic above handle the local branch.)
 
+   #### Two fail-closed guarantees the pseudocode leaves implicit
+
    **Two fail-closed guarantees the pseudocode leaves implicit:**
    - **On a re-adoption of the SAME worktree campaign itself created, PRESERVE its recorded
      `worktree_owned`/`branch_owned`** rather than downgrading them to `no`. A first adopt that **created**
@@ -389,6 +403,8 @@ For each `#PR` to adopt:
    the PR also go here; stage only the specific
    source files changed (explicit paths, never `git add -A`). Fix commits are pushed back to the PR's
    head branch on `origin`.
+
+#### Step 6 — Ensure a live CI watch when — and ONLY when — a check can still move
 
 6. **Ensure a live CI watch when — and ONLY when — a check can still move.** The warrant for a watch is a
    **still-RUNNING evidence row** in the PR's snapshot, **never the `ci` value** (Stage 2b, `stage-2-ci.md`

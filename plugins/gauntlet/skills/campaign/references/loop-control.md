@@ -1,10 +1,14 @@
 ## Loop control
 
+> **Read when:** every heartbeat executes these steps in order; jump to the step you are in.
+
 The skill is **event-driven**. Read `runtime-adapter.md` before waiting. Reconciles come from the first
 invocation, a scheduled heartbeat when the host provides one, a **background task completing**, or the
 bounded-wait fallback returning. A completion may be a CI watch, a review, or a CI/review fix.
 
 **Every heartbeat — reconcile, dispatch, reschedule:**
+
+### Step 1 — Resolve repository context, then the run + lease, then init / resume / start fresh
 
 1. **Resolve repository context, then the run + lease, then init / resume / start fresh.** Call
    `runtime-adapter.md`'s repository-context resolver exactly once with the supplied checkout and carry
@@ -156,6 +160,8 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
    **Settle the base branch's required-check set before any CI derivation:** run `scripts/ci-status.py
    required-set --ledger <rundir>/state.jsonl`. Run it every heartbeat; the command reuses a settled value and
    only retries `unknown`. `stage-2-ci.md`, "WHAT WERE WE EXPECTING TO SEE?", owns its states and behavior.
+### Step 2 — Fold in completions
+
 2. **Fold in completions.** For any background task that finished (CI watch → **a HEARTBEAT, not an artifact**:
    the watch **only blocks** and produces **nothing**, so **this heartbeat** performs the SHA-pinned fetch of
    both check families, **promotes** it atomically to `ci-<pr>-<head_sha>.txt` and **verifies** its stamp
@@ -185,10 +191,14 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
    never set `reviews_ok` by hand.
    For any completed task (review, CI watch,
    CI/review fix), record the result against the SHA it ran on and act per Stage 2.
+### Step 3 — Dispatch due work
+
 3. **Dispatch due work — non-blocking, idempotent, bounded, work-conserving.** Scan the whole run,
    not just the PR/job that woke you. Launch every due action that fits a free slot before returning.
    Launch only what is actually due *and not already in flight* (check ground truth first, never the
    ledger alone).
+
+   #### HELD-STATUS GUARD — a PROPERTY, not a list, and now a COMMAND
 
    **HELD-STATUS GUARD — a PROPERTY, not a list, and now a COMMAND. Apply it BEFORE every bullet below,
    and before every other action this skill takes on a PR.** While a PR's `status` is **HELD** the PR is
@@ -236,6 +246,9 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      mirror, when **someone else** pushed to the PR (step 1). Recording a change campaign did not make is
      not making one. What is frozen is **campaign's own action on the PR**; a park never licenses a
      lying label or a stale row.
+
+   #### Only the user's answer unparks a PR
+
    - **Only the user's answer unparks a PR — and EVERY park class names the durable record it is
      answered into.** An answer that lives only in this session is an answer a fresh agent re-asks. On
      the answer: **record it**, then unpark to the `status` **THAT ANSWER** dictates — the table below is
@@ -379,10 +392,14 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
    that PR is the CORRECT state, never a stall to "fix" by dispatching work), or a genuinely full cap. If the run has **no PR at all**
    and none is in flight (no-arg idle), do not spin: show the **idle prompt**
    (`run-identity-and-lease.md`, "Resolving a heartbeat", owns its wording).
+### Step 4 — Merge queued PRs as a serialized drain
+
 4. **Merge** queued PRs as a serialized drain: re-confirm one candidate against the live SHA **and
    re-check it is not parked** (the held-status guard binds the merge too — Stage 3), merge
    it, sync `<base>`, reconcile remaining candidates, and repeat while another PR is immediately
    mergeable (Stage 3).
+### Step 5 — Reschedule or exit
+
 5. **Reschedule or exit.**
    - Any non-terminal PR remains (in review, pending CI, or awaiting a user ruling on a review-finding
      standoff / API approval / precondition) →
@@ -440,6 +457,8 @@ together — cannot corrupt state or act on a stale verdict (PR-content pinning 
 at the gate). The worst case is a wasted duplicate review, which is harmless: it's just another fresh,
 context-isolated re-roll anyway. The agent is also single-threaded per turn, so heartbeat *decisions* never truly race — only
 in-flight tasks do.
+
+#### Resume after a killed session
 
 **Resume after a killed session — including by a different agent instance:** in-flight background
 tasks die with the session, but nothing authoritative is lost. A new invocation reconciles against

@@ -10,6 +10,13 @@ different write: its `0`-reset belongs **only** to a campaign commit landing on 
 campaign commit to the PR head resets the gate", below, through `scripts/ledger.py … set --pr <N>
 --reviews_ok 0`. An ordinary derivation is observation, not a content change, and never touches it.)
 
+> **Jump by question (navigation, not authority — the sections below govern):**
+> - `derive` returned a verdict → "ACT ON THE VERDICT"
+> - a required-check-set question → "WHAT WERE WE EXPECTING TO SEE?"
+> - a PR stuck or parked → SETTLED / "ESCALATE" / "THE PARK MUST DECLARE ITS OWN EXIT" (all under "`pending` MUST NOT BE AN ABSORBING STATE")
+> - a watch question → "WATCH ONLY WHAT CAN MOVE"
+> - a CI-fix dispatch → "Classify, then set the model class"
+
 #### THE DERIVATION IS A COMMAND — RUN IT. NEVER DERIVE `ci` BY READING TERMINAL OUTPUT.
 
 **The heartbeat derives `ci` by RUNNING `scripts/ci-status.py`, and by nothing else:**
@@ -384,6 +391,8 @@ change `head_sha` until it pushes — so an ungated strike rule would park, with
 of heartbeats, the exact PR the driver is actively fixing, and an ungated stall clock would start timing a
 `RUNNING` row the driver is about to make irrelevant.
 
+##### MACHINE ACTION — any work that can produce a new `head_sha`
+
 **MACHINE ACTION** = **any work campaign dispatches that can produce a new `head_sha` on this PR.** That
 **PROPERTY is the definition, and it is the whole of it.** **APPLY THE PROPERTY — NEVER CONSULT A LIST.**
 Of any work in question, ask: *when it completes, can it put a new commit on this PR's head?* If yes it is
@@ -440,6 +449,8 @@ strikes accrue (or the stall clock runs) on the next derivations, and **it reach
 like any other settled or stalled PR. The gate suppresses a bound **only while work that can move
 `head_sha` is actually coming**, never merely because the PR is red.
 
+##### ESCALATE — park the PR and tell the user
+
 **ESCALATE** = park the PR (`status = awaiting-user`, `ci_reason` = the blocker **named**: which check
 never registered, **which check has been `RUNNING` since when without the check set moving**, which value
 was unrecognized, which read was denied), **and `blocker_ruling` = `-` in
@@ -452,6 +463,8 @@ abort the run or close the PR — the run's other PRs keep going. At **this** pa
 bare restatement of `ci`. (The field itself is **wider than CI**: it is the durable machine-blocker reason,
 and `stage-3-merge.md`'s merge-precondition parks write it with `ci` **green**. `files-and-ledger.md` owns
 that definition.) A park that cannot name its blocker is not actionable.
+
+##### THE PARK MUST DECLARE ITS OWN EXIT
 
 **THE PARK MUST DECLARE ITS OWN EXIT — the invariant at the top of this section binds `awaiting-user`
 too.** A park whose exit event never comes is the same wedge, one level up. So the escalation:
@@ -501,6 +514,8 @@ added to the schema tomorrow is already covered here:
   the park has no exit.
 - **A RULING that dies gets re-asked** ("THE RULING IS CONSUMED EXACTLY ONCE" below).
 
+##### THE RULING IS CONSUMED EXACTLY ONCE
+
 **THE RULING IS CONSUMED EXACTLY ONCE — a durable answer that is never spent is a park that unparks
 itself.** `blocker_ruling` must be **DURABLE** (it survives a context loss) **AND spent EXACTLY ONCE** (it
 answers the park it was written for, and no other). Both halves, or neither holds:
@@ -521,6 +536,8 @@ a spent `retry` on the row, and the next park would read it as its own answer. (
 `head_sha` instead would **not** work: a `retry` that fails to move CI re-parks the PR at the **same**
 `head_sha` (`loop-control.md` step 3), so a `head_sha`-scoped ruling would satisfy that re-park with no
 fresh user answer — the exact failure this rule exists to prevent.)
+
+##### THE LIVENESS COUNTERS
 
 **THE LIVENESS COUNTERS — one name for the set, so a new counter never leaves a stale restatement.** They
 are `ci_fingerprint`, `settled_strikes`, `unusable_refetches`, and `ci_stalled_since`.

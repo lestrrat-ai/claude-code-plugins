@@ -2,12 +2,16 @@
 
 This file is the dispatch half of Stage 2a (`stage-2-review-gate.md`, "The review gauntlet"); the gate policy, the artifact contract, and verdict handling stay there, and this file owns how a review pass is materialized and launched.
 
+### Build the transport record
+
 **Orchestrator:** build one `ReviewTransport` record through `runtime-adapter.md`; never substitute its
 dynamic values into command prose. Resolve the two emitter paths relative to the active `SKILL.md`,
 derive all attempt paths from the same launch attempt, and serialize the record with a real JSON encoder.
 Then bind `<TRANSPORT-RECORD>` and `<INTENT>` in one non-rescanning `bind_review_prompt` call and
 materialize its result through `write_bytes`. The reviewer must receive concrete record values, never
 literal unresolved field names.
+
+### Resolve the active attempt's paths
 
 `<prompt-file>`, `<review-output>`, `<progress-file>` and `<findings-file>` resolve to the **active launch
 attempt's** files — NOT to fixed names. The attempt-artifact table ("Each launch attempt owns its own
@@ -34,6 +38,8 @@ as explicit review input. Review commands address it by absolute path with `run_
 it. `runtime-adapter.md` owns the transport-specific isolation semantics,
 including the native path's disclosed lack of an OS boundary when the host supplies none.
 
+### Fetch `origin/<base>` before the first dispatch
+
 **Fetch `origin/<base>` fresh before the first review dispatch.** The review diffs
 `origin/<base>...HEAD` — a **remote-tracking** ref, not a possibly-absent local `<base>` (adoption
 fetches only the PR head, so a local `<base>` may not exist, and a PR may target a stale or as-yet-
@@ -51,11 +57,15 @@ run_argv(
 This is idempotent and safe to repeat; run it (or rely on adoption's step-5 base fetch) before the
 review launches. All review diffs then use `origin/<base>...HEAD`.
 
+### Bind the intent verbatim
+
 **Orchestrator: pass the VERBATIM CONTENTS of the active `intent-<pr>.md` as `bind_review_prompt`'s
 `intent` value** — the whole
 block, not a summary and not a path. A reviewer handed a path is a reviewer that may not read it; a reviewer
 handed a summary is measured against the summary. Store the resolved emitter paths in the transport
 record; do not put them into executable prose.
+
+### The prompt template — verbatim, test-pinned
 
 The following is the prompt template, **not shell source**. The trailing backslash-newline pairs only
 wrap the displayed prose; omit them when materializing the prompt. Use `runtime-adapter.md`'s
@@ -166,6 +176,8 @@ THE QUESTION YOU ARE ANSWERING IS: does this PR achieve its stated Purpose, with
    "external-process-capture", return the report only as the process's final output and do not write \
    TRANSPORT.report.path yourself; the orchestrator's typed process transport captures it.
 ```
+
+### Build the external record and launch
 
 Pass that artifact as data. Build the external Codex record only when the runtime transition
 returns `launch-external` or `retry-external`; no other action constructs this external record or
