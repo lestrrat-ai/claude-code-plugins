@@ -414,10 +414,9 @@ may block the PR — the subcommands, and the four verdicts `verify`
 returns; resolve the script at `<skill-dir>/scripts/review-pass.py` and pass that path to subtasks, exactly
 as with `ledger.py` below.
 
-**Each script's fixtures are a SIBLING `*-test.py`** (`review-pass-test.py`, `ledger-test.py`), loaded by
-`self-test` from a `__file__`-relative path. **`self-test` FAILS LOUDLY when the sibling is missing** — a
-self-test that passes because it found no tests is a green derived from zero evidence, which is the exact
-class of bug these suites exist to catch.
+`review-pass.py`'s `self-test` loads a sibling fixture suite, following the **sibling-suite convention that
+`SKILL.md` owns** — that page defines the rule and names which scripts do and do not follow it. This page
+deliberately does not restate or enumerate it; a list here goes stale the moment a suite is added.
 
 ### Editing the ledger — use `scripts/ledger.py`
 
