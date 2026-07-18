@@ -53,6 +53,7 @@ The table maps **BOTH enums TOTALLY** — every value of each has its own row, s
 **only** on a value GitHub has genuinely added since. A value with no row is a **wedge**: it falls to the
 catch-all and parks a PR that nothing was wrong with.
 
+<!-- merge-precondition-table:start -->
 | Field / value | Meaning | Do |
 |---|---|---|
 | `.isDraft = true` | a **draft** PR — GitHub blocks the merge regardless of CI | **NEVER merge.** Park `awaiting-user`. |
@@ -67,6 +68,7 @@ catch-all and parks a PR that nothing was wrong with.
 | `.mergeStateStatus = BLOCKED` | the merge is blocked — **cause NOT enumerable** | **do not merge.** Park `awaiting-user`. **NEVER** map it to `ci = pending`. |
 | `.mergeStateStatus = UNKNOWN` | not computed yet | **re-poll, bounded** — see **"The UNKNOWN re-poll bound"** below |
 | **any other value** | GitHub added one | **park `awaiting-user`**, naming the value. Never guess. |
+<!-- merge-precondition-table:end -->
 
 **The UNKNOWN re-poll bound.** `UNKNOWN` is a value GitHub has **not computed yet** — it is not a verdict,
 and it resolves within seconds once GitHub finishes computing mergeability lazily. Re-poll it **in-heartbeat up

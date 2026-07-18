@@ -213,22 +213,53 @@ def check(pr: str, ledger_path: Path, repo: "str | None", view_json: "str | None
 
 # --- doc-check: the doc and the code cannot silently disagree ------------------
 
-def doc_enum(text: str, field: str) -> set:
-    """The set of `<field>` values `stage-3-merge.md`'s merge-precondition table enumerates, read off the
-    backticked `.<field> = VALUE` tokens the table uses (e.g. `.mergeStateStatus = CLEAN`).
+# The merge-precondition table is DELIMITED in the doc by these two markers, each on its own line — the
+# start immediately before the header row, the end immediately after the last row. They make the extraction
+# UNAMBIGUOUS: `doc_enum` reads the ONE table between them and nothing else. Without a hard boundary, ANOTHER
+# `|`-table elsewhere in the doc (or a value dropped from this table but still named in a second table) could
+# supply the token the precondition table no longer has, and the drift-guard would PASS over a lost value.
+PRECONDITION_TABLE_START = "<!-- merge-precondition-table:start -->"
+PRECONDITION_TABLE_END = "<!-- merge-precondition-table:end -->"
 
-    The extraction is scoped to the doc's Markdown TABLE ROWS — a line whose first non-space character is
-    `|` — and NOTHING else. That scoping is load-bearing, not cosmetic: a value dropped from the table
-    itself but still named in PROSE somewhere in the doc (the fenced enum block above the table, a worked
-    example, a `.mergeStateStatus = BLOCKED` sentence) would otherwise supply the token the table no longer
-    has, and the drift-guard would PASS while the table it is meant to pin has silently lost a value. The
-    TABLE is the contract this tool implements, so ONLY the table rows are read — prose cannot mask a
-    dropped row.
+
+def precondition_table_rows(text: str) -> "list[str] | None":
+    """The lines strictly BETWEEN the two precondition-table markers, or `None` if the markers are absent,
+    empty, or out of order. `None` is a HARD FAIL for `doc_check` — a table it cannot locate is never a pass.
+    """
+    lines = text.splitlines()
+    start = next((i for i, l in enumerate(lines) if l.strip() == PRECONDITION_TABLE_START), None)
+    end = next((i for i, l in enumerate(lines) if l.strip() == PRECONDITION_TABLE_END), None)
+    if start is None or end is None or end <= start + 1:
+        return None
+    return lines[start + 1:end]
+
+
+def doc_enum(rows: "list[str]", field: str) -> set:
+    """The set of `<field>` values the merge-precondition table enumerates, read off the backticked
+    `.<field> = VALUE` tokens (e.g. `.mergeStateStatus = CLEAN`).
+
+    `rows` are ONLY the lines between the precondition-table markers (see `precondition_table_rows`), and
+    within each table row ONLY the FIRST `|`-delimited cell — the "Field / value" column — is read. Both
+    scopings are load-bearing, not cosmetic, and each closes a distinct bypass:
+
+    - Marker scoping: a value dropped from THIS table but still named in prose or in ANOTHER `|`-table
+      elsewhere in the doc would otherwise supply the token this table no longer has — the drift-guard would
+      PASS while the table it pins has silently lost a value.
+    - First-cell scoping: a value dropped from its own row but still mentioned in a later cell (a "Meaning"
+      or "Do" cell) of some row INSIDE the markers would likewise sneak the token back in. Only the value
+      column declares what the table enumerates; the prose cells describe it and must not contribute.
+
+    The TABLE's value column is the contract this tool implements, so ONLY it is read — nothing else can mask
+    a dropped row.
     """
     enum = set()
-    for line in text.splitlines():
-        if line.lstrip().startswith("|"):
-            enum.update(re.findall(rf"\.{field}\s*=\s*([A-Z_]+)", line))
+    for line in rows:
+        if not line.lstrip().startswith("|"):
+            continue
+        cells = line.split("|")
+        # cells[0] is the empty string before the leading `|`; cells[1] is the "Field / value" column.
+        first_cell = cells[1] if len(cells) > 1 else ""
+        enum.update(re.findall(rf"\.{field}\s*=\s*([A-Z_]+)", first_cell))
     return enum
 
 
@@ -236,18 +267,25 @@ def doc_check(doc: Path) -> int:
     """Assert `stage-3-merge.md` and this code enumerate the SAME two enum value sets.
 
     Neither the doc nor `decide` may add or drop a `.mergeable` or `.mergeStateStatus` value without the
-    other. A check that finds NOTHING must never pass, so an empty extraction (a renamed/reformatted table)
-    FAILS exactly as a mismatch does.
+    other. A check that finds NOTHING must never pass, so absent markers (an unlocatable table) and an empty
+    extraction (a renamed/reformatted table) both FAIL exactly as a mismatch does.
     """
     if not doc.exists():
         print(f"FAIL     the doc is not at {doc} — a check that cannot find its subject NEVER passes")
         return 1
     text = doc.read_text(encoding="utf-8")
 
+    rows = precondition_table_rows(text)
+    if rows is None:
+        print(f"FAIL     the merge-precondition-table markers "
+              f"({PRECONDITION_TABLE_START} … {PRECONDITION_TABLE_END}) are absent, empty, or out of order "
+              f"in {doc.name} — a drift-guard that cannot LOCATE its table must never report success")
+        return 1
+
     checks = [
-        ("mergeable", doc_enum(text, "mergeable"), set(MERGEABLE),
+        ("mergeable", doc_enum(rows, "mergeable"), set(MERGEABLE),
          "MERGEABLE is necessary-not-sufficient; dropping a value here wedges a PR or merges over it"),
-        ("mergeStateStatus", doc_enum(text, "mergeStateStatus"), set(MERGE_STATE_STATUS),
+        ("mergeStateStatus", doc_enum(rows, "mergeStateStatus"), set(MERGE_STATE_STATUS),
          "the merge-precondition table; a value in the doc but not the code (or vice versa) is a silent drift"),
     ]
     failures = 0
