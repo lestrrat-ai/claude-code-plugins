@@ -52,11 +52,12 @@ def _load(name: str, filename: str):
     return mod
 
 
-# The schema owner. `HELD_STATUSES`, `REPAIR_STATUS` and `load` are imported, never restated — a new held
-# status inherits the merge freeze here with no edit, and the file format has exactly one parser.
+# The schema owner. `HELD_STATUSES` and `load` are imported, never restated — the file format has exactly
+# one parser, and the held set is imported only to make the parked-vs-terminal reason accurate. The merge
+# gate itself does NOT enumerate held statuses: `decide` ALLOW-LISTS `in_review` (below), so a new held
+# status — or any other non-`in_review` status — is frozen by that allow-list with no edit here.
 L = _load("merge_check_ledger", "ledger.py")
 HELD_STATUSES = L.HELD_STATUSES
-REPAIR_STATUS = L.REPAIR_STATUS
 
 # `required(tier)` — 1 if TRIVIAL else 2 — is REUSED, never retyped. The rule already lives in `nudge.py`
 # (and `review-pass.py`); a third copy here would be the drift this repo keeps killing. So merge-check
@@ -110,14 +111,21 @@ def _short(sha: str) -> str:
 def decide(row: dict, view: dict, *, required) -> dict:
     """PURE. Return `{"verdict": "merge"|"not-yet", "reason": str}` for one PR. No I/O.
 
-    The order is FIRST-FAILING-CHECK-WINS, and it is deliberate: a held PR is FROZEN regardless of counters,
-    so it is asked before anything else; the two GitHub enums are asked LAST, only once every ledger
-    precondition has already passed. `required` is the gate's `required(tier)` helper, passed in.
+    The order is FIRST-FAILING-CHECK-WINS, and it is deliberate: the status ALLOW-LIST is asked before
+    anything else, so a PR that is not `in_review` (held, terminal, or anything else) is frozen regardless
+    of counters; the two GitHub enums are asked LAST, only once every ledger precondition has already
+    passed. `required` is the gate's `required(tier)` helper, passed in.
     """
-    # 1. HELD — a parked or repairing PR is FROZEN, whatever its counters or the enums say.
+    # 1. STATUS ALLOW-LIST — only an `in_review` row is EVER a merge candidate. This is an ALLOW-LIST, not a
+    #    reject-list, and that is the whole point: every OTHER status parks, so nothing can slip through to a
+    #    `merge` verdict — not a held `awaiting-*`/`repairing`, not a TERMINAL `aborted`/`merged`, not any
+    #    status added to the ledger later. It SUBSUMES the old held freeze (a held PR is simply not
+    #    `in_review`); the held set is consulted ONLY to keep the reason accurate (parked vs terminal/other).
     status = row["status"]
-    if status in HELD_STATUSES or status == REPAIR_STATUS:
-        return _not_yet(f"held ({status})")
+    if status != "in_review":
+        if status in HELD_STATUSES:
+            return _not_yet(f"held ({status})")
+        return _not_yet(f"row status is {status}, not in_review")
 
     # 2. NOT OPEN — a merged/closed PR is not a merge candidate.
     state = view["state"]

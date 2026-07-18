@@ -85,6 +85,28 @@ def t_held_never_merges():
         expect(row(status=status), view(), "not-yet", f"held ({status})")
 
 
+# --- the status ALLOW-LIST: only `in_review` is a merge candidate -------------
+
+def t_terminal_status_never_merges():
+    # THE REPRO: a TERMINAL row (aborted/merged) with a fully clean+green+2/2 view and a matching SHA once
+    # printed `{"verdict":"merge"}` — it would have merged an aborted PR. The allow-list parks anything that
+    # is not `in_review`, naming the offending status so the reason is actionable. `merged` is the same trap.
+    for status in ("aborted", "merged"):
+        expect(row(status=status), view(), "not-yet", f"row status is {status}, not in_review")
+
+
+def t_unexpected_status_never_merges():
+    # An ALLOW-LIST, not a reject-list: a status nobody enumerated (a future one, a typo) STILL parks — it is
+    # not `in_review`, so it never reaches a merge verdict, whatever the counters and enums say.
+    expect(row(status="quarantined"), view(), "not-yet", "row status is quarantined, not in_review")
+
+
+def t_in_review_is_the_one_that_merges():
+    # The allow-list did NOT break the happy path: an `in_review` row with every precondition met + CLEAN
+    # still merges. (row()'s default status is already in_review; state it explicitly for this fixture.)
+    expect(row(status="in_review"), view(), "merge", "")
+
+
 # --- ledger preconditions, in order -------------------------------------------
 
 def t_not_open():
@@ -333,6 +355,11 @@ CASES = [
     ("clean-all-met", "CLEAN + every precondition met -> merge", t_clean_and_all_met),
     ("has-hooks", "HAS_HOOKS -> merge", t_has_hooks_merges),
     ("held-frozen", "a held PR never merges, whatever the counters/enums say", t_held_never_merges),
+    ("terminal-frozen", "a terminal row (aborted/merged) never merges — the allow-list repro",
+     t_terminal_status_never_merges),
+    ("unexpected-frozen", "an unexpected status parks — allow-list, not reject-list",
+     t_unexpected_status_never_merges),
+    ("in-review-merges", "only in_review clears the status allow-list", t_in_review_is_the_one_that_merges),
     ("not-open", "a merged/closed PR is not a candidate", t_not_open),
     ("draft", "a draft PR is parked, not merged", t_draft),
     ("stale-sha", "a moved head outranks ci and the enums", t_stale_sha),
