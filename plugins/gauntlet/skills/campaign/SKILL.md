@@ -104,11 +104,16 @@ when. Same rules: by field name, never hand-edited.
 has stopped converging — the closed enum, the ownership guardrail, and the repair cap
 (`references/repair-pass.md`).
 
-Each script's fixtures live in a **sibling `*-test.py`** (`review-pass-test.py`, `ledger-test.py`,
-`followups-test.py`, `repair-pass-test.py`); the `self-test` subcommand loads it and **fails loudly if it is missing**.
-`scripts/transport-contract-test.py` is the standalone exception: the plugin validator runs it directly
-to pin the runtime adapter's typed review/adoption boundary; it owns no run state and has no accessor
-`self-test` subcommand.
+Each schema-owning accessor that carries a sibling suite keeps its fixtures in a **sibling `*-test.py`** —
+the accessor's own filename with `-test` appended, in the same directory; its `self-test` subcommand loads
+that file by path and **fails loudly if it is missing**. That is the rule, and it is deliberately **not** an
+enumeration: a list of the suites that exist today is a restatement, and it goes stale the next time one is
+added — by an author who never reads this line.
+Not every script follows it, so do not assume a sibling for one you have not checked: `ci-snapshot.py` has
+a `self-test` whose fixtures are in-file plus golden files under `scripts/fixtures/`, not a sibling module;
+and `scripts/transport-contract-test.py` is the standalone case the plugin validator runs directly to pin
+the runtime adapter's typed review/adoption boundary — it owns no run state and has no accessor `self-test`
+subcommand.
 
 **At run startup, record which version of these rules is actually running:** read `version` from the
 running plugin's `plugin.json` and write it to the ledger header —

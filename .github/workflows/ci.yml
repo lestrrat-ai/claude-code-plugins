@@ -100,11 +100,13 @@ jobs:
             plugins/gauntlet/skills/campaign/scripts/nudge.py \
             plugins/gauntlet/skills/campaign/scripts/nudge-test.py \
             plugins/gauntlet/skills/campaign/scripts/reviewer-liveness.py \
-            plugins/gauntlet/skills/campaign/scripts/reviewer-liveness-test.py | tee pyright.json
+            plugins/gauntlet/skills/campaign/scripts/reviewer-liveness-test.py \
+            plugins/gauntlet/skills/campaign/scripts/lease.py \
+            plugins/gauntlet/skills/campaign/scripts/lease-test.py | tee pyright.json
           analyzed=$(jq '.summary.filesAnalyzed' pyright.json)
           echo "filesAnalyzed=${analyzed}"
-          if [ "${analyzed}" != "22" ]; then
-            echo "::error::pyright analysed ${analyzed} file(s), not the 22 it was pointed at — it checked" \
+          if [ "${analyzed}" != "24" ]; then
+            echo "::error::pyright analysed ${analyzed} file(s), not the 24 it was pointed at — it checked" \
                  "nothing and said so quietly. Fix the paths above; a silent no-op is not a passing gate."
             exit 1
           fi
@@ -192,3 +194,18 @@ jobs:
       # this step is that `py_compile` parses these files and runs neither.
       - name: Reviewer liveness probe contract
         run: python3 plugins/gauntlet/skills/campaign/scripts/reviewer-liveness.py self-test
+
+      # The run lease's check-and-set, executed. The lease is what stops two agents driving one run, and
+      # until now it was the only durable store with no schema owner: four reference docs and an `echo`.
+      # The rules worth the most here are the ones the PROSE never defined, because nobody was watching
+      # them — an unparseable lease read as "absent" (which ADOPTS A LIVE RUN), a `release` that deletes
+      # someone else's lease, a skewed clock manufacturing an adoption. Each is a two-driver bug and each
+      # was reachable from the instructions as written. The suite also drives two REAL racing processes
+      # through the real lock.
+      #
+      # This step exists because `py_compile` above parses these files and executes neither. A triage
+      # suite shipped in this repo with no CI step at all, so a semantic regression passed CI while the
+      # focused suite failed; that is follow-up fu18. The sibling `lease-test.py` is loaded by path and a
+      # MISSING sibling fails loudly, so this can never report an all-clear over a suite it did not run.
+      - name: Run lease contract
+        run: python3 plugins/gauntlet/skills/campaign/scripts/lease.py self-test
