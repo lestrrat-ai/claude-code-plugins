@@ -52,6 +52,13 @@ gh label create gauntlet-run-<run-id> --color 5319E7 --description "gauntlet: ru
 
 ### Adopt one PR
 
+> The MECHANICAL steps below — **1, 2, 4, 5 and the row of step 3** — are performed by
+> `scripts/pr-adopt.py adopt` (`pr-adopt.py adopt --pr <N> --run-id <id> --file <state.jsonl> --tier <T>
+> --worktrees-root <p> --project-root <p>`). The driver still supplies the two JUDGMENT calls it does not
+> make: the review **TIER** (the `--tier` argument, triaged per Stage **2a-triage**) and the PR's
+> **INTENT** (step 3a). Its decision logic is a pure `build_plan` pinned by `pr-adopt-test.py`. The steps
+> stay below as the spec the tool implements; read them as the authority.
+
 For each `#PR` to adopt:
 
 1. **Read the PR** — one `gh pr view` for the facts the ledger row needs, **including the cross-repo
