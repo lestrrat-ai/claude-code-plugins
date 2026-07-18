@@ -96,11 +96,13 @@ jobs:
             plugins/gauntlet/skills/campaign/scripts/repair-pass.py \
             plugins/gauntlet/skills/campaign/scripts/repair-pass-test.py \
             plugins/gauntlet/skills/campaign/scripts/followups.py \
-            plugins/gauntlet/skills/campaign/scripts/followups-test.py | tee pyright.json
+            plugins/gauntlet/skills/campaign/scripts/followups-test.py \
+            plugins/gauntlet/skills/campaign/scripts/nudge.py \
+            plugins/gauntlet/skills/campaign/scripts/nudge-test.py | tee pyright.json
           analyzed=$(jq '.summary.filesAnalyzed' pyright.json)
           echo "filesAnalyzed=${analyzed}"
-          if [ "${analyzed}" != "18" ]; then
-            echo "::error::pyright analysed ${analyzed} file(s), not the 18 it was pointed at — it checked" \
+          if [ "${analyzed}" != "20" ]; then
+            echo "::error::pyright analysed ${analyzed} file(s), not the 20 it was pointed at — it checked" \
                  "nothing and said so quietly. Fix the paths above; a silent no-op is not a passing gate."
             exit 1
           fi
@@ -167,3 +169,14 @@ jobs:
       # A MISSING sibling fails loudly — it can never report an all-clear over a suite it did not run.
       - name: Follow-up store contract
         run: python3 plugins/gauntlet/skills/campaign/scripts/followups.py self-test
+
+      # The nudge printer's rules, executed. It reminds the orchestrator each wake of what to check
+      # (heartbeat armed, fan out work, PR labels, a review that may have died) — a sticky-note printer,
+      # not gate machinery: it decides nothing and always exits 0. Each fixture pins a rule with teeth
+      # (fires when its condition holds, absent when it does not), so a printer that emitted every line
+      # unconditionally would go red. The sibling `nudge-test.py` is loaded by path; a MISSING sibling
+      # fails loudly, so this can never report health over a suite it did not run. As with the triage
+      # suite (follow-up fu18), the point of this step is that `py_compile` parses these files and runs
+      # neither.
+      - name: Nudge printer contract
+        run: python3 plugins/gauntlet/skills/campaign/scripts/nudge.py --self-test
