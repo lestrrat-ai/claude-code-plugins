@@ -10,7 +10,7 @@ resume, reuse the existing dir). Per-run dirs are what keep concurrent runs' fil
 | `state.jsonl` | Live per-PR ledger — a **cache/hint**, not the source of truth (see below) |
 | `pr-<pr>.json` | `gh pr view` snapshot captured at adoption (PR facts the ledger row is built from) |
 | `prs.json` | Batched `gh pr list` snapshot of this run's PRs — the per-heartbeat reconcile input, and the adoption/discovery input. **ONE path, ONE schema, ONE command**: the canonical command is spelled in full in **"The canonical `prs.json` command"**, the command block directly below this table, and that block is its ONLY definition |
-| `lease.json` | This run's active-driver lease (`{agent, updated}`; see "Run lease") |
+| `lease.json` | This run's active-driver lease — read/written ONLY through `scripts/lease.py` (see "Run lease") |
 | `review-<pr>-<n>.prompt.txt` | The reviewer prompt for round `n`, launch attempt 1, with the verbatim intent and JSON-encoded typed transport record bound as data. Written through `runtime-adapter.md`'s `write_bytes` and passed through `dispatch_native` or `run_argv` — never embedded in shell source (`stage-2-review-gate.md`) |
 | `review-<pr>-<n>.txt` | The reviewer's PR review output, round `n` (launch attempt 1), written by the sole producer assigned in `runtime-adapter.md`'s typed review record |
 | `review-<pr>-<n>.plan.jsonl` | Orchestrator-authored review work units for round `n` (per-pass — a relaunch reuses it). Written through `scripts/review-pass.py plan-add`, never a heredoc |

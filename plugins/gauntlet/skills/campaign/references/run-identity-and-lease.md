@@ -77,27 +77,33 @@ snapshot another run may have overwritten.
 ### Run lease — one active driver at a time
 
 Namespacing keeps two *runs* apart; the **lease** keeps two *agents* from driving the **same** run.
-Each run has `<rundir>/lease.json`:
+Each run has `<rundir>/lease.json`: who is driving (`agent` — a token), the heartbeat proof presented
+when the run was taken (`heartbeat`), and the last refresh time (`updated`). `scripts/lease.py` is its
+schema-owning accessor and the ONLY door to the file (`mint` / `acquire` / `refresh` / `release` /
+`read`) — never hand-read, hand-write, or hand-delete it. The whole check-and-set lives inside the
+tool: the claim lock and its stale-lock sweep, the staleness window (`LEASE_STALE_AFTER` — long enough
+that a busy driver is never mistaken for a dead one, so staleness flags a *dead* driver), the
+corrupt-lease refusal, and the read-back. Do not unpack those mechanics here: present a token, act on
+the verdict the tool prints.
 
-```
-{ "agent": "<token>", "updated": <unix-ts> }   # token = the agent holding the run; ts = last heartbeat
-```
-
-- **Mint** an agent token (`openssl rand -hex 4`) when you first take a run — at fresh-run start or on
-  adoption — keep it in context, **and put it in your scheduled heartbeat prompt** (`--token <tok>`) so a
-  summarized/amnesiac heartbeat recovers it from the prompt instead of guessing. **You own the run iff the
-  token you present (prompt `--token`, else in-context) equals the lease's `agent`.**
-- **Claim atomically.** Taking or adopting a run is a check-and-set that MUST be serialized against
-  other agents: acquire an atomic lock first — `mkdir <rundir>/claim.lock` (fails if held) — then read
-  the lease, decide, write your token + fresh `updated`, and `rmdir` the lock. Two agents racing to
-  adopt can't both win because only one `mkdir` succeeds. (A crashed claim leaves a stale
-  `claim.lock`; treat one whose mtime is older than a few minutes as abandoned and clear it.)
-- **Heartbeat.** Rewrite the lease with `updated = $(date +%s)` every heartbeat once you're the confirmed
+- **Take a run** — at fresh-run start or on adoption — **in this order**: (1) `lease.py mint` prints
+  your agent token; (2) arm the scheduled heartbeat carrying it (`--token <tok>`, via `heartbeat.py
+  callback` — `runtime-adapter.md` owns the host mechanism); (3) `lease.py --file <rundir>/lease.json
+  acquire --token <tok> --heartbeat-id <proof>`, where the proof names the arming you ALREADY did
+  (`runtime-adapter.md` says what your host's proof is). `acquire` refuses without both and never mints
+  a token itself — arming comes FIRST, so a driver that dies mid-work is still resumed by its own
+  heartbeat. Keep the token in context; the heartbeat prompt already carries it, so a
+  summarized/amnesiac heartbeat recovers it from the prompt instead of guessing.
+- **You own the run iff the verdict says so.** `acquire`/`refresh` print a verdict, and the verdict —
+  not your write, not an eyeballed read of the file — is the proof: `owned`/`adopted` → drive;
+  `superseded`/`lost-race`/any refusal → you are NOT the driver — do not review, fix, merge, or
+  relabel; report and stop.
+- **Heartbeat.** `lease.py … refresh --token <tok>` every heartbeat once you're the confirmed
   owner, **and** immediately before and after any long *foreground* step, should one be unavoidable,
   so a busy turn still looks alive. All long work — reviews, CI watches, and fix subagents —
-  is backgrounded, so turns stay short and the per-heartbeat refresh normally suffices. A lease is
-  **stale** only once `now - updated` exceeds **~30 min** — comfortably longer than any single
-  foreground operation, so liveness flags a *dead* driver, not a busy one.
+  is backgrounded, so turns stay short and the per-heartbeat refresh normally suffices. `refresh` takes
+  no proof (it does not re-arm) and refreshes even your own stale lease; if it refuses because the
+  lease is GONE, do not re-create it — re-arm and `acquire` explicitly.
 - **Never hold the run hostage on a user prompt.** Do NOT block the loop waiting on a user answer —
   that freezes the heartbeat and could let the run be declared stale mid-drive. Park the PR
   (`awaiting-api` for an API-changing fix; `awaiting-user` for a **review standoff** — a refutation the
@@ -109,23 +115,27 @@ Each run has `<rundir>/lease.json`:
   and the **unpark** it triggers (`files-and-ledger.md`, `status`; `loop-control.md` step 3, "Only the
   user's answer unparks a PR") — a park with no defined exit is the wedge one level up (Constraints;
   `stage-2-review-gate.md`).
-- **Adopt only an orphaned run.** Safe to take over only when the lease is **absent or stale** (under
-  the claim lock). After writing your token, re-read: if it isn't yours, you lost the race — stand down.
-- **Stand down if superseded.** On a scheduled heartbeat, present your `--token`: if the lease is **fresh** and
-  its `agent` is a **different** token, you were superseded (a takeover while you were hung) — do NOT
-  drive; report and stop. Never overwrite a fresh lease you don't own. (Carrying the token in the
-  prompt removes any amnesia ambiguity — a scheduled heartbeat always knows its own token.)
-- **Release** on normal exit: delete `lease.json` (with the owner label) so the finished run shows no
-  active driver.
+- **Adopt only an orphaned run.** `acquire` adopts only a lease that is **absent or stale**; a fresh
+  lease under a different token answers `superseded` — pass `--allow-takeover` only after the user has
+  agreed to take over a live run. A lease the tool cannot parse is **`corrupt`, never "absent"**: it
+  refuses rather than adopt. Inspect the file and remove it by hand only when the user confirms the
+  run is genuinely orphaned.
+- **Stand down if superseded.** On a scheduled heartbeat, present your `--token`: a `superseded`
+  answer means a takeover while you were hung — do NOT drive; report and stop. (Carrying the token in
+  the prompt removes any amnesia ambiguity — a scheduled heartbeat always knows its own token.)
+- **Release** on normal exit: `lease.py … release --token <tok>` (with the owner label) so the
+  finished run shows no active driver. It refuses unless the token matches, so a superseded driver can
+  never delete the live owner's lease.
 
 ### Resolving a heartbeat (Loop control step 1 applies this)
 
-1. **`--run <id>` given** (every scheduled heartbeat; also a manual targeted resume). Load `<rundir>/state.jsonl`.
-   Under the claim lock, compare the token you present to the lease: **matches** (scheduled heartbeat with
-   `--token`) → refresh lease, reconcile, continue; **lease absent/stale** → adopt (write token, fresh
-   ts, read-back); **lease fresh but a different token** → for a scheduled heartbeat, stand down (superseded);
-   for a **manual** `--run` with no matching token, another agent appears active, so **confirm takeover
-   with the user** before adopting.
+1. **`--run <id>` given** (every scheduled heartbeat; also a manual targeted resume). Load `<rundir>/state.jsonl`,
+   then present a token to `lease.py`. **Scheduled heartbeat** (token in the prompt's `--token`) →
+   `refresh`: `owned` → reconcile, continue; `superseded` → stand down; refused because the lease is
+   gone → re-arm, then `acquire`. **Manual `--run` with no token in hand** → `lease.py read` (advisory
+   status only): `absent`/`stale` → adopt (mint + arm + `acquire`, per "Take a run"); `held` → another
+   agent appears active, so **confirm takeover with the user** before `acquire --allow-takeover`;
+   `corrupt` → see "Adopt only an orphaned run".
 2. **Bare invocation** → the arg decides intent:
    - **`#PR` args are given** (`<campaign-invocation> #12 #15`, no `--run`) → **start a NEW run** that
      **adopts those PRs** (see "PR adoption"). Passing PRs is an explicit "gate these now", so it never
@@ -139,12 +149,15 @@ Each run has `<rundir>/lease.json`:
      silently caps at **30** without it, and a run missed by the scan reads exactly like a run that does
      not exist, so the driver would start a duplicate or fail to resume an orphan. Like `prs.json`, the
      cap **bounds** the scan rather than proving it complete) ∪ run-ids with a `<rundir>/` (its `state.jsonl` or
-     `lease.json`), each **actively-driven** (fresh lease),
-     **orphaned** (non-terminal, lease absent/stale), or **finished** (terminal, no open PR):
+     `lease.json`), each bucketed by `lease.py read` (advisory status — never decide ownership from it;
+     that is `acquire`'s job): **actively-driven** (`held`),
+     **orphaned** (non-terminal, `absent`/`stale`), or **finished** (terminal, no open PR):
      - exactly one **orphaned** → adopt and resume it ("pick up where the previous instance left off"),
        reconciling its run-labelled PRs (see "PR adoption");
      - several orphaned → list them (id, #open PRs) and **ask which to resume, or start new**;
      - only **actively-driven** → each has a live driver; do NOT hijack — offer to start a **new** run;
+     - a lease reading **`corrupt`** → neither driven nor adoptable; report it to the user and leave
+       that run alone (see "Adopt only an orphaned run");
      - only **finished** → the finished-run prompt (Loop control step 1), per run;
      - **none at all** (idle — nothing to drive) → **prompt**: "No PRs under a campaign. Run
        `gauntlet:review` to find issues, or pass PR numbers to gate." Campaign never sweeps or mints

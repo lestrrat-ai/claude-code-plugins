@@ -9,14 +9,10 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
 1. **Resolve repository context, then the run + lease, then init / resume / start fresh.** Call
    `runtime-adapter.md`'s repository-context resolver exactly once with the supplied checkout and carry
    that record for every path and Git cwd on this heartbeat. Then bind **which run this heartbeat is
-   for** and confirm you may drive it, per "Run identity and concurrency": a `--run <id>` scheduled heartbeat
-   presents its `--token` and, under the run's claim lock, continues if the token matches the lease,
-   adopts if the lease is absent/stale, or **stands down** if a fresh lease bears a different token; a
-   bare invocation **with `#PR` args** starts a NEW run adopting those PRs, while an **arg-less** bare
-   invocation discovers runs and adopts the sole **orphaned** one (asks among several, refuses to
-   hijack an actively-driven one); a bare invocation with a **non-PR** arg starts nothing — it hits
-   the idle prompt (run `gauntlet:review`, or pass PR numbers).
-   This claim-locked lease check is what guarantees **no two agents drive one ledger**.
+   for** and confirm you may drive it — `run-identity-and-lease.md`, "Resolving a heartbeat", owns the
+   whole resolution: which arg mode does what, and which `lease.py` call to present a token to. Drive
+   only on an `owned`/`adopted` verdict; on `superseded` or any refusal, **stand down**.
+   This lease gate is what guarantees **no two agents drive one ledger**.
 
    Once bound and confirmed owner, decide on **liveness of THIS run**, not on whether some `state.jsonl`
    exists — and scope **every** git/gh scan to this run's `gauntlet-run-<run-id>` label so another run's
@@ -102,8 +98,9 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      disagree or any PR is refused, prompt and create nothing** — so a rejected set never leaves an
      empty orphan run behind. **Only once the full set passes preflight**: call `create_run_directory`
      **first** — it mints the run-id and atomically creates `<rundir>` — and derive `run_id` from the
-     returned directory's final path component; **then** mint the agent token (separate, run-id-independent),
-     and write the lease **and `state.jsonl` header** — now with `run_id` set and `base_branch` filled
+     returned directory's final path component; **then** take the run per `run-identity-and-lease.md`,
+     "Take a run" (token, heartbeat arming, `lease.py acquire` — in that order),
+     and write the `state.jsonl` header — now with `run_id` set and `base_branch` filled
      from the agreed `baseRefName` (known from preflight). Then **adopt** each PR
      (ledger row + labels + worktree, and a CI watch **only when one is due** — `pr-adoption.md` owns what
      adoption produces and when the watch is warranted); a death mid-adoption still leaves
@@ -427,8 +424,8 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      this run's block to its own file `.gauntlet/history/<run-id>.md` — merged PRs, aborted
      PRs + why, and declined-API PRs; per-run files never
      contend, see "Fresh runs and carryover"), **release the run** (delete this run's
-     `gauntlet-run-<run-id>` owner label via `gh label delete gauntlet-run-<run-id> --yes`, and delete
-     `<rundir>/lease.json`; the shared status labels stay), emit the final report, and **do not
+     `gauntlet-run-<run-id>` owner label via `gh label delete gauntlet-run-<run-id> --yes`, and release
+     the lease — `lease.py … release --token <tok>`; the shared status labels stay), emit the final report, and **do not
      reschedule**. This run's loop ends. **Leave
      `<rundir>` in place** (do NOT delete it here) — its terminal `state.jsonl` is what lets a later bare
      invocation detect *this* *finished* run and take the "ask the user" branch in step 1 instead of a

@@ -4,10 +4,10 @@
   carrying its `gauntlet-run-<run-id>` label. Adopted PRs keep their OWN head branch, so ownership is
   scoped by that LABEL only (never a branch prefix). NEVER reconcile, review, fix, merge, relabel, or
   clean up another run's work — scope every git/gh scan by that label.
-- One active driver per run, enforced by `<rundir>/lease.json` under an atomic `mkdir <rundir>/claim.lock`:
-  take/adopt a run only inside the claim lock, and adopt ONLY when its lease is absent or stale
-  (`now - updated` > ~30 min); refresh the lease every heartbeat AND around long foreground ops; on a
-  scheduled heartbeat whose lease is fresh but bears a different token, **stand down** — never double-drive a ledger.
+- One active driver per run, enforced by the run lease `<rundir>/lease.json` — driven ONLY through
+  `scripts/lease.py` (`acquire` / `refresh` / `release`): act on its printed verdict, and on
+  `superseded` **stand down** — never double-drive a ledger. Refresh every heartbeat AND around long
+  foreground ops; `run-identity-and-lease.md`, "Run lease", owns when to call what.
 - Every **scheduled** heartbeat carries `--run <run-id> --token <agent-token>`; the token re-proves lease
   ownership so a summarized heartbeat never mistakes its own run for another's. A scheduler-less bounded wait
   retains the current invocation and token, then loops directly back to reconcile. Re-read `run_id` from
