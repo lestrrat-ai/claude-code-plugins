@@ -325,9 +325,7 @@ source. Progress events, findings and a verdict are counted **only** from the ou
 attempt named in the active `pass_identity`. A dead attempt's files are inert — left on disk for
 forensics, never read or counted as gate output.
 
-Reviewers do NOT hand-write the unit-progress events (`started`/`done`) — ever; the emit tool is the
-only way those are produced. (The `plan_amendment_request` line is the exception: the tool does not
-emit it, so it is not subject to the emit-only rule.) The
+The emit-only rule above governs how the reviewer records unit progress. The
 orchestrator resolves the bundled emitter's absolute path as `<skill-dir>/scripts/emit-progress.py`
 (skill dir = the directory holding the campaign `SKILL.md`) and stores it with the active progress path
 in the typed review record, so the reviewer receives concrete data rather than shell fragments. The
@@ -422,23 +420,16 @@ safely pollable either, so that route likewise keeps the progress-file-plus-comp
 
 ### What the review is MEASURED AGAINST — the PR's intent
 
-**THE REVIEWER USED TO BE TOLD WHAT THE CODE WAS. IT WAS NEVER TOLD WHAT THE CODE WAS FOR.** The dispatch
-prompt said *"review the changes on this branch"*, and adoption did not so much as **fetch the PR's body**.
-So the question the reviewer answered was *"is anything wrong with this code?"* — **and that question has no
-fixed point.** There is always one more true thing to say about any diff.
-
-It ran a PR through **21 review rounds** and never converged. A human had to stop it. **Not one of the late
-findings was wrong** — every one was true, reproduced, `file:line`-concrete. They were defects in guards the
-loop had itself just added, against inputs **nobody can write**: a table you can only corrupt by hand-editing
-a git-ignored scratch file the driver owns; a self-test you can only defeat by editing its source in memory.
-Each became a fix; each fix added surface; the next round hunted the surface. Meanwhile the findings that
-**mattered** — a false CI green reachable from a real GitHub response — were of a completely different
-character, and the difference between the two is exactly **INTENT**.
-
-So the question changes, and every rule below follows from it:
+Every rule below follows from the one question a review pass answers:
 
 > **DOES THIS PR ACHIEVE ITS STATED PURPOSE, WITHOUT BREAKING ANYTHING REACHABLE BY AN ACTOR NAMED IN ITS
 > THREAT MODEL?**
+
+It is deliberately NOT *"is anything wrong with this code?"* — that question has no fixed point (there is
+always one more true thing to say about any diff), and asking it once ran a PR through **21 review
+rounds** of true, reproduced, irrelevant findings before a human stopped it. The findings that
+**mattered** — a false CI green reachable from a real GitHub response — were separated from those rounds'
+findings by exactly one thing: **INTENT**.
 
 The intent block is `<rundir>/intent-<pr>.md`, written at adoption (`pr-adoption.md`) and re-read every
 heartbeat — never re-derived, because a heartbeat is a fresh agent instance and an intent invented twice is two
@@ -474,9 +465,9 @@ measured against **nothing at all**.
 
 ### Findings are RECORDS, not prose — `emit-finding.py` is the ONLY way to report one
 
-A finding used to be a paragraph in `review-<pr>-<n>.txt`. Nothing could validate its citation, bound its
-writer, or ask what it defended — so **nothing could ever decline one**, and the only two things a driver
-could do with a finding were *fix it* or *silently ignore it*. It fixed. Twenty-seven times.
+A finding used to be a paragraph in `review-<pr>-<n>.txt` — nothing could validate its citation, bound
+its writer, or ask what it defended, so **nothing could ever decline one**: the driver's only options
+were *fix it* or *silently ignore it*, and it fixed, twenty-seven times in one run.
 
 The reviewer now records **every** finding through the tool (its CLI is defined once, in `review-pass.py`'s
 `add_finding_args`, so `emit-finding.py --help` cannot advertise a command the tool refuses):
@@ -516,13 +507,10 @@ the pass if you say otherwise, because that repro describes a developer with a t
 not dismissed, and not necessarily wrong. It is simply not worth another round.
 
 **Both conjuncts are load-bearing, and the record is what proves it.** Do **NOT** simplify this to "a
-finding against code an earlier fix round added is non-gating": a fix round can absolutely introduce a real
-defect. PR #43's round 11 found a **false green** in a paginated reader that an earlier round had itself
-added — reachable from a real GitHub response. That is `writer=network`, it quotes the PR's purpose, and it
-**GATES**, because a false green is the exact thing that PR exists to prevent. What does **not** gate is the
-round-15 finding on the same PR: the AST scanner that proves *"no raw response escapes a scanned reader"*
-fails to notice a response wrapped in a dict. Nobody can write that input, it serves no stated purpose, and
-it attacks a declared non-goal. The proof machinery had become the thing under review, fifteen rounds in.
+finding against code an earlier fix round added is non-gating": a fix round can absolutely introduce a
+real defect — the PR #43 round-11 finding shown above sat in code an earlier round had itself added, and
+it **GATES** (`writer=network`, and it quotes the PR's purpose). The same PR's round-15 finding — proof
+machinery that misses an input **nobody can write**, attacking a declared non-goal — does not.
 
 `review-pass.py verify` **exits non-zero** when: the PR has **no usable intent block** for the pass to be
 measured against (checked for **every** pass — see below); a `NOT SATISFIED` pass records **no gating
@@ -975,14 +963,11 @@ asymmetry is deliberate: **wrongly refuting a real defect is far worse than wron
 one.** Uncertainty is not evidence of impossibility.
 
 > Worked example, from a real run: a reviewer reported a **hardlink escape** — a formatter writing
-> through a multi-linked inode to a file outside the repo. A guard was built for it. The finding is
-> REFUTED, and for exactly one reason: **the mechanism requires a hardlink in the checkout, and git
-> cannot produce one.** Git's modes are regular, executable, symlink, gitlink — there is no hardlink
-> mode, so the chain breaks at its first link. This was **verified empirically**, not merely asserted:
-> git stored the hardlinked files as ordinary `100644` blobs, and checkout recreated separate inodes.
-> Note what did the refuting — a **tested impossibility**, not "the trigger isn't PR content". The guard
-> was dead weight and a full round was wasted, because the word "hardlink" was pattern-matched instead
-> of tested.
+> through a multi-linked inode to a file outside the repo. REFUTED, for exactly one reason: **the
+> mechanism requires a hardlink in the checkout, and git cannot produce one** (its modes are regular,
+> executable, symlink, gitlink). Verified empirically, not merely asserted — git stored the hardlinked
+> files as ordinary `100644` blobs, and checkout recreated separate inodes. A **tested impossibility**
+> did the refuting, not "the trigger isn't PR content".
 
 **Refuting is NOT declining.** Refute only on evidence that the claim is **false** or that its
 **mechanism cannot occur** — NEVER because a fix is inconvenient, expensive, or unwelcome. "I don't want
