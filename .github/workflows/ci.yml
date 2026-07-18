@@ -107,12 +107,13 @@ jobs:
             plugins/gauntlet/skills/campaign/scripts/heartbeat-test.py \
             plugins/gauntlet/skills/campaign/scripts/run-id.py \
             plugins/gauntlet/skills/campaign/scripts/run-id-test.py \
+            plugins/gauntlet/skills/campaign/scripts/script-table-test.py \
             plugins/gauntlet/skills/campaign/scripts/merge-check.py \
             plugins/gauntlet/skills/campaign/scripts/merge-check-test.py | tee pyright.json
           analyzed=$(jq '.summary.filesAnalyzed' pyright.json)
           echo "filesAnalyzed=${analyzed}"
-          if [ "${analyzed}" != "30" ]; then
-            echo "::error::pyright analysed ${analyzed} file(s), not the 30 it was pointed at — it checked" \
+          if [ "${analyzed}" != "31" ]; then
+            echo "::error::pyright analysed ${analyzed} file(s), not the 31 it was pointed at — it checked" \
                  "nothing and said so quietly. Fix the paths above; a silent no-op is not a passing gate."
             exit 1
           fi
@@ -244,3 +245,11 @@ jobs:
       # no doc table to drift and no doc-check here. It NEVER performs the merge; it only decides.
       - name: Merge-check contract (the code-owned mapping, pinned by fixtures)
         run: python3 plugins/gauntlet/skills/campaign/scripts/merge-check.py self-test
+
+      # The Bundled Scripts table in campaign's SKILL.md declares itself COMPLETE: one row per bundled
+      # script. A completeness claim with no check goes stale the first time a script lands without a
+      # row — six scripts had already done exactly that before the table existed. This executes the
+      # claim: a script with no row, a row naming no script, a duplicate row, or a scan that matches
+      # nothing at all (the section anchor or the directory moved) each fail the build.
+      - name: Script-table contract (SKILL.md inventory matches scripts/)
+        run: python3 plugins/gauntlet/skills/campaign/scripts/script-table-test.py
