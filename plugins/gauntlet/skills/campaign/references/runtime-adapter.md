@@ -55,8 +55,10 @@ These repository operations consume that record; no consumer reconstructs their 
   absolute path instead.
 - `create_run_directory(repository: RepositoryContext) -> Path` invokes the bundled `run-id.py` (resolved
   from the active `SKILL.md`'s `scripts/`, per `SKILL.md`'s bundled-script rule) through
-  `run_argv(["python3", <that run-id.py path>, "new", "--runs-dir", repository.scratch_root], null,
-  <captured stdout>, null)` and returns the `rundir` from the `{run_id, rundir}` JSON it prints. `run-id.py`
+  `run_argv(["python3", <that run-id.py path>, "new", "--runs-dir", repository.scratch_root], null, null,
+  null)` — `cwd`/`stdin_file`/`stdout_file` all null, so the returned `ProcessResult` carries the tool's
+  stdout — then REQUIRES a zero exit and parses the `{run_id, rundir}` JSON from `ProcessResult.stdout`,
+  returning the `rundir`. `run-id.py`
   OWNS the mint and the atomic create: it generates the id, creates `repository.scratch_root` if absent,
   and creates `run_directory(repository, run_id)` with a bare `mkdir` (no `-p`, so a collision is an atomic
   failure) — retrying with a FRESH id on the rare clash and failing closed if it cannot. It takes NO

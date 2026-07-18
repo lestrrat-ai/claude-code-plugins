@@ -90,6 +90,7 @@ def check_document_contract() -> None:
         "## Typed repository context and data/process boundary",
         "resolve_repository_context(checkout: Path) -> RepositoryContext",
         "create_run_directory(repository: RepositoryContext) -> Path",
+        "ProcessResult.stdout",  # create_run_directory captures run-id.py's stdout from the RESULT (stdout_file null), not a mis-slotted arg
         "default_worktree(repository: RepositoryContext, head_ref_name: Text) -> Path",
         "run_argv(argv: list[Text]",
         "bind_review_prompt(template: Bytes",
