@@ -625,17 +625,10 @@ indistinguishable from an earned one, so the door is simply not there.
 (`set --reviews-ok 0` stays available and is still correct: **voiding** the tally on a PR-content change is
 not a verdict — no round happened — and the table below lists every site that owes it.)
 
-**`review_rounds` is the loop's only memory, and it is NEVER reset** — not by a fix, not by a rebase, not by
-a content change, not by a re-triage. Every heartbeat is a fresh context: without it, **no rule that depends on
-"how many rounds has this PR taken" can ever fire** — the 21-round PR ran under a backstop that triggers
-on the *second* `NOT SATISFIED`, unfired, because nothing recorded any history. `ns_streak` (consecutive
-`NOT SATISFIED`, cleared **only** by a `SATISFIED`) is the same sensor one derivative down.
-
-**What READS these counters is `verdict` itself, and at a cap it STOPS THE LOOP.** They are sensors, and
-the reader is fused into the one door that cannot be skipped — deliberately: a cap evaluated by a
-*separate* command is a cap a driver can forget to run. The hazard that normally argues for keeping a
-reader out of a sensor — that the reader comes to reset what it consumes — is structurally absent here:
-**the cap path writes `status` and nothing else**, so `review_rounds` stays monotone whatever it decides.
+**`review_rounds` and `ns_streak` are the loop's only memory across fresh-context heartbeats, and neither is
+ever reset** — not by a fix, a rebase, a content change, or a re-triage. Both are written **and READ** by
+`verdict` itself; see `files-and-ledger.md` (the `review_rounds` / `ns_streak` field definitions) for what
+the counters mean and why the reader is fused into the door that cannot be skipped.
 
 **At a review-loop cap, `verdict` sets `status = repairing` and EXITS NON-ZERO.** The PR has stopped
 converging: **do NOT dispatch a fix subagent and do NOT launch another review pass for it.** Hand its
@@ -650,8 +643,8 @@ Then, per verdict:
 
 - **NOT SATISFIED** → the SHA's tally is void (`ledger.py verdict … --verdict not-satisfied` does it) **and,
   in the same step, restore
-  `gauntlet-reviewing` if the PR carries `gauntlet-accepted`** (`gh pr edit <pr> --remove-label
-  gauntlet-accepted --add-label gauntlet-reviewing` — "Status labels mirror the review gate"). This
+  `gauntlet-reviewing` if the PR carries `gauntlet-accepted`** ("Status labels mirror the review gate",
+  below). This
   applies the moment the verdict lands, *before* any fix is written: a PR whose latest verdict says
   NOT SATISFIED must never still read `gauntlet-accepted` on GitHub. **Only GATING findings reach the fix
   path at all** — a non-gating finding is recorded as a follow-up and no fix is dispatched for it (the

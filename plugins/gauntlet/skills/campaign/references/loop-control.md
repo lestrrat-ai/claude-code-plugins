@@ -38,8 +38,8 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      **This refresh is itself a gate-reset site — relabel here, in this step.** When it detects that a
      PR's live `head_sha` has moved with the PR diff changed (a formatter/bot commit, a manual push,
      any content change this run did not dispatch), it resets `reviews_ok` to 0 — and MUST, in the same
-     step, run `gh pr edit <pr> --remove-label gauntlet-accepted --add-label gauntlet-reviewing` on a PR
-     carrying `gauntlet-accepted` (`stage-2-review-gate.md`, "Status labels mirror the review gate").
+     step, relabel a PR carrying `gauntlet-accepted` back to `gauntlet-reviewing`
+     (`stage-2-review-gate.md`, "Status labels mirror the review gate").
      Do NOT leave this to the label-reconcile pass below: that pass is the **backstop**, and a reset
      site that defers to it is the exact bug this rule forbids. (A clean base-only advance with the PR
      diff unchanged does not reset the gate, so it keeps `gauntlet-accepted`.)
@@ -87,8 +87,8 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      **Check there is something to adopt BEFORE creating any run state.** If the invocation carries no
      `#PR` args (a bare or non-`#PR` invocation that found no live run to resume — likewise `--new`
      with no `#PR` args), **create nothing** — no run-id, no `<rundir>`, no lease, no `state.jsonl` — and
-     **PROMPT** the user: "No PRs under a campaign. Run gauntlet:review to find issues, or pass PR
-     numbers to gate." Creating `<rundir>`/lease/header before a PR is confirmed would leave an empty
+     show the **idle prompt** (`run-identity-and-lease.md`, "Resolving a heartbeat", owns its wording).
+     Creating `<rundir>`/lease/header before a PR is confirmed would leave an empty
      orphan run that later no-arg invocations rediscover as bogus state.
 
      When there **are** `#PR` args, **preflight the whole set FIRST — read-only, before creating any
@@ -377,8 +377,8 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
    no exited watch needs relaunching, no PR is mergeable, and every remaining wait is external
    (background review/CI), a **parked** PR awaiting the user (`awaiting-user` / `awaiting-api` — idle on
    that PR is the CORRECT state, never a stall to "fix" by dispatching work), or a genuinely full cap. If the run has **no PR at all**
-   and none is in flight (no-arg idle), do not spin: **PROMPT** "No PRs under a campaign. Run
-   gauntlet:review to find issues, or pass PR numbers to gate."
+   and none is in flight (no-arg idle), do not spin: show the **idle prompt**
+   (`run-identity-and-lease.md`, "Resolving a heartbeat", owns its wording).
 4. **Merge** queued PRs as a serialized drain: re-confirm one candidate against the live SHA **and
    re-check it is not parked** (the held-status guard binds the merge too — Stage 3), merge
    it, sync `<base>`, reconcile remaining candidates, and repeat while another PR is immediately

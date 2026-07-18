@@ -113,14 +113,9 @@
   had ever happened. The rule called itself a hard backstop; it was a hard backstop **with no input**, and
   one PR ran **21 review rounds** underneath it.
 
-  The ledger now records that history — `ns_streak` (consecutive `NOT SATISFIED`, cleared only by a
-  `SATISFIED`) and `review_rounds` (landed verdicts, **never** reset) — so the trigger is, for the first
-  time, a value a fresh heartbeat can **read** (`files-and-ledger.md`). **And it IS read: `ledger.py verdict`
-  evaluates the caps as it records the verdict, and at a cap it holds the PR `repairing` and exits
-  non-zero.** The reader lives in the one door that cannot be skipped, because a cap evaluated by a
-  *separate* command is a cap a driver can forget to run — which is the failure being cured, not a fresh
-  instance of it. The counters are never written backwards by it: the cap path writes `status` and nothing
-  else.
+  The ledger now records that history in durable state — `ns_streak` and `review_rounds` — evaluated by
+  `ledger.py verdict` itself as it records each verdict, and at a cap it holds the PR `repairing` and exits
+  non-zero (`files-and-ledger.md` for the counters and the design rationale).
 
 Other stop conditions — escalate rather than loop: a worktree won't build, the reviewer keeps
 returning the same unactionable verdict, or CI fails identically after a fix attempt. **Note what is NOT

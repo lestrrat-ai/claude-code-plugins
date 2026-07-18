@@ -716,10 +716,9 @@ it: an economy-class CI-fix worker, a `session`-class CI-fix worker, a review-fi
 REFUTATION of a review finding (`finding-audit.md`, "Audit every finding before you fix it").**
 Every one of them MUST, in the same step:
 
-- **reset `reviews_ok` to 0 AND restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`**
-  (`gh pr edit <pr> --remove-label gauntlet-accepted --add-label gauntlet-reviewing`) — the gate and its
-  label move together, never one without the other (`stage-2-review-gate.md`, "Status labels mirror the
-  review gate");
+- **reset `reviews_ok` to 0 AND restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`** —
+  the gate and its label move together, never one without the other (`stage-2-review-gate.md`, "Status
+  labels mirror the review gate");
 - **re-derive `ci` from a fresh snapshot for the NEW `head_sha`, and launch a watch if — and only if —
   that snapshot holds a row that can still move** ("WATCH ONLY WHAT CAN MOVE" above). The new commit
   **resets the liveness counters** ("THE LIVENESS COUNTERS" above), so the PR gets a clean budget.
@@ -776,7 +775,10 @@ Its job, in order:
 
 - **NEVER make CI pass by weakening the check.** NEVER delete or loosen an assertion, NEVER add
   `skip`/`xfail`, NEVER disable or downgrade a lint rule, NEVER raise a timeout. **Fix the cause.** If the
-  check itself is demonstrably wrong, **say so explicitly and ESCALATE** — never silently rewrite it.
+  check itself is demonstrably wrong, **say so explicitly and ESCALATE** — never silently rewrite it. **This
+  bullet ALONE among these blocks goes VERBATIM into EVERY CI-fix subagent's prompt — the `session` class
+  included, on every escalation.** The rest of the HARD RULES below are the cheap tier's; the no-weakening
+  prohibition binds both tiers.
 - **NEVER use a catch-all fixer that applies SEMANTIC rules**, and never a documented semantic rewriter.
   Denied outright: `golangci-lint run --fix`, `ruff --fix`, `eslint --fix`, `cargo clippy --fix`, any
   `--fix`/`--write` flag on a linter that applies semantic rules; **`goimports`** (it ADDS imports — an
