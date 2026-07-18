@@ -30,6 +30,7 @@ def read(name: str) -> str:
 def check_document_contract() -> None:
     runtime = read("runtime-adapter.md")
     stage = read("stage-2-review-gate.md")
+    dispatch = read("review-dispatch.md")
     reviewer = read("reviewer.md")
     cross = read("cross-agent-reviewers.md")
     adoption = read("pr-adoption.md")
@@ -118,7 +119,7 @@ def check_document_contract() -> None:
         'RUN_ARGV(["python3", TRANSPORT.emit_progress_path',
         'RUN_ARGV(["python3", TRANSPORT.emit_finding_path',
     ):
-        require(needle in stage, f"review prompt lost typed operation: {needle}")
+        require(needle in dispatch, f"review-dispatch.md lost typed operation: {needle}")
 
     require("producer rule applies to initial launch, relaunch, and native fallback" in reviewer,
             "native report producer no longer covers every attempt state")
@@ -137,7 +138,8 @@ def check_document_contract() -> None:
             "fresh-run creation bypasses the repository context owner")
     require('cwd: repository.project_root' in merge and "argv: [\"git\", \"fetch\"" in merge,
             "merge fetches bypass the typed repository context")
-    require("git -C $" not in merge and "cwd: project_root" not in stage,
+    require("git -C $" not in merge and "cwd: project_root" not in stage
+            and "cwd: project_root" not in dispatch,
             "merge/pre-review restored an ambient or unresolved Git cwd")
     require('"bash", fetch_review_items_script, "--tmp-dir", repository.scratch_root, pr_url' in copilot and
             'path_join(repository.scratch_root, "copilot-review-items.json")' in copilot,
@@ -149,8 +151,8 @@ def check_document_contract() -> None:
         "owned transition instead of constructing this record",
     ):
         require(needle in cross, f"cross-agent capability/fallback contract drifted: {needle}")
-    require("no other action constructs this external record" in stage,
-            "Stage 2 launches external argv outside the owned transition")
+    require("no other action constructs this external record" in dispatch,
+            "Review dispatch launches external argv outside the owned transition")
     retired_same_enumeration = "same enumeration " + "independently"
     retired_parallel_role = "parallel adversarial " + "reviewer"
     retired_supplementary_role = "supplementary " + "enumeration"
@@ -173,6 +175,14 @@ def check_document_contract() -> None:
     # live procedure may contain them because the typed forms above are now the executable contract.
     forbidden = {
         "stage-2-review-gate.md": (
+            'git -C "<worktree>"',
+            'python3 "<SCRIPT>"',
+            'python3 "<FINDING-SCRIPT>"',
+            'git fetch origin "refs/heads/<base>',
+            '-C "<review-root>"',
+            '< "<review-root>/<prompt-file>"',
+        ),
+        "review-dispatch.md": (
             'git -C "<worktree>"',
             'python3 "<SCRIPT>"',
             'python3 "<FINDING-SCRIPT>"',

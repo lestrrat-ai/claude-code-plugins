@@ -306,7 +306,7 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      unaddressed Copilot review items, CI not red, no merge conflict with `<base>` — see Stage 2a
      preconditions), and no review running for that SHA → **first ensure the PR's INTENT
      (`<rundir>/intent-<pr>.md`) and PR-head worktree exist.** The dispatch substitutes the intent block
-     into the review prompt **verbatim** (`stage-2-review-gate.md`), and a reviewer with no intent is a
+     into the review prompt **verbatim** (`review-dispatch.md`), and a reviewer with no intent is a
      reviewer asked "is anything wrong with this code?" — the question with no fixed point. **It is not an
      exhortation: `review-pass.py verify` loads `intent-<pr>.md` for EVERY pass, so a pass dispatched
      without one is `unusable` and its verdict cannot be tallied** — the review would be spent for nothing.
