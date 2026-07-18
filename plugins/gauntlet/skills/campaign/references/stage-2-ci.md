@@ -776,7 +776,10 @@ Its job, in order:
 
 - **NEVER make CI pass by weakening the check.** NEVER delete or loosen an assertion, NEVER add
   `skip`/`xfail`, NEVER disable or downgrade a lint rule, NEVER raise a timeout. **Fix the cause.** If the
-  check itself is demonstrably wrong, **say so explicitly and ESCALATE** — never silently rewrite it.
+  check itself is demonstrably wrong, **say so explicitly and ESCALATE** — never silently rewrite it. **This
+  bullet ALONE among these blocks goes VERBATIM into EVERY CI-fix subagent's prompt — the `session` class
+  included, on every escalation.** The rest of the HARD RULES below are the cheap tier's; the no-weakening
+  prohibition binds both tiers.
 - **NEVER use a catch-all fixer that applies SEMANTIC rules**, and never a documented semantic rewriter.
   Denied outright: `golangci-lint run --fix`, `ruff --fix`, `eslint --fix`, `cargo clippy --fix`, any
   `--fix`/`--write` flag on a linter that applies semantic rules; **`goimports`** (it ADDS imports — an
