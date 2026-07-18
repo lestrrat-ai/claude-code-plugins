@@ -53,10 +53,17 @@ These repository operations consume that record; no consumer reconstructs their 
 - `default_worktree(repository: RepositoryContext, head_ref_name: Text) -> Path` returns
   `path_join(repository.worktrees_root, head_ref_name)`. A reused checkout remains its discovered
   absolute path instead.
-- `create_run_directory(repository: RepositoryContext, run_id: Text) -> Path` first calls
-  `run_argv(["mkdir", "-p", "--", repository.scratch_root], null, null, null)`, then calls
-  `run_argv(["mkdir", "--", run_directory(repository, run_id)], null, null, null)`. The second call has
-  no `-p`, so collision remains an atomic failure; on failure the caller mints a new id and retries.
+- `create_run_directory(repository: RepositoryContext) -> Path` invokes the bundled `run-id.py` (resolved
+  from the active `SKILL.md`'s `scripts/`, per `SKILL.md`'s bundled-script rule) through
+  `run_argv(["python3", <that run-id.py path>, "new", "--runs-dir", repository.scratch_root], null, null,
+  null)` — `cwd`/`stdin_file`/`stdout_file` all null, so the returned `ProcessResult` carries the tool's
+  stdout — then REQUIRES a zero exit and parses the `{run_id, rundir}` JSON from `ProcessResult.stdout`,
+  returning the `rundir`. `run-id.py`
+  OWNS the mint and the atomic create: it generates the id, creates `repository.scratch_root` if absent,
+  and creates `run_directory(repository, run_id)` with a bare `mkdir` (no `-p`, so a collision is an atomic
+  failure) — retrying with a FRESH id on the rare clash and failing closed if it cannot. It takes NO
+  pre-minted `run_id` (it produces one) and the caller no longer mints or retries; the run-id is the
+  returned directory's final path component.
 
 Campaign entry/resume, Copilot address-review entry, adoption/pre-review, and merge all carry the
 resulting `RepositoryContext` as typed data. Every repository Git process uses either

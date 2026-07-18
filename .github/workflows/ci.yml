@@ -104,11 +104,13 @@ jobs:
             plugins/gauntlet/skills/campaign/scripts/lease.py \
             plugins/gauntlet/skills/campaign/scripts/lease-test.py \
             plugins/gauntlet/skills/campaign/scripts/heartbeat.py \
-            plugins/gauntlet/skills/campaign/scripts/heartbeat-test.py | tee pyright.json
+            plugins/gauntlet/skills/campaign/scripts/heartbeat-test.py \
+            plugins/gauntlet/skills/campaign/scripts/run-id.py \
+            plugins/gauntlet/skills/campaign/scripts/run-id-test.py | tee pyright.json
           analyzed=$(jq '.summary.filesAnalyzed' pyright.json)
           echo "filesAnalyzed=${analyzed}"
-          if [ "${analyzed}" != "26" ]; then
-            echo "::error::pyright analysed ${analyzed} file(s), not the 26 it was pointed at — it checked" \
+          if [ "${analyzed}" != "28" ]; then
+            echo "::error::pyright analysed ${analyzed} file(s), not the 28 it was pointed at — it checked" \
                  "nothing and said so quietly. Fix the paths above; a silent no-op is not a passing gate."
             exit 1
           fi
@@ -219,3 +221,13 @@ jobs:
       # an all-clear over a suite it did not run.
       - name: Heartbeat callback contract
         run: python3 plugins/gauntlet/skills/campaign/scripts/heartbeat.py self-test
+
+      # The run-id tool's contract, executed. It mints a run-id and ATOMICALLY creates the run directory —
+      # the `mkdir` that FAILS when the directory already exists is what stops two freshly-started runs from
+      # sharing one rundir and ledger, the double-drive the lease guards one layer up. Its fixtures force a
+      # collision (the mint must move to a FRESH id) and exhaust the retries (the mint must RAISE, never
+      # reuse a dir), so a minter that quietly adopted an existing directory goes red. `py_compile` above
+      # only parses it; the sibling `run-id-test.py` is loaded by path and a MISSING sibling fails loudly,
+      # so this can never report an all-clear over a suite it did not run.
+      - name: Run-id contract
+        run: python3 plugins/gauntlet/skills/campaign/scripts/run-id.py self-test
