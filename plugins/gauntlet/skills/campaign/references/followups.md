@@ -129,12 +129,42 @@ about and one whose partial rejection strands the rest.
 
    **An entry that is NOT a fresh candidate resumes at the step its lifecycle state has already reached — it
    does not restart.** The transition graph in "THE LIFETIME OF AN ENTRY" below — owned by `followups.py`,
-   with each command's exact from-set printed live by `<cmd> --help` — is the authority on which step each
-   state resumes at; **read the edges there, do not re-derive them here.** As intuition only: an
-   already-`corroborated` entry skips investigation and resumes at the `take-up` decision (step 3); a
-   `reopened` one already carries the decision it earned before its PR died, so it resumes at opening the
-   replacement PR, not at re-deciding. (A `refuted` entry is re-investigated only when new evidence may
-   overturn it, and that re-investigation succeeds by `corroborate` — never `refute`.)
+   with each command's exact from-set printed live by `<cmd> --help` — is the authority on **which store
+   edge** is legal from each state; **read the edges there, do not re-derive them here.** But a store edge
+   is **not the whole resume step**: several states also need a **campaign action** — dispatch a subagent,
+   reconcile a PR against this run, adopt it into the gauntlet — that **is not a store transition at all**,
+   so it is invisible on the graph, and "defer to the graph" would silently drop it. The graph still owns
+   every `state` move; what this list adds is the campaign action each move must **accompany**. Resume by
+   non-terminal state (the two terminal states — `rejected`, the user's ruling; and a deleted `merged`
+   entry — are never resumed, and the loop never reaches either on its own):
+
+   - **`candidate`** (a fresh one) — INVESTIGATE: this is step 1, the common path above. No prior step to
+     resume.
+   - **`corroborated`** — skip investigation; resume at the `take-up` decision (step 3). No campaign action
+     beyond what step 3 already does.
+   - **`refuted`** — re-investigated **only** when new evidence may overturn it, and that re-investigation
+     succeeds by `corroborate`, never `refute`.
+   - **`self-accepted`** — the driver took it up, and **a fix subagent of THIS SAME RUN may have already
+     opened the PR** in an earlier wake whose `open-pr` record did not run before the wake ended. So
+     **before dispatching any fixer, RECONCILE for an already-created PR** — by the deterministic
+     `gauntlet-authored` follow-up branch, or the entry's durable follow-up id. If one exists, **record it
+     with `open-pr` and adopt it (step 4) — never re-dispatch**; open a **new** PR (step 3) only when
+     reconciliation finds none; if reconciliation is **ambiguous**, surface to the user rather than risk a
+     duplicate. This closes a **same-run** wake gap; it does **not** solve the cross-run race scoped out as
+     a non-goal above, which needs a store transition this does not add.
+   - **`accepted`** — the **user approved** the surfaced fix (step 5 reached `accept`). The driver **skips
+     take-up** — the user already ruled, so no autonomous ACT is needed — dispatches the scoped fix subagent
+     **under the user-approved scope**, then handles its PR exactly as steps 3–4 do: `open-pr`, adopt into
+     the run, gate. Same PR handling, entered from the user's ruling instead of an autonomous `take-up`.
+   - **`in-pr`** — a PR is open and named in the entry, but an interrupted wake may have recorded `open-pr`
+     **without** finishing ADOPTION. Adoption is a campaign action, not a store edge — no `in-pr`
+     transition performs it — so "defer to the graph" strands the PR. On resume, **reconcile the recorded
+     PR against the current run and ADOPT it** (the existing idempotent adoption, step 4) if it lacks a run
+     label or ledger row, **then** wait for `merged`/`closed-unmerged`. An unadopted follow-up PR sits
+     **outside the campaign gate** — the exact thing "fold that PR into the current campaign" exists to
+     prevent.
+   - **`reopened`** — it already carries the decision it earned before its PR died, so it resumes at opening
+     the **replacement** PR, not at re-deciding.
 
 2. **NOT APPLICABLE → `refute`.** If the investigation cannot reproduce the claim, or shows the mechanism
    cannot occur, it is **refuted** — and that is its **most valuable** outcome, not a failure. A refuted
