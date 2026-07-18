@@ -199,13 +199,16 @@ def read_lease(path: Path) -> "dict | None":
     if not isinstance(agent, str) or not agent.strip():
         raise Corrupt(f"{path} has no usable `agent` — cannot tell who is driving this run")
     updated = rec.get("updated")
-    # This int-only check is also what makes a huge-exponent float harmless. `parse_constant` above
+    # This int-only check is what keeps a huge-exponent float out of every DECISION. `parse_constant` above
     # catches the NaN/Infinity/-Infinity TOKENS, but not `1e10000`, which `parse_float` silently turns into
-    # `inf`. That does not matter: `updated` is the ONLY numeric field any decision reads, and it refuses
-    # every float here (finite or `inf`), so no non-finite value can ever reach a staleness decision. A
-    # `1e10000` surviving in an OPAQUE field (`heartbeat`, recorded verbatim and never inspected) touches
-    # nothing — and `lease.json` is git-ignored bookkeeping only this run's own driver writes, so an absurd
-    # value there is the single user's own foot, deliberately NOT guarded (a documented non-threat).
+    # `inf`. `updated` is the ONLY numeric field any decision reads, and it refuses every float here (finite
+    # or `inf`), so no non-finite value can reach a staleness decision. A `1e10000` can still SURVIVE in an
+    # opaque field (`heartbeat`, recorded verbatim and never inspected) and, if the owner later `refresh`es
+    # (which preserves unknown fields), reach `write_lease`, where `json.dumps(allow_nan=False)` RAISES —
+    # the refresh aborts non-zero, but the atomic temp-write never lands, so the on-disk lease is left
+    # intact. That noisy abort is NOT guarded to a clean refusal ON PURPOSE: `lease.json` is git-ignored
+    # bookkeeping only this run's own driver writes, so a `1e10000` there is the single user's own foot — a
+    # documented non-threat (`intent`/fu35), not a malformed lease this tool undertakes to reject cleanly.
     if isinstance(updated, bool) or not isinstance(updated, int):
         raise Corrupt(f"{path} has a non-integer `updated` ({updated!r}) — cannot tell if it is stale")
     return rec
