@@ -405,7 +405,9 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      can be declared hung before that cap once the stream falls quiet (`stage-2-review-gate.md`, the
      stdout-stream liveness signal), so while such a review is streaming, a shorter poll toward that
      quiet window is a real check, not a bare re-reconcile. ALWAYS keep a heartbeat or bounded wait active whenever non-terminal work remains — skipping
-     both means a hung or orphaned run wakes no one. Run
+     both means a hung or orphaned run wakes no one. **Now render the status — this happens on EVERY
+     heartbeat that reschedules, never skipped, and its first and mandatory element is the ledger table
+     itself.** Run
      `ledger.py --file <state.jsonl> table` and include its output verbatim, fenced, in the status
      message. **Verbatim means WHOLE** — including every `#` line it prints below the grid. The default
      view is a **filtered** one and those lines are what disclose the filtering
