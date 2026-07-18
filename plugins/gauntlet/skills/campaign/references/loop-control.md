@@ -100,9 +100,11 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      cross-repo/fork per `pr-adoption.md`), and verify all share a common `baseRefName`. This touches
      **no** run-id, `<rundir>`, lease, `state.jsonl`, label, worktree, or CI watch. **If the bases
      disagree or any PR is refused, prompt and create nothing** — so a rejected set never leaves an
-     empty orphan run behind. **Only once the full set passes preflight**: mint a run-id + agent token,
-     atomically create `<rundir>`, and write the lease **and `state.jsonl` header** — now with
-     `base_branch` filled from the agreed `baseRefName` (known from preflight). Then **adopt** each PR
+     empty orphan run behind. **Only once the full set passes preflight**: call `create_run_directory`
+     **first** — it mints the run-id and atomically creates `<rundir>` — and derive `run_id` from the
+     returned directory's final path component; **then** mint the agent token (separate, run-id-independent),
+     and write the lease **and `state.jsonl` header** — now with `run_id` set and `base_branch` filled
+     from the agreed `baseRefName` (known from preflight). Then **adopt** each PR
      (ledger row + labels + worktree, and a CI watch **only when one is due** — `pr-adoption.md` owns what
      adoption produces and when the watch is warranted); a death mid-adoption still leaves
      a discoverable, adoptable run. Then fall through to dispatch/reschedule.
