@@ -52,6 +52,12 @@ RUN_LABEL_COLOR = "5319E7"
 # it opens). It is the ONLY thing that makes `pr_origin` = `gauntlet`; a driver cannot assert it by flag.
 GAUNTLET_AUTHORED_LABEL = "gauntlet-authored"
 
+# The SHA-bound liveness counters — stage-2-ci.md, "THE LIVENESS COUNTERS", owns the set and what each
+# member means. They describe the OLD head's CI, so a re-adoption at a moved head must reset them in the
+# same ledger update as head_sha; the reset VALUES come from ledger.py's ROW_DEFAULTS (the fresh-head
+# defaults), never a literal typed here.
+LIVENESS_COUNTERS = ("ci_fingerprint", "settled_strikes", "unusable_refetches", "ci_stalled_since")
+
 
 def _load(name: str, filename: str):
     mod = load_module_from_path(name, _HERE / filename)
@@ -222,11 +228,15 @@ def cmd_adopt(args) -> int:
 
     # 4. Register the row — refresh in place if it exists, else add. Never a duplicate row.
     #
-    # The `add-row` initializers (ci=pending, reviews_ok=0, status=in_review, tier) apply to a NEW row.
-    # On a RE-ADOPTION they are SHA-bound gate state: reset them ONLY when the head SHA actually moved,
-    # otherwise a re-adopt would discard SATISFIED verdicts accumulated on unchanged content. `set` writes
-    # only the fields it NAMES, so preservation is the default — an unchanged-head refresh names none of
-    # the SHA-bound fields and they survive untouched.
+    # `set` writes only the fields it NAMES, so preservation is the default — a refresh names only what it
+    # must recompute and everything else survives untouched. What that is depends on whether the head moved:
+    #   * NEW row: initialize the SHA-bound gate fields AND `status` (the fresh row's starting state).
+    #   * MOVED head on an existing row: the new head is new evidence, so reset the SHA-bound EVIDENCE — the
+    #     review tally, ci, and the liveness counters — but PRESERVE `status`: it tracks a HUMAN decision,
+    #     not the SHA, so a head refresh must never un-hold a PR the user has not ruled on (awaiting-user,
+    #     aborted, repairing).
+    #   * UNCHANGED head on an existing row: name none of the SHA-bound fields — the accumulated verdicts,
+    #     ci and liveness state all describe content that is still there and are preserved.
     _, rows = L.load(Path(args.file))
     existing = L.find_row(rows, pr)
     head_changed = existing is not None and existing.get("head_sha") != planned_head
@@ -236,12 +246,17 @@ def cmd_adopt(args) -> int:
                    "--head-sha", planned_head,
                    "--slug", str(row["slug"]),
                    "--pr-origin", str(row["pr_origin"])]
-    if existing is None or head_changed:
-        # A NEW row, or a head that moved: (re)initialize the SHA-bound gate fields.
+    if existing is None:
         ledger_argv += ["--tier", str(row["tier"]),
                         "--ci", str(row["ci"]),
                         "--status", str(row["status"]),
                         "--reviews-ok", str(row["reviews_ok"])]
+    elif head_changed:
+        ledger_argv += ["--tier", str(row["tier"]),
+                        "--ci", str(row["ci"]),
+                        "--reviews-ok", str(row["reviews_ok"])]
+        for field in LIVENESS_COUNTERS:
+            ledger_argv += [f"--{field.replace('_', '-')}", str(L.ROW_DEFAULTS[field])]
     proc = _run(ledger_argv, cwd=args.project_root)
     if proc.returncode != 0:
         return _refuse(f"ledger {verb} for PR {pr} failed: {proc.stderr.strip()}")

@@ -403,7 +403,9 @@ def t_readopt_changed_head_resets():
         _add_row(ledger, 12, head_sha=old, tier="HIGH")          # no worktree dir -> create path
         _record_verdict(ledger, 12, old)
         _record_verdict(ledger, 12, old)
-        _set_row(ledger, 12, ci="green")
+        # Stale liveness state describing the OLD head's CI, plus a green ci — all SHA-bound evidence.
+        _set_row(ledger, 12, ci="green", ci_fingerprint="deadbeef", settled_strikes="2",
+                 unusable_refetches="1", ci_stalled_since="2026-01-01T00:00:00Z")
         code, _, err, _ = _adopt(d, ledger, view(headRefOid=new), wroot=wroot, worktree_head=new)
         check(code == 0, f"changed-head re-adopt succeeds (got {code}: {err})")
         check(_field(ledger, 12, "reviews_ok") == "0", "a MOVED head RESETS reviews_ok to 0")
@@ -411,6 +413,42 @@ def t_readopt_changed_head_resets():
         check(_field(ledger, 12, "head_sha") == new, "the row records the new head")
         check(_field(ledger, 12, "review_rounds") == "2",
               "review_rounds is MONOTONE — a re-adoption never resets the loop's memory")
+        # The SHA-bound liveness counters describe the OLD head; a moved head resets every one of them to
+        # its fresh-head default (ledger.py ROW_DEFAULTS), IN THE SAME ledger update as head_sha.
+        for field in M.LIVENESS_COUNTERS:
+            check(_field(ledger, 12, field) == M.L.ROW_DEFAULTS[field],
+                  f"a moved head RESETS the liveness counter {field} to its fresh-head default")
+
+
+def t_readopt_changed_head_preserves_held_status():
+    with tempfile.TemporaryDirectory() as dd:
+        d = Path(dd)
+        wroot = d / "wt"
+        old, new = "a" * 40, "b" * 40
+        ledger = d / "state.jsonl"
+        _init_ledger(ledger)
+        _add_row(ledger, 12, head_sha=old, tier="HIGH")
+        _record_verdict(ledger, 12, old)
+        _record_verdict(ledger, 12, old)          # reviews_ok=2 at the OLD head
+        # The user then PARKED it: awaiting-user with a recorded ruling the park is waiting on.
+        _set_row(ledger, 12, status="awaiting-user", blocker_ruling="retry@2026-01-01T00:00:00Z")
+        check(_field(ledger, 12, "reviews_ok") == "2", "precondition: verdicts accrued before the park")
+        code, _, err, _ = _adopt(d, ledger, view(headRefOid=new), wroot=wroot, worktree_head=new)
+        check(code == 0, f"changed-head re-adopt of a held PR succeeds (got {code}: {err})")
+        check(_field(ledger, 12, "status") == "awaiting-user",
+              "a moved head PRESERVES status — it tracks a HUMAN decision, not the SHA, so re-adoption "
+              "never silently un-holds a PR the user has not ruled on")
+        check(_field(ledger, 12, "blocker_ruling") == "retry@2026-01-01T00:00:00Z",
+              "and preserves the blocker_ruling the park is waiting on")
+        # The SHA-bound EVIDENCE still resets even while status is held.
+        check(_field(ledger, 12, "reviews_ok") == "0", "the moved head still resets reviews_ok")
+        check(_field(ledger, 12, "ci") == "pending", "the moved head still resets ci")
+        # And the PR is STILL HELD: dispatch-check must forbid ordinary gate work on it.
+        with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+            dc = M.L.main(["--file", str(ledger), "dispatch-check", "--pr", "12"])
+        check(dc == M.L.EXIT_STOP,
+              f"dispatch-check must still report the preserved awaiting-user row HELD "
+              f"(exit {M.L.EXIT_STOP}); got {dc}")
 
 
 # --- fix 6: the ONE status label mirrors the live gate, mutually exclusive -----
@@ -506,7 +544,8 @@ CASES = [
     ("gh_scoped_to_project_root", "every gh command runs in project-root (fix 2)", t_gh_scoped_to_project_root),
     ("readopt_preserves_ownership", "re-adopting the same worktree keeps created-ownership (fix 4)", t_readopt_preserves_ownership),
     ("readopt_unchanged_head_preserves_verdicts", "an unchanged head keeps reviews_ok/ci (fix 5)", t_readopt_unchanged_head_preserves_verdicts),
-    ("readopt_changed_head_resets", "a moved head resets reviews_ok/ci, review_rounds stays (fix 5)", t_readopt_changed_head_resets),
+    ("readopt_changed_head_resets", "a moved head resets reviews_ok/ci and the liveness counters, review_rounds stays (fix 5)", t_readopt_changed_head_resets),
+    ("readopt_changed_head_preserves_held_status", "a moved head preserves a held status and stays HELD, resetting only SHA-bound evidence", t_readopt_changed_head_preserves_held_status),
     ("readopt_accepted_unchanged_head_labels", "accepted+unchanged head keeps gauntlet-accepted, mutually exclusive (fix 6)", t_readopt_accepted_unchanged_head_labels),
     ("readopt_changed_head_labels", "a moved head returns to gauntlet-reviewing, removes accepted (fix 6)", t_readopt_changed_head_labels),
     ("stale_local_branch_refused", "a worktree off a stale local branch is refused (fix 7)", t_stale_local_branch_refused),
