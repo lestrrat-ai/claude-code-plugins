@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import subprocess
 import sys
 import time
@@ -283,6 +284,115 @@ def t_duplicate_json_key_is_corrupt(work: Path) -> None:
         L.check(dcode != 0 and p.exists(), f"release must not delete a {name} lease it cannot trust")
 
 
+# --- corrupt at the DECODE/PARSE boundary, not just per-field -----------------
+
+def t_invalid_utf8_is_corrupt(work: Path) -> None:
+    """Undecodable bytes must FAIL CLOSED, not crash with a traceback.
+
+    `read_text` raises `UnicodeDecodeError`, a `ValueError` subclass and NOT an `OSError`, so before the
+    decode-boundary catch it escaped `except OSError` and `read` printed a raw traceback while `acquire`
+    skipped its Corrupt refusal entirely. A lease we cannot even decode is corrupt, never absent.
+    """
+    p = lease_path(work)
+    p.write_bytes(b"\xff\xfe not valid utf-8 \x80\x81")
+    before = p.read_bytes()
+    code, _out, err = acquire(work, token="mine", heartbeat="w1")
+    L.check(code != 0, "a lease with invalid UTF-8 must REFUSE — undecodable bytes are corrupt, not absent")
+    L.check(p.read_bytes() == before, "an undecodable lease must not be overwritten")
+    L.check(err.startswith("lease: REFUSED"),
+            "acquire must emit its own REFUSED message, not let a raw UnicodeDecodeError escape")
+    L.check("Traceback" not in err and "UnicodeDecodeError" not in err,
+            "the tool must fail closed on undecodable bytes, never crash with a traceback")
+    rcode, rout, _ = L.run(["--file", str(p), "read"])
+    L.check(rcode != 0 and verdict_of(rout) == "corrupt", "`read` must report undecodable bytes as corrupt")
+
+
+def t_non_finite_is_corrupt(work: Path) -> None:
+    """`json.loads` accepts NaN/Infinity/-Infinity by default; the parse boundary must reject them.
+
+    The per-field checks only catch a non-finite `agent`/`updated`. Anywhere else — a preserved unknown
+    field, `heartbeat`, a nested object — a non-finite value slips past, reads `held`/acquires `owned`, and
+    round-trips to disk as INVALID strict JSON. Each `agent`/`updated` here is well-formed, so ONLY the
+    `parse_constant` reject makes these corrupt; without it acquire would adopt the stale lease (exit 0).
+    """
+    cases = [
+        ("heartbeat-nan", '{"agent": "t1", "heartbeat": NaN, "updated": 1}'),
+        ("unknown-infinity", '{"agent": "t1", "updated": 1, "extra": Infinity}'),
+        ("nested-neg-infinity", '{"agent": "t1", "updated": 1, "meta": {"drift": -Infinity}}'),
+    ]
+    for name, raw in cases:
+        p = put(work, None, raw=raw)
+        before = p.read_bytes()
+        code, _out, _err = acquire(work, token="mine", heartbeat="w1")
+        L.check(code != 0,
+                f"a {name} lease must REFUSE — a non-finite JSON constant is not strict JSON, so corrupt")
+        L.check(p.read_bytes() == before, f"a {name} lease must not be overwritten")
+        rcode, rout, _ = L.run(["--file", str(p), "read"])
+        L.check(rcode != 0 and verdict_of(rout) == "corrupt", f"`read` must report a {name} lease corrupt")
+
+
+def t_write_lease_never_writes_non_finite(work: Path) -> None:
+    """What we write must be STRICT JSON, and `write_lease` must refuse to serialize a non-finite value.
+
+    `allow_nan=False` is the guard that stops the tool putting on disk exactly what `read_lease` now
+    refuses to read back — a lease that would strand the run behind a corruption of our own making.
+    """
+    code, _out, _err = acquire(work, token="t1", heartbeat="w1")
+    L.check(code == 0, "precondition: a normal acquire succeeds")
+    content = lease_path(work).read_text()
+
+    def _boom(v):
+        raise AssertionError(f"the lease on disk holds a non-finite constant {v!r} — not strict JSON")
+
+    json.loads(content, parse_constant=_boom)  # raises if disk holds NaN/Infinity/-Infinity
+    L.check("NaN" not in content and "Infinity" not in content,
+            "the lease written to disk must be strict JSON — no NaN/Infinity tokens")
+
+    raised = False
+    try:
+        L.write_lease(lease_path(work),
+                      {"agent": "t1", "heartbeat": "w1", "updated": L.now(), "drift": float("inf")})
+    except ValueError:
+        raised = True
+    L.check(raised, "write_lease must REFUSE to serialize a non-finite number (allow_nan=False) — the tool "
+                    "must never itself put NaN/Infinity on disk")
+
+
+# --- mode: refresh/acquire must not narrow the lease's permissions ------------
+
+def t_refresh_preserves_file_mode(work: Path) -> None:
+    """`replace_text` writes through a 0600 mkstemp temp, so a rewrite would NARROW 0664 -> 0600.
+
+    write_lease preserves an existing lease's prior mode. Without it, every refresh silently tightens the
+    lease's permissions away from what the run dir was set up with.
+    """
+    p = put(work, {"agent": "t1", "heartbeat": "w0", "updated": L.now() - 100})
+    os.chmod(p, 0o664)
+    code, _out, _err = L.run(["--file", str(p), "refresh", "--token", "t1"])
+    L.check(code == 0, "refreshing my own lease succeeds")
+    mode = stat.S_IMODE(p.stat().st_mode)
+    L.check(mode == 0o664,
+            f"refresh must PRESERVE the lease's prior mode (0664), got {oct(mode)} — a rewrite must not "
+            f"narrow it to mkstemp's private 0600")
+
+
+def t_new_lease_uses_umask_permissions(work: Path) -> None:
+    """A brand-new lease gets umask-adjusted create perms, NOT mkstemp's private 0600.
+
+    umask is pinned for the duration so the expected mode is deterministic regardless of the environment.
+    """
+    old = os.umask(0o022)
+    try:
+        code, _out, _err = acquire(work, token="t1", heartbeat="w1")
+    finally:
+        os.umask(old)
+    L.check(code == 0, "an absent lease is adoptable")
+    mode = stat.S_IMODE(lease_path(work).stat().st_mode)
+    L.check(mode == 0o644,
+            f"a NEW lease must get umask-adjusted create perms (0644 under umask 022), got {oct(mode)} — "
+            f"not mkstemp's private 0600")
+
+
 # --- release: the token check the prose forgot --------------------------------
 
 def t_release_refuses_someone_elses_lease(work: Path) -> None:
@@ -525,6 +635,15 @@ CASES = [
      t_read_reports_corrupt_without_deciding),
     ("duplicate-key-corrupt", "a duplicate JSON key reads two ways — corrupt, never guessed",
      t_duplicate_json_key_is_corrupt),
+    ("invalid-utf8-corrupt", "undecodable bytes fail closed to corrupt, never crash", t_invalid_utf8_is_corrupt),
+    ("non-finite-corrupt", "NaN/Infinity anywhere is corrupt, not a value to round-trip",
+     t_non_finite_is_corrupt),
+    ("strict-json-on-disk", "write_lease writes strict JSON and refuses a non-finite value",
+     t_write_lease_never_writes_non_finite),
+    ("refresh-preserves-mode", "refresh preserves the lease's prior mode, never narrows to 0600",
+     t_refresh_preserves_file_mode),
+    ("new-lease-umask-mode", "a new lease gets umask-adjusted perms, not mkstemp's 0600",
+     t_new_lease_uses_umask_permissions),
     ("release-refuses-theirs", "release refuses a lease we do not own — the prose's missing check",
      t_release_refuses_someone_elses_lease),
     ("release-mine", "release with the right token releases", t_release_deletes_my_own),

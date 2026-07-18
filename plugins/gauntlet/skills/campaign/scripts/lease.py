@@ -38,6 +38,7 @@ import argparse
 import json
 import os
 import secrets
+import stat
 import sys
 import tempfile
 import time
@@ -145,6 +146,19 @@ def _reject_duplicate_keys(pairs: "list[tuple[str, object]]") -> dict:
     return dict(pairs)
 
 
+def _reject_non_finite(constant: str) -> NoReturn:
+    """`parse_constant` hook: reject the non-finite constants `json.loads` accepts by DEFAULT.
+
+    `json.loads` parses `NaN`, `Infinity`, and `-Infinity` anywhere a number may appear — a preserved
+    unknown field, a nested object, anything past the per-field checks. They are NOT strict JSON: a driver
+    hand-rolling a parser may reject them, and `json.dumps` cannot even re-serialize them without
+    `allow_nan=True`, so such a value round-trips to disk as INVALID JSON. A lease we cannot round-trip
+    cannot be trusted, so we refuse it at the PARSE boundary — the same fail-closed direction as bad bytes
+    or bad JSON, closing the whole "unparseable" class rather than the two example inputs.
+    """
+    raise ValueError(f"non-finite JSON constant {constant!r}")
+
+
 def read_lease(path: Path) -> "dict | None":
     """Return the lease, or None if ABSENT. Raise Corrupt if present and untrustworthy.
 
@@ -155,19 +169,30 @@ def read_lease(path: Path) -> "dict | None":
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return None
+    except UnicodeDecodeError as exc:
+        # A `UnicodeDecodeError` is a `ValueError` subclass, NOT an `OSError`, so it would otherwise escape
+        # the `except OSError` below and crash `read`/`acquire` with a raw traceback instead of failing
+        # closed. Undecodable bytes are the same fail-closed direction as bad JSON: a lease we cannot even
+        # decode cannot tell us who is driving, so it is Corrupt, never 'absent'.
+        raise Corrupt(f"{path} is not valid UTF-8 ({exc}) — a lease we cannot decode cannot tell us who is "
+                      f"driving; refusing to read that as 'absent'") from exc
     except OSError as exc:
         raise Corrupt(f"cannot read {path}: {exc}") from exc
     if not raw.strip():
         raise Corrupt(f"{path} is empty — a driver may hold this run; refusing to read that as 'absent'")
     try:
-        rec = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
+        rec = json.loads(raw, object_pairs_hook=_reject_duplicate_keys, parse_constant=_reject_non_finite)
     except json.JSONDecodeError as exc:
         raise Corrupt(f"{path} is not valid JSON ({exc}) — refusing to read that as 'absent'") from exc
     except ValueError as exc:
-        # `_reject_duplicate_keys` raises a plain ValueError; JSONDecodeError (a ValueError subclass) is
-        # already handled above, so this only catches the duplicate-key case.
-        raise Corrupt(f"{path} has a {exc} — a lease that two parsers read differently cannot tell us who "
-                      f"is driving; refusing to read that as 'absent'") from exc
+        # Both `_reject_duplicate_keys` (a repeated member name) and `_reject_non_finite`
+        # (NaN/Infinity/-Infinity anywhere) raise a plain ValueError; JSONDecodeError, a ValueError
+        # subclass, is handled above. Either way the bytes are not a strict JSON object we can trust: a
+        # lease two parsers could read differently — or that is not strict JSON at all — cannot tell us
+        # who is driving.
+        raise Corrupt(f"{path} has a {exc} — a lease that two parsers could read differently, or that is "
+                      f"not strict JSON, cannot tell us who is driving; refusing to read that as 'absent'"
+                      ) from exc
     if not isinstance(rec, dict):
         raise Corrupt(f"{path} holds {type(rec).__name__}, not a JSON object")
     agent = rec.get("agent")
@@ -179,9 +204,32 @@ def read_lease(path: Path) -> "dict | None":
     return rec
 
 
+def _current_umask() -> int:
+    """Read the process umask. There is no read-only call, so set-to-0 then restore."""
+    mask = os.umask(0)
+    os.umask(mask)
+    return mask
+
+
 def write_lease(path: Path, rec: dict) -> None:
-    """Write the lease atomically, preserving any field this version does not know about."""
-    replace_text(path, json.dumps(rec) + "\n", temp_prefix=".lease.", encoding="utf-8")
+    """Write the lease atomically, preserving any field this version does not know about.
+
+    Two guards ride on the atomic replace:
+
+    - `allow_nan=False`, so this tool can NEVER itself put a non-finite number (NaN/Infinity) on disk.
+      `read_lease` refuses to read one back, so writing one would strand the run behind a corrupt lease of
+      our own making. If `rec` ever held one, `json.dumps` raises before anything is written.
+    - PERMISSION preservation. `replace_text` writes through a private 0600 `mkstemp` temp, so without this
+      every refresh/acquire would NARROW an existing lease's mode (e.g. 0664 -> 0600). An EXISTING lease
+      keeps its prior mode; a BRAND-NEW lease gets the umask-adjusted permissions an ordinary create would
+      produce. `mode=` chmods the temp BEFORE the rename, so the lease never appears on disk mis-permissioned.
+    """
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        mode = 0o666 & ~_current_umask()
+    replace_text(path, json.dumps(rec, allow_nan=False) + "\n",
+                 temp_prefix=".lease.", encoding="utf-8", mode=mode)
 
 
 def age_of(rec: dict, now_ts: "int | None" = None) -> int:
