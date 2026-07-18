@@ -390,10 +390,10 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
    - Any non-terminal PR remains (in review, pending CI, or awaiting a user ruling on a review-finding
      standoff / API approval / precondition) →
      refresh this run's lease, then choose the runtime adapter's scheduled-heartbeat or bounded-wait
-     branch. A scheduled heartbeat uses `<campaign-invocation> --run <run-id> --token <agent-token>` —
-     exactly those two flags: `--run` rebinds the heartbeat to this run and `--token` re-proves ownership of
-     its lease. It **never replays `--new` or the original `#PR` adoption args** — the run is resumed,
-     not re-created, and carrying `--new` would mint a new run every heartbeat. A scheduler-less bounded
+     branch. A scheduled heartbeat does not hand-assemble its callback: the **Scheduled-heartbeat host**
+     step in `runtime-adapter.md` ("Background work and heartbeats") owns building it — it runs
+     `heartbeat.py callback` and schedules that tool's stdout, which is why the callback carries exactly
+     `--run` and `--token` and never `--new`/`#PR` or `--heartbeat-id`. A scheduler-less bounded
      wait retains the current invocation and token instead of constructing a scheduled heartbeat. Both are a
      **fallback lifecycle, not a tight poll**: background completions are the primary heartbeat. A scheduled
      heartbeat also recovers a killed/orphaned session through a later scheduled heartbeat; if a scheduler-less
