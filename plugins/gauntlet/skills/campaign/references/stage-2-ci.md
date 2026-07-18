@@ -692,6 +692,12 @@ ones.
 
 #### CLASSIFY every row — a TOTAL function over the REAL enum
 
+> **`ci-status.py derive` PERFORMS CLASSIFICATION** ("THE DERIVATION IS A COMMAND", above). This section
+> is the **SPECIFICATION IT IMPLEMENTS** — `doc-check` holds these tables and enums to the code — so read
+> it to understand or review a verdict, and keep it correct. **Do NOT classify rows by hand to decide
+> `ci`.** The buckets are also the vocabulary other rules reuse (AGREEMENT above; `RUNNING` in SETTLED,
+> below), which is why they are spelled out here rather than only in code.
+
 **THE RULE — classify over the WHOLE enum, and give every unlisted value somewhere to go.** A rule that
 names only the values you happened to think of leaves **holes**, and a value that falls in a hole matches
 **no** branch: it is not green, not red, not pending — so it can never resolve, and the PR **wedges
@@ -765,6 +771,14 @@ block a merge, this is the line that was wrong.
 
 #### DECIDE — first match wins
 
+> **`ci-status.py derive` EVALUATES THESE BULLETS** — its JSON's `verdict` and `reason` name the bullet
+> that matched and the row that made it match. The bullet LOGIC is the **SPECIFICATION THE TOOL
+> IMPLEMENTS** (`doc-check` pins the bullet order; the `*-outranks-*` fixtures pin it behaviourally):
+> keep it correct, and **NEVER re-evaluate it by hand against a snapshot** — a hand evaluation that
+> disagrees with the JSON is the by-eye derivation this file exists to kill. **What each bullet ALSO
+> carries is the DRIVER ACTION for its outcome** — the watch policy, the fix dispatch, the escalation.
+> Those are yours: act on the `verdict` the JSON printed, and do what its bullet says to do.
+
 **THE REGISTRATION GAP IS CLOSED — `green` means the required set passed.** It did not always. `green`
 once meant only *"every check that had REGISTERED by the time we looked had passed"*, which says nothing
 about whether a **required** check ever registered at all: a required check that has not registered is not
@@ -780,7 +794,7 @@ gone**, not because it was talked away:
   required set are **`pending` bullets below** — non-merging outcomes, each bounded and escalated — never a
   green with a footnote. **A caveat attached to a green is not a caveat; it is a merge.**
 
-Evaluate the bullets **in this order — first match wins.**
+The bullets are evaluated **in this order — first match wins.**
 
 **THE ORDER IS PART OF THE RULE — and `red` OUTRANKS `UNKNOWN_VALUE` DELIBERATELY.** When a snapshot
 carries **both** a `FAIL` row and an `UNKNOWN_VALUE` row, `red` wins and the PR gets its CI fix. That is
