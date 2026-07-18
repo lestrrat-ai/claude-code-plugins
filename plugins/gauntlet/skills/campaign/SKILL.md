@@ -217,6 +217,7 @@ a line the tool writes.
 | `emit-progress.py` | Reviewer's door: append one unit-progress event (the only sanctioned way) | `references/stage-2-review-gate.md` |
 | `emit-finding.py` | Reviewer's door: record one FINDING (the only sanctioned way; findings must anchor or they do not gate) | `references/stage-2-review-gate.md` |
 | `reviewer-liveness.py` | Probe whether a dispatched reviewer's output stream is still moving; decides nothing, always exits 0 | `references/stage-2-review-gate.md` |
+| `base-preflight.py` | Decide proceed / rebase-first / recheck from a PR's live merge-state before review or fix; performs no rebase | `references/stage-2-review-gate.md` |
 | `ci-status.py` | `derive` — how `ci` is DERIVED, always, the only way — and `required-set` | `references/stage-2-ci.md` |
 | `ci-snapshot.py` | Executable contract for the SHA-pinned CI snapshot artifact (used by `derive`) | `references/stage-2-ci.md` |
 | `mutate-ci-snapshot.py` | Mutation harness proving `ci-snapshot.py`'s rules are fixture-pinned; run by validation/CI, not the driver | `references/stage-2-ci.md` |
