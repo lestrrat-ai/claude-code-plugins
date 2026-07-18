@@ -109,11 +109,13 @@ jobs:
             plugins/gauntlet/skills/campaign/scripts/run-id-test.py \
             plugins/gauntlet/skills/campaign/scripts/script-table-test.py \
             plugins/gauntlet/skills/campaign/scripts/base-preflight.py \
-            plugins/gauntlet/skills/campaign/scripts/base-preflight-test.py | tee pyright.json
+            plugins/gauntlet/skills/campaign/scripts/base-preflight-test.py \
+            plugins/gauntlet/skills/campaign/scripts/merge-check.py \
+            plugins/gauntlet/skills/campaign/scripts/merge-check-test.py | tee pyright.json
           analyzed=$(jq '.summary.filesAnalyzed' pyright.json)
           echo "filesAnalyzed=${analyzed}"
-          if [ "${analyzed}" != "31" ]; then
-            echo "::error::pyright analysed ${analyzed} file(s), not the 31 it was pointed at — it checked" \
+          if [ "${analyzed}" != "33" ]; then
+            echo "::error::pyright analysed ${analyzed} file(s), not the 33 it was pointed at — it checked" \
                  "nothing and said so quietly. Fix the paths above; a silent no-op is not a passing gate."
             exit 1
           fi
@@ -244,6 +246,17 @@ jobs:
       # MISSING sibling fails loudly, so this can never report an all-clear over a suite it did not run.
       - name: Base-preflight contract
         run: python3 plugins/gauntlet/skills/campaign/scripts/base-preflight.py self-test
+
+      # The merge-readiness decider's contract, executed. It is the ONE place the two GitHub merge enums
+      # (`.mergeable`, `.mergeStateStatus`) are crossed with the ledger's preconditions to decide `merge`
+      # vs `not-yet` — the miscross this replaces once turned a blocked merge into an infinite CI watch.
+      # `self-test` runs the sibling FIXTURES (`merge-check-test.py`, loaded by path; a MISSING sibling
+      # fails loudly), which pin the exact verdict AND reason for every branch — including that both enums
+      # are mapped TOTALLY (an unrecognized value of either PARKS) and that a gh-spawn failure fails closed.
+      # The code owns the mapping; stage-3-merge.md points at the tool rather than restating it, so there is
+      # no doc table to drift and no doc-check here. It NEVER performs the merge; it only decides.
+      - name: Merge-check contract (the code-owned mapping, pinned by fixtures)
+        run: python3 plugins/gauntlet/skills/campaign/scripts/merge-check.py self-test
 
       # The Bundled Scripts table in campaign's SKILL.md declares itself COMPLETE: one row per bundled
       # script. A completeness claim with no check goes stale the first time a script lands without a

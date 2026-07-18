@@ -27,42 +27,36 @@ answer lands the PR is skipped, never merged.
 else. Campaign's own SHA-pinned snapshot (`stage-2-ci.md`) is the **only** source of `ci`. Crossing these
 two wires is what turns a blocked merge into an infinite CI watch.
 
-`gh pr view <pr> --json mergeable,mergeStateStatus,isDraft` returns **two different enums** — say which
-field a value came from, and map **every** value of each (introspected from the schema, not recalled):
+**The merge-readiness decision is COMPUTED, never read by eye:**
+`python3 <skill-dir>/scripts/merge-check.py check --pr <N> --file <state.jsonl>`. It reads the ledger
+row + the live PR view (`gh pr view <pr> --json mergeable,mergeStateStatus,isDraft,state,headRefOid`) and
+prints `{"verdict":"merge"|"not-yet","reason":…}`, crossing — in ONE place — the held/open/draft/
+stale-head/ci/reviews preconditions and then **BOTH** GitHub enums (`.mergeable` first — `CONFLICTING`
+and `UNKNOWN` decide on their own, `MERGEABLE` falls through — then `.mergeStateStatus`, which alone
+yields `merge`), so the miscross above cannot recur. Both enums are crossed **TOTALLY**: a value GitHub's
+schema does not declare **parks**, never guesses. Act on the verdict:
 
-```
-MergeableState (.mergeable)       MERGEABLE CONFLICTING UNKNOWN
-MergeStateStatus (.mergeStateStatus)  DIRTY UNKNOWN BLOCKED BEHIND UNSTABLE HAS_HOOKS CLEAN
-```
+- `merge` → proceed to the merge steps below (step 1).
+- `not-yet <reason>` → do **NOT** merge; the reason names the block. Route on the reason's **action**
+  (the phrase the tool emits), never on a hand-copied list of enum values — a value the tool newly parks
+  then routes correctly with no edit here:
+  - `rebase` reasons (base moved ahead / conflicts) → refresh the PR per step 6.
+  - the tool's **`— park`** reasons (any `not-yet` reason that ends in `— park` / `park awaiting-user`)
+    → park and name the blocker (below). This is the tool's catch-all for a merge GitHub blocks for a
+    cause campaign cannot clear itself — a draft, a `BLOCKED` merge state, **and any value neither enum
+    recognizes** — so routing on the `— park` action, not a fixed value list, keeps this bucket total.
+  - `re-poll` reasons (merge state / mergeability not computed yet — `UNKNOWN`) → the **UNKNOWN re-poll
+    bound** (below).
+  - Everything else (`ci is …`, `N of M approvals`, `held`, stale head) → leave the PR; the next
+    heartbeat re-evaluates once that precondition changes.
 
-**The two enums answer DIFFERENT questions, and `.mergeable` NEVER answers the merge question.**
-`.mergeable` says whether the branches **can be combined at all**; `.mergeStateStatus` says whether the
-merge is **permitted right now**. So `MERGEABLE` is **NECESSARY BUT NOT SUFFICIENT** — a `MERGEABLE` PR
-is routinely `BLOCKED`, `BEHIND` or `UNSTABLE`, and merging on `.mergeable` alone would merge straight
-over a blocked, stale, or non-passing PR. **`MERGEABLE` does NOT mean "merge it"; only the
-`.mergeStateStatus` rows below decide that.** The two are read together, never one instead of the other.
+The mapping the tool crosses is **OWNED by `merge-check.py`** and pinned by its sibling fixtures
+(`merge-check-test.py`), which assert every enum value's verdict — that is what proves the mapping, not a
+table restated here for a reader to map by eye.
 
-The table maps **BOTH enums TOTALLY** — every value of each has its own row, so the catch-all fires
-**only** on a value GitHub has genuinely added since. A value with no row is a **wedge**: it falls to the
-catch-all and parks a PR that nothing was wrong with.
-
-| Field / value | Meaning | Do |
-|---|---|---|
-| `.isDraft = true` | a **draft** PR — GitHub blocks the merge regardless of CI | **NEVER merge.** Park `awaiting-user`. |
-| `.mergeable = MERGEABLE` | the branches **can** be combined — **the ONLY non-blocking `.mergeable` value, and the one EVERY healthy PR carries** | **NOT a licence to merge.** The `.mergeable` precondition is satisfied and **nothing else is decided**: fall through to the `.mergeStateStatus` rows below, which decide whether the merge may actually run. |
-| `.mergeable = CONFLICTING` | conflicts with the base | refresh the PR per step 6 |
-| `.mergeable = UNKNOWN` | **not computed yet** (GitHub computes mergeability lazily) | **re-poll, bounded** — see **"The UNKNOWN re-poll bound"** below; **never** read as a verdict |
-| `.mergeStateStatus = CLEAN` | mergeable, everything green | **merge** |
-| `.mergeStateStatus = HAS_HOOKS` | mergeable; the repo has pre-receive hooks | **merge** |
-| `.mergeStateStatus = BEHIND` | base has moved ahead | refresh the PR per step 6 → gate reset |
-| `.mergeStateStatus = DIRTY` | conflicts | refresh the PR per step 6 |
-| `.mergeStateStatus = UNSTABLE` | a check is **non-passing** — which **INCLUDES STILL RUNNING** | **do not merge.** Do **NOT** touch `ci` and do **NOT** dispatch a CI-fix — campaign's own snapshot decides that. |
-| `.mergeStateStatus = BLOCKED` | the merge is blocked — **cause NOT enumerable** | **do not merge.** Park `awaiting-user`. **NEVER** map it to `ci = pending`. |
-| `.mergeStateStatus = UNKNOWN` | not computed yet | **re-poll, bounded** — see **"The UNKNOWN re-poll bound"** below |
-| **any other value** | GitHub added one | **park `awaiting-user`**, naming the value. Never guess. |
-
-**The UNKNOWN re-poll bound.** `UNKNOWN` is a value GitHub has **not computed yet** — it is not a verdict,
-and it resolves within seconds once GitHub finishes computing mergeability lazily. Re-poll it **in-heartbeat up
+**The UNKNOWN re-poll bound.** A `not-yet` whose reason is a **`re-poll`** (`.mergeStateStatus` or
+`.mergeable` = `UNKNOWN` — a value GitHub has **not computed yet**) is not a verdict, and it resolves
+within seconds once GitHub finishes computing mergeability lazily. Re-poll it **in-heartbeat up
 to 3 times**, with a short backoff between re-polls (a few seconds) — the initial Stage-3 fetch that
 returned `UNKNOWN` is what triggers this loop and is **not** one of the three. If it is **still** `UNKNOWN`
 after the third re-poll, do **NOT** merge on this heartbeat — leave the PR and let the **next heartbeat** re-evaluate it: **the
@@ -71,7 +65,7 @@ that stays `UNKNOWN` across heartbeats is bounded by the heartbeat cadence, so *
 the in-heartbeat cap is a fixed 3, and the coarse retry is the heartbeat loop itself. Never read `UNKNOWN` as
 `MERGEABLE`, and never let a perpetually-`UNKNOWN` PR either merge or wedge.
 
-**EVERY `awaiting-user` park in this table is a MACHINE-BLOCKER park, and it MUST declare its exit** — a
+**EVERY `awaiting-user` park a `not-yet` verdict names is a MACHINE-BLOCKER park, and it MUST declare its exit** — a
 park whose exit event never comes is the same wedge it was meant to prevent. So, in the same step: write
 `ci_reason` **naming the blocker** (the draft state, `BLOCKED`, or the unrecognized value verbatim),
 **clear `blocker_ruling` to `-`** (park entry spends nothing and answers nothing — a ruling already on the
@@ -98,8 +92,9 @@ subagent at a check that is merely **still running**.
    may have moved the tip past the recorded `head_sha` and reset the gates —
    **and re-fetch `origin/<base>` and re-check
    `gh pr view <pr> --json mergeable,mergeStateStatus,isDraft`** — a concurrent run sharing this base may
-   have advanced it since the PR was last reviewed. Read the result through **"The merge precondition"**
-   below, which maps **every** value of both enums.
+   have advanced it since the PR was last reviewed. Feed the ledger row and that live view to
+   **`merge-check.py check`** (**"The merge precondition"** above), which crosses **every** value of both
+   enums and returns the verdict.
 2. Push guard: `gh pr view <pr> --json state --jq .state` (PR number from the ledger row) must be
    `OPEN`.
 3. Merge — always `gh pr merge <pr> --squash` (use the repo's prevailing merge method if not squash),

@@ -303,8 +303,8 @@ Header field notes (the header fields above; per-row fields follow):
     `RUNNING` since when without the check set moving, which enum value was unrecognized, which VERIFY
     rule the snapshot failed, which read was denied.
   - **MERGE-PRECONDITION blockers** (`stage-3-merge.md`, "The merge precondition" — reached only with
-    **`ci = green`**): the PR is a **draft**, `mergeStateStatus` = `BLOCKED`, or an **unrecognized**
-    `mergeStateStatus` — the offending value named **verbatim**.
+    **`ci = green`**): any value `merge-check.py` parks (its `MERGEABLE` / `MERGE_STATE_STATUS`
+    catch-alls — any `— park` reason it emits) — the offending value named **verbatim**.
 
   Those two are the write sites that exist today, **not a bound on the set**: the class is the
   **property** — *campaign cannot move this PR without a human* (`status`, below, `awaiting-user` class
@@ -382,8 +382,8 @@ Header field notes (the header fields above; per-row fields follow):
        that **never stopped `RUNNING`** while nothing in the check set moved (`ci_stalled_since` at the CI
        STALL CAP — a hung runner, a dead reporter, a required check that queues and never starts), a
        snapshot that stayed **UNUSABLE** (`unusable_refetches` at its cap), a check carrying an
-       **unrecognized enum value**, a merge `BLOCKED` for a cause campaign cannot enumerate, an
-       **unrecognized `mergeStateStatus`**, or a **draft** PR (`stage-2-ci.md`, "SETTLED", "RUNNING-STALL"
+       **unrecognized enum value**, or **any merge precondition `merge-check.py` parks** (any `— park`
+       reason it emits) (`stage-2-ci.md`, "SETTLED", "RUNNING-STALL"
        and "UNUSABLE — the refetch is BOUNDED"; `stage-3-merge.md`, "The merge precondition"). **This is
        the exit from `pending` — in BOTH of its shapes**, the settled one and the forever-`RUNNING` one;
        without it, a stuck PR spins forever and no one is ever told. **Answered into**
