@@ -110,8 +110,8 @@ across runs (a run-owner claim field, or deterministic-branch reconciliation tha
 and is tracked as a follow-up, not solved by this documentation.
 
 **One follow-up at a time. Never a grab-bag.** Pick a single open entry and resume it **by its lifecycle
-state** (`followups.py` owns the transitions, and each command's own `--help` prints its exact
-from-set→to edge). Release the slot once that entry reaches an
+state** (`followups.py` owns the transitions, and its `--help` subcommand listing prints each
+subcommand's exact from-set→to edge). Release the slot once that entry reaches an
 **actionable outcome** — refuted, taken up and opened as a PR now being gated (`in-pr`), or surfaced and
 awaiting the user — never "a terminal state": only `rejected` is terminal, and it is the user's ruling, so
 the loop never reaches it on its own. A PR that bundles several follow-ups is one no reviewer can reason
@@ -129,9 +129,10 @@ about and one whose partial rejection strands the rest.
    any later fix are **two different subagents, in that order, always**.
 
    **An entry that is NOT a fresh candidate resumes at the step its lifecycle state has already reached — it
-   does not restart.** `followups.py` owns the transitions, and each command's own `--help` prints its
-   exact from-set→to edge — that is the authority on **which store edge** is legal from each state; **read
-   the edges there (`<cmd> --help` / `scripts/followups.py`), do not re-derive them here.** But a store edge
+   does not restart.** `followups.py` owns the transitions, and its `--help` subcommand listing prints
+   each subcommand's exact from-set→to edge — that is the authority on **which store edge** is legal from
+   each state; **read the edges there (`followups.py --help` / `scripts/followups.py`), do not re-derive
+   them here.** But a store edge
    is **not the whole resume step**: several states also need a **campaign action** — dispatch a subagent,
    reconcile a PR against this run, adopt it into the gauntlet — that **is not a store transition at all**,
    so it is invisible on the graph, and "defer to the graph" would silently drop it. The graph still owns
