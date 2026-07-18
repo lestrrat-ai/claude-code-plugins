@@ -111,6 +111,7 @@ green (a value silently bucketed as "probably fine").
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import shutil
@@ -869,6 +870,43 @@ def evaluate(
     except SnapshotError as exc:
         return UNUSABLE, str(exc)
     return decide(rows, required)
+
+
+# --- the liveness fingerprint --------------------------------------------------------------------
+
+# The canonical line per EVIDENCE row type — the row kind, then exactly the fields CLASSIFY reads
+# (`stage-2-ci.md`, "The FINGERPRINT is computed over the VERIFIED snapshot's EVIDENCE ROWS", which owns
+# the spec; `doc-check` asserts the doc's line formats match these tuples). `header`/`source`/`witness`
+# rows carry no verdict and are EXCLUDED; so are the row's `sha` (already proven equal to the ledger's
+# head_sha, which is hashed in once, at the front) and its `id` (a re-run under a new job id is not
+# CI moving).
+FINGERPRINT_FIELDS = {
+    "checkrun": ("name", "app_id", "status", "conclusion"),
+    "status": ("context", "state"),
+}
+
+
+def fingerprint(rows: list[dict], head_sha: str) -> str:
+    """The liveness digest of a VERIFIED snapshot's evidence rows.
+
+    Callers hand this VERIFIED rows only — an UNUSABLE snapshot has NO fingerprint at all (`derive`
+    emits `fingerprint: null` for it): a strike is a claim that TRUSTED evidence did not move, and
+    nothing rejected is ever hashed.
+
+    Canonical form, pinned exactly by `ci-status-test.py`'s `[fp]` cases: each evidence row becomes its
+    tab-joined line, DUPLICATE lines are KEPT (two matrix legs at the same verdict are two lines — a
+    third arriving IS motion), lines are sorted by code point (UTF-8 preserves code-point order in its
+    bytes, so this IS the bytewise sort the doc specifies), every line ends with `\\n`, and the payload
+    is `head_sha` + `\\n` + the lines, hashed as UTF-8 through sha256.
+    """
+    lines = []
+    for row in rows:
+        fields = FINGERPRINT_FIELDS.get(row["row"])
+        if fields is None:
+            continue
+        lines.append("\t".join([row["row"], *(row[f] for f in fields)]))
+    payload = head_sha + "\n" + "".join(line + "\n" for line in sorted(lines))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 # --- self-test: the fixtures ARE the evidence ---------------------------------------------------

@@ -1323,7 +1323,7 @@ def derive(fetch: Fetch, repo: str, pr: str, head_sha: str, rundir: Path, requir
         # A source that could not be read leaves NO artifact — there is nothing on disk for a later heartbeat to
         # mistake for evidence, and no verdict is derived from a fetch we know to be incomplete. The
         # `promote` below is NEVER reached, and that is the whole of the "no partial artifact" rule.
-        return result(pr, head_sha, SNAP.UNUSABLE, f"FETCH FAILED — {exc}", None, {}, None, required)
+        return result(pr, head_sha, SNAP.UNUSABLE, f"FETCH FAILED — {exc}", None, {}, None, required, None)
 
     path = promote(rows, rundir, pr, head_sha)
 
@@ -1355,11 +1355,21 @@ def derive(fetch: Fetch, repo: str, pr: str, head_sha: str, rundir: Path, requir
             f"(what the stale snapshot said, for the record: {verdict} — {reason})"
         )
 
-    return result(pr, head_sha, verdict, reason, path, evidence, head_now, decided_under)
+    # THE FINGERPRINT IS COMPUTED HERE, NEVER BY THE DRIVER — a hash a driver reassembles by hand from the
+    # doc's spec is a hash that drifts, and every drifted byte reads as "CI moved", which resets the very
+    # counters the fingerprint exists to feed. Only a VERIFIED snapshot has one: `unusable`/`unverifiable`
+    # rows were never trusted (the moved-head override above lands here too), and hashing rejected evidence
+    # would let a strike accrue against rows nobody believed. The rows come off the PROMOTED ARTIFACT, like
+    # the verdict — never from the dicts still in memory.
+    fp = None
+    if verdict not in (SNAP.UNUSABLE, SNAP.UNVERIFIABLE):
+        fp = SNAP.fingerprint(SNAP.parse(path), head_sha)
+
+    return result(pr, head_sha, verdict, reason, path, evidence, head_now, decided_under, fp)
 
 
 def result(pr: str, head_sha: str, verdict: str, reason: str, path: Path | None,
-           evidence: dict, head_now: object, required) -> dict:
+           evidence: dict, head_now: object, required, fingerprint: str | None) -> dict:
     """The machine-readable verdict — everything the driver needs, and NOTHING it has to interpret.
 
     `ci` is what goes into the ledger. `verdict` is what the evidence said. They are separate because the
@@ -1396,6 +1406,13 @@ def result(pr: str, head_sha: str, verdict: str, reason: str, path: Path | None,
         # channel: `unknown` NEVER accompanies a green (it is a `pending` bullet in `decide()`), so this can
         # never become "green, but note that we could not read what was required".
         "required_set": required.state,
+        # THE LIVENESS DIGEST of the verified snapshot's evidence rows (`ci-snapshot.py fingerprint()`;
+        # the spec is `stage-2-ci.md`, "SETTLED"). The driver compares it to the ledger's `ci_fingerprint`
+        # and applies the SETTLED/RUNNING-STALL rules — it NEVER recomputes the hash by hand. `null`
+        # exactly when the snapshot never VERIFIED (fetch failed, unusable, unverifiable, head moved):
+        # an untrusted snapshot has no fingerprint, and a derivation that got none touches no liveness
+        # counter but `unusable_refetches`.
+        "fingerprint": fingerprint,
         # THERE IS NO `notes` FIELD, and its absence is a RULE, not an oversight. It used to carry "the
         # evidence may be incomplete" NEXT TO A GREEN VERDICT — a disclosure nobody read, attached to the
         # one answer it contradicted. Every gap we can DETECT is now a REFUSAL (`read_pages`, the rollup
@@ -1515,6 +1532,41 @@ def parse_classify(blocks: list[str]) -> dict[str, set[str]]:
             f"GitHub adds tomorrow falls into a HOLE, matches no branch, and the PR wedges forever."
         )
     return out
+
+
+def parse_fingerprint_spec(blocks: list[str]) -> dict[str, tuple[str, ...]]:
+    """The doc's FINGERPRINT block -> {row kind: the fields its canonical line carries, in order}.
+
+    The block is the SPEC `ci-snapshot.fingerprint()` implements, and it is executable prose of the same
+    kind as the enums: nothing compared it to the code until this parser existed, and a drifted copy is
+    the one a reader believes. The line format is `checkrun  ->  "checkrun\\t<name>\\t…"` — the quoted
+    template's first token must be the row kind itself, and every later token is one `<field>`.
+    """
+    for block in blocks:
+        if "fingerprint = sha256" not in block:
+            continue
+        out: dict[str, tuple[str, ...]] = {}
+        for kind, quoted in re.findall(r"^(checkrun|status)\s+->\s+\"([^\"]+)\"", block, re.MULTILINE):
+            parts = quoted.split("\\t")
+            if parts[0] != kind:
+                raise DocError(f"the FINGERPRINT line for {kind!r} does not begin with the row kind: "
+                               f"{quoted!r} — the line must carry which row it is, or two kinds with the "
+                               f"same fields would hash identically")
+            fields = []
+            for part in parts[1:]:
+                m = re.fullmatch(r"<([a-z_]+)>", part)
+                if not m:
+                    raise DocError(f"the FINGERPRINT line for {kind!r} carries {part!r}, which is not a "
+                                   f"`<field>` placeholder — a literal there would be a value the doc "
+                                   f"invented, hashed into every fingerprint")
+                fields.append(m.group(1))
+            out[kind] = tuple(fields)
+        if set(out) != {"checkrun", "status"}:
+            raise DocError(f"the FINGERPRINT block defines lines for {sorted(out)!r}, expected exactly "
+                           f"['checkrun', 'status'] — the two evidence row types and no other")
+        return out
+    raise DocError("no FINGERPRINT block (`fingerprint = sha256`) — the spec this tool implements is "
+                   "not where it was")
 
 
 def parse_decide_order(text: str) -> tuple[str, ...]:
@@ -1713,16 +1765,19 @@ def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list
 def doc_check(doc: Path) -> int:
     """Assert the DOC, the CODE, and this tool's DECIDE_ORDER all say the same thing.
 
-    Four things are checked, and the last two are the ones no reader ever does by hand:
+    Five things are checked, and the last two are the ones no reader ever does by hand:
 
       1. the doc's CLASSIFY buckets == the sets `ci-snapshot.py` actually classifies with;
       2. the doc's DECIDE bullet order == DECIDE_ORDER (which the fixtures pin behaviourally);
-      3. **CLASSIFICATION IS TOTAL over the doc's OWN enums** — every declared value lands in exactly one
+      3. the doc's FINGERPRINT canonical lines == `ci-snapshot.FINGERPRINT_FIELDS`, the fields the hash
+         `derive` emits is actually built from — a drifted line format is a DIFFERENT fingerprint, and a
+         reader who trusts the doc's copy sees motion that never happened;
+      4. **CLASSIFICATION IS TOTAL over the doc's OWN enums** — every declared value lands in exactly one
          bucket, no bucket holds a value the enum does not declare. A rule set can agree with the doc's
          tables line for line and still leave a HOLE, because the tables and the enum list are two different
          paragraphs. A value in a hole matches NO branch: not green, not red, not pending — the PR can never
          resolve, and it WEDGES. This is the check that catches that, and nothing else in the repo does.
-      4. the doc's `gh` INVOCATIONS, in every copy of them, against the argv the code really issues — plus
+      5. the doc's `gh` INVOCATIONS, in every copy of them, against the argv the code really issues — plus
          every copy of the derive and required-set commands and their required ledger inputs.
 
     (The doc's three snapshot `jq` filters are executed by `ci-snapshot.py` over recorded, multi-page API
@@ -1738,6 +1793,7 @@ def doc_check(doc: Path) -> int:
         enums = parse_enums(blocks)
         classify = parse_classify(blocks)
         order = parse_decide_order(text)
+        fp_spec = parse_fingerprint_spec(blocks)
     except DocError as exc:
         print(f"FAIL     {doc.name} cannot be read: {exc}")
         return 1
@@ -1774,6 +1830,11 @@ def doc_check(doc: Path) -> int:
          enums.get("CheckStatusState"), "the doc and the script's own comment disagree"),
         ("DECIDE order", order, DECIDE_ORDER,
          "the doc evaluates the bullets in a different order than this tool pins"),
+        ("FINGERPRINT line: checkrun", fp_spec.get("checkrun"), SNAP.FINGERPRINT_FIELDS["checkrun"],
+         "the doc's canonical line and the hash `derive` emits disagree — every driver comparing "
+         "`fingerprint` against `ci_fingerprint` would see motion that never happened, or none that did"),
+        ("FINGERPRINT line: status", fp_spec.get("status"), SNAP.FINGERPRINT_FIELDS["status"],
+         "same: a drifted line format is a different fingerprint"),
     ]
 
     failures = 0
@@ -1821,7 +1882,8 @@ def doc_check(doc: Path) -> int:
               f"ONE of them is wrong and a reader will believe the other.")
         return 1
     print(f"{len(checks) + len(held)} checks: {doc.name}, ci-snapshot.py and ci-status.py agree — enums, "
-          f"CLASSIFY buckets, TOTALITY, the DECIDE order, and every copy of every command.")
+          f"CLASSIFY buckets, TOTALITY, the DECIDE order, the FINGERPRINT lines, and every copy of "
+          f"every command.")
     return 0
 
 

@@ -449,8 +449,8 @@
   TO SEE?".
 - **DERIVE `ci` BY RUNNING `scripts/ci-status.py derive --pr <N> --head-sha <the ledger's> --rundir
   <rundir> --required-set <the ledger header's>`, and by NOTHING ELSE.** It fetches, promotes, verifies and
-  decides, and prints the verdict and the `ci` value as JSON (`stage-2-ci.md`, "THE DERIVATION IS A
-  COMMAND", which owns the exact invocation — **`--required-set` is MANDATORY**: the evidence says what
+  decides, and prints the verdict, the `ci` value and the liveness `fingerprint` as JSON (`stage-2-ci.md`,
+  "THE DERIVATION IS A COMMAND", which owns the exact invocation — **`--required-set` is MANDATORY**: the evidence says what
   showed up, and only the base branch's declared set says what was SUPPOSED to).  **NEVER derive `ci` by
   READING the output of a command and judging it.** That is not a style preference: every rule below was already
   correct when a driver ran `gh pr checks`, saw that no checks were reported, and wrote **`ci = green`** —

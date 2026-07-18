@@ -37,15 +37,44 @@ fixture stayed green, and the flag was a lie against any repo but the one the pr
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Callable
 
 HERE = Path(__file__).resolve().parent
 STATUS_PY = HERE / "ci-status.py"
+
+
+# --- the fingerprint canonicalization, pinned to the BYTE -----------------------------------------
+#
+# The payload below is built from LITERALS, straight off the spec in `stage-2-ci.md` ("SETTLED") — never by
+# calling the function under test. If `fingerprint()` ever tab-joins differently, drops a duplicate line,
+# hashes the `id`, or forgets a terminating newline, the `[fp]` cases go red; a test that derived its
+# expectation from the same code could never notice any of that.
+FP_SHA = "1499c72bf1715e74abb0e28658b515eaa2c0c971"
+FP_ROWS = [
+    # Deliberately SCRAMBLED, with every non-evidence row type present: order must not matter, and
+    # `header`/`source`/`witness` rows must not enter the hash.
+    {"row": "witness", "name": "Lint scripts", "id": "https://x/1"},
+    {"row": "status", "sha": FP_SHA, "context": "ci/jenkins", "state": "SUCCESS"},
+    {"row": "header", "sha": FP_SHA},
+    {"row": "checkrun", "sha": FP_SHA, "name": "Lint scripts", "app_id": "15368",
+     "status": "COMPLETED", "conclusion": "SUCCESS", "id": "https://x/1"},
+    {"row": "source", "source": "rollup", "sha": "-", "count": "1"},
+    # A re-run of the same check under a NEW job id: a DIFFERENT `id`, the SAME canonical line — and the
+    # duplicate line is KEPT, so one leg becoming two IS motion while a re-run by itself is not.
+    {"row": "checkrun", "sha": FP_SHA, "name": "Lint scripts", "app_id": "15368",
+     "status": "COMPLETED", "conclusion": "SUCCESS", "id": "https://x/2"},
+]
+FP_PAYLOAD = (FP_SHA + "\n"
+              + "checkrun\tLint scripts\t15368\tCOMPLETED\tSUCCESS\n" * 2
+              + "status\tci/jenkins\tSUCCESS\n")
+FP_EXPECT = hashlib.sha256(FP_PAYLOAD.encode("utf-8")).hexdigest()
 
 
 # --- the SEAMS no fixture can reach ---------------------------------------------------------------
@@ -87,6 +116,14 @@ SEAM_EXPECT = {
     # the caller is. `field()` takes no default and never will — a default is a legal-looking value handed to
     # whoever did not think about the illegal case.
     "[shape] a field read that declares NO shape": ("refused", "DECLARES NO SHAPE"),
+    # The fingerprint canonicalization, against a payload built from LITERALS (FP_PAYLOAD above). The first
+    # case pins every byte at once: field selection, tab-joining, the bytewise sort, duplicates kept,
+    # non-evidence rows excluded, newline termination. The rest pin the EXCLUSIONS as behavior — the things
+    # the hash must NOT move for — because those are the halves a rewrite quietly loses.
+    "[fp] the fingerprint is sha256 over the CANONICAL payload": ("accepted", FP_EXPECT),
+    "[fp] row order does not move the fingerprint": ("accepted", FP_EXPECT),
+    "[fp] a verdict change MOVES the fingerprint": ("accepted", "True"),
+    "[fp] a re-run under a new job id is NOT motion": ("accepted", "True"),
 }
 
 
@@ -144,6 +181,19 @@ def check_fixture(name: str, got: dict, fx: dict) -> list[str]:
         bad.append(f"ledger ci {got['ci']!r}, expected {want['ci']!r}")
     if want.get("promoted") is False and got["snapshot"] is not None:
         bad.append("an artifact was PROMOTED for a fetch that FAILED — a later heartbeat would read it as evidence")
+    # THE FINGERPRINT INVARIANT HOLDS ON EVERY FIXTURE, no per-fixture expectation needed: a VERIFIED
+    # snapshot carries the sha256 the driver compares to `ci_fingerprint`, and an untrusted one carries
+    # `null` — nothing rejected is ever hashed, so no strike can accrue against rows nobody believed.
+    fp = got.get("fingerprint", "ABSENT")
+    if fp == "ABSENT":
+        bad.append("derive emitted NO `fingerprint` field — the driver would be back to hashing by hand")
+    elif got["verdict"] in ("unusable", "unverifiable"):
+        if fp is not None:
+            bad.append(f"fingerprint {fp!r} on an untrusted ({got['verdict']}) snapshot — nothing rejected "
+                       f"is ever hashed")
+    elif fp is None or not re.fullmatch(r"[0-9a-f]{64}", fp):
+        bad.append(f"fingerprint {fp!r} on a VERIFIED snapshot — expected the 64-hex sha256 of its "
+                   f"evidence rows")
     return bad
 
 
@@ -206,6 +256,19 @@ def seam_cases(ci, tmp: Path) -> dict[str, tuple[str, str]]:
                              "-H", "X-Repo: repos/other/repo/x"))
     case("[shape] a field read that declares NO shape",
          lambda: ci.field("check-runs", {"check_runs": []}, "check_runs"))
+
+    case("[fp] the fingerprint is sha256 over the CANONICAL payload",
+         lambda: ci.SNAP.fingerprint(FP_ROWS, FP_SHA))
+    case("[fp] row order does not move the fingerprint",
+         lambda: ci.SNAP.fingerprint(list(reversed(FP_ROWS)), FP_SHA))
+    case("[fp] a verdict change MOVES the fingerprint",
+         lambda: ci.SNAP.fingerprint(
+             [{**r, "conclusion": "FAILURE"} if r["row"] == "checkrun" else r for r in FP_ROWS],
+             FP_SHA) != FP_EXPECT)
+    case("[fp] a re-run under a new job id is NOT motion",
+         lambda: ci.SNAP.fingerprint(
+             [{**r, "id": "https://x/rerun"} if r["row"] == "checkrun" else r for r in FP_ROWS],
+             FP_SHA) == FP_EXPECT)
     return out
 
 
@@ -353,7 +416,8 @@ def run(ci, tmp: Path) -> int:
         print(f"FAIL     {problem}")
     if not problems:
         print(f"ok       {'the seams no fixture reaches':32} -> {len(SEAM_EXPECT)} cases: gh_fetch's own two "
-              f"rules, the CLI's operator-error guards, and the repo-scoping refusal")
+              f"rules, the CLI's operator-error guards, the repo-scoping refusal, and the fingerprint "
+              f"canonicalization")
 
     required_problems = required_set_cases(ci, tmp)
     for problem in required_problems:

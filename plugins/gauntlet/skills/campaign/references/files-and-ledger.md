@@ -261,10 +261,11 @@ Header field notes (the header fields above; per-row fields follow):
   every heartbeat and re-triaged on any content change; drives `required(tier)` and the review depth.
 - `ci` — `green` / `red` / `pending` for `head_sha`. (**There is no `none`.** It was documented but no
   procedure could ever write it.)
-- `ci_fingerprint` — digest of the last **verified** CI snapshot. **What it covers and exactly how it is
-  serialized is DEFINED in `stage-2-ci.md`, "SETTLED" — and is NEVER restated here**, because a
-  fingerprint reconstructed from a paraphrase is a different fingerprint. **UNCHANGED + nothing RUNNING
-  == SETTLED.**
+- `ci_fingerprint` — digest of the last **verified** CI snapshot, written **verbatim from the
+  `fingerprint` field of `ci-status.py derive`'s JSON** (`null` there → the derivation was not verified
+  and this field is not written). **What it covers and exactly how it is serialized is DEFINED in
+  `stage-2-ci.md`, "SETTLED" — and is NEVER restated here**, because a fingerprint reconstructed from a
+  paraphrase is a different fingerprint. **UNCHANGED + nothing RUNNING == SETTLED.**
 - `settled_strikes` — consecutive derivations seen **SETTLED but not green** *while no machine action was
   due or in flight* for the PR at this `head_sha` (`stage-2-ci.md`, "SETTLED", owns the gate — a PR the
   driver is actively repairing is never struck). At the **STRIKE CAP**, escalate: park `awaiting-user`

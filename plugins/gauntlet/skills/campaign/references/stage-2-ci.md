@@ -20,7 +20,9 @@ It performs every step below — FETCH (SHA-pinned, paginated, **both** families
 (via `scripts/ci-snapshot.py`, which it calls), and DECIDE — and prints **JSON**: the `verdict`, the `ci`
 value to write to the ledger, the `reason` (**which rule fired, and which row made it fire** — this is what
 `ci_reason` is built from), the evidence counts, `head_moved` + `head_sha_now`, the `required_set` state the
-verdict was decided under, and the path to the snapshot it left behind. It exits `0` **only** on green.
+verdict was decided under, the `fingerprint` of the verified snapshot's evidence rows (`null` when the
+snapshot never verified — the liveness rules below consume it, and its spec lives at "The FINGERPRINT
+COMES OUT OF `derive`"), and the path to the snapshot it left behind. It exits `0` **only** on green.
 **Write `ci` from that JSON; never from an impression of some command's output.**
 
 **`--required-set` IS MANDATORY, AND IT HAS NO DEFAULT.** It is the ledger header's `required_set`, passed
@@ -1008,9 +1010,14 @@ to `ci` — `bailout-and-final-report.md`. The rest of this section is what make
 The missing concept is **"CI has STOPPED MOVING and the rule is STILL unsatisfied."** `ci = pending`
 cannot express it, because `pending` conflates *still running* with *stuck*.
 
-**The FINGERPRINT is computed over the VERIFIED snapshot's EVIDENCE ROWS — the JSONL the FETCH above
-emits, nothing else.** Serialize each `checkrun` and `status` row into one canonical line, sort those
-lines bytewise, prefix the ledger's `head_sha`, and hash:
+**The FINGERPRINT COMES OUT OF `derive` — the `fingerprint` field of its JSON. NEVER hash by hand.** It
+is computed (`ci-snapshot.py`'s `fingerprint()`) over the VERIFIED snapshot's EVIDENCE ROWS — the JSONL
+the FETCH above emits, nothing else — and it exists for the same reason the derivation is a command: a
+hash a driver reassembles from this spec is a hash that drifts, and **every drifted byte reads as "CI
+moved"**, which resets the very counters the fingerprint feeds. The block below is the **SPEC the tool
+implements** (`doc-check` holds its line formats to the code; `ci-status-test.py`'s `[fp]` cases pin the
+exact bytes): each `checkrun` and `status` row becomes one canonical line, the lines are sorted bytewise,
+the ledger's `head_sha` is prefixed, and the whole is hashed:
 
 ```
 checkrun  ->  "checkrun\t<name>\t<app_id>\t<status>\t<conclusion>"
@@ -1031,7 +1038,11 @@ fingerprint = sha256( head_sha + "\n" + <those lines, sorted bytewise, one per l
   ledger's `head_sha`, and `head_sha` is hashed in **once**, at the front. **The `id`/`details_url` is
   EXCLUDED too**: it is a cross-source **identity** for containment, not a verdict, and a re-run that
   produces the same result under a new job id is **not** CI moving toward green.
-- **A snapshot that is not VERIFIED has NO fingerprint.** `UNUSABLE` never yields one — its rows were
+- **IDENTICAL lines are KEPT, and every line — the last included — ends with `\n`, in UTF-8.** Two matrix
+  legs at the same verdict are two identical lines, and a third leg arriving at that same verdict **IS**
+  motion — dedup would erase it and let the stall clock run through a check set that is visibly changing.
+- **A snapshot that is not VERIFIED has NO fingerprint** — `derive` prints `fingerprint: null` for it.
+  `UNUSABLE` never yields one — its rows were
   never trusted, so **nothing rejected is ever hashed** and an `UNUSABLE` derivation **NEVER touches
   `settled_strikes`**: a strike is a claim that *trusted* evidence did not move, and `UNUSABLE` is the
   **absence** of trusted evidence — the two cannot be counted on the same dial. It gets its **own**
@@ -1059,9 +1070,10 @@ strike, and never escalates — `pending` is **absorbing** for it, and half (b) 
 `PENDING`/`EXPECTED`. Do **not** re-derive it from `ci`: `red` outranks `pending` in DECIDE, so a snapshot
 recorded `red` can still hold a **RUNNING** row, and that PR is still moving.
 
-Per derivation **on a VERIFIED snapshot** (an `UNUSABLE` one has no `fp` at all — it is handled entirely
-by "UNUSABLE — the refetch is BOUNDED" below, and touches **no liveness counter but its own**), in this
-order:
+Per derivation **on a VERIFIED snapshot** — `fp` below is **the `fingerprint` field of `derive`'s JSON**,
+never a value assembled by hand (an `UNUSABLE` one prints `fingerprint: null`, has no `fp` at all, is
+handled entirely by "UNUSABLE — the refetch is BOUNDED" below, and touches **no liveness counter but its
+own**) — in this order:
 
 ```
 head_sha changed          -> reset the LIVENESS COUNTERS (below) ; then ci_fingerprint = fp   # new evidence
