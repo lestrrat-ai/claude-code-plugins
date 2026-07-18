@@ -29,17 +29,19 @@ absolute run path through that owner.
 
 ### Run ID — namespacing
 
-Minted once at the start of a fresh run — compact, filesystem- and label-safe. Create the run dir
-**atomically** so a run-id collision can't silently share a dir; retry with a fresh id on the rare
-clash:
+Minted once at the start of a fresh run — compact, filesystem- and label-safe. The run-id and its
+directory are created together by `scripts/run-id.py`: it mints `g<YYMMDD>-<HHMM>-<rand>`, creates the
+parent `scratch_root` if absent, and creates `<scratch_root>/<run-id>` with a bare atomic `mkdir` —
+retrying with a FRESH id on the rare collision and failing closed if it cannot, so two fresh runs can
+never silently share a directory:
 
 ```text
-run_id="g$(date +%y%m%d-%H%M)-$(openssl rand -hex 4)"   # e.g. g260704-0915-a3f29c1b (32 bits entropy)
-rundir = create_run_directory(repository, run_id) || run_id=…
+run-id.py new --runs-dir <repository.scratch_root>   # -> {"run_id": "g260704-0915-a3f29c1b", "rundir": "…"}
 ```
 
-`runtime-adapter.md`'s `create_run_directory` owns the parent creation, exact argv, absolute path
-derivation, and bare atomic create. Do not unpack that operation here.
+Invoke it through `runtime-adapter.md`'s `create_run_directory(repository)`, which resolves the
+host-specific `repository.scratch_root` and owns that invocation. The atomic create and the collision
+retry live in `run-id.py`; the caller no longer mints an id or retries. Do not unpack that operation here.
 
 Record it in the ledger header field `run_id` (`ledger.py --file <state.jsonl> header set run_id
 <run-id>`) and re-read it every heartbeat (`ledger.py … header get run_id`, like `base_branch`); never trust

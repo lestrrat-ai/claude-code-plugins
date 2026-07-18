@@ -89,7 +89,7 @@ def check_document_contract() -> None:
     for needle in (
         "## Typed repository context and data/process boundary",
         "resolve_repository_context(checkout: Path) -> RepositoryContext",
-        "create_run_directory(repository: RepositoryContext, run_id: Text) -> Path",
+        "create_run_directory(repository: RepositoryContext) -> Path",
         "default_worktree(repository: RepositoryContext, head_ref_name: Text) -> Path",
         "run_argv(argv: list[Text]",
         "bind_review_prompt(template: Bytes",
@@ -129,7 +129,7 @@ def check_document_contract() -> None:
             "adoption no longer preserves typed branch/path data")
     require("path_join(project_root" not in adoption and "], project_root)" not in adoption,
             "adoption restored an unresolved project_root consumer")
-    require("create_run_directory(repository, run_id)" in run_identity,
+    require("create_run_directory(repository)" in run_identity,
             "fresh-run creation bypasses the repository context owner")
     require('cwd: repository.project_root' in merge and "argv: [\"git\", \"fetch\"" in merge,
             "merge fetches bypass the typed repository context")
