@@ -102,6 +102,13 @@ capacity** and the gated PRs do not need the driver right now (the nudge's "star
 is one prompt for it). It is **work-conserving, never blocking**: it runs *alongside* gating the campaign's
 PRs, never instead of them, and it holds the run hostage on nothing.
 
+**Scope: one run's driver, not cross-run coordination.** The follow-up store is shared across every
+concurrent run, and this loop does not claim a follow-up against a *second run* — two runs active at once
+could both take up one `self-accepted` entry and open duplicate PRs for it. Making dispatch idempotent
+across runs (a run-owner claim field, or deterministic-branch reconciliation that adopts an existing
+`gauntlet-authored` PR) needs a `followups.py` store transition, so it is a deliberate **non-goal** here
+and is tracked as a follow-up, not solved by this documentation.
+
 **One follow-up at a time. Never a grab-bag.** Pick a single open entry and resume it **by its lifecycle
 state** (the graph is in "THE LIFETIME OF AN ENTRY" below). Release the slot once that entry reaches an
 **actionable outcome** — refuted, taken up and opened as a PR now being gated (`in-pr`), or surfaced and
