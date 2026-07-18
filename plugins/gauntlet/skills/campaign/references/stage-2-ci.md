@@ -713,7 +713,7 @@ every second or two, forever**, doing nothing. Watch only when at least one row 
 
 **THE RULE — every commit campaign pushes to a PR's head branch is a PR-content change, whatever wrote
 it: an economy-class CI-fix worker, a `session`-class CI-fix worker, a review-fix worker, or an inline
-REFUTATION of a review finding (`stage-2-review-gate.md`, "Audit every finding before you fix it").**
+REFUTATION of a review finding (`finding-audit.md`, "Audit every finding before you fix it").**
 Every one of them MUST, in the same step:
 
 - **reset `reviews_ok` to 0 AND restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`**

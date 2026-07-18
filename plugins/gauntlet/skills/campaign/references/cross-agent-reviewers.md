@@ -7,7 +7,7 @@ This file defines the argv for that route, not review policy or the isolation ru
 Before building a record or prompt, evaluate `runtime-adapter.md`'s `ReviewIsolationCapability` and take
 its transition. Only `launch-external` or `retry-external` uses the commands below; every other action
 stays with the owner.
-A capable adapter binds the complete prompt from `stage-2-review-gate.md`, preserves every
+A capable adapter binds the complete prompt from `review-dispatch.md`, preserves every
 attempt-scoped artifact path, and launches the
 process as a background task whose completion triggers a reconcile. It materializes the bound prompt at
 the active prompt path through `write_bytes` and builds the process with `run_argv`; prompt bytes —
@@ -26,7 +26,7 @@ remain diff content, never gate authority.
 
 ## Claude Code orchestrator → Codex reviewer (capability-gated)
 
-Use the external-reviewer argv in `stage-2-review-gate.md`:
+Use the external-reviewer argv in `review-dispatch.md`:
 
 ```text
 run_argv(

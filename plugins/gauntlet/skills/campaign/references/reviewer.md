@@ -87,7 +87,7 @@ open-ended review — *"is anything wrong with this code?"* — that the intent 
 native-worker path**, which is the fallback whenever a cross-engine reviewer is absent or fails. A stale
 summary is worse than no summary: it is the version people actually read, and it is believed.
 
-**Dispatch it by taking the review prompt from `stage-2-review-gate.md` and calling
+**Dispatch it by taking the review prompt from `review-dispatch.md` and calling
 `bind_review_prompt` for its two data bindings**: `<INTENT>` receives the intent block **verbatim**, while `<TRANSPORT-RECORD>` receives the
 JSON encoding of `runtime-adapter.md`'s typed record for the active attempt. That one record carries the
 worktree, base, emitter paths, attempt identity, progress/findings paths, and report ownership; no field

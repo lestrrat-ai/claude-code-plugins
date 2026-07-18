@@ -13,7 +13,7 @@ never in a scratch note, never only in the reply to the user.
 
 **These are things the DRIVER noticed. They are CLAIMS, not facts** — and the driver's own diagnosis is a
 claim needing corroboration exactly like a reviewer's (`AGENTS.md`/`CLAUDE.md`, "Your OWN diagnosis is a claim too";
-`stage-2-review-gate.md`, "Audit every finding before you fix it").
+`finding-audit.md`, "Audit every finding before you fix it").
 
 **THE DRIVER MUST NOT ACTION AN UNCORROBORATED CLAIM.** That is the whole guarantee, and everything below
 is how it is kept. What the driver may do with a claim depends entirely on what it has DONE to corroborate

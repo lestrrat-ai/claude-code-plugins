@@ -209,7 +209,7 @@ Exactly one producer owns the final report:
 
 Progress belongs to `emit-progress.py`, findings to `emit-finding.py`, and prompt bytes to the
 orchestrator's `write_bytes`. No transport adds a second writer. `reviewer.md`,
-`stage-2-review-gate.md`, `cross-agent-reviewers.md`, and `pr-adoption.md` point here for the boundary;
+`stage-2-review-gate.md`, `review-dispatch.md`, `cross-agent-reviewers.md`, and `pr-adoption.md` point here for the boundary;
 they may define argv values or workflow order, but they must not redefine quoting or artifact ownership.
 The plugin validator runs `scripts/transport-contract-test.py` to pin these mappings with hostile
 path/ref/payload and exact-byte fixtures.
