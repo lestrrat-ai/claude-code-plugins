@@ -60,57 +60,65 @@ the idle prompt.
 ## Flow
 
 The sequence of a campaign. Stage names match the reference filenames; each step states WHAT happens
-and WHO owns the rules — read the owner before doing that step's work (see Load Discipline).
+and WHO owns the rules — read the owner before doing that step's work (see Load Discipline). A step
+whose action IS a tool execution leads with the tool call; a `->` prefix is the trigger that gates
+it — no trigger means the step runs unconditionally at that point in the sequence.
 
 **Entry — run + lease** (`references/run-identity-and-lease.md`)
 
-1. Resolve args to a run intent. Fresh run: mint the run-id and its run directory atomically
-   (`run-id.py new`), then apply carryover from earlier runs (`references/carryover.md`).
-2. Acquire or refresh the run lease (`lease.py`); stand down if a fresh lease names a different owner.
-   One active driver per run — never double-drive.
-3. At run start, set the ledger header: `reviewer` (`references/reviewer.md` — set once, never
-   re-derived from memory) and `skill_version` — read `version` from the **running plugin's**
-   `plugin.json` and record it via `ledger.py --file <state.jsonl> header set skill_version <version>`.
-   The harness loads this skill from the **installed plugin cache**, so a merged, version-bumped rule
-   governs nothing until that cache refreshes; record what is actually running. Header fields are
-   DATA: re-read `base_branch` and `reviewer` from the ledger every heartbeat, never assume `main`,
-   never trust memory.
+1. Resolve args to a run intent (`references/run-identity-and-lease.md`, "Resolving a heartbeat",
+   owns resolution).
+2. Fresh run -> `run-id.py new`: mint the run-id and ATOMICALLY create its run directory, then apply
+   carryover from earlier runs (`references/carryover.md`).
+3. `lease.py acquire` (`refresh` on resume): take or keep the run lease; stand down if a fresh lease
+   names a different owner. One active driver per run — never double-drive.
+4. Run start -> `ledger.py --file <state.jsonl> header set skill_version <version>`: record the
+   `version` read from the **running plugin's** `plugin.json`. The harness loads this skill from the
+   **installed plugin cache**, so a merged, version-bumped rule governs nothing until that cache
+   refreshes; record what is actually running.
+5. Run start -> set `reviewer` in the ledger header (`references/reviewer.md`) — once, never
+   re-derived from memory. Header fields are DATA: re-read `base_branch` and `reviewer` from the
+   ledger every heartbeat, never assume `main`, never trust memory.
 
 **Adoption** (`references/pr-adoption.md`) — for each explicit `#PR` arg, and on every heartbeat for
 every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snapshot):
 
-4. Fetch the PR; REFUSE foreign-owned and cross-repo/fork PRs. Write the PR's intent artifact
+6. Fetch the PR; REFUSE foreign-owned and cross-repo/fork PRs. Write the PR's intent artifact
    (`intent-<pr>.md`: `## Purpose` / `## Non-goals` / `## Threat model`; local, git-ignored, never
-   written back to the PR) and validate it with `review-pass.py intent-check` before dispatching its
-   first review. Register the ledger row (refresh on re-adoption, never duplicate), run label, status
-   label, and worktree. Start a CI watch only if a check can still move.
+   written back to the PR). Register the ledger row (refresh on re-adoption, never duplicate), run
+   label, status label, and worktree. Start a CI watch only if a check can still move.
+7. `review-pass.py intent-check --file <rundir>/intent-<pr>.md`: run immediately after writing an
+   intent artifact and before dispatching the PR's first review — the same parser every pass later
+   loads, so a malformed intent fails before review work is spent.
 
 **Heartbeat loop** (`references/loop-control.md` — read at each heartbeat before dispatch)
 
-5. Reconcile the run's PR snapshot (treat `state.jsonl` as cache), fold completed review / CI / fix
-   tasks against the SHA each ran on, and refresh the required set
-   (`ci-status.py required-set --ledger <rundir>/state.jsonl`) before any CI derivation.
-6. Re-derive each PR's tier from its `head_sha` (deterministic file-class triage:
-   `references/stage-2-review-gate.md`, "2a-triage"), then launch ALL due work up to caps — reviews,
-   CI watches/fixes, precondition clearing, base refresh — skipping HELD PRs, and stop in-flight
-   reviews doomed by a content change. `ledger.py … dispatch-check --pr <N>` exits non-zero for a held
-   PR; run it before ANY action that mutates a PR.
-7. Before sleeping, audit: re-run the dispatch scan across both concurrency pools and confirm every
-   due launch actually happened, every PR at a liveness cap was escalated rather than left spinning,
-   and a heartbeat or bounded wait is armed whenever non-terminal work remains. NEVER sleep with due
-   work un-launched or no path to the next reconcile. Then follow `references/loop-control.md`,
-   "Reschedule or exit", exactly: a scheduled-heartbeat host renders status after scheduling and
-   returns; a scheduler-less host performs one bounded wait and returns to step 5 while non-terminal
-   work remains.
+8. Reconcile the run's PR snapshot (treat `state.jsonl` as cache) and fold completed review / CI /
+   fix tasks against the SHA each ran on.
+9. `ci-status.py required-set --ledger <rundir>/state.jsonl`: refresh the required set before any CI
+   derivation this heartbeat.
+10. Mutating action due on a PR -> `ledger.py … dispatch-check --pr <N>`: run before ANY action that
+    mutates a PR — it exits non-zero for a HELD one.
+11. Re-derive each PR's tier from its `head_sha` (deterministic file-class triage:
+    `references/stage-2-review-gate.md`, "2a-triage"), then launch ALL due work up to caps — reviews,
+    CI watches/fixes, precondition clearing, base refresh — skipping HELD PRs, and stop in-flight
+    reviews doomed by a content change.
+12. Before sleeping, audit: re-run the dispatch scan across both concurrency pools and confirm every
+    due launch actually happened, every PR at a liveness cap was escalated rather than left spinning,
+    and a heartbeat or bounded wait is armed whenever non-terminal work remains. NEVER sleep with due
+    work un-launched or no path to the next reconcile. Then follow `references/loop-control.md`,
+    "Reschedule or exit", exactly: a scheduled-heartbeat host renders status after scheduling and
+    returns; a scheduler-less host performs one bounded wait and returns to the reconcile step while
+    non-terminal work remains.
 
 **Review gate — stage 2a** (`references/stage-2-review-gate.md`)
 
-8. Clear preconditions first — open Copilot items, red CI, base conflicts. Never spend a review over
-   them.
-9. Reviews are fresh, context-isolated, SHA-pinned, and sequential per PR (launch review 2 only after
-   review 1 is SATISFIED). The gate: `required(tier)` SATISFIED verdicts on current content — **1 if
-   TRIVIAL, else 2** (any code/agent-doc/sensitive change is 2) — plus green CI.
-10. The review is measured against the PR's INTENT, never "is anything wrong with this code?". The
+13. Clear preconditions first — open Copilot items, red CI, base conflicts. Never spend a review over
+    them.
+14. Reviews are fresh, context-isolated, SHA-pinned, and sequential per PR (launch review 2 only
+    after review 1 is SATISFIED). The gate: `required(tier)` SATISFIED verdicts on current content —
+    **1 if TRIVIAL, else 2** (any code/agent-doc/sensitive change is 2) — plus green CI.
+15. The review is measured against the PR's INTENT, never "is anything wrong with this code?". The
     reviewer receives `intent-<pr>.md` verbatim and answers ONE question: does this PR achieve its
     stated Purpose, without breaking anything reachable by an actor named in its Threat model?
     Non-goals BIND. A pass with no usable intent earns no verdicts at all. Every finding is a record
@@ -118,41 +126,42 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
     actually supply the bad input; a finding that anchors to neither is NON-GATING (a follow-up, never
     a `NOT SATISFIED`, never a fix). The rule is an if-and-only-if: `NOT SATISFIED` exactly when at
     least one GATING finding stands.
-11. Record every verdict with `ledger.py verdict` — NEVER hand-set `reviews_ok`. It bumps
-    `review_rounds` (monotone, never reset — the loop's only memory across fresh-context heartbeats)
-    and `ns_streak` atomically, and at a cap holds the PR `repairing` and exits non-zero.
-12. On `NOT SATISFIED`, findings are claims, not facts: a dispatched context-isolated audit subagent
+16. Review verdict returned -> `ledger.py verdict`: the ONLY way to record it — NEVER hand-set
+    `reviews_ok`. It bumps `review_rounds` (monotone, never reset — the loop's only memory across
+    fresh-context heartbeats) and `ns_streak` atomically, and at a cap holds the PR `repairing` and
+    exits non-zero.
+17. On `NOT SATISFIED`, findings are claims, not facts: a dispatched context-isolated audit subagent
     (never the orchestrator inline) verdicts each gating finding — CONFIRMED / ADJUSTED / REFUTED,
     with evidence — BEFORE any fix is dispatched; **unsure -> CONFIRMED, never REFUTED**. Only
     CONFIRMED + ADJUSTED get fixed, under the fix-subagent contract (below). A refutation NEVER clears
     the gate: it is committed into the tree as a falsifiable inline claim (never an instruction to the
     reviewer), once per finding; if a fresh reviewer re-raises it, that is a standoff -> park
     `awaiting-user`.
-13. Any campaign commit is PR content: it resets the gate, re-triages the tier, and is re-reviewed on
+18. Any campaign commit is PR content: it resets the gate, re-triages the tier, and is re-reviewed on
     the new SHA.
-14. At a review-loop cap, STOP dispatching targeted fixes — a cap is a **mode switch, not a
-    doorbell**. Hand the PR's WHOLE history at once to a context-isolated reassessment pass and
-    execute the ONE decision it returns — RESCOPE / REPAIR-INTENT / DEMOTE / ROOT-CAUSE / ABORT —
-    without asking the user, recorded through `repair-pass.py` (`references/repair-pass.md`). On
-    `pr_origin = external` (the default) only DEMOTE / REPAIR-INTENT / ABORT are permitted, and a
-    second failed repair aborts rather than looping.
+19. At a review-loop cap -> `repair-pass.py` (`permitted` / `decide`): STOP dispatching targeted
+    fixes — a cap is a **mode switch, not a doorbell**. Hand the PR's WHOLE history at once to a
+    context-isolated reassessment pass and execute the ONE decision it returns — RESCOPE /
+    REPAIR-INTENT / DEMOTE / ROOT-CAUSE / ABORT — without asking the user, recorded through the tool
+    (`references/repair-pass.md`). On `pr_origin = external` (the default) only DEMOTE /
+    REPAIR-INTENT / ABORT are permitted, and a second failed repair aborts rather than looping.
 
 **CI — stage 2b** (`references/stage-2-ci.md`)
 
-15. `ci` is DERIVED only by `ci-status.py derive` against the header's required set ("THE DERIVATION
-    IS A COMMAND" owns the exact invocation) — a SHA-pinned snapshot of BOTH check families, verified
-    before parsing. NEVER from `gh pr checks` (its output carries no SHA), NEVER by reading command
-    output and judging it by eye.
-16. A PR with a still-RUNNING check always has a live watch; a PR whose CI has SETTLED never does
+20. `ci-status.py derive`: how `ci` is DERIVED — always, the only way ("THE DERIVATION IS A COMMAND"
+    owns the exact invocation): a SHA-pinned snapshot of BOTH check families, verified before parsing,
+    decided against the header's required set. NEVER from `gh pr checks` (its output carries no SHA),
+    NEVER by reading command output and judging it by eye.
+21. A PR with a still-RUNNING check always has a live watch; a PR whose CI has SETTLED never does
     ("WATCH ONLY WHAT CAN MOVE"). Completions are heartbeats — the driver never blocks. The bounded
     CI waits and their caps are named in ONE place ("THE LIVENESS COUNTERS"); at any cap, escalate or
     park — never leave a PR spinning on a watch that will never wake anyone.
-17. CI fixes: a formatting/lint failure goes to the `economy` tier (Worker Dispatch below); everything
+22. CI fixes: a formatting/lint failure goes to the `economy` tier (Worker Dispatch below); everything
     else, and every escalation from the cheap tier, goes to `session`.
 
 **Parks — cross-cutting** (`references/loop-control.md`, "held-status guard")
 
-18. A HELD PR is FROZEN — take no action that MUTATES it. Two kinds: **parked** (`awaiting-user` /
+23. A HELD PR is FROZEN — take no action that MUTATES it. Two kinds: **parked** (`awaiting-user` /
     `awaiting-api` — waits on a HUMAN) and **`repairing`** (waits on the reassessment pass, which is
     machine work due NOW). The test is "does this mutate the PR?", **not** "is it on a list";
     `HELD_STATUSES` in `scripts/ledger.py` is the one enumeration — never retype it. Sole exception:
@@ -162,7 +171,7 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
 
 **Merge — stage 3** (`references/stage-3-merge.md`)
 
-19. A merge candidate is not held, on a live SHA, with `reviews_ok >= required(tier)` and
+24. A merge candidate is not held, on a live SHA, with `reviews_ok >= required(tier)` and
     `ci == green`. Merge one at a time until no candidate remains immediately ready after base
     refresh. Campaign never passes `--delete-branch` — the repo's *Automatically delete head branches*
     setting governs the remote branch; local cleanup follows the per-PR `worktree_owned` /
@@ -170,11 +179,11 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
 
 **Terminal** (`references/bailout-and-final-report.md`, `references/carryover.md`)
 
-20. Every PR merged or set aside -> write the carryover ledger and the final report. Otherwise refresh
-    the lease and reschedule. Work FOUND and deliberately not done — out of scope, pre-existing, a
-    site a fixer left alone — is recorded through `followups.py` the moment it is noticed, never left
-    in driver prose, which dies with the driver's context; recording one never discharges a finding
-    (`references/followups.md`).
+25. Work FOUND and deliberately not done — out of scope, pre-existing, a site a fixer left alone ->
+    `followups.py add`: record it the moment it is noticed, never in driver prose, which dies with the
+    driver's context; recording one never discharges a finding (`references/followups.md`).
+26. Every PR merged or set aside -> write the carryover ledger and the final report. Otherwise refresh
+    the lease and reschedule.
 
 ## Bundled Scripts
 
