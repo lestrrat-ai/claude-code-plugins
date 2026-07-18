@@ -64,9 +64,12 @@ def check_document_contract() -> None:
 
     # The per-PR `gh pr view` adoption snapshot is the same class: typed run_argv, its output path a
     # Path in stdout_file via path_join, never `> <rundir>/pr-<pr>.json`.
+    # `body` is deliberately ABSENT — a fork PR's body is attacker-controlled and this pre-refusal read
+    # never needs it (pr-adoption.md, step 1; scripts/pr-adopt.py). The intent read (step 3a) fetches it
+    # separately, for a same-repo PR only.
     pr_view_argv = " ".join((
         'argv: ["gh", "pr", "view", pr, "--json", '
-        '"number,title,body,headRefName,headRefOid,baseRefName,labels,state,'
+        '"number,title,headRefName,headRefOid,baseRefName,labels,state,'
         'isCrossRepository,headRepositoryOwner,headRepository"],'
     ).split())
     require(pr_view_argv in " ".join(adoption.split()),

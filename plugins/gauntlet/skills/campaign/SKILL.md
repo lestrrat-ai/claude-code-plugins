@@ -220,6 +220,7 @@ a line the tool writes.
 |---|---|---|
 | `run-id.py` | Mint a run-id and ATOMICALLY create its run directory (`new`) | `references/run-identity-and-lease.md` |
 | `lease.py` | Run-lease accessor: `mint` / `acquire` / `refresh` / `release` / `read` | `references/run-identity-and-lease.md` |
+| `pr-adopt.py` | `plan` / `adopt` — mechanically adopt an existing first-party PR into a run: refuse fork/foreign/non-open, register the ledger row + ownership/status labels, discover-or-create the PR-head worktree | `references/pr-adoption.md` |
 | `heartbeat.py` | Emit the scheduled-heartbeat callback command the driver arms for its next wake | `references/runtime-adapter.md` |
 | `ledger.py` | Schema-owning accessor for `state.jsonl` — plus `verdict`, the ONLY verdict recorder (tally, caps, `repairing` hold), and `dispatch-check`, the held-PR guard run before any mutating action | `references/files-and-ledger.md` |
 | `review-pass.py` | Executable contract for a review pass's artifacts — plan, `pass_identity`, progress, findings, `intent-check`, and the `verify` that answers "does this pass COUNT?" (`--verdict` required) | `references/stage-2-review-gate.md` |

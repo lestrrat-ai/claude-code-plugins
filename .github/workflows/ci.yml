@@ -99,6 +99,8 @@ jobs:
             plugins/gauntlet/skills/campaign/scripts/followups-test.py \
             plugins/gauntlet/skills/campaign/scripts/nudge.py \
             plugins/gauntlet/skills/campaign/scripts/nudge-test.py \
+            plugins/gauntlet/skills/campaign/scripts/pr-adopt.py \
+            plugins/gauntlet/skills/campaign/scripts/pr-adopt-test.py \
             plugins/gauntlet/skills/campaign/scripts/reviewer-liveness.py \
             plugins/gauntlet/skills/campaign/scripts/reviewer-liveness-test.py \
             plugins/gauntlet/skills/campaign/scripts/lease.py \
@@ -114,8 +116,8 @@ jobs:
             plugins/gauntlet/skills/campaign/scripts/merge-check-test.py | tee pyright.json
           analyzed=$(jq '.summary.filesAnalyzed' pyright.json)
           echo "filesAnalyzed=${analyzed}"
-          if [ "${analyzed}" != "33" ]; then
-            echo "::error::pyright analysed ${analyzed} file(s), not the 33 it was pointed at — it checked" \
+          if [ "${analyzed}" != "35" ]; then
+            echo "::error::pyright analysed ${analyzed} file(s), not the 35 it was pointed at — it checked" \
                  "nothing and said so quietly. Fix the paths above; a silent no-op is not a passing gate."
             exit 1
           fi
@@ -218,6 +220,16 @@ jobs:
       # MISSING sibling fails loudly, so this can never report an all-clear over a suite it did not run.
       - name: Run lease contract
         run: python3 plugins/gauntlet/skills/campaign/scripts/lease.py self-test
+
+      # The PR-adoption tool's contract, executed. `pr-adopt.py` does the MECHANICAL half of taking a PR
+      # into a run — refuse fork/foreign/closed PRs (fail closed), register the ledger row, create-or-reuse
+      # the head worktree, apply the owner + reviewing labels — with the decision in a PURE `build_plan`
+      # so every refusal and computed row field is pinned offline, no live GitHub. It decides no tier and
+      # authors no intent; those stay the driver's. The sibling `pr-adopt-test.py` is loaded by path and a
+      # MISSING sibling fails loudly, so this can never report an all-clear over a suite it did not run. As
+      # with the suites above, the point of this step is that `py_compile` parses these files and runs neither.
+      - name: Run pr-adopt contract
+        run: python3 plugins/gauntlet/skills/campaign/scripts/pr-adopt.py self-test
 
       # The scheduled-heartbeat callback command, pinned. The rule it protects is the resume contract:
       # the callback carries ONLY --run and --token — never --heartbeat-id (acquire-time proof) and never

@@ -52,6 +52,13 @@ gh label create gauntlet-run-<run-id> --color 5319E7 --description "gauntlet: ru
 
 ### Adopt one PR
 
+> The MECHANICAL steps below — **1, 2, 4, 5 and the row of step 3** — are performed by
+> `scripts/pr-adopt.py adopt` (`pr-adopt.py adopt --pr <N> --run-id <id> --file <state.jsonl> --tier <T>
+> --worktrees-root <p> --project-root <p>`). The driver still supplies the two JUDGMENT calls it does not
+> make: the review **TIER** (the `--tier` argument, triaged per Stage **2a-triage**) and the PR's
+> **INTENT** (step 3a). Its decision logic is a pure `build_plan` pinned by `pr-adopt-test.py`. The steps
+> stay below as the spec the tool implements; read them as the authority.
+
 For each `#PR` to adopt:
 
 1. **Read the PR** — one `gh pr view` for the facts the ledger row needs, **including the cross-repo
@@ -63,7 +70,7 @@ For each `#PR` to adopt:
    ```text
    run_argv(
      argv: ["gh", "pr", "view", pr,
-            "--json", "number,title,body,headRefName,headRefOid,baseRefName,labels,state,isCrossRepository,headRepositoryOwner,headRepository"],
+            "--json", "number,title,headRefName,headRefOid,baseRefName,labels,state,isCrossRepository,headRepositoryOwner,headRepository"],
      cwd: repository.project_root,
      stdin_file: null,
      stdout_file: path_join(<rundir>, concat("pr-", pr, ".json"))
@@ -74,10 +81,14 @@ For each `#PR` to adopt:
    `headRepositoryOwner`/`headRepository` name the fork. A same-repo PR has `isCrossRepository=false` and
    its head branch is on `origin`. **Campaign gates same-repo PRs only** — fork PRs are refused in step 2.
 
-   **`body` is in the field set because the review gate is measured against WHAT THE PR IS FOR** (step 3a).
-   It was absent, and its absence is the whole reason a reviewer could be asked *"is anything wrong with
-   this code?"* — a question with no fixed point — instead of *"does this PR do its job?"*
-   (`stage-2-review-gate.md`, "What the review is MEASURED AGAINST").
+   **`body` is deliberately NOT in this field set.** This read happens **before** the fork refusal (step 2),
+   and a fork PR's `body` is **attacker-controlled** content; the adoption DECISION — refuse / register /
+   worktree / label — never needs it, so it is never fetched or parsed here (a body read before the refusal
+   is content this pipeline would ingest from a PR it is about to reject). The PR's stated intent — what the
+   review gate is measured against (step 3a, `stage-2-review-gate.md`, "What the review is MEASURED
+   AGAINST") — is read from the body **separately**, when the driver authors `intent-<pr>.md`, and only for
+   a **same-repo** PR (forks are already refused), so the body it reads comes from a committer with write
+   access to this repo.
 
 2. **Refuse a foreign-owned PR.** If `labels` already contains a `gauntlet-run-*` label that is **not**
    this run's `gauntlet-run-<run-id>`, another run owns it — **do NOT adopt, relabel, or touch it**.
@@ -351,6 +362,19 @@ For each `#PR` to adopt:
    (Do **not** replace the typed remote-tracking fetch with a direct PR-head-to-local-branch fetch: that
    form writes the local branch directly and is **refused** when the branch already exists or is checked
    out. Let the create/reuse logic above handle the local branch.)
+
+   **Two fail-closed guarantees the pseudocode leaves implicit:**
+   - **On a re-adoption of the SAME worktree campaign itself created, PRESERVE its recorded
+     `worktree_owned`/`branch_owned`** rather than downgrading them to `no`. A first adopt that **created**
+     the worktree recorded `yes`; blanking that to `no` on a later heartbeat would strand the
+     campaign-created worktree from Stage-3 cleanup. The `existing is present` branch's `worktree_owned =
+     "no"` / `branch_owned = "no"` is the **first-discovery** value; when the discovered path equals the
+     path this run's row already recorded as campaign-created, keep the recorded ownership. A genuinely
+     pre-existing external checkout (first adoption, or a differently recorded path) stays `no`/`no`.
+   - **After the reuse fast-forward or the create, VERIFY the resolved worktree's `HEAD` equals the
+     recorded `head_sha`** and refuse on mismatch. A stale same-named local branch, or a remote that moved
+     since the adoption snapshot, would otherwise leave the checkout at a tip that is **not** the PR head
+     the ledger records — a silent stale adoption. Refuse rather than record a worktree that does not match.
 
    Record the **actual** resolved `worktree`; `default_worktree(repository, headRefName)` is only the
    **created default** used on the `git worktree add` path, while a reused checkout sits at some other
