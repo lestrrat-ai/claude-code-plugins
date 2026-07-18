@@ -110,7 +110,8 @@ across runs (a run-owner claim field, or deterministic-branch reconciliation tha
 and is tracked as a follow-up, not solved by this documentation.
 
 **One follow-up at a time. Never a grab-bag.** Pick a single open entry and resume it **by its lifecycle
-state** (the graph is in "THE LIFETIME OF AN ENTRY" below). Release the slot once that entry reaches an
+state** (`followups.py` owns the transitions, and each command's own `--help` prints its exact
+from-set→to edge). Release the slot once that entry reaches an
 **actionable outcome** — refuted, taken up and opened as a PR now being gated (`in-pr`), or surfaced and
 awaiting the user — never "a terminal state": only `rejected` is terminal, and it is the user's ruling, so
 the loop never reaches it on its own. A PR that bundles several follow-ups is one no reviewer can reason
@@ -128,9 +129,9 @@ about and one whose partial rejection strands the rest.
    any later fix are **two different subagents, in that order, always**.
 
    **An entry that is NOT a fresh candidate resumes at the step its lifecycle state has already reached — it
-   does not restart.** The transition graph in "THE LIFETIME OF AN ENTRY" below — owned by `followups.py`,
-   with each command's exact from-set printed live by `<cmd> --help` — is the authority on **which store
-   edge** is legal from each state; **read the edges there, do not re-derive them here.** But a store edge
+   does not restart.** `followups.py` owns the transitions, and each command's own `--help` prints its
+   exact from-set→to edge — that is the authority on **which store edge** is legal from each state; **read
+   the edges there (`<cmd> --help` / `scripts/followups.py`), do not re-derive them here.** But a store edge
    is **not the whole resume step**: several states also need a **campaign action** — dispatch a subagent,
    reconcile a PR against this run, adopt it into the gauntlet — that **is not a store transition at all**,
    so it is invisible on the graph, and "defer to the graph" would silently drop it. The graph still owns
@@ -194,7 +195,10 @@ about and one whose partial rejection strands the rest.
    **and every Tier-2 condition holds and is evidenced** (`corroborated`, `not-gate-machinery`,
    `behavior-preserved`, `reversible` — `take-up` refuses without them), the driver takes it up
    (→ `self-accepted`) and dispatches a **scoped fix subagent under the fix-subagent contract**
-   (`fix-subagent-contract.md`) that authors the fix **and opens a PR** for it. That PR is opened
+   (`fix-subagent-contract.md`) that authors the fix **and opens a PR** for it. The driver hands the fixer
+   a **worktree from the current run's base branch**, and the fixer branches, commits, pushes, and opens
+   the PR against that base — its worktree and scope requirements are owned by `fix-subagent-contract.md`,
+   not restated here. That PR is opened
    **`gauntlet-authored`** and adopted into the current run so `pr-adoption.md` reads it as
    `pr_origin=gauntlet` — without the label it defaults to `external`, which then blocks campaign's own
    later autonomous repair of the very PR it authored. Record the PR with `followups.py open-pr --id fuN
