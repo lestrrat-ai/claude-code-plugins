@@ -12,10 +12,8 @@ check outranks the enums.
 
 from __future__ import annotations
 
-import io
 import json
 import tempfile
-from contextlib import redirect_stdout
 from pathlib import Path
 
 from _gauntlet.modules import load_module_from_path
@@ -245,112 +243,6 @@ def t_cli_view_wrong_type_field():
     _cli_malformed_view(v, "isDraft")
 
 
-# --- the drift guard has teeth ------------------------------------------------
-
-def t_doc_check_agrees_with_the_shipped_doc():
-    check(M.doc_check(M.DOC) == 0, "the shipped stage-3-merge.md must agree with the code that runs")
-
-
-def _doc_check_quiet(doc: Path) -> int:
-    """Run doc_check but swallow its (intentionally alarming) FAIL output — these fixtures WANT it to fail,
-    so its report must not pollute the self-test transcript with lines that look like a real break."""
-    with redirect_stdout(io.StringIO()):
-        return M.doc_check(doc)
-
-
-START = M.PRECONDITION_TABLE_START
-END = M.PRECONDITION_TABLE_END
-
-
-def _table_rows(mss_values, mergeable_values, *, meaning_tokens=()) -> str:
-    """A minimal merge-precondition TABLE wrapped in the start/end markers doc_enum requires. Each enum token
-    sits in the FIRST cell of its row — the only cell doc_enum reads. `meaning_tokens` inject extra
-    `.mergeStateStatus = X` strings into a row's MEANING (second) cell; those must NOT count. Used by the
-    drift fixtures so they exercise the real marked-table, first-cell path."""
-    rows = ([f"| `.mergeStateStatus = {v}` | meaning | do |" for v in mss_values]
-            + [f"| `.mergeable = {v}` | meaning | do |" for v in mergeable_values]
-            + [f"| `.mergeStateStatus = CLEAN` | also names `.mergeStateStatus = {t}` here | do |"
-               for t in meaning_tokens])
-    return (f"{START}\n| Field / value | Meaning | Do |\n|---|---|---|\n"
-            + "\n".join(rows) + f"\n{END}\n")
-
-
-def t_doc_check_detects_a_dropped_value():
-    with tempfile.TemporaryDirectory() as d:
-        doc = Path(d) / "stage-3-merge.md"
-        states = [v for v in M.MERGE_STATE_STATUS if v != "HAS_HOOKS"]  # drop one FROM THE TABLE
-        doc.write_text(_table_rows(states, M.MERGEABLE), encoding="utf-8")
-        check(_doc_check_quiet(doc) == 1, "a doc missing a mergeStateStatus value the code handles must FAIL")
-
-
-def t_doc_check_prose_cannot_mask_a_dropped_table_row():
-    # The exact bypass this pins: a value dropped from the TABLE but still named in PROSE outside it must
-    # NOT sneak back into the extracted set. The old whole-doc regex would pick the prose token up, the sets
-    # would match, and doc-check would PASS while the table silently lost a row. Scoped to table rows, the
-    # prose contributes nothing, the set is short a value, and doc-check FAILS as it must.
-    with tempfile.TemporaryDirectory() as d:
-        doc = Path(d) / "stage-3-merge.md"
-        states = [v for v in M.MERGE_STATE_STATUS if v != "HAS_HOOKS"]  # HAS_HOOKS is gone FROM THE TABLE
-        table = _table_rows(states, M.MERGEABLE)
-        prose = ("\nNote: a `.mergeStateStatus = HAS_HOOKS` PR still merges — but this line is PROSE, not a\n"
-                 "table row, so it must NOT count toward the enumerated set.\n")
-        doc.write_text(table + prose, encoding="utf-8")
-        check(_doc_check_quiet(doc) == 1,
-              "a value dropped from the TABLE but named only in PROSE must STILL fail doc-check")
-
-
-def t_doc_check_another_table_outside_markers_cannot_mask_a_dropped_row():
-    # Bypass #1: a value dropped from the MARKED precondition table, but still carried by ANOTHER `|`-table
-    # elsewhere in the doc (outside the markers). Scoped to the marked region, the second table contributes
-    # NOTHING, the set is short a value, and doc-check FAILS as it must.
-    with tempfile.TemporaryDirectory() as d:
-        doc = Path(d) / "stage-3-merge.md"
-        states = [v for v in M.MERGE_STATE_STATUS if v != "HAS_HOOKS"]  # HAS_HOOKS gone from the MARKED table
-        marked = _table_rows(states, M.MERGEABLE)
-        other = ("\n### An unrelated table, OUTSIDE the markers\n\n"
-                 "| Field / value | Meaning | Do |\n|---|---|---|\n"
-                 "| `.mergeStateStatus = HAS_HOOKS` | some other context | do |\n")
-        doc.write_text(marked + other, encoding="utf-8")
-        check(_doc_check_quiet(doc) == 1,
-              "a value dropped from the MARKED table but named in another table OUTSIDE the markers must "
-              "STILL fail doc-check")
-
-
-def t_doc_check_meaning_cell_inside_markers_cannot_mask_a_dropped_row():
-    # Bypass #2: a value dropped from its own value-column row, but still mentioned in a later (MEANING) cell
-    # of a row INSIDE the markers. Only the FIRST cell (the value column) is read, so the meaning-cell token
-    # contributes NOTHING, the set is short a value, and doc-check FAILS as it must.
-    with tempfile.TemporaryDirectory() as d:
-        doc = Path(d) / "stage-3-merge.md"
-        states = [v for v in M.MERGE_STATE_STATUS if v != "HAS_HOOKS"]  # no HAS_HOOKS value-column row
-        doc.write_text(_table_rows(states, M.MERGEABLE, meaning_tokens=("HAS_HOOKS",)), encoding="utf-8")
-        check(_doc_check_quiet(doc) == 1,
-              "a value named only in a MEANING cell inside the markers must STILL fail doc-check")
-
-
-def t_doc_check_fails_when_markers_are_absent():
-    # No markers at all — the drift-guard cannot LOCATE its table, so it must fail loudly, never pass.
-    with tempfile.TemporaryDirectory() as d:
-        doc = Path(d) / "stage-3-merge.md"
-        body = _table_rows(list(M.MERGE_STATE_STATUS), M.MERGEABLE)
-        body = body.replace(START + "\n", "").replace(END + "\n", "")  # strip both markers
-        doc.write_text(body, encoding="utf-8")
-        check(_doc_check_quiet(doc) == 1, "a doc with no precondition-table markers must FAIL — an "
-                                          "unlocatable table is never a pass")
-
-
-def t_doc_check_fails_when_it_finds_nothing():
-    # Markers PRESENT (so the table is located) but the marked region names ZERO enum values — the
-    # empty-extraction branch, distinct from the markers-absent one above.
-    with tempfile.TemporaryDirectory() as d:
-        doc = Path(d) / "stage-3-merge.md"
-        doc.write_text(f"{START}\n| Field / value | Meaning | Do |\n|---|---|---|\n"
-                       f"| this table names no enum values at all | meaning | do |\n{END}\n",
-                       encoding="utf-8")
-        check(_doc_check_quiet(doc) == 1, "a doc that enumerates zero values must FAIL — a check with no "
-                                          "subject never passes")
-
-
 CASES = [
     ("clean-all-met", "CLEAN + every precondition met -> merge", t_clean_and_all_met),
     ("has-hooks", "HAS_HOOKS -> merge", t_has_hooks_merges),
@@ -378,15 +270,4 @@ CASES = [
     ("cli-no-row", "a PR absent from the ledger decides `no ledger row`", t_cli_no_ledger_row),
     ("cli-view-missing-field", "a view missing a field fails closed, never KeyError", t_cli_view_missing_field),
     ("cli-view-wrong-type", "a view field of the wrong JSON type fails closed", t_cli_view_wrong_type_field),
-    ("doc-agrees", "the shipped doc agrees with the code", t_doc_check_agrees_with_the_shipped_doc),
-    ("doc-drift-caught", "doc-check FAILS when the doc drops a value", t_doc_check_detects_a_dropped_value),
-    ("doc-prose-cant-mask", "prose outside the table can't mask a dropped table row",
-     t_doc_check_prose_cannot_mask_a_dropped_table_row),
-    ("doc-other-table-cant-mask", "another table OUTSIDE the markers can't mask a dropped row",
-     t_doc_check_another_table_outside_markers_cannot_mask_a_dropped_row),
-    ("doc-meaning-cell-cant-mask", "a MEANING cell inside the markers can't mask a dropped row",
-     t_doc_check_meaning_cell_inside_markers_cannot_mask_a_dropped_row),
-    ("doc-markers-absent-fails", "doc-check FAILS when the precondition-table markers are absent",
-     t_doc_check_fails_when_markers_are_absent),
-    ("doc-empty-fails", "doc-check FAILS when it extracts nothing", t_doc_check_fails_when_it_finds_nothing),
 ]

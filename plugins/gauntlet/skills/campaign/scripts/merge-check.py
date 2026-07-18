@@ -16,13 +16,13 @@ two enums are crossed, so nobody does it by hand and nobody does it wrong.
 
 `.mergeable = MERGEABLE` is NECESSARY BUT NOT SUFFICIENT: it falls THROUGH to `.mergeStateStatus`, which is
 the only field that yields `merge`. Both enums are mapped TOTALLY — every value GitHub's schema declares has
-its own row, and a value with NO row is a WEDGE, so the catch-all PARKS it rather than guessing. The table
-this implements is `references/stage-3-merge.md`'s merge-precondition table, and `doc-check` FAILS the build
-if the doc and this code stop enumerating the same value sets — neither may add or drop a value alone.
+its own row, and a value with NO row is a WEDGE, so the catch-all PARKS it rather than guessing. This mapping
+is the OWNER of the merge-readiness decision; `references/stage-3-merge.md` now DELEGATES that decision to a
+single `merge-check.py check` call rather than restating it as a by-eye table, and the sibling fixtures pin
+every value's verdict.
 
     merge-check.py check --pr 31 --file <state.jsonl> [--repo owner/name] [--view-json <path>]
-    merge-check.py doc-check   assert stage-3-merge.md's two enum sets equal the sets `decide` handles
-    merge-check.py self-test   run every fixture (merge-check-test.py), then doc-check
+    merge-check.py self-test   run every fixture (merge-check-test.py)
 
 The fixture suite is the SIBLING `merge-check-test.py`, this tool's EXECUTABLE CONTRACT; `self-test` loads
 it by a `__file__`-relative path and FAILS LOUDLY if it is missing — a self-test that passes because it
@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -42,7 +41,6 @@ from _gauntlet.modules import load_module_from_path
 
 _HERE = Path(__file__).resolve().parent
 SIBLING = _HERE / "merge-check-test.py"     # the fixture suite — this tool's executable contract
-DOC = _HERE.parent / "references" / "stage-3-merge.md"
 
 
 def _load(name: str, filename: str):
@@ -66,7 +64,7 @@ _N = _load("merge_check_nudge", "nudge.py")
 REQUIRED = _N.required
 
 
-# --- the two GitHub enums, as data so `decide` and `doc-check` read ONE source -------------------
+# --- the two GitHub enums, as data so `decide` reads ONE source ----------------------------------
 #
 # `.mergeable` — MERGEABLE is the ONLY value that does not decide on its own; it FALLS THROUGH to
 # `.mergeStateStatus`. So its row is the FALL_THROUGH sentinel, not a verdict. The other two are terminal
@@ -79,9 +77,9 @@ MERGEABLE = {
 }
 
 # `.mergeStateStatus` — CLEAN and HAS_HOOKS are the ONLY two that clear the merge; every other value is a
-# terminal not-yet. This is `stage-3-merge.md`'s merge-precondition table, value for value. A value with no
-# row here parks via the catch-all in `decide`, never guesses — `doc-check` pins that this set equals the
-# doc's.
+# terminal not-yet. This mapping is the OWNER of the merge-readiness decision; `stage-3-merge.md` DELEGATES
+# to it. A value with no row here parks via the catch-all in `decide`, never guesses; the sibling fixtures
+# pin every value's verdict.
 MERGE = "merge"
 NOT_YET = "not-yet"
 MERGE_STATE_STATUS = {
@@ -250,109 +248,6 @@ def check(pr: str, ledger_path: Path, repo: "str | None", view_json: "str | None
     return 0
 
 
-# --- doc-check: the doc and the code cannot silently disagree ------------------
-
-# The merge-precondition table is DELIMITED in the doc by these two markers, each on its own line — the
-# start immediately before the header row, the end immediately after the last row. They make the extraction
-# UNAMBIGUOUS: `doc_enum` reads the ONE table between them and nothing else. Without a hard boundary, ANOTHER
-# `|`-table elsewhere in the doc (or a value dropped from this table but still named in a second table) could
-# supply the token the precondition table no longer has, and the drift-guard would PASS over a lost value.
-PRECONDITION_TABLE_START = "<!-- merge-precondition-table:start -->"
-PRECONDITION_TABLE_END = "<!-- merge-precondition-table:end -->"
-
-
-def precondition_table_rows(text: str) -> "list[str] | None":
-    """The lines strictly BETWEEN the two precondition-table markers, or `None` if the markers are absent,
-    empty, or out of order. `None` is a HARD FAIL for `doc_check` — a table it cannot locate is never a pass.
-    """
-    lines = text.splitlines()
-    start = next((i for i, l in enumerate(lines) if l.strip() == PRECONDITION_TABLE_START), None)
-    end = next((i for i, l in enumerate(lines) if l.strip() == PRECONDITION_TABLE_END), None)
-    if start is None or end is None or end <= start + 1:
-        return None
-    return lines[start + 1:end]
-
-
-def doc_enum(rows: "list[str]", field: str) -> set:
-    """The set of `<field>` values the merge-precondition table enumerates, read off the backticked
-    `.<field> = VALUE` tokens (e.g. `.mergeStateStatus = CLEAN`).
-
-    `rows` are ONLY the lines between the precondition-table markers (see `precondition_table_rows`), and
-    within each table row ONLY the FIRST `|`-delimited cell — the "Field / value" column — is read. Both
-    scopings are load-bearing, not cosmetic, and each closes a distinct bypass:
-
-    - Marker scoping: a value dropped from THIS table but still named in prose or in ANOTHER `|`-table
-      elsewhere in the doc would otherwise supply the token this table no longer has — the drift-guard would
-      PASS while the table it pins has silently lost a value.
-    - First-cell scoping: a value dropped from its own row but still mentioned in a later cell (a "Meaning"
-      or "Do" cell) of some row INSIDE the markers would likewise sneak the token back in. Only the value
-      column declares what the table enumerates; the prose cells describe it and must not contribute.
-
-    The TABLE's value column is the contract this tool implements, so ONLY it is read — nothing else can mask
-    a dropped row.
-    """
-    enum = set()
-    for line in rows:
-        if not line.lstrip().startswith("|"):
-            continue
-        cells = line.split("|")
-        # cells[0] is the empty string before the leading `|`; cells[1] is the "Field / value" column.
-        first_cell = cells[1] if len(cells) > 1 else ""
-        enum.update(re.findall(rf"\.{field}\s*=\s*([A-Z_]+)", first_cell))
-    return enum
-
-
-def doc_check(doc: Path) -> int:
-    """Assert `stage-3-merge.md` and this code enumerate the SAME two enum value sets.
-
-    Neither the doc nor `decide` may add or drop a `.mergeable` or `.mergeStateStatus` value without the
-    other. A check that finds NOTHING must never pass, so absent markers (an unlocatable table) and an empty
-    extraction (a renamed/reformatted table) both FAIL exactly as a mismatch does.
-    """
-    if not doc.exists():
-        print(f"FAIL     the doc is not at {doc} — a check that cannot find its subject NEVER passes")
-        return 1
-    text = doc.read_text(encoding="utf-8")
-
-    rows = precondition_table_rows(text)
-    if rows is None:
-        print(f"FAIL     the merge-precondition-table markers "
-              f"({PRECONDITION_TABLE_START} … {PRECONDITION_TABLE_END}) are absent, empty, or out of order "
-              f"in {doc.name} — a drift-guard that cannot LOCATE its table must never report success")
-        return 1
-
-    checks = [
-        ("mergeable", doc_enum(rows, "mergeable"), set(MERGEABLE),
-         "MERGEABLE is necessary-not-sufficient; dropping a value here wedges a PR or merges over it"),
-        ("mergeStateStatus", doc_enum(rows, "mergeStateStatus"), set(MERGE_STATE_STATUS),
-         "the merge-precondition table; a value in the doc but not the code (or vice versa) is a silent drift"),
-    ]
-    failures = 0
-    for field, doc_set, code_set, why in checks:
-        if not doc_set:
-            failures += 1
-            print(f"FAIL     .{field:20} the doc enumerates ZERO values — the table is GONE, renamed, or "
-                  f"reformatted, and a check with no subject must never report success")
-            continue
-        if doc_set == code_set:
-            print(f"ok       .{field:20} {' '.join(sorted(code_set))}")
-            continue
-        failures += 1
-        print(f"FAIL     .{field:20} doc/code DISAGREE\n"
-              f"         code says: {' '.join(sorted(code_set))}\n"
-              f"         doc says:  {' '.join(sorted(doc_set))}\n"
-              f"         missing from the doc: {' '.join(sorted(code_set - doc_set)) or '—'}   "
-              f"only in the doc: {' '.join(sorted(doc_set - code_set)) or '—'}\n"
-              f"         {why}")
-    print()
-    if failures:
-        print(f"{failures} disagreement(s) between {doc.name} and the code that runs. ONE of them is wrong "
-              f"and a reader will believe the other.")
-        return 1
-    print(f"{len(checks)} checks: {doc.name} and merge-check.py agree — both enum sets, mapped totally.")
-    return 0
-
-
 # --- self-test: the executable contract lives in the SIBLING module ------------
 
 class SelfTestFailure(AssertionError):
@@ -375,7 +270,7 @@ def _sibling_cases() -> list:
 
 
 def self_test() -> int:
-    """Run the sibling suite over every fixture, then `doc-check`. Non-zero on any failure."""
+    """Run the sibling suite over every fixture. Non-zero on any failure."""
     failures = 0
     try:
         cases = _sibling_cases()
@@ -396,14 +291,10 @@ def self_test() -> int:
         else:
             print(f"ok       {name:30} -> {rule}")
     print()
-    # The DOC-CHECK is part of the contract: the code may not silently drift from stage-3-merge.md.
-    doc_rc = doc_check(DOC)
-    print()
-    if failures or doc_rc != 0:
-        print(f"{failures} fixture(s) failed and doc-check {'FAILED' if doc_rc else 'passed'} — the "
-              f"merge-readiness decider's contract is broken.")
+    if failures:
+        print(f"{failures} fixture(s) failed — the merge-readiness decider's contract is broken.")
         return 1
-    print(f"all {len(cases)} fixtures hold and stage-3-merge.md agrees — the decider's contract is intact.")
+    print(f"all {len(cases)} fixtures hold — the decider's contract is intact.")
     return 0
 
 
@@ -417,17 +308,12 @@ def main(argv: "list[str] | None" = None) -> int:
     c.add_argument("--repo", help="owner/name (default: the current checkout's)")
     c.add_argument("--view-json", help="a recorded `gh pr view` JSON — decide without calling gh")
 
-    d = sub.add_parser("doc-check", help="assert stage-3-merge.md's two enum sets equal the code's")
-    d.add_argument("--doc", type=Path, default=DOC)
-
-    sub.add_parser("self-test", help="run every fixture (merge-check-test.py), then doc-check")
+    sub.add_parser("self-test", help="run every fixture (merge-check-test.py)")
 
     args = p.parse_args(argv)
 
     if args.cmd == "self-test":
         return self_test()
-    if args.cmd == "doc-check":
-        return doc_check(args.doc)
     return check(args.pr, args.file, args.repo, args.view_json)
 
 
