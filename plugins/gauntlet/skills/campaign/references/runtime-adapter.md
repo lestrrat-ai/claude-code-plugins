@@ -289,12 +289,14 @@ For the heartbeat fallback, choose exactly one lifecycle:
    invocation, run-id, and token — `heartbeat.py callback --run <run-id> --token <agent-token>
    --invocation <campaign-invocation>` — and schedule its **stdout** (the `<campaign-invocation> --run
    <run-id> --token <agent-token>` line the tool prints) at the delay selected by `loop-control.md`, then
-   render status and return. Letting the tool build the line is what enforces the guarantee: the callback
+   render the status — the `ledger.py table` output `loop-control.md` "Reschedule or exit" defines — and
+   return. Letting the tool build the line is what enforces the guarantee: the callback
    carries **only** `--run` and `--token` and **never** `--new`/`#PR` (start-time args that would mint a
    fresh run each heartbeat) or `--heartbeat-id` (an acquire-time proof) — and the tool refuses any value
    that is empty or carries whitespace, closing the argument-injection seam. The future invocation begins
    at the heartbeat/reconcile entry.
-2. **Scheduler-less host:** keep the current campaign invocation alive, render status, and use the host's
+2. **Scheduler-less host:** keep the current campaign invocation alive, render the status (the
+   `ledger.py table` output `loop-control.md` "Reschedule or exit" defines), and use the host's
    bounded wait/poll mechanism until the first task completion or protected 5-minute/15-minute deadline.
    When that wait returns, go directly back to the heartbeat/reconcile entry and repeat while non-terminal
    work remains. Do **not** take the scheduled-host return after a bounded wait.

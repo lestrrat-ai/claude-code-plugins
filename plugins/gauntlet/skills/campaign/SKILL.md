@@ -107,9 +107,9 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
     due launch actually happened, every PR at a liveness cap was escalated rather than left spinning,
     and a heartbeat or bounded wait is armed whenever non-terminal work remains. NEVER sleep with due
     work un-launched or no path to the next reconcile. Then follow `references/loop-control.md`,
-    "Reschedule or exit", exactly: a scheduled-heartbeat host renders status after scheduling and
-    returns; a scheduler-less host performs one bounded wait and returns to the reconcile step while
-    non-terminal work remains.
+    "Reschedule or exit", exactly: a scheduled-heartbeat host renders the status — the `ledger.py table`
+    output that block defines — after scheduling and returns; a scheduler-less host renders the same
+    status, performs one bounded wait, and returns to the reconcile step while non-terminal work remains.
 
 **Review gate — stage 2a** (`references/stage-2-review-gate.md`)
 
