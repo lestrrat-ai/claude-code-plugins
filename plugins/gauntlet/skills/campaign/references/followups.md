@@ -144,18 +144,24 @@ about and one whose partial rejection strands the rest.
      beyond what step 3 already does.
    - **`refuted`** — re-investigated **only** when new evidence may overturn it, and that re-investigation
      succeeds by `corroborate`, never `refute`.
-   - **`self-accepted`** — the driver took it up, and **a fix subagent of THIS SAME RUN may have already
-     opened the PR** in an earlier wake whose `open-pr` record did not run before the wake ended. So
-     **before dispatching any fixer, RECONCILE for an already-created PR** — by the deterministic
-     `gauntlet-authored` follow-up branch, or the entry's durable follow-up id. If one exists, **record it
-     with `open-pr` and adopt it (step 4) — never re-dispatch**; open a **new** PR (step 3) only when
-     reconciliation finds none; if reconciliation is **ambiguous**, surface to the user rather than risk a
-     duplicate. This closes a **same-run** wake gap; it does **not** solve the cross-run race scoped out as
-     a non-goal above, which needs a store transition this does not add.
-   - **`accepted`** — the **user approved** the surfaced fix (step 5 reached `accept`). The driver **skips
-     take-up** — the user already ruled, so no autonomous ACT is needed — dispatches the scoped fix subagent
-     **under the user-approved scope**, then handles its PR exactly as steps 3–4 do: `open-pr`, adopt into
-     the run, gate. Same PR handling, entered from the user's ruling instead of an autonomous `take-up`.
+   - **`self-accepted`** — the driver already took it up; the entry has **no PR yet** (a `self-accepted`
+     entry stores no PR reference — `open-pr` is the step that first writes one). So resume at **step 3**:
+     dispatch the scoped fix subagent, which authors the fix and **opens the PR**; `open-pr` then records it
+     (→ `in-pr`) and step 4 adopts it into the run. Do **not** try to "look up" or reconcile an
+     already-created PR first — there is **no durable fuN→PR key** to look one up by (no PR field before
+     `open-pr`, no fuN→PR reverse index, the `gauntlet-authored` label is run-wide not per-fuN, and the fix
+     contract mandates no fuN-keyed branch — `fix-subagent-contract.md`). See the **same-run idempotency**
+     note below the list.
+   - **`accepted`** — the **user ruled** on it (step 5 reached `accept`), so the driver **skips take-up**;
+     the user already decided, so no autonomous ACT is needed. But `accepted` is the single gateway to
+     **both** `open-pr` (a fix) **and** `publish` (a Tier-3 issue), and the entry records only **when** the
+     user decided (`decided`) — **nothing stores which** they approved. So proceed with the action the
+     ruling **authorized**: if the user approved a **FIX**, dispatch the scoped fix subagent under the
+     approved scope, which opens the PR, then `open-pr` records it (→ `in-pr`) and step 4 adopts it — no
+     reconciliation, exactly as `self-accepted` resumes; if the user approved **PUBLICATION**, that is the
+     **publish** path (Tier 3), **not** a fix. If a fresh wake **cannot tell which** the ruling was for,
+     **SURFACE the entry to the user** rather than assume a fix. The same-run idempotency note below covers
+     its interrupted-wake gap.
    - **`in-pr`** — a PR is open and named in the entry, but an interrupted wake may have recorded `open-pr`
      **without** finishing ADOPTION. Adoption is a campaign action, not a store edge — no `in-pr`
      transition performs it — so "defer to the graph" strands the PR. On resume, **reconcile the recorded
@@ -163,8 +169,20 @@ about and one whose partial rejection strands the rest.
      label or ledger row, **then** wait for `merged`/`closed-unmerged`. An unadopted follow-up PR sits
      **outside the campaign gate** — the exact thing "fold that PR into the current campaign" exists to
      prevent.
-   - **`reopened`** — it already carries the decision it earned before its PR died, so it resumes at opening
-     the **replacement** PR, not at re-deciding.
+   - **`reopened`** — its PR died and it already carries the decision it earned, so it does **not** re-decide:
+     it resumes at opening the **replacement** PR. Dispatch the fixer, which opens the replacement PR, then
+     `open-pr` records it (→ `in-pr`) and step 4 adopts it — no reconciliation, same as `self-accepted`. The
+     same-run idempotency note below covers its interrupted-wake gap.
+
+   **Same-run idempotency is a deliberate non-goal — the interrupted-wake gap for `self-accepted`,
+   `accepted`, and `reopened`.** A wake that dies **after** the fix subagent opens the PR but **before**
+   `open-pr` records it leaves the entry in `self-accepted` (or `accepted`/`reopened`) with **no durable
+   fuN→PR key** to reconcile against — so the next wake re-dispatches and can open a **duplicate PR within
+   one run**. Making that dispatch idempotent needs a durable key: a `followups.py` PR-reference field
+   written before `open-pr`, or a deterministic fuN-keyed branch required by the fix contract — **both are
+   deliberate NON-GOALS here** (one is a `followups.py` store change, the other a fix-subagent-contract
+   change), tracked as **a follow-up**. This is the same-run analogue of the cross-run race scoped out under
+   "Scope: one run's driver" above; **neither is solved by this documentation.**
 
 2. **NOT APPLICABLE → `refute`.** If the investigation cannot reproduce the claim, or shows the mechanism
    cannot occur, it is **refuted** — and that is its **most valuable** outcome, not a failure. A refuted
