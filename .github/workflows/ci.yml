@@ -108,11 +108,16 @@ jobs:
             plugins/gauntlet/skills/campaign/scripts/heartbeat.py \
             plugins/gauntlet/skills/campaign/scripts/heartbeat-test.py \
             plugins/gauntlet/skills/campaign/scripts/run-id.py \
-            plugins/gauntlet/skills/campaign/scripts/run-id-test.py | tee pyright.json
+            plugins/gauntlet/skills/campaign/scripts/run-id-test.py \
+            plugins/gauntlet/skills/campaign/scripts/script-table-test.py \
+            plugins/gauntlet/skills/campaign/scripts/base-preflight.py \
+            plugins/gauntlet/skills/campaign/scripts/base-preflight-test.py \
+            plugins/gauntlet/skills/campaign/scripts/merge-check.py \
+            plugins/gauntlet/skills/campaign/scripts/merge-check-test.py | tee pyright.json
           analyzed=$(jq '.summary.filesAnalyzed' pyright.json)
           echo "filesAnalyzed=${analyzed}"
-          if [ "${analyzed}" != "30" ]; then
-            echo "::error::pyright analysed ${analyzed} file(s), not the 30 it was pointed at — it checked" \
+          if [ "${analyzed}" != "35" ]; then
+            echo "::error::pyright analysed ${analyzed} file(s), not the 35 it was pointed at — it checked" \
                  "nothing and said so quietly. Fix the paths above; a silent no-op is not a passing gate."
             exit 1
           fi
@@ -243,3 +248,32 @@ jobs:
       # so this can never report an all-clear over a suite it did not run.
       - name: Run-id contract
         run: python3 plugins/gauntlet/skills/campaign/scripts/run-id.py self-test
+
+      # The base-preflight decider's contract, executed. It turns stage-2-review-gate.md's prose
+      # "rebase before you review/fix if CONFLICTING/DIRTY/BEHIND" precondition into a tested check: it
+      # DECIDES proceed / rebase-first / recheck from the live PR view and performs no rebase. Its fixtures
+      # pin the mapping TOTALLY over both GitHub enums (one per mergeStateStatus value, plus an unrecognised
+      # value that must re-poll, never guess) and drive the CLI's fail-closed `recheck` on a malformed view.
+      # `py_compile` above only parses it; the sibling `base-preflight-test.py` is loaded by path and a
+      # MISSING sibling fails loudly, so this can never report an all-clear over a suite it did not run.
+      - name: Base-preflight contract
+        run: python3 plugins/gauntlet/skills/campaign/scripts/base-preflight.py self-test
+
+      # The merge-readiness decider's contract, executed. It is the ONE place the two GitHub merge enums
+      # (`.mergeable`, `.mergeStateStatus`) are crossed with the ledger's preconditions to decide `merge`
+      # vs `not-yet` — the miscross this replaces once turned a blocked merge into an infinite CI watch.
+      # `self-test` runs the sibling FIXTURES (`merge-check-test.py`, loaded by path; a MISSING sibling
+      # fails loudly), which pin the exact verdict AND reason for every branch — including that both enums
+      # are mapped TOTALLY (an unrecognized value of either PARKS) and that a gh-spawn failure fails closed.
+      # The code owns the mapping; stage-3-merge.md points at the tool rather than restating it, so there is
+      # no doc table to drift and no doc-check here. It NEVER performs the merge; it only decides.
+      - name: Merge-check contract (the code-owned mapping, pinned by fixtures)
+        run: python3 plugins/gauntlet/skills/campaign/scripts/merge-check.py self-test
+
+      # The Bundled Scripts table in campaign's SKILL.md declares itself COMPLETE: one row per bundled
+      # script. A completeness claim with no check goes stale the first time a script lands without a
+      # row — six scripts had already done exactly that before the table existed. This executes the
+      # claim: a script with no row, a row naming no script, a duplicate row, or a scan that matches
+      # nothing at all (the section anchor or the directory moved) each fail the build.
+      - name: Script-table contract (SKILL.md inventory matches scripts/)
+        run: python3 plugins/gauntlet/skills/campaign/scripts/script-table-test.py
