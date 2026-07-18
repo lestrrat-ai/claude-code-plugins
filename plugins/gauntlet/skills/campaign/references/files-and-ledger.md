@@ -477,6 +477,11 @@ a new name.
 to waiting (`loop-control.md`, "Reschedule or exit"). It renders state and decides nothing — no gate
 logic, no derived values.
 
+**Read the ledger by FIELD NAME through `ledger.py get`** (or `list`) — **never by parsing the table**.
+A SHA (or any value) recovered from `table`'s grid is a truncated, escaped rendering, and feeding one back
+into a command or writing it to the store is a bug: this repo has already had a fabricated 8-char SHA
+written into a real ledger, and a truncated SHA escape into a command.
+
 **`table` is a PROJECTION — NEVER a source to read a value back out of.** Its output is *formatted for a
 human*, and the formatting is lossy in four ways:
 
@@ -519,11 +524,6 @@ human*, and the formatting is lossy in four ways:
   makes the omission notice trustworthy, and it is why an empty grid always **says which empty it is** —
   a ledger that holds nothing and a ledger whose every row is hidden print **different** markers, so an
   end-of-run table where everything merged can never be misread as a campaign that adopted no PRs.
-
-So **read the ledger by FIELD NAME through `ledger.py get`** (or `list`) — **never by parsing the table**.
-A SHA (or any value) recovered from `table`'s grid is a truncated, escaped rendering, and feeding one back
-into a command or writing it to the store is a bug: this repo has already had a fabricated 8-char SHA
-written into a real ledger, and a truncated SHA escape into a command.
 
 It rejects an unknown field name (listing the valid ones), refuses a duplicate `pr` on `add-row`,
 errors on a missing row for `set`/`get`, and creates the file with the header if it is missing. It also

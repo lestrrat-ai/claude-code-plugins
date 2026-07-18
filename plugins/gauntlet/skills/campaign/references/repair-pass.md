@@ -4,23 +4,6 @@
 Everything below is a command that exits non-zero, not a rule an attentive agent has to remember — which
 is the entire point, and is explained by the section that ends this file.
 
-### Why this exists
-
-The review gate had **no memory and could not see its own non-convergence.** Every heartbeat is a fresh agent
-instance; `reviews_ok` is zeroed on every `NOT SATISFIED`; and nothing counted rounds. So the ledger after
-21 review rounds was **indistinguishable from the ledger after 1**, and the skill's stopping rules — "run
-the root-cause pass on the 2nd `NOT SATISFIED`", the 1-hour cap — were rules with **no sensor**. They sat
-in the skill, unfired, for 8.5 hours.
-
-Two PRs ran **21** and **14** adversarial review rounds. Nearly every round produced a **true** finding, a
-fix was dispatched, the fix added code, and the next round found more — in the late rounds, more *in the
-guards the loop itself had just added*. Neither PR converged. A human stopped it, and could only do so by
-holding all 21 rounds in mind **at once**. That view is what no heartbeat had, and it is what this pass restores.
-
-**The reviewer was not malfunctioning.** It was doing exactly what it was asked, and what it was asked has
-**no fixed point**: an open-ended adversarial mandate over a growing surface always has one more true thing
-to say. Do not look for a bug in the reviewer. The bug is that nothing could **count**.
-
 ### The trigger — the loop's memory, and the caps on it
 
 `ledger.py` carries the memory. Two counters, and `ledger.py verdict` is the **ONLY** sanctioned way to
@@ -54,6 +37,23 @@ corroborating pass from merging must never be torn up. (On the real record this 
 and the prose is the copy people read. `ledger.py`'s comment defends each number against the real record,
 and `ledger-test.py` **replays that record** so a re-tuned cap states, in its own failure message, what the
 new number would have done to two PRs that really ran.
+
+### Why this exists
+
+The review gate had **no memory and could not see its own non-convergence.** Every heartbeat is a fresh agent
+instance; `reviews_ok` is zeroed on every `NOT SATISFIED`; and nothing counted rounds. So the ledger after
+21 review rounds was **indistinguishable from the ledger after 1**, and the skill's stopping rules — "run
+the root-cause pass on the 2nd `NOT SATISFIED`", the 1-hour cap — were rules with **no sensor**. They sat
+in the skill, unfired, for 8.5 hours.
+
+Two PRs ran **21** and **14** adversarial review rounds. Nearly every round produced a **true** finding, a
+fix was dispatched, the fix added code, and the next round found more — in the late rounds, more *in the
+guards the loop itself had just added*. Neither PR converged. A human stopped it, and could only do so by
+holding all 21 rounds in mind **at once**. That view is what no heartbeat had, and it is what this pass restores.
+
+**The reviewer was not malfunctioning.** It was doing exactly what it was asked, and what it was asked has
+**no fixed point**: an open-ended adversarial mandate over a growing surface always has one more true thing
+to say. Do not look for a bug in the reviewer. The bug is that nothing could **count**.
 
 ### A cap is a MODE SWITCH, not a doorbell
 

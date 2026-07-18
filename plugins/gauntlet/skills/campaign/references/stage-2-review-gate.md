@@ -61,7 +61,8 @@ move, **not** relaunched once CI has SETTLED). Everything else waits for the use
 
 #### Preconditions — clear Copilot items, CI, and conflicts before reviewing
 
-**Preconditions — clear Copilot items, CI, and conflicts before reviewing.** A review pass is
+**Only launch a review pass once all three are clear for the current tip.** Clear Copilot items, CI,
+and conflicts before reviewing: a review pass is
 expensive and is invalidated by any PR-content change, so never spend one on a PR whose current tip
 still has review-blocking issues. Before launching a pass on a **non-parked** PR, check three things
 and clear any that are dirty. Each fix changes PR content, so `reviews_ok` resets to 0 **and the status label is restored to
@@ -93,8 +94,6 @@ review gate"), and the review re-starts on the clean tip:
   conflict-resolving rebase changes PR content, so it resets the gate **as well** — here, at this site,
   exactly as the step-6 reconcile does at its own (`stage-3-merge.md`), and it therefore **relabels in the
   same step** ("Status labels mirror the review gate", below).
-
-Only launch a review pass once all three are clear for the current tip.
 
 Run reviews **one at a time per PR** — never two at once for the same SHA. When a PR's tip
 (`head_sha`) has fewer than `required(tier)` SATISFIED verdicts (2a-triage owns the formula) and no review
@@ -424,7 +423,17 @@ late verdict from a stale/superseded attempt unless its attempt id still matches
 #### A finer liveness signal — the reviewer's OUTPUT STREAM
 
 **A finer liveness signal for a background-task reviewer whose stdout is captured INCREMENTALLY: its
-OUTPUT STREAM.** The meaningful-progress
+OUTPUT STREAM.** **The signal needs the stdout to
+be captured INCREMENTALLY**, so it applies only to a background-task reviewer whose stream grows as the
+model emits — the Claude-Code→codex route qualifies (codex streams its reasoning to the captured stdout).
+A reviewer whose output is BUFFERED until completion exposes no growing stream: `claude -p --output-format
+text` (the Codex→claude route) writes nothing until the end (realtime streaming needs `--output-format
+stream-json`), so a HEALTHY such reviewer's file stays unwritten and the probe reads a FALSE `quiet` — the
+driver MUST NOT rely on its `quiet` verdict for that route. A native-worker reviewer's transcript is not
+safely pollable either, so that route likewise keeps the progress-file-plus-completion model
+(`reviewer.md`, native-worker path).
+
+The meaningful-progress
 timer above is unit-granular — a `done` event fires only when a whole unit completes, minutes apart — so
 BETWEEN units a live reviewer grinding one unit and a hung one look identical until the ~15-min cap. A
 background-task reviewer whose stdout is captured as it is produced writes a stream that grows CONTINUOUSLY
@@ -442,15 +451,7 @@ healthy warming-up reviewer or pre-empt the launch-evidence recovery. **This is 
 meaningful progress** — exactly like the `started`/"still working"
 lines above, a growing stream **MUST NOT reset the meaningful-progress timer**: a reviewer that streams
 forever without completing a unit is still stalled at that cap. The stream signal makes a dead process
-caught sooner; it never extends patience for one that will not converge. **The signal needs the stdout to
-be captured INCREMENTALLY**, so it applies only to a background-task reviewer whose stream grows as the
-model emits — the Claude-Code→codex route qualifies (codex streams its reasoning to the captured stdout).
-A reviewer whose output is BUFFERED until completion exposes no growing stream: `claude -p --output-format
-text` (the Codex→claude route) writes nothing until the end (realtime streaming needs `--output-format
-stream-json`), so a HEALTHY such reviewer's file stays unwritten and the probe reads a FALSE `quiet` — the
-driver MUST NOT rely on its `quiet` verdict for that route. A native-worker reviewer's transcript is not
-safely pollable either, so that route likewise keeps the progress-file-plus-completion model
-(`reviewer.md`, native-worker path).
+caught sooner; it never extends patience for one that will not converge.
 
 ### What the review is MEASURED AGAINST — the PR's intent
 
@@ -677,29 +678,31 @@ Then, per verdict:
 
 #### NOT SATISFIED
 
-- **NOT SATISFIED** → the SHA's tally is void (`ledger.py verdict … --verdict not-satisfied` does it) **and,
-  in the same step, restore
-  `gauntlet-reviewing` if the PR carries `gauntlet-accepted`** ("Status labels mirror the review gate",
-  below). This
-  applies the moment the verdict lands, *before* any fix is written: a PR whose latest verdict says
-  NOT SATISFIED must never still read `gauntlet-accepted` on GitHub. **Only GATING findings reach the fix
-  path at all** — a non-gating finding is recorded as a follow-up and no fix is dispatched for it (the
-  gating rule, above; `verify` has already refused the pass if a `not-satisfied` recorded none). **Then —
-  unless `verdict` just held the PR for repair, in which case NO fix is dispatched at all — dispatch a
-  context-isolated AUDIT SUBAGENT to AUDIT
-  the gating findings — see
-  `finding-audit.md`; NEVER dispatch a fix for an unaudited finding — and, for
-  its CONFIRMED/ADJUSTED verdicts,
-  dispatch a scoped fix subagent** into `<worktree>` (the PR row's ledger `worktree` column value) with
-  the **audited** issue list (**CONFIRMED + ADJUSTED only**); it
-  commits + pushes → HEAD advances (a second gate reset — relabel again if the first was somehow
-  skipped). A later heartbeat starts a fresh review on the new tip. (Because reviews are sequential, no
-  second review was spent on this broken commit.) Any **REFUTED** finding is **written into the tree** —
-  an inline comment at the site stating why the mechanism cannot occur — and committed like any other
-  change, so the next reviewer reads it and can flag it if it is wrong. That commit is PR content: it
-  resets the gate through the same rule.
+**NOT SATISFIED** → run this action sequence, in order:
 
-  **Run the review-fix in the `session` class — NEVER downgraded** (`SKILL.md`, "Worker Dispatch"). The one
+1. **Void the tally and restore the label in the same step.** The SHA's tally is void (`ledger.py verdict
+   … --verdict not-satisfied` does it) **and, in the same step, restore `gauntlet-reviewing` if the PR
+   carries `gauntlet-accepted`** ("Status labels mirror the review gate", below). This applies the moment
+   the verdict lands, *before* any fix is written: a PR whose latest verdict says NOT SATISFIED must never
+   still read `gauntlet-accepted` on GitHub.
+2. **Dispatch the context-isolated AUDIT subagent.** **Only GATING findings reach the fix path at all** —
+   a non-gating finding is recorded as a follow-up and no fix is dispatched for it (the gating rule, above;
+   `verify` has already refused the pass if a `not-satisfied` recorded none). Then — unless `verdict` just
+   held the PR for repair, in which case NO fix is dispatched at all — **dispatch a context-isolated AUDIT
+   SUBAGENT to AUDIT the gating findings** — see `finding-audit.md`; **NEVER dispatch a fix for an
+   unaudited finding**.
+3. **Dispatch the review-fix for CONFIRMED/ADJUSTED findings only.** For its CONFIRMED/ADJUSTED verdicts,
+   **dispatch a scoped fix subagent** into `<worktree>` (the PR row's ledger `worktree` column value) with
+   the **audited** issue list (**CONFIRMED + ADJUSTED only**); it commits + pushes → HEAD advances (a
+   second gate reset — relabel again if the first was somehow skipped). A later heartbeat starts a fresh
+   review on the new tip. (Because reviews are sequential, no second review was spent on this broken
+   commit.)
+4. **A REFUTED finding's reasoning goes into the tree.** Any **REFUTED** finding is **written into the
+   tree** — an inline comment at the site stating why the mechanism cannot occur — and committed like any
+   other change, so the next reviewer reads it and can flag it if it is wrong. That commit is PR content:
+   it resets the gate through the same rule.
+
+  **Why the session class:** **Run the review-fix in the `session` class — NEVER downgraded** (`SKILL.md`, "Worker Dispatch"). The one
   deliberate downgrade in this skill is the CI-fix subagent for a **formatting/lint** failure, which runs a
   formatter and verifies its diff (`stage-2-ci.md`); a review defect is **authored code**, and this subagent
   writes it from scratch. Its output is **code that gets merged**, and its only
@@ -707,6 +710,7 @@ Then, per verdict:
   weak fix produces a plausible-looking commit, the next pass returns `NOT SATISFIED`, the gate resets,
   and the whole diff is re-reviewed: the cheap wrong fix is paid for twice, and it is the expensive half
   that pays. Worst case the pass misses it and the defect merges.
+
   **Dispatch it under the fix-subagent contract** (`fix-subagent-contract.md` — the complete DEFINITION
   for every fix subagent, CI or review; **read it before dispatching**). The review-specific inputs it
   asks for are the worktree path and the concrete issue list (CONFIRMED + ADJUSTED only).
@@ -766,14 +770,7 @@ fresh review round starts — but it never blocks the current gate.
 2a-triage owns the formula and the file classes. A `NOT SATISFIED`, a `plan_amendment_request`, or a
 content change that adds a CODE/agent-doc/SENSITIVE file re-triages the PR upward (Stage 2a-triage),
 which can raise the target — so a PR can never merge on a single pass once its content stops being pure
-prose. For a two-pass gate the passes are
-not statistically or epistemically independent observations — they judge the same diff under the same
-review task and protocol (and, when both passes run the same reviewer, the same model and prompt), so
-their verdicts are correlated and this is not a probabilistic proof of correctness. What the second pass
-buys is a re-roll of a stochastic reviewer: a fresh execution, with none of the first pass's context
-to anchor it, that can catch a defect the first pass happened to miss — worth the spend for code and
-agent-facing instructions, where a surviving defect is expensive, but not for pure human prose, where
-one adversarial pass is proportionate. Record the reviewed SHA
+prose. Record the reviewed SHA
 (`git rev-parse HEAD`) with each pass. A verdict counts while its SHA equals the live tip. It also
 continues to count after `<base>` advances if the PR is still non-conflicting and the PR diff/content
 is unchanged (e.g. clean base-only rebase); carry `reviews_ok` forward to the new `head_sha`, set
@@ -784,6 +781,15 @@ drops to 0. Pinning to SHA plus the clean-base-only exception makes the gate ver
 not burning reviews merely because another PR merged cleanly. A `NOT SATISFIED` invalidates that
 content's tally even before a fix lands. The `required(tier)` SATISFIED verdicts and green CI must all
 describe the same live PR content; CI must still be green for the current HEAD SHA.
+
+For a two-pass gate the passes are
+not statistically or epistemically independent observations — they judge the same diff under the same
+review task and protocol (and, when both passes run the same reviewer, the same model and prompt), so
+their verdicts are correlated and this is not a probabilistic proof of correctness. What the second pass
+buys is a re-roll of a stochastic reviewer: a fresh execution, with none of the first pass's context
+to anchor it, that can catch a defect the first pass happened to miss — worth the spend for code and
+agent-facing instructions, where a surviving defect is expensive, but not for pure human prose, where
+one adversarial pass is proportionate.
 
 ### Status labels mirror the review gate — relabel is part of the reset, not a later chore
 

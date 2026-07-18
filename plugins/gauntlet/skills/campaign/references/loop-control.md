@@ -26,15 +26,17 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
    `awaiting-user`).
    Three cases:
 
-   - **This run has live work → resume.** **Reconcile against ground truth** (do NOT redo *completed*
-     work — a CI task whose output file is missing may be re-launched, since in-flight tasks die with
-     their session. A **review** whose output file is missing is NOT simply re-launched: resolve its
-     **active launch attempt** first (Stage 2a) — read the highest-numbered attempt's `pass_identity`
+   - **This run has live work → resume.** **A dead review pass — no verdict and no live task — is
+     dispatched by its relaunch budget alone:** read the highest-numbered attempt's `pass_identity`
      and dispatch on `launch_attempt` **alone**: `1` → relaunch once (as attempt `2`); `2` → the
-     relaunch is spent, so take the **fresh-worker fallback**. **Launch evidence is irrelevant on
-     this path** — the task is already dead, so whether it managed to write a `started` line before
-     dying says nothing about whether it will ever produce a verdict. A missing output file must never
-     re-arm the relaunch budget, and a dead attempt `2` must never be left un-dispatched):
+     relaunch is spent, so take the **fresh-worker fallback** (Stage 2a). **Reconcile against ground
+     truth** (do NOT redo *completed* work — a CI task whose output file is missing may be re-launched,
+     since in-flight tasks die with their session. A **review** whose output file is missing is NOT
+     simply re-launched: resolve its **active launch attempt** first (Stage 2a) by that algorithm.
+     **Launch evidence is irrelevant on this path** — the task is already dead, so whether it managed
+     to write a `started` line before dying says nothing about whether it will ever produce a verdict.
+     A missing output file must never re-arm the relaunch budget, and a dead attempt `2` must never be
+     left un-dispatched):
      for each of this run's branches/PRs read the live SHA, CI status, and verdict files, and refresh
      the ledger — write every ledger update through `scripts/ledger.py … set/header set` **by field
      name** (`files-and-ledger.md`), never by hand-editing rows by column position.
@@ -413,15 +415,19 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      heartbeat also recovers a killed/orphaned session through a later scheduled heartbeat; if a scheduler-less
      invocation is killed, durable state permits a later explicit resume (see "Resume after a killed
      session"). **Size the scheduled delay or bounded wait to the nearest stall it guards:**
-     **~5 min** while any dispatched review pass is still awaiting its first line of **launch evidence**
-     — its Stage 2a launch deadline is then the soonest thing that can fire, and a hung launch must not
-     sit undetected for a full normal interval — otherwise **~15 min**, matching the Stage 2a meaningful-progress
-     threshold: with no launch deadline pending, nothing can declare a review stalled before then, so a
-     shorter interval only re-reconciles git/gh with no new signal (and pays a fresh-context cost per
-     heartbeat). **One exception carries new signal:** a background-task review watched via its stdout stream
-     can be declared hung before that cap once the stream falls quiet (`stage-2-review-gate.md`, the
-     stdout-stream liveness signal), so while such a review is streaming, a shorter poll toward that
-     quiet window is a real check, not a bare re-reconcile. ALWAYS keep a heartbeat or bounded wait active whenever non-terminal work remains — skipping
+     - **Any dispatched review pass still awaiting its first line of launch evidence → ~5 min:** its
+       Stage 2a launch deadline is then the soonest thing that can fire, and a hung launch must not
+       sit undetected for a full normal interval.
+     - **A background-task review streaming its stdout → poll toward the quiet window:** it can be
+       declared hung before the ~15-min cap once the stream falls quiet (`stage-2-review-gate.md`, the
+       stdout-stream liveness signal), so while such a review is streaming, a shorter poll toward that
+       quiet window is a real check, not a bare re-reconcile.
+     - **Otherwise → ~15 min:** matching the Stage 2a meaningful-progress
+       threshold — with no launch deadline pending, nothing can declare a review stalled before then, so a
+       shorter interval only re-reconciles git/gh with no new signal (and pays a fresh-context cost per
+       heartbeat).
+
+     ALWAYS keep a heartbeat or bounded wait active whenever non-terminal work remains — skipping
      both means a hung or orphaned run wakes no one. **Now render the status — this happens on EVERY
      heartbeat that reschedules, never skipped, and its first and mandatory element is the ledger table
      itself.** Run

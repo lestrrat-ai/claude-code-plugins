@@ -160,7 +160,15 @@ For each `#PR` to adopt:
      who wrote this"* is not *"I wrote this"*. It is **NOT** `worktree_owned`/`branch_owned`: those say
      whether campaign created the local checkout and branch, which is a **cleanup** question, and a PR can
      have a campaign-created worktree and still belong entirely to someone else.
-   - **On a REFRESH of an existing row, PRESERVE EVERY FIELD THIS STEP DOES NOT EXPLICITLY RECOMPUTE.**
+   - **On a REFRESH of an existing row, only re-read `head_sha`/`ci` from ground truth; reset
+     `reviews_ok` to `0` and re-triage `tier` only if** reconciliation detects a PR-content change
+     since the recorded `head_sha` (per the gate's SHA-pinning rules). **That reset is a gate-reset
+     site: in the same step, restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`**
+     (`stage-2-review-gate.md`, "Status labels mirror the review gate"). Step 4's `--add-label
+     gauntlet-reviewing` alone is NOT sufficient: it would leave the stale `gauntlet-accepted` in
+     place, so the PR would carry **both** status labels and still publicly claim it passed.
+
+     **PRESERVE EVERY FIELD THIS STEP DOES NOT EXPLICITLY RECOMPUTE.**
      That is a **property, not a list** — and deliberately so, because the list that stood here was one:
      `ledger.py … set` writes only the fields it **NAMES**, so preservation is the **default**, and this
      step's job is to name nothing it must not clobber. Everything a previous heartbeat wrote and a later one
@@ -178,13 +186,6 @@ For each `#PR` to adopt:
      RULING IS CONSUMED EXACTLY ONCE") — so a ruling this refresh can see is either still **awaiting its
      park's exit** (preserving it is the whole point: a heartbeat may be a fresh agent instance) or the
      **terminal** record of an `abort`. A **spent** ruling is never on the row for this step to resurrect.
-     Only re-read `head_sha`/`ci` from ground truth; reset
-     `reviews_ok` to `0` and re-triage `tier` **only if** reconciliation detects a PR-content change
-     since the recorded `head_sha` (per the gate's SHA-pinning rules). **That reset is a gate-reset
-     site: in the same step, restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`**
-     (`stage-2-review-gate.md`, "Status labels mirror the review gate"). Step 4's `--add-label
-     gauntlet-reviewing` alone is NOT sufficient: it would leave the stale `gauntlet-accepted` in
-     place, so the PR would carry **both** status labels and still publicly claim it passed.
    - **Whenever this refresh writes a NEW `head_sha`, RESET THE LIVENESS COUNTERS** (`stage-2-ci.md`,
      "THE LIVENESS COUNTERS") in the same `ledger.py … set` call — **whether or not the gate reset with
      it**: a clean base-only advance moves the head without touching `reviews_ok`, and it still means the
@@ -204,9 +205,16 @@ For each `#PR` to adopt:
    MEASURED AGAINST"). Without it, the reviewer is asked *"is anything wrong with this code?"* — a question
    with no fixed point, and one that ran a PR through 21 review rounds without converging.
 
-   **It is LOCAL, git-ignored driver bookkeeping. Campaign NEVER writes it back to the PR** — no `gh pr
-   edit`, no comment, no commit. The PR belongs to its author; this is the driver's working note about it,
-   and it lives with the run's other artifacts under `<rundir>`.
+   The three-branch decision:
+   - **A PR whose body already carries a usable intent block** (by the test below) → **COPY IT VERBATIM**
+     into `intent-<pr>.md`. Record `intent = stated@<iso>`.
+   - **Otherwise the driver AUTHORS it** — from the PR's **diff, title and body** — writes it to
+     `intent-<pr>.md`, and **proceeds**. Record `intent = authored@<iso>`. "Otherwise" includes a body
+     that carries the three headings but leaves an anchor empty: author the missing section rather than
+     copying a block the tool will refuse. Do **NOT** stop and ask the user: the driver can act here, so
+     it acts.
+   - Only if it **cannot form an intent block at all** (an empty PR, a diff it cannot characterise) does
+     it **refuse the adoption** and report that PR to the user, adopting the rest.
 
    The format is exactly three sections:
 
@@ -219,6 +227,10 @@ For each `#PR` to adopt:
    - Who can write the inputs this code reads: <...>
    - Who cannot: <...>
    ```
+
+   **It is LOCAL, git-ignored driver bookkeeping. Campaign NEVER writes it back to the PR** — no `gh pr
+   edit`, no comment, no commit. The PR belongs to its author; this is the driver's working note about it,
+   and it lives with the run's other artifacts under `<rundir>`.
 
    **USABLE means the parser will take it — `review-pass.py` is the definition, and this is the same rule
    stated for a human:** all three headings, **at least one `## Purpose` bullet, AND at least one
@@ -241,17 +253,6 @@ For each `#PR` to adopt:
    `review-pass.py intent-check --file <rundir>/intent-<pr>.md`. A non-zero exit refuses adoption for that
    PR until the artifact is corrected. This is the same parser `verify` uses, moved before review dispatch;
    never spend a review to learn that its intent could not be read.
-
-   **A PR whose body already carries a usable intent block** (by the test above) → **COPY IT VERBATIM** into
-   `intent-<pr>.md`. Record `intent = stated@<iso>`.
-
-   **Otherwise the driver AUTHORS it** — from the PR's **diff, title and body** — writes it to
-   `intent-<pr>.md`, and **proceeds**. Record `intent = authored@<iso>`. "Otherwise" includes a body that
-   carries the three headings but leaves an anchor empty: author the missing section rather than copying a
-   block the tool will refuse. Do **NOT** stop and ask the user:
-   the driver can act here, so it acts. Only if it **cannot form an intent block at all** (an empty PR, a
-   diff it cannot characterise) does it **refuse the adoption** and report that PR to the user, adopting the
-   rest.
 
    **The file is READ BY THE TOOL, on every pass.** `review-pass.py verify` loads `intent-<pr>.md` for
    **every** pass it judges — whatever that pass found, and even when it found nothing — so an absent,

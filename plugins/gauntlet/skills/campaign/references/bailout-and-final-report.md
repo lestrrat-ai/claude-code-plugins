@@ -2,6 +2,11 @@
 
 ### 1-hour cap per task
 
+When it trips, abort cleanly and **retry once against the SAME adopted PR** (`attempts` += 1, reset
+`started`). The PR is user/externally owned — campaign never closes it and opens a replacement of
+its own. Instead, **rebuild the worktree from the PR's head branch** so the retry runs with fresh
+LOCAL state against that same PR / its head; the PR itself is left in place.
+
 - **1-hour cap per task** — one hour of wall-clock since `started` without merging. The cap catches a
   *stuck* task, not a slow external system, and the ledger records no separately-metered work time — so
   key it off recorded row state, not a running subtraction of durations nothing stores: **do not fire
@@ -65,10 +70,6 @@
   `started` is over an hour old *and* the row is agent-controlled — **it is in NONE of the three bounded
   waits above**: not parked, not `repairing`, and **NO** bound of the CI owner's set live for it (never a
   count of them, which rots the moment a set gains a member) — trips it.
-  When it trips, abort cleanly and **retry once against the SAME adopted PR** (`attempts` += 1, reset
-  `started`). The PR is user/externally owned — campaign never closes it and opens a replacement of
-  its own. Instead, **rebuild the worktree from the PR's head branch** so the retry runs with fresh
-  LOCAL state against that same PR / its head; the PR itself is left in place.
 - **The user's `abort` ruling on a parked PR takes this SAME path.** A `blocker_ruling = abort@<iso>`
   (`loop-control.md` step 3, "Only the user's answer unparks a PR") is a permanent abort of that PR, not a
   new mechanism: run exactly the procedure below, with the park's `ci_reason` as the recorded cause.

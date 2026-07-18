@@ -216,6 +216,13 @@ path/ref/payload and exact-byte fixtures.
 
 ## Fresh workers
 
+- Use a background or otherwise asynchronous worker whenever the host supports one.
+- Preserve each role's read/write limits and output artifact paths exactly.
+- If the host cannot create a fresh worker, an explicitly configured external reviewer may fill a
+  review role. It does not fill audit, mapper, reassessment, or fix roles.
+- If neither a native fresh worker nor the required role's allowed fallback exists, park the PR as a
+  machine blocker. Never run a conversational-isolation gate inline merely to keep moving.
+
 A **worker** is a fresh, conversationally isolated execution created through the active host's native
 agent/task mechanism. Claude Code may call this a subagent; Codex may expose an agent or task. Give it
 only the contract, paths, and evidence its role needs. Never let a gate review inherit the campaign
@@ -255,13 +262,6 @@ are proved true. A prompt saying "do not edit" does not create that boundary, an
 the launch or parks the pass. For Codex specifically, `--ignore-rules` disables execpolicy `.rules`; it
 does **not** disable `AGENTS.md` discovery. The external argv in `cross-agent-reviewers.md` launches at
 native level today, and the same argv serves a future adapter that additionally proves the OS properties.
-
-- Use a background or otherwise asynchronous worker whenever the host supports one.
-- Preserve each role's read/write limits and output artifact paths exactly.
-- If the host cannot create a fresh worker, an explicitly configured external reviewer may fill a
-  review role. It does not fill audit, mapper, reassessment, or fix roles.
-- If neither a native fresh worker nor the required role's allowed fallback exists, park the PR as a
-  machine blocker. Never run a conversational-isolation gate inline merely to keep moving.
 
 ## Model classes
 
