@@ -293,11 +293,11 @@ def _adopt(d: Path, ledger: Path, v: dict, *, wroot: Path, worktree_head=None,
     if repo:
         argv += ["--repo", repo]
     old = M._run
-    M._run = rec
+    setattr(M, "_run", rec)
     try:
         code, out, err = capture_cli(M.main, argv)
     finally:
-        M._run = old
+        setattr(M, "_run", old)
     return code, out, err, rec
 
 
@@ -313,6 +313,7 @@ def t_view_omits_body():
         check(code == 0, f"a clean adopt succeeds (got {code}: {err})")
         va = rec.one("gh", "pr", "view")
         check(va is not None, "the executor issues a `gh pr view`")
+        assert va is not None  # narrow for the type checker; `check` above is the readable guard
         fields = set(va[va.index("--json") + 1].split(","))
         check("body" not in fields, f"`gh pr view` must NOT request body; got {sorted(fields)}")
         expected = {"number", "title", "headRefName", "headRefOid", "baseRefName", "labels", "state",
