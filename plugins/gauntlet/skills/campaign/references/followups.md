@@ -94,6 +94,138 @@ in-edge, and that edge is the user's `accept` — the graph has no other way the
 The promotion path for publication is **raise → consensus with the user → publish**. Nothing skips the
 middle step.
 
+## WORKING A FOLLOW-UP — the active loop, one entry at a time
+
+The threshold above says what the driver **may** do. This is the **procedure** that does it — the loop
+that turns an open follow-up into either a refutation or a merged PR. Run it when a wake has **spare
+capacity** and the gated PRs do not need the driver right now (the nudge's "start on follow-ups" reminder
+is one prompt for it). It is **work-conserving, never blocking**: it runs *alongside* gating the campaign's
+PRs, never instead of them, and it holds the run hostage on nothing.
+
+**Scope: one run's driver, not cross-run coordination.** The follow-up store is shared across every
+concurrent run, and this loop does not claim a follow-up against a *second run* — two runs active at once
+could both take up one `self-accepted` entry and open duplicate PRs for it. Making dispatch idempotent
+across runs (a run-owner claim field, or deterministic-branch reconciliation that adopts an existing
+`gauntlet-authored` PR) needs a `followups.py` store transition, so it is a deliberate **non-goal** here
+and is tracked as a follow-up, not solved by this documentation.
+
+**One follow-up at a time. Never a grab-bag.** Pick a single open entry and resume it **by its lifecycle
+state** (`followups.py` owns the transitions, and its `--help` subcommand listing prints each
+subcommand's exact from-set→to edge). Release the slot once that entry reaches an
+**actionable outcome** — refuted, taken up and opened as a PR now being gated (`in-pr`), or surfaced and
+awaiting the user — never "a terminal state": only `rejected` is terminal, and it is the user's ruling, so
+the loop never reaches it on its own. A PR that bundles several follow-ups is one no reviewer can reason
+about and one whose partial rejection strands the rest.
+
+1. **VERIFY the claim — the main line, and where a fresh `candidate` starts.** The common path is one line:
+   a `candidate` → **INVESTIGATE** (dispatch a context-isolated Tier-1, read-only subagent) → `corroborate`
+   or `refute` → if corroborated and every Tier-2 condition holds, `take-up` → a fix subagent opens a PR →
+   `open-pr` → adopt into the run → `merged`. A follow-up is a CLAIM, and the driver's own diagnosis needs
+   corroboration exactly like a reviewer's finding does (`AGENTS.md`/`CLAUDE.md`, "Your OWN diagnosis is a
+   claim too"). So the driver does **not** verify inline and does **not** skip to a fix: the investigation
+   subagent's sole job is to **reproduce the claim** — read the code, run the commands, walk the causal
+   chain — and record the outcome with evidence through `followups.py corroborate` / `refute`. This is the
+   same audit-before-fix discipline the review gate keeps (`stage-2-review-gate.md`); the investigation and
+   any later fix are **two different subagents, in that order, always**.
+
+   **An entry that is NOT a fresh candidate resumes at the step its lifecycle state has already reached — it
+   does not restart.** `followups.py` owns the transitions, and its `--help` subcommand listing prints
+   each subcommand's exact from-set→to edge — that is the authority on **which store edge** is legal from
+   each state; **read the edges there (`followups.py --help` / `scripts/followups.py`), do not re-derive
+   them here.** But a store edge
+   is **not the whole resume step**: several states also need a **campaign action** — dispatch a subagent,
+   reconcile a PR against this run, adopt it into the gauntlet — that **is not a store transition at all**,
+   so it is invisible on the graph, and "defer to the graph" would silently drop it. The graph still owns
+   every `state` move; what this list adds is the campaign action each move must **accompany**. Resume by
+   non-terminal state (the two terminal states — `rejected`, the user's ruling; and a deleted `merged`
+   entry — are never resumed, and the loop never reaches either on its own):
+
+   - **`candidate`** (a fresh one) — INVESTIGATE: this is step 1, the common path above. No prior step to
+     resume.
+   - **`corroborated`** — skip investigation; resume at the `take-up` decision (step 3). No campaign action
+     beyond what step 3 already does.
+   - **`refuted`** — re-investigated **only** when new evidence may overturn it, and that re-investigation
+     succeeds by `corroborate`, never `refute`.
+   - **`self-accepted`** — the driver already took it up; the entry has **no PR yet** (a `self-accepted`
+     entry stores no PR reference — `open-pr` is the step that first writes one). So resume at **step 3**:
+     dispatch the scoped fix subagent, which authors the fix and **opens the PR**; `open-pr` then records it
+     (→ `in-pr`) and step 4 adopts it into the run. Do **not** try to "look up" or reconcile an
+     already-created PR first — there is **no durable fuN→PR key** to look one up by (no PR field before
+     `open-pr`, no fuN→PR reverse index, the `gauntlet-authored` label is run-wide not per-fuN, and the fix
+     contract mandates no fuN-keyed branch — `fix-subagent-contract.md`). See the **same-run idempotency**
+     note below the list.
+   - **`accepted`** — the **user ruled** on it (step 5 reached `accept`), so the driver **skips take-up**;
+     the user already decided, so no autonomous ACT is needed. But `accepted` is the single gateway to
+     **both** `open-pr` (a fix) **and** `publish` (a Tier-3 issue), and the entry records only **when** the
+     user decided (`decided`) — **nothing stores which** they approved. So proceed with the action the
+     ruling **authorized**: if the user approved a **FIX**, dispatch the scoped fix subagent under the
+     approved scope, which opens the PR, then `open-pr` records it (→ `in-pr`) and step 4 adopts it — no
+     reconciliation, exactly as `self-accepted` resumes; if the user approved **PUBLICATION**, that is the
+     **publish** path (Tier 3), **not** a fix. If a fresh wake **cannot tell which** the ruling was for,
+     **SURFACE the entry to the user** rather than assume a fix. The same-run idempotency note below covers
+     its interrupted-wake gap.
+   - **`in-pr`** — a PR is open and named in the entry, but an interrupted wake may have recorded `open-pr`
+     **without** finishing ADOPTION. Adoption is a campaign action, not a store edge — no `in-pr`
+     transition performs it — so "defer to the graph" strands the PR. On resume, **reconcile the recorded
+     PR against the current run and ADOPT it** (the existing idempotent adoption, step 4) if it lacks a run
+     label or ledger row, **then** wait for `merged`/`closed-unmerged`. An unadopted follow-up PR sits
+     **outside the campaign gate** — the exact thing "fold that PR into the current campaign" exists to
+     prevent.
+   - **`reopened`** — its PR died and it already carries the decision it earned, so it does **not** re-decide:
+     it resumes at opening the **replacement** PR. Dispatch the fixer, which opens the replacement PR, then
+     `open-pr` records it (→ `in-pr`) and step 4 adopts it — no reconciliation, same as `self-accepted`. The
+     same-run idempotency note below covers its interrupted-wake gap.
+
+   **Same-run idempotency is a deliberate non-goal — the interrupted-wake gap for `self-accepted`,
+   `accepted`, and `reopened`.** A wake that dies **after** the fix subagent opens the PR but **before**
+   `open-pr` records it leaves the entry in `self-accepted` (or `accepted`/`reopened`) with **no durable
+   fuN→PR key** to reconcile against — so the next wake re-dispatches and can open a **duplicate PR within
+   one run**. Making that dispatch idempotent needs a durable key: a `followups.py` PR-reference field
+   written before `open-pr`, or a deterministic fuN-keyed branch required by the fix contract — **both are
+   deliberate NON-GOALS here** (one is a `followups.py` store change, the other a fix-subagent-contract
+   change), tracked as **a follow-up**. This is the same-run analogue of the cross-run race scoped out under
+   "Scope: one run's driver" above; **neither is solved by this documentation.**
+
+2. **NOT APPLICABLE → `refute`.** If the investigation cannot reproduce the claim, or shows the mechanism
+   cannot occur, it is **refuted** — and that is its **most valuable** outcome, not a failure. A refuted
+   entry is **not deleted**: it stays visible with its evidence so the user (or a later, better
+   investigation) can overturn it. The driver then moves on. **Refuting is not declining** — refute only on
+   evidence the claim is false, never because a fix is inconvenient.
+
+3. **APPLICABLE → `take-up`, then a FIX SUBAGENT that opens a PR.** If the investigation `corroborated` it
+   **and every Tier-2 condition holds and is evidenced** (`corroborated`, `not-gate-machinery`,
+   `behavior-preserved`, `reversible` — `take-up` refuses without them), the driver takes it up
+   (→ `self-accepted`) and dispatches a **scoped fix subagent under the fix-subagent contract**
+   (`fix-subagent-contract.md`) that authors the fix **and opens a PR** for it. The driver hands the fixer
+   a **worktree from the current run's base branch**, and the fixer branches, commits, pushes, and opens
+   the PR against that base — its worktree and scope requirements are owned by `fix-subagent-contract.md`,
+   not restated here. That PR is opened
+   **`gauntlet-authored`** and adopted into the current run so `pr-adoption.md` reads it as
+   `pr_origin=gauntlet` — without the label it defaults to `external`, which then blocks campaign's own
+   later autonomous repair of the very PR it authored. Record the PR with `followups.py open-pr --id fuN
+   --pr <ref>`; the entry stays `in-pr` and names which PR is addressing it.
+
+4. **FOLD THE PR INTO THE CURRENT CAMPAIGN.** The follow-up's PR is **adopted into this run** like any other
+   (`pr-adoption.md` — the `gauntlet-authored` label, ledger row, intent, CI) and **gated by the same
+   review gauntlet**. This is the
+   whole point of "self-accepted, not accepted": the driver may take a follow-up up on its own, but the PR
+   it produces is **judged by the independent gate, not self-approved** — the driver is not its own gate
+   authority. When that PR **merges**, run `followups.py merged --id fuN`: the merged PR is the durable
+   record now, so the entry is deleted (`closed-unmerged` if the PR dies instead — back to open work).
+
+5. **ANY TIER-2 CONDITION FAILS OR IS UNCLEAR → SURFACE AND ASK.** If the fix would touch gate machinery,
+   **change user-facing behavior at all** (Tier-2 condition 3 requires it **preserved** — a named test is
+   evidence the behavior is unchanged, never licence to change it), be irreversible — or you are simply
+   unsure — it is **not** the driver's to take up. Surface it in the report and let the user rule (`accept` / `reject`). That is
+   the normal case, not a failure. And **publishing is never on the autonomous path**: an issue or a
+   release always waits for the user's agreement on that specific item (Tier 3).
+
+**The two subagents are the load-bearing part.** The investigation reproduces before anything is changed,
+and the fix authors code that the gauntlet judges — never the same worker doing both, and never the driver
+doing either inline. That is what keeps an *invented* follow-up from becoming a *merged* regression, which
+is the exact death-spiral this repo has already suffered (`AGENTS.md`/`CLAUDE.md`, "when each fix creates
+the next finding").
+
 ## THE LIFETIME OF AN ENTRY — delete once a durable record exists ELSEWHERE; KEEP what prevents repeated work
 
 **This store is a WORK QUEUE, not an archive.** It is **local** and **git-ignored**: it does not survive a
@@ -336,6 +468,9 @@ hid and the flag that reveals them. Read a value back with `get --field`, **neve
 Surfacing an entry to the user *is* how consensus gets reached, and it must never hold the run hostage
 (`run-identity-and-lease.md`, "Never hold the run hostage on a user prompt"): raise them alongside the
 report and fold any answer in as its own wake. **A `candidate` is a question, not a task**: the driver has
-not investigated it yet, so it has nothing to act on and nothing to say — surface it and ask.
+not investigated it yet, so it has nothing to act on and nothing to say. The FIRST move on a fresh
+candidate is to INVESTIGATE it — the active loop above, when there is spare capacity — because that is
+how the question gets answered. Surfacing it to the user is the THRESHOLD fallback (when the driver
+cannot act autonomously or a user ruling is required), never a substitute for investigating it.
 
 ---
