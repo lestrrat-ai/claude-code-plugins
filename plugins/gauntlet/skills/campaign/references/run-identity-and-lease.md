@@ -5,7 +5,7 @@ measured against. It is **not assumed to be `main`**: it is the **adopted PRs' `
 `gh pr view`), which may be a release or integration branch. When several PRs are adopted at once they
 must **agree** on `baseRefName`; if they disagree, stop and prompt (one run targets one base). Resolve
 it **once** at the start of a run and record it in the ledger header as `base_branch`; re-read it from
-the ledger every wake, never from memory.
+the ledger every heartbeat, never from memory.
 
 Throughout this doc, `<base>` means that branch and `origin/<base>` its remote-tracking branch.
 Concretely: adopted PRs already target `<base>` (their `baseRefName`), every review diffs
@@ -42,8 +42,8 @@ rundir = create_run_directory(repository, run_id) || run_id=…
 derivation, and bare atomic create. Do not unpack that operation here.
 
 Record it in the ledger header field `run_id` (`ledger.py --file <state.jsonl> header set run_id
-<run-id>`) and re-read it every wake (`ledger.py … header get run_id`, like `base_branch`); never trust
-in-context memory for it — a wake may be a fresh agent instance. It flows into:
+<run-id>`) and re-read it every heartbeat (`ledger.py … header get run_id`, like `base_branch`); never trust
+in-context memory for it — a heartbeat may be a fresh agent instance. It flows into:
 
 | Owned by the run | Namespaced form |
 |------------------|-----------------|
@@ -52,7 +52,7 @@ in-context memory for it — a wake may be a fresh agent instance. It flows into
 | PR owner label   | `gauntlet-run-<run-id>` — the **authoritative "mine" marker**. Every adopted PR is tagged with it; it, not any branch name, is what makes a PR this run's. |
 | branch           | the **adopted PR's own `headRefName`** — campaign reuses the PR's existing branch and does NOT mint a `fix-<run-id>-...` branch, so ownership can't be read off the branch name (that's the label's job). |
 | worktree         | the ledger-recorded `worktree` path resolved by the repository-context-aware adoption operation; only a campaign-created worktree (`worktree_owned = yes`) is ever removed (see "PR adoption" / Stage 3) |
-| self-wake prompt | `<campaign-invocation> --run <run-id> --token <agent-token>` — resolve the host form through `runtime-adapter.md`; carry **only** these two flags so a summarized wake re-proves ownership without guessing. It **never** carries `--new` or the original `#PR` adoption args: those are **start-time-only** (they *create/adopt*), whereas `--run` **resumes** an existing run — replaying `--new` on a self-wake would mint a fresh run every heartbeat. |
+| scheduled heartbeat prompt | `<campaign-invocation> --run <run-id> --token <agent-token>` — resolve the host form through `runtime-adapter.md`; carry **only** these two flags so a summarized heartbeat re-proves ownership without guessing. It **never** carries `--new` or the original `#PR` adoption args: those are **start-time-only** (they *create/adopt*), whereas `--run` **resumes** an existing run — replaying `--new` on a scheduled heartbeat would mint a fresh run every heartbeat. |
 
 **Isolation invariant — a run touches ONLY its own work.** It reads/writes only its `<rundir>`, only
 its `state.jsonl`, and only PRs carrying its `gauntlet-run-<run-id>` label (adopted PRs keep their own
@@ -82,18 +82,18 @@ Each run has `<rundir>/lease.json`:
 ```
 
 - **Mint** an agent token (`openssl rand -hex 4`) when you first take a run — at fresh-run start or on
-  adoption — keep it in context, **and put it in your self-wake prompt** (`--token <tok>`) so a
-  summarized/amnesiac wake recovers it from the prompt instead of guessing. **You own the run iff the
+  adoption — keep it in context, **and put it in your scheduled heartbeat prompt** (`--token <tok>`) so a
+  summarized/amnesiac heartbeat recovers it from the prompt instead of guessing. **You own the run iff the
   token you present (prompt `--token`, else in-context) equals the lease's `agent`.**
 - **Claim atomically.** Taking or adopting a run is a check-and-set that MUST be serialized against
   other agents: acquire an atomic lock first — `mkdir <rundir>/claim.lock` (fails if held) — then read
   the lease, decide, write your token + fresh `updated`, and `rmdir` the lock. Two agents racing to
   adopt can't both win because only one `mkdir` succeeds. (A crashed claim leaves a stale
   `claim.lock`; treat one whose mtime is older than a few minutes as abandoned and clear it.)
-- **Heartbeat.** Rewrite the lease with `updated = $(date +%s)` every wake once you're the confirmed
+- **Heartbeat.** Rewrite the lease with `updated = $(date +%s)` every heartbeat once you're the confirmed
   owner, **and** immediately before and after any long *foreground* step, should one be unavoidable,
   so a busy turn still looks alive. All long work — reviews, CI watches, and fix subagents —
-  is backgrounded, so turns stay short and the per-wake refresh normally suffices. A lease is
+  is backgrounded, so turns stay short and the per-heartbeat refresh normally suffices. A lease is
   **stale** only once `now - updated` exceeds **~30 min** — comfortably longer than any single
   foreground operation, so liveness flags a *dead* driver, not a busy one.
 - **Never hold the run hostage on a user prompt.** Do NOT block the loop waiting on a user answer —
@@ -103,25 +103,25 @@ Each run has `<rundir>/lease.json`:
   *campaign cannot move this PR without a human*, with `ci_reason` naming whatever it was. This file
   deliberately enumerates **no** blocker cases — `files-and-ledger.md`, `status`, `awaiting-user` class
   2, owns the class), surface the question, keep driving the other PRs, reschedule, and fold
-  the answer in when it lands as its own wake. Each class names the **durable record** it is answered into
+  the answer in when it lands as its own heartbeat. Each class names the **durable record** it is answered into
   and the **unpark** it triggers (`files-and-ledger.md`, `status`; `loop-control.md` step 3, "Only the
   user's answer unparks a PR") — a park with no defined exit is the wedge one level up (Constraints;
   `stage-2-review-gate.md`).
 - **Adopt only an orphaned run.** Safe to take over only when the lease is **absent or stale** (under
   the claim lock). After writing your token, re-read: if it isn't yours, you lost the race — stand down.
-- **Stand down if superseded.** On a self-wake, present your `--token`: if the lease is **fresh** and
+- **Stand down if superseded.** On a scheduled heartbeat, present your `--token`: if the lease is **fresh** and
   its `agent` is a **different** token, you were superseded (a takeover while you were hung) — do NOT
   drive; report and stop. Never overwrite a fresh lease you don't own. (Carrying the token in the
-  prompt removes any amnesia ambiguity — a self-wake always knows its own token.)
+  prompt removes any amnesia ambiguity — a scheduled heartbeat always knows its own token.)
 - **Release** on normal exit: delete `lease.json` (with the owner label) so the finished run shows no
   active driver.
 
-### Resolving a wake (Loop control step 1 applies this)
+### Resolving a heartbeat (Loop control step 1 applies this)
 
-1. **`--run <id>` given** (every self-wake; also a manual targeted resume). Load `<rundir>/state.jsonl`.
-   Under the claim lock, compare the token you present to the lease: **matches** (self-wake with
+1. **`--run <id>` given** (every scheduled heartbeat; also a manual targeted resume). Load `<rundir>/state.jsonl`.
+   Under the claim lock, compare the token you present to the lease: **matches** (scheduled heartbeat with
    `--token`) → refresh lease, reconcile, continue; **lease absent/stale** → adopt (write token, fresh
-   ts, read-back); **lease fresh but a different token** → for a self-wake, stand down (superseded);
+   ts, read-back); **lease fresh but a different token** → for a scheduled heartbeat, stand down (superseded);
    for a **manual** `--run` with no matching token, another agent appears active, so **confirm takeover
    with the user** before adopting.
 2. **Bare invocation** → the arg decides intent:

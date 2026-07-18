@@ -293,7 +293,7 @@ class Tables:
                                      "…and at the PROGRESS door, which is where the strip used to be. A hand-written event naming ` u01 ` is told its unit id is malformed — not told the unit is 'not in the plan', which is the wrong lesson and was the old message"),
             "amendment-padded-unit-id": (PLAN, [ident(), amendment(proposed_unit=json.loads(unit(" u99 ")))], UNUSABLE,
                                          "NOT AN ID",
-                                         "…and at the THIRD intake: an amendment's `proposed_unit` is what the orchestrator FOLDS INTO THE PLAN, so an id the plan door would refuse must be refused here too — or the plan acquires, one wake later, exactly the unmatchable unit this rule exists to keep out of it"),
+                                         "…and at the THIRD intake: an amendment's `proposed_unit` is what the orchestrator FOLDS INTO THE PLAN, so an id the plan door would refuse must be refused here too — or the plan acquires, one heartbeat later, exactly the unmatchable unit this rule exists to keep out of it"),
             "amendment-unit-not-object": (PLAN, [ident(), amendment(proposed_unit="u99")], UNUSABLE, "not a JSON object",
                                           "the amendment's proposed_unit is a STRING. This is the one place a non-dict unit can reach `check_unit` — the plan's own lines are objects by the time it runs — and it used to be handed straight to `set()`"),
             "plan-missing": (None, WORKED, UNUSABLE, "no plan at",
@@ -489,7 +489,7 @@ class Tables:
                 PLAN, [ident(), started("u01")], None, None, None, UNUSABLE, "THE RUN SKIPPED A STEP",
                 "the pass is still WORKING (u01 started, nothing done) and its PR has no intent — and it is "
                 "refused for the INTENT, not merely reported `incomplete`. A run that dispatched a reviewer "
-                "with nothing to measure it against is broken from the first wake, and the earliest verdict "
+                "with nothing to measure it against is broken from the first heartbeat, and the earliest verdict "
                 "that can say so is the one that should"),
 
             # --- the finding's own shape -------------------------------------------------------------

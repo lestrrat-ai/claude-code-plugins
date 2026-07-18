@@ -13,7 +13,7 @@ adapter; keep workflow rules shared.
 | Skill resources | May expose `CLAUDE_PLUGIN_ROOT` | Active skill path is supplied to the agent | Resolve from the directory containing active `SKILL.md`; pass absolute paths to workers. |
 | Agent dispatch | Agent tool and configured agent types | Available Codex multi-agent controls | Describe worker scope, permissions, model class, and output; do not require a host tool name. |
 | Model selection | Claude model aliases may be available | Session model or configured Codex agents | State required capability; map named models only inside host adapter. |
-| Wake/resume | `ScheduleWakeup` where available | Thread wake where available; bounded foreground wait otherwise | Persist state before waiting and provide an exact resume path. |
+| Heartbeat/resume | `ScheduleWakeup` where available | wakes its thread where available; bounded foreground wait otherwise | Persist state before waiting and provide an exact resume path. |
 | Other-agent reviewer | Default: review with `codex exec` | Default: review with `claude -p` | Cross-engine is the default, launched at native-limitation level when the paired CLI is present. Fall back to a fresh native worker when it is absent or fails. Explicit or saved user choice overrides. |
 
 Campaign's exact cross-agent command lines live in

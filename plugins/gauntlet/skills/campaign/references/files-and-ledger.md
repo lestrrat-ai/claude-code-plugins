@@ -9,18 +9,18 @@ resume, reuse the existing dir). Per-run dirs are what keep concurrent runs' fil
 |------|----------|
 | `state.jsonl` | Live per-PR ledger — a **cache/hint**, not the source of truth (see below) |
 | `pr-<pr>.json` | `gh pr view` snapshot captured at adoption (PR facts the ledger row is built from) |
-| `prs.json` | Batched `gh pr list` snapshot of this run's PRs — the per-wake reconcile input, and the adoption/discovery input. **ONE path, ONE schema, ONE command**: the canonical command is spelled in full in **"The canonical `prs.json` command"**, the command block directly below this table, and that block is its ONLY definition |
+| `prs.json` | Batched `gh pr list` snapshot of this run's PRs — the per-heartbeat reconcile input, and the adoption/discovery input. **ONE path, ONE schema, ONE command**: the canonical command is spelled in full in **"The canonical `prs.json` command"**, the command block directly below this table, and that block is its ONLY definition |
 | `lease.json` | This run's active-driver lease (`{agent, updated}`; see "Run lease") |
 | `review-<pr>-<n>.prompt.txt` | The reviewer prompt for round `n`, launch attempt 1, with the verbatim intent and JSON-encoded typed transport record bound as data. Written through `runtime-adapter.md`'s `write_bytes` and passed through `dispatch_native` or `run_argv` — never embedded in shell source (`stage-2-review-gate.md`) |
 | `review-<pr>-<n>.txt` | The reviewer's PR review output, round `n` (launch attempt 1), written by the sole producer assigned in `runtime-adapter.md`'s typed review record |
 | `review-<pr>-<n>.plan.jsonl` | Orchestrator-authored review work units for round `n` (per-pass — a relaunch reuses it). Written through `scripts/review-pass.py plan-add`, never a heredoc |
 | `review-<pr>-<n>.progress.jsonl` | Reviewer progress events against the plan for round `n` (launch attempt 1), opened by the orchestrator's `pass_identity` line. **Every line is READ and validated through `scripts/review-pass.py` — and not every line is WRITTEN by it.** The `pass_identity` (`review-pass.py identity`) and the unit-progress events (the reviewer's `emit-progress.py`) are; a `plan_amendment_request` the reviewer appends **directly** is not — it is the one event the emit-only rule exempts. `stage-2-review-gate.md` owns that rule; see "Review-pass artifacts" below |
 | `review-<pr>-<n>.findings.jsonl` | The pass's FINDINGS, round `n` (launch attempt 1) — one validated record per finding, written **only** through `scripts/emit-finding.py`. A finding used to be prose in the report, so nothing could check its citation, bound its writer, or ask what it DEFENDED — and therefore nothing could ever **decline** one. Each record ANCHORS to the PR's intent: a `## Purpose` line quoted verbatim, or the actor who can actually write the bad input. `stage-2-review-gate.md` owns the schema and the gating rule |
-| `intent-<pr>.md` | **What this PR is FOR** — `## Purpose` / `## Non-goals` / `## Threat model`. Written at adoption (`pr-adoption.md`), from the PR body when it carries one and **authored by the driver** from the diff/title/body when it does not; re-read every wake, never re-derived. It is passed to the reviewer **verbatim**, and it is what the **pass** is measured against: `review-pass.py verify` loads it for **every** pass it judges — including one that found nothing — so a PR with no usable block here earns **no verdicts at all** (`stage-2-review-gate.md`, "Does this pass COUNT?"). **LOCAL and git-ignored — campaign NEVER writes it back to the PR** |
+| `intent-<pr>.md` | **What this PR is FOR** — `## Purpose` / `## Non-goals` / `## Threat model`. Written at adoption (`pr-adoption.md`), from the PR body when it carries one and **authored by the driver** from the diff/title/body when it does not; re-read every heartbeat, never re-derived. It is passed to the reviewer **verbatim**, and it is what the **pass** is measured against: `review-pass.py verify` loads it for **every** pass it judges — including one that found nothing — so a PR with no usable block here earns **no verdicts at all** (`stage-2-review-gate.md`, "Does this pass COUNT?"). **LOCAL and git-ignored — campaign NEVER writes it back to the PR** |
 | `review-<pr>-<n>.a<k>.prompt.txt` / `.a<k>.txt` / `.a<k>.progress.jsonl` / `.a<k>.findings.jsonl` | The same four per-attempt artifacts for **launch attempt `k ≥ 2`** — a relaunched pass writes here, never over attempt 1's files, so a killed-but-alive attempt can't corrupt the live one. Only the attempt named in the active `pass_identity` is read or counted as gate output (see `stage-2-review-gate.md`). The plan and the intent are **not** per-attempt: the plan is per-pass, the intent per-PR |
-| `ci-<pr>-<head_sha>.txt` | Latest **SHA-pinned** CI snapshot for a PR — check runs **AND** commit statuses, written **BY THE WAKE** running **`scripts/ci-status.py derive`** after the watch completes (**the watch never writes it**), promoted atomically, and **stamped with the `head_sha` it describes** (verify the stamp before parsing). Carries a **`source` completion marker per mandatory source**, so a source that was **never queried** is `unusable`, not a silent green (`stage-2-ci.md`). Never the watch stream, and never `gh pr checks` — its output carries **no SHA** |
+| `ci-<pr>-<head_sha>.txt` | Latest **SHA-pinned** CI snapshot for a PR — check runs **AND** commit statuses, written **BY THE HEARTBEAT** running **`scripts/ci-status.py derive`** after the watch completes (**the watch never writes it**), promoted atomically, and **stamped with the `head_sha` it describes** (verify the stamp before parsing). Carries a **`source` completion marker per mandatory source**, so a source that was **never queried** is `unusable`, not a silent green (`stage-2-ci.md`). Never the watch stream, and never `gh pr checks` — its output carries **no SHA** |
 | `audit-<pr>-<n>.md` | A dispatched context-isolated audit subagent's verdicts on round `n`'s gating findings — CONFIRMED / ADJUSTED / REFUTED, each with evidence. A REFUTED finding's reasoning is recorded here **and** written into the tree as an inline comment at the site, committed like any other change (`stage-2-review-gate.md`, "Audit every finding before you fix it") |
-| `repair-<pr>-<k>.md` | The **reassessment pass**'s decision record for repair `k`: the whole round-by-round history it was handed, the ONE decision it returned, and why (`repair-pass.md`). Written **before** the decision is recorded — `repair-pass.py decide` refuses a `--record` that is missing or empty, because a wake is a fresh agent instance and a justification held only in a dead agent's context can never be audited |
+| `repair-<pr>-<k>.md` | The **reassessment pass**'s decision record for repair `k`: the whole round-by-round history it was handed, the ONE decision it returned, and why (`repair-pass.md`). Written **before** the decision is recorded — `repair-pass.py decide` refuses a `--record` that is missing or empty, because a heartbeat is a fresh agent instance and a justification held only in a dead agent's context can never be audited |
 | `abort-<id>.md` | Detailed log for an aborted PR-task |
 
 **The canonical `prs.json` command — this block is THE definition.** Every other site defers to it, and
@@ -42,7 +42,7 @@ run_argv(
 )
 ```
 
-`pr-adoption.md` (discovery) and `loop-control.md`'s per-wake PR scan (the `prs.json` block in step 1)
+`pr-adoption.md` (discovery) and `loop-control.md`'s per-heartbeat PR scan (the `prs.json` block in step 1)
 each run this command
 inline, **identically** — same label, same flags, same `--json` field set, same path. That is intended:
 they are the same scan. What is forbidden is a **different** spelling anywhere.
@@ -85,7 +85,7 @@ repo root, `.gauntlet/` (git-ignored; add `.gauntlet/` to `.gitignore` if missin
 
 **Only `.gauntlet/tmp/` is disposable — never `rm -rf .gauntlet/` itself.** That would take **every
 durable store in the table above** with it — the carryover history, and the follow-up ledger, which
-(unlike `state.jsonl`, a cache that re-derives itself from `gh` every wake) **nothing can rebuild**.
+(unlike `state.jsonl`, a cache that re-derives itself from `gh` every heartbeat) **nothing can rebuild**.
 Scratch cleanup targets `.gauntlet/tmp/**` and nothing above it.
 
 The history tree keeps **one file per run** (`<run-id>.md`) so concurrent runs never clobber a shared
@@ -107,13 +107,13 @@ the **active launch attempt's** review output files for which verdicts exist on 
 attempt named in that pass's `pass_identity`, so a relaunch's verdict is never missed and a dead
 attempt's is never counted). `git rev-parse HEAD` is used
 ONLY to validate/read an existing worktree when one is checked out — never as the primary source of a
-PR's live head (an adopted PR may have no local branch/worktree at all). Every wake re-derives what's
+PR's live head (an adopted PR may have no local branch/worktree at all). Every heartbeat re-derives what's
 due from those, then refreshes this file. So a stale or half-written ledger is self-healing — never
 act on it without reconciling against gh (and any existing worktree) first.
 
 The store is **JSONL** — one JSON object per line, `cat`/`grep`/`jq`-able. The first line is the
 run-config header record (`{"type": "header", …}` — the run's config, **every field of it** re-read each
-wake, never from memory; the fields are the ones `ledger.py`'s `HEADER_FIELDS` declares and "Header-record
+heartbeat, never from memory; the fields are the ones `ledger.py`'s `HEADER_FIELDS` declares and "Header-record
 fields" below defines, and no reader may keep its own copy of that list); each
 following line is one adopted PR's row record (`{"type": "row", …}`). Every record is **self-describing**
 — fields are keyed by NAME, never by column position:
@@ -136,13 +136,13 @@ live `headRefOid` and pasted into commands; an abbreviated one silently fails bo
 shortened SHA into the store, and never reconstruct one from a display.** The ONLY place a SHA is ever
 shortened is `table`'s rendering (below) — that is display-only and does not exist on disk.
 
-Header-record fields: `run_id` (this run's identity — namespaces its dir/label/wakes; set once),
+Header-record fields: `run_id` (this run's identity — namespaces its dir/label/heartbeats; set once),
 `base_branch` (the adopted PRs' baseRefName — the branch they merge into & diffs measure against; set
 once, see "Base branch"), `api_changes` (`ask` | `allowed`, run-wide; set once from the invocation),
 `reviewer` (`default` (per-host cross-engine route with native fallback — see "The reviewer") | `codex` | `claude` | `<other>` — the selected reviewer; set once, see
 "The reviewer"), `required_set` (what `base_branch` **requires** — `stage-2-ci.md`, "What were we
 expecting to see?", owns the three states, the format, and the reads that produce them; re-read every
-wake while it is `unknown`), `skill_version` (**which copy of the rules actually governed this run**).
+heartbeat while it is `unknown`), `skill_version` (**which copy of the rules actually governed this run**).
 
 `skill_version` is read at startup from the **running plugin's** `plugin.json` (`SKILL.md`) and stated in
 the final report. **It is not cosmetic.** The harness loads this skill from the **installed plugin cache**,
@@ -210,7 +210,7 @@ Header field notes (the header fields above; per-row fields follow):
   there is **no `--review-rounds` flag at any door**: a door that can write a counter is a door that can
   zero it, and the rule is enforced by the flag's ABSENCE rather than by a promise.
 
-  **It is the review loop's only memory across fresh-context wakes.** `reviews_ok` is a gate tally and is
+  **It is the review loop's only memory across fresh-context heartbeats.** `reviews_ok` is a gate tally and is
   correctly zeroed on every NOT SATISFIED — which means that without this field, **the ledger after 21
   review rounds is indistinguishable from the ledger after one**, and every stopping rule of the form "on
   the second NOT SATISFIED…" is a backstop with **no sensor**. That is not a hypothetical either: one PR ran
@@ -233,7 +233,7 @@ Header field notes (the header fields above; per-row fields follow):
   run dir, not in this one-object-per-line store): `-` (not adopted yet) | `stated@<iso>` (the PR body
   already carried a usable intent block, copied verbatim) | `authored@<iso>` (the driver **inferred** it
   from the PR's title, body and diff). Set at adoption (`pr-adoption.md` step 3a) and **preserved** by every
-  refresh — a wake is a fresh agent instance, and an intent invented twice is two intents.
+  refresh — a heartbeat is a fresh agent instance, and an intent invented twice is two intents.
 
   The distinction is the honest one and the final report states it: an `authored` intent is **the driver's
   CLAIM about what the PR is for**, not the author's, and a wrong intent block silently **narrows** a
@@ -251,14 +251,14 @@ Header field notes (the header fields above; per-row fields follow):
   looping. The mechanism that fixes non-convergence must not itself fail to converge. Like `review_rounds`,
   it has **no flag at any door** — a budget you can zero is not a bound.
 - `repair_decision` — `-`, or the last reassessment decision + when: `<decision>@<iso>`. Durable, because
-  the wake that dispatches the repair may be a different agent instance from the one that decided it — and
+  the heartbeat that dispatches the repair may be a different agent instance from the one that decided it — and
   a repair may not be dispatched at all until this field is set (`ledger.py dispatch-check --action repair`).
   **DURABLE *and* SPENT EXACTLY ONCE per cap** — it is reset to `-` when the row **re-enters `repairing`**
   (`ledger.py verdict` at a cap), so a decision answers exactly the cap it was recorded for and a PR that
   reaches a cap **again** must earn a fresh `decide` (which spends `repair_count`, so the bound holds).
   `abort@…` is terminal and is never cleared.
 - `tier` — the adaptive review tier derived from `head_sha`: `TRIVIAL` | `STANDARD` | `HIGH`. Re-derived
-  every wake and re-triaged on any content change; drives `required(tier)` and the review depth.
+  every heartbeat and re-triaged on any content change; drives `required(tier)` and the review depth.
 - `ci` — `green` / `red` / `pending` for `head_sha`. (**There is no `none`.** It was documented but no
   procedure could ever write it.)
 - `ci_fingerprint` — digest of the last **verified** CI snapshot. **What it covers and exactly how it is
@@ -279,7 +279,7 @@ Header field notes (the header fields above; per-row fields follow):
   fingerprint did **not** change (`stage-2-ci.md`, "RUNNING-STALL" — the definition; the cap lives there
   and nowhere else). A **clock, not a tally**, and that is deliberate: a `RUNNING` row that is merely
   **SLOW** and one that is **DEAD** are indistinguishable on a fingerprint, and derivations are driven by
-  wakes whose cadence depends on the run's load — so only elapsed **TIME** separates them. It is on disk
+  heartbeats whose cadence depends on the run's load — so only elapsed **TIME** separates them. It is on disk
   precisely so `now - ci_stalled_since` is computable by a fresh agent instance that remembers nothing.
   Cleared (`-`) on any fingerprint change, on any `head_sha` change, and whenever a **machine action** is
   due or in flight for this PR at this `head_sha` (a fix that pushes will replace these rows). At the cap,
@@ -311,7 +311,7 @@ Header field notes (the header fields above; per-row fields follow):
   2) — so **any** future park with that property writes its reason here, with no edit to this bullet.
 - `blocker_ruling` — durable record of the user's answer to a **machine-blocker park** (the `status`
   taxonomy below): `-` (none yet) | `retry@<iso>` | `abort@<iso>`. It is the **answer** to the question
-  `ci_reason` **asks**, and it exists for the same reason `api_approval` does: a wake may be a fresh
+  `ci_reason` **asks**, and it exists for the same reason `api_approval` does: a heartbeat may be a fresh
   agent instance, so an answer held only in context is an answer the user is asked for twice. `retry`
   unparks with the liveness counters cleared; `abort` goes terminal `aborted`. The unpark is
   `loop-control.md` step 3, "Only the user's answer unparks a PR".
@@ -324,13 +324,13 @@ Header field notes (the header fields above; per-row fields follow):
   cleared — it goes terminal, and a terminal row is never re-parked, so it stays as the record of why.
   A **counter reset never touches it**: it is not one of the liveness counters.
 
-  These live **on disk, not in the driver's head**: a wake may be a fresh agent instance, and a counter —
+  These live **on disk, not in the driver's head**: a heartbeat may be a fresh agent instance, and a counter —
   or a ruling — that dies with the context never reaches its cap.
 - `attempts` — task attempts so far (for the retry-once bailout).
 - `started` — wall-clock start of the current attempt (for the 1-hour cap).
 - `api_approval` — durable record of the user's decision on this PR's API-changing fix: `-`
   (not an API change, or not yet decided) | `approved@<iso>` | `declined@<iso>`. Written the moment
-  the user answers, so a later wake — or a fresh agent that adopted the run — reads it and never
+  the user answers, so a later heartbeat — or a fresh agent that adopted the run — reads it and never
   re-asks about a PR already decided. It records the decision (an input); `status` stays the
   live position, so the two never contradict: `approved` pairs with the PR back in normal
   gate flow, `declined` with a terminal `aborted`. A one-off approval lands here only; it never flips
@@ -358,7 +358,7 @@ Header field notes (the header fields above; per-row fields follow):
   1. **PARKED — waiting on a HUMAN** (`awaiting-api`, `awaiting-user`). No amount of machine work can
      resolve it. The user's answer unparks the PR **to the `status` that answer dictates** — a **RESUME**
      answer (`approved`, a standoff ruling, `retry`) to `in_review`, with normal dispatch resuming on the
-     next wake; a **TERMINAL** answer (`declined`, `abort`) to `aborted`, which never resumes. Per class,
+     next heartbeat; a **TERMINAL** answer (`declined`, `abort`) to `aborted`, which never resumes. Per class,
      below — and `loop-control.md` step 3, "Only the user's answer unparks a PR", owns the mapping.
   2. **`repairing` — waiting on the REASSESSMENT PASS, not on a human.** The PR reached a review-loop cap
      (`review_rounds` or `ns_streak`), so it has stopped converging and **must not take another targeted
@@ -395,7 +395,7 @@ Header field notes (the header fields above; per-row fields follow):
 
     Same park mechanics as
     `awaiting-api` for both: `reviews_ok` stays 0, no review pass is launched for this PR, the other PRs
-    keep being driven, and the answer folds in as its own wake (`loop-control.md` step 3, "Only the
+    keep being driven, and the answer folds in as its own heartbeat (`loop-control.md` step 3, "Only the
     user's answer unparks a PR" — the owning definition of the record + unpark for **every** park class).
     NEVER park without surfacing the question, and NEVER park into a state whose exit is undefined.
 
@@ -428,7 +428,7 @@ by name and the script keeps the store canonical.
 This mirrors how `stage-2-review-gate.md` treats `emit-progress.py`: the file stays **plaintext and
 human-readable** JSONL (`cat`/`grep`/`jq`-able), the accessor just owns the schema and writes the
 canonical layout — the store is now JSONL owned by the script. `state.jsonl` is still a cache reconciled
-against ground truth every wake (above) — the accessor changes *how* records are written, not what the
+against ground truth every heartbeat (above) — the accessor changes *how* records are written, not what the
 ledger means.
 
 Resolve its absolute path as `<skill-dir>/scripts/ledger.py` (skill dir = the directory holding the
@@ -467,7 +467,7 @@ the one kind of work a `repairing` row accepts, and it is refused until the reas
 the row — otherwise a driver could call its next targeted fix "the repair" and go on whacking moles under
 a new name.
 
-`table` is the user-facing status view: the end-of-wake report renders it whenever the run goes back
+`table` is the user-facing status view: the end-of-heartbeat report renders it whenever the run goes back
 to waiting (`loop-control.md`, "Reschedule or exit"). It renders state and decides nothing — no gate
 logic, no derived values.
 

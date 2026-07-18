@@ -97,7 +97,7 @@ middle step.
 ## WORKING A FOLLOW-UP — the active loop, one entry at a time
 
 The threshold above says what the driver **may** do. This is the **procedure** that does it — the loop
-that turns an open follow-up into either a refutation or a merged PR. Run it when a wake has **spare
+that turns an open follow-up into either a refutation or a merged PR. Run it when a heartbeat has **spare
 capacity** and the gated PRs do not need the driver right now (the nudge's "start on follow-ups" reminder
 is one prompt for it). It is **work-conserving, never blocking**: it runs *alongside* gating the campaign's
 PRs, never instead of them, and it holds the run hostage on nothing.
@@ -161,10 +161,10 @@ about and one whose partial rejection strands the rest.
      ruling **authorized**: if the user approved a **FIX**, dispatch the scoped fix subagent under the
      approved scope, which opens the PR, then `open-pr` records it (→ `in-pr`) and step 4 adopts it — no
      reconciliation, exactly as `self-accepted` resumes; if the user approved **PUBLICATION**, that is the
-     **publish** path (Tier 3), **not** a fix. If a fresh wake **cannot tell which** the ruling was for,
+     **publish** path (Tier 3), **not** a fix. If a fresh heartbeat **cannot tell which** the ruling was for,
      **SURFACE the entry to the user** rather than assume a fix. The same-run idempotency note below covers
-     its interrupted-wake gap.
-   - **`in-pr`** — a PR is open and named in the entry, but an interrupted wake may have recorded `open-pr`
+     its interrupted-heartbeat gap.
+   - **`in-pr`** — a PR is open and named in the entry, but an interrupted heartbeat may have recorded `open-pr`
      **without** finishing ADOPTION. Adoption is a campaign action, not a store edge — no `in-pr`
      transition performs it — so "defer to the graph" strands the PR. On resume, **reconcile the recorded
      PR against the current run and ADOPT it** (the existing idempotent adoption, step 4) if it lacks a run
@@ -174,12 +174,12 @@ about and one whose partial rejection strands the rest.
    - **`reopened`** — its PR died and it already carries the decision it earned, so it does **not** re-decide:
      it resumes at opening the **replacement** PR. Dispatch the fixer, which opens the replacement PR, then
      `open-pr` records it (→ `in-pr`) and step 4 adopts it — no reconciliation, same as `self-accepted`. The
-     same-run idempotency note below covers its interrupted-wake gap.
+     same-run idempotency note below covers its interrupted-heartbeat gap.
 
-   **Same-run idempotency is a deliberate non-goal — the interrupted-wake gap for `self-accepted`,
-   `accepted`, and `reopened`.** A wake that dies **after** the fix subagent opens the PR but **before**
+   **Same-run idempotency is a deliberate non-goal — the interrupted-heartbeat gap for `self-accepted`,
+   `accepted`, and `reopened`.** A heartbeat that dies **after** the fix subagent opens the PR but **before**
    `open-pr` records it leaves the entry in `self-accepted` (or `accepted`/`reopened`) with **no durable
-   fuN→PR key** to reconcile against — so the next wake re-dispatches and can open a **duplicate PR within
+   fuN→PR key** to reconcile against — so the next heartbeat re-dispatches and can open a **duplicate PR within
    one run**. Making that dispatch idempotent needs a durable key: a `followups.py` PR-reference field
    written before `open-pr`, or a deterministic fuN-keyed branch required by the fix contract — **both are
    deliberate NON-GOALS here** (one is a `followups.py` store change, the other a fix-subagent-contract
@@ -252,10 +252,10 @@ time. So:
   its history intact — the finding, the ACT grounds or the user's ruling, and the PR that died. It never
   vanishes with the PR, and it is never stuck in "being worked on" forever.
 
-**Move it in the wake that SAW the event** — the same rule as recording one the moment it is noticed, and
-for the same reason: the driver's memory of it dies with the driver's context. The wake that opens the PR
-addressing a follow-up runs `open-pr`; the wake that observes that PR **merged** or **closed** runs
-`merged` / `closed-unmerged`. A follow-up whose PR landed three wakes ago and still sits in `in-pr` is a
+**Move it in the heartbeat that SAW the event** — the same rule as recording one the moment it is noticed, and
+for the same reason: the driver's memory of it dies with the driver's context. The heartbeat that opens the PR
+addressing a follow-up runs `open-pr`; the heartbeat that observes that PR **merged** or **closed** runs
+`merged` / `closed-unmerged`. A follow-up whose PR landed three heartbeats ago and still sits in `in-pr` is a
 queue nobody can trust to say what is left to do.
 
 **AND REJECTIONS ARE KEPT.** A `rejected` entry stays in the store — hidden from the default view (nobody
@@ -276,7 +276,7 @@ disposable, and a follow-up must outlive the run that found it.
 Two consequences follow, and both are why this is not just another `state.jsonl`:
 
 - **It is the SOURCE OF TRUTH, not a cache.** `state.jsonl` is a hint reconciled against GitHub every
-  wake, so a lost row heals itself. **Nothing can rebuild a lost follow-up** — it exists nowhere else, by
+  heartbeat, so a lost row heals itself. **Nothing can rebuild a lost follow-up** — it exists nowhere else, by
   design. A lost entry is lost forever.
 - **It has MANY writers.** The lease makes `state.jsonl` single-writer; **every concurrent run** writes
   this one. Its accessor locks the read-modify-write for that reason — hand-editing the file races with a
@@ -428,7 +428,7 @@ job is to hold claims a human can audit.
 DELIBERATE act rather than an oversight**. It is a footgun guard, **NOT** a security boundary.
 
 **The user's ruling is DURABLE DATA.** `accept`/`reject` stamp when it was made, for the same reason the
-ledger's `api_approval` records `approved@<iso>` rather than living in the driver's head: **a later wake
+ledger's `api_approval` records `approved@<iso>` rather than living in the driver's head: **a later heartbeat
 is a fresh agent that never saw the conversation**, and it must not re-ask a question the user already
 answered. **Nothing the driver does alone stamps it** — not an investigation, not a `take-up`, not opening
 a PR, not `publish`. A ruling written by anything but the user would launder the driver's action into the
@@ -467,7 +467,7 @@ hid and the flag that reveals them. Read a value back with `get --field`, **neve
 **What the driver may do with what it surfaces is the THRESHOLD above — do not re-derive it here.**
 Surfacing an entry to the user *is* how consensus gets reached, and it must never hold the run hostage
 (`run-identity-and-lease.md`, "Never hold the run hostage on a user prompt"): raise them alongside the
-report and fold any answer in as its own wake. **A `candidate` is a question, not a task**: the driver has
+report and fold any answer in as its own heartbeat. **A `candidate` is a question, not a task**: the driver has
 not investigated it yet, so it has nothing to act on and nothing to say. The FIRST move on a fresh
 candidate is to INVESTIGATE it — the active loop above, when there is spare capacity — because that is
 how the question gets answered. Surfacing it to the user is the THRESHOLD fallback (when the driver

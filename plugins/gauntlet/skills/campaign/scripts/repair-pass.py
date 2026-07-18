@@ -2,7 +2,7 @@
 """The REASSESSMENT PASS's door — the only sanctioned way to record what to do about a PR that has stopped
 converging.
 
-The campaign review gate had no memory. Every wake was a fresh agent instance, `reviews_ok` was zeroed on
+The campaign review gate had no memory. Every heartbeat was a fresh agent instance, `reviews_ok` was zeroed on
 every NOT SATISFIED, and nothing counted rounds — so the ledger after 21 review rounds was indistinguishable
 from the ledger after 1, and every stopping rule in the skill was a rule with NO SENSOR. Two PRs ran 21 and
 14 adversarial rounds, produced a true finding almost every time, and never converged. A human stopped it at
@@ -186,12 +186,12 @@ def cmd_decide(path: Path, args) -> int:
              f"with; it is what happens when the loop stops converging.")
 
     # THE DECISION RECORD MUST EXIST BEFORE IT IS RECORDED. A decision whose reasoning is only in a dead
-    # agent's context is a decision nobody can audit — and every wake is a fresh agent instance.
+    # agent's context is a decision nobody can audit — and every heartbeat is a fresh agent instance.
     record = Path(args.record)
     if not record.exists() or not record.read_text().strip():
         fail(f"--record {record} does not exist or is empty. Write the reassessment's reasoning — the "
              f"round-by-round history it saw, the decision, and WHY — before recording the decision. A "
-             f"decision with no record on disk cannot be audited by the next wake, which remembers nothing.")
+             f"decision with no record on disk cannot be audited by the next heartbeat, which remembers nothing.")
 
     allowed = permitted_for(row)
     if args.decision not in allowed:

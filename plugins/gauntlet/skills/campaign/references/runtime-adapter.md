@@ -270,24 +270,24 @@ native worker's inherited session model is the implementation of `session`; reco
 the final report. Never guess a model name from the other host. An unavailable `economy` mapping raises
 cost but does not lower the gate.
 
-## Background work and wakeups
+## Background work and heartbeats
 
 Reviews, fixes, audits, reassessments, and CI watches remain asynchronous logical tasks. Fold a
 completion into the same reconcile loop regardless of the host mechanism that reports it.
 
 For the heartbeat fallback, choose exactly one lifecycle:
 
-1. **Scheduled-wake host:** schedule `<campaign-invocation> --run <run-id> --token <agent-token>` at the
+1. **Scheduled-heartbeat host:** schedule `<campaign-invocation> --run <run-id> --token <agent-token>` at the
    delay selected by `loop-control.md`, render status, and return. The future invocation begins at the
-   wake/reconcile entry.
+   heartbeat/reconcile entry.
 2. **Scheduler-less host:** keep the current campaign invocation alive, render status, and use the host's
    bounded wait/poll mechanism until the first task completion or protected 5-minute/15-minute deadline.
-   When that wait returns, go directly back to the wake/reconcile entry and repeat while non-terminal
+   When that wait returns, go directly back to the heartbeat/reconcile entry and repeat while non-terminal
    work remains. Do **not** take the scheduled-host return after a bounded wait.
 
-The second path is how Codex CLI sessions operate when no scheduled-wakeup capability is available. If
+The second path is how Codex CLI sessions operate when no scheduled-heartbeat capability is available. If
 the process is killed, durable run state and the lease takeover rules allow a later invocation to resume;
-the skill does not pretend a wake was scheduled when none was.
+the skill does not pretend a heartbeat was scheduled when none was.
 
 ## Reviewer selection and diversity
 

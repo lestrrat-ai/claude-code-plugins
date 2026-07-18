@@ -3,7 +3,7 @@
 - **1-hour cap per task** — one hour of wall-clock since `started` without merging. The cap catches a
   *stuck* task, not a slow external system, and the ledger records no separately-metered work time — so
   key it off recorded row state, not a running subtraction of durations nothing stores: **do not fire
-  the cap on a wake where the row is in a BOUNDED wait.** There are exactly three kinds, and **none is
+  the cap on a heartbeat where the row is in a BOUNDED wait.** There are exactly three kinds, and **none is
   a `ci` value**:
   - **a PARK** — `status == awaiting-api` (parked for user approval) or `status == awaiting-user` (parked
     for the user to adjudicate a **review standoff** or a **machine blocker** — `files-and-ledger.md`,
@@ -59,7 +59,7 @@
   and that park is exempt for its own reason (a **declared exit**, above). So a PR waiting on a live CI
   bound is never aborted out from under it: the bound either resolves, or it reaches the human. This cap's
   job is the **agent-controlled** row — the task stuck in campaign's own work (a hung review, a red PR
-  whose fix never lands), where nothing else is counting. Only a wake where
+  whose fix never lands), where nothing else is counting. Only a heartbeat where
   `started` is over an hour old *and* the row is agent-controlled — **it is in NONE of the three bounded
   waits above**: not parked, not `repairing`, and **NO** bound of the CI owner's set live for it (never a
   count of them, which rots the moment a set gains a member) — trips it.
@@ -89,7 +89,7 @@
   **The rule this replaces was "stop targeted patching on the 2nd `NOT SATISFIED` and run the root-cause
   pass", and it NEVER FIRED — not once, across 35 review rounds on two PRs.** It was not skipped in bad
   faith: it was **unevaluable**. Its trigger is a fact about *history* ("the second `NOT SATISFIED` on this
-  PR"), the ledger recorded no history, and every wake is a fresh agent instance holding exactly one
+  PR"), the ledger recorded no history, and every heartbeat is a fresh agent instance holding exactly one
   finding. It called itself a hard backstop; it was a hard backstop **with no sensor**. Do not restore it.
 
   What replaces it is a **counter with a cap**, on disk, evaluated by the tool that records the verdict:
@@ -109,13 +109,13 @@
   **THIS BACKSTOP HAD NO SENSOR, AND THAT IS WHY IT NEVER FIRED.** Its trigger — *"the second `NOT
   SATISFIED` on the same PR"* — is a **fact about history**, and nothing recorded any history: `reviews_ok`
   is zeroed on every `NOT SATISFIED`, so the ledger after twenty-one rounds read exactly as it did after
-  one. Each wake is a **fresh agent instance** holding a single round, so it could not know a second one
+  one. Each heartbeat is a **fresh agent instance** holding a single round, so it could not know a second one
   had ever happened. The rule called itself a hard backstop; it was a hard backstop **with no input**, and
   one PR ran **21 review rounds** underneath it.
 
   The ledger now records that history — `ns_streak` (consecutive `NOT SATISFIED`, cleared only by a
   `SATISFIED`) and `review_rounds` (landed verdicts, **never** reset) — so the trigger is, for the first
-  time, a value a fresh wake can **read** (`files-and-ledger.md`). **And it IS read: `ledger.py verdict`
+  time, a value a fresh heartbeat can **read** (`files-and-ledger.md`). **And it IS read: `ledger.py verdict`
   evaluates the caps as it records the verdict, and at a cap it holds the PR `repairing` and exits
   non-zero.** The reader lives in the one door that cannot be skipped, because a cap evaluated by a
   *separate* command is a cap a driver can forget to run — which is the failure being cured, not a fresh

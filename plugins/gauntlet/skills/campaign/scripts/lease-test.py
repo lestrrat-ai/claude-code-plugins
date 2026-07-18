@@ -82,12 +82,12 @@ def t_no_heartbeat_refuses(work: Path) -> None:
 def t_no_heartbeat_refuses_on_an_absent_lease(work: Path) -> None:
     """The easy way to reintroduce the bug: check the proof only on the `owned` path.
 
-    A fresh run is the case with NO wake yet — exactly the one that must not sail through.
+    A fresh run is the case with NO heartbeat yet — exactly the one that must not sail through.
     """
     L.check(not lease_path(work).exists(), "fixture precondition: no lease yet")
     code, _out, _err = acquire(work, token="t1")
     L.check(code != 0, "an ABSENT lease must refuse without a proof too — a fresh run is the case with no "
-                       "wake armed yet, so checking only the `owned` path defeats the whole door")
+                       "heartbeat armed yet, so checking only the `owned` path defeats the whole door")
 
 
 def t_empty_heartbeat_is_not_a_proof(work: Path) -> None:
@@ -112,8 +112,8 @@ def t_argparse_must_not_steal_the_refusal(work: Path) -> None:
 
 
 def t_no_token_refuses_and_never_mints(work: Path) -> None:
-    """A caller with no token never armed a wake that identifies it: its proof cannot be real."""
-    code, _out, err = acquire(work, heartbeat="wake-1")
+    """A caller with no token never armed a heartbeat that identifies it: its proof cannot be real."""
+    code, _out, err = acquire(work, heartbeat="hb-1")
     L.check(code != 0, "acquire with NO --token must REFUSE")
     L.check(not lease_path(work).exists(), "a refused acquire must write NOTHING — and must NOT mint a "
                                            "token to make itself succeed")
@@ -124,7 +124,7 @@ def t_no_token_refuses_and_never_mints(work: Path) -> None:
 
 def t_proof_is_stored_verbatim(work: Path) -> None:
     """The tool never parses, normalizes, or validates the proof's content."""
-    hostile = "  wake id/with spaces --and-dashes é中 $(echo no) `echo no`  "
+    hostile = "  heartbeat id/with spaces --and-dashes é中 $(echo no) `echo no`  "
     code, out, _err = acquire(work, token="t1", heartbeat=hostile)
     L.check(code == 0, "a proof with odd bytes is still a proof — the tool does not inspect it")
     L.check(json.loads(out)["heartbeat"] == hostile, "the proof must round-trip VERBATIM")
@@ -136,13 +136,13 @@ def t_a_new_proof_is_not_a_generation_mismatch(work: Path) -> None:
     """Pins the REJECTED design out: `heartbeat` is a record, not a generation to match.
 
     An earlier draft compared the presented proof to the stored one and stood down on a mismatch. It could
-    never have worked: a wake has two things to say ("I am H1" / "I armed H2") and one flag to say them in.
+    never have worked: a heartbeat has two things to say ("I am H1" / "I armed H2") and one flag to say them in.
     """
-    acquire(work, token="t1", heartbeat="wake-1")
-    code, out, _err = acquire(work, token="t1", heartbeat="wake-2")
-    L.check(code == 0, "re-acquiring with a DIFFERENT proof is normal — each wake arms its own successor")
+    acquire(work, token="t1", heartbeat="hb-1")
+    code, out, _err = acquire(work, token="t1", heartbeat="hb-2")
+    L.check(code == 0, "re-acquiring with a DIFFERENT proof is normal — each heartbeat arms its own successor")
     L.check(verdict_of(out) == "owned", "same token on a fresh lease is `owned`, whatever the proof says")
-    L.check(json.loads(lease_path(work).read_text())["heartbeat"] == "wake-2",
+    L.check(json.loads(lease_path(work).read_text())["heartbeat"] == "hb-2",
             "the lease records the LATEST proof")
 
 
@@ -693,7 +693,7 @@ def t_lost_race_readback_refuses(work: Path) -> None:
 
 CASES = [
     ("no-heartbeat", "no proof of arming, no lease — the entire mechanism", t_no_heartbeat_refuses),
-    ("no-heartbeat-absent", "an ABSENT lease refuses too — a fresh run has no wake yet",
+    ("no-heartbeat-absent", "an ABSENT lease refuses too — a fresh run has no heartbeat yet",
      t_no_heartbeat_refuses_on_an_absent_lease),
     ("blank-heartbeat", "a whitespace proof is refused, never trimmed into a value",
      t_empty_heartbeat_is_not_a_proof),

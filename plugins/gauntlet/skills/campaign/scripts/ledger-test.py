@@ -1116,7 +1116,7 @@ def t_review_rounds_never_reset(L: ModuleType, tmp: Path) -> None:
             code, out, err = cli(L, ["--file", str(path), *door, f"--{field.replace('_', '-')}", "0"])
             check(code == 2,
                   f"`{door[0]} --{field}` was ACCEPTED (exit {code}) — a door that can WRITE this counter "
-                  f"is a door that can RESET it, and it is the loop's only memory across wakes:\n{out}{err}")
+                  f"is a door that can RESET it, and it is the loop's only memory across heartbeats:\n{out}{err}")
             check("unrecognized arguments" in err,
                   f"`{door[0]} --{field}` failed, but not because the flag does not EXIST: {err!r}")
 
@@ -1354,7 +1354,7 @@ def t_round_cap_fires(L: ModuleType, tmp: Path) -> None:
     """At ROUND_CAP, a NOT SATISFIED holds the row `repairing` and EXITS NON-ZERO.
 
     Non-zero is the entire point. The skill's own "hard backstop" on the 2nd NOT SATISFIED sat unfired
-    through 35 review rounds because nothing COMPUTED it — it was prose, evaluated by a fresh-context wake
+    through 35 review rounds because nothing COMPUTED it — it was prose, evaluated by a fresh-context heartbeat
     that could not see round 1 from round 21. A driver that dispatches a fix after this has a FAILED
     COMMAND in its transcript, not a judgment call.
     """

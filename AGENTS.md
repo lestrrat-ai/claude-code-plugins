@@ -6,16 +6,16 @@ tree. The consequences below are all non-obvious:
 
 ## This is a SINGLE-USER, advisory workflow — calibrate severity to that
 
-The gauntlet campaign, its lease, its wake / adoption / refresh machinery, and these plugin skills serve
+The gauntlet campaign, its lease, its heartbeat / adoption / refresh machinery, and these plugin skills serve
 **ONE user driving their own runs.** Do NOT chase airtight consistency or distributed-systems-grade
-correctness in the wake / lease / adoption / refresh paths. A momentary inconsistency the single user
+correctness in the heartbeat / lease / adoption / refresh paths. A momentary inconsistency the single user
 creates is one the single user notices and resolves — an **ACCEPTED RESIDUAL, not a gating defect.** (The
 user's stated policy.)
 
 - **The lease is advisory and LOOSE by design.** Its heartbeat-proof precondition gates the **FIRST
   acquire — taking a run**; an owner's `refresh` — **including refresh of its own STALE lease** — is not
   required to re-present proof. Findings of the form *"a stale/matching refresh revives a run without
-  re-proof"*, *"two agents could briefly both drive one run"*, or *"wake/adoption/refresh could be made
+  re-proof"*, *"two agents could briefly both drive one run"*, or *"heartbeat/adoption/refresh could be made
   more consistent/airtight"* are **accepted residuals, NOT defects** — the tool never promised otherwise.
 - **Calibrate finding severity to what the artifact IS.** A same-machine, single-user skill helper is not
   a web server facing millions of hostile requests. A guard being incomplete against an input only the one
@@ -37,7 +37,7 @@ Read `docs/runtime-compatibility.md` before changing manifests, marketplaces, sk
 validation.
 
 - NEVER require a host-specific tool name, agent type, model name, invocation form, environment variable,
-  or wake mechanism without an explicit host adapter and a safe fallback.
+  or heartbeat mechanism without an explicit host adapter and a safe fallback.
 - Resolve bundled resources from the directory containing the active `SKILL.md`. NEVER depend on
   `CLAUDE_PLUGIN_ROOT` or `PLUGIN_ROOT` being available to a worker.
 - When invocation syntax matters, document both forms: Claude Code `/plugin:skill`; Codex `$plugin:skill`.

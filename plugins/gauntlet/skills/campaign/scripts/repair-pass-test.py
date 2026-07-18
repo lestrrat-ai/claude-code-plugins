@@ -181,10 +181,10 @@ def t_only_a_capped_pr_may_be_reassessed(tmp: Path) -> None:
 
 
 def t_a_decision_needs_a_record(tmp: Path) -> None:
-    """No decision without its REASONING ON DISK. Every wake is a fresh agent that remembers nothing.
+    """No decision without its REASONING ON DISK. Every heartbeat is a fresh agent that remembers nothing.
 
     The whole failure was a loop that could not see itself. A decision whose justification lives only in
-    the context of an agent that has already exited is a decision the next wake — and the user — cannot
+    the context of an agent that has already exited is a decision the next heartbeat — and the user — cannot
     audit, and it would be the one artifact of the mechanism that has no evidence behind it.
     """
     path, _ = setup(tmp, "norec.jsonl", pr_origin="gauntlet")

@@ -6,12 +6,12 @@
   clean up another run's work — scope every git/gh scan by that label.
 - One active driver per run, enforced by `<rundir>/lease.json` under an atomic `mkdir <rundir>/claim.lock`:
   take/adopt a run only inside the claim lock, and adopt ONLY when its lease is absent or stale
-  (`now - updated` > ~30 min); refresh the lease every wake AND around long foreground ops; on a
-  self-wake whose lease is fresh but bears a different token, **stand down** — never double-drive a ledger.
-- Every **scheduled** self-wake carries `--run <run-id> --token <agent-token>`; the token re-proves lease
-  ownership so a summarized wake never mistakes its own run for another's. A scheduler-less bounded wait
+  (`now - updated` > ~30 min); refresh the lease every heartbeat AND around long foreground ops; on a
+  scheduled heartbeat whose lease is fresh but bears a different token, **stand down** — never double-drive a ledger.
+- Every **scheduled** heartbeat carries `--run <run-id> --token <agent-token>`; the token re-proves lease
+  ownership so a summarized heartbeat never mistakes its own run for another's. A scheduler-less bounded wait
   retains the current invocation and token, then loops directly back to reconcile. Re-read `run_id` from
-  the ledger each wake, never from memory.
+  the ledger each heartbeat, never from memory.
 - Resume is intent-scoped: a fresh instance resumes via `--run <id>` or an **arg-less** bare invocation
   (adopts the sole orphaned run). A bare invocation **with `#PR` args** and `--new` start an independent
   new run (adopting those PRs) and never pre-empt other live runs; a **non-PR** arg starts nothing —
@@ -56,7 +56,7 @@
 - Concurrency is a **rolling cap (~8 in flight), never a barrier wave**: keep up to ~8 review passes
   and ~8 CI-fix subagents in flight, backfilling each freed slot immediately. Never let a draining
   group of PRs stall the backlog — Loop-control step 3 owns this refill.
-- Work-conserving dispatch is mandatory: every wake scans all PRs and launches every due
+- Work-conserving dispatch is mandatory: every heartbeat scans all PRs and launches every due
   action that fits a free slot before returning. Waiting is allowed only when no useful action is
   launchable anywhere in the run.
 - A PR with a **still-RUNNING** check must ALWAYS have a live watch: if **any evidence row classifies
@@ -64,16 +64,16 @@
   **NEVER** "any row is not yet terminal" / `.status != COMPLETED`, which is a negated test: it sweeps up
   every value GitHub adds tomorrow and silently watches it instead of letting it fall to the
   `UNKNOWN_VALUE` escalation) and the watch task has exited (including after any rebase/push), relaunch
-  the watch in the same wake — never wait for the heartbeat.
+  the watch in this same heartbeat — never wait for the next heartbeat.
 - **But NEVER relaunch a watch merely because `ci == pending`.** Once CI has **SETTLED** (no row can
   still move) there is nothing to block on: `gh pr checks --watch` returns in about **a second**, and a
-  task completion is **itself a wake** — so a settled-but-not-green PR would burn a fresh-context wake
+  task completion is **itself a heartbeat** — so a settled-but-not-green PR would burn a fresh-context heartbeat
   **every second, forever**, and observe nothing. A settled PR is resolved by the **`settled_strikes`
   escalation** (`stage-2-ci.md`, "SETTLED"), not by watching it harder.
 - **And the watch is NEVER the bound.** A row that stays `RUNNING` forever (a hung runner, a dead
   reporter) keeps `gh pr checks --watch` blocked forever, so the watch wakes no one and `pending` would
   absorb the PR — the exact wedge. **RUNNING-STALL** ends it: a `RUNNING` row plus a fingerprint that has
-  not changed for the **CI STALL CAP** escalates on the fallback wake (a scheduled heartbeat or bounded
+  not changed for the **CI STALL CAP** escalates on the fallback heartbeat (a scheduled heartbeat or bounded
   wait returning), timed by `ci_stalled_since` **on disk** (`stage-2-ci.md`, "RUNNING-STALL"). It bounds
   **TIME**, not derivations, because a derivation count
   tracks the run's load and would park a healthy slow build; and it does not park one, because **any**
@@ -81,7 +81,7 @@
 - Stop a PR's in-flight review before dispatching content-changing work on it (review fix, CI fix,
   copilot-address, conflict-resolving rebase): a verdict on a doomed SHA wastes tokens and a review
   slot. Refill the slot with the next due review.
-- Reconcile from ONE batched `gh pr list` snapshot per wake (`<rundir>/prs.json`), written with the
+- Reconcile from ONE batched `gh pr list` snapshot per heartbeat (`<rundir>/prs.json`), written with the
   **canonical `prs.json` command — the single owning definition is the block "The canonical `prs.json`
   command" in `files-and-ledger.md`**, which spells it in full, label and output path included (**ONE
   path, ONE schema, ONE command**). Never spell a variant of it here or anywhere else, and **NEVER drop
@@ -90,9 +90,9 @@
   at **30**. Per-PR `gh` calls only where the snapshot falls short. Merge-gate CI truth stays the
   SHA-pinned, SHA-verified snapshot of **both** check families (Stage 2b).
 - Carryover pruning NEVER blocks a fresh-run start: keep uncertain entries, adopt the run's PRs
-  immediately, ask the user asynchronously, and fold the answer in as its own wake.
+  immediately, ask the user asynchronously, and fold the answer in as its own heartbeat.
 - Public API surface/behavior changes need user confirmation by default (see Constraints). The
-  `api_changes` flag lives in the ledger header and is re-read every wake — never trust memory, never
+  `api_changes` flag lives in the ledger header and is re-read every heartbeat — never trust memory, never
   auto-merge an unapproved API break.
 - Before queueing a review pass on a PR, clear its preconditions on the current tip: address any
   GitHub Copilot review items (the active host form of `gauntlet:copilot-address-reviews <pr>`), fix any CI failures (one at a time,
@@ -103,7 +103,7 @@
   Never spend a review over open Copilot items, a red check, or a conflicting PR (Stage 2a).
 - The review gate is **tier-dependent**: `required(tier)` fresh, context-isolated `SATISFIED` verdicts
   on the same live PR content — **one if TRIVIAL, two otherwise** (any code / agent-doc / sensitive
-  change always requires two). Re-derive the tier from `head_sha` each wake.
+  change always requires two). Re-derive the tier from `head_sha` each heartbeat.
 - **The review is measured against the PR's INTENT — never against "is anything wrong with this code?"**
   The reviewer is handed `<rundir>/intent-<pr>.md` **verbatim** and answers one question: **does this PR
   achieve its stated Purpose, without breaking anything reachable by an actor named in its Threat model?**
@@ -129,7 +129,7 @@
   `writer` field is what answers it.
 - **Record every verdict with `ledger.py verdict` — NEVER set `reviews_ok` by hand.** It bumps
   `review_rounds`, applies the tally, and moves `ns_streak` in one atomic write. **`review_rounds` is the
-  review loop's only memory across fresh-context wakes and is NEVER reset** — not by a fix, a rebase, a
+  review loop's only memory across fresh-context heartbeats and is NEVER reset** — not by a fix, a rebase, a
   content change or a re-triage. There is no flag at any door that can write it; `set` cannot even RAISE
   `reviews_ok` (only a verdict adds a verdict). Without that counter, the ledger after 21 review rounds is
   **indistinguishable** from the ledger after one, and every stopping rule of the form "on the second NOT
@@ -141,11 +141,11 @@
   **gate and the label move together, in the same step**: every action that drops `reviews_ok` to 0 (a
   `NOT SATISFIED` verdict, a review/CI/copilot fix commit, a conflict-resolving rebase, any other
   content change on the head branch) MUST also run `gh pr edit <pr> --remove-label gauntlet-accepted
-  --add-label gauntlet-reviewing`. Never defer the swap to the next wake — that leaves the label lying
+  --add-label gauntlet-reviewing`. Never defer the swap to the next heartbeat — that leaves the label lying
   until reconcile, and lying forever if the session dies first. A **clean base-only rebase** with an
   unchanged PR diff does NOT reset the gate, so it correctly KEEPS `gauntlet-accepted` — it sets
   `ci = pending` and, because the head still **moved**, **resets the liveness counters** (`stage-2-ci.md`,
-  "THE LIVENESS COUNTERS"). Per-wake label reconcile is the self-healing backstop, never the mechanism
+  "THE LIVENESS COUNTERS"). Per-heartbeat label reconcile is the self-healing backstop, never the mechanism
   (`stage-2-review-gate.md`, "Status labels mirror the review gate").
 - **YOUR OWN diagnosis is a claim too — REPRODUCE the failure before you "fix" working code.** The rule
   below audits a *reviewer's* finding. It binds **your own** with equal force, and that is where it keeps
@@ -444,7 +444,7 @@
   The gate is unchanged; record the selected route and resulting reviewer in the report. See "The
   reviewer".
 - **RUN `scripts/ci-status.py required-set --ledger <rundir>/state.jsonl` before CI derivation on every
-  wake.** It owns both base-branch declaration reads, their strict parse and union, and the atomic ledger
+  heartbeat.** It owns both base-branch declaration reads, their strict parse and union, and the atomic ledger
   write. A settled value is reused; only `unknown` is retried. See `stage-2-ci.md`, "WHAT WERE WE EXPECTING
   TO SEE?".
 - **DERIVE `ci` BY RUNNING `scripts/ci-status.py derive --pr <N> --head-sha <the ledger's> --rundir
@@ -479,7 +479,7 @@
 - The run targets a **base branch** (`base_branch` in the ledger header), which is **not assumed to
   be `main`** — it is the `baseRefName` of the adopted PRs (must agree across them, else prompt).
   Reviews diff `origin/<base>...HEAD` and PRs merge into `<base>`; a fix worktree branches off the PR's OWN
-  head branch/SHA, never off `<base>` (see `pr-adoption.md`). Re-read it each wake (see "Base branch").
+  head branch/SHA, never off `<base>` (see `pr-adoption.md`). Re-read it each heartbeat (see "Base branch").
 - After every merge, fast-forward local `<base>` to `origin/<base>` (Stage 3 step 4) so subsequent
   `origin/<base>...HEAD` diffs and rebases branch off the just-merged tip, not a stale base. If the
   fast-forward fails, bail out — never force it.

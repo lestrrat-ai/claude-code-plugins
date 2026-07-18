@@ -119,7 +119,7 @@ the one line it was pointed at and leave the class intact:
 
 This is a **report** requirement, not just a search requirement: a sweep nobody can audit did not happen.
 
-**THE ORCHESTRATOR RECORDS EVERY SITE THE FIXER LEFT ALONE — as a follow-up, in the same wake it reads the
+**THE ORCHESTRATOR RECORDS EVERY SITE THE FIXER LEFT ALONE — as a follow-up, in the same heartbeat it reads the
 report.** The block above makes the subagent report the sites it deliberately did not touch (and any
 pre-existing defect it noticed and declined to fix); **that report dies with the subagent**, so a
 disposition nobody wrote down is a defect nobody will ever see again. Record each one through

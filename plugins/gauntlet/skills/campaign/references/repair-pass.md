@@ -6,7 +6,7 @@ is the entire point, and is explained by the section that ends this file.
 
 ### Why this exists
 
-The review gate had **no memory and could not see its own non-convergence.** Every wake is a fresh agent
+The review gate had **no memory and could not see its own non-convergence.** Every heartbeat is a fresh agent
 instance; `reviews_ok` is zeroed on every `NOT SATISFIED`; and nothing counted rounds. So the ledger after
 21 review rounds was **indistinguishable from the ledger after 1**, and the skill's stopping rules — "run
 the root-cause pass on the 2nd `NOT SATISFIED`", the 1-hour cap — were rules with **no sensor**. They sat
@@ -15,7 +15,7 @@ in the skill, unfired, for 8.5 hours.
 Two PRs ran **21** and **14** adversarial review rounds. Nearly every round produced a **true** finding, a
 fix was dispatched, the fix added code, and the next round found more — in the late rounds, more *in the
 guards the loop itself had just added*. Neither PR converged. A human stopped it, and could only do so by
-holding all 21 rounds in mind **at once**. That view is what no wake had, and it is what this pass restores.
+holding all 21 rounds in mind **at once**. That view is what no heartbeat had, and it is what this pass restores.
 
 **The reviewer was not malfunctioning.** It was doing exactly what it was asked, and what it was asked has
 **no fixed point**: an open-ended adversarial mandate over a growing surface always has one more true thing
@@ -65,7 +65,7 @@ first.
 
 Dispatch **one context-isolated worker** in the **`session` class** (it decides the acceptance path — never
 downgrade it; `SKILL.md`, "Worker Dispatch"), and hand it **THE WHOLE HISTORY AT ONCE**. This is the
-crux: **no wake has ever had this view**, which is exactly why 21 rounds could pass unnoticed.
+crux: **no heartbeat has ever had this view**, which is exactly why 21 rounds could pass unnoticed.
 
 It receives, in one prompt:
 
@@ -97,7 +97,7 @@ repair-pass.py --file <state.jsonl> decide --pr <N> --decision <one of the five>
 ```
 
 `--record` is **refused if it does not exist or is empty**. The reasoning — the history the pass saw, the
-decision, and why — must be **on disk**: every wake is a fresh agent instance, and a justification that
+decision, and why — must be **on disk**: every heartbeat is a fresh agent instance, and a justification that
 lives only in the context of an agent that has already exited is one nobody can audit.
 
 ### The repair is dispatched only after its decision is recorded
@@ -149,7 +149,7 @@ never the ordinary fix.
 ### Why every part of this is a command and not a paragraph
 
 The rules that failed on 2026-07-14 did not fail by being ignored. **They failed by being unevaluable.**
-The 2nd-`NOT SATISFIED` backstop triggers on a fact about history that nothing recorded, read by a wake
+The 2nd-`NOT SATISFIED` backstop triggers on a fact about history that nothing recorded, read by a heartbeat
 that remembers nothing. The 1-hour cap was never computed by anything, and its own word — *"stuck"* — did
 not describe a loop that produced a real finding and a real fix every single round. It **looked like
 progress**, one round at a time, all night.

@@ -19,7 +19,7 @@ string of `NOT SATISFIED` findings that are siblings in one structured space —
 different instance — is the same signal arriving late; treat it identically.)
 
 **The old "no later than the 2nd `NOT SATISFIED`" backstop is GONE — do not look for it, and do not
-restore it.** It triggered on a fact about history that nothing recorded, evaluated by a wake that
+restore it.** It triggered on a fact about history that nothing recorded, evaluated by a heartbeat that
 remembers nothing, and it **never fired once** across 35 review rounds on two PRs
 (`bailout-and-final-report.md`). What backstops this pass now is a **counter with a cap**: at a review-loop
 cap the PR goes `repairing` and a reassessment pass sees **every round at once** and returns one decision —

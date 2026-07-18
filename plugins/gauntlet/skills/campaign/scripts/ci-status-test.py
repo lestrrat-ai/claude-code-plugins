@@ -143,7 +143,7 @@ def check_fixture(name: str, got: dict, fx: dict) -> list[str]:
     if got["ci"] != want["ci"]:
         bad.append(f"ledger ci {got['ci']!r}, expected {want['ci']!r}")
     if want.get("promoted") is False and got["snapshot"] is not None:
-        bad.append("an artifact was PROMOTED for a fetch that FAILED — a later wake would read it as evidence")
+        bad.append("an artifact was PROMOTED for a fetch that FAILED — a later heartbeat would read it as evidence")
     return bad
 
 

@@ -1268,7 +1268,7 @@ def promote(rows: list[dict], rundir: Path, pr: str, head_sha: str) -> Path:
 
     Nothing is promoted unless every fetch SUCCEEDED: this is only ever called after `build_snapshot`
     returns, and any FetchError above aborts before this line. A partial artifact is not a snapshot, and a
-    half-written one left in <rundir> is worse than none — a later wake would read it as evidence.
+    half-written one left in <rundir> is worse than none — a later heartbeat would read it as evidence.
     """
     tmp = rundir / f".ci-{pr}.{os.getpid()}"
     tmp.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
@@ -1320,7 +1320,7 @@ def derive(fetch: Fetch, repo: str, pr: str, head_sha: str, rundir: Path, requir
     try:
         rows, head_now, evidence = build_snapshot(fetch, repo, pr, head_sha)
     except FetchError as exc:
-        # A source that could not be read leaves NO artifact — there is nothing on disk for a later wake to
+        # A source that could not be read leaves NO artifact — there is nothing on disk for a later heartbeat to
         # mistake for evidence, and no verdict is derived from a fetch we know to be incomplete. The
         # `promote` below is NEVER reached, and that is the whole of the "no partial artifact" rule.
         return result(pr, head_sha, SNAP.UNUSABLE, f"FETCH FAILED — {exc}", None, {}, None, required)

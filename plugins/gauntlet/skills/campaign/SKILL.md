@@ -1,7 +1,7 @@
 ---
 name: campaign
 description: >-
-  Gates PRs to merge. A self-looping review-to-merge campaign: existing PRs are adopted into a run (pass PR numbers, or discover this run's labelled PRs), each PR is triaged to a review tier, and a per-PR review gauntlet (tier-dependent fresh, context-isolated SATISFIED verdicts on the whole PR diff, reviewed one at a time) plus event-driven CI monitoring gate an auto-merge. Multiple isolated runs (each keyed by a run-id, with a lease so only one agent drives each) can run concurrently in one repo. Drives its own loop through the active host's wake or bounded-wait mechanism — invoke once. Campaign never writes fixes from scratch; to find issues first use gauntlet:review. Args (distinct modes): #PR... | --new #PR... | --run ID | no args
+  Gates PRs to merge. A self-looping review-to-merge campaign: existing PRs are adopted into a run (pass PR numbers, or discover this run's labelled PRs), each PR is triaged to a review tier, and a per-PR review gauntlet (tier-dependent fresh, context-isolated SATISFIED verdicts on the whole PR diff, reviewed one at a time) plus event-driven CI monitoring gate an auto-merge. Multiple isolated runs (each keyed by a run-id, with a lease so only one agent drives each) can run concurrently in one repo. Drives its own loop through the active host's heartbeat or bounded-wait mechanism — invoke once. Campaign never writes fixes from scratch; to find issues first use gauntlet:review. Args (distinct modes): #PR... | --new #PR... | --run ID | no args
 ---
 
 # Campaign
@@ -32,7 +32,7 @@ confirmed fix and hand them straight here (`/gauntlet:campaign #PRs` in Claude C
 way PRs enter a campaign; you can also open them yourself.
 
 Invoke once. This skill drives its own loop through the runtime adapter. In Claude Code, do not wrap it
-in `/loop`; in Codex, keep the invocation alive when no wake scheduler is available.
+in `/loop`; in Codex, keep the invocation alive when no heartbeat scheduler is available.
 
 ## Args
 
@@ -48,7 +48,7 @@ resumes and takes no `#PR`/`--new`; `#PR` args alone start/adopt into a run. Inv
 - No argument -> discover this run's labelled PRs and continue. If none and nothing to do, PROMPT:
   "No PRs under a campaign. Run gauntlet:review to find issues, or pass PR numbers to gate."
 - Non-PR arg (e.g. `auth`) -> same prompt (the old area/topic sweep arg is REMOVED).
-- `--run <id>` -> resume specific run; self-wakes also carry internal `--token`.
+- `--run <id>` -> resume specific run; scheduled heartbeats also carry internal `--token`.
 - `--new` or "fresh run" -> force independent new run-id for a new PR set (with carryover).
 
 ## Bundled Scripts
@@ -126,7 +126,7 @@ PR's checks (SHA-pinned, both families), promotes the snapshot, verifies it (thr
 and decides **against the base branch's required set** (`--required-set`, from the ledger header —
 MANDATORY), printing the verdict and the ledger `ci` value as JSON
 (`references/stage-2-ci.md`, "THE DERIVATION IS A COMMAND", which owns the exact invocation).
-Run `scripts/ci-status.py required-set --ledger <rundir>/state.jsonl` before derivation on every wake. It
+Run `scripts/ci-status.py required-set --ledger <rundir>/state.jsonl` before derivation on every heartbeat. It
 owns both GitHub reads and the atomic ledger write, retries only `unknown`, and reuses a settled value.
 **NEVER derive `ci` by reading a command's output and judging it by eye** — that is what once wrote
 `ci = green` for a PR whose checks had not registered at all.
@@ -143,7 +143,7 @@ from one host into another.
 | Fresh-worker fallback review | **`session`** | Same job as a review pass; counts toward the gate identically. |
 | Review-fix (after `NOT SATISFIED`) | **`session`** | Authors code from scratch, judged only by another full review pass. A cheap bad fix burns a whole review pass and a gate reset — it *costs* more than the tier saves. |
 | Root-cause **mapper** | **`session`** | Read-only, but NOT low-judgment: it enumerates a full matrix and confirms each gap with a repro. A weaker model **under-maps**, which is the exact failure the mapper exists to prevent (`root-cause-pass.md`). "Read-only" is not a licence to downgrade. |
-| **Reassessment pass** (a PR at a review-loop cap) | **`session`** | It reads a PR's ENTIRE history at once and decides the **acceptance path** — rescope, re-intent, demote, root-cause, or abort. It is gate machinery, and it is the one judgment no wake in the failed run was ever able to make. A weaker model here mis-diagnoses the loop and repairs the wrong thing (`repair-pass.md`). |
+| **Reassessment pass** (a PR at a review-loop cap) | **`session`** | It reads a PR's ENTIRE history at once and decides the **acceptance path** — rescope, re-intent, demote, root-cause, or abort. It is gate machinery, and it is the one judgment no heartbeat in the failed run was ever able to make. A weaker model here mis-diagnoses the loop and repairs the wrong thing (`repair-pass.md`). |
 | **CI-fix — formatting/lint failure** | **`economy`** | **Downgraded ON PURPOSE when the host has a configured economy mapping.** It does not author a fix: it runs a deterministic formatter, **READS the resulting diff**, verifies it, and **escalates** anything it cannot verify (`references/stage-2-ci.md`). |
 | **CI-fix — everything else**, and every **escalation** from the cheap tier | **`session`** | Authors code that gets merged. CI does **not** validate it: a wrong fix can turn CI green — by weakening a check, or by being plain wrong in product code that no check covers. |
 
@@ -208,7 +208,7 @@ Always read before touching run state:
 - `references/run-identity-and-lease.md`
 - `references/files-and-ledger.md`
 
-Read `references/loop-control.md` at each wake before dispatch.
+Read `references/loop-control.md` at each heartbeat before dispatch.
 
 Read stage refs only when that stage/action is due:
 
@@ -232,16 +232,16 @@ Read stage refs only when that stage/action is due:
 
 - **PR-gating:** adopt PR -> triage tier -> watch CI + review PR HEAD -> merge. PRs are **adopted, not
   generated** — campaign gates existing PRs and never writes fixes from scratch.
-- **Work-conserving:** every wake reconciles, folds completions, launches all due work up to caps,
+- **Work-conserving:** every heartbeat reconciles, folds completions, launches all due work up to caps,
   drains still-ready PRs serially, then reschedules only when no useful action remains launchable.
-- **Driver never blocks:** reviews and CI watches run as background tasks — completions are wakes.
+- **Driver never blocks:** reviews and CI watches run as background tasks — completions are heartbeats.
   A PR with a **still-RUNNING** check always has a live watch — but a PR whose CI has **SETTLED** does
-  **not** (watching it burns a wake per second and observes nothing: `references/stage-2-ci.md`, "WATCH
+  **not** (watching it burns a heartbeat per second and observes nothing: `references/stage-2-ci.md`, "WATCH
   ONLY WHAT CAN MOVE"). A review doomed by a pending content change is stopped, not awaited.
 - **Run isolation:** touch only this run's `<rundir>`, ledger, labels, branches, PRs, and worktrees.
 - **One active driver:** lease controls ownership; never double-drive one run.
-- **Base branch is data:** read `base_branch` from ledger every wake; never assume `main`.
-- **Reviewer is data:** read `reviewer` from ledger every wake before dispatching any review; set once at run start, never re-derived from memory (else an explicit/preferred reviewer silently reverts to default on a self-wake or adoption).
+- **Base branch is data:** read `base_branch` from ledger every heartbeat; never assume `main`.
+- **Reviewer is data:** read `reviewer` from ledger every heartbeat before dispatching any review; set once at run start, never re-derived from memory (else an explicit/preferred reviewer silently reverts to default on a scheduled heartbeat or adoption).
 - **A logical model class is selected on every worker dispatch:** use `session` for gate and authored-code
   roles, and `economy` only for the bounded formatting/lint role. The runtime adapter owns the host
   mapping.
@@ -286,7 +286,7 @@ Read stage refs only when that stage/action is due:
   required, the third accepted value), which is not a verdict and routes on the progress file to
   `amended`/`incomplete`/`unusable`, never a tally.
 - **Verdicts go through `ledger.py verdict` — NEVER set `reviews_ok` by hand.** It bumps `review_rounds`
-  (**monotone, never reset — the loop's only memory across fresh-context wakes**), applies the tally, and
+  (**monotone, never reset — the loop's only memory across fresh-context heartbeats**), applies the tally, and
   moves `ns_streak`, atomically. `set` cannot RAISE the tally and no door can write the counters at all.
 - **Findings are claims, not facts:** on every `NOT SATISFIED`, a **dispatched context-isolated audit
   subagent** (not the orchestrator inline) verdicts each **gating** finding (CONFIRMED /
@@ -327,7 +327,7 @@ Read stage refs only when that stage/action is due:
   recording one **NEVER** discharges a finding — a CONFIRMED finding is still fixed
   (`references/followups.md`).
 
-## Wake Skeleton
+## Heartbeat Skeleton
 
 1. **Resolve run + lease;** adopt only absent/stale lease, stand down if fresh different owner.
 2. **Adopt `#PR` args + reconcile run-labelled PRs.** For each explicit `#PR`, adopt it per
@@ -347,7 +347,7 @@ Read stage refs only when that stage/action is due:
    stop in-flight reviews doomed by a content change.
 5. **Merge ready PRs** (never a parked one) one at a time until no candidate remains immediately ready
    after base refresh.
-6. **Launch audit + fallback wake — before sleeping, verify every due launch actually happened.** Re-run
+6. **Launch audit + fallback heartbeat — before sleeping, verify every due launch actually happened.** Re-run
    step 4's dispatch scan across both concurrency pools (CI-fix subagents and review passes each have
    their own cap): confirm every due review pass was launched, a CI watch is live for every PR with a
    **still-RUNNING** check (**not** for one whose CI has settled — that is the hot-spin bug), that every
@@ -356,10 +356,10 @@ Read stage refs only when that stage/action is due:
    unchanged fingerprint past the CI STALL CAP is at a cap too, and its watch will never wake anyone) —
    and — whenever any
    non-terminal work remains — the runtime adapter's heartbeat or bounded wait is actually active. If
-   any due launch or fallback wake is missing, launch it and re-audit. NEVER sleep with due work
+   any due launch or fallback heartbeat is missing, launch it and re-audit. NEVER sleep with due work
    un-launched or no path to the next reconcile.
 7. **Terminal -> carryover/report;** otherwise refresh the lease and follow `references/loop-control.md`,
-   "Reschedule or exit", exactly. A scheduled-wake host renders status after scheduling and returns. A
+   "Reschedule or exit", exactly. A scheduled-heartbeat host renders status after scheduling and returns. A
    scheduler-less host renders status, performs one bounded wait, then returns to step 1 to reconcile and
    repeats while non-terminal work remains; it does not take the scheduled-host return.
 
