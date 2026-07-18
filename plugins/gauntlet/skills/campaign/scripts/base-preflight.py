@@ -72,35 +72,44 @@ def decide(view: dict) -> dict:
     """PURE. Return `{"verdict": ..., "reason": ...}` for one PR view. No I/O. Assumes a validated view (see
     `validate_view`), so `view["mergeable"]` and `view["mergeStateStatus"]` are present strings.
 
-    The order is deliberate and FIRST-MATCHING-RULE-WINS: a conflict is reported before a moved base, both
-    are reported before an uncomputed mergeability, and only a fully computed, non-conflicting, current view
-    reaches `proceed`. A value in NEITHER enum falls to the totality catch-all and re-polls — it is never
-    guessed into `proceed`.
+    The order is deliberate and FIRST-MATCHING-RULE-WINS, and it fails safe BEFORE it acts: an unrecognised
+    value of EITHER enum re-polls first, then an uncomputed mergeability re-polls, and only then is a conflict
+    or a moved base allowed to say `rebase-first`. This ordering is load-bearing — a view like
+    `{mergeable: CONFLICTING, mergeStateStatus: UNKNOWN}` or `{..., mergeStateStatus: FROZEN}` (a value GitHub
+    added since) must NOT be steered to `rebase-first` on the half of the view we DO recognise while the other
+    half is uncomputed or unclassified. UNKNOWN/unrecognised WINS: re-poll and decide again on a full view,
+    never guess. Only a fully computed, recognised, non-conflicting, current view reaches `proceed`.
     """
     mergeable = view["mergeable"]
     mss = view["mergeStateStatus"]
 
-    # 1. CONFLICTS WITH BASE — the branch cannot combine with its base. A fix authored here fights the merge.
-    if mergeable == "CONFLICTING" or mss == "DIRTY":
-        return _verdict(REBASE_FIRST, "conflicts with base — rebase before reviewing/fixing")
+    # 1. UNRECOGNISED VALUE of EITHER enum — a value GitHub's schema does not declare (one it added since).
+    #    Fail safe BEFORE any rebase/proceed decision: re-poll, never guess onto a value nobody classified.
+    if mergeable not in MERGEABLE_VALUES or mss not in MERGE_STATE_STATUS_VALUES:
+        unknown = mergeable if mergeable not in MERGEABLE_VALUES else mss
+        return _verdict(RECHECK, f"unknown merge state {unknown} — re-poll, never guess")
 
-    # 2. BASE MOVED AHEAD — no conflict, but the base has commits this branch lacks; rebase to review the tip.
-    if mss == "BEHIND":
-        return _verdict(REBASE_FIRST, "base has moved ahead — rebase first")
-
-    # 3. NOT COMPUTED YET — GitHub has not finished computing mergeability. NEVER a verdict: re-poll.
+    # 2. NOT COMPUTED YET — GitHub has not finished computing mergeability for EITHER enum. NEVER a verdict:
+    #    re-poll. This wins over rebase-first: a recognised CONFLICTING/DIRTY/BEHIND on one half cannot decide
+    #    the branch while the other half is still UNKNOWN.
     if mergeable == "UNKNOWN" or mss == "UNKNOWN":
         return _verdict(RECHECK, "mergeability not computed yet — re-poll")
 
-    # 4. CURRENT WITH BASE — mergeable AND a base-current merge state. The one verdict that clears a fix.
+    # 3. CONFLICTS WITH BASE — the branch cannot combine with its base. A fix authored here fights the merge.
+    if mergeable == "CONFLICTING" or mss == "DIRTY":
+        return _verdict(REBASE_FIRST, "conflicts with base — rebase before reviewing/fixing")
+
+    # 4. BASE MOVED AHEAD — no conflict, but the base has commits this branch lacks; rebase to review the tip.
+    if mss == "BEHIND":
+        return _verdict(REBASE_FIRST, "base has moved ahead — rebase first")
+
+    # 5. CURRENT WITH BASE — mergeable AND a base-current merge state. The one verdict that clears a fix.
     if mergeable == "MERGEABLE" and mss in BASE_CURRENT_STATES:
         return _verdict(PROCEED, "branch is current with base")
 
-    # 5. TOTALITY CATCH-ALL — an unrecognised value of either enum. By here `mergeable` is not CONFLICTING or
-    #    UNKNOWN and `mss` is not DIRTY/BEHIND/UNKNOWN, so the offending value is whichever enum is outside its
-    #    schema set. Re-poll, never guess a fix onto a merge state nobody has classified.
-    unknown = mergeable if mergeable not in MERGEABLE_VALUES else mss
-    return _verdict(RECHECK, f"unknown merge state {unknown} — re-poll, never guess")
+    # 6. DEFENSIVE CATCH-ALL — unreachable after step 1 pinned both enums to their schema sets and steps 2-5
+    #    covered every recognised combination. Fail closed rather than fall off the end of the function.
+    return _verdict(RECHECK, "mergeability not computed yet — re-poll")
 
 
 # --- obtain the live PR view ---------------------------------------------------

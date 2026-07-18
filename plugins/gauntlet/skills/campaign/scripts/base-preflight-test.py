@@ -112,6 +112,35 @@ def t_unrecognised_mergestate_value_rechecks():
     expect(view(mergeStateStatus="FROZEN"), "recheck", "unknown merge state FROZEN — re-poll, never guess")
 
 
+# --- cross-enum precedence: UNKNOWN / unrecognised WINS over a recognised rebase state ------------
+# A view with a recognised CONFLICTING/DIRTY/BEHIND on ONE half and an UNKNOWN or unrecognised value on the
+# OTHER must NOT be steered to `rebase-first` on the half we recognise — the uncomputed/unclassified half
+# wins and we re-poll on a full view. These pin the ordering: fail-safe BEFORE act.
+
+def t_conflicting_with_unknown_mergestate_rechecks():
+    # CONFLICTING mergeable but mergeStateStatus not yet computed — re-poll, do NOT rebase on half a view.
+    expect(view(mergeable="CONFLICTING", mergeStateStatus="UNKNOWN"), "recheck",
+           "mergeability not computed yet — re-poll")
+
+
+def t_conflicting_with_unrecognised_mergestate_rechecks():
+    # CONFLICTING mergeable but an unrecognised merge state (one GitHub added since) — re-poll, never guess.
+    expect(view(mergeable="CONFLICTING", mergeStateStatus="FROZEN"), "recheck",
+           "unknown merge state FROZEN — re-poll, never guess")
+
+
+def t_dirty_with_unknown_mergeable_rechecks():
+    # DIRTY merge state but mergeable not yet computed — the uncomputed half wins over the DIRTY rebase state.
+    expect(view(mergeable="UNKNOWN", mergeStateStatus="DIRTY"), "recheck",
+           "mergeability not computed yet — re-poll")
+
+
+def t_behind_with_unknown_mergeable_rechecks():
+    # BEHIND merge state but mergeable not yet computed — the uncomputed half wins over the BEHIND rebase state.
+    expect(view(mergeable="UNKNOWN", mergeStateStatus="BEHIND"), "recheck",
+           "mergeability not computed yet — re-poll")
+
+
 # --- CLI: a recorded view makes `check` testable without gh --------------------
 
 def t_cli_proceed():
@@ -168,6 +197,14 @@ CASES = [
     ("unknown-mergeable-rechecks", "UNKNOWN mergeability -> recheck", t_unknown_mergeable_rechecks),
     ("unrecognised-value-rechecks", "an unrecognised merge state re-polls (totality catch-all)",
      t_unrecognised_mergestate_value_rechecks),
+    ("conflicting+unknown-rechecks", "CONFLICTING + UNKNOWN merge state re-polls, never rebases",
+     t_conflicting_with_unknown_mergestate_rechecks),
+    ("conflicting+unrecognised-rechecks", "CONFLICTING + unrecognised merge state re-polls, never rebases",
+     t_conflicting_with_unrecognised_mergestate_rechecks),
+    ("dirty+unknown-mergeable-rechecks", "DIRTY + UNKNOWN mergeable re-polls, never rebases",
+     t_dirty_with_unknown_mergeable_rechecks),
+    ("behind+unknown-mergeable-rechecks", "BEHIND + UNKNOWN mergeable re-polls, never rebases",
+     t_behind_with_unknown_mergeable_rechecks),
     ("cli-proceed", "check --view-json on a CLEAN view exits 0 with proceed", t_cli_proceed),
     ("cli-rebase-first", "check --view-json on a DIRTY view exits non-zero with rebase-first", t_cli_rebase_first),
     ("cli-malformed", "a view missing a field fails closed to recheck, never KeyError", t_cli_malformed),

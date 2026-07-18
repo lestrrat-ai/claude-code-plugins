@@ -42,12 +42,20 @@ licence to ignore the other. A fixer that sweeps the tree to find the sites its 
 ### PRE-FLIGHT — the base must be current before ANY fix is dispatched
 
 **BEFORE dispatching ANY fix subagent (review-fix or CI-fix) for a PR, run
-`scripts/base-preflight.py check --pr <N>`.** If it does not print `proceed`, do **NOT** dispatch the fix:
-REBASE the PR onto `<base>` first (per `stage-2-review-gate.md`'s conflict-rebase), then re-run the
-pre-flight. A `rebase-first` verdict means the branch conflicts with its base or the base has moved ahead; a
-`recheck` means mergeability is not computed yet — re-poll. A fix authored on a stale or conflicting base is
-wasted work: it is re-reviewed against the rebased tip anyway, and its diff may not even apply. The tool
-DECIDES only — it performs no rebase; the driver rebases when told, exactly as at the review-gate site.
+`scripts/base-preflight.py check --pr <N>`.** It prints ONE of three verdicts, and the action **splits by
+verdict** — only `proceed` clears the dispatch, and the other two are NOT the same response:
+
+- **`proceed`** → the base is current; **dispatch the fix**.
+- **`rebase-first`** → the branch conflicts with its base or the base has moved ahead; do **NOT** dispatch.
+  **REBASE the PR onto `<base>`** (per `stage-2-review-gate.md`'s conflict-rebase), then **re-run the
+  pre-flight**.
+- **`recheck`** → mergeability is not computed yet (or the view carried a value nobody has classified); do
+  **NOT** dispatch and do **NOT** rebase — **re-poll**, then **re-run the pre-flight**. Rebasing here would
+  act on a view GitHub has not finished computing.
+
+A fix authored on a stale or conflicting base is wasted work: it is re-reviewed against the rebased tip
+anyway, and its diff may not even apply. The tool DECIDES only — it performs no rebase; the driver rebases
+only on `rebase-first`, exactly as at the review-gate site.
 
 ### SCOPE — bounds the reading
 
