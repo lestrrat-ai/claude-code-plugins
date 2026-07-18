@@ -9,7 +9,9 @@ JUDGMENT; everything here is MECHANICS that a model transcribing a doc gets subt
   * READ the PR (one `gh pr view` for the fields the ledger row needs, including the cross-repo field);
   * REFUSE fork/foreign/closed PRs — FAIL CLOSED, touching nothing when it refuses (step 2);
   * REGISTER the ledger row (refresh in place if it exists, never a duplicate `add-row`) (step 3, row);
-  * CREATE-OR-REUSE the PR-head worktree (step 5);
+  * RESOLVE the PR-head worktree — DISCOVER the branch's actual checkout via `git worktree list` and REUSE
+    it (fast-forwarded, clean), else CREATE one at the default path; fail closed on a dirty/detached/foreign
+    checkout or a head-SHA mismatch (step 5);
   * LABEL the PR ours + under review (step 4).
 
 The decision logic lives in a PURE `build_plan()` (and a pure `slugify()`), so every refusal and every
@@ -87,6 +89,31 @@ def slugify(title: str) -> str:
             out.append("-")
             prev_dash = True
     return "".join(out).strip("-")
+
+
+def worktree_for_branch(porcelain_z: str, branch_ref: str) -> "str | None":
+    """Resolve the worktree that has `branch_ref` (e.g. `refs/heads/feat-x`) checked out, from the output of
+    `git worktree list --porcelain -z` — the ONE discovery chokepoint (pr-adoption.md step 5,
+    `parse_nul_porcelain_for_exact_branch`). Returns that worktree's path, or None when the branch is checked
+    out NOWHERE (so a fresh worktree must be created).
+
+    Only an exact `branch refs/heads/<name>` entry matches. A worktree whose HEAD is DETACHED, or on a
+    DIFFERENT branch, returns None for this branch — which is why a detached or foreign checkout sitting at
+    the default path is never mistaken for the branch (its later head-branch pushes would fail).
+
+    The `-z` porcelain format terminates every field with NUL and ends each worktree entry with an extra
+    empty field; splitting on NUL and resetting the current path on the empty field walks entries safely."""
+    current: "str | None" = None
+    for token in porcelain_z.split("\0"):
+        if token == "":
+            current = None
+            continue
+        label, _, value = token.partition(" ")
+        if label == "worktree":
+            current = value
+        elif label == "branch" and value == branch_ref:
+            return current
+    return None
 
 
 def _pr_origin(view: dict) -> str:
@@ -213,7 +240,7 @@ def cmd_adopt(args) -> int:
         return _refuse(str(plan["reason"]))
 
     branch = str(plan["branch"])
-    worktree = str(plan["worktree"])
+    base = str(plan["base"])
     row = plan["row"]
     planned_head = str(row["head_sha"])
 
@@ -261,61 +288,93 @@ def cmd_adopt(args) -> int:
     if proc.returncode != 0:
         return _refuse(f"ledger {verb} for PR {pr} failed: {proc.stderr.strip()}")
 
-    # 5. Create-or-reuse the PR-head worktree, off the PR's OWN head branch. On any git failure, refuse
-    # and say the row/label already landed — a half-adoption must be VISIBLE, never silently absorbed.
+    # 5. Resolve the PR-head worktree — DISCOVER the branch's ACTUAL checkout, never assume the default path.
+    # On any git failure, refuse and say the row/label already landed — a half-adoption must be VISIBLE.
     half = (f"(the run label {run_label} and the ledger row for PR {pr} were ALREADY written; "
             f"the PR's labels were NOT applied)")
-    # FETCH the PR head first so every worktree choice is made against ground truth, not a stale local ref.
-    fetch = _run(["git", "-C", args.project_root, "fetch", "origin",
-                  f"refs/heads/{branch}:refs/remotes/origin/{branch}"])
-    if fetch.returncode != 0:
-        return _refuse(f"git fetch of head {branch} failed: {fetch.stderr.strip()} {half}")
+    branch_ref = f"refs/heads/{branch}"
+    origin_ref = f"refs/remotes/origin/{branch}"
+    # FETCH both tracking refs first, so every worktree choice is made against ground truth, not a stale
+    # local ref. The review step diffs origin/<base>...HEAD, so the base tracking ref must exist too.
+    for ref in (base, branch):
+        fetch = _run(["git", "-C", args.project_root, "fetch", "origin",
+                      f"refs/heads/{ref}:refs/remotes/origin/{ref}"])
+        if fetch.returncode != 0:
+            return _refuse(f"git fetch of {ref} failed: {fetch.stderr.strip()} {half}")
 
-    if Path(worktree).is_dir():
-        # REUSE an existing checkout — but VERIFY it is at the planned head. A same-named worktree left at
-        # an older SHA would silently adopt stale content while the ledger records the new head. Fail closed.
-        rev = _run(["git", "-C", worktree, "rev-parse", "HEAD"])
-        if rev.returncode != 0:
-            return _refuse(f"git rev-parse HEAD in reused worktree {worktree} failed: "
-                           f"{rev.stderr.strip()} {half}")
-        actual = rev.stdout.strip()
-        if actual != planned_head:
-            return _refuse(f"reused worktree {worktree} is at {actual} but PR {pr}'s head is "
-                           f"{planned_head} — the checkout is STALE; refusing rather than adopt a worktree "
-                           f"that does not match the PR head {half}")
-        # PRESERVE created-ownership on a re-adoption of the SAME worktree: a first adopt that CREATED it
-        # recorded worktree_owned=yes, and clobbering that to `no` would strand it from Stage-3 cleanup.
-        # A genuinely pre-existing external checkout (first adoption, or a different recorded worktree) is
-        # `no`/`no`.
+    # DISCOVERY CHOKEPOINT: the branch may already be checked out — at the project root, at the default
+    # worktree path, or at any other worktree — and `git worktree add` REFUSES a branch checked out elsewhere
+    # (exit 128, one checkout per branch), which would leave a half-adoption. Ask git where it actually is,
+    # once, and record THAT path — never blindly add at the default.
+    listing = _run(["git", "-C", args.project_root, "worktree", "list", "--porcelain", "-z"])
+    if listing.returncode != 0:
+        return _refuse(f"git worktree list failed: {listing.stderr.strip()} {half}")
+    existing_checkout = worktree_for_branch(listing.stdout, branch_ref)
+
+    if existing_checkout is not None:
+        # REUSE the discovered checkout — wherever it sits (root, the default path, or another worktree). It
+        # must be CLEAN (never adopt over uncommitted work) and fast-forwardable to the fetched origin head.
+        worktree = existing_checkout
+        status = _run(["git", "-C", worktree, "status", "--porcelain", "--untracked-files=all"])
+        if status.returncode != 0:
+            return _refuse(f"git status in reused worktree {worktree} failed: "
+                           f"{status.stderr.strip()} {half}")
+        if status.stdout.strip():
+            return _refuse(f"reused worktree {worktree} for branch {branch} is DIRTY (uncommitted changes) "
+                           f"— refusing to adopt over a dirty tree {half}")
+        ff = _run(["git", "-C", worktree, "merge", "--ff-only", origin_ref])
+        if ff.returncode != 0:
+            return _refuse(f"fast-forward of reused worktree {worktree} to origin/{branch} failed "
+                           f"(it is not a fast-forward of the PR head): {ff.stderr.strip()} {half}")
+        # PRESERVE created-ownership on a re-adoption of the SAME worktree campaign itself created: a first
+        # adopt that CREATED it recorded worktree_owned=yes, and clobbering that to `no` would strand it from
+        # Stage-3 cleanup. A genuinely pre-existing external checkout (first adoption, or a differently
+        # recorded worktree) is `no`/`no`.
         if existing is not None and existing.get("worktree") == worktree:
             worktree_owned = existing.get("worktree_owned", "no")
             branch_owned = existing.get("branch_owned", "no")
         else:
             worktree_owned, branch_owned = "no", "no"
     else:
-        # CREATE the worktree from the fetched origin head — never an arbitrary same-named local branch.
-        local = _run(["git", "-C", args.project_root, "show-ref", "--verify", "--quiet",
-                      f"refs/heads/{branch}"])
+        # No checkout of the branch anywhere → CREATE one at the default path from the fetched origin head. A
+        # detached HEAD, or a DIFFERENT branch, occupying the default path is NOT this branch's checkout —
+        # discovery returned None — so `git worktree add` below hits an occupied path and FAILS CLOSED here,
+        # never a silent adoption of a checkout that is not the PR head.
+        worktree = str(plan["worktree"])
+        local = _run(["git", "-C", args.project_root, "show-ref", "--verify", "--quiet", branch_ref])
         if local.returncode == 0:
+            # The local branch exists but is checked out nowhere: add a worktree on it, then bring it to the
+            # fetched origin head. Never `-B` — that could reset a pre-existing local branch.
             add = _run(["git", "-C", args.project_root, "worktree", "add", worktree, branch])
+            if add.returncode != 0:
+                return _refuse(f"git worktree add for {branch} failed: {add.stderr.strip()} {half}")
+            ff = _run(["git", "-C", worktree, "merge", "--ff-only", origin_ref])
+            if ff.returncode != 0:
+                return _refuse(f"fast-forward of new worktree {worktree} to origin/{branch} failed: "
+                               f"{ff.stderr.strip()} {half}")
             branch_owned = "no"
-        else:
+        elif local.returncode == 1:
+            # No local branch either (ref absent): create it from the fetched origin head.
             add = _run(["git", "-C", args.project_root, "worktree", "add", "-b", branch, worktree,
-                        f"refs/remotes/origin/{branch}"])
+                        origin_ref])
+            if add.returncode != 0:
+                return _refuse(f"git worktree add -b for {branch} failed: {add.stderr.strip()} {half}")
             branch_owned = "yes"
-        if add.returncode != 0:
-            return _refuse(f"git worktree add for {branch} failed: {add.stderr.strip()} {half}")
-        # VERIFY the created worktree is at the planned head. A stale same-named local branch (the `add
-        # <worktree> <branch>` path) would put it at an older SHA — refuse rather than adopt the wrong tip.
-        rev = _run(["git", "-C", worktree, "rev-parse", "HEAD"])
-        if rev.returncode != 0:
-            return _refuse(f"git rev-parse HEAD in new worktree {worktree} failed: "
-                           f"{rev.stderr.strip()} {half}")
-        actual = rev.stdout.strip()
-        if actual != planned_head:
-            return _refuse(f"worktree {worktree} for branch {branch} is at {actual} but PR {pr}'s head is "
-                           f"{planned_head} — a STALE local branch was checked out; refusing {half}")
+        else:
+            return _refuse(f"git show-ref for {branch} failed unexpectedly (exit {local.returncode}): "
+                           f"{local.stderr.strip()} {half}")
         worktree_owned = "yes"
+
+    # VERIFY the resolved worktree is at the PLANNED head — after any fast-forward or create. A checkout that
+    # cannot be brought to the recorded head is STALE (a same-named local branch left behind, or a remote
+    # moved since the snapshot); refuse rather than record a worktree that does not match the PR head.
+    rev = _run(["git", "-C", worktree, "rev-parse", "HEAD"])
+    if rev.returncode != 0:
+        return _refuse(f"git rev-parse HEAD in worktree {worktree} failed: {rev.stderr.strip()} {half}")
+    actual = rev.stdout.strip()
+    if actual != planned_head:
+        return _refuse(f"worktree {worktree} for branch {branch} is at {actual} but PR {pr}'s head is "
+                       f"{planned_head} — the checkout is STALE (does not match the PR head); refusing {half}")
 
     set_argv = ["python3", str(LEDGER_PY), "--file", args.file, "set", "--pr", pr,
                 "--worktree", worktree, "--worktree-owned", worktree_owned,

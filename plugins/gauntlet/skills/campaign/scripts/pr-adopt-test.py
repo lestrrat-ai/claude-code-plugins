@@ -205,8 +205,25 @@ def t_driver_cannot_assert_origin():
 #
 # `Recorder` replaces pr-adopt's `_run`: it RECORDS every argv+cwd, answers `gh pr view` from a canned
 # view, runs the real ledger IN-PROCESS against the temp store (so re-adoption reads back true state), and
-# answers `git` from the scenario knobs. That pins the executor's gh scoping, its worktree SHA checks, and
-# its ledger writes offline, with no live GitHub and no real git repo.
+# answers `git` from the scenario knobs. That pins the executor's gh scoping, the DISCOVERY chokepoint
+# (`git worktree list --porcelain -z`), its reuse/create branching, its worktree SHA checks, and its ledger
+# writes offline, with no live GitHub and no real git repo.
+#
+# The worktree-discovery scenario is `checkouts`: a list of (path, branch_ref_or_None) tuples the fake
+# renders as real `-z` porcelain, exactly as git would. A None branch is a DETACHED entry. Any path in
+# `checkouts` is OCCUPIED, so a `git worktree add` targeting it fails (exit 128) — the same fail-closed git
+# gives a detached/foreign checkout sitting at the default path.
+
+
+def _worktree_list_z(checkouts, head) -> str:
+    """Render `checkouts` as `git worktree list --porcelain -z` output: each field NUL-terminated, each
+    entry ended by an extra empty (NUL) field. A None branch renders as a `detached` entry."""
+    out = ""
+    for path, branch in checkouts:
+        out += f"worktree {path}\0HEAD {head}\0"
+        out += "detached\0" if branch is None else f"branch {branch}\0"
+        out += "\0"
+    return out
 
 def _ledger(*args) -> int:
     """Run the real ledger main quietly (its row JSON would otherwise pollute the self-test output)."""
@@ -247,11 +264,18 @@ def _labelset(argv, flag):
 
 
 class Recorder:
-    def __init__(self, *, view, worktree_head=None, local_branch_exists=False):
+    def __init__(self, *, view, worktree_head=None, local_branch_exists=False,
+                 checkouts=None, dirty=False, ff_fails=False):
         self.view = view
         self.calls: list = []
         self.worktree_head = worktree_head if worktree_head is not None else view["headRefOid"]
         self.local_branch_exists = local_branch_exists
+        self.checkouts = list(checkouts or [])
+        self.dirty = dirty
+        self.ff_fails = ff_fails
+
+    def _occupied(self):
+        return {path for path, _ in self.checkouts}
 
     def __call__(self, argv, *, cwd=None):
         self.calls.append({"argv": list(argv), "cwd": cwd})
@@ -268,11 +292,27 @@ class Recorder:
             return CompletedProcess(argv, code or 0, "", "ledger reported failure")
         if prog == "git":
             sub = argv[3] if len(argv) > 3 and argv[1] == "-C" else ""
+            if sub == "worktree":
+                wsub = argv[4] if len(argv) > 4 else ""
+                if wsub == "list":
+                    return CompletedProcess(argv, 0, _worktree_list_z(self.checkouts, self.worktree_head), "")
+                if wsub == "add":
+                    # `add <worktree> <branch>` or `add -b <branch> <worktree> <ref>`; find the target path.
+                    target = argv[7] if len(argv) > 5 and argv[5] == "-b" else argv[5]
+                    if target in self._occupied():
+                        return CompletedProcess(argv, 128, "", f"fatal: '{target}' already exists")
+                    return CompletedProcess(argv, 0, "", "")
+                return CompletedProcess(argv, 0, "", "")
             if sub == "show-ref":
                 return CompletedProcess(argv, 0 if self.local_branch_exists else 1, "", "")
+            if sub == "status":
+                return CompletedProcess(argv, 0, "M file\n" if self.dirty else "", "")
+            if sub == "merge":
+                return CompletedProcess(argv, 1 if self.ff_fails else 0, "",
+                                        "not a fast-forward" if self.ff_fails else "")
             if sub == "rev-parse":
                 return CompletedProcess(argv, 0, self.worktree_head + "\n", "")
-            return CompletedProcess(argv, 0, "", "")  # fetch / worktree add
+            return CompletedProcess(argv, 0, "", "")  # fetch
         return CompletedProcess(argv, 0, "", "")
 
     def gh_calls(self):
@@ -284,10 +324,15 @@ class Recorder:
                 return c["argv"]
         return None
 
+    def any_call(self, pred):
+        return any(pred(c["argv"]) for c in self.calls)
+
 
 def _adopt(d: Path, ledger: Path, v: dict, *, wroot: Path, worktree_head=None,
-           local_branch_exists=False, tier="HIGH", run_id="g1", repo=None):
-    rec = Recorder(view=v, worktree_head=worktree_head, local_branch_exists=local_branch_exists)
+           local_branch_exists=False, checkouts=None, dirty=False, ff_fails=False,
+           tier="HIGH", run_id="g1", repo=None):
+    rec = Recorder(view=v, worktree_head=worktree_head, local_branch_exists=local_branch_exists,
+                   checkouts=checkouts, dirty=dirty, ff_fails=ff_fails)
     argv = ["adopt", "--pr", str(v["number"]), "--run-id", run_id, "--file", str(ledger),
             "--tier", tier, "--worktrees-root", str(wroot), "--project-root", str(d)]
     if repo:
@@ -351,10 +396,12 @@ def t_readopt_preserves_ownership():
         wt.mkdir(parents=True)
         ledger = d / "state.jsonl"
         _init_ledger(ledger)
-        # First adopt CREATED this worktree — owner=yes.
+        # First adopt CREATED this worktree — owner=yes. Discovery finds the branch at that same path.
         _add_row(ledger, 12, head_sha=sha, worktree=str(wt), worktree_owned="yes", branch_owned="yes",
                  tier="HIGH", slug="fix-the-thing")
-        code, _, err, _ = _adopt(d, ledger, view(headRefOid=sha), wroot=wroot, worktree_head=sha)
+        checkouts = [(str(wt), "refs/heads/feat-x")]
+        code, _, err, _ = _adopt(d, ledger, view(headRefOid=sha), wroot=wroot, worktree_head=sha,
+                                 checkouts=checkouts)
         check(code == 0, f"unchanged-head re-adopt succeeds (got {code}: {err})")
         check(_field(ledger, 12, "worktree_owned") == "yes",
               "re-adoption of the SAME worktree PRESERVES worktree_owned=yes (campaign created it)")
@@ -362,7 +409,8 @@ def t_readopt_preserves_ownership():
         # Teeth: a FIRST adoption of a genuinely pre-existing external checkout is no/no.
         ledger2 = d / "state2.jsonl"
         _init_ledger(ledger2)
-        code2, _, err2, _ = _adopt(d, ledger2, view(headRefOid=sha), wroot=wroot, worktree_head=sha)
+        code2, _, err2, _ = _adopt(d, ledger2, view(headRefOid=sha), wroot=wroot, worktree_head=sha,
+                                   checkouts=checkouts)
         check(code2 == 0, f"first adopt of a pre-existing checkout succeeds (got {code2}: {err2})")
         check(_field(ledger2, 12, "worktree_owned") == "no",
               "a pre-existing external checkout is worktree_owned=no on FIRST adoption")
@@ -386,7 +434,8 @@ def t_readopt_unchanged_head_preserves_verdicts():
         _record_verdict(ledger, 12, sha)          # reviews_ok -> 2
         _set_row(ledger, 12, ci="green")
         check(_field(ledger, 12, "reviews_ok") == "2", "precondition: two SATISFIED verdicts recorded")
-        code, _, err, _ = _adopt(d, ledger, view(headRefOid=sha), wroot=wroot, worktree_head=sha)
+        code, _, err, _ = _adopt(d, ledger, view(headRefOid=sha), wroot=wroot, worktree_head=sha,
+                                 checkouts=[(str(wt), "refs/heads/feat-x")])
         check(code == 0, f"unchanged-head re-adopt succeeds (got {code}: {err})")
         check(_field(ledger, 12, "reviews_ok") == "2",
               "an UNCHANGED head PRESERVES reviews_ok — the accumulated verdicts are not discarded")
@@ -466,7 +515,8 @@ def t_readopt_accepted_unchanged_head_labels():
                  tier="HIGH")
         _record_verdict(ledger, 12, sha)
         _record_verdict(ledger, 12, sha)          # reviews_ok=2 == required(HIGH)
-        code, _, err, rec = _adopt(d, ledger, view(headRefOid=sha), wroot=wroot, worktree_head=sha)
+        code, _, err, rec = _adopt(d, ledger, view(headRefOid=sha), wroot=wroot, worktree_head=sha,
+                                   checkouts=[(str(wt), "refs/heads/feat-x")])
         check(code == 0, f"accepted re-adopt succeeds (got {code}: {err})")
         e = rec.one("gh", "pr", "edit")
         check(e is not None, "a gh pr edit is issued")
@@ -523,10 +573,174 @@ def t_reused_worktree_sha_mismatch_refused():
         _init_ledger(ledger)
         _add_row(ledger, 12, head_sha=old, worktree=str(wt), worktree_owned="no", branch_owned="no",
                  tier="HIGH")
-        code, _, err, _ = _adopt(d, ledger, view(headRefOid=new), wroot=wroot, worktree_head=old)
+        code, _, err, _ = _adopt(d, ledger, view(headRefOid=new), wroot=wroot, worktree_head=old,
+                                 checkouts=[(str(wt), "refs/heads/feat-x")])
         check(code != 0, "a reused worktree not at the planned head must be REFUSED — fail closed")
         check("stale" in err.lower(), f"the refusal must SAY the checkout is stale; got {err!r}")
         check(new in err and old in err, "the refusal names both the planned and the actual SHA")
+
+
+# --- the worktree-discovery chokepoint: parse `git worktree list --porcelain -z` --------------------------
+
+def t_worktree_for_branch_parser():
+    z = _worktree_list_z([("/repo", "refs/heads/main"),
+                          ("/repo/.worktrees/feat-x", "refs/heads/feat-x"),
+                          ("/repo/.worktrees/detached", None),
+                          ("/repo/.worktrees/other", "refs/heads/other")], "a" * 40)
+    check(M.worktree_for_branch(z, "refs/heads/feat-x") == "/repo/.worktrees/feat-x",
+          "an exact `branch refs/heads/<name>` entry resolves to its worktree path")
+    check(M.worktree_for_branch(z, "refs/heads/main") == "/repo",
+          "the branch checked out at the ROOT resolves to the root path")
+    check(M.worktree_for_branch(z, "refs/heads/absent") is None,
+          "a branch checked out nowhere resolves to None (create a worktree)")
+    # A detached HEAD, or a differently-named branch, is NOT this branch's checkout.
+    check(M.worktree_for_branch(z, "refs/heads/detached") is None,
+          "a detached worktree never matches a branch ref — only `detached` was recorded, no branch line")
+    check(M.worktree_for_branch("", "refs/heads/feat-x") is None, "empty listing -> None")
+
+
+# --- fix: the WORKTREE is DISCOVERED, then reused-or-created across every cell -----------------------------
+#
+# Each cell drives the executor with a `checkouts` scenario and asserts the RECORDED worktree path is the
+# DISCOVERED one (never blindly the default), and that a refusal touches nothing further.
+
+BR = "refs/heads/feat-x"
+
+
+def _worktree_added(rec) -> bool:
+    return rec.any_call(lambda a: a[0] == "git" and "worktree" in a and "add" in a)
+
+
+def t_reuse_at_root():
+    with tempfile.TemporaryDirectory() as dd:
+        d = Path(dd)
+        wroot = d / "wt"
+        sha = "a" * 40
+        ledger = d / "state.jsonl"
+        _init_ledger(ledger)
+        # The PR branch is checked out at the PROJECT ROOT — reuse THAT path, never `git worktree add`.
+        code, _, err, rec = _adopt(d, ledger, view(headRefOid=sha), wroot=wroot, worktree_head=sha,
+                                   checkouts=[(str(d), BR)])
+        check(code == 0, f"a branch checked out at the root adopts by REUSE (got {code}: {err})")
+        check(_field(ledger, 12, "worktree") == str(d),
+              "the RECORDED worktree is the discovered root path, not the default worktrees-root path")
+        check(_field(ledger, 12, "worktree_owned") == "no", "a reused root checkout is worktree_owned=no")
+        check(_field(ledger, 12, "branch_owned") == "no", "and branch_owned=no — campaign created neither")
+        check(not _worktree_added(rec),
+              "REUSE must NOT `git worktree add` (it exits 128 for a branch checked out elsewhere)")
+
+
+def t_reuse_at_other_worktree():
+    with tempfile.TemporaryDirectory() as dd:
+        d = Path(dd)
+        wroot = d / "wt"
+        sha = "a" * 40
+        other = d / "somewhere-else" / "feat-x"
+        ledger = d / "state.jsonl"
+        _init_ledger(ledger)
+        code, _, err, rec = _adopt(d, ledger, view(headRefOid=sha), wroot=wroot, worktree_head=sha,
+                                   checkouts=[(str(other), BR)])
+        check(code == 0, f"a branch checked out at another worktree adopts by REUSE (got {code}: {err})")
+        check(_field(ledger, 12, "worktree") == str(other),
+              "the RECORDED worktree is the discovered other-worktree path")
+        check(not _worktree_added(rec), "REUSE of another worktree must NOT `git worktree add`")
+
+
+def t_reuse_default_clean():
+    with tempfile.TemporaryDirectory() as dd:
+        d = Path(dd)
+        wroot = d / "wt"
+        sha = "a" * 40
+        wt = wroot / "feat-x"                      # the DEFAULT path — and it holds the branch, clean
+        ledger = d / "state.jsonl"
+        _init_ledger(ledger)
+        code, _, err, rec = _adopt(d, ledger, view(headRefOid=sha), wroot=wroot, worktree_head=sha,
+                                   checkouts=[(str(wt), BR)])
+        check(code == 0, f"a clean branch checkout at the default path is REUSED (got {code}: {err})")
+        check(_field(ledger, 12, "worktree") == str(wt), "the recorded worktree is the default path")
+        check(_field(ledger, 12, "worktree_owned") == "no",
+              "a pre-existing checkout at the default path is still worktree_owned=no on first adoption")
+        check(rec.any_call(lambda a: a[0] == "git" and "merge" in a and "--ff-only" in a),
+              "a reused checkout is FAST-FORWARDED to the origin head before its SHA is verified")
+        check(not _worktree_added(rec), "a reused default checkout must NOT `git worktree add`")
+
+
+def t_detached_at_path_refused():
+    with tempfile.TemporaryDirectory() as dd:
+        d = Path(dd)
+        wroot = d / "wt"
+        sha = "a" * 40
+        wt = wroot / "feat-x"                      # the default path is a DETACHED HEAD, not the branch
+        ledger = d / "state.jsonl"
+        _init_ledger(ledger)
+        code, _, _, rec = _adopt(d, ledger, view(headRefOid=sha), wroot=wroot, worktree_head=sha,
+                                 checkouts=[(str(wt), None)])
+        check(code != 0, "a DETACHED checkout at the default path must REFUSE — it is not the branch")
+        check(rec.one("gh", "pr", "edit") is None, "a refusal touches nothing further — no gh pr edit")
+        check(_field(ledger, 12, "worktree") == "-",
+              "and the ledger worktree field is untouched (the row landed, the worktree never resolved)")
+
+
+def t_different_branch_at_path_refused():
+    with tempfile.TemporaryDirectory() as dd:
+        d = Path(dd)
+        wroot = d / "wt"
+        sha = "a" * 40
+        wt = wroot / "feat-x"                      # the default path holds a DIFFERENT branch
+        ledger = d / "state.jsonl"
+        _init_ledger(ledger)
+        code, _, _, rec = _adopt(d, ledger, view(headRefOid=sha), wroot=wroot, worktree_head=sha,
+                                 checkouts=[(str(wt), "refs/heads/some-other-branch")])
+        check(code != 0, "a DIFFERENT branch at the default path must REFUSE — the add hits an occupied path")
+        check(rec.one("gh", "pr", "edit") is None, "a refusal touches nothing further — no gh pr edit")
+        check(_field(ledger, 12, "worktree") == "-", "and the ledger worktree field is untouched")
+
+
+def t_dirty_at_path_refused():
+    with tempfile.TemporaryDirectory() as dd:
+        d = Path(dd)
+        wroot = d / "wt"
+        sha = "a" * 40
+        wt = wroot / "feat-x"
+        ledger = d / "state.jsonl"
+        _init_ledger(ledger)
+        # The branch IS checked out at the default path, but the tree is DIRTY.
+        code, _, err, rec = _adopt(d, ledger, view(headRefOid=sha), wroot=wroot, worktree_head=sha,
+                                   checkouts=[(str(wt), BR)], dirty=True)
+        check(code != 0, "a DIRTY reused checkout must REFUSE — never adopt over uncommitted work")
+        check("dirty" in err.lower(), f"the refusal must SAY the checkout is dirty; got {err!r}")
+        check(rec.one("gh", "pr", "edit") is None, "a refusal touches nothing further — no gh pr edit")
+        check(_field(ledger, 12, "worktree") == "-", "and the ledger worktree field is untouched")
+
+
+def t_absent_creates_and_verifies():
+    with tempfile.TemporaryDirectory() as dd:
+        d = Path(dd)
+        wroot = d / "wt"
+        sha = "a" * 40
+        wt = wroot / "feat-x"
+        ledger = d / "state.jsonl"
+        _init_ledger(ledger)
+        # No checkout of the branch ANYWHERE, and no local branch either -> create at the default path with -b.
+        code, _, err, rec = _adopt(d, ledger, view(headRefOid=sha), wroot=wroot, worktree_head=sha,
+                                   checkouts=[], local_branch_exists=False)
+        check(code == 0, f"an absent branch is CREATED at the default path (got {code}: {err})")
+        check(_field(ledger, 12, "worktree") == str(wt), "the recorded worktree is the default path")
+        check(_field(ledger, 12, "worktree_owned") == "yes", "a campaign-created worktree is worktree_owned=yes")
+        check(_field(ledger, 12, "branch_owned") == "yes",
+              "no pre-existing local branch -> campaign created it (branch_owned=yes, the -b path)")
+        check(rec.any_call(lambda a: a[0] == "git" and "worktree" in a and "add" in a and "-b" in a),
+              "the create path issues `git worktree add -b` from the fetched origin head")
+        # Teeth: a pre-existing LOCAL branch (checked out nowhere) is reused -> branch_owned=no, no -b.
+        ledger2 = d / "state2.jsonl"
+        _init_ledger(ledger2)
+        code2, _, err2, rec2 = _adopt(d, ledger2, view(headRefOid=sha), wroot=wroot, worktree_head=sha,
+                                      checkouts=[], local_branch_exists=True)
+        check(code2 == 0, f"an absent-worktree but existing local branch is CREATED (got {code2}: {err2})")
+        check(_field(ledger2, 12, "branch_owned") == "no",
+              "a pre-existing local branch is reused (branch_owned=no), not recreated")
+        check(rec2.any_call(lambda a: a[0] == "git" and "worktree" in a and "add" in a and "-b" not in a),
+              "with a local branch present, the add is plain `worktree add <path> <branch>` (no -b)")
 
 
 CASES = [
@@ -550,4 +764,12 @@ CASES = [
     ("readopt_changed_head_labels", "a moved head returns to gauntlet-reviewing, removes accepted (fix 6)", t_readopt_changed_head_labels),
     ("stale_local_branch_refused", "a worktree off a stale local branch is refused (fix 7)", t_stale_local_branch_refused),
     ("reused_worktree_sha_mismatch_refused", "a reused worktree not at the planned head is refused (fix 7)", t_reused_worktree_sha_mismatch_refused),
+    ("worktree_for_branch_parser", "the discovery chokepoint parses `git worktree list --porcelain -z` for the exact branch", t_worktree_for_branch_parser),
+    ("reuse_at_root", "a branch checked out at the ROOT is reused, no worktree add", t_reuse_at_root),
+    ("reuse_at_other_worktree", "a branch checked out at another worktree is reused at its discovered path", t_reuse_at_other_worktree),
+    ("reuse_default_clean", "a clean checkout at the default path is reused, fast-forwarded, SHA-verified", t_reuse_default_clean),
+    ("detached_at_path_refused", "a DETACHED HEAD at the default path fails closed, touches nothing further", t_detached_at_path_refused),
+    ("different_branch_at_path_refused", "a DIFFERENT branch at the default path fails closed", t_different_branch_at_path_refused),
+    ("dirty_at_path_refused", "a DIRTY reused checkout fails closed, touches nothing further", t_dirty_at_path_refused),
+    ("absent_creates_and_verifies", "an absent branch is created (with/without a pre-existing local branch), SHA-verified", t_absent_creates_and_verifies),
 ]

@@ -363,6 +363,19 @@ For each `#PR` to adopt:
    form writes the local branch directly and is **refused** when the branch already exists or is checked
    out. Let the create/reuse logic above handle the local branch.)
 
+   **Two fail-closed guarantees the pseudocode leaves implicit:**
+   - **On a re-adoption of the SAME worktree campaign itself created, PRESERVE its recorded
+     `worktree_owned`/`branch_owned`** rather than downgrading them to `no`. A first adopt that **created**
+     the worktree recorded `yes`; blanking that to `no` on a later heartbeat would strand the
+     campaign-created worktree from Stage-3 cleanup. The `existing is present` branch's `worktree_owned =
+     "no"` / `branch_owned = "no"` is the **first-discovery** value; when the discovered path equals the
+     path this run's row already recorded as campaign-created, keep the recorded ownership. A genuinely
+     pre-existing external checkout (first adoption, or a differently recorded path) stays `no`/`no`.
+   - **After the reuse fast-forward or the create, VERIFY the resolved worktree's `HEAD` equals the
+     recorded `head_sha`** and refuse on mismatch. A stale same-named local branch, or a remote that moved
+     since the adoption snapshot, would otherwise leave the checkout at a tip that is **not** the PR head
+     the ledger records — a silent stale adoption. Refuse rather than record a worktree that does not match.
+
    Record the **actual** resolved `worktree`; `default_worktree(repository, headRefName)` is only the
    **created default** used on the `git worktree add` path, while a reused checkout sits at some other
    absolute path. In the row's `worktree` (via `ledger.py … set --pr <N> --worktree …`), record
