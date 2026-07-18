@@ -7,8 +7,8 @@ a planned unit `done`, or an accepted amendment — lands for ~15 min
 fire only when a whole unit completes, minutes apart, so BETWEEN units a live
 reviewer grinding one unit and a hung one look identical until the cap.
 
-A cross-engine reviewer launched as a background task writes its reasoning to a
-stdout stream that grows CONTINUOUSLY while the model emits — a far finer
+A background-task reviewer whose stdout is captured INCREMENTALLY writes its
+reasoning to a stream that grows CONTINUOUSLY while the model emits — a far finer
 PROCESS-LIVENESS signal than the unit-granular progress file. This probe reads
 that stream's SIZE and MTIME ONLY (never its content — the transcript is large
 and reading it would flood the driver's context) and reports whether it was
@@ -16,17 +16,27 @@ written within a quiet window.
 
 It DECIDES NOTHING and always exits 0. It is a MISS-CATCHER, not a verdict: a
 growing stream proves the process is ALIVE, so the driver need not declare a
-false stall while the progress file is merely coarse-stale; a stream quiet past
-the window CORROBORATES a hang, so the driver can apply `reviewer.md`'s retry
-budget without waiting the full meaningful-progress cap. Crucially, stream growth
+false stall while the progress file is merely coarse-stale; a `quiet` (or
+`absent`) stream CORROBORATES a hang ONLY AFTER launch evidence exists — the
+reviewer wrote at least one line after `pass_identity` and then went quiet — in
+which case the driver can apply `reviewer.md`'s retry budget without waiting the
+full meaningful-progress cap. Before launch evidence the Stage 2a launch-evidence
+deadline owns that window, so a `quiet`/`absent` stream there is NOT a hang signal
+(`stage-2-review-gate.md`). Crucially, stream growth
 is PROCESS liveness, NOT meaningful progress: it MUST NOT reset the
 meaningful-progress timer (`stage-2-review-gate.md`) — a reviewer that streams
 forever without completing a unit is still stalled at that cap. This signal kills
 a hung process faster; it never extends patience for one that will not converge.
 
-Only the background-task (cross-engine) route has a pollable stream. A
-native-worker reviewer's transcript is not safely pollable, so that route keeps
-the progress-file + completion-notification model; do not point this probe at it.
+The signal needs the stdout to be captured INCREMENTALLY. The background-task
+Claude-Code→codex route qualifies: codex streams its reasoning to the captured
+stdout as it emits. A reviewer whose output is BUFFERED until completion exposes
+no growing stream — `claude -p --output-format text` (the Codex→claude route)
+writes nothing until the end (realtime streaming needs `--output-format
+stream-json`), so a HEALTHY such reviewer reads a FALSE `quiet`; do not rely on
+this probe's `quiet` verdict there. A native-worker reviewer's transcript is not
+safely pollable either, so that route likewise keeps the progress-file +
+completion-notification model; do not point this probe at those routes.
 """
 from __future__ import annotations
 
@@ -86,7 +96,7 @@ def main(argv: "list[str] | None" = None) -> int:
 
     p = sub.add_parser("probe", help="report the stream's liveness verdict as JSON")
     p.add_argument("--stream", required=True,
-                   help="path to the reviewer's background-task stdout file (stat'd, never read)")
+                   help="path to the reviewer's incrementally-captured background-task stdout file (stat'd, never read)")
     p.add_argument("--quiet-window-seconds", "--quiet_window_seconds", type=int,
                    default=DEFAULT_QUIET_WINDOW_SECONDS,
                    help=f"a stream unwritten for this long reads 'quiet' (default {DEFAULT_QUIET_WINDOW_SECONDS})")
