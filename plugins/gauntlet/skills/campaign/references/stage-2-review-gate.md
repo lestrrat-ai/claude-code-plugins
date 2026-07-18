@@ -87,7 +87,7 @@ review gate"), and the review re-starts on the clean tip:
 Only launch a review pass once all three are clear for the current tip.
 
 Run reviews **one at a time per PR** — never two at once for the same SHA. When a PR's tip
-(`head_sha`) has fewer than `required(tier)` SATISFIED verdicts (2, or 1 for TRIVIAL) and no review
+(`head_sha`) has fewer than `required(tier)` SATISFIED verdicts (2a-triage owns the formula) and no review
 already running for it, the heartbeat's dispatch step launches **one** review pass by the selected reviewer
 (see "The reviewer") — a **fresh**, context-isolated pass over the whole `origin/<base>...HEAD` diff, run as
 a **background** task (its completion is a heartbeat; the loop folds the verdict in at step 2). For a
@@ -133,8 +133,12 @@ file is a plaintext file in a directory the reviewer can write to.
 ["python3", review_pass_script, "finding-add", "--file", findings_file,
  "--path", path, "--line", line, "--writer", writer, "--purpose", purpose,
  "--repro", repro, "--fix", fix]
+["python3", review_pass_script, "intent-check", "--file", intent_file]
+    # refuse a missing/malformed intent block BEFORE dispatch, not at verify
 ["python3", review_pass_script, "verify", "--file", progress_file,
  "--head-sha", live_head_sha, "--verdict", verdict, "--amendments-ruled", count]
+["python3", review_pass_script, "status", "--run", rundir]
+    # ADVISORY read-only glance at in-flight passes; never a gate input
 ["python3", review_pass_script, "self-test"]
 ```
 
@@ -574,8 +578,9 @@ count, and a guard whose input can be absent never fires. `verify` now derives t
 file's own name and loads `<rundir>/intent-<pr>.md` on **every** pass; anything short of a **usable** block
 makes the pass `unusable` and no verdict is tallied from it. **What "usable" means is NOT restated here** —
 `pr-adoption.md` step 3a states it for the human writing the file, and `review-pass.py`'s parser IS the
-definition. A missing intent is the one `unusable` that is **not** a reviewer failure: write the block,
-then re-dispatch.
+definition (`review-pass.py intent-check --file <rundir>/intent-<pr>.md` is the pre-dispatch form of the
+same check — run it before dispatching rather than discovering the gap at `verify`). A missing intent is
+the one `unusable` that is **not** a reviewer failure: write the block, then re-dispatch.
 
 The reviewer runs the following review contract. Select the reviewer through `reviewer.md`, evaluate its
 `ReviewIsolationCapability`, and take the resulting `review_transition` through `runtime-adapter.md`
@@ -598,13 +603,10 @@ Then bind `<TRANSPORT-RECORD>` and `<INTENT>` in one non-rescanning `bind_review
 materialize its result through `write_bytes`. The reviewer must receive concrete record values, never
 literal unresolved field names.
 
-`<prompt-file>`, `<review-output>`, `<progress-file>` and `<findings-file>` resolve to the **active launch attempt's**
-files (per the attempt-artifact table above) — NOT to fixed names:
-
-| Launch attempt | `<prompt-file>` | `<review-output>` | `<progress-file>` | `<findings-file>` |
-|---|---|---|---|---|
-| `1` | `review-<pr>-<n>.prompt.txt` | `review-<pr>-<n>.txt` | `review-<pr>-<n>.progress.jsonl` | `review-<pr>-<n>.findings.jsonl` |
-| `k ≥ 2` (relaunch) | `review-<pr>-<n>.a<k>.prompt.txt` | `review-<pr>-<n>.a<k>.txt` | `review-<pr>-<n>.a<k>.progress.jsonl` | `review-<pr>-<n>.a<k>.findings.jsonl` |
+`<prompt-file>`, `<review-output>`, `<progress-file>` and `<findings-file>` resolve to the **active launch
+attempt's** files — NOT to fixed names. The attempt-artifact table ("Each launch attempt owns its own
+artifacts", above) is the owner of those names; `<review-output>` is that table's "Output (verdict) file"
+column.
 
 Putting attempt-1 names into a relaunch record is a silent self-defeat: the relaunched reviewer would
 write its progress into the *dead* attempt's file, leaving the active `.a<k>.progress.jsonl` holding
@@ -924,7 +926,7 @@ Then, per verdict:
   bumps `reviews_ok` and `review_rounds` and clears `ns_streak` in one write — **never** `set
   --reviews-ok`, which refuses to raise the tally). It **never** trips a review-loop cap. The gate is met
   once this SHA holds `required(tier)` SATISFIED verdicts
-  (2, or 1 for TRIVIAL). If the tally is still short of the target — e.g. the **first** SATISFIED on a
+  (2a-triage owns the formula). If the tally is still short of the target — e.g. the **first** SATISFIED on a
   `required==2` PR — the next heartbeat launches the next (corroborating) review on the same SHA. When the
   tally **reaches** `required(tier)` on the same SHA, the review gate is met for this HEAD — swap the
   PR's label: `gh pr edit <pr> --remove-label gauntlet-reviewing --add-label gauntlet-accepted`.
@@ -1119,13 +1121,11 @@ when **both** accepting passes on the same content name the same area, note that
 report, and the orchestrator MAY add a plan unit covering it the next time the PR content changes and a
 fresh review round starts — but it never blocks the current gate.
 
-**Gate is `required(tier)` fresh, context-isolated SATISFIED verdicts on the same PR content — two,
-EXCEPT a TRIVIAL human-prose-only PR gates on one.** Any change touching code, an agent-doc, or a
-SENSITIVE file always requires **two**; only a PR whose *entire* diff is HUMAN-DOC prose (tier TRIVIAL)
-gates on **one**. A `NOT SATISFIED`, a `plan_amendment_request`, or a content change that adds a
-CODE/agent-doc/SENSITIVE file re-triages the PR upward (Stage 2a-triage), which can raise the target
-from one to two — so a PR can never merge on a single pass once its content stops being pure prose. For
-a two-pass gate the passes are
+**Gate is `required(tier)` fresh, context-isolated SATISFIED verdicts on the same PR content** —
+2a-triage owns the formula and the file classes. A `NOT SATISFIED`, a `plan_amendment_request`, or a
+content change that adds a CODE/agent-doc/SENSITIVE file re-triages the PR upward (Stage 2a-triage),
+which can raise the target — so a PR can never merge on a single pass once its content stops being pure
+prose. For a two-pass gate the passes are
 not statistically or epistemically independent observations — they judge the same diff under the same
 review task and protocol (and, when both passes run the same reviewer, the same model and prompt), so
 their verdicts are correlated and this is not a probabilistic proof of correctness. What the second pass
