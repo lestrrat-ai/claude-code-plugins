@@ -215,11 +215,21 @@ def check(pr: str, ledger_path: Path, repo: "str | None", view_json: "str | None
 
 def doc_enum(text: str, field: str) -> set:
     """The set of `<field>` values `stage-3-merge.md`'s merge-precondition table enumerates, read off the
-    backticked `.<field> = VALUE` tokens the table uses (e.g. `.mergeStateStatus = CLEAN`). The fenced enum
-    block above the table writes the same values differently and is not matched here — the TABLE is the
-    contract this tool implements, so the table is what is pinned.
+    backticked `.<field> = VALUE` tokens the table uses (e.g. `.mergeStateStatus = CLEAN`).
+
+    The extraction is scoped to the doc's Markdown TABLE ROWS — a line whose first non-space character is
+    `|` — and NOTHING else. That scoping is load-bearing, not cosmetic: a value dropped from the table
+    itself but still named in PROSE somewhere in the doc (the fenced enum block above the table, a worked
+    example, a `.mergeStateStatus = BLOCKED` sentence) would otherwise supply the token the table no longer
+    has, and the drift-guard would PASS while the table it is meant to pin has silently lost a value. The
+    TABLE is the contract this tool implements, so ONLY the table rows are read — prose cannot mask a
+    dropped row.
     """
-    return set(re.findall(rf"\.{field}\s*=\s*([A-Z_]+)", text))
+    enum = set()
+    for line in text.splitlines():
+        if line.lstrip().startswith("|"):
+            enum.update(re.findall(rf"\.{field}\s*=\s*([A-Z_]+)", line))
+    return enum
 
 
 def doc_check(doc: Path) -> int:

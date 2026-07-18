@@ -201,14 +201,36 @@ def _doc_check_quiet(doc: Path) -> int:
         return M.doc_check(doc)
 
 
+def _table_rows(mss_values, mergeable_values) -> str:
+    """A minimal merge-precondition TABLE — each enum token in a Markdown table row (leading `|`), which is
+    the ONLY shape doc_enum reads. Used by the drift fixtures so they exercise the real table-row path."""
+    rows = ([f"| `.mergeStateStatus = {v}` | meaning | do |" for v in mss_values]
+            + [f"| `.mergeable = {v}` | meaning | do |" for v in mergeable_values])
+    return "| Field / value | Meaning | Do |\n|---|---|---|\n" + "\n".join(rows) + "\n"
+
+
 def t_doc_check_detects_a_dropped_value():
     with tempfile.TemporaryDirectory() as d:
         doc = Path(d) / "stage-3-merge.md"
-        states = [v for v in M.MERGE_STATE_STATUS if v != "HAS_HOOKS"]  # drop one
-        body = ([f"`.mergeStateStatus = {v}`" for v in states]
-                + [f"`.mergeable = {v}`" for v in M.MERGEABLE])
-        doc.write_text("\n".join(body) + "\n", encoding="utf-8")
+        states = [v for v in M.MERGE_STATE_STATUS if v != "HAS_HOOKS"]  # drop one FROM THE TABLE
+        doc.write_text(_table_rows(states, M.MERGEABLE), encoding="utf-8")
         check(_doc_check_quiet(doc) == 1, "a doc missing a mergeStateStatus value the code handles must FAIL")
+
+
+def t_doc_check_prose_cannot_mask_a_dropped_table_row():
+    # The exact bypass this pins: a value dropped from the TABLE but still named in PROSE outside it must
+    # NOT sneak back into the extracted set. The old whole-doc regex would pick the prose token up, the sets
+    # would match, and doc-check would PASS while the table silently lost a row. Scoped to table rows, the
+    # prose contributes nothing, the set is short a value, and doc-check FAILS as it must.
+    with tempfile.TemporaryDirectory() as d:
+        doc = Path(d) / "stage-3-merge.md"
+        states = [v for v in M.MERGE_STATE_STATUS if v != "HAS_HOOKS"]  # HAS_HOOKS is gone FROM THE TABLE
+        table = _table_rows(states, M.MERGEABLE)
+        prose = ("\nNote: a `.mergeStateStatus = HAS_HOOKS` PR still merges — but this line is PROSE, not a\n"
+                 "table row, so it must NOT count toward the enumerated set.\n")
+        doc.write_text(table + prose, encoding="utf-8")
+        check(_doc_check_quiet(doc) == 1,
+              "a value dropped from the TABLE but named only in PROSE must STILL fail doc-check")
 
 
 def t_doc_check_fails_when_it_finds_nothing():
@@ -241,5 +263,7 @@ CASES = [
     ("cli-no-row", "a PR absent from the ledger decides `no ledger row`", t_cli_no_ledger_row),
     ("doc-agrees", "the shipped doc agrees with the code", t_doc_check_agrees_with_the_shipped_doc),
     ("doc-drift-caught", "doc-check FAILS when the doc drops a value", t_doc_check_detects_a_dropped_value),
+    ("doc-prose-cant-mask", "prose outside the table can't mask a dropped table row",
+     t_doc_check_prose_cannot_mask_a_dropped_table_row),
     ("doc-empty-fails", "doc-check FAILS when it extracts nothing", t_doc_check_fails_when_it_finds_nothing),
 ]
