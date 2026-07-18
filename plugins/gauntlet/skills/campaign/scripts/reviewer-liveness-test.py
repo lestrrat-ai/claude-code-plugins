@@ -9,6 +9,8 @@ decides nothing; these fixtures pin exactly which fact each input produces.
 """
 from __future__ import annotations
 
+import builtins
+import io
 import os
 import tempfile
 from pathlib import Path
@@ -89,17 +91,50 @@ def t_reports_size_when_present_and_none_when_absent():
 
 def t_probe_uses_real_stat_never_reads_content():
     # Exercise the real os.stat path: size comes from stat, verdict from the file's own mtime — the probe
-    # never opens the file for reading. An old mtime reads 'quiet'; a fresh one reads 'alive'.
+    # never OPENS the file for reading. An old mtime reads 'quiet'; a fresh one reads 'alive'.
+    #
+    # TEETH for the load-bearing safety property: the transcript is large, so probe() must reach its
+    # result via os.stat ALONE and never open the stream (opening + reading it would flood the driver's
+    # context). We PIN that here by forbidding open during the probe() call: builtins.open and io.open are
+    # patched to raise the instant anything tries to open the stream path, so a future regression that
+    # starts reading the transcript turns this fixture RED instead of passing green. os.stat is left
+    # untouched, so the size/mtime path a correct probe uses still works. The tempfile is written BEFORE
+    # the guard is installed, so only the probe() call runs under it, and the originals are restored in a
+    # finally so the patch cannot leak to another fixture.
     with tempfile.TemporaryDirectory() as d:
         p = Path(d) / "review-1-1.out"
         body = b"streamed reasoning tokens\n" * 100
         p.write_bytes(body)
         os.utime(p, (1000.0, 1000.0))  # mtime far in the past relative to our injected 'now'
-        stale = R.probe(str(p), WINDOW, now_epoch=1000.0 + WINDOW + 5)
+        target = os.path.realpath(str(p))
+
+        real_builtins_open = builtins.open
+        real_io_open = io.open
+
+        def _forbid_stream_open(orig):
+            def guarded(file, *args, **kwargs):
+                try:
+                    same = os.path.realpath(os.fspath(file)) == target
+                except TypeError:
+                    same = False  # a non-path (e.g. an int fd) is never our stream
+                if same:
+                    raise AssertionError(
+                        "probe() OPENED the stream file — it must stat only, never read the transcript")
+                return orig(file, *args, **kwargs)
+            return guarded
+
+        builtins.open = _forbid_stream_open(real_builtins_open)
+        io.open = _forbid_stream_open(real_io_open)
+        try:
+            stale = R.probe(str(p), WINDOW, now_epoch=1000.0 + WINDOW + 5)
+            fresh = R.probe(str(p), WINDOW, now_epoch=1000.0 + 1)
+        finally:
+            builtins.open = real_builtins_open
+            io.open = real_io_open
+
         check(stale["verdict"] == "quiet", "a real file with an old mtime must read 'quiet' via os.stat")
         check(stale["stream_bytes"] == len(body),
               "stream_bytes must equal the file's real size (proving it stat'd, not guessed)")
-        fresh = R.probe(str(p), WINDOW, now_epoch=1000.0 + 1)
         check(fresh["verdict"] == "alive", "the same file read at a fresh 'now' must read 'alive' — teeth")
 
 
