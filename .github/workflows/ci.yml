@@ -237,9 +237,10 @@ jobs:
       # The merge-readiness decider's contract, executed. It is the ONE place the two GitHub merge enums
       # (`.mergeable`, `.mergeStateStatus`) are crossed with the ledger's preconditions to decide `merge`
       # vs `not-yet` — the miscross this replaces once turned a blocked merge into an infinite CI watch.
-      # Its fixtures (`merge-check-test.py`, loaded by path; a MISSING sibling fails loudly) pin the exact
-      # verdict AND reason for every branch, and its `doc-check` FAILS if stage-3-merge.md's two-enum table
-      # and the code stop enumerating the same value sets — so the doc that owns the mapping can never
-      # silently drift from the tool that implements it. It NEVER performs the merge; it only decides.
-      - name: Merge-check contract (+ stage-3-merge.md agrees with the code)
+      # `self-test` runs the sibling FIXTURES (`merge-check-test.py`, loaded by path; a MISSING sibling
+      # fails loudly), which pin the exact verdict AND reason for every branch — including that both enums
+      # are mapped TOTALLY (an unrecognized value of either PARKS) and that a gh-spawn failure fails closed.
+      # The code owns the mapping; stage-3-merge.md points at the tool rather than restating it, so there is
+      # no doc table to drift and no doc-check here. It NEVER performs the merge; it only decides.
+      - name: Merge-check contract (the code-owned mapping, pinned by fixtures)
         run: python3 plugins/gauntlet/skills/campaign/scripts/merge-check.py self-test

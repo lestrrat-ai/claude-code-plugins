@@ -216,7 +216,14 @@ def load_view(pr: str, repo: "str | None", view_json: "str | None") -> dict:
     if repo:
         argv += ["--repo", repo]
     argv += ["--json", VIEW_FIELDS]
-    proc = subprocess.run(argv, capture_output=True, text=True, check=False)  # noqa: S603
+    # SPAWN failure (gh absent or not executable) raises OSError from subprocess.run itself, BEFORE any
+    # returncode exists. Route it through the same `ViewError` as the non-zero and non-JSON branches, so
+    # every gh-path failure fails CLOSED via the one `except ViewError` — never an uncaught traceback with
+    # no verdict on stdout.
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, check=False)  # noqa: S603
+    except OSError as exc:
+        raise ViewError(f"could not run `gh pr view {pr}`: {exc}") from exc
     if proc.returncode != 0:
         raise ViewError(f"`gh pr view {pr}` exited {proc.returncode}: {proc.stderr.strip()}")
     try:

@@ -37,9 +37,14 @@ yields `merge`), so the miscross above cannot recur. Both enums are crossed **TO
 schema does not declare **parks**, never guesses. Act on the verdict:
 
 - `merge` → proceed to the merge steps below (step 1).
-- `not-yet <reason>` → do **NOT** merge; the reason names the block.
+- `not-yet <reason>` → do **NOT** merge; the reason names the block. Route on the reason's **action**
+  (the phrase the tool emits), never on a hand-copied list of enum values — a value the tool newly parks
+  then routes correctly with no edit here:
   - `rebase` reasons (base moved ahead / conflicts) → refresh the PR per step 6.
-  - `park awaiting-user` reasons (draft, `BLOCKED`) → park and name the blocker (below).
+  - the tool's **`— park`** reasons (any `not-yet` reason that ends in `— park` / `park awaiting-user`)
+    → park and name the blocker (below). This is the tool's catch-all for a merge GitHub blocks for a
+    cause campaign cannot clear itself — a draft, a `BLOCKED` merge state, **and any value neither enum
+    recognizes** — so routing on the `— park` action, not a fixed value list, keeps this bucket total.
   - `re-poll` reasons (merge state / mergeability not computed yet — `UNKNOWN`) → the **UNKNOWN re-poll
     bound** (below).
   - Everything else (`ci is …`, `N of M approvals`, `held`, stale head) → leave the PR; the next

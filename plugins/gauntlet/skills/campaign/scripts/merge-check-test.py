@@ -243,6 +243,32 @@ def t_cli_view_wrong_type_field():
     _cli_malformed_view(v, "isDraft")
 
 
+def t_cli_gh_spawn_failure():
+    # gh ABSENT (or not executable): subprocess.run raises OSError BEFORE any returncode. It must fail
+    # CLOSED through the one `except ViewError` — a structured not-yet, a NON-ZERO exit, and NO traceback —
+    # never an uncaught FileNotFoundError with no verdict on stdout. Simulate the spawn failure by patching
+    # the module's subprocess.run; drive the real CLI with NO --view-json so it takes load_view's gh path.
+    def boom(*_args, **_kwargs):
+        raise FileNotFoundError(2, "No such file or directory", "gh")
+    real_run = M.subprocess.run
+    M.subprocess.run = boom
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            led = Path(d) / "state.jsonl"
+            L.dump(led, dict(L.HEADER_DEFAULTS, run_id="g1"), [row()])
+            # capture_cli only catches SystemExit, so an uncaught spawn traceback would ESCAPE here and fail
+            # this fixture — that is the teeth.
+            code, out, err = capture_cli(M.main, ["check", "--pr", "9", "--file", str(led), "--repo", "o/n"])
+    finally:
+        M.subprocess.run = real_run
+    check(code != 0, f"a gh-spawn failure must exit non-zero (fail closed), got {code} (stderr: {err})")
+    result = json.loads(out)
+    check(result["verdict"] == "not-yet",
+          f"a gh-spawn failure must decide not-yet, never merge, got {result!r}")
+    check(result["reason"].startswith("could not fetch PR view:"),
+          f"the reason must name the failed view fetch, got {result['reason']!r}")
+
+
 CASES = [
     ("clean-all-met", "CLEAN + every precondition met -> merge", t_clean_and_all_met),
     ("has-hooks", "HAS_HOOKS -> merge", t_has_hooks_merges),
@@ -270,4 +296,5 @@ CASES = [
     ("cli-no-row", "a PR absent from the ledger decides `no ledger row`", t_cli_no_ledger_row),
     ("cli-view-missing-field", "a view missing a field fails closed, never KeyError", t_cli_view_missing_field),
     ("cli-view-wrong-type", "a view field of the wrong JSON type fails closed", t_cli_view_wrong_type_field),
+    ("cli-gh-spawn-failure", "a gh-spawn failure fails closed, no traceback", t_cli_gh_spawn_failure),
 ]
