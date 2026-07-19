@@ -53,11 +53,20 @@ immediately — surface the candidate list to the user in the same message and f
 it lands as its own heartbeat (prune then). Same principle as "never hold the run hostage on a user prompt"
 (Run lease). Note what was pruned (and what the user kept) so the decision is auditable next run.
 
-A run is distilled into the ledger **exactly once**, on its **normal exit** (all its PRs terminal) —
-Loop control step 5 writes that run's own `.gauntlet/history/<run-id>.md`. The finished-run
-"ask the user → yes" path reuses *that* file; it does not re-distill. `--new` never pre-empts other
-runs — each run is isolated and always distills itself on its own exit — so there is no mid-flight
-snapshot path.
+A run is distilled into the ledger **exactly once**, on its **normal exit** (all its PRs terminal) — Loop
+control step 5 runs **`carryover.py distill`** to write that run's own `.gauntlet/history/<run-id>.md`
+from the terminal ledger (the CONTENT is a mechanical projection of `state.jsonl`; the tool refuses a run
+with any non-terminal row, so a live run is never distilled). **The "exactly once" rule is the tool's own
+refusal, not an exhortation:** an existing `<run-id>.md` means a previous exit already wrote it, so
+`distill` REFUSES to overwrite it (a `--force` flag exists for one case only — re-running after a crash
+that died mid-write). The finished-run "ask the user → yes" path reuses *that* file; it does not
+re-distill. `--new` never pre-empts other runs — each run is isolated and always distills itself on its
+own exit — so there is no mid-flight snapshot path.
+
+**Follow-ups are NOT in this file.** Work the campaign found-and-deferred lives in its own durable store,
+`.gauntlet/followups.jsonl` (`followups.md`) — a sibling of `history/`, **not** run-scoped, and the
+source of truth that outlives any run. The distill records only what a run's PRs came to (the three kinds
+above); it never reads or duplicates the follow-up store.
 
 ### Starting a fresh run
 

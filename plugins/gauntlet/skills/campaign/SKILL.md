@@ -185,8 +185,8 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
 25. Work FOUND and deliberately not done — out of scope, pre-existing, a site a fixer left alone ->
     `followups.py add`: record it the moment it is noticed, never in driver prose, which dies with the
     driver's context; recording one never discharges a finding (`references/followups.md`).
-26. Every PR merged or set aside -> write the carryover ledger and the final report. Otherwise refresh
-    the lease and reschedule.
+26. Every PR merged or set aside -> run `carryover.py distill` to write the carryover ledger (it projects
+    the terminal ledger, exactly once), then the final report. Otherwise refresh the lease and reschedule.
 
 ## Bundled Scripts
 
@@ -237,6 +237,7 @@ a line the tool writes.
 | `merge-check.py` | `check` — decide merge-readiness (`merge` / `not-yet <reason>`) from the ledger row + live PR view, crossing the ledger preconditions and both GitHub merge enums in one place | `references/stage-3-merge.md` |
 | `repair-pass.py` | Reassessment pass's door: `permitted` / `decide` — the closed decision enum, ownership guardrail, repair cap | `references/repair-pass.md` |
 | `followups.py` | Schema-owning accessor for the follow-up store (`.gauntlet/followups.jsonl`) — a durable work QUEUE, not an archive: entries are deleted once recorded elsewhere, kept when nothing else would remember | `references/followups.md` |
+| `carryover.py` | `distill` — project a run's TERMINAL ledger into `.gauntlet/history/<run-id>.md` on normal exit: merged/aborted/API-declined facts, exactly once (refuses a live run and refuses to overwrite) | `references/carryover.md` |
 | `nudge.py` | Advisory reminder printer for heartbeat start; always exits 0 | its own module docstring |
 | `transport-contract-test.py` | Standalone suite the plugin validator runs directly to pin the typed review/adoption boundary; owns no run state | `references/runtime-adapter.md` |
 | `script-table-test.py` | Standalone suite CI runs directly to prove this table and `scripts/` agree; owns no run state | this section |

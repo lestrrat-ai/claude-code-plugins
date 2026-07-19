@@ -185,6 +185,20 @@ jobs:
       - name: Follow-up store contract
         run: python3 plugins/gauntlet/skills/campaign/scripts/followups.py self-test
 
+      # The carryover distiller's contract, executed. On a run's normal exit it projects the TERMINAL
+      # ledger into `.gauntlet/history/<run-id>.md` — the record a future run reads to de-dup against
+      # merged/aborted work and to be reminded of parked API-declined changes. Two refusals are load-
+      # bearing and the fixtures pin both: a run with ANY non-terminal row is NOT distilled (a live run
+      # has no finished history to write), and an existing file is NOT overwritten without `--force`
+      # (distilled exactly once — a second exit must not clobber the first). It reuses `ledger.py`'s
+      # loader so a malformed store is refused with the same strictness, and it never touches the
+      # follow-up store (that source of truth is not run-scoped and is not duplicated here). The sibling
+      # `carryover-test.py` is loaded by path; a MISSING sibling fails loudly, so this can never report an
+      # all-clear over a suite it did not run. As with the suites above, the point of this step is that
+      # `py_compile` parses these files and runs neither.
+      - name: Carryover distiller contract
+        run: python3 plugins/gauntlet/skills/campaign/scripts/carryover.py self-test
+
       # The nudge printer's rules, executed. It reminds the orchestrator each wake of what to check
       # (heartbeat armed, fan out work, PR labels, a review that may have died) — a sticky-note printer,
       # not gate machinery: it decides nothing and always exits 0. Each fixture pins a rule with teeth

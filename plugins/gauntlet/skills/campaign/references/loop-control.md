@@ -436,9 +436,10 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
        completion or the nearest protected deadline, then go directly back to step 1 and reconcile.
        Repeat this status/wait/reconcile cycle while non-terminal work remains. Do **not** execute the
        scheduled-host return after the bounded wait.
-   - All this run's PRs `merged` or `aborted` → **distill the run into the carryover ledger** (write
-     this run's block to its own file `.gauntlet/history/<run-id>.md` — merged PRs, aborted
-     PRs + why, and declined-API PRs; per-run files never
+   - All this run's PRs `merged` or `aborted` → **distill the run into the carryover ledger** by running
+     **`carryover.py distill`** (it projects this run's own file `.gauntlet/history/<run-id>.md` from the
+     terminal ledger — merged PRs, aborted PRs + why, and declined-API facts — and REFUSES a run with any
+     non-terminal row or an existing file, so it distills exactly once; per-run files never
      contend, see "Fresh runs and carryover"), **release the run** (delete this run's
      `gauntlet-run-<run-id>` owner label via `gh label delete gauntlet-run-<run-id> --yes`, and release
      the lease — `lease.py … release --token <tok>`; the shared status labels stay), emit the final report, and **do not
