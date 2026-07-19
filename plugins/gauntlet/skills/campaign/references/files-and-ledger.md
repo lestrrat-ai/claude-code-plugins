@@ -119,7 +119,7 @@ following line is one adopted PR's row record (`{"type": "row", …}`). Every re
 — fields are keyed by NAME, never by column position:
 
 ```
-{"type": "header", "run_id": "g260704-0915-a3f29c1b", "base_branch": "main", "api_changes": "ask", "reviewer": "codex", "required_set": "declared:[{\"context\": \"build\", \"app\": \"-\"}, {\"context\": \"test (3.12, ubuntu)\", \"app\": \"15368\"}]", "skill_version": "0.1.4", "last_activity": "2026-07-04T09:40:00Z"}
+{"type": "header", "run_id": "g260704-0915-a3f29c1b", "base_branch": "main", "api_changes": "ask", "reviewer": "codex", "required_set": "declared:[{\"context\": \"build\", \"app\": \"-\"}, {\"context\": \"test (3.12, ubuntu)\", \"app\": \"15368\"}]", "skill_version": "0.1.4", "last_activity": "2026-07-04T09:40:00Z", "watchdog_due": "2026-07-04T10:25:00Z", "pending_adoption": "-"}
 {"type": "row", "id": "pr41", "slug": "fix-null-deref", "branch": "fix-null-deref", "worktree": "/srv/example-repo/.worktrees/fix-null-deref", "worktree_owned": "yes", "branch_owned": "yes", "pr": "41", "head_sha": "a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c", "reviews_ok": "2", "ci": "green", "tier": "STANDARD", "attempts": "1", "started": "2026-07-04T09:15:00Z", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:9f2c\u2026", "settled_strikes": "0", "unusable_refetches": "0", "ci_stalled_since": "-", "ci_reason": "-", "blocker_ruling": "-", "review_rounds": "3", "ns_streak": "0", "intent": "stated@2026-07-04T09:15:00Z", "pr_origin": "gauntlet", "repair_count": "0", "repair_decision": "-"}
 {"type": "row", "id": "pr52", "slug": "add-retry-flag", "branch": "add-retry-flag", "worktree": "/home/example/checkouts/add-retry-flag", "worktree_owned": "no", "branch_owned": "no", "pr": "52", "head_sha": "b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7089a1b", "reviews_ok": "0", "ci": "pending", "tier": "HIGH", "attempts": "0", "started": "-", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:4a71\u2026", "settled_strikes": "1", "unusable_refetches": "0", "ci_stalled_since": "-", "ci_reason": "required check absent: integration-tests", "blocker_ruling": "-", "review_rounds": "5", "ns_streak": "2", "intent": "authored@2026-07-04T09:20:00Z", "pr_origin": "external", "repair_count": "0", "repair_decision": "-"}
 ```
@@ -144,7 +144,10 @@ once, see "Base branch"), `api_changes` (`ask` | `allowed`, run-wide; set once f
 expecting to see?", owns the three states, the format, and the reads that produce them; re-read every
 heartbeat while it is `unknown`), `skill_version` (**which copy of the rules actually governed this run**),
 `last_activity` (**when this run last did something MEANINGFUL** — a UTC ISO-8601 stamp the write doors
-maintain; the quiet-run sensor `nudge.py` reads, defined below).
+maintain; the quiet-run sensor `nudge.py` reads, defined below), `watchdog_due` (**the durable
+health-pass deadline** — a UTC ISO-8601 stamp `ledger.py watchdog` stamps and reads, defined below),
+`pending_adoption` (**the run-intent checkpoint** — the requested PR list recorded at setup, defined
+below).
 
 `skill_version` is read at startup from the **running plugin's** `plugin.json` (`SKILL.md`) and stated in
 the final report. **It is not cosmetic.** The harness loads this skill from the **installed plugin cache**,
@@ -180,6 +183,30 @@ derivation, a liveness-counter update, or a CI-park it performs leaves the field
 those CI writes are exactly the liveness-counter bookkeeping the stamp already exempts, so the only effect
 is that a run whose *only* recent motion was CI polling reads as quiet **sooner** — the quiet-run check
 fires **earlier**, which surfaces a sweep earlier and never suppresses one. It never reads falsely *fresh*.
+
+`watchdog_due` records **the durable HEALTH-PASS DEADLINE** — a UTC ISO-8601 stamp (second precision)
+naming the instant by which the run owes its next deep **health pass** (`loop-control.md`, "Reschedule or
+exit", owns the pass). It is stamped **only** by `ledger.py watchdog arm` (`now + WATCHDOG_INTERVAL`);
+`ledger.py watchdog check` reads it back — read-only, always exit 0 — printing exactly one of `unset` /
+`ok <remaining>` / `due <age>` / `invalid — re-arm`, and **`ledger.py` OWNS that parse** (nudge reuses it,
+never a second copy): a malformed or naive stamp reads as `invalid`, whose advisory fix is a re-arm, never
+a crash — the same treatment the quiet-run rule gives an unreadable `last_activity`. It is a
+**TOOL-STAMPED** field, the exact stance `last_activity` takes: **`header set watchdog_due` is refused**
+(there is no door to hand-write it — a typed-in deadline would be a **forged** one), and its writes are
+**activity-EXEMPT** (it joins `ACTIVITY_EXEMPT`) — re-arming the watchdog is not "the run did something
+meaningful", so a bare `watchdog arm` must **never** stamp `last_activity`, else the watchdog would defeat
+the very quiet sensor it backs. It **defaults to `-`** — the schema's "not set yet" spelling — and
+`watchdog check` reads `-` as `unset`; an old ledger predating the field reads back `-` and every reader
+tolerates that.
+
+`pending_adoption` records **the RUN-INTENT CHECKPOINT** — a space-separated list of PR numbers written at
+setup, **BEFORE `acquire`**, so a death mid-setup does not lose the requested PR list (which otherwise
+lived only in the invocation args — `run-identity-and-lease.md`, "Take a run", owns the sequence). Unlike
+`watchdog_due` it is an **ORDINARY, hand-settable config field** (`header set pending_adoption "89 90"`):
+it has a real door, and **writing it IS meaningful activity** (no exemption — it is **not** a sensor and
+carries no liveness meaning). Adoption clears it back to `-` as its final step, and any later entry — the
+armed wake, a watchdog poke, a manual resume — that finds it set resumes setup idempotently from exactly
+those PRs (`loop-control.md` step 1). It **defaults to `-`**: nothing is pending.
 
 Header field notes (the header fields above; per-row fields follow):
 
@@ -479,7 +506,10 @@ and pass that path to subtasks, exactly as with `emit-progress.py`. Subcommands
 # Run: python3 <skill-dir>/scripts/ledger.py --file <state.jsonl> <subcommand> …
 # The synopsis abbreviates that `python3 <skill-dir>/scripts/ledger.py` prefix to `ledger.py`.
 ledger.py --file <state.jsonl> header get <field>                 # read a run-config header field
-ledger.py --file <state.jsonl> header set <field> <value>         # set a run-config header field
+ledger.py --file <state.jsonl> header set <field> <value>         # set a run-config header field (refused for a TOOL-STAMPED field: last_activity, watchdog_due)
+ledger.py --file <state.jsonl> watchdog arm                       # stamp watchdog_due = now + WATCHDOG_INTERVAL (activity-EXEMPT)
+ledger.py --file <state.jsonl> watchdog check                     # print unset|ok <rem>|due <age>|invalid — re-arm (read-only, always exit 0)
+ledger.py watchdog interval                                       # print the interval in minutes (reads NO ledger; scheduler adapter consumes THIS)
 ledger.py --file <state.jsonl> add-row --pr N [--<field> <val> …] # register a row (refuses a duplicate pr; unset fields default)
 ledger.py --file <state.jsonl> set --pr N --<field> <val> [--<field> <val> …]  # update named fields on the row for PR N
 ledger.py --file <state.jsonl> verdict --pr N --head-sha <sha> --verdict satisfied|not-satisfied

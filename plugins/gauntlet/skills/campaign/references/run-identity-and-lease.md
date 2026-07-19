@@ -87,7 +87,16 @@ corrupt-lease refusal, and the read-back. Do not unpack those mechanics here: pr
 the verdict the tool prints.
 
 - **Take a run** — at fresh-run start or on adoption — **in this order**: (1) `lease.py mint` prints
-  your agent token; (2) arm the scheduled heartbeat carrying it (`--token <tok>`, via `heartbeat.py
+  your agent token; **then, BEFORE arming (the arm ends the setup turn on a turn-ending scheduler), do
+  the two durable-setup steps that must survive a mid-setup death:** **(a)** record the run intent —
+  `ledger.py --file <rundir>/state.jsonl header set pending_adoption "<pr> <pr> …"`, which creates the
+  ledger + header if missing — so a death before `acquire` does not lose the requested PR list (it
+  otherwise lived only in the invocation args), and any later entry that finds `pending_adoption` set
+  resumes setup idempotently from adoption of exactly those PRs (`files-and-ledger.md`; adoption clears it
+  back to `-` as its final step, `loop-control.md` step 1); **(b)** on a persistent-scheduler host,
+  **ensure the watchdog entry** (`runtime-adapter.md`, "Persistent watchdog capability" — `ensure` is
+  idempotent and does NOT end the turn), so a heartbeat chain that dies during or after setup can still be
+  resurrected. Then (2) arm the scheduled heartbeat carrying the token (`--token <tok>`, via `heartbeat.py
   callback` — `runtime-adapter.md` owns the host mechanism); (3) `lease.py --file <rundir>/lease.json
   acquire --token <tok> --heartbeat-id <proof>`, where the proof names the arming you ALREADY did
   (`runtime-adapter.md` says what your host's proof is). `acquire` refuses without both and never mints
@@ -145,6 +154,23 @@ the verdict the tool prints.
    status only): `absent`/`stale` → adopt (mint + arm + `acquire`, per "Take a run"); `held` → another
    agent appears active, so **confirm takeover with the user** before `acquire --allow-takeover`;
    `corrupt` → see "Adopt only an orphaned run".
+
+   **`--run <id> --watchdog` — the resurrection poke** (fired by the persistent watchdog entry —
+   `runtime-adapter.md`, "Persistent watchdog capability"; the poke line is `heartbeat.py watchdog`'s, and
+   is **TOKEN-FREE**). **Arg grammar:** `--watchdog` **requires `--run`** and is **rejected** in
+   combination with `--token`, `--new`, or `#PR` args — a token-bearing poke beside a live chain could
+   double-drive, and `--new`/`#PR` are start-time args that would mint a fresh run. Because it carries no
+   token it resolves the lease **first** and stands down when the primary is alive. Load
+   `<rundir>/state.jsonl`, `lease.py read`, and act on the verdict — **reusing existing verdicts only**:
+
+   | `lease.py` read / state | action |
+   |---|---|
+   | `held` | the primary driver is alive: report **one** stand-down line and **EXIT**. Never prompt, never `--allow-takeover`. |
+   | `stale`/`absent`, run **not finalized** — a non-terminal row remains, **OR** `pending_adoption` is set, **OR** every row is terminal but finalization is still owed (carryover not distilled / label not deleted / lease not released — the lease file is still present and the run label still exists) | the heartbeat chain is **dead**: adopt per "Take a run" — mint, arm the SHORT chain (setup delay), and on a turn-terminal host the arm **ends the poke's turn** so `acquire` runs on the armed wake (exactly the setup turn-split above). Then resume from **what durable state says**: `pending_adoption` set → finish setup (adopt those PRs); non-terminal rows → the normal loop; finalization owed → run the **terminal step** (`loop-control.md`, "Reschedule or exit"). **Report that the watchdog resurrected an orphaned run**, not merely resumed it. |
+   | `stale`/`absent`, run **finished AND finalized** — every row terminal, carryover distilled, label deleted, lease released | nothing to drive: **remove the watchdog entry** (the self-cleaning backstop for a terminal step that never got to remove it) and **EXIT**. |
+   | `corrupt` | report and **EXIT** — never adopt a corrupt lease (the existing rule; see "Adopt only an orphaned run"). |
+   | post-acquire `superseded` / `lost-race` | a driver took the run while you were acquiring: **stand down** (the existing rule) — report and stop. |
+
 2. **Bare invocation** → the arg decides intent:
    - **`#PR` args are given** (`<campaign-invocation> #12 #15`, no `--run`) → **start a NEW run** that
      **adopts those PRs** (see "PR adoption"). Passing PRs is an explicit "gate these now", so it never
