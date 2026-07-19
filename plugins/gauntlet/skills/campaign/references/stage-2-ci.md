@@ -775,8 +775,10 @@ Its job, in order:
 
 1. **CLASSIFY** the failure from the check logs.
 2. **FIX IT.** For a formatting/lint failure, that is running the standard formatter for that language.
-   It **chooses the tool** — campaign does not hand it a command line — subject to the hard rules below,
-   and it **PREFLIGHTS every file** before formatting it (hard rules: symlink / symlinked parent).
+   It **chooses the tool** — campaign does not hand it a command line — subject to the hard rules below.
+   Before formatting, it **PREFLIGHTS every file** with the `format-preflight.py check` command (the
+   PREFLIGHT hard rule below owns the exact command line, its exit codes, and the "none left → ESCALATE"
+   rule) and formats **only** the files that come back `ok` — never a file the tool `refused`.
 3. **READ THE RESULTING DIFF.** This step is not optional and is not a formality. Verify **all** of:
    - the diff contains **ONLY** what the fix should have produced (a formatting fix produces formatting);
    - **no file it did not intend to touch** was touched;
@@ -807,12 +809,28 @@ Its job, in order:
   a repo-supplied `gofmt` is arbitrary code execution. Run tools from the **environment**, never from the
   tree.
 - **NEVER hand a tool a bare glob or a whole directory** (`gofmt -w .`). **Name the files you are fixing.**
-- **PREFLIGHT EVERY FILE BEFORE FORMATTING IT — refuse it if the write can land outside the worktree:**
-  - it **IS a symlink** (`lstat`, never `stat`);
-  - **ANY directory component of its path is a symlink**.
+- **PREFLIGHT EVERY FILE BEFORE FORMATTING IT — refuse any file whose write could land OUTSIDE the
+  worktree. Do NOT hand-run this with `lstat`; run the command** (resolved as
+  `<skill-dir>/scripts/format-preflight.py`, the same resolution rule as every other bundled script —
+  `SKILL.md`, "Bundled Scripts"):
 
-  Refuse = **do not format that file**; log it; carry on with the rest. If nothing is left to format,
-  **ESCALATE**.
+  ```
+  python3 <skill-dir>/scripts/format-preflight.py check --worktree <worktree> <files…>
+  ```
+
+  It prints one JSON object — a per-file `results` list, each `ok` or `refused` with a reason — and its
+  EXIT CODE is the signal: **`0`** every file is ok; **`3`** at least one is refused; **`2`** operator
+  error (no worktree / no files). **Format ONLY the files it returns `ok`; do NOT format any `refused`
+  one. If nothing is left to format (every file refused, or exit `2`), ESCALATE.**
+
+  **THE SPEC THE TOOL IMPLEMENTS — this is what the command enforces, not a second procedure to hand-run.**
+  A file is refused when its formatter-write could escape the worktree, decided per file in order:
+  - **ANY directory component of its path is a symlink** (`lstat`, never `stat`) — the write goes THROUGH
+    it — or a component is missing;
+  - the file itself **IS a symlink** (`lstat`, never `stat`), is missing, or is not a regular file.
+
+  (`realpath` is deliberately NOT the test — it collapses the very links the check exists to see; the tool
+  walks each component and `lstat`s it. A worktree that itself sits behind a symlink is allowed.)
 
   **THE PRINCIPLE — do not generalise it into anything more.** Diff review covers everything the tool
   writes **INSIDE** the repo: the model SEES it and escalates (an injected `-cpuprofile=prof.go` writes
