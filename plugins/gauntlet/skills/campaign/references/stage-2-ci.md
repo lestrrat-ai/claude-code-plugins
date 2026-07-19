@@ -761,9 +761,10 @@ it: an economy-class CI-fix worker, a `session`-class CI-fix worker, a review-fi
 REFUTATION of a review finding (`finding-audit.md`, "Audit every finding before you fix it").**
 Every one of them MUST, in the same step:
 
-- **reset `reviews_ok` to 0 AND restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`** —
-  the gate and its label move together, never one without the other (`stage-2-review-gate.md`, "Status
-  labels mirror the review gate");
+- **reset `reviews_ok` to 0 AND reconcile the label by running `label-mirror.py mirror` for the PR** (it
+  restores `gauntlet-reviewing` on a PR carrying `gauntlet-accepted`) — the gate and its label move
+  together, never one without the other (`stage-2-review-gate.md`, "Status labels mirror the review
+  gate", owns the swap and the tool);
 - **re-derive `ci` from a fresh snapshot for the NEW `head_sha`, and launch a watch if — and only if —
   `liveness` then reports `watch_warranted`** ("WATCH ONLY WHAT CAN MOVE" above). Writing the new
   `head_sha` through the accessor **resets the liveness counters** at the door ("THE LIVENESS COUNTERS"

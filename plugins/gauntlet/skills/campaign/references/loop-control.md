@@ -39,8 +39,9 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      **This refresh is itself a gate-reset site — relabel here, in this step.** When it detects that a
      PR's live `head_sha` has moved with the PR diff changed (a formatter/bot commit, a manual push,
      any content change this run did not dispatch), it resets `reviews_ok` to 0 — and MUST, in the same
-     step, relabel a PR carrying `gauntlet-accepted` back to `gauntlet-reviewing`
-     (`stage-2-review-gate.md`, "Status labels mirror the review gate").
+     step, reconcile the label by running `label-mirror.py mirror` for that PR, which restores
+     `gauntlet-reviewing` on a PR carrying `gauntlet-accepted`
+     (`stage-2-review-gate.md`, "Status labels mirror the review gate", owns the swap and the tool).
      Do NOT defer this to the label-reconcile pass below — that pass is only the **backstop** ("This
      reconcile is a backstop, not the mechanism", below). (A clean base-only advance with the PR
      diff unchanged does not reset the gate, so it keeps `gauntlet-accepted`.)
@@ -126,14 +127,17 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
    **Reconcile labels too** (idempotent, retroactive, **scoped to this run**). Ensure the labels exist
    (`gh label create … --force`, including this run's `gauntlet-run-<run-id>`), then for every PR **of
    this run** (its `gauntlet-run-<run-id>` label — the only ownership marker for adopted PRs): ensure
-   it carries `gauntlet-run-<run-id>`, and **overwrite** its status label to match its **live** gate
-   state. **Never touch another run's PRs.**
+   it carries `gauntlet-run-<run-id>`, and **reconcile its status label by running `label-mirror.py
+   mirror` for it** — the tool overwrites the status label to match the PR's **live** gate state. (The
+   `gauntlet-run-<run-id>` ownership label is adoption's, and the tool never touches it — ensure it
+   separately, as above.) **Never touch another run's PRs.**
 
-   **Always apply one status label AND remove the other — never merely add.** The two status labels are
-   mutually exclusive, so a purely additive reconcile cannot repair the one state it most needs to: a
+   **The tool applies one status label AND removes the other — never merely add.** The two status labels
+   are mutually exclusive, so a purely additive reconcile cannot repair the one state it most needs to: a
    PR wearing **both** labels (what a missed swap at a reset site actually produces) would keep the
-   contradictory label forever, because adding a label it already carries changes nothing. Write it
-   unconditionally, in one call per PR, so the outcome does not depend on which labels are already there:
+   contradictory label forever, because adding a label it already carries changes nothing. The swap it
+   applies — shown as the SPEC it implements, one call per PR, direction picked from the live gate, NOT a
+   command to paste by hand:
 
    ```
    # current HEAD holds required(tier) SATISFIED verdicts:

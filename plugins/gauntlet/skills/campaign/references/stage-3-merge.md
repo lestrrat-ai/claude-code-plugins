@@ -217,8 +217,10 @@ subagent at a check that is merely **still running**.
      either, which right after a push is the common case (no check has registered yet). CI must return
      green before merging.
    - Rebase requiring conflict resolution → PR content changed → **reset `reviews_ok` to 0 AND, in that
-     same step, restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`** — the gate and its
-     label move together (`stage-2-review-gate.md`, "Status labels mirror the review gate"). Update
+     same step, reconcile the label by running `label-mirror.py mirror` for the PR** (it restores
+     `gauntlet-reviewing` on a PR carrying `gauntlet-accepted`) — the gate and its
+     label move together (`stage-2-review-gate.md`, "Status labels mirror the review gate", owns the swap
+     and the tool). Update
      `head_sha` to the
      new tip through the accessor, which **resets the liveness counters** (a new head is new evidence — `stage-2-ci.md`, "THE
      LIVENESS COUNTERS"; the clean-rebase branch above does the same, and this branch is no different in

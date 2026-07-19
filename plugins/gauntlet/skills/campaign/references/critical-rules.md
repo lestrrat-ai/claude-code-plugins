@@ -159,7 +159,8 @@
   sees on GitHub — a stale `gauntlet-accepted` publicly claims a PR passed a gauntlet it did not. So the
   **gate and the label move together, in the same step**: every action that drops `reviews_ok` to 0 (a
   `NOT SATISFIED` verdict, a review/CI/copilot fix commit, a conflict-resolving rebase, any other
-  content change on the head branch) MUST also restore `gauntlet-reviewing` on a PR carrying
+  content change on the head branch) MUST also reconcile the label by running `label-mirror.py mirror`
+  for the PR — the ONE way that swap is applied — which restores `gauntlet-reviewing` on a PR carrying
   `gauntlet-accepted`. Never defer the swap to the next heartbeat — that leaves the label lying
   until reconcile, and lying forever if the session dies first. A **clean base-only rebase** with an
   unchanged PR diff does NOT reset the gate, so it correctly KEEPS `gauntlet-accepted` — it sets
@@ -394,7 +395,8 @@
   failure.
 - **ANY campaign commit to the PR head resets the gate** (`stage-2-ci.md`, "Any campaign commit to the PR
   head resets the gate") — economy-class CI-fix, `session`-class CI-fix, review-fix, or **refutation commit** alike. In the SAME step: reset
-  `reviews_ok` to 0 AND restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`; the new commit
+  `reviews_ok` to 0 AND reconcile the label by running `label-mirror.py mirror` for the PR (it restores
+  `gauntlet-reviewing` on a PR carrying `gauntlet-accepted`); the new commit
   moves `head_sha`, so writing it through the accessor **resets the liveness counters** at the door
   (`stage-2-ci.md`, "THE LIVENESS COUNTERS"); re-derive CI
   for the new tip and watch it **only if `liveness` reports `watch_warranted`** (`stage-2-ci.md`, "WATCH

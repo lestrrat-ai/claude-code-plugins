@@ -679,10 +679,11 @@ Then, per verdict:
 **NOT SATISFIED** → run this action sequence, in order:
 
 1. **Void the tally and restore the label in the same step.** The SHA's tally is void (`ledger.py verdict
-   … --verdict not-satisfied` does it) **and, in the same step, restore `gauntlet-reviewing` if the PR
-   carries `gauntlet-accepted`** ("Status labels mirror the review gate", below). This applies the moment
-   the verdict lands, *before* any fix is written: a PR whose latest verdict says NOT SATISFIED must never
-   still read `gauntlet-accepted` on GitHub.
+   … --verdict not-satisfied` does it) **and, in the same step, reconcile the label by running
+   `label-mirror.py mirror` for this PR** — it restores `gauntlet-reviewing` on a PR carrying
+   `gauntlet-accepted` ("Status labels mirror the review gate", below, owns the swap and the tool). This
+   applies the moment the verdict lands, *before* any fix is written: a PR whose latest verdict says NOT
+   SATISFIED must never still read `gauntlet-accepted` on GitHub.
 2. **Dispatch the context-isolated AUDIT subagent.** **Only GATING findings reach the fix path at all** —
    a non-gating finding is recorded as a follow-up and no fix is dispatched for it (the gating rule, above;
    `verify` has already refused the pass if a `not-satisfied` recorded none). Then — unless `verdict` just
@@ -728,7 +729,9 @@ Then, per verdict:
   (2a-triage owns the formula). If the tally is still short of the target — e.g. the **first** SATISFIED on a
   `required==2` PR — the next heartbeat launches the next (corroborating) review on the same SHA. When the
   tally **reaches** `required(tier)` on the same SHA, the review gate is met for this HEAD — swap the
-  PR's label: `gh pr edit <pr> --remove-label gauntlet-reviewing --add-label gauntlet-accepted`.
+  PR's label by running `label-mirror.py mirror` for it ("Status labels mirror the review gate", below,
+  owns the swap; it applies `--add-label gauntlet-accepted --remove-label gauntlet-reviewing` from the
+  live gate).
 
 The audit contract — verdicts, reachability test, refutation handling, termination — is `finding-audit.md`; a reviewer's finding is a CLAIM, and no fix is dispatched for an unaudited finding.
 
@@ -797,7 +800,20 @@ is only ever as true as the moment it was last written.
 
 **THE RULE — the gate and the label move together, in the same step.** Any action that takes
 `reviews_ok` to `0` (or otherwise voids the tally) MUST, in that same step, restore
-`gauntlet-reviewing` on a PR that currently carries `gauntlet-accepted`:
+`gauntlet-reviewing` on a PR that currently carries `gauntlet-accepted` — and, symmetrically, an action
+that brings the tally UP to `required(tier)` swaps it to `gauntlet-accepted`.
+
+**`label-mirror.py mirror` is THE way that swap is applied — never a hand-run `gh pr edit`.** It reads the
+PR's ledger row, computes the desired label from `reviews_ok` and `required(tier)` exactly as the gate
+does, and applies the canonical idempotent swap only if the label is not already right (a terminal row is
+skipped; a tier nobody set is refused). Run it in the same step as the reset, once per PR:
+
+```
+python3 <skill-dir>/scripts/label-mirror.py mirror --ledger <state.jsonl> --pr <N> --repo owner/name
+```
+
+The swap it applies — shown as the SPEC it implements, NOT a command to paste by hand (the tool picks the
+direction from the live gate; here is the reviewing-restoring one):
 
 ```
 gh pr edit <pr> --remove-label gauntlet-accepted --add-label gauntlet-reviewing
