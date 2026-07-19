@@ -66,14 +66,16 @@ the in-heartbeat cap is a fixed 3, and the coarse retry is the heartbeat loop it
 `MERGEABLE`, and never let a perpetually-`UNKNOWN` PR either merge or wedge.
 
 **EVERY `awaiting-user` park a `not-yet` verdict names is a MACHINE-BLOCKER park, and it MUST declare its exit** — a
-park whose exit event never comes is the same wedge it was meant to prevent. So, in the same step: write
-`ci_reason` **naming the blocker** (the draft state, `BLOCKED`, or the unrecognized value verbatim),
-**clear `blocker_ruling` to `-`** (park entry spends nothing and answers nothing — a ruling already on the
-row belongs to a **previous** park; `stage-2-ci.md`, "THE RULING IS CONSUMED EXACTLY ONCE"), and
-resolve it through `blocker_ruling` = `retry` / `abort` — the user marks the PR ready, clears the
-protection, or gives up, and answers. The record and the unpark are defined once, in `files-and-ledger.md`
-(`status`) and `loop-control.md` step 3, "Only the user's answer unparks a PR"; never invent a second
-mechanism here.
+park whose exit event never comes is the same wedge it was meant to prevent. Run **`ledger.py … park --pr
+<N> --reason <the blocker>`** — the sanctioned writer of a non-CI machine-blocker park (`stage-2-ci.md`,
+"ESCALATE"). It sets `status = awaiting-user`, `ci_reason` = the blocker **named** (the draft state,
+`BLOCKED`, or the unrecognized value verbatim), and `blocker_ruling = -` in ONE atomic write (park entry
+spends nothing and answers nothing — a ruling already on the row belongs to a **previous** park;
+`stage-2-ci.md`, "THE RULING IS CONSUMED EXACTLY ONCE"), and it refuses a blank reason, a terminal row, and
+a second park over an open question. It is then resolved through `blocker_ruling` = `retry` / `abort` — the
+user marks the PR ready, clears the protection, or gives up, and answers. The record and the unpark are
+defined once, in `files-and-ledger.md` (`status`) and `loop-control.md` step 3, "Only the user's answer
+unparks a PR"; never invent a second mechanism here.
 
 #### `BLOCKED` and `UNSTABLE` — what each merge state means
 

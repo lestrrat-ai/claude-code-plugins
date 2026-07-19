@@ -249,11 +249,14 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      answered into.** An answer that lives only in this session is an answer a fresh agent re-asks. On
      the answer: **record it**, then unpark to the `status` **THAT ANSWER** dictates — the table below is
      the authority, and it is **NOT always `in_review`**:
-     - a **RESUME** answer (`api_approval` = `approved`, a standoff ruling either way, `blocker_ruling` =
-       `retry`) → `ledger.py … set --pr <N> --status in_review`, and resume normal dispatch — including any
-       rebase or base refresh the PR has been owed while frozen — from the next heartbeat. A parked PR that has
-       fallen **behind** its base simply **stays behind** until then; it is not dropped from the run, just
-       frozen.
+     - a **RESUME** answer returns the PR to `in_review` and resumes normal dispatch — including any
+       rebase or base refresh the PR has been owed while frozen — from the next heartbeat. **The write
+       depends on the park class:** an `api_approval` = `approved` or a standoff ruling → `ledger.py … set
+       --pr <N> --status in_review` (that class carries no liveness budget and no `retry` ruling to spend);
+       a **machine-blocker** `blocker_ruling` = `retry` → **`ledger.py … unpark --pr <N>`**, which flips the
+       status, spends the ruling, and resets the liveness counters in ONE write (below — a plain `set` would
+       leave the counters standing and re-escalate). A parked PR that has fallen **behind** its base simply
+       **stays behind** until then; it is not dropped from the run, just frozen.
      - a **TERMINAL** answer (`api_approval` = `declined`, `blocker_ruling` = `abort`) → `--status aborted`
        (terminal), via `bailout-and-final-report.md`'s abort procedure. It **never** returns to
        `in_review`, and nothing is dispatched for it again.
@@ -264,16 +267,17 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      |---|---|---|
      | **`awaiting-api`** — an API-changing fix | `api_approval` = `approved@<iso>` / `declined@<iso>` | `approved` → `in_review`; `declined` → terminal `aborted` |
      | **`awaiting-user`, review standoff** — a REFUTED finding the fresh reviewer re-raised | the ruling in `<rundir>/audit-<pr>-<n>.md` | `in_review`; ruled **valid** → the finding is fixed like a CONFIRMED one, ruled **invalid** → normal flow |
-     | **`awaiting-user`, machine blocker** — campaign cannot move this PR without a human; that **property** IS the class, **never a list of cases** (one illustration: CI has SETTLED and is still not green). Do not enumerate the members here — `files-and-ledger.md`, `status`, `awaiting-user` class 2, **owns** the class, and `ci_reason` names the blocker at every one of them, present or future | `blocker_ruling` = `retry@<iso>` / `abort@<iso>` | `retry` → `in_review`, **RESET THE LIVENESS COUNTERS**, and **SPEND the ruling: `blocker_ruling` = `-`** (`stage-2-ci.md`, "THE LIVENESS COUNTERS" / "THE RULING IS CONSUMED EXACTLY ONCE"), then re-derive CI on the next heartbeat; `abort` → terminal `aborted` (the ruling **stays** — it is the record of why) |
+     | **`awaiting-user`, machine blocker** — campaign cannot move this PR without a human; that **property** IS the class, **never a list of cases** (one illustration: CI has SETTLED and is still not green). Do not enumerate the members here — `files-and-ledger.md`, `status`, `awaiting-user` class 2, **owns** the class, and `ci_reason` names the blocker at every one of them, present or future | `blocker_ruling` = `retry@<iso>` / `abort@<iso>` | `retry` → **`ledger.py … unpark --pr <N>`** — one write that sets `status = in_review`, SPENDS the ruling to `-`, and RESETS the liveness counters (`stage-2-ci.md`, "THE LIVENESS COUNTERS" / "THE RULING IS CONSUMED EXACTLY ONCE"), then re-derive CI on the next heartbeat; `abort` → terminal `aborted` via the abort procedure (`unpark` refuses it — the ruling **stays** as the record of why) |
 
      **The counter reset is part of the unpark, not an optimization**: a `retry` that clears nothing
      re-escalates on its first derivation (`stage-2-ci.md`, "THE LIVENESS COUNTERS" / "SETTLED" /
      "UNUSABLE — the refetch is BOUNDED", own why). The loop is bounded by the **human**: campaign never
      re-asks unprompted, and every park is a fresh question backed by a fresh snapshot.
 
-     **A `retry` is SPENT when it is consumed — one ruling answers exactly ONE park.** Write `status =
-     in_review`, the counter reset, and `blocker_ruling` = `-` in the **same** `ledger.py … set --pr <N>`
-     call. That re-park above is precisely the case that proves it: the PR comes back to the **same**
+     **A `retry` is SPENT when it is consumed — one ruling answers exactly ONE park.** `ledger.py … unpark
+     --pr <N>` writes `status = in_review`, the counter reset, and `blocker_ruling` = `-` in **one** call —
+     the three fields are coherent only together, so the tool does them as one write rather than leaving a
+     driver to hand-assemble them. That re-park above is precisely the case that proves it: the PR comes back to the **same**
      machine blocker, and a ruling left on the row would answer the new park with the **old** answer —
      the blocker would silently self-clear with no fresh user answer, which is the one thing the durable
      record exists to prevent. Park **entry** clears it too (`stage-2-ci.md`, ESCALATE), so a crash
