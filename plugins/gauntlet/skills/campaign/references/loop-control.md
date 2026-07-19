@@ -72,7 +72,38 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      )
      ```
 
-     — and drive reconcile from that file; fall back to per-PR `gh pr view` only where the snapshot
+     — then **compare that snapshot against the ledger by running
+     `scripts/reconcile.py detect --ledger <rundir>/state.jsonl --prs <rundir>/prs.json --run-id
+     <run-id>`. The comparison is MECHANICAL and the TOOL does it — do NOT hand-walk the snapshot row by
+     row.** It emits **FACTS ONLY** (one object per ledger row, plus an `unadopted` list) and **names no
+     action**: a terminal row reports only `{"terminal": <status>}` (it is not compared), and every live
+     row reports `absent_from_snapshot` and, when present, `head_moved` / `base_changed` /
+     `branch_mismatch` / `state` / `mergeable` / `mergeStateStatus` / `label_facts` (see its `--help`).
+     **Routing each fact is THIS skill's policy — the tool observes, you route** (a moved head is a FACT,
+     not a tool failure, so `detect` exits 0 on it; it fails closed only on a snapshot that is not
+     evidence). Route each fact to the rule that already governs it — the rules are unchanged, this only
+     names which fact triggers which:
+     - **`absent_from_snapshot`** — a live row whose PR **dropped out of the `--state open` snapshot**: it
+       merged or closed, and **that absence IS the signal** (`files-and-ledger.md`, the `prs.json`
+       bounded-snapshot caveat). Handle it as a **terminal** PR (this step's finished-run cases; the Stage 3
+       drain sets `merged`). **NEVER read absence as an error, and NEVER fetch anything to "resolve" it** —
+       a past change broke adoption by "fixing" absence with `--state all` (repo `CLAUDE.md`).
+     - **`head_moved`** — the live head differs from the row's `head_sha`: this is the **gate-reset and
+       liveness-counter-reset** site — the two paragraphs directly above the command block own it. The tool
+       reports only THAT the head moved; deciding whether the PR **diff** changed (reset `reviews_ok`,
+       relabel) or it was a **clean base-only advance** (counters only, gate kept) stays your judgement.
+     - **`base_changed`** — the snapshot `baseRefName` differs from the header's `base_branch`: base-currency
+       handling (`base-preflight.md`; Stage 2a preconditions).
+     - **`branch_mismatch`** — the snapshot `headRefName` differs from the row's recorded `branch`: reconcile
+       the row's `branch` (adopted PRs keep their **own** head branch — the `gauntlet-run-<run-id>` label is
+       the ownership marker, never a branch prefix; `files-and-ledger.md`, `branch`).
+     - **`state` / `mergeable` / `mergeStateStatus`** — verbatim GitHub fields, unjudged: they feed CI and
+       merge derivation (Stage 2b; `merge-check.py`, Stage 3).
+     - **`label_facts`** — which status labels the snapshot shows, reported not judged: they feed the **label
+       reconcile pass** below ("Reconcile labels too" / "Always apply one status label AND remove the other").
+     - **`unadopted`** — snapshot PRs with **no ledger row**: discovery candidates (`pr-adoption.md`).
+
+     Fall back to per-PR `gh pr view` only where the snapshot
      isn't enough (merge-gate CI truth stays the SHA-pinned, SHA-verified snapshot of **both** check
      families, Stage 2b). Heartbeat
      turnaround is throughput: every serial `gh` call in reconcile delays every dispatch behind it. Re-read
