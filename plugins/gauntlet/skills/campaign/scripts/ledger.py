@@ -18,7 +18,7 @@ import os
 import re
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import NoReturn
 
@@ -38,7 +38,7 @@ TEST_PY = HERE / "ledger-test.py"     # the fixture suite — this accessor's ex
 # --- schema (owned here, once) ------------------------------------------------
 
 HEADER_FIELDS = ("run_id", "base_branch", "api_changes", "reviewer", "required_set", "skill_version",
-                 "last_activity")
+                 "last_activity", "watchdog_due", "pending_adoption")
 HEADER_DEFAULTS = {
     "run_id": "-",
     "base_branch": "-",
@@ -81,6 +81,25 @@ HEADER_DEFAULTS = {
     # every reader MUST tolerate that absence: `-` means "nothing has been stamped yet", which is a fact, not
     # a date, and the quiet-run rule simply does not fire on it.
     "last_activity": "-",
+    # THE DURABLE HEALTH-PASS DEADLINE — a UTC ISO-8601 stamp (second precision) naming the instant by which
+    # the run owes its next deep "health pass". `ledger.py watchdog arm` stamps it to `now + WATCHDOG_INTERVAL`;
+    # `watchdog check` reads it back; both hosts honor it at loop entry so a run that has gone quiet (a dead
+    # heartbeat chain, or heartbeats firing but never doing the deep look) still gets a periodic forced sweep.
+    # A TOOL-STAMPED field, exactly like `last_activity`: there is NO `header set watchdog_due` door (a
+    # hand-written deadline would be a forged one), and its writes are activity-EXEMPT (re-arming the watchdog
+    # is not "the run did something meaningful"; letting it stamp would defeat the very quiet sensor it backs).
+    #
+    # The default is `-`, the schema's own "not set" spelling. An old ledger written before this field existed
+    # reads back `-`, and every reader tolerates that: `watchdog check` reads `-` as `unset`.
+    "watchdog_due": "-",
+    # THE RUN-INTENT CHECKPOINT — a space-separated list of PR numbers recorded at setup, BEFORE acquire, so a
+    # death mid-setup does not lose the requested PR list (which otherwise lived only in the invocation args).
+    # An ORDINARY, hand-settable config field (`header set pending_adoption "89 90"`), unlike `watchdog_due`:
+    # it has a real door, and writing it IS meaningful activity (no exemption). Adoption clears it back to `-`
+    # as its final step; any later entry that finds it set resumes setup idempotently from those PRs.
+    #
+    # The default is `-`: nothing is pending. This is not a sensor and carries no liveness meaning.
+    "pending_adoption": "-",
 }
 
 ROW_FIELDS = (
@@ -183,7 +202,29 @@ LIVENESS_COUNTERS = ("ci_fingerprint", "settled_strikes", "unusable_refetches", 
 #     moved only these observed NO change in the PR, which is PRECISELY the "nothing moved" `last_activity`
 #     exists to expose; stamping on it would hide a stalled run behind its own polling. A counter added to
 #     `LIVENESS_COUNTERS` is exempt here with no edit, because this reads that set rather than a copy of it.
-ACTIVITY_EXEMPT = frozenset(LIVENESS_COUNTERS + ("last_activity",))
+#   * `watchdog_due` — the health-pass deadline. A write whose ONLY change is re-arming the watchdog is not
+#     "the run did something meaningful": it is the run promising to look again later. Stamping `last_activity`
+#     on it would let a bare `watchdog arm` masquerade as activity and reset the very quiet sensor the watchdog
+#     exists to back — so `watchdog arm` must NOT stamp, and this exemption is how that is guaranteed.
+ACTIVITY_EXEMPT = frozenset(LIVENESS_COUNTERS + ("last_activity", "watchdog_due"))
+
+# THE HEADER FIELDS WITH NO HAND-WRITE DOOR — `header set <field>` is REFUSED for each, mapped to the exact
+# refusal message. Both are TOOL-STAMPED: `last_activity` by `save()`'s side effect on a real change,
+# `watchdog_due` by `watchdog arm`. A value typed in either would be a FORGED reading (a fake liveness stamp,
+# a fake deadline), the one thing these fields must never carry — the same "remove the door" mechanism
+# `review_rounds` uses against a reset. Named as a set so a third such field refuses with one edit here.
+NO_SET_HEADER = {
+    "last_activity":
+        "`last_activity` is a SENSOR, not a settable field — it is stamped automatically on a real "
+        "change and there is no door to hand-write it, the same stance `review_rounds` takes. A value "
+        "typed in here would be a forged liveness reading, which is the one thing this field must never "
+        "carry",
+    "watchdog_due":
+        "`watchdog_due` is a TOOL-STAMPED deadline, not a settable field — it is written only by "
+        "`ledger.py watchdog arm` and there is no door to hand-write it, the same stance `last_activity` "
+        "takes. A value typed in here would be a forged deadline, which is the one thing this field must "
+        "never carry",
+}
 
 # The two fields `verdict` OWNS — and the ONLY reason they are not settable through `set`/`add-row` is
 # that a door which can write them is a door that can RESET them.
@@ -441,6 +482,60 @@ def now_activity() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+# HOW LONG A `watchdog arm` PUSHES THE DEADLINE OUT. Derived, not guessed: ~3 normal ~15-min heartbeat
+# beats, so the watchdog is a LONG cadence that a healthy short-beat run re-arms well before it fires, and
+# only a run that has actually gone quiet (or whose heartbeat chain died) lets it lapse. "Short checks long,
+# long checks short": the 15-min heartbeat backstops this deadline, and this deadline backstops the heartbeat.
+WATCHDOG_INTERVAL = timedelta(minutes=45)
+
+
+def now_watchdog() -> datetime:
+    """The current UTC time as an AWARE datetime, second precision — the instant `watchdog arm` measures the
+    deadline from and `watchdog check` compares against.
+
+    MODULE-LEVEL for the same reason `now_activity()` is: a fixture freezes it by replacing it (`setattr(L,
+    'now_watchdog', ...)`). It returns a datetime rather than a string because both arm (now + interval) and
+    check (now vs the stored deadline) do arithmetic on it; second precision matches the on-disk ISO shape.
+    """
+    return datetime.now(timezone.utc).replace(microsecond=0)
+
+
+def watchdog_state(value: str, now: datetime) -> "tuple[str, timedelta | None]":
+    """Classify the stored `watchdog_due` against `now`. Returns (state, delta):
+
+      ("unset",   None)       `-`/empty — the watchdog was never armed.
+      ("ok",      remaining)  a FUTURE aware deadline — time left until the health pass is owed.
+      ("due",     age)        a PAST (or exactly-now) aware deadline — how long the pass is overdue.
+      ("invalid", None)       unparseable OR naive — the advisory repair-by-re-arm state.
+
+    This OWNS the `watchdog_due` parse (nudge.py reuses it), and it NEVER raises: a malformed stamp, or a
+    naive one that cannot be compared to an aware `now`, reads as `invalid` rather than crashing a read-only
+    check — the same treatment nudge gives an unreadable `last_activity`. The advisory fix for `invalid` is a
+    re-arm, so it is a state, not an error.
+    """
+    if not value or value == "-":
+        return ("unset", None)
+    try:
+        ts = datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return ("invalid", None)
+    if ts.tzinfo is None:  # a naive stamp cannot be subtracted from an aware `now` — refuse it, do not crash
+        return ("invalid", None)
+    if now >= ts:
+        return ("due", now - ts)
+    return ("ok", ts - now)
+
+
+def watchdog_check_line(value: str, now: datetime) -> str:
+    """The EXACT one line `watchdog check` prints: one of `unset` / `ok <remaining>` / `due <age>` /
+    `invalid — re-arm`. Durations render in whole minutes (`45m`), the same unit the quiet-run sweep uses."""
+    state, delta = watchdog_state(value, now)
+    if delta is None:  # exactly the two duration-less states
+        return "unset" if state == "unset" else "invalid — re-arm"
+    minutes = int(delta.total_seconds() // 60)
+    return f"{state} {minutes}m"
+
+
 def is_activity(updates: dict, current: dict) -> bool:
     """Does this write record MEANINGFUL activity — i.e. does it change a NON-EXEMPT field to a NEW value?
 
@@ -509,17 +604,41 @@ def cmd_header(path: Path, args) -> int:
         return 0
     if args.value is None:
         fail("header set requires a value")
-    # `last_activity` is a SENSOR — no door hand-writes it, exactly as no flag at any door writes
-    # `review_rounds`. It is stamped by `save()` as a side effect of a REAL change, never typed in, so a
-    # driver cannot forge "this run is alive" (nor, by writing an old date, forge "it is stalled").
-    if args.field == "last_activity":
-        fail("`last_activity` is a SENSOR, not a settable field — it is stamped automatically on a real "
-             "change and there is no door to hand-write it, the same stance `review_rounds` takes. A value "
-             "typed in here would be a forged liveness reading, which is the one thing this field must never "
-             "carry")
+    # A tool-stamped field (`last_activity`, `watchdog_due`) has NO hand-write door — no flag at any door
+    # writes `review_rounds` for the same reason. Each is stamped only by its own tool-path (a sensor's
+    # `save()` side effect, or `watchdog arm`), never typed in, so a driver cannot forge "this run is alive"
+    # (nor, by writing an old date, forge "it is stalled" or "the deadline already passed").
+    if args.field in NO_SET_HEADER:
+        fail(NO_SET_HEADER[args.field])
     activity = header.get(args.field) != args.value
     header[args.field] = args.value
     save(path, header, rows, activity=activity)
+    return 0
+
+
+def watchdog_interval_minutes() -> int:
+    """`WATCHDOG_INTERVAL` in whole minutes — the number `watchdog interval` prints. The scheduler adapter
+    consumes THIS (never a copied literal), so a re-tuned constant reaches every consumer with no edit there."""
+    return int(WATCHDOG_INTERVAL.total_seconds() // 60)
+
+
+def cmd_watchdog(path: Path, args) -> int:
+    """`watchdog arm | check | interval` — the durable health-pass deadline. `interval` is handled in main()
+    before the ledger is touched (it reads a constant, not the store); this owns `arm` and `check`.
+
+    `arm` stamps `watchdog_due = now + WATCHDOG_INTERVAL` and saves with `activity=False`: `watchdog_due` is
+    in `ACTIVITY_EXEMPT`, so a re-arm must NEVER stamp `last_activity` (that would let the watchdog defeat the
+    quiet sensor it backs). `check` is READ-ONLY and ALWAYS exits 0 — a malformed or naive stored deadline
+    prints the `invalid — re-arm` state rather than crashing, since a read that gates nothing must never fail.
+    """
+    header, rows = load(path)
+    if args.action == "arm":
+        due = now_watchdog() + WATCHDOG_INTERVAL
+        header["watchdog_due"] = due.isoformat()
+        save(path, header, rows, activity=False)  # exempt: re-arming is not meaningful activity
+        return 0
+    # check
+    print(watchdog_check_line(header.get("watchdog_due", HEADER_DEFAULTS["watchdog_due"]), now_watchdog()))
     return 0
 
 
@@ -1072,6 +1191,11 @@ def build_parser() -> argparse.ArgumentParser:
     h.add_argument("field")
     h.add_argument("value", nargs="?")
 
+    w = sub.add_parser("watchdog", help="arm/check/print the durable health-pass deadline (watchdog_due)")
+    w.add_argument("action", choices=("arm", "check", "interval"),
+                   help="'arm' stamps the deadline now+interval; 'check' prints unset/ok/due/invalid "
+                        "(read-only, always exit 0); 'interval' prints the interval in minutes (reads no ledger)")
+
     def add_row_field_opts(p) -> None:
         for name in ROW_FIELDS:
             # pr is the row key (via --pr); id is derived; VERDICT_OWNED has no flag AT ALL, at either
@@ -1148,6 +1272,12 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     if args.cmd == "self-test":  # stdlib only, no ledger, no repo checkout, no network
         return self_test()
+    if args.cmd == "watchdog" and args.action == "interval":
+        # `interval` prints a module constant and reads NO ledger — so, like self-test, it needs no --file.
+        # The scheduler adapter reads this number; forcing it to name a ledger just to learn the cadence would
+        # be a false dependency. `arm`/`check` DO read the store and fall through to the --file guard below.
+        print(watchdog_interval_minutes())
+        return 0
     if args.file is None:
         parser.error("the following arguments are required: --file")
     path = Path(args.file)
@@ -1155,6 +1285,7 @@ def main(argv: list[str]) -> int:
         "header": cmd_header, "add-row": cmd_add_row, "set": cmd_set, "verdict": cmd_verdict,
         "get": cmd_get, "list": cmd_list, "table": cmd_table,
         "dispatch-check": cmd_dispatch_check, "park": cmd_park, "unpark": cmd_unpark,
+        "watchdog": cmd_watchdog,
     }
     return handlers[args.cmd](path, args)
 
