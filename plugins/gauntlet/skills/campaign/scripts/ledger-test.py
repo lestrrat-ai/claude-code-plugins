@@ -35,6 +35,7 @@ What the fixtures are aimed at, in two families:
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import json
 import os
@@ -1926,6 +1927,126 @@ def t_set_status_transitions_stay_open(L: ModuleType, tmp: Path) -> None:
           f"`set --blocker-ruling` was refused — the user's answer cannot be recorded: exit {code}, {err!r}")
 
 
+# --- last_activity: the run's durable "when did anything last move?" sensor -----
+#
+# Two frozen instants, so a stamp is DETERMINISTIC and a no-op write can be PROVEN not to re-stamp (the
+# second value would differ from the first if it did). The clock is a module global that `save()` looks up
+# by name, so replacing it is the same test-injectable-clock move `lease-test.py` makes on `now`.
+FROZEN_A = "2026-01-02T03:04:05+00:00"
+FROZEN_B = "2026-06-07T08:09:10+00:00"
+
+
+@contextlib.contextmanager
+def frozen_clock(L: ModuleType, value: str):
+    """Freeze the accessor's activity clock to `value` for the duration of the block, then restore it."""
+    prev = L.now_activity
+    setattr(L, "now_activity", lambda: value)
+    try:
+        yield
+    finally:
+        setattr(L, "now_activity", prev)
+
+
+def last_activity(L: ModuleType, path: Path) -> str:
+    """Read the header's `last_activity` through the REAL CLI — the value a heartbeat would see."""
+    code, out, err = cli(L, ["--file", str(path), "header", "get", "last_activity"])
+    check(code == 0, f"header get last_activity exited {code}: {err!r}")
+    return out.rstrip("\n")
+
+
+def t_activity_stamped_on_a_real_change(L: ModuleType, tmp: Path) -> None:
+    """A value-CHANGING `set` stamps `last_activity` in the same write; a NO-OP `set` leaves it untouched.
+
+    The no-op half is what has teeth: the second write is frozen to a DIFFERENT instant, and the stamp must
+    still read the FIRST — a sensor that re-stamped on a write that changed nothing would report a stalled
+    run as alive, which is the exact reading it exists to prevent.
+    """
+    path = write_lines(tmp / "act.jsonl", header_line(L, run_id="r1"), row_line(L, pr="1", status="pending"))
+    check(last_activity(L, path) == "-", "a fresh ledger must start with last_activity `-`")
+    with frozen_clock(L, FROZEN_A):
+        code, _, err = cli(L, ["--file", str(path), "set", "--pr", "1", "--status", "in_review"])
+        check(code == 0, f"set exited {code}: {err!r}")
+    check(last_activity(L, path) == FROZEN_A,
+          f"a value-changing set did not stamp last_activity: {last_activity(L, path)!r}")
+    with frozen_clock(L, FROZEN_B):  # a NO-OP: status is ALREADY in_review
+        code, _, err = cli(L, ["--file", str(path), "set", "--pr", "1", "--status", "in_review"])
+        check(code == 0, f"no-op set exited {code}: {err!r}")
+    check(last_activity(L, path) == FROZEN_A,
+          f"a NO-OP set re-stamped last_activity to {last_activity(L, path)!r} — a write that changes "
+          f"nothing is not activity and must leave the sensor alone")
+
+
+def t_verdict_stamps_activity(L: ModuleType, tmp: Path) -> None:
+    """A landed `verdict` stamps `last_activity` — it always moves review_rounds, so it is always activity."""
+    sha = "a" * 40
+    path = write_lines(tmp / "v.jsonl", header_line(L, run_id="r1"),
+                       row_line(L, pr="1", head_sha=sha, status="in_review"))
+    with frozen_clock(L, FROZEN_A):
+        code, _, err = cli(L, ["--file", str(path), "verdict", "--pr", "1", "--head-sha", sha,
+                               "--verdict", "satisfied"])
+        check(code == 0, f"verdict exited {code}: {err!r}")
+    check(last_activity(L, path) == FROZEN_A,
+          f"a landed verdict did not stamp last_activity: {last_activity(L, path)!r}")
+
+
+def t_liveness_only_write_is_not_activity(L: ModuleType, tmp: Path) -> None:
+    """A write that moves ONLY a liveness counter does NOT stamp — polling that saw no PR change is exactly
+    the "nothing moved" last_activity exists to expose. Every member of LIVENESS_COUNTERS, one at a time.
+
+    Reading `L.LIVENESS_COUNTERS` (never a retyped list) and asserting this fixture covers it is the
+    mechanical half of "name the set": add a counter to that tuple without exempting it from activity and
+    THIS fixture goes red, instead of a new counter silently stamping the sensor on every CI poll.
+    """
+    values = {"ci_fingerprint": "abc123", "settled_strikes": "2",
+              "unusable_refetches": "3", "ci_stalled_since": "2026-05-05T05:05:05+00:00"}
+    check(set(values) == set(L.LIVENESS_COUNTERS),
+          f"this fixture does not cover every liveness counter — it tests {tuple(values)} but "
+          f"LIVENESS_COUNTERS is {L.LIVENESS_COUNTERS}; a counter it misses could stamp with no fixture red")
+    for field, value in values.items():
+        path = write_lines(tmp / f"lv-{field}.jsonl", header_line(L, run_id="r1"),
+                           row_line(L, pr="1", status="pending"))
+        with frozen_clock(L, FROZEN_A):  # a real change first, to give last_activity a known value
+            code, _, err = cli(L, ["--file", str(path), "set", "--pr", "1", "--status", "in_review"])
+            check(code == 0, f"[{field}] baseline set exited {code}: {err!r}")
+        check(last_activity(L, path) == FROZEN_A, f"[{field}] the baseline change did not stamp")
+        with frozen_clock(L, FROZEN_B):  # a liveness-counter-only write — must NOT re-stamp
+            flag = "--" + field.replace("_", "-")
+            code, _, err = cli(L, ["--file", str(path), "set", "--pr", "1", flag, value])
+            check(code == 0, f"[{field}] liveness set exited {code}: {err!r}")
+        check(last_activity(L, path) == FROZEN_A,
+              f"[{field}] a liveness-counter-only set re-stamped last_activity to "
+              f"{last_activity(L, path)!r} — a CI poll that saw no change is not meaningful activity")
+
+
+def t_last_activity_is_a_sensor_no_door(L: ModuleType, tmp: Path) -> None:
+    """`header set last_activity` is REFUSED — a sensor has no door, exactly as review_rounds has no flag —
+    and it writes NOTHING. `header get last_activity` still READS it."""
+    path = write_lines(tmp / "sensor.jsonl", header_line(L, run_id="r1"))
+    code, out, err = cli(L, ["--file", str(path), "header", "set", "last_activity",
+                             "2000-01-01T00:00:00+00:00"])
+    check(code == 1, f"header set last_activity must be REFUSED (exit 1); got {code}: {out!r}")
+    check("sensor" in err.lower(), f"the refusal must state WHY last_activity is not settable: {err!r}")
+    check(last_activity(L, path) == "-",
+          f"a REFUSED header set still wrote last_activity: {last_activity(L, path)!r} — the forged date "
+          f"reached disk")
+
+
+def t_last_activity_absent_is_tolerated(L: ModuleType, tmp: Path) -> None:
+    """An OLD ledger written before last_activity existed reads back the default `-`, `table` still renders,
+    and a mutating op on it stamps a fresh one — absence is a fresh start, never an error."""
+    old_header = json.dumps({"type": "header", "run_id": "r1", "base_branch": "main"})  # NO last_activity key
+    path = write_lines(tmp / "old.jsonl", old_header, row_line(L, pr="1", status="pending"))
+    check(last_activity(L, path) == "-",
+          f"an old ledger without last_activity must read back `-`: {last_activity(L, path)!r}")
+    code, _, err = cli(L, ["--file", str(path), "table"])
+    check(code == 0, f"table on a pre-field ledger exited {code}: {err!r}")  # readers tolerate the absence
+    with frozen_clock(L, FROZEN_A):
+        code, _, err = cli(L, ["--file", str(path), "set", "--pr", "1", "--status", "in_review"])
+        check(code == 0, f"set exited {code}: {err!r}")
+    check(last_activity(L, path) == FROZEN_A,
+          f"a mutating op on a pre-field ledger did not stamp last_activity: {last_activity(L, path)!r}")
+
+
 CASES = [
     ("escape-injective", "escape_cell is INJECTIVE — no two values collide", t_escape_injective),
     ("render-injective", "the PRINTED ROWS are injective too — no two values print the same line", t_render_injective),
@@ -1981,6 +2102,11 @@ CASES = [
     ("unpark-refusals", "unpark refuses not-parked/unanswered/abort/malformed — writing nothing", t_unpark_refusals),
     ("set-status-stays-open", "set may still write the standoff park/unpark transitions — park/unpark can't serve them", t_set_status_transitions_stay_open),
     ("replay-the-record", "the REAL #42/#43 verdict sequences: it fires, never too early, and says what it costs", t_replay_the_real_record),
+    ("activity-stamped-on-change", "a value-changing set stamps last_activity; a no-op set does not", t_activity_stamped_on_a_real_change),
+    ("verdict-stamps-activity", "a landed verdict stamps last_activity — it always moves review_rounds", t_verdict_stamps_activity),
+    ("liveness-not-activity", "a liveness-counter-only write does NOT stamp — polling that saw no change is not activity", t_liveness_only_write_is_not_activity),
+    ("last-activity-sensor", "last_activity has NO door — `header set last_activity` is refused and writes nothing", t_last_activity_is_a_sensor_no_door),
+    ("last-activity-absent-ok", "an old ledger without last_activity reads `-` and mutating it stamps fresh", t_last_activity_absent_is_tolerated),
 ]
 
 
