@@ -595,8 +595,8 @@ def check_unit(unit: object, where: str) -> None:
 
     **`unit: object` — NOT `dict` — and that is load-bearing, not pedantry.** This is handed values
     straight out of `json.loads`, and a JSON value is whatever the file says it is: an amendment's
-    `proposed_unit` can arrive as a STRING (`"proposed_unit": "u99"`), and a reviewer hand-writes that
-    event — it is the one event type the emit-only rule exempts. Annotating the parameter `dict` would be
+    `proposed_unit` can arrive as a STRING (`"proposed_unit": "u99"`) — the read side never assumes the
+    `amend` door was used, so a hand-written line is always possible input. Annotating the parameter `dict` would be
     a promise no caller can keep, and a type checker reading that promise concludes the `isinstance` guard
     below can never fire and the `raise` is UNREACHABLE. It is not: it fires, on that exact input, and the
     fixture `amendment-unit-not-object` drives it. Believe the annotation and delete the "dead" guard, and
@@ -1018,8 +1018,8 @@ def check_event(rec: dict, where: str) -> None:
         # typed ` u01 `, and it is what this tool used to say — after quietly stripping the value first.
         check_id("unit", rec["unit"], where)
     if kind == AMENDMENT:
-        # The amendment is the ONE event a reviewer really does hand-write (it is exempt from the
-        # emit-only rule), so it is the one whose fields nothing upstream has already shaped. Its `ts` had
+        # The amendment was the ONE event a reviewer hand-wrote (exempt from the emit-only rule) before
+        # the `amend` door; the read side still assumes nothing upstream shaped its fields. Its `ts` had
         # NO check at all beyond "is a string" — the identity's clock was guarded and this one, the same
         # kind of value, was not. It is what says WHEN the reviewer said the plan was wrong, and the
         # orchestrator rules on amendments in order; a `ts` that is not a time cannot be ordered.
@@ -1580,6 +1580,62 @@ def cmd_emit(args) -> int:
     # …and the file it would PRODUCE, through that same function. `units` is already loaded, so the thunk
     # just hands it back; nothing is re-derived, and nothing is re-stated.
     sys.stdout.write(write_line(path, text, rec, lambda after: check_progress_file(after, path, lambda: units)))
+    return 0
+
+
+def cmd_amend(args) -> int:
+    """Append one `plan_amendment_request` — the ONLY sanctioned way a reviewer raises a plan amendment.
+
+    **THE AMENDMENT WAS THE ONE PROGRESS EVENT A REVIEWER HAND-WROTE** (exempt from the emit-only
+    rule), and that exemption is exactly why it needed a door of its own.
+    The dispatch prompt never stated its schema, so external reviewers invented `{"type":"plan_amendment_
+    request","gap":"…"}`; `verify` requires EXACTLY `{type, ts, reason, proposed_unit}` and refused the
+    malformed line, which took the WHOLE pass down as `unusable`. Two full passes were lost that way in one
+    real run — a `done` refused on READ and WRITTEN on the other door, one artifact over.
+
+    So the amendment gets the SAME both-doors treatment every other event has, through the SAME functions
+    `verify` runs: `check_event` (the AMENDMENT branch — `ts`, non-blank `reason`, and `check_unit` over the
+    `proposed_unit`, the very unit check `plan-add` runs), `check_progress_file` (the file it appends into
+    must already carry a valid `pass_identity`, like `emit`), and `write_line` (refuse the write unless the
+    file it would PRODUCE reads back). There is no amendment-shaped copy of any rule.
+
+    **THE TOOL STAMPS `ts` — the reviewer supplies no clock, so a bad clock is no longer a possible input.**
+    UTC to the second, the one form `TS_RE`/`real_utc` accept, so what this writes is what the read door
+    reads. It is what says WHEN the reviewer said the plan was wrong, and the orchestrator rules on
+    amendments in order; a clock the reviewer typed is a clock the reviewer could get wrong.
+    """
+    path = Path(args.file)
+    parse_name(path)  # validates the filename; return discarded
+    # The RECORD IS THE FLAGS, plus a `ts` the TOOL stamps. The `proposed_unit` is built exactly as
+    # `plan-add` builds a unit, and `check_event` runs `check_unit` over it — so an id the plan door would
+    # refuse is refused here too, and the plan cannot acquire, one heartbeat later, a unit `emit` can never
+    # name. `reason` reaches the same non-blank rule the read side already applies to it.
+    rec: "dict[str, object]" = {
+        "type": AMENDMENT,
+        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "reason": args.reason,
+        "proposed_unit": {
+            "type": UNIT, "id": args.id, "kind": args.kind, "target": args.target,
+            "checks": list(args.check),
+        },
+    }
+    check_event(rec, "the amendment you asked to raise (--reason/--id/--kind/--target/--check)")
+
+    plan = plan_path(path)
+    text = read_text(path, "progress file")
+    _, units = check_progress_file(text, path, lambda: load_plan(plan))
+    # …and the file it would PRODUCE, through that same function — `units` is already loaded, so the thunk
+    # just hands it back. An amendment names no planned unit itself (`walk_progress` skips it), so nothing is
+    # re-derived; the readback is the whole-file guarantee, not a second copy of the amendment's own rules.
+    sys.stdout.write(write_line(path, text, rec, lambda after: check_progress_file(after, path, lambda: units)))
+    # A short confirmation, naming the proposed unit — the mirror of `finding-add`'s note. The pass now
+    # verifies `amended` until the orchestrator folds the unit into the plan and restarts the pass (or
+    # records why not); the reviewer ends its report `VERDICT: DEFERRED`.
+    sys.stdout.write(
+        f"# amendment raised: the plan is missing {args.id!r} ({args.kind} / {args.target}). This pass now "
+        f"verifies `amended` until the orchestrator rules on it — folds the unit into the plan and restarts "
+        f"the pass, or records why not. End the report `VERDICT: DEFERRED`.\n"
+    )
     return 0
 
 
@@ -2300,6 +2356,30 @@ def add_finding_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--fix", required=True, help="the concrete fix")
 
 
+def add_amendment_args(p: argparse.ArgumentParser) -> None:
+    """The amendment door's flags — defined in exactly ONE place, exactly as `add_emit_args` is.
+
+    `emit-amendment.py` (the reviewer's door) and `review-pass.py amend` (the owner's) both call this, so
+    the two cannot come to accept — or ADVERTISE — different flags. The lesson is `emit-progress.py`'s: it
+    had no parser of its own, rendered the OWNER's help, and printed a command it then refused.
+
+    There is NO `--ts` flag, and that is the point: the tool STAMPS the amendment's `ts` itself, so a bad
+    clock is not a possible input. `--id`/`--kind`/`--target`/`--check` describe the PROPOSED unit exactly
+    as `plan-add`'s do — the orchestrator folds it into the plan — so `--check` is REQUIRED and repeatable
+    for the same reason there: a unit with no checks is not a unit, and a help door that bracketed it would
+    advertise a command the write path refuses.
+    """
+    p.add_argument("--file", required=True, help="the launch attempt's progress.jsonl")
+    p.add_argument("--reason", required=True,
+                   help="what dimension the plan MISSES — the orchestrator RULES on it, so a blank one is "
+                        "refused (it is the evidence-free `done` of the amendment world)")
+    p.add_argument("--id", required=True, help="the PROPOSED unit's id — lowercase letters then digits, e.g. u03")
+    p.add_argument("--kind", required=True, help="file | cross-cutting | docs | …")
+    p.add_argument("--target", required=True, help="the CONCRETE thing the proposed unit would review")
+    p.add_argument("--check", action="append", default=[], required=True,
+                   help="a concrete check; REQUIRED, and repeatable — a unit with no checks is not a unit")
+
+
 def build_parser() -> "tuple[argparse.ArgumentParser, list[str]]":
     """The CLI, and the list of subcommands it actually has — DERIVED from the parser, never typed out.
 
@@ -2334,6 +2414,9 @@ def build_parser() -> "tuple[argparse.ArgumentParser, list[str]]":
     # the flag — instead of by a rule about the unit that was built from it.
     a.add_argument("--check", action="append", default=[], required=True,
                    help="a concrete check; REQUIRED, and repeatable — a unit with no checks is not a unit")
+
+    add_amendment_args(sub.add_parser(
+        "amend", help="raise ONE plan_amendment_request, ts stamped by the tool (what emit-amendment.py calls)"))
 
     add_finding_args(sub.add_parser(
         "finding-add", help="record ONE finding, anchored to the PR's intent (what emit-finding.py calls)"))
@@ -2399,7 +2482,7 @@ def dispatch(args) -> int:
         return self_test()
     try:
         return {"emit": cmd_emit, "identity": cmd_identity, "plan-add": cmd_plan_add,
-                "finding-add": cmd_finding_add, "intent-check": cmd_intent_check,
+                "amend": cmd_amend, "finding-add": cmd_finding_add, "intent-check": cmd_intent_check,
                 "verify": cmd_verify, "status": cmd_status}[args.cmd](args)
     except Defect as exc:
         fail(str(exc), 1)

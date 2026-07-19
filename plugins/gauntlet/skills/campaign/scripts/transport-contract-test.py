@@ -118,6 +118,7 @@ def check_document_contract() -> None:
         'RUN_ARGV(["git", "-C", TRANSPORT.worktree, "diff"',
         'RUN_ARGV(["python3", TRANSPORT.emit_progress_path',
         'RUN_ARGV(["python3", TRANSPORT.emit_finding_path',
+        'RUN_ARGV(["python3", TRANSPORT.emit_amendment_path',
     ):
         require(needle in dispatch, f"review-dispatch.md lost typed operation: {needle}")
 
@@ -235,6 +236,7 @@ def run_hostile_fixtures() -> None:
             "findings_path": hostile[4],
             "emit_progress_path": hostile[5],
             "emit_finding_path": hostile[6],
+            "emit_amendment_path": hostile[2],
             "report": {"producer": "native-worker-write", "path": hostile[0]},
         }
         encoded_record = json.dumps(record, ensure_ascii=False)
