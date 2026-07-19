@@ -108,8 +108,10 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
     and a heartbeat or bounded wait is armed whenever non-terminal work remains. NEVER sleep with due
     work un-launched or no path to the next reconcile. Then follow `references/loop-control.md`,
     "Reschedule or exit", exactly: a scheduled-heartbeat host renders the status — the `ledger.py table`
-    output that block defines — after scheduling and returns; a scheduler-less host renders the same
-    status, performs one bounded wait, and returns to the reconcile step while non-terminal work remains.
+    output that block defines — and then schedules as the turn's LAST action (scheduling ends the turn
+    on that host: `references/runtime-adapter.md`, "Scheduled-heartbeat host"); a scheduler-less host
+    renders the same status, performs one bounded wait, and returns to the reconcile step while
+    non-terminal work remains.
 
 **Review gate — stage 2a** (`references/stage-2-review-gate.md`)
 

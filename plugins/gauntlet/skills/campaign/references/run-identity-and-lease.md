@@ -92,8 +92,14 @@ the verdict the tool prints.
   acquire --token <tok> --heartbeat-id <proof>`, where the proof names the arming you ALREADY did
   (`runtime-adapter.md` says what your host's proof is). `acquire` refuses without both and never mints
   a token itself — arming comes FIRST, so a driver that dies mid-work is still resumed by its own
-  heartbeat. Keep the token in context; the heartbeat prompt already carries it, so a
-  summarized/amnesiac heartbeat recovers it from the prompt instead of guessing.
+  heartbeat. **On a host whose scheduler ends the turn (`runtime-adapter.md`, "Scheduled-heartbeat
+  host"), step 2 is the setup turn's LAST action and step 3 plus the rest of setup (header, adoption,
+  first dispatches) run on the heartbeat it armed** — the proof then names the arming that delivered
+  the very turn you are in, which is exactly "something already done". Size that first arm to the
+  setup delay (`loop-control.md`, "Reschedule or exit"): a fresh run resumes in about a minute, not a
+  full idle interval that the user reads as a hung run. Keep the token in context; the heartbeat
+  prompt already carries it, so a summarized/amnesiac heartbeat recovers it from the prompt instead of
+  guessing.
 - **You own the run iff the verdict says so.** `acquire`/`refresh` print a verdict, and the verdict —
   not your write, not an eyeballed read of the file — is the proof: `owned`/`adopted` → drive;
   `superseded`/`lost-race`/any refusal → you are NOT the driver — do not review, fix, merge, or
@@ -132,7 +138,8 @@ the verdict the tool prints.
 1. **`--run <id>` given** (every scheduled heartbeat; also a manual targeted resume). Load `<rundir>/state.jsonl`,
    then present a token to `lease.py`. **Scheduled heartbeat** (token in the prompt's `--token`) →
    `refresh`: `owned` → reconcile, continue; `superseded` → stand down; refused because the lease is
-   gone → re-arm, then `acquire`. **Manual `--run` with no token in hand** → `lease.py read` (advisory
+   gone → re-arm, then `acquire` (the turn-split in "Take a run" applies on a turn-ending scheduler:
+   the `acquire` runs on the wake the re-arm produces). **Manual `--run` with no token in hand** → `lease.py read` (advisory
    status only): `absent`/`stale` → adopt (mint + arm + `acquire`, per "Take a run"); `held` → another
    agent appears active, so **confirm takeover with the user** before `acquire --allow-takeover`;
    `corrupt` → see "Adopt only an orphaned run".
