@@ -419,7 +419,9 @@ rule is sized for a reviewer working slowly, not one that never woke up. Gate ev
   too would strand a dead attempt `2` that had written a `started` line — neither relaunchable nor
   fallback-eligible — and the PR would hang forever.
 - Before re-dispatching, **re-check the command** for the known launch faults — most of all the quoted
-  prompt-file stdin redirect on every external reviewer (`review-dispatch.md`). A relaunch of the same hanging
+  prompt-file stdin redirect on every external reviewer (`review-dispatch.md`), and the external reviewer's
+  `-C` target, which must be the run-artifact root (a `-C` off that root makes the run directory read-only
+  under `workspace-write`, so every emit fails and the reviewer defers). A relaunch of the same hanging
   command hangs identically.
 - **A failed launch is a dispatch fault, not a review outcome.** It yields no verdict — it never
   counts SATISFIED or NOT SATISFIED, never touches `reviews_ok`, and never escalates the tier. It is
@@ -631,6 +633,11 @@ routing verdicts as any other pass — **`amended`** (fold the amendment and re-
 (the pass stopped early — relaunch), or **`unusable`** (a spurious deferral: nothing was outstanding, so
 it owes a binary verdict). **NEVER fabricate a binary `satisfied`/`not-satisfied` for the reviewer** — if
 it did not rule, you do not rule for it.
+
+**A deferral whose reason names an UNWRITABLE progress/findings file is a DISPATCH fault, not a pass to
+route** — before any relaunch, re-check the launch argv against the canonical spelling
+(`cross-agent-reviewers.md`), above all the `-C` target, which must be the run-artifact root. Relaunching
+the same command makes the same run directory read-only and fails identically.
 
 **`--verdict` is REQUIRED, and a COMPLETE pass verified without it is `unusable` — never `ok`.** A gate
 must not depend on an agent remembering to pass something — so the input is demanded, exactly as the
