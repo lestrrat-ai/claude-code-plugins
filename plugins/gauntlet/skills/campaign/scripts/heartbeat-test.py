@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Fixtures for `heartbeat.py` — the scheduled-heartbeat callback command.
+"""Fixtures for `heartbeat.py` — the scheduled heartbeat and session-watchdog commands.
 
 They live in a SIBLING file, and `heartbeat.py self-test` FAILS LOUDLY if it cannot load them.
 
-EVERY FIXTURE MUST PIN A RULE with TEETH. The rules worth the most here are the ones that keep the callback
-a RESUME and nothing else: it carries exactly `--run` and `--token`, it never carries `--heartbeat-id`
-(an acquire-time proof), and it never carries `--new`/`#PR` (start-time args that would mint a fresh run
-every heartbeat). Each of those, if it regressed, would silently break the resume contract.
+EVERY FIXTURE MUST PIN A RULE with TEETH. The rules worth the most here are the ones that keep both wakes
+on the current run: the heartbeat carries exactly `--run` and `--token`; the watchdog adds only
+`--watchdog`; neither carries `--heartbeat-id` (an acquire-time proof) or `--new`/`#PR` (start-time
+args that would mint a fresh run every wake).
 """
 
 from __future__ import annotations
@@ -126,6 +126,51 @@ def t_smuggled_args_cannot_reach_stdout():
                       f"a refused callback must not leak {forbidden!r} to stdout, got {out!r}")
 
 
+# --- session watchdog wake -----------------------------------------------------
+
+def t_watchdog_is_owner_callback_plus_flag():
+    got = H.watchdog_command("/gauntlet:campaign", "g260704-0915-a3f29c1b", "aabbccdd")
+    check(got == "/gauntlet:campaign --run g260704-0915-a3f29c1b --token aabbccdd --watchdog",
+          f"the watchdog must be the owner callback plus --watchdog, got {got!r}")
+    check("--heartbeat-id" not in got and "--new" not in got and "#" not in got,
+          "the watchdog must carry no acquire-time proof or start-time args")
+
+
+def t_watchdog_host_neutral():
+    got = H.watchdog_command("$gauntlet:campaign", "g1", "t1")
+    check(got.startswith("$gauntlet:campaign "),
+          "the watchdog must preserve the supplied Codex invocation; no host form is hardcoded")
+
+
+def t_cli_watchdog_prints_command():
+    r, t, inv = "g260704-0915-a3f29c1b", "aabbccdd", "$gauntlet:campaign"
+    code, out, err = capture_cli(H.main, ["watchdog", "--run", r, "--token", t, "--invocation", inv])
+    check(code == 0, f"a well-formed watchdog wake must exit 0, got {code}")
+    check(out.strip() == f"{inv} --run {r} --token {t} --watchdog",
+          f"the watchdog CLI must print the exact command, got {out.strip()!r}")
+    check(err == "", f"a successful watchdog wake must write nothing to stderr, got {err!r}")
+
+
+def _assert_watchdog_refused(argv, what):
+    code, out, err = capture_cli(H.main, ["watchdog", *argv])
+    check(code != 0, f"a {what} must fail closed with a non-zero exit, got {code}")
+    check(out.strip() == "", f"a refused watchdog ({what}) must print NOTHING on stdout, got {out.strip()!r}")
+    check("REFUSED" in err, f"the watchdog refusal ({what}) must say REFUSED on stderr, got {err!r}")
+    return out
+
+
+def t_watchdog_refuses_unusable_values():
+    _assert_watchdog_refused(["--run", "", "--token", "tok", "--invocation", "/gauntlet:campaign"],
+                             "blank watchdog run")
+    _assert_watchdog_refused(["--run", "g1", "--token", "aa bb", "--invocation", "/gauntlet:campaign"],
+                             "whitespace-containing watchdog token")
+    out = _assert_watchdog_refused(
+        ["--run", "g1 --new #9", "--token", "tok", "--invocation", "/gauntlet:campaign"],
+        "watchdog run containing start-time args")
+    check("--new" not in out and "#" not in out,
+          f"a refused watchdog must not leak smuggled args to stdout, got {out!r}")
+
+
 CASES = [
     ("callback-two-flags", "the callback is exactly `<invocation> --run <id> --token <tok>`",
      t_callback_is_two_flags),
@@ -149,4 +194,12 @@ CASES = [
      t_cli_refuses_tab_and_newline),
     ("smuggle-blocked", "--new/#PR/--heartbeat-id hidden behind whitespace never reach stdout",
      t_smuggled_args_cannot_reach_stdout),
+    ("watchdog-owner-callback", "the watchdog is the owner callback plus --watchdog only",
+     t_watchdog_is_owner_callback_plus_flag),
+    ("watchdog-host-neutral", "the watchdog preserves the supplied host invocation",
+     t_watchdog_host_neutral),
+    ("watchdog-cli-prints", "the watchdog subcommand prints the exact command and nothing else",
+     t_cli_watchdog_prints_command),
+    ("watchdog-refuses-unusable", "a malformed watchdog command prints nothing and refuses",
+     t_watchdog_refuses_unusable_values),
 ]

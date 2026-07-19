@@ -83,8 +83,9 @@ HEADER_DEFAULTS = {
     "last_activity": "-",
     # THE DURABLE HEALTH-PASS DEADLINE — a UTC ISO-8601 stamp (second precision) naming the instant by which
     # the run owes its next deep "health pass". `ledger.py watchdog arm` stamps it to `now + WATCHDOG_INTERVAL`;
-    # `watchdog check` reads it back; both hosts honor it at loop entry so a run that has gone quiet (a dead
-    # heartbeat chain, or heartbeats firing but never doing the deep look) still gets a periodic forced sweep.
+    # `watchdog check` reads it back; every live loop honors it at entry. The session watchdog audits
+    # scheduling separately, so the first wake that sees this deadline due performs the sweep. It does not
+    # revive a dead session.
     # A TOOL-STAMPED field, exactly like `last_activity`: there is NO `header set watchdog_due` door (a
     # hand-written deadline would be a forged one), and its writes are activity-EXEMPT (re-arming the watchdog
     # is not "the run did something meaningful"; letting it stamp would defeat the very quiet sensor it backs).

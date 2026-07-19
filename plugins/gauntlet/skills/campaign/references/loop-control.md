@@ -456,9 +456,9 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      `--run` and `--token` and never `--new`/`#PR` or `--heartbeat-id`. A scheduler-less bounded
      wait retains the current invocation and token instead of constructing a scheduled heartbeat. Both are a
      **fallback lifecycle, not a tight poll**: background completions are the primary heartbeat. A scheduled
-     heartbeat also recovers a killed/orphaned session through a later scheduled heartbeat; if a scheduler-less
-     invocation is killed, durable state permits a later explicit resume (see "Resume after a killed
-     session"). **Size the scheduled delay or bounded wait to the nearest stall it guards:**
+     heartbeat resumes another turn only while its session remains live; a dead session needs the explicit
+     resume path (see "Resume after a killed session"). **Size the scheduled delay or bounded wait to the
+     nearest stall it guards:**
      - **Run setup still owed — the lease not yet acquired, or adoption / first dispatches not yet
        run (a fresh run's arm-ended setup turn, `run-identity-and-lease.md` "Take a run") → ~60 s:**
        on a turn-ending scheduler the wakeup IS the continuation of setup, so any longer delay is
@@ -475,12 +475,11 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
        shorter interval only re-reconciles git/gh with no new signal (and pays a fresh-context cost per
        heartbeat).
 
-     **And whatever tier you picked, NEVER schedule past the watchdog deadline** — cap the delay at the
-     time `ledger.py watchdog check` says remains. This is what makes the watchdog a self-enqueueing job
-     on the one wakeup the host provides: the deadline is structurally guaranteed a wake, the health pass
-     runs on it, and its `watchdog arm` enqueues the next one. (The current tiers all sit inside the
-     45-min interval, so the cap binds only if a tier ever grows past it — it is the invariant, not a
-     live constraint.)
+     **And whatever tier you picked, NEVER schedule the primary heartbeat past the watchdog deadline** —
+     cap the delay at the time `ledger.py watchdog check` says remains. A host with the session-watchdog
+     capability also delivers its separate audit nudge at that deadline; this cap is the matching fallback
+     on a bounded-wait host and the guard against a later primary tier longer than 45 minutes. (The current
+     tiers all sit inside the interval, so the cap binds only if a tier grows.)
 
      **The health pass — when the run owes a deep look, LOOK before you reschedule.** A run can
      heartbeat forever while nothing moves: every PR parked on a forgotten question, a review silently
@@ -494,9 +493,14 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      ```
 
      The first is #112's quiet sensor (the durable `last_activity` stamp); the second is the durable
-     long-cadence deadline (`ledger.py watchdog`, `files-and-ledger.md`) — the sensor that catches a run
-     whose heartbeats keep FIRING but never look deeply. **When `need_health` — and open PRs remain — this heartbeat runs
-     exactly ONE health pass and then exactly ONE `ledger.py --file <state.jsonl> watchdog arm`, and
+     long-cadence deadline (`ledger.py watchdog`, `files-and-ledger.md`). The separate session watchdog
+     nudge (`runtime-adapter.md`, "Session watchdog nudge") audits both wakes during run resolution. It
+     does NOT add a deep-health trigger: a watchdog and primary heartbeat can arrive together, and the first
+     health pass re-arms the deadline for the second. Re-arm a missing primary only as this turn's final
+     normal scheduling action; re-ensure a missing watchdog nudge before that action. A bounded-wait host
+     reports that it has no separate nudge.
+     **When `need_health` — and open PRs remain — this heartbeat runs exactly ONE health pass and then exactly ONE
+     `ledger.py --file <state.jsonl> watchdog arm`, and
      completes BOTH before the status render and the turn's final scheduling action** (the last-action rule
      below). **Never two passes for two triggers**: quiet and watchdog-due firing together is still one
      pass, one arm. The pass **relies on this heartbeat's successful `refresh` verdict** (step 1) and adds
@@ -519,13 +523,11 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      question rather than presenting the idleness as a fault to chase. Then confirm the next heartbeat is
      armed, exactly as always.
 
-     **The honest boundary: an in-session sensor is only read by a heartbeat that FIRES.** If the heartbeat
-     chain itself dies — no scheduled wake, no bounded wait returns — nothing in-session reads either
-     sensor. Recovery is a **MANUAL RESUME on every host** (there is no persistent scheduler on either):
-     a dead chain surfaces as a **stale lease on the next manual invocation** (`--run <id>`), where
-     adoption picks the orphaned run up and tells the user the run had been **orphaned** — its chain had
-     stopped — not merely resumed (`run-identity-and-lease.md`, "Adopt only an orphaned run"). The silent
-     stall is surfaced, never absorbed.
+     **The honest boundary: the session watchdog checks a live session, not a dead one.** If the primary
+     heartbeat is missing while the session remains live, the watchdog nudge fires, audits it, and the final
+     scheduling action restores it. If the session itself dies, both in-session wakes disappear. Recovery is
+     a **MANUAL RESUME on every host**: the next `--run <id>` finds a stale lease and adoption reports the
+     run as **orphaned**, not merely resumed (`run-identity-and-lease.md`, "Adopt only an orphaned run").
 
      ALWAYS keep a heartbeat or bounded wait active whenever non-terminal work remains — skipping
      both means a hung or orphaned run wakes no one. **Now render the status — this happens on EVERY
@@ -539,7 +541,8 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      presented as the whole ledger. Never re-type, trim, or re-align it. Then one line per remaining
      wait naming what it waits on (review in flight, CI watch, parked on the user's answer). Render it
      after every ledger write during this heartbeat — the ledger was reconciled this heartbeat, so the table is the
-     state the next reconcile resumes from. Then take exactly one runtime branch:
+     state the next reconcile resumes from. State whether the session watchdog is armed or unavailable; never
+     imply dead-session recovery. Then take exactly one runtime branch:
      - **Scheduled-heartbeat host:** with the status above already rendered, schedule the heartbeat as
        the turn's LAST action — scheduling ends the turn on this host (`runtime-adapter.md`,
        "Scheduled-heartbeat host"), so nothing runs after it. The scheduled invocation begins again at
@@ -554,10 +557,11 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      non-terminal row or an existing file, so it distills exactly once; per-run files never
      contend, see "Fresh runs and carryover"), **release the run** (delete this run's
      `gauntlet-run-<run-id>` owner label via `gh label delete gauntlet-run-<run-id> --yes`, release
-     the lease — `lease.py … release --token <tok>`; the shared
-     status labels stay), emit the final report, and **do not
+     the lease — `lease.py … release --token <tok>`; then remove the session watchdog nudge
+     (`runtime-adapter.md`, "Session watchdog nudge"); the shared status labels stay), emit the final
+     report, and **do not
      reschedule**. This run's loop ends. **"Rows all terminal" alone is NOT "finished"** — finalization
-     (carryover distilled, label deleted, lease released) may still be **owed**, so
+     (carryover distilled, label deleted, lease released, watchdog removed) may still be **owed**, so
      do these in order. **Leave
      `<rundir>` in place** (do NOT delete it here) — its terminal `state.jsonl` is what lets a later bare
      invocation detect *this* *finished* run and take the "ask the user" branch in step 1 instead of a

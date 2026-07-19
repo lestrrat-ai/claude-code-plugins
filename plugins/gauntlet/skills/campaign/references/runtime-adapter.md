@@ -314,12 +314,36 @@ The second path is how Codex CLI sessions operate when no scheduled-heartbeat ca
 the process is killed, durable run state and the lease takeover rules allow a later invocation to resume;
 the skill does not pretend a heartbeat was scheduled when none was.
 
-The watchdog deadline (`ledger.py watchdog`, `files-and-ledger.md`; owner: `loop-control.md`'s health
-pass) is a LONG durable deadline that needs **NO host mechanism**. Every host's loop entry checks it on
-the existing heartbeat or bounded-wait chain, so it is **identical on Claude Code and Codex** — there is
-no scheduler entry, no resurrection poke, nothing host-specific. A dead heartbeat chain or a dead session
-is recovered by **MANUAL RESUME on every host**: the next manual `--run <id>` invocation finds a stale
-lease and adopts the orphaned run (`run-identity-and-lease.md` owns adoption).
+### Session watchdog nudge
+
+The watchdog is a SECOND, long-cadence wake that asks the current session's orchestrator to audit campaign
+soundness. It is not a durable recovery system: it exists only while that session exists and a dead session
+still needs a manual `--run <id>` resume. `ledger.py watchdog` owns the 45-minute cadence and
+`loop-control.md`, "Reschedule or exit", owns the audit.
+
+On a host with a session-watchdog capability, use these idempotent operations, keyed by
+`gauntlet-watchdog-<run-id>`:
+
+- `available?` — report whether the host can schedule an additional wake into this live session.
+- `ensure` — create the recurring nudge if missing. Use `ledger.py watchdog interval` for its cadence
+  and schedule only `heartbeat.py watchdog`'s stdout, built with run id, owner token, and campaign
+  invocation. The nudge reaches the same session; it never launches an independent driver.
+- `inspect` — report whether the nudge remains armed for this session.
+- `remove` — delete the nudge during normal finalization.
+- `primary inspect` — on a scheduled-heartbeat host, report whether the next primary callback names this
+  run and owner token. A missing callback is repaired by this turn's final normal scheduling action; a
+  bounded-wait host reports that no callback exists to inspect.
+
+None of these operations ends the turn. The primary heartbeat's final scheduling action still ends it.
+
+| Host | Session watchdog |
+|---|---|
+| Claude Code | Harness cron, scoped to this session. Its entry must deliver the watchdog command into this session, not create a new worker. |
+| Codex | Absent. The bounded-wait loop still honors `watchdog_due`, but has no separate audit wake. |
+
+An absent capability or failed `ensure` is non-blocking. State the boundary in the run-start and status
+reports: normal heartbeat health checks remain, but no separate session watchdog is armed. Do not claim
+that either host recovers a dead session automatically.
 
 ## Reviewer selection and diversity
 

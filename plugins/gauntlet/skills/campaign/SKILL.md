@@ -50,8 +50,11 @@ These are **distinct modes**, not freely-composable flags; `references/run-ident
 - No argument -> discover this run's labelled PRs and continue. If none and nothing to do, show the
   idle prompt (`references/run-identity-and-lease.md`, "Resolving a heartbeat", owns its wording).
 - Non-PR arg (e.g. `auth`) -> same prompt (the old area/topic sweep arg is REMOVED).
-- `--run <id>` -> resume that run; takes no `#PR`/`--new`. Scheduled heartbeats also carry internal
+- `--run <id>` -> resume that run; takes no `#PR`/`--new`. Scheduled heartbeats carry internal
   `--token`.
+- `--run <id> --token <tok> --watchdog` -> internal, session-scoped soundness-audit wake. It requires
+  `--token`, rejects `#PR`/`--new`, and never adopts a run or recovers a dead session
+  (`references/run-identity-and-lease.md`, "Resolving a heartbeat").
 - `--new #PR...` -> force an independent new run-id for a new PR set (with carryover); requires PRs.
 
 Invalid combinations (e.g. `--new` with no PRs, or `--run` with `#PR`) are rejected / fall through to
@@ -73,8 +76,10 @@ it — no trigger means the step runs unconditionally at that point in the seque
 3. `lease.py acquire` (`refresh` on resume): take or keep the run lease; stand down if a fresh lease
    names a different owner. One active driver per run — never double-drive. **Take a run in order**
    (`references/run-identity-and-lease.md`, "Take a run"): BEFORE arming, record the run intent
-   (`ledger.py header set pending_adoption "<pr>…"`, cleared when adoption finishes), so a mid-setup
-   death is resumable — the checkpoint survives it.
+   (`ledger.py header set pending_adoption "<pr>…"`, cleared when adoption finishes) and — where the
+   host supports it — ensure the session watchdog nudge
+   (`references/runtime-adapter.md`, "Session watchdog nudge"). It audits a live session's campaign
+   soundness; it does not recover a dead session.
 4. Run start -> `ledger.py --file <state.jsonl> header set skill_version <version>`: record the
    `version` read from the **running plugin's** `plugin.json`. The harness loads this skill from the
    **installed plugin cache**, so a merged, version-bumped rule governs nothing until that cache
@@ -101,8 +106,10 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
    step 1). Then reconcile the run's PR snapshot (treat `state.jsonl` as cache) and fold completed
    review / CI / fix tasks against the SHA each ran on. When the run is **QUIET** (nudge, no meaningful
    ledger activity for its window) **OR** `ledger.py watchdog check` says the long-cadence deadline is
-   `due`/`unset`/`invalid`, run the **health pass** (one pass, then one `ledger.py watchdog arm`) before
-   rescheduling and lead the status with the diagnosis (`references/loop-control.md`, "Reschedule or exit").
+   `due`/`unset`/`invalid`, run the **health pass** (one pass, then one `ledger.py watchdog arm`)
+   before rescheduling and lead the status with the diagnosis. A `--watchdog` wake audits that the primary
+   heartbeat is armed; it runs the health pass only when one of those normal triggers applies
+   (`references/loop-control.md`, "Reschedule or exit").
 9. `ci-status.py required-set --ledger <rundir>/state.jsonl`: refresh the required set before any CI
    derivation this heartbeat.
 10. Mutating action due on a PR -> `ledger.py … dispatch-check --pr <N>`: run before ANY action that
