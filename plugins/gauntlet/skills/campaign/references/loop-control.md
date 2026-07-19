@@ -18,6 +18,14 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
    only on an `owned`/`adopted` verdict; on `superseded` or any refusal, **stand down**.
    This lease gate is what guarantees **no two agents drive one ledger**.
 
+   Once you own the run and have loaded its ledger, run
+   `scripts/nudge.py --file <rundir>/state.jsonl --followups .gauntlet/followups.jsonl --rundir <rundir>`
+   and **READ its output** before reconciling. It is the **advisory reminder list** — computed from durable
+   state so an amnesiac fresh-context heartbeat is HANDED its obligations rather than told to remember
+   them. It **decides nothing and always exits 0**; each reminder just points at the owner of the actual
+   check (labels, caps, the quiet-run sweep below). Act on the reminders through those owners; ignore none
+   silently.
+
    Once bound and confirmed owner, decide on **liveness of THIS run**, not on whether some `state.jsonl`
    exists — and scope **every** git/gh scan to this run's `gauntlet-run-<run-id>` label so another run's
    PRs are never mistaken for your own (adopted PRs keep their OWN head branch, so ownership is the
@@ -464,10 +472,43 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
        shorter interval only re-reconciles git/gh with no new signal (and pays a fresh-context cost per
        heartbeat).
 
+     **The quiet-run sweep — when the run has gone silent, LOOK before you reschedule.** A run can
+     heartbeat forever while nothing moves: every PR parked on a forgotten question, a review silently
+     stuck — and each heartbeat looks locally fine, because "nothing moved" is invisible to an agent that
+     remembers nothing. The nudge (step 1) reads that from the durable `last_activity` stamp and reports
+     the run **QUIET** when nothing meaningful has changed for **`nudge.py`'s `QUIET_AFTER` window**. When
+     it does — and open PRs remain — this heartbeat **MUST run the quiet-run sweep rather than silently
+     rescheduling into another dead interval.** The sweep is nothing new; it re-runs the checks their
+     existing owners already define, on the rows the sensor says have gone still:
+     - **any in-flight review pass** → `review-pass.py status --run <rundir> --verify`, then apply the
+       **Stage 2a launch-deadline and meaningful-progress rules** to it (`stage-2-review-gate.md`) — a
+       review that died mid-flight is exactly what a quiet streak hides.
+     - **any row that can still move** → **re-derive CI** (Stage 2b) and apply the CI watch / RUNNING-STALL
+       rules — a watch that wedged wakes no one, and only a swept heartbeat notices.
+     - **every parked PR** → **re-surface its question to the user, WITH how long it has waited.** The park
+       is not a stall to "fix" (the held-status guard still binds — step 3), but a forgotten question is
+       the single most likely reason a run went quiet, so it is what the user needs put back in front of
+       them.
+
+     **When the run is quiet, the status this heartbeat renders LEADS with that diagnosis — BEFORE the
+     ledger table:** every parked question restated with its waiting age, and every stalled-review finding,
+     first; then the mandatory table below. **When every open PR is parked, the run is not stalled — it is
+     idle BECAUSE it waits on the user**, and the status says so plainly, leading with the unanswered
+     question rather than presenting the idleness as a fault to chase. Then confirm the next heartbeat is
+     armed, exactly as always.
+
+     **The honest boundary: a quiet streak is only observable by a heartbeat that FIRES.** If the heartbeat
+     chain itself dies — no scheduled wake, no bounded wait returns — nothing in-skill notices the silence,
+     because the sensor is read only when a heartbeat runs. That failure surfaces instead as a **stale
+     lease on the next manual invocation**: adoption (`run-identity-and-lease.md`, "Resolving a heartbeat")
+     picks the orphaned run up, and the adopting driver tells the user the run had been **orphaned** — its
+     heartbeat chain had stopped — not merely resumed.
+
      ALWAYS keep a heartbeat or bounded wait active whenever non-terminal work remains — skipping
      both means a hung or orphaned run wakes no one. **Now render the status — this happens on EVERY
-     heartbeat that reschedules, never skipped, and its first and mandatory element is the ledger table
-     itself.** Run
+     heartbeat that reschedules, never skipped. Its first and mandatory element is the ledger table
+     itself** (a quiet-run diagnosis, when one fired above, leads *in front of* the table — it never
+     replaces or reorders it). Run
      `ledger.py --file <state.jsonl> table` and include its output verbatim, fenced, in the status
      message. **Verbatim means WHOLE** — including every `#` line it prints below the grid. The default
      view is a **filtered** one and those lines are what disclose the filtering

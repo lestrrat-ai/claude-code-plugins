@@ -119,7 +119,7 @@ following line is one adopted PR's row record (`{"type": "row", …}`). Every re
 — fields are keyed by NAME, never by column position:
 
 ```
-{"type": "header", "run_id": "g260704-0915-a3f29c1b", "base_branch": "main", "api_changes": "ask", "reviewer": "codex", "required_set": "declared:[{\"context\": \"build\", \"app\": \"-\"}, {\"context\": \"test (3.12, ubuntu)\", \"app\": \"15368\"}]", "skill_version": "0.1.4"}
+{"type": "header", "run_id": "g260704-0915-a3f29c1b", "base_branch": "main", "api_changes": "ask", "reviewer": "codex", "required_set": "declared:[{\"context\": \"build\", \"app\": \"-\"}, {\"context\": \"test (3.12, ubuntu)\", \"app\": \"15368\"}]", "skill_version": "0.1.4", "last_activity": "2026-07-04T09:40:00Z"}
 {"type": "row", "id": "pr41", "slug": "fix-null-deref", "branch": "fix-null-deref", "worktree": "/srv/example-repo/.worktrees/fix-null-deref", "worktree_owned": "yes", "branch_owned": "yes", "pr": "41", "head_sha": "a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c", "reviews_ok": "2", "ci": "green", "tier": "STANDARD", "attempts": "1", "started": "2026-07-04T09:15:00Z", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:9f2c\u2026", "settled_strikes": "0", "unusable_refetches": "0", "ci_stalled_since": "-", "ci_reason": "-", "blocker_ruling": "-", "review_rounds": "3", "ns_streak": "0", "intent": "stated@2026-07-04T09:15:00Z", "pr_origin": "gauntlet", "repair_count": "0", "repair_decision": "-"}
 {"type": "row", "id": "pr52", "slug": "add-retry-flag", "branch": "add-retry-flag", "worktree": "/home/example/checkouts/add-retry-flag", "worktree_owned": "no", "branch_owned": "no", "pr": "52", "head_sha": "b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7089a1b", "reviews_ok": "0", "ci": "pending", "tier": "HIGH", "attempts": "0", "started": "-", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:4a71\u2026", "settled_strikes": "1", "unusable_refetches": "0", "ci_stalled_since": "-", "ci_reason": "required check absent: integration-tests", "blocker_ruling": "-", "review_rounds": "5", "ns_streak": "2", "intent": "authored@2026-07-04T09:20:00Z", "pr_origin": "external", "repair_count": "0", "repair_decision": "-"}
 ```
@@ -142,7 +142,9 @@ once, see "Base branch"), `api_changes` (`ask` | `allowed`, run-wide; set once f
 `reviewer` (`default` (per-host cross-engine route with native fallback — see "The reviewer") | `codex` | `claude` | `<other>` — the selected reviewer; set once, see
 "The reviewer"), `required_set` (what `base_branch` **requires** — `stage-2-ci.md`, "What were we
 expecting to see?", owns the three states, the format, and the reads that produce them; re-read every
-heartbeat while it is `unknown`), `skill_version` (**which copy of the rules actually governed this run**).
+heartbeat while it is `unknown`), `skill_version` (**which copy of the rules actually governed this run**),
+`last_activity` (**when this run last did something MEANINGFUL** — a UTC ISO-8601 stamp the write doors
+maintain; the quiet-run sensor `nudge.py` reads, defined below).
 
 `skill_version` is read at startup from the **running plugin's** `plugin.json` (`SKILL.md`) and stated in
 the final report. **It is not cosmetic.** The harness loads this skill from the **installed plugin cache**,
@@ -159,6 +161,25 @@ green** (`stage-2-ci.md`), so a run that never performed the read merges **nothi
 looked" and "I looked and there are none" are different facts**, and the default is the one that claims
 nothing — a `none` that really meant "I could not see" is how a green gets recorded for a commit whose
 required check never registered.
+
+`last_activity` records **when this run last did something MEANINGFUL**, so a fresh-context heartbeat can
+tell **how long nothing has moved** without holding the history in its head — the same lesson as
+`review_rounds`. It is **maintained internally by the write doors**: any `ledger.py` mutation that changes a
+**non-exempt** field to a **new** value stamps it (UTC ISO-8601, second precision) in the **same atomic
+write**. What does **not** stamp: a **liveness-counter-only** write (a write touching only THE LIVENESS
+COUNTERS — CI-polling bookkeeping that by definition observed no PR change, which is the very "nothing
+moved" this field exists to expose), and a **no-op** (a field set to the value it already holds). **No door
+writes it directly** — `header set last_activity` is **refused**: it is a **sensor**, the same stance
+`review_rounds` takes (a door that can write a sensor is a door that can reset the clock it keeps). It
+**defaults to `-`** — the schema's "not set yet" spelling — so an old ledger written before this field
+existed reads back `-`, and every reader tolerates that: the quiet-run rule simply does not fire on it.
+
+**Boundary — `ci-status.py` writes bypass the stamp.** `ci-status.py` writes the ledger through
+`ledger.py`'s raw `dump`, not the stamping `save`, so **its writes never touch `last_activity`** — a CI
+derivation, a liveness-counter update, or a CI-park it performs leaves the field standing. This is benign:
+those CI writes are exactly the liveness-counter bookkeeping the stamp already exempts, so the only effect
+is that a run whose *only* recent motion was CI polling reads as quiet **sooner** — the quiet-run check
+fires **earlier**, which surfaces a sweep earlier and never suppresses one. It never reads falsely *fresh*.
 
 Header field notes (the header fields above; per-row fields follow):
 
