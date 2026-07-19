@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Raise ONE plan amendment — the reviewer's door into `review-pass.py`, and the ONLY way to raise one.
 
-**THE AMENDMENT IS THE ONE PROGRESS EVENT A REVIEWER HAND-WRITES** — it is exempt from the emit-only rule
+**THE AMENDMENT WAS THE ONE PROGRESS EVENT A REVIEWER HAND-WROTE** — exempt from the emit-only rule
 that governs `started`/`done` — and that exemption is exactly what cost two full review passes in one real
 run. The dispatch prompt never stated the event's schema, so external reviewers invented
 `{"type":"plan_amendment_request","gap":"…"}`; `verify` requires EXACTLY `{type, ts, reason, proposed_unit}`

@@ -268,8 +268,9 @@
 - **A review pass's artifacts have a TOOL — `scripts/review-pass.py`. NEVER hand-parse one, NEVER
   hand-write a line the tool writes** (Stage 2a). It owns the plan, the `pass_identity`, the unit-progress
   events, **the findings**, and the read that answers **does this pass COUNT?** — `verify`, which validates
-  EVERY line of those files, including the one event the emit-only rule exempts from tool-writing (Stage 2a
-  owns that rule). **A verdict from a pass that does not verify `ok` is NEVER tallied**, and there are
+  EVERY line of those files whatever produced it — every reviewer event now goes through a door
+  (`emit-progress.py`, `emit-finding.py`, `emit-amendment.py`), and a hand-written line is caught on read
+  all the same (Stage 2a owns that rule). **A verdict from a pass that does not verify `ok` is NEVER tallied**, and there are
   **three** kinds of defect that make a pass `unusable`, whatever its report says (Stage 2a, "Does this pass
   COUNT?", owns the enumeration):
   - **the ARTIFACTS are malformed** — a short SHA or any other malformed identifier, a `done` for a unit

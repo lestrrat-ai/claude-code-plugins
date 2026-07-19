@@ -5,7 +5,7 @@ This file is the dispatch half of Stage 2a (`stage-2-review-gate.md`, "The revie
 ### Build the transport record
 
 **Orchestrator:** build one `ReviewTransport` record through `runtime-adapter.md`; never substitute its
-dynamic values into command prose. Resolve the two emitter paths relative to the active `SKILL.md`,
+dynamic values into command prose. Resolve the three emitter paths relative to the active `SKILL.md`,
 derive all attempt paths from the same launch attempt, and serialize the record with a real JSON encoder.
 Then bind `<TRANSPORT-RECORD>` and `<INTENT>` in one non-rescanning `bind_review_prompt` call and
 materialize its result through `write_bytes`. The reviewer must receive concrete record values, never
@@ -96,14 +96,18 @@ THE QUESTION YOU ARE ANSWERING IS: does this PR achieve its stated Purpose, with
    First read TRANSPORT.plan_path, then critically assess whether its units \
    cover the review dimensions this change actually needs — the plan is the orchestrator's starting \
    point, not a guarantee of complete coverage. If an important dimension is missing or a unit is \
-   wrong, append a plan_amendment_request event to TRANSPORT.progress_path through a byte-safe file API \
-   (or a fixed program invoked with path and JSON record as distinct RUN_ARGV elements) naming the gap; do NOT silently \
-   limit your review to the listed units, and do NOT rewrite the plan yourself. Running the emit tool \
+   wrong, raise it by running \
+   RUN_ARGV(["python3", TRANSPORT.emit_amendment_path, "--file", TRANSPORT.progress_path, \
+   "--reason", reason, "--id", unit_id, "--kind", kind, "--target", target, "--check", check]) naming \
+   the gap — --check may repeat, and the tool STAMPS the timestamp so you supply no clock; a non-zero \
+   exit means your inputs were rejected (fix them and re-run). Hand-writing the event instead does NOT \
+   work: it is read back under the same rules, and one malformed line destroys the whole pass. Do NOT \
+   silently limit your review to the listed units, and do NOT rewrite the plan yourself. Running the emit tool \
    is the ONLY way to record unit-progress (started/done) events: you MUST NOT write those unit-progress \
    events into the progress file directly — never hand-write JSON, echo, printf, or redirect them into \
-   it. That emit-only rule covers ONLY started/done unit-progress; the emit tool does not emit \
-   plan_amendment_request, so append that event directly to the progress JSONL (it is exempt from the \
-   emit-only rule). Run \
+   it. That emit-only rule covers ONLY started/done unit-progress, but nothing is exempt from going \
+   through a tool any longer: EVERY event you write reaches the file through one — unit progress via \
+   emit-progress, findings via emit-finding, and plan amendments via emit-amendment (above). Run \
    RUN_ARGV(["python3", TRANSPORT.emit_progress_path, "--file", TRANSPORT.progress_path, \
    "--unit", unit_id, "--status", "started"]) when a planned unit begins, and the same argv with \
    "--status", "done", "--evidence", evidence when it finishes. The tool appends the canonical \
@@ -165,7 +169,7 @@ THE QUESTION YOU ARE ANSWERING IS: does this PR achieve its stated Purpose, with
    record it with the tool and return NOT SATISFIED instead. End with exactly one line: \
    'VERDICT: SATISFIED' or 'VERDICT: NOT SATISFIED'. \
    The ONE exception is when you did NOT render a verdict because you raised a separate request the \
-   orchestrator must handle FIRST — you appended a plan_amendment_request naming a plan gap, or the \
+   orchestrator must handle FIRST — you raised a plan_amendment_request naming a plan gap, or the \
    dispatch was broken and you are stopping: then end with 'VERDICT: DEFERRED — <one-line reason>' and do \
    NOT fabricate SATISFIED or NOT SATISFIED. A deferral is a REQUEST, not a verdict; the orchestrator \
    routes it to the tool, which reads the progress file and decides what to do next. Build the complete \

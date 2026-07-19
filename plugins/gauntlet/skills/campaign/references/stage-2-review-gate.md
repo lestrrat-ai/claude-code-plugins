@@ -135,8 +135,10 @@ or park conditions here.
 **A REVIEW PASS'S ARTIFACTS HAVE A TOOL — `scripts/review-pass.py`. NEVER hand-parse one, and never
 hand-write a line the tool writes.** The plan, the `pass_identity`, every unit-progress event, and the read
 that decides whether a pass COUNTS all go through it — and so does every line it does NOT write: `verify`
-re-derives its rules from the bytes, whatever produced them. There is exactly ONE event the reviewer
-appends directly, and the emit-only rule below is what names it.
+re-derives its rules from the bytes, whatever produced them. Every reviewer-written event now reaches
+the file through a door — unit progress through `emit-progress.py`, findings through `emit-finding.py`,
+and a `plan_amendment_request` through `emit-amendment.py`; `pass_identity` is the orchestrator's line,
+and the emit-only rule below governs the whole set.
 It is the schema owner for the review-pass artifact set exactly as
 `ledger.py` is for `state.jsonl`, and it enforces every rule below at **both doors** — where the commands
 enter *and* where the data enters, because a rule enforced only on write is not enforced: the progress
@@ -151,6 +153,9 @@ file is a plaintext file in a directory the reviewer can write to.
     # pr/pass/launch_attempt are read FROM THE FILENAME
 ["python3", review_pass_script, "emit", "--file", progress_file,
  "--unit", unit, "--status", status, "--evidence", evidence]
+["python3", review_pass_script, "amend", "--file", progress_file,
+ "--reason", reason, "--id", unit, "--kind", kind, "--target", target, "--check", check]
+    # raise ONE plan_amendment_request; ts stamped by the tool (what emit-amendment.py calls)
 ["python3", review_pass_script, "finding-add", "--file", findings_file,
  "--path", path, "--line", line, "--writer", writer, "--purpose", purpose,
  "--repro", repro, "--fix", fix]
@@ -238,8 +243,8 @@ Rules:
 - **The reviewer must not treat the plan as presumptively complete.** Before working the units, judge
   whether they cover the dimensions this target actually needs; deterministic coverage is a design
   goal, but the orchestrator's decomposition can still miss something. When a materially important
-  review dimension is omitted (or a unit is wrong), the reviewer MUST append a `plan_amendment_request`
-  event naming the gap rather than silently reviewing only the listed units — an unraised omission is a
+  review dimension is omitted (or a unit is wrong), the reviewer MUST raise a `plan_amendment_request`
+  through `emit-amendment.py` naming the gap rather than silently reviewing only the listed units — an unraised omission is a
   reviewer failure. Requesting an amendment is the *only* sanctioned response: the reviewer never
   rewrites the plan or self-grants units, and unapproved amendments do NOT count as plan units. The
   orchestrator folds that request on the next heartbeat and either updates the plan + restarts the review
@@ -269,7 +274,9 @@ follows `started`, no second `done` — are ONE predicate that both doors call.)
 
 The `plan_amendment_request` event keeps its existing shape; its `ts` must be a real UTC ISO-8601
 timestamp (the same clock rule `pass_identity.dispatched_at` obeys) and its `reason` must be non-empty —
-an amendment holds a pass back, so it must say something the orchestrator can rule on.
+an amendment holds a pass back, so it must say something the orchestrator can rule on. On the write side,
+`emit-amendment.py` STAMPS `ts` itself and refuses a blank `reason` or a malformed proposed unit, so a
+reviewer never supplies the clock; the read rule here is what a hand-written line would still be judged by.
 
 #### Calling `emit-progress.py` is the ONLY sanctioned way to record a unit-progress event
 
@@ -284,15 +291,17 @@ plan spells it) and — the refusal that is not about the event at all — refus
 enforced by good faith: `verify` re-derives every rule from the bytes, so a hand-written line that the
 tool would have refused is caught on **READ** — the pass goes `unusable` rather than counting. This emit-only rule applies
 ONLY to the `started`/`done` unit-progress events: the tool does not produce any other event type.
-`plan_amendment_request` events are NOT emitted by the tool — the reviewer raises them through the
-amendment mechanism above — and `pass_identity` is written by the orchestrator; both are EXEMPT from
-the tool-only rule.
+`plan_amendment_request` events are raised ONLY through `emit-amendment.py` (which forwards to
+`review-pass.py amend`, validating the event at the same door), so the amendment is no longer exempt from
+going through a tool. `pass_identity` remains the one line the orchestrator writes (`review-pass.py
+identity`); everything else the reviewer records reaches the file through a door.
 
 The block below shows the canonical event shapes the parser accepts. The two unit-progress lines
 (`started`/`done`) are exactly what the tool emits — shown for reference and as the parser's contract,
-NOT a template for you to write by hand. The third line (`plan_amendment_request`) is NOT produced by
-the tool and is shown only to document its shape. The fourth (`pass_identity`) is written by the
-**orchestrator** at dispatch, never by the reviewer:
+NOT a template for you to write by hand. The third line (`plan_amendment_request`) is now produced by
+the tool as well (`emit-amendment.py` / `review-pass.py amend`), and the shape shown here is the
+parser's contract. The fourth (`pass_identity`) is written by the **orchestrator** at dispatch, never by
+the reviewer:
 
 ```
 {"type":"progress","unit":"u01","status":"started"}

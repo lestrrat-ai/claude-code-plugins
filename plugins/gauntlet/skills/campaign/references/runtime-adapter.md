@@ -182,7 +182,7 @@ ReviewTransport {
   attempt: { pr: PositiveInt, pass: PositiveInt, launch_attempt: PositiveInt },
   review_root: Path, worktree: Path, base: Text,
   prompt_path: Path, plan_path: Path, progress_path: Path, findings_path: Path,
-  emit_progress_path: Path, emit_finding_path: Path,
+  emit_progress_path: Path, emit_finding_path: Path, emit_amendment_path: Path,
   report: { producer: "native-worker-write" | "external-process-capture", path: Path }
 }
 ```
@@ -207,8 +207,9 @@ Exactly one producer owns the final report:
   channel; `run_argv` captures that channel at `report.path` (`codex -o` for Codex, `stdout_file` for
   Claude). The reviewer MUST NOT write the path itself.
 
-Progress belongs to `emit-progress.py`, findings to `emit-finding.py`, and prompt bytes to the
-orchestrator's `write_bytes`. No transport adds a second writer. `reviewer.md`,
+Progress belongs to `emit-progress.py`, findings to `emit-finding.py`, plan amendments to
+`emit-amendment.py`, and prompt bytes to the orchestrator's `write_bytes`. No transport adds a second
+writer. `reviewer.md`,
 `stage-2-review-gate.md`, `review-dispatch.md`, `cross-agent-reviewers.md`, and `pr-adoption.md` point here for the boundary;
 they may define argv values or workflow order, but they must not redefine quoting or artifact ownership.
 The plugin validator runs `scripts/transport-contract-test.py` to pin these mappings with hostile

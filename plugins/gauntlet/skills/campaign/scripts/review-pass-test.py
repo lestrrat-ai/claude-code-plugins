@@ -309,7 +309,7 @@ class Tables:
                                   AMENDED, "not yet ruled on",
                                   "the reviewer says the plan is missing a dimension. It is a VERDICT, never a footnote printed beside `ok`"),
             "amendment-bad-unit": (PLAN, [ident(), amendment(proposed_unit={"id": "u99"})], UNUSABLE, "carries EXACTLY",
-                                   "a hand-written amendment (they are EXEMPT from the emit-only rule, so this is the one event a reviewer really does write) whose proposed unit is malformed"),
+                                   "a hand-written amendment (the read side never assumes the amend door was used) whose proposed unit is malformed"),
             "amendment-impossible-ts": (PLAN, [ident(), amendment(ts="2026-99-99T99:99:99Z")], UNUSABLE,
                                         "not a real UTC ISO-8601 time",
                                         "the amendment's `ts` had NO check at all beyond 'is a string' — the identity's clock was guarded and this one, the same kind of value, was not. The orchestrator rules on amendments; a `ts` that is not a moment cannot be ordered against one"),
@@ -668,7 +668,7 @@ class Tables:
              "complete pass with no amendment there is nothing to defer to, so it comes back UNUSABLE — "
              "proving the flag parses AND that `deferred` is never silently treated as a passing verdict"),
 
-            # THE AMENDMENT WRITE DOOR — the one progress event a reviewer hand-writes, now with a door.
+            # THE AMENDMENT WRITE DOOR — the one progress event a reviewer used to hand-write, now with a door.
             (["amend", "--reason", "no unit covers the harness", "--id", "u09", "--kind", "file",
               "--target", "harness.py", "--check", "it runs"], DISPATCHED, 0, "plan_amendment_request",
              "**THE FIX, AT THE WRITE DOOR.** The dispatch prompt never stated the amendment's schema, so "

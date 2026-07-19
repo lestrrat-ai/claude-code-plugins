@@ -595,8 +595,8 @@ def check_unit(unit: object, where: str) -> None:
 
     **`unit: object` — NOT `dict` — and that is load-bearing, not pedantry.** This is handed values
     straight out of `json.loads`, and a JSON value is whatever the file says it is: an amendment's
-    `proposed_unit` can arrive as a STRING (`"proposed_unit": "u99"`), and a reviewer hand-writes that
-    event — it is the one event type the emit-only rule exempts. Annotating the parameter `dict` would be
+    `proposed_unit` can arrive as a STRING (`"proposed_unit": "u99"`) — the read side never assumes the
+    `amend` door was used, so a hand-written line is always possible input. Annotating the parameter `dict` would be
     a promise no caller can keep, and a type checker reading that promise concludes the `isinstance` guard
     below can never fire and the `raise` is UNREACHABLE. It is not: it fires, on that exact input, and the
     fixture `amendment-unit-not-object` drives it. Believe the annotation and delete the "dead" guard, and
@@ -1018,8 +1018,8 @@ def check_event(rec: dict, where: str) -> None:
         # typed ` u01 `, and it is what this tool used to say — after quietly stripping the value first.
         check_id("unit", rec["unit"], where)
     if kind == AMENDMENT:
-        # The amendment is the ONE event a reviewer really does hand-write (it is exempt from the
-        # emit-only rule), so it is the one whose fields nothing upstream has already shaped. Its `ts` had
+        # The amendment was the ONE event a reviewer hand-wrote (exempt from the emit-only rule) before
+        # the `amend` door; the read side still assumes nothing upstream shaped its fields. Its `ts` had
         # NO check at all beyond "is a string" — the identity's clock was guarded and this one, the same
         # kind of value, was not. It is what says WHEN the reviewer said the plan was wrong, and the
         # orchestrator rules on amendments in order; a `ts` that is not a time cannot be ordered.
@@ -1586,8 +1586,8 @@ def cmd_emit(args) -> int:
 def cmd_amend(args) -> int:
     """Append one `plan_amendment_request` — the ONLY sanctioned way a reviewer raises a plan amendment.
 
-    **THE AMENDMENT IS THE ONE PROGRESS EVENT A REVIEWER HAND-WRITES** (it is exempt from the emit-only
-    rule — `check_event`'s AMENDMENT branch), and that exemption is exactly why it needed a door of its own.
+    **THE AMENDMENT WAS THE ONE PROGRESS EVENT A REVIEWER HAND-WROTE** (exempt from the emit-only
+    rule), and that exemption is exactly why it needed a door of its own.
     The dispatch prompt never stated its schema, so external reviewers invented `{"type":"plan_amendment_
     request","gap":"…"}`; `verify` requires EXACTLY `{type, ts, reason, proposed_unit}` and refused the
     malformed line, which took the WHOLE pass down as `unusable`. Two full passes were lost that way in one
