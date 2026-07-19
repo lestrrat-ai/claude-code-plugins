@@ -93,8 +93,12 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
 
 **Heartbeat loop** (`references/loop-control.md` — read at each heartbeat before dispatch)
 
-8. Reconcile the run's PR snapshot (treat `state.jsonl` as cache) and fold completed review / CI /
-   fix tasks against the SHA each ran on.
+8. At heartbeat entry, once you own the run and load its ledger, run `nudge.py` and READ its advisory
+   reminders — computed from durable state, decides nothing, always exits 0 (`references/loop-control.md`
+   step 1). Then reconcile the run's PR snapshot (treat `state.jsonl` as cache) and fold completed
+   review / CI / fix tasks against the SHA each ran on. If the nudge reports the run **QUIET** (no
+   meaningful ledger activity for its window), run the **quiet-run sweep** before rescheduling and lead
+   the status with the diagnosis (`references/loop-control.md`, "Reschedule or exit").
 9. `ci-status.py required-set --ledger <rundir>/state.jsonl`: refresh the required set before any CI
    derivation this heartbeat.
 10. Mutating action due on a PR -> `ledger.py … dispatch-check --pr <N>`: run before ANY action that

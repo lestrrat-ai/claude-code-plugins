@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from _gauntlet.modules import load_module_from_path
@@ -48,6 +49,33 @@ REPAIRING = L.REPAIR_STATUS
 TERMINAL = ("merged", "aborted")
 OPEN_FOLLOWUP_HIDDEN = F.TABLE_HIDDEN_STATES  # a follow-up in one of these is closed, not open work
 
+# The PARKED-on-a-human statuses — HELD minus `repairing` (which waits on the reassessment pass, not the
+# user). DERIVED from HELD so a new held status cannot silently join or miss this set. The quiet-run rule
+# treats these specially: a run idle only because every open PR is parked is idle BECAUSE it waits on YOU.
+PARKED = tuple(s for s in HELD if s != REPAIRING)
+
+# How long a run may show NO ledger activity before the quiet-run sweep fires. Derived, not guessed: two
+# normal ~15-min heartbeat intervals (so a single slow heartbeat never trips it) plus ~5 min of slack.
+QUIET_AFTER = timedelta(minutes=35)
+
+
+def _activity_age(last_activity: str, now: datetime) -> "timedelta | None":
+    """How long since the run last did something — or None if that is UNKNOWABLE, in which case the
+    quiet-run rule stays silent. This is advisory and NEVER raises: a `-` (an old ledger that predates the
+    sensor), an empty value, an unparseable stamp, or a naive one all read as "cannot tell" and skip the
+    rule rather than fabricate an age. A stamp is UTC ISO-8601 (ledger.py writes `now_activity()`); a naive
+    value cannot be subtracted from an aware `now`, so it is refused here rather than crashing the printer.
+    """
+    if not last_activity or last_activity == "-":
+        return None
+    try:
+        ts = datetime.fromisoformat(last_activity)
+    except ValueError:
+        return None
+    if ts.tzinfo is None:
+        return None
+    return now - ts
+
 
 def required(tier: str) -> int:
     """1 if TRIVIAL, else 2. Untriaged ('-'/'') counts as needs-review (target 2) — never under-remind."""
@@ -65,8 +93,15 @@ def rundir_has(rundir: "Path | None", name: str) -> bool:
     return rundir is not None and (rundir / name).exists()
 
 
-def reminders(header: dict, rows: list, n_followups: int, rundir: "Path | None") -> list:
-    """Compute the reminder lines. Pure: same inputs → same output. Returns a list of strings."""
+def reminders(header: dict, rows: list, n_followups: int, rundir: "Path | None",
+              now: "datetime | None" = None) -> list:
+    """Compute the reminder lines. Pure: same inputs → same output. Returns a list of strings.
+
+    `now` is the current UTC time, injectable so the quiet-run rule is testable; it defaults to
+    `datetime.now(timezone.utc)` when a caller (main) does not pass one.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
     out: list = []
     active = [r for r in rows if r["status"] not in TERMINAL]
 
@@ -83,6 +118,33 @@ def reminders(header: dict, rows: list, n_followups: int, rundir: "Path | None")
         out.append(f"{len(active)} PR(s) open — reconcile and fan out work up to caps.")
     if n_followups:
         out.append(f"{n_followups} open follow-up(s) — start any you can.")
+
+    # --- quiet-run sweep -------------------------------------------------------
+    # A run whose ledger has not moved for QUIET_AFTER is not necessarily healthy — a review may have died,
+    # a poll may be stuck, or the user may be sitting on a parked question. Every heartbeat is a fresh
+    # context, so "how long has nothing moved?" is read from the durable `last_activity` stamp, not memory.
+    # The rule reminds the orchestrator to SWEEP before rescheduling into another silent interval; it decides
+    # nothing. It stays silent unless there is BOTH a readable stamp that old AND at least one open PR — an
+    # idle run with nothing open has nothing to sweep, and a `-`/absent stamp is an old ledger, not a stall.
+    age = _activity_age(header.get("last_activity", "-"), now)
+    if age is not None and age >= QUIET_AFTER and active:
+        quiet_min = int(age.total_seconds() // 60)
+        parked = [r for r in active if r["status"] in PARKED]
+        out.append(f"run has been QUIET for ~{quiet_min}m (no ledger activity) — SWEEP before rescheduling.")
+        if len(parked) == len(active):
+            # The run is not stalled — it is WAITING ON THE USER. The unanswered question is the thing to
+            # surface, not a stall to chase; say so explicitly so the sweep is not misread as a fault.
+            out.append("every open PR is parked — the run is idle BECAUSE it is waiting on YOU; the "
+                       "unanswered question below is the thing to surface, not a stall to fix.")
+        out.append("run `review-pass.py status --run <rundir> --verify` — apply the launch-deadline and "
+                   "meaningful-progress rules to any in-flight pass.")
+        out.append("re-derive CI for every row that can still move.")
+        for r in parked:
+            why = r.get("ci_reason", "-")
+            tail = f": {why}" if why and why != "-" else ""
+            out.append(f"PR {r['pr']}: parked — LEAD your next status to the user with this question and how "
+                       f"long it has waited (≥ ~{quiet_min}m quiet){tail}.")
+        out.append("confirm the next heartbeat is armed before you sleep.")
 
     # --- per-PR reminders ------------------------------------------------------
     # A HELD PR (parked or repairing) fires ONLY its held reminder. That exclusion is enforced by the
@@ -122,8 +184,9 @@ def reminders(header: dict, rows: list, n_followups: int, rundir: "Path | None")
     return out
 
 
-def render(header: dict, rows: list, n_followups: int, rundir: "Path | None") -> str:
-    lines = reminders(header, rows, n_followups, rundir)
+def render(header: dict, rows: list, n_followups: int, rundir: "Path | None",
+           now: "datetime | None" = None) -> str:
+    lines = reminders(header, rows, n_followups, rundir, now)
     run_id = header.get("run_id", "-")
     head = f"NUDGE (run {run_id}) — {len(lines)} reminder(s):"
     body = "\n".join(f"  - {line}" for line in lines)

@@ -18,7 +18,7 @@ import os
 import re
 import sys
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import NoReturn
 
@@ -37,7 +37,8 @@ TEST_PY = HERE / "ledger-test.py"     # the fixture suite — this accessor's ex
 
 # --- schema (owned here, once) ------------------------------------------------
 
-HEADER_FIELDS = ("run_id", "base_branch", "api_changes", "reviewer", "required_set", "skill_version")
+HEADER_FIELDS = ("run_id", "base_branch", "api_changes", "reviewer", "required_set", "skill_version",
+                 "last_activity")
 HEADER_DEFAULTS = {
     "run_id": "-",
     "base_branch": "-",
@@ -69,6 +70,17 @@ HEADER_DEFAULTS = {
     # a `none` that really meant "I could not see" is how a green is recorded for a commit whose required
     # check never registered.
     "required_set": "unknown",
+    # WHEN THIS RUN LAST DID SOMETHING MEANINGFUL — a UTC ISO-8601 stamp (second precision), maintained
+    # INTERNALLY by the write doors, never hand-set (`header set last_activity` is refused; a sensor has no
+    # door). Every heartbeat is a fresh agent instance, so "how long has nothing moved?" cannot live in the
+    # driver's head — it lives here, the same lesson as `review_rounds`. `nudge.py` reads it to fire the
+    # quiet-run sweep when a run has gone silent for too long.
+    #
+    # The default is `-`, the schema's own "not set" spelling — the same one `ci_stalled_since` (this run's
+    # other on-disk ISO timestamp) uses. An old ledger written before this field existed reads back `-`, and
+    # every reader MUST tolerate that absence: `-` means "nothing has been stamped yet", which is a fact, not
+    # a date, and the quiet-run rule simply does not fire on it.
+    "last_activity": "-",
 }
 
 ROW_FIELDS = (
@@ -162,6 +174,16 @@ ROW_DEFAULTS = {
 # evidence and every one of them resets to its `ROW_DEFAULTS` value. Every member is a `ROW_FIELDS` field, so
 # a reset reads its fresh-head value straight from `ROW_DEFAULTS` — the values are never retyped here either.
 LIVENESS_COUNTERS = ("ci_fingerprint", "settled_strikes", "unusable_refetches", "ci_stalled_since")
+
+# THE FIELDS WHOSE WRITE IS NOT "MEANINGFUL ACTIVITY" — so a write that touches ONLY these does NOT stamp
+# `last_activity`. Two members, both load-bearing, and the set is NAMED (never retyped) so it cannot drift:
+#   * `last_activity` itself — a sensor never counts its own write as the thing it senses; letting it would
+#     reset the very clock it keeps (the same "no door hand-writes a sensor" stance `review_rounds` takes).
+#   * THE LIVENESS COUNTERS (the whole set, `LIVENESS_COUNTERS`) — CI polling bookkeeping. A derivation that
+#     moved only these observed NO change in the PR, which is PRECISELY the "nothing moved" `last_activity`
+#     exists to expose; stamping on it would hide a stalled run behind its own polling. A counter added to
+#     `LIVENESS_COUNTERS` is exempt here with no edit, because this reads that set rather than a copy of it.
+ACTIVITY_EXEMPT = frozenset(LIVENESS_COUNTERS + ("last_activity",))
 
 # The two fields `verdict` OWNS — and the ONLY reason they are not settable through `set`/`add-row` is
 # that a door which can write them is a door that can RESET them.
@@ -408,6 +430,42 @@ def dump(path: Path, header: dict, rows: list[dict]) -> None:
     )
 
 
+def now_activity() -> str:
+    """The current UTC time as an ISO-8601 stamp to the SECOND — what `last_activity` records.
+
+    A MODULE-LEVEL function on purpose: a fixture freezes the clock by replacing it (`setattr(L,
+    'now_activity', ...)`), the same test-injectable-clock convention `lease.py`'s `now()` uses. The form is
+    UTC-aware, second precision — byte-for-byte the shape `ci-status.py` writes `ci_stalled_since` in, so the
+    run's two on-disk ISO timestamps read back the same way.
+    """
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def is_activity(updates: dict, current: dict) -> bool:
+    """Does this write record MEANINGFUL activity — i.e. does it change a NON-EXEMPT field to a NEW value?
+
+    Two things make a write NOT activity, and both are handled here: a field in `ACTIVITY_EXEMPT` (a liveness
+    counter, or `last_activity` itself) never counts, and a NO-OP — a field set to the value it already holds
+    — never counts either. So `set --settled-strikes 5` (liveness only) and `set --status merged` where the
+    row is ALREADY `merged` both return False, while `set --status merged` on an in-flight row returns True.
+    """
+    return any(name not in ACTIVITY_EXEMPT and current.get(name) != value
+               for name, value in updates.items())
+
+
+def save(path: Path, header: dict, rows: list[dict], *, activity: bool) -> None:
+    """Write the store, stamping `last_activity` in the SAME atomic write iff this write is real activity.
+
+    Every mutating door routes its write through here rather than calling `dump()` directly, so the stamp and
+    the change it marks are one `os.replace()` — a heartbeat can never see the new row without the timestamp
+    that dates it, nor the reverse. When `activity` is False (a no-op `set`, or a liveness-counter-only
+    write) the stamp is left exactly as it was: that untouched-ness is the signal the quiet-run rule reads.
+    """
+    if activity:
+        header["last_activity"] = now_activity()
+    dump(path, header, rows)
+
+
 def find_row(rows: list[dict], pr: str) -> "dict | None":
     for row in rows:
         if row.get("pr") == pr:
@@ -451,8 +509,17 @@ def cmd_header(path: Path, args) -> int:
         return 0
     if args.value is None:
         fail("header set requires a value")
+    # `last_activity` is a SENSOR — no door hand-writes it, exactly as no flag at any door writes
+    # `review_rounds`. It is stamped by `save()` as a side effect of a REAL change, never typed in, so a
+    # driver cannot forge "this run is alive" (nor, by writing an old date, forge "it is stalled").
+    if args.field == "last_activity":
+        fail("`last_activity` is a SENSOR, not a settable field — it is stamped automatically on a real "
+             "change and there is no door to hand-write it, the same stance `review_rounds` takes. A value "
+             "typed in here would be a forged liveness reading, which is the one thing this field must never "
+             "carry")
+    activity = header.get(args.field) != args.value
     header[args.field] = args.value
-    dump(path, header, rows)
+    save(path, header, rows, activity=activity)
     return 0
 
 
@@ -523,7 +590,7 @@ def cmd_add_row(path: Path, args) -> int:
     row["pr"] = pr  # --pr is the row key
     row["id"] = f"pr{pr}"  # id is always derived from pr, never caller-set
     rows.append(row)
-    dump(path, header, rows)
+    save(path, header, rows, activity=True)  # adopting a PR is always activity — a row appeared
     print(json.dumps(row))
     return 0
 
@@ -567,13 +634,17 @@ def cmd_set(path: Path, args) -> int:
     if not updates:
         fail("set requires at least one --<field> <value>")
     check_tally(updates, row)
+    # Decide activity from the updates against the row AS LOADED — before `apply_head_sha`/`row.update`
+    # mutate it. A head MOVE counts (head_sha is non-exempt and changes), and the liveness counters that
+    # move resets do NOT (they are in ACTIVITY_EXEMPT); a liveness-counter-only `set`, or a no-op, does not.
+    activity = is_activity(updates, row)
     # `--head-sha` routes through the accessor, which resets THE LIVENESS COUNTERS on a genuine head move.
     # It is applied FIRST so that an explicit counter flag in the SAME call (applied by the row.update below)
     # WINS over the automatic reset — the precedence apply_head_sha's docstring pins.
     if "head_sha" in updates:
         apply_head_sha(row, updates.pop("head_sha"))
     row.update(updates)  # by NAME — never by column position
-    dump(path, header, rows)
+    save(path, header, rows, activity=activity)
     print(json.dumps(row))
     return 0
 
@@ -651,7 +722,7 @@ def cmd_verdict(path: Path, args) -> int:
         # `in_review`) row, so the decision it clears is always a spent one. The next repair here MUST be
         # earned by a fresh `decide`, which bumps `repair_count` — the bound the mechanism exists to hold.
         row["repair_decision"] = "-"
-    dump(path, header, rows)
+    save(path, header, rows, activity=True)  # a landed verdict always moves review_rounds — always activity
     print(json.dumps(row))
     if not at_cap:
         return 0
@@ -785,7 +856,7 @@ def cmd_park(path: Path, args) -> int:
              f"({held_reason(status)}). Resolve it through its own path, not a park")
 
     row.update({"status": "awaiting-user", "ci_reason": reason, "blocker_ruling": "-"})
-    dump(path, header, rows)
+    save(path, header, rows, activity=True)  # a park changes `status` — a non-exempt field, so it is activity
     print(json.dumps(row))
     return 0
 
@@ -836,7 +907,7 @@ def cmd_unpark(path: Path, args) -> int:
     for f in LIVENESS_COUNTERS:
         updates[f] = ROW_DEFAULTS[f]   # from the defaults — NEVER a retyped literal
     row.update(updates)
-    dump(path, header, rows)
+    save(path, header, rows, activity=True)  # unpark flips `status` back to in_review — a non-exempt change
     print(json.dumps(row))
     return 0
 

@@ -90,6 +90,11 @@
   **TIME**, not derivations, because a derivation count
   tracks the run's load and would park a healthy slow build; and it does not park one, because **any**
   motion anywhere in the check set moves the fingerprint and resets the clock.
+- A run that heartbeats while **nothing moves** is not healthy: when `nudge.py` reports the run **QUIET**
+  (no meaningful ledger activity for its `QUIET_AFTER` window, read off the durable `last_activity` stamp),
+  the heartbeat **runs the quiet-run sweep before rescheduling** and **leads the status with the diagnosis**
+  — parked questions with their waiting age, stalled-review findings — ahead of the ledger table
+  (`loop-control.md`, "Reschedule or exit", owns it).
 - Stop a PR's in-flight review before dispatching content-changing work on it (review fix, CI fix,
   copilot-address, conflict-resolving rebase): a verdict on a doomed SHA wastes tokens and a review
   slot. Refill the slot with the next due review.

@@ -125,7 +125,9 @@ the verdict the tool prints.
   lease under a different token answers `superseded` — pass `--allow-takeover` only after the user has
   agreed to take over a live run. A lease the tool cannot parse is **`corrupt`, never "absent"**: it
   refuses rather than adopt. Inspect the file and remove it by hand only when the user confirms the
-  run is genuinely orphaned.
+  run is genuinely orphaned. **When the run you adopt still has non-terminal rows, its heartbeat chain
+  had died — tell the user the run had been orphaned, not merely resumed, so the silent stall is
+  surfaced.**
 - **Stand down if superseded.** On a scheduled heartbeat, present your `--token`: a `superseded`
   answer means a takeover while you were hung — do NOT drive; report and stop. (Carrying the token in
   the prompt removes any amnesia ambiguity — a scheduled heartbeat always knows its own token.)
