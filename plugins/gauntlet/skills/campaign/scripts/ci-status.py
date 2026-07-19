@@ -101,10 +101,14 @@ also reads the PR's CURRENT head, LAST (after both evidence families), and if it
 red would be a claim about the wrong commit too. `ci = pending`, and the reason NAMES the new head so the
 driver re-derives against it rather than guessing. See `derive()`.
 
-WHAT IT DOES NOT DECIDE, ON PURPOSE. It answers **what the evidence says**, and **whether that evidence is
-about this PR at all**. It does NOT answer **what the driver should do about it** — whether to launch a
-watch, dispatch a CI fix, or park the PR. Those rules live in `stage-2-ci.md`. Encoding them here would
-create a SECOND owner of a rule that is moving under it.
+WHAT IT DOES NOT DECIDE, ON PURPOSE. `derive` answers **what the evidence says**, and **whether that
+evidence is about this PR at all**. It does NOT answer **what the driver should DO** — dispatch a CI fix,
+or prompt the user when a PR parks. Those ACTIONS live in `stage-2-ci.md`. ONE ROW OF THAT BOUNDARY MOVED
+DELIBERATELY, and only that row: the watch policy ("WATCH ONLY WHAT CAN MOVE") reduces mechanically to a
+single fact — IS A WATCH WARRANTED? — so `liveness` now EMITS that fact as `watch_warranted` instead of
+leaving the driver to read the table by hand. What stays the driver's is the ACTION it triggers: LAUNCHING
+the watch task, ensuring one is alive, relaunching an exited one. Encoding those actions here would create
+a SECOND owner of a rule that is moving under it.
 
 THE DOC AND THIS TOOL CANNOT SILENTLY DISAGREE — `doc-check` is what makes that true.
 The enums, the CLASSIFY buckets and the DECIDE order are stated in `ci-derivation-spec.md` as prose AND encoded in
@@ -1618,6 +1622,48 @@ def liveness(ledger_path: Path, pr: str, derived: dict, machine_action: str, now
         put("blocker_ruling", "-")
 
     LEDGER.dump(ledger_path, header, rows)
+
+    # --- watch_warranted: the WHOLE of "WATCH ONLY WHAT CAN MOVE", reduced to one fact ---------------
+    #
+    # The watch policy's table (`stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE") collapses to ONE predicate,
+    # EMITTED here so the driver ACTS on a field instead of reading the table by eye — the same by-eye
+    # judgment the whole tool exists to remove. What stays the driver's is the ACTION: LAUNCHING the watch
+    # task, ensuring one is alive, relaunching an exited one. Deciding WHETHER a watch is warranted is this:
+    #
+    #     watch_warranted = VERIFIED  AND  verdict != UNCLASSIFIED  AND  buckets["RUNNING"] > 0
+    #
+    # It reads ONLY `derived` — NEVER the row's `status` — so it is UNAFFECTED by held/parked status: a
+    # park neither stops a warranted watch nor starts an unwarranted one (`stage-2-ci.md`, "WATCH ONLY WHAT
+    # CAN MOVE"; the CI-watch park exception in `loop-control.md` step 3 and `critical-rules.md`).
+    #
+    # THE COLLAPSE, one WATCH-table row at a time — this is the proof, not a summary of it:
+    #   * green                    -> every evidence row PASS, so RUNNING == 0 -> false.
+    #   * pending (a row RUNNING)  -> RUNNING > 0 -> TRUE.
+    #   * pending (nothing registered) -> zero evidence rows -> RUNNING == 0 -> false.
+    #   * pending (required set unreadable) / (required check missing) -> NO row is RUNNING BY DECIDE
+    #     CONSTRUCTION: plain `pending` (a RUNNING row) OUTRANKS both required-set bullets, so had a row
+    #     been RUNNING the verdict would be plain `pending`, not either of these -> RUNNING == 0 -> false.
+    #   * red + a row still RUNNING -> RUNNING > 0 -> TRUE.   red, every row terminal -> RUNNING == 0 -> false.
+    #   * unusable / unverifiable  -> NOT verified (no trusted rows to tally) -> false.
+    #   * UNKNOWN_VALUE            -> false, AND THIS IS THE ONE ROW A BARE `RUNNING > 0` GETS WRONG.
+    #     `ci-snapshot.decide()` ranks UNCLASSIFIED ABOVE plain `pending`, so an unclassified verdict CAN
+    #     carry a still-RUNNING row (buckets == {RUNNING: 1, UNKNOWN_VALUE: 1} is reachable, and pinned by
+    #     a fixture). The table says NO watch anyway: `liveness` has ALREADY PARKED the PR, and the human
+    #     ruling — not a check finishing — is the exit; a running check completing cannot answer the open
+    #     question the unknown value raised. So the predicate EXCLUDES UNCLASSIFIED explicitly. Drop that
+    #     term and it would warrant a pointless watch on a parked PR — the counterexample this field exists
+    #     to get right.
+    running = derived["buckets"]["RUNNING"] if derived["verified"] else 0
+    if not derived["verified"]:
+        watch_warranted, watch_reason = False, "no verified snapshot"
+    elif derived["verdict"] == SNAP.UNCLASSIFIED:
+        watch_warranted, watch_reason = False, "unknown value parked — the park is the resolution, not a watch"
+    elif running > 0:
+        watch_warranted = True
+        watch_reason = f"{running} row{'s' if running != 1 else ''} still RUNNING"
+    else:
+        watch_warranted, watch_reason = False, "nothing can move"
+
     return {
         "pr": pr,
         "head_sha": row["head_sha"],
@@ -1632,6 +1678,11 @@ def liveness(ledger_path: Path, pr: str, derived: dict, machine_action: str, now
         "settled_strikes": row["settled_strikes"],
         "unusable_refetches": row["unusable_refetches"],
         "ci_stalled_since": row["ci_stalled_since"],
+        # WHETHER A WATCH IS WARRANTED — the whole of "WATCH ONLY WHAT CAN MOVE", decided above so the
+        # driver never reads that table by hand. The driver ACTS on it: watch_warranted AND no live watch
+        # -> ensure/relaunch one; false -> never launch or relaunch. `watch_reason` names the deciding fact.
+        "watch_warranted": watch_warranted,
+        "watch_reason": watch_reason,
     }
 
 
