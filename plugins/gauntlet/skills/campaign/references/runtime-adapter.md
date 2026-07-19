@@ -287,10 +287,19 @@ For the heartbeat fallback, choose exactly one lifecycle:
 1. **Scheduled-heartbeat host:** do NOT hand-assemble the callback. Run `scripts/heartbeat.py callback`
    (resolve `scripts/` from the active `SKILL.md`, per **Bundled resources** above) with the host
    invocation, run-id, and token — `heartbeat.py callback --run <run-id> --token <agent-token>
-   --invocation <campaign-invocation>` — and schedule its **stdout** (the `<campaign-invocation> --run
-   <run-id> --token <agent-token>` line the tool prints) at the delay selected by `loop-control.md`, then
-   render the status — the `ledger.py table` output `loop-control.md` "Reschedule or exit" defines — and
-   return. Letting the tool build the line is what enforces the guarantee: the callback
+   --invocation <campaign-invocation>` — render the status — the `ledger.py table` output
+   `loop-control.md` "Reschedule or exit" defines — and then, as the turn's last action, schedule the
+   tool's **stdout** (the `<campaign-invocation> --run <run-id> --token <agent-token>` line it prints)
+   at the delay selected by `loop-control.md`. **On this host, scheduling ENDS THE TURN** — the
+   scheduler answers that there is nothing more to do this turn and the harness yields until the wakeup
+   fires (verified empirically on Claude Code) — so the schedule call is ALWAYS the LAST action of a
+   turn, and everything the turn still owes (status render, ledger writes, dispatches) happens BEFORE
+   it. The same property is why fresh-run setup spans two turns: "Take a run"'s arm step ends the setup
+   turn, and `acquire` plus the rest of setup run on the heartbeat that arming produced — the acquire
+   proof is that arming, which is already done (`run-identity-and-lease.md`, "Take a run" owns the
+   sequence; `loop-control.md` "Reschedule or exit" sizes the setup delay so a fresh run resumes in
+   about a minute instead of idling a full interval looking stalled). Letting the tool build the line
+   is what enforces the guarantee: the callback
    carries **only** `--run` and `--token` and **never** `--new`/`#PR` (start-time args that would mint a
    fresh run each heartbeat) or `--heartbeat-id` (an acquire-time proof) — and the tool refuses any value
    that is empty or carries whitespace, closing the argument-injection seam. The future invocation begins

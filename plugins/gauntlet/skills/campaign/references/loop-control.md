@@ -448,6 +448,10 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      heartbeat also recovers a killed/orphaned session through a later scheduled heartbeat; if a scheduler-less
      invocation is killed, durable state permits a later explicit resume (see "Resume after a killed
      session"). **Size the scheduled delay or bounded wait to the nearest stall it guards:**
+     - **Run setup still owed — the lease not yet acquired, or adoption / first dispatches not yet
+       run (a fresh run's arm-ended setup turn, `run-identity-and-lease.md` "Take a run") → ~60 s:**
+       on a turn-ending scheduler the wakeup IS the continuation of setup, so any longer delay is
+       dead time the user reads as a hung run.
      - **Any dispatched review pass still awaiting its first line of launch evidence → ~5 min:** its
        Stage 2a launch deadline is then the soonest thing that can fire, and a hung launch must not
        sit undetected for a full normal interval.
@@ -472,8 +476,10 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      wait naming what it waits on (review in flight, CI watch, parked on the user's answer). Render it
      after every ledger write during this heartbeat — the ledger was reconciled this heartbeat, so the table is the
      state the next reconcile resumes from. Then take exactly one runtime branch:
-     - **Scheduled-heartbeat host:** schedule the heartbeat, render the status above, and return. The scheduled
-       invocation begins again at step 1.
+     - **Scheduled-heartbeat host:** with the status above already rendered, schedule the heartbeat as
+       the turn's LAST action — scheduling ends the turn on this host (`runtime-adapter.md`,
+       "Scheduled-heartbeat host"), so nothing runs after it. The scheduled invocation begins again at
+       step 1.
      - **Scheduler-less bounded-wait host:** render the same status, wait only until the first task
        completion or the nearest protected deadline, then go directly back to step 1 and reconcile.
        Repeat this status/wait/reconcile cycle while non-terminal work remains. Do **not** execute the
