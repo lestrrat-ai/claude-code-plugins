@@ -69,11 +69,13 @@
 - Work-conserving dispatch is mandatory: every heartbeat scans all PRs and launches every due
   action that fits a free slot before returning. Waiting is allowed only when no useful action is
   launchable anywhere in the run.
-- A PR with a **still-RUNNING** check must ALWAYS have a live watch: if **`derive`'s `buckets.RUNNING`
-  is > 0** (the CLASSIFY tally — `ci-derivation-spec.md`, "CLASSIFY every row" — an EXPLICIT membership test, and
+- A PR whose snapshot can still move must ALWAYS have a live watch: if **`liveness` reports
+  `watch_warranted`** — its mechanical reduction of "WATCH ONLY WHAT CAN MOVE": `verified AND verdict !=
+  UNCLASSIFIED AND buckets.RUNNING > 0`, where `buckets.RUNNING` is the CLASSIFY tally
+  (`ci-derivation-spec.md`, "CLASSIFY every row"), an EXPLICIT membership test and
   **NEVER** "any row is not yet terminal" / `.status != COMPLETED`, which is a negated test: it sweeps up
   every value GitHub adds tomorrow and silently watches it instead of letting it fall to the
-  `UNKNOWN_VALUE` escalation) and the watch task has exited (including after any rebase/push), relaunch
+  `UNKNOWN_VALUE` escalation — and the watch task has exited (including after any rebase/push), relaunch
   the watch in this same heartbeat — never wait for the next heartbeat.
 - **But NEVER relaunch a watch merely because `ci == pending`.** Once CI has **SETTLED** (no row can
   still move) there is nothing to block on: `gh pr checks --watch` returns in about **a second**, and a
@@ -207,8 +209,8 @@
   Write the refutation as an **inline comment at the site** (plus `<rundir>/audit-<pr>-<n>.md`) and
   **commit it**. A refutation is a COMMIT, a commit is PR CONTENT, and PR content **RESETS THE GATE** and
   is **REVIEWED** — route it through the same "any campaign commit resets the gate" rule (`reviews_ok` →
-  0, restore `gauntlet-reviewing`, re-derive CI for the new tip and watch it only if a row can still move,
-  re-enter Stage 2a); never invent a second mechanism. Nothing is slipped past the reviewer: the argument is IN the diff, so a bogus refutation is
+  0, restore `gauntlet-reviewing`, re-derive CI for the new tip and watch it only if `liveness` reports
+  `watch_warranted`, re-enter Stage 2a); never invent a second mechanism. Nothing is slipped past the reviewer: the argument is IN the diff, so a bogus refutation is
   a defect the next reviewer flags. The comment MUST be a **falsifiable claim with evidence** ("git has
   no hardlink mode — a PR cannot create one; verified: checkout recreates separate inodes"), NEVER an
   instruction to the reviewer ("ignore this", "do not re-raise", "already dismissed") — argue why the
@@ -395,9 +397,9 @@
   `reviews_ok` to 0 AND restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`; the new commit
   moves `head_sha`, so writing it through the accessor **resets the liveness counters** at the door
   (`stage-2-ci.md`, "THE LIVENESS COUNTERS"); re-derive CI
-  for the new tip and watch it **only if a row can still move** (`stage-2-ci.md`, "WATCH ONLY WHAT CAN
-  MOVE" — a watch launched on a tip whose checks have not registered yet has nothing to block on and
-  exits in about a second), and re-enter Stage 2a. NEVER exempt a commit because it "only reformatted".
+  for the new tip and watch it **only if `liveness` reports `watch_warranted`** (`stage-2-ci.md`, "WATCH
+  ONLY WHAT CAN MOVE" — a watch launched on a tip whose checks have not registered yet has nothing to
+  block on and exits in about a second), and re-enter Stage 2a. NEVER exempt a commit because it "only reformatted".
 - **THE LIVENESS COUNTERS reset on EVERY `head_sha` change — gate reset or not, and the ledger accessor
   enforces it at the head write** (`stage-2-ci.md`, "THE LIVENESS COUNTERS", which names every site): write
   the new `head_sha` through `ledger.py … set --head-sha` and its door resets the set — no site hand-resets.

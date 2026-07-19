@@ -427,12 +427,12 @@ def liveness_cases(ci, tmp: Path) -> list[str]:
         return rows[0]
 
     def derived(verdict: str = "pending", ci_value: str = "pending", running: int = 1,
-                head_sha: str = sha) -> dict:
+                head_sha: str = sha, fail: int = 0, unknown: int = 0) -> dict:
         verified = verdict not in ("unusable", "unverifiable")
         return ci.derive_output({
             "head_sha": head_sha, "verdict": verdict, "ci": ci_value, "reason": "row X made it fire",
             "fingerprint": fp1 if verified else None,
-            "buckets": ({"PASS": 1, "RUNNING": running, "FAIL": 0, "UNKNOWN_VALUE": 0}
+            "buckets": ({"PASS": 1, "RUNNING": running, "FAIL": fail, "UNKNOWN_VALUE": unknown}
                         if verified else None),
         })
 
@@ -539,6 +539,38 @@ def liveness_cases(ci, tmp: Path) -> list[str]:
          (out["state"], out["escalated"], r["status"], r["blocker_ruling"],
           "UNKNOWN VALUE" in r["ci_reason"]))
 
+    # WATCH WARRANTED — the mechanical reduction of "WATCH ONLY WHAT CAN MOVE", emitted so the driver never
+    # reads that table by hand: verified AND verdict != unclassified AND buckets.RUNNING > 0. Each case is
+    # one row of the WATCH table, asserted against `watch_warranted` and the fact `watch_reason` names.
+    def watch(name: str, warranted: bool, needle: str, derv: dict, **reset_fields: str) -> None:
+        reset(**reset_fields)
+        out = ci.liveness(ledger, "35", derv, "none", now)
+        case(name, (warranted, True), (out["watch_warranted"], needle in out["watch_reason"]))
+
+    watch("pending with RUNNING rows warrants a watch", True, "still RUNNING",
+          derived(running=2), ci_fingerprint=fp1)
+    watch("settled red warrants no watch — nothing can move", False, "nothing can move",
+          derived(verdict="red", ci_value="red", running=0), ci_fingerprint=fp1, ci="red")
+    # red with a still-RUNNING row (a FAIL row AND a RUNNING row in buckets): the fix moves it, but the
+    # RUNNING row can still move, so the watch IS warranted — the WATCH table's red split, verbatim.
+    watch("red with a still-RUNNING row warrants a watch", True, "still RUNNING",
+          derived(verdict="red", ci_value="red", running=1, fail=1), ci_fingerprint=fp1, ci="red")
+    watch("green warrants no watch", False, "nothing can move",
+          derived(verdict="green", ci_value="green", running=0), ci_fingerprint=fp1)
+    watch("an unusable derivation warrants no watch — no verified snapshot", False, "no verified snapshot",
+          derived(verdict="unusable"))
+    # THE COUNTEREXAMPLE the exclusion exists for: `decide()` ranks UNKNOWN_VALUE above plain `pending`,
+    # so an UNCLASSIFIED verdict can carry a still-RUNNING row (buckets RUNNING>0 AND UNKNOWN_VALUE>0). A
+    # bare RUNNING>0 reading would warrant a watch; the park is the resolution, so watch_warranted is
+    # FALSE. Delete the `verdict != unclassified` term and this case goes red.
+    watch("unclassified with a RUNNING row warrants NO watch — the park is the resolution",
+          False, "park is the resolution",
+          derived(verdict="unclassified", ci_value="pending", running=1, unknown=1))
+    # A HELD row does not change the watch decision — parking never stops a warranted watch nor starts an
+    # unwarranted one. Same RUNNING>0 pending derivation, on a parked row -> still warranted.
+    watch("a held row with a RUNNING row still warrants a watch", True, "still RUNNING",
+          derived(running=1), status="awaiting-user", ci_reason="the open question", ci_fingerprint=fp1)
+
     return problems
 
 
@@ -588,7 +620,7 @@ def run(ci, tmp: Path) -> int:
     if not liveness_problems:
         print(f"ok       {'liveness bookkeeping':32} -> every transition of the derivation block: strikes "
               f"to the cap, the stall clock, the refetch cap, machine-action stop, held observation, "
-              f"stale-head refusal")
+              f"stale-head refusal, and the watch_warranted reduction (incl. the UNCLASSIFIED exclusion)")
 
     print()
     print(f"--- doc-check: {ci.SPEC_DOC.name} + {ci.DRIVER_DOC.name} vs the code that runs ---")

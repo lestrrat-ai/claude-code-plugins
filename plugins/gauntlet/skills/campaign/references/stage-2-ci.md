@@ -32,8 +32,9 @@ VERIFY (via `scripts/ci-snapshot.py`, which it calls), and DECIDE, all defined i
 value to write to the ledger, the `reason` (**which rule fired, and which row made it fire** — this is what
 `ci_reason` is built from), the evidence counts, `head_moved` + `head_sha_now`, the `required_set` state the
 verdict was decided under, the `fingerprint` of the verified snapshot's evidence rows, the `buckets`
-CLASSIFY tally (`PASS`/`RUNNING`/`FAIL`/`UNKNOWN_VALUE` — `buckets.RUNNING > 0` is the one fact the
-watch policy reads; both `null` when the snapshot never verified), and the path to the snapshot it left
+CLASSIFY tally (`PASS`/`RUNNING`/`FAIL`/`UNKNOWN_VALUE`; both `null` when the snapshot never verified —
+`liveness` reduces `buckets.RUNNING` to the `watch_warranted` fact the watch policy acts on, and reads it
+directly for its SETTLED/RUNNING-STALL split), and the path to the snapshot it left
 behind. It exits `0` **only** on green.
 **Write `ci` from that JSON; never from an impression of some command's output** — and then hand that
 same JSON to `ci-status.py liveness` ("THE BOOKKEEPING IS A COMMAND", below), which records it and does
@@ -116,9 +117,9 @@ wins") and is never re-evaluated by hand.
 | `verdict` | `ci` | The driver's move |
 |---|---|---|
 | `green` | `green` | Nothing here — Stage 3's merge preconditions take over. No watch. |
-| `red` | `red` | **If the row is HELD (`liveness` reports it), dispatch nothing** — a held PR dispatches nothing until its question is answered (`loop-control.md` step 3, "held-status guard"); the watch still follows "WATCH ONLY WHAT CAN MOVE" below. Otherwise: **stop any review pass in flight on this PR** (the fix will replace its SHA — `loop-control.md` step 3; free the slot), **CLASSIFY the failure from the check logs** ("Classify, then set the model class", below) **before dispatching anything**, and dispatch a **scoped CI-fix subagent** into `<worktree>` — the row's ledger `worktree` value, the single source of truth for this PR's checkout path (`pr-adoption.md`). Its fix commits + pushes to the PR's **own head branch** → apply the gate reset ("Any campaign commit to the PR head resets the gate", below). Watch only while `buckets.RUNNING > 0`. |
+| `red` | `red` | **If the row is HELD (`liveness` reports it), dispatch nothing** — a held PR dispatches nothing until its question is answered (`loop-control.md` step 3, "held-status guard"); the watch still follows "WATCH ONLY WHAT CAN MOVE" below. Otherwise: **stop any review pass in flight on this PR** (the fix will replace its SHA — `loop-control.md` step 3; free the slot), **CLASSIFY the failure from the check logs** ("Classify, then set the model class", below) **before dispatching anything**, and dispatch a **scoped CI-fix subagent** into `<worktree>` — the row's ledger `worktree` value, the single source of truth for this PR's checkout path (`pr-adoption.md`). Its fix commits + pushes to the PR's **own head branch** → apply the gate reset ("Any campaign commit to the PR head resets the gate", below). Watch only while `liveness` reports `watch_warranted` (a still-RUNNING row — "WATCH ONLY WHAT CAN MOVE", below). |
 | `unclassified` | `pending` | `liveness` has parked the PR (`status = awaiting-user`). **Prompt the user** per ESCALATE ("THE PARK MUST DECLARE ITS OWN EXIT", below), naming the offending value from `reason`. Never guess a bucket for it. No watch — the park is the resolution. |
-| `pending` | `pending` | `buckets.RUNNING > 0` → ensure a live watch ("WATCH ONLY WHAT CAN MOVE", below). Otherwise nothing can move — no watch; the liveness bounds own the wait and `liveness` escalates at a cap. The `pending` sub-cases that waiting can never green (`nothing registered`, `required set unreadable`, `required check missing` — each named in `reason`) resolve through those same bounds; while `required_set` is `unknown`, keep running `required-set` each heartbeat ("WHAT WERE WE EXPECTING TO SEE?", below). |
+| `pending` | `pending` | `liveness` reports `watch_warranted` → ensure a live watch ("WATCH ONLY WHAT CAN MOVE", below). Otherwise nothing can move — no watch; the liveness bounds own the wait and `liveness` escalates at a cap. The `pending` sub-cases that waiting can never green (`nothing registered`, `required set unreadable`, `required check missing` — each named in `reason`) resolve through those same bounds; while `required_set` is `unknown`, keep running `required-set` each heartbeat ("WHAT WERE WE EXPECTING TO SEE?", below). |
 | `unusable` / `unverifiable` | `pending` | **Refetch on the next heartbeat** — the heartbeat is the backoff ("UNUSABLE — the refetch is BOUNDED", below); `liveness` counted the attempt and escalates at the REFETCH CAP. `head_moved: true` → refresh the row's `head_sha` (`pr-adoption.md`) and re-derive pinned to it. No watch. |
 
 #### WHAT WERE WE EXPECTING TO SEE? — the required-check set
@@ -724,9 +725,17 @@ unusable_refetches >= 3                 -> ESCALATE (above)  # 3 == THE REFETCH 
 
 #### WATCH ONLY WHAT CAN MOVE — the relaunch is not free
 
-The watch is warranted by **a row that can still move**, never by the `ci` value — and "a row can still
-move" is read off **`derive`'s JSON: `buckets.RUNNING > 0`**, never off a hand classification of the
-snapshot:
+The watch decision is **`liveness`'s `watch_warranted` field** — the driver ACTS on it and NEVER reads
+this table by hand. When it is **true and no watch task is alive**, ensure one (relaunch it in this same
+heartbeat if it has exited); when it is **false**, never launch or relaunch. The field is the mechanical
+reduction `watch_warranted = verified AND verdict != UNCLASSIFIED AND buckets.RUNNING > 0`: a watch is
+warranted by **a row that can still move**, never by the `ci` value.
+
+**The table below is the SPEC that field implements** — each row is one case of the predicate, kept so a
+reader can audit the field against the policy. **The `UNKNOWN_VALUE` row is the one a naive
+`buckets.RUNNING > 0` reading gets wrong**: an unclassified verdict can still carry a running row (DECIDE
+ranks `UNKNOWN_VALUE` above plain `pending`), yet the park — not a check finishing — is its exit, so
+`watch_warranted` excludes it.
 
 | DECIDE outcome | Watch? |
 |---|---|
@@ -756,11 +765,11 @@ Every one of them MUST, in the same step:
   the gate and its label move together, never one without the other (`stage-2-review-gate.md`, "Status
   labels mirror the review gate");
 - **re-derive `ci` from a fresh snapshot for the NEW `head_sha`, and launch a watch if — and only if —
-  that snapshot holds a row that can still move** ("WATCH ONLY WHAT CAN MOVE" above). Writing the new
+  `liveness` then reports `watch_warranted`** ("WATCH ONLY WHAT CAN MOVE" above). Writing the new
   `head_sha` through the accessor **resets the liveness counters** at the door ("THE LIVENESS COUNTERS"
   above), so the PR gets a clean budget.
   **NEVER launch the watch unconditionally on the push**: at that instant the checks may not have
-  registered yet, so watch only if the fresh snapshot holds a row that can still move ("WATCH ONLY WHAT
+  registered yet, so watch only if `liveness` reports `watch_warranted` ("WATCH ONLY WHAT
   CAN MOVE" above);
 - **re-enter Stage 2a.**
 

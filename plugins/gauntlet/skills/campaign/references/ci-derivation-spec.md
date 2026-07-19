@@ -781,8 +781,9 @@ ever re-ordered again.
   - **An unknown value parks the PR AS SOON AS no `FAIL` outranks it** — on this derivation if there is
     no `FAIL`, otherwise on the next one, once the CI fix has cleared the failure. **It is deferred, never
     dropped**, and it outranks `pending`: a still-running row does **not** postpone the park.
-- **pending** → any evidence row classifies `RUNNING` → leave `ci = pending`. **This is the ONLY outcome
-  that warrants a watch** (`stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE"): a row can still move on its own, so if the
+- **pending** → any evidence row classifies `RUNNING` → leave `ci = pending`. **This outcome warrants a
+  watch** (`stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE", owns the whole policy — a `red` verdict with a
+  still-`RUNNING` row is watched too): a row can still move on its own, so if the
   watch task has exited, **relaunch it in this same heartbeat** — a PR with a still-RUNNING row must never sit
   unwatched waiting for the fallback heartbeat. **It is also BOUNDED**: "a row can still move" is a claim the row
   makes, not a promise it keeps, so if the whole check set then sits unchanged for the CI STALL CAP, the

@@ -365,9 +365,11 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      resulting commit **resets the gate** (Stage 2b, "Any campaign commit to the PR head resets the gate").
      The worker's job order, the no-weakening prohibition, and the denylist live in `stage-2-ci.md` —
      follow them there; do NOT restate them here. Different PRs may fix CI concurrently within the cap.
-   - CI snapshot holds a **still-RUNNING** evidence row (an evidence row that classifies `RUNNING` under
-     Stage 2b CLASSIFY — never "a row that is not terminal") for a PR whose watch task has already exited →
-     **relaunch the watch in this same heartbeat**. A PR with a row that can still move must never sit
+   - `liveness` reports **`watch_warranted`** (its reduction of "WATCH ONLY WHAT CAN MOVE" — a verified
+     snapshot with a still-`RUNNING` evidence row that is not an `UNKNOWN_VALUE` park; the `RUNNING` is an
+     evidence row that classifies `RUNNING` under Stage 2b CLASSIFY, never "a row that is not terminal") for
+     a PR whose watch task has already exited →
+     **relaunch the watch in this same heartbeat**. A PR whose watch is warranted must never sit
      unwatched until the fallback heartbeat; the fallback lifecycle is not the mechanism. **But NEVER relaunch
      it merely because `ci == pending`** — once CI has SETTLED nothing can move, `gh pr checks --watch`
      exits in about a second, and its completion is itself a heartbeat: that is a heartbeat per second, forever

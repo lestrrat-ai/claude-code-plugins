@@ -211,8 +211,8 @@ subagent at a check that is merely **still running**.
      `gauntlet-accepted`), update `head_sha` to the new tip through `ledger.py … set --head-sha` (which
      **resets the liveness counters** at the door — new commit, new evidence — `stage-2-ci.md`, "THE
      LIVENESS COUNTERS"), set `ci = pending`, **and re-derive CI
-     from a snapshot of the new tip in the same heartbeat, launching a watch only if that snapshot holds a
-     still-RUNNING row** ("WATCH ONLY WHAT CAN MOVE"). A rebased PR must not sit unwatched until the
+     from a snapshot of the new tip in the same heartbeat, launching a watch only if `liveness` then reports
+     `watch_warranted`** ("WATCH ONLY WHAT CAN MOVE"). A rebased PR must not sit unwatched until the
      heartbeat while its checks are running — but it must not be watched when **nothing** is running
      either, which right after a push is the common case (no check has registered yet). CI must return
      green before merging.
@@ -223,7 +223,7 @@ subagent at a check that is merely **still running**.
      new tip through the accessor, which **resets the liveness counters** (a new head is new evidence — `stage-2-ci.md`, "THE
      LIVENESS COUNTERS"; the clean-rebase branch above does the same, and this branch is no different in
      that respect). Then re-derive CI for
-     the new tip — watching it only if a row can still move ("WATCH ONLY WHAT CAN MOVE") — and re-enter
+     the new tip — watching it only if `liveness` reports `watch_warranted` ("WATCH ONLY WHAT CAN MOVE") — and re-enter
      Stage 2.
    - Still open, **not parked**, mergeable, not behind/dirty/conflicting, same live `head_sha`,
      `reviews_ok >= required(tier)`, and `ci == green` → still immediately mergeable; return to step 1
