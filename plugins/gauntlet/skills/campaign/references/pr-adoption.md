@@ -186,14 +186,16 @@ For each `#PR` to adopt:
      RULING IS CONSUMED EXACTLY ONCE") — so a ruling this refresh can see is either still **awaiting its
      park's exit** (preserving it is the whole point: a heartbeat may be a fresh agent instance) or the
      **terminal** record of an `abort`. A **spent** ruling is never on the row for this step to resurrect.
-   - **Whenever this refresh writes a NEW `head_sha`, RESET THE LIVENESS COUNTERS** (`stage-2-ci.md`,
-     "THE LIVENESS COUNTERS") in the same `ledger.py … set` call — **whether or not the gate reset with
-     it**: a clean base-only advance moves the head without touching `reviews_ok`, and it still means the
-     old head's strikes, stall clock and refetch count describe evidence that no longer exists. Carried
-     onto the new head they park a healthy PR early. **Reset the SET, never a list retyped here** — a
-     counter added to it is inherited by this site with no edit. (This is one of the **explicit
-     recomputes** the preserve-by-default rule above defers to: the counters are pinned to `head_sha`, not
-     to the user, so a new head voids them.)
+   - **Whenever this refresh writes a NEW `head_sha`, the ledger accessor RESETS THE LIVENESS COUNTERS**
+     (`stage-2-ci.md`, "THE LIVENESS COUNTERS") — **whether or not the gate reset with it**: write the new
+     `head_sha` through `ledger.py … set --head-sha` (or `pr-adopt`, which routes through it) and its door
+     resets the whole set in the same row write. A clean base-only advance moves the head without touching
+     `reviews_ok`, and it still means the old head's strikes, stall clock and refetch count describe evidence
+     that no longer exists; carried onto the new head they park a healthy PR early — the door prevents that.
+     **Do NOT hand-reset the counters here** — the accessor owns it, and a list retyped at this site goes
+     stale the next time the set gains a member. (This is one of the **explicit recomputes** the
+     preserve-by-default rule above defers to: the counters are pinned to `head_sha`, not to the user, so a
+     new head voids them — at the door.)
 
    The ownership marker for an adopted PR is the **label**, not the branch name (its branch won't match
    the `fix-<run-id>-` prefix) — so labelling in step 4 is what makes the PR ours.

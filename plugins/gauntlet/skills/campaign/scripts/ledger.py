@@ -154,6 +154,14 @@ ROW_DEFAULTS = {
     "pr_origin": "external", "repair_count": "0", "repair_decision": "-",
 }
 
+# THE LIVENESS COUNTERS — the SHA-bound CI-liveness fields, named ONCE here so every site that resets them on
+# a head move (this accessor's `set` door via `apply_head_sha`, and pr-adopt's refresh, which re-exports THIS
+# tuple) refers to the SET, never a retyped copy of the list. `stage-2-ci.md`, "THE LIVENESS COUNTERS", owns
+# what each member means; they describe the CI of ONE `head_sha`, so a write of a NEW head is a write of new
+# evidence and every one of them resets to its `ROW_DEFAULTS` value. Every member is a `ROW_FIELDS` field, so
+# a reset reads its fresh-head value straight from `ROW_DEFAULTS` — the values are never retyped here either.
+LIVENESS_COUNTERS = ("ci_fingerprint", "settled_strikes", "unusable_refetches", "ci_stalled_since")
+
 # The two fields `verdict` OWNS — and the ONLY reason they are not settable through `set`/`add-row` is
 # that a door which can write them is a door that can RESET them.
 #
@@ -470,6 +478,35 @@ def cmd_add_row(path: Path, args) -> int:
     return 0
 
 
+def apply_head_sha(row: dict, new_sha: str) -> None:
+    """Write `new_sha` to `row['head_sha']`, resetting THE LIVENESS COUNTERS on a genuine head MOVE.
+
+    THE PROPERTY, enforced at the write door rather than by prose at each caller (stage-2-ci.md, "THE
+    LIVENESS COUNTERS", reset-site class 1): a NEW `head_sha` is NEW evidence, so the old head's CI-liveness
+    says nothing about it. When `new_sha != row['head_sha']` this writes the head AND resets every
+    `LIVENESS_COUNTERS` field to its `ROW_DEFAULTS` value — READ from the defaults, never retyped — mutating
+    the SAME `row` dict, so the caller's single `dump()` lands the head move and the reset in ONE atomic write.
+    A SAME-VALUE write (`new_sha == row['head_sha']`) is not a move and changes NOTHING.
+
+    The shape is validated with `SHA_RE` FIRST and REFUSED otherwise (40 lowercase hex): a value that cannot
+    be a commit id has no business becoming a row's head, and refusing before any mutation keeps a bad
+    `--head-sha` from resetting the counters.
+
+    PRECEDENCE — an explicit counter flag in the SAME `set` call WINS over the automatic reset. This helper
+    touches ONLY `head_sha` and the counters; `cmd_set` calls it and THEN applies the remaining named updates,
+    so the explicit flag is written AFTER the reset. `set --head-sha <new> --settled-strikes 5` records 5,
+    while every counter NOT named still resets to its default (pinned by `t_head_sha_explicit_counter_wins`).
+    """
+    if not SHA_RE.match(new_sha):
+        fail(f"--head-sha {new_sha!r} is not a git object id (40 LOWERCASE hex) — a value that cannot be a "
+             f"commit id has no business becoming a row's head, and a bad head must reset no counters")
+    if new_sha == row["head_sha"]:
+        return  # a same-value write is not a head MOVE — the liveness state still describes this head
+    row["head_sha"] = new_sha
+    for field in LIVENESS_COUNTERS:
+        row[field] = ROW_DEFAULTS[field]  # fresh head, fresh budget — the value comes from ROW_DEFAULTS
+
+
 def cmd_set(path: Path, args) -> int:
     header, rows = load(path)
     pr = str(args.pr)
@@ -480,6 +517,11 @@ def cmd_set(path: Path, args) -> int:
     if not updates:
         fail("set requires at least one --<field> <value>")
     check_tally(updates, row)
+    # `--head-sha` routes through the accessor, which resets THE LIVENESS COUNTERS on a genuine head move.
+    # It is applied FIRST so that an explicit counter flag in the SAME call (applied by the row.update below)
+    # WINS over the automatic reset — the precedence apply_head_sha's docstring pins.
+    if "head_sha" in updates:
+        apply_head_sha(row, updates.pop("head_sha"))
     row.update(updates)  # by NAME — never by column position
     dump(path, header, rows)
     print(json.dumps(row))

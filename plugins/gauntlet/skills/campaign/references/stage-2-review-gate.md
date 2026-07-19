@@ -89,7 +89,8 @@ review gate"), and the review re-starts on the clean tip:
   and re-run rather than rebase on a half-computed view (`base-preflight.py` is the owner of the full
   mapping). It is the enforced form of this rule and it is also the pre-flight gate before any fix subagent
   is dispatched (`fix-subagent-contract.md`, PRE-FLIGHT). Clean base-only rebase with the PR diff unchanged keeps `reviews_ok` but still moves `head_sha`, so it
-  sets `ci = pending` **and resets the liveness counters** ("Status labels mirror the review gate"
+  sets `ci = pending`, and writing the new head through `ledger.py … set --head-sha` makes the accessor
+  **reset the liveness counters** at the door ("Status labels mirror the review gate"
   Exception, below, owns this rule; `stage-2-ci.md`, "THE LIVENESS COUNTERS");
   conflict-resolving rebase changes PR content, so it resets the gate **as well** — here, at this site,
   exactly as the step-6 reconcile does at its own (`stage-3-merge.md`), and it therefore **relabels in the
@@ -771,7 +772,8 @@ prose. Record the reviewed SHA
 (`git rev-parse HEAD`) with each pass. A verdict counts while its SHA equals the live tip. It also
 continues to count after `<base>` advances if the PR is still non-conflicting and the PR diff/content
 is unchanged (e.g. clean base-only rebase); carry `reviews_ok` forward to the new `head_sha`, set
-`ci = pending`, and **reset the liveness counters** (`stage-2-ci.md`, "THE LIVENESS COUNTERS"). The moment PR content changes — review fix, CI fix, conflict-resolving rebase, a
+`ci = pending` — writing the new head through the accessor **resets the liveness counters** at the door
+(`stage-2-ci.md`, "THE LIVENESS COUNTERS"). The moment PR content changes — review fix, CI fix, conflict-resolving rebase, a
 formatter/bot commit on the PR branch, or manual push — earlier verdicts are stale and `reviews_ok`
 drops to 0. Pinning to SHA plus the clean-base-only exception makes the gate verifiable from git while
 not burning reviews merely because another PR merged cleanly. A `NOT SATISFIED` invalidates that
@@ -831,9 +833,10 @@ Search for both.
 
 **Exception — a clean base-only rebase** (PR diff unchanged) carries `reviews_ok` forward and therefore
 **keeps** `gauntlet-accepted`. The gate did not reset, so the label does not move. Gate and label stay in
-lockstep in both directions. **It is still a `head_sha` change, though**, so it sets `ci = pending` **and
-resets the liveness counters** (`stage-2-ci.md`, "THE LIVENESS COUNTERS") — the gate and the counters key
-off **different** events, and this row is exactly where they part company.
+lockstep in both directions. **It is still a `head_sha` change, though**, so it sets `ci = pending`, and
+writing the new head through the accessor **resets the liveness counters** at the door (`stage-2-ci.md`,
+"THE LIVENESS COUNTERS") — the gate and the counters key off **different** events, and this row is exactly
+where they part company.
 
 **Reconcile is the backstop, not the mechanism.** Loop control re-derives every label from the live
 gate each heartbeat so a missed swap self-heals, exactly as the CI-watch heartbeat backstops a missed watch.

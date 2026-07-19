@@ -561,28 +561,38 @@ BOUNDED wait rather than a wedge.
 
 **Reset them TOGETHER — EVERY member of the set, each back to its `ROW_DEFAULTS` value** (`scripts/ledger.py`
 owns those defaults; **never retype them here**, or the reset rots the next time the set gains a member) — at
-exactly two kinds of site:
+exactly two kinds of site, and the two RESET THEMSELVES DIFFERENTLY:
 
-1. **Any `head_sha` change — whether or not the gate resets with it.** The new head is new evidence, so
-   the old head's liveness says nothing about it. **THE TRIGGER IS THE PROPERTY — "this site wrote a new
-   `head_sha`" — and NOT membership of a list.** Every site that writes one resets them, including a site
-   added after this paragraph was written, with **no edit here**. Today's sites, **illustratively and
-   NON-EXHAUSTIVELY**: **"Any campaign commit to the PR head resets the gate"** (below — CI-fix,
-   review-fix, copilot-item fix, refutation commit); **Stage 2a's precondition rebase**
-   (`stage-2-review-gate.md`) and **`stage-3-merge.md`, step 6's reconcile** — for each, BOTH branches: a
-   clean base-only rebase, which does **not** reset the gate, and a conflict-resolving rebase, which does;
-   **`loop-control.md` step 1's ledger refresh** and **`pr-adoption.md` step 3's row refresh** (a
-   formatter/bot commit, a manual push, any content change this run did not dispatch).
+1. **Any `head_sha` change — whether or not the gate resets with it — and THE ACCESSOR DOES IT FOR YOU.**
+   The new head is new evidence, so the old head's liveness says nothing about it. **THE TRIGGER IS THE
+   PROPERTY — "this site wrote a new `head_sha`" — and NOT membership of a list.** This reset is enforced
+   **at the write door, not by prose at each site**: `scripts/ledger.py … set --head-sha <new>` (and
+   `pr-adopt`, which routes through it) resets every member of the set to its default in the SAME row write,
+   on any genuine head move — ledger.py's `apply_head_sha`. **So a site that writes a new `head_sha` through
+   the accessor NEED NOT and MUST NOT hand-reset the counters**: write the new head through the accessor and
+   the door resets them. A `--settled-strikes 0` typed beside the head write is redundant, and a hand-reset
+   that lists the members is exactly the stale restatement this door removes. Every site that writes a head
+   through the accessor gets the reset, including one added after this paragraph, with **no edit here**.
+   Today's sites, **illustratively and NON-EXHAUSTIVELY**: **"Any campaign commit to the PR head resets the
+   gate"** (below — CI-fix, review-fix, copilot-item fix, refutation commit); **Stage 2a's precondition
+   rebase** (`stage-2-review-gate.md`) and **`stage-3-merge.md`, step 6's reconcile** — for each, BOTH
+   branches: a clean base-only rebase, which does **not** reset the gate, and a conflict-resolving rebase,
+   which does; **`loop-control.md` step 1's ledger refresh** and **`pr-adoption.md` step 3's row refresh** (a
+   formatter/bot commit, a manual push, any content change this run did not dispatch). Each writes the new
+   `head_sha` through the accessor, so each gets the reset from the door — none hand-resets.
 2. **An unpark by `retry`** (`loop-control.md` step 3) — no new head, but the user changed something
    **outside** the PR (they re-ran the workflow, killed the hung runner, registered the missing check), so
-   the strikes and the stall clock that measured the old attempt are void.
+   the strikes and the stall clock that measured the old attempt are void. **This reset stays EXPLICIT** —
+   there is NO `head_sha` change for the door to fire on, so the unpark writes the counters back to their
+   defaults itself, in the same `ledger.py … set` call that spends the ruling.
 
 **`liveness`'s stale-derivation refusal ("THE BOOKKEEPING IS A COMMAND", above) is NOT a substitute for
-the site doing it — it is the seam that makes the site's reset SAFE.** The sites above **write the new
-`head_sha` to the row**, so by the time CI is re-derived the ledger already reads the new head and there
-is nothing left to detect. The reset belongs **at the site that moves `head_sha`**; what `liveness` adds
-is the other half: a derivation still pinned to the OLD head is refused outright, so stale evidence can
-never spend the budget the site just reset.
+the head write doing it — it is the seam that makes that reset SAFE.** The sites above **write the new
+`head_sha` to the row** through the accessor, so by the time CI is re-derived the ledger already reads the
+new head, the counters are already reset, and there is nothing left to detect. The reset belongs **with the
+`head_sha` write itself** — the accessor performs it when the site moves the head; what `liveness` adds is
+the other half: a derivation still pinned to the OLD head is refused outright, so stale evidence can never
+spend the budget the head write just reset.
 
 **A gate reset is NOT the trigger — a `head_sha` change is.** The two are not the same set and never map
 onto each other: a `NOT SATISFIED` verdict resets the gate with **no** new head (the counters stay — CI
@@ -737,8 +747,9 @@ Every one of them MUST, in the same step:
   the gate and its label move together, never one without the other (`stage-2-review-gate.md`, "Status
   labels mirror the review gate");
 - **re-derive `ci` from a fresh snapshot for the NEW `head_sha`, and launch a watch if — and only if —
-  that snapshot holds a row that can still move** ("WATCH ONLY WHAT CAN MOVE" above). The new commit
-  **resets the liveness counters** ("THE LIVENESS COUNTERS" above), so the PR gets a clean budget.
+  that snapshot holds a row that can still move** ("WATCH ONLY WHAT CAN MOVE" above). Writing the new
+  `head_sha` through the accessor **resets the liveness counters** at the door ("THE LIVENESS COUNTERS"
+  above), so the PR gets a clean budget.
   **NEVER launch the watch unconditionally on the push**: at that instant the checks may not have
   registered yet, so watch only if the fresh snapshot holds a row that can still move ("WATCH ONLY WHAT
   CAN MOVE" above);
