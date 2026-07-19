@@ -45,6 +45,14 @@ isolation claim and does not create a stronger boundary:
 - `-C`, followed by `transport.review_root` as its own argv element, selects the run-artifact working
   root;
   `--skip-git-repo-check` is required because that root is deliberately not the candidate repository.
+- **`-C` MUST be `transport.review_root` because that is the reviewer's only WRITABLE root.** Every
+  artifact the reviewer writes — progress, findings, amendments, the report — lives under `review_root`,
+  and `--sandbox workspace-write` makes only the `-C` root (and its `writable_roots`) writable. A `-C`
+  pointed anywhere else (for example at the candidate worktree) leaves the run directory READ-ONLY, so
+  every `emit` fails with a read-only-filesystem error and the reviewer defers with a read-only progress
+  file. That symptom is a DISPATCH fault, not a reviewer fault: relaunching the same argv fails
+  identically. Do not widen the sandbox to "fix" it (a `writable_roots` entry for the worktree would make
+  candidate content writable); point `-C` at `review_root`.
 - `transport.worktree` is named only inside the bound prompt and is read through absolute paths (for
   example, the typed Git argv in the review prompt). Do not pass it through `-C` or `--add-dir`: either makes candidate
   content part of the writable workspace, and `-C` also enables candidate `AGENTS.md` discovery.

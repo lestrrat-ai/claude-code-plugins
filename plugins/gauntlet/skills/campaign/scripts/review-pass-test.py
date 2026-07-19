@@ -1960,6 +1960,54 @@ def run_status_cases(mod: types.ModuleType, T: Tables, tmp: Path) -> int:
     return failures
 
 
+def check_unwritable_target(R: types.ModuleType, T: Tables, tmp: Path) -> int:
+    """The EROFS/EACCES write-door diagnostic: an emit into an UNWRITABLE target must defer with the -C
+    diagnosis, not die with a bare `OSError` that names no cause.
+
+    **THE REAL DEFECT.** A codex reviewer launched with `-C` at the candidate worktree made the run dir
+    read-only under `workspace-write`; every `emit-progress.py` append failed with `OSError: [Errno 30]
+    Read-only file system`, the reviewer deferred with a bare "progress file is read-only", the
+    orchestrator re-dispatched the SAME wrong command, and a ~20-minute pass was lost each time. The write
+    door now translates that OS failure into a DISPATCH-fault diagnostic naming the `-C` target and the
+    `VERDICT: DEFERRED` recovery.
+
+    We cannot mount a read-only filesystem in a unit test, so we reproduce the same errno family the door
+    treats identically: appending to a `0o444` file raises `EACCES`, the sibling of the real `EROFS`.
+    `chmod` does not restrict root, so under euid 0 (or a platform without `geteuid`) the condition cannot
+    be created and the case skips cleanly — the diagnostic is behavioral, not a gate rule, so a skipped
+    probe is honest rather than a false green.
+    """
+    if not hasattr(os, "geteuid") or os.geteuid() == 0:
+        print("skip     [unwritable] chmod does not restrict root — the EROFS/EACCES write door "
+              "cannot be probed here")
+        return 0
+    d = tmp / "unwritable"
+    d.mkdir(parents=True, exist_ok=True)
+    progress = d / PROGRESS_FILE
+    # A validly dispatched-but-empty pass: pass_identity as the first line, a one-unit plan, and a sound
+    # intent beside it — so emit clears every READ-side check and reaches the write door, which is the one
+    # thing under test here.
+    progress.write_text(T.ident() + "\n", encoding="utf-8")
+    (d / PLAN_FILE).write_text(T.unit("u01") + "\n", encoding="utf-8")
+    write_intent(d)
+    progress.chmod(0o444)
+    try:
+        code, text = run_cli(R, ["emit", "--file", str(progress), "--unit", "u01", "--status", "started"])
+    finally:
+        progress.chmod(0o644)  # restore so the TemporaryDirectory cleanup can remove it
+    if code == 0:
+        print("FAIL     [unwritable] emit into a read-only progress file EXITED 0 — the write door "
+              "swallowed the OSError instead of deferring")
+        return 1
+    if "-C" not in text or "DEFERRED" not in text:
+        print(f"FAIL     [unwritable] emit refused (exit {code}) but its message names neither the `-C` "
+              f"target nor the DEFERRED recovery:\n         {text.strip()}")
+        return 1
+    print(f"ok       [unwritable] emit into a read-only target -> exit {code}, DISPATCH-fault diagnostic "
+          f"names -C and VERDICT: DEFERRED")
+    return 0
+
+
 def run(R: types.ModuleType, tmp: Path) -> int:
     """Every family, then the mutation matrix. Non-zero on any failure.
 
@@ -2010,6 +2058,8 @@ def run(R: types.ModuleType, tmp: Path) -> int:
     failures += check_amendment_door(R, tmp)
     print()
     failures += run_status_cases(R, T, tmp)
+    print()
+    failures += check_unwritable_target(R, T, tmp)
     print()
     if failures:
         print(f"{failures} check(s) FAILED — the review-pass contract is broken.")

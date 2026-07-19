@@ -107,6 +107,7 @@ so. Absent that, the guard fires: the DEFAULT is that nothing has been ruled on.
 from __future__ import annotations
 
 import argparse
+import errno
 import importlib.util
 import json
 import os
@@ -1527,10 +1528,43 @@ def write_line(path: Path, before: str, rec: "dict[str, object]",
     line = json.dumps(rec, separators=(",", ":")) + "\n"
     # MUTATE:write-verifies-result:pass
     readable_back(before + line)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as out:
-        out.write(line)
+    _append_line(path, line)
     return line
+
+
+def _append_line(path: Path, line: str) -> None:
+    """The actual disk write — isolated so an UNWRITABLE target says WHY, not a bare traceback.
+
+    Every artifact this tool produces is appended here. The append can fail because the target's
+    filesystem cannot be written from this process — `EROFS` (the filesystem itself is read-only) or
+    `EACCES` (the path is not writable). The bare `OSError` those raise says nothing about the cause the
+    real run hit: a codex reviewer launched with `-C` pointed at the candidate worktree instead of the
+    run-artifact root, so its `workspace-write` sandbox made the RUN directory read-only and EVERY emit
+    failed with `Read-only file system`. This is NOT a rule about the artifact's contents — the bytes are
+    fine; the door they were headed for is shut — so it lives OUTSIDE the read-side rule functions and is
+    not one the round-trip/mutation machinery pins. It only translates the OS failure into a diagnosis a
+    driver can act on, and keeps the existing exit path (a `Defect` -> exit 1, non-zero).
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as out:
+            out.write(line)
+    except OSError as exc:
+        if exc.errno in (errno.EROFS, errno.EACCES):
+            raise Defect(
+                f"{path.name} cannot be written ({exc}) — its filesystem is READ-ONLY, or the path is not "
+                f"writable from this process. When this process is a sandboxed reviewer (codex "
+                f"`workspace-write`), that means the launch's `-C` root does NOT cover the run directory: "
+                f"every artifact a reviewer writes (progress, findings, amendments, report) lives under the "
+                f"run-artifact root, so `-C` MUST be that root — `cross-agent-reviewers.md` (\"Claude Code "
+                f"orchestrator -> Codex reviewer\") owns the exact argv, and a `-C` pointed at the candidate "
+                f"worktree makes the run directory read-only and every emit fail like this. This is a "
+                f"DISPATCH fault, not a reviewer fault, and retrying into the SAME sandbox fails "
+                f"identically. Do NOT create the file yourself and do NOT retry: make the report's terminal "
+                f"line `VERDICT: DEFERRED — {path.name} is on a read-only/unwritable filesystem (check the "
+                f"launch's -C target)` and stop"
+            ) from exc
+        raise
 
 
 def cmd_emit(args) -> int:
