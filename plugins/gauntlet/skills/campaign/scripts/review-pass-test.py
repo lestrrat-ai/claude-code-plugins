@@ -73,11 +73,14 @@ HERE = Path(__file__).resolve().parent
 OWNER = HERE / "review-pass.py"
 WRAPPER = HERE / "emit-progress.py"
 FINDING_WRAPPER = HERE / "emit-finding.py"
+AMENDMENT_WRAPPER = HERE / "emit-amendment.py"
 WRAPPER_DOOR = "emit-progress.py"
 FINDING_WRAPPER_DOOR = "emit-finding.py"
+AMENDMENT_WRAPPER_DOOR = "emit-amendment.py"
 WRAPPER_OWNER_COMMANDS = {
     WRAPPER_DOOR: "emit",
     FINDING_WRAPPER_DOOR: "finding-add",
+    AMENDMENT_WRAPPER_DOOR: "amend",
 }
 
 # The `self-test` door is a door like any other, and EXECUTING it is what the door check does to every door
@@ -664,6 +667,34 @@ class Tables:
              "`VERDICT_CHOICES` member, not an exit-2 rejection) and routes it to the progress file. On this "
              "complete pass with no amendment there is nothing to defer to, so it comes back UNUSABLE — "
              "proving the flag parses AND that `deferred` is never silently treated as a passing verdict"),
+
+            # THE AMENDMENT WRITE DOOR — the one progress event a reviewer hand-writes, now with a door.
+            (["amend", "--reason", "no unit covers the harness", "--id", "u09", "--kind", "file",
+              "--target", "harness.py", "--check", "it runs"], DISPATCHED, 0, "plan_amendment_request",
+             "**THE FIX, AT THE WRITE DOOR.** The dispatch prompt never stated the amendment's schema, so "
+             "reviewers invented `{type, gap}` and `verify` refused the malformed line — taking the WHOLE "
+             "pass down. Now the amendment goes through a door like every other event: the `ts` is "
+             "TOOL-STAMPED (no clock is an input), and the line it writes is one `verify` reads back"),
+            (["amend", "--reason", "no unit covers the harness", "--id", " u01 ", "--kind", "file",
+              "--target", "x.py", "--check", "a"], DISPATCHED, 1, "NOT AN ID",
+             "the proposed unit's id goes through the SAME `check_unit` the plan door runs, so an id the "
+             "plan would refuse is refused here — the plan cannot acquire, one heartbeat later, an "
+             "unmatchable unit this amendment would have folded into it"),
+            (["amend", "--reason", "   ", "--id", "u09", "--kind", "file", "--target", "x.py",
+              "--check", "a"], DISPATCHED, 1, "an amendment is a CLAIM",
+             "a blank `--reason`: the read side's own non-blank predicate, at the write door. The "
+             "orchestrator RULES on the reason; a blank one forces the `amended` verdict while saying "
+             "nothing to rule on"),
+            (["amend", "--reason", "harness gap", "--id", "u09", "--kind", "file", "--target", "x.py"],
+             DISPATCHED, 2, "the following arguments are required: --check",
+             "the amendment's `--check` is REQUIRED and repeatable, exactly as `plan-add`'s is — a proposed "
+             "unit with no checks is not a unit, and the help door may not bracket a flag the write path "
+             "refuses"),
+            (["amend", "--reason", "harness gap", "--id", "u09", "--kind", "file", "--target", "x.py",
+              "--check", "a"], EMPTY, 1, "NO `pass_identity`",
+             "the amendment appends into the SAME progress file the orchestrator seeds with `pass_identity` "
+             "before dispatch — so an EMPTY file means the pass was never launched, and the write is refused "
+             "and NOTHING is written, exactly as `emit`'s is"),
         ]
 
         # `plan-add` and `finding-add` get their own families: their flags do not fit the shape above (a
@@ -746,6 +777,8 @@ class Tables:
             "emit": (PROGRESS_FILE, ["--unit", "u01", "--status", R.STARTED]),
             "identity": (PROGRESS_FILE, ["--head-sha", SHA, "--dispatched-at", TS]),
             "plan-add": (PLAN_FILE, ["--id", "u09", "--kind", "file", "--target", "x.py", "--check", "a"]),
+            "amend": (PROGRESS_FILE, ["--reason", "harness gap", "--id", "u09", "--kind", "file",
+                                      "--target", "x.py", "--check", "a"]),
             "finding-add": (FINDINGS_FILE, FIND_OK),
         }
         # `status` writes NOTHING — it is an ADVISORY read-only view — so the round trip does not drive it
@@ -759,6 +792,8 @@ class Tables:
             WRAPPER_DOOR: (PROGRESS_FILE, DISPATCHED),  # …and the same door, through the wrapper it runs
             "identity": (PROGRESS_FILE, None),          # it writes into a file that must hold NO BYTES
             "plan-add": (PLAN_FILE, None),              # the first unit lands in a plan that does not exist
+            "amend": (PROGRESS_FILE, DISPATCHED),       # the amendment appends after the identity, like emit
+            AMENDMENT_WRAPPER_DOOR: (PROGRESS_FILE, DISPATCHED),  # …and the same door, through its wrapper
             "finding-add": (FINDINGS_FILE, None),       # …and the first finding in a findings file that does not
             FINDING_WRAPPER_DOOR: (FINDINGS_FILE, None),  # the reviewer's OTHER door, through its wrapper
             "intent-check": (INTENT_FILE, INTENT.splitlines()),
@@ -775,6 +810,7 @@ class Tables:
             "--unit": ["u01"], "--status": [R.STARTED], "--evidence": ["f.py:1"],
             "--head-sha": [SHA], "--dispatched-at": [TS],
             "--id": ["u09"], "--kind": ["file"], "--target": ["x.py"], "--check": ["a"],
+            "--reason": ["no unit covers the harness"],
             "--amendments-ruled": ["0"], "--verdict": [R.SATISFIED],
             "--path": ["scripts/ci-status.py"], "--line": ["769"], "--writer": ["network"],
             "--purpose": [PURPOSE_GREEN], "--repro": ["a reply with no rows"], "--fix": ["refuse it"],
@@ -1539,6 +1575,9 @@ def door_parsers(R: types.ModuleType) -> "dict[str, argparse.ArgumentParser]":
     finding_wrapper = argparse.ArgumentParser(prog=FINDING_WRAPPER_DOOR)
     R.add_finding_args(finding_wrapper)
     doors[FINDING_WRAPPER_DOOR] = finding_wrapper
+    amendment_wrapper = argparse.ArgumentParser(prog=AMENDMENT_WRAPPER_DOOR)
+    R.add_amendment_args(amendment_wrapper)
+    doors[AMENDMENT_WRAPPER_DOOR] = amendment_wrapper
     return doors
 
 
@@ -1557,6 +1596,8 @@ def door_script(door: str) -> Path:
         return WRAPPER
     if door == FINDING_WRAPPER_DOOR:
         return FINDING_WRAPPER
+    if door == AMENDMENT_WRAPPER_DOOR:
+        return AMENDMENT_WRAPPER
     return OWNER
 
 
@@ -1751,6 +1792,77 @@ def check_intent_door(R: types.ModuleType, tmp: Path) -> int:
     return failures
 
 
+def check_amendment_door(R: types.ModuleType, tmp: Path) -> int:
+    """The amendment write door, END-TO-END: a line it writes is one `verify` reads back as `amended`.
+
+    The refusal shapes are pinned by the CLI/round-trip families; what only an end-to-end can show is the
+    WHOLE arc the fix exists for — the reviewer raises the amendment through the door, and the SAME `verify`
+    that used to throw the pass away for a hand-written `{type, gap}` line now routes it `amended`. It drives
+    BOTH the owner's `amend` subcommand and the reviewer-facing `emit-amendment.py` shim (a subprocess, as a
+    caller runs it), so the shim's resolve-and-forward is exercised, not replicated.
+    """
+    failures = 0
+
+    def seed(name: str) -> Path:
+        d = tmp / f"amend-e2e-{name}"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / PLAN_FILE).write_text("".join(line + "\n" for line in Tables(R).PLAN), encoding="utf-8")
+        write_intent(d)
+        return d
+
+    # 1) The owner's door: raise the amendment, then `verify --verdict deferred` must route `amended`.
+    d = seed("owner")
+    progress = d / PROGRESS_FILE
+    run_cli(R, ["identity", "--file", str(progress), "--head-sha", SHA, "--dispatched-at", TS])
+    code, out = run_cli(R, ["amend", "--file", str(progress), "--reason", "no unit covers the harness",
+                            "--id", "u09", "--kind", "file", "--target", "harness.py", "--check", "it runs"])
+    if code != 0 or "u09" not in out:
+        print(f"FAIL     [amend] the owner's door refused a valid amendment (exit {code}): {out.strip()}")
+        failures += 1
+    code, out = run_cli(R, ["verify", "--file", str(progress), "--head-sha", SHA, "--verdict", "deferred"])
+    if code != 1 or R.AMENDED not in out:
+        print(f"FAIL     [amend] `verify --verdict deferred` did not route {R.AMENDED!r} after a written "
+              f"amendment (exit {code}): {out.strip()}")
+        failures += 1
+    else:
+        print(f"ok       [amend] {'owner door -> verify':24} a written amendment routes `{R.AMENDED}`")
+
+    # 2) The no-identity refusal writes NOTHING — the file the write door declined to grow is byte-for-byte
+    #    what it was. (The CLI family pins the exit code and message; this pins that no bytes landed.)
+    d = seed("no-identity")
+    progress = d / PROGRESS_FILE
+    progress.write_bytes(b"")
+    code, out = run_cli(R, ["amend", "--file", str(progress), "--reason", "gap", "--id", "u09",
+                            "--kind", "file", "--target", "x.py", "--check", "a"])
+    if code == 0 or progress.read_bytes() != b"":
+        print(f"FAIL     [amend] a refused amendment (no pass_identity) still changed the file "
+              f"(exit {code}, {len(progress.read_bytes())} byte(s)): {out.strip()}")
+        failures += 1
+    else:
+        print(f"ok       [amend] {'no-identity refusal':24} refused and NOTHING was written")
+
+    # 3) The reviewer-facing shim, as a caller runs it (subprocess) — its line `verify` accepts.
+    d = seed("shim")
+    progress = d / PROGRESS_FILE
+    run_cli(R, ["identity", "--file", str(progress), "--head-sha", SHA, "--dispatched-at", TS])
+    run = subprocess.run(  # noqa: S603 - our own script
+        [sys.executable, str(AMENDMENT_WRAPPER), "--file", str(progress), "--reason", "harness gap",
+         "--id", "u09", "--kind", "docs", "--target", "y.md", "--check", "b"],
+        capture_output=True, text=True, check=False)
+    if run.returncode != 0:
+        print(f"FAIL     [amend] the `emit-amendment.py` shim refused a valid amendment "
+              f"(exit {run.returncode}): {(run.stdout + run.stderr).strip()}")
+        failures += 1
+    code, out = run_cli(R, ["verify", "--file", str(progress), "--head-sha", SHA, "--verdict", "deferred"])
+    if code != 1 or R.AMENDED not in out:
+        print(f"FAIL     [amend] `verify` did not accept the shim's line as {R.AMENDED!r} "
+              f"(exit {code}): {out.strip()}")
+        failures += 1
+    else:
+        print(f"ok       [amend] {'emit-amendment.py shim':24} its line verifies `{R.AMENDED}`")
+    return failures
+
+
 def status_parse(out: str) -> "tuple[list[str], dict[str, dict[str, str]]]":
     """Parse `status`'s printed table BACK: (column names, {pass label -> {column -> cell}}).
 
@@ -1894,6 +2006,8 @@ def run(R: types.ModuleType, tmp: Path) -> int:
     failures += check_docs(R)
     print()
     failures += check_intent_door(R, tmp)
+    print()
+    failures += check_amendment_door(R, tmp)
     print()
     failures += run_status_cases(R, T, tmp)
     print()
