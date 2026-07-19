@@ -91,11 +91,11 @@
   tracks the run's load and would park a healthy slow build; and it does not park one, because **any**
   motion anywhere in the check set moves the fingerprint and resets the clock.
 - A run that heartbeats while **nothing moves** is not healthy, nor is one whose heartbeats keep firing
-  but never look deeply: when the run is **QUIET** (`nudge.py`, off the durable `last_activity` stamp) **OR**
-  `ledger.py watchdog check` says the long-cadence deadline is `due`/`unset`/`invalid`, the heartbeat
-  **runs the health pass before rescheduling** (one pass, then one `watchdog arm`) and **leads the status
-  with the diagnosis** — parked questions with their waiting age, stalled-review findings — ahead of the
-  ledger table (`loop-control.md`, "Reschedule or exit", owns it).
+  but never look deeply: when the run is **QUIET** (`nudge.py`, off the durable `last_activity` stamp)
+  **OR** `ledger.py watchdog check` says the long-cadence deadline is `due`/`unset`/`invalid`, the
+  heartbeat **runs the health pass before rescheduling** (one pass, then one `watchdog arm`) and **leads
+  the status with the diagnosis** — parked questions with their waiting age, stalled-review findings —
+  ahead of the ledger table (`loop-control.md`, "Reschedule or exit", owns it).
 - Stop a PR's in-flight review before dispatching content-changing work on it (review fix, CI fix,
   copilot-address, conflict-resolving rebase): a verdict on a doomed SHA wastes tokens and a review
   slot. Refill the slot with the next due review.

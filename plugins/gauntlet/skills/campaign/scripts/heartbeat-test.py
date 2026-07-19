@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Fixtures for `heartbeat.py` — the scheduled-heartbeat callback command.
+"""Fixtures for `heartbeat.py` — the scheduled heartbeat and session-watchdog commands.
 
 They live in a SIBLING file, and `heartbeat.py self-test` FAILS LOUDLY if it cannot load them.
 
-EVERY FIXTURE MUST PIN A RULE with TEETH. The rules worth the most here are the ones that keep the callback
-a RESUME and nothing else: it carries exactly `--run` and `--token`, it never carries `--heartbeat-id`
-(an acquire-time proof), and it never carries `--new`/`#PR` (start-time args that would mint a fresh run
-every heartbeat). Each of those, if it regressed, would silently break the resume contract.
+EVERY FIXTURE MUST PIN A RULE with TEETH. The rules worth the most here are the ones that keep both wakes
+on the current run: the heartbeat carries exactly `--run` and `--token`; the watchdog adds only
+`--watchdog`; neither carries `--heartbeat-id` (an acquire-time proof) or `--new`/`#PR` (start-time
+args that would mint a fresh run every wake).
 """
 
 from __future__ import annotations
@@ -126,70 +126,49 @@ def t_smuggled_args_cannot_reach_stdout():
                       f"a refused callback must not leak {forbidden!r} to stdout, got {out!r}")
 
 
-# --- the token-free watchdog poke contract ------------------------------------
+# --- session watchdog wake -----------------------------------------------------
 
-def t_watchdog_line_shape():
-    got = H.watchdog_command("/gauntlet:campaign", "g260704-0915-a3f29c1b")
-    check(got == "/gauntlet:campaign --run g260704-0915-a3f29c1b --watchdog",
-          f"the poke must be exactly `<invocation> --run <id> --watchdog`, got {got!r}")
-
-
-def t_watchdog_carries_run_and_watchdog_and_nothing_forbidden():
-    """The poke's WHOLE contract: it carries `--run` and `--watchdog`, and NONE of `--token`, `--new`, `#PR`,
-    or `--heartbeat-id`. A token-bearing poke beside a live chain could be adopted as a second driver and
-    double-drive the run; the start-time/acquire-time args would mint a fresh run or replay a stale proof."""
-    got = H.watchdog_command("/gauntlet:campaign", "g260704-0915-a3f29c1b")
-    check("--run" in got, "the poke must carry --run — it names the run to check on")
-    check("--watchdog" in got, "the poke must carry --watchdog — the flavor that resolves the lease first")
-    for forbidden in ("--token", "--new", "#", "--heartbeat-id"):
-        check(forbidden not in got,
-              f"the poke must NOT carry {forbidden!r} — a token could double-drive; --new/#PR would mint a "
-              f"fresh run; --heartbeat-id is an acquire-time proof a lease-resolving poke never presents")
+def t_watchdog_is_owner_callback_plus_flag():
+    got = H.watchdog_command("/gauntlet:campaign", "g260704-0915-a3f29c1b", "aabbccdd")
+    check(got == "/gauntlet:campaign --run g260704-0915-a3f29c1b --token aabbccdd --watchdog",
+          f"the watchdog must be the owner callback plus --watchdog, got {got!r}")
+    check("--heartbeat-id" not in got and "--new" not in got and "#" not in got,
+          "the watchdog must carry no acquire-time proof or start-time args")
 
 
 def t_watchdog_host_neutral():
-    got = H.watchdog_command("$gauntlet:campaign", "g1")
+    got = H.watchdog_command("$gauntlet:campaign", "g1", "t1")
     check(got.startswith("$gauntlet:campaign "),
-          "the poke must assume NO host form — the Codex `$` invocation must survive verbatim")
+          "the watchdog must preserve the supplied Codex invocation; no host form is hardcoded")
 
 
 def t_cli_watchdog_prints_command():
-    r, inv = "g260704-0915-a3f29c1b", "$gauntlet:campaign"
-    code, out, err = capture_cli(H.main, ["watchdog", "--run", r, "--invocation", inv])
-    check(code == 0, f"a well-formed poke invocation must exit 0, got {code}")
-    check(out.strip() == f"{inv} --run {r} --watchdog",
-          f"the CLI must print the exact poke command, got {out.strip()!r}")
-    check(err == "", f"a successful poke must write nothing to stderr, got {err!r}")
+    r, t, inv = "g260704-0915-a3f29c1b", "aabbccdd", "$gauntlet:campaign"
+    code, out, err = capture_cli(H.main, ["watchdog", "--run", r, "--token", t, "--invocation", inv])
+    check(code == 0, f"a well-formed watchdog wake must exit 0, got {code}")
+    check(out.strip() == f"{inv} --run {r} --token {t} --watchdog",
+          f"the watchdog CLI must print the exact command, got {out.strip()!r}")
+    check(err == "", f"a successful watchdog wake must write nothing to stderr, got {err!r}")
 
 
 def _assert_watchdog_refused(argv, what):
     code, out, err = capture_cli(H.main, ["watchdog", *argv])
     check(code != 0, f"a {what} must fail closed with a non-zero exit, got {code}")
-    check(out.strip() == "", f"a refused poke ({what}) must print NOTHING on stdout, got {out.strip()!r}")
-    check("REFUSED" in err, f"the refusal ({what}) must say REFUSED on stderr, got {err!r}")
+    check(out.strip() == "", f"a refused watchdog ({what}) must print NOTHING on stdout, got {out.strip()!r}")
+    check("REFUSED" in err, f"the watchdog refusal ({what}) must say REFUSED on stderr, got {err!r}")
     return out
 
 
-def t_cli_watchdog_fails_closed_on_blank_and_whitespace():
-    _assert_watchdog_refused(["--run", "", "--invocation", "/x"], "blank --run")
-    _assert_watchdog_refused(["--run", "g1", "--invocation", ""], "blank --invocation")
-    _assert_watchdog_refused(["--run", "g1 --new #9", "--invocation", "/gauntlet:campaign"],
-                             "whitespace-containing --run")
-    _assert_watchdog_refused(["--run", "g1\ttok", "--invocation", "/gauntlet:campaign"], "tab --run")
-    _assert_watchdog_refused(["--run", "g1", "--invocation", "/gauntlet:campaign --new"],
-                             "whitespace-containing --invocation")
-
-
-def t_watchdog_smuggled_token_cannot_reach_stdout():
-    # The point of the token-free design: a `--token`/`--new`/`#PR`/`--heartbeat-id` hidden behind whitespace
-    # in --run must NEVER survive to stdout, where a scheduler would re-split it into a double-driving argv.
-    for smuggle in ("g1 --token deadbeef", "g1 --new #99", "g1 #12", "g1 --heartbeat-id deadbeef"):
-        out = _assert_watchdog_refused(["--run", smuggle, "--invocation", "/gauntlet:campaign"],
-                                       f"smuggled {smuggle!r}")
-        for forbidden in ("--token", "--new", "#", "--heartbeat-id"):
-            if forbidden in smuggle:
-                check(forbidden not in out,
-                      f"a refused poke must not leak {forbidden!r} to stdout, got {out!r}")
+def t_watchdog_refuses_unusable_values():
+    _assert_watchdog_refused(["--run", "", "--token", "tok", "--invocation", "/gauntlet:campaign"],
+                             "blank watchdog run")
+    _assert_watchdog_refused(["--run", "g1", "--token", "aa bb", "--invocation", "/gauntlet:campaign"],
+                             "whitespace-containing watchdog token")
+    out = _assert_watchdog_refused(
+        ["--run", "g1 --new #9", "--token", "tok", "--invocation", "/gauntlet:campaign"],
+        "watchdog run containing start-time args")
+    check("--new" not in out and "#" not in out,
+          f"a refused watchdog must not leak smuggled args to stdout, got {out!r}")
 
 
 CASES = [
@@ -215,16 +194,12 @@ CASES = [
      t_cli_refuses_tab_and_newline),
     ("smuggle-blocked", "--new/#PR/--heartbeat-id hidden behind whitespace never reach stdout",
      t_smuggled_args_cannot_reach_stdout),
-    ("watchdog-line-shape", "the poke is exactly `<invocation> --run <id> --watchdog`",
-     t_watchdog_line_shape),
-    ("watchdog-run-and-watchdog-only", "the poke carries --run/--watchdog and none of --token/--new/#PR/--heartbeat-id",
-     t_watchdog_carries_run_and_watchdog_and_nothing_forbidden),
-    ("watchdog-host-neutral", "the poke's invocation is passed in — no `/` host form is hardcoded",
+    ("watchdog-owner-callback", "the watchdog is the owner callback plus --watchdog only",
+     t_watchdog_is_owner_callback_plus_flag),
+    ("watchdog-host-neutral", "the watchdog preserves the supplied host invocation",
      t_watchdog_host_neutral),
-    ("watchdog-cli-prints", "the watchdog subcommand prints the exact poke and nothing else",
+    ("watchdog-cli-prints", "the watchdog subcommand prints the exact command and nothing else",
      t_cli_watchdog_prints_command),
-    ("watchdog-fails-closed", "a blank or whitespace value fails closed, prints nothing, says REFUSED",
-     t_cli_watchdog_fails_closed_on_blank_and_whitespace),
-    ("watchdog-smuggle-blocked", "a smuggled --token/--new/#PR/--heartbeat-id never reaches stdout",
-     t_watchdog_smuggled_token_cannot_reach_stdout),
+    ("watchdog-refuses-unusable", "a malformed watchdog command prints nothing and refuses",
+     t_watchdog_refuses_unusable_values),
 ]

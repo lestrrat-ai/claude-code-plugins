@@ -314,46 +314,36 @@ The second path is how Codex CLI sessions operate when no scheduled-heartbeat ca
 the process is killed, durable run state and the lease takeover rules allow a later invocation to resume;
 the skill does not pretend a heartbeat was scheduled when none was.
 
-### Persistent watchdog capability
+### Session watchdog nudge
 
-The heartbeat mechanisms above are the run's SHORT cadence. `ledger.py watchdog` (`files-and-ledger.md`)
-adds a LONG durable deadline both hosts honor at loop entry. On a host that has a **persistent scheduler**
-— one that survives the death of the driving process — that deadline is backed by a **resurrection poke**:
-a low-frequency wake that re-checks a run whose heartbeat chain may have died. This capability owns the
-scheduler entry; the deadline itself is host-neutral and lives in `ledger.py`.
+The watchdog is a SECOND, long-cadence wake that asks the current session's orchestrator to audit campaign
+soundness. It is not a durable recovery system: it exists only while that session exists and a dead session
+still needs a manual `--run <id>` resume. `ledger.py watchdog` owns the 45-minute cadence and
+`loop-control.md`, "Reschedule or exit", owns the audit.
 
-The capability is **four idempotent operations**, keyed **deterministically** by run id so a re-run never
-creates a duplicate entry — the entry name is `gauntlet-watchdog-<run-id>`:
+On a host with a session-watchdog capability, use these idempotent operations, keyed by
+`gauntlet-watchdog-<run-id>`:
 
-- `available?` — probe whether this host has a persistent scheduler. Unavailability is a **documented,
-  NON-blocking degradation** (below), never an error that stops the run.
-- `ensure` — create the entry if it is missing; **safe to repeat** (an existing entry is left as-is). Its
-  recurrence is the number `ledger.py watchdog interval` prints — **read it from the tool, never copy a
-  literal**, so a re-tuned interval reaches the scheduler with no edit here. The command the entry fires is
-  built **only** by `heartbeat.py watchdog --run <run-id> --invocation <campaign-invocation>` (it prints
-  `<campaign-invocation> --run <run-id> --watchdog`) — the **same no-hand-assembly stance** the callback
-  takes: never splice that line together yourself, so the poke can never carry a `--token`, `--new`, `#PR`,
-  or `--heartbeat-id` it must not (`run-identity-and-lease.md`, "Resolving a heartbeat", owns the poke's
-  resolution).
-- `inspect` — does the entry exist?
-- `remove` — delete the entry.
+- `available?` — report whether the host can schedule an additional wake into this live session.
+- `ensure` — create the recurring nudge if missing. Use `ledger.py watchdog interval` for its cadence
+  and schedule only `heartbeat.py watchdog`'s stdout, built with run id, owner token, and campaign
+  invocation. The nudge reaches the same session; it never launches an independent driver.
+- `inspect` — report whether the nudge remains armed for this session.
+- `remove` — delete the nudge during normal finalization.
+- `primary inspect` — on a scheduled-heartbeat host, report whether the next primary callback names this
+  run and owner token. A missing callback is repaired by this turn's final normal scheduling action; a
+  bounded-wait host reports that no callback exists to inspect.
 
-**None of `ensure`/`inspect`/`remove` ends the turn** — only wakeup **scheduling** does (the
-scheduled-heartbeat lifecycle above). Managing the watchdog entry is ordinary work the turn does before its
-final scheduling action, exactly like a ledger write or a dispatch.
+None of these operations ends the turn. The primary heartbeat's final scheduling action still ends it.
 
-Host mappings:
-
-| Host | `persistent watchdog` |
+| Host | Session watchdog |
 |---|---|
-| Claude Code | the **harness cron facility** — a persistent scheduler that outlives the session, so `ensure`/`inspect`/`remove` map to its create/list/delete and the poke fires even after a dead heartbeat chain. |
-| Codex | **ABSENT.** There is no persistent scheduler. The loop-entry `watchdog check` still delivers the **full health cadence** whenever a heartbeat or bounded wait runs; what is missing is only automatic resurrection — if the driving process itself dies, recovery is a **manual resume** (`--run <id>`), stated plainly to the user. |
+| Claude Code | Harness cron, scoped to this session. Its entry must deliver the watchdog command into this session, not create a new worker. |
+| Codex | Absent. The bounded-wait loop still honors `watchdog_due`, but has no separate audit wake. |
 
-**Unavailability is a NON-blocking, REPORTED degradation.** When `available?` is false (Codex always), or
-`ensure` fails or is denied, the run does **not** stop and does **not** park: it proceeds on the §1
-deadline path alone, and the setup report and every status render state the boundary — long-cadence health
-checks remain, **automatic resurrection does not**, so a dead driver needs a manual resume
-(`loop-control.md`, run start and "Reschedule or exit", own the report).
+An absent capability or failed `ensure` is non-blocking. State the boundary in the run-start and status
+reports: normal heartbeat health checks remain, but no separate session watchdog is armed. Do not claim
+that either host recovers a dead session automatically.
 
 ## Reviewer selection and diversity
 

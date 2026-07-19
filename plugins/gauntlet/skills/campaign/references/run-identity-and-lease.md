@@ -88,21 +88,24 @@ the verdict the tool prints.
 
 - **Take a run** — at fresh-run start or on adoption — **in this order**: (1) `lease.py mint` prints
   your agent token; **then, BEFORE arming (the arm ends the setup turn on a turn-ending scheduler), do
-  the two durable-setup steps that must survive a mid-setup death:** **(a)** record the run intent —
+  the durable-setup step that must survive a mid-setup death:** record the run intent —
   `ledger.py --file <rundir>/state.jsonl header set pending_adoption "<pr> <pr> …"`, which creates the
   ledger + header if missing — so a death before `acquire` does not lose the requested PR list (it
   otherwise lived only in the invocation args), and any later entry that finds `pending_adoption` set
   resumes setup idempotently from adoption of exactly those PRs (`files-and-ledger.md`; adoption clears it
-  back to `-` as its final step, `loop-control.md` step 1); **(b)** on a persistent-scheduler host,
-  **ensure the watchdog entry** (`runtime-adapter.md`, "Persistent watchdog capability" — `ensure` is
-  idempotent and does NOT end the turn), so a heartbeat chain that dies during or after setup can still be
-  resurrected. Then (2) arm the scheduled heartbeat carrying the token (`--token <tok>`, via `heartbeat.py
-  callback` — `runtime-adapter.md` owns the host mechanism); (3) `lease.py --file <rundir>/lease.json
+  back to `-` as its final step, `loop-control.md` step 1). Then (2) call the session watchdog's
+  `available?` operation. When available, ensure its recurring nudge using `heartbeat.py watchdog --run
+  <run-id> --token <tok> --invocation <campaign-invocation>` (`runtime-adapter.md`, "Session watchdog
+  nudge"). When unavailable or when `ensure` fails, report that the run has no separate audit wake and
+  continue. The nudge does not end this turn and exists only while this session lives. Then (3) arm the
+  scheduled heartbeat carrying
+  the token (`--token <tok>`, via `heartbeat.py callback` — `runtime-adapter.md` owns the host
+  mechanism); (4) `lease.py --file <rundir>/lease.json
   acquire --token <tok> --heartbeat-id <proof>`, where the proof names the arming you ALREADY did
   (`runtime-adapter.md` says what your host's proof is). `acquire` refuses without both and never mints
-  a token itself — arming comes FIRST, so a driver that dies mid-work is still resumed by its own
-  heartbeat. **On a host whose scheduler ends the turn (`runtime-adapter.md`, "Scheduled-heartbeat
-  host"), step 2 is the setup turn's LAST action and step 3 plus the rest of setup (header, adoption,
+  a token itself — arming comes FIRST, so a live session can resume after a turn ends mid-work. **On a host
+  whose scheduler ends the turn (`runtime-adapter.md`, "Scheduled-heartbeat
+  host"), step 3 is the setup turn's LAST action and step 4 plus the rest of setup (header, adoption,
   first dispatches) run on the heartbeat it armed** — the proof then names the arming that delivered
   the very turn you are in, which is exactly "something already done". Size that first arm to the
   setup delay (`loop-control.md`, "Reschedule or exit"): a fresh run resumes in about a minute, not a
@@ -146,30 +149,20 @@ the verdict the tool prints.
 
 ### Resolving a heartbeat (Loop control step 1 applies this)
 
-1. **`--run <id>` given** (every scheduled heartbeat; also a manual targeted resume). Load `<rundir>/state.jsonl`,
-   then present a token to `lease.py`. **Scheduled heartbeat** (token in the prompt's `--token`) →
-   `refresh`: `owned` → reconcile, continue; `superseded` → stand down; refused because the lease is
-   gone → re-arm, then `acquire` (the turn-split in "Take a run" applies on a turn-ending scheduler:
-   the `acquire` runs on the wake the re-arm produces). **Manual `--run` with no token in hand** → `lease.py read` (advisory
-   status only): `absent`/`stale` → adopt (mint + arm + `acquire`, per "Take a run"); `held` → another
-   agent appears active, so **confirm takeover with the user** before `acquire --allow-takeover`;
-   `corrupt` → see "Adopt only an orphaned run".
-
-   **`--run <id> --watchdog` — the resurrection poke** (fired by the persistent watchdog entry —
-   `runtime-adapter.md`, "Persistent watchdog capability"; the poke line is `heartbeat.py watchdog`'s, and
-   is **TOKEN-FREE**). **Arg grammar:** `--watchdog` **requires `--run`** and is **rejected** in
-   combination with `--token`, `--new`, or `#PR` args — a token-bearing poke beside a live chain could
-   double-drive, and `--new`/`#PR` are start-time args that would mint a fresh run. Because it carries no
-   token it resolves the lease **first** and stands down when the primary is alive. Load
-   `<rundir>/state.jsonl`, `lease.py read`, and act on the verdict — **reusing existing verdicts only**:
-
-   | `lease.py` read / state | action |
-   |---|---|
-   | `held` | the primary driver is alive: report **one** stand-down line and **EXIT**. Never prompt, never `--allow-takeover`. |
-   | `stale`/`absent`, run **not finalized** — a non-terminal row remains, **OR** `pending_adoption` is set, **OR** every row is terminal but finalization is still owed (carryover not distilled / label not deleted / lease not released — the lease file is still present and the run label still exists) | the heartbeat chain is **dead**: adopt per "Take a run" — mint, arm the SHORT chain (setup delay), and on a turn-terminal host the arm **ends the poke's turn** so `acquire` runs on the armed wake (exactly the setup turn-split above). Then resume from **what durable state says**: `pending_adoption` set → finish setup (adopt those PRs); non-terminal rows → the normal loop; finalization owed → run the **terminal step** (`loop-control.md`, "Reschedule or exit"). **Report that the watchdog resurrected an orphaned run**, not merely resumed it. |
-   | `stale`/`absent`, run **finished AND finalized** — every row terminal, carryover distilled, label deleted, lease released | nothing to drive: **remove the watchdog entry** (the self-cleaning backstop for a terminal step that never got to remove it) and **EXIT**. |
-   | `corrupt` | report and **EXIT** — never adopt a corrupt lease (the existing rule; see "Adopt only an orphaned run"). |
-   | post-acquire `superseded` / `lost-race` | a driver took the run while you were acquiring: **stand down** (the existing rule) — report and stop. |
+1. **`--run <id>` given** (every scheduled heartbeat, session watchdog nudge, or manual targeted resume).
+   Load `<rundir>/state.jsonl`, then present a token to `lease.py`. **Scheduled heartbeat** (token in
+   the prompt's `--token`, without `--watchdog`) → `refresh`: `owned` → reconcile, continue;
+   `superseded` → stand down; refused because the lease is gone → re-arm, then `acquire` (the turn-split
+   in "Take a run" applies on a turn-ending scheduler: the `acquire` runs on the wake the re-arm
+   produces). **Session watchdog** (`--run <id> --token <tok> --watchdog`) → first run the runtime
+   adapter's read-only primary and watchdog inspections, then take the same `refresh`: `owned` → run
+   the soundness audit before normal reconciliation (`loop-control.md`, "Reschedule or exit"); any refusal
+   or `superseded` → report the inspections and stop. It NEVER calls `acquire`,
+   `--allow-takeover`, or adoption: it is a live-session audit, not a recovery path.
+   **Manual `--run` with no token in hand** → `lease.py read` (advisory status only):
+   `absent`/`stale` → adopt (mint + arm + `acquire`, per "Take a run"); `held` → another agent
+   appears active, so **confirm takeover with the user** before `acquire --allow-takeover`; `corrupt` →
+   see "Adopt only an orphaned run".
 
 2. **Bare invocation** → the arg decides intent:
    - **`#PR` args are given** (`<campaign-invocation> #12 #15`, no `--run`) → **start a NEW run** that

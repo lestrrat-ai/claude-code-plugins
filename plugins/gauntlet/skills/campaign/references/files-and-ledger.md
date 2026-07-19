@@ -205,8 +205,9 @@ lived only in the invocation args — `run-identity-and-lease.md`, "Take a run",
 `watchdog_due` it is an **ORDINARY, hand-settable config field** (`header set pending_adoption "89 90"`):
 it has a real door, and **writing it IS meaningful activity** (no exemption — it is **not** a sensor and
 carries no liveness meaning). Adoption clears it back to `-` as its final step, and any later entry — the
-armed wake, a watchdog poke, a manual resume — that finds it set resumes setup idempotently from exactly
-those PRs (`loop-control.md` step 1). It **defaults to `-`**: nothing is pending.
+armed wake, a watchdog nudge after it refreshes this owner, or a manual resume — that finds it set resumes
+setup idempotently from exactly those PRs (`loop-control.md` step 1). It **defaults to `-`**: nothing is
+pending.
 
 Header field notes (the header fields above; per-row fields follow):
 

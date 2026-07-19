@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Emit the scheduled-heartbeat callback command — the exact line an agent schedules for its next wake.
+"""Emit the scheduled heartbeat and session-watchdog commands.
 
 A scheduled heartbeat is the SAME owner resuming its own run, so when that callback runs it goes through
 `lease.py`'s REFRESH path, not `acquire`. Per the single-user policy (`AGENTS.md`), an owner's refresh needs
@@ -18,9 +18,13 @@ and nothing else. In particular:
 - It hardcodes NO host form. The invocation string (`/gauntlet:campaign` on Claude Code,
   `$gauntlet:campaign` on Codex) is PASSED IN via `--invocation`, so this tool is host-neutral.
 
-This tool does NOT arm the heartbeat. Arming is the host's own `ScheduleWakeup`/cron call, which is an
-agent-only action that cannot be scripted — `runtime-adapter.md` owns that mechanism. This tool only PRINTS
-the command the agent then schedules through it.
+The watchdog is a SECOND, session-scoped wake at a longer cadence. It carries the current owner's token and
+adds `--watchdog`, which makes the campaign audit its soundness before rescheduling. It is not an orphan
+recovery path and never claims to survive a dead session.
+
+This tool does NOT arm either wake. Arming is the host's own scheduler call, which is an agent-only action
+that cannot be scripted — `runtime-adapter.md` owns that mechanism. This tool only PRINTS the command the
+agent then schedules through it.
 """
 
 from __future__ import annotations
@@ -31,7 +35,7 @@ from pathlib import Path
 
 from _gauntlet.modules import load_module_from_path
 
-DESCRIPTION = "Print the scheduled-heartbeat callback command (two flags only: --run and --token)."
+DESCRIPTION = "Print a scheduled heartbeat or session-watchdog campaign command."
 
 _HERE = Path(__file__).resolve().parent
 SIBLING = _HERE / "heartbeat-test.py"
@@ -48,18 +52,9 @@ def callback_command(invocation: str, run_id: str, token: str) -> str:
     return f"{invocation} --run {run_id} --token {token}"
 
 
-def watchdog_command(invocation: str, run_id: str) -> str:
-    """Assemble the watchdog resurrection poke: `<invocation> --run <run-id> --watchdog`, and NOTHING else.
-
-    A poke is fired by a persistent scheduler to check on a run whose heartbeat chain may have died. It is
-    TOKEN-FREE BY DESIGN: unlike the `callback` (a resume by the SAME owner, which carries `--token`), a poke
-    might land BESIDE a still-live heartbeat chain. A token-bearing poke could then be adopted as a second
-    driver and DOUBLE-DRIVE the one run, so the poke carries no token — it resolves the lease first and stands
-    down when the primary is alive. It likewise carries no `--new`/`#PR` (start-time args that would mint a
-    fresh run) and no `--heartbeat-id` (an acquire-time proof). The host form is passed in, so this stays
-    host-neutral, exactly like `callback_command`.
-    """
-    return f"{invocation} --run {run_id} --watchdog"
+def watchdog_command(invocation: str, run_id: str, token: str) -> str:
+    """Build a session-scoped soundness-audit wake for the current owner."""
+    return f"{invocation} --run {run_id} --token {token} --watchdog"
 
 
 # --- cli ----------------------------------------------------------------------
@@ -75,8 +70,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="the host campaign invocation (Claude Code `/gauntlet:campaign`, "
                          "Codex `$gauntlet:campaign`) — passed in so this tool hardcodes no host form")
 
-    wd = sub.add_parser("watchdog", help="print the TOKEN-FREE watchdog resurrection poke command")
-    wd.add_argument("--run", required=True, help="the run id the poke checks on (never mints a new run)")
+    wd = sub.add_parser("watchdog", help="print the session-watchdog soundness-audit wake command")
+    wd.add_argument("--run", required=True, help="the existing run id the watchdog audits")
+    wd.add_argument("--token", required=True, help="the current owner token")
     wd.add_argument("--invocation", required=True,
                     help="the host campaign invocation — passed in so this tool hardcodes no host form")
 
@@ -85,8 +81,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _reject_unusable(fields: "list[tuple[str, str]]") -> bool:
-    """Fail closed on any required value that is empty OR contains ANY whitespace. Shared by `callback` and
-    `watchdog`: whitespace is the argument-injection seam — a `--run "g1 --new #99"` would smuggle extra
+    """Fail closed on any required value that is empty OR contains ANY whitespace:
+    whitespace is the argument-injection seam — a `--run "g1 --new #99"` would smuggle extra
     tokens past the fixed-shape guarantee once the printed line is re-split into argv. No legitimate value (a
     `g<date>-<rand>` run-id, a hex token, a `/gauntlet:campaign` invocation) carries whitespace. On a bad
     value: print the refusal on stderr, print NOTHING on stdout, return True so the caller returns non-zero.
@@ -116,12 +112,10 @@ def main(argv: "list[str] | None" = None) -> int:
         return 0
 
     if args.cmd == "watchdog":
-        # The poke is TOKEN-FREE by design, so it validates only `--run` and `--invocation` — the same
-        # empty/whitespace fail-closed the callback applies, so a smuggled `--token`/`--new`/`#PR` hidden
-        # behind whitespace can never survive to stdout and be re-split into a double-driving argv.
-        if _reject_unusable([("--run", args.run), ("--invocation", args.invocation)]):
+        if _reject_unusable([("--run", args.run), ("--token", args.token),
+                             ("--invocation", args.invocation)]):
             return 1
-        print(watchdog_command(args.invocation, args.run))
+        print(watchdog_command(args.invocation, args.run, args.token))
         return 0
 
     parser.error("a subcommand is required (callback | watchdog | self-test)")
@@ -159,7 +153,7 @@ def self_test() -> int:
     except SelfTestFailure as exc:
         print(f"FAIL     {'sibling-fixtures':30} -> the fixtures in {SIBLING.name} must be RUNNABLE\n"
               f"         {exc}")
-        print("\n1 check(s) FAILED — the heartbeat callback tool's contract is broken.")
+        print("\n1 check(s) FAILED — the campaign wake-command tool's contract is broken.")
         return 1
     for name, rule, fn in cases:
         try:
@@ -174,9 +168,9 @@ def self_test() -> int:
             print(f"ok       {name:30} -> {rule}")
     print()
     if failures:
-        print(f"{failures} check(s) FAILED — the heartbeat callback tool's contract is broken.")
+        print(f"{failures} check(s) FAILED — the campaign wake-command tool's contract is broken.")
         return 1
-    print(f"all {len(cases)} fixtures hold — the heartbeat callback tool's contract is intact.")
+    print(f"all {len(cases)} fixtures hold — the campaign wake-command tool's contract is intact.")
     return 0
 
 
