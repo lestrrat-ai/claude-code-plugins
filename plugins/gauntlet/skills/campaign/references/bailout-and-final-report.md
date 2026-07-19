@@ -172,8 +172,9 @@ When the loop exits, summarize:
   announced only in it — a follow-up that exists only in this report dies with it.
 - Any worktrees left for inspection.
 
-This run's durable carryover file (`.gauntlet/history/<run-id>.md`) is written on exit (Loop control
-step 5), so the next fresh run inherits what this run's PRs came to. Its contents are **NOT** a copy of
-the list above: the carryover file's schema is owned by `carryover.md` ("The carryover ledger") — write
-the slots that owner defines, and take any change to them from there. The two lists overlap but are not
-the same list, and the report must never be read as an enumeration of the carryover file.
+This run's durable carryover file (`.gauntlet/history/<run-id>.md`) is written on exit by
+`carryover.py distill` (Loop control step 5), so the next fresh run inherits what this run's PRs came to.
+Its contents are **NOT** a copy of the list above: the carryover file is a mechanical projection of the
+terminal ledger, owned by `carryover.md` ("The carryover ledger") — take any change to its slots from
+there. The two lists overlap but are not the same list, and the report must never be read as an
+enumeration of the carryover file.
