@@ -594,10 +594,10 @@ and the PR would stall forever, which is the very failure this feature exists to
 evidence answers "is this **live** process working?" and is meaningful **only** for the in-flight
 ~5-min launch check; once the task is gone, the only question is how much relaunch budget remains. It
 binds to the run via
-`--run <id>` (what every scheduled heartbeat carries, so a fresh instance adopting an orphaned run's heartbeat
-just works) or, for a bare re-invocation, by discovering live runs and adopting the sole **orphaned**
-one (asking among several). Adoption is gated on the **run lease**: an agent takes over only a run
-whose lease is absent or stale, so it can always tell whether another agent is still driving that
+`--run <id>` (which a scheduled heartbeat carries only while its session remains live; after a dead
+session, use a manual `--run <id>` resume) or, for a bare re-invocation, by discovering live runs and
+adopting the sole **orphaned** one (asking among several). Adoption is gated on the **run lease**: an agent takes
+over only a run whose lease is absent or stale, so it can always tell whether another agent is still driving that
 ledger and never double-drives an actively-held run (see "Run identity and concurrency" and Loop
 control step 1). This is how a later agent picks up exactly where a previous instance left off.
 
