@@ -455,9 +455,15 @@ like any other settled or stalled PR. The gate suppresses a bound only while wor
 never registered, **which check has been `RUNNING` since when without the check set moving**, which value
 was unrecognized, which read was denied), **and `blocker_ruling` = `-` in
 that same row write** ("THE RULING IS CONSUMED EXACTLY ONCE" below — a ruling already on the
-row answers the **previous** park, never this one), and tell the user. **For the three liveness bounds,
-`ci-status.py liveness` performs that row write itself** (exit `3` — "THE BOOKKEEPING IS A COMMAND",
-above); telling the user is the half that stays with the driver. It does **not**
+row answers the **previous** park, never this one), and tell the user. **The three-field row write is a
+COMMAND, split by who owns the park: for the three liveness bounds `ci-status.py liveness` performs it
+itself** (exit `3` — "THE BOOKKEEPING IS A COMMAND", above); **every OTHER machine-blocker park runs
+`ledger.py … park --pr <N> --reason <the blocker>`**, which writes `status = awaiting-user`, `ci_reason`,
+and `blocker_ruling = -` in one atomic write (`files-and-ledger.md`, "Editing the ledger" — it refuses a
+blank reason, a terminal row, and a second park over an open question). The non-CI sites are
+`stage-3-merge.md`'s merge-precondition park. **NEVER hand-assemble the three fields through `set`** — a
+park missing its `ci_reason` is a question nobody can read. Telling the user is the half that stays with
+the driver. It does **not**
 abort the run or close the PR — the run's other PRs keep going. At **this** park — a CI one — `ci_reason` is
 **the DECIDE reason for this snapshot**: the bullet that matched and the row that made it match, never a
 bare restatement of `ci`. (The field itself is **wider than CI**: it is the durable machine-blocker reason,
@@ -520,11 +526,14 @@ added to the schema tomorrow is already covered here:
 itself.** `blocker_ruling` must be **DURABLE** (it survives a context loss) **AND spent EXACTLY ONCE** (it
 answers the park it was written for, and no other). Both halves, or neither holds:
 
-- **ENTERING a machine-blocker park sets `blocker_ruling` = `-`** (ESCALATE above), in the **same**
-  `ledger.py … set` call that writes `status = awaiting-user` — one atomic row write, so no heartbeat can ever
-  observe a freshly parked row still carrying the previous park's answer.
-- **CONSUMING a `retry` sets it back to `-`** in the same call that unparks the PR (`loop-control.md`
-  step 3).
+- **ENTERING a machine-blocker park sets `blocker_ruling` = `-`** (ESCALATE above), in the **same** write
+  that sets `status = awaiting-user` — `ledger.py … park` for a non-CI park, `ci-status.py liveness` for a
+  CI one — one atomic row write, so no heartbeat can ever observe a freshly parked row still carrying the
+  previous park's answer.
+- **CONSUMING a `retry` sets it back to `-`** in the **same** `ledger.py … unpark --pr <N>` call that
+  unparks the PR (`loop-control.md` step 3): the tool spends the ruling and resets the liveness counters in
+  one write. It refuses a `blocker_ruling` that is not a well-formed `retry@<iso>` — a bare `retry` or an
+  `abort` never reaches this consume path.
 - **`abort@<iso>` is NEVER cleared.** It unparks into terminal `aborted`; a terminal row is never re-parked
   and never re-consulted, so the ruling stays as the durable record of **why** the PR stopped
   (`bailout-and-final-report.md`).

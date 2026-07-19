@@ -1726,6 +1726,206 @@ def t_stale_repair_decision_cleared_at_cap(L: ModuleType, tmp: Path) -> None:
     check(fresh in out, f"dispatch-check must name the decision to dispatch: {out!r}")
 
 
+# --- park / unpark: the machine-blocker park is a MULTI-FIELD atomic write -----
+#
+# A park (status=awaiting-user, ci_reason=<blocker>, blocker_ruling=-) and a retry unpark (status=in_review,
+# ruling spent, the four liveness counters reset) are each coherent only as ONE write. Hand-assembled from
+# `set` a field gets dropped — a park with no ci_reason is unanswerable, a retry that leaves the counters
+# re-escalates. These fixtures pin that each subcommand does the WHOLE write, refuses what it must, and
+# leaves everything it does not own untouched.
+
+PARK_ROW = dict(pr="1", head_sha=SHA_A, status="in_review", settled_strikes="2", unusable_refetches="1",
+                ci_stalled_since="2026-07-14T00:00:00Z", ci_fingerprint="sha256:zz")
+
+
+def count_dumps(L: ModuleType, fn) -> int:
+    """Run `fn` and return how many times the accessor wrote the store — a park/unpark is ONE write."""
+    calls = [0]
+    real = L.dump
+
+    def spy(*a, **k):  # noqa: ANN002,ANN003
+        calls[0] += 1
+        return real(*a, **k)
+
+    # `setattr`, not `L.dump = spy`: assigning through the ModuleType attribute is a Pyright error on the
+    # type-clean list, and this is a test seam, not a schema write.
+    setattr(L, "dump", spy)
+    try:
+        fn()
+    finally:
+        setattr(L, "dump", real)
+    return calls[0]
+
+
+def t_park_writes_all_three(L: ModuleType, tmp: Path) -> None:
+    """`park` sets status=awaiting-user, ci_reason=<blocker>, blocker_ruling=- in ONE write — and touches
+    NOTHING else, the liveness counters included (a park does not reset them; only the unpark does)."""
+    path = write_lines(tmp / "p.jsonl", header_line(L),
+                       row_line(L, blocker_ruling="retry@2026-07-01T00:00:00Z", **PARK_ROW))
+    captured: dict = {}
+
+    def run() -> None:
+        captured["r"] = cli(L, ["--file", str(path), "park", "--pr", "1", "--reason", "BLOCKED merge state — park"])
+
+    dumps = count_dumps(L, run)
+    code, out, err = captured["r"]
+    check(code == 0, f"park exited {code}: {err!r}")
+    check(dumps == 1, f"park wrote the store {dumps} times, not once — it is ONE atomic write")
+    row = json.loads(out)
+    check((row["status"], row["ci_reason"], row["blocker_ruling"])
+          == ("awaiting-user", "BLOCKED merge state — park", "-"),
+          f"park did not write the three fields atomically: {row!r}")
+    # the liveness counters and every unrelated field are UNTOUCHED — park is not the counter-reset site.
+    check((row["settled_strikes"], row["unusable_refetches"], row["ci_stalled_since"], row["ci_fingerprint"])
+          == ("2", "1", "2026-07-14T00:00:00Z", "sha256:zz"),
+          f"park reset a liveness counter — that is the UNPARK's job, not the park's: {row!r}")
+    check(row["head_sha"] == SHA_A, f"park disturbed an unrelated field: {row!r}")
+    # …and it is on DISK, not just in the printed JSON.
+    code, got, _ = cli(L, ["--file", str(path), "get", "--pr", "1"])
+    check(json.loads(got)["status"] == "awaiting-user", f"the park did not land on disk: {got!r}")
+
+
+def t_park_refusals(L: ModuleType, tmp: Path) -> None:
+    """Every park refusal writes NOTHING, and the double-park STOPS with the OPEN question surfaced."""
+    # no row
+    code, _, err = cli(L, ["--file", str(tmp / "none.jsonl"), "park", "--pr", "9", "--reason", "x"])
+    check(code == 1 and "no row for pr 9" in err, f"park on a missing row: exit {code}, {err!r}")
+
+    # terminal rows
+    for term in ("merged", "aborted"):
+        path = write_lines(tmp / f"{term}.jsonl", header_line(L), row_line(L, pr="1", status=term))
+        code, _, err = cli(L, ["--file", str(path), "park", "--pr", "1", "--reason", "x"])
+        check(code == 1 and term in err and "terminal" in err, f"[{term}] park was allowed: exit {code}, {err!r}")
+        check("awaiting-user" not in path.read_text(), f"[{term}] a refused park still wrote the store")
+
+    # empty / `-` reason — a park that cannot NAME its blocker
+    for reason in ("", "   ", "-"):
+        path = write_lines(tmp / f"r{reason.strip() or 'blank'}.jsonl", header_line(L),
+                           row_line(L, pr="1", status="in_review"))
+        code, _, err = cli(L, ["--file", str(path), "park", "--pr", "1", "--reason", reason])
+        check(code == 1 and "name its blocker" in err, f"[{reason!r}] park with no blocker: exit {code}, {err!r}")
+        check("awaiting-user" not in path.read_text(), f"[{reason!r}] a refused park still wrote the store")
+
+    # conflicting-owner held states — each names the conflicting status, exit 1, nothing written
+    for status in ("awaiting-api", L.REPAIR_STATUS):
+        path = write_lines(tmp / f"o-{status}.jsonl", header_line(L), row_line(L, pr="1", status=status))
+        code, _, err = cli(L, ["--file", str(path), "park", "--pr", "1", "--reason", "x"])
+        check(code == 1 and status in err, f"[{status}] park did not name the conflicting owner: exit {code}, {err!r}")
+        check("awaiting-user" not in path.read_text(), f"[{status}] a refused park still wrote the store")
+
+    # DOUBLE PARK — a park is already open. STOP (EXIT_STOP), surface the OPEN ci_reason, overwrite NOTHING.
+    open_q = "SETTLED at the STRIKE CAP — nobody is coming"
+    path = write_lines(tmp / "dbl.jsonl", header_line(L),
+                       row_line(L, pr="1", status="awaiting-user", ci_reason=open_q,
+                                blocker_ruling="-"))
+    code, _, err = cli(L, ["--file", str(path), "park", "--pr", "1", "--reason", "a DIFFERENT blocker"])
+    check(code == L.EXIT_STOP, f"a second park did not STOP: exit {code}")
+    check(open_q in err, f"the double-park refusal must surface the OPEN question: {err!r}")
+    code, out, _ = cli(L, ["--file", str(path), "get", "--pr", "1", "--field", "ci_reason"])
+    check(out.strip() == open_q,
+          f"a second park OVERWROTE the open question — the very thing the user is being asked to rule on: {out!r}")
+
+
+def t_unpark_spends_and_resets(L: ModuleType, tmp: Path) -> None:
+    """`unpark` flips status=in_review, SPENDS the ruling to `-`, and resets ALL FOUR liveness counters —
+    in ONE write — while every unrelated field survives."""
+    path = write_lines(tmp / "u.jsonl", header_line(L),
+                       row_line(L, blocker_ruling="retry@2026-07-14T01:00:00Z", status="awaiting-user",
+                                ci_reason="SETTLED — nobody coming", slug="keep-me", reviews_ok="1",
+                                review_rounds="5", ns_streak="0",
+                                **{k: v for k, v in PARK_ROW.items() if k not in ("status",)}))
+    captured: dict = {}
+
+    def run() -> None:
+        captured["r"] = cli(L, ["--file", str(path), "unpark", "--pr", "1"])
+
+    dumps = count_dumps(L, run)
+    code, out, err = captured["r"]
+    check(code == 0, f"unpark exited {code}: {err!r}")
+    check(dumps == 1, f"unpark wrote the store {dumps} times, not once — it is ONE atomic write")
+    row = json.loads(out)
+    check((row["status"], row["blocker_ruling"]) == ("in_review", "-"),
+          f"unpark did not flip status and SPEND the ruling: {row!r}")
+    # ALL FOUR liveness counters back to their ROW_DEFAULTS — asserted against the accessor's own defaults.
+    for f in L.LIVENESS_COUNTERS:
+        check(row[f] == L.ROW_DEFAULTS[f],
+              f"unpark left liveness counter {f}={row[f]!r}, not its default {L.ROW_DEFAULTS[f]!r} — the "
+              f"retry would re-escalate on its first derivation")
+    # …and the fields the unpark does NOT own are all still there.
+    check((row["head_sha"], row["slug"], row["reviews_ok"], row["review_rounds"], row["ci_reason"])
+          == (SHA_A, "keep-me", "1", "5", "SETTLED — nobody coming"),
+          f"unpark disturbed a field it does not own (ci_reason is overwritten by the NEXT derivation, "
+          f"never by the unpark): {row!r}")
+    code, got, _ = cli(L, ["--file", str(path), "get", "--pr", "1", "--field", "status"])
+    check(got.strip() == "in_review", f"the unpark did not land on disk: {got!r}")
+
+
+def t_unpark_refusals(L: ModuleType, tmp: Path) -> None:
+    """Every unpark refusal writes NOTHING; the unanswered park STOPS, and abort is routed to its own flow."""
+    # no row
+    code, _, err = cli(L, ["--file", str(tmp / "none.jsonl"), "unpark", "--pr", "9"])
+    check(code == 1 and "no row for pr 9" in err, f"unpark on a missing row: exit {code}, {err!r}")
+
+    # not parked — nothing to unpark
+    for status in ("in_review", "pending", "merged", L.REPAIR_STATUS):
+        path = write_lines(tmp / f"np-{status}.jsonl", header_line(L),
+                           row_line(L, pr="1", status=status, blocker_ruling="retry@2026-07-14T00:00:00Z"))
+        code, _, err = cli(L, ["--file", str(path), "unpark", "--pr", "1"])
+        check(code == 1 and "not awaiting-user" in err, f"[{status}] unpark was allowed: exit {code}, {err!r}")
+
+    # UNANSWERED park — ruling `-`. STOP (EXIT_STOP), surface the open blocker, write nothing.
+    path = write_lines(tmp / "unans.jsonl", header_line(L),
+                       row_line(L, pr="1", status="awaiting-user", ci_reason="the OPEN question",
+                                blocker_ruling="-"))
+    code, _, err = cli(L, ["--file", str(path), "unpark", "--pr", "1"])
+    check(code == L.EXIT_STOP, f"unparking an UNANSWERED park did not STOP: exit {code}")
+    check("the OPEN question" in err, f"the unanswered-unpark refusal must surface the open blocker: {err!r}")
+    code, got, _ = cli(L, ["--file", str(path), "get", "--pr", "1", "--field", "status"])
+    check(got.strip() == "awaiting-user", f"a refused unpark still moved the row off the park: {got!r}")
+
+    # ABORT ruling — NOT an unpark; routed to the abort flow, exit 1, nothing written
+    path = write_lines(tmp / "abort.jsonl", header_line(L),
+                       row_line(L, pr="1", status="awaiting-user", ci_reason="q",
+                                blocker_ruling="abort@2026-07-14T00:00:00Z"))
+    code, _, err = cli(L, ["--file", str(path), "unpark", "--pr", "1"])
+    check(code == 1 and "abort" in err.lower(), f"an abort ruling was treated as an unpark: exit {code}, {err!r}")
+    code, got, _ = cli(L, ["--file", str(path), "get", "--pr", "1", "--field", "status"])
+    check(got.strip() == "awaiting-user", f"a refused (abort) unpark still moved the row: {got!r}")
+
+    # MALFORMED stamps — a bare `retry`, an empty stamp, a non-date stamp — all refused
+    for bad in ("retry", "retry@", "retry@not-a-date", "retryX@2026-07-14T00:00:00Z"):
+        path = write_lines(tmp / f"bad-{bad.strip('@') or 'x'}.jsonl", header_line(L),
+                           row_line(L, pr="1", status="awaiting-user", ci_reason="q", blocker_ruling=bad))
+        code, _, err = cli(L, ["--file", str(path), "unpark", "--pr", "1"])
+        check(code == 1 and "well-formed" in err,
+              f"[{bad!r}] a malformed ruling was accepted as a retry: exit {code}, {err!r}")
+        check("in_review" not in path.read_text(), f"[{bad!r}] a refused unpark still wrote the store")
+
+
+def t_set_status_transitions_stay_open(L: ModuleType, tmp: Path) -> None:
+    """The `set --status awaiting-user` / `set --status in_review` transitions are DELIBERATELY still
+    allowed — the design decision that keeps the REVIEW-STANDOFF park (finding-audit.md) working.
+
+    The standoff park is answered into `audit-<pr>-<n>.md`, NOT `blocker_ruling`, and its unpark carries no
+    `retry@<iso>` ruling for `unpark` to validate — so park/unpark CANNOT serve it and `set` must stay open.
+    If a future change gates these transitions to force everything through park/unpark, this fixture goes
+    red and says why: the standoff writer would break.
+    """
+    path = write_lines(tmp / "so.jsonl", header_line(L), row_line(L, pr="1", status="in_review"))
+    # standoff PARK via set — no ci_reason, no ruling; answered into the audit file
+    code, out, err = cli(L, ["--file", str(path), "set", "--pr", "1", "--status", "awaiting-user"])
+    check(code == 0, f"`set --status awaiting-user` was refused — the review-standoff park is broken: {err!r}")
+    check(json.loads(out)["status"] == "awaiting-user", f"set did not write the standoff park: {out!r}")
+    # standoff UNPARK via set — a plain return to in_review, no retry ruling involved
+    code, out, err = cli(L, ["--file", str(path), "set", "--pr", "1", "--status", "in_review"])
+    check(code == 0, f"`set --status in_review` was refused — the standoff unpark is broken: {err!r}")
+    check(json.loads(out)["status"] == "in_review", f"set did not write the standoff unpark: {out!r}")
+    # `blocker_ruling` also stays settable via set — it is where the user's ANSWER is recorded
+    code, out, err = cli(L, ["--file", str(path), "set", "--pr", "1", "--blocker-ruling", "retry@2026-07-14T00:00:00Z"])
+    check(code == 0 and json.loads(out)["blocker_ruling"] == "retry@2026-07-14T00:00:00Z",
+          f"`set --blocker-ruling` was refused — the user's answer cannot be recorded: exit {code}, {err!r}")
+
+
 CASES = [
     ("escape-injective", "escape_cell is INJECTIVE — no two values collide", t_escape_injective),
     ("render-injective", "the PRINTED ROWS are injective too — no two values print the same line", t_render_injective),
@@ -1775,6 +1975,11 @@ CASES = [
     ("repair-bound-no-door", "repair_count has NO flag — a budget you can zero is not a bound", t_the_repair_bound_has_no_door),
     ("repair-decision-cleared", "re-entering a cap CLEARS the stale reassessment decision — the repair budget binds", t_stale_repair_decision_cleared_at_cap),
     ("pr-origin-default", "an unknown origin is `external` — the fail-safe direction", t_pr_origin_defaults_to_external),
+    ("park-writes-three", "`park` writes status/ci_reason/blocker_ruling atomically, counters untouched", t_park_writes_all_three),
+    ("park-refusals", "park refuses no-row/terminal/blank-reason/held-owner, and a double-park STOPs", t_park_refusals),
+    ("unpark-spends-resets", "`unpark` flips status, spends the ruling, resets all four counters — one write", t_unpark_spends_and_resets),
+    ("unpark-refusals", "unpark refuses not-parked/unanswered/abort/malformed — writing nothing", t_unpark_refusals),
+    ("set-status-stays-open", "set may still write the standoff park/unpark transitions — park/unpark can't serve them", t_set_status_transitions_stay_open),
     ("replay-the-record", "the REAL #42/#43 verdict sequences: it fires, never too early, and says what it costs", t_replay_the_real_record),
 ]
 

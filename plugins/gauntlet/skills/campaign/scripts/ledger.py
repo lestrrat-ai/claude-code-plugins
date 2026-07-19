@@ -18,6 +18,7 @@ import os
 import re
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import NoReturn
 
@@ -178,6 +179,30 @@ VERDICT_OWNED = ("review_rounds", "ns_streak")
 # forever. The tool that decides a repair is the only thing that writes what it spent.
 REPAIR_OWNED = ("repair_count", "repair_decision")
 
+# The park/unpark TRANSITIONS `park`/`unpark` own — the same mechanism as VERDICT_OWNED, one level up at the
+# `status` field. A machine-blocker park and a retry unpark are each MULTI-FIELD atomic writes whose fields
+# are coherent only TOGETHER: a park sets `status = awaiting-user`, `ci_reason` = the blocker, and
+# `blocker_ruling = -` in ONE write (a park with no `ci_reason` is a question nobody can read); a retry
+# unpark sets `status = in_review`, SPENDS the ruling back to `-`, and resets the four liveness counters in
+# ONE write (a retry that leaves the counters standing re-escalates on its first derivation). Hand-assembling
+# either from `set` is exactly how a field gets dropped, so `park`/`unpark` are the sanctioned writers of
+# those two transitions (stage-2-ci.md, "ESCALATE" / "THE RULING IS CONSUMED EXACTLY ONCE" / "THE LIVENESS
+# COUNTERS"; loop-control.md step 3; stage-3-merge.md).
+#
+# `set` is DELIBERATELY left able to write `status` and `blocker_ruling` — the guard is NOT closed, because:
+#   * the REVIEW-STANDOFF park (finding-audit.md) writes `status = awaiting-user` through `set` and is
+#     answered into `audit-<pr>-<n>.md`, NOT `blocker_ruling`; its unpark is a plain `set --status
+#     in_review` carrying no `retry@<iso>` ruling for `unpark` to validate. park/unpark cannot serve that
+#     class, so `set` stays open for it (and for `merged`/`aborted`/the api-approval resume);
+#   * `blocker_ruling` is where the USER'S ANSWER is recorded (`set --pr N --blocker-ruling retry@<iso>`);
+#     park/unpark own only the park-ENTRY clear and the retry SPEND, never the answer itself.
+# The CI-bound parks are `ci-status.py liveness`'s (it writes the same three fields itself and does NOT call
+# `park`); `park` is the writer for every OTHER machine-blocker park.
+
+# (`unpark` resets every LIVENESS_COUNTERS member — the set defined once, above — to its ROW_DEFAULTS
+# value, never a retyped literal, so a counter added to the set is reset by the retry unpark with NO edit
+# to `cmd_unpark`.)
+
 SATISFIED, NOT_SATISFIED = "satisfied", "not-satisfied"
 VERDICTS = (SATISFIED, NOT_SATISFIED)
 
@@ -241,6 +266,12 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}\Z")
 # would take `" +2 "` and CRASH on `"-"` — and `-` is this schema's own "not set" spelling, so it is a
 # value a counter field can genuinely be handed by a hand-edited store).
 COUNT_RE = re.compile(r"^(?:0|[1-9][0-9]*)\Z")
+
+# A machine-blocker ruling on disk: `retry@<iso>` | `abort@<iso>` (or `-` for none). `unpark` CONSUMES a
+# `retry`, so the shape is checked rather than trusted — the `@<iso>` is what SCOPES a ruling to the park it
+# answers (stage-2-ci.md, "THE RULING IS CONSUMED EXACTLY ONCE"), and a bare `retry` or a malformed stamp is
+# a ruling `unpark` must refuse, never act on. No DOTALL: a newline in the stamp is malformed, so it fails.
+RULING_RE = re.compile(r"^(retry|abort)@(.+)\Z")
 
 
 def fail(msg: str) -> NoReturn:
@@ -387,6 +418,25 @@ def find_row(rows: list[dict], pr: str) -> "dict | None":
 def check_field(name: str, valid: "tuple[str, ...]") -> None:
     if name not in valid:
         fail(f"unknown field '{name}'; valid: {', '.join(valid)}")
+
+
+def parse_ruling(value: str) -> "tuple[str, str] | None":
+    """A `blocker_ruling` as (kind, stamp) — or None if it is not a well-formed `retry@<iso>`/`abort@<iso>`.
+
+    The stamp is validated by actually PARSING it: a trailing `Z` is UTC, which `datetime.fromisoformat`
+    does not accept before 3.11, so it is normalised to `+00:00` first. A bare `retry`, an empty stamp, or
+    one that is not a date-time is not a ruling `unpark` may consume — refused, never guessed at.
+    """
+    m = RULING_RE.match(value)
+    if m is None:
+        return None
+    kind, stamp = m.group(1), m.group(2)
+    probe = stamp[:-1] + "+00:00" if stamp.endswith("Z") else stamp
+    try:
+        datetime.fromisoformat(probe)
+    except ValueError:
+        return None
+    return kind, stamp
 
 
 # --- subcommands --------------------------------------------------------------
@@ -695,6 +745,102 @@ def cmd_dispatch_check(path: Path, args) -> int:
     return EXIT_STOP
 
 
+def cmd_park(path: Path, args) -> int:
+    """Park a PR on the USER for a MACHINE BLOCKER — the ESCALATE row write, in ONE atomic dump.
+
+    Sets `status = awaiting-user`, `ci_reason` = the blocker (NAMED), and `blocker_ruling = -` in one write.
+    The `blocker_ruling` clear is not cosmetic: park ENTRY answers nothing, so a ruling already on the row
+    belongs to a PREVIOUS park and must be voided in the SAME write that opens this one (stage-2-ci.md, "THE
+    RULING IS CONSUMED EXACTLY ONCE"). This is the sanctioned writer of the machine-blocker park transition
+    for every NON-CI park (the merge-precondition park, stage-3-merge.md; any future one). `ci-status.py
+    liveness` performs the CI-bound parks itself, on these same three fields, and does not call this.
+
+    Refusals, none of which write anything:
+      * no row, or a TERMINAL row (`merged`/`aborted`) — nothing waits on a human for it — `fail` (exit 1);
+      * an empty or `-` reason — a park that cannot name its blocker is not actionable (ESCALATE) — exit 1;
+      * `awaiting-api` / `repairing` — those held states have their OWN owners (`held_reason`) — exit 1;
+      * ALREADY `awaiting-user` — a park is open and a SECOND may not overwrite the open question. That is a
+        STOP, not an input error: `EXIT_STOP`, and the EXISTING `ci_reason` is surfaced so the driver knows
+        which question is already outstanding.
+    """
+    header, rows = load(path)
+    pr = str(args.pr)
+    row = find_row(rows, pr)
+    if row is None:
+        fail(f"no row for pr {pr}; use `add-row` to create it")
+    reason = args.reason.strip()
+    if reason in ("", "-"):
+        fail(f"park requires a --reason NAMING the blocker: a park that cannot name its blocker is not "
+             f"actionable (stage-2-ci.md, ESCALATE). `ci_reason` is the question the user is asked to rule "
+             f"on, so an empty or `-` reason parks a PR on a question nobody can read")
+    status = row["status"]
+    if status in ("merged", "aborted"):
+        fail(f"pr {pr} is {status} — a terminal row is never parked; nothing waits on a human for it")
+    if status == "awaiting-user":
+        print(f"ledger: pr {pr} is ALREADY awaiting-user — a park is open and NOT yet answered, so a second "
+              f"park may not overwrite its question. Open blocker: {row['ci_reason']}", file=sys.stderr)
+        return EXIT_STOP
+    if status in ("awaiting-api", REPAIR_STATUS):
+        fail(f"pr {pr} is {status}, not parkable as a machine blocker — that state has its own owner "
+             f"({held_reason(status)}). Resolve it through its own path, not a park")
+
+    row.update({"status": "awaiting-user", "ci_reason": reason, "blocker_ruling": "-"})
+    dump(path, header, rows)
+    print(json.dumps(row))
+    return 0
+
+
+def cmd_unpark(path: Path, args) -> int:
+    """Unpark a PR whose machine-blocker park the user answered `retry` — ONE atomic multi-field write.
+
+    The row must be `awaiting-user` AND carry a `blocker_ruling` of `retry@<iso>` (the user's answer,
+    recorded through `set`). Then, in ONE write: `status = in_review`; the ruling SPENT back to `-`
+    (consumed exactly once — stage-2-ci.md, "THE RULING IS CONSUMED EXACTLY ONCE"); and the four
+    `LIVENESS_COUNTERS` reset to their `ROW_DEFAULTS`, so the retry gets a FRESH budget instead of
+    re-escalating on its first derivation (stage-2-ci.md, "THE LIVENESS COUNTERS"). The counters are reset
+    from `ROW_DEFAULTS`, never retyped, so a member added to the set is covered with no edit here.
+
+    Refusals, none of which write anything:
+      * no row, or a row that is NOT `awaiting-user` (nothing to unpark) — `fail` (exit 1);
+      * ruling `abort@<iso>` — abort is NOT an unpark; it goes terminal through the abort procedure
+        (`bailout-and-final-report.md`), which owns it — `fail` (exit 1);
+      * a bare `retry` or a malformed stamp — not a ruling that may be consumed — `fail` (exit 1);
+      * ruling `-` — the park's question is UNANSWERED. That is a STOP, not an input error: `EXIT_STOP`,
+        and the open `ci_reason` is surfaced so the driver knows what the user still owes an answer to.
+    """
+    header, rows = load(path)
+    pr = str(args.pr)
+    row = find_row(rows, pr)
+    if row is None:
+        fail(f"no row for pr {pr}; use `add-row` to create it")
+    if row["status"] != "awaiting-user":
+        fail(f"pr {pr} is {row['status']}, not awaiting-user — there is no machine-blocker park to unpark. "
+             f"Only a parked row is unparked, and only the user's answer parks-then-unparks it")
+    ruling = row["blocker_ruling"]
+    if ruling == "-":
+        print(f"ledger: pr {pr} is awaiting-user but its blocker_ruling is `-` — the park is NOT yet "
+              f"answered. Record the user's answer first (`set --pr {pr} --blocker-ruling retry@<iso>`), "
+              f"then unpark. Open blocker: {row['ci_reason']}", file=sys.stderr)
+        return EXIT_STOP
+    parsed = parse_ruling(ruling)
+    if parsed is None:
+        fail(f"pr {pr} blocker_ruling {ruling!r} is not a well-formed ruling — expected `retry@<iso>` or "
+             f"`abort@<iso>`. A bare `retry` or a malformed timestamp is refused, never acted on")
+    kind, _ = parsed
+    if kind == "abort":
+        fail(f"pr {pr} blocker_ruling is {ruling} — `abort` is NOT an unpark. It goes to terminal `aborted` "
+             f"through the abort procedure (bailout-and-final-report.md), which owns it; `unpark` serves the "
+             f"`retry` answer only")
+
+    updates = {"status": "in_review", "blocker_ruling": "-"}
+    for f in LIVENESS_COUNTERS:
+        updates[f] = ROW_DEFAULTS[f]   # from the defaults — NEVER a retyped literal
+    row.update(updates)
+    dump(path, header, rows)
+    print(json.dumps(row))
+    return 0
+
+
 def cmd_get(path: Path, args) -> int:
     _, rows = load(path)
     row = find_row(rows, str(args.pr))
@@ -896,6 +1042,17 @@ def build_parser() -> argparse.ArgumentParser:
                         "rebase, relabel. 'repair' = the reassessment's decided repair, the only work a "
                         "`repairing` row accepts (and only once its decision is recorded)")
 
+    pk = sub.add_parser("park", help="park a PR on the user for a MACHINE BLOCKER: status=awaiting-user, "
+                                     "ci_reason=<blocker>, blocker_ruling=- — atomically")
+    pk.add_argument("--pr", required=True, help="PR number (row key)")
+    pk.add_argument("--reason", required=True,
+                    help="the machine blocker, NAMED — the question the user is asked to rule on; becomes "
+                         "ci_reason. Empty or `-` is refused")
+
+    up = sub.add_parser("unpark", help="unpark a PR whose machine-blocker park the user answered `retry`: "
+                                       "status=in_review, ruling spent, liveness counters reset — atomically")
+    up.add_argument("--pr", required=True, help="PR number (row key)")
+
     g = sub.add_parser("get", help="print the row for --pr as JSON, or one field")
     g.add_argument("--pr", required=True, help="PR number (row key)")
     g.add_argument("--field", help="print only this field")
@@ -926,7 +1083,7 @@ def main(argv: list[str]) -> int:
     handlers = {
         "header": cmd_header, "add-row": cmd_add_row, "set": cmd_set, "verdict": cmd_verdict,
         "get": cmd_get, "list": cmd_list, "table": cmd_table,
-        "dispatch-check": cmd_dispatch_check,
+        "dispatch-check": cmd_dispatch_check, "park": cmd_park, "unpark": cmd_unpark,
     }
     return handlers[args.cmd](path, args)
 

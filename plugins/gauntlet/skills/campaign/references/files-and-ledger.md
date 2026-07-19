@@ -318,12 +318,21 @@ Header field notes (the header fields above; per-row fields follow):
   Those two are the write sites that exist today, **not a bound on the set**: the class is the
   **property** — *campaign cannot move this PR without a human* (`status`, below, `awaiting-user` class
   2) — so **any** future park with that property writes its reason here, with no edit to this bullet.
+  Written by the park **tool**, never by hand: `ci-status.py liveness` for a CI park, `ledger.py … park
+  --pr <N> --reason <blocker>` for a non-CI one (both set it in the same atomic write as `status =
+  awaiting-user`).
 - `blocker_ruling` — durable record of the user's answer to a **machine-blocker park** (the `status`
   taxonomy below): `-` (none yet) | `retry@<iso>` | `abort@<iso>`. It is the **answer** to the question
   `ci_reason` **asks**, and it exists for the same reason `api_approval` does: a heartbeat may be a fresh
   agent instance, so an answer held only in context is an answer the user is asked for twice. `retry`
   unparks with the liveness counters cleared; `abort` goes terminal `aborted`. The unpark is
   `loop-control.md` step 3, "Only the user's answer unparks a PR".
+
+  **Who writes it:** the user's **answer** is recorded through `set --pr <N> --blocker-ruling retry@<iso>`
+  (or `abort@<iso>`); the park-ENTRY clear to `-` is the park writer's (`ledger.py … park` / `ci-status.py
+  liveness`); and the retry SPEND back to `-` is **`ledger.py … unpark`**'s, in the same write that flips
+  the status and resets the counters. `unpark` validates the shape — a bare `retry` or a malformed stamp is
+  refused, and an `abort` is routed to the terminal flow rather than consumed.
 
   **DURABLE *and* SPENT EXACTLY ONCE — one ruling answers exactly ONE park** (`stage-2-ci.md`, "THE RULING
   IS CONSUMED EXACTLY ONCE", is the owning definition: the clears at park **entry** and `retry` **consume**,
@@ -395,11 +404,12 @@ Header field notes (the header fields above; per-row fields follow):
        and "UNUSABLE — the refetch is BOUNDED"; `stage-3-merge.md`, "The merge precondition"). **This is
        the exit from `pending` — in BOTH of its shapes**, the settled one and the forever-`RUNNING` one;
        without it, a stuck PR spins forever and no one is ever told. **Answered into**
-       `blocker_ruling`: `retry@<iso>` → back to `in_review` **with the liveness counters cleared** (else
-       it re-escalates on its first derivation) **and the ruling itself SPENT back to `-`** (a ruling is
-       consumed exactly once — `stage-2-ci.md`, "THE RULING IS CONSUMED EXACTLY ONCE"; entering this park
-       clears it too, so it can never be answered by a **previous** park's ruling), `abort@<iso>` →
-       terminal `aborted` (not cleared — terminal rows are never re-parked).
+       `blocker_ruling`: `retry@<iso>` → **`ledger.py … unpark --pr <N>`**, which returns the row to
+       `in_review` **with the liveness counters cleared** (else it re-escalates on its first derivation)
+       **and the ruling itself SPENT back to `-`** (a ruling is consumed exactly once — `stage-2-ci.md`,
+       "THE RULING IS CONSUMED EXACTLY ONCE"; entering this park clears it too, so it can never be answered
+       by a **previous** park's ruling), all in one write; `abort@<iso>` → terminal `aborted` via the abort
+       procedure (`unpark` refuses it — not cleared, terminal rows are never re-parked).
 
     Same park mechanics as
     `awaiting-api` for both: `reviews_ok` stays 0, no review pass is launched for this PR, the other PRs
@@ -457,6 +467,8 @@ ledger.py --file <state.jsonl> get --pr N [--field <f>]           # print the ro
 ledger.py --file <state.jsonl> list [--where <field>=<val>]       # print matching rows' pr numbers (all if no filter)
 ledger.py --file <state.jsonl> table [--all] [--fields <f>,<f>,…] # print run header + the live rows as an aligned table (read-only)
 ledger.py --file <state.jsonl> dispatch-check --pr N [--action ordinary|repair]
+ledger.py --file <state.jsonl> park --pr N --reason <blocker>     # MACHINE-BLOCKER park: status=awaiting-user, ci_reason=<blocker>, blocker_ruling=- — one write
+ledger.py --file <state.jsonl> unpark --pr N                      # retry unpark: status=in_review, ruling spent, liveness counters reset — one write
 ```
 
 **`verdict` is the ONLY sanctioned way to record a review verdict**, and it is not a convenience: it bumps
@@ -473,6 +485,19 @@ action that MUTATES a PR; it exits non-zero when the row is HELD (`status`, abov
 the one kind of work a `repairing` row accepts, and it is refused until the reassessment's decision is on
 the row — otherwise a driver could call its next targeted fix "the repair" and go on whacking moles under
 a new name.
+
+**`park`/`unpark` are the sanctioned writers of the machine-blocker park/unpark TRANSITIONS**, the same
+way `verdict` owns the review counters: a park (`status = awaiting-user`, `ci_reason` = the blocker,
+`blocker_ruling = -`) and a retry unpark (`status = in_review`, ruling spent, the four liveness counters
+reset) are each MULTI-FIELD writes coherent only together, so each is ONE atomic call rather than a
+hand-assembled string of `set`s. `park` is for every **non-CI** machine-blocker park (the merge-precondition
+park, `stage-3-merge.md`); the **CI** parks stay `ci-status.py liveness`'s, which writes the same three
+fields itself (`stage-2-ci.md`, "ESCALATE"). `unpark` consumes a `retry@<iso>` ruling only — it refuses a
+bare `retry`, an unanswered park, an `abort` (that goes terminal through the abort procedure), and a row
+that is not parked. **`set` still writes `status` and `blocker_ruling` and is NOT gated:** the
+review-standoff park/unpark (`finding-audit.md`) is answered into `audit-<pr>-<n>.md`, not `blocker_ruling`,
+so park/unpark cannot serve it and it stays on `set`; and `blocker_ruling` is where the user's **answer** is
+recorded (`set --blocker-ruling retry@<iso>`), which `unpark` then consumes.
 
 `table` is the user-facing status view: the end-of-heartbeat report renders it whenever the run goes back
 to waiting (`loop-control.md`, "Reschedule or exit"). It renders state and decides nothing — no gate
