@@ -193,8 +193,8 @@ subagent at a check that is merely **still running**.
    (`ledger.py … dispatch-check --pr <N>` — parked on a human, or `repairing`) is **FROZEN**
    (`loop-control.md` step 3,
    "held-status guard"): this reconcile MUTATES a PR, so it is exactly what the guard forbids. A clean
-   rebase would move its `head_sha`, set `ci = pending` and reset its liveness counters (`stage-2-ci.md`,
-   "THE LIVENESS COUNTERS"); a conflict-resolving rebase would reset
+   rebase would move its `head_sha`, set `ci = pending` and — at that head write — the accessor would reset
+   its liveness counters (`stage-2-ci.md`, "THE LIVENESS COUNTERS"); a conflict-resolving rebase would reset
    `reviews_ok`, relabel, and relaunch work — and would **change the PR's content**, which can invalidate
    the very refutation or API change the user was parked to adjudicate. **A parked PR that has fallen
    behind simply STAYS behind** until the user answers; it is re-reconciled normally on the heartbeat after it
@@ -206,8 +206,9 @@ subagent at a check that is merely **still running**.
    invalidate gauntlet reviews.** Rebase only if GitHub flags the PR behind/conflicting:
    - Clean rebase (no conflicts) → verify the PR's own diff/content is unchanged → keep `reviews_ok`,
      **keep its status label as-is** (the gate did not reset, so an accepted PR stays
-     `gauntlet-accepted`), update `head_sha` to the new tip, set `ci = pending`, **reset the liveness
-     counters** (new commit, new evidence — `stage-2-ci.md`, "THE LIVENESS COUNTERS"), **and re-derive CI
+     `gauntlet-accepted`), update `head_sha` to the new tip through `ledger.py … set --head-sha` (which
+     **resets the liveness counters** at the door — new commit, new evidence — `stage-2-ci.md`, "THE
+     LIVENESS COUNTERS"), set `ci = pending`, **and re-derive CI
      from a snapshot of the new tip in the same heartbeat, launching a watch only if that snapshot holds a
      still-RUNNING row** ("WATCH ONLY WHAT CAN MOVE"). A rebased PR must not sit unwatched until the
      heartbeat while its checks are running — but it must not be watched when **nothing** is running
@@ -217,7 +218,7 @@ subagent at a check that is merely **still running**.
      same step, restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`** — the gate and its
      label move together (`stage-2-review-gate.md`, "Status labels mirror the review gate"). Update
      `head_sha` to the
-     new tip and **reset the liveness counters** (a new head is new evidence — `stage-2-ci.md`, "THE
+     new tip through the accessor, which **resets the liveness counters** (a new head is new evidence — `stage-2-ci.md`, "THE
      LIVENESS COUNTERS"; the clean-rebase branch above does the same, and this branch is no different in
      that respect). Then re-derive CI for
      the new tip — watching it only if a row can still move ("WATCH ONLY WHAT CAN MOVE") — and re-enter

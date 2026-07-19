@@ -111,7 +111,8 @@
   GitHub Copilot review items (the active host form of `gauntlet:copilot-address-reviews <pr>`), fix any CI failures (one at a time,
   prefer a scoped subagent), and rebase away any conflict with `<base>`. PR-content changes reset
   verdicts. Clean base-only rebase with unchanged PR diff keeps `reviews_ok`, sets `ci = pending`, and
-  **resets the liveness counters** (`stage-2-ci.md`, "THE LIVENESS COUNTERS").
+  moves `head_sha` — so writing the new head through `ledger.py … set --head-sha` makes the accessor
+  **reset the liveness counters** at the door (`stage-2-ci.md`, "THE LIVENESS COUNTERS"); never hand-reset.
   Never spend a review over open Copilot items, a red check, or a conflicting PR (Stage 2a).
 - The review gate is **tier-dependent**: `required(tier)` fresh, context-isolated `SATISFIED` verdicts
   on the same live PR content — **one if TRIVIAL, two otherwise** (any code / agent-doc / sensitive
@@ -160,7 +161,8 @@
   `gauntlet-accepted`. Never defer the swap to the next heartbeat — that leaves the label lying
   until reconcile, and lying forever if the session dies first. A **clean base-only rebase** with an
   unchanged PR diff does NOT reset the gate, so it correctly KEEPS `gauntlet-accepted` — it sets
-  `ci = pending` and **resets the liveness counters** (`stage-2-ci.md`,
+  `ci = pending` and, because it moves `head_sha`, the accessor **resets the liveness counters** at that
+  head write (`stage-2-ci.md`,
   "THE LIVENESS COUNTERS"). Per-heartbeat label reconcile is the self-healing backstop, never the mechanism
   (`stage-2-review-gate.md`, "Status labels mirror the review gate").
 - **YOUR OWN diagnosis is a claim too — REPRODUCE the failure before you "fix" working code.** The rule
@@ -349,8 +351,8 @@
 - Verdicts are pinned to reviewed PR content: any PR-content change (review fix / CI fix /
   conflict-resolving rebase / bot or manual PR-branch commit) makes prior verdicts stale. Base
   advancement with no conflict and unchanged PR diff does NOT invalidate verdicts; carry `reviews_ok`
-  forward, update `head_sha`, **reset the liveness counters** (`stage-2-ci.md`, "THE LIVENESS COUNTERS"),
-  and require fresh CI.
+  forward, update `head_sha` through `ledger.py … set --head-sha` — which **resets the liveness counters**
+  at the door (`stage-2-ci.md`, "THE LIVENESS COUNTERS") — and require fresh CI.
 - Resume vs. fresh run is decided by **liveness**, not by `state.jsonl` existing: live work → resume;
   a finished prior run → ask the user before a fresh run; `--new` → fresh run with
   carryover (Loop control step 1). A finished run must never silently exit "all done" or silently
@@ -390,13 +392,16 @@
   failure.
 - **ANY campaign commit to the PR head resets the gate** (`stage-2-ci.md`, "Any campaign commit to the PR
   head resets the gate") — economy-class CI-fix, `session`-class CI-fix, review-fix, or **refutation commit** alike. In the SAME step: reset
-  `reviews_ok` to 0 AND restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`, **reset the
-  liveness counters** (`stage-2-ci.md`, "THE LIVENESS COUNTERS"), re-derive CI
+  `reviews_ok` to 0 AND restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`; the new commit
+  moves `head_sha`, so writing it through the accessor **resets the liveness counters** at the door
+  (`stage-2-ci.md`, "THE LIVENESS COUNTERS"); re-derive CI
   for the new tip and watch it **only if a row can still move** (`stage-2-ci.md`, "WATCH ONLY WHAT CAN
   MOVE" — a watch launched on a tip whose checks have not registered yet has nothing to block on and
   exits in about a second), and re-enter Stage 2a. NEVER exempt a commit because it "only reformatted".
-- **THE LIVENESS COUNTERS reset on EVERY `head_sha` change — gate reset or not** (`stage-2-ci.md`, "THE
-  LIVENESS COUNTERS", which names every site). A `head_sha` change and a gate reset are **not** the same
+- **THE LIVENESS COUNTERS reset on EVERY `head_sha` change — gate reset or not, and the ledger accessor
+  enforces it at the head write** (`stage-2-ci.md`, "THE LIVENESS COUNTERS", which names every site): write
+  the new `head_sha` through `ledger.py … set --head-sha` and its door resets the set — no site hand-resets.
+  A `head_sha` change and a gate reset are **not** the same
   event: a `NOT SATISFIED` verdict resets the gate with no new head (the counters stay — CI did not move),
   and a **clean base-only rebase** moves the head without resetting the gate (the counters reset — the old
   head's evidence is gone). Carried onto a new head, the old head's counters park a **healthy** PR early,

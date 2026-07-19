@@ -54,12 +54,6 @@ RUN_LABEL_COLOR = "5319E7"
 # it opens). It is the ONLY thing that makes `pr_origin` = `gauntlet`; a driver cannot assert it by flag.
 GAUNTLET_AUTHORED_LABEL = "gauntlet-authored"
 
-# The SHA-bound liveness counters — stage-2-ci.md, "THE LIVENESS COUNTERS", owns the set and what each
-# member means. They describe the OLD head's CI, so a re-adoption at a moved head must reset them in the
-# same ledger update as head_sha; the reset VALUES come from ledger.py's ROW_DEFAULTS (the fresh-head
-# defaults), never a literal typed here.
-LIVENESS_COUNTERS = ("ci_fingerprint", "settled_strikes", "unusable_refetches", "ci_stalled_since")
-
 
 def _load(name: str, filename: str):
     mod = load_module_from_path(name, _HERE / filename)
@@ -72,6 +66,12 @@ L = _load("pr_adopt_ledger", "ledger.py")
 # `required(tier)` — the review gate's SATISFIED-verdict floor — is OWNED by review-pass.py
 # (`required_reviews`); the status label mirrors that gate, so reuse the owner rather than retype the rule.
 RP = _load("pr_adopt_review_pass", "review-pass.py")
+
+# THE LIVENESS COUNTERS — RE-EXPORTED from ledger.py, never a second copy of the list. A re-adoption at a
+# moved head no longer hand-resets them: the ledger `set --head-sha` door does it (ledger.py's
+# `apply_head_sha`; stage-2-ci.md, "THE LIVENESS COUNTERS"). This name survives only for readers/tests that
+# ask pr-adopt which fields the set is.
+LIVENESS_COUNTERS = L.LIVENESS_COUNTERS
 
 
 # --- pure decision surface ----------------------------------------------------
@@ -259,11 +259,14 @@ def cmd_adopt(args) -> int:
     # must recompute and everything else survives untouched. What that is depends on whether the head moved:
     #   * NEW row: initialize the SHA-bound gate fields AND `status` (the fresh row's starting state).
     #   * MOVED head on an existing row: the new head is new evidence, so reset the SHA-bound EVIDENCE — the
-    #     review tally, ci, and the liveness counters — but PRESERVE `status`: it tracks a HUMAN decision,
-    #     not the SHA, so a head refresh must never un-hold a PR the user has not ruled on (awaiting-user,
-    #     aborted, repairing).
+    #     review tally and ci here, and THE LIVENESS COUNTERS at the accessor. The `--head-sha` write below
+    #     resets those counters itself (ledger.py's `apply_head_sha`; stage-2-ci.md, "THE LIVENESS COUNTERS")
+    #     — this refresh MUST NOT hand-reset them. `status` is PRESERVED: it tracks a HUMAN decision, not the
+    #     SHA, so a head refresh must never un-hold a PR the user has not ruled on (awaiting-user, aborted,
+    #     repairing).
     #   * UNCHANGED head on an existing row: name none of the SHA-bound fields — the accumulated verdicts,
-    #     ci and liveness state all describe content that is still there and are preserved.
+    #     ci and liveness state all describe content that is still there and are preserved (the accessor's
+    #     same-value `--head-sha` write is a no-op, so the counters are untouched).
     _, rows = L.load(Path(args.file))
     existing = L.find_row(rows, pr)
     head_changed = existing is not None and existing.get("head_sha") != planned_head
@@ -282,8 +285,6 @@ def cmd_adopt(args) -> int:
         ledger_argv += ["--tier", str(row["tier"]),
                         "--ci", str(row["ci"]),
                         "--reviews-ok", str(row["reviews_ok"])]
-        for field in LIVENESS_COUNTERS:
-            ledger_argv += [f"--{field.replace('_', '-')}", str(L.ROW_DEFAULTS[field])]
     proc = _run(ledger_argv, cwd=args.project_root)
     if proc.returncode != 0:
         return _refuse(f"ledger {verb} for PR {pr} failed: {proc.stderr.strip()}")

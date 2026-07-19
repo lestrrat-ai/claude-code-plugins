@@ -1222,6 +1222,78 @@ def t_counter_refuses_a_corrupt_value(L: ModuleType, tmp: Path) -> None:
         check("not a count" in err, f"[{value!r}] refused for the wrong reason: {err!r}")
 
 
+# --- the head_sha door resets THE LIVENESS COUNTERS ---------------------------
+#
+# A NEW `head_sha` is NEW evidence, so the old head's CI-liveness says nothing about it (stage-2-ci.md, "THE
+# LIVENESS COUNTERS"). That property is enforced at the WRITE DOOR — `set --head-sha` — not by prose at each
+# caller: on a genuine head move the four `LIVENESS_COUNTERS` reset to their `ROW_DEFAULTS` values in the same
+# row write, a same-value write touches nothing, and a non-sha is refused before anything is written.
+
+STALE_LIVENESS = {"ci_fingerprint": "deadbeef", "settled_strikes": "2",
+                  "unusable_refetches": "1", "ci_stalled_since": "2026-01-01T00:00:00Z"}
+
+
+def t_head_sha_change_resets_liveness(L: ModuleType, tmp: Path) -> None:
+    """A NEW head_sha through `set` RESETS every LIVENESS_COUNTERS field to its default — in the SAME write —
+    while a same-value write leaves them untouched, and a field written in the same call is preserved.
+
+    THIS IS THE MUTATION PIN: delete the reset in `apply_head_sha` and the first block below goes red — a
+    new-sha write that leaves stale counters must be impossible through `cmd_set`.
+    """
+    path = write_lines(tmp / "hs.jsonl", header_line(L),
+                       row_line(L, pr="1", head_sha=SHA_A, ci="green", **STALE_LIVENESS))
+    # NEW head + another field (ci) in ONE call: the counters reset, and the co-written field lands.
+    code, out, err = cli(L, ["--file", str(path), "set", "--pr", "1", "--head-sha", SHA_B, "--ci", "red"])
+    check(code == 0, f"set exited {code}: {err!r}")
+    row = json.loads(out)
+    check(row["head_sha"] == SHA_B, f"the new head did not land: {row['head_sha']!r}")
+    check(row["ci"] == "red", f"a field written in the same call as the head move was lost: {row['ci']!r}")
+    for field in L.LIVENESS_COUNTERS:
+        check(row[field] == L.ROW_DEFAULTS[field],
+              f"a NEW head_sha left {field}={row[field]!r} — the door did not reset it to "
+              f"{L.ROW_DEFAULTS[field]!r}; a new-sha write leaving stale counters must be impossible")
+
+    # SAME head again: not a move, so nothing resets. Write a fresh strike, then re-set the SAME head.
+    cli(L, ["--file", str(path), "set", "--pr", "1", "--settled-strikes", "3"])
+    code, out, _ = cli(L, ["--file", str(path), "set", "--pr", "1", "--head-sha", SHA_B])
+    row = json.loads(out)
+    check(row["settled_strikes"] == "3",
+          f"a SAME-VALUE head_sha write reset a counter it must not touch: {row['settled_strikes']!r}")
+
+
+def t_head_sha_explicit_counter_wins(L: ModuleType, tmp: Path) -> None:
+    """An explicit liveness-counter flag in the SAME `set` call as a NEW head_sha WINS over the automatic
+    reset — the flag is applied AFTER the reset — while every counter NOT named still resets."""
+    path = write_lines(tmp / "hw.jsonl", header_line(L),
+                       row_line(L, pr="1", head_sha=SHA_A, **STALE_LIVENESS))
+    code, out, err = cli(L, ["--file", str(path), "set", "--pr", "1",
+                             "--head-sha", SHA_B, "--settled-strikes", "5"])
+    check(code == 0, f"set exited {code}: {err!r}")
+    row = json.loads(out)
+    check(row["head_sha"] == SHA_B, f"the new head did not land: {row['head_sha']!r}")
+    check(row["settled_strikes"] == "5",
+          f"an explicit --settled-strikes did NOT win over the auto-reset: {row['settled_strikes']!r}")
+    check(row["unusable_refetches"] == L.ROW_DEFAULTS["unusable_refetches"],
+          f"a counter NOT named still had to reset on the head move: {row['unusable_refetches']!r}")
+
+
+def t_set_head_sha_refuses_a_non_sha(L: ModuleType, tmp: Path) -> None:
+    """`set --head-sha` validates the shape with SHA_RE — a value that is not 40 lowercase hex is REFUSED,
+    and NOTHING is written: no head move, no counter reset. Refusing before any mutation is the point."""
+    path = write_lines(tmp / "bad.jsonl", header_line(L),
+                       row_line(L, pr="1", head_sha=SHA_A, **STALE_LIVENESS))
+    for bad in (SHA_A[:7], "g" * 40, SHA_A.upper(), "-"):
+        code, out, err = cli(L, ["--file", str(path), "set", "--pr", "1", "--head-sha", bad])
+        check(code == 1, f"set --head-sha {bad!r} was ACCEPTED (exit {code}):\n{out}")
+        check("40 LOWERCASE hex" in err, f"[{bad!r}] refused for the wrong reason: {err!r}")
+    # …and the refused writes changed nothing at all — not the head, not one counter.
+    code, out, _ = cli(L, ["--file", str(path), "get", "--pr", "1"])
+    row = json.loads(out)
+    check(row["head_sha"] == SHA_A, f"a refused head_sha write still moved the head: {row['head_sha']!r}")
+    for field, want in STALE_LIVENESS.items():
+        check(row[field] == want, f"a refused head_sha write reset {field} to {row[field]!r}, not {want!r}")
+
+
 def t_write_is_atomic(L: ModuleType, tmp: Path) -> None:
     """**A LEDGER WRITE IS ALL OR NOTHING.** No crash, no full disk, may leave a store torn in half.
 
@@ -1690,6 +1762,9 @@ CASES = [
     ("verdict-head-pinned", "a verdict for a SUPERSEDED sha is refused — it describes content that is gone", t_verdict_refuses_a_moved_head),
     ("verdict-domain", "`verdict` needs a real row and one of exactly two verdicts", t_verdict_needs_a_row_and_a_known_verdict),
     ("counter-corrupt", "a counter field that is not a count is refused, never handed to int()", t_counter_refuses_a_corrupt_value),
+    ("head-sha-resets-liveness", "a NEW head_sha through `set` resets THE LIVENESS COUNTERS; a same-value write does not", t_head_sha_change_resets_liveness),
+    ("head-sha-explicit-counter-wins", "an explicit counter flag in the same call as a new head_sha wins over the auto-reset", t_head_sha_explicit_counter_wins),
+    ("head-sha-refuses-non-sha", "`set --head-sha` refuses a non-40-hex value and writes nothing", t_set_head_sha_refuses_a_non_sha),
     ("write-atomic", "a write that dies mid-way leaves the OLD ledger intact — temp + fsync + os.replace", t_write_is_atomic),
     ("skill-version", "the header records WHICH VERSION of the rules governed the run; default `unknown`", t_skill_version_is_recorded),
     ("round-cap", "at ROUND_CAP a NOT SATISFIED holds the row `repairing` and exits non-zero", t_round_cap_fires),

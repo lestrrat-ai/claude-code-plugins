@@ -196,9 +196,10 @@ Header field notes (the header fields above; per-row fields follow):
   and `tier` are pinned to this exact SHA (re-triage on any content change). `reviews_ok` is pinned to
   this SHA **unless** the only change is a clean base-only rebase/merge with the PR diff unchanged;
   then carry `reviews_ok` forward to the new `head_sha`, set `ci = pending`, and — because the head
-  **moved** — **reset the liveness counters** (`stage-2-ci.md`, "THE LIVENESS COUNTERS"). A clean rebase
+  **moved** — the ledger accessor **resets the liveness counters** at the `set --head-sha` write itself
+  (`stage-2-ci.md`, "THE LIVENESS COUNTERS"; ledger.py's `apply_head_sha`). A clean rebase
   does not reset the *gate*, but it **is** a `head_sha` change, and **every** `head_sha` change resets
-  those counters: the old head's strikes and stall clock measured evidence that no longer exists.
+  those counters at the door: the old head's strikes and stall clock measured evidence that no longer exists.
 - `reviews_ok` — number of fresh, context-isolated SATISFIED verdicts recorded against this PR's
   current content. Target = `required(tier)`: **1 if `tier == TRIVIAL`, else 2** (Stage **2a-triage**).
   **Only `ledger.py verdict` may RAISE it** — `set --reviews-ok <n>` refuses any value above the current
@@ -273,13 +274,14 @@ Header field notes (the header fields above; per-row fields follow):
   due or in flight* for the PR at this `head_sha` (`stage-2-ci.md`, "SETTLED", owns the gate — a PR the
   driver is actively repairing is never struck). Counted by `ci-status.py liveness`, never by hand. At
   the **STRIKE CAP**, escalate: park `awaiting-user`
-  naming the blocker. Reset to `0` on any `head_sha` change or fingerprint change.
+  naming the blocker. Reset to `0` on any `head_sha` change (the ledger `set --head-sha` accessor does this
+  itself — ledger.py's `apply_head_sha`) or fingerprint change (by `ci-status.py liveness`).
 - `unusable_refetches` — consecutive derivations whose snapshot was **UNUSABLE** at this `head_sha`. An
   UNUSABLE snapshot has **no fingerprint** (its rows were never trusted), so it can never be a
   `settled_strike`: it gets its own counter, counted by `ci-status.py liveness`. At the **REFETCH CAP**,
   escalate the same way. Reset to `0`
-  on any `head_sha` change and on any **VERIFIED** snapshot (`stage-2-ci.md`, "UNUSABLE — the refetch is
-  BOUNDED").
+  on any `head_sha` change (the ledger `set --head-sha` accessor does this itself) and on any **VERIFIED**
+  snapshot (by `ci-status.py liveness`) (`stage-2-ci.md`, "UNUSABLE — the refetch is BOUNDED").
 - `ci_stalled_since` — `-`, or the **UTC ISO-8601 timestamp** of the first derivation that saw the check
   set **RUNNING-STALLED** at this fingerprint: an evidence row still classifies `RUNNING` **and** the
   fingerprint did **not** change (`stage-2-ci.md`, "RUNNING-STALL" — the definition; the cap lives there
@@ -287,7 +289,8 @@ Header field notes (the header fields above; per-row fields follow):
   **SLOW** and one that is **DEAD** are indistinguishable on a fingerprint, and derivations are driven by
   heartbeats whose cadence depends on the run's load — so only elapsed **TIME** separates them. It is on disk
   precisely so `now - ci_stalled_since` is computable by a fresh agent instance that remembers nothing.
-  Cleared (`-`) on any fingerprint change, on any `head_sha` change, and whenever a **machine action** is
+  Cleared (`-`) on any fingerprint change (by `ci-status.py liveness`), on any `head_sha` change (the ledger
+  `set --head-sha` accessor does this itself), and whenever a **machine action** is
   due or in flight for this PR at this `head_sha` (a fix that pushes will replace these rows). At the cap,
   escalate: park `awaiting-user`, `ci_reason` naming the check that never finished and how long the check
   set sat unchanged.

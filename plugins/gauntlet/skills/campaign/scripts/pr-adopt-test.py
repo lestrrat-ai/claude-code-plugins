@@ -463,10 +463,15 @@ def t_readopt_changed_head_resets():
         check(_field(ledger, 12, "review_rounds") == "2",
               "review_rounds is MONOTONE — a re-adoption never resets the loop's memory")
         # The SHA-bound liveness counters describe the OLD head; a moved head resets every one of them to
-        # its fresh-head default (ledger.py ROW_DEFAULTS), IN THE SAME ledger update as head_sha.
+        # its fresh-head default (ledger.py ROW_DEFAULTS). pr-adopt no longer hand-resets them — the ledger
+        # `set --head-sha` DOOR does it (ledger.py's apply_head_sha), so this asserts the door's reset landed
+        # through the ordinary refresh, IN THE SAME ledger update as head_sha.
         for field in M.LIVENESS_COUNTERS:
             check(_field(ledger, 12, field) == M.L.ROW_DEFAULTS[field],
                   f"a moved head RESETS the liveness counter {field} to its fresh-head default")
+        # …and pr-adopt names the SET by re-exporting ledger's tuple — never a second copy of the list.
+        check(M.LIVENESS_COUNTERS is M.L.LIVENESS_COUNTERS,
+              "pr-adopt.LIVENESS_COUNTERS must BE ledger.LIVENESS_COUNTERS (one owner), not a duplicate")
 
 
 def t_readopt_changed_head_preserves_held_status():
