@@ -2,15 +2,17 @@
 """DECIDE whether a PR's branch is current with its base BEFORE a review or a fix is authored on it.
 
 This enforces the rebase-before-review/fix precondition `stage-2-review-gate.md` states in prose: if a PR
-is CONFLICTING/DIRTY/BEHIND with `<base>`, rebase it before reviewing or fixing. That prose was a rule a
-model re-derived by eye every heartbeat, and a fix authored on a stale/conflicting base is wasted — it is
+conflicts with `<base>` or lacks its refreshed tip, rebase it before reviewing or fixing. GitHub may still
+report MERGEABLE/CLEAN after another campaign PR advances an unprotected base, so the check combines its
+merge states with fetched Git ancestry. A fix authored on a stale/conflicting base is wasted — it is
 re-reviewed against the rebased tip anyway. This turns the prose into an enforced check.
 
-It DECIDES one of `proceed` / `rebase-first` / `recheck` from the live PR view and PERFORMS NO REBASE: the
-driver rebases when told `rebase-first`, then re-runs this. Deciding and doing are two jobs and this is only
-the first — nothing here runs `git rebase`/`git merge` or edits a branch.
+It DECIDES one of `proceed` / `rebase-first` / `recheck` from the live PR view plus fetched base ancestry
+and PERFORMS NO REBASE: the driver rebases when told `rebase-first`, then re-runs this. Deciding and doing
+are two jobs and this is only the first — nothing here runs `git rebase`/`git merge` or edits a branch.
 
     base-preflight.py check --pr 31 [--repo owner/name] [--view-json <path>] [--project-root <dir>]
+        [--worktree <path> --base <branch> [--remote origin]]
     base-preflight.py self-test   run every fixture (base-preflight-test.py)
 
 The verdict is printed as JSON on stdout, and the EXIT CODE gates a caller's `$?`: 0 for `proceed`, non-zero
@@ -48,24 +50,48 @@ RECHECK = "recheck"
 
 # --- the two GitHub enums, as data so `decide` reads ONE source, mapped TOTALLY -------------------
 #
-# The AUTHORITATIVE value sets are GitHub's schema, as `stage-3-merge.md` records them. This tool judges ONLY
-# base-currency, so the two enums are crossed for exactly one question — is the branch current enough with
-# its base? — never for merge-readiness (that is `merge-check.py`'s job, downstream, over the same enums).
-# The mapping below is TOTAL over both sets: every value has a home, and a value in NEITHER set is one GitHub
-# added since — the catch-all in `decide` re-polls it rather than guessing.
+# The AUTHORITATIVE value sets are GitHub's schema, as `stage-3-merge.md` records them. The two enums are
+# crossed only as a pre-screen before the Git ancestry check, never for merge-readiness (that is
+# `merge-check.py`'s job, downstream, over the same enums). The mapping below is TOTAL over both sets: every
+# value has a home, and a value in NEITHER set is one GitHub added since — the catch-all in `decide` re-polls
+# it rather than guessing.
 MERGEABLE_VALUES = frozenset({"MERGEABLE", "CONFLICTING", "UNKNOWN"})
 MERGE_STATE_STATUS_VALUES = frozenset(
     {"DIRTY", "UNKNOWN", "BLOCKED", "BEHIND", "UNSTABLE", "HAS_HOOKS", "CLEAN"})
 
-# The `mergeStateStatus` values that mean the base is CURRENT ENOUGH to author a review/fix on. UNSTABLE and
-# BLOCKED are about CHECKS/PERMISSIONS, NOT a stale base — a non-passing check or a branch-protection block
-# does not make the base moved-ahead, so a fix/review may proceed; this tool judges base-currency alone.
-# DIRTY/BEHIND/UNKNOWN are deliberately ABSENT: each is handled by an earlier rule in `decide`.
+# The `mergeStateStatus` values that pass the ENUM screen. UNSTABLE and BLOCKED are about
+# CHECKS/PERMISSIONS, not a stale base. This is not proof the branch contains the refreshed base; the graph
+# check in `check` supplies that proof. DIRTY/BEHIND/UNKNOWN are deliberately ABSENT: each is handled by an
+# earlier rule in `decide`.
 BASE_CURRENT_STATES = frozenset({"CLEAN", "HAS_HOOKS", "UNSTABLE", "BLOCKED"})
 
 
 def _verdict(verdict: str, reason: str) -> dict:
     return {"verdict": verdict, "reason": reason}
+
+
+def check_base_ancestry(worktree: "str | None", base: "str | None", remote: str) -> tuple[str, str]:
+    """Return ``current``, ``stale``, or ``unverified`` for the fetched base against a PR worktree.
+
+    GitHub may keep reporting ``MERGEABLE/CLEAN`` after another campaign PR advances an unprotected base.
+    The merge-state enums alone therefore cannot prove that a candidate contains the current base. Fetch the
+    named base and ask Git's ancestry graph directly; this updates only the remote-tracking ref, never the
+    candidate branch. Callers treat ``unverified`` as fail-closed.
+    """
+    if not worktree or not base:
+        return "unverified", "base ancestry requires --worktree and --base"
+    fetch = subprocess.run(  # noqa: S603
+        ["git", "-C", worktree, "fetch", remote, base], capture_output=True, text=True, check=False)
+    if fetch.returncode != 0:
+        return "unverified", f"could not fetch {remote}/{base}: {fetch.stderr.strip()}"
+    probe = subprocess.run(  # noqa: S603
+        ["git", "-C", worktree, "merge-base", "--is-ancestor", f"{remote}/{base}", "HEAD"],
+        capture_output=True, text=True, check=False)
+    if probe.returncode == 0:
+        return "current", ""
+    if probe.returncode == 1:
+        return "stale", ""
+    return "unverified", f"could not compare HEAD with {remote}/{base}: {probe.stderr.strip()}"
 
 
 def decide(view: dict) -> dict:
@@ -78,7 +104,8 @@ def decide(view: dict) -> dict:
     `{mergeable: CONFLICTING, mergeStateStatus: UNKNOWN}` or `{..., mergeStateStatus: FROZEN}` (a value GitHub
     added since) must NOT be steered to `rebase-first` on the half of the view we DO recognise while the other
     half is uncomputed or unclassified. UNKNOWN/unrecognised WINS: re-poll and decide again on a full view,
-    never guess. Only a fully computed, recognised, non-conflicting, current view reaches `proceed`.
+    never guess. A fully computed, recognised, non-conflicting view reaches preliminary `proceed`; `check`
+    then verifies the fetched base graph before emitting final `proceed`.
     """
     mergeable = view["mergeable"]
     mss = view["mergeStateStatus"]
@@ -103,9 +130,9 @@ def decide(view: dict) -> dict:
     if mss == "BEHIND":
         return _verdict(REBASE_FIRST, "base has moved ahead — rebase first")
 
-    # 5. CURRENT WITH BASE — mergeable AND a base-current merge state. The one verdict that clears a fix.
+    # 5. ENUM SCREEN PASSES — the graph check in `check` decides whether this becomes final `proceed`.
     if mergeable == "MERGEABLE" and mss in BASE_CURRENT_STATES:
-        return _verdict(PROCEED, "branch is current with base")
+        return _verdict(PROCEED, "GitHub merge state permits base check")
 
     # 6. DEFENSIVE CATCH-ALL — unreachable after step 1 pinned both enums to their schema sets and steps 2-5
     #    covered every recognised combination. Fail closed rather than fall off the end of the function.
@@ -172,8 +199,8 @@ def load_view(pr: str, repo: "str | None", view_json: "str | None",
         raise ViewError(f"gh response is not JSON ({exc})") from exc
 
 
-def check(pr: str, repo: "str | None", view_json: "str | None",
-          project_root: "str | None") -> int:
+def check(pr: str, repo: "str | None", view_json: "str | None", project_root: "str | None",
+          worktree: "str | None", base: "str | None", remote: str) -> int:
     """Fetch the live view, decide, print the verdict as JSON. EXIT 0 only on `proceed`; every other outcome
     (rebase-first, recheck, an unfetchable or malformed view) exits non-zero so a caller can gate on `$?`."""
     try:
@@ -188,6 +215,12 @@ def check(pr: str, repo: "str | None", view_json: "str | None",
         print(json.dumps(_verdict(RECHECK, f"malformed PR view: {problem}")))
         return 1
     result = decide(view)
+    if result["verdict"] == PROCEED:
+        ancestry, detail = check_base_ancestry(worktree, base, remote)
+        if ancestry == "stale":
+            result = _verdict(REBASE_FIRST, "base has moved ahead — rebase first")
+        elif ancestry == "unverified":
+            result = _verdict(RECHECK, f"could not verify base ancestry: {detail}")
     print(json.dumps(result))
     return 0 if result["verdict"] == PROCEED else 1
 
@@ -250,6 +283,9 @@ def main(argv: "list[str] | None" = None) -> int:
     c.add_argument("--repo", help="owner/name (default: the current checkout's)")
     c.add_argument("--view-json", help="a recorded `gh pr view` JSON — decide without calling gh")
     c.add_argument("--project-root", help="run `gh pr view` with this as its working directory")
+    c.add_argument("--worktree", help="the PR-head worktree used for the Git ancestry check")
+    c.add_argument("--base", help="the PR base branch to fetch and compare")
+    c.add_argument("--remote", default="origin", help="the worktree remote holding --base (default: origin)")
 
     sub.add_parser("self-test", help="run every fixture (base-preflight-test.py)")
 
@@ -257,7 +293,8 @@ def main(argv: "list[str] | None" = None) -> int:
 
     if args.cmd == "self-test":
         return self_test()
-    return check(args.pr, args.repo, args.view_json, args.project_root)
+    return check(args.pr, args.repo, args.view_json, args.project_root,
+                 args.worktree, args.base, args.remote)
 
 
 if __name__ == "__main__":

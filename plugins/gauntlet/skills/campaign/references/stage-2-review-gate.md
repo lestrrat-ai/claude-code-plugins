@@ -80,15 +80,14 @@ review gate"), and the review re-starts on the clean tip:
 - **CI failures.** If `ci` is red for the current tip, do NOT review — fix CI first (Stage 2b).
   Handle failures **one at a time per PR/SHA**, and **prefer a scoped subagent** per failure; different
   PRs may fix CI concurrently within the cap.
-- **Merge conflicts with `<base>`.** If GitHub flags the PR conflicting/behind
-  (`gh pr view <pr> --json mergeable,mergeStateStatus` → `CONFLICTING` / `DIRTY` / `BEHIND`), rebase
-  it onto `<base>` before reviewing. This CONFLICTING/DIRTY/BEHIND condition is now DECIDED by
-  `python3 scripts/base-preflight.py check --pr <pr>`, which prints `rebase-first` for exactly these states
-  (and `proceed` when the base is current) — but only once BOTH enum values are recognized and computed; an
-  UNKNOWN or unrecognized value returns `recheck` FIRST, before any rebase-first classification, so re-poll
-  and re-run rather than rebase on a half-computed view (`base-preflight.py` is the owner of the full
-  mapping). It is the enforced form of this rule and it is also the pre-flight gate before any fix subagent
-  is dispatched (`fix-subagent-contract.md`, PRE-FLIGHT). Once it says `rebase-first`, **the CLEAN
+- **Base currency with `<base>`.** Before reviewing or dispatching a fix, run `python3
+  scripts/base-preflight.py check --pr <pr> --worktree <worktree> --base <base>`. It checks both GitHub's
+  merge states and whether fetched `origin/<base>` is an ancestor of the PR worktree's `HEAD`. A
+  `rebase-first` verdict covers a conflict, GitHub reporting behind, or a CLEAN PR whose branch lacks the
+  refreshed base. `recheck` covers an uncomputed/unrecognized GitHub value or ancestry the helper cannot
+  verify; re-poll and re-run, never dispatch or rebase from incomplete evidence. `base-preflight.py` owns
+  the decision and is the pre-flight gate for every fix subagent (`fix-subagent-contract.md`, PRE-FLIGHT).
+  Once it says `rebase-first`, **the CLEAN
   base-only case is EXECUTED — not hand-run — by `python3 scripts/clean-rebase.py run --ledger
   <state.jsonl> --pr <pr> --worktree <worktree> --base <base>`**: it does the fetch/rebase/`--force-with-lease`
   push and the one ledger reset, and **refuses anything that is not clean**. **Exit 3 means it was NOT

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""DECIDE whether a PR may merge — from its ledger row plus its live GitHub view. GATE MACHINERY.
+"""DECIDE whether a PR may merge — from its ledger row, live GitHub view, and fetched base ancestry. GATE MACHINERY.
 
 It prints ONE verdict: `merge` (every precondition met) or `not-yet` with a concrete `reason`. It NEVER
 merges anything, and it wires into no merge step — deciding and doing are two jobs, and this is only the
 first. `gh pr merge` lives in `stage-3-merge.md`, downstream of a `merge` verdict; nothing here runs it.
 
-WHY THIS IS A COMMAND AND NOT A TABLE A DRIVER READS BY EYE. The merge decision crosses FIVE ledger
-preconditions (held, open, draft, live head == reviewed head, ci, reviews) and then TWO GitHub enums
+WHY THIS IS A COMMAND AND NOT A TABLE A DRIVER READS BY EYE. The merge decision crosses the ledger
+preconditions (held, open, draft, live head == reviewed head, ci, reviews, current base) and then TWO GitHub enums
 (`.mergeable` and `.mergeStateStatus`) that answer DIFFERENT questions — `.mergeable` says the branches
 CAN be combined, `.mergeStateStatus` says the merge is PERMITTED RIGHT NOW. Reading one for the other is
 the miscross that once turned a BLOCKED merge into an infinite CI watch (`stage-3-merge.md`): a PR that was
@@ -15,8 +15,10 @@ the miscross that once turned a BLOCKED merge into an infinite CI watch (`stage-
 two enums are crossed, so nobody does it by hand and nobody does it wrong.
 
 `.mergeable = MERGEABLE` is NECESSARY BUT NOT SUFFICIENT: it falls THROUGH to `.mergeStateStatus`, which is
-the only field that yields `merge`. Both enums are mapped TOTALLY — every value GitHub's schema declares has
-its own row, and a value with NO row is a WEDGE, so the catch-all PARKS it rather than guessing. This mapping
+the only field that yields a preliminary `merge`. Before emitting `merge`, the shared preflight helper
+fetches the ledger base and proves it is an ancestor of the candidate `HEAD`. Both enums are mapped TOTALLY
+— every value GitHub's schema declares has its own row, and a value with NO row is a WEDGE, so the catch-all
+PARKS it rather than guessing. This mapping
 is the OWNER of the merge-readiness decision; `references/stage-3-merge.md` now DELEGATES that decision to a
 single `merge-check.py check` call rather than restating it as a by-eye table, and the sibling fixtures pin
 every value's verdict.
@@ -56,6 +58,7 @@ def _load(name: str, filename: str):
 # status — or any other non-`in_review` status — is frozen by that allow-list with no edit here.
 L = _load("merge_check_ledger", "ledger.py")
 HELD_STATUSES = L.HELD_STATUSES
+B = _load("merge_check_base_preflight", "base-preflight.py")
 
 # `required(tier)` — 1 if TRIVIAL else 2 — is REUSED, never retyped. The rule already lives in `nudge.py`
 # (and `review-pass.py`); a third copy here would be the drift this repo keeps killing. So merge-check
@@ -235,7 +238,7 @@ def load_view(pr: str, repo: "str | None", view_json: "str | None") -> dict:
 def check(pr: str, ledger_path: Path, repo: "str | None", view_json: "str | None") -> int:
     """Read the ledger row + the live view, decide, print the verdict as JSON. Exit 0 on a computed verdict;
     a view that could not be fetched is a fail-closed not-yet, and a non-zero exit is fine there."""
-    _header, rows = L.load(ledger_path)
+    header, rows = L.load(ledger_path)
     row = next((r for r in rows if r["pr"] == str(pr)), None)
     if row is None:
         print(json.dumps(_not_yet("no ledger row")))
@@ -251,7 +254,22 @@ def check(pr: str, ledger_path: Path, repo: "str | None", view_json: "str | None
     if problem is not None:
         print(json.dumps(_not_yet(f"malformed PR view: {problem}")))
         return 1
-    print(json.dumps(decide(row, view, required=REQUIRED)))
+    result = decide(row, view, required=REQUIRED)
+    if result["verdict"] != MERGE:
+        print(json.dumps(result))
+        return 0
+
+    # GitHub may still call the PR MERGEABLE/CLEAN after an earlier campaign merge advances an unprotected
+    # base. Re-fetch and compare actual ancestry before the final merge decision; the shared preflight helper
+    # owns the graph check so review dispatch and Stage 3 cannot disagree about what "current base" means.
+    ancestry, detail = B.check_base_ancestry(row.get("worktree"), header.get("base_branch"), "origin")
+    if ancestry == "stale":
+        print(json.dumps(_not_yet("base moved ahead — rebase")))
+        return 0
+    if ancestry == "unverified":
+        print(json.dumps(_not_yet(f"could not verify base ancestry: {detail}")))
+        return 1
+    print(json.dumps(result))
     return 0
 
 
