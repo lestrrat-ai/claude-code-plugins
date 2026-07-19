@@ -314,46 +314,12 @@ The second path is how Codex CLI sessions operate when no scheduled-heartbeat ca
 the process is killed, durable run state and the lease takeover rules allow a later invocation to resume;
 the skill does not pretend a heartbeat was scheduled when none was.
 
-### Persistent watchdog capability
-
-The heartbeat mechanisms above are the run's SHORT cadence. `ledger.py watchdog` (`files-and-ledger.md`)
-adds a LONG durable deadline both hosts honor at loop entry. On a host that has a **persistent scheduler**
-— one that survives the death of the driving process — that deadline is backed by a **resurrection poke**:
-a low-frequency wake that re-checks a run whose heartbeat chain may have died. This capability owns the
-scheduler entry; the deadline itself is host-neutral and lives in `ledger.py`.
-
-The capability is **four idempotent operations**, keyed **deterministically** by run id so a re-run never
-creates a duplicate entry — the entry name is `gauntlet-watchdog-<run-id>`:
-
-- `available?` — probe whether this host has a persistent scheduler. Unavailability is a **documented,
-  NON-blocking degradation** (below), never an error that stops the run.
-- `ensure` — create the entry if it is missing; **safe to repeat** (an existing entry is left as-is). Its
-  recurrence is the number `ledger.py watchdog interval` prints — **read it from the tool, never copy a
-  literal**, so a re-tuned interval reaches the scheduler with no edit here. The command the entry fires is
-  built **only** by `heartbeat.py watchdog --run <run-id> --invocation <campaign-invocation>` (it prints
-  `<campaign-invocation> --run <run-id> --watchdog`) — the **same no-hand-assembly stance** the callback
-  takes: never splice that line together yourself, so the poke can never carry a `--token`, `--new`, `#PR`,
-  or `--heartbeat-id` it must not (`run-identity-and-lease.md`, "Resolving a heartbeat", owns the poke's
-  resolution).
-- `inspect` — does the entry exist?
-- `remove` — delete the entry.
-
-**None of `ensure`/`inspect`/`remove` ends the turn** — only wakeup **scheduling** does (the
-scheduled-heartbeat lifecycle above). Managing the watchdog entry is ordinary work the turn does before its
-final scheduling action, exactly like a ledger write or a dispatch.
-
-Host mappings:
-
-| Host | `persistent watchdog` |
-|---|---|
-| Claude Code | the **harness cron facility** — a persistent scheduler that outlives the session, so `ensure`/`inspect`/`remove` map to its create/list/delete and the poke fires even after a dead heartbeat chain. |
-| Codex | **ABSENT.** There is no persistent scheduler. The loop-entry `watchdog check` still delivers the **full health cadence** whenever a heartbeat or bounded wait runs; what is missing is only automatic resurrection — if the driving process itself dies, recovery is a **manual resume** (`--run <id>`), stated plainly to the user. |
-
-**Unavailability is a NON-blocking, REPORTED degradation.** When `available?` is false (Codex always), or
-`ensure` fails or is denied, the run does **not** stop and does **not** park: it proceeds on the §1
-deadline path alone, and the setup report and every status render state the boundary — long-cadence health
-checks remain, **automatic resurrection does not**, so a dead driver needs a manual resume
-(`loop-control.md`, run start and "Reschedule or exit", own the report).
+The watchdog deadline (`ledger.py watchdog`, `files-and-ledger.md`; owner: `loop-control.md`'s health
+pass) is a LONG durable deadline that needs **NO host mechanism**. Every host's loop entry checks it on
+the existing heartbeat or bounded-wait chain, so it is **identical on Claude Code and Codex** — there is
+no scheduler entry, no resurrection poke, nothing host-specific. A dead heartbeat chain or a dead session
+is recovered by **MANUAL RESUME on every host**: the next manual `--run <id>` invocation finds a stale
+lease and adopts the orphaned run (`run-identity-and-lease.md` owns adoption).
 
 ## Reviewer selection and diversity
 

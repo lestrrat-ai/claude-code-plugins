@@ -52,9 +52,6 @@ These are **distinct modes**, not freely-composable flags; `references/run-ident
 - Non-PR arg (e.g. `auth`) -> same prompt (the old area/topic sweep arg is REMOVED).
 - `--run <id>` -> resume that run; takes no `#PR`/`--new`. Scheduled heartbeats also carry internal
   `--token`.
-- `--run <id> --watchdog` -> internal TOKEN-FREE resurrection poke fired by the persistent watchdog
-  entry; resolves the lease first and stands down if the primary is alive, else adopts the orphaned run
-  (`references/run-identity-and-lease.md`, "Resolving a heartbeat"). Rejected with `--token`/`--new`/`#PR`.
 - `--new #PR...` -> force an independent new run-id for a new PR set (with carryover); requires PRs.
 
 Invalid combinations (e.g. `--new` with no PRs, or `--run` with `#PR`) are rejected / fall through to
@@ -76,9 +73,8 @@ it — no trigger means the step runs unconditionally at that point in the seque
 3. `lease.py acquire` (`refresh` on resume): take or keep the run lease; stand down if a fresh lease
    names a different owner. One active driver per run — never double-drive. **Take a run in order**
    (`references/run-identity-and-lease.md`, "Take a run"): BEFORE arming, record the run intent
-   (`ledger.py header set pending_adoption "<pr>…"`, cleared when adoption finishes) and — on a
-   persistent-scheduler host — **ensure the watchdog entry** (`references/runtime-adapter.md`, "Persistent
-   watchdog capability"), so a mid-setup or later death is resumable/resurrectable.
+   (`ledger.py header set pending_adoption "<pr>…"`, cleared when adoption finishes), so a mid-setup
+   death is resumable — the checkpoint survives it.
 4. Run start -> `ledger.py --file <state.jsonl> header set skill_version <version>`: record the
    `version` read from the **running plugin's** `plugin.json`. The harness loads this skill from the
    **installed plugin cache**, so a merged, version-bumped rule governs nothing until that cache

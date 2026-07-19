@@ -48,20 +48,6 @@ def callback_command(invocation: str, run_id: str, token: str) -> str:
     return f"{invocation} --run {run_id} --token {token}"
 
 
-def watchdog_command(invocation: str, run_id: str) -> str:
-    """Assemble the watchdog resurrection poke: `<invocation> --run <run-id> --watchdog`, and NOTHING else.
-
-    A poke is fired by a persistent scheduler to check on a run whose heartbeat chain may have died. It is
-    TOKEN-FREE BY DESIGN: unlike the `callback` (a resume by the SAME owner, which carries `--token`), a poke
-    might land BESIDE a still-live heartbeat chain. A token-bearing poke could then be adopted as a second
-    driver and DOUBLE-DRIVE the one run, so the poke carries no token — it resolves the lease first and stands
-    down when the primary is alive. It likewise carries no `--new`/`#PR` (start-time args that would mint a
-    fresh run) and no `--heartbeat-id` (an acquire-time proof). The host form is passed in, so this stays
-    host-neutral, exactly like `callback_command`.
-    """
-    return f"{invocation} --run {run_id} --watchdog"
-
-
 # --- cli ----------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
@@ -75,18 +61,13 @@ def build_parser() -> argparse.ArgumentParser:
                     help="the host campaign invocation (Claude Code `/gauntlet:campaign`, "
                          "Codex `$gauntlet:campaign`) — passed in so this tool hardcodes no host form")
 
-    wd = sub.add_parser("watchdog", help="print the TOKEN-FREE watchdog resurrection poke command")
-    wd.add_argument("--run", required=True, help="the run id the poke checks on (never mints a new run)")
-    wd.add_argument("--invocation", required=True,
-                    help="the host campaign invocation — passed in so this tool hardcodes no host form")
-
     sub.add_parser("self-test", help="run every fixture and assert the rules this file enforces still hold")
     return parser
 
 
 def _reject_unusable(fields: "list[tuple[str, str]]") -> bool:
-    """Fail closed on any required value that is empty OR contains ANY whitespace. Shared by `callback` and
-    `watchdog`: whitespace is the argument-injection seam — a `--run "g1 --new #99"` would smuggle extra
+    """Fail closed on any required value that is empty OR contains ANY whitespace for the `callback`:
+    whitespace is the argument-injection seam — a `--run "g1 --new #99"` would smuggle extra
     tokens past the fixed-shape guarantee once the printed line is re-split into argv. No legitimate value (a
     `g<date>-<rand>` run-id, a hex token, a `/gauntlet:campaign` invocation) carries whitespace. On a bad
     value: print the refusal on stderr, print NOTHING on stdout, return True so the caller returns non-zero.
@@ -115,16 +96,7 @@ def main(argv: "list[str] | None" = None) -> int:
         print(callback_command(args.invocation, args.run, args.token))
         return 0
 
-    if args.cmd == "watchdog":
-        # The poke is TOKEN-FREE by design, so it validates only `--run` and `--invocation` — the same
-        # empty/whitespace fail-closed the callback applies, so a smuggled `--token`/`--new`/`#PR` hidden
-        # behind whitespace can never survive to stdout and be re-split into a double-driving argv.
-        if _reject_unusable([("--run", args.run), ("--invocation", args.invocation)]):
-            return 1
-        print(watchdog_command(args.invocation, args.run))
-        return 0
-
-    parser.error("a subcommand is required (callback | watchdog | self-test)")
+    parser.error("a subcommand is required (callback | self-test)")
 
 
 # --- self-test ----------------------------------------------------------------

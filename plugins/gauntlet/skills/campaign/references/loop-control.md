@@ -139,14 +139,10 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      empty orphan run behind. **Only once the full set passes preflight**: call `create_run_directory`
      **first** — it mints the run-id and atomically creates `<rundir>` — and derive `run_id` from the
      returned directory's final path component; **then** take the run per `run-identity-and-lease.md`,
-     "Take a run" (which, BEFORE arming, records `pending_adoption` = this set's PR list and — on a
-     persistent-scheduler host — **ensures the watchdog entry**; then token, heartbeat arming,
-     `lease.py acquire` — in that order),
+     "Take a run" (which, BEFORE arming, records `pending_adoption` = this set's PR list; then token,
+     heartbeat arming, `lease.py acquire` — in that order),
      and write the `state.jsonl` header — now with `run_id` set and `base_branch` filled
-     from the agreed `baseRefName` (known from preflight). **Probe watchdog `available?` at run start and
-     REPORT the degradation when it is absent** (Codex, or `ensure` denied): long-cadence health checks
-     remain, automatic resurrection does not — a dead driver needs a manual resume
-     (`runtime-adapter.md`, "Persistent watchdog capability"). Then **adopt** each PR
+     from the agreed `baseRefName` (known from preflight). Then **adopt** each PR
      (ledger row + labels + worktree, and a CI watch **only when one is due** — `pr-adoption.md` owns what
      adoption produces and when the watch is warranted); a death mid-adoption still leaves
      a discoverable, adoptable run. **When the whole requested set is adopted, clear the checkpoint —
@@ -479,6 +475,13 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
        shorter interval only re-reconciles git/gh with no new signal (and pays a fresh-context cost per
        heartbeat).
 
+     **And whatever tier you picked, NEVER schedule past the watchdog deadline** — cap the delay at the
+     time `ledger.py watchdog check` says remains. This is what makes the watchdog a self-enqueueing job
+     on the one wakeup the host provides: the deadline is structurally guaranteed a wake, the health pass
+     runs on it, and its `watchdog arm` enqueues the next one. (The current tiers all sit inside the
+     45-min interval, so the cap binds only if a tier ever grows past it — it is the invariant, not a
+     live constraint.)
+
      **The health pass — when the run owes a deep look, LOOK before you reschedule.** A run can
      heartbeat forever while nothing moves: every PR parked on a forgotten question, a review silently
      stuck — and each heartbeat looks locally fine, because "nothing moved" is invisible to an agent that
@@ -492,8 +495,7 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
 
      The first is #112's quiet sensor (the durable `last_activity` stamp); the second is the durable
      long-cadence deadline (`ledger.py watchdog`, `files-and-ledger.md`) — the sensor that catches a run
-     whose heartbeats keep FIRING but never look deeply, and, on a persistent-scheduler host, the deadline
-     the resurrection poke enforces. **When `need_health` — and open PRs remain — this heartbeat runs
+     whose heartbeats keep FIRING but never look deeply. **When `need_health` — and open PRs remain — this heartbeat runs
      exactly ONE health pass and then exactly ONE `ledger.py --file <state.jsonl> watchdog arm`, and
      completes BOTH before the status render and the turn's final scheduling action** (the last-action rule
      below). **Never two passes for two triggers**: quiet and watchdog-due firing together is still one
@@ -509,10 +511,6 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
        is not a stall to "fix" (the held-status guard still binds — step 3), but a forgotten question is
        the single most likely reason a run went quiet, so it is what the user needs put back in front of
        them.
-     - **adapter-conditional verification** (`runtime-adapter.md`): on a **scheduled-heartbeat /
-       persistent-scheduler host**, **ensure the persistent watchdog entry still exists** (`ensure` — it is
-       idempotent, so re-running it is free); on a **bounded-wait host**, verify control returns to the
-       bounded-wait loop — there is **no callback to inspect**, so do not claim one.
 
      **When the health pass ran, the status this heartbeat renders LEADS with the diagnosis — BEFORE the
      ledger table:** every parked question restated with its waiting age, and every stalled-review finding,
@@ -523,12 +521,11 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
 
      **The honest boundary: an in-session sensor is only read by a heartbeat that FIRES.** If the heartbeat
      chain itself dies — no scheduled wake, no bounded wait returns — nothing in-session reads either
-     sensor. Recovery then depends on the host: on a **persistent-scheduler host** the **resurrection
-     poke** fires on its own cadence and adopts the orphaned run (`run-identity-and-lease.md`, "Resolving a
-     heartbeat", `--watchdog`), telling the user the run had been **orphaned** — its chain had stopped —
-     not merely resumed. Where no persistent scheduler exists (Codex — `runtime-adapter.md`), a dead chain
-     surfaces only as a **stale lease on the next manual invocation** (`--run <id>`), where adoption picks
-     the orphaned run up and reports the same. Either way the silent stall is surfaced, never absorbed.
+     sensor. Recovery is a **MANUAL RESUME on every host** (there is no persistent scheduler on either):
+     a dead chain surfaces as a **stale lease on the next manual invocation** (`--run <id>`), where
+     adoption picks the orphaned run up and tells the user the run had been **orphaned** — its chain had
+     stopped — not merely resumed (`run-identity-and-lease.md`, "Adopt only an orphaned run"). The silent
+     stall is surfaced, never absorbed.
 
      ALWAYS keep a heartbeat or bounded wait active whenever non-terminal work remains — skipping
      both means a hung or orphaned run wakes no one. **Now render the status — this happens on EVERY
@@ -557,16 +554,11 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      non-terminal row or an existing file, so it distills exactly once; per-run files never
      contend, see "Fresh runs and carryover"), **release the run** (delete this run's
      `gauntlet-run-<run-id>` owner label via `gh label delete gauntlet-run-<run-id> --yes`, release
-     the lease — `lease.py … release --token <tok>` — and, on a persistent-scheduler host, **remove the
-     persistent watchdog entry** (`runtime-adapter.md`, "Persistent watchdog capability"); the shared
+     the lease — `lease.py … release --token <tok>`; the shared
      status labels stay), emit the final report, and **do not
      reschedule**. This run's loop ends. **"Rows all terminal" alone is NOT "finished"** — finalization
-     (carryover distilled, label deleted, lease released, watchdog entry removed) may still be **owed**, so
-     do these in order and only remove the watchdog entry once the rest is done; a resurrection poke that
-     arrives with finalization still owed **resumes the terminal step** rather than deleting the entry from
-     under it (`run-identity-and-lease.md`, "Resolving a heartbeat", `--watchdog`). The poke's own
-     self-cleanup — it removes the entry when it finds the run finished AND finalized — is the **backstop**
-     for a terminal step that died before removing it. **Leave
+     (carryover distilled, label deleted, lease released) may still be **owed**, so
+     do these in order. **Leave
      `<rundir>` in place** (do NOT delete it here) — its terminal `state.jsonl` is what lets a later bare
      invocation detect *this* *finished* run and take the "ask the user" branch in step 1 instead of a
      silent exit. (A stale heartbeat firing after exit harmlessly re-hits the finished-run branch via
