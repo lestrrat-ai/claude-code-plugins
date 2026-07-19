@@ -284,6 +284,17 @@ jobs:
       - name: Format-preflight contract
         run: python3 plugins/gauntlet/skills/campaign/scripts/format-preflight.py self-test
 
+      # The clean-rebase EXECUTOR's contract, executed. Where base-preflight only DECIDES that a rebase is
+      # due, this DOES the clean base-only case — fetch/rebase/force-with-lease push plus the ledger reset
+      # (new head_sha, ci=pending, liveness counters reset; reviews_ok carried forward per the Exception
+      # rule) — and REFUSES everything else: a conflict is aborted and a diff-changing rebase is reset, each
+      # handed back at exit 3 so the driver's judgment path owns conflict resolution. The sibling
+      # `clean-rebase-test.py` builds REAL throwaway git repos (a bare remote, a base and a PR branch, a
+      # PR-head worktree) and drives the tool end to end, asserting repo/ledger state with git plumbing, not
+      # exit codes alone; it is loaded by path and a MISSING sibling fails loudly.
+      - name: Clean-rebase contract
+        run: python3 plugins/gauntlet/skills/campaign/scripts/clean-rebase.py self-test
+
       # The merge-readiness decider's contract, executed. It is the ONE place the two GitHub merge enums
       # (`.mergeable`, `.mergeStateStatus`) are crossed with the ledger's preconditions to decide `merge`
       # vs `not-yet` — the miscross this replaces once turned a blocked merge into an infinite CI watch.

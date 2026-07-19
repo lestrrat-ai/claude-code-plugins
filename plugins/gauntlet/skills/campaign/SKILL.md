@@ -232,6 +232,7 @@ a line the tool writes.
 | `reviewer-liveness.py` | Probe whether a dispatched reviewer's output stream is still moving; decides nothing, always exits 0 | `references/stage-2-review-gate.md` |
 | `base-preflight.py` | Decide proceed / rebase-first / recheck from a PR's live merge-state before review or fix; performs no rebase | `references/stage-2-review-gate.md` |
 | `format-preflight.py` | `check` — refuse to format any file whose formatter-write could escape the worktree (the file, or any path component, is a symlink); reads only, formats nothing | `references/stage-2-ci.md` |
+| `clean-rebase.py` | `run` — EXECUTE the clean base-only rebase (fetch/rebase/force-with-lease push + the ledger reset) and REFUSE everything else: a conflict or a diff-changing rebase is aborted/reset and handed back (exit 3), never resolved | `references/stage-2-review-gate.md` |
 | `ci-status.py` | `derive` — how `ci` is DERIVED, always, the only way — `liveness` — the recorder: writes `ci` + the liveness counters, parks at any cap — and `required-set` | `references/stage-2-ci.md` |
 | `ci-snapshot.py` | Executable contract for the SHA-pinned CI snapshot artifact (used by `derive`) | `references/ci-derivation-spec.md` |
 | `mutate-ci-snapshot.py` | Mutation harness proving `ci-snapshot.py`'s rules are fixture-pinned; run by validation/CI, not the driver | `references/ci-derivation-spec.md` |

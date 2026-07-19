@@ -88,9 +88,16 @@ review gate"), and the review re-starts on the clean tip:
   UNKNOWN or unrecognized value returns `recheck` FIRST, before any rebase-first classification, so re-poll
   and re-run rather than rebase on a half-computed view (`base-preflight.py` is the owner of the full
   mapping). It is the enforced form of this rule and it is also the pre-flight gate before any fix subagent
-  is dispatched (`fix-subagent-contract.md`, PRE-FLIGHT). Clean base-only rebase with the PR diff unchanged keeps `reviews_ok` but still moves `head_sha`, so it
-  sets `ci = pending`, and writing the new head through `ledger.py … set --head-sha` makes the accessor
-  **reset the liveness counters** at the door ("Status labels mirror the review gate"
+  is dispatched (`fix-subagent-contract.md`, PRE-FLIGHT). Once it says `rebase-first`, **the CLEAN
+  base-only case is EXECUTED — not hand-run — by `python3 scripts/clean-rebase.py run --ledger
+  <state.jsonl> --pr <pr> --worktree <worktree> --base <base>`**: it does the fetch/rebase/`--force-with-lease`
+  push and the one ledger reset, and **refuses anything that is not clean**. **Exit 3 means it was NOT
+  clean** — a conflict, or a rebase that applied textually but changed the PR's own diff — and it has already
+  aborted/reset and left the worktree at its original head; **fall back to the JUDGMENT path**: resolve the
+  conflict by hand (the driver's call, never the tool's), then apply the gate-reset rules for a
+  content-changing rebase below. Clean base-only rebase with the PR diff unchanged keeps `reviews_ok` but still moves `head_sha`, so it
+  sets `ci = pending`, and the tool writes the new head through the accessor, which
+  **resets the liveness counters** at the door ("Status labels mirror the review gate"
   Exception, below, owns this rule; `stage-2-ci.md`, "THE LIVENESS COUNTERS");
   conflict-resolving rebase changes PR content, so it resets the gate **as well** — here, at this site,
   exactly as the step-6 reconcile does at its own (`stage-3-merge.md`), and it therefore **relabels in the

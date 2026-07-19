@@ -206,16 +206,20 @@ subagent at a check that is merely **still running**.
 
    For each **non-parked** open PR: **base advancement alone does NOT
    invalidate gauntlet reviews.** Rebase only if GitHub flags the PR behind/conflicting:
-   - Clean rebase (no conflicts) → verify the PR's own diff/content is unchanged → keep `reviews_ok`,
-     **keep its status label as-is** (the gate did not reset, so an accepted PR stays
-     `gauntlet-accepted`), update `head_sha` to the new tip through `ledger.py … set --head-sha` (which
-     **resets the liveness counters** at the door — new commit, new evidence — `stage-2-ci.md`, "THE
-     LIVENESS COUNTERS"), set `ci = pending`, **and re-derive CI
-     from a snapshot of the new tip in the same heartbeat, launching a watch only if `liveness` then reports
-     `watch_warranted`** ("WATCH ONLY WHAT CAN MOVE"). A rebased PR must not sit unwatched until the
-     heartbeat while its checks are running — but it must not be watched when **nothing** is running
-     either, which right after a push is the common case (no check has registered yet). CI must return
-     green before merging.
+   - Clean rebase (no conflicts, PR diff unchanged) → **EXECUTED — not hand-run — by `python3
+     scripts/clean-rebase.py run --ledger <state.jsonl> --pr <N> --worktree <worktree> --base <base>`**: it
+     does the fetch/rebase/`--force-with-lease` push, verifies the PR's own diff is unchanged, and writes the
+     one ledger reset — keep `reviews_ok`, **keep its status label as-is** (the gate did not reset, so an
+     accepted PR stays `gauntlet-accepted`), new `head_sha` written through the accessor (which **resets the
+     liveness counters** at the door — new commit, new evidence — `stage-2-ci.md`, "THE LIVENESS
+     COUNTERS"), `ci = pending`. **Exit 3 means it was NOT
+     clean** — a conflict, or a rebase that changed the PR's own diff — and it has already aborted/reset to
+     the original head; the conflict-resolution bullet below then owns it. On a clean (exit 0) rebase,
+     **re-derive CI from a snapshot of the new tip in the same heartbeat, launching a watch only if `liveness`
+     then reports `watch_warranted`** ("WATCH ONLY WHAT CAN MOVE"). A rebased PR must not sit unwatched
+     until the heartbeat while its checks are running — but it must not be watched when **nothing** is
+     running either, which right after a push is the common case (no check has registered yet). CI must
+     return green before merging.
    - Rebase requiring conflict resolution → PR content changed → **reset `reviews_ok` to 0 AND, in that
      same step, reconcile the label by running `label-mirror.py mirror` for the PR** (it restores
      `gauntlet-reviewing` on a PR carrying `gauntlet-accepted`) — the gate and its
