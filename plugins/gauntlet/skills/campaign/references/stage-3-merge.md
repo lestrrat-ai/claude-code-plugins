@@ -29,12 +29,12 @@ two wires is what turns a blocked merge into an infinite CI watch.
 
 **The merge-readiness decision is COMPUTED, never read by eye:**
 `python3 <skill-dir>/scripts/merge-check.py check --pr <N> --file <state.jsonl>`. It reads the ledger
-row + the live PR view (`gh pr view <pr> --json mergeable,mergeStateStatus,isDraft,state,headRefOid`) and
-prints `{"verdict":"merge"|"not-yet","reason":…}`, crossing — in ONE place — the held/open/draft/
-stale-head/ci/reviews preconditions and then **BOTH** GitHub enums (`.mergeable` first — `CONFLICTING`
+row + the live PR view (`gh pr view <pr> --json mergeable,mergeStateStatus,isDraft,state,headRefOid`),
+fetches the ledger base into the PR worktree, and prints `{"verdict":"merge"|"not-yet","reason":…}`.
+It crosses — in ONE place — the held/open/draft/stale-head/ci/reviews preconditions and then **BOTH** GitHub enums (`.mergeable` first — `CONFLICTING`
 and `UNKNOWN` decide on their own, `MERGEABLE` falls through — then `.mergeStateStatus`, which alone
-yields `merge`), so the miscross above cannot recur. Both enums are crossed **TOTALLY**: a value GitHub's
-schema does not declare **parks**, never guesses. Act on the verdict:
+yields `merge`), then confirms `origin/<base>` is an ancestor of `HEAD`. Both enums are crossed
+**TOTALLY**: a value GitHub's schema does not declare **parks**, never guesses. Act on the verdict:
 
 - `merge` → proceed to the merge steps below (step 1).
 - `not-yet <reason>` → do **NOT** merge; the reason names the block. Route on the reason's **action**
@@ -94,11 +94,10 @@ subagent at a check that is merely **still running**.
    Before each merge, re-confirm the PR is still **not parked** and that both gates still hold against the live PR head SHA
    (`gh pr view <pr> --json headRefOid --jq .headRefOid`, PR number from the ledger row) — a late push
    may have moved the tip past the recorded `head_sha` and reset the gates —
-   **and re-fetch `origin/<base>` and re-check
-   `gh pr view <pr> --json mergeable,mergeStateStatus,isDraft`** — a concurrent run sharing this base may
-   have advanced it since the PR was last reviewed. Feed the ledger row and that live view to
-   **`merge-check.py check`** (**"The merge precondition"** above), which crosses **every** value of both
-   enums and returns the verdict.
+   **and run `merge-check.py check`** (**"The merge precondition"** above). It re-fetches
+   `origin/<base>` and verifies the candidate contains it, so a concurrent run that advanced the base cannot
+   leave an older CLEAN candidate mergeable. The tool also crosses **every** value of both enums and returns
+   the verdict.
 2. Push guard: `gh pr view <pr> --json state --jq .state` (PR number from the ledger row) must be
    `OPEN`.
 3. Merge — always `gh pr merge <pr> --squash` (use the repo's prevailing merge method if not squash),
@@ -204,8 +203,10 @@ subagent at a check that is merely **still running**.
    either way** (observation, not mutation): the watch follows the normal policy (`stage-2-ci.md`, "WATCH
    ONLY WHAT CAN MOVE") — relaunched while a row is still RUNNING, **not** relaunched once CI has settled.
 
-   For each **non-parked** open PR: **base advancement alone does NOT
-   invalidate gauntlet reviews.** Rebase only if GitHub flags the PR behind/conflicting:
+   For each **non-parked** open PR, run `python3 scripts/base-preflight.py check --pr <pr> --worktree
+   <worktree> --base <base>`. It fetches `origin/<base>` and requires it to be an ancestor of `HEAD` even
+   when GitHub still reports CLEAN. On `recheck`, re-poll and leave the candidate alone. On
+   `rebase-first`, rebase before considering the candidate for another review or merge:
    - Clean rebase (no conflicts, PR diff unchanged) → **EXECUTED — not hand-run — by `python3
      scripts/clean-rebase.py run --ledger <state.jsonl> --pr <N> --worktree <worktree> --base <base>`**: it
      does the fetch/rebase/`--force-with-lease` push, verifies the PR's own diff is unchanged, and writes the
@@ -231,9 +232,8 @@ subagent at a check that is merely **still running**.
      that respect). Then re-derive CI for
      the new tip — watching it only if `liveness` reports `watch_warranted` ("WATCH ONLY WHAT CAN MOVE") — and re-enter
      Stage 2.
-   - Still open, **not parked**, mergeable, not behind/dirty/conflicting, same live `head_sha`,
-     `reviews_ok >= required(tier)`, and `ci == green` → still immediately mergeable; return to step 1
-     in the same heartbeat.
+   - `proceed` with the same live `head_sha`, `reviews_ok >= required(tier)`, and `ci == green` → return
+     to step 1 in the same heartbeat; `merge-check.py` repeats the ancestry check before merging.
 
 Stop the merge loop only when no remaining PR is immediately mergeable after the latest base refresh.
 

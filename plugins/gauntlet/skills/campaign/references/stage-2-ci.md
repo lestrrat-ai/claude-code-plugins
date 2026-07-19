@@ -428,7 +428,8 @@ invent a second one.
 missing. That, too, is a property, not a fixed list of scans: whichever rule OWNS that dispatch is the
 one that says so. For a CI fix it is `loop-control.md` step 3's dispatch scan; for a rebase it is the rule
 that owns the rebase (Stage 2a's preconditions, `stage-2-review-gate.md`; the step-6 reconcile,
-`stage-3-merge.md`) finding the PR behind/conflicting on this heartbeat. A PR frozen by a park has no
+`stage-3-merge.md`) returning `rebase-first` after it checks the PR against the refreshed base on this
+heartbeat. A PR frozen by a park has no
 machine action due — the held-status guard forbids every one of them (`loop-control.md`), so nothing is
 coming, which is why the park is the terminus and not another wait.
 

@@ -185,16 +185,61 @@ def t_unknown_mergeable_value_parks():
 # --- CLI: a recorded view makes `check` testable without gh --------------------
 
 def t_cli_injected_view():
-    with tempfile.TemporaryDirectory() as d:
-        led = Path(d) / "state.jsonl"
-        L.dump(led, dict(L.HEADER_DEFAULTS, run_id="g1"), [row()])
-        vjson = Path(d) / "view.json"
-        vjson.write_text(json.dumps(view()), encoding="utf-8")
-        code, out, err = capture_cli(
-            M.main, ["check", "--pr", "9", "--file", str(led), "--view-json", str(vjson)])
-        check(code == 0, f"the CLI must exit 0 on a computed verdict (stderr: {err})")
-        check(json.loads(out) == {"verdict": "merge", "reason": ""},
-              f"the CLI should print the merge verdict, got {out!r}")
+    real_check = M.B.check_base_ancestry
+    M.B.check_base_ancestry = lambda *_args: ("current", "")
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            led = Path(d) / "state.jsonl"
+            L.dump(led, dict(L.HEADER_DEFAULTS, run_id="g1", base_branch="main"), [row()])
+            vjson = Path(d) / "view.json"
+            vjson.write_text(json.dumps(view()), encoding="utf-8")
+            code, out, err = capture_cli(
+                M.main, ["check", "--pr", "9", "--file", str(led), "--view-json", str(vjson)])
+    finally:
+        M.B.check_base_ancestry = real_check
+    check(code == 0, f"the CLI must exit 0 on a computed verdict (stderr: {err})")
+    check(json.loads(out) == {"verdict": "merge", "reason": ""},
+          f"the CLI should print the merge verdict, got {out!r}")
+
+
+def t_cli_stale_base_blocks_merge():
+    """The final gate repeats base ancestry before it turns a CLEAN candidate into a merge."""
+    real_check = M.B.check_base_ancestry
+    M.B.check_base_ancestry = lambda *_args: ("stale", "")
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            led = Path(d) / "state.jsonl"
+            L.dump(led, dict(L.HEADER_DEFAULTS, run_id="g1", base_branch="main"), [row()])
+            vjson = Path(d) / "view.json"
+            vjson.write_text(json.dumps(view()), encoding="utf-8")
+            code, out, err = capture_cli(
+                M.main, ["check", "--pr", "9", "--file", str(led), "--view-json", str(vjson)])
+    finally:
+        M.B.check_base_ancestry = real_check
+    check(code == 0, f"a stale base is a computed not-yet result (stderr: {err})")
+    check(json.loads(out) == {"verdict": "not-yet", "reason": "base moved ahead — rebase"},
+          f"a CLEAN candidate behind the base must not merge, got {out!r}")
+
+
+def t_cli_unverified_base_blocks_merge():
+    """The final gate fails closed when it cannot read the candidate's base ancestry."""
+    real_check = M.B.check_base_ancestry
+    M.B.check_base_ancestry = lambda *_args: ("unverified", "could not fetch origin/main: unavailable")
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            led = Path(d) / "state.jsonl"
+            L.dump(led, dict(L.HEADER_DEFAULTS, run_id="g1", base_branch="main"), [row()])
+            vjson = Path(d) / "view.json"
+            vjson.write_text(json.dumps(view()), encoding="utf-8")
+            code, out, err = capture_cli(
+                M.main, ["check", "--pr", "9", "--file", str(led), "--view-json", str(vjson)])
+    finally:
+        M.B.check_base_ancestry = real_check
+    check(code != 0, f"unverified base ancestry must fail closed (stderr: {err})")
+    check(json.loads(out) == {
+        "verdict": "not-yet",
+        "reason": "could not verify base ancestry: could not fetch origin/main: unavailable",
+    }, f"an unverified base must block merge, got {out!r}")
 
 
 def t_cli_no_ledger_row():
@@ -293,6 +338,8 @@ CASES = [
     ("mss-unknown-value-parks", "an unrecognised merge state parks (totality)", t_unknown_mergestate_value_parks),
     ("mergeable-unknown-value-parks", "an unrecognised mergeable value parks", t_unknown_mergeable_value_parks),
     ("cli-injected-view", "check --view-json decides without gh and exits 0", t_cli_injected_view),
+    ("cli-stale-base", "a CLEAN candidate behind refreshed base cannot merge", t_cli_stale_base_blocks_merge),
+    ("cli-unverified-base", "an unreadable base ancestry fails closed", t_cli_unverified_base_blocks_merge),
     ("cli-no-row", "a PR absent from the ledger decides `no ledger row`", t_cli_no_ledger_row),
     ("cli-view-missing-field", "a view missing a field fails closed, never KeyError", t_cli_view_missing_field),
     ("cli-view-wrong-type", "a view field of the wrong JSON type fails closed", t_cli_view_wrong_type_field),

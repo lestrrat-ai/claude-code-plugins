@@ -101,7 +101,7 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
        reports only THAT the head moved; deciding whether the PR **diff** changed (reset `reviews_ok`,
        relabel) or it was a **clean base-only advance** (counters only, gate kept) stays your judgement.
      - **`base_changed`** — the snapshot `baseRefName` differs from the header's `base_branch`: base-currency
-       handling (`base-preflight.md`; Stage 2a preconditions).
+       handling (`stage-2-review-gate.md`, "Base currency with `<base>`").
      - **`branch_mismatch`** — the snapshot `headRefName` differs from the row's recorded `branch`: reconcile
        the row's `branch` (adopted PRs keep their **own** head branch — the `gauntlet-run-<run-id>` label is
        the ownership marker, never a branch prefix; `files-and-ledger.md`, `branch`).
@@ -359,9 +359,8 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      files at that `head_sha`; agent-docs = code; default STANDARD on uncertainty — see the tiers
      spec) and write it back with `ledger.py … set --pr <N> --tier <tier>`. The tier is pinned to
      `head_sha` and sets `required(tier)` = **1 if TRIVIAL else 2**.
-   - current tip has `reviews_ok < required(tier)`, its **review preconditions are clear** (no
-     unaddressed Copilot review items, CI not red, no merge conflict with `<base>` — see Stage 2a
-     preconditions), and no review running for that SHA → **first ensure the PR's INTENT
+   - current tip has `reviews_ok < required(tier)`, has no unaddressed Copilot review items, CI is not red,
+     and no review is running for that SHA → **first ensure the PR's INTENT
      (`<rundir>/intent-<pr>.md`) and PR-head worktree exist.** The dispatch substitutes the intent block
      into the review prompt **verbatim** (`review-dispatch.md`), and a reviewer with no intent is a
      reviewer asked "is anything wrong with this code?" — the question with no fixed point. **It is not an
@@ -383,8 +382,11 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      explicit precondition of the review launch. **Also fetch `origin/<base>` fresh before the first
      review dispatch through the typed Stage 2a pre-review operation** — the review
      diffs `origin/<base>...HEAD`, a remote-tracking ref that always exists, since adoption fetches only
-     the PR head and a local `<base>` may be absent or stale (see `pr-adoption.md` / Stage 2a). Then
-     evaluate the verdict transport through `runtime-adapter.md`'s capability/transition owner before
+     the PR head and a local `<base>` may be absent or stale (see `pr-adoption.md` / Stage 2a). Then run
+     `base-preflight.py check --pr <N> --worktree <worktree> --base <base>`; only `proceed` clears the
+     review launch. Rebase on `rebase-first` or re-poll on `recheck` per Stage 2a, then restart this
+     precondition sequence. With `proceed`, evaluate the verdict transport through
+     `runtime-adapter.md`'s capability/transition owner before
      building its record and take only the action it returns;
      missing native cwd/mount/sandbox controls alone are not a machine blocker. Then launch **one**
      review pass as a **background**
@@ -441,9 +443,9 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
 ### Step 4 — Merge queued PRs as a serialized drain
 
 4. **Merge** queued PRs as a serialized drain: re-confirm one candidate against the live SHA **and
-   re-check it is not parked** (the held-status guard binds the merge too — Stage 3), merge
-   it, sync `<base>`, reconcile remaining candidates, and repeat while another PR is immediately
-   mergeable (Stage 3).
+   re-check it is not parked** (the held-status guard binds the merge too — Stage 3), revalidate that it
+   contains the fetched current base, merge it, sync `<base>`, reconcile remaining candidates, and repeat
+   while another PR is immediately mergeable (Stage 3 owns the check).
 ### Step 5 — Reschedule or exit
 
 5. **Reschedule or exit.**

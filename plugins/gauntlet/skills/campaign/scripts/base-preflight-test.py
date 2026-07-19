@@ -12,6 +12,7 @@ the mapping is pinned TOTALLY over the enum, plus the unrecognised-value fixture
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -48,25 +49,26 @@ def expect(v: dict, verdict: str, reason: "str | None" = None) -> None:
 
 
 # --- one fixture PER mergeStateStatus value (mergeable defaults to MERGEABLE) --------------------
-# The four base-current states clear a fix; DIRTY/BEHIND demand a rebase; UNKNOWN re-polls. Together they
-# cover every value in MERGE_STATE_STATUS_VALUES, so the mapping is pinned TOTALLY over the enum.
+# The four enum-screen states advance to the graph check; DIRTY/BEHIND demand a rebase; UNKNOWN re-polls.
+# Together they cover every value in MERGE_STATE_STATUS_VALUES, so the mapping is pinned TOTALLY over the
+# enum.
 
 def t_clean_proceeds():
-    expect(view(mergeStateStatus="CLEAN"), "proceed", "branch is current with base")
+    expect(view(mergeStateStatus="CLEAN"), "proceed", "GitHub merge state permits base check")
 
 
 def t_has_hooks_proceeds():
-    expect(view(mergeStateStatus="HAS_HOOKS"), "proceed", "branch is current with base")
+    expect(view(mergeStateStatus="HAS_HOOKS"), "proceed", "GitHub merge state permits base check")
 
 
 def t_unstable_proceeds():
-    # UNSTABLE is about a non-passing/still-running CHECK, not a stale base — a fix/review may proceed.
-    expect(view(mergeStateStatus="UNSTABLE"), "proceed", "branch is current with base")
+    # UNSTABLE is about a non-passing/still-running CHECK, not Git ancestry, so it reaches the graph check.
+    expect(view(mergeStateStatus="UNSTABLE"), "proceed", "GitHub merge state permits base check")
 
 
 def t_blocked_proceeds():
-    # BLOCKED is about branch-protection/permissions, not a stale base — base-currency still clears.
-    expect(view(mergeStateStatus="BLOCKED"), "proceed", "branch is current with base")
+    # BLOCKED is about branch-protection/permissions, not Git ancestry, so it reaches the graph check.
+    expect(view(mergeStateStatus="BLOCKED"), "proceed", "GitHub merge state permits base check")
 
 
 def t_dirty_rebases():
@@ -143,14 +145,16 @@ def t_behind_with_unknown_mergeable_rechecks():
 
 # --- CLI: a recorded view makes `check` testable without gh --------------------
 
-def t_cli_proceed():
+def t_cli_missing_ancestry_rechecks():
     with tempfile.TemporaryDirectory() as d:
         vjson = Path(d) / "view.json"
         vjson.write_text(json.dumps(view()), encoding="utf-8")
         code, out, err = capture_cli(M.main, ["check", "--pr", "9", "--view-json", str(vjson)])
-        check(code == 0, f"a `proceed` verdict must exit 0 (stderr: {err})")
-        check(json.loads(out) == {"verdict": "proceed", "reason": "branch is current with base"},
-              f"the CLI should print the proceed verdict, got {out!r}")
+        check(code != 0, f"a CLEAN view without ancestry evidence must fail closed (stderr: {err})")
+        check(json.loads(out) == {
+            "verdict": "recheck",
+            "reason": "could not verify base ancestry: base ancestry requires --worktree and --base",
+        }, f"the CLI should demand base ancestry before proceeding, got {out!r}")
 
 
 def t_cli_rebase_first():
@@ -201,11 +205,119 @@ def t_cli_bad_project_root_fails_closed():
           f"the reason must name the fetch failure, got {result['reason']!r}")
 
 
+def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
+    result = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, check=False)
+    check(result.returncode == 0,
+          f"git {' '.join(args)} failed in {cwd}: {result.stderr.strip()}")
+    return result
+
+
+def _configure_repo(path: Path) -> None:
+    _git(path, "config", "user.email", "fixture@example.invalid")
+    _git(path, "config", "user.name", "Fixture")
+
+
+def t_clean_view_with_stale_base_rebases():
+    """A prior campaign merge advances main while GitHub still calls the second PR CLEAN."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        remote = root / "remote.git"
+        seed = root / "seed"
+        candidate = root / "candidate"
+
+        result = subprocess.run(["git", "init", "--bare", "-b", "main", str(remote)],
+                                capture_output=True, text=True, check=False)
+        check(result.returncode == 0, f"could not create fixture remote: {result.stderr.strip()}")
+        result = subprocess.run(["git", "clone", str(remote), str(seed)],
+                                capture_output=True, text=True, check=False)
+        check(result.returncode == 0, f"could not clone fixture seed: {result.stderr.strip()}")
+        _configure_repo(seed)
+
+        (seed / "f").write_text("base\n", encoding="utf-8")
+        _git(seed, "add", "f")
+        _git(seed, "commit", "-m", "base")
+        _git(seed, "push", "origin", "main")
+
+        _git(seed, "checkout", "-b", "first")
+        (seed / "first").write_text("first\n", encoding="utf-8")
+        _git(seed, "add", "first")
+        _git(seed, "commit", "-m", "first candidate")
+        _git(seed, "push", "origin", "first")
+
+        _git(seed, "checkout", "main")
+        _git(seed, "checkout", "-b", "second")
+        (seed / "second").write_text("second\n", encoding="utf-8")
+        _git(seed, "add", "second")
+        _git(seed, "commit", "-m", "second candidate")
+        _git(seed, "push", "origin", "second")
+
+        result = subprocess.run(["git", "clone", str(remote), str(candidate)],
+                                capture_output=True, text=True, check=False)
+        check(result.returncode == 0, f"could not clone candidate worktree: {result.stderr.strip()}")
+        _configure_repo(candidate)
+        _git(candidate, "checkout", "second")
+
+        # Simulate the first serial campaign merge advancing main after the second PR was reviewed.
+        _git(seed, "checkout", "main")
+        _git(seed, "merge", "--squash", "first")
+        _git(seed, "commit", "-m", "merge first candidate")
+        _git(seed, "push", "origin", "main")
+
+        vjson = root / "clean-view.json"
+        vjson.write_text(json.dumps(view()), encoding="utf-8")
+        code, out, err = capture_cli(
+            M.main,
+            ["check", "--pr", "9", "--view-json", str(vjson), "--worktree", str(candidate),
+             "--base", "main"],
+        )
+        check(code != 0,
+              f"a CLEAN view whose worktree lacks the advanced base must stop for rebase (stderr: {err})")
+        check(json.loads(out) == {"verdict": "rebase-first", "reason": "base has moved ahead — rebase first"},
+              f"a stale base must rebase despite CLEAN GitHub enums, got {out!r}")
+
+
+def t_clean_view_with_current_base_proceeds():
+    """A CLEAN PR whose HEAD contains fetched main may proceed."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        remote = root / "remote.git"
+        seed = root / "seed"
+        candidate = root / "candidate"
+
+        result = subprocess.run(["git", "init", "--bare", "-b", "main", str(remote)],
+                                capture_output=True, text=True, check=False)
+        check(result.returncode == 0, f"could not create fixture remote: {result.stderr.strip()}")
+        result = subprocess.run(["git", "clone", str(remote), str(seed)],
+                                capture_output=True, text=True, check=False)
+        check(result.returncode == 0, f"could not clone fixture seed: {result.stderr.strip()}")
+        _configure_repo(seed)
+        (seed / "f").write_text("base\n", encoding="utf-8")
+        _git(seed, "add", "f")
+        _git(seed, "commit", "-m", "base")
+        _git(seed, "push", "origin", "main")
+
+        result = subprocess.run(["git", "clone", str(remote), str(candidate)],
+                                capture_output=True, text=True, check=False)
+        check(result.returncode == 0, f"could not clone candidate worktree: {result.stderr.strip()}")
+        _configure_repo(candidate)
+
+        vjson = root / "clean-view.json"
+        vjson.write_text(json.dumps(view()), encoding="utf-8")
+        code, out, err = capture_cli(
+            M.main,
+            ["check", "--pr", "9", "--view-json", str(vjson), "--worktree", str(candidate),
+             "--base", "main"],
+        )
+        check(code == 0, f"a candidate containing the fetched base must proceed (stderr: {err})")
+        check(json.loads(out) == {"verdict": "proceed", "reason": "GitHub merge state permits base check"},
+              f"a current base must permit the candidate, got {out!r}")
+
+
 CASES = [
-    ("clean-proceeds", "CLEAN -> proceed", t_clean_proceeds),
-    ("has-hooks-proceeds", "HAS_HOOKS -> proceed", t_has_hooks_proceeds),
-    ("unstable-proceeds", "UNSTABLE is a check signal, not a stale base -> proceed", t_unstable_proceeds),
-    ("blocked-proceeds", "BLOCKED is a permission signal, not a stale base -> proceed", t_blocked_proceeds),
+    ("clean-proceeds", "CLEAN passes the enum screen", t_clean_proceeds),
+    ("has-hooks-proceeds", "HAS_HOOKS passes the enum screen", t_has_hooks_proceeds),
+    ("unstable-proceeds", "UNSTABLE is a check signal and reaches the graph check", t_unstable_proceeds),
+    ("blocked-proceeds", "BLOCKED is a permission signal and reaches the graph check", t_blocked_proceeds),
     ("dirty-rebases", "DIRTY -> rebase-first", t_dirty_rebases),
     ("behind-rebases", "BEHIND -> rebase-first", t_behind_rebases),
     ("unknown-mergestate-rechecks", "UNKNOWN merge state -> recheck", t_unknown_mergestate_rechecks),
@@ -223,9 +335,13 @@ CASES = [
      t_dirty_with_unknown_mergeable_rechecks),
     ("behind+unknown-mergeable-rechecks", "BEHIND + UNKNOWN mergeable re-polls, never rebases",
      t_behind_with_unknown_mergeable_rechecks),
-    ("cli-proceed", "check --view-json on a CLEAN view exits 0 with proceed", t_cli_proceed),
+    ("cli-missing-ancestry", "a CLEAN view without base ancestry fails closed", t_cli_missing_ancestry_rechecks),
     ("cli-rebase-first", "check --view-json on a DIRTY view exits non-zero with rebase-first", t_cli_rebase_first),
     ("cli-malformed", "a view missing a field fails closed to recheck, never KeyError", t_cli_malformed),
     ("cli-bad-project-root", "an invalid --project-root fails closed to recheck, no traceback",
      t_cli_bad_project_root_fails_closed),
+    ("clean-view-stale-base", "a CLEAN second candidate behind a merged sibling rebases",
+     t_clean_view_with_stale_base_rebases),
+    ("clean-view-current-base", "a CLEAN candidate containing fetched base proceeds",
+     t_clean_view_with_current_base_proceeds),
 ]
