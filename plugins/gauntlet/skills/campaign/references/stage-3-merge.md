@@ -75,6 +75,8 @@ protection, or gives up, and answers. The record and the unpark are defined once
 (`status`) and `loop-control.md` step 3, "Only the user's answer unparks a PR"; never invent a second
 mechanism here.
 
+#### `BLOCKED` and `UNSTABLE` — what each merge state means
+
 **`BLOCKED` does NOT mean "a required check is missing or failing."** It means the merge is blocked **for
 any reason** — including a **draft** PR, or one **awaiting a human approving review**, or a ruleset
 campaign cannot read. Verified: `cli/cli` PR #13856 reads `BLOCKED` with `mergeable = MERGEABLE` **and a

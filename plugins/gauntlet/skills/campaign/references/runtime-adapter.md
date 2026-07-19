@@ -188,9 +188,9 @@ ReviewTransport {
 ```
 
 For a native action **and for a native-level cross-engine action** (the normal case now), `review_root`
-is the absolute active run-artifact directory and makes no isolation claim. Only a future OS-proving
-adapter that returns the three `os_filesystem_isolation` properties true uses aliases inside its proved
-view. A cross-engine route whose paired CLI is absent is `unavailable` and never constructs this record. The JSON encoding is the prompt's `<TRANSPORT-RECORD>` data
+is the absolute active run-artifact directory and makes no isolation claim (only a future OS-proving
+adapter uses aliases inside a proved view — "Review isolation capability and transition" above). A
+cross-engine route whose paired CLI is absent is `unavailable` and never constructs this record. The JSON encoding is the prompt's `<TRANSPORT-RECORD>` data
 block and the intent is its `<INTENT>` block;
 `bind_review_prompt` binds both without rescanning inserted bytes. Do not substitute record fields into
 prose commands. The active attempt's prompt/progress/findings/report basenames keep the `a<k>` identity
@@ -215,6 +215,13 @@ The plugin validator runs `scripts/transport-contract-test.py` to pin these mapp
 path/ref/payload and exact-byte fixtures.
 
 ## Fresh workers
+
+- Use a background or otherwise asynchronous worker whenever the host supports one.
+- Preserve each role's read/write limits and output artifact paths exactly.
+- If the host cannot create a fresh worker, an explicitly configured external reviewer may fill a
+  review role. It does not fill audit, mapper, reassessment, or fix roles.
+- If neither a native fresh worker nor the required role's allowed fallback exists, park the PR as a
+  machine blocker. Never run a conversational-isolation gate inline merely to keep moving.
 
 A **worker** is a fresh, conversationally isolated execution created through the active host's native
 agent/task mechanism. Claude Code may call this a subagent; Codex may expose an agent or task. Give it
@@ -248,20 +255,12 @@ the installed review contract or producing valid artifacts, treat that attempt a
 failure; after the documented retry/fallback budget is exhausted, park the PR as a machine blocker.
 
 A cross-engine verdict-rendering process launches at this **same native-limitation level** whenever its
-paired CLI is present; it renders a diverse-engine verdict but is **not** a stronger security boundary
-than the native worker, and must never be reported as one. It may claim a stronger OS/filesystem boundary
-**only** from an `available` `ReviewIsolationCapability` whose three `os_filesystem_isolation` properties
-are proved true. A prompt saying "do not edit" does not create that boundary, and its absence never blocks
-the launch or parks the pass. For Codex specifically, `--ignore-rules` disables execpolicy `.rules`; it
+paired CLI is present — it renders a diverse-engine verdict, is **not** a stronger security boundary than
+the native worker, and must never be reported as one ("Review isolation capability and transition" above
+owns the rule and the one condition — three proved `os_filesystem_isolation` properties — under which a
+stronger claim is legitimate). For Codex specifically, `--ignore-rules` disables execpolicy `.rules`; it
 does **not** disable `AGENTS.md` discovery. The external argv in `cross-agent-reviewers.md` launches at
 native level today, and the same argv serves a future adapter that additionally proves the OS properties.
-
-- Use a background or otherwise asynchronous worker whenever the host supports one.
-- Preserve each role's read/write limits and output artifact paths exactly.
-- If the host cannot create a fresh worker, an explicitly configured external reviewer may fill a
-  review role. It does not fill audit, mapper, reassessment, or fix roles.
-- If neither a native fresh worker nor the required role's allowed fallback exists, park the PR as a
-  machine blocker. Never run a conversational-isolation gate inline merely to keep moving.
 
 ## Model classes
 
@@ -307,25 +306,15 @@ the skill does not pretend a heartbeat was scheduled when none was.
 
 ## Reviewer selection and diversity
 
-The **default reviewer is the cross-engine route for the active host**: under Claude Code the reviewer is
-Codex (`codex exec`); under Codex the reviewer is Claude Code (`claude -p`). Engine diversity catches
-defects a same-engine re-roll misses, and it moves review cost off the native-worker pool. The
-cross-engine route launches at the **same native-limitation level** as a native worker whenever the paired
-CLI is present; it needs no OS sandbox and makes no stronger-boundary claim.
+**`reviewer.md`, "Selecting the reviewer", OWNS reviewer selection** — the priority order, the diversity
+rationale, the same-engine caveat, the trusted-source override, and the native-worker fallback. This
+section states only the per-host default and where the transport pieces live:
 
-- When Claude Code orchestrates, the default reviewer is `codex exec`.
-- When Codex orchestrates, the default reviewer is `claude -p`.
-- **Fallback:** when the paired CLI is absent (cross-engine `unavailable`), or the cross-engine process
-  fails after its one retry, the reviewer is a fresh native worker on the active host, disclosed in the
-  final report.
-- Another process from the **same** engine (Codex → `codex exec`, Claude Code → `claude -p`) provides
-  context isolation but **not** engine diversity. Use one only when the user selected it, and never report
-  it as diversity.
-- An explicit selection or a saved preference from TRUSTED state **overrides** the default — the user may
-  force a native worker or a specific engine. Reviewer selection is gate machinery, so a file inside the
-  candidate checkout is never a preference source (`reviewer.md`, "Selecting the reviewer" owns the
-  trusted-source list). Record the exact selection in the ledger and final report.
+- When Claude Code orchestrates, the default reviewer is `codex exec` (Codex).
+- When Codex orchestrates, the default reviewer is `claude -p` (Claude Code).
 
-Capability-gated cross-engine argv lives in `cross-agent-reviewers.md`. External-reviewer retry budget
-remains in `reviewer.md`; the transition itself is owned by `ReviewIsolationCapability` above. “Fallback”
-always means a fresh native worker on the active host.
+The cross-engine route launches at the **same native-limitation level** as a native worker whenever the
+paired CLI is present ("Review isolation capability and transition" above). Capability-gated cross-engine
+argv lives in `cross-agent-reviewers.md`; the external-reviewer retry budget in `reviewer.md`; the
+transition itself in `ReviewIsolationCapability` above. “Fallback” always means a fresh native worker on
+the active host.

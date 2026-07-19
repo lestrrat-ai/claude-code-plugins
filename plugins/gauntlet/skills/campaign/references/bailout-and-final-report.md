@@ -1,5 +1,12 @@
 ## Bailout
 
+### 1-hour cap per task
+
+When it trips, abort cleanly and **retry once against the SAME adopted PR** (`attempts` += 1, reset
+`started`). The PR is user/externally owned — campaign never closes it and opens a replacement of
+its own. Instead, **rebuild the worktree from the PR's head branch** so the retry runs with fresh
+LOCAL state against that same PR / its head; the PR itself is left in place.
+
 - **1-hour cap per task** — one hour of wall-clock since `started` without merging. The cap catches a
   *stuck* task, not a slow external system, and the ledger records no separately-metered work time — so
   key it off recorded row state, not a running subtraction of durations nothing stores: **do not fire
@@ -63,10 +70,6 @@
   `started` is over an hour old *and* the row is agent-controlled — **it is in NONE of the three bounded
   waits above**: not parked, not `repairing`, and **NO** bound of the CI owner's set live for it (never a
   count of them, which rots the moment a set gains a member) — trips it.
-  When it trips, abort cleanly and **retry once against the SAME adopted PR** (`attempts` += 1, reset
-  `started`). The PR is user/externally owned — campaign never closes it and opens a replacement of
-  its own. Instead, **rebuild the worktree from the PR's head branch** so the retry runs with fresh
-  LOCAL state against that same PR / its head; the PR itself is left in place.
 - **The user's `abort` ruling on a parked PR takes this SAME path.** A `blocker_ruling = abort@<iso>`
   (`loop-control.md` step 3, "Only the user's answer unparks a PR") is a permanent abort of that PR, not a
   new mechanism: run exactly the procedure below, with the park's `ci_reason` as the recorded cause.
@@ -106,12 +109,9 @@
   aborts rather than looping (`repair_count`, capped): the mechanism that fixes non-convergence must not
   itself fail to converge.
 
-  **THIS BACKSTOP HAD NO SENSOR, AND THAT IS WHY IT NEVER FIRED.** Its trigger — *"the second `NOT
-  SATISFIED` on the same PR"* — is a **fact about history**, and nothing recorded any history: `reviews_ok`
-  is zeroed on every `NOT SATISFIED`, so the ledger after twenty-one rounds read exactly as it did after
-  one. Each heartbeat is a **fresh agent instance** holding a single round, so it could not know a second one
-  had ever happened. The rule called itself a hard backstop; it was a hard backstop **with no input**, and
-  one PR ran **21 review rounds** underneath it.
+  **THIS BACKSTOP HAD NO SENSOR — that is why it never fired** (the full account is above: its trigger was
+  a fact about *history* the ledger did not record, and each fresh-agent heartbeat held a single round, so
+  one PR ran **21 review rounds** underneath it).
 
   The ledger now records that history in durable state — `ns_streak` and `review_rounds` — evaluated by
   `ledger.py verdict` itself as it records each verdict, and at a cap it holds the PR `repairing` and exits

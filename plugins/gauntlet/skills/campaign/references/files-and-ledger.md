@@ -233,8 +233,9 @@ Header field notes (the header fields above; per-row fields follow):
 - `intent` — the PROVENANCE of `<rundir>/intent-<pr>.md` (the file itself is markdown, so it lives in the
   run dir, not in this one-object-per-line store): `-` (not adopted yet) | `stated@<iso>` (the PR body
   already carried a usable intent block, copied verbatim) | `authored@<iso>` (the driver **inferred** it
-  from the PR's title, body and diff). Set at adoption (`pr-adoption.md` step 3a) and **preserved** by every
-  refresh — a heartbeat is a fresh agent instance, and an intent invented twice is two intents.
+  from the PR's title, body and diff). Set at adoption (`pr-adoption.md` step 3a) and **preserved** — never
+  re-derived — by every refresh (a heartbeat is a fresh agent instance; `blocker_ruling` below owns the
+  durability rule).
 
   The distinction is the honest one and the final report states it: an `authored` intent is **the driver's
   CLAIM about what the PR is for**, not the author's, and a wrong intent block silently **narrows** a
@@ -252,7 +253,7 @@ Header field notes (the header fields above; per-row fields follow):
   looping. The mechanism that fixes non-convergence must not itself fail to converge. Like `review_rounds`,
   it has **no flag at any door** — a budget you can zero is not a bound.
 - `repair_decision` — `-`, or the last reassessment decision + when: `<decision>@<iso>`. Durable, because
-  the heartbeat that dispatches the repair may be a different agent instance from the one that decided it — and
+  a heartbeat may be a fresh agent instance (`blocker_ruling` below owns why) — and
   a repair may not be dispatched at all until this field is set (`ledger.py dispatch-check --action repair`).
   **DURABLE *and* SPENT EXACTLY ONCE per cap** — it is reset to `-` when the row **re-enters `repairing`**
   (`ledger.py verdict` at a cap), so a decision answers exactly the cap it was recorded for and a PR that
@@ -321,12 +322,9 @@ Header field notes (the header fields above; per-row fields follow):
   unparks with the liveness counters cleared; `abort` goes terminal `aborted`. The unpark is
   `loop-control.md` step 3, "Only the user's answer unparks a PR".
 
-  **DURABLE *and* SPENT EXACTLY ONCE — one ruling answers exactly ONE park.** It is set back to `-` when a
-  machine-blocker park is **ENTERED** and when a `retry` is **CONSUMED** (`stage-2-ci.md`, "THE RULING IS
-  CONSUMED EXACTLY ONCE" — that is the owning definition). That is what **scopes** a ruling to its park: a
-  ruling sitting on a **parked** row can only have been written while **that** park was open, so a stale
-  `retry` can never unpark a **later** blocker with no fresh user answer. `abort@<iso>` is **never**
-  cleared — it goes terminal, and a terminal row is never re-parked, so it stays as the record of why.
+  **DURABLE *and* SPENT EXACTLY ONCE — one ruling answers exactly ONE park** (`stage-2-ci.md`, "THE RULING
+  IS CONSUMED EXACTLY ONCE", is the owning definition: the clears at park **entry** and `retry` **consume**,
+  the scoping that keeps a stale `retry` off a later park, and why terminal `abort@<iso>` is never cleared).
   A **counter reset never touches it**: it is not one of the liveness counters.
 
   These live **on disk, not in the driver's head**: a heartbeat may be a fresh agent instance, and a counter —
@@ -341,6 +339,8 @@ Header field notes (the header fields above; per-row fields follow):
   gate flow, `declined` with a terminal `aborted`. A one-off approval lands here only; it never flips
   the run-wide `api_changes` header.
 - `status` — `in_review` → `merged`, or `aborted`; plus the **HELD** (non-terminal) statuses below.
+
+### `status` held and parked taxonomy
 
   **HELD is the PROPERTY the dispatch guard is keyed on: campaign takes NO action that MUTATES a held
   PR.** Never launch a review pass, a CI fix, a review fix, or a merge for it, and never rebase it, refresh
@@ -453,7 +453,6 @@ ledger.py --file <state.jsonl> verdict --pr N --head-sha <sha> --verdict satisfi
 ledger.py --file <state.jsonl> get --pr N [--field <f>]           # print the row as JSON, or one field
 ledger.py --file <state.jsonl> list [--where <field>=<val>]       # print matching rows' pr numbers (all if no filter)
 ledger.py --file <state.jsonl> table [--all] [--fields <f>,<f>,…] # print run header + the live rows as an aligned table (read-only)
-ledger.py --file <state.jsonl> verdict --pr N --head-sha <sha> --verdict satisfied|not-satisfied
 ledger.py --file <state.jsonl> dispatch-check --pr N [--action ordinary|repair]
 ```
 
@@ -475,6 +474,11 @@ a new name.
 `table` is the user-facing status view: the end-of-heartbeat report renders it whenever the run goes back
 to waiting (`loop-control.md`, "Reschedule or exit"). It renders state and decides nothing — no gate
 logic, no derived values.
+
+**Read the ledger by FIELD NAME through `ledger.py get`** (or `list`) — **never by parsing the table**.
+A SHA (or any value) recovered from `table`'s grid is a truncated, escaped rendering, and feeding one back
+into a command or writing it to the store is a bug: this repo has already had a fabricated 8-char SHA
+written into a real ledger, and a truncated SHA escape into a command.
 
 **`table` is a PROJECTION — NEVER a source to read a value back out of.** Its output is *formatted for a
 human*, and the formatting is lossy in four ways:
@@ -518,11 +522,6 @@ human*, and the formatting is lossy in four ways:
   makes the omission notice trustworthy, and it is why an empty grid always **says which empty it is** —
   a ledger that holds nothing and a ledger whose every row is hidden print **different** markers, so an
   end-of-run table where everything merged can never be misread as a campaign that adopted no PRs.
-
-So **read the ledger by FIELD NAME through `ledger.py get`** (or `list`) — **never by parsing the table**.
-A SHA (or any value) recovered from `table`'s grid is a truncated, escaped rendering, and feeding one back
-into a command or writing it to the store is a bug: this repo has already had a fabricated 8-char SHA
-written into a real ledger, and a truncated SHA escape into a command.
 
 It rejects an unknown field name (listing the valid ones), refuses a duplicate `pr` on `add-row`,
 errors on a missing row for `set`/`get`, and creates the file with the header if it is missing. It also

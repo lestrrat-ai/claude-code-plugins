@@ -190,19 +190,19 @@ machine-read convention as `state.jsonl` and the review plan/progress files (`fi
   `repos/cli/cli/commits/trunk/status`. Whether *that* commit still carries zero statuses is a **live
   fact that changes**; the API's behavior **at zero** is the permanent point.)
 - **A SHORT READ IS NOT A GREEN — CHECK WHAT YOU COLLECTED AGAINST GITHUB'S OWN `total_count`, ON EVERY
-  PAGE.** Both REST families return it, and it counts the rows GitHub holds **for the commit, across ALL
-  pages**, not for the page it sits on (observed 2026-07-14: 27 check runs read at `per_page=5` returns six
+  PAGE.** Both REST families return it, and it counts the rows GitHub holds for the commit, across ALL
+  pages, not for the page it sits on (observed 2026-07-14: 27 check runs read at `per_page=5` returns six
   pages, each reporting `total_count=27`; the *count-is-the-cross-page-total* behavior is the permanent
-  point, the 27 is not). So `total_count` vs the rows the **slurp** collected is a completeness test, and a
-  read that is **short FAILS CLOSED** (`unusable`, refetch): a row GitHub holds and we do not have **could be
-  the failing one**, and a verdict derived from evidence we KNOW has a hole in it is the false green of this
-  whole file wearing a footnote. **Every page's count is checked, not the first alone** — GitHub RECOMPUTES
-  the count per request, so a check that registers between two page fetches makes a **later** page report a
+  point, the 27 is not). So `total_count` vs the rows the slurp collected is a completeness test, and a
+  read that is short FAILS CLOSED (`unusable`, refetch): a row GitHub holds and we do not have could be
+  the failing one, and a verdict derived from evidence we KNOW has a hole in it is the false green of this
+  whole file wearing a footnote. Every page's count is checked, not the first alone — GitHub RECOMPUTES
+  the count per request, so a check that registers between two page fetches makes a later page report a
   higher count than the first (page one says 31, we collect 31, page two says 32), and a rule that trusted
-  page one would wave the missing 32nd row through as green; pages that **disagree** about what the commit
-  holds fail closed for the same reason a short read does. **A note beside a green is not a disclosure, it is
-  a trapdoor** — the tool used to print exactly that, and it shipped a green anyway. **And a count we cannot
-  READ is refused too** (absent, or not an integer), **on any page**: a fail-closed rule that cannot fire is
+  page one would wave the missing 32nd row through as green; pages that disagree about what the commit
+  holds fail closed for the same reason a short read does. A note beside a green is not a disclosure, it is
+  a trapdoor — the tool used to print exactly that, and it shipped a green anyway. And a count we cannot
+  READ is refused too (absent, or not an integer), on any page: a fail-closed rule that cannot fire is
   not a rule.
 - **A PAGE MISSING ITS ROW ARRAY IS NOT A PAGE WITH NO ROWS — AND NO FIELD READ MAY DEFAULT.** The rule
   above was written and *still passed* on a response whose `statuses` member was simply **not there**:
@@ -239,6 +239,9 @@ machine-read convention as `state.jsonl` and the review plan/progress files (`fi
   one we cannot read, and taking it for "no witnesses" makes containment a claim about the **empty set**,
   which passes trivially. Refuse it. This is the artifact's founding rule — *an absence must read as "we do
   not know", never as "nothing wrong"* — applied one level up, to the **response**.
+
+##### THE ROLLUP'S `StatusContext` ENTRIES MUST BE VISIBLE IN FAMILY (2)
+
 - **THE ROLLUP'S `StatusContext` ENTRIES MUST BE VISIBLE IN FAMILY (2), OR THE FETCH FAILS CLOSED.** The
   rollup lists commit statuses too, and a `StatusContext` in state **`EXPECTED`** is **a required status
   check that has not been posted yet** — the PR is *blocked* on it. **The REST commit-status API has no
@@ -264,6 +267,9 @@ machine-read convention as `state.jsonl` and the review plan/progress files (`fi
   the PR goes green. **The REQUIRED SET is the closure** (`stage-2-ci.md`, "WHAT WERE WE EXPECTING TO SEE?") — it is
   declared by the base branch, so it does not depend on the rollup showing up, and `green` requires every
   declared check to be **present and passing**.
+
+##### THE TWO SOURCES MUST AGREE ABOUT WHAT A CHECK SAYS
+
 - **THE TWO SOURCES MUST AGREE ABOUT WHAT A CHECK SAYS, OR THE FETCH FAILS CLOSED.** The rule above asks
   only whether a check **EXISTS** in both sources. It does **not** ask whether they **SAY THE SAME THING
   ABOUT IT** — and for as long as nobody asked, the tool believed whichever source it happened to parse. A
@@ -461,25 +467,25 @@ wrong".** This is the rule this whole section opens with, and until the `source`
 commit-status fetch was SKIPPED, or died before appending anything"* produced the **byte-identical file**.
 So:
 
-- **EXACTLY ONE `source` marker per MANDATORY source** (`check-runs`, `status`, `rollup`), **and no
-  others.** A **missing** marker → **UNUSABLE** (*"a mandatory source was never queried — its failures
-  cannot be in this artifact"*). **NEVER green.** **TWO** markers for one source → unusable as well: if they
+- **EXACTLY ONE `source` marker per MANDATORY source** (`check-runs`, `status`, `rollup`), and no
+  others. A missing marker → **UNUSABLE** (*"a mandatory source was never queried — its failures
+  cannot be in this artifact"*). **NEVER green.** TWO markers for one source → unusable as well: if they
   disagreed the file would claim two things, and nothing would read the second. A marker for a source the
-  contract does not define is **present and not counted**, exactly like an unknown row type.
+  contract does not define is present and not counted, exactly like an unknown row type.
 - **`count` MUST EQUAL the rows of that source actually present** (`check-runs`→`checkrun`,
-  `status`→`status`, `rollup`→`witness`). A marker claiming **5** where **3** sit in the file means the
-  artifact is **TRUNCATED** — rows the fetch emitted did not survive promotion, and **a row that is not in
-  the file could be the failing one** → **UNUSABLE**. A `count` that is not a decimal integer is not a
-  count you can **compare**, and a comparison you cannot make is not one you may assume the result of.
+  `status`→`status`, `rollup`→`witness`). A marker claiming 5 where 3 sit in the file means the
+  artifact is TRUNCATED — rows the fetch emitted did not survive promotion, and a row that is not in
+  the file could be the failing one → **UNUSABLE**. A `count` that is not a decimal integer is not a
+  count you can compare, and a comparison you cannot make is not one you may assume the result of.
 - **`sha` MUST be GITHUB'S, and it is compared to the LEDGER'S `head_sha`** — the same two-sources rule as
-  the evidence rows, for the same reason: they **can** disagree, so the check **can** fail. A marker that
-  disagrees means **GitHub answered about another commit**, so every row that source contributed is about
+  the evidence rows, for the same reason: they can disagree, so the check can fail. A marker that
+  disagrees means GitHub answered about another commit, so every row that source contributed is about
   that commit → **UNUSABLE**.
 - **`sha` may be `"-"` EXACTLY where GitHub gives no oid** (the table above), and nowhere else. A `"-"` on
-  the **`status`** marker, or on a **`check-runs`** marker whose fetch **did** return rows, means the value
-  was **not built from the response** — and a marker whose sha is not GitHub's **cannot disagree with the
-  ledger, so it could never fail**: a **rubber stamp**. A **real sha on the `rollup`** marker is worse — it
-  is a value **we invented**, the same fabrication as a sha on a `witness` row. Both → **UNUSABLE**.
+  the `status` marker, or on a `check-runs` marker whose fetch did return rows, means the value
+  was not built from the response — and a marker whose sha is not GitHub's cannot disagree with the
+  ledger, so it could never fail: a rubber stamp. A real sha on the `rollup` marker is worse — it
+  is a value we invented, the same fabrication as a sha on a `witness` row. Both → **UNUSABLE**.
 
 **WHY A MARKER IS NOT A RUBBER STAMP.** It carries what **only a fetch that actually ran** could know: a
 `count` that must match the file it sits in, and a `sha` that must match a **ledger value it never saw**.

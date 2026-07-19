@@ -10,6 +10,13 @@ different write: its `0`-reset belongs **only** to a campaign commit landing on 
 campaign commit to the PR head resets the gate", below, through `scripts/ledger.py … set --pr <N>
 --reviews_ok 0`. An ordinary derivation is observation, not a content change, and never touches it.)
 
+> **Jump by question (navigation, not authority — the sections below govern):**
+> - `derive` returned a verdict → "ACT ON THE VERDICT"
+> - a required-check-set question → "WHAT WERE WE EXPECTING TO SEE?"
+> - a PR stuck or parked → SETTLED / "ESCALATE" / "THE PARK MUST DECLARE ITS OWN EXIT" (all under "`pending` MUST NOT BE AN ABSORBING STATE")
+> - a watch question → "WATCH ONLY WHAT CAN MOVE"
+> - a CI-fix dispatch → "Classify, then set the model class"
+
 #### THE DERIVATION IS A COMMAND — RUN IT. NEVER DERIVE `ci` BY READING TERMINAL OUTPUT.
 
 **The heartbeat derives `ci` by RUNNING `scripts/ci-status.py`, and by nothing else:**
@@ -384,61 +391,65 @@ change `head_sha` until it pushes — so an ungated strike rule would park, with
 of heartbeats, the exact PR the driver is actively fixing, and an ungated stall clock would start timing a
 `RUNNING` row the driver is about to make irrelevant.
 
-**MACHINE ACTION** = **any work campaign dispatches that can produce a new `head_sha` on this PR.** That
-**PROPERTY is the definition, and it is the whole of it.** **APPLY THE PROPERTY — NEVER CONSULT A LIST.**
+##### MACHINE ACTION — any work that can produce a new `head_sha`
+
+**MACHINE ACTION** = any work campaign dispatches that can produce a new `head_sha` on this PR. That
+PROPERTY is the definition, and it is the whole of it. **APPLY THE PROPERTY — NEVER CONSULT A LIST.**
 Of any work in question, ask: *when it completes, can it put a new commit on this PR's head?* If yes it is
-a MACHINE ACTION, **whether or not it appears in any enumeration anywhere in this repo** — the same idiom
-as the parked-PR guard's "does this MUTATE the PR?, **not** is it on a list" (`SKILL.md`). A set defined
-by a property but **applied** through its examples is a set that silently shrinks every time a member is
+a MACHINE ACTION, whether or not it appears in any enumeration anywhere in this repo — the same idiom
+as the parked-PR guard's "does this MUTATE the PR?, not is it on a list" (`SKILL.md`). A set defined
+by a property but applied through its examples is a set that silently shrinks every time a member is
 added somewhere else — which is exactly how the list below went stale once already.
 
 - **NON-NORMATIVE EXAMPLES. Illustrative only; they DO NOT BOUND THE SET:** a CI-fix subagent (either
   tier, including an escalation from the cheap one), a review-fix subagent, a copilot-address fix, a
-  refutation commit, and **every rebase and base refresh — the conflict-resolving rebase and the CLEAN
-  BASE-ONLY one alike** (Stage 2a's precondition rebase, `stage-2-review-gate.md`; the post-merge
+  refutation commit, and every rebase and base refresh — the conflict-resolving rebase and the CLEAN
+  BASE-ONLY one alike (Stage 2a's precondition rebase, `stage-2-review-gate.md`; the post-merge
   reconcile, `stage-3-merge.md` step 6). Work that has the property but is missing from this list is
-  **still** a machine action.
+  still a machine action.
 - **The CLEAN BASE-ONLY REBASE IS ONE — it is the member this list omitted, and the omission parked
-  healthy PRs.** It qualifies for exactly the reason every other member does: **it MOVES `head_sha`**
+  healthy PRs.** It qualifies for exactly the reason every other member does: it MOVES `head_sha`
   ("THE LIVENESS COUNTERS" below, which resets the counters at it for that same reason). Whether it also
-  resets the **gate** is a **DIFFERENT QUESTION** — it does not — and it is **not this one**: the property
-  here is `head_sha`, not `reviews_ok`. A PR merely **DUE** for a clean rebase would otherwise keep
-  striking (or keep its stall clock running) against a head the rebase is about to replace, and **park —
-  a spurious park, with the work already on its way**.
+  resets the gate is a DIFFERENT QUESTION — it does not — and it is not this one: the property
+  here is `head_sha`, not `reviews_ok`. A PR merely DUE for a clean rebase would otherwise keep
+  striking (or keep its stall clock running) against a head the rebase is about to replace, and park —
+  a spurious park, with the work already on its way.
 - **The CI watch is NOT a machine action, and neither is a review pass.** They fail the property: neither
   pushes a commit, so neither can move CI. A settled PR under review is still settled, a stalled one is
   still stalled, and suppressing either bound for them would wedge the PR exactly as before.
 
-**In flight** = dispatched for this PR at this `head_sha` and not yet completed — **the same in-flight
-test `loop-control.md` step 3 already applies** to suppress a duplicate dispatch ("CI red and no fix is
+**In flight** = dispatched for this PR at this `head_sha` and not yet completed — the same in-flight
+test `loop-control.md` step 3 already applies to suppress a duplicate dispatch ("CI red and no fix is
 already in flight for that PR/SHA"). The strike rule and the stall clock read that same fact; they do not
 invent a second one.
 
-**Due** = **this heartbeat would launch it** — it is not in flight, and nothing but a free concurrency slot is
-missing. That, too, is a **property, not a fixed list of scans**: whichever rule OWNS that dispatch is the
+**Due** = this heartbeat would launch it — it is not in flight, and nothing but a free concurrency slot is
+missing. That, too, is a property, not a fixed list of scans: whichever rule OWNS that dispatch is the
 one that says so. For a CI fix it is `loop-control.md` step 3's dispatch scan; for a rebase it is the rule
 that owns the rebase (Stage 2a's preconditions, `stage-2-review-gate.md`; the step-6 reconcile,
-`stage-3-merge.md`) finding the PR behind/conflicting on this heartbeat. A PR **frozen by a park** has **no**
+`stage-3-merge.md`) finding the PR behind/conflicting on this heartbeat. A PR frozen by a park has no
 machine action due — the held-status guard forbids every one of them (`loop-control.md`), so nothing is
 coming, which is why the park is the terminus and not another wait.
 
 **IT STILL TERMINATES — a liveness rule that can be suppressed forever is not a liveness rule.** The STOP
-is keyed to a machine action being **DUE or IN FLIGHT**, and **every machine action ENDS**, so the STOP
+is keyed to a machine action being DUE or IN FLIGHT, and every machine action ENDS, so the STOP
 ends with it — the broader definition above does not widen it into a wedge:
 
-- **A fix subagent is bounded**: a stuck task is retried **once** and then aborted permanently, and "CI
+- **A fix subagent is bounded**: a stuck task is retried once and then aborted permanently, and "CI
   fails identically after a fix attempt" is itself a stop condition (`bailout-and-final-report.md`).
-- **A rebase is bounded by construction**: it either lands a new head — which **resets the counters at the
-  site that moved it**, the correct outcome, not a suppression — or it fails; either way it is afterwards
+- **A rebase is bounded by construction**: it either lands a new head — which resets the counters at the
+  site that moved it, the correct outcome, not a suppression — or it fails; either way it is afterwards
   neither due nor in flight.
-- **DUE cannot persist**: the only thing a due action waits on is a **free concurrency slot**, and slots
+- **DUE cannot persist**: the only thing a due action waits on is a free concurrency slot, and slots
   free as work completes.
 
-So a PR whose machine actions are **all exhausted** — a **red** PR whose CI-fix budget is **spent**, not
-behind or conflicting, so no rebase is owed — has **none due and none in flight**: the STOP does not fire,
-strikes accrue (or the stall clock runs) on the next derivations, and **it reaches its cap and parks**,
-like any other settled or stalled PR. The gate suppresses a bound **only while work that can move
-`head_sha` is actually coming**, never merely because the PR is red.
+So a PR whose machine actions are all exhausted — a red PR whose CI-fix budget is spent, not
+behind or conflicting, so no rebase is owed — has none due and none in flight: the STOP does not fire,
+strikes accrue (or the stall clock runs) on the next derivations, and it reaches its cap and parks,
+like any other settled or stalled PR. The gate suppresses a bound only while work that can move
+`head_sha` is actually coming, never merely because the PR is red.
+
+##### ESCALATE — park the PR and tell the user
 
 **ESCALATE** = park the PR (`status = awaiting-user`, `ci_reason` = the blocker **named**: which check
 never registered, **which check has been `RUNNING` since when without the check set moving**, which value
@@ -452,6 +463,8 @@ abort the run or close the PR — the run's other PRs keep going. At **this** pa
 bare restatement of `ci`. (The field itself is **wider than CI**: it is the durable machine-blocker reason,
 and `stage-3-merge.md`'s merge-precondition parks write it with `ci` **green**. `files-and-ledger.md` owns
 that definition.) A park that cannot name its blocker is not actionable.
+
+##### THE PARK MUST DECLARE ITS OWN EXIT
 
 **THE PARK MUST DECLARE ITS OWN EXIT — the invariant at the top of this section binds `awaiting-user`
 too.** A park whose exit event never comes is the same wedge, one level up. So the escalation:
@@ -467,8 +480,8 @@ too.** A park whose exit event never comes is the same wedge, one level up. So t
 - **Records that answer DURABLY in the ledger's `blocker_ruling`** (`files-and-ledger.md`) the moment it
   lands, and unparks per `loop-control.md` step 3, "Only the user's answer unparks a PR" — which also
   **clears the liveness counters**, so the retry gets a fresh budget instead of re-escalating on its first
-  derivation. A heartbeat may be a fresh agent instance: an answer that lives only in the driver's head is an
-  answer that gets re-asked.
+  derivation. A heartbeat may be a fresh agent instance, so the answer must be durable ("HOW state dies
+  with the context is a CLASS" below).
 
 **NOTHING THIS SECTION RELIES ON LIVES IN THE DRIVER'S HEAD — and that is a PROPERTY, not the list that
 used to stand here.** A heartbeat may be a fresh agent instance, so: **if a LATER derivation, the escalation
@@ -477,7 +490,7 @@ schema itself** — `files-and-ledger.md`'s row-field definitions, and the `ROW_
 `scripts/ledger.py` that own it — and a field added there is durable **with no edit to this section**. A
 list retyped here rots the next time one is added, and the one that stood here rotted **twice**: it first
 dropped `ci_reason`, the very thing the park asks the user about, and its replacement dropped
-`ci_fingerprint`, without which every heartbeat sees CI as having moved and **no bound ever fires at all**.
+`ci_fingerprint`, whose loss silently reopens the wedge ("HOW state dies with the context is a CLASS" below).
 There is no third attempt: **the members are not retyped here, in any form, marked or not.** Every write
 goes through the owning tool, **by field name**, never by hand-editing the row: the derivation-driven
 fields are `ci-status.py liveness`'s ("THE BOOKKEEPING IS A COMMAND", above), and everything else —
@@ -489,17 +502,19 @@ added to the schema tomorrow is already covered here:
 
 - **A COUNTER that dies never reaches its cap.** A fresh instance restarts the count from zero, so the
   bound never fires.
-- **A CLOCK is worse**: it does not merely lose the elapsed time, it **silently restarts** it. Every clock
-  is therefore a **timestamp on disk**, so that **any** heartbeat computes the elapsed time from the ledger
+- **A CLOCK is worse**: it does not merely lose the elapsed time, it silently restarts it. Every clock
+  is therefore a timestamp on disk, so that any heartbeat computes the elapsed time from the ledger
   alone, remembering nothing.
 - **EVIDENCE OF WHAT CI LOOKED LIKE LAST TIME is worse still, because losing it looks like SUCCESS.** The
-  derivation decides that CI **moved** by comparing this snapshot against what the row says it saw before;
-  with that gone, **every** heartbeat sees motion, **every** heartbeat resets the counters and the clock, and the
+  derivation decides that CI moved by comparing this snapshot against what the row says it saw before;
+  with that gone, every heartbeat sees motion, every heartbeat resets the counters and the clock, and the
   bounds never fire — the wedge this whole section exists to close, reopened silently and with no error.
 - **A REASON that dies leaves the park UNANSWERABLE.** The escalation prompt above is built from the
   blocker the human is being asked to rule on; a fresh agent that lost it cannot even ask the question, so
   the park has no exit.
 - **A RULING that dies gets re-asked** ("THE RULING IS CONSUMED EXACTLY ONCE" below).
+
+##### THE RULING IS CONSUMED EXACTLY ONCE
 
 **THE RULING IS CONSUMED EXACTLY ONCE — a durable answer that is never spent is a park that unparks
 itself.** `blocker_ruling` must be **DURABLE** (it survives a context loss) **AND spent EXACTLY ONCE** (it
@@ -521,6 +536,8 @@ a spent `retry` on the row, and the next park would read it as its own answer. (
 `head_sha` instead would **not** work: a `retry` that fails to move CI re-parks the PR at the **same**
 `head_sha` (`loop-control.md` step 3), so a `head_sha`-scoped ruling would satisfy that re-park with no
 fresh user answer — the exact failure this rule exists to prevent.)
+
+##### THE LIVENESS COUNTERS
 
 **THE LIVENESS COUNTERS — one name for the set, so a new counter never leaves a stale restatement.** They
 are `ci_fingerprint`, `settled_strikes`, `unusable_refetches`, and `ci_stalled_since`.
@@ -607,8 +624,8 @@ the healthy build**, and a rule that parks healthy PRs gets turned off, which le
   SETTLED PR has **nothing that could move** — there is no slow-vs-dead question to answer.
 - **It is computed FROM DISK, never from the driver's memory of when it last looked.** `ci_stalled_since`
   is a UTC ISO-8601 timestamp in the **ledger**; `now - ci_stalled_since` is a subtraction any fresh agent
-  instance can do on its first heartbeat. A duration accumulated in context is a duration that resets to zero
-  every time the session dies — which is the failure that made these counters durable in the first place.
+  instance can do on its first heartbeat (why a clock lives on disk, not in context: "HOW state dies with
+  the context is a CLASS" above).
 
 **WHY IT DOES NOT PARK A HEALTHY SLOW CHECK.** The clock is **not** "how long the build has been running".
 It is **"how long NOT ONE row in the whole check set has changed state"** — the fingerprint covers every
@@ -723,8 +740,8 @@ Every one of them MUST, in the same step:
   that snapshot holds a row that can still move** ("WATCH ONLY WHAT CAN MOVE" above). The new commit
   **resets the liveness counters** ("THE LIVENESS COUNTERS" above), so the PR gets a clean budget.
   **NEVER launch the watch unconditionally on the push**: at that instant the checks may not have
-  registered yet, the snapshot holds **zero evidence rows**, and `gh pr checks --watch` would exit in
-  about a second — a heartbeat per second, forever, on a PR nothing is watching *for*;
+  registered yet, so watch only if the fresh snapshot holds a row that can still move ("WATCH ONLY WHAT
+  CAN MOVE" above);
 - **re-enter Stage 2a.**
 
 The verdicts on the old SHA describe content that no longer exists, and a `gauntlet-accepted` label on
@@ -820,10 +837,9 @@ Its job, in order:
 A cheap model verifying a tool's diff is a **MISS-CATCHER, NOT A PROOF.** It can miss a semantic change.
 
 What backs it: the **exact failing check must pass**; the subagent **must escalate anything it cannot
-verify**; and **every commit campaign pushes is still gated by the full review gauntlet** — any campaign
-commit to the PR head resets `reviews_ok` to 0, restores `gauntlet-reviewing`, resets the liveness
-counters ("THE LIVENESS COUNTERS"), re-derives CI for the new tip and watches it **only if a row can still
-move** ("WATCH ONLY WHAT CAN MOVE"), and re-enters Stage 2a in the `session` class.
+verify**; and **every commit campaign pushes is still gated by the full review gauntlet** — it resets the
+gate and re-enters Stage 2a in the `session` class ("Any campaign commit to the PR head resets the gate"
+above owns the full action list).
 
 This trades a **small, bounded risk** for a workflow that is **cheaper AND more capable** than either a
 full-strength subagent on every formatting failure or a hermetic no-model tool path. **The user accepts

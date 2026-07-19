@@ -1,10 +1,14 @@
 ## Loop control
 
+> **Read when:** every heartbeat executes these steps in order; jump to the step you are in.
+
 The skill is **event-driven**. Read `runtime-adapter.md` before waiting. Reconciles come from the first
 invocation, a scheduled heartbeat when the host provides one, a **background task completing**, or the
 bounded-wait fallback returning. A completion may be a CI watch, a review, or a CI/review fix.
 
 **Every heartbeat — reconcile, dispatch, reschedule:**
+
+### Step 1 — Resolve repository context, then the run + lease, then init / resume / start fresh
 
 1. **Resolve repository context, then the run + lease, then init / resume / start fresh.** Call
    `runtime-adapter.md`'s repository-context resolver exactly once with the supplied checkout and carry
@@ -22,36 +26,31 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
    `awaiting-user`).
    Three cases:
 
-   - **This run has live work → resume.** **Reconcile against ground truth** (do NOT redo *completed*
-     work — a CI task whose output file is missing may be re-launched, since in-flight tasks die with
-     their session. A **review** whose output file is missing is NOT simply re-launched: resolve its
-     **active launch attempt** first (Stage 2a) — read the highest-numbered attempt's `pass_identity`
-     and dispatch on `launch_attempt` **alone**: `1` → relaunch once (as attempt `2`); `2` → the
-     relaunch is spent, so take the **fresh-worker fallback**. **Launch evidence is irrelevant on
-     this path** — the task is already dead, so whether it managed to write a `started` line before
-     dying says nothing about whether it will ever produce a verdict. A missing output file must never
-     re-arm the relaunch budget, and a dead attempt `2` must never be left un-dispatched):
-     for each of this run's branches/PRs read the live SHA, CI status, and verdict files, and refresh
-     the ledger — write every ledger update through `scripts/ledger.py … set/header set` **by field
-     name** (`files-and-ledger.md`), never by hand-editing rows by column position.
+   - **This run has live work → resume.** A dead review pass — no verdict, no live task — is resolved by
+     its relaunch budget alone (highest-numbered `launch_attempt`: `1` → relaunch once as attempt `2`;
+     `2` → **fresh-worker fallback**), **NOT by a blind re-launch**; the full algorithm and why launch
+     evidence is irrelevant on this path live in **"Resume after a killed session"** below (Stage 2a).
+     **Reconcile against ground truth** — do NOT redo *completed* work; a CI task whose output file is
+     missing may be re-launched, since in-flight tasks die with their session — then, for each of this
+     run's branches/PRs read the live SHA, CI status, and verdict files, and refresh the ledger: write
+     every ledger update through `scripts/ledger.py … set/header set` **by field name**
+     (`files-and-ledger.md`), never by hand-editing rows by column position.
 
      **This refresh is itself a gate-reset site — relabel here, in this step.** When it detects that a
      PR's live `head_sha` has moved with the PR diff changed (a formatter/bot commit, a manual push,
      any content change this run did not dispatch), it resets `reviews_ok` to 0 — and MUST, in the same
      step, relabel a PR carrying `gauntlet-accepted` back to `gauntlet-reviewing`
      (`stage-2-review-gate.md`, "Status labels mirror the review gate").
-     Do NOT leave this to the label-reconcile pass below: that pass is the **backstop**, and a reset
-     site that defers to it is the exact bug this rule forbids. (A clean base-only advance with the PR
+     Do NOT defer this to the label-reconcile pass below — that pass is only the **backstop** ("This
+     reconcile is a backstop, not the mechanism", below). (A clean base-only advance with the PR
      diff unchanged does not reset the gate, so it keeps `gauntlet-accepted`.)
 
      **And whenever this refresh writes a NEW `head_sha` — gate reset or not — RESET THE LIVENESS
-     COUNTERS** (`stage-2-ci.md`, "THE LIVENESS COUNTERS"), in the same `ledger.py … set` call. This
-     covers **both** cases above: the content change that resets the gate, **and** the clean base-only
-     advance that does not. The new head is new evidence, so the old head's liveness counters describe
-     nothing — carried forward, they park a healthy PR early, on a budget it never spent at this SHA.
-     **NAME the set; do NOT unpack it here.** A gloss that lists the set's members is a **restatement**,
-     even standing next to a correct pointer — it is the part a reader believes, and it goes stale the
-     moment the set gains a member (this line's did, when `ci_stalled_since` joined).
+     COUNTERS** (`stage-2-ci.md`, "THE LIVENESS COUNTERS", which owns why), in the same `ledger.py … set`
+     call. This covers **both** cases above: the content change that resets the gate, **and** the clean
+     base-only advance that does not. **NAME the set; do NOT unpack it here** — a gloss that lists the
+     set's members is a **restatement** that goes stale the moment the set gains a member (this line's
+     did, when `ci_stalled_since` joined).
 
      Do the PR scan as
      **one batched snapshot per heartbeat** — the **same canonical command** `pr-adoption.md` runs, writing the
@@ -156,13 +155,15 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
    **Settle the base branch's required-check set before any CI derivation:** run `scripts/ci-status.py
    required-set --ledger <rundir>/state.jsonl`. Run it every heartbeat; the command reuses a settled value and
    only retries `unknown`. `stage-2-ci.md`, "WHAT WERE WE EXPECTING TO SEE?", owns its states and behavior.
+### Step 2 — Fold in completions
+
 2. **Fold in completions.** For any background task that finished (CI watch → **a HEARTBEAT, not an artifact**:
-   the watch **only blocks** and produces **nothing**, so **this heartbeat** performs the SHA-pinned fetch of
-   both check families, **promotes** it atomically to `ci-<pr>-<head_sha>.txt` and **verifies** its stamp
-   against the ledger's **current** `head_sha` before parsing a single line of it — the CI state is
-   **never** decided from the watch's exit code (Stage 2b, "WHO DOES WHAT" and "VERIFY THE STAMP BEFORE
+   the watch only blocks and produces nothing, so this heartbeat performs the SHA-pinned fetch of
+   both check families, promotes it atomically to `ci-<pr>-<head_sha>.txt` and verifies its stamp
+   against the ledger's current `head_sha` before parsing a single line of it — the CI state is
+   never decided from the watch's exit code (Stage 2b, "WHO DOES WHAT" and "VERIFY THE STAMP BEFORE
    PARSING"); review →
-   the **active launch attempt's** output file, with its progress file as liveness evidence — attempt 1
+   the active launch attempt's output file, with its progress file as liveness evidence — attempt 1
    uses `.prompt.txt` and writes `review-<pr>-<n>.txt` / `.progress.jsonl` / `.findings.jsonl`; a
    relaunch uses and writes `review-<pr>-<n>.a<k>.*`, and
    only the attempt named in the current `pass_identity` is read or counted (Stage 2a). **Before a
@@ -171,13 +172,13 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
    an ad-hoc parse; anything but `ok` means the verdict is not tallied (Stage 2a, "Does this pass COUNT?").
    **`--verdict` is REQUIRED** — it is what lets the tool check the one rule it can, so a COMPLETE pass
    verified without it is `unusable`, never `ok` (a rule a driver can switch off by forgetting a flag is
-   not a gate). That rule is an **if and only if**: **`not-satisfied` exactly when at least one GATING
-   finding stands** — a verdict that blocks a PR
+   not a gate). That rule is an if and only if: `not-satisfied` exactly when at least one GATING
+   finding stands — a verdict that blocks a PR
    must name what blocks it, and a finding that blocks a PR cannot be waved through by the verdict. Either
    way round is `unusable` (Stage 2a, "Does this pass COUNT?").
    **A pass that raised a separate request instead of ruling passes `verify --verdict deferred`** (the
    report's terminal line is `VERDICT: DEFERRED`, or the progress file holds an unruled
-   `plan_amendment_request`): `deferred` is not a verdict, so it is **never tallied** — the tool routes on
+   `plan_amendment_request`): `deferred` is not a verdict, so it is never tallied — the tool routes on
    the progress file and returns `amended` (fold the amendment, re-run the pass) or `incomplete`
    (relaunch), and only a binary `satisfied`/`not-satisfied` ever reaches the ledger below.
    **Then record the verdict with `scripts/ledger.py verdict --pr <N> --head-sha <sha> --verdict …`** — the
@@ -185,10 +186,14 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
    never set `reviews_ok` by hand.
    For any completed task (review, CI watch,
    CI/review fix), record the result against the SHA it ran on and act per Stage 2.
+### Step 3 — Dispatch due work
+
 3. **Dispatch due work — non-blocking, idempotent, bounded, work-conserving.** Scan the whole run,
    not just the PR/job that woke you. Launch every due action that fits a free slot before returning.
    Launch only what is actually due *and not already in flight* (check ground truth first, never the
    ledger alone).
+
+   #### HELD-STATUS GUARD — a PROPERTY, not a list, and now a COMMAND
 
    **HELD-STATUS GUARD — a PROPERTY, not a list, and now a COMMAND. Apply it BEFORE every bullet below,
    and before every other action this skill takes on a PR.** While a PR's `status` is **HELD** the PR is
@@ -236,6 +241,9 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      mirror, when **someone else** pushed to the PR (step 1). Recording a change campaign did not make is
      not making one. What is frozen is **campaign's own action on the PR**; a park never licenses a
      lying label or a stale row.
+
+   #### Only the user's answer unparks a PR
+
    - **Only the user's answer unparks a PR — and EVERY park class names the durable record it is
      answered into.** An answer that lives only in this session is an answer a fresh agent re-asks. On
      the answer: **record it**, then unpark to the `status` **THAT ANSWER** dictates — the table below is
@@ -257,12 +265,10 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      | **`awaiting-user`, review standoff** — a REFUTED finding the fresh reviewer re-raised | the ruling in `<rundir>/audit-<pr>-<n>.md` | `in_review`; ruled **valid** → the finding is fixed like a CONFIRMED one, ruled **invalid** → normal flow |
      | **`awaiting-user`, machine blocker** — campaign cannot move this PR without a human; that **property** IS the class, **never a list of cases** (one illustration: CI has SETTLED and is still not green). Do not enumerate the members here — `files-and-ledger.md`, `status`, `awaiting-user` class 2, **owns** the class, and `ci_reason` names the blocker at every one of them, present or future | `blocker_ruling` = `retry@<iso>` / `abort@<iso>` | `retry` → `in_review`, **RESET THE LIVENESS COUNTERS**, and **SPEND the ruling: `blocker_ruling` = `-`** (`stage-2-ci.md`, "THE LIVENESS COUNTERS" / "THE RULING IS CONSUMED EXACTLY ONCE"), then re-derive CI on the next heartbeat; `abort` → terminal `aborted` (the ruling **stays** — it is the record of why) |
 
-     **A `retry` that clears nothing re-escalates on its first derivation** — the strikes are still at
-     the cap — so the counter reset is **part of the unpark, not an optimization**. It buys the PR a
-     fresh liveness budget and no more: if CI still does not move, the same bound re-parks it, this time
-     reporting that the retry did not move CI (`stage-2-ci.md`, "SETTLED" / "UNUSABLE — the refetch is
-     BOUNDED"). The loop is bounded by the **human**: campaign never re-asks unprompted, and every park
-     is a fresh question backed by a fresh snapshot.
+     **The counter reset is part of the unpark, not an optimization**: a `retry` that clears nothing
+     re-escalates on its first derivation (`stage-2-ci.md`, "THE LIVENESS COUNTERS" / "SETTLED" /
+     "UNUSABLE — the refetch is BOUNDED", own why). The loop is bounded by the **human**: campaign never
+     re-asks unprompted, and every park is a fresh question backed by a fresh snapshot.
 
      **A `retry` is SPENT when it is consumed — one ruling answers exactly ONE park.** Write `status =
      in_review`, the counter reset, and `blocker_ruling` = `-` in the **same** `ledger.py … set --pr <N>`
@@ -379,10 +385,14 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
    that PR is the CORRECT state, never a stall to "fix" by dispatching work), or a genuinely full cap. If the run has **no PR at all**
    and none is in flight (no-arg idle), do not spin: show the **idle prompt**
    (`run-identity-and-lease.md`, "Resolving a heartbeat", owns its wording).
+### Step 4 — Merge queued PRs as a serialized drain
+
 4. **Merge** queued PRs as a serialized drain: re-confirm one candidate against the live SHA **and
    re-check it is not parked** (the held-status guard binds the merge too — Stage 3), merge
    it, sync `<base>`, reconcile remaining candidates, and repeat while another PR is immediately
    mergeable (Stage 3).
+### Step 5 — Reschedule or exit
+
 5. **Reschedule or exit.**
    - Any non-terminal PR remains (in review, pending CI, or awaiting a user ruling on a review-finding
      standoff / API approval / precondition) →
@@ -396,15 +406,19 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      heartbeat also recovers a killed/orphaned session through a later scheduled heartbeat; if a scheduler-less
      invocation is killed, durable state permits a later explicit resume (see "Resume after a killed
      session"). **Size the scheduled delay or bounded wait to the nearest stall it guards:**
-     **~5 min** while any dispatched review pass is still awaiting its first line of **launch evidence**
-     — its Stage 2a launch deadline is then the soonest thing that can fire, and a hung launch must not
-     sit undetected for a full normal interval — otherwise **~15 min**, matching the Stage 2a meaningful-progress
-     threshold: with no launch deadline pending, nothing can declare a review stalled before then, so a
-     shorter interval only re-reconciles git/gh with no new signal (and pays a fresh-context cost per
-     heartbeat). **One exception carries new signal:** a background-task review watched via its stdout stream
-     can be declared hung before that cap once the stream falls quiet (`stage-2-review-gate.md`, the
-     stdout-stream liveness signal), so while such a review is streaming, a shorter poll toward that
-     quiet window is a real check, not a bare re-reconcile. ALWAYS keep a heartbeat or bounded wait active whenever non-terminal work remains — skipping
+     - **Any dispatched review pass still awaiting its first line of launch evidence → ~5 min:** its
+       Stage 2a launch deadline is then the soonest thing that can fire, and a hung launch must not
+       sit undetected for a full normal interval.
+     - **A background-task review streaming its stdout → poll toward the quiet window:** it can be
+       declared hung before the ~15-min cap once the stream falls quiet (`stage-2-review-gate.md`, the
+       stdout-stream liveness signal), so while such a review is streaming, a shorter poll toward that
+       quiet window is a real check, not a bare re-reconcile.
+     - **Otherwise → ~15 min:** matching the Stage 2a meaningful-progress
+       threshold — with no launch deadline pending, nothing can declare a review stalled before then, so a
+       shorter interval only re-reconciles git/gh with no new signal (and pays a fresh-context cost per
+       heartbeat).
+
+     ALWAYS keep a heartbeat or bounded wait active whenever non-terminal work remains — skipping
      both means a hung or orphaned run wakes no one. **Now render the status — this happens on EVERY
      heartbeat that reschedules, never skipped, and its first and mandatory element is the ledger table
      itself.** Run
@@ -440,6 +454,8 @@ together — cannot corrupt state or act on a stale verdict (PR-content pinning 
 at the gate). The worst case is a wasted duplicate review, which is harmless: it's just another fresh,
 context-isolated re-roll anyway. The agent is also single-threaded per turn, so heartbeat *decisions* never truly race — only
 in-flight tasks do.
+
+#### Resume after a killed session
 
 **Resume after a killed session — including by a different agent instance:** in-flight background
 tasks die with the session, but nothing authoritative is lost. A new invocation reconciles against
