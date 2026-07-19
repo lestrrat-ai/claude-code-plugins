@@ -119,6 +119,18 @@ def reminders(header: dict, rows: list, n_followups: int, rundir: "Path | None",
     if n_followups:
         out.append(f"{n_followups} open follow-up(s) — start any you can.")
 
+    # --- watchdog-due reminder -------------------------------------------------
+    # The durable long-cadence health-pass deadline (ledger.py's `watchdog_due`). When it is due, never armed,
+    # or unreadable AND there is open work, the run owes a deep health pass — the long sensor that catches a
+    # run heartbeats keep firing on but never look deeply at. The parse is ledger.py's own `watchdog_state`
+    # (never a second copy of it), and like every nudge rule it is a CHEAP read that never raises: a malformed
+    # or naive deadline reads `invalid`, which fires the same "re-arm it" reminder rather than crashing. Nudge
+    # knows NOTHING about scheduler entries — that is the health pass's adapter business, not a reminder's.
+    if active:
+        wd_state, _ = L.watchdog_state(header.get("watchdog_due", "-"), now)
+        if wd_state in ("due", "unset", "invalid"):
+            out.append("watchdog due — run the health pass, then `ledger.py watchdog arm`.")
+
     # --- quiet-run sweep -------------------------------------------------------
     # A run whose ledger has not moved for QUIET_AFTER is not necessarily healthy — a review may have died,
     # a poll may be stuck, or the user may be sitting on a parked question. Every heartbeat is a fresh

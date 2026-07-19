@@ -236,6 +236,45 @@ def t_quiet_run_names_the_park():
           "a run with an in-flight PR is not idle-on-user — it must not claim every open PR is parked")
 
 
+# --- watchdog-due reminder ----------------------------------------------------
+# Stamps built around NOW so the rule is DETERMINISTIC: a future deadline (ok → silent) and a past one
+# (due → fires), plus the `-`/malformed/naive spellings that read unset/invalid.
+
+def _future(minutes: int) -> str:
+    return (NOW + timedelta(minutes=minutes)).isoformat(timespec="seconds")
+
+
+def _past(minutes: int) -> str:
+    return (NOW - timedelta(minutes=minutes)).isoformat(timespec="seconds")
+
+
+def t_watchdog_due_fires_on_unset_overdue_invalid_with_open_work():
+    """With an OPEN PR, the reminder fires when watchdog_due is unset (`-`), overdue (a past deadline), or
+    invalid (malformed or naive) — and stays SILENT when it is `ok` (a future deadline). The teeth: an
+    always-on reminder would be no sensor, so the `ok` case must be silent."""
+    open_row = [row(1, "in_review")]
+    for label, wd in (("unset (`-`)", "-"),
+                      ("overdue", _past(10)),
+                      ("malformed", "not-a-date"),
+                      ("naive", "2026-07-19T11:00:00")):  # no tzinfo
+        lines = fire(open_row, hdr=header(run_id="g1", watchdog_due=wd), now=NOW)
+        check(has(lines, "watchdog due — run the health pass"),
+              f"a {label} watchdog_due with open work must fire the watchdog-due reminder")
+    ok = fire(open_row, hdr=header(run_id="g1", watchdog_due=_future(30)), now=NOW)
+    check(not has(ok, "watchdog due"),
+          "a future (ok) watchdog deadline must NOT fire the reminder — the run does not owe a health pass yet")
+
+
+def t_watchdog_due_silent_without_open_work():
+    """No non-terminal row → nothing to health-check, so the reminder stays silent even when unset/overdue —
+    both an empty ledger and a terminal-only one."""
+    for rows in ([], [row(1, "merged"), row(2, "aborted")]):
+        for wd in ("-", _past(10), "not-a-date"):
+            lines = fire(rows, hdr=header(run_id="g1", watchdog_due=wd), now=NOW)
+            check(not has(lines, "watchdog due"),
+                  f"a run with no open work must NOT fire the watchdog-due reminder (rows={rows}, wd={wd!r})")
+
+
 def t_a_nudge_never_blocks():
     # main() over a real ledger file exits 0 no matter what it prints.
     with tempfile.TemporaryDirectory() as d:
@@ -263,5 +302,7 @@ CASES = [
     ("quiet-silent-when-absent", "an absent/`-`/unparseable last_activity never fires the sweep", t_quiet_run_silent_when_absent),
     ("quiet-needs-open-pr", "a quiet run with nothing open has nothing to sweep", t_quiet_run_needs_an_open_pr),
     ("quiet-names-the-park", "a parked-only quiet run says it waits on the user and surfaces the question", t_quiet_run_names_the_park),
+    ("watchdog-due-fires", "watchdog-due reminder fires on unset/overdue/invalid with open work, silent when ok", t_watchdog_due_fires_on_unset_overdue_invalid_with_open_work),
+    ("watchdog-due-needs-open-work", "watchdog-due reminder is silent with no open/terminal-only rows", t_watchdog_due_silent_without_open_work),
     ("never-blocks", "a nudge always exits 0", t_a_nudge_never_blocks),
 ]

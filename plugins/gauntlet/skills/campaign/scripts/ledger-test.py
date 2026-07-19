@@ -41,6 +41,7 @@ import json
 import os
 import sys
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType
 
@@ -2047,6 +2048,132 @@ def t_last_activity_absent_is_tolerated(L: ModuleType, tmp: Path) -> None:
           f"a mutating op on a pre-field ledger did not stamp last_activity: {last_activity(L, path)!r}")
 
 
+# --- watchdog: the durable long-cadence health-pass deadline ------------------
+#
+# A single frozen instant so `arm` stamps a DETERMINISTIC deadline and `check` classifies it against a known
+# `now`. `now_watchdog()` is the module clock `arm`/`check` both look up by name, so replacing it is the same
+# test-injectable-clock move `frozen_clock` makes on `now_activity`.
+WD_NOW = datetime(2026, 7, 19, 12, 0, 0, tzinfo=timezone.utc)
+
+
+@contextlib.contextmanager
+def frozen_watchdog(L: ModuleType, value: datetime):
+    """Freeze the accessor's watchdog clock to `value` for the block, then restore it."""
+    prev = L.now_watchdog
+    setattr(L, "now_watchdog", lambda: value)
+    try:
+        yield
+    finally:
+        setattr(L, "now_watchdog", prev)
+
+
+def header_field(L: ModuleType, path: Path, field: str) -> str:
+    """Read one header field through the REAL CLI — the value a heartbeat would see."""
+    code, out, err = cli(L, ["--file", str(path), "header", "get", field])
+    check(code == 0, f"header get {field} exited {code}: {err!r}")
+    return out.rstrip("\n")
+
+
+def t_watchdog_arm_stamps_a_future_deadline(L: ModuleType, tmp: Path) -> None:
+    """`watchdog arm` stamps `watchdog_due = now + WATCHDOG_INTERVAL` — a FUTURE aware ISO stamp — and does
+    so through the real CLI. The teeth: the stamped value is EXACTLY the frozen now plus the module interval,
+    so a drifted interval or a wrong sign is caught, not waved through."""
+    path = write_lines(tmp / "wd.jsonl", header_line(L, run_id="r1"), row_line(L, pr="1", status="in_review"))
+    check(header_field(L, path, "watchdog_due") == "-", "a fresh ledger must start with watchdog_due `-`")
+    with frozen_watchdog(L, WD_NOW):
+        code, _, err = cli(L, ["--file", str(path), "watchdog", "arm"])
+        check(code == 0, f"watchdog arm exited {code}: {err!r}")
+    expected = (WD_NOW + L.WATCHDOG_INTERVAL).isoformat()
+    check(header_field(L, path, "watchdog_due") == expected,
+          f"arm did not stamp now+WATCHDOG_INTERVAL: {header_field(L, path, 'watchdog_due')!r} != {expected!r}")
+
+
+def t_watchdog_check_states(L: ModuleType, tmp: Path) -> None:
+    """`watchdog check` prints EXACTLY one of unset/ok <rem>/due <age>/invalid — re-arm, always exit 0, and a
+    malformed OR naive stored stamp is the `invalid` state, never a crash. Every branch, one fixture."""
+    def check_line(due: "str | None") -> str:
+        over = {} if due is None else {"watchdog_due": due}
+        path = write_lines(tmp / "chk.jsonl", header_line(L, run_id="r1", **over))
+        with frozen_watchdog(L, WD_NOW):
+            code, out, err = cli(L, ["--file", str(path), "watchdog", "check"])
+        check(code == 0, f"watchdog check must ALWAYS exit 0 (due={due!r}); got {code}: {err!r}")
+        return out.rstrip("\n")
+
+    check(check_line("-") == "unset", "a `-` deadline reads `unset`")
+    check(check_line(None) == "unset", "an absent watchdog_due (old ledger) reads `unset`")
+    future = (WD_NOW + timedelta(minutes=30)).isoformat()
+    check(check_line(future) == "ok 30m", f"a future deadline reads `ok <remaining>`: {check_line(future)!r}")
+    past = (WD_NOW - timedelta(minutes=7)).isoformat()
+    check(check_line(past) == "due 7m", f"a past deadline reads `due <age>`: {check_line(past)!r}")
+    check(check_line("2020-01-01T00:00:00") == "invalid — re-arm",
+          "a NAIVE stamp (no tzinfo) is the invalid state — it cannot be compared to an aware now")
+    check(check_line("not-a-date") == "invalid — re-arm",
+          "a MALFORMED stamp is the invalid state — advisory repair-by-re-arm, never a crash")
+
+
+def t_watchdog_arm_is_not_activity(L: ModuleType, tmp: Path) -> None:
+    """`watchdog arm` must NOT stamp `last_activity` — `watchdog_due` is in ACTIVITY_EXEMPT, so re-arming the
+    watchdog cannot masquerade as the run doing meaningful work and reset the quiet sensor it backs.
+
+    The teeth: give last_activity a known value, then arm under a DIFFERENT frozen watchdog instant; the
+    sensor must still read the first value. Also asserts watchdog_due IS in ACTIVITY_EXEMPT (name the set)."""
+    check("watchdog_due" in L.ACTIVITY_EXEMPT,
+          "watchdog_due must be in ACTIVITY_EXEMPT — a re-arm that stamped last_activity would defeat the "
+          "quiet sensor the watchdog exists to back")
+    path = write_lines(tmp / "arm-act.jsonl", header_line(L, run_id="r1"), row_line(L, pr="1", status="pending"))
+    with frozen_clock(L, FROZEN_A):  # a real change first, to give last_activity a known value
+        code, _, err = cli(L, ["--file", str(path), "set", "--pr", "1", "--status", "in_review"])
+        check(code == 0, f"baseline set exited {code}: {err!r}")
+    check(header_field(L, path, "last_activity") == FROZEN_A, "the baseline change did not stamp last_activity")
+    with frozen_watchdog(L, WD_NOW):
+        code, _, err = cli(L, ["--file", str(path), "watchdog", "arm"])
+        check(code == 0, f"watchdog arm exited {code}: {err!r}")
+    check(header_field(L, path, "last_activity") == FROZEN_A,
+          f"watchdog arm stamped last_activity to {header_field(L, path, 'last_activity')!r} — a re-arm is "
+          f"not meaningful activity and must leave the quiet sensor alone")
+
+
+def t_watchdog_due_has_no_door(L: ModuleType, tmp: Path) -> None:
+    """`header set watchdog_due` is REFUSED — a tool-stamped deadline has no hand-write door, exactly as
+    `last_activity` has none — and it writes NOTHING. `header get watchdog_due` still READS it."""
+    path = write_lines(tmp / "nodoor.jsonl", header_line(L, run_id="r1"))
+    code, out, err = cli(L, ["--file", str(path), "header", "set", "watchdog_due", "2020-01-01T00:00:00+00:00"])
+    check(code == 1, f"header set watchdog_due must be REFUSED (exit 1); got {code}: {out!r}")
+    check("watchdog_due" in err, f"the refusal must name the field: {err!r}")
+    check(header_field(L, path, "watchdog_due") == "-",
+          f"a REFUSED header set still wrote watchdog_due: {header_field(L, path, 'watchdog_due')!r} — the "
+          f"forged deadline reached disk")
+
+
+def t_watchdog_interval_prints_the_constant(L: ModuleType, tmp: Path) -> None:
+    """`watchdog interval` prints WATCHDOG_INTERVAL in whole minutes, reads NO ledger (needs no --file), and
+    the printed number is DERIVED from the constant — never a hard-coded literal that could drift from it."""
+    code, out, err = cli(L, ["watchdog", "interval"])
+    check(code == 0, f"watchdog interval must exit 0 with no --file; got {code}: {err!r}")
+    expected = int(L.WATCHDOG_INTERVAL.total_seconds() // 60)
+    check(out.rstrip("\n") == str(expected),
+          f"watchdog interval printed {out.rstrip(chr(10))!r}, not the constant's {expected} minutes")
+
+
+def t_pending_adoption_is_an_ordinary_field(L: ModuleType, tmp: Path) -> None:
+    """`pending_adoption` is a NORMAL settable config field: `header set` writes it, it round-trips, clears
+    back to `-`, and — unlike watchdog_due — setting it IS meaningful activity (it stamps last_activity)."""
+    path = write_lines(tmp / "pend.jsonl", header_line(L, run_id="r1"), row_line(L, pr="1", status="pending"))
+    check(header_field(L, path, "pending_adoption") == "-", "pending_adoption must default to `-`")
+    with frozen_clock(L, FROZEN_A):
+        code, _, err = cli(L, ["--file", str(path), "header", "set", "pending_adoption", "89 90"])
+        check(code == 0, f"header set pending_adoption exited {code}: {err!r}")
+    check(header_field(L, path, "pending_adoption") == "89 90",
+          f"pending_adoption did not round-trip: {header_field(L, path, 'pending_adoption')!r}")
+    check(header_field(L, path, "last_activity") == FROZEN_A,
+          "setting pending_adoption IS meaningful activity — it must stamp last_activity (no exemption)")
+    with frozen_clock(L, FROZEN_B):  # clearing it back to `-` is a real value change → still activity
+        code, _, err = cli(L, ["--file", str(path), "header", "set", "pending_adoption", "-"])
+        check(code == 0, f"clearing pending_adoption exited {code}: {err!r}")
+    check(header_field(L, path, "pending_adoption") == "-", "pending_adoption must clear back to `-`")
+    check(header_field(L, path, "last_activity") == FROZEN_B, "clearing pending_adoption is also activity")
+
+
 CASES = [
     ("escape-injective", "escape_cell is INJECTIVE — no two values collide", t_escape_injective),
     ("render-injective", "the PRINTED ROWS are injective too — no two values print the same line", t_render_injective),
@@ -2107,6 +2234,12 @@ CASES = [
     ("liveness-not-activity", "a liveness-counter-only write does NOT stamp — polling that saw no change is not activity", t_liveness_only_write_is_not_activity),
     ("last-activity-sensor", "last_activity has NO door — `header set last_activity` is refused and writes nothing", t_last_activity_is_a_sensor_no_door),
     ("last-activity-absent-ok", "an old ledger without last_activity reads `-` and mutating it stamps fresh", t_last_activity_absent_is_tolerated),
+    ("watchdog-arm-future", "watchdog arm stamps watchdog_due = now + WATCHDOG_INTERVAL (a future stamp)", t_watchdog_arm_stamps_a_future_deadline),
+    ("watchdog-check-states", "watchdog check prints unset/ok/due/invalid, always exit 0, naive+malformed → invalid", t_watchdog_check_states),
+    ("watchdog-arm-not-activity", "watchdog arm does NOT stamp last_activity — watchdog_due is ACTIVITY_EXEMPT", t_watchdog_arm_is_not_activity),
+    ("watchdog-due-no-door", "`header set watchdog_due` is refused and writes nothing", t_watchdog_due_has_no_door),
+    ("watchdog-interval", "watchdog interval prints the constant in minutes, reads no ledger", t_watchdog_interval_prints_the_constant),
+    ("pending-adoption-ordinary", "pending_adoption is an ordinary settable field; setting it IS activity", t_pending_adoption_is_an_ordinary_field),
 ]
 
 
