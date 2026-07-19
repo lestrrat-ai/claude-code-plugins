@@ -281,6 +281,16 @@ jobs:
       - name: Merge-check contract (the code-owned mapping, pinned by fixtures)
         run: python3 plugins/gauntlet/skills/campaign/scripts/merge-check.py self-test
 
+      # The status-label reconciler's contract, executed. This tool is the ONE way the gate's label swap
+      # (`gauntlet-accepted` <-> `gauntlet-reviewing`) is applied, so no driver hand-runs `gh pr edit` at
+      # the N gate-reset sites and misses it at one. `self-test` runs the sibling FIXTURES
+      # (`label-mirror-test.py`, loaded by path; a MISSING sibling fails loudly), which drive the real
+      # `mirror()` over a fake `gh` seam and pin: the exact swap argv, a no-op when the label is already
+      # right, a terminal row skipped with NO gh call, an unset tier and a missing row refused (exit 2),
+      # and a gh view/edit failure failing closed (exit 1). It touches only the two status labels.
+      - name: Label-mirror contract (the gate and its label move together)
+        run: python3 plugins/gauntlet/skills/campaign/scripts/label-mirror.py self-test
+
       # The Bundled Scripts table in campaign's SKILL.md declares itself COMPLETE: one row per bundled
       # script. A completeness claim with no check goes stale the first time a script lands without a
       # row — six scripts had already done exactly that before the table existed. This executes the

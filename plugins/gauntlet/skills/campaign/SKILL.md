@@ -236,6 +236,7 @@ a line the tool writes.
 | `ci-snapshot.py` | Executable contract for the SHA-pinned CI snapshot artifact (used by `derive`) | `references/ci-derivation-spec.md` |
 | `mutate-ci-snapshot.py` | Mutation harness proving `ci-snapshot.py`'s rules are fixture-pinned; run by validation/CI, not the driver | `references/ci-derivation-spec.md` |
 | `merge-check.py` | `check` — decide merge-readiness (`merge` / `not-yet <reason>`) from the ledger row + live PR view, crossing the ledger preconditions and both GitHub merge enums in one place | `references/stage-3-merge.md` |
+| `label-mirror.py` | `mirror` — reconcile a PR's status label with its review gate (the canonical idempotent `gauntlet-accepted`/`gauntlet-reviewing` swap), computed from the ledger row; touches only the two status labels | `references/stage-2-review-gate.md` |
 | `repair-pass.py` | Reassessment pass's door: `permitted` / `decide` — the closed decision enum, ownership guardrail, repair cap | `references/repair-pass.md` |
 | `followups.py` | Schema-owning accessor for the follow-up store (`.gauntlet/followups.jsonl`) — a durable work QUEUE, not an archive: entries are deleted once recorded elsewhere, kept when nothing else would remember | `references/followups.md` |
 | `nudge.py` | Advisory reminder printer for heartbeat start; always exits 0 | its own module docstring |

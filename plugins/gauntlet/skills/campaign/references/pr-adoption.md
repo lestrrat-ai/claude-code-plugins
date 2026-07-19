@@ -163,10 +163,12 @@ For each `#PR` to adopt:
    - **On a REFRESH of an existing row, only re-read `head_sha`/`ci` from ground truth; reset
      `reviews_ok` to `0` and re-triage `tier` only if** reconciliation detects a PR-content change
      since the recorded `head_sha` (per the gate's SHA-pinning rules). **That reset is a gate-reset
-     site: in the same step, restore `gauntlet-reviewing` if the PR carries `gauntlet-accepted`**
-     (`stage-2-review-gate.md`, "Status labels mirror the review gate"). Step 4's `--add-label
-     gauntlet-reviewing` alone is NOT sufficient: it would leave the stale `gauntlet-accepted` in
-     place, so the PR would carry **both** status labels and still publicly claim it passed.
+     site: in the same step, reconcile the label by running `label-mirror.py mirror` for the PR**, which
+     restores `gauntlet-reviewing` on a PR carrying `gauntlet-accepted`
+     (`stage-2-review-gate.md`, "Status labels mirror the review gate", owns the swap and the tool). A
+     bare `--add-label gauntlet-reviewing` is NOT sufficient: it would leave the stale `gauntlet-accepted`
+     in place, so the PR would carry **both** status labels and still publicly claim it passed — the tool
+     removes the other label in the same call.
 
      **PRESERVE EVERY FIELD THIS STEP DOES NOT EXPLICITLY RECOMPUTE.**
      That is a **property, not a list** — and deliberately so, because the list that stood here was one:
@@ -288,6 +290,11 @@ For each `#PR` to adopt:
 4. **Label it ours, and set the status label from the LIVE gate.** Add this run's owner label, then
    apply the status label that matches the PR's gate state **as it stands after step 3** — never a
    hardcoded `gauntlet-reviewing`.
+
+   **This ADOPTION-time labeling stays a raw `gh pr edit`, NOT `label-mirror.py mirror`** — because the
+   same call also adds this run's `gauntlet-run-<run-id>` ownership label, which is out of the tool's
+   scope (the tool touches only the two status labels). Once the row is adopted, every LATER status-label
+   reconcile is the tool's job ("Status labels mirror the review gate").
 
    **The status labels are mutually exclusive** — a PR carries exactly one — so whichever you apply,
    remove the other in the same call. Which one you apply is decided by the live gate, not by the fact
