@@ -62,23 +62,10 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      that lists the set's members here is a **restatement** that goes stale the moment the set gains a
      member (this line's did, when `ci_stalled_since` joined).
 
-     Do the PR scan as
-     **one batched snapshot per heartbeat** — the **same canonical command** `pr-adoption.md` runs, writing the
-     **same path with the same schema** (they are the same scan; two spellings of it is how a reader of
-     `prs.json` ends up with fields that are not there, or a snapshot scoped to the wrong PRs). Its owning
-     definition is the block **"The canonical `prs.json` command"** in `files-and-ledger.md`; copy it
-     whole, never a variant:
-
-     ```text
-     run_argv(
-       argv: ["gh", "pr", "list", "--label", concat("gauntlet-run-", run_id),
-              "--state", "open", "--limit", "1000",
-              "--json", "number,headRefName,headRefOid,title,baseRefName,state,mergeable,mergeStateStatus,labels"],
-       cwd: repository.project_root,
-       stdin_file: null,
-       stdout_file: path_join(<rundir>, "prs.json")
-     )
-     ```
+     Produce **one batched snapshot per heartbeat** through **"The canonical `prs.json` command"** in
+     `files-and-ledger.md`. Its executable owner is `scripts/reconcile.py fetch`; NEVER reconstruct its
+     GitHub query. A refusal leaves the prior file intact, but that prior file is not current evidence →
+     stop this reconcile and handle the reported blocker.
 
      — then **compare that snapshot against the ledger by running
      `scripts/reconcile.py detect --ledger <rundir>/state.jsonl --prs <rundir>/prs.json --run-id
@@ -91,9 +78,9 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      not a tool failure, so `detect` exits 0 on it; it fails closed only on a snapshot that is not
      evidence). Route each fact to the rule that already governs it — the rules are unchanged, this only
      names which fact triggers which:
-     - **`absent_from_snapshot`** — a live row whose PR **dropped out of the `--state open` snapshot**: it
-       merged or closed, and **that absence IS the signal** (`files-and-ledger.md`, the `prs.json`
-       bounded-snapshot caveat). Handle it as a **terminal** PR (this step's finished-run cases; the Stage 3
+     - **`absent_from_snapshot`** — a live row whose PR dropped out of the validated canonical snapshot:
+       it merged or closed, and **that absence IS the signal** (`scripts/reconcile.py fetch` owns the
+       query contract). Handle it as a **terminal** PR (this step's finished-run cases; the Stage 3
        drain sets `merged`). **NEVER read absence as an error, and NEVER fetch anything to "resolve" it** —
        a past change broke adoption by "fixing" absence with `--state all` (repo `CLAUDE.md`).
      - **`head_moved`** — the live head differs from the row's `head_sha`: this is the **gate-reset and

@@ -9,7 +9,7 @@ resume, reuse the existing dir). Per-run dirs are what keep concurrent runs' fil
 |------|----------|
 | `state.jsonl` | Live per-PR ledger — a **cache/hint**, not the source of truth (see below) |
 | `pr-<pr>.json` | `gh pr view` snapshot captured at adoption (PR facts the ledger row is built from) |
-| `prs.json` | Batched `gh pr list` snapshot of this run's PRs — the per-heartbeat reconcile input, and the adoption/discovery input. **ONE path, ONE schema, ONE command**: the canonical command is spelled in full in **"The canonical `prs.json` command"**, the command block directly below this table, and that block is its ONLY definition. The per-heartbeat comparison of this file against the ledger is MECHANICAL and owned by **`scripts/reconcile.py detect`**, which emits the per-PR reconcile **facts** (routing them is skill policy — `loop-control.md`, step 1) |
+| `prs.json` | Batched snapshot of this run's PRs — adoption/discovery + per-heartbeat reconcile input. **`scripts/reconcile.py fetch` is the ONE executable producer**: it owns query argv, schema validation, scope validation, truncation refusal, and atomic promotion. **`scripts/reconcile.py detect` is the ONE consumer**: it emits per-PR reconcile facts. Routing remains skill policy (`loop-control.md`, "Step 1 — reconcile from ground truth") |
 | `lease.json` | This run's active-driver lease — read/written ONLY through `scripts/lease.py` (see "Run lease") |
 | `review-<pr>-<n>.prompt.txt` | The reviewer prompt for round `n`, launch attempt 1, with the verbatim intent and JSON-encoded typed transport record bound as data. Written through `runtime-adapter.md`'s `write_bytes` and passed through `dispatch_native` or `run_argv` — never embedded in shell source (`stage-2-review-gate.md`) |
 | `review-<pr>-<n>.txt` | The reviewer's PR review output, round `n` (launch attempt 1), written by the sole producer assigned in `runtime-adapter.md`'s typed review record |
@@ -23,50 +23,36 @@ resume, reuse the existing dir). Per-run dirs are what keep concurrent runs' fil
 | `repair-<pr>-<k>.md` | The **reassessment pass**'s decision record for repair `k`: the whole round-by-round history it was handed, the ONE decision it returned, and why (`repair-pass.md`). Written **before** the decision is recorded — `repair-pass.py decide` refuses a `--record` that is missing or empty, because a heartbeat is a fresh agent instance and a justification held only in a dead agent's context can never be audited |
 | `abort-<id>.md` | Detailed log for an aborted PR-task |
 
-**The canonical `prs.json` command — this block is THE definition.** Every other site defers to it, and
-**NO site may spell a variant of it** — differing spellings are how a reader of `prs.json` ends up with
-a file that is scoped wrong or missing the fields it reads. It is the typed `run_argv` operation from
-`runtime-adapter.md`: every `gh pr list` option is its own argv element, and the output path is a typed
-`Path` in `stdout_file` — never a shell redirection, so it keeps dynamic paths out of shell source and a
-`<rundir>` containing a space stays one intact path. Copy it whole, including the `--label` filter and the
-`stdout_file` path:
+**The canonical `prs.json` command — `scripts/reconcile.py fetch` is THE definition.** Every other site
+defers here and NEVER reconstructs its internal GitHub query. Resolve script from active `SKILL.md`, then
+launch this typed operation (`skill_dir` = absolute directory containing active `SKILL.md`):
 
 ```text
 run_argv(
-  argv: ["gh", "pr", "list", "--label", concat("gauntlet-run-", run_id),
-         "--state", "open", "--limit", "1000",
-         "--json", "number,headRefName,headRefOid,title,baseRefName,state,mergeable,mergeStateStatus,labels"],
+  argv: ["python3", path_join(skill_dir, "scripts", "reconcile.py"), "fetch",
+         "--project-root", repository.project_root,
+         "--run-id", run_id,
+         "--output", path_join(<rundir>, "prs.json")],
   cwd: repository.project_root,
   stdin_file: null,
-  stdout_file: path_join(<rundir>, "prs.json")
+  stdout_file: null
 )
 ```
 
-`pr-adoption.md` (discovery) and `loop-control.md`'s per-heartbeat PR scan (the `prs.json` block in step 1)
-each run this command
-inline, **identically** — same label, same flags, same `--json` field set, same path. That is intended:
-they are the same scan. What is forbidden is a **different** spelling anywhere.
+`fetch` builds the fixed `gh pr list` argv internally. It captures stdout as bytes without shell source,
+validates JSON shape + every required field + every row's run label, rejects a response at its result cap,
+then promotes the exact bytes through a same-directory atomic rename. Any command, validation, or promotion
+failure leaves the previous `prs.json` intact.
 
 Every part is load-bearing:
 
-- **Without `--label gauntlet-run-<run-id>`** the snapshot escapes the run's scope: the listing returns
-  **every PR in the repo** instead of this run's, and reconcile would then act on — adopt, relabel,
-  even merge — **other runs' PRs**. That is a **run-isolation violation**, and run isolation is the
-  property that lets concurrent runs coexist in one repo.
-- **Without `--limit`** `gh pr list` silently caps at **30** items, writing a truncated file that
-  reconcile reads as the complete run snapshot.
-- **Without `--json <the field set above>`** the reader finds no `labels`/`mergeable`/`headRefOid` —
-  two writers with different field sets silently hand the reader a file missing the fields it reads.
-- **Without the `stdout_file` `Path` (`path_join(<rundir>, "prs.json")`)** the snapshot lands somewhere
-  nobody reads, and reconcile reads a file nobody wrote. It is a typed `Path`, never a shell redirection,
-  so a `<rundir>` carrying a space stays one intact path instead of triggering a bash "ambiguous
-  redirect".
+- **Use the typed project root + output path.** `fetch` refuses relative paths and output paths outside
+  project root before it launches GitHub CLI.
+- **Use the exact run ID.** `fetch` forms the owner label as an argv value and verifies it on every row.
+- **Treat exit 0 as promotion success.** A refusal emits no replacement artifact.
 
-**`prs.json` is a BOUNDED snapshot, not a proof of completeness.** `--limit 1000` defeats the default-30
-truncation; it does **not** make the snapshot provably complete — a run with more than 1000 labelled PRs
-would still truncate. That matters because **an absent PR is indistinguishable from a PR that was never
-adopted**: a dropped row does not error, it just quietly stops being reconciled. Treat "every labelled PR
-is in `prs.json`" as an assumption bounded by that cap, never as a guarantee.
+**`fetch` refuses the query's result-cap boundary.** At that exact row count, completeness is unknown and
+absence cannot be evidence. Split campaign into smaller runs; NEVER detect against the refused response.
 
 Store ALL reviewer and `gh` output under `<rundir>` first, then Read/Grep it. NEVER `/tmp/`.
 
@@ -99,7 +85,7 @@ git-ignored driver bookkeeping, and that is the extent of campaign's on-disk foo
 ### The ledger — `state.jsonl`
 
 One row per adopted PR. It is a **cache**, not the authoritative state — **ground truth is
-GitHub via `gh`, plus local worktrees** (`gh pr list/view` for PRs and merged/open state, each PR's
+GitHub via `gh`, plus local worktrees** (`reconcile.py fetch` + per-PR `gh pr view` for PRs and state, each PR's
 `headRefOid` from `gh` — keyed by PR number — for the live head SHA, a **SHA-pinned** `check-runs` +
 commit-`status` fetch for live CI, and
 the **active launch attempt's** review output files for which verdicts exist on which SHA —

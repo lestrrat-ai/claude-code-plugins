@@ -6,29 +6,16 @@ them into the run and start their gate work.
 
 Two entry paths feed it (see "Run identity and concurrency" for the full grammar):
 - **explicit `#PR` args** (`<campaign-invocation> #12 #15`) — adopt exactly those PRs.
-- **no-arg discovery** (`<campaign-invocation>`, resume) — reconcile the PRs already labelled for this run:
+- **no-arg discovery** (`<campaign-invocation>`, resume) — run **"The canonical `prs.json` command"**
+  from `files-and-ledger.md`, then reconcile PRs already labelled for this run. The executable owner is
+  `scripts/reconcile.py fetch`; NEVER reconstruct its GitHub query in prose.
 
-  ```text
-  # THE canonical run snapshot — the SAME command loop-control's per-heartbeat PR scan (the `prs.json`
-  # block in step 1) runs. ONE path, ONE schema.
-  # Owning definition: "The canonical `prs.json` command" in files-and-ledger.md. Copy it whole;
-  # never spell a variant.
-  run_argv(
-    argv: ["gh", "pr", "list", "--label", concat("gauntlet-run-", run_id),
-           "--state", "open", "--limit", "1000",
-           "--json", "number,headRefName,headRefOid,title,baseRefName,state,mergeable,mergeStateStatus,labels"],
-    cwd: repository.project_root,
-    stdin_file: null,
-    stdout_file: path_join(<rundir>, "prs.json")
-  )
-  ```
-
-  Every open PR carrying this run's owner label is already ours — refresh its row from that snapshot.
+  Every PR returned by the canonical snapshot is already ours — refresh its row from that snapshot.
   A PR with the label but no row is a re-adoption after an amnesiac heartbeat; a row whose PR is gone
   (merged/closed) reconciles to its terminal status.
 
-  **`--limit` is NOT optional** — `gh pr list` silently caps at **30** items without it, and a truncated
-  snapshot loses rows silently (`files-and-ledger.md`, `prs.json`).
+  A fetch refusal produces no discovery input. Keep the previous snapshot untouched and resolve the
+  reported blocker before adoption.
 
 `base_branch` for the run = the adopted PR's `baseRefName`. When several PRs are adopted at once they
 **must agree** on `baseRefName`; if they disagree, stop and prompt the user (one run targets one base).

@@ -103,7 +103,8 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
 
 8. At heartbeat entry, once you own the run and load its ledger, run `nudge.py` and READ its advisory
    reminders — computed from durable state, decides nothing, always exits 0 (`references/loop-control.md`
-   step 1). Then reconcile the run's PR snapshot (treat `state.jsonl` as cache) and fold completed
+   step 1). Then produce the run's validated PR snapshot through `reconcile.py fetch`, reconcile it
+   through `reconcile.py detect` (treat `state.jsonl` as cache), and fold completed
    review / CI / fix tasks against the SHA each ran on. When the run is **QUIET** (nudge, no meaningful
    ledger activity for its window) **OR** `ledger.py watchdog check` says the long-cadence deadline is
    `due`/`unset`/`invalid`, run the **health pass** (one pass, then one `ledger.py watchdog arm`)
@@ -256,7 +257,7 @@ a line the tool writes.
 | `mutate-ci-snapshot.py` | Mutation harness proving `ci-snapshot.py`'s rules are fixture-pinned; run by validation/CI, not the driver | `references/ci-derivation-spec.md` |
 | `merge-check.py` | `check` — decide merge-readiness (`merge` / `not-yet <reason>`) from the ledger row, live PR view, and fetched base ancestry | `references/stage-3-merge.md` |
 | `label-mirror.py` | `mirror` — reconcile a PR's status label with its review gate (the canonical idempotent `gauntlet-accepted`/`gauntlet-reviewing` swap), computed from the ledger row; touches only the two status labels | `references/stage-2-review-gate.md` |
-| `reconcile.py` | `detect` — compare the batched `prs.json` snapshot against the ledger and emit the per-PR reconcile FACTS (absent-by-absence, head/base/branch change, verbatim state/merge/label observations, unadopted candidates); names no action — routing is the skill's | `references/loop-control.md` |
+| `reconcile.py` | `fetch` — construct, validate, and atomically promote the canonical run-scoped PR snapshot; `detect` — compare it against the ledger and emit per-PR FACTS. Names no action; routing is skill policy | `references/files-and-ledger.md`, `references/loop-control.md` |
 | `repair-pass.py` | Reassessment pass's door: `permitted` / `decide` — the closed decision enum, ownership guardrail, repair cap | `references/repair-pass.md` |
 | `followups.py` | Schema-owning accessor for the follow-up store (`.gauntlet/followups.jsonl`) — a durable work QUEUE, not an archive: entries are deleted once recorded elsewhere, kept when nothing else would remember | `references/followups.md` |
 | `carryover.py` | `distill` — project a run's TERMINAL ledger into `.gauntlet/history/<run-id>.md` on normal exit: merged/aborted/API-declined facts, exactly once (refuses a live run and refuses to overwrite) | `references/carryover.md` |
