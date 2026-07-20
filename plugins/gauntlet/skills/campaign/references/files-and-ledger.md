@@ -296,8 +296,10 @@ Header field notes (the header fields above; per-row fields follow):
   (`ledger.py verdict` at a cap), so a decision answers exactly the cap it was recorded for and a PR that
   reaches a cap **again** must earn a fresh `decide` (which spends `repair_count`, so the bound holds).
   `abort@…` is terminal and is never cleared.
-- `tier` — the adaptive review tier derived from `head_sha`: `TRIVIAL` | `STANDARD` | `HIGH`. Re-derived
-  every heartbeat and re-triaged on any content change; drives `required(tier)` and the review depth.
+- `tier` — the adaptive review tier derived from `head_sha`: `TRIVIAL` | `STANDARD` | `HIGH`. Run
+  `triage.py derive` every heartbeat and on any content change; `stage-2-review-gate.md`, "2a-triage",
+  owns the complete invocation and policy. This field records that command's `tier`; it drives
+  `required(tier)` and review depth.
 - `ci` — `green` / `red` / `pending` for `head_sha`. Recorded by `ci-status.py liveness` from `derive`'s
   JSON (`stage-2-ci.md`, "THE BOOKKEEPING IS A COMMAND"). (**There is no `none`.** It was documented but
   no procedure could ever write it.)

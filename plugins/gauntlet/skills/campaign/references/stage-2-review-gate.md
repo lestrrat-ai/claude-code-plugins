@@ -8,29 +8,50 @@
 
 ### 2a-triage. PR triage — file class & risk tier (deterministic, per `head_sha`)
 
-Before the review gauntlet, triage each PR to a **risk tier**. Triage is **deterministic** and
-**size-agnostic** — there are **NO line-count or file-count thresholds**; only *what kind* of file the
-PR touches and whether the change is systemic. Re-derive the tier **every heartbeat** from the PR's current
-`head_sha` and pin it there; record it in the ledger `tier` column via `scripts/ledger.py … set --pr
-<N> --tier <tier>` (by field name — the schema-owning accessor, `files-and-ledger.md`; never hand-edit
-the row by column position). Default to **STANDARD** whenever you are unsure. `reviews_ok` target = `required(tier)`: **1 if `tier==TRIVIAL`, else 2**.
+**Run `scripts/triage.py derive` to execute file-class triage.** Re-run it every heartbeat against the
+ledger row's current `head_sha`; never classify a diff by eye:
+
+```text
+python3 <skill-dir>/scripts/triage.py derive \
+    --worktree <worktree> --base origin/<base> --head-sha <head_sha> \
+    --systemic yes|no|unknown
+```
+
+Pass the driver-owned systemic judgment explicitly. Use `unknown` when it cannot be settled; the command
+then reports `systemic_unresolved = true` and refuses a TRIVIAL result. The command resolves the merge-base,
+reads Git's NUL-delimited raw diff and modes at the expected 40-character head, and re-reads `HEAD` after
+classification. A stale expected head, moving head, malformed diff, or failed Git read is a refusal with no
+partial JSON; refresh the row/worktree and retry. On success, require output `head_sha` to equal the row,
+then record output `tier` through `scripts/ledger.py … set --pr <N> --tier <tier>`. The output also carries
+`required_reviews`, the per-file class/reasons, and unresolved systemic state.
+
+Triage is **deterministic** and **size-agnostic** — there are **NO line-count or file-count thresholds**;
+only *what kind* of file the PR touches and whether the change is systemic. `triage.py` is the executable
+owner of classification. The policy it executes is the block below. Default to **STANDARD** whenever a
+path, status, content marker, or systemic judgment is uncertain. `reviews_ok` target = `required(tier)`:
+**1 if `tier==TRIVIAL`, else 2**.
 
 **File classes (classify every changed file; default CODE when unsure).**
 
-- **HUMAN-DOC** — human-facing prose only: top-level `README.md`, human `docs/**`, `CHANGELOG`,
-  `LICENSE`.
+- **HUMAN-DOC** — human-facing prose only: top-level `README.md`, human prose under `docs/**`,
+  `CHANGELOG`, `LICENSE`.
 - **CODE** — source files **and agent-consumed docs**: `SKILL.md`, a skill's `references/**`,
   `CLAUDE.md`/`AGENTS.md`, `.claude/**`, prompt / agent-instruction files, any `.md` carrying
   skill/agent frontmatter. Agent-docs are CODE, never HUMAN-DOC.
 - **SENSITIVE** (a CODE subset) — CI (`.github/**`), `scripts/**`, executables (`+x`),
   `Dockerfile`/`Makefile`, dependency manifests/lockfiles, IaC, auth/crypto/secret paths.
 
+For a rename, classify both old and new paths and keep the higher class. For a deletion, classify the old
+path and its base content. Treat a file whose old **or** new Git mode is executable as SENSITIVE. These are
+diff properties, so filesystem inspection of only the new checkout is not a substitute.
+
 **Tiers (no size thresholds).**
 
-- **TRIVIAL** — **ALL** changed files are HUMAN-DOC → **1** review pass, **minimal** plan.
+- **TRIVIAL** — **ALL** changed files are HUMAN-DOC and systemic judgment is `no` → **1** review pass,
+  **minimal** plan.
 - **STANDARD** — any CODE / agent-doc file changed, none SENSITIVE → **2** passes, plan **covers the
   real review dimensions**.
-- **HIGH** — any SENSITIVE file changed, OR a systemic / cross-package / root-cause change → **2**
+- **HIGH** — any SENSITIVE file changed, OR systemic judgment is `yes` → **2**
   passes with **mandatory cross-cutting units + a deeper sweep** (Stage 2a-deep).
 
 **Escalation guardrails.**
@@ -40,6 +61,7 @@ the row by column position). Default to **STANDARD** whenever you are unsure. `r
   SATISFIED` lands, a `plan_amendment_request` is raised, or a content change **adds a
   CODE/agent-doc/SENSITIVE file** to a PR that was TRIVIAL.
 - Tier is pinned to `head_sha` and re-derived every heartbeat; on any uncertainty default STANDARD.
+  Systemic input may raise a content-driven tier and never lowers it.
 
 ### 2a. The review gauntlet
 

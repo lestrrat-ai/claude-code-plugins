@@ -55,9 +55,9 @@ itself; the reassessment REUSES it and never reimplements it.**
    "Worker Dispatch").
 3. **One batch-fix round** for all confirmed gaps. Route every site through **ONE shared
    chokepoint/helper** so the cells can't diverge again. Add a test per cell.
-4. **Resume the gauntlet** on the batched result — the review gate's `required(tier)` fresh,
-   context-isolated SATISFIED verdicts (two: a systemic / root-cause change is HIGH tier, never
-   TRIVIAL).
+4. **Resume the gauntlet** on the batched result. Run `triage.py derive` with `--systemic yes`, then use
+   its tier and the review gate's `required(tier)` fresh, context-isolated SATISFIED verdicts
+   (`stage-2-review-gate.md`, "2a-triage").
 
 Caveats:
 

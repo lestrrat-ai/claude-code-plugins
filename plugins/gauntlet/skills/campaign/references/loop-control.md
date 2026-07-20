@@ -335,11 +335,12 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      (`bailout-and-final-report.md`) — leave the PR **OPEN**, drop this run's labels, write `abort-<id>.md`.
 
    Then, for each PR that is **not held at all**:
-   - any newly-adopted PR whose ledger row lacks a `tier`, or any PR whose `head_sha` changed since it
-     was last triaged → **re-triage its tier** (deterministic file-class classification of the changed
-     files at that `head_sha`; agent-docs = code; default STANDARD on uncertainty — see the tiers
-     spec) and write it back with `ledger.py … set --pr <N> --tier <tier>`. The tier is pinned to
-     `head_sha` and sets `required(tier)` = **1 if TRIVIAL else 2**.
+   - any newly-adopted PR whose ledger row lacks a `tier`, and every PR on every heartbeat → **run
+     `triage.py derive --worktree <worktree> --base origin/<base> --head-sha <head_sha> --systemic
+     yes|no|unknown`**. `stage-2-review-gate.md`, "2a-triage", owns the complete invocation and policy.
+     Never classify files or modes here. On success, require output `head_sha` to equal the row and write
+     output `tier` back with `ledger.py … set --pr <N> --tier <tier>`. On refusal, refresh the moving or
+     mismatched input and retry; never carry a tier across content the command did not classify.
    - current tip has `reviews_ok < required(tier)`, has no unaddressed Copilot review items, CI is not red,
      and no review is running for that SHA → **first ensure the PR's INTENT
      (`<rundir>/intent-<pr>.md`) and PR-head worktree exist.** The dispatch substitutes the intent block

@@ -42,9 +42,12 @@ gh label create gauntlet-run-<run-id> --color 5319E7 --description "gauntlet: ru
 > The MECHANICAL steps below — **1, 2, 4, 5 and the row of step 3** — are performed by
 > `scripts/pr-adopt.py adopt` (`pr-adopt.py adopt --pr <N> --run-id <id> --file <state.jsonl> --tier <T>
 > --worktrees-root <p> --project-root <p>`). The driver still supplies the two JUDGMENT calls it does not
-> make: the review **TIER** (the `--tier` argument, triaged per Stage **2a-triage**) and the PR's
-> **INTENT** (step 3a). Its decision logic is a pure `build_plan` pinned by `pr-adopt-test.py`. The steps
-> stay below as the spec the tool implements; read them as the authority.
+> make: the systemic-change input for deterministic tier derivation and the PR's **INTENT** (step 3a).
+> Adoption needs a row before it has resolved the PR-head worktree, so pass `--tier STANDARD` as the
+> conservative bootstrap value. `pr-adopt.py` launches no gate work. Immediately after step 5, run
+> `triage.py derive` as required below and overwrite that bootstrap through `ledger.py`; loop control repeats
+> the command before any review. Its decision logic is a pure `build_plan` pinned by `pr-adopt-test.py`.
+> The steps stay below as the spec the tool implements; read them as the authority.
 
 For each `#PR` to adopt:
 
@@ -129,7 +132,8 @@ For each `#PR` to adopt:
      it reused a pre-existing local branch or checkout;
      `pr` = `<N>`; `head_sha` = `headRefOid`.
    - **On a NEW row only, initialize:** `reviews_ok` = `0` (no verdicts yet); `ci` = `pending`;
-     `tier` = triage per `head_sha` (Stage **2a-triage**); `attempts` = `0` (no attempt has run yet —
+     `tier` = bootstrap `STANDARD`, replaced by `triage.py derive` immediately after step 5;
+     `attempts` = `0` (no attempt has run yet —
      `attempts` counts attempts **so far**, and seeding it at `1` silently spends half the retry-once
      budget before any work is dispatched); `started` = now;
      `api_approval` = `-`; `blocker_ruling` = `-`; `status` = `in_review`;
@@ -402,6 +406,19 @@ For each `#PR` to adopt:
    head branch on `origin`.
 
 #### Step 6 — Ensure a live CI watch when — and ONLY when — a check can still move
+
+Before starting any gate work, **derive the real tier from the resolved PR-head worktree**:
+
+```text
+python3 <skill-dir>/scripts/triage.py derive \
+    --worktree <ledger worktree> --base origin/<base> --head-sha <headRefOid> \
+    --systemic yes|no|unknown
+```
+
+`stage-2-review-gate.md`, "2a-triage", owns the command and classification policy. Require the output
+`head_sha` to equal the adoption snapshot, then replace the bootstrap with `ledger.py … set --pr <N>
+--tier <output tier>`. A refusal leaves the conservative bootstrap in place and blocks gate dispatch until
+the next heartbeat refreshes the worktree/head and derives successfully.
 
 6. **Ensure a live CI watch when — and ONLY when — a check can still move.** The warrant for a watch is a
    **still-RUNNING evidence row** in the PR's snapshot, **never the `ci` value** (Stage 2b, `stage-2-ci.md`

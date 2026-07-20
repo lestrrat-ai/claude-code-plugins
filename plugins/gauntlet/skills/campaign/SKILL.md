@@ -94,7 +94,8 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
 6. Fetch the PR; REFUSE foreign-owned and cross-repo/fork PRs. Write the PR's intent artifact
    (`intent-<pr>.md`: `## Purpose` / `## Non-goals` / `## Threat model`; local, git-ignored, never
    written back to the PR). Register the ledger row (refresh on re-adoption, never duplicate), run
-   label, status label, and worktree. Start a CI watch only if a check can still move.
+   label, status label, and worktree. Run `triage.py derive` on that resolved worktree and record its
+   SHA-pinned tier before gate work. Start a CI watch only if a check can still move.
 7. `review-pass.py intent-check --file <rundir>/intent-<pr>.md`: run immediately after writing an
    intent artifact and before dispatching the PR's first review — the same parser every pass later
    loads, so a malformed intent fails before review work is spent.
@@ -115,8 +116,8 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
    derivation this heartbeat.
 10. Mutating action due on a PR -> `ledger.py … dispatch-check --pr <N>`: run before ANY action that
     mutates a PR — it exits non-zero for a HELD one.
-11. Re-derive each PR's tier from its `head_sha` (deterministic file-class triage:
-    `references/stage-2-review-gate.md`, "2a-triage"), then launch ALL due work up to caps — reviews,
+11. `triage.py derive`: re-derive each PR's tier from its `head_sha` through the executable file-class
+    owner (`references/stage-2-review-gate.md`, "2a-triage"), then launch ALL due work up to caps — reviews,
     CI watches/fixes, precondition clearing, base refresh — skipping HELD PRs, and stop in-flight
     reviews doomed by a content change.
 12. Before sleeping, audit: re-run the dispatch scan across both concurrency pools and confirm every
@@ -242,6 +243,7 @@ a line the tool writes.
 | `run-id.py` | Mint a run-id and ATOMICALLY create its run directory (`new`) | `references/run-identity-and-lease.md` |
 | `lease.py` | Run-lease accessor: `mint` / `acquire` / `refresh` / `release` / `read` | `references/run-identity-and-lease.md` |
 | `pr-adopt.py` | `plan` / `adopt` — mechanically adopt an existing first-party PR into a run: refuse fork/foreign/non-open, register the ledger row + ownership/status labels, discover-or-create the PR-head worktree | `references/pr-adoption.md` |
+| `triage.py` | `derive` — classify one stable, SHA-pinned PR diff and emit its tier, required review count, per-file reasons, and unresolved systemic state | `references/stage-2-review-gate.md` |
 | `heartbeat.py` | Emit the scheduled-heartbeat callback command the driver arms for its next wake | `references/runtime-adapter.md` |
 | `ledger.py` | Schema-owning accessor for `state.jsonl` — plus `verdict`, the ONLY verdict recorder (tally, caps, `repairing` hold), and `dispatch-check`, the held-PR guard run before any mutating action | `references/files-and-ledger.md` |
 | `review-pass.py` | Executable contract for a review pass's artifacts — plan, `pass_identity`, progress, findings, active-attempt report result, `intent-check`, and the `verify` that answers "does this pass COUNT?" | `references/stage-2-review-gate.md` |
