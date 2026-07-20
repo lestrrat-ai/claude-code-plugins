@@ -263,6 +263,10 @@ def _sync_base(root: Path, base: str) -> None:
     if len(checked) > 1:
         raise Refusal(f"base branch {base!r} is checked out in more than one worktree")
     if checked:
+        # ff-only intentionally accepts a local-ahead base (git reports "Already up to date", exit 0).
+        # Downstream diffs/rebases read origin/<base> (freshly fetched above), not this local branch, so a
+        # local-ahead checkout poisons nothing; local-ahead means origin is an ancestor of local, i.e. local
+        # already contains the merged tip. The dangerous diverged case still fails ff-only and refuses below.
         _require(
             _run(["git", "-C", checked[0], "merge", "--ff-only", f"origin/{base}"]),
             f"fast-forward of checked-out base {base}",
