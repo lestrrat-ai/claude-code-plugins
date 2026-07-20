@@ -511,6 +511,17 @@ def cmd_fix_list(args) -> int:
     # the record must outlive this agent instance. A crash between this write and the driver dispatching
     # the fix loses the emitted work rather than re-dispatching it; for this single-user advisory tool
     # that at-most-once boundary is the deliberate trade against the replay it replaces.
+    #
+    # This mark-before-emit ordering is INTENTIONAL, not an oversight, and the claim is falsifiable:
+    # write-then-emit and emit-then-mark are duals. Mark-first is at-most-once — a failed stdout flush
+    # (e.g. `fix-list --json` to /dev/full → exit 120) leaves the marker durable, so the one emitted fix
+    # is lost on retry. Emit-first would be at-least-once — a crash after a successful flush but before
+    # the marker write REPLAYS the fix, reopening the exact window the `fix_scope` marker was added to
+    # close. Neither window shuts without a durable outbox/ack protocol, which the single-user policy
+    # says not to build. The loss is a safe residual, not a broken guarantee: the failing call exits
+    # NONZERO (signalled to the driver, never silent), the standoff ruling stays durable in the artifact,
+    # and losing the emit reverts to the audit's own recorded REFUTED verdict — the gate's default — not
+    # to merging a broken change. Accepted single-user residual per the repo's single-user policy.
     if standoff_phase and fixes:
         _append(state, {"type": CONSUMED, "consumed": [fix["finding_id"] for fix in fixes]})
         load_audit(Path(args.file), require_complete=True)
