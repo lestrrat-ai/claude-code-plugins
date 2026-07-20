@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Fixtures for ``triage.py`` — the mechanical file inventory and FLOOR tier for one pinned diff.
 
-The suite uses real temporary Git repositories for the file, mode, rename, delete, ordering and hostile
-path cases.  It loads the owner by path and therefore fails loudly when the executable policy owner is
+The suite uses real temporary Git repositories for the file, mode, rename, delete, modification,
+type-change, symlink, ordering and hostile path cases.  It pins that classification inspects every side
+that exists (base and head) and that a non-regular Git object (symlink, gitlink, unrecognized mode) is
+never prose.  It loads the owner by path and therefore fails loudly when the executable policy owner is
 missing.  It pins that the floor is only ever HIGH/STANDARD/None (never TRIVIAL — that is the
 orchestrator's semantic call) and that the ``--tier`` lower-bound check vetoes a below-floor tier.  That
 missing-owner failure was the pre-change reproduction: campaign previously had only prose classification,
@@ -234,6 +236,75 @@ def t_deleted_agent_frontmatter_is_code() -> None:
           f"deleted Markdown must inspect base content for agent frontmatter and floor STANDARD: {result!r}")
 
 
+def t_symlink_at_human_doc_path_is_code() -> None:
+    """A symlink (Git mode 120000) added at a human-doc path is a non-regular Git object, never prose:
+    it must classify at least CODE, floor STANDARD, and refuse a decided --tier TRIVIAL."""
+    with repository({"docs/real.md": ("# Real\n", 0o644)}) as (repo, base):
+        (repo / "docs/guide.md").symlink_to("real.md")
+        head = commit(repo, "symlink at a doc path")
+        result = derive(repo, base)
+        row = one_file(result)
+        check(row["path"] == "docs/guide.md" and row["new_mode"] == "120000",
+              f"the changed file must be the symlink: {row!r}")
+        check(row["class"] == M.CODE and result["floor"] == M.STANDARD,
+              f"a symlink at a docs path must be CODE and floor STANDARD, not a prose no-floor: {result!r}")
+        code, out, err = capture_cli(M.main, [
+            "derive", "--worktree", str(repo), "--base", base, "--head-sha", head, "--tier", M.TRIVIAL])
+    check(code == M.EXIT_REFUSED and out == "",
+          f"--tier TRIVIAL must be refused when a symlink clears the doc path: {code}/{out!r}")
+    check("below the mechanical floor" in err, f"the refusal must name the floor: {err!r}")
+
+
+def t_nonregular_modes_are_never_prose() -> None:
+    """A symlink (120000), a gitlink (160000), or any unrecognized mode at a human-doc path is a
+    non-regular Git object; the mode, not the content, forces at least CODE (fail-closed) so the
+    escalate-only floor cannot be cleared by a non-blob object wearing a prose path."""
+    def runner(argv: list[str], _worktree: str) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(argv, 0, b"plain prose\n", b"")
+
+    for mode in ("120000", "160000", "100600"):
+        change = M.Change(status="A", old_mode="000000", new_mode=mode, old_path=None, path=b"docs/guide.md")
+        row = M._classify_change(change, runner, "/nonexistent", "a" * 40, "b" * 40)
+        check(row["class"] == M.CODE,
+              f"mode {mode} at docs/guide.md must classify CODE, not prose: {row!r}")
+        check(any("non-regular" in reason for reason in row["reasons"]),
+              f"the reason must name the non-regular mode: {row!r}")
+
+
+def t_modification_classifies_base_and_head() -> None:
+    """A single-path modification (status M) must classify BOTH its base and head content and keep the
+    higher class. Stripping agent frontmatter leaves plain prose at HEAD but changed an agent-consumed
+    document, so the base side must still classify CODE — as renames and deletions already do."""
+    frontmatter = "---\nname: operator\ndescription: agent behavior\ntools: read\n---\nBody\n"
+    with repository({"docs/operator.md": (frontmatter, 0o644)}) as (repo, base):
+        write(repo, "docs/operator.md", "# Operator\n\nPlain prose now, no frontmatter.\n")
+        head = commit(repo, "strip agent frontmatter")
+        result = derive(repo, base)
+        row = one_file(result)
+        check(row["status"] == "M", f"the change must be a modification: {row!r}")
+        check(row["class"] == M.CODE and result["floor"] == M.STANDARD,
+              f"a modification that strips frontmatter must classify the base side CODE and floor STANDARD: {result!r}")
+        code, out, err = capture_cli(M.main, [
+            "derive", "--worktree", str(repo), "--base", base, "--head-sha", head, "--tier", M.TRIVIAL])
+    check(code == M.EXIT_REFUSED and out == "",
+          f"--tier TRIVIAL must be refused for a frontmatter-strip modification: {code}/{out!r}")
+    check("below the mechanical floor" in err, f"the refusal must name the floor, not a missing worktree: {err!r}")
+
+
+def t_type_change_classifies_base_and_head() -> None:
+    """A single-path type-change (status T) must classify BOTH sides. A regular prose doc that becomes a
+    symlink keeps prose at the base but a non-regular object at HEAD, so it floors to STANDARD."""
+    with repository({"docs/guide.md": ("# Guide\n", 0o644)}) as (repo, base):
+        (repo / "docs/guide.md").unlink()
+        (repo / "docs/guide.md").symlink_to("elsewhere.md")
+        commit(repo, "doc becomes a symlink")
+        result = derive(repo, base)
+    row = one_file(result)
+    check(row["status"] == "T", f"regular file -> symlink must be a type change: {row!r}")
+    check(row["class"] == M.CODE and result["floor"] == M.STANDARD,
+          f"a type change to a symlink must classify at least CODE and floor STANDARD: {result!r}")
+
+
 def t_tool_never_emits_trivial_floor() -> None:
     """The floor is only ever HIGH, STANDARD, or None (no floor) — the tool is STRUCTURALLY INCAPABLE of
     granting TRIVIAL. All-prose yields None (the orchestrator decides), NOT a TRIVIAL grant."""
@@ -420,6 +491,10 @@ CASES = [
     ("rename-sensitive", "renaming away from a sensitive path remains HIGH", t_rename_from_sensitive_remains_high),
     ("delete-sensitive", "deleting a sensitive file remains HIGH", t_sensitive_deletion_is_high),
     ("delete-frontmatter", "deleted Markdown uses base content for frontmatter", t_deleted_agent_frontmatter_is_code),
+    ("symlink-doc", "a symlink at a docs path is CODE, floors STANDARD, refuses TRIVIAL", t_symlink_at_human_doc_path_is_code),
+    ("nonregular-modes", "symlink/gitlink/unrecognized modes are never prose", t_nonregular_modes_are_never_prose),
+    ("modify-both-sides", "a modification classifies base and head; frontmatter strip stays CODE", t_modification_classifies_base_and_head),
+    ("typechange-both-sides", "a type change classifies base and head", t_type_change_classifies_base_and_head),
     ("no-trivial-floor", "the tool never emits a TRIVIAL floor; all-prose is no-floor", t_tool_never_emits_trivial_floor),
     ("tier-veto", "a --tier below the floor is refused; at/above passes", t_tier_below_floor_is_refused),
     ("head-mismatch", "a stale expected head is refused without JSON", t_head_mismatch_is_refused_without_output),

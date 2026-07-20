@@ -307,6 +307,16 @@ def _mode_executable(mode: str) -> bool:
     return mode != "000000" and bool(int(mode, 8) & 0o111)
 
 
+_REGULAR_BLOB_MODES = frozenset({"100644", "100755"})
+
+
+def _mode_regular_blob(mode: str) -> bool:
+    """A regular file blob (``100644``) or its executable form (``100755``). A symlink (``120000``), a
+    gitlink (``160000``), or any other mode is a non-regular Git object that is never human prose, so a
+    side carrying such a mode floors to at least CODE (fail-closed)."""
+    return mode in _REGULAR_BLOB_MODES
+
+
 def _blob(runner: Runner, worktree: str, commit: str, path: bytes) -> bytes | None:
     """Read a versioned path for frontmatter classification; absence becomes explicit uncertainty."""
     spec = os.fsencode(commit) + b":" + path
@@ -338,28 +348,41 @@ def _classify_change(change: Change, runner: Runner, worktree: str,
                      diff_base_sha: str, head_sha: str) -> dict:
     old_path_s = os.fsdecode(change.old_path) if change.old_path is not None else None
     path_s = os.fsdecode(change.path)
-    candidates: list[tuple[str, bytes, str]] = []
+    status = change.status[0]
+
+    # Classify EVERY side that exists — base and head alike — and keep the higher class. The base side
+    # exists for a deletion, a modification, a type-change, and the old path of a rename/copy; the head
+    # side exists for every status but a deletion. A single-path modification or type-change (M/T) must
+    # therefore inspect its base content too — otherwise a diff that strips agent frontmatter reads as
+    # plain prose at HEAD and clears the floor. Each side carries its own Git mode; a non-regular object
+    # (symlink, gitlink, or any unrecognized mode) is never prose and floors to at least CODE.
+    sides: list[tuple[str, bytes, str, str]] = []
     if change.old_path is not None:
-        candidates.append((old_path_s or "", change.old_path, diff_base_sha))
-    if change.status[0] != "D":
-        candidates.append((path_s, change.path, head_sha))
-    if not candidates:  # Defensive: a deletion always has old_path, but malformed evidence must not crash.
-        candidates.append((path_s, change.path, diff_base_sha))
+        sides.append((old_path_s or "", change.old_path, diff_base_sha, change.old_mode))
+    elif status in {"M", "T"}:
+        sides.append((path_s, change.path, diff_base_sha, change.old_mode))
+    if status != "D":
+        sides.append((path_s, change.path, head_sha, change.new_mode))
+    if not sides:  # Defensive: a deletion always has old_path, but malformed evidence must not crash.
+        sides.append((path_s, change.path, diff_base_sha, change.old_mode))
 
     classes: list[str] = []
     reasons: list[str] = []
-    for candidate_path, candidate_bytes, commit in candidates:
+    for candidate_path, candidate_bytes, commit, mode in sides:
         content = _blob(runner, worktree, commit, candidate_bytes)
         file_class, path_reasons = _path_class(candidate_path, content)
+        if not _mode_regular_blob(mode) and _CLASS_RANK[file_class] < _CLASS_RANK[CODE]:
+            file_class = CODE
+            path_reasons = [*path_reasons, f"non-regular Git mode {mode} is never human prose"]
         classes.append(file_class)
         for reason in path_reasons:
-            label = f"{candidate_path}: {reason}" if len(candidates) > 1 else reason
+            label = f"{candidate_path}: {reason}" if len(sides) > 1 else reason
             reasons.append(label)
 
     if _mode_executable(change.old_mode) or _mode_executable(change.new_mode):
         classes.append(SENSITIVE)
         reasons.append("old or new Git mode is executable")
-    if change.status[0] not in {"A", "C", "D", "M", "R", "T"}:
+    if status not in {"A", "C", "D", "M", "R", "T"}:
         classes.append(CODE)
         reasons.append(f"unknown Git change status {change.status!r} defaults to CODE")
 

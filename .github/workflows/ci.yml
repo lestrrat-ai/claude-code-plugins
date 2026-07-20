@@ -254,7 +254,8 @@ jobs:
       # into a run — refuse fork/foreign/closed PRs (fail closed), register the ledger row, create-or-reuse
       # the head worktree, apply the owner + reviewing labels — with the decision in a PURE `build_plan`
       # so every refusal and computed row field is pinned offline, no live GitHub. Its STANDARD tier is a
-      # conservative bootstrap that triage.py replaces after worktree creation; it authors no intent.
+      # conservative bootstrap that the orchestrator replaces — with the tier it decides after consulting
+      # triage.py's inventory and floor — once the worktree exists; pr-adopt.py authors no intent.
       # The sibling `pr-adopt-test.py` is loaded by path and a
       # MISSING sibling fails loudly, so this can never report an all-clear over a suite it did not run. As
       # with the suites above, the point of this step is that `py_compile` parses these files and runs neither.
@@ -262,10 +263,11 @@ jobs:
         run: python3 plugins/gauntlet/skills/campaign/scripts/pr-adopt.py self-test
 
       # The campaign tier floor + inventory, executed over real temporary Git repositories. The suite
-      # pins human/code/sensitive classes, agent frontmatter, modes, renames, deletions, unknown paths,
-      # the mechanical FLOOR (never TRIVIAL) and its below-floor `--tier` veto, hostile path bytes, stable
-      # ordering, and stale/moving-head refusal. The sibling `triage-test.py` is loaded by path and a
-      # missing or empty suite fails loudly.
+      # pins human/code/sensitive classes, agent frontmatter, modes, renames, deletions, modifications and
+      # type-changes classifying BOTH base and head sides, non-regular Git objects (symlink/gitlink) never
+      # being prose, unknown paths, the mechanical FLOOR (never TRIVIAL) and its below-floor `--tier` veto,
+      # hostile path bytes, stable ordering, and stale/moving-head refusal. The sibling `triage-test.py` is
+      # loaded by path and a missing or empty suite fails loudly.
       - name: Campaign tier derivation contract
         run: python3 plugins/gauntlet/skills/campaign/scripts/triage.py self-test
 

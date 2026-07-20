@@ -52,8 +52,11 @@ content marker is uncertain. `reviews_ok` target = `required(tier)`: **1 if `tie
 - **SENSITIVE** (a CODE subset) — CI (`.github/**`), `scripts/**`, executables (`+x`),
   `Dockerfile`/`Makefile`, dependency manifests/lockfiles, IaC, auth/crypto/secret paths.
 
-For a rename, classify both old and new paths and keep the higher class. For a deletion, classify the old
-path and its base content. Treat a file whose old **or** new Git mode is executable as SENSITIVE. These are
+Classify **every side of the change that exists** — the base content and the head content alike — and keep
+the higher class: a rename classifies its old and new paths, a deletion its old path, and a modification or
+type-change both its base and head content (so stripping agent frontmatter cannot read as prose at HEAD).
+Treat a file whose old **or** new Git mode is executable as SENSITIVE, and any **non-regular Git object** — a
+symlink, a gitlink, or any mode that is not a regular blob — as never HUMAN-DOC (at least CODE). These are
 diff properties, so filesystem inspection of only the new checkout is not a substitute.
 
 **Tiers (no size thresholds).**
