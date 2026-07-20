@@ -719,16 +719,11 @@ Then, per verdict:
   and the whole diff is re-reviewed: the cheap wrong fix is paid for twice, and it is the expensive half
   that pays. Worst case the pass misses it and the defect merges.
 
-  **Dispatch it under the fix-subagent contract** (`fix-subagent-contract.md` — the complete DEFINITION
-  for every fix subagent, CI or review; **read it before dispatching**). The review-specific inputs it
-  asks for are the worktree path and the concrete issue list (CONFIRMED + ADJUSTED only).
+  **Materialize it through `worker-prompt.py fix --role review`** as defined by
+  `fix-subagent-contract.md`. Put CONFIRMED + ADJUSTED findings in the exact issue byte file. Dispatch only
+  the published `prompt.txt` bytes with the `session` class recorded in `metadata.json`; never reconstruct
+  shared or review-specific prompt wording here.
 
-  *Non-authoritative summary of the contract — the contract is the definition and wins over this; never
-  dispatch from this summary:* **SCOPE** it — tell it NOT to re-derive the whole diff or read beyond the
-  files those issues name; that is where the savings are, not in the model tier. And **SWEEP** — put the
-  contract's **sweep-and-report block into the prompt verbatim** — a review defect whose fix changes a
-  definition or a fact is not done until every site that restates it is correct, and every site found is
-  reported. Scope bounds the READING; the sweep bounds the WRITING; the fixer owes you both.
 #### SATISFIED
 
 - **SATISFIED** → record it (`ledger.py … verdict --pr <N> --head-sha <sha> --verdict satisfied`, which

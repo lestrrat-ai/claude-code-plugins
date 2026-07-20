@@ -1,43 +1,21 @@
-## The fix-subagent contract — SCOPE the reading, SWEEP the writing
+## The fix-subagent contract — materialize the prompt, then dispatch its exact bytes
 
-**This file is the DEFINITION, and it is COMPLETE.** Every fix worker campaign dispatches — the economy
-CI-fix, the `session`-class CI-fix, and the review-fix — is dispatched under it. If you are dispatching a
-fixer, read this.
+**Use `scripts/worker-prompt.py fix` for the three shipped fix-worker roles: economy CI-fix, `session`
+CI-fix, and review-fix.** It materializes the complete prompt for each. These three roles repair an
+**existing PR branch** and push to it. Never assemble, shorten, or supplement one of their prompts from
+prose.
 
-**Other files carry NON-AUTHORITATIVE summaries of the rules below**, so each dispatch site reads on its
-own. Every one of them is a **pointer with a reminder attached, never a substitute**: **a summary may
-never be relied on, extended, or treated as complete, and if any of them disagrees with this file, THIS
-FILE WINS.** Never dispatch a fixer from a summary; never reconstruct the contract from one. Correcting
-this file means sweeping those sites too — a summary that has drifted from its definition is worse than
-no summary.
+**The follow-up fixer that opens a NEW PR is a separate workflow, outside these three roles.** It creates
+a branch and opens its own PR — which no materializer role does — so its dispatch is owned by
+`followups.md`, not by this materializer. It still honors this file's SCOPE and SWEEP discipline; the
+no-supplement rule above binds only the three materializer roles, not that workflow's branch-and-PR
+creation.
 
-**When you correct this contract, SWEEP for the restatements — do NOT expect a list of them here.** There
-is deliberately none, and that is not an omission: **a list of restatement sites is ITSELF a restatement,
-and it rots exactly like every other one.** This file once enumerated four sites; six existed the day it
-was written — **the list went stale inside the commit that created it**, and a reader trusting it would
-have swept four and never looked for the rest. That is the whole reason you must search instead. Search
-for the *shape* of the rules — a recipe does not go stale, a list of files does:
-
-- the **scope** rule — `SCOPE`, "scope … fix subagent", "re-derive", "whole diff", "beyond the named"
-- the **sweep** rule — `SWEEP`, "RESTATES", "sweep-and-report", "stale restatement", "fix only the instance"
-- **pointers at this file** — `fix-subagent-contract`
-
-Then read each hit and decide: it is a summary of this contract, or it is not. Do not stop when the count
-matches something you were told. Whether you CHANGE a rule here or ADD one, **enumerate SEMANTICALLY first
-and then search for the identifiers that enumeration names**, exactly as the SWEEP block below requires:
-searching for the rule's own wording finds only the sites you already fixed, and searching for an old value
-misses every site that paraphrased it.
-
-The contract has two halves that pull in opposite directions **on purpose**. Ship both, or the fixer
-optimizes the one you gave it:
-
-- **SCOPE** bounds what it READS, so it does not re-derive a problem you already solved for it.
-- **SWEEP** bounds what it WRITES, so it does not leave the fix half-applied.
-
-**Read narrowly to UNDERSTAND; sweep widely to FINISH.** They are not in conflict: the scope rule is
-about **not re-deriving the problem**, the sweep rule is about **not shipping half a fix**. Neither is
-licence to ignore the other. A fixer that sweeps the tree to find the sites its own change invalidated is
-**obeying** the scope rule, not breaking it — it is not re-deriving anything, it is finishing.
+`scripts/worker-prompt-template.txt` is the **one owner of shared prompt wording**: preflight evidence,
+scope, semantic sweep, and report. It also owns each role-specific prompt block. `worker-prompt.py`
+validates required blocks, binds dynamic data once, and publishes `prompt.txt` plus `metadata.json` as one
+atomic directory. The sibling fixture suite pins exact bytes and rejects a template missing a required
+block. This file owns the dispatch procedure, not a second copy of prompt text.
 
 ### PRE-FLIGHT — the base must be current before ANY fix is dispatched
 
@@ -57,88 +35,44 @@ A fix authored on a stale or conflicting base is wasted work: it is re-reviewed 
 anyway, and its diff may not even apply. The tool fetches and decides only — it performs no rebase; the
 driver rebases only on `rebase-first`, exactly as at the review-gate site.
 
-### SCOPE — bounds the reading
+### Materialize the exact prompt bundle
 
-**Scope every fix subagent.** Hand it the worktree path and the **concrete issue list** (for a CI-fix:
-the failing check's logs and the specific failing file(s)), and tell it **NOT** to re-derive the whole
-diff or read the repo beyond what the named issues touch. An unscoped fixer re-reads everything it was
-already told, and that is where the cost is — **not** in the model tier.
+**Write dynamic worker data to byte files, then call the materializer through typed argv.** The concrete
+issue file names every affected file. CI roles also receive the exact failing logs through a log file;
+review refuses a log file. Repository and worktree context remain argv fields.
 
-**Scope by defect, not by guess: name every file the defect actually touches**, or the fixer will
-faithfully leave the sites you forgot to list.
+```
+argv: ["python3", path_join(skill_dir, "scripts", "worker-prompt.py"), "fix",
+       "--role", role,
+       "--project-root", repository.project_root,
+       "--worktree", worktree,
+       "--pr", pr,
+       "--base", base,
+       "--preflight-verdict", "proceed",
+       "--issues-file", issues_file,
+       optional_ci("--logs-file", logs_file),
+       "--output-dir", attempt_prompt_bundle]
+```
 
-### SWEEP — bounds the writing
+`role` is exactly `review`, `ci-session`, or `ci-economy`. The output directory must not exist. Use
+`prompt.txt` as the worker's complete prompt bytes. Read `metadata.json` and dispatch with its `role` and
+logical `model_class`; the runtime adapter maps that class to the active host. Never map a host model name
+inside this tool or add prompt text after materialization.
 
-**Scoping the fix is NOT licence to fix only the INSTANCE.** Every fix subagent — CI or review — gets
-the block below in its prompt **verbatim**, because a scoped fixer is exactly the thing that will patch
-the one line it was pointed at and leave the class intact:
+**Bundle consistency is guaranteed per directory, never across directories.** A single `os.rename`
+publishes `prompt.txt` and `metadata.json` together, so within ONE published bundle directory the
+metadata's `prompt_sha256` always describes that exact `prompt.txt`. The tool verifies no pairing at
+consumption, and it does not need to: consume both files from the one directory it published. Reading
+`prompt.txt` from one bundle and `metadata.json` from a DIFFERENT one — a hand-paired mix of two
+git-ignored `.gauntlet/tmp` outputs — is a single-user footgun outside the threat model, not defended
+(`CLAUDE.md`, single-user advisory workflow).
 
-> **When your fix changes a DEFINITION (a rule, a command, a schema, a format) or a FACT (a count, a
-> name, an API behavior), you are NOT done until every place that RESTATES it is also correct.** Sweep
-> the whole tree, not just the file you were sent to. Restatements hide in **summaries**, **quick-reference
-> bullets**, **cross-references**, **table rows**, **worked examples**, and **other copies of the same
-> command**. A summary that has drifted from its definition is **worse than no summary** — it is the
-> version people actually read. **Report every site you found and its disposition, including the ones you
-> deliberately left alone and why.** If your fix is genuinely local and restates nothing, say so explicitly.
->
-> This widening is **bounded by the change you are making**: sweep for what your own fix invalidated. It
-> is **not** permission to re-derive the diff, re-review the PR, or fix defects nobody asked you to fix.
->
-> **GREP CANNOT TELL YOU WHAT TO SEARCH FOR — whether you EDIT a rule or INTRODUCE one.** A restatement is
-> greppable only if it COPIED the old value, the old spelling, the old number. One that **PARAPHRASES** the
-> rule contains no old string, and an EDIT has just as many paraphrases as an introduction: the one-line
-> summary *"green means zero failing and zero pending"* outlived THREE rewrites of the rule it summarised
-> and silently dropped both of that rule's disclosed caveats — that rule was EDITED, and no search for an
-> old value would ever have reached that sentence. So **searching for the old value/spelling/command/number
-> is ONE INPUT to the sweep, never the sweep itself.**
->
-> An INTRODUCED rule is the same trap at its sharpest: there is no old string to hunt at all, and
-> **searching for the new rule's own WORDING or NAME matches only the sites you already fixed, so it
-> reports success every time and is wrong every time.** The shape of that miss — **INVENTED strings, they
-> exist nowhere in this repo, see the rule below**: you add *"a re-queue must reset the freshness
-> counters"*, and somewhere else a line already reads *"it only bumps `retry_epoch`"*. That line is now a
-> stale restatement of your brand-new rule, and it shares **not one word** with it — no search for the
-> rule's wording, its name, or any old value will ever reach it.
->
-> **This does NOT mean text search is useless** — believing that swaps one incomplete method for another,
-> and makes you skip a search that would have worked. Searching for the **BEHAVIOR IDENTIFIERS the rule
-> governs** — the field, the state, the command, the cap's name — is legitimate and necessary; it is HOW
-> you execute the sweep. Continue the invented example: *"it only bumps `retry_epoch`"* names a field, and
-> a search for `retry_epoch` WOULD have found it — **but only once you enumerated the sites that state what
-> a re-queue does.** Nothing in the new rule's own wording ("reset the freshness counters") tells you to go
-> looking for `retry_epoch`. That is the whole gap the enumeration closes.
->
-> **AN ILLUSTRATION OF A DEFECT MUST NEVER BE A LIVE STRING IN THE TREE.** When you quote a bad line as an
-> example — here or in any doc you fix — quote one that exists **nowhere**, invent it, and say you invented
-> it. Quote a real one and the doc becomes a false-positive generator: the next sweeper searches for the
-> example, lands on the live site, and condemns text that is correct. If a real quotation is truly
-> unavoidable, mark it HISTORICAL unmistakably — but prefer the invented one, because that marking has to
-> say **where** the phrase is still live and **why** it is correct there, which is a fact about the tree,
-> and it rots. **An example a reader can act on by mistake is worse than no example.**
->
-> So, for EVERY definition or fact change alike: **enumerate SEMANTICALLY first, then search for the
-> identifiers the enumeration names.** List every site that **DOES OR STATES THE THING THE RULE GOVERNS** —
-> writes the field, enters the state, performs the reset, states the cap — search for each of those
-> identifiers, and check every hit against the definition.
-> **The enumeration tells you WHAT to search for; the search is how you execute it, never a substitute
-> for it.** Enumerate the BEHAVIOR, not the words. Report the site list.
->
-> **A POINTER WITH A GLOSS IS STILL A RESTATEMENT.** A site that correctly points at the owner and then
-> "just briefly" restates what it points at — *"reset the liveness counters (`settled_strikes`,
-> `unusable_refetches`)"* — has **copied the definition into the gloss**. When the owner gains a member,
-> the pointer stays right and **the gloss silently goes wrong**, and the gloss is the part people read.
-> This shape survives every sweep that asks "does this site point at the owner?", because it does.
-> **Name the set. Do not unpack it.** If a gloss is genuinely needed, it must be COMPLETE — and then it
-> is a copy, and you own the cost of keeping it true.
->
-> **MAKE THE CHECK MECHANICAL WHEREVER YOU CAN.** "Did you sweep thoroughly?" is not a check — it cannot
-> fail. "`rg -Un '<the value>'` returns exactly one hit, and here is every hit accounted for" is a check.
-> Prefer a command whose output you must reconcile out loud over a promise that you looked.
-
-This is a **report** requirement, not just a search requirement: a sweep nobody can audit did not happen.
+**Stop on every refusal.** Missing or conflicting role inputs, any preflight verdict other than `proceed`,
+invalid UTF-8/NUL payloads, unsafe paths, template drift, existing output, or partial publication produces
+no usable bundle. The script launches no worker and judges no repair.
 
 **THE ORCHESTRATOR RECORDS EVERY SITE THE FIXER LEFT ALONE — as a follow-up, in the same heartbeat it reads the
-report.** The block above makes the subagent report the sites it deliberately did not touch (and any
+report.** The template's report block makes the subagent report sites it deliberately did not touch (and any
 pre-existing defect it noticed and declined to fix); **that report dies with the subagent**, so a
 disposition nobody wrote down is a defect nobody will ever see again. Record each one through
 `scripts/followups.py` — the subagent's own report is the entry's evidence, and why the fixer left it
@@ -150,19 +84,3 @@ CONFIRMED/ADJUSTED findings the fixer was dispatched at are **fixed, or they sta
 as a follow-up settles nothing, and a fixer that defers the very defect it was sent to fix has done
 nothing. This block records what the fixer left **beside** the fix, never the fix it declined to make
 (`followups.md`, "RECORDING A FOLLOW-UP NEVER DISCHARGES A FINDING").
-
-**Prefer ONE OWNER over another copy.** When the fixer finds a definition restated in N places, the best
-repair is usually to leave the definition in one place and make the others point at it — a fifth copy of
-a rule is a fifth thing that can go stale. A pointer is only valid if what it points at is **complete**;
-pointing at a partial definition is itself the defect. And a pointer is only a pointer while it stays a
-pointer: the moment it unpacks what it points at, it is a copy wearing a pointer's clothes.
-
-**A value that appears twice has two sources of truth.** Give every constant (a cap, a limit, a count)
-exactly ONE defining site that carries the literal; everywhere else names it. Then the sweep for it is a
-command, not a judgment call.
-
-**But an EXTERNAL constant that happens to equal yours is NOT a duplicate of it.** GitHub's documented 6h
-per-job execution limit is not your 6h stall cap — they are two independent facts that currently agree.
-"Unifying" them destroys a true external fact and couples you to a coincidence: change your cap to 4h and
-GitHub's limit still reads 6 hours. Keep the external constant EXACT, and mark it as theirs, so the next
-sweeper does not helpfully collapse it into yours.

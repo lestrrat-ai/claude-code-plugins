@@ -440,9 +440,9 @@ moving on:
 - **An audit finds something real that is NOT the finding** (`stage-2-review-gate.md`, "Audit every
   finding before you fix it") — a pre-existing defect at the same site, or a wider class an **ADJUSTED**
   finding only clipped the edge of.
-- **A fix subagent reports a site it deliberately LEFT ALONE.** The sweep block already requires it to
-  report those (`fix-subagent-contract.md`, "SWEEP — bounds the writing"). That report is the follow-up's
-  evidence, and the orchestrator records it — **the subagent's report dies with the subagent**.
+- **A fix subagent reports a site it deliberately LEFT ALONE.** The materialized prompt's report block
+  requires it (`fix-subagent-contract.md`, "Materialize the exact prompt bundle"). That report is the
+  follow-up's evidence, and the orchestrator records it — **the subagent's report dies with the subagent**.
 - **The user defers something** — anything the user says is real but "not now", or descopes from a PR.
   Record it with the user's own words as the evidence; it is already `accept`-able, because the user just
   agreed it is real.

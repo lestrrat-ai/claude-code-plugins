@@ -112,12 +112,14 @@ jobs:
             plugins/gauntlet/skills/campaign/scripts/script-table-test.py \
             plugins/gauntlet/skills/campaign/scripts/base-preflight.py \
             plugins/gauntlet/skills/campaign/scripts/base-preflight-test.py \
+            plugins/gauntlet/skills/campaign/scripts/worker-prompt.py \
+            plugins/gauntlet/skills/campaign/scripts/worker-prompt-test.py \
             plugins/gauntlet/skills/campaign/scripts/merge-check.py \
             plugins/gauntlet/skills/campaign/scripts/merge-check-test.py | tee pyright.json
           analyzed=$(jq '.summary.filesAnalyzed' pyright.json)
           echo "filesAnalyzed=${analyzed}"
-          if [ "${analyzed}" != "35" ]; then
-            echo "::error::pyright analysed ${analyzed} file(s), not the 35 it was pointed at — it checked" \
+          if [ "${analyzed}" != "37" ]; then
+            echo "::error::pyright analysed ${analyzed} file(s), not the 37 it was pointed at — it checked" \
                  "nothing and said so quietly. Fix the paths above; a silent no-op is not a passing gate."
             exit 1
           fi
@@ -285,6 +287,13 @@ jobs:
       # the sibling `format-preflight-test.py` is loaded by path and a MISSING sibling fails loudly.
       - name: Format-preflight contract
         run: python3 plugins/gauntlet/skills/campaign/scripts/format-preflight.py self-test
+
+      # The fix-worker prompt is the executed dispatch contract. Its sibling fixtures pin complete exact
+      # bytes for every role and refuse missing blocks, unsafe payloads, conflicting outputs, and partial
+      # publication. A prose-only dispatch can stay internally consistent while omitting a mandatory block;
+      # this materializer cannot.
+      - name: Fix-worker prompt contract
+        run: python3 plugins/gauntlet/skills/campaign/scripts/worker-prompt.py self-test
 
       # The clean-rebase EXECUTOR's contract, executed. Where base-preflight only DECIDES that a rebase is
       # due, this DOES the clean base-only case — fetch/rebase/force-with-lease push plus the ledger reset
