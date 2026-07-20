@@ -330,8 +330,13 @@ def prior_cap_rounds(rundir: Path, pr: str) -> "set[int]":
         rounds = doc.get("rounds")
         if not isinstance(rounds, list):
             continue
-        nums = [item.get("round") for item in rounds
-                if isinstance(item, dict) and isinstance(item.get("round"), int)]
+        nums: "list[int]" = []
+        for item in rounds:
+            if not isinstance(item, dict):
+                continue
+            round_no = item.get("round")
+            if isinstance(round_no, int):
+                nums.append(round_no)
         if nums:
             caps.add(max(nums))
     return caps
