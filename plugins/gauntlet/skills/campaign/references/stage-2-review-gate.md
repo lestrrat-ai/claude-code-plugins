@@ -161,7 +161,7 @@ file is a plaintext file in a directory the reviewer can write to.
 ["python3", review_pass_script, "intent-check", "--file", intent_file]
     # refuse a missing/malformed intent block BEFORE dispatch, not at verify
 ["python3", review_pass_script, "verify", "--file", progress_file,
- "--head-sha", live_head_sha, "--verdict", verdict, "--amendments-ruled", count]
+ "--head-sha", live_head_sha, "--amendments-ruled", count]
 ["python3", review_pass_script, "status", "--run", rundir]
     # ADVISORY read-only glance at in-flight passes; never a gate input
 ["python3", review_pass_script, "self-test"]
@@ -566,10 +566,11 @@ it **GATES** (`writer=network`, and it quotes the PR's purpose). The same PR's r
 machinery that misses an input **nobody can write**, attacking a declared non-goal — does not.
 
 `review-pass.py verify` **exits non-zero** on any defect in the pass's artifacts — a missing intent block,
-a verdict that does not cohere with the findings (in either direction), a missing verdict on a COMPLETE
-pass, a spurious `deferred`, or a malformed finding record — the `unusable` row of the verify table below
-enumerates them in full. It still **cannot say `SATISFIED`** and still **cannot raise `reviews_ok`**
-— it can only ever **subtract** a pass, never grant one.
+a malformed or incomplete active-attempt report, a terminal result that does not cohere with the findings
+(in either direction), a spurious `DEFERRED`, or a malformed finding record — the `unusable` row of the
+verify table below enumerates them in full. It reads the terminal result from that report; the driver does
+not retell it. The verifier still **cannot raise `reviews_ok`** or judge whether the review prose is sound
+— it validates and prints one pass result for the separate tally step.
 
 **THE VERDICT/FINDINGS RULE IS AN IF AND ONLY IF, AND BOTH HALVES ARE ENFORCED: `NOT SATISFIED` exactly
 when at least one GATING finding stands.** The reviewer decided the finding gates **when it chose that
@@ -613,54 +614,43 @@ the pass that produced it, and deciding "was this pass real?" by eye is the same
 a false `ci = green` — one layer up.
 
 ```
-review-pass.py verify --file <rundir>/<active attempt's progress file> --head-sha <the PR's LIVE head> \
-    --verdict satisfied|not-satisfied|deferred
+review-pass.py verify --file <rundir>/<active attempt's progress file> --head-sha <the PR's LIVE head>
 ```
 
-**`--verdict` is what you READ in the report, TOLD to the tool** — the tool still never opens
-`review-<pr>-<n>.txt` and still cannot *say* `SATISFIED`. It buys exactly one machine-checked
-rule, and that rule is an **IF AND ONLY IF**: **`not-satisfied` exactly when at least one GATING finding
-stands.** A verdict that blocks a PR must name what blocks it — **and a finding that blocks a PR cannot be
-waved through by the verdict.** Both halves make a pass `unusable`; neither can grant one.
+**`verify` derives the active attempt's report path from the progress artifact and parses the result.**
+It requires exactly one terminal result on the last nonblank line: `VERDICT: SATISFIED`, `VERDICT: NOT
+SATISFIED`, or `VERDICT: DEFERRED — <one-line reason>`. Missing, empty, truncated, duplicate,
+nonterminal, malformed, and wrong-attempt reports are `unusable`. The parsed binary result is checked by
+the existing if-and-only-if rule: **`not-satisfied` exactly when at least one GATING finding stands.** A
+verdict that blocks a PR must name what blocks it, and a finding that blocks a PR cannot be waved through.
 
-**When the report's terminal line is `VERDICT: DEFERRED`** — the reviewer raised a separate request the
-orchestrator must handle first (it appended a `plan_amendment_request`, or the dispatch was broken and it
-stopped) instead of rendering a verdict — **OR** there is no binary verdict but the progress file holds an
-unruled `plan_amendment_request`, **pass `--verdict deferred`.** `deferred` is **not** a verdict and never
-reaches the coherence rule; it hands control to the progress file, and the tool answers with the same
-routing verdicts as any other pass — **`amended`** (fold the amendment and re-run), **`incomplete`**
-(the pass stopped early — relaunch), or **`unusable`** (a spurious deferral: nothing was outstanding, so
-it owes a binary verdict). **NEVER fabricate a binary `satisfied`/`not-satisfied` for the reviewer** — if
-it did not rule, you do not rule for it.
+**A SATISFIED report has exactly one `RESIDUAL-RISK:` line immediately above its verdict.** It uses the
+prompt's exact form. The line is forbidden on NOT SATISFIED and DEFERRED results.
+
+**A parsed DEFERRED result routes through progress state without becoming a judgment.** An unruled
+`plan_amendment_request` returns `amended`; an unfinished pass returns `incomplete`; a complete pass with
+nothing outstanding returns `unusable` because the deferral points at nothing.
 
 **A deferral whose reason names an UNWRITABLE progress/findings file is a DISPATCH fault, not a pass to
 route** — before any relaunch, re-check the launch argv against the canonical spelling
 (`cross-agent-reviewers.md`), above all the `-C` target, which must be the run-artifact root. Relaunching
 the same command makes the same run directory read-only and fails identically.
 
-**`--verdict` is REQUIRED, and a COMPLETE pass verified without it is `unusable` — never `ok`.** A gate
-must not depend on an agent remembering to pass something — so the input is demanded, exactly as the
-intent is.
-**You come to this door WITH the report's `VERDICT:` line in hand.** It is not the way to ask whether the
-reviewer has finished: a pass still in flight is **watched**, not verified — its progress file is the
-liveness evidence ("Launch check", above).
+**A pass still in flight is watched with `review-pass.py status`, not verified.** `status` stays lenient
+for torn output; `verify` is strict because only its `ok` result can reach the ledger.
 
 It answers with exactly one verdict, and there is **no "counts, but…"** — a disclosure printed beside a
 pass is a trapdoor, not a disclosure:
 
 | verdict | exit | what it means | what to do |
 |---|---|---|---|
-| `ok` | 0 | the artifacts are sound: a `pass_identity` naming **this** PR, **this** pass, **this** launch attempt and **the live head SHA**; a **usable intent block** for this PR; every planned unit `done` **once**, with concrete evidence, after a `started` for it; every `done` for a unit that is **actually in the plan**; no unruled amendment; and the verdict you gave **coheres** with the findings | **tally the verdict you passed** |
+| `ok` | 0 | the artifacts are sound: one strict result from the active attempt's report; a `pass_identity` naming **this** PR, **this** pass, **this** launch attempt and **the live head SHA**; a **usable intent block** for this PR; every planned unit `done` **once**, with concrete evidence, after a `started` for it; every `done` for a unit that is **actually in the plan**; no unruled amendment; and the parsed result **coheres** with the findings | tally the parsed binary result through `ledger.py verdict` |
 | `incomplete` | 1 | sound, but a planned unit has no `done` — the pass has not covered its plan | it is still working (or it stopped early — the meaningful-progress rule decides which). **Never tally a verdict from it** |
 | `amended` | 1 | sound, but the reviewer raised a `plan_amendment_request` nobody has ruled on | fold it into the plan and restart the pass, or ignore it with a note — then re-run with `--amendments-ruled N` |
-| `unusable` | 1 | the artifacts are **defective** — a short SHA or any other malformed identifier, a `done` for an unplanned unit, an evidence-free `done`, a `done` that no `started` precedes, a SECOND `done` for one unit, a hand-written line of the wrong shape, an identity naming another commit or another attempt; **no usable intent block for the PR** (`pr-adoption.md` step 3a — checked for **every** pass, including one that found nothing); a **verdict that does not cohere with the findings** in *either* direction (**a `not-satisfied` that recorded no GATING finding**, or a **`satisfied` that recorded one that stands**); **NO verdict at all on a COMPLETE pass** (the coherence rule's input may not be omitted); **a spurious `deferred`** (`--verdict deferred` on a pass that is complete with **no** outstanding `plan_amendment_request` — a deferral that points at nothing); a finding missing a field, a `writer` outside the enum, a `purpose` that is not a verbatim `## Purpose` line, or a `writer` its own repro contradicts | the pass **CANNOT count, whatever its report says.** Treat it as a reviewer system failure (retry / fresh-worker fallback), never as a verdict. **An `unusable` for a missing intent is NOT a reviewer failure** — it means the run skipped `pr-adoption.md` step 3a: write the intent, then re-dispatch the pass. **Neither is one for a missing verdict** — that is YOUR call being wrong, not the pass: read the report's `VERDICT:` line and pass it. (The CLI refuses that call outright — `--verdict` is required — so the *absent*-verdict case is reachable only by an in-process caller; a spurious `deferred` reaches it from the CLI too, and means the reviewer owes a binary verdict or the request it meant to raise) |
+| `unusable` | 1 | the artifacts are **defective** — the active report is missing, empty, truncated, duplicate, nonterminal, malformed, or lacks SATISFIED's exact residual-risk line; a short SHA or other malformed identifier; invalid progress/identity/findings; **no usable intent block**; a parsed result that does not cohere with findings; or a spurious DEFERRED result | the pass **CANNOT count**. Fix skipped adoption inputs when named; otherwise retry or take the fresh-worker fallback |
 
-**`ok` IS NOT `SATISFIED`, and the tool will never say `SATISFIED`.** It does not open
-`review-<pr>-<n>.txt` and does not parse the reviewer's prose — the VERDICT is the reviewer's **judgment**
-and stays theirs; `verify` only checks the pass's **mechanics**. That line is what keeps the tool from
-*becoming* the gate: it can only ever **subtract** a pass (refuse a defective one), never **add** a
-SATISFIED verdict, never raise `reviews_ok`, and never merge anything. A bug in a tool that can only
-refuse costs a re-review; a bug in a tool that could accept would merge a PR nobody reviewed.
+**`ok` is not SATISFIED.** The tool parses the reviewer's exact terminal result but does not judge the
+report's prose, raise `reviews_ok`, or merge. `ledger.py verdict` remains the only tally writer.
 
 ### Recording a verdict — `ledger.py verdict` is the ONLY sanctioned path
 

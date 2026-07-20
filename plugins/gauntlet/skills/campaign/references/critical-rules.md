@@ -274,8 +274,11 @@
   EVERY line of those files whatever produced it — every reviewer event now goes through a door
   (`emit-progress.py`, `emit-finding.py`, `emit-amendment.py`), and a hand-written line is caught on read
   all the same (Stage 2a owns that rule). **A verdict from a pass that does not verify `ok` is NEVER tallied**, and there are
-  **three** kinds of defect that make a pass `unusable`, whatever its report says (Stage 2a, "Does this pass
+  **four** kinds of defect that make a pass `unusable` (Stage 2a, "Does this pass
   COUNT?", owns the enumeration):
+  - **the active REPORT result is unusable** — missing, empty, truncated, duplicate, nonterminal,
+    malformed, from the wrong launch attempt, or missing SATISFIED's exact immediately preceding
+    `RESIDUAL-RISK:` line;
   - **the ARTIFACTS are malformed** — a short SHA or any other malformed identifier, a `done` for a unit
     that was never planned, an evidence-free `done`, a `done` that no `started` precedes, a SECOND `done`
     for one unit, a hand-written line of the wrong shape, an identity naming another commit or attempt;
@@ -283,12 +286,9 @@
     **including one that found nothing** (that is the ordinary case, and the one that merges a PR);
   - **the VERDICT does not cohere with the FINDINGS** — the rule is an **if and only if**: `not-satisfied`
     exactly when at least one GATING finding stands, so a `not-satisfied` that recorded none is refused,
-    and so is a `satisfied` that recorded one. **`--verdict` is a REQUIRED input to `verify`**, so a
-    COMPLETE pass verified without one is refused too: a rule whose input may be omitted is a rule the
-    driver switches off by forgetting a flag, and this one is the only mechanical check on the reviewer's
-    own verdict. (`--verdict` takes a third value, `deferred`, when the reviewer raised a separate request
-    instead of ruling — it is not a verdict, routes on the progress file to `amended`/`incomplete`, and is
-    itself `unusable` if the pass is complete with nothing outstanding.)
+    and so is a `satisfied` that recorded one. `verify` derives the result from the active progress path;
+    no caller may retell or override it. DEFERRED is not a verdict: it routes through progress to
+    `amended`/`incomplete`, and is `unusable` if the pass is complete with nothing outstanding.
   Every one of those rules holds at **both doors** — the same predicate refuses it on write (`emit`) and on
   read (`verify`), so it cannot be enforced at one and not the other. **Every identifier it handles has ONE
   legal form and NO door repairs one** (a unit id is `u01`-shaped; `pr`/`pass`/`launch_attempt` are decimal
@@ -298,8 +298,8 @@
   Trimming at both doors would leave two spellings of one id; a FORMAT leaves nothing to convert. And
   **anything the tool writes it can
   read back**: a write is refused unless the file it would produce verifies, so the tool can never accept
-  your work and then tell you the work does not count (it did — see Stage 2a). `ok` is **not** `SATISFIED` — the
-  tool never reads the report and never says SATISFIED; it can only ever *refuse* a pass, never accept one.
+  your work and then tell you the work does not count (it did — see Stage 2a). `ok` is **not** `SATISFIED`:
+  the tool parses the terminal result but never judges the report's prose or writes the tally.
 - Before each review, write an orchestrator-owned `review-<pr>-<n>.plan.jsonl` (per-pass — a relaunch
   reuses it; written through the tool above, never a heredoc). Build `runtime-adapter.md`'s one typed
   transport record, JSON-bind it and the verbatim intent into the active `.prompt.txt` through

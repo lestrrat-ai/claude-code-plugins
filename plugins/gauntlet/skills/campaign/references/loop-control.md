@@ -201,18 +201,15 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
    uses `.prompt.txt` and writes `review-<pr>-<n>.txt` / `.progress.jsonl` / `.findings.jsonl`; a
    relaunch uses and writes `review-<pr>-<n>.a<k>.*`, and
    only the attempt named in the current `pass_identity` is read or counted (Stage 2a). **Before a
-   review verdict is counted, the pass's artifacts must verify** — `scripts/review-pass.py verify --verdict
-   <what the report's VERDICT line says>`, never
-   an ad-hoc parse; anything but `ok` means the verdict is not tallied (Stage 2a, "Does this pass COUNT?").
-   **`--verdict` is REQUIRED** — it is what lets the tool check the one rule it can, so a COMPLETE pass
-   verified without it is `unusable`, never `ok` (a rule a driver can switch off by forgetting a flag is
-   not a gate). That rule is an if and only if: `not-satisfied` exactly when at least one GATING
+   review verdict is counted, the pass's artifacts must verify** — run `scripts/review-pass.py verify`
+   against the active attempt's progress file, never parse the report by hand. The tool derives the
+   attempt-scoped report path and prints its strict result; anything but `ok` is not tallied (Stage 2a,
+   "Does this pass COUNT?"). The coherence rule is an if and only if: `not-satisfied` exactly when at least one GATING
    finding stands — a verdict that blocks a PR
    must name what blocks it, and a finding that blocks a PR cannot be waved through by the verdict. Either
    way round is `unusable` (Stage 2a, "Does this pass COUNT?").
-   **A pass that raised a separate request instead of ruling passes `verify --verdict deferred`** (the
-   report's terminal line is `VERDICT: DEFERRED`, or the progress file holds an unruled
-   `plan_amendment_request`): `deferred` is not a verdict, so it is never tallied — the tool routes on
+   **A pass that raised a separate request ends with the exact DEFERRED-with-reason result.** DEFERRED is
+   not a verdict, so it is never tallied — the tool routes on
    the progress file and returns `amended` (fold the amendment, re-run the pass) or `incomplete`
    (relaunch), and only a binary `satisfied`/`not-satisfied` ever reaches the ledger below.
    **Then record the verdict with `scripts/ledger.py verdict --pr <N> --head-sha <sha> --verdict …`** — the

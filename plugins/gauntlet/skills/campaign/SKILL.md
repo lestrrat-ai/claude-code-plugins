@@ -244,7 +244,7 @@ a line the tool writes.
 | `pr-adopt.py` | `plan` / `adopt` — mechanically adopt an existing first-party PR into a run: refuse fork/foreign/non-open, register the ledger row + ownership/status labels, discover-or-create the PR-head worktree | `references/pr-adoption.md` |
 | `heartbeat.py` | Emit the scheduled-heartbeat callback command the driver arms for its next wake | `references/runtime-adapter.md` |
 | `ledger.py` | Schema-owning accessor for `state.jsonl` — plus `verdict`, the ONLY verdict recorder (tally, caps, `repairing` hold), and `dispatch-check`, the held-PR guard run before any mutating action | `references/files-and-ledger.md` |
-| `review-pass.py` | Executable contract for a review pass's artifacts — plan, `pass_identity`, progress, findings, `intent-check`, and the `verify` that answers "does this pass COUNT?" (`--verdict` required) | `references/stage-2-review-gate.md` |
+| `review-pass.py` | Executable contract for a review pass's artifacts — plan, `pass_identity`, progress, findings, active-attempt report result, `intent-check`, and the `verify` that answers "does this pass COUNT?" | `references/stage-2-review-gate.md` |
 | `emit-progress.py` | Reviewer's door: append one unit-progress event (the only sanctioned way) | `references/stage-2-review-gate.md` |
 | `emit-finding.py` | Reviewer's door: record one FINDING (the only sanctioned way; findings must anchor or they do not gate) | `references/stage-2-review-gate.md` |
 | `emit-amendment.py` | Reviewer's door: raise one plan amendment (the only sanctioned way; `ts` is tool-stamped, the proposed unit is validated like a plan unit) | `references/stage-2-review-gate.md` |
