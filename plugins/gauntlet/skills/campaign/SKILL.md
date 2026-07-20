@@ -152,8 +152,8 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
     exits non-zero.
 17. On `NOT SATISFIED`, findings are claims, not facts: a dispatched context-isolated audit subagent
     (never the orchestrator inline) verdicts each gating finding — CONFIRMED / ADJUSTED / REFUTED,
-    with evidence — BEFORE any fix is dispatched; **unsure -> CONFIRMED, never REFUTED**. Only
-    CONFIRMED + ADJUSTED get fixed, under the fix-subagent contract (below). A refutation NEVER clears
+    with evidence — through `finding-audit.py`, BEFORE any fix is dispatched; **unsure -> CONFIRMED,
+    never REFUTED**. Build post-audit work only from its verified `fix-list --json` output. A refutation NEVER clears
     the gate: it is committed into the tree as a falsifiable inline claim (never an instruction to the
     reviewer), once per finding; if a fresh reviewer re-raises it, that is a standoff -> park
     `awaiting-user`.
@@ -246,6 +246,7 @@ a line the tool writes.
 | `ledger.py` | Schema-owning accessor for `state.jsonl` — plus `verdict`, the ONLY verdict recorder (tally, caps, `repairing` hold), and `dispatch-check`, the held-PR guard run before any mutating action | `references/files-and-ledger.md` |
 | `review-pass.py` | Executable contract for a review pass's artifacts — plan, `pass_identity`, progress, findings, active-attempt report result, `intent-check`, and the `verify` that answers "does this pass COUNT?" | `references/stage-2-review-gate.md` |
 | `review-dispatch.py` | `prepare` — validate one fresh review attempt, derive every artifact path, write `pass_identity` + exact bound prompt, and return the host-neutral typed transport record; never selects or launches a route | `references/review-dispatch.md` |
+| `finding-audit.py` | Schema-owning accessor for complete gating-finding audits, mechanically derived review-fix scope, and durable standoff rulings | `references/finding-audit.md` |
 | `emit-progress.py` | Reviewer's door: append one unit-progress event (the only sanctioned way) | `references/stage-2-review-gate.md` |
 | `emit-finding.py` | Reviewer's door: record one FINDING (the only sanctioned way; findings must anchor or they do not gate) | `references/stage-2-review-gate.md` |
 | `emit-amendment.py` | Reviewer's door: raise one plan amendment (the only sanctioned way; `ts` is tool-stamped, the proposed unit is validated like a plan unit) | `references/stage-2-review-gate.md` |

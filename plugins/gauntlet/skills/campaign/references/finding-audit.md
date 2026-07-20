@@ -18,8 +18,8 @@ role stays narrow — read verdicts, record them via `ledger.py verdict`, dispat
 (for CONFIRMED/ADJUSTED findings) the fix subagent, watch CI, and merge.
 
 **On every `NOT SATISFIED`, the audit subagent verdicts each finding against the source BEFORE any fix
-subagent is dispatched.** It gives each one a verdict, with evidence, and records the audit in
-`<rundir>/audit-<pr>-<n>.md`:
+subagent is dispatched.** It gives each one a verdict, with evidence, and records each verdict through
+`scripts/finding-audit.py`:
 
 | verdict | meaning | what to do |
 |---|---|---|
@@ -31,6 +31,53 @@ Only CONFIRMED and ADJUSTED findings go to the scoped fix subagent.
 
 **The audit runs on GATING findings only.** A non-gating finding is never fixed, so there is nothing to
 audit: it is recorded as a follow-up and the review moves on.
+
+### Executable audit artifact
+
+**Read and write `audit-<pr>-<n>.jsonl` only through `scripts/finding-audit.py`.** It imports
+`review-pass.py`'s strict finding parser and gating rule, binds the audit to the active findings artifact,
+and assigns stable content-derived IDs. A changed source finding makes the audit stale; a missing,
+duplicate, unknown, or non-gating result is refused.
+
+Before dispatching the audit subagent, initialize the audit from the active launch attempt's findings:
+
+```text
+python3 <skill-dir>/scripts/finding-audit.py init \
+  --file <rundir>/audit-<pr>-<n>.jsonl \
+  --findings <rundir>/review-<pr>-<n>[.a<k>].findings.jsonl
+```
+
+Pass `init`'s JSON output and the absolute script path to the context-isolated audit subagent. It records
+exactly one result for every printed `finding_id`:
+
+```text
+python3 <skill-dir>/scripts/finding-audit.py record \
+  --file <rundir>/audit-<pr>-<n>.jsonl --finding-id <id> \
+  --verdict CONFIRMED|ADJUSTED|REFUTED --evidence <source-or-test evidence>
+```
+
+For `ADJUSTED`, also pass `--adjusted-repro <replacement trigger/reproduction>` and
+`--adjusted-fix <replacement fix>`. Do not pass those flags for the other verdicts.
+
+After the audit worker exits, require complete coverage and derive the worker inputs:
+
+```text
+python3 <skill-dir>/scripts/finding-audit.py verify \
+  --file <rundir>/audit-<pr>-<n>.jsonl
+python3 <skill-dir>/scripts/finding-audit.py fix-list \
+  --file <rundir>/audit-<pr>-<n>.jsonl --json
+```
+
+**Use only `fix-list --json` output to build post-audit work.** Its `fixes` array is the review-fix scope:
+CONFIRMED, ADJUSTED with replacement details, and a user-ruled-valid standoff. Its separate `refutations`
+array is the inline-comment scope for newly REFUTED findings. Never hand-parse the JSONL or hand-build
+either list. `verify` returns the complete ordered audit and any standoff rulings for later readers.
+`verify` and `fix-list` fail until every gating finding has exactly one evidenced result.
+
+After any standoff ruling is recorded, `fix-list` enters standoff mode and returns only ruled-valid
+standoff findings. It never replays CONFIRMED/ADJUSTED work from the original round; that work landed
+before the fresh reviewer could create the standoff. Each returned standoff fix carries the fresh
+reviewer's counter and the user's ruling evidence.
 
 ### Two DIFFERENT questions, and confusing them is how this section reads as contradicting the gating rule
 
@@ -105,7 +152,8 @@ forever.
 
 On REFUTED:
 
-- **Record** the finding, the refutation, and the evidence in `<rundir>/audit-<pr>-<n>.md`.
+- **Record** the finding, the refutation, and the evidence through `finding-audit.py record` in
+  `<rundir>/audit-<pr>-<n>.jsonl`.
 - **Write an inline comment at the site** — the code or doc the finding named — stating why the finding
   does not apply (this also matches the user's standing rule for not-applicable review feedback).
 - **Commit it.** The refutation commit is a **PR-content change**, so it **RESETS THE GATE** exactly like
@@ -142,9 +190,16 @@ review prompt**, so a native worker reviewer and a `codex exec` reviewer both re
   on the answer. **The park is ENFORCED AT DISPATCH, not merely recorded:** while parked, NEVER launch a
   review pass, a CI fix, a review fix, or a merge for that PR (`loop-control.md` step 3;
   `stage-3-merge.md`) — `reviews_ok` stays 0, so a re-review would let a `SATISFIED` verdict merge the PR
-  with the disputed finding never adjudicated. Only the user's answer unparks it (`status` →
-  `in_review`), and **the ruling is recorded durably in `<rundir>/audit-<pr>-<n>.md`** — a heartbeat may be a
-  fresh agent instance, and an answer held only in context is one the user is asked for twice
+  with the disputed finding never adjudicated. Record the user's answer before unparking:
+
+  ```text
+  python3 <skill-dir>/scripts/finding-audit.py rule-standoff \
+    --file <rundir>/audit-<pr>-<n>.jsonl --finding-id <id> \
+    --ruling valid|invalid --counter <fresh-reviewer counter> --evidence <user ruling>
+  ```
+
+  Then set `status` → `in_review`. The command records one durable ruling and refuses a second; a heartbeat
+  may be a fresh agent instance, and an answer held only in context is one the user is asked for twice
   (`loop-control.md` step 3, "Only the user's answer unparks a PR"). Ruling the finding **invalid** → drop
   it and return to the normal flow; **valid** → fix it exactly like a CONFIRMED finding.
 - **NEVER refute the same finding twice on your own authority.** One refutation, then the reviewer rules;
@@ -152,7 +207,8 @@ review prompt**, so a native worker reviewer and a `codex exec` reviewer both re
   parks. The standoff is the **review-gate** cause of `awaiting-user`; a **machine blocker** parks the same
   status by its own rule, answered into `blocker_ruling` (`files-and-ledger.md`, `status`).
 
-**Why this cannot become self-gating:** the audit only ever *subtracts* work from a fix list. It cannot
-add a SATISFIED verdict, cannot raise `reviews_ok`, and cannot merge anything. The refutation itself is
+**Why this cannot become self-gating:** the audit verdicts only ever *subtract* work from the initial fix
+list; `rule-standoff` carries the user's later decision. Neither can add a SATISFIED verdict, raise
+`reviews_ok`, or merge anything. The refutation itself is
 submitted **to** the gate as reviewable content, never held **against** it. The gate is still the
 reviewer's; the audit only stops the driver from building things nobody needed.

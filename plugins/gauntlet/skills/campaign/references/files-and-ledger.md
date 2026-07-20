@@ -19,7 +19,7 @@ resume, reuse the existing dir). Per-run dirs are what keep concurrent runs' fil
 | `intent-<pr>.md` | **What this PR is FOR** — `## Purpose` / `## Non-goals` / `## Threat model`. Written at adoption (`pr-adoption.md`), from the PR body when it carries one and **authored by the driver** from the diff/title/body when it does not; re-read every heartbeat, never re-derived. It is passed to the reviewer **verbatim**, and it is what the **pass** is measured against: `review-pass.py verify` loads it for **every** pass it judges — including one that found nothing — so a PR with no usable block here earns **no verdicts at all** (`stage-2-review-gate.md`, "Does this pass COUNT?"). **LOCAL and git-ignored — campaign NEVER writes it back to the PR** |
 | `review-<pr>-<n>.a<k>.prompt.txt` / `.a<k>.txt` / `.a<k>.progress.jsonl` / `.a<k>.findings.jsonl` | The same four per-attempt artifacts for **launch attempt `k ≥ 2`** — a relaunched pass writes here, never over attempt 1's files, so a killed-but-alive attempt can't corrupt the live one. `review-pass.py verify` derives `.a<k>.txt` from `.a<k>.progress.jsonl`; only that attempt is read or counted. The plan and intent remain per-pass/per-PR |
 | `ci-<pr>-<head_sha>.txt` | Latest **SHA-pinned** CI snapshot for a PR — check runs **AND** commit statuses, written **BY THE HEARTBEAT** running **`scripts/ci-status.py derive`** after the watch completes (**the watch never writes it**), promoted atomically, and **stamped with the `head_sha` it describes** (verify the stamp before parsing). Carries a **`source` completion marker per mandatory source**, so a source that was **never queried** is `unusable`, not a silent green (`ci-derivation-spec.md`). Never the watch stream, and never `gh pr checks` — its output carries **no SHA** |
-| `audit-<pr>-<n>.md` | A dispatched context-isolated audit subagent's verdicts on round `n`'s gating findings — CONFIRMED / ADJUSTED / REFUTED, each with evidence. A REFUTED finding's reasoning is recorded here **and** written into the tree as an inline comment at the site, committed like any other change (`finding-audit.md`, "Audit every finding before you fix it") |
+| `audit-<pr>-<n>.jsonl` | Schema-owned audit of round `n`'s gating findings and any standoff ruling. Read/written only through `scripts/finding-audit.py`; `finding-audit.md`, **Executable audit artifact**, owns the complete procedure |
 | `repair-<pr>-<k>.prompt.txt` / `.prompt.txt.manifest.json` | Deterministic reassessment prompt and hash manifest written only by `repair-pass.py bundle` (`repair-pass.md`, "Build the complete reassessment bundle"). The manifest is promoted last and is required by `decide`; a prompt without its valid sidecar cannot authorize a decision |
 | `repair-<pr>-<k>.md` | The **reassessment pass**'s decision record for repair `k`: the ONE decision and why (`repair-pass.md`). Written before the decision is recorded, with the matching bundle hash as its first nonblank line and a machine-readable `DECISION: <enum>` line naming the chosen decision. `repair-pass.py decide` refuses a missing/empty record, one not bound to its exact prepared prompt, or one whose `DECISION:` line is absent/duplicated/not-permitted or disagrees with `--decision` |
 | `abort-<id>.md` | Detailed log for an aborted PR-task |
@@ -427,9 +427,8 @@ Header field notes (the header fields above; per-row fields follow):
     1. **A REVIEW STANDOFF** — a finding the orchestrator REFUTED in the tree and a **fresh reviewer
        re-raised anyway** (`finding-audit.md`, "Audit every finding before you fix it"). A REFUTED
        finding does **NOT** park by itself — it is committed as an inline refutation and the next
-       reviewer judges it; only the re-raise parks. **Answered into** `<rundir>/audit-<pr>-<n>.md`: ruled
-       **invalid** → back to the normal flow; ruled **valid** → back to the normal flow with that finding
-       fixed like a CONFIRMED one.
+       reviewer judges it; only the re-raise parks. **Answered through** `finding-audit.py rule-standoff`
+       in `<rundir>/audit-<pr>-<n>.jsonl`; follow `finding-audit.md`, **Executable audit artifact**.
     2. **A MACHINE BLOCKER — campaign cannot move this PR without a human.** `ci_reason` **names** it.
        Non-exhaustively: **CI has SETTLED and is still not green** (`settled_strikes` at its cap), a check
        that **never stopped `RUNNING`** while nothing in the check set moved (`ci_stalled_since` at the CI
@@ -535,8 +534,8 @@ park, `stage-3-merge.md`); the **CI** parks stay `ci-status.py liveness`'s, whic
 fields itself (`stage-2-ci.md`, "ESCALATE"). `unpark` consumes a `retry@<iso>` ruling only — it refuses a
 bare `retry`, an unanswered park, an `abort` (that goes terminal through the abort procedure), and a row
 that is not parked. **`set` still writes `status` and `blocker_ruling` and is NOT gated:** the
-review-standoff park/unpark (`finding-audit.md`) is answered into `audit-<pr>-<n>.md`, not `blocker_ruling`,
-so park/unpark cannot serve it and it stays on `set`; and `blocker_ruling` is where the user's **answer** is
+review-standoff park/unpark (`finding-audit.md`) is answered through `finding-audit.py rule-standoff`, not
+`blocker_ruling`, so park/unpark cannot serve it and it stays on `set`; and `blocker_ruling` is where the user's **answer** is
 recorded (`set --blocker-ruling retry@<iso>`), which `unpark` then consumes.
 
 `table` is the user-facing status view: the end-of-heartbeat report renders it whenever the run goes back

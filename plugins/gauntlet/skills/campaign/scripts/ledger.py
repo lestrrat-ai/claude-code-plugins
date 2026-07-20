@@ -255,7 +255,7 @@ REPAIR_OWNED = ("repair_count", "repair_decision")
 #
 # `set` is DELIBERATELY left able to write `status` and `blocker_ruling` — the guard is NOT closed, because:
 #   * the REVIEW-STANDOFF park (finding-audit.md) writes `status = awaiting-user` through `set` and is
-#     answered into `audit-<pr>-<n>.md`, NOT `blocker_ruling`; its unpark is a plain `set --status
+#     answered through `finding-audit.py rule-standoff`, NOT `blocker_ruling`; its unpark is a plain `set --status
 #     in_review` carrying no `retry@<iso>` ruling for `unpark` to validate. park/unpark cannot serve that
 #     class, so `set` stays open for it (and for `merged`/`aborted`/the api-approval resume);
 #   * `blocker_ruling` is where the USER'S ANSWER is recorded (`set --pr N --blocker-ruling retry@<iso>`);

@@ -697,18 +697,18 @@ Then, per verdict:
    a non-gating finding is recorded as a follow-up and no fix is dispatched for it (the gating rule, above;
    `verify` has already refused the pass if a `not-satisfied` recorded none). Then — unless `verdict` just
    held the PR for repair, in which case NO fix is dispatched at all — **dispatch a context-isolated AUDIT
-   SUBAGENT to AUDIT the gating findings** — see `finding-audit.md`; **NEVER dispatch a fix for an
-   unaudited finding**.
-3. **Dispatch the review-fix for CONFIRMED/ADJUSTED findings only.** For its CONFIRMED/ADJUSTED verdicts,
-   **dispatch a scoped fix subagent** into `<worktree>` (the PR row's ledger `worktree` column value) with
-   the **audited** issue list (**CONFIRMED + ADJUSTED only**); it commits + pushes → HEAD advances (a
+   SUBAGENT to AUDIT the gating findings**. Run `finding-audit.md`'s **Executable audit artifact**
+   procedure through `finding-audit.py verify`; **NEVER dispatch post-audit work before it succeeds**.
+3. **Dispatch the review-fix from `finding-audit.py fix-list --json` only.** Pass its `fixes` array to a
+   **scoped fix subagent** in `<worktree>` (the PR row's ledger `worktree` column value); never hand-build
+   that issue list. It commits + pushes → HEAD advances (a
    second gate reset — relabel again if the first was somehow skipped). A later heartbeat starts a fresh
    review on the new tip. (Because reviews are sequential, no second review was spent on this broken
    commit.)
-4. **A REFUTED finding's reasoning goes into the tree.** Any **REFUTED** finding is **written into the
-   tree** — an inline comment at the site stating why the mechanism cannot occur — and committed like any
-   other change, so the next reviewer reads it and can flag it if it is wrong. That commit is PR content:
-   it resets the gate through the same rule.
+4. **Write only `fix-list --json`'s `refutations` into the tree.** Each item becomes an inline comment at
+   its site stating why the mechanism cannot occur, then is committed like any other change. The next
+   reviewer reads it and can flag it if it is wrong. That commit is PR content and resets the gate through
+   the same rule.
 
   **Why the session class:** **Run the review-fix in the `session` class — NEVER downgraded** (`SKILL.md`, "Worker Dispatch"). The one
   deliberate downgrade in this skill is the CI-fix subagent for a **formatting/lint** failure, which runs a
