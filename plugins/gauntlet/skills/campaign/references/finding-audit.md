@@ -71,16 +71,19 @@ python3 <skill-dir>/scripts/finding-audit.py fix-list \
   --file <rundir>/audit-<pr>-<n>.jsonl --json
 ```
 
-**Use only `fix-list --json` output to build post-audit work.** Its `fixes` array is the review-fix scope:
-CONFIRMED, ADJUSTED with replacement details, and a user-ruled-valid standoff. Its separate `refutations`
-array is the inline-comment scope for newly REFUTED findings. Never hand-parse the JSONL or hand-build
-either list. `verify` returns the complete ordered audit and any standoff rulings for later readers.
-`verify` and `fix-list` fail until every gating finding has exactly one evidenced result.
+**Use only `fix-list --json` output to build post-audit work, and dispatch what one call returns before
+you call it again.** Its `fixes` array is the review-fix scope: CONFIRMED, ADJUSTED with replacement
+details, and a user-ruled-valid standoff. Its separate `refutations` array is the inline-comment scope for
+newly REFUTED findings. Never hand-parse the JSONL or hand-build either list. `verify` returns the complete
+ordered audit and any standoff rulings for later readers. `verify` and `fix-list` fail until every gating
+finding has exactly one evidenced result.
 
-After any standoff ruling is recorded, `fix-list` enters standoff mode and returns only ruled-valid
-standoff findings. It never replays CONFIRMED/ADJUSTED work from the original round; that work landed
-before the fresh reviewer could create the standoff. Each returned standoff fix carries the fresh
-reviewer's counter and the user's ruling evidence.
+After any standoff ruling is recorded, `fix-list` enters standoff mode and returns each ruled-valid standoff
+finding exactly ONCE: emitting a standoff fix records it consumed in the audit artifact, so a later
+`fix-list` — a fresh, memoryless heartbeat — never replays a fix that already landed, even after a second,
+separately ruled standoff adds new work. It never replays CONFIRMED/ADJUSTED work from the original round
+either; that work landed before the fresh reviewer could create the standoff. Each returned standoff fix
+carries the fresh reviewer's counter and the user's ruling evidence.
 
 ### Two DIFFERENT questions, and confusing them is how this section reads as contradicting the gating rule
 

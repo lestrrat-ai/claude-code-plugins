@@ -273,6 +273,49 @@ def t_standoff_ruling_is_durable_once_and_controls_fix_scope() -> None:
         check(payload["refutations"] == [], "a ruled standoff must not replay the original refutation work")
 
 
+def t_two_standoff_rulings_each_enter_fix_scope_once() -> None:
+    """Two REFUTED findings ruled valid in SEPARATE rounds: the second scope must not replay the first.
+
+    Regression for the finding that once any standoff ruling existed, `fix-list` re-emitted EVERY
+    valid ruling on every call, so after f1's fix landed a later `fix-list` (a fresh memoryless
+    heartbeat) re-dispatched it alongside the newly ruled f2.
+    """
+    with tempfile.TemporaryDirectory() as name:
+        directory = Path(name)
+        _source, audit, summary = initialize(directory, [finding(10), finding(11)])
+        f1, f2 = [item["finding_id"] for item in summary["gating"]]
+        check(record(audit, f1, "REFUTED", "verified impossible for f1")[0] == 0, "f1 refutation records")
+        check(record(audit, f2, "REFUTED", "verified impossible for f2")[0] == 0, "f2 refutation records")
+
+        # Round A: the user rules f1 valid; the fix scope is exactly f1.
+        check(invoke([
+            "rule-standoff", "--file", str(audit), "--finding-id", f1,
+            "--ruling", "valid", "--counter", "fresh reviewer reached f1",
+            "--evidence", "user accepted the f1 reproduction",
+        ])[0] == 0, "f1 valid ruling records")
+        code, payload, err = fix_list(audit)
+        check(code == 0 and [fix["finding_id"] for fix in payload["fixes"]] == [f1],
+              f"round A fix scope must be exactly f1: {err}, {payload}")
+
+        # f1's fix has landed. A memoryless heartbeat re-reads fix-list before the next ruling exists:
+        # the already-consumed f1 must NOT come back as work.
+        code, payload, err = fix_list(audit)
+        check(code == 0 and payload["fixes"] == [],
+              f"re-reading fix-list after consuming f1 must return no work: {err}, {payload}")
+
+        # Round B: the user rules f2 valid; the fix scope must be ONLY f2, never replaying the landed f1.
+        check(invoke([
+            "rule-standoff", "--file", str(audit), "--finding-id", f2,
+            "--ruling", "valid", "--counter", "fresh reviewer reached f2",
+            "--evidence", "user accepted the f2 reproduction",
+        ])[0] == 0, "f2 valid ruling records")
+        code, payload, err = fix_list(audit)
+        check(code == 0 and [fix["finding_id"] for fix in payload["fixes"]] == [f2],
+              f"round B fix scope must be exactly f2: {err}, {payload}")
+        check(f1 not in json.dumps(payload["fixes"]),
+              "the second standoff scope must not replay the first, already-consumed fix")
+
+
 def t_standoff_requires_a_complete_refuted_audit() -> None:
     with tempfile.TemporaryDirectory() as name:
         directory = Path(name)
@@ -405,6 +448,7 @@ CASES = [
     t_source_change_makes_audit_stale,
     t_adjusted_details_and_evidence_are_required,
     t_standoff_ruling_is_durable_once_and_controls_fix_scope,
+    t_two_standoff_rulings_each_enter_fix_scope_once,
     t_standoff_requires_a_complete_refuted_audit,
     t_atomic_failure_preserves_existing_audit,
     t_hostile_payload_and_parent_path_round_trip_as_data,

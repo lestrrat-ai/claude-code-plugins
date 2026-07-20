@@ -31,6 +31,7 @@ FORMAT_VERSION = "1"
 HEADER = "finding_audit"
 RESULT = "audit_result"
 STANDOFF = "standoff_ruling"
+CONSUMED = "fix_scope"
 VERDICTS = ("CONFIRMED", "ADJUSTED", "REFUTED")
 RULINGS = ("valid", "invalid")
 
@@ -42,6 +43,9 @@ RESULT_KEYS = {
 }
 STANDOFF_KEYS = {
     "type", "finding_id", "ruling", "counter", "evidence",
+}
+CONSUMED_KEYS = {
+    "type", "consumed",
 }
 
 
@@ -207,6 +211,7 @@ def validate_audit(text: str, path: Path, *, require_complete: bool = False) -> 
     gating_ids = set(expected_ids)
     results: dict[str, dict] = {}
     rulings: dict[str, dict] = {}
+    consumed: set[str] = set()
 
     for number, row in enumerate(rows[1:], start=2):
         where = f"{path.name} line {number}"
@@ -259,8 +264,32 @@ def validate_audit(text: str, path: Path, *, require_complete: bool = False) -> 
             rulings[finding_id] = row
             continue
 
+        if row_type == CONSUMED:
+            # A fix-scope marker records the standoff fixes an earlier `fix-list` already emitted, so a
+            # later `fix-list` on a fresh memoryless heartbeat never re-dispatches a landed fix. Each id
+            # it names must be a gating finding with a valid standoff ruling recorded BEFORE this row, and
+            # no id may be consumed twice.
+            _check_exact(row, CONSUMED_KEYS, where)
+            ids = row["consumed"]
+            if not isinstance(ids, list) or not ids:
+                raise AuditError(f"{where}: `consumed` must be a non-empty list of finding ids")
+            for finding_id in ids:
+                _nonblank(finding_id, "consumed id", where)
+                ruling = rulings.get(finding_id)
+                if ruling is None or ruling["ruling"] != "valid":
+                    raise AuditError(
+                        f"{where}: {finding_id!r} has no valid standoff ruling recorded before it; only a "
+                        "ruled-valid standoff fix is consumed"
+                    )
+                if finding_id in consumed:
+                    raise AuditError(
+                        f"{where}: {finding_id} is already consumed; a standoff fix enters the scope once"
+                    )
+                consumed.add(finding_id)
+            continue
+
         raise AuditError(
-            f"{where}: unknown record type {row_type!r}; expected {RESULT!r} or {STANDOFF!r}"
+            f"{where}: unknown record type {row_type!r}; expected {RESULT!r}, {STANDOFF!r}, or {CONSUMED!r}"
         )
 
     missing = [finding_id for finding_id in expected_ids if finding_id not in results]
@@ -279,6 +308,7 @@ def validate_audit(text: str, path: Path, *, require_complete: bool = False) -> 
         "gating_ids": expected_ids,
         "results": results,
         "rulings": rulings,
+        "consumed": consumed,
         "missing": missing,
     }
 
@@ -436,14 +466,18 @@ def cmd_fix_list(args) -> int:
     fixes = []
     refutations = []
     standoff_phase = bool(state["rulings"])
+    consumed = state["consumed"]
     for item in state["indexed"]:
         finding_id = item["finding_id"]
         if finding_id not in state["gating_ids"]:
             continue
         result = state["results"][finding_id]
         ruling = state["rulings"].get(finding_id)
+        # In standoff phase a valid ruling is fix work exactly ONCE. An earlier `fix-list` marks the fix
+        # consumed, so a later call (a fresh, memoryless heartbeat) never replays a fix that already
+        # landed — even after a second, separate ruling puts new work in scope.
         eligible = (
-            ruling is not None and ruling["ruling"] == "valid"
+            ruling is not None and ruling["ruling"] == "valid" and finding_id not in consumed
             if standoff_phase else result["verdict"] in ("CONFIRMED", "ADJUSTED")
         )
         if not eligible:
@@ -473,6 +507,13 @@ def cmd_fix_list(args) -> int:
             fix["standoff_counter"] = ruling["counter"]
             fix["standoff_evidence"] = ruling["evidence"]
         fixes.append(fix)
+    # Emitting standoff fixes CONSUMES them durably, in the artifact, before the output is reported —
+    # the record must outlive this agent instance. A crash between this write and the driver dispatching
+    # the fix loses the emitted work rather than re-dispatching it; for this single-user advisory tool
+    # that at-most-once boundary is the deliberate trade against the replay it replaces.
+    if standoff_phase and fixes:
+        _append(state, {"type": CONSUMED, "consumed": [fix["finding_id"] for fix in fixes]})
+        load_audit(Path(args.file), require_complete=True)
     print(json.dumps({
         "audit": str(state["path"]),
         "findings": state["header"]["findings_file"],
@@ -531,7 +572,11 @@ def build_parser() -> argparse.ArgumentParser:
     verify = sub.add_parser("verify", help="require exactly one result for every gating finding")
     verify.add_argument("--file", required=True)
 
-    fix_list = sub.add_parser("fix-list", help="emit the complete mechanically filtered review-fix scope")
+    fix_list = sub.add_parser(
+        "fix-list",
+        help="emit the mechanically filtered review-fix scope not yet consumed; emitting a standoff fix "
+             "consumes it so a later call never replays it",
+    )
     fix_list.add_argument("--file", required=True)
     fix_list.add_argument("--json", action="store_true", required=True,
                           help="required: emit the fix scope as one JSON object")
