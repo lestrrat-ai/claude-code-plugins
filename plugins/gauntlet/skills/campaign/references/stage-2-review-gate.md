@@ -928,7 +928,8 @@ THREE spellings, and a search for only the first will miss the others**: `ledger
 tally on unchanged content**), **`ledger.py verdict … --verdict not-satisfied`** (the
 verdict tally, which voids it), and **`ledger.py … set --pr <N> --tier`** (the tier write; a
 **de-escalation** changes `required(tier)` without touching `reviews_ok`, while a **depth-raising
-escalation** pairs this write with the `--reviews-ok 0` reset above). Search for all three.
+escalation** carries `--reviews-ok 0` in the SAME atomic write — one `ledger.py set` with both flags, so
+tier and voided tally move together, per `loop-control.md`/`pr-adoption.md`). Search for all three.
 
 **Exception — a clean base-only rebase** (PR diff unchanged) carries `reviews_ok` forward and therefore
 **keeps** `gauntlet-accepted`. The gate did not reset, so the label does not move. Gate and label stay in

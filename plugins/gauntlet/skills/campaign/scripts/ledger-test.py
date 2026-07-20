@@ -1170,6 +1170,36 @@ def t_set_cannot_raise_the_tally(L: ModuleType, tmp: Path) -> None:
     check(code == 0, f"re-writing the same tally was refused: {err!r}")
 
 
+def t_escalation_reset_is_one_atomic_write(L: ModuleType, tmp: Path) -> None:
+    """The depth-raising escalation reset — the deeper `tier` AND the voided `reviews_ok` — lands in ONE
+    `set` invocation, so the two move together (`loop-control.md`/`pr-adoption.md` re-triage steps).
+
+    Two separate writes (`set --tier HIGH` then `set --reviews-ok 0`) open a window: a driver death between
+    them leaves `tier=HIGH, reviews_ok=2`, and the next heartbeat sees no escalation (HIGH→HIGH) so never
+    re-triggers the reset — a stricter tier standing on a stale accepted tally. `set` already applies every
+    field flag in ONE atomic write, so the single-write form is available; this pins that it is.
+    """
+    path = write_lines(tmp / "e.jsonl", header_line(L), row_line(L, pr="1", head_sha=SHA_A, tier="STANDARD"))
+    # A standing accepted tally at the shallower tier (earned, not hand-set — `set` cannot raise it).
+    cli(L, ["--file", str(path), "verdict", "--pr", "1", "--head-sha", SHA_A, "--verdict", "satisfied"])
+    cli(L, ["--file", str(path), "verdict", "--pr", "1", "--head-sha", SHA_A, "--verdict", "satisfied"])
+    code, out, _ = cli(L, ["--file", str(path), "get", "--pr", "1", "--field", "reviews_ok"])
+    check(out == "2\n", f"setup: the shallow tally is {out!r}, not '2'")
+
+    # THE escalation reset: raise the tier and void the tally in ONE call.
+    code, out, err = cli(L, ["--file", str(path), "set", "--pr", "1", "--tier", "HIGH", "--reviews-ok", "0"])
+    check(code == 0, f"the one-write escalation reset was refused (exit {code}): {err!r}")
+    row = json.loads(out)
+    check(row["tier"] == "HIGH", f"the deeper tier did not land in the same write: {row['tier']!r}")
+    check(row["reviews_ok"] == "0", f"the tally was not voided in the same write: {row['reviews_ok']!r}")
+
+    # And it is DURABLE — both fields are in the persisted row, not just the printed one.
+    code, out, _ = cli(L, ["--file", str(path), "get", "--pr", "1", "--field", "tier"])
+    check(out == "HIGH\n", f"persisted tier is {out!r}, not 'HIGH'")
+    code, out, _ = cli(L, ["--file", str(path), "get", "--pr", "1", "--field", "reviews_ok"])
+    check(out == "0\n", f"persisted reviews_ok is {out!r}, not '0' — tier and tally did not move together")
+
+
 def t_verdict_refuses_a_moved_head(L: ModuleType, tmp: Path) -> None:
     """A verdict for a SHA that is not the row's head is REFUSED — it describes content that is gone.
 
@@ -2207,6 +2237,7 @@ CASES = [
     ("verdict-counts-rounds", "`verdict` bumps review_rounds on EVERY verdict and applies the tally atomically", t_verdict_counts_rounds),
     ("rounds-never-reset", "NOTHING resets review_rounds/ns_streak — there is no flag, at any door", t_review_rounds_never_reset),
     ("tally-floor-only", "`set` may VOID reviews_ok, NEVER raise it — only a verdict adds a verdict", t_set_cannot_raise_the_tally),
+    ("escalation-reset-atomic", "the depth-raising reset writes deeper tier + voided tally in ONE atomic set", t_escalation_reset_is_one_atomic_write),
     ("verdict-head-pinned", "a verdict for a SUPERSEDED sha is refused — it describes content that is gone", t_verdict_refuses_a_moved_head),
     ("verdict-domain", "`verdict` needs a real row and one of exactly two verdicts", t_verdict_needs_a_row_and_a_known_verdict),
     ("counter-corrupt", "a counter field that is not a count is refused, never handed to int()", t_counter_refuses_a_corrupt_value),

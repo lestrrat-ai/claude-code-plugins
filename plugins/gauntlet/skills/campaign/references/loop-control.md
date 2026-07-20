@@ -348,10 +348,13 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      "Status labels mirror the review gate", owns the split; depth order TRIVIAL < STANDARD < HIGH):
      - **Depth-raising escalation** (the decision raises the tier to a strictly deeper one — TRIVIAL→STANDARD,
        TRIVIAL→HIGH, STANDARD→HIGH; STANDARD→HIGH raises depth even though `required` stays 2): the standing
-       verdicts were earned at a shallower depth and do NOT satisfy the new tier, so in the SAME step also
-       reset the tally with `ledger.py … set --pr <N> --reviews-ok 0` and require a fresh tier-sized plan
-       before the next dispatch (the plan-copy rule in `stage-2-review-gate.md` must NOT reuse the shallower
-       plan). Do this even though the SHA is unchanged.
+       verdicts were earned at a shallower depth and do NOT satisfy the new tier, so write the deeper tier and
+       the voided tally in ONE atomic ledger write — `ledger.py … set --pr <N> --tier <deeper> --reviews-ok 0`
+       (`ledger.py set` applies every field flag in a single atomic write, so tier and reset land together and
+       no driver death can leave the deeper tier standing beside a stale tally that the next heartbeat would
+       read as no escalation). Then require a fresh tier-sized plan before the next dispatch (the plan-copy
+       rule in `stage-2-review-gate.md` must NOT reuse the shallower plan). Do this even though the SHA is
+       unchanged.
      - **De-escalation** (the decision lowers the tier — STANDARD→TRIVIAL, HIGH→STANDARD, HIGH→TRIVIAL): the
        verdicts were earned at a DEEPER depth (a superset), so KEEP `reviews_ok` and the plan; only
        `required(tier)` moves.

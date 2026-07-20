@@ -420,9 +420,16 @@ python3 <skill-dir>/scripts/triage.py derive \
 
 `stage-2-review-gate.md`, "2a-triage", owns the command and classification policy. Require the output
 `head_sha` to equal the adoption snapshot, decide the tier at or above the reported `floor` (`TRIVIAL`
-only as your semantic all-prose call — the tool never grants it), then replace the bootstrap with
-`ledger.py … set --pr <N> --tier <decided tier>`. A refusal leaves the conservative bootstrap in place and
-blocks gate dispatch until the next heartbeat refreshes the worktree/head and derives successfully.
+only as your semantic all-prose call — the tool never grants it). **Then, exactly as the heartbeat
+re-triage path does (`loop-control.md`), and BEFORE the ledger write, re-run `triage.py derive` with the
+IDENTICAL `--worktree`/`--base`/`--head-sha` inputs plus `--tier <decided>` so the tool VETOES a
+below-floor choice**; require its success and an output `head_sha` that still equals the row, and BLOCK
+gate dispatch on refusal (exit 2, no JSON). Only then replace the bootstrap with
+`ledger.py … set --pr <N> --tier <decided tier>`. Without this second veto derive the adoption path would
+write a below-floor tier straight through — gate work could start below the emitted floor, an
+under-reviewed stricter tier — the exact hole the heartbeat veto closes; the two paths are symmetric. A
+refusal from EITHER derive leaves the conservative bootstrap in place and blocks gate dispatch until the
+next heartbeat refreshes the worktree/head and derives successfully.
 
 **A same-SHA tier change is TWO events by direction** (`stage-2-review-gate.md`, "Status labels mirror the
 review gate", owns the split; depth order TRIVIAL < STANDARD < HIGH), and on an UNCHANGED re-adoption
@@ -430,8 +437,11 @@ review gate", owns the split; depth order TRIVIAL < STANDARD < HIGH), and on an 
 decided-tier write must honour the direction before the mirror:
 - **Depth-raising escalation** (this decision raises the preserved tier to a strictly deeper one —
   TRIVIAL→STANDARD, TRIVIAL→HIGH, STANDARD→HIGH): the preserved verdicts were earned at a shallower depth
-  and do NOT satisfy the new tier, so in the SAME step reset the preserved tally with
-  `ledger.py … set --pr <N> --reviews-ok 0` and require a fresh tier-sized plan on the next dispatch.
+  and do NOT satisfy the new tier, so write the deeper tier and the voided tally in ONE atomic ledger write —
+  `ledger.py … set --pr <N> --tier <deeper> --reviews-ok 0` (`ledger.py set` applies every field flag in a
+  single atomic write, so tier and reset land together and no driver death can leave the deeper tier beside a
+  stale tally the next heartbeat would read as no escalation) — and require a fresh tier-sized plan on the
+  next dispatch.
   Without this, a PR left `gauntlet-accepted` under a preserved STANDARD (`required` 2, `reviews_ok` 2) would
   stay accepted when raised to HIGH — a false public label with the deep sweep never run.
 - **De-escalation** (this decision lowers the tier): KEEP the preserved verdicts; only `required(tier)` moves.
