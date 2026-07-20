@@ -112,9 +112,12 @@ def record(audit: Path, finding_id: str, verdict: str, evidence: str = "verified
     return invoke(argv)
 
 
-def fix_list(audit: Path):
+def fix_list(audit: Path) -> "tuple[int, dict, str]":
+    # `fix-list --json` always prints one JSON object on success (code 0); stdout is empty only when the
+    # command failed, and every caller guards `code == 0` before reading the payload. Return `{}` rather
+    # than `None` for that failure path so the payload is never Optional at a subscript.
     code, out, err = invoke(["fix-list", "--file", str(audit), "--json"])
-    return code, json.loads(out) if out.strip() else None, err
+    return code, json.loads(out) if out.strip() else {}, err
 
 
 def t_complete_audit_derives_only_confirmed_and_adjusted_fixes() -> None:
