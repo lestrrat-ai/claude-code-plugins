@@ -180,8 +180,9 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
    the wrong label, or both.
 
    This reconcile is a **backstop, not the mechanism**. The relabel is owed at the moment the gate
-   projection changes, in the same step that writes `reviews_ok = 0` or decides a tier that changes
-   `required(tier)` (`stage-2-review-gate.md`, "Status labels mirror the review gate"); this pass only
+   projection changes, in the same step that writes `reviews_ok = 0` (which includes a depth-raising tier
+   escalation) or decides a de-escalation that lowers `required(tier)`
+   (`stage-2-review-gate.md`, "Status labels mirror the review gate", owns the two-direction split); this pass only
    *self-heals* a swap that was somehow missed. A PR that
    reaches this point wearing a stale `gauntlet-accepted` — or both labels at once — means some reset
    site skipped its relabel: fix the label here, and treat it as a bug in that site, not as normal
@@ -342,12 +343,24 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      and policy. Never classify files or modes here. On success, require output `head_sha` to equal the
      row, **decide the tier at or above `floor`** (`TRIVIAL` only when `floor` is `null` and you judge it
      truly human prose — the tool never grants it), and write it with `ledger.py … set --pr <N> --tier
-     <tier>`; re-run `derive --tier <decided>` to have the tool veto a below-floor mistake. **`required(tier)`
-     is part of the gate projection, so the tier write can change which status label is correct even though
-     `reviews_ok` is untouched (STANDARD↔TRIVIAL flips `required` between 2 and 1); therefore in the SAME
-     step, run `label-mirror.py mirror` for that PR** — idempotent, a no-op when the label already matches —
-     so the tier, `required(tier)`, and the public status label move together (`stage-2-review-gate.md`,
-     "Status labels mirror the review gate", owns the swap and the tool). On refusal,
+     <tier>`; re-run `derive --tier <decided>` to have the tool veto a below-floor mistake. **A same-SHA
+     tier change is TWO events by direction, and the write differs by direction** (`stage-2-review-gate.md`,
+     "Status labels mirror the review gate", owns the split; depth order TRIVIAL < STANDARD < HIGH):
+     - **Depth-raising escalation** (the decision raises the tier to a strictly deeper one — TRIVIAL→STANDARD,
+       TRIVIAL→HIGH, STANDARD→HIGH; STANDARD→HIGH raises depth even though `required` stays 2): the standing
+       verdicts were earned at a shallower depth and do NOT satisfy the new tier, so in the SAME step also
+       reset the tally with `ledger.py … set --pr <N> --reviews-ok 0` and require a fresh tier-sized plan
+       before the next dispatch (the plan-copy rule in `stage-2-review-gate.md` must NOT reuse the shallower
+       plan). Do this even though the SHA is unchanged.
+     - **De-escalation** (the decision lowers the tier — STANDARD→TRIVIAL, HIGH→STANDARD, HIGH→TRIVIAL): the
+       verdicts were earned at a DEEPER depth (a superset), so KEEP `reviews_ok` and the plan; only
+       `required(tier)` moves.
+     **Then, in that SAME step, run `label-mirror.py mirror` for that PR** — idempotent, a no-op when the
+     label already matches — so the tier, `required(tier)`, and the public status label move together: it
+     restores `gauntlet-reviewing` on a depth-raising escalation (the voided tally no longer meets
+     `required`) and swaps a standing tally to `gauntlet-accepted` on a de-escalation that now meets the
+     lowered `required` (`stage-2-review-gate.md`, "Status labels mirror the review gate", owns the swap and
+     the tool). On refusal,
      refresh the moving or mismatched input and retry; never carry a tier across content the command did
      not classify.
    - current tip has `reviews_ok < required(tier)`, has no unaddressed Copilot review items, CI is not red,

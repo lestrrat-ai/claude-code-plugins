@@ -424,16 +424,25 @@ only as your semantic all-prose call — the tool never grants it), then replace
 `ledger.py … set --pr <N> --tier <decided tier>`. A refusal leaves the conservative bootstrap in place and
 blocks gate dispatch until the next heartbeat refreshes the worktree/head and derives successfully.
 
-**`required(tier)` is part of the gate projection, so this decided-tier write can change which status
-label is correct even when `reviews_ok` is untouched (STANDARD↔TRIVIAL flips `required` between 2 and 1);
-therefore in the SAME step, run `label-mirror.py mirror` for the PR** — idempotent, a no-op when the label
+**A same-SHA tier change is TWO events by direction** (`stage-2-review-gate.md`, "Status labels mirror the
+review gate", owns the split; depth order TRIVIAL < STANDARD < HIGH), and on an UNCHANGED re-adoption
+`pr-adopt.py` PRESERVES `reviews_ok` (>= 1) (it preserves it when the head did not move), so this
+decided-tier write must honour the direction before the mirror:
+- **Depth-raising escalation** (this decision raises the preserved tier to a strictly deeper one —
+  TRIVIAL→STANDARD, TRIVIAL→HIGH, STANDARD→HIGH): the preserved verdicts were earned at a shallower depth
+  and do NOT satisfy the new tier, so in the SAME step reset the preserved tally with
+  `ledger.py … set --pr <N> --reviews-ok 0` and require a fresh tier-sized plan on the next dispatch.
+  Without this, a PR left `gauntlet-accepted` under a preserved STANDARD (`required` 2, `reviews_ok` 2) would
+  stay accepted when raised to HIGH — a false public label with the deep sweep never run.
+- **De-escalation** (this decision lowers the tier): KEEP the preserved verdicts; only `required(tier)` moves.
+**Then, in the SAME step, run `label-mirror.py mirror` for the PR** — idempotent, a no-op when the label
 already matches — so the tier, `required(tier)`, and the public status label move together
 (`stage-2-review-gate.md`, "Status labels mirror the review gate", owns the swap and the tool). **Run it
 on an UNCHANGED re-adoption too, NOT only a fresh one:** step 4 labelled against the *preserved* tier
-before this decision, and an unchanged re-adoption PRESERVES `reviews_ok` (>= 1), so a PR left
-`gauntlet-accepted` under a preserved TRIVIAL (`required` 1) keeps that false label until this mirror flips
-it to `gauntlet-reviewing` once the decision raises the tier to STANDARD (`required` 2). Never skip it as a
-presumed no-op — a fresh adoption's `reviews_ok=0` is the ONLY case the mirror is a guaranteed no-op.
+before this decision, so a PR left `gauntlet-accepted` under a preserved lower tier keeps that false label
+until the mirror flips it to `gauntlet-reviewing` (the escalation reset above took the tally below
+`required`). Never skip it as a presumed no-op — a fresh adoption's `reviews_ok=0` is the ONLY case the
+mirror is a guaranteed no-op.
 
 ```
 python3 <skill-dir>/scripts/label-mirror.py mirror --ledger <state.jsonl> --pr <N> --repo owner/name

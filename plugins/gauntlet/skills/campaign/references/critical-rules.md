@@ -169,10 +169,12 @@
   only run state a human sees on GitHub — a stale `gauntlet-accepted` publicly claims a PR passed a
   gauntlet it did not. So the **gate and the label move together, in the same step**: every action that
   changes the gate projection — dropping `reviews_ok` to 0 (a `NOT SATISFIED` verdict, a review/CI/copilot
-  fix commit, a conflict-resolving rebase, any other content change on the head branch), OR a tier
-  decision that changes `required(tier)` on unchanged content — MUST also reconcile the label by running
+  fix commit, a conflict-resolving rebase, any other content change on the head branch, **or a
+  depth-raising tier escalation, which voids the tally on unchanged content**), OR a tier **de-escalation**
+  that lowers `required(tier)` on unchanged content — MUST also reconcile the label by running
   `label-mirror.py mirror` for the PR — the ONE way that swap is applied — which restores
-  `gauntlet-reviewing` on a PR carrying `gauntlet-accepted`. Never defer the swap to the next heartbeat — that leaves the label lying
+  `gauntlet-reviewing` on a PR carrying `gauntlet-accepted` (`stage-2-review-gate.md`, "Status labels
+  mirror the review gate", owns the two-direction split). Never defer the swap to the next heartbeat — that leaves the label lying
   until reconcile, and lying forever if the session dies first. A **clean base-only rebase** with an
   unchanged PR diff does NOT reset the gate, so it correctly KEEPS `gauntlet-accepted` — it sets
   `ci = pending` and, because it moves `head_sha`, the accessor **resets the liveness counters** at that
