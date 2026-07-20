@@ -671,8 +671,8 @@ def check_tally(updates: dict, row: dict) -> None:
     """`set` may VOID the tally. It may NEVER RAISE it.
 
     **`reviews_ok` counts SATISFIED verdicts, and only a verdict may add one.** It stays settable because
-    voiding it is a real, frequent, correct event that is NOT a verdict — a fix commit, a rebase that
-    resolves conflicts, any PR-content change drops it to 0 (stage-2-review-gate.md, "Status labels mirror
+    voiding it is a real, frequent, correct event that is NOT a verdict — a fix commit, a judgment-path
+    rebase (conflict-resolving or diff-changed), any PR-content change drops it to 0 (stage-2-review-gate.md, "Status labels mirror
     the review gate", lists every such site). What no caller may do is write a HIGHER number: that is
     manufacturing a verdict that no review pass ever returned, and it would also skip `review_rounds` and
     `ns_streak` — the two counters that exist precisely because the tally alone cannot see a loop.

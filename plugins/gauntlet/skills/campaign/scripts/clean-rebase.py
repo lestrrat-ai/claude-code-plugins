@@ -26,8 +26,9 @@ Exit codes gate a caller's `$?`:
   2  a PRECONDITION refused it — nothing was mutated (no row, held/terminal, bad/dirty/stale worktree,
      branch mismatch, absent remote). The caller fixes the stated condition and re-runs.
   3  NOT the clean case — a conflict, or the rebase changed the PR's diff. HEAD is restored; nothing
-     pushed, ledger untouched. The driver falls back to the JUDGMENT path (resolve conflicts by hand,
-     then apply the gate-reset rules those docs own).
+     pushed, ledger untouched. The driver falls back to the JUDGMENT path for BOTH subcases (resolve a
+     conflict by hand where there is one, or accept the reshaped diff where there is none), then applies
+     the gate-reset rules those docs own.
   1  a PARTIAL state the driver must resolve — most importantly a push that was REJECTED after a clean
      local rebase (the rebase is preserved locally; the ledger is NOT written, and orig_head is printed
      so the driver can decide). Never auto-reset here — that would silently destroy a completed rebase.

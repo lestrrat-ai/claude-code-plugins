@@ -120,8 +120,10 @@
   **reset the liveness counters** at the door (`stage-2-ci.md`, "THE LIVENESS COUNTERS"); never hand-reset.
   The clean case is EXECUTED by `scripts/clean-rebase.py run` (fetch/rebase/`--force-with-lease` push +
   that ledger reset); it **refuses anything not clean** — a conflict or a diff-changing rebase is
-  aborted/reset and handed back at **exit 3**, where the driver resolves the conflict by hand, never the
-  tool.
+  aborted/reset and handed back at **exit 3**, where **both** subcases fall to the driver's JUDGMENT
+  path, never the tool: resolve the conflict by hand where there is one, OR accept/verify the reshaped
+  diff where there is none, then apply the gate reset the stage-2 owner defines — `reviews_ok = 0` **and**
+  `label-mirror.py mirror` (`stage-2-review-gate.md`, "Status labels mirror the review gate").
   Never spend a review over open Copilot items, a red check, or a conflicting PR (Stage 2a).
 - The review gate is **tier-dependent**: `required(tier)` fresh, context-isolated `SATISFIED` verdicts
   on the same live PR content — **one if TRIVIAL, two otherwise** (any code / agent-doc / sensitive
