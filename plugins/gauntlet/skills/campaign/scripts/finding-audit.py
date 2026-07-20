@@ -181,8 +181,13 @@ def _source_for(path: Path, header: dict) -> tuple[Path, list[dict], list[dict]]
     return source_path, findings, indexed
 
 
-def validate_audit(text: str, path: Path, *, require_complete: bool = False) -> dict:
-    """Validate proposed or stored audit bytes against the current source findings."""
+def _parse_and_validate_header(text: str, path: Path) -> "tuple[list[dict], dict]":
+    """Parse the audit's JSONL and validate its header SHAPE — the checks every read door shares.
+
+    Both `validate_audit` (which then re-anchors to the current source findings) and
+    `check_landed_audit_complete` (which stops here and never re-anchors) call this. Nothing in it reads
+    the source findings or the current intent, so it re-anchors nothing.
+    """
     rows = parse_audit(text, path)
     header = rows[0]
     _check_exact(header, HEADER_KEYS, f"{path.name} line 1")
@@ -192,6 +197,12 @@ def validate_audit(text: str, path: Path, *, require_complete: bool = False) -> 
         raise AuditError(
             f"{path.name} line 1: unsupported version {header['version']!r}; expected {FORMAT_VERSION!r}"
         )
+    return rows, header
+
+
+def validate_audit(text: str, path: Path, *, require_complete: bool = False) -> dict:
+    """Validate proposed or stored audit bytes against the current source findings."""
+    rows, header = _parse_and_validate_header(text, path)
 
     source_path, findings, indexed = _source_for(path, header)
     expected_digest = source_digest(findings)
@@ -322,6 +333,41 @@ def load_audit(path: Path, *, require_complete: bool = False) -> dict:
     except (OSError, UnicodeDecodeError) as exc:
         raise AuditError(f"cannot read {path} as UTF-8 text: {exc}") from exc
     return validate_audit(text, path, require_complete=require_complete)
+
+
+def check_landed_audit_complete(text: str, path: Path) -> None:
+    """Fail closed unless a LANDED audit is HEADER-INTERNALLY complete — WITHOUT re-anchoring.
+
+    A landed round's audit is HISTORICAL EVIDENCE the reassessment bundle embeds; it is NEVER re-judged
+    against the current source findings or `intent-<pr>.md`. So this reads ONLY the audit's OWN bytes: it
+    validates the header, then requires that every gating id the audit's OWN HEADER names carries an
+    `audit_result` row IN THIS SAME AUDIT. It shares `_parse_and_validate_header` with `validate_audit`
+    but STOPS before `_source_for`, so it never re-reads the source findings and never re-anchors their
+    `purpose` strings to the current intent.
+
+    Do NOT route this through `validate_audit(require_complete=True)` or `load_audit`: those pass through
+    `_source_for` -> `read_source` -> review-pass.py's `check_findings_file`, which re-anchors to the
+    current intent. After a REPAIR-INTENT drops a purpose an earlier round anchored to, that door rejects
+    the round's complete audit and WEDGES the bundle — the exact break `t_bundle_audit_read_does_not_re_anchor`
+    guards. Reading only the audit's own header is what lets a HEADER-ONLY audit be REFUSED here while a
+    complete audit bound to a since-dropped purpose still validates.
+    """
+    rows, header = _parse_and_validate_header(text, path)
+    gating_ids = header["gating_ids"]
+    if (not isinstance(gating_ids, list) or not gating_ids
+            or not all(isinstance(gid, str) and gid.strip() for gid in gating_ids)):
+        raise AuditError(f"{path.name} header: `gating_ids` must be a non-empty list of finding ids")
+    recorded = {
+        row["finding_id"]
+        for row in rows[1:]
+        if row.get("type") == RESULT and isinstance(row.get("finding_id"), str)
+    }
+    missing = [gid for gid in gating_ids if gid not in recorded]
+    if missing:
+        raise AuditError(
+            f"{path.name} is incomplete: {len(missing)} gating finding(s) have no audit result: "
+            + ", ".join(missing)
+        )
 
 
 def _replace(path: Path, text: str) -> None:
