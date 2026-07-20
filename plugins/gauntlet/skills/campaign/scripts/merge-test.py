@@ -478,6 +478,60 @@ def t_repeat_after_terminal_is_noop():
         finish(td, real)
 
 
+def t_repeat_after_closed_terminal_is_noop():
+    # Symmetric with t_repeat_after_terminal_is_noop, for the `aborted` terminal side. The close-out records
+    # `aborted`; a SECOND run on that terminal row must be the SAME already-complete no-op the `merged` repeat
+    # is — no merge, no cleanup, no ledger write, and NEVER destroying the unmerged work the abort preserved.
+    td, root, f, led, real = scenario(state="CLOSED")
+    try:
+        first, _, err = invoke(f, led, root)
+        check(first == 0 and status(led) == "aborted", f"close-out did not record aborted: {err}")
+        before = len(f.calls)
+        second, result, err = invoke(f, led, root)
+        check(second == 0 and result is not None and result["status"] == "already-complete",
+              f"aborted terminal rerun was not an already-complete no-op: {err}")
+        check(status(led) == "aborted", "aborted terminal rerun changed the ledger")
+        new = [argv for argv, _ in f.calls[before:]]
+        check(not any(argv[:3] == ["gh", "pr", "merge"] for argv in new), "aborted terminal rerun issued a merge")
+        check(not any("worktree" in argv and "remove" in argv for argv in new),
+              "aborted terminal rerun cleaned resources")
+        check(f.worktree_present and f.branch_present, "aborted terminal rerun destroyed unmerged work")
+    finally:
+        finish(td, real)
+
+    # The repeat is ledger-only, so — exactly as the fresh close-out tolerates them
+    # (t_closed_out_terminates_despite_moved_head_base_or_branch) — a head/base/branch that moved before the
+    # close still yields the no-op, never a spurious live-ref refusal on a settled terminal row.
+    for label, knob in (
+        ("moved head", {"view_head": "b" * 40}),
+        ("changed base", {"view_base": "release"}),
+        ("changed branch", {"view_branch": "renamed"}),
+    ):
+        td, root, f, led, real = scenario(state="CLOSED", status="aborted", **knob)
+        try:
+            code, result, err = invoke(f, led, root)
+            check(code == 0 and result is not None and result["status"] == "already-complete",
+                  f"{label}: aborted+CLOSED repeat refused instead of no-op: {err}")
+            check(status(led) == "aborted", f"{label}: the repeat changed the ledger")
+            check(f.merged_calls == 0, f"{label}: the repeat issued a merge")
+            check(f.worktree_present and f.branch_present, f"{label}: the repeat destroyed unmerged work")
+        finally:
+            finish(td, real)
+
+    # Guardrail: an `aborted` row whose live PR is OPEN or MERGED is a CONTRADICTION, not a no-op — the PR is
+    # no longer closed-without-merge. It must REFUSE naming the mismatch (not the generic "not in_review"),
+    # mirroring the merged+non-MERGED guard.
+    for live_state in ("OPEN", "MERGED"):
+        td, root, f, led, real = scenario(state=live_state, status="aborted")
+        try:
+            code, _result, err = invoke(f, led, root)
+            check(code != 0 and "aborted but GitHub state is" in err,
+                  f"aborted+{live_state} must refuse as a contradiction, got code={code} err={err!r}")
+            check(f.merged_calls == 0, f"aborted+{live_state} contradiction must not merge")
+        finally:
+            finish(td, real)
+
+
 def t_head_race_between_view_and_merge_refuses_before_landing():
     # A push advances the live tip to a DIFFERENT SHA in the window between the pre-merge view (which
     # still reports the reviewed head) and the merge call. --match-head-commit pins the reviewed SHA, so
@@ -686,6 +740,7 @@ CASES = [
     ("merge-accepted", "MERGED confirmation outranks a lost merge response", t_merge_transport_failure_after_acceptance_continues),
     ("terminal-write-resume", "a failed terminal write resumes after already-completed cleanup", t_terminal_write_failure_resumes_after_cleanup),
     ("terminal-repeat", "repeated invocation after terminal state is a no-op", t_repeat_after_terminal_is_noop),
+    ("aborted-terminal-repeat", "repeating after a CLOSED close-out is an already-complete no-op (moved refs tolerated); aborted+OPEN/MERGED refuses as a contradiction", t_repeat_after_closed_terminal_is_noop),
     ("head-race", "--match-head-commit refuses a tip that advanced before the merge landed", t_head_race_between_view_and_merge_refuses_before_landing),
     ("merge-method", "merge method is a validated input; squash-disabled repo has a prevailing-method recourse", t_merge_method_input_validated_and_applied),
     ("absent-resume", "an absent-but-unfinalized MERGED row resumes its remaining phases through run", t_absent_snapshot_merged_row_resumes_via_run),

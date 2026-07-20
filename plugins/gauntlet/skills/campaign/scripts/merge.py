@@ -384,10 +384,26 @@ def execute(ledger: Path, pr: str, project_root: Path, repo: str,
     # terminal `aborted` status (files-and-ledger.md, `status` taxonomy: any non-terminal status -> `aborted`)
     # and stop.
     close_out = view["state"] == "CLOSED" and row["status"] not in ("merged", "aborted")
-    _validate_state(header, row, pr, root, view, check_live_refs=not close_out)
+    # An already-`aborted` row whose PR is still CLOSED is the aborted TERMINAL-REPEAT, symmetric with the
+    # `merged`-repeat no-op below: like the fresh close-out it is ledger-only (nothing to merge or clean up),
+    # so it too drops the live head/base/branch pins — a push or base/branch rename that landed before the
+    # close must not turn a settled no-op into a spurious refusal. The `aborted` block below is its
+    # CLOSED-only guard; a live OPEN/MERGED keeps the pins (its refusal is a contradiction, not a no-op).
+    aborted_repeat = row["status"] == "aborted" and view["state"] == "CLOSED"
+    _validate_state(header, row, pr, root, view, check_live_refs=not (close_out or aborted_repeat))
     if close_out:
         _mark_terminal(ledger, pr, "aborted")
         return {"status": "closed-unmerged", "pr": pr, "cleanup": {}}
+
+    if row["status"] == "aborted":
+        # Terminal-repeat, symmetric with the `merged` no-op below (both terminal statuses are safe to
+        # repeat). A CLOSED live state confirms the recorded abort still holds -> the same already-complete
+        # no-op, no ledger write. A live OPEN or MERGED state CONTRADICTS the terminal `aborted` row (the PR
+        # is no longer closed-without-merge); refuse naming the mismatch, never a silent no-op.
+        if view["state"] != "CLOSED":
+            raise Refusal(
+                f"terminal ledger row says aborted but GitHub state is {view['state']!r}, not CLOSED")
+        return {"status": "already-complete", "pr": pr, "cleanup": {}}
 
     if row["status"] == "merged":
         if view["state"] != "MERGED":
