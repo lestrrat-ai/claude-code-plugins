@@ -124,6 +124,12 @@ def check_document_contract() -> None:
         "Their absence NEVER blocks launch",
         "selected cross-engine route, paired CLI available | `launch-external`",
         "Missing native OS/startup controls alone never select",
+        "### Review preparation mapping",
+        "| `launch-external` / `retry-external` | selected capability's external route | "
+        "`external-process-capture` |",
+        "| `launch-native` / `fallback-native` | `native` | `native-worker-write` |",
+        "attempt `2` fails → prepare fresh native fallback attempt `3`",
+        "dead or unusable attempt `3` → `park-machine-blocker`",
     ):
         require(needle in runtime, f"runtime adapter lost typed owner: {needle}")
 
@@ -132,6 +138,8 @@ def check_document_contract() -> None:
         "prepared = JSON_DECODE(result.stdout)",
         "scripts/review-prompt.txt",
         "using the returned `transport` without reconstructing",
+        "Every transport text value must encode as UTF-8",
+        "Recover only the exact inert prompt-only state",
     ):
         require(needle in dispatch, f"review-dispatch.md lost preparation handoff: {needle}")
 

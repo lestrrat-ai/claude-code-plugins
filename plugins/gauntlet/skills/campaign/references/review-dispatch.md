@@ -28,18 +28,23 @@ transport = prepared.transport
 
 Inputs have these owners:
 
-- `route` comes from `runtime-adapter.md`'s `review_transition`; `prepare` never selects or probes it.
-- `report_producer` comes from `runtime-adapter.md`, "Review transport record and report ownership";
-  `prepare` refuses a route/producer mismatch.
+- `route`, `report_producer`, and `launch_attempt` come from `runtime-adapter.md`, **Review preparation
+  mapping**. `prepare` never selects, probes, or changes them.
 - `review_root`, `worktree`, and `base` come from the invocation's typed `RepositoryContext` and ledger.
-- `pr`, `review_pass`, `launch_attempt`, `head_sha`, and `dispatched_at` name this launch attempt.
+- `pr`, `review_pass`, `head_sha`, and `dispatched_at` name this launch attempt.
 - `intent_file` is the absolute derived `<rundir>/intent-<pr>.md` path. The command refuses another path.
 
 The command validates the existing per-pass plan and per-PR intent through `review-pass.py`, derives the
 prompt/progress/findings/report paths from one attempt identity, resolves all three emitters from its
 installed script directory, writes the exact bound prompt, and writes the validated `pass_identity` as
-the progress file's first line. It refuses any existing prompt, progress, findings, or report artifact for
-that attempt. A non-zero exit prepares nothing usable; do not launch.
+the progress file's first line. Every transport text value must encode as UTF-8; a path containing other
+filesystem bytes is a controlled refusal before either launch artifact exists.
+
+**Recover only the exact inert prompt-only state.** If the prompt is a regular file whose bytes exactly
+match this invocation and progress, findings, and report are all absent, an interrupted preparer stopped
+before installing the activating `pass_identity`; remove that prompt and recreate the pair. Refuse every
+other existing prompt, progress, findings, or report state. A non-zero exit prepares nothing usable; do
+not launch.
 
 `review-<pr>-<n>.plan.jsonl` remains per-pass and `intent-<pr>.md` remains per-PR. Every other path in
 `transport` is per-attempt: attempt 1 uses `review-<pr>-<n>.*`; attempt `k >= 2` uses

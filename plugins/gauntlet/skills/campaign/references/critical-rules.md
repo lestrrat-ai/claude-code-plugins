@@ -315,9 +315,9 @@
   → the pass never started → kill + relaunch into attempt-scoped artifacts per the Stage 2a launch
   check. **Meaningful progress** is the stronger bar (`done`/accepted amendment) — stale for ~15 min →
   suspicious review → retry/fallback per Stage 2a. Both bars judge a **live** process. A pass whose
-  task is **dead** with no verdict (killed session) ignores launch evidence entirely and dispatches on
-  `launch_attempt` alone: `1` → relaunch once; `2` → fresh-worker fallback. Never leave a dead pass
-  on neither branch.
+  task is **dead** with no verdict (killed session) ignores launch evidence entirely and follows
+  `runtime-adapter.md`, **Review preparation mapping**, from the highest `launch_attempt`. Never invent
+  another recovery branch.
 - Reviewers do not own the plan but must not treat it as presumptively complete: critically evaluate
   its coverage first, and raise any omitted dimension or materially wrong unit via a
   `plan_amendment_request` event rather than silently reviewing only the listed units. Never rewrite

@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -225,6 +227,19 @@ def t_invalid_identifiers_create_nothing() -> None:
                   f"invalid {field} must create no launch artifacts")
 
 
+def t_invalid_utf8_filesystem_path_is_controlled_refusal() -> None:
+    if os.name != "posix":
+        return
+    with tempfile.TemporaryDirectory() as raw:
+        bad_bytes = os.fsencode(raw) + b"/non-utf8-\xff"
+        os.mkdir(bad_bytes)
+        args = _fixture(Path(os.fsdecode(bad_bytes)))
+        _refused(args, "UTF-8")
+        rundir = Path(args.run_dir)
+        check(not list(rundir.glob("*.prompt.txt")) and not list(rundir.glob("*.progress.jsonl")),
+              "a non-UTF-8 transport path must create no launch artifacts")
+
+
 def t_missing_or_wrong_intent_and_bad_plan_create_nothing() -> None:
     with tempfile.TemporaryDirectory() as raw:
         args = _fixture(Path(raw))
@@ -308,6 +323,94 @@ def t_second_install_failure_rolls_back_first_file() -> None:
         check(not list(root.glob(".review-dispatch-*.tmp")), "staging failure left a temp file")
 
 
+def t_prompt_only_crash_state_is_recoverable() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw))
+        paths = D.attempt_paths(Path(args.run_dir), args.pr, args.review_pass, args.launch_attempt)
+        child = r'''\
+import importlib.util
+import json
+import os
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+owner = Path(sys.argv[1])
+sys.path.insert(0, os.fspath(owner.parent))
+spec = importlib.util.spec_from_file_location("crashing_review_dispatch", owner)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+real_install = module.install_pair
+
+def crash_install(prompt_path, prompt, progress_path, identity):
+    def crash_after_first_link(source, target):
+        os.link(source, target)
+        os._exit(91)
+    real_install(prompt_path, prompt, progress_path, identity, link=crash_after_first_link)
+
+module.install_pair = crash_install
+module.prepare(SimpleNamespace(**json.loads(sys.argv[2])))
+'''
+        crashed = subprocess.run(
+            [sys.executable, "-c", child, os.fspath(OWNER), json.dumps(vars(args))],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        check(crashed.returncode == 91, f"crash fixture exited {crashed.returncode}, not 91")
+        check(paths["prompt"].is_file() and not paths["progress"].exists() and
+              not paths["findings"].exists() and not paths["report"].exists(),
+              "crash fixture did not leave the exact inert prompt-only state")
+
+        payload = D.prepare(args)
+        check(Path(payload["transport"]["prompt_path"]) == paths["prompt"],
+              "same-attempt recovery changed the prompt path")
+        check(paths["prompt"].is_file() and paths["progress"].is_file(),
+              "same-attempt recovery did not recreate the complete pair")
+
+
+def t_external_attempt_two_has_native_attempt_three_recovery() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(
+            Path(raw), launch_attempt="2", route="external-codex",
+            producer="external-process-capture",
+        )
+        D.prepare(args)
+        args.launch_attempt = "3"
+        args.route = "native"
+        args.report_producer = "native-worker-write"
+        transport = D.prepare(args)["transport"]
+        check(transport["attempt"]["launch_attempt"] == 3 and
+              transport["report"]["path"].endswith("review-41-2.a3.txt"),
+              "native fallback did not receive fresh attempt-3 artifacts")
+
+    refs = OWNER.parent.parent / "references"
+    runtime = (refs / "runtime-adapter.md").read_text(encoding="utf-8")
+    stage = (refs / "stage-2-review-gate.md").read_text(encoding="utf-8")
+    loop = (refs / "loop-control.md").read_text(encoding="utf-8")
+    check("attempt `2` fails → prepare fresh native fallback attempt `3`" in runtime,
+          "runtime owner does not allocate attempt 3 after failed attempt 2")
+    check("dead or unusable attempt `3` → `park-machine-blocker`" in runtime,
+          "runtime owner does not terminate failed native fallback attempt 3")
+    stale_attempt_two_terminal = "`2` → " + "fresh-worker fallback"
+    for name, text in (("Stage 2", stage), ("killed-session", loop)):
+        check("Review preparation mapping" in text,
+              f"{name} recovery does not point to the attempt-3 owner")
+        check(stale_attempt_two_terminal not in text,
+              f"{name} recovery retains the stale attempt-2 terminal rule")
+
+
+def t_transition_actions_map_directly_to_prepare_inputs() -> None:
+    runtime = (OWNER.parent.parent / "references" / "runtime-adapter.md").read_text(encoding="utf-8")
+    for row in (
+        "| `launch-external` / `retry-external` | selected capability's external route | "
+        "`external-process-capture` |",
+        "| `launch-native` / `fallback-native` | `native` | `native-worker-write` |",
+        "| `park-machine-blocker` | no preparation | no preparation |",
+    ):
+        check(row in runtime, f"review_transition mapping row is missing: {row}")
+
+
 def t_cli_emits_only_canonical_host_neutral_json() -> None:
     with tempfile.TemporaryDirectory() as raw:
         args = _fixture(Path(raw), route="external-codex", producer="external-process-capture")
@@ -340,8 +443,12 @@ CASES = [
     ("hostile-data", "hostile paths and intent remain inert exact data", t_hostile_paths_and_intent_remain_exact_data),
     ("closed-template", "template slots close before payload binding", t_template_slots_are_closed_before_payload_binding),
     ("invalid-identifiers", "invalid identity fields create no artifacts", t_invalid_identifiers_create_nothing),
+    ("invalid-utf8-path", "non-UTF-8 filesystem bytes produce a controlled refusal", t_invalid_utf8_filesystem_path_is_controlled_refusal),
     ("required-inputs", "missing/wrong intent and malformed plan create nothing", t_missing_or_wrong_intent_and_bad_plan_create_nothing),
     ("fresh-attempt", "every existing attempt artifact refuses without overwrite", t_every_existing_attempt_artifact_refuses_without_overwrite),
     ("atomic-rollback", "second-file failure rolls back the first file", t_second_install_failure_rolls_back_first_file),
+    ("crash-recovery", "the exact inert prompt-only crash state is recoverable", t_prompt_only_crash_state_is_recoverable),
+    ("fallback-attempt-three", "external retry failure has a terminal native attempt-3 path", t_external_attempt_two_has_native_attempt_three_recovery),
+    ("transition-mapping", "review actions map directly to route and producer", t_transition_actions_map_directly_to_prepare_inputs),
     ("host-neutral-json", "CLI emits canonical data and never launches", t_cli_emits_only_canonical_host_neutral_json),
 ]

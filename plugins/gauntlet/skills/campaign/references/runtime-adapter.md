@@ -172,11 +172,31 @@ consumes no retry and takes the fresh native fallback immediately.
 Missing native OS/startup controls alone never select `park-machine-blocker`; only actual inability to
 complete the installed contract after its budget does. `reviewer.md` owns the retry budget, while this table owns the transition meaning.
 
+### Review preparation mapping
+
+**Map each `ReviewAction` to `review-dispatch.py prepare` inputs through this table.** The action and route
+are different enums:
+
+| `ReviewAction` | `route` | `report_producer` |
+|---|---|---|
+| `launch-external` / `retry-external` | selected capability's external route | `external-process-capture` |
+| `launch-native` / `fallback-native` | `native` | `native-worker-write` |
+| `park-machine-blocker` | no preparation | no preparation |
+
+Selected capability's external route is exactly `external-codex` or `external-claude`; never pass the
+`ReviewAction` string as `--route`.
+
+**Allocate `launch_attempt` monotonically for every reviewer launch passed to `prepare`.** An unavailable
+external route is never prepared and consumes no number, so its immediate native fallback takes the
+current next number. Once an attempt exists, recovery is fixed: attempt `1` fails → prepare the selected route's
+one retry as attempt `2`; attempt `2` fails → prepare fresh native fallback attempt `3`.
+**A dead or unusable attempt `3` → `park-machine-blocker`.** Never reuse an attempt's artifacts, and never
+allocate attempt `4`.
+
 ### Review transport record and report ownership
 
-After `review_transition` returns `launch-native`, `fallback-native`, `launch-external`, or
-`retry-external`, run `review-dispatch.py prepare` with that selected route and its producer, then use its
-returned record unchanged. `park-machine-blocker` prepares no record:
+After `review_transition`, take **Review preparation mapping**, run `review-dispatch.py prepare` with its
+result, then use the returned record unchanged:
 
 ```text
 ReviewTransport {
@@ -195,7 +215,8 @@ cross-engine route whose paired CLI is absent is `unavailable` and never constru
 block and the intent is its `<INTENT>` block;
 `review-dispatch.py` binds both without rescanning inserted bytes. Do not substitute record fields into
 prose commands. The materializer derives the active prompt/progress/findings/report basenames from one
-attempt identity and refuses a route/producer mismatch or any pre-existing attempt output.
+attempt identity and enforces the conflict rule owned by `review-dispatch.md`, **Prepare the active
+attempt**.
 
 Exactly one producer owns the final report:
 

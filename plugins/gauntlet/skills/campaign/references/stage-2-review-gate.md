@@ -400,26 +400,18 @@ rule is sized for a reviewer working slowly, not one that never woke up. Gate ev
   the weaker one (any reviewer-written line, ~5 min, "is it alive?"); meaningful progress is the
   stronger one (a planned unit `done` or an accepted amendment, ~15 min, "is it getting anywhere?").
   A `started` event is launch evidence but is **not** meaningful progress. Never collapse the two.
-- **Zero launch evidence past the deadline → the pass never started.** Do NOT wait out the 15-min
-  stale path. Kill the task and re-dispatch the pass **once**, into **fresh, attempt-scoped artifacts**
-  (`review-<pr>-<n>.a2.*`, per the table above — never the dead attempt's files): run
-  `review-dispatch.py prepare` with `--launch-attempt 2` and a new `--dispatched-at`, then launch from its
-  returned transport. From that moment the `a2` artifacts are the
-  only ones read, so anything the killed attempt 1 still writes is inert. If the relaunch also produces
-  nothing by its own deadline → treat it as a reviewer system failure and take the fresh-worker
-  fallback under `runtime-adapter.md`'s native-worker contract. Reading the retry count off the file,
-  not off memory, is what makes this survive a killed session: a fresh agent adopting the run finds the
-  highest-numbered attempt's `pass_identity`, sees `launch_attempt: 2`, and falls back instead of
-  relaunching forever.
+- **Zero launch evidence past the deadline → the pass never started.** Do NOT wait out the 15-min stale
+  path. Kill the task, then take the exact next action and fresh attempt from `runtime-adapter.md`,
+  **Review preparation mapping**. `review-dispatch.py prepare` creates fresh attempt-scoped artifacts;
+  anything a killed attempt later writes stays inert. The highest-numbered `pass_identity` keeps the
+  recovery budget on disk, so a new agent cannot restart it from memory.
 - **This deadline test applies ONLY to a pass whose process is still alive.** It asks "this thing is
   running — has it started?", and launch evidence is the answer. A pass whose task is **gone** (the
   session died with it) is a different question entirely, and launch evidence is **irrelevant** to it:
-  a dead process will never produce a verdict no matter what it wrote before dying. Recovery there
-  dispatches on `launch_attempt` **alone** — `1` → relaunch once as attempt `2`; `2` → the budget is
-  spent, take the fresh-worker fallback (Loop control step 1 / "Resume after a killed session").
-  **Every dead pass lands on exactly one of those two branches**; gating that path on launch evidence
-  too would strand a dead attempt `2` that had written a `started` line — neither relaunchable nor
-  fallback-eligible — and the PR would hang forever.
+  a dead process will never produce a verdict no matter what it wrote before dying. Dispatch on
+  `launch_attempt` **alone** through `runtime-adapter.md`, **Review preparation mapping** (Loop control,
+  "Resume after a killed session"). Every dead pass lands on exactly one mapping branch; launch evidence
+  never suppresses it.
 - Before re-dispatching, **re-check the command** for the known launch faults — most of all the quoted
   prompt-file stdin redirect on every external reviewer (`review-dispatch.md`), and the external reviewer's
   `-C` target, which must be the run-artifact root (a `-C` off that root makes the run directory read-only

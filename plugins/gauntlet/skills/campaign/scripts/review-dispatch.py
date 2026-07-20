@@ -136,11 +136,17 @@ def bind_prompt(template: bytes, transport: dict, intent: bytes) -> bytes:
         )
     before_record, tail = template.split(TRANSPORT_SLOT, 1)
     between, after_intent = tail.split(INTENT_SLOT, 1)
-    encoded = json.dumps(
-        transport,
-        ensure_ascii=False,
-        separators=(",", ":"),
-    ).encode("utf-8")
+    try:
+        encoded = json.dumps(
+            transport,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except UnicodeEncodeError as exc:
+        refuse(
+            "ReviewTransport text must be valid UTF-8; a filesystem path contains "
+            f"non-UTF-8 bytes ({exc})"
+        )
     return before_record + encoded + between + intent + after_intent
 
 
@@ -197,7 +203,8 @@ def install_pair(
     """Install prompt then identity with no overwrite and rollback on a controlled failure.
 
     ``pass_identity`` is the launch evidence, so it is linked last. A prompt left by an abrupt process or
-    machine stop is inert; a returned success always has both files. Ordinary link failures roll back both.
+    machine stop is inert and the next matching prepare recovers it; a returned success always has both
+    files. Ordinary link failures roll back both.
     """
     staged_prompt: "Path | None" = None
     staged_identity: "Path | None" = None
@@ -221,6 +228,30 @@ def install_pair(
         if staged_identity is not None:
             staged_identity.unlink(missing_ok=True)
         raise
+
+
+def recover_inert_prompt(paths: "dict[str, Path]", expected_prompt: bytes) -> None:
+    """Remove only an exact prompt-only residue from an interrupted preparation.
+
+    The identity is installed last and activates the attempt. A regular prompt whose bytes match this
+    invocation while progress, findings, and report are truly absent cannot belong to a launched reviewer.
+    Every other existing-artifact state remains evidence and is refused by the normal conflict check.
+    """
+    prompt = paths["prompt"]
+
+    def present(path: Path) -> bool:
+        return os.path.lexists(os.fspath(path))
+
+    if not present(prompt) or any(present(paths[name]) for name in ("progress", "findings", "report")):
+        return
+    if prompt.is_symlink() or not prompt.is_file():
+        return
+    try:
+        if prompt.read_bytes() != expected_prompt:
+            return
+        prompt.unlink()
+    except OSError as exc:
+        refuse(f"cannot recover interrupted prompt-only preparation at {prompt}: {exc}")
 
 
 def prepare(args) -> dict:
@@ -263,13 +294,6 @@ def prepare(args) -> dict:
     except (RP.Defect, OSError) as exc:
         refuse(str(exc))
 
-    conflicts = [paths[name] for name in ("prompt", "progress", "findings", "report") if paths[name].exists()]
-    if conflicts:
-        refuse(
-            "launch attempt artifacts must all be fresh; already present: "
-            + ", ".join(os.fspath(path) for path in conflicts)
-        )
-
     try:
         template = TEMPLATE.read_bytes()
     except OSError as exc:
@@ -298,6 +322,17 @@ def prepare(args) -> dict:
         head_sha=args.head_sha,
         dispatched_at=args.dispatched_at,
     )
+    recover_inert_prompt(paths, prompt)
+    conflicts = [
+        paths[name]
+        for name in ("prompt", "progress", "findings", "report")
+        if os.path.lexists(os.fspath(paths[name]))
+    ]
+    if conflicts:
+        refuse(
+            "launch attempt artifacts must all be fresh; already present: "
+            + ", ".join(os.fspath(path) for path in conflicts)
+        )
     try:
         install_pair(paths["prompt"], prompt, paths["progress"], identity)
     except OSError as exc:
