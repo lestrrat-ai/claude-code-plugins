@@ -115,7 +115,8 @@ branch — the repo's "Automatically delete head branches" setting alone governs
 
 Each phase leaves a durable or safely repeatable checkpoint. Re-run the same command after any failure:
 GitHub `MERGED` skips the merge call; base updates are fast-forward-only; absent owned worktrees/branches
-count as completed cleanup; a terminal ledger row is a no-op. The command refuses held rows, stale gates,
+count as completed cleanup; a terminal ledger row is a no-op. The command refuses held rows whose PR is not
+CLOSED (a CLOSED held row is closed out to `aborted`, not refused — `loop-control.md` Step 4), stale gates,
 uncertain GitHub facts, another run's PR, foreign refs, root/reused cleanup targets, and cleanup before
 confirmed `MERGED`. Report `reused-left` cleanup results in the final report.
 

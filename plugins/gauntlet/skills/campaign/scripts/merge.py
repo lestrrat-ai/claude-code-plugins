@@ -376,11 +376,14 @@ def execute(ledger: Path, pr: str, project_root: Path, repo: str,
     # owned worktree/branch holds UNMERGED work that removing it would destroy. This close-out is
     # ledger-only, so the live head/base/branch pins do NOT apply to it (`check_live_refs=False`): a push
     # that advanced the head before the close, or a base/branch rename, must still TERMINATE the row, not
-    # wedge it at in_review forever (a CLOSED PR never re-enters the open snapshot to be re-gated). Only an
-    # in_review row is a real close-out; a `merged`/held row with a CLOSED live state is a contradiction
-    # left to the fully-validated status gate below. Record the terminal `aborted` status
-    # (files-and-ledger.md, `status` taxonomy: `in_review` -> `aborted`) and stop.
-    close_out = view["state"] == "CLOSED" and row["status"] == "in_review"
+    # wedge it non-terminal forever (a CLOSED PR never re-enters the open snapshot to be re-gated). ANY
+    # non-terminal row — `in_review` OR any held status (`L.HELD_STATUSES`) — is a real close-out: a CLOSED
+    # PR moots every held reason (nothing left to merge, approve, adjudicate, or repair), and a human
+    # closing a parked PR IS the resolution. Only a `merged` row with a CLOSED live state is a contradiction
+    # (a merged PR reports MERGED, not CLOSED), left to the fully-validated status gate below. Record the
+    # terminal `aborted` status (files-and-ledger.md, `status` taxonomy: any non-terminal status -> `aborted`)
+    # and stop.
+    close_out = view["state"] == "CLOSED" and row["status"] not in ("merged", "aborted")
     _validate_state(header, row, pr, root, view, check_live_refs=not close_out)
     if close_out:
         _mark_terminal(ledger, pr, "aborted")

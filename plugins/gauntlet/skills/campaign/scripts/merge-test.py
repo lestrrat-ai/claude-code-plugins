@@ -604,6 +604,40 @@ def t_closed_out_terminates_despite_moved_head_base_or_branch():
             finish(td, real)
 
 
+def t_closed_out_terminates_every_held_status():
+    # The close-out fires for ANY non-terminal status, not just `in_review`. A CLOSED PR moots every HELD
+    # reason (`L.HELD_STATUSES` — awaiting-api/awaiting-user/repairing): nothing is left to merge, approve,
+    # adjudicate, or repair, and a human closing a parked PR IS the resolution. So every held status must
+    # terminate as `aborted` with NO merge and NO cleanup, exactly like the in_review close-out
+    # (t_absent_snapshot_closed_row_terminates). This is the counterpart of the OPEN+held REFUSAL that
+    # t_gate_refusals still pins: OPEN keeps waiting on the human, CLOSED closes out.
+    for held in L.HELD_STATUSES:
+        td, root, f, led, real = scenario(state="CLOSED", status=held)
+        try:
+            code, result, err = invoke(f, led, root)
+            check(code == 0, f"{held}: CLOSED held row refused instead of terminating: {err}")
+            check(status(led) == "aborted",
+                  f"{held}: CLOSED held row must terminate as aborted, got {status(led)!r}")
+            check(result is not None and result["status"] == "closed-unmerged" and result["cleanup"] == {},
+                  f"{held}: expected closed-unmerged with no cleanup, got {result}")
+            check(f.merged_calls == 0, f"{held}: the close-out issued a merge command")
+            check(f.worktree_present and f.branch_present,
+                  f"{held}: the close-out deleted owned resources holding unmerged work")
+        finally:
+            finish(td, real)
+
+    # Guardrail: a `merged` row with a CLOSED live state stays a REFUSED contradiction (a merged PR reports
+    # MERGED, not CLOSED). `merged` is excluded from the close-out, so it falls to the terminal status gate.
+    td, root, f, led, real = scenario(state="CLOSED", status="merged")
+    try:
+        code, _result, err = invoke(f, led, root)
+        check(code != 0 and "merged but GitHub state is" in err,
+              f"merged+CLOSED must stay a refused contradiction, got code={code} err={err!r}")
+        check(f.merged_calls == 0, "the merged/CLOSED contradiction must not merge")
+    finally:
+        finish(td, real)
+
+
 def t_absent_routing_decision():
     # The ROUTING DECISION itself (loop-control.md Step 1 -> Step 4), exercised end to end rather than by a
     # bare execute() call. reconcile.py observes the absent fact; `merge.py run` is the single finalizer BOTH
@@ -657,5 +691,6 @@ CASES = [
     ("absent-resume", "an absent-but-unfinalized MERGED row resumes its remaining phases through run", t_absent_snapshot_merged_row_resumes_via_run),
     ("absent-closed", "an absent-but-unfinalized CLOSED-without-merge row terminates as aborted with no cleanup", t_absent_snapshot_closed_row_terminates),
     ("closed-out-moved-refs", "the CLOSED close-out terminates as aborted despite a moved head, base, or branch", t_closed_out_terminates_despite_moved_head_base_or_branch),
+    ("closed-out-held-statuses", "a CLOSED PR closes out every held status to aborted; merged+CLOSED stays refused", t_closed_out_terminates_every_held_status),
     ("absent-routing", "the absent fact routes reconcile -> merge.py run, which finalizes MERGED and CLOSED sides", t_absent_routing_decision),
 ]
