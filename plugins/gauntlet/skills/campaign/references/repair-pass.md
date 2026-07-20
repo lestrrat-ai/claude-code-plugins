@@ -67,17 +67,32 @@ Dispatch **one context-isolated worker** in the **`session` class** (it decides 
 downgrade it; `SKILL.md`, "Worker Dispatch"), and hand it **THE WHOLE HISTORY AT ONCE**. This is the
 crux: **no heartbeat has ever had this view**, which is exactly why 21 rounds could pass unnoticed.
 
-It receives, in one prompt:
+### Build the complete reassessment bundle
 
-- **every round's verdict and finding** — all of `<rundir>/review-<pr>-*.txt`, in order, with each one's
-  verdict. Not a summary: the findings themselves.
-- **the diff-growth curve** — what the PR's main files measured at each of this run's commits:
-  `git log --oneline origin/<base>..HEAD` and, per commit, `git show <sha>:<file> | wc -l`.
-- **the PR's intent artifact** — its Purpose / Non-goals / Threat model.
-- **the current diff** — `git diff origin/<base>...HEAD`.
-- **the permitted decisions** — from `repair-pass.py --file <state.jsonl> permitted --pr <N>`, which
-  derives them from the row. **Build the prompt from that output; never retype the enum**, or the prompt
-  will drift from the rule the tool enforces.
+**Build the worker prompt only through `repair-pass.py bundle`:**
+
+```text
+repair-pass.py --file <state.jsonl> bundle --pr <N> --run-dir <rundir> \
+  --worktree <pr-worktree> --output <rundir>/repair-<pr>-<k>.prompt.txt
+```
+
+The command selects rounds numerically, selects each round's active launch attempt through
+`review-pass.py`'s identity rules, and validates the complete artifact set before writing anything. It
+includes the active reports/findings, any available audits with explicit absence markers, intent,
+cumulative per-commit file measurements, current three-dot diff, and the ledger-derived `permitted` result
+as JSON data. Dynamic bytes never become shell source.
+
+The command writes the prompt and `<output>.manifest.json`, then prints the manifest location and hashes.
+It refuses missing or duplicate active artifacts, an incomplete pass, a report whose framing `review-pass.py`
+rejects (no terminal `VERDICT:` line, or a verdict incoherent with the round's findings), a stale
+latest-review/ledger/worktree SHA, or a failed Git read. It resolves `origin/<base>` to one immutable commit
+SHA before any read and binds it, so every diff is measured against a single base and `decide` can detect a
+base that moved. **Re-running it while the decision is still unrecorded is safe and idempotent:**
+because the bundle is deterministic, an existing prompt/manifest pair whose bytes match the freshly rebuilt
+bundle is REUSED — so a heartbeat that built the bundle and died before `decide` simply resumes — a partial
+pair left by a crash mid-write is regenerated, and a non-matching or symlinked output is refused rather than
+overwritten. Dispatch the exact prompt file to the reassessment worker; NEVER rebuild, reorder, summarize,
+or splice its inputs by hand.
 
 It returns **exactly ONE decision from a CLOSED enum**, and the driver executes it **without asking the
 user**:
@@ -93,12 +108,22 @@ user**:
 The decision is recorded through the tool, and **only** through the tool:
 
 ```
-repair-pass.py --file <state.jsonl> decide --pr <N> --decision <one of the five> --record <rundir>/repair-<pr>-<k>.md
+repair-pass.py --file <state.jsonl> decide --pr <N> --decision <one of the five> \
+  --record <rundir>/repair-<pr>-<k>.md \
+  --bundle-manifest <rundir>/repair-<pr>-<k>.prompt.txt.manifest.json
 ```
 
 `--record` is **refused if it does not exist or is empty**. The reasoning — the history the pass saw, the
 decision, and why — must be **on disk**: every heartbeat is a fresh agent instance, and a justification that
-lives only in the context of an agent that has already exited is one nobody can audit.
+lives only in the context of an agent that has already exited is one nobody can audit. Its first nonblank
+line must copy the prompt's exact `BUNDLE-SHA256: <hash>` marker, and it must carry, on its own line, a
+machine-readable `DECISION: <enum>` field naming the chosen decision. `decide` re-hashes the prompt payload
+and refuses a record or manifest for different bytes, PR, decision-determining ledger fields (the
+`DECISION_FIELDS` projection in `repair-pass.py`, not the full row — its liveness fields keep moving under
+the CI-observation exception, so they are excluded from the bundle bytes), head SHA, or a base ref that has
+moved since the bundle was built. It also refuses a record whose `DECISION:` line is **absent, duplicated,
+not permitted, or disagrees with `--decision`** — the record is the sole carrier of the decision across the
+fresh-heartbeat boundary, so the ledger can never record a decision the audit artifact does not name.
 
 ### The repair is dispatched only after its decision is recorded
 
