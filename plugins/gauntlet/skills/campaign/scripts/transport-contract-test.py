@@ -41,26 +41,28 @@ def check_document_contract() -> None:
     loop_control = read("loop-control.md")
     copilot = (COPILOT / "SKILL.md").read_text(encoding="utf-8")
 
-    # The canonical prs.json snapshot command is the typed run_argv operation, spelled IDENTICALLY at all
-    # three sites — the owning block plus the two mandated copies. The output path is a typed Path in
-    # stdout_file, never a shell redirection (`> <rundir>/prs.json`), so dynamic paths stay out of shell
-    # source and a run directory containing a space stays one intact Path. Compare on whitespace-collapsed
-    # text so the sites' differing code-fence indentation does not read as a variant spelling.
-    prs_json_argv = (
-        'argv: ["gh", "pr", "list", "--label", concat("gauntlet-run-", run_id), '
-        '"--state", "open", "--limit", "1000", '
-        '"--json", "number,headRefName,headRefOid,title,baseRefName,state,mergeable,mergeStateStatus,labels"],'
-    )
-    prs_json_stdout = 'stdout_file: path_join(<rundir>, "prs.json")'
-    prs_json_argv_flat = " ".join(prs_json_argv.split())
-    for name, text in (("files-and-ledger.md", files_ledger),
+    # The canonical prs.json producer is now one executable owner. Only files-and-ledger.md spells the
+    # typed invocation; adoption and heartbeat prose point to it and never reconstruct the internal gh
+    # argv. The output remains a typed Path argument and never enters shell source or stdout redirection.
+    prs_fetch_argv = " ".join(" ".join((
+        'argv: ["python3", path_join(skill_dir, "scripts", "reconcile.py"), "fetch",',
+        '"--project-root", repository.project_root,',
+        '"--run-id", run_id,',
+        '"--output", path_join(<rundir>, "prs.json")],',
+    )).split())
+    require(prs_fetch_argv in " ".join(files_ledger.split()),
+            "files-and-ledger.md lost the typed reconcile.py fetch invocation")
+    require("stdout_file: null" in files_ledger,
+            "files-and-ledger.md routed fetch output through a second writer")
+    for name, body in (("pr-adoption.md", adoption), ("loop-control.md", loop_control)):
+        require("The canonical `prs.json` command" in body and "reconcile.py fetch" in body,
+                f"{name} lost its pointer to the executable snapshot owner")
+        require('argv: ["gh", "pr", "list"' not in body,
+                f"{name} reconstructed the internal gh query instead of using reconcile.py fetch")
+    for name, body in (("files-and-ledger.md", files_ledger),
                        ("pr-adoption.md", adoption),
                        ("loop-control.md", loop_control)):
-        require(prs_json_argv_flat in " ".join(text.split()),
-                f"{name} lost the typed prs.json argv (--label concat / --state / --limit / --json)")
-        require(prs_json_stdout in text,
-                f"{name} lost the typed prs.json stdout_file Path")
-        require("> <rundir>/prs.json" not in text,
+        require("> <rundir>/prs.json" not in body,
                 f"{name} restored the prs.json shell redirection")
 
     # The per-PR `gh pr view` adoption snapshot is the same class: typed run_argv, its output path a
@@ -353,8 +355,8 @@ def run_repository_context_fixtures() -> None:
         require(scratch_root != Path("/.gauntlet/tmp"),
                 "absent PROJECT regressed to the root-level scratch path")
 
-        # The canonical prs.json snapshot path is produced via stdout_file/path_join, a typed Path — never
-        # a shell redirection. With the repository root carrying a space and a newline, path_join keeps the
+        # The canonical prs.json snapshot path is passed to reconcile.py fetch as a typed Path — never a
+        # shell redirection. With the repository root carrying a space and a newline, path_join keeps the
         # snapshot ONE intact Path under <rundir>; it is never shell-split and never triggers a bash
         # "ambiguous redirect".
         prs_json_path = rundir / "prs.json"
@@ -365,14 +367,14 @@ def run_repository_context_fixtures() -> None:
         require(prs_json_path.is_absolute() and
                 (prs_json_path == repository_root or repository_root in prs_json_path.parents),
                 f"prs.json snapshot path escaped the repository: {prs_json_path!s}")
-        # As one stdout_file argv element into a shell-only adapter, the space/newline-bearing path stays a
-        # single token — exactly one Path, never split by the shell.
+        # As one argv element into a shell-only adapter, the space/newline-bearing path stays one token —
+        # exactly one Path, never split by the shell.
         prs_json_probe = [sys.executable, "-c",
                           "import json,sys; print(json.dumps(sys.argv[1:]))", os.fspath(prs_json_path)]
         prs_json_done = subprocess.run(["sh", "-c", shlex.join(prs_json_probe)],
                                        text=True, capture_output=True, check=True)
         require(json.loads(prs_json_done.stdout) == [os.fspath(prs_json_path)],
-                "prs.json stdout_file path was shell-split by the mechanical encoder")
+                "prs.json fetch output path was shell-split by the mechanical encoder")
 
         mkdir_parent = ["mkdir", "-p", "--", os.fspath(scratch_root)]
         mkdir_run = ["mkdir", "--", os.fspath(rundir)]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fixtures for `reconcile.py` — the ledger-vs-snapshot FACT detector.
+"""Fixtures for `reconcile.py` — canonical snapshot fetch + ledger FACT detection.
 
 They live in a SIBLING file, and `reconcile.py self-test` FAILS LOUDLY if it cannot load them.
 
@@ -20,7 +20,7 @@ Two decisions this suite PINS, because they are the ones a reader would otherwis
 from __future__ import annotations
 
 import json
-import re
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -28,7 +28,6 @@ from _gauntlet.modules import load_module_from_path
 from _gauntlet.testing import capture_cli
 
 OWNER = Path(__file__).resolve().parent / "reconcile.py"
-REFERENCES = Path(__file__).resolve().parent.parent / "references"
 
 
 def _load_owner():
@@ -107,6 +106,173 @@ def scenario(rows, entries, *, base_branch="main", run_id=RUN_ID):
         ledger = build_ledger(d, rows, base_branch=base_branch)
         prs = build_prs(d, entries)
         return run(ledger, prs, run_id=run_id)
+
+
+def fetch_paths(tmp: str, *, hostile: bool = False) -> "tuple[Path, Path]":
+    root_name = "project with space\nand newline" if hostile else "project"
+    output_name = "prs ; $(never-executed).json" if hostile else "prs.json"
+    project_root = Path(tmp) / root_name
+    output = project_root / ".gauntlet" / "tmp" / "run dir" / output_name
+    output.parent.mkdir(parents=True)
+    return project_root, output
+
+
+def response_bytes(entries) -> bytes:
+    return (json.dumps(entries, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+class RecordedRunner:
+    def __init__(self, stdout: bytes, returncode: int, stderr: bytes) -> None:
+        self.stdout = stdout
+        self.returncode = returncode
+        self.stderr = stderr
+        self.calls: list[tuple[list[str], dict]] = []
+
+    def __call__(self, argv: list[str], **kwargs) -> "subprocess.CompletedProcess[bytes]":
+        self.calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(
+            argv, self.returncode, stdout=self.stdout, stderr=self.stderr)
+
+
+def completed(stdout: bytes, *, returncode: int = 0, stderr: bytes = b"") -> RecordedRunner:
+    return RecordedRunner(stdout, returncode, stderr)
+
+
+def expect_fetch_refusal(project_root: Path, output: Path, run_id: str, runner, needle: str) -> None:
+    try:
+        M.fetch_snapshot(project_root, output, run_id, runner=runner)
+    except M.Refusal as exc:
+        check(needle in str(exc), f"refusal did not name {needle!r}: {exc}")
+    else:
+        raise M.SelfTestFailure(f"fetch unexpectedly accepted response; wanted refusal naming {needle!r}")
+
+
+# --- canonical fetch ---------------------------------------------------------
+
+def t_fetch_exact_argv_and_raw_bytes():
+    hostile_run_id = "run with space;$(never-executed)\nand newline"
+    hostile_label = M.RUN_LABEL_PREFIX + hostile_run_id
+    item = entry(41, title="snowman ☃", label_names=[hostile_label, REVIEWING])
+    payload = response_bytes([item])
+    with tempfile.TemporaryDirectory() as d:
+        project_root, output = fetch_paths(d, hostile=True)
+        runner = completed(payload)
+        count = M.fetch_snapshot(project_root, output, hostile_run_id, runner=runner)
+
+        expected = [
+            "gh", "pr", "list",
+            "--label", hostile_label,
+            "--state", "open",
+            "--limit", "1000",
+            "--json", "number,headRefName,headRefOid,title,baseRefName,state,mergeable,mergeStateStatus,labels",
+        ]
+        check(runner.calls == [(expected, {
+            "cwd": project_root, "capture_output": True, "check": False,
+        })], f"fetch argv/cwd drifted or passed through a shell: {runner.calls!r}")
+        check(count == 1, f"one response row must yield count 1, got {count}")
+        check(output.read_bytes() == payload,
+              "fetch did not promote the exact captured stdout bytes (Unicode or whitespace changed)")
+        check(not (project_root / "never-executed").exists(),
+              "hostile argv/path text was interpreted instead of passed as data")
+
+
+def t_fetch_malformed_and_missing_field_preserve_old():
+    with tempfile.TemporaryDirectory() as d:
+        project_root, output = fetch_paths(d)
+        old = b"previous snapshot\n"
+        output.write_bytes(old)
+        expect_fetch_refusal(project_root, output, RUN_ID, completed(b"not json\n"), "not valid JSON")
+        check(output.read_bytes() == old, "malformed JSON replaced the previous snapshot")
+
+        missing = entry(41)
+        del missing["headRefOid"]
+        expect_fetch_refusal(project_root, output, RUN_ID, completed(response_bytes([missing])),
+                             "headRefOid")
+        check(output.read_bytes() == old, "missing-field response replaced the previous snapshot")
+
+
+def t_fetch_non_utf8_preserves_old():
+    with tempfile.TemporaryDirectory() as d:
+        project_root, output = fetch_paths(d)
+        output.write_bytes(b"old")
+        expect_fetch_refusal(project_root, output, RUN_ID, completed(b"\xff\xfe"), "not UTF-8")
+        check(output.read_bytes() == b"old", "non-UTF-8 response replaced the previous snapshot")
+
+
+def t_fetch_wrong_label_preserves_old():
+    with tempfile.TemporaryDirectory() as d:
+        project_root, output = fetch_paths(d)
+        output.write_bytes(b"old")
+        foreign = entry(41, label_names=["gauntlet-run-other", REVIEWING])
+        expect_fetch_refusal(project_root, output, RUN_ID, completed(response_bytes([foreign])), RUN_LABEL)
+        check(output.read_bytes() == b"old", "wrong-label response replaced the previous snapshot")
+
+
+def t_fetch_limit_boundary_refused():
+    with tempfile.TemporaryDirectory() as d:
+        project_root, output = fetch_paths(d)
+        output.write_bytes(b"old")
+        rows = [entry(n) for n in range(M.SNAPSHOT_LIMIT)]
+        expect_fetch_refusal(project_root, output, RUN_ID, completed(response_bytes(rows)), "may be truncated")
+        check(output.read_bytes() == b"old", "limit-boundary response replaced the previous snapshot")
+
+
+def t_fetch_command_failures_preserve_old():
+    with tempfile.TemporaryDirectory() as d:
+        project_root, output = fetch_paths(d)
+        output.write_bytes(b"old")
+        expect_fetch_refusal(project_root, output, RUN_ID,
+                             completed(b"partial", returncode=7, stderr=b"network failed"), "exited 7")
+        check(output.read_bytes() == b"old", "non-zero gh response replaced the previous snapshot")
+
+        def cannot_spawn(argv, **kwargs):
+            raise FileNotFoundError("gh missing")
+
+        expect_fetch_refusal(project_root, output, RUN_ID, cannot_spawn, "could not run")
+        check(output.read_bytes() == b"old", "spawn failure replaced the previous snapshot")
+
+
+def t_fetch_replace_failure_preserves_old_and_cleans_temp():
+    with tempfile.TemporaryDirectory() as d:
+        project_root, output = fetch_paths(d)
+        output.write_bytes(b"old")
+        real_replace = M.os.replace
+
+        def fail_replace(source, target):
+            raise OSError("simulated replace failure")
+
+        M.os.replace = fail_replace
+        try:
+            expect_fetch_refusal(project_root, output, RUN_ID, completed(response_bytes([entry(41)])),
+                                 "atomically promote")
+        finally:
+            M.os.replace = real_replace
+        check(output.read_bytes() == b"old", "failed atomic replace damaged the previous snapshot")
+        leftovers = list(output.parent.glob(f".{output.name}.*.tmp"))
+        check(leftovers == [], f"failed atomic replace left temp artifacts: {leftovers!r}")
+
+
+def t_fetch_rejects_untyped_or_escaping_paths():
+    with tempfile.TemporaryDirectory() as d:
+        project_root, output = fetch_paths(d)
+        runner = completed(response_bytes([]))
+        expect_fetch_refusal(Path("relative-root"), output, RUN_ID, runner, "absolute")
+        expect_fetch_refusal(project_root, Path("relative-output"), RUN_ID, runner, "absolute")
+        outside = Path(d) / "outside.json"
+        expect_fetch_refusal(project_root, outside, RUN_ID, runner, "stay under")
+        check(runner.calls == [], "invalid typed paths reached gh instead of failing before the fetch")
+
+
+def t_fetch_then_detect_consistent():
+    with tempfile.TemporaryDirectory() as d:
+        project_root, output = fetch_paths(d)
+        ledger = build_ledger(output.parent, [row(41)])
+        count = M.fetch_snapshot(project_root, output, RUN_ID, runner=completed(response_bytes([entry(41)])))
+        facts = M.detect(ledger, output, RUN_ID)
+        check(count == 1 and facts["counts"]["snapshot_entries"] == 1,
+              f"fetch and detect disagree about snapshot size: {count}, {facts!r}")
+        check(facts["rows"]["41"]["absent_from_snapshot"] is False,
+              f"detect did not consume the fetched row: {facts!r}")
 
 
 # --- happy-path facts ---------------------------------------------------------
@@ -287,7 +453,7 @@ def t_missing_canonical_field_refused():
     check(code == 2, f"a missing canonical field must exit 2 (fail closed), got {code}")
     check(out.strip() == "", f"a refusal must print NO facts to stdout, got {out!r}")
     check("headRefOid" in err, f"the refusal must NAME the missing field, got {err!r}")
-    check("files-and-ledger.md" in err, f"the refusal must point at the canonical block, got {err!r}")
+    check("reconcile.py fetch" in err, f"the refusal must point at the executable owner, got {err!r}")
 
 
 def t_null_canonical_field_refused():
@@ -389,22 +555,24 @@ def t_corrupt_ledger_refused():
     check("schema owner" in err, f"the refusal must attribute it to the ledger owner, got {err!r}")
 
 
-# --- anti-drift: the canonical field set matches the doc that OWNS the command --
-
-def t_canonical_fields_match_the_doc():
-    doc = (REFERENCES / "files-and-ledger.md").read_text(encoding="utf-8")
-    matches = re.findall(r'"--json",\s*"([^"]+)"', doc)
-    check(len(matches) == 1,
-          f"expected exactly one `--json` field list in files-and-ledger.md's canonical block, "
-          f"found {len(matches)} — the anchor this check reads moved")
-    doc_fields = tuple(matches[0].split(","))
-    check(doc_fields == M.CANONICAL_FIELDS,
-          f"reconcile.CANONICAL_FIELDS {M.CANONICAL_FIELDS!r} has DRIFTED from the canonical command's "
-          f"field set {doc_fields!r} — a field added to the command must be added to the detector, or a "
-          f"fact silently goes unread")
-
-
 CASES = [
+    ("fetch-exact-argv", "fetch owns exact label/state/limit/fields argv and captures raw bytes",
+     t_fetch_exact_argv_and_raw_bytes),
+    ("fetch-refuse-malformed", "malformed/missing-field output preserves the old snapshot",
+     t_fetch_malformed_and_missing_field_preserve_old),
+    ("fetch-refuse-non-utf8", "non-UTF-8 output preserves the old snapshot", t_fetch_non_utf8_preserves_old),
+    ("fetch-refuse-wrong-label", "every fetched row must carry this run's label",
+     t_fetch_wrong_label_preserves_old),
+    ("fetch-refuse-limit", "a response at the limit boundary may be truncated and is refused",
+     t_fetch_limit_boundary_refused),
+    ("fetch-command-failures", "non-zero and spawn failures preserve the old snapshot",
+     t_fetch_command_failures_preserve_old),
+    ("fetch-atomic-preserve", "failed atomic promotion preserves old bytes and cleans its temp",
+     t_fetch_replace_failure_preserves_old_and_cleans_temp),
+    ("fetch-typed-paths", "relative or escaping paths refuse before gh runs",
+     t_fetch_rejects_untyped_or_escaping_paths),
+    ("fetch-then-detect", "detect consumes exactly the snapshot fetch validated and promoted",
+     t_fetch_then_detect_consistent),
     ("all-quiet", "a present, unchanged live row -> only neutral observations", t_all_quiet),
     ("merged-by-absence", "an absent live row -> absent_from_snapshot:true, exit 0, NOT an error",
      t_merged_by_absence),
@@ -442,6 +610,4 @@ CASES = [
     ("refuse-missing-ledger", "a missing ledger -> exit 2", t_missing_ledger_refused),
     ("refuse-corrupt-ledger", "a corrupt ledger -> exit 2, attributed to the schema owner",
      t_corrupt_ledger_refused),
-    ("canonical-fields-match-doc", "reconcile.CANONICAL_FIELDS == the canonical command's field set",
-     t_canonical_fields_match_the_doc),
 ]

@@ -99,13 +99,10 @@
 - Stop a PR's in-flight review before dispatching content-changing work on it (review fix, CI fix,
   copilot-address, conflict-resolving rebase): a verdict on a doomed SHA wastes tokens and a review
   slot. Refill the slot with the next due review.
-- Reconcile from ONE batched `gh pr list` snapshot per heartbeat (`<rundir>/prs.json`), written with the
-  **canonical `prs.json` command — the single owning definition is the block "The canonical `prs.json`
-  command" in `files-and-ledger.md`**, which spells it in full, label and output path included (**ONE
-  path, ONE schema, ONE command**). Never spell a variant of it here or anywhere else, and **NEVER drop
-  `--label gauntlet-run-<run-id>` or `--limit 1000`**: without `--label` the snapshot escapes the run's
-  scope and reconcile would act on **other runs' PRs**, and without `--limit` `gh pr list` silently caps
-  at **30**. Per-PR `gh` calls only where the snapshot falls short. Merge-gate CI truth stays the
+- Reconcile from ONE batched snapshot per heartbeat (`<rundir>/prs.json`) through **`scripts/reconcile.py
+  fetch`**. `files-and-ledger.md`, **"The canonical `prs.json` command"**, owns the typed invocation;
+  the executable owns query scope, fields, result bound, validation, and atomic promotion. NEVER
+  reconstruct its GitHub query. Per-PR `gh` calls only where the snapshot falls short. Merge-gate CI truth stays the
   SHA-pinned, SHA-verified snapshot of **both** check families (Stage 2b).
 - Carryover pruning NEVER blocks a fresh-run start: keep uncertain entries, adopt the run's PRs
   immediately, ask the user asynchronously, and fold the answer in as its own heartbeat.

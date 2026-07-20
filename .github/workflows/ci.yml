@@ -316,17 +316,13 @@ jobs:
       - name: Label-mirror contract (the gate and its label move together)
         run: python3 plugins/gauntlet/skills/campaign/scripts/label-mirror.py self-test
 
-      # The reconcile detector's contract, executed. `reconcile.py detect` does the MECHANICAL half of the
-      # per-heartbeat reconcile (loop-control.md step 1): compare the batched `prs.json` snapshot against the
-      # ledger and emit the per-PR FACTS — a live row ABSENT from an `--state open` snapshot is the
-      # merged/closed-by-absence signal (a FACT, exit 0, never an error, never a `gh` fetch to "resolve" it),
-      # plus head/base/branch changes, verbatim state/merge/label observations, and unadopted candidates. It
-      # NAMES NO ACTION; routing each fact is skill prose. `self-test` runs the sibling FIXTURES
-      # (`reconcile-test.py`, loaded by path; a MISSING sibling fails loudly), which pin the exact facts
-      # object AND the fail-closed refusals (missing/null/wrong-typed canonical field, a snapshot entry
-      # outside the run's label scope, a non-array or corrupt input) at exit 2 with empty stdout. One fixture
-      # asserts the tool's canonical field set has not drifted from the command that WRITES `prs.json`.
-      - name: Reconcile detector contract (facts only; routing stays in the skill)
+      # The reconcile fetch/detect contract, executed. `fetch` owns the canonical run-scoped query,
+      # validates its raw response, refuses possible truncation, and atomically promotes `prs.json` while
+      # preserving the prior file on failure. `detect` compares that snapshot against the ledger and emits
+      # per-PR FACTS only; routing stays in skill prose. The sibling fixtures pin exact argv, hostile typed
+      # paths, byte capture, response refusals, atomic preservation, fetch-then-detect consistency, and the
+      # detector's existing fact/refusal matrix. A missing sibling fails loudly.
+      - name: Reconcile snapshot contract (fetch + facts; routing stays in the skill)
         run: python3 plugins/gauntlet/skills/campaign/scripts/reconcile.py self-test
 
       # The Bundled Scripts table in campaign's SKILL.md declares itself COMPLETE: one row per bundled
