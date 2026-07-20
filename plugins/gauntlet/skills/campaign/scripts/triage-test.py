@@ -107,9 +107,34 @@ def t_human_docs_have_no_floor() -> None:
 
 
 def t_top_level_human_doc_names() -> None:
-    for name in ("README.md", "CHANGELOG.md", "LICENSE"):
+    prose = ("README.md", "CHANGELOG", "CHANGELOG.md", "CHANGELOG.txt", "CHANGELOG.rst",
+             "LICENSE", "LICENSE.md", "LICENSE.txt", "LICENSE-MIT", "LICENSE-APACHE")
+    for name in prose:
         cls, reasons = M._path_class(name, b"plain prose\n")
         check(cls == M.HUMAN_DOC, f"{name} must be HUMAN-DOC, got {cls}: {reasons}")
+
+
+def t_prose_named_source_is_code() -> None:
+    """A top-level name that begins with a prose word but carries a source-like or unknown suffix
+    (CHANGELOG.py, license.go, LICENSE.exe) is NOT prose: an unbounded stem prefix let it clear the
+    escalate-only floor. It must classify CODE and floor STANDARD, vetoing a decided --tier TRIVIAL."""
+    for name in ("CHANGELOG.py", "license.go", "LICENSE.exe", "changelog.sh"):
+        cls, reasons = M._path_class(name, b"import os\n")
+        check(cls == M.CODE, f"{name} must be CODE, not prose-by-prefix: {cls}: {reasons}")
+    with repository() as (repo, base):
+        write(repo, "CHANGELOG.py", "import os\nos.system('noop')\n")
+        write(repo, "license.go", "package main\n")
+        head = commit(repo, "source named like prose")
+        result = derive(repo, base)
+        check(result["floor"] == M.STANDARD,
+              f"source suffixes on prose stems must floor STANDARD: {result!r}")
+        check({row["class"] for row in result["files"]} == {M.CODE},
+              f"CHANGELOG.py and license.go must classify CODE: {result!r}")
+        code, out, err = capture_cli(M.main, [
+            "derive", "--worktree", str(repo), "--base", base, "--head-sha", head, "--tier", M.TRIVIAL])
+    check(code == M.EXIT_REFUSED and out == "",
+          f"--tier TRIVIAL must be refused for source named like prose: {code}/{out!r}")
+    check("below the mechanical floor" in err, f"the refusal must name the floor: {err!r}")
 
 
 def t_source_and_unknown_are_standard() -> None:
@@ -478,9 +503,110 @@ def t_output_head_is_full_live_sha() -> None:
     check(result["diff_base_sha"] == base, "linear fixture's diff base must be the base commit")
 
 
+def t_blob_read_failure_on_existing_side_refuses() -> None:
+    """`git show` failing for a REGULAR-file side the raw diff already named is unreadable evidence, never
+    benign absence (a blob-filtered clone with the promisor down exits 128 'bad object' while `git diff`
+    still parses at tree level). It must fail CLOSED — TriageError, exit 2, no JSON — like every other Git
+    call, not silently read as empty prose that would drop stripped agent frontmatter under the floor."""
+    base_sha = "a" * 40
+    head_sha = "b" * 40
+    # One modification of a regular-mode docs file: both sides are regular blobs, so both are read.
+    raw = b":100644 100644 " + b"c" * 40 + b" " + b"d" * 40 + b" M\0docs/operator.md\0"
+
+    def runner(argv: list[str], _worktree: str) -> subprocess.CompletedProcess[bytes]:
+        if argv == ["git", "rev-parse", "--verify", "HEAD^{commit}"]:
+            return subprocess.CompletedProcess(argv, 0, os.fsencode(head_sha + "\n"), b"")
+        if argv[:4] == ["git", "rev-parse", "--verify", "--end-of-options"]:
+            return subprocess.CompletedProcess(argv, 0, os.fsencode(base_sha + "\n"), b"")
+        if argv[:2] == ["git", "merge-base"]:
+            return subprocess.CompletedProcess(argv, 0, os.fsencode(base_sha + "\n"), b"")
+        if argv[:3] == ["git", "diff", "--raw"]:
+            return subprocess.CompletedProcess(argv, 0, raw, b"")
+        if argv[:2] == ["git", "show"]:
+            return subprocess.CompletedProcess(argv, 128, b"", b"fatal: bad object")
+        return subprocess.CompletedProcess(argv, 99, b"", b"unexpected argv")
+
+    with tempfile.TemporaryDirectory() as directory:
+        try:
+            M.derive(worktree=directory, base="main", head_sha=head_sha, runner=runner)
+        except M.TriageError as exc:
+            check("exited 128" in str(exc), f"a failed git show must fail closed with git detail: {exc}")
+        else:
+            raise M.SelfTestFailure("a failed git show on an existing regular side was read as empty prose")
+
+
+def t_nonregular_side_read_failure_is_tolerated() -> None:
+    """The mirror of the rule above: a NON-regular side (symlink/gitlink) is forced to CODE by mode and its
+    content is never read, so a `git show` failure on it must NOT abort — mode already carries the class."""
+    def runner(argv: list[str], _worktree: str) -> subprocess.CompletedProcess[bytes]:
+        if argv[:2] == ["git", "show"]:
+            return subprocess.CompletedProcess(argv, 128, b"", b"fatal: bad object")
+        return subprocess.CompletedProcess(argv, 0, b"plain prose\n", b"")
+
+    change = M.Change(status="A", old_mode="000000", new_mode="120000", old_path=None, path=b"docs/guide.md")
+    row = M._classify_change(change, runner, "/nonexistent", "a" * 40, "b" * 40)
+    check(row["class"] == M.CODE,
+          f"a symlink side must classify CODE without reading (or failing on) its blob: {row!r}")
+
+
+def t_quoted_frontmatter_keys_are_code() -> None:
+    """Agent frontmatter written with QUOTED YAML keys ("tools":, 'name':) is still agent frontmatter — a
+    bare-letter-only match dropped the key and read the block as prose. Floor STANDARD, --tier TRIVIAL vetoed."""
+    doc = '---\n"name": operator\n"tools": [read, write]\n---\nBody\n'
+    with repository() as (repo, base):
+        write(repo, "docs/operator-guide.md", doc)
+        head = commit(repo, "quoted frontmatter")
+        result = derive(repo, base)
+        row = one_file(result)
+        check(row["class"] == M.CODE and result["floor"] == M.STANDARD,
+              f"quoted-key agent frontmatter must be CODE and floor STANDARD: {result!r}")
+        code, out, err = capture_cli(M.main, [
+            "derive", "--worktree", str(repo), "--base", base, "--head-sha", head, "--tier", M.TRIVIAL])
+    check(code == M.EXIT_REFUSED and out == "",
+          f"--tier TRIVIAL must be refused for quoted-key agent frontmatter: {code}/{out!r}")
+    check("below the mechanical floor" in err, f"the refusal must name the floor: {err!r}")
+
+
+def t_frontmatter_runs_for_all_prose_extensions() -> None:
+    """The agent-frontmatter escape runs for every prose-like extension _is_human_doc accepts, not just
+    `.md`: a docs/*.txt or *.rst carrying agent frontmatter is CODE, not prose that clears the floor."""
+    doc = "---\nname: operator\ndescription: agent rules\ntools: read\n---\nBody\n"
+    for name in ("docs/operator.txt", "docs/operator.rst"):
+        with repository() as (repo, base):
+            write(repo, name, doc)
+            commit(repo, "prose doc with agent frontmatter")
+            result = derive(repo, base)
+        row = one_file(result)
+        check(row["class"] == M.CODE and result["floor"] == M.STANDARD,
+              f"{name} carrying agent frontmatter must be CODE and floor STANDARD: {result!r}")
+
+
+def t_frontmatter_closing_past_line_100_is_code() -> None:
+    """The closing-delimiter scan must not truncate at a fixed line: agent frontmatter whose closing `---`
+    sits well past line 100 must still classify CODE, not read as prose because the scan gave up early."""
+    filler = "".join(f"note-{i}: line\n" for i in range(150))
+    doc = "---\nname: operator\ndescription: agent rules\ntools: read\n" + filler + "---\nBody\n"
+    with repository() as (repo, base):
+        write(repo, "docs/long.md", doc)
+        commit(repo, "long frontmatter")
+        result = derive(repo, base)
+    check(one_file(result)["class"] == M.CODE and result["floor"] == M.STANDARD,
+          f"agent frontmatter closing past line 100 must still be CODE: {result!r}")
+
+
+def t_unterminated_frontmatter_fails_closed_to_code() -> None:
+    """An opening `---` with NO closing delimiter anywhere is a malformed/unterminated frontmatter block:
+    fail closed to CODE rather than silently reading the whole file as prose."""
+    doc = "---\nname: operator\ntools: read\nno closing fence in this file\n"
+    cls, reasons = M._path_class("docs/broken.md", doc.encode("utf-8"))
+    check(cls == M.CODE and any("frontmatter" in r for r in reasons),
+          f"unterminated frontmatter must fail closed to CODE: {cls}: {reasons}")
+
+
 CASES = [
     ("human-doc", "an all-prose diff has no floor — the tool never grants TRIVIAL", t_human_docs_have_no_floor),
-    ("human-names", "top-level README/CHANGELOG/LICENSE are HUMAN-DOC", t_top_level_human_doc_names),
+    ("human-names", "top-level README/CHANGELOG/LICENSE and prose suffixes are HUMAN-DOC", t_top_level_human_doc_names),
+    ("prose-named-source", "prose-named source suffixes (CHANGELOG.py, license.go) are CODE", t_prose_named_source_is_code),
     ("code-unknown", "source and unknown paths are CODE and floor STANDARD", t_source_and_unknown_are_standard),
     ("agent-frontmatter", "Markdown carrying skill/agent frontmatter is CODE", t_agent_frontmatter_is_code),
     ("agent-paths", "agent instructions, skill references, .claude and prompts are CODE", t_agent_paths_are_code),
@@ -505,6 +631,12 @@ CASES = [
     ("atomic-refusal", "input and Git failures emit no partial JSON", t_bad_inputs_and_git_failures_emit_no_partial_json),
     ("raw-partial", "malformed or partial raw Git records are refused", t_raw_parser_refuses_partial_records),
     ("head-output", "output is pinned to the full live HEAD", t_output_head_is_full_live_sha),
+    ("blob-read-fail", "a failed git show on an existing regular side fails closed (exit 2)", t_blob_read_failure_on_existing_side_refuses),
+    ("nonregular-read-skip", "a non-regular side is CODE by mode; its blob is never read", t_nonregular_side_read_failure_is_tolerated),
+    ("quoted-frontmatter", "quoted YAML frontmatter keys still classify CODE", t_quoted_frontmatter_keys_are_code),
+    ("frontmatter-extensions", "the frontmatter check runs for .txt/.rst prose too", t_frontmatter_runs_for_all_prose_extensions),
+    ("frontmatter-long", "frontmatter closing past line 100 still classifies CODE", t_frontmatter_closing_past_line_100_is_code),
+    ("frontmatter-unterminated", "an unterminated frontmatter block fails closed to CODE", t_unterminated_frontmatter_fails_closed_to_code),
 ]
 
 

@@ -47,7 +47,7 @@ content marker is uncertain. `reviews_ok` target = `required(tier)`: **1 if `tie
 - **HUMAN-DOC** — human-facing prose only: top-level `README.md`, human prose under `docs/**`,
   `CHANGELOG`, `LICENSE`.
 - **CODE** — source files **and agent-consumed docs**: `SKILL.md`, a skill's `references/**`,
-  `CLAUDE.md`/`AGENTS.md`, `.claude/**`, prompt / agent-instruction files, any `.md` carrying
+  `CLAUDE.md`/`AGENTS.md`, `.claude/**`, prompt / agent-instruction files, any prose file carrying
   skill/agent frontmatter. Agent-docs are CODE, never HUMAN-DOC.
 - **SENSITIVE** (a CODE subset) — CI (`.github/**`), `scripts/**`, executables (`+x`),
   `Dockerfile`/`Makefile`, dependency manifests/lockfiles, IaC, auth/crypto/secret paths.

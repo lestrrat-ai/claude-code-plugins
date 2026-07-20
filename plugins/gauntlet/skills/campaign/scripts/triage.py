@@ -61,6 +61,9 @@ TIER_VALUES = frozenset(_TIER_RANK)
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 _HUMAN_SUFFIXES = frozenset({".md", ".mdown", ".markdown", ".rst", ".txt", ".adoc", ".asciidoc"})
+# Suffixes a top-level CHANGELOG/LICENSE stem may carry and still be prose (a bare stem has none). A stem
+# with any other suffix is source-like or unknown and classifies CODE, never HUMAN-DOC.
+_PROSE_DOC_SUFFIXES = frozenset({"", ".md", ".txt", ".rst"})
 _AGENT_DOC_BASENAMES = frozenset({"skill.md", "agents.md", "claude.md"})
 _AGENT_TOKENS = frozenset({"agent", "agents", "instruction", "instructions", "prompt", "prompts"})
 
@@ -80,6 +83,19 @@ _SENSITIVE_TOKENS = frozenset({
     "secret", "secrets", "credential", "credentials", "key", "keys", "certificate", "certificates",
 })
 _FRONTMATTER_AGENT_KEYS = frozenset({"agent", "agents", "model", "tools", "skills"})
+
+# A YAML mapping key at the head of a frontmatter line: bare (``tools:``), double- or single-quoted
+# (``"tools":`` / ``'name':``), each allowed standard leading indentation. A quoted key is valid YAML that a
+# bare-letter-only match would silently drop, reading agent frontmatter as prose and clearing the floor.
+_FRONTMATTER_KEY_RE = re.compile(
+    r"""^\s*
+        (?:"(?P<dq>[^"]+)"
+          |'(?P<sq>[^']+)'
+          |(?P<bare>[A-Za-z][A-Za-z0-9_-]*))
+        \s*:
+    """,
+    re.VERBOSE,
+)
 
 
 class TriageError(Exception):
@@ -281,15 +297,34 @@ def _has_agent_frontmatter(content: bytes | None) -> bool:
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
         return False
-    closing = next((i for i, line in enumerate(lines[1:101], 1) if line.strip() == "---"), None)
+    # Scan the WHOLE head for the closing delimiter — never a fixed-size window that would let a block
+    # closing past an arbitrary line read as prose. An opening ``---`` with no closing delimiter anywhere is
+    # a malformed/unterminated frontmatter block: fail closed (treat as agent frontmatter -> CODE).
+    closing = next((i for i, line in enumerate(lines[1:], 1) if line.strip() == "---"), None)
     if closing is None:
-        return False
+        return True
     keys: set[str] = set()
     for line in lines[1:closing]:
-        match = re.match(r"^([A-Za-z][A-Za-z0-9_-]*):", line)
+        match = _FRONTMATTER_KEY_RE.match(line)
         if match:
-            keys.add(match.group(1).lower())
+            key = match.group("dq") or match.group("sq") or match.group("bare")
+            keys.add(key.lower())
     return bool(keys & _FRONTMATTER_AGENT_KEYS or {"name", "description"} <= keys)
+
+
+def _is_top_level_prose(name: str) -> bool:
+    """A top-level file whose NAME AND SUFFIX are both prose. The prose stems (``README``, ``CHANGELOG``,
+    ``LICENSE``/``LICENSE-<variant>``) are only human docs with a prose suffix or none — a source-like or
+    unknown suffix (``CHANGELOG.py``, ``license.go``) is NOT prose and falls through to CODE. Matching a
+    stem by unbounded prefix would let any ``CHANGELOG*``/``LICENSE*`` source file clear the floor."""
+    lower = name.lower()
+    if lower == "readme.md":
+        return True
+    suffix = PurePosixPath(name).suffix.lower()
+    stem = lower[: len(lower) - len(suffix)] if suffix else lower
+    if suffix not in _PROSE_DOC_SUFFIXES:
+        return False
+    return stem == "changelog" or stem == "license" or stem.startswith("license-")
 
 
 def _is_human_doc(path: str) -> bool:
@@ -297,8 +332,7 @@ def _is_human_doc(path: str) -> bool:
     if not parts:
         return False
     name = parts[-1]
-    upper = name.upper()
-    if len(parts) == 1 and (name == "README.md" or upper.startswith("CHANGELOG") or upper.startswith("LICENSE")):
+    if len(parts) == 1 and _is_top_level_prose(name):
         return True
     return parts[0].lower() == "docs" and PurePosixPath(name).suffix.lower() in _HUMAN_SUFFIXES
 
@@ -317,14 +351,23 @@ def _mode_regular_blob(mode: str) -> bool:
     return mode in _REGULAR_BLOB_MODES
 
 
-def _blob(runner: Runner, worktree: str, commit: str, path: bytes) -> bytes | None:
-    """Read a versioned path for frontmatter classification; absence becomes explicit uncertainty."""
+def _blob(runner: Runner, worktree: str, commit: str, path: bytes) -> bytes:
+    """Read a regular-file side the raw diff already proved exists at ``commit``, for frontmatter
+    classification. A failed ``git show`` here is never benign absence — the diff named this object — so it
+    is unreadable evidence (e.g. a blob-filtered clone with the promisor down) and fails CLOSED with
+    ``TriageError`` (exit 2), exactly like every other Git call. Non-regular modes never reach this: they
+    are already forced to CODE by mode, so their content is not read."""
     spec = os.fsencode(commit) + b":" + path
+    operation = f"reading {os.fsdecode(path)!r} at {commit}"
     try:
         proc = runner(["git", "show", os.fsdecode(spec)], worktree)
-    except OSError:
-        return None
-    return proc.stdout if proc.returncode == 0 else None
+    except OSError as exc:
+        raise TriageError(f"{operation} could not run: {exc}") from exc
+    if proc.returncode != 0:
+        detail = os.fsdecode(proc.stderr).strip()
+        suffix = f": {detail}" if detail else ""
+        raise TriageError(f"{operation} exited {proc.returncode}{suffix}")
+    return proc.stdout
 
 
 def _path_class(path: str, content: bytes | None) -> tuple[str, list[str]]:
@@ -334,8 +377,8 @@ def _path_class(path: str, content: bytes | None) -> tuple[str, list[str]]:
     agent = _agent_path_reason(path)
     if agent:
         return CODE, [agent]
-    if PurePosixPath(path).suffix.lower() == ".md" and _has_agent_frontmatter(content):
-        return CODE, ["Markdown with skill or agent frontmatter"]
+    if PurePosixPath(path).suffix.lower() in _HUMAN_SUFFIXES and _has_agent_frontmatter(content):
+        return CODE, ["prose file carrying skill or agent frontmatter"]
     if _is_human_doc(path):
         return HUMAN_DOC, ["human-facing prose"]
     return CODE, ["unrecognized path defaults to CODE"]
@@ -369,7 +412,10 @@ def _classify_change(change: Change, runner: Runner, worktree: str,
     classes: list[str] = []
     reasons: list[str] = []
     for candidate_path, candidate_bytes, commit, mode in sides:
-        content = _blob(runner, worktree, commit, candidate_bytes)
+        # A non-regular Git object (symlink, gitlink, unrecognized mode) is never prose and is forced to
+        # CODE by mode below, so its content is not read — and a ``git show`` on it is not required to
+        # succeed. A regular blob's content IS read, and a failed read there fails closed (see ``_blob``).
+        content = _blob(runner, worktree, commit, candidate_bytes) if _mode_regular_blob(mode) else None
         file_class, path_reasons = _path_class(candidate_path, content)
         if not _mode_regular_blob(mode) and _CLASS_RANK[file_class] < _CLASS_RANK[CODE]:
             file_class = CODE
