@@ -201,8 +201,12 @@ def _validate_state(header: dict, row: dict, pr: str, root: Path, view: dict,
 def _base_is_current(row: dict, header: dict) -> None:
     worktree = row["worktree"]
     base = header["base_branch"]
+    # Fully-qualified refspec so a dash-leading base name (network-supplied via baseRefName) can never be
+    # parsed by git as an option; the same safety idiom as _sync_base and pr-adopt.py. This updates the very
+    # origin/<base> remote-tracking ref the ancestry probe below reads.
+    tracking_ref = f"refs/heads/{base}:refs/remotes/origin/{base}"
     _require(
-        _run(["git", "-C", worktree, "fetch", "origin", base]),
+        _run(["git", "-C", worktree, "fetch", "origin", tracking_ref]),
         f"refresh of origin/{base} for merge-check",
     )
     probe = _run(
@@ -264,8 +268,11 @@ def _sync_base(root: Path, base: str) -> None:
             f"fast-forward of checked-out base {base}",
         )
     else:
+        # Fully-qualified refspec (no leading `+`, preserving fast-forward-only semantics) so a dash-leading
+        # base name can never be parsed by git as an option — the same safety idiom used just above.
+        local_ref = f"refs/heads/{base}:refs/heads/{base}"
         _require(
-            _run(["git", "-C", str(root), "fetch", "origin", f"{base}:{base}"]),
+            _run(["git", "-C", str(root), "fetch", "origin", local_ref]),
             f"fast-forward of local base ref {base}",
         )
 
