@@ -4,14 +4,13 @@ The cross-engine reviewer is **the default per host, overridable**: Claude Code 
 reviews with Claude Code, launched at native-limitation level whenever the paired CLI is present. An
 explicit user selection or saved preference overrides the default (a native worker, or a specific engine).
 This file defines the argv for that route, not review policy or the isolation rule.
-Before building a record or prompt, evaluate `runtime-adapter.md`'s `ReviewIsolationCapability` and take
+Before preparing a record or prompt, evaluate `runtime-adapter.md`'s `ReviewIsolationCapability` and take
 its transition. Only `launch-external` or `retry-external` uses the commands below; every other action
 stays with the owner.
-A capable adapter binds the complete prompt from `review-dispatch.md`, preserves every
-attempt-scoped artifact path, and launches the
-process as a background task whose completion triggers a reconcile. It materializes the bound prompt at
-the active prompt path through `write_bytes` and builds the process with `run_argv`; prompt bytes —
-including verbatim GitHub-derived intent — and dynamic paths never enter shell source.
+A capable adapter runs `review-dispatch.py prepare` through the exact invocation in `review-dispatch.md`,
+then launches the process from its returned transport as a background task whose completion triggers a
+reconcile. Prompt bytes — including verbatim GitHub-derived intent — and dynamic paths never enter shell
+source.
 
 The commands assume a same-repository PR, as required by `pr-adoption.md`. Never add a permission-bypass
 flag to make a failed launch work.

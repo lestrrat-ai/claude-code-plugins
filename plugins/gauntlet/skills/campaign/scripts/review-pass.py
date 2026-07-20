@@ -5,15 +5,14 @@
 # shebang is a courtesy and the mode carries nothing. Leave it.
 """Executable contract for a REVIEW PASS's artifacts (stage-2-review-gate.md).
 
-A review pass produces four things, and until now exactly ONE of them had a tool:
+A review pass produces four things, all with an executable owner:
 
-  * `review-<pr>-<n>.plan.jsonl`      the units the reviewer must check — written BY HAND, with a shell
-                                      heredoc. No schema, no validation, no owner.
-  * `review-<pr>-<n>.progress.jsonl`  what the reviewer did. Its `pass_identity` line was written BY HAND
-                                      with `printf` — which is how a TRUNCATED SHA got into one. Its
-                                      `progress` events came from `emit-progress.py`, the one tooled part.
+  * `review-<pr>-<n>.plan.jsonl`      the units the reviewer must check — written through `plan-add`.
+  * `review-<pr>-<n>.progress.jsonl`  what the reviewer did. `review-dispatch.py prepare` writes its
+                                      `pass_identity` through this module's schema; progress events enter
+                                      through `emit-progress.py`.
   * `review-<pr>-<n>.txt`             the reviewer's report, and its VERDICT line.
-  * the TALLY                         read BY HAND, with an ad-hoc parser written fresh each time.
+  * the TALLY                         derived through `verify`, never read by eye.
 
 **This is gate machinery**: what these files say decides whether a review pass COUNTS, and therefore
 whether a PR may merge. The one component of the CI gate that was never mechanized is the one that
@@ -23,7 +22,7 @@ evidence. Reading a progress file by eye is the same hole, one layer up.
 So this file is the review pass's artifacts, executed:
 
   plan-add    append ONE validated unit to a pass's plan          (the plan stops being a heredoc)
-  identity    write a pass's `pass_identity` line                 (the SHA stops being a `printf`)
+  identity    low-level `pass_identity` schema/write door         (campaign uses review-dispatch prepare)
   emit        append ONE progress event                           (what `emit-progress.py` calls)
   verify      READ a pass and answer: DOES THIS PASS COUNT?       (the tally stops being by eye)
   self-test   the fixtures, the proof that every rule is pinned by one, every JSON example in the docs fed

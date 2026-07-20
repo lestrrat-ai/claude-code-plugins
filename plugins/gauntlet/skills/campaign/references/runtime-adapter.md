@@ -75,9 +75,10 @@ of publishing a command-source template:
 
 - `read_bytes(path: Path) -> Bytes` reads exactly the named file through the host's file API.
 - `write_bytes(path: Path, content: Bytes)` writes exactly `content` through the host's file API.
-- `bind_review_prompt(template: Bytes, intent: Bytes, transport: ReviewTransport) -> Bytes` binds the
-  template's two original slots in one pass. It JSON-encodes `transport`, inserts `intent` verbatim, and
-  never rescans either inserted value for slot syntax.
+- `review-dispatch.py prepare` is the review-attempt materializer. Run it through `run_argv`, then
+  JSON-decode `ProcessResult.stdout`; `references/review-dispatch.md`, "Prepare the active attempt",
+  owns the exact invocation. The command writes the prompt and progress identity and returns the typed
+  transport record. The host never binds prompt slots or derives attempt paths itself.
 - `run_argv(argv: list[Text], cwd: Path | null, stdin_file: Path | null,
   stdout_file: Path | null) -> ProcessResult` starts exactly `argv[0]` with the remaining list members as
   distinct argv elements. `cwd`, stdin and stdout are separate typed fields, not fragments of `argv` and
@@ -174,8 +175,8 @@ complete the installed contract after its budget does. `reviewer.md` owns the re
 ### Review transport record and report ownership
 
 After `review_transition` returns `launch-native`, `fallback-native`, `launch-external`, or
-`retry-external`, build the corresponding typed review record in memory and serialize it with a real
-JSON encoder while materializing the prompt. `park-machine-blocker` builds no record:
+`retry-external`, run `review-dispatch.py prepare` with that selected route and its producer, then use its
+returned record unchanged. `park-machine-blocker` prepares no record:
 
 ```text
 ReviewTransport {
@@ -192,9 +193,9 @@ is the absolute active run-artifact directory and makes no isolation claim (only
 adapter uses aliases inside a proved view — "Review isolation capability and transition" above). A
 cross-engine route whose paired CLI is absent is `unavailable` and never constructs this record. The JSON encoding is the prompt's `<TRANSPORT-RECORD>` data
 block and the intent is its `<INTENT>` block;
-`bind_review_prompt` binds both without rescanning inserted bytes. Do not substitute record fields into
-prose commands. The active attempt's prompt/progress/findings/report basenames keep the `a<k>` identity
-defined by `stage-2-review-gate.md`; derive every path in one record from that same attempt.
+`review-dispatch.py` binds both without rescanning inserted bytes. Do not substitute record fields into
+prose commands. The materializer derives the active prompt/progress/findings/report basenames from one
+attempt identity and refuses a route/producer mismatch or any pre-existing attempt output.
 
 Exactly one producer owns the final report:
 
@@ -208,12 +209,12 @@ Exactly one producer owns the final report:
   Claude). The reviewer MUST NOT write the path itself.
 
 Progress belongs to `emit-progress.py`, findings to `emit-finding.py`, plan amendments to
-`emit-amendment.py`, and prompt bytes to the orchestrator's `write_bytes`. No transport adds a second
-writer. `reviewer.md`,
+`emit-amendment.py`, and prompt plus `pass_identity` preparation to `review-dispatch.py`. No transport
+adds a second writer. `reviewer.md`,
 `stage-2-review-gate.md`, `review-dispatch.md`, `cross-agent-reviewers.md`, and `pr-adoption.md` point here for the boundary;
 they may define argv values or workflow order, but they must not redefine quoting or artifact ownership.
-The plugin validator runs `scripts/transport-contract-test.py` to pin these mappings with hostile
-path/ref/payload and exact-byte fixtures.
+The plugin validator runs `scripts/review-dispatch.py self-test` and `scripts/transport-contract-test.py`
+to pin these mappings with hostile path/ref/payload and exact-byte fixtures.
 
 ## Fresh workers
 

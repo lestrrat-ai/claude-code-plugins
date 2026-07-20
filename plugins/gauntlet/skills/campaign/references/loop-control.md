@@ -383,9 +383,10 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      that file's `pass_identity.dispatched_at`) →
      it **never started** (Stage 2a launch check — a reviewer hung on stdin, a bad path, a sandbox
      denial). Kill the task, re-check the command for the known launch faults (above all the quoted
-     prompt-file stdin redirect), and re-dispatch the pass once into **attempt-scoped artifacts**
-     (`review-<pr>-<n>.a2.*`, fresh `pass_identity` with `launch_attempt: 2` — never the dead attempt's
-     files, which a surviving process could still write to); a dead `launch_attempt: 2` →
+     prompt-file stdin route), and re-dispatch the pass once with
+     `review-dispatch.py prepare --launch-attempt 2`, which creates coherent **attempt-scoped artifacts**
+     (`review-<pr>-<n>.a2.*` plus the fresh identity — never the dead attempt's files, which a surviving
+     process could still write to); a dead `launch_attempt: 2` →
      fresh-worker fallback. A failed launch yields no verdict: it never touches `reviews_ok` and
      never bumps the row's `attempts`;
    - CI red and no fix is already in flight for that PR/SHA → **CLASSIFY the failure from the check logs
