@@ -85,9 +85,11 @@ _SENSITIVE_TOKENS = frozenset({
 })
 _FRONTMATTER_AGENT_KEYS = frozenset({"agent", "agents", "model", "tools", "skills"})
 
-# A YAML mapping key at the head of a frontmatter line: bare (``tools:``), double- or single-quoted
+# One top-level key of a plain BLOCK-style YAML mapping line: bare (``tools:``), double- or single-quoted
 # (``"tools":`` / ``'name':``), each allowed standard leading indentation. A quoted key is valid YAML that a
-# bare-letter-only match would silently drop, reading agent frontmatter as prose and clearing the floor.
+# bare-letter-only match would silently drop, reading agent frontmatter as prose and clearing the floor. This
+# matches a block-mapping key line ONLY; a flow mapping (``{name: …}``) and every other non-block surface
+# form is handled by ``_frontmatter_top_level_keys``, which fails such an interior closed to CODE.
 _FRONTMATTER_KEY_RE = re.compile(
     r"""^\s*
         (?:"(?P<dq>[^"]+)"
@@ -295,6 +297,45 @@ def _agent_path_reason(path: str) -> str | None:
     return None
 
 
+def _frontmatter_top_level_keys(interior: list[str]) -> tuple[set[str], bool]:
+    """Extract a YAML frontmatter interior's top-level mapping keys, treating it as a plain BLOCK mapping.
+
+    Returns ``(keys, accountable)``. ``accountable`` is ``True`` only when every content line is one this
+    line-based extractor can COMPLETELY account for as a plain block mapping: a top-level ``key:`` entry
+    (bare or quoted), a comment, a blank, or an indented continuation of the current entry's value (a block
+    sequence item, a nested mapping, block-scalar text). It is ``False`` for any interior that is not a plain
+    block mapping — a top-level FLOW mapping (``{name: operator, description: …}``) or flow sequence, a block
+    sequence document (``- item``), a bare scalar, a ``?`` complex key, a value's flow collection continued
+    onto its own line (a ``]``/``}`` at column 0), or a continuation with no owning key.
+
+    The stdlib carries no YAML parser, so rather than parse those forms — and rather than repeat the bug of
+    misreading them as prose (each surface form was patched in turn: bare keys, then quoted keys, now flow),
+    the caller fails a non-accountable interior CLOSED to CODE. "Cannot parse completely" means CODE, never
+    prose. The failure is escalate-only and therefore safe: it can only raise a would-be HUMAN-DOC to CODE."""
+    keys: set[str] = set()
+    opened_key = False
+    for line in interior:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue  # a blank line or a comment carries no structural content
+        if line[:1] in (" ", "\t"):
+            # An indented line continues the current top-level entry's value. It is accountable only once an
+            # entry has opened it; indentation with no owning key is not a plain block mapping.
+            if not opened_key:
+                return set(), False
+            continue
+        match = _FRONTMATTER_KEY_RE.match(line)
+        if match is None:
+            # A column-0 line that is not a block ``key:`` entry: a flow mapping/sequence, a ``-`` sequence
+            # item, a bare scalar, a ``?`` complex key, or a ``]``/``}`` closing a value's flow collection
+            # that was continued across lines. None of these is a plain block mapping this extractor finishes.
+            return set(), False
+        key = match.group("dq") or match.group("sq") or match.group("bare")
+        keys.add(key.lower())
+        opened_key = True
+    return keys, True
+
+
 def _has_agent_frontmatter(content: bytes | None) -> bool:
     if content is None:
         return False
@@ -308,12 +349,13 @@ def _has_agent_frontmatter(content: bytes | None) -> bool:
     closing = next((i for i, line in enumerate(lines[1:], 1) if line.strip() == "---"), None)
     if closing is None:
         return True
-    keys: set[str] = set()
-    for line in lines[1:closing]:
-        match = _FRONTMATTER_KEY_RE.match(line)
-        if match:
-            key = match.group("dq") or match.group("sq") or match.group("bare")
-            keys.add(key.lower())
+    keys, accountable = _frontmatter_top_level_keys(lines[1:closing])
+    # An interior the block extractor cannot COMPLETELY account for — a flow mapping/sequence and every other
+    # non-block surface form — is never read as prose: fail closed to CODE. The interior is now validated as
+    # a plain block mapping rather than scanned line by line and assumed prose on any line the key regex
+    # misses, which is the class each earlier round patched one surface form at a time.
+    if not accountable:
+        return True
     return bool(keys & _FRONTMATTER_AGENT_KEYS or {"name", "description"} <= keys)
 
 
@@ -482,6 +524,17 @@ def derive(*, worktree: str, base: str, head_sha: str, tier: str | None = None,
         raise TriageError(f"HEAD mismatch: expected {head_sha}, found {head_before}")
     base_sha = _resolve_base(runner, worktree, base)
     diff_base_sha = _merge_base(runner, worktree, base_sha, head_sha)
+    # ``--find-renames`` without ``-l0``: above Git's default ``diff.renameLimit`` the inexact-rename search
+    # is skipped (Git prints ``warning: … rename detection was skipped`` to stderr, exit 0). That skip is
+    # deliberately tolerated because it CANNOT lower the floor. The floor is a ``max`` over per-row classes,
+    # and an undetected rename degrades to an A row plus a D row that ``_classify_change`` classifies on BOTH
+    # sides' content — the D at the old path on the base, the A at the new path on the head — the exact two
+    # ``(path, commit, mode)`` pairs the single R record would have classified. A + D can only ADD rows, so
+    # the floor is >= the detected-rename case, never below it (verified end to end: a CODE fixture and an
+    # executable-script fixture forced through ``renameLimit=1`` floor identically detected vs. skipped, and
+    # the A+D split even re-checks the executable mode on both sides). Forcing ``-l0`` or refusing on the
+    # warning would instead make any legitimately large diff un-triageable — a fail-closed regression bought
+    # for a floor that was already correct.
     raw = _run(
         runner,
         ["git", "diff", "--raw", "-z", "--no-abbrev", "--find-renames", diff_base_sha, head_sha, "--"],

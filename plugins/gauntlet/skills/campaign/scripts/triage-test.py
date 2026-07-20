@@ -567,6 +567,52 @@ def t_quoted_frontmatter_keys_are_code() -> None:
     check("below the mechanical floor" in err, f"the refusal must name the floor: {err!r}")
 
 
+def t_flow_style_frontmatter_is_code() -> None:
+    """Flow-style top-level frontmatter — a single ``{...}`` mapping — is valid YAML that the line-based
+    block-key scan does not match, so before the root fix it read as prose and cleared the floor. The
+    interior is now validated as a plain block mapping; a flow mapping is not one, so it fails closed to
+    CODE. Both a {name, description} and an {agent, model} flow mapping floor STANDARD end to end and veto a
+    decided --tier TRIVIAL. (The paths carry no agent token, so only the frontmatter can force CODE.)"""
+    for stem, interior in (("operator-flow", "{name: operator, description: agent behavior}"),
+                           ("model-flow", "{agent: reviewer, model: opus}")):
+        doc = f"---\n{interior}\n---\nBody\n"
+        with repository() as (repo, base):
+            write(repo, f"docs/{stem}.md", doc)
+            head = commit(repo, "flow-style frontmatter")
+            result = derive(repo, base)
+            row = one_file(result)
+            check(row["class"] == M.CODE and result["floor"] == M.STANDARD,
+                  f"flow-style agent frontmatter must be CODE and floor STANDARD: {result!r}")
+            code, out, err = capture_cli(M.main, [
+                "derive", "--worktree", str(repo), "--base", base, "--head-sha", head, "--tier", M.TRIVIAL])
+        check(code == M.EXIT_REFUSED and out == "",
+              f"--tier TRIVIAL must be refused for flow-style frontmatter: {code}/{out!r}")
+        check("below the mechanical floor" in err, f"the refusal must name the floor: {err!r}")
+
+
+def t_unparseable_frontmatter_fails_closed_to_code() -> None:
+    """A frontmatter interior the line-based block extractor cannot COMPLETELY account for — here a value
+    whose flow sequence is continued across lines and closes with ``]`` at column 0 — fails closed to CODE
+    regardless of its keys. Its keys (``title``, ``links``) are NOT agent keys and NOT {name, description},
+    so the ONLY thing forcing CODE is the fail-closed rule: a frontmatter that cannot be fully parsed is
+    never read as prose. Floor STANDARD end to end, --tier TRIVIAL vetoed."""
+    doc = "---\ntitle: Notes\nlinks: [\n  first,\n  second,\n]\n---\nBody\n"
+    cls, reasons = M._path_class("docs/notes.md", doc.encode("utf-8"))
+    check(cls == M.CODE and any("frontmatter" in r for r in reasons),
+          f"an unparseable frontmatter interior must fail closed to CODE: {cls}: {reasons}")
+    with repository() as (repo, base):
+        write(repo, "docs/notes.md", doc)
+        head = commit(repo, "unparseable frontmatter")
+        result = derive(repo, base)
+        check(result["floor"] == M.STANDARD and one_file(result)["class"] == M.CODE,
+              f"unparseable frontmatter must floor STANDARD: {result!r}")
+        code, out, err = capture_cli(M.main, [
+            "derive", "--worktree", str(repo), "--base", base, "--head-sha", head, "--tier", M.TRIVIAL])
+    check(code == M.EXIT_REFUSED and out == "",
+          f"--tier TRIVIAL must be refused for unparseable frontmatter: {code}/{out!r}")
+    check("below the mechanical floor" in err, f"the refusal must name the floor: {err!r}")
+
+
 def t_frontmatter_runs_for_all_prose_extensions() -> None:
     """The agent-frontmatter escape runs for every prose-like extension _is_human_doc accepts, not just
     `.md`: a docs/*.txt or *.rst carrying agent frontmatter is CODE, not prose that clears the floor."""
@@ -668,6 +714,8 @@ CASES = [
     ("blob-read-fail", "a failed git show on an existing regular side fails closed (exit 2)", t_blob_read_failure_on_existing_side_refuses),
     ("nonregular-read-skip", "a non-regular side is CODE by mode; its blob is never read", t_nonregular_side_read_failure_is_tolerated),
     ("quoted-frontmatter", "quoted YAML frontmatter keys still classify CODE", t_quoted_frontmatter_keys_are_code),
+    ("flow-frontmatter", "flow-style {..} agent frontmatter fails closed to CODE", t_flow_style_frontmatter_is_code),
+    ("unparseable-frontmatter", "frontmatter the extractor cannot fully parse fails closed to CODE", t_unparseable_frontmatter_fails_closed_to_code),
     ("frontmatter-extensions", "the frontmatter check runs for .txt/.rst prose too", t_frontmatter_runs_for_all_prose_extensions),
     ("frontmatter-long", "frontmatter closing past line 100 still classifies CODE", t_frontmatter_closing_past_line_100_is_code),
     ("frontmatter-unterminated", "an unterminated frontmatter block fails closed to CODE", t_unterminated_frontmatter_fails_closed_to_code),
