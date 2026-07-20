@@ -138,11 +138,21 @@ def _validate_ref(root: Path, value: str, role: str) -> None:
 
 
 def _validate_state(header: dict, row: dict, pr: str, root: Path, view: dict,
-                    *, check_live_refs: bool = True) -> None:
-    # `check_live_refs=False` drops ONLY the live head/base/branch equality pins below — the checks a
-    # MERGE needs to land on the exact reviewed tip. The ledger-only CLOSED close-out (execute()) passes
-    # it: it records terminal `aborted` and touches nothing else, so a head push or base/branch rename
-    # before the close is irrelevant to it. Every non-close-out caller keeps the pins (the default).
+                    *, check_live_refs: bool = True, check_cleanup_ownership: bool = True) -> None:
+    # Two INDEPENDENT relaxations, both defaulting to the FULL validation every cleanup-performing caller
+    # needs. A caller drops a relaxation ONLY when the path it guards does not use what that relaxation
+    # checks; the ledger-only CLOSED close-out and its aborted-repeat drop BOTH (they merge nothing and
+    # clean nothing), every other caller keeps both.
+    #   * `check_live_refs=False` drops the live head/base/branch equality pins below — the checks a MERGE
+    #     needs to land on the exact reviewed tip. A head push or base/branch rename before a CLOSED
+    #     close-out is irrelevant to a row that only records terminal `aborted`.
+    #   * `check_cleanup_ownership=False` drops the cleanup-ownership fields (`worktree`, `worktree_owned`,
+    #     `branch_owned`). The close-out performs NO local cleanup, so it must not require them resolved: a
+    #     HALF-ADOPTED row (pr-adopt.py registers the ledger row BEFORE it resolves the worktree, so its
+    #     documented git-failure path leaves those three at their ROW_DEFAULTS "-") that is then CLOSED on
+    #     GitHub must still TERMINATE, not wedge non-terminal forever — a CLOSED PR never re-enters the
+    #     open snapshot to be re-gated, so a refusal here re-routes the finalizer to the same failing
+    #     call every heartbeat. Every cleanup-performing caller keeps these (the default).
     if row.get("pr") != pr:
         raise Refusal(f"ledger row belongs to PR {row.get('pr')}, not PR {pr}")
     if not pr.isdecimal() or int(pr) < 1:
@@ -162,15 +172,15 @@ def _validate_state(header: dict, row: dict, pr: str, root: Path, view: dict,
         raise Refusal(f"ledger reviews_ok {row.get('reviews_ok')!r} is malformed")
     if row.get("ci") not in ("green", "red", "pending"):
         raise Refusal(f"ledger ci {row.get('ci')!r} is malformed")
-    if row.get("worktree_owned") not in ("yes", "no"):
-        raise Refusal(f"ledger worktree_owned {row.get('worktree_owned')!r} is unresolved")
-    if row.get("branch_owned") not in ("yes", "no"):
-        raise Refusal(f"ledger branch_owned {row.get('branch_owned')!r} is unresolved")
-    if row["branch_owned"] == "yes" and row["worktree_owned"] != "yes":
-        raise Refusal("branch_owned=yes with worktree_owned=no is not an adoption-produced ownership state")
-    worktree = Path(row.get("worktree", ""))
-    if not worktree.is_absolute():
-        raise Refusal("ledger worktree must be an absolute path")
+    if check_cleanup_ownership:
+        if row.get("worktree_owned") not in ("yes", "no"):
+            raise Refusal(f"ledger worktree_owned {row.get('worktree_owned')!r} is unresolved")
+        if row.get("branch_owned") not in ("yes", "no"):
+            raise Refusal(f"ledger branch_owned {row.get('branch_owned')!r} is unresolved")
+        if row["branch_owned"] == "yes" and row["worktree_owned"] != "yes":
+            raise Refusal("branch_owned=yes with worktree_owned=no is not an adoption-produced ownership state")
+        if not Path(row.get("worktree", "")).is_absolute():
+            raise Refusal("ledger worktree must be an absolute path")
     if check_live_refs:
         if view["headRefOid"] != row["head_sha"]:
             raise Refusal(
@@ -189,7 +199,8 @@ def _validate_state(header: dict, row: dict, pr: str, root: Path, view: dict,
     foreign = [name for name in run_labels if name != ours]
     if foreign:
         raise Refusal(f"PR {pr} also carries another run's owner label {foreign[0]}")
-    if row["worktree_owned"] == "yes":
+    if check_cleanup_ownership and row["worktree_owned"] == "yes":
+        worktree = Path(row["worktree"])
         expected = root / ".worktrees" / branch
         if os.path.normpath(str(worktree)) != os.path.normpath(str(expected)):
             raise Refusal(
@@ -378,9 +389,11 @@ def execute(ledger: Path, pr: str, project_root: Path, repo: str,
     # loop-control.md Step 4 routes here (a human closed the PR, or the driver died after `gh pr close`).
     # There is NOTHING to merge and NOTHING to clean up: the branch content never reached `<base>`, so an
     # owned worktree/branch holds UNMERGED work that removing it would destroy. This close-out is
-    # ledger-only, so the live head/base/branch pins do NOT apply to it (`check_live_refs=False`): a push
-    # that advanced the head before the close, or a base/branch rename, must still TERMINATE the row, not
-    # wedge it non-terminal forever (a CLOSED PR never re-enters the open snapshot to be re-gated). ANY
+    # ledger-only, so NEITHER the live head/base/branch pins (`check_live_refs=False`) NOR the
+    # cleanup-ownership fields (`check_cleanup_ownership=False`) apply to it: a push that advanced the head
+    # before the close, a base/branch rename, OR a HALF-ADOPTED row whose worktree/ownership fields never
+    # resolved must still TERMINATE the row, not wedge it non-terminal forever (a CLOSED PR never re-enters
+    # the open snapshot to be re-gated, so a refusal here re-routes the finalizer to the same failure). ANY
     # non-terminal row — `in_review` OR any held status (`L.HELD_STATUSES`) — is a real close-out: a CLOSED
     # PR moots every held reason (nothing left to merge, approve, adjudicate, or repair), and a human
     # closing a parked PR IS the resolution. Only a `merged` row with a CLOSED live state is a contradiction
@@ -390,11 +403,14 @@ def execute(ledger: Path, pr: str, project_root: Path, repo: str,
     close_out = view["state"] == "CLOSED" and row["status"] not in ("merged", "aborted")
     # An already-`aborted` row whose PR is still CLOSED is the aborted TERMINAL-REPEAT, symmetric with the
     # `merged`-repeat no-op below: like the fresh close-out it is ledger-only (nothing to merge or clean up),
-    # so it too drops the live head/base/branch pins — a push or base/branch rename that landed before the
-    # close must not turn a settled no-op into a spurious refusal. The `aborted` block below is its
-    # CLOSED-only guard; a live OPEN/MERGED keeps the pins (its refusal is a contradiction, not a no-op).
+    # so it too drops BOTH the live head/base/branch pins and the cleanup-ownership fields — a push or
+    # base/branch rename that landed before the close, or an unresolved half-adoption worktree, must not
+    # turn a settled no-op into a spurious refusal. The `aborted` block below is its CLOSED-only guard; a
+    # live OPEN/MERGED keeps the full validation (its refusal is a contradiction, not a no-op).
     aborted_repeat = row["status"] == "aborted" and view["state"] == "CLOSED"
-    _validate_state(header, row, pr, root, view, check_live_refs=not (close_out or aborted_repeat))
+    relaxed = close_out or aborted_repeat
+    _validate_state(header, row, pr, root, view,
+                    check_live_refs=not relaxed, check_cleanup_ownership=not relaxed)
     if close_out:
         _mark_terminal(ledger, pr, "aborted")
         return {"status": "closed-unmerged", "pr": pr, "cleanup": {}}

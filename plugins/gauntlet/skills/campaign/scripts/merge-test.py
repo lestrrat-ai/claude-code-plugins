@@ -82,11 +82,15 @@ class Fake:
         self.view_base = view_base or self.base
 
     def ledger(self, path: Path, *, worktree: "Path | None" = None, branch: "str | None" = None,
-               run_id="g1") -> None:
+               run_id="g1", worktree_field: "str | None" = None) -> None:
         header = dict(L.HEADER_DEFAULTS, run_id=run_id, base_branch=self.base)
         row = dict(L.ROW_DEFAULTS)
+        # `worktree_field` writes the row's worktree column VERBATIM — passing the ROW_DEFAULTS "-" models a
+        # HALF-ADOPTION (pr-adopt.py registered the row before it resolved the worktree). Otherwise the
+        # column is the absolute worktree path, resolved like an adopted row.
+        wt = worktree_field if worktree_field is not None else str(worktree or self.worktree)
         row.update(pr="9", id="pr9", branch=branch or self.branch,
-                   worktree=str(worktree or self.worktree), worktree_owned=self.worktree_owned,
+                   worktree=wt, worktree_owned=self.worktree_owned,
                    branch_owned=self.branch_owned, head_sha=SHA, reviews_ok=self.reviews,
                    ci=self.ci, tier="HIGH", status=self.status)
         L.dump(path, header, [row])
@@ -630,6 +634,34 @@ def t_absent_snapshot_closed_row_terminates():
         finish(td, real)
 
 
+def t_half_adopted_closed_row_closes_out_without_cleanup_fields():
+    # A HALF-ADOPTION: pr-adopt.py registers the ledger row (step 4) BEFORE it resolves the worktree
+    # (step 5), and its documented git-failure path returns with worktree/worktree_owned/branch_owned left
+    # at their ROW_DEFAULTS "-". If that PR is then CLOSED on GitHub, the close-out records `aborted` and
+    # performs NO local cleanup, so it must NOT require those three fields — validating them (the old
+    # over-strict path) refused on the unresolved worktree_owned, leaving status=in_review. Because a CLOSED
+    # PR is absent from the open snapshot, the heartbeat re-routes it to this same finalizer forever (a wedge
+    # loop). The close-out must terminate as `aborted`, clean NOTHING, and never touch the unresolved fields.
+    td, root, f, led, real = scenario(state="CLOSED", worktree_owned="-", branch_owned="-")
+    try:
+        f.ledger(led, worktree_field="-")  # the half-adoption defaults: all three cleanup fields unresolved
+        code, result, err = invoke(f, led, root)
+        check(code == 0, f"half-adopted CLOSED row did not close out (over-strict validation?): {err}")
+        check(status(led) == "aborted",
+              f"half-adopted CLOSED row must terminate as aborted, got {status(led)!r}")
+        check(result is not None and result["status"] == "closed-unmerged" and result["cleanup"] == {},
+              f"the close-out must report closed-unmerged with no cleanup: {result}")
+        check(f.merged_calls == 0, "the half-adopted close-out issued a merge command")
+        check(not any(argv[:3] == ["gh", "pr", "merge"] for argv, _ in f.calls),
+              "the half-adopted close-out issued a merge command")
+        check(not any("worktree" in argv and "remove" in argv for argv, _ in f.calls),
+              "the half-adopted close-out performed a local cleanup operation")
+        check(f.worktree_present and f.branch_present,
+              "the half-adopted close-out destroyed local resources")
+    finally:
+        finish(td, real)
+
+
 def t_closed_out_terminates_despite_moved_head_base_or_branch():
     # The CLOSED close-out is LEDGER-ONLY (records `aborted`, merges nothing, cleans nothing), so the strict
     # live head/base/branch pins that gate a MERGE do not apply to it. Their trigger is ordinary same-repo
@@ -745,6 +777,7 @@ CASES = [
     ("merge-method", "merge method is a validated input; squash-disabled repo has a prevailing-method recourse", t_merge_method_input_validated_and_applied),
     ("absent-resume", "an absent-but-unfinalized MERGED row resumes its remaining phases through run", t_absent_snapshot_merged_row_resumes_via_run),
     ("absent-closed", "an absent-but-unfinalized CLOSED-without-merge row terminates as aborted with no cleanup", t_absent_snapshot_closed_row_terminates),
+    ("half-adopted-closed", "a half-adopted CLOSED row closes out to aborted without requiring the cleanup-ownership fields", t_half_adopted_closed_row_closes_out_without_cleanup_fields),
     ("closed-out-moved-refs", "the CLOSED close-out terminates as aborted despite a moved head, base, or branch", t_closed_out_terminates_despite_moved_head_base_or_branch),
     ("closed-out-held-statuses", "a CLOSED PR closes out every held status to aborted; merged+CLOSED stays refused", t_closed_out_terminates_every_held_status),
     ("absent-routing", "the absent fact routes reconcile -> merge.py run, which finalizes MERGED and CLOSED sides", t_absent_routing_decision),
