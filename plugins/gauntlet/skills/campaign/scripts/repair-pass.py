@@ -359,6 +359,7 @@ def collect_rounds(rundir: Path, pr: str, expected_rounds: int) -> list[dict]:
                      f"({len(done)} of {len(units)} plan units done)")
             identity = RP.check_identity(events, pr, str(round_no), str(attempt_no))
             findings = load_historical_findings(progress)
+            report_result = RP.parse_report(progress)
         except RP.Defect as exc:
             fail(f"active attempt {attempt_no} of pr {pr} round {round_no} is unusable: {exc}")
 
@@ -375,14 +376,30 @@ def collect_rounds(rundir: Path, pr: str, expected_rounds: int) -> list[dict]:
 
         audit_file = rundir / f"audit-{pr}-{round_no}.md"
         gating_findings = sum(1 for finding in findings if RP.gating(finding))
-        # F1 — a cap round's verdict is DERIVABLE from validated state: a cap trips ONLY on a NOT SATISFIED,
-        # and review-pass.py's coherence rule is an IF AND ONLY IF — NOT SATISFIED exactly when at least one
-        # GATING finding stands. So a cap round with zero gating findings is history review-pass.py itself
-        # would reject as `unusable`; refuse it here rather than hand the reassessment worker a NOT SATISFIED
-        # with nothing behind it. BOUNDARY: we check only the coherence the artifacts + the `repairing`
-        # status make derivable. A NON-cap round's verdict lives solely in the report PROSE, which
-        # review-pass.py deliberately never parses and neither do we — that round is left unchecked on
-        # purpose, not by oversight; a prose verdict reader would be a second, competing spelling of the rule.
+        # F1 — every landed round's report now carries a terminal `VERDICT:` line, and #126's
+        # `RP.parse_report` (the ONE sanctioned report reader, already called by `review-pass.py
+        # evaluate_detail`) is what validates that framing. Routing each active report through it above makes
+        # a truncated or prose-only report with no `VERDICT:` line fail CLOSED here — as every sibling
+        # artifact already does — rather than bundling its bytes at exit 0. With the parsed verdict in hand,
+        # re-check the same coherence review-pass.py enforced when the round landed, so no round reaches the
+        # reassessment worker dressed as sound evidence review-pass.py itself would reject:
+        #   * DEFERRED is not a verdict; a landed, complete round owes a binary one.
+        #   * the contract is an IF AND ONLY IF — NOT SATISFIED exactly when at least one GATING finding stands.
+        verdict = report_result["verdict"]
+        if verdict == RP.DEFERRED:
+            fail(f"pr {pr} review round {round_no} reports a DEFERRED verdict, not a binary one — a landed, "
+                 f"complete review round owes {RP.VERDICTS}; this is history review-pass.py rejects as unusable")
+        if verdict == RP.NOT_SATISFIED and not gating_findings:
+            fail(f"pr {pr} review round {round_no} reports NOT SATISFIED but records NO gating finding — the "
+                 f"coherence rule is an IF AND ONLY IF, so this is history review-pass.py rejects as unusable")
+        if verdict == RP.SATISFIED and gating_findings:
+            fail(f"pr {pr} review round {round_no} reports SATISFIED while {gating_findings} gating finding(s) "
+                 f"stand — the coherence rule is an IF AND ONLY IF, so this is history review-pass.py rejects "
+                 f"as unusable")
+        # A cap round additionally must carry a gating finding: a cap trips ONLY on a NOT SATISFIED, and the
+        # coherence rule above then requires at least one gating finding. This also refuses a cap round whose
+        # report claims SATISFIED with no gating finding — incoherent with the `repairing` status a cap sets —
+        # which the per-verdict checks above do not reach.
         if round_no in cap_rounds and not gating_findings:
             fail(f"pr {pr} review round {round_no} reached a repair cap (status={L.REPAIR_STATUS}) but "
                  f"records NO gating finding. A cap trips only on NOT SATISFIED, which by the coherence rule "
@@ -413,12 +430,16 @@ def collect_rounds(rundir: Path, pr: str, expected_rounds: int) -> list[dict]:
     return rounds
 
 
-def diff_growth(worktree: Path, base_ref: str, head_sha: str) -> list[dict]:
-    """Measure every current PR path at every commit, in Git's numeric chronological order."""
-    raw_paths = git_bytes(worktree, "diff", "--name-only", "-z", f"{base_ref}...{head_sha}")
+def diff_growth(worktree: Path, base_sha: str, head_sha: str) -> list[dict]:
+    """Measure every current PR path at every commit, in Git's numeric chronological order.
+
+    `base_sha` is the immutable commit the caller pinned `origin/<base>` to once (F2); every query here
+    resolves against that one SHA, never a symbolic ref a concurrent fetch could advance mid-build.
+    """
+    raw_paths = git_bytes(worktree, "diff", "--name-only", "-z", f"{base_sha}...{head_sha}")
     paths = sorted(part for part in raw_paths.split(b"\0") if part)
     commits = [line for line in git_text(worktree, "rev-list", "--reverse", "--topo-order",
-                                          f"{base_ref}..{head_sha}").splitlines() if line]
+                                          f"{base_sha}..{head_sha}").splitlines() if line]
     curve = []
     for commit in commits:
         meta = git_bytes(worktree, "show", "-s", "--format=%aI%x00%s", commit).removesuffix(b"\n")
@@ -599,7 +620,15 @@ def cmd_bundle(path: Path, args) -> int:
     if not isinstance(base, str) or not base.strip() or base == "-":
         fail("ledger header has no usable base_branch")
     base_ref = f"origin/{base}"
-    git_bytes(worktree, "rev-parse", "--verify", f"{base_ref}^{{commit}}")
+    # F2 — resolve the symbolic remote-tracking ref to ONE immutable commit SHA BEFORE any bundle read, and
+    # use that SHA (never `base_ref`) for the current diff and every growth query below. `origin/<base>` is
+    # shared mutable state a concurrent campaign fetch advances; re-resolving it per Git read would let one
+    # bundle mix two base SHAs (current_diff vs the old base, diff_growth vs the new). Pinning it here is the
+    # symmetric completion of the HEAD-moved guard this build already has, and lifts the base binding from a
+    # symbolic string to a checkable SHA the manifest carries and `decide` re-verifies.
+    base_sha = git_text(worktree, "rev-parse", "--verify", f"{base_ref}^{{commit}}").strip()
+    if not RP.SHA_RE.match(base_sha):
+        fail(f"Git returned a non-canonical base SHA {base_sha!r} for {base_ref}")
 
     try:
         expected_rounds = int(row["review_rounds"])
@@ -618,8 +647,8 @@ def cmd_bundle(path: Path, args) -> int:
         fail(f"intent for pr {pr} is unusable: {exc}")
     intent_text = read_utf8(intent_file, "intent")
     current_diff = git_text(worktree, "diff", "--binary", "--no-ext-diff",
-                            f"{base_ref}...{head_sha}")
-    growth = diff_growth(worktree, base_ref, head_sha)
+                            f"{base_sha}...{head_sha}")
+    growth = diff_growth(worktree, base_sha, head_sha)
     final_head = git_text(worktree, "rev-parse", "HEAD").strip()
     if final_head != head_sha:
         fail(f"worktree HEAD moved while building the bundle: started at {head_sha}, ended at {final_head}")
@@ -630,6 +659,7 @@ def cmd_bundle(path: Path, args) -> int:
         "pr": pr,
         "head_sha": head_sha,
         "base_ref": base_ref,
+        "base_sha": base_sha,
         "ledger": {"path": str(path.resolve()), "row": {field: row[field] for field in L.ROW_FIELDS}},
         "intent": artifact(intent_file, intent_text),
         "rounds": rounds,
@@ -662,6 +692,7 @@ def cmd_bundle(path: Path, args) -> int:
         "pr": pr,
         "head_sha": head_sha,
         "base_ref": base_ref,
+        "base_sha": base_sha,
         "rounds": [{"round": item["round"], "launch_attempt": item["launch_attempt"],
                     "review_head_sha": item["review_head_sha"]} for item in rounds],
     }
@@ -682,10 +713,10 @@ def cmd_bundle(path: Path, args) -> int:
 
 MANIFEST_KEYS = {
     "schema", "bundle_sha256", "prompt_sha256", "prompt_path", "ledger_path", "run_dir", "worktree",
-    "pr", "head_sha", "base_ref", "rounds",
+    "pr", "head_sha", "base_ref", "base_sha", "rounds",
 }
 BUNDLE_KEYS = {
-    "schema", "pr", "head_sha", "base_ref", "ledger", "intent", "rounds", "diff_growth",
+    "schema", "pr", "head_sha", "base_ref", "base_sha", "ledger", "intent", "rounds", "diff_growth",
     "current_diff", "permitted", "decision_definitions",
 }
 
@@ -727,6 +758,15 @@ def validate_decision_bundle(path: Path, header: dict, row: dict, pr: str, recor
     live_head = git_text(manifest_worktree, "rev-parse", "HEAD").strip()
     if live_head != row["head_sha"]:
         fail(f"bundle is stale: worktree HEAD moved to {live_head}, row and bundle name {row['head_sha']}")
+    # F2 — the base is bound as an immutable SHA, and re-verified here symmetrically with HEAD: if
+    # `origin/<base>` has advanced since the bundle was built, its diffs describe a base that is no longer
+    # current, so refuse and rebuild rather than decide on a stale base.
+    if not isinstance(manifest["base_sha"], str) or not RP.SHA_RE.match(manifest["base_sha"]):
+        fail(f"bundle manifest base_sha is not a commit SHA: {manifest['base_sha']!r}")
+    live_base = git_text(manifest_worktree, "rev-parse", "--verify", f"{expected_base_ref}^{{commit}}").strip()
+    if live_base != manifest["base_sha"]:
+        fail(f"bundle is stale: base ref {expected_base_ref} moved to {live_base}, bundle names "
+             f"{manifest['base_sha']} — rebuild the bundle against the current base")
     for field in ("bundle_sha256", "prompt_sha256"):
         if not isinstance(manifest[field], str) or not SHA256_RE.match(manifest[field]):
             fail(f"bundle manifest field {field} is not a sha256")
@@ -772,6 +812,8 @@ def validate_decision_bundle(path: Path, header: dict, row: dict, pr: str, recor
         fail(f"bundle prompt {prompt_path} payload is not canonical deterministic JSON")
     if payload.get("base_ref") != manifest["base_ref"]:
         fail("bundle prompt and manifest name different base refs")
+    if payload.get("base_sha") != manifest["base_sha"]:
+        fail("bundle prompt and manifest name different base SHAs")
     ledger_snapshot = payload.get("ledger")
     if not isinstance(ledger_snapshot, dict) or set(ledger_snapshot) != {"path", "row"}:
         fail("bundle prompt has no valid ledger snapshot")

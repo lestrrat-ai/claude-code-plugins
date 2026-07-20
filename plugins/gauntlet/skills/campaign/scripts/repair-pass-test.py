@@ -61,7 +61,10 @@ def decision_repo(tmp: Path) -> "tuple[Path, str]":
                 raise RuntimeError(result.stderr.decode(errors="replace"))
         (repo / "base.txt").write_text("base\n")
         for argv in (["git", "-C", str(repo), "add", "base.txt"],
-                     ["git", "-C", str(repo), "commit", "-q", "-m", "base"]):
+                     ["git", "-C", str(repo), "commit", "-q", "-m", "base"],
+                     # decide re-resolves `origin/<base>` to verify the bundle's pinned base SHA (F2), so the
+                     # decision-door worktree must carry the remote-tracking ref, at the one commit it holds.
+                     ["git", "-C", str(repo), "update-ref", "refs/remotes/origin/main", "HEAD"]):
             result = subprocess.run(argv, capture_output=True, check=False)
             if result.returncode != 0:
                 raise RuntimeError(result.stderr.decode(errors="replace"))
@@ -104,11 +107,14 @@ def bind_record(ledger: Path, record: Path, pr: str, head_sha: str, worktree: Pa
     check(row is not None, f"fixture ledger has no row for pr {pr}")
     assert row is not None
     permitted = R.permitted_record(row)
+    # `decision_repo` points `origin/main` at its single commit, which is also this fixture's `head_sha`, so
+    # the bundle's pinned base SHA (F2) is `head_sha` here — decide re-resolves `origin/main` and matches it.
     payload = R.canonical_json({
         "schema": R.BUNDLE_SCHEMA,
         "pr": pr,
         "head_sha": head_sha,
         "base_ref": "origin/main",
+        "base_sha": head_sha,
         "ledger": {"path": str(ledger.resolve()), "row": row},
         "intent": {},
         "rounds": [],
@@ -134,6 +140,7 @@ def bind_record(ledger: Path, record: Path, pr: str, head_sha: str, worktree: Pa
         "pr": pr,
         "head_sha": head_sha,
         "base_ref": "origin/main",
+        "base_sha": head_sha,
         "rounds": [],
     }))
     record.write_text(
@@ -430,19 +437,27 @@ def bundle_setup(tmp: Path, *, rounds: int = 1, relaunch_round: "int | None" = N
     rundir.mkdir()
     (rundir / "intent-1.md").write_text(INTENT)
     for round_no in range(1, rounds + 1):
+        is_cap = round_no == rounds
+        active_attempt = 2 if relaunch_round == round_no else 1
         report = f"round {round_no}\n\nVERDICT: NOT SATISFIED\n"
-        write_review_attempt(rundir, round_no, 1, head_sha, report,
-                             audit="audit bytes for round 2\n" if round_no == 2 else None)
+        # Every round here returns NOT SATISFIED, and #126's `parse_report` verdict now coheres with the
+        # findings per round (review-pass.py's IF AND ONLY IF). So each round carries a gating finding, and
+        # every NON-cap round also records its finding audit — a cap round legitimately skips its audit (the
+        # NOT-SATISFIED action sequence goes straight to `repairing`).
+        audit = None if is_cap else f"audit bytes for round {round_no}\n"
+        write_review_attempt(rundir, round_no, 1, head_sha, report, audit=audit)
         if relaunch_round == round_no:
             write_review_attempt(rundir, round_no, 1, head_sha,
                                  "DEAD ATTEMPT 1 MUST NOT ENTER THE BUNDLE\n")
             write_review_attempt(rundir, round_no, 2, head_sha,
                                  "ACTIVE ATTEMPT 2\n\nVERDICT: NOT SATISFIED\n",
-                                 audit="active audit\n" if round_no == 2 else None)
+                                 audit="active audit\n" if round_no == 2 else audit)
+        if not is_cap:
+            write_cap_finding(rundir, round_no, active_attempt)
 
     # The last round is the cap round (the NOT SATISFIED that tripped the cap and set `repairing`). By the
     # coherence rule it must carry a gating finding; give it one so the history is usable. `cap_finding=False`
-    # builds the incoherent history the F1 refusal fixture needs.
+    # builds the incoherent history the cap-needs-finding refusal fixture needs.
     if cap_finding:
         write_cap_finding(rundir, rounds, 2 if relaunch_round == rounds else 1)
 
@@ -537,7 +552,9 @@ def t_bundle_refuses_missing_stale_and_duplicate_inputs(tmp: Path) -> None:
     (missing_case["rundir"] / "review-1-1.txt").unlink()
     missing_output = missing_case["rundir"] / "bundle.txt"
     code, _, err = run_bundle(missing_case, missing_output)
-    check(code == 1 and "missing required review report" in err, f"missing report was not refused: {err!r}")
+    # The report is now read through `parse_report` (the one sanctioned reader), whose missing-file Defect
+    # names the "active review report" — routing it there is exactly the F1 fix.
+    check(code == 1 and "active review report" in err, f"missing report was not refused: {err!r}")
     check(not missing_output.exists() and not Path(str(missing_output) + ".manifest.json").exists(),
           "missing input left partial bundle output")
 
@@ -559,16 +576,10 @@ def t_bundle_refuses_missing_stale_and_duplicate_inputs(tmp: Path) -> None:
     check(code == 1 and "pass_identity" in err, f"duplicate active identity was not refused: {err!r}")
     check(not duplicate_output.exists(), "duplicate active attempt left bundle output")
 
+    # Round 1 of a 2-round history is a non-cap round that carries a gating finding, so it MUST record its
+    # finding audit. Drop that audit and the bundle refuses the round before any output.
     audit_case = bundle_setup(tmp / "missing-audit", rounds=2)
-    (audit_case["rundir"] / "review-1-1.findings.jsonl").write_text(json.dumps({
-        "type": R.RP.FINDING,
-        "file": "feature.txt",
-        "line": "2",
-        "writer": "end-user",
-        "purpose": "assemble complete repair history deterministically",
-        "repro": "supply the feature input through the documented user path",
-        "fix": "handle the feature input at the shared boundary",
-    }) + "\n")
+    (audit_case["rundir"] / "audit-1-1.md").unlink()
     audit_output = audit_case["rundir"] / "bundle.txt"
     code, _, err = run_bundle(audit_case, audit_output)
     check(code == 1 and "missing required finding audit" in err,
@@ -618,7 +629,11 @@ def t_bundle_exempts_every_prior_cap_round(tmp: Path) -> None:
 
     # The repair landed, the row returned to review, two more rounds ran, and round 3 is the SECOND cap.
     head = case["head_sha"]
-    write_review_attempt(case["rundir"], 2, 1, head, "round 2\n\nVERDICT: SATISFIED\n")  # 0 gating, no audit
+    # A clean intermediate round: SATISFIED coheres with 0 gating findings, and #126's `parse_report`
+    # requires its one RESIDUAL-RISK line immediately above the verdict. No audit is owed (0 gating).
+    write_review_attempt(case["rundir"], 2, 1, head,
+                         "round 2\n\nRESIDUAL-RISK: feature.txt — the clean re-review after the repair "
+                         "landed\nVERDICT: SATISFIED\n")
     write_review_attempt(case["rundir"], 3, 1, head, "round 3\n\nVERDICT: NOT SATISFIED\n")
     write_cap_finding(case["rundir"], 3)  # the second cap round carries its gating finding, no audit
     # `review_rounds`/`repair_count` have no CLI door, so place the second-cap state directly.
@@ -657,6 +672,76 @@ def t_bundle_refuses_a_cap_round_with_no_gating_finding(tmp: Path) -> None:
           f"a cap round with zero gating findings was bundled as sound history: {err!r}")
     check(not output.exists() and not R.bundle_manifest_path(output).exists(),
           "the refused incoherent history left bundle output")
+
+
+def t_bundle_refuses_a_report_with_no_verdict(tmp: Path) -> None:
+    """A truncated / prose-only active report with no terminal `VERDICT:` line is refused (F1).
+
+    Every sibling active artifact — progress, identity, findings — is re-validated through the sanctioned
+    `review-pass.py` readers and fails CLOSED on malformed input. The report was the one exception: read with
+    a bare exists+nonempty check, a killed-worker report (the file's own founding scenario) bundled at exit 0
+    while `review-pass.py`'s own reader rejects it. Routing it through #126's `parse_report` — the ONE
+    sanctioned report reader — closes that fail-open gap without a second parser.
+    """
+    case = bundle_setup(tmp, rounds=1, origin="external")  # cap_finding=True: the gating finding is present
+    report = case["rundir"] / "review-1-1.txt"
+    report.write_text("The reviewer began analyzing feature.txt and then the process was killed mid-sentence\n")
+    output = case["rundir"] / "bundle.txt"
+    code, _, err = run_bundle(case, output)
+    check(code == 1 and "VERDICT:" in err,
+          f"a report with no terminal VERDICT line was bundled instead of refused: {err!r}")
+    check(not output.exists() and not R.bundle_manifest_path(output).exists(),
+          "the refused unparseable report left bundle output")
+
+
+def t_bundle_pins_base_sha_against_a_racing_fetch(tmp: Path) -> None:
+    """`origin/<base>` is resolved to ONE immutable SHA before any read, so a concurrent fetch that advances
+    the remote-tracking ref mid-build cannot make the bundle mix two base SHAs (F2).
+
+    Before the fix, `current_diff` resolved `origin/<base>` and `diff_growth` resolved it again; a fetch
+    landing between them produced one bundle describing the PR against two different bases, at exit 0, with
+    only the symbolic ref in the manifest so decide could not detect the mix. Pinning the base to a SHA up
+    front is the symmetric completion of the HEAD-moved guard: every read uses the same pinned base.
+    """
+    case = bundle_setup(tmp, rounds=1, origin="external")
+    repo, head = case["repo"], case["head_sha"]
+    base_before = git(repo, "rev-parse", "origin/main").stdout.decode().strip()
+    real_git = R._run_git
+    advanced = False
+
+    def racing_git(worktree: Path, *argv: str) -> subprocess.CompletedProcess:
+        """Advance origin/main right after the current-diff read, as a real background fetch would."""
+        nonlocal advanced
+        result = real_git(worktree, *argv)
+        if not advanced and argv[:3] == ("diff", "--binary", "--no-ext-diff"):
+            git(worktree, "update-ref", "refs/remotes/origin/main", head)
+            advanced = True
+        return result
+
+    setattr(R, "_run_git", racing_git)
+    try:
+        output = case["rundir"] / "repair-1-1.prompt.txt"
+        code, _, err = run_bundle(case, output)
+    finally:
+        setattr(R, "_run_git", real_git)
+
+    check(advanced, "the fixture never advanced origin/main mid-build — the race was not exercised")
+    base_after = git(repo, "rev-parse", "origin/main").stdout.decode().strip()
+    check(base_after == head and base_after != base_before,
+          "the fixture did not actually move origin/main between reads")
+    check(code == 0, f"bundle refused a build whose base was pinned before any read: {err!r}")
+    payload = prompt_payload(output)
+    manifest = json.loads(R.bundle_manifest_path(output).read_text())
+    check(payload["base_sha"] == base_before,
+          f"bundle did not pin the pre-race base SHA: {payload['base_sha']!r} != {base_before!r}")
+    check(manifest["base_sha"] == base_before, "manifest bound a different base SHA than the payload")
+    # The single pinned base governs BOTH reads: the feature change is present in the current diff and the
+    # growth curve measures exactly the one feature commit against that base — never one-vs-old, one-vs-new.
+    check("+feature" in payload["current_diff"],
+          "the current diff lost the feature change under the pinned base")
+    check(len(payload["diff_growth"]) == 1,
+          f"diff_growth measured against the moved ref, not the pinned base: "
+          f"{len(payload['diff_growth'])} commits")
 
 
 def t_bundle_resumes_after_context_loss(tmp: Path) -> None:
@@ -879,6 +964,8 @@ CASES = [
     ("bundle-old-intent", "old intent anchors survive; the cap round may have no audit yet", t_bundle_preserves_findings_from_an_older_intent),
     ("bundle-prior-cap", "a second cap builds; every earlier cap round's absent audit is exempt", t_bundle_exempts_every_prior_cap_round),
     ("bundle-cap-needs-finding", "a cap round with no gating finding is unusable history and refused", t_bundle_refuses_a_cap_round_with_no_gating_finding),
+    ("bundle-report-needs-verdict", "a report with no terminal VERDICT line fails closed through parse_report", t_bundle_refuses_a_report_with_no_verdict),
+    ("bundle-base-sha-pinned", "the base is pinned to one SHA before any read; a racing fetch cannot mix bases", t_bundle_pins_base_sha_against_a_racing_fetch),
     ("bundle-resume", "a bundle rebuilt after context loss reuses or regenerates, never wedges", t_bundle_resumes_after_context_loss),
     ("bundle-atomic", "Git and atomic-write failures leave no partial bundle", t_bundle_git_and_atomic_failures_leave_no_output),
     ("decision-bundle-bound", "decide accepts only a record bound to the matching prepared bundle", t_decide_is_bound_to_prepared_bundle),

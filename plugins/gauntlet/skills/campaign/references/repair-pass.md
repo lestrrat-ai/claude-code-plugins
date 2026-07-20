@@ -83,8 +83,11 @@ cumulative per-commit file measurements, current three-dot diff, and the ledger-
 as JSON data. Dynamic bytes never become shell source.
 
 The command writes the prompt and `<output>.manifest.json`, then prints the manifest location and hashes.
-It refuses missing or duplicate active artifacts, an incomplete pass, a stale latest-review/ledger/worktree
-SHA, or a failed Git read. **Re-running it while the decision is still unrecorded is safe and idempotent:**
+It refuses missing or duplicate active artifacts, an incomplete pass, a report whose framing `review-pass.py`
+rejects (no terminal `VERDICT:` line, or a verdict incoherent with the round's findings), a stale
+latest-review/ledger/worktree SHA, or a failed Git read. It resolves `origin/<base>` to one immutable commit
+SHA before any read and binds it, so every diff is measured against a single base and `decide` can detect a
+base that moved. **Re-running it while the decision is still unrecorded is safe and idempotent:**
 because the bundle is deterministic, an existing prompt/manifest pair whose bytes match the freshly rebuilt
 bundle is REUSED — so a heartbeat that built the bundle and died before `decide` simply resumes — a partial
 pair left by a crash mid-write is regenerated, and a non-matching or symlinked output is refused rather than
@@ -114,7 +117,8 @@ repair-pass.py --file <state.jsonl> decide --pr <N> --decision <one of the five>
 decision, and why — must be **on disk**: every heartbeat is a fresh agent instance, and a justification that
 lives only in the context of an agent that has already exited is one nobody can audit. Its first nonblank
 line must copy the prompt's exact `BUNDLE-SHA256: <hash>` marker. `decide` re-hashes the prompt payload and
-refuses a record or manifest for different bytes, PR, ledger, or head SHA.
+refuses a record or manifest for different bytes, PR, ledger, head SHA, or a base ref that has moved since
+the bundle was built.
 
 ### The repair is dispatched only after its decision is recorded
 
