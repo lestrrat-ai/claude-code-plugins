@@ -1,17 +1,27 @@
 #!/usr/bin/env python3
-"""Derive Campaign's review tier from one immutable PR-head diff.
+"""Emit the mechanical FLOOR and file inventory for one immutable PR-head diff.
 
-``references/stage-2-review-gate.md`` (``2a-triage``) owns the policy.  This command owns its
-mechanical execution: resolve a base, read one raw Git diff pinned to the caller's expected 40-character
-HEAD, classify every changed path and mode, then prove HEAD did not move while the evidence was read.
-Systemic-change judgment stays with the driver and crosses the boundary as an explicit closed value.
+``references/stage-2-review-gate.md`` (``2a-triage``) owns the policy.  This command is a mechanical
+INPUT to that policy with ESCALATE-ONLY authority, never the tier decision.  It resolves a base, reads one
+raw Git diff pinned to the caller's expected 40-character HEAD, classifies every changed path and mode,
+then proves HEAD did not move while the evidence was read.  From that it emits a per-file inventory and a
+FLOOR tier — the minimum the mechanics compel:
 
-    triage.py derive --worktree <path> --base <ref> --head-sha <40-hex> \
-        --systemic yes|no|unknown
+  * any SENSITIVE file  -> floor ``HIGH``;
+  * any non-HUMAN-DOC file (or an empty/unresolved diff) -> floor ``STANDARD``;
+  * nothing but human prose -> ``null`` floor (no floor: the orchestrator decides).
+
+It is STRUCTURALLY INCAPABLE of emitting a ``TRIVIAL`` floor: ``TRIVIAL`` is only ever the orchestrator's
+semantic "is this all human prose?" call.  The optional ``--tier`` lets a caller present the tier it
+DECIDED; the command then acts as a LOWER-BOUND check and REFUSES a tier below the floor (veto-downward).
+It never grants a tier and never lowers one.
+
+    triage.py derive --worktree <path> --base <ref> --head-sha <40-hex> [--tier TRIVIAL|STANDARD|HIGH]
     triage.py self-test
 
 Success prints one deterministic JSON object and exits 0.  Any Git failure, malformed evidence, stale
-expected head, or moving head prints no JSON, explains the refusal on stderr, and exits 2.
+expected head, moving head, or a ``--tier`` below the floor prints no JSON, explains the refusal on
+stderr, and exits 2.
 """
 
 from __future__ import annotations
@@ -31,18 +41,6 @@ from _gauntlet.modules import load_module_from_path
 _HERE = Path(__file__).resolve().parent
 SIBLING = _HERE / "triage-test.py"
 
-
-def _load(name: str, filename: str):
-    module = load_module_from_path(name, _HERE / filename)
-    if module is None:
-        raise RuntimeError(f"cannot load {filename}")
-    return module
-
-
-# The review-count formula remains owned by review-pass.py. Triage reports it but does not create a second
-# gate definition that could drift from label and merge consumers.
-RP = _load("campaign_triage_review_pass", "review-pass.py")
-
 EXIT_OK = 0
 EXIT_REFUSED = 2
 
@@ -54,8 +52,13 @@ TRIVIAL = "TRIVIAL"
 STANDARD = "STANDARD"
 HIGH = "HIGH"
 
+# Tier order, low to high. The floor is only ever STANDARD, HIGH, or None (no floor); TRIVIAL is never a
+# floor. A None floor ranks below every tier, so any DECIDED tier — including the orchestrator's TRIVIAL —
+# clears it. The --tier veto compares a driver's decided tier against the floor's rank.
+_TIER_RANK = {TRIVIAL: 0, STANDARD: 1, HIGH: 2}
+TIER_VALUES = frozenset(_TIER_RANK)
+
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-SYSTEMIC_VALUES = frozenset({"yes", "no", "unknown"})
 
 _HUMAN_SUFFIXES = frozenset({".md", ".mdown", ".markdown", ".rst", ".txt", ".adoc", ".asciidoc"})
 _AGENT_DOC_BASENAMES = frozenset({"skill.md", "agents.md", "claude.md"})
@@ -373,11 +376,28 @@ def _classify_change(change: Change, runner: Runner, worktree: str,
     return result
 
 
-def derive(*, worktree: str, base: str, head_sha: str, systemic: str,
+def _floor(files: list[dict]) -> tuple[str | None, str]:
+    """The minimum tier the mechanics compel, and why. Never ``TRIVIAL``: an all-prose diff has NO floor
+    (the orchestrator decides), and an empty/unresolved diff floors to ``STANDARD`` — never vacuously below
+    it."""
+    if any(row["class"] == SENSITIVE for row in files):
+        return HIGH, "a SENSITIVE file is present"
+    if not files:
+        return STANDARD, "no files resolved from the diff — an empty or unreadable diff never floors below STANDARD"
+    if all(row["class"] == HUMAN_DOC for row in files):
+        return None, "every changed file is human-facing prose — no mechanical floor; the orchestrator decides the tier"
+    return STANDARD, "a non-prose (CODE) file is present"
+
+
+def derive(*, worktree: str, base: str, head_sha: str, tier: str | None = None,
            runner: Runner = _real_run) -> dict:
-    """Derive one deterministic tier record or raise ``TriageError`` without emitting partial output."""
-    if systemic not in SYSTEMIC_VALUES:
-        raise TriageError(f"--systemic must be one of {sorted(SYSTEMIC_VALUES)}, got {systemic!r}")
+    """Emit one deterministic inventory-and-floor record, or raise ``TriageError`` without partial output.
+
+    ``tier`` is the caller's DECIDED tier, if any. When supplied it is validated and checked against the
+    floor as a LOWER BOUND: a tier below the floor is refused (veto-downward). The command never grants a
+    tier and never returns ``TRIVIAL`` as a floor."""
+    if tier is not None and tier not in TIER_VALUES:
+        raise TriageError(f"--tier must be one of {sorted(TIER_VALUES)}, got {tier!r}")
     if not SHA_RE.fullmatch(head_sha):
         raise TriageError("--head-sha must be exactly 40 lowercase hexadecimal characters")
     if not Path(worktree).is_dir():
@@ -402,25 +422,20 @@ def derive(*, worktree: str, base: str, head_sha: str, systemic: str,
     if head_after != head_before:
         raise TriageError(f"HEAD moved during triage: started at {head_before}, ended at {head_after}")
 
-    content_high = any(row["class"] == SENSITIVE for row in files)
-    all_human = bool(files) and all(row["class"] == HUMAN_DOC for row in files)
-    unresolved = systemic == "unknown"
-    if content_high or systemic == "yes":
-        tier = HIGH
-    elif all_human and systemic == "no":
-        tier = TRIVIAL
-    else:
-        tier = STANDARD
+    floor, floor_reason = _floor(files)
+    floor_rank = _TIER_RANK[floor] if floor is not None else -1
+    if tier is not None and _TIER_RANK[tier] < floor_rank:
+        raise TriageError(
+            f"decided tier {tier} is below the mechanical floor {floor} ({floor_reason}); "
+            f"the tool escalates only — decide at or above the floor")
 
     return {
         "base": base,
         "diff_base_sha": diff_base_sha,
         "files": files,
+        "floor": floor,
+        "floor_reason": floor_reason,
         "head_sha": head_sha,
-        "required_reviews": RP.required_reviews(tier),
-        "systemic": systemic,
-        "systemic_unresolved": unresolved,
-        "tier": tier,
     }
 
 
@@ -430,7 +445,7 @@ def cmd_derive(args: argparse.Namespace) -> int:
             worktree=args.worktree,
             base=args.base,
             head_sha=args.head_sha,
-            systemic=args.systemic,
+            tier=args.tier,
         )
     except TriageError as exc:
         print(f"triage: REFUSED — {exc}", file=sys.stderr)
@@ -466,11 +481,14 @@ def cmd_self_test(_args: argparse.Namespace) -> int:
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description=next(iter((__doc__ or "").splitlines()), ""))
     sub = root.add_subparsers(dest="command", required=True)
-    derive_parser = sub.add_parser("derive", help="derive a review tier from one pinned Git diff")
+    derive_parser = sub.add_parser(
+        "derive", help="emit the per-file inventory and mechanical floor for one pinned Git diff")
     derive_parser.add_argument("--worktree", required=True)
     derive_parser.add_argument("--base", required=True, help="base revision, commonly origin/<base>")
     derive_parser.add_argument("--head-sha", required=True, help="expected live 40-character HEAD")
-    derive_parser.add_argument("--systemic", required=True, choices=sorted(SYSTEMIC_VALUES))
+    derive_parser.add_argument(
+        "--tier", choices=sorted(TIER_VALUES),
+        help="the caller's DECIDED tier; refused if it is below the mechanical floor (veto-downward)")
     derive_parser.set_defaults(func=cmd_derive)
     test_parser = sub.add_parser("self-test", help="run the sibling fixture suite")
     test_parser.set_defaults(func=cmd_self_test)

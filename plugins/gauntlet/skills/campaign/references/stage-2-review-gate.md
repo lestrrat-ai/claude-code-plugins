@@ -6,30 +6,41 @@
 > - did the pass count → "Does this pass COUNT?"
 > - the status labels look wrong → "Status labels mirror the review gate"
 
-### 2a-triage. PR triage — file class & risk tier (deterministic, per `head_sha`)
+### 2a-triage. PR triage — file class & risk tier (deterministic mechanics, orchestrator-decided tier, per `head_sha`)
 
-**Run `scripts/triage.py derive` to execute file-class triage.** Re-run it every heartbeat against the
-ledger row's current `head_sha`; never classify a diff by eye:
+**The tier is a SPLIT decision.** `scripts/triage.py derive` is a mechanical INPUT with **escalate-only**
+authority: it enumerates the diff and emits the per-file inventory and a **FLOOR** — the minimum the
+mechanics compel. **You, the orchestrator, DECIDE the tier at or above that floor.** The tool can raise the
+floor and veto a below-floor tier; it can **never grant `TRIVIAL`** — that is only ever your semantic
+"is this all human prose?" call. Re-run it every heartbeat against the ledger row's current `head_sha`;
+never classify a diff by eye:
 
 ```text
 python3 <skill-dir>/scripts/triage.py derive \
     --worktree <worktree> --base origin/<base> --head-sha <head_sha> \
-    --systemic yes|no|unknown
+    [--tier <your decided tier>]
 ```
 
-Pass the driver-owned systemic judgment explicitly. Use `unknown` when it cannot be settled; the command
-then reports `systemic_unresolved = true` and refuses a TRIVIAL result. The command resolves the merge-base,
-reads Git's NUL-delimited raw diff and modes at the expected 40-character head, and re-reads `HEAD` after
-classification. A stale expected head, moving head, malformed diff, or failed Git read is a refusal with no
-partial JSON; refresh the row/worktree and retry. On success, require output `head_sha` to equal the row,
-then record output `tier` through `scripts/ledger.py … set --pr <N> --tier <tier>`. The output also carries
-`required_reviews`, the per-file class/reasons, and unresolved systemic state.
+The command resolves the merge-base, reads Git's NUL-delimited raw diff and modes at the expected
+40-character head, and re-reads `HEAD` after classification. A stale expected head, moving head, malformed
+diff, or failed Git read is a refusal with no partial JSON; refresh the row/worktree and retry. On success
+the output carries `head_sha`, the per-file `files` inventory (class + reasons), and the `floor`
+(`HIGH`, `STANDARD`, or `null` for no floor). **Require output `head_sha` to equal the row.** Then DECIDE
+the tier at or above `floor` and record it through `scripts/ledger.py … set --pr <N> --tier <tier>`. To
+have the tool guard your decision mechanically, pass it back as `--tier <decided>`: the command REFUSES
+(exit 2, no JSON) a tier below the floor. `TRIVIAL` is admissible **only** when `floor` is `null` (every
+changed file is human prose) **and** you judge it truly human prose.
+
+The floor computation:
+
+- any **SENSITIVE** file → floor **HIGH**;
+- any non-HUMAN-DOC file, **or** an empty/unresolved diff → floor **STANDARD**;
+- nothing but HUMAN-DOC prose → **no floor** (`null`): the tier is yours to decide, `TRIVIAL` included.
 
 Triage is **deterministic** and **size-agnostic** — there are **NO line-count or file-count thresholds**;
-only *what kind* of file the PR touches and whether the change is systemic. `triage.py` is the executable
-owner of classification. The policy it executes is the block below. Default to **STANDARD** whenever a
-path, status, content marker, or systemic judgment is uncertain. `reviews_ok` target = `required(tier)`:
-**1 if `tier==TRIVIAL`, else 2**.
+only *what kind* of file the PR touches. `triage.py` is the executable owner of file classification and the
+floor. The policy it executes is the block below. Default to **STANDARD** whenever a path, status, or
+content marker is uncertain. `reviews_ok` target = `required(tier)`: **1 if `tier==TRIVIAL`, else 2**.
 
 **File classes (classify every changed file; default CODE when unsure).**
 
@@ -47,21 +58,25 @@ diff properties, so filesystem inspection of only the new checkout is not a subs
 
 **Tiers (no size thresholds).**
 
-- **TRIVIAL** — **ALL** changed files are HUMAN-DOC and systemic judgment is `no` → **1** review pass,
-  **minimal** plan.
-- **STANDARD** — any CODE / agent-doc file changed, none SENSITIVE → **2** passes, plan **covers the
-  real review dimensions**.
-- **HIGH** — any SENSITIVE file changed, OR systemic judgment is `yes` → **2**
-  passes with **mandatory cross-cutting units + a deeper sweep** (Stage 2a-deep).
+- **TRIVIAL** — an **orchestrator-only** grant: **ALL** changed files are HUMAN-DOC (`floor` is `null`)
+  **and** you judge the change truly human prose → **1** review pass, **minimal** plan. The tool never
+  emits this; a systemic change to prose is still yours to escalate.
+- **STANDARD** — the floor when any CODE / agent-doc file changed, none SENSITIVE → **2** passes, plan
+  **covers the real review dimensions**.
+- **HIGH** — the floor when any SENSITIVE file changed → **2** passes with **mandatory cross-cutting units
+  + a deeper sweep** (Stage 2a-deep). Escalate to HIGH yourself for a systemic change even when the floor
+  is lower.
 
 **Escalation guardrails.**
 
-- Agent-docs are **never** TRIVIAL. A **single** non-HUMAN-DOC byte in the diff disqualifies TRIVIAL.
-- Re-triage and **escalate** (never de-escalate below what the content warrants) when: a `NOT
-  SATISFIED` lands, a `plan_amendment_request` is raised, or a content change **adds a
+- Agent-docs are **never** TRIVIAL. A **single** non-HUMAN-DOC byte in the diff sets a STANDARD floor,
+  which the tool's `--tier` veto enforces against a mistaken TRIVIAL.
+- Re-triage and **escalate** (never de-escalate below what the content warrants, and never below the
+  floor) when: a `NOT SATISFIED` lands, a `plan_amendment_request` is raised, or a content change **adds a
   CODE/agent-doc/SENSITIVE file** to a PR that was TRIVIAL.
-- Tier is pinned to `head_sha` and re-derived every heartbeat; on any uncertainty default STANDARD.
-  Systemic input may raise a content-driven tier and never lowers it.
+- Tier is pinned to `head_sha`; the floor is re-derived and the tier re-decided every heartbeat. On any
+  uncertainty default STANDARD. The tool's floor may raise a tier and never lowers it; a systemic judgment
+  is yours to add on top of the floor.
 
 ### 2a. The review gauntlet
 

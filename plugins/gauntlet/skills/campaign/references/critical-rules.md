@@ -125,8 +125,10 @@
   Never spend a review over open Copilot items, a red check, or a conflicting PR (Stage 2a).
 - The review gate is **tier-dependent**: `required(tier)` fresh, context-isolated `SATISFIED` verdicts
   on the same live PR content — **one if TRIVIAL, two otherwise**. Re-derive the tier from `head_sha`
-  every heartbeat through `triage.py derive`; `stage-2-review-gate.md`, "2a-triage", owns the complete
-  invocation and policy. Never classify files, modes, renames, deletions, or frontmatter by eye.
+  every heartbeat: `triage.py derive` supplies the mechanical inventory and **floor**, and the orchestrator
+  decides the tier at or above it (`TRIVIAL` is only ever the orchestrator's all-prose call — the tool
+  never grants it). `stage-2-review-gate.md`, "2a-triage", owns the complete invocation and policy. Never
+  classify files, modes, renames, deletions, or frontmatter by eye.
 - **The review is measured against the PR's INTENT — never against "is anything wrong with this code?"**
   The reviewer is handed `<rundir>/intent-<pr>.md` **verbatim** and answers one question: **does this PR
   achieve its stated Purpose, without breaking anything reachable by an actor named in its Threat model?**

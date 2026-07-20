@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Fixtures for ``triage.py`` — deterministic campaign tier derivation.
+"""Fixtures for ``triage.py`` — the mechanical file inventory and FLOOR tier for one pinned diff.
 
 The suite uses real temporary Git repositories for the file, mode, rename, delete, ordering and hostile
 path cases.  It loads the owner by path and therefore fails loudly when the executable policy owner is
-missing.  That missing-owner failure was the pre-change reproduction: campaign previously had only prose
-classification, so no command could reject a stale head or consistently detect these classes.
+missing.  It pins that the floor is only ever HIGH/STANDARD/None (never TRIVIAL — that is the
+orchestrator's semantic call) and that the ``--tier`` lower-bound check vetoes a below-floor tier.  That
+missing-owner failure was the pre-change reproduction: campaign previously had only prose classification,
+so no command could reject a stale head or consistently detect these classes.
 """
 
 from __future__ import annotations
@@ -82,9 +84,9 @@ def repository(base_files: dict[str, tuple[str, int]] | None = None):
         yield repo, base
 
 
-def derive(repo: Path, base: str, *, systemic: str = "no") -> dict:
+def derive(repo: Path, base: str, *, tier: str | None = None) -> dict:
     head = os.fsdecode(git(repo, "rev-parse", "HEAD").stdout).strip()
-    return M.derive(worktree=str(repo), base=base, head_sha=head, systemic=systemic)
+    return M.derive(worktree=str(repo), base=base, head_sha=head, tier=tier)
 
 
 def one_file(result: dict) -> dict:
@@ -92,13 +94,13 @@ def one_file(result: dict) -> dict:
     return result["files"][0]
 
 
-def t_human_docs_are_trivial() -> None:
+def t_human_docs_have_no_floor() -> None:
     with repository() as (repo, base):
         write(repo, "docs/guide.md", "# Guide\n")
         commit(repo, "docs")
         result = derive(repo, base)
-    check(result["tier"] == M.TRIVIAL and result["required_reviews"] == 1,
-          f"human prose must be TRIVIAL/1, got {result!r}")
+    check(result["floor"] is None,
+          f"an all-prose diff must have NO floor — the tool never grants TRIVIAL: {result!r}")
     check(one_file(result)["class"] == M.HUMAN_DOC, "docs/guide.md must be HUMAN-DOC")
 
 
@@ -114,8 +116,8 @@ def t_source_and_unknown_are_standard() -> None:
         write(repo, "assets/blob.weird", "x\n")
         commit(repo, "code")
         result = derive(repo, base)
-    check(result["tier"] == M.STANDARD and result["required_reviews"] == 2,
-          f"code/unknown content must be STANDARD/2, got {result!r}")
+    check(result["floor"] == M.STANDARD,
+          f"code/unknown content must floor to STANDARD, got {result!r}")
     check({row["class"] for row in result["files"]} == {M.CODE}, "both paths must classify CODE")
 
 
@@ -125,8 +127,8 @@ def t_agent_frontmatter_is_code() -> None:
         commit(repo, "agent doc")
         result = derive(repo, base)
     row = one_file(result)
-    check(result["tier"] == M.STANDARD and row["class"] == M.CODE,
-          f"agent-frontmatter Markdown must be CODE/STANDARD, got {result!r}")
+    check(result["floor"] == M.STANDARD and row["class"] == M.CODE,
+          f"agent-frontmatter Markdown must be CODE and floor STANDARD, got {result!r}")
     check(any("frontmatter" in reason for reason in row["reasons"]), "reason must name frontmatter")
 
 
@@ -167,7 +169,7 @@ def t_mixed_content_uses_highest_class() -> None:
         write(repo, ".github/workflows/ci.yml", "name: ci\n")
         commit(repo, "mixed")
         result = derive(repo, base)
-    check(result["tier"] == M.HIGH, f"one sensitive file must raise the mixed diff to HIGH: {result!r}")
+    check(result["floor"] == M.HIGH, f"one sensitive file must raise the mixed diff's floor to HIGH: {result!r}")
     by_path = {row["path"]: row["class"] for row in result["files"]}
     check(by_path == {
         ".github/workflows/ci.yml": M.SENSITIVE,
@@ -183,8 +185,8 @@ def t_executable_mode_add_and_remove_are_high() -> None:
             commit(repo, "mode")
             result = derive(repo, base)
         row = one_file(result)
-        check(result["tier"] == M.HIGH and row["class"] == M.SENSITIVE,
-              f"mode {oct(before)}->{oct(after)} must be HIGH/SENSITIVE: {result!r}")
+        check(result["floor"] == M.HIGH and row["class"] == M.SENSITIVE,
+              f"mode {oct(before)}->{oct(after)} must floor to HIGH/SENSITIVE: {result!r}")
         check("old or new Git mode is executable" in row["reasons"], "executable reason is missing")
 
 
@@ -197,8 +199,8 @@ def t_rename_classifies_both_paths() -> None:
     row = one_file(result)
     check(row["status"].startswith("R") and row["old_path"] == "docs/old.md" and row["path"] == "src/new.md",
           f"rename identity is wrong: {row!r}")
-    check(row["class"] == M.CODE and result["tier"] == M.STANDARD,
-          "a rename from human docs into source must classify both paths and become STANDARD")
+    check(row["class"] == M.CODE and result["floor"] == M.STANDARD,
+          "a rename from human docs into source must classify both paths and floor to STANDARD")
 
 
 def t_rename_from_sensitive_remains_high() -> None:
@@ -207,8 +209,8 @@ def t_rename_from_sensitive_remains_high() -> None:
         (repo / "scripts/tool.py").rename(repo / "docs/tool.md")
         commit(repo, "rename sensitive")
         result = derive(repo, base)
-    check(result["tier"] == M.HIGH and one_file(result)["class"] == M.SENSITIVE,
-          f"touching the old sensitive path must remain HIGH: {result!r}")
+    check(result["floor"] == M.HIGH and one_file(result)["class"] == M.SENSITIVE,
+          f"touching the old sensitive path must keep the floor at HIGH: {result!r}")
 
 
 def t_sensitive_deletion_is_high() -> None:
@@ -219,7 +221,7 @@ def t_sensitive_deletion_is_high() -> None:
     row = one_file(result)
     check(row["status"] == "D" and row["old_path"] == "scripts/obsolete.py",
           f"deletion must retain its old path: {row!r}")
-    check(result["tier"] == M.HIGH, "deleting a sensitive file is still a sensitive change")
+    check(result["floor"] == M.HIGH, "deleting a sensitive file still floors to HIGH")
 
 
 def t_deleted_agent_frontmatter_is_code() -> None:
@@ -228,26 +230,66 @@ def t_deleted_agent_frontmatter_is_code() -> None:
         (repo / "docs/old.md").unlink()
         commit(repo, "delete agent doc")
         result = derive(repo, base)
-    check(result["tier"] == M.STANDARD and one_file(result)["class"] == M.CODE,
-          f"deleted Markdown must inspect base content for agent frontmatter: {result!r}")
+    check(result["floor"] == M.STANDARD and one_file(result)["class"] == M.CODE,
+          f"deleted Markdown must inspect base content for agent frontmatter and floor STANDARD: {result!r}")
 
 
-def t_systemic_input_only_raises() -> None:
+def t_tool_never_emits_trivial_floor() -> None:
+    """The floor is only ever HIGH, STANDARD, or None (no floor) — the tool is STRUCTURALLY INCAPABLE of
+    granting TRIVIAL. All-prose yields None (the orchestrator decides), NOT a TRIVIAL grant."""
+    scenarios = (
+        ({"docs/guide.md": "# Guide\n"}, None),
+        ({"src/main.py": "x = 1\n"}, M.STANDARD),
+        ({"scripts/tool.py": "print('x')\n"}, M.HIGH),
+    )
+    for files, expected in scenarios:
+        with repository() as (repo, base):
+            for name, content in files.items():
+                write(repo, name, content)
+            commit(repo, "scenario")
+            result = derive(repo, base)
+        check(result["floor"] == expected,
+              f"floor for {sorted(files)} must be {expected!r}, got {result['floor']!r}")
+        check(result["floor"] != M.TRIVIAL, "the tool must NEVER emit a TRIVIAL floor")
+    # An empty diff also never floors below STANDARD — never a vacuous no-floor that could read as TRIVIAL.
+    with repository() as (repo, base):
+        empty = derive(repo, base)
+    check(empty["floor"] == M.STANDARD, f"an empty diff floors to STANDARD, never TRIVIAL: {empty!r}")
+
+
+def t_tier_below_floor_is_refused() -> None:
+    """The optional --tier is a LOWER-BOUND check: a decided tier below the floor is refused (veto-downward),
+    while a tier at or above the floor — including the orchestrator's TRIVIAL on an all-prose diff — passes."""
+    # floor HIGH (sensitive): only HIGH clears it.
+    with repository() as (repo, base):
+        write(repo, "scripts/tool.py", "print('x')\n")
+        head = commit(repo, "sensitive")
+        for below in (M.TRIVIAL, M.STANDARD):
+            code, out, err = capture_cli(M.main, [
+                "derive", "--worktree", str(repo), "--base", base, "--head-sha", head, "--tier", below])
+            check(code == M.EXIT_REFUSED and out == "",
+                  f"--tier {below} below a HIGH floor must be refused with no JSON: {code}/{out!r}")
+            check("below the mechanical floor" in err and "HIGH" in err,
+                  f"the refusal must name the floor: {err!r}")
+        check(derive(repo, base, tier=M.HIGH)["floor"] == M.HIGH,
+              "--tier HIGH clears a HIGH floor and still emits the inventory")
+    # floor STANDARD (code): TRIVIAL is refused, STANDARD/HIGH pass.
+    with repository() as (repo, base):
+        write(repo, "src/main.py", "x = 1\n")
+        commit(repo, "code")
+        try:
+            derive(repo, base, tier=M.TRIVIAL)
+        except M.TriageError as exc:
+            check("below the mechanical floor" in str(exc), f"STANDARD floor must veto TRIVIAL: {exc}")
+        else:
+            raise M.SelfTestFailure("a TRIVIAL tier below a STANDARD floor was accepted")
+        check(derive(repo, base, tier=M.STANDARD)["floor"] == M.STANDARD, "--tier STANDARD clears a STANDARD floor")
+    # floor None (all prose): the orchestrator's TRIVIAL call is ALLOWED — nothing to veto.
     with repository() as (repo, base):
         write(repo, "docs/guide.md", "# Guide\n")
         commit(repo, "docs")
-        yes = derive(repo, base, systemic="yes")
-        unknown = derive(repo, base, systemic="unknown")
-    check(yes["tier"] == M.HIGH and not yes["systemic_unresolved"],
-          f"systemic=yes must raise human docs to HIGH: {yes!r}")
-    check(unknown["tier"] == M.STANDARD and unknown["systemic_unresolved"],
-          f"systemic=unknown must fail safe to STANDARD and stay unresolved: {unknown!r}")
-
-    with repository() as (repo, base):
-        write(repo, "scripts/tool.py", "print('x')\n")
-        commit(repo, "sensitive")
-        no = derive(repo, base, systemic="no")
-    check(no["tier"] == M.HIGH, f"systemic=no must never lower content-driven HIGH: {no!r}")
+        ok = derive(repo, base, tier=M.TRIVIAL)
+    check(ok["floor"] is None, "an all-prose diff has no floor, so a decided TRIVIAL is accepted")
 
 
 def t_head_mismatch_is_refused_without_output() -> None:
@@ -257,7 +299,6 @@ def t_head_mismatch_is_refused_without_output() -> None:
         wrong = ("0" if head[0] != "0" else "1") + head[1:]
         code, out, err = capture_cli(M.main, [
             "derive", "--worktree", str(repo), "--base", base, "--head-sha", wrong,
-            "--systemic", "no",
         ])
     check(code == M.EXIT_REFUSED and out == "", f"stale expected head must emit no JSON, got {code}/{out!r}")
     check("HEAD mismatch" in err and wrong in err and head in err, f"mismatch refusal must name both SHAs: {err!r}")
@@ -284,7 +325,7 @@ def t_moving_head_is_refused() -> None:
 
     with tempfile.TemporaryDirectory() as directory:
         try:
-            M.derive(worktree=directory, base="main", head_sha=sha_a, systemic="no", runner=runner)
+            M.derive(worktree=directory, base="main", head_sha=sha_a, runner=runner)
         except M.TriageError as exc:
             check("HEAD moved during triage" in str(exc), f"wrong moving-head refusal: {exc}")
         else:
@@ -319,20 +360,20 @@ def t_hostile_paths_are_data() -> None:
     json.dumps(result, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
 
-def t_empty_diff_is_standard() -> None:
+def t_empty_diff_floors_standard() -> None:
     with repository() as (repo, base):
         result = derive(repo, base)
-    check(result["files"] == [] and result["tier"] == M.STANDARD and result["required_reviews"] == 2,
-          f"an empty/uncertain diff must never become vacuously TRIVIAL: {result!r}")
+    check(result["files"] == [] and result["floor"] == M.STANDARD,
+          f"an empty/uncertain diff must floor to STANDARD, never a vacuous no-floor: {result!r}")
 
 
 def t_bad_inputs_and_git_failures_emit_no_partial_json() -> None:
     with repository() as (repo, base):
         head = os.fsdecode(git(repo, "rev-parse", "HEAD").stdout).strip()
         cases = (
-            ["derive", "--worktree", str(repo), "--base", base, "--head-sha", "short", "--systemic", "no"],
-            ["derive", "--worktree", str(repo), "--base=--not-a-ref", "--head-sha", head, "--systemic", "no"],
-            ["derive", "--worktree", str(repo / "missing"), "--base", base, "--head-sha", head, "--systemic", "no"],
+            ["derive", "--worktree", str(repo), "--base", base, "--head-sha", "short"],
+            ["derive", "--worktree", str(repo), "--base=--not-a-ref", "--head-sha", head],
+            ["derive", "--worktree", str(repo / "missing"), "--base", base, "--head-sha", head],
         )
         for argv in cases:
             code, out, err = capture_cli(M.main, list(argv))
@@ -367,9 +408,9 @@ def t_output_head_is_full_live_sha() -> None:
 
 
 CASES = [
-    ("human-doc", "human-facing prose is TRIVIAL with one required review", t_human_docs_are_trivial),
+    ("human-doc", "an all-prose diff has no floor — the tool never grants TRIVIAL", t_human_docs_have_no_floor),
     ("human-names", "top-level README/CHANGELOG/LICENSE are HUMAN-DOC", t_top_level_human_doc_names),
-    ("code-unknown", "source and unknown paths are CODE/STANDARD", t_source_and_unknown_are_standard),
+    ("code-unknown", "source and unknown paths are CODE and floor STANDARD", t_source_and_unknown_are_standard),
     ("agent-frontmatter", "Markdown carrying skill/agent frontmatter is CODE", t_agent_frontmatter_is_code),
     ("agent-paths", "agent instructions, skill references, .claude and prompts are CODE", t_agent_paths_are_code),
     ("sensitive-classes", "CI/scripts/manifests/IaC/auth/build paths are SENSITIVE", t_sensitive_classes_are_high),
@@ -379,12 +420,13 @@ CASES = [
     ("rename-sensitive", "renaming away from a sensitive path remains HIGH", t_rename_from_sensitive_remains_high),
     ("delete-sensitive", "deleting a sensitive file remains HIGH", t_sensitive_deletion_is_high),
     ("delete-frontmatter", "deleted Markdown uses base content for frontmatter", t_deleted_agent_frontmatter_is_code),
-    ("systemic", "systemic judgment raises but never lowers content tier", t_systemic_input_only_raises),
+    ("no-trivial-floor", "the tool never emits a TRIVIAL floor; all-prose is no-floor", t_tool_never_emits_trivial_floor),
+    ("tier-veto", "a --tier below the floor is refused; at/above passes", t_tier_below_floor_is_refused),
     ("head-mismatch", "a stale expected head is refused without JSON", t_head_mismatch_is_refused_without_output),
     ("head-moving", "HEAD moving during evidence collection is refused", t_moving_head_is_refused),
     ("deterministic", "file ordering and JSON bytes are deterministic", t_deterministic_order_and_bytes),
     ("hostile-paths", "hostile and non-UTF8 Git paths remain inert data", t_hostile_paths_are_data),
-    ("empty-diff", "an empty diff defaults STANDARD rather than vacuous TRIVIAL", t_empty_diff_is_standard),
+    ("empty-diff", "an empty diff floors to STANDARD rather than a vacuous no-floor", t_empty_diff_floors_standard),
     ("atomic-refusal", "input and Git failures emit no partial JSON", t_bad_inputs_and_git_failures_emit_no_partial_json),
     ("raw-partial", "malformed or partial raw Git records are refused", t_raw_parser_refuses_partial_records),
     ("head-output", "output is pinned to the full live HEAD", t_output_head_is_full_live_sha),

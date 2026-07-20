@@ -261,10 +261,11 @@ jobs:
       - name: Run pr-adopt contract
         run: python3 plugins/gauntlet/skills/campaign/scripts/pr-adopt.py self-test
 
-      # Deterministic campaign tier derivation, executed over real temporary Git repositories. The suite
-      # pins human/code/sensitive classes, agent frontmatter, modes, renames, deletions, unknown and
-      # systemic inputs, hostile path bytes, stable ordering, and stale/moving-head refusal. The sibling
-      # `triage-test.py` is loaded by path and a missing or empty suite fails loudly.
+      # The campaign tier floor + inventory, executed over real temporary Git repositories. The suite
+      # pins human/code/sensitive classes, agent frontmatter, modes, renames, deletions, unknown paths,
+      # the mechanical FLOOR (never TRIVIAL) and its below-floor `--tier` veto, hostile path bytes, stable
+      # ordering, and stale/moving-head refusal. The sibling `triage-test.py` is loaded by path and a
+      # missing or empty suite fails loudly.
       - name: Campaign tier derivation contract
         run: python3 plugins/gauntlet/skills/campaign/scripts/triage.py self-test
 

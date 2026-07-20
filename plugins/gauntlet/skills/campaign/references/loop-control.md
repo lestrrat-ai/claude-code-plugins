@@ -336,11 +336,14 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
 
    Then, for each PR that is **not held at all**:
    - any newly-adopted PR whose ledger row lacks a `tier`, and every PR on every heartbeat → **run
-     `triage.py derive --worktree <worktree> --base origin/<base> --head-sha <head_sha> --systemic
-     yes|no|unknown`**. `stage-2-review-gate.md`, "2a-triage", owns the complete invocation and policy.
-     Never classify files or modes here. On success, require output `head_sha` to equal the row and write
-     output `tier` back with `ledger.py … set --pr <N> --tier <tier>`. On refusal, refresh the moving or
-     mismatched input and retry; never carry a tier across content the command did not classify.
+     `triage.py derive --worktree <worktree> --base origin/<base> --head-sha <head_sha>`** for the
+     mechanical inventory and `floor`. `stage-2-review-gate.md`, "2a-triage", owns the complete invocation
+     and policy. Never classify files or modes here. On success, require output `head_sha` to equal the
+     row, **decide the tier at or above `floor`** (`TRIVIAL` only when `floor` is `null` and you judge it
+     truly human prose — the tool never grants it), and write it with `ledger.py … set --pr <N> --tier
+     <tier>`; re-run `derive --tier <decided>` to have the tool veto a below-floor mistake. On refusal,
+     refresh the moving or mismatched input and retry; never carry a tier across content the command did
+     not classify.
    - current tip has `reviews_ok < required(tier)`, has no unaddressed Copilot review items, CI is not red,
      and no review is running for that SHA → **first ensure the PR's INTENT
      (`<rundir>/intent-<pr>.md`) and PR-head worktree exist.** The dispatch substitutes the intent block

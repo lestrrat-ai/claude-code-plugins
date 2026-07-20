@@ -2,9 +2,10 @@
 """Adopt a PR into a run — the MECHANICAL half, as a command instead of a shell block in a doc.
 
 `references/pr-adoption.md` is the authority; this tool performs its steps 1, 2, 4, 5 and the row of
-step 3. It does NOT derive the review TIER: adoption passes a conservative `STANDARD` bootstrap because the
-PR-head worktree does not exist until this command resolves it, then `triage.py derive` replaces that value
-before gate work. It does NOT author the PR's INTENT (step 3a — the driver's working note about what the PR
+step 3. It does NOT decide the review TIER: adoption passes a conservative `STANDARD` bootstrap because the
+PR-head worktree does not exist until this command resolves it, then — after step 5 — `triage.py derive`
+supplies the mechanical floor and the orchestrator decides the tier at or above it before gate work. It does
+NOT author the PR's INTENT (step 3a — the driver's working note about what the PR
 is for). Everything here is MECHANICS that a model transcribing a doc gets subtly wrong under load:
 
   * READ the PR (one `gh pr view` for the fields the ledger row needs, including the cross-repo field);
@@ -427,7 +428,8 @@ def main(argv: "list[str] | None" = None) -> int:
     p.add_argument("--view-json", required=True, help="path to a parsed `gh pr view` JSON document")
     p.add_argument("--run-id", required=True, help="this run's id (the owner label is gauntlet-run-<id>)")
     p.add_argument("--tier", required=True,
-                   help="bootstrap tier; adoption passes STANDARD and triage.py replaces it before gate work")
+                   help="bootstrap tier; adoption passes STANDARD, then the orchestrator decides the real "
+                        "tier at or above triage.py's floor before gate work")
     p.add_argument("--worktrees-root", default=".worktrees", help="root under which the head worktree sits")
 
     a = sub.add_parser("adopt", help="the real thing: read the PR, refuse/register/worktree/label")
@@ -435,7 +437,8 @@ def main(argv: "list[str] | None" = None) -> int:
     a.add_argument("--run-id", required=True, help="this run's id")
     a.add_argument("--file", required=True, help="the run ledger (<rundir>/state.jsonl)")
     a.add_argument("--tier", required=True,
-                   help="bootstrap tier; adoption passes STANDARD and triage.py replaces it before gate work")
+                   help="bootstrap tier; adoption passes STANDARD, then the orchestrator decides the real "
+                        "tier at or above triage.py's floor before gate work")
     a.add_argument("--worktrees-root", required=True, help="root under which the head worktree sits")
     a.add_argument("--project-root", required=True, help="the repo checkout git/ledger commands run in")
     a.add_argument("--repo", help="owner/name (default: the project-root checkout's)")
