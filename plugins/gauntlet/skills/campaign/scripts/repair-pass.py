@@ -819,6 +819,14 @@ def validate_decision_bundle(path: Path, header: dict, row: dict, pr: str, recor
         fail("bundle prompt has no valid ledger snapshot")
     if ledger_snapshot["path"] != str(path.resolve()) or not isinstance(ledger_snapshot["row"], dict):
         fail("bundle prompt is bound to a different ledger")
+    # These SIX are the COMPLETE decision-determining set — nothing else in the row feeds the
+    # reassessment. Falsifiable claim: the five decisions (rescope, repair-intent, demote,
+    # root-cause, abort) read no other ledger field, and head_sha/worktree/base_sha are bound and
+    # re-verified live above. The liveness/observation fields (ci, reviews_ok, tier, api_approval,
+    # settled_strikes, ci_fingerprint, ...) are DELIBERATELY excluded: they legitimately move during
+    # `repairing` under the CI-observation exception, so a full-row equality check would let a routine
+    # CI write invalidate a valid bundle and wedge the repair path. If a new decision ever reads
+    # another field, add it here.
     for field in ("status", "pr_origin", "review_rounds", "ns_streak", "repair_count", "repair_decision"):
         if ledger_snapshot["row"].get(field) != row[field]:
             fail(f"bundle prompt is stale: ledger field {field} changed after it was prepared")
