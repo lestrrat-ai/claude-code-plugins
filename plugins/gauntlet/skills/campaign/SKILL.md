@@ -252,6 +252,7 @@ a line the tool writes.
 | `reviewer-liveness.py` | Probe whether a dispatched reviewer's output stream is still moving; decides nothing, always exits 0 | `references/stage-2-review-gate.md` |
 | `base-preflight.py` | Decide proceed / rebase-first / recheck from live merge-state plus fetched base ancestry before review or fix; performs no rebase | `references/stage-2-review-gate.md` |
 | `format-preflight.py` | `check` — refuse to format any file whose formatter-write could escape the worktree (the file, or any path component, is a symlink); reads only, formats nothing | `references/stage-2-ci.md` |
+| `worker-prompt.py` | `fix` — bind one complete review/CI fix prompt and logical model class, then atomically publish its exact bytes + metadata | `references/fix-subagent-contract.md` |
 | `clean-rebase.py` | `run` — EXECUTE the clean base-only rebase (fetch/rebase/force-with-lease push + the ledger reset) and REFUSE everything else: a conflict or a diff-changing rebase is aborted/reset and handed back (exit 3), never resolved | `references/stage-2-review-gate.md` |
 | `ci-status.py` | `derive` — how `ci` is DERIVED, always, the only way — `liveness` — the recorder: writes `ci` + the liveness counters, parks at any cap — and `required-set` | `references/stage-2-ci.md` |
 | `ci-snapshot.py` | Executable contract for the SHA-pinned CI snapshot artifact (used by `derive`) | `references/ci-derivation-spec.md` |
@@ -292,20 +293,11 @@ name from one host into another.
 | **CI-fix — formatting/lint failure** | **`economy`** | **Downgraded ON PURPOSE when the host has a configured economy mapping.** It does not author a fix: it runs a deterministic formatter, **READS the resulting diff**, verifies it, and **escalates** anything it cannot verify (`references/stage-2-ci.md`). |
 | **CI-fix — everything else**, and every **escalation** from the cheap tier | **`session`** | Authors code that gets merged. CI does **not** validate it: a wrong fix can turn CI green — by weakening a check, or by being plain wrong in product code no check covers. |
 
-**The gate, the from-scratch fixes, and the mapper are NEVER downgraded.** The formatting CI-fix tier
-IS downgraded, deliberately — it does something narrower: run a tool and VERIFY its output. Its job
-order, its four verbatim prohibition blocks (never weaken a check; never use a semantic fixer; never
-execute a repo-tree binary; never a bare glob — plus the symlink preflight), and the honest risk
-statement (a cheap model verifying a tool's diff is a **miss-catcher, not a proof** — NEVER justified
-with "CI/the gate will catch it") are owned in full by `references/stage-2-ci.md`; copy the blocks from
-there into its prompt **verbatim**, never from memory. Escalation is a correct outcome, not a failure.
-
-**Every fix subagent — CI or review — is dispatched under one contract**, and
-`references/fix-subagent-contract.md` is its complete definition. Two halves, both mandatory: **SCOPE**
-the reading (worktree path + the specific issue list — not the whole diff, not the repo beyond the
-named files) and **SWEEP** the writing (a fix that changes a definition or a fact is not done until
-every site that RESTATES it is correct; the contract's sweep-and-report block goes into the prompt
-**verbatim**). Read the contract before dispatching a fixer; do not reconstruct it from this summary.
+**The gate, from-scratch fixes, and mapper are NEVER downgraded.** The formatting CI-fix tier is
+downgraded for its narrower formatter-and-verification job. `worker-prompt.py fix` is the only fix-prompt
+builder; its template owns the complete shared and role-specific wording. Read
+`references/fix-subagent-contract.md`, materialize the selected role, and dispatch only the exact
+`prompt.txt` bytes with the logical model class from `metadata.json`.
 
 ## Load Discipline
 

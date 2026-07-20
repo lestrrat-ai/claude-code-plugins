@@ -392,16 +392,10 @@
   every ESCALATION from the economy tier → the `session` class**.
 - **CLASSIFY the failure from the check logs BEFORE dispatching anything** — never dispatch straight off a
   red check (`loop-control.md` step 3, `stage-2-ci.md`). The class picks the model.
-- **The cheap CI-fix subagent's PROMPT BLOCKS are owned IN FULL by `stage-2-ci.md`** — its sections "The
-  cheap CI-fix subagent — run the tool, READ the diff, ESCALATE" (the job order), "HARD RULES — give these
-  to the cheap subagent VERBATIM in its prompt" (the no-weakening prohibition, the tool denylist, the
-  no-in-repo-binary and no-bare-glob rules, and the symlink preflight), and "The risk, stated honestly".
-  **Copy those blocks from there VERBATIM into the subagent's prompt — NEVER reconstruct them from this
-  file or from memory.** The no-weakening block goes into **EVERY CI-fix prompt, both tiers** (the owner's
-  first HARD RULE says so); the rest are the cheap tier's. The essence a rule lookup needs: the cheap tier
-  runs a **deterministic formatter**, **READS the resulting diff**, and **ESCALATES to the `session` class
-  anything it cannot verify**; it **NEVER weakens a check**; escalation is the correct outcome, not a
-  failure.
+- **Materialize every fix prompt through `worker-prompt.py fix`** (`fix-subagent-contract.md`).
+  `worker-prompt-template.txt` is the only owner of shared and role-specific prompt wording. Never copy a
+  prompt block from this lookup or `stage-2-ci.md`; dispatch exact `prompt.txt` bytes with the role and
+  logical model class from `metadata.json`.
 - **ANY campaign commit to the PR head resets the gate** (`stage-2-ci.md`, "Any campaign commit to the PR
   head resets the gate") — economy-class CI-fix, `session`-class CI-fix, review-fix, or **refutation commit** alike. In the SAME step: reset
   `reviews_ok` to 0 AND reconcile the label by running `label-mirror.py mirror` for the PR (it restores
@@ -427,15 +421,8 @@
   **next** park too — the blocker silently self-clears with **no fresh user answer**, which is exactly what
   the durable record exists to prevent. `abort` is never cleared: it is terminal, and a terminal row is
   never re-parked.
-- **EVERY fix subagent — CI-fix (both tiers) and review-fix — is dispatched under the fix-subagent contract
-  (`fix-subagent-contract.md`, the complete DEFINITION; read it before dispatching, never reconstruct it
-  from a summary).** Both halves are mandatory: **SCOPE** the reading — worktree + concrete issue list, NOT
-  the whole diff, NOT beyond the named files; **scope by defect, not by guess — name every file the defect
-  touches**. **SWEEP** the writing — the contract's sweep-and-report block goes into the prompt **verbatim**:
-  a fix that changes a DEFINITION or a FACT is not done until every site that RESTATES it is correct, and
-  every site found is reported. Read narrowly to UNDERSTAND, sweep widely to FINISH — the contract, not
-  this bullet, defines how to sweep; neither half excuses skipping the other. Scope every fix regardless
-  of model or reviewer choice.
+- **EVERY fix subagent — both CI tiers and review-fix — uses the fix-subagent materializer.** Follow
+  `fix-subagent-contract.md`; never rebuild its shared contract or role block from this lookup.
 - Default reviewer is the cross-engine route for the active host (Claude Code → Codex, Codex → Claude
   Code), which falls back to a fresh native worker when the paired CLI is absent; no external tool is
   required to run. Use the user's preferred reviewer when one is set — an explicit invocation, or a

@@ -707,6 +707,7 @@ grep -Fq 'ReviewIsolationCapability' "$campaign/references/runtime-adapter.md" |
   fail "runtime adapter is missing the review-isolation capability owner"
 python3 "$campaign/scripts/review-dispatch.py" self-test || status=1
 python3 "$campaign/scripts/transport-contract-test.py" || status=1
+python3 "$campaign/scripts/worker-prompt.py" self-test || status=1
 
 campaign_host_leaks=$(
   grep -rnE 'ScheduleWakeup|\$\{CLAUDE_PLUGIN_ROOT\}|Subagent Dispatch|fresh-subagent' \

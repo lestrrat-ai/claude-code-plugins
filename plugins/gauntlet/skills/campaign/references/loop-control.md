@@ -391,8 +391,8 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      formatter, **reads the resulting diff**, and **escalates** anything it cannot verify; **everything
      else** — and every **escalation** — → a scoped CI-fix worker in the **`session`** class. Either way the
      resulting commit **resets the gate** (Stage 2b, "Any campaign commit to the PR head resets the gate").
-     The worker's job order, the no-weakening prohibition, and the denylist live in `stage-2-ci.md` —
-     follow them there; do NOT restate them here. Different PRs may fix CI concurrently within the cap.
+     Materialize the selected role through `worker-prompt.py fix` (`fix-subagent-contract.md`); its
+     template owns the job order and role rules. Different PRs may fix CI concurrently within the cap.
    - `liveness` reports **`watch_warranted`** (its reduction of "WATCH ONLY WHAT CAN MOVE" — a verified
      snapshot with a still-`RUNNING` evidence row that is not an `UNKNOWN_VALUE` park; the `RUNNING` is an
      evidence row that classifies `RUNNING` under Stage 2b CLASSIFY, never "a row that is not terminal") for

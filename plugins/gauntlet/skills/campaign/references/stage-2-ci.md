@@ -788,18 +788,15 @@ it is a false public claim. NEVER exempt a commit because it "only reformatted".
 | **Formatting / lint** — the fix is exactly what a standard formatter or autofixer produces | **`economy`** | It does NOT author a fix from scratch: it runs a deterministic tool, **READS the resulting diff**, verifies it, and **escalates** anything it cannot verify. Downgraded **on purpose** when the host has an economy mapping. |
 | **Everything else** — failing product test, compile error, flake, anything needing judgment — **and every escalation from the economy worker** | **`session`** | It authors code that gets merged, and nothing downstream validates it. |
 
-**Dispatch both tiers under the fix-subagent contract** (`fix-subagent-contract.md` — the complete
-DEFINITION for every fix subagent, CI or review; **read it before dispatching**). The CI-specific inputs
-it asks for are the failing check's logs, the specific failing file(s), and the worktree path.
-
-*Non-authoritative summary of the contract — the contract is the definition and wins over this; never
-dispatch from this summary:* **SCOPE** the reading — read narrowly: **NOT** the whole diff, **NOT**
-beyond what the failure touches. And because scoping the reading is not licence to fix only the
-**instance**, **SWEEP** the writing — the contract's **sweep-and-report block goes into the prompt
-verbatim**: a fix that changes a definition or a fact is not done until every site that restates it is
-correct, and every site found is reported.
+**Materialize both tiers through `worker-prompt.py fix`** as defined by `fix-subagent-contract.md`. Use
+`--role ci-economy` for formatting/lint and `--role ci-session` for everything else or an escalation.
+Put the named failures/files and exact logs in their byte files. Dispatch only the published `prompt.txt`
+bytes with the role and logical model class from `metadata.json`.
 
 #### The cheap CI-fix subagent — run the tool, READ the diff, ESCALATE
+
+`worker-prompt-template.txt` owns the complete economy-role job order, prohibitions, and risk text that a
+worker receives. The explanation below is never prompt source; do not copy or reconstruct it at dispatch.
 
 The point of putting a model here is that **something LOOKS at what happened before it is committed**.
 Its job, in order:
@@ -821,14 +818,13 @@ Its job, in order:
    worktree to the PR head, and hand the failure to a **`session`-class** CI-fix worker. **Escalation is
    the correct outcome, not a failure** — it is what the tier is for.
 
-**HARD RULES — give these to the cheap subagent VERBATIM in its prompt:**
+**HARD RULES — enforced in the materialized economy prompt:**
 
 - **NEVER make CI pass by weakening the check.** NEVER delete or loosen an assertion, NEVER add
   `skip`/`xfail`, NEVER disable or downgrade a lint rule, NEVER raise a timeout. **Fix the cause.** If the
-  check itself is demonstrably wrong, **say so explicitly and ESCALATE** — never silently rewrite it. **This
-  bullet ALONE among these blocks goes VERBATIM into EVERY CI-fix subagent's prompt — the `session` class
-  included, on every escalation.** The rest of the HARD RULES below are the cheap tier's; the no-weakening
-  prohibition binds both tiers.
+  check itself is demonstrably wrong, **say so explicitly and ESCALATE** — never silently rewrite it. This
+  prohibition binds every CI-fix role; `worker-prompt.py` includes it for `ci-session` and `ci-economy`.
+  The remaining rules below explain the economy role.
 - **NEVER use a catch-all fixer that applies SEMANTIC rules**, and never a documented semantic rewriter.
   Denied outright: `golangci-lint run --fix`, `ruff --fix`, `eslint --fix`, `cargo clippy --fix`, any
   `--fix`/`--write` flag on a linter that applies semantic rules; **`goimports`** (it ADDS imports — an
