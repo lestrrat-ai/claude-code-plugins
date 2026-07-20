@@ -78,7 +78,8 @@ repair-pass.py --file <state.jsonl> bundle --pr <N> --run-dir <rundir> \
 
 The command selects rounds numerically, selects each round's active launch attempt through
 `review-pass.py`'s identity rules, and validates the complete artifact set before writing anything. It
-includes the active reports/findings, any available audits with explicit absence markers, intent,
+includes the active reports/findings, each round's `finding-audit.py`-owned audit with explicit absence
+markers (the complete audit results and standoff rulings the accessor returns, never a summary), intent,
 cumulative per-commit file measurements, current three-dot diff, and the ledger-derived `permitted` result
 as JSON data. Dynamic bytes never become shell source.
 

@@ -1908,13 +1908,13 @@ def t_set_status_transitions_stay_open(L: ModuleType, tmp: Path) -> None:
     """The `set --status awaiting-user` / `set --status in_review` transitions are DELIBERATELY still
     allowed — the design decision that keeps the REVIEW-STANDOFF park (finding-audit.md) working.
 
-    The standoff park is answered into `audit-<pr>-<n>.md`, NOT `blocker_ruling`, and its unpark carries no
+    The standoff park is answered through `finding-audit.py rule-standoff`, NOT `blocker_ruling`, and its unpark carries no
     `retry@<iso>` ruling for `unpark` to validate — so park/unpark CANNOT serve it and `set` must stay open.
     If a future change gates these transitions to force everything through park/unpark, this fixture goes
     red and says why: the standoff writer would break.
     """
     path = write_lines(tmp / "so.jsonl", header_line(L), row_line(L, pr="1", status="in_review"))
-    # standoff PARK via set — no ci_reason, no ruling; answered into the audit file
+    # standoff PARK via set — no ci_reason, no ruling; answered through finding-audit.py
     code, out, err = cli(L, ["--file", str(path), "set", "--pr", "1", "--status", "awaiting-user"])
     check(code == 0, f"`set --status awaiting-user` was refused — the review-standoff park is broken: {err!r}")
     check(json.loads(out)["status"] == "awaiting-user", f"set did not write the standoff park: {out!r}")

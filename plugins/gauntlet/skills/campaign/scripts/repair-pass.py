@@ -60,6 +60,7 @@ DESCRIPTION = "Build and bind the reassessment pass for a PR that has stopped co
 
 OWNER = Path(__file__).resolve().parent / "ledger.py"
 REVIEW_OWNER = Path(__file__).resolve().parent / "review-pass.py"
+AUDIT_OWNER = Path(__file__).resolve().parent / "finding-audit.py"
 
 
 def load_ledger():
@@ -89,6 +90,23 @@ def load_review_pass():
 
 
 RP = load_review_pass()
+
+
+def load_finding_audit():
+    """Load `finding-audit.py` BY PATH — it owns the audit schema and its header-internal completeness check.
+
+    Same reason as the loaders above: the cwd is the driver's worktree, the schema owner lives with the
+    installed plugin. The bundle validates a landed audit's COMPLETENESS through this owner, never by
+    re-declaring the schema here.
+    """
+    mod = load_module_from_path("repair_pass_finding_audit", AUDIT_OWNER)
+    if mod is None:  # a broken install — never an input error
+        print(f"repair-pass: cannot load its audit schema owner at {AUDIT_OWNER}", file=sys.stderr)
+        raise SystemExit(1)
+    return mod
+
+
+FA = load_finding_audit()
 
 BUNDLE_SCHEMA = "gauntlet-repair-bundle-v1"
 MANIFEST_SCHEMA = "gauntlet-repair-bundle-manifest-v1"
@@ -406,7 +424,7 @@ def collect_rounds(rundir: Path, pr: str, expected_rounds: int) -> list[dict]:
         else:
             findings_artifact = artifact(findings_file, "", present=False)
 
-        audit_file = rundir / f"audit-{pr}-{round_no}.md"
+        audit_file = rundir / f"audit-{pr}-{round_no}.jsonl"
         gating_findings = sum(1 for finding in findings if RP.gating(finding))
         # F1 — every landed round's report now carries a terminal `VERDICT:` line, and #126's
         # `RP.parse_report` (the ONE sanctioned report reader, already called by `review-pass.py
@@ -437,7 +455,33 @@ def collect_rounds(rundir: Path, pr: str, expected_rounds: int) -> list[dict]:
                  f"records NO gating finding. A cap trips only on NOT SATISFIED, which by the coherence rule "
                  f"must carry at least one gating finding; this is history review-pass.py rejects as unusable")
         if audit_file.exists():
-            audit_artifact = artifact(audit_file, read_utf8(audit_file, "finding audit"))
+            audit_text = read_utf8(audit_file, "finding audit")
+            # A landed round's finding audit is HISTORICAL EVIDENCE embedded for the reassessment worker —
+            # NOT re-judged against the current intent. Read it structurally symmetric with the findings read
+            # in `load_historical_findings` right above, through the SAME non-re-anchoring door: review-pass.py's
+            # `parse_lines` proves the JSONL is well-formed and loads NO intent. NEVER read the audit through
+            # finding-audit.py's own door (`verify` / `load_audit`), which re-reads the round's source findings
+            # and re-anchors their `purpose` strings to the CURRENT `intent-<pr>.md`. After a REPAIR-INTENT
+            # re-authors that intent and drops a purpose an earlier round anchored to, that door would reject
+            # the round's audit and WEDGE the bundle — the same break `load_historical_findings` and
+            # `t_bundle_exempts_every_prior_cap_round` exist to prevent, on the audit's side.
+            #
+            # Well-formedness alone is NOT soundness: a HEADER-ONLY audit (`finding-audit.py init` with zero
+            # `record` calls) parses cleanly yet has no `audit_result` rows, so `parse_lines` would embed it
+            # as present indistinguishably from a complete one — the one landed artifact re-validated only for
+            # well-formedness while every other soundness gap here fails closed. So ALSO run finding-audit.py's
+            # HEADER-INTERNAL completeness check (`check_landed_audit_complete`): it reads only the audit's own
+            # header and rows — no source findings, no intent — so it stays on the same non-re-anchoring door,
+            # and it REFUSES an incomplete audit rather than embedding it as sound history.
+            try:
+                RP.parse_lines(audit_text, audit_file.name)
+            except RP.Defect as exc:
+                fail(f"pr {pr} review round {round_no} finding audit is unusable: {exc}")
+            try:
+                FA.check_landed_audit_complete(audit_text, audit_file)
+            except FA.AuditError as exc:
+                fail(f"pr {pr} review round {round_no} finding audit is unusable: {exc}")
+            audit_artifact = artifact(audit_file, audit_text)
         elif gating_findings and round_no not in cap_rounds:
             fail(f"missing required finding audit for pr {pr} review round {round_no}")
         else:

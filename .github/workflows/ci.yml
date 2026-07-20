@@ -93,6 +93,8 @@ jobs:
             plugins/gauntlet/skills/campaign/scripts/review-pass.py \
             plugins/gauntlet/skills/campaign/scripts/review-pass-test.py \
             plugins/gauntlet/skills/campaign/scripts/emit-finding.py \
+            plugins/gauntlet/skills/campaign/scripts/finding-audit.py \
+            plugins/gauntlet/skills/campaign/scripts/finding-audit-test.py \
             plugins/gauntlet/skills/campaign/scripts/repair-pass.py \
             plugins/gauntlet/skills/campaign/scripts/repair-pass-test.py \
             plugins/gauntlet/skills/campaign/scripts/followups.py \
@@ -118,8 +120,8 @@ jobs:
             plugins/gauntlet/skills/campaign/scripts/merge-check-test.py | tee pyright.json
           analyzed=$(jq '.summary.filesAnalyzed' pyright.json)
           echo "filesAnalyzed=${analyzed}"
-          if [ "${analyzed}" != "37" ]; then
-            echo "::error::pyright analysed ${analyzed} file(s), not the 37 it was pointed at — it checked" \
+          if [ "${analyzed}" != "39" ]; then
+            echo "::error::pyright analysed ${analyzed} file(s), not the 39 it was pointed at — it checked" \
                  "nothing and said so quietly. Fix the paths above; a silent no-op is not a passing gate."
             exit 1
           fi
@@ -173,6 +175,13 @@ jobs:
       # fails if no fixture notices — so "N rules pinned" is DERIVED here, never a claim in a report.
       - name: Review-pass contract (every rule pinned by a fixture)
         run: python3 plugins/gauntlet/skills/campaign/scripts/review-pass.py self-test
+
+      # The finding-audit accessor's contract, executed. It binds one audit to the strict findings
+      # artifact, requires exactly one evidenced result per gating finding, derives fix/refutation scope,
+      # and records standoff rulings once. The sibling suite covers malformed and stale inputs, REFUTED
+      # exclusion, hostile payload bytes, and atomic write failure.
+      - name: Finding-audit contract
+        run: python3 plugins/gauntlet/skills/campaign/scripts/finding-audit.py self-test
 
       # The FOLLOW-UP store's contract, executed. Three rules here are not merely correctness rules:
       # the lifecycle graph is what makes the USER's agreement unskippable — no driver-only path reaches

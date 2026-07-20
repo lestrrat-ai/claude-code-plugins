@@ -31,6 +31,19 @@ def _load_owner():
 
 R = _load_owner()
 L = R.L  # the ledger — the ONE owner of the schema, the caps and the statuses
+# The audit's schema owner — fixtures now produce real `.jsonl` audits through it, the way the runtime does,
+# instead of hand-writing the old `.md` file the bundle no longer reads.
+def _load_finding_audit():
+    """Load finding-audit.py by path, guarding+raising so the value is non-Optional — the same shape as
+    `_load_owner`, so `FA.main` is well-typed inside every fixture. A module-level `assert FA is not None`
+    would NOT type-narrow the global inside function bodies; the guarded helper does."""
+    mod = load_module_from_path("repair_pass_test_finding_audit", OWNER.parent / "finding-audit.py")
+    if mod is None:
+        raise RuntimeError(f"cannot load the finding-audit accessor at {OWNER.parent / 'finding-audit.py'}")
+    return mod
+
+
+FA = _load_finding_audit()
 
 SHA = "c" * 40
 
@@ -432,7 +445,7 @@ def init_repo(parent: Path, name: str = "worktree") -> "tuple[Path, str]":
 
 
 def write_review_attempt(rundir: Path, round_no: int, attempt: int, head_sha: str,
-                         report: str, *, audit: "str | None" = None) -> Path:
+                         report: str) -> Path:
     RP = R.RP
     stem = f"review-1-{round_no}" + (f".a{attempt}" if attempt >= 2 else "")
     plan = rundir / f"review-1-{round_no}.plan.jsonl"
@@ -454,9 +467,29 @@ def write_review_attempt(rundir: Path, round_no: int, attempt: int, head_sha: st
     ]
     progress.write_text("".join(json.dumps(record) + "\n" for record in records))
     (rundir / f"{stem}.txt").write_text(report)
-    if audit is not None:
-        (rundir / f"audit-1-{round_no}.md").write_text(audit)
     return progress
+
+
+def make_audit(rundir: Path, round_no: int, attempt: int = 1) -> Path:
+    """Produce a round's finding audit the REAL way — through `finding-audit.py` against the round's ACTIVE
+    attempt — recording one CONFIRMED verdict for every gating finding it exposes.
+
+    This replaces the pre-jsonl fixtures' hand-written `audit-1-<n>.md`: those bytes were never a real audit,
+    so a `.md`-only fixture would pass a bundle reader that only checked "the file exists". The bundle now
+    reads `audit-1-<n>.jsonl`, so the fixtures must produce it the way the runtime does. The round's active
+    progress and findings (and the intent) must already be on disk.
+    """
+    stem = f"review-1-{round_no}" + (f".a{attempt}" if attempt >= 2 else "")
+    progress = rundir / f"{stem}.progress.jsonl"
+    audit = rundir / f"audit-1-{round_no}.jsonl"
+    code, out, err = capture_cli(FA.main, ["init", "--file", str(audit), "--progress", str(progress)])
+    check(code == 0, f"audit init for round {round_no} failed: {err!r}")
+    for item in json.loads(out)["gating"]:
+        code, _, err = capture_cli(FA.main, [
+            "record", "--file", str(audit), "--finding-id", item["finding_id"],
+            "--verdict", "CONFIRMED", "--evidence", f"round {round_no} audit verified the finding"])
+        check(code == 0, f"audit record for round {round_no} failed: {err!r}")
+    return audit
 
 
 # One gating finding, reused wherever a cap round must carry the finding its NOT-SATISFIED verdict implies.
@@ -496,16 +529,17 @@ def bundle_setup(tmp: Path, *, rounds: int = 1, relaunch_round: "int | None" = N
         # findings per round (review-pass.py's IF AND ONLY IF). So each round carries a gating finding, and
         # every NON-cap round also records its finding audit — a cap round legitimately skips its audit (the
         # NOT-SATISFIED action sequence goes straight to `repairing`).
-        audit = None if is_cap else f"audit bytes for round {round_no}\n"
-        write_review_attempt(rundir, round_no, 1, head_sha, report, audit=audit)
+        write_review_attempt(rundir, round_no, 1, head_sha, report)
         if relaunch_round == round_no:
             write_review_attempt(rundir, round_no, 1, head_sha,
                                  "DEAD ATTEMPT 1 MUST NOT ENTER THE BUNDLE\n")
             write_review_attempt(rundir, round_no, 2, head_sha,
-                                 "ACTIVE ATTEMPT 2\n\nVERDICT: NOT SATISFIED\n",
-                                 audit="active audit\n" if round_no == 2 else audit)
+                                 "ACTIVE ATTEMPT 2\n\nVERDICT: NOT SATISFIED\n")
         if not is_cap:
+            # The non-cap round's gating finding, then its REAL `.jsonl` audit produced through
+            # finding-audit.py against the active attempt — the artifact the bundle now reads.
             write_cap_finding(rundir, round_no, active_attempt)
+            make_audit(rundir, round_no, active_attempt)
 
     # The last round is the cap round (the NOT SATISFIED that tripped the cap and set `repairing`). By the
     # coherence rule it must carry a gating finding; give it one so the history is usable. `cap_finding=False`
@@ -547,8 +581,9 @@ def t_bundle_orders_rounds_and_selects_active_attempt(tmp: Path) -> None:
     check("ACTIVE ATTEMPT 2" in payload["rounds"][1]["report"]["content"],
           "active relaunch report is absent")
     check("DEAD ATTEMPT 1" not in output.read_text(), "superseded attempt bytes entered the bundle")
-    check(payload["rounds"][1]["audit"]["content"] == "active audit\n",
-          "round audit was not included with the active history")
+    check(payload["rounds"][1]["audit"]["present"] is True
+          and "round 2 audit verified the finding" in payload["rounds"][1]["audit"]["content"],
+          "the active relaunch round's real .jsonl audit was not included with the history")
     manifest = json.loads((Path(str(output) + ".manifest.json")).read_text())
     check([item["round"] for item in manifest["rounds"]] == list(range(1, 11)),
           "manifest round order drifted from prompt order")
@@ -631,7 +666,7 @@ def t_bundle_refuses_missing_stale_and_duplicate_inputs(tmp: Path) -> None:
     # Round 1 of a 2-round history is a non-cap round that carries a gating finding, so it MUST record its
     # finding audit. Drop that audit and the bundle refuses the round before any output.
     audit_case = bundle_setup(tmp / "missing-audit", rounds=2)
-    (audit_case["rundir"] / "audit-1-1.md").unlink()
+    (audit_case["rundir"] / "audit-1-1.jsonl").unlink()
     audit_output = audit_case["rundir"] / "bundle.txt"
     code, _, err = run_bundle(audit_case, audit_output)
     check(code == 1 and "missing required finding audit" in err,
@@ -707,6 +742,104 @@ def t_bundle_exempts_every_prior_cap_round(tmp: Path) -> None:
     check(json.loads(out)["bundle_sha256"] == R.sha256_bytes(
               R.canonical_json(payload).encode("utf-8")),
           "the emitted bundle hash does not cover the second cap payload")
+
+
+def t_bundle_audit_read_does_not_re_anchor(tmp: Path) -> None:
+    """A landed round's finding audit is embedded as HISTORICAL EVIDENCE and is NEVER re-anchored to the
+    current intent — the audit-side mirror of `load_historical_findings` and of every-prior-cap exemption.
+
+    After a REPAIR-INTENT re-authors `intent-<pr>.md` and drops a purpose an earlier round anchored to, that
+    round's audit — bound to the dropped purpose through its source findings — must still read back into the
+    next cap's bundle. finding-audit.py's OWN read door (`verify`) re-reads those source findings and
+    re-anchors their purposes to the new intent, so it would reject the audit and WEDGE the bundle; the bundle
+    reads it through review-pass.py's non-re-anchoring line parser instead, exactly as it reads the findings
+    beside it. Without this, a repairing PR could neither take its second repair nor ABORT through the
+    sanctioned door — both need a buildable bundle.
+    """
+    case = bundle_setup(tmp, rounds=2, origin="external")  # round 1 non-cap with a REAL audit; round 2 cap
+    audit_path = case["rundir"] / "audit-1-1.jsonl"
+    check(audit_path.exists(), "round 1 should have produced a real .jsonl audit through finding-audit.py")
+
+    # REPAIR-INTENT re-authors the intent, dropping the purpose round 1's finding (and its audit) anchored to.
+    (case["rundir"] / "intent-1.md").write_text(
+        "## Purpose\n- a wholly re-authored purpose written by the intent repair\n\n"
+        "## Non-goals\n- deciding which repair is correct\n\n"
+        "## Threat model\n"
+        "- Who can write the inputs this code reads: the campaign driver and review workers\n"
+        "- Who cannot: unrelated repository users\n")
+
+    # finding-audit.py's OWN read door now REJECTS this audit: it re-anchors the source findings to the new
+    # intent, where the round's purpose no longer exists. This is exactly the door the bundle must NOT use.
+    code_v, _, err_v = capture_cli(FA.main, ["verify", "--file", str(audit_path)])
+    check(code_v == 1 and "Purpose" in err_v,
+          f"the re-anchoring door unexpectedly accepted the post-repair audit — the guard is moot: {err_v!r}")
+
+    output = case["rundir"] / "repair-1-1.prompt.txt"
+    code, _, err = run_bundle(case, output)
+    check(code == 0, f"the bundle re-anchored a historical audit to the re-authored intent and wedged: {err!r}")
+    payload = prompt_payload(output)
+    check(payload["rounds"][0]["audit"]["present"] is True
+          and "round 1 audit verified the finding" in payload["rounds"][0]["audit"]["content"],
+          "the historical audit was not embedded as evidence after the intent was re-authored")
+
+
+def t_bundle_refuses_a_header_only_audit(tmp: Path) -> None:
+    """A landed round's HEADER-ONLY finding audit is incomplete history and is refused before any output.
+
+    `finding-audit.py init` writes the header and zero `audit_result` rows. Those bytes are well-formed
+    JSONL with a valid header, so `parse_lines` alone would embed them as `present: True` indistinguishably
+    from a complete audit — the one landed artifact re-validated only for well-formedness. The bundle now
+    also runs finding-audit.py's header-internal completeness check, so a round whose header names gating
+    findings but records no result for them fails closed. (Red before the fix: the header-only audit passed
+    as complete and the bundle succeeded.)
+    """
+    case = bundle_setup(tmp, rounds=2)  # round 1 non-cap with a REAL complete audit, round 2 cap
+    audit_path = case["rundir"] / "audit-1-1.jsonl"
+    lines = audit_path.read_text().splitlines()
+    check(len(lines) >= 2, "round 1's real audit should carry a header plus at least one audit_result row")
+    # Reduce it to what `init` alone writes: the header, no results. Well-formed, valid header, incomplete.
+    audit_path.write_text(lines[0] + "\n")
+
+    output = case["rundir"] / "bundle.txt"
+    code, _, err = run_bundle(case, output)
+    check(code == 1 and "incomplete" in err,
+          f"a header-only audit was embedded as complete history rather than refused: {err!r}")
+    check(not output.exists() and not R.bundle_manifest_path(output).exists(),
+          "a refused bundle must leave no output")
+
+
+def t_bundle_audit_completeness_is_header_internal(tmp: Path) -> None:
+    """The bundle's audit COMPLETENESS check reads only the audit's own header — it NEVER re-anchors.
+
+    A COMPLETE audit whose source purpose was later dropped from `intent-<pr>.md` must still validate as
+    complete, exactly as `t_bundle_audit_read_does_not_re_anchor` requires of the whole bundle. If the new
+    completeness check went through finding-audit.py's re-anchoring door (`verify`/`load_audit`), it would
+    re-read the round's source findings, fail to anchor the dropped purpose, reject the audit, and WEDGE the
+    bundle. This pins that the check stays header-internal: `verify` rejects the same audit, the
+    header-internal check accepts it.
+    """
+    case = bundle_setup(tmp, rounds=2, origin="external")  # round 1 non-cap with a REAL complete audit
+    audit_path = case["rundir"] / "audit-1-1.jsonl"
+    check(audit_path.exists(), "round 1 should have produced a real, complete .jsonl audit")
+
+    # REPAIR-INTENT re-authors the intent, dropping the purpose round 1's finding (and its audit) anchored to.
+    (case["rundir"] / "intent-1.md").write_text(
+        "## Purpose\n- a wholly re-authored purpose written by the intent repair\n\n"
+        "## Non-goals\n- deciding which repair is correct\n\n"
+        "## Threat model\n"
+        "- Who can write the inputs this code reads: the campaign driver and review workers\n"
+        "- Who cannot: unrelated repository users\n")
+
+    text = audit_path.read_text()
+    # finding-audit.py's RE-ANCHORING door rejects this complete audit: its source purpose is gone from intent.
+    code_v, _, err_v = capture_cli(FA.main, ["verify", "--file", str(audit_path)])
+    check(code_v == 1 and "Purpose" in err_v,
+          f"the re-anchoring door unexpectedly accepted the post-repair audit — the contrast is moot: {err_v!r}")
+    # The header-internal completeness check reads only the audit's own bytes, so the complete audit passes.
+    try:
+        FA.check_landed_audit_complete(text, audit_path)
+    except FA.AuditError as exc:
+        check(False, f"the completeness check re-anchored or mis-read a complete historical audit: {exc}")
 
 
 def t_bundle_refuses_a_cap_round_with_no_gating_finding(tmp: Path) -> None:
@@ -1078,6 +1211,9 @@ CASES = [
     ("bundle-refusals", "missing, stale, and duplicate active inputs fail before output", t_bundle_refuses_missing_stale_and_duplicate_inputs),
     ("bundle-old-intent", "old intent anchors survive; the cap round may have no audit yet", t_bundle_preserves_findings_from_an_older_intent),
     ("bundle-prior-cap", "a second cap builds; every earlier cap round's absent audit is exempt", t_bundle_exempts_every_prior_cap_round),
+    ("bundle-audit-no-re-anchor", "a historical audit reads back after the intent is re-authored (no re-anchor)", t_bundle_audit_read_does_not_re_anchor),
+    ("bundle-audit-header-only", "a header-only (incomplete) audit is refused, not embedded as present", t_bundle_refuses_a_header_only_audit),
+    ("bundle-audit-complete-header-internal", "the completeness check is header-internal, never re-anchoring", t_bundle_audit_completeness_is_header_internal),
     ("bundle-cap-needs-finding", "a cap round with no gating finding is unusable history and refused", t_bundle_refuses_a_cap_round_with_no_gating_finding),
     ("bundle-report-needs-verdict", "a report with no terminal VERDICT line fails closed through parse_report", t_bundle_refuses_a_report_with_no_verdict),
     ("bundle-base-sha-pinned", "the base is pinned to one SHA before any read; a racing fetch cannot mix bases", t_bundle_pins_base_sha_against_a_racing_fetch),

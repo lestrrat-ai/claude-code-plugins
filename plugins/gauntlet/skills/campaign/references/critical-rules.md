@@ -199,7 +199,8 @@
   unaudited finding: **CONFIRMED** (real, and its mechanism can occur → fix), **ADJUSTED** (a real
   defect, but not the one described → fix the real one), or **REFUTED** (false, or its **mechanism cannot
   occur** → do NOT fix; refute in the tree). **One audit subagent handles that PR's gating findings** and
-  records the audit in `<rundir>/audit-<pr>-<n>.md`; only CONFIRMED + ADJUSTED reach the fix subagent. The **reachability test is NOT about where the trigger
+  records every result through `finding-audit.py`; dispatch post-audit work only from its verified
+  `fix-list --json` output (`finding-audit.md`, **Executable audit artifact**). The **reachability test is NOT about where the trigger
   comes from** — it asks **can the mechanism the finding describes actually occur?** Walk the finding's
   own causal chain and check every link. A defect is reachable if the code/docs THIS PR SHIPS can exhibit
   it on ANY input campaign consumes — PR content, reviewer output, CI logs/snapshots, ledger and run
@@ -214,7 +215,8 @@
 - **A REFUTATION NEVER CLEARS THE GATE — IT GOES INTO THE COMMIT, WHERE THE REVIEWER JUDGES IT.** Refute
   only on evidence of falsity or a verified-impossible mechanism — NEVER because a fix is inconvenient.
   `reviews_ok` stays 0: the orchestrator may say "this finding is wrong", NEVER "therefore it passes".
-  Write the refutation as an **inline comment at the site** (plus `<rundir>/audit-<pr>-<n>.md`) and
+  Write the refutation as an **inline comment at the site** (recorded in
+  `<rundir>/audit-<pr>-<n>.jsonl` through `finding-audit.py`) and
   **commit it**. A refutation is a COMMIT, a commit is PR CONTENT, and PR content **RESETS THE GATE** and
   is **REVIEWED** — route it through the same "any campaign commit resets the gate" rule (`reviews_ok` →
   0, restore `gauntlet-reviewing`, re-derive CI for the new tip and watch it only if `liveness` reports
@@ -230,7 +232,7 @@
   USER adjudicate, and keep driving the other PRs. A REFUTED finding does **NOT** park by itself — only
   the **re-raise** parks (`finding-audit.md`, "Audit every finding before you fix it"). The standoff
   is **one of TWO `awaiting-user` classes**, each with its own durable answer record: the standoff is
-  answered into `audit-<pr>-<n>.md`; a **machine blocker** (campaign cannot move the PR without a human) is
+  answered through `finding-audit.py rule-standoff`; a **machine blocker** (campaign cannot move the PR without a human) is
   answered into `blocker_ruling` = `retry`/`abort`. `files-and-ledger.md`, `status`, `awaiting-user`
   class 2, **owns** the machine-blocker class; `loop-control.md` step 3, "Only the user's answer unparks a
   PR", owns the unpark. **NEVER park into a state whose exit is undefined.**
