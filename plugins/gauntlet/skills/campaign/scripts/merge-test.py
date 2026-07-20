@@ -20,8 +20,22 @@ def _load_owner():
     return mod
 
 
+def _load_reconcile():
+    # Loaded by path (never a static import — reconcile.py is outside the pyright type-clean set, and
+    # `merge.py` already loads its siblings this way). The helper raises rather than returning None, so the
+    # module binding is non-optional at every use.
+    path = OWNER.parent / "reconcile.py"
+    mod = load_module_from_path("merge_test_reconcile", path)
+    if mod is None:
+        raise RuntimeError(f"cannot load {path}")
+    return mod
+
+
 M = _load_owner()
 L = M.L
+# The reconcile detector. The routing-decision fixture drives BOTH tools: the fact reconcile emits, and the
+# `merge.py run` finalizer that fact routes to.
+RECON = _load_reconcile()
 
 SHA = "a" * 40
 
@@ -486,6 +500,63 @@ def t_absent_snapshot_merged_row_resumes_via_run():
         finish(td, real)
 
 
+def t_absent_snapshot_closed_row_terminates():
+    # Heartbeat routing (loop-control.md Step 4), the CLOSED side of the absent-row finalizer: an
+    # absent-from-snapshot NON-TERMINAL row whose live PR is CLOSED WITHOUT merging (a human closed it, or the
+    # driver died after `gh pr close`). `merge.py run` performs the terminal close-out — records `aborted`,
+    # runs NO merge, and cleans NOTHING: the branch content never reached <base>, so removing an owned
+    # worktree/branch would destroy unmerged work.
+    td, root, f, led, real = scenario(state="CLOSED")
+    try:
+        code, result, err = invoke(f, led, root)
+        check(code == 0, err)
+        check(f.merged_calls == 0, "a CLOSED-without-merge PR must never be merged")
+        check(status(led) == "aborted", f"a closed-without-merge row must terminate as aborted, got {status(led)!r}")
+        check(result is not None and result["status"] == "closed-unmerged" and result["cleanup"] == {},
+              f"the close-out must report closed-unmerged with no cleanup: {result}")
+        check(f.worktree_present and f.branch_present,
+              "the close-out must NOT delete owned resources holding unmerged work")
+        check(not any(argv[:3] == ["gh", "pr", "merge"] for argv, _ in f.calls),
+              "the close-out issued a merge command")
+        check(not any("worktree" in argv and "remove" in argv for argv, _ in f.calls),
+              "the close-out removed a worktree")
+    finally:
+        finish(td, real)
+
+
+def t_absent_routing_decision():
+    # The ROUTING DECISION itself (loop-control.md Step 1 -> Step 4), exercised end to end rather than by a
+    # bare execute() call. reconcile.py observes the absent fact; `merge.py run` is the single finalizer BOTH
+    # sides of the routing lead to. reconcile emits `absent_from_snapshot: True` for a NON-TERMINAL row missing
+    # from the snapshot, and that one fact routes to `merge.py run`, which distinguishes MERGED (resume) from
+    # CLOSED-without-merge (terminate). Both branches are driven from the same reconcile fact here.
+    for live_state, want_status, want_result in (
+        ("MERGED", "merged", "merged"),
+        ("CLOSED", "aborted", "closed-unmerged"),
+    ):
+        td, root, f, led, real = scenario(state=live_state)
+        try:
+            # Routing INPUT: reconcile sees PR 9 (in_review) absent from an empty snapshot and reports the fact.
+            prs = root / "prs.json"
+            prs.write_text("[]", encoding="utf-8")
+            facts = RECON.detect(led, prs, "g1")
+            row_fact = facts["rows"]["9"]
+            check(row_fact.get("absent_from_snapshot") is True,
+                  f"{live_state}: reconcile did not report the absent fact: {row_fact}")
+            check("terminal" not in row_fact,
+                  f"{live_state}: a non-terminal absent row must not be pre-classified terminal: {row_fact}")
+            # Routing OUTPUT: the fact routes to `merge.py run`, which finalizes the correct side.
+            code, result, err = invoke(f, led, root)
+            check(code == 0, f"{live_state}: {err}")
+            check(status(led) == want_status,
+                  f"{live_state}: absent row finalized to {status(led)!r}, expected {want_status!r}")
+            check(result is not None and result["status"] == want_result,
+                  f"{live_state}: run reported {result}, expected result status {want_result!r}")
+            check(f.merged_calls == 0, f"{live_state}: an already-terminal live PR must not be re-merged")
+        finally:
+            finish(td, real)
+
+
 CASES = [
     ("happy-owned", "exact merge argv, owned cleanup, terminal write", t_happy_owned_cleanup_and_command),
     ("merged-live-row", "MERGED with live ledger resumes without another merge", t_merge_landed_ledger_live_resumes),
@@ -503,4 +574,6 @@ CASES = [
     ("head-race", "--match-head-commit refuses a tip that advanced before the merge landed", t_head_race_between_view_and_merge_refuses_before_landing),
     ("merge-method", "merge method is a validated input; squash-disabled repo has a prevailing-method recourse", t_merge_method_input_validated_and_applied),
     ("absent-resume", "an absent-but-unfinalized MERGED row resumes its remaining phases through run", t_absent_snapshot_merged_row_resumes_via_run),
+    ("absent-closed", "an absent-but-unfinalized CLOSED-without-merge row terminates as aborted with no cleanup", t_absent_snapshot_closed_row_terminates),
+    ("absent-routing", "the absent fact routes reconcile -> merge.py run, which finalizes MERGED and CLOSED sides", t_absent_routing_decision),
 ]
