@@ -6,6 +6,11 @@ against the live PR and fetched base, then performs the established merge sequen
 is either durable outside this process (GitHub MERGED, updated refs, absent owned resources, terminal
 ledger row) or safe to repeat. A rerun therefore resumes after interruption without repeating the merge.
 
+It is also the FINALIZER for an absent-from-snapshot row loop-control.md Step 4 routes here after a merge
+that landed but never finished: the single live view distinguishes MERGED (resume the owed base-sync /
+cleanup / terminal-write phases) from CLOSED-without-merge (the terminal close-out — record `aborted`, no
+merge, no cleanup, because unmerged branch content must never be destroyed).
+
     merge.py run --ledger <state.jsonl> --pr <N> --project-root <dir> --repo <owner/name> \
         [--merge-method squash|merge|rebase]
     merge.py self-test
@@ -325,13 +330,15 @@ def _cleanup(root: Path, row: dict) -> dict:
     }
 
 
-def _mark_merged(ledger: Path, pr: str) -> None:
+def _mark_terminal(ledger: Path, pr: str, status: str) -> None:
+    """Write a TERMINAL ledger status (`merged` after a landed merge, `aborted` after a closed-without-merge
+    close-out) as the last, resumable phase. A same-value write is a no-op, so a re-run finalizes idempotently."""
     header, rows = L.load(ledger)
     row = L.find_row(rows, pr)
     if row is None:
         raise Refusal(f"ledger row for PR {pr} disappeared before terminal write")
-    if row["status"] != "merged":
-        row["status"] = "merged"
+    if row["status"] != status:
+        row["status"] = status
         try:
             L.save(ledger, header, rows, activity=True)
         except OSError as exc:
@@ -379,13 +386,21 @@ def execute(ledger: Path, pr: str, project_root: Path, repo: str,
             raise Refusal(
                 f"merge command returned success but PR {pr} state is {confirmed['state']!r}, not MERGED")
         view = confirmed
+    elif view["state"] == "CLOSED":
+        # CLOSED WITHOUT MERGING — the terminal close-out, the CLOSED side of the absent-row finalizer
+        # loop-control.md Step 4 routes here (a human closed the PR, or the driver died after `gh pr close`).
+        # There is NOTHING to merge and NOTHING to clean up: the branch content never reached `<base>`, so an
+        # owned worktree/branch holds UNMERGED work that removing it would destroy. Record the terminal
+        # `aborted` status (files-and-ledger.md, `status` taxonomy: `in_review` -> `aborted`) and stop.
+        _mark_terminal(ledger, pr, "aborted")
+        return {"status": "closed-unmerged", "pr": pr, "cleanup": {}}
     elif view["state"] != "MERGED":
-        raise Refusal(f"PR {pr} state is {view['state']!r}; expected OPEN or MERGED")
+        raise Refusal(f"PR {pr} state is {view['state']!r}; expected OPEN, MERGED, or CLOSED")
 
     # MERGED is confirmed before any local ref or worktree is changed. Each following phase is idempotent.
     _sync_base(root, header["base_branch"])
     cleanup = _cleanup(root, row)
-    _mark_merged(ledger, pr)
+    _mark_terminal(ledger, pr, "merged")
     return {"status": "merged", "pr": pr, "cleanup": cleanup}
 
 
