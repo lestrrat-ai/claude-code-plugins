@@ -34,7 +34,8 @@ def check(cond: bool, msg: str) -> None:
 class Fake:
     def __init__(self, root: Path, *, worktree_owned="yes", branch_owned="yes",
                  state="OPEN", ci="green", reviews="2", status="in_review",
-                 base_checked=True, fail_once: "str | None" = None):
+                 base_checked=True, fail_once: "str | None" = None,
+                 live_head: str = SHA, reject_method: "str | None" = None):
         self.root = root
         self.branch = "feat-pr"
         self.base = "main"
@@ -53,6 +54,10 @@ class Fake:
         self.failed: set[str] = set()
         self.view_error_once = fail_once == "confirm-view"
         self.merged_calls = 0
+        # The live tip GitHub would merge, and a merge method the repo rejects — the two knobs that
+        # model, respectively, a head-race (--match-head-commit must refuse) and a disabled method.
+        self.live_head = live_head
+        self.reject_method = reject_method
 
     def ledger(self, path: Path, *, worktree: "Path | None" = None, branch: "str | None" = None,
                run_id="g1") -> None:
@@ -107,6 +112,12 @@ class Fake:
             return ok(json.dumps(self.view()))
         if argv[:3] == ["gh", "pr", "merge"]:
             self.merged_calls += 1
+            if "--match-head-commit" in argv:
+                pinned = argv[argv.index("--match-head-commit") + 1]
+                if pinned != self.live_head:
+                    return bad("Head branch was modified. Review and try the merge again.")
+            if self.reject_method is not None and f"--{self.reject_method}" in argv:
+                return bad(f"{self.reject_method.capitalize()} merges are not allowed on this repository")
             if self._fail("merge-before"):
                 return bad("merge rejected")
             self.state = "MERGED"
@@ -155,9 +166,10 @@ def scenario(**kwargs):
     return td, root, fake, ledger, real
 
 
-def invoke(fake: Fake, ledger: Path, root: Path) -> tuple[int, "dict | None", str]:
+def invoke(fake: Fake, ledger: Path, root: Path,
+           merge_method: str = "squash") -> tuple[int, "dict | None", str]:
     try:
-        result = M.execute(ledger, "9", root, "o/r")
+        result = M.execute(ledger, "9", root, "o/r", merge_method=merge_method)
         return 0, result, ""
     except M.Refusal as exc:
         return 1, None, str(exc)
@@ -183,7 +195,8 @@ def t_happy_owned_cleanup_and_command():
         check(status(led) == "merged", "terminal ledger state must land last")
         check(not f.worktree_present and not f.branch_present, "both owned resources must be removed")
         merge = [argv for argv, _ in f.calls if argv[:3] == ["gh", "pr", "merge"]]
-        check(merge == [["gh", "pr", "merge", "9", "--repo", "o/r", "--squash"]],
+        check(merge == [["gh", "pr", "merge", "9", "--repo", "o/r", "--squash",
+                         "--match-head-commit", SHA]],
               f"wrong merge argv: {merge}")
         check(all("--delete-branch" not in argv for argv, _ in f.calls),
               "campaign must never request remote branch deletion")
@@ -399,6 +412,80 @@ def t_repeat_after_terminal_is_noop():
         finish(td, real)
 
 
+def t_head_race_between_view_and_merge_refuses_before_landing():
+    # A push advances the live tip to a DIFFERENT SHA in the window between the pre-merge view (which
+    # still reports the reviewed head) and the merge call. --match-head-commit pins the reviewed SHA, so
+    # GitHub refuses; the unreviewed head is never squashed and the row stays live for a clean re-gate.
+    td, root, f, led, real = scenario(live_head="c" * 40)
+    try:
+        code, _result, _err = invoke(f, led, root)
+        check(code != 0, "head-race merge was not refused")
+        merge = [argv for argv, _ in f.calls if argv[:3] == ["gh", "pr", "merge"]]
+        check(merge == [["gh", "pr", "merge", "9", "--repo", "o/r", "--squash",
+                         "--match-head-commit", SHA]],
+              f"merge argv did not pin the reviewed head: {merge}")
+        check(f.state == "OPEN", "the unreviewed head was merged despite the pin")
+        check(status(led) == "in_review", "a refused head-race must leave the row live to re-gate")
+        check(f.worktree_present and f.branch_present,
+              "a refused merge must not clean owned resources")
+    finally:
+        finish(td, real)
+
+
+def t_merge_method_input_validated_and_applied():
+    # The merge method is an explicit, validated runner input defaulting to squash. A squash-disabled
+    # repo fails LOUDLY on the default; the documented recourse is to pass the repo's prevailing method.
+    td, root, f, led, real = scenario(reject_method="squash")
+    try:
+        code, _result, err = invoke(f, led, root)  # default --squash on a squash-disabled repo
+        check(code != 0 and "not allowed" in err, f"squash-disabled repo did not fail loudly: {err}")
+        check(f.state == "OPEN", "a rejected squash must not merge")
+        check(status(led) == "in_review", "a rejected merge must leave the row live")
+    finally:
+        finish(td, real)
+
+    td, root, f, led, real = scenario(reject_method="squash")
+    try:
+        code, _result, err = invoke(f, led, root, merge_method="merge")  # prevailing method recourse
+        check(code == 0, f"prevailing merge method was not honored: {err}")
+        merge = [argv for argv, _ in f.calls if argv[:3] == ["gh", "pr", "merge"]]
+        check(merge == [["gh", "pr", "merge", "9", "--repo", "o/r", "--merge",
+                         "--match-head-commit", SHA]],
+              f"merge argv did not carry the chosen method: {merge}")
+        check(all("--delete-branch" not in argv for argv, _ in f.calls),
+              "a non-squash method must still never request remote branch deletion")
+        check(status(led) == "merged", "the prevailing-method merge did not complete")
+    finally:
+        finish(td, real)
+
+    td, root, f, led, real = scenario()
+    try:
+        code, _result, err = invoke(f, led, root, merge_method="octopus")
+        check(code != 0 and "merge method" in err, f"an invalid merge method was accepted: {err}")
+        check(f.merged_calls == 0, "an invalid merge method reached the merge call")
+    finally:
+        finish(td, real)
+
+
+def t_absent_snapshot_merged_row_resumes_via_run():
+    # Heartbeat routing (loop-control.md Step 4): an absent-from-snapshot row whose ledger status is not
+    # yet terminal is routed through `merge.py run`. GitHub already MERGED it, but the process died before
+    # base-sync/cleanup/terminal write, so those later phases are still pending. run resumes them here —
+    # no second merge, cleanup completes, terminal row lands — which is what the doc delegates to it.
+    td, root, f, led, real = scenario(state="MERGED")
+    try:
+        check(f.worktree_present and f.branch_present, "precondition: later phases still pending")
+        code, result, err = invoke(f, led, root)
+        check(code == 0, err)
+        check(f.merged_calls == 0, "a MERGED PR must not be re-merged when the heartbeat resumes it")
+        check(status(led) == "merged", "resume must finalize the terminal ledger row")
+        check(not f.worktree_present and not f.branch_present,
+              "resume must complete the pending base-sync/cleanup phases")
+        check(result is not None and result["status"] == "merged", f"unexpected result: {result}")
+    finally:
+        finish(td, real)
+
+
 CASES = [
     ("happy-owned", "exact merge argv, owned cleanup, terminal write", t_happy_owned_cleanup_and_command),
     ("merged-live-row", "MERGED with live ledger resumes without another merge", t_merge_landed_ledger_live_resumes),
@@ -413,4 +500,7 @@ CASES = [
     ("merge-accepted", "MERGED confirmation outranks a lost merge response", t_merge_transport_failure_after_acceptance_continues),
     ("terminal-write-resume", "a failed terminal write resumes after already-completed cleanup", t_terminal_write_failure_resumes_after_cleanup),
     ("terminal-repeat", "repeated invocation after terminal state is a no-op", t_repeat_after_terminal_is_noop),
+    ("head-race", "--match-head-commit refuses a tip that advanced before the merge landed", t_head_race_between_view_and_merge_refuses_before_landing),
+    ("merge-method", "merge method is a validated input; squash-disabled repo has a prevailing-method recourse", t_merge_method_input_validated_and_applied),
+    ("absent-resume", "an absent-but-unfinalized MERGED row resumes its remaining phases through run", t_absent_snapshot_merged_row_resumes_via_run),
 ]

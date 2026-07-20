@@ -96,13 +96,22 @@ subagent at a check that is merely **still running**.
 
 ```text
 python3 <skill-dir>/scripts/merge.py run \
-  --ledger <state.jsonl> --pr <N> --project-root <repository.project_root> --repo <owner/name>
+  --ledger <state.jsonl> --pr <N> --project-root <repository.project_root> --repo <owner/name> \
+  [--merge-method squash|merge|rebase]
 ```
 
 `merge.py` imports `merge-check.py`; readiness policy stays owned by **"The merge precondition"** above.
 The command re-reads the live PR and exact head, checks this run's owner label, executes the established
-`gh pr merge <N> --squash` call without `--delete-branch`, confirms `MERGED`, updates local `<base>`,
-cleans only ledger-owned local resources, then records `status = merged` through the ledger accessor.
+`gh pr merge <N> --<merge-method> --match-head-commit <head_sha>` call without `--delete-branch`, confirms
+`MERGED`, updates local `<base>`, cleans only ledger-owned local resources, then records `status = merged`
+through the ledger accessor.
+
+`--match-head-commit` pins the merge to the exact reviewed head SHA: a push that advanced the live tip
+between the readiness view and the merge call makes GitHub refuse fail-closed, rather than squashing the
+unreviewed head. `--merge-method` defaults to `squash`; **use the repo's prevailing merge method if squash
+is disabled** (a squash-only-disabled repository otherwise fails loudly on every restart). The
+no-`--delete-branch` rule holds for every method: campaign never deletes the adopted PR's remote head
+branch — the repo's "Automatically delete head branches" setting alone governs that.
 
 Each phase leaves a durable or safely repeatable checkpoint. Re-run the same command after any failure:
 GitHub `MERGED` skips the merge call; base updates are fast-forward-only; absent owned worktrees/branches

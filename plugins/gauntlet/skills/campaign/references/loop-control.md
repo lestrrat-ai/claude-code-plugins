@@ -427,6 +427,15 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
   `merge.py run` for that PR. It revalidates the fetched base, merges, syncs `<base>`, cleans owned local
   resources, and records the terminal row as one resumable sequence. Reconcile remaining candidates and
   repeat while another PR is immediately mergeable (Stage 3 owns the check).
+
+  **An `absent_from_snapshot` row whose ledger status is not yet terminal is also routed through
+  `merge.py run` — before the terminal routing above owns it.** Such a row is the resume case: the process
+  died after `gh pr merge` landed `MERGED` but before base-sync/cleanup/terminal write, so the PR left the
+  `--state open` snapshot while its later phases stay pending. `merge.py run` re-reads the live PR, and on
+  `MERGED` skips the merge and resumes exactly those remaining phases. Only when `merge.py run` confirms
+  the PR **closed without merging** does the separate closed-without-merge terminal path apply. (The
+  absent-fact routing itself is owned above where each reconcile fact is routed — this only names which
+  side of it, merged-not-finalized versus closed, the drain resumes versus terminates.)
 ### Step 5 — Reschedule or exit
 
 5. **Reschedule or exit.**

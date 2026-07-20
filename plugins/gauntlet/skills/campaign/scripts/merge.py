@@ -6,7 +6,8 @@ against the live PR and fetched base, then performs the established merge sequen
 is either durable outside this process (GitHub MERGED, updated refs, absent owned resources, terminal
 ledger row) or safe to repeat. A rerun therefore resumes after interruption without repeating the merge.
 
-    merge.py run --ledger <state.jsonl> --pr <N> --project-root <dir> --repo <owner/name>
+    merge.py run --ledger <state.jsonl> --pr <N> --project-root <dir> --repo <owner/name> \
+        [--merge-method squash|merge|rebase]
     merge.py self-test
 
 The sibling `merge-test.py` is the executable contract. Tests replace the process boundary; they never
@@ -42,6 +43,7 @@ MC = _load("merge_runner_check", "merge-check.py")
 SHA_RE = re.compile(r"^[0-9a-f]{40}\Z")
 COUNT_RE = re.compile(r"^(?:0|[1-9][0-9]*)\Z")
 RUN_LABEL_PREFIX = "gauntlet-run-"
+MERGE_METHODS = ("squash", "merge", "rebase")
 VIEW_FIELDS = (
     "state,headRefOid,headRefName,baseRefName,labels,"
     "mergeable,mergeStateStatus,isDraft"
@@ -336,7 +338,11 @@ def _mark_merged(ledger: Path, pr: str) -> None:
             raise Refusal(f"terminal ledger write failed: {exc}") from exc
 
 
-def execute(ledger: Path, pr: str, project_root: Path, repo: str) -> dict:
+def execute(ledger: Path, pr: str, project_root: Path, repo: str,
+            merge_method: str = "squash") -> dict:
+    if merge_method not in MERGE_METHODS:
+        raise Refusal(
+            f"merge method {merge_method!r} is not one of {', '.join(MERGE_METHODS)}")
     root = resolve_project_root(project_root)
     header, rows = L.load(ledger)
     row = L.find_row(rows, pr)
@@ -357,7 +363,11 @@ def execute(ledger: Path, pr: str, project_root: Path, repo: str) -> dict:
 
     if view["state"] == "OPEN":
         _require_ready(row, header, view)
-        merge_argv = ["gh", "pr", "merge", pr, "--repo", repo, "--squash"]
+        # --match-head-commit pins the merge to the exact reviewed SHA. If a push advanced the live tip
+        # in the window between the pre-merge view and this call, GitHub refuses fail-closed rather than
+        # squashing the unreviewed head; the post-merge re-validation would only detect that after landing.
+        merge_argv = ["gh", "pr", "merge", pr, "--repo", repo, f"--{merge_method}",
+                      "--match-head-commit", row["head_sha"]]
         merge_proc = _run(merge_argv, cwd=str(root))
         # A transport failure can happen after GitHub accepted the merge. Re-read state before deciding
         # whether this phase failed; MERGED is the durable checkpoint and prevents a second merge attempt.
@@ -425,12 +435,15 @@ def main(argv: "list[str] | None" = None) -> int:
     run.add_argument("--pr", required=True)
     run.add_argument("--project-root", required=True, type=Path)
     run.add_argument("--repo", required=True)
+    run.add_argument("--merge-method", default="squash", choices=MERGE_METHODS,
+                     help="merge method (default: squash; use the repo's prevailing method if squash is disabled)")
     sub.add_parser("self-test", help="run every fixture in merge-test.py")
     args = parser.parse_args(argv)
     if args.cmd == "self-test":
         return self_test()
     try:
-        result = execute(args.ledger, str(args.pr), args.project_root, args.repo)
+        result = execute(args.ledger, str(args.pr), args.project_root, args.repo,
+                         merge_method=args.merge_method)
     except (Refusal, SystemExit) as exc:
         detail = exc if isinstance(exc, Refusal) else "ledger rejected malformed state"
         print(f"merge: REFUSED — {detail}", file=sys.stderr)
