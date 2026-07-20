@@ -56,6 +56,17 @@ def write_intent(directory: Path) -> None:
     )
 
 
+def rewrite_intent_dropping_purpose(directory: Path) -> None:
+    """A sanctioned REPAIR-INTENT re-authors intent-<pr>.md, dropping the purpose the landed round's
+    findings anchored to. The source findings file is left untouched, so only the intent has changed."""
+    (directory / "intent-41.md").write_text(
+        "## Purpose\n\n- A different purpose authored by a later repair-intent.\n\n"
+        "## Non-goals\n\n- Unrelated cleanup.\n\n"
+        "## Threat model\n\n- Repository content can exercise the changed parser.\n",
+        encoding="utf-8",
+    )
+
+
 def write_source(directory: Path, rows: list[dict], name: str = "review-41-1.findings.jsonl") -> Path:
     write_intent(directory)
     path = directory / name
@@ -276,6 +287,60 @@ def t_standoff_ruling_is_durable_once_and_controls_fix_scope() -> None:
         check(payload["refutations"] == [], "a ruled standoff must not replay the original refutation work")
 
 
+def t_standoff_ruling_records_after_repair_intent_rewrites_intent() -> None:
+    """A REPAIR-INTENT rewrites intent-<pr>.md BETWEEN recording REFUTED and the ruling.
+
+    Regression for the finding that `rule-standoff` and standoff-phase `fix-list` re-anchored a landed
+    round's audit to the CURRENT intent. A sanctioned REPAIR-INTENT drops the purpose the REFUTED finding
+    anchored to; the re-anchoring read then rejected the historical finding (exit 1, NO standoff_ruling
+    row), so the user's one durable ruling was UNRECORDABLE and the PR wedged in awaiting-user. The
+    non-re-anchoring historical read fixes it while preserving the source-digest staleness guard. Without
+    the fix, part (a) FAILS (the ruling is refused); with it, all three parts pass.
+    """
+    # (a) the ruling records DURABLY after the intent is rewritten, and (b) fix-list returns it once.
+    with tempfile.TemporaryDirectory() as name:
+        directory = Path(name)
+        _source, audit, summary = initialize(directory, [finding(11)])
+        fid = summary["gating"][0]["finding_id"]
+        check(record(audit, fid, "REFUTED", "verified impossible call chain")[0] == 0, "refutation records")
+        rewrite_intent_dropping_purpose(directory)
+        args = [
+            "rule-standoff", "--file", str(audit), "--finding-id", fid,
+            "--ruling", "valid", "--counter", "fresh reviewer reached the branch",
+            "--evidence", "user accepted the fresh reproduction",
+        ]
+        code, _out, err = invoke(args)
+        check(code == 0, f"standoff ruling must record after a repair-intent rewrite: {err}")
+        rows = [json.loads(line) for line in audit.read_text(encoding="utf-8").splitlines()]
+        rulings = [r for r in rows if r.get("type") == "standoff_ruling"]
+        check(len(rulings) == 1 and rulings[0]["finding_id"] == fid,
+              f"a durable standoff_ruling row must be written: {rows}")
+
+        code, payload, err = fix_list(audit)
+        check(code == 0 and [f["finding_id"] for f in payload["fixes"]] == [fid]
+              and payload["fixes"][0]["disposition"] == "standoff-valid",
+              f"standoff fix-list must return the ruled fix after repair-intent: {err}, {payload}")
+        code, payload, err = fix_list(audit)
+        check(code == 0 and payload["fixes"] == [],
+              f"the ruled standoff fix must be consumed exactly once: {err}, {payload}")
+
+    # (c) the source-digest staleness guard SURVIVES on the historical path: a genuinely changed source
+    # finding must still stale the ruling read even though the intent was rewritten.
+    with tempfile.TemporaryDirectory() as name:
+        directory = Path(name)
+        source, audit, summary = initialize(directory, [finding(11)])
+        fid = summary["gating"][0]["finding_id"]
+        check(record(audit, fid, "REFUTED", "verified impossible call chain")[0] == 0, "refutation records")
+        rewrite_intent_dropping_purpose(directory)
+        source.write_text(json.dumps(finding(11, fix="a genuinely different fix")) + "\n", encoding="utf-8")
+        code, _out, err = invoke([
+            "rule-standoff", "--file", str(audit), "--finding-id", fid,
+            "--ruling", "valid", "--counter", "counter", "--evidence", "answer",
+        ])
+        check(code == 1 and "stale" in err,
+              f"a changed source finding must still stale on the historical path: {err}")
+
+
 def t_two_standoff_rulings_each_enter_fix_scope_once() -> None:
     """Two REFUTED findings ruled valid in SEPARATE rounds: the second scope must not replay the first.
 
@@ -451,6 +516,7 @@ CASES = [
     t_source_change_makes_audit_stale,
     t_adjusted_details_and_evidence_are_required,
     t_standoff_ruling_is_durable_once_and_controls_fix_scope,
+    t_standoff_ruling_records_after_repair_intent_rewrites_intent,
     t_two_standoff_rulings_each_enter_fix_scope_once,
     t_standoff_requires_a_complete_refuted_audit,
     t_atomic_failure_preserves_existing_audit,

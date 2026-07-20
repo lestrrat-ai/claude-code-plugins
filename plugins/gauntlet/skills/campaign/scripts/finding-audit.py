@@ -124,9 +124,41 @@ def source_name(path: Path) -> re.Match[str]:
 
 
 def read_source(path: Path) -> list[dict]:
-    """Read findings through review-pass.py's strict parser and gating owner."""
+    """Read findings through review-pass.py's strict parser and gating owner.
+
+    This is the LIVE, current-round reader: `check_findings_file` loads the PR's CURRENT `intent-<pr>.md`
+    and re-anchors every finding's `purpose` to it. Correct while the round is live — before any
+    REPAIR-INTENT. NEVER use it for a HISTORICAL read (see `read_source_historical`).
+    """
     try:
         return R.check_findings_file(R.read_text(path, "findings file"), path)
+    except R.Defect as exc:
+        raise AuditError(str(exc)) from exc
+
+
+def read_source_historical(path: Path) -> list[dict]:
+    """Read a LANDED round's findings WITHOUT re-anchoring their `purpose` to the current intent.
+
+    Structurally symmetric with `repair-pass.py load_historical_findings`: run the artifact owner's strict
+    name check, parser, and every non-anchor finding rule, but validate each finding's `purpose` against
+    the round's OWN recorded purpose strings — historical evidence — instead of loading the current
+    `intent-<pr>.md`. A sanctioned REPAIR-INTENT may re-author that intent and drop a purpose an earlier
+    round anchored to; re-anchoring would then reject the round's complete audit and WEDGE the PR, so a
+    later historical read of the audit (a standoff ruling, or a standoff-phase fix-list) uses this door.
+
+    It reads finding CONTENT (`read_source` does; `check_landed_audit_complete` does not), so the digest
+    the caller computes over these findings still catches a genuinely CHANGED source finding as stale.
+    """
+    try:
+        R.findings_name(path)
+        records = R.parse_lines(R.read_text(path, "findings file"), path.name)
+        historical_purposes = [
+            rec.get("purpose") for rec in records
+            if isinstance(rec.get("purpose"), str) and rec.get("purpose") != R.NO_PURPOSE
+        ]
+        for line_no, rec in enumerate(records, start=1):
+            R.check_finding(rec, f"{path.name} line {line_no}", historical_purposes)
+        return records
     except R.Defect as exc:
         raise AuditError(str(exc)) from exc
 
@@ -159,7 +191,9 @@ def parse_audit(text: str, path: Path) -> list[dict]:
     return records
 
 
-def _source_for(path: Path, header: dict) -> tuple[Path, list[dict], list[dict]]:
+def _source_for(
+    path: Path, header: dict, *, historical: bool = False
+) -> tuple[Path, list[dict], list[dict]]:
     name = header.get("findings_file")
     if not isinstance(name, str) or not name or Path(name).name != name:
         raise AuditError(
@@ -176,7 +210,7 @@ def _source_for(path: Path, header: dict) -> tuple[Path, list[dict], list[dict]]
             f"{path.name} names PR/pass {audit_match.group('pr')}/{audit_match.group('pass')}, but "
             f"{name} names {source_match.group('pr')}/{source_match.group('pass')}"
         )
-    findings = read_source(source_path)
+    findings = read_source_historical(source_path) if historical else read_source(source_path)
     indexed = enumerate_findings(findings)
     return source_path, findings, indexed
 
@@ -184,9 +218,10 @@ def _source_for(path: Path, header: dict) -> tuple[Path, list[dict], list[dict]]
 def _parse_and_validate_header(text: str, path: Path) -> "tuple[list[dict], dict]":
     """Parse the audit's JSONL and validate its header SHAPE — the checks every read door shares.
 
-    Both `validate_audit` (which then re-anchors to the current source findings) and
-    `check_landed_audit_complete` (which stops here and never re-anchors) call this. Nothing in it reads
-    the source findings or the current intent, so it re-anchors nothing.
+    Both `validate_audit` (which then reads the source findings — re-anchoring to the current intent, or
+    historically against the findings' own purposes) and `check_landed_audit_complete` (which stops here
+    and never reads the source) call this. Nothing in it reads the source findings or the current intent,
+    so it re-anchors nothing.
     """
     rows = parse_audit(text, path)
     header = rows[0]
@@ -200,11 +235,22 @@ def _parse_and_validate_header(text: str, path: Path) -> "tuple[list[dict], dict
     return rows, header
 
 
-def validate_audit(text: str, path: Path, *, require_complete: bool = False) -> dict:
-    """Validate proposed or stored audit bytes against the current source findings."""
+def validate_audit(
+    text: str, path: Path, *, require_complete: bool = False, historical: bool = False
+) -> dict:
+    """Validate proposed or stored audit bytes against the source findings.
+
+    `historical=False` (the default) re-anchors the source findings to the CURRENT `intent-<pr>.md` — the
+    LIVE current-round reads (`init`, `record`, `verify`, normal-phase `fix-list`). `historical=True` reads
+    the source through `read_source_historical`, validating each finding against its OWN recorded purposes
+    instead — the reads of a LANDED round's audit at a later time (`rule-standoff`, standoff-phase
+    `fix-list`, and their write-backs), which must survive a REPAIR-INTENT that dropped an anchored purpose.
+    Either way the source-digest staleness check below runs unchanged, so a genuinely changed source finding
+    still stales.
+    """
     rows, header = _parse_and_validate_header(text, path)
 
-    source_path, findings, indexed = _source_for(path, header)
+    source_path, findings, indexed = _source_for(path, header, historical=historical)
     expected_digest = source_digest(findings)
     if header["source_digest"] != expected_digest:
         raise AuditError(
@@ -324,15 +370,22 @@ def validate_audit(text: str, path: Path, *, require_complete: bool = False) -> 
     }
 
 
-def load_audit(path: Path, *, require_complete: bool = False) -> dict:
-    """Read and validate the whole audit against the current source findings."""
+def _read_audit_text(path: Path) -> str:
     try:
-        text = path.read_text(encoding="utf-8")
+        return path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
         raise AuditError(f"no audit artifact at {path}; run `finding-audit.py init` first") from exc
     except (OSError, UnicodeDecodeError) as exc:
         raise AuditError(f"cannot read {path} as UTF-8 text: {exc}") from exc
-    return validate_audit(text, path, require_complete=require_complete)
+
+
+def load_audit(path: Path, *, require_complete: bool = False, historical: bool = False) -> dict:
+    """Read and validate the whole audit against the source findings.
+
+    `historical` selects re-anchoring vs the non-re-anchoring historical read; see `validate_audit`.
+    """
+    text = _read_audit_text(path)
+    return validate_audit(text, path, require_complete=require_complete, historical=historical)
 
 
 def check_landed_audit_complete(text: str, path: Path) -> None:
@@ -377,12 +430,14 @@ def _replace(path: Path, text: str) -> None:
         raise AuditError(f"cannot atomically write {path}: {exc}") from exc
 
 
-def _append(state: dict, row: dict) -> None:
+def _append(state: dict, row: dict, *, historical: bool = False) -> None:
     path = state["path"]
     proposed = state["text"] + json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n"
     # Validate the proposed bytes before replacement. A write door cannot create an artifact its read
-    # door rejects, and any refusal leaves the old file untouched.
-    validate_audit(proposed, path)
+    # door rejects, and any refusal leaves the old file untouched. `historical` must MATCH the read that
+    # loaded `state`: a standoff write-back re-anchoring here would reject a post-REPAIR-INTENT ruling row
+    # the historical read had just accepted.
+    validate_audit(proposed, path, historical=historical)
     _replace(path, proposed)
 
 
@@ -508,10 +563,17 @@ def cmd_verify(args) -> int:
 
 
 def cmd_fix_list(args) -> int:
-    state = load_audit(Path(args.file), require_complete=True)
+    path = Path(args.file)
+    # Detect the phase WITHOUT re-anchoring: a standoff_ruling row on disk means this is a historical read
+    # of a landed round's audit (a REPAIR-INTENT may since have dropped an anchored purpose), so the source
+    # must load through the non-re-anchoring door; a normal-phase fix-list has no standoff row and keeps the
+    # live current-round re-anchoring. The peek shares `_parse_and_validate_header`, which loads no source.
+    text = _read_audit_text(path)
+    rows, _header = _parse_and_validate_header(text, path)
+    standoff_phase = any(row.get("type") == STANDOFF for row in rows[1:])
+    state = load_audit(path, require_complete=True, historical=standoff_phase)
     fixes = []
     refutations = []
-    standoff_phase = bool(state["rulings"])
     consumed = state["consumed"]
     for item in state["indexed"]:
         finding_id = item["finding_id"]
@@ -569,8 +631,9 @@ def cmd_fix_list(args) -> int:
     # and losing the emit reverts to the audit's own recorded REFUTED verdict — the gate's default — not
     # to merging a broken change. Accepted single-user residual per the repo's single-user policy.
     if standoff_phase and fixes:
-        _append(state, {"type": CONSUMED, "consumed": [fix["finding_id"] for fix in fixes]})
-        load_audit(Path(args.file), require_complete=True)
+        _append(state, {"type": CONSUMED, "consumed": [fix["finding_id"] for fix in fixes]},
+                historical=True)
+        load_audit(path, require_complete=True, historical=True)
     print(json.dumps({
         "audit": str(state["path"]),
         "findings": state["header"]["findings_file"],
@@ -582,7 +645,12 @@ def cmd_fix_list(args) -> int:
 
 
 def cmd_rule_standoff(args) -> int:
-    state = load_audit(Path(args.file), require_complete=True)
+    # A ruling is recorded against a LANDED round's audit at a later time. A sanctioned REPAIR-INTENT may
+    # have re-authored `intent-<pr>.md` and dropped the purpose the REFUTED finding anchored to, so this is
+    # a HISTORICAL read — never re-anchored — else the user's one durable ruling becomes unrecordable and
+    # the PR wedges. The source-digest staleness check still runs, so a genuinely changed source finding
+    # still stales. `historical=True` must also cover the write-back below.
+    state = load_audit(Path(args.file), require_complete=True, historical=True)
     result = state["results"].get(args.finding_id)
     if result is None or result["verdict"] != "REFUTED":
         raise AuditError("a standoff ruling can be recorded only for a finding this audit REFUTED")
@@ -599,8 +667,8 @@ def cmd_rule_standoff(args) -> int:
         "counter": args.counter,
         "evidence": args.evidence,
     }
-    _append(state, row)
-    load_audit(Path(args.file), require_complete=True)
+    _append(state, row, historical=True)
+    load_audit(Path(args.file), require_complete=True, historical=True)
     print(json.dumps(row, ensure_ascii=False, sort_keys=True))
     return 0
 
