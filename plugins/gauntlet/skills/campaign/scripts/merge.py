@@ -137,7 +137,12 @@ def _validate_ref(root: Path, value: str, role: str) -> None:
     _require(proc, f"validation of {role} {value!r}")
 
 
-def _validate_state(header: dict, row: dict, pr: str, root: Path, view: dict) -> None:
+def _validate_state(header: dict, row: dict, pr: str, root: Path, view: dict,
+                    *, check_live_refs: bool = True) -> None:
+    # `check_live_refs=False` drops ONLY the live head/base/branch equality pins below — the checks a
+    # MERGE needs to land on the exact reviewed tip. The ledger-only CLOSED close-out (execute()) passes
+    # it: it records terminal `aborted` and touches nothing else, so a head push or base/branch rename
+    # before the close is irrelevant to it. Every non-close-out caller keeps the pins (the default).
     if row.get("pr") != pr:
         raise Refusal(f"ledger row belongs to PR {row.get('pr')}, not PR {pr}")
     if not pr.isdecimal() or int(pr) < 1:
@@ -166,15 +171,16 @@ def _validate_state(header: dict, row: dict, pr: str, root: Path, view: dict) ->
     worktree = Path(row.get("worktree", ""))
     if not worktree.is_absolute():
         raise Refusal("ledger worktree must be an absolute path")
-    if view["headRefOid"] != row["head_sha"]:
-        raise Refusal(
-            f"live head {view['headRefOid']} differs from ledger head {row['head_sha']} — re-gate")
-    if view["headRefName"] != branch:
-        raise Refusal(
-            f"live head branch {view['headRefName']!r} differs from ledger branch {branch!r}")
-    if view["baseRefName"] != base:
-        raise Refusal(
-            f"live base {view['baseRefName']!r} differs from ledger base {base!r}")
+    if check_live_refs:
+        if view["headRefOid"] != row["head_sha"]:
+            raise Refusal(
+                f"live head {view['headRefOid']} differs from ledger head {row['head_sha']} — re-gate")
+        if view["headRefName"] != branch:
+            raise Refusal(
+                f"live head branch {view['headRefName']!r} differs from ledger branch {branch!r}")
+        if view["baseRefName"] != base:
+            raise Refusal(
+                f"live base {view['baseRefName']!r} differs from ledger base {base!r}")
     labels = _labels(view)
     ours = f"{RUN_LABEL_PREFIX}{run_id}"
     run_labels = [name for name in labels if name.startswith(RUN_LABEL_PREFIX)]
@@ -356,7 +362,22 @@ def execute(ledger: Path, pr: str, project_root: Path, repo: str,
     if row is None:
         raise Refusal(f"no ledger row for PR {pr}")
     view = _view(pr, repo, root)
-    _validate_state(header, row, pr, root, view)
+
+    # CLOSED WITHOUT MERGING — the terminal close-out, the CLOSED side of the absent-row finalizer
+    # loop-control.md Step 4 routes here (a human closed the PR, or the driver died after `gh pr close`).
+    # There is NOTHING to merge and NOTHING to clean up: the branch content never reached `<base>`, so an
+    # owned worktree/branch holds UNMERGED work that removing it would destroy. This close-out is
+    # ledger-only, so the live head/base/branch pins do NOT apply to it (`check_live_refs=False`): a push
+    # that advanced the head before the close, or a base/branch rename, must still TERMINATE the row, not
+    # wedge it at in_review forever (a CLOSED PR never re-enters the open snapshot to be re-gated). Only an
+    # in_review row is a real close-out; a `merged`/held row with a CLOSED live state is a contradiction
+    # left to the fully-validated status gate below. Record the terminal `aborted` status
+    # (files-and-ledger.md, `status` taxonomy: `in_review` -> `aborted`) and stop.
+    close_out = view["state"] == "CLOSED" and row["status"] == "in_review"
+    _validate_state(header, row, pr, root, view, check_live_refs=not close_out)
+    if close_out:
+        _mark_terminal(ledger, pr, "aborted")
+        return {"status": "closed-unmerged", "pr": pr, "cleanup": {}}
 
     if row["status"] == "merged":
         if view["state"] != "MERGED":
@@ -386,15 +407,8 @@ def execute(ledger: Path, pr: str, project_root: Path, repo: str,
             raise Refusal(
                 f"merge command returned success but PR {pr} state is {confirmed['state']!r}, not MERGED")
         view = confirmed
-    elif view["state"] == "CLOSED":
-        # CLOSED WITHOUT MERGING — the terminal close-out, the CLOSED side of the absent-row finalizer
-        # loop-control.md Step 4 routes here (a human closed the PR, or the driver died after `gh pr close`).
-        # There is NOTHING to merge and NOTHING to clean up: the branch content never reached `<base>`, so an
-        # owned worktree/branch holds UNMERGED work that removing it would destroy. Record the terminal
-        # `aborted` status (files-and-ledger.md, `status` taxonomy: `in_review` -> `aborted`) and stop.
-        _mark_terminal(ledger, pr, "aborted")
-        return {"status": "closed-unmerged", "pr": pr, "cleanup": {}}
     elif view["state"] != "MERGED":
+        # CLOSED was already finalized by the close-out above; only OPEN and MERGED remain live here.
         raise Refusal(f"PR {pr} state is {view['state']!r}; expected OPEN, MERGED, or CLOSED")
 
     # MERGED is confirmed before any local ref or worktree is changed. Each following phase is idempotent.

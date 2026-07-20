@@ -49,7 +49,9 @@ class Fake:
     def __init__(self, root: Path, *, worktree_owned="yes", branch_owned="yes",
                  state="OPEN", ci="green", reviews="2", status="in_review",
                  base_checked=True, fail_once: "str | None" = None,
-                 live_head: str = SHA, reject_method: "str | None" = None):
+                 live_head: str = SHA, reject_method: "str | None" = None,
+                 view_head: "str | None" = None, view_branch: "str | None" = None,
+                 view_base: "str | None" = None):
         self.root = root
         self.branch = "feat-pr"
         self.base = "main"
@@ -72,6 +74,12 @@ class Fake:
         # model, respectively, a head-race (--match-head-commit must refuse) and a disabled method.
         self.live_head = live_head
         self.reject_method = reject_method
+        # The live view's head/base/branch, each defaulting to the pinned ledger value. Overriding one
+        # models a push that advanced the head, or a base/branch rename, BEFORE the reported live state —
+        # the input the strict merge pins refuse but the ledger-only CLOSED close-out must tolerate.
+        self.view_head = view_head or SHA
+        self.view_branch = view_branch or self.branch
+        self.view_base = view_base or self.base
 
     def ledger(self, path: Path, *, worktree: "Path | None" = None, branch: "str | None" = None,
                run_id="g1") -> None:
@@ -86,9 +94,9 @@ class Fake:
     def view(self) -> dict:
         return {
             "state": self.state,
-            "headRefOid": SHA,
-            "headRefName": self.branch,
-            "baseRefName": self.base,
+            "headRefOid": self.view_head,
+            "headRefName": self.view_branch,
+            "baseRefName": self.view_base,
             "labels": [{"name": "gauntlet-run-g1"}],
             "mergeable": "MERGEABLE",
             "mergeStateStatus": "CLEAN",
@@ -524,6 +532,34 @@ def t_absent_snapshot_closed_row_terminates():
         finish(td, real)
 
 
+def t_closed_out_terminates_despite_moved_head_base_or_branch():
+    # The CLOSED close-out is LEDGER-ONLY (records `aborted`, merges nothing, cleans nothing), so the strict
+    # live head/base/branch pins that gate a MERGE do not apply to it. Their trigger is ordinary same-repo
+    # author behavior: a push advances the head, or a base/branch is renamed, and THEN the PR is closed.
+    # A CLOSED PR never re-enters the open snapshot, so reconcile can never refresh the row's head_sha —
+    # if the close-out refused on the pin the row would wedge at in_review forever. All three variants must
+    # still terminate as `aborted` with no merge and no cleanup. (The pins stay in force on OPEN and MERGED:
+    # t_stale_head_and_malformed_ownership_refused and t_root_and_foreign_targets_refused cover that.)
+    for label, knob in (
+        ("moved head", {"view_head": "b" * 40}),
+        ("changed base", {"view_base": "release"}),
+        ("changed branch", {"view_branch": "renamed"}),
+    ):
+        td, root, f, led, real = scenario(state="CLOSED", **knob)
+        try:
+            code, result, err = invoke(f, led, root)
+            check(code == 0, f"{label}: close-out refused instead of terminating: {err}")
+            check(status(led) == "aborted",
+                  f"{label}: closed-without-merge row must terminate as aborted, got {status(led)!r}")
+            check(result is not None and result["status"] == "closed-unmerged" and result["cleanup"] == {},
+                  f"{label}: expected closed-unmerged with no cleanup, got {result}")
+            check(f.merged_calls == 0, f"{label}: the close-out issued a merge command")
+            check(f.worktree_present and f.branch_present,
+                  f"{label}: the close-out deleted owned resources holding unmerged work")
+        finally:
+            finish(td, real)
+
+
 def t_absent_routing_decision():
     # The ROUTING DECISION itself (loop-control.md Step 1 -> Step 4), exercised end to end rather than by a
     # bare execute() call. reconcile.py observes the absent fact; `merge.py run` is the single finalizer BOTH
@@ -575,5 +611,6 @@ CASES = [
     ("merge-method", "merge method is a validated input; squash-disabled repo has a prevailing-method recourse", t_merge_method_input_validated_and_applied),
     ("absent-resume", "an absent-but-unfinalized MERGED row resumes its remaining phases through run", t_absent_snapshot_merged_row_resumes_via_run),
     ("absent-closed", "an absent-but-unfinalized CLOSED-without-merge row terminates as aborted with no cleanup", t_absent_snapshot_closed_row_terminates),
+    ("closed-out-moved-refs", "the CLOSED close-out terminates as aborted despite a moved head, base, or branch", t_closed_out_terminates_despite_moved_head_base_or_branch),
     ("absent-routing", "the absent fact routes reconcile -> merge.py run, which finalizes MERGED and CLOSED sides", t_absent_routing_decision),
 ]
