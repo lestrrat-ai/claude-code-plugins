@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import shlex
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -32,12 +33,12 @@ FIXTURE_FORMAT_PREFLIGHT = "/fixture/skill/scripts/format-preflight.py"
 GOLDEN_PROMPT_SHA256 = {
     "review": "586d63c999e4b027def4a5748ba4b88c6e31f5910bcd1f895df548e178f0acac",
     "ci-session": "07bad4c143b866ad03094cc0916ac3a8f17ad327dab932e527156f8f7be727f3",
-    "ci-economy": "4c8de49ae8173b63ad6853592d0e443bb278df1e300a3516c555f1fba2e3587a",
+    "ci-economy": "35e74ccadafd57d505c0196887b73a694f8b94e9f37ea8862652c607dcbef6db",
 }
 GOLDEN_METADATA_SHA256 = {
     "review": "e070e3e5618e093696610da7a0fd47cccaf44f3c01f9640154b4774c55a9c65d",
     "ci-session": "5a8ef32ab7a6f2227da4d2150dbea22f59fa26fd784246f1ffb06b873ac4e5c9",
-    "ci-economy": "8896c32512e99069a5d5988c99340f782d9602a018ce02a8ebdd587cee7bdde0",
+    "ci-economy": "d9997a800e945df591c43dd856cab53ba177a6fbc38e3a456015f8abd045d098",
 }
 
 
@@ -313,39 +314,70 @@ def t_economy_binds_runnable_preflight_command() -> None:
 
 
 def t_economy_preflight_command_survives_word_splitting() -> None:
-    """A worktree/script path with a space and a shell metacharacter stays one argv token in the command.
+    """The materialized preflight command runs as ONE shell command under a real bash, passing the file.
 
-    Regression: the paths are bound into shell source inside backticks, so an unquoted spaced worktree
-    word-splits and the preflight reads only the prefix (exit 2). The bound paths must be `shlex.quote`d.
+    Two shell hazards are checked against an actual `bash -c`, not a `shlex.split` stand-in that would
+    normalize a stray newline into whitespace and mask the bug:
+      - The whole backtick command, including `<files...>`, must be a single physical command. A newline
+        inside the backticks would terminate the preflight (it runs with zero files) and turn the appended
+        file into a separate command the shell tries to execute — masking the mandatory check.
+      - A worktree/script path with a space and a `$(...)` metacharacter must stay one argv token and must
+        not command-substitute; the bound paths are `shlex.quote`d for exactly this.
     """
-    preflight = "/fixture/skill dir/scripts/format-preflight.py"
-    worktree = "/fixture/wt with spaces $(touch NEVER)"
-    prompt = M.render_prompt(
-        role="ci-economy",
-        project_root="/fixture/repo",
-        worktree=worktree,
-        pr=7,
-        base="main",
-        issues=ISSUES,
-        logs=LOGS,
-        format_preflight=preflight,
-        sections=M.load_template(),
-    )
-    text = prompt.decode("utf-8")
-    check(shlex.quote(worktree) in text, "economy preflight worktree was not shell-quoted")
-    check(shlex.quote(preflight) in text, "economy preflight script path was not shell-quoted")
-    # The prose `Worktree:` line still carries the raw, readable (unquoted) worktree.
-    check(("Worktree: " + worktree) in text, "prose worktree line lost the readable unquoted path")
-    # Reconstruct the emitted command (backtick-wrapped, `<files...>` on the next line) and prove it
-    # round-trips through shell word-splitting to the intended argv. A worker is told to shell-quote each
-    # file it appends, so model that here.
-    start = text.index("python3 ")
-    end = text.index("<files...>", start)
-    command = text[start:end].strip()
-    worker_file = "src/a b.go"
-    argv = shlex.split(command + " " + shlex.quote(worker_file))
-    check(argv == ["python3", preflight, "check", "--worktree", worktree, worker_file],
-          f"economy preflight command word-split instead of round-tripping: {argv!r}")
+    with tempfile.TemporaryDirectory(prefix="worker prompt shell ") as raw:
+        root = Path(raw)
+        # A stub preflight that records the argv it actually received, so we can prove the file reached it.
+        preflight = root / "skill dir" / "scripts" / "format-preflight.py"
+        preflight.parent.mkdir(parents=True)
+        argv_out = root / "preflight-argv.json"
+        preflight.write_text(
+            "import json, os, sys\n"
+            f"open({str(argv_out)!r}, 'w').write(json.dumps(sys.argv[1:]))\n"
+            "raise SystemExit(0)\n"
+        )
+        worktree = str(root / "wt with spaces $(touch NEVER)")
+        os.mkdir(worktree)
+        never_marker = root / "NEVER"
+        # A harmless, NON-executable worker file whose body would create a marker IF the shell ever ran it.
+        worker_file = root / "src" / "a b.go"
+        worker_file.parent.mkdir()
+        exec_marker = root / "FILE-WAS-EXECUTED"
+        worker_file.write_text(f"#!/bin/sh\ntouch {str(exec_marker)!r}\n")
+        worker_file.chmod(0o644)
+
+        prompt = M.render_prompt(
+            role="ci-economy",
+            project_root="/fixture/repo",
+            worktree=worktree,
+            pr=7,
+            base="main",
+            issues=ISSUES,
+            logs=LOGS,
+            format_preflight=str(preflight),
+            sections=M.load_template(),
+        )
+        text = prompt.decode("utf-8")
+        check(shlex.quote(worktree) in text, "economy preflight worktree was not shell-quoted")
+        check(shlex.quote(str(preflight)) in text, "economy preflight script path was not shell-quoted")
+        # The prose `Worktree:` line still carries the raw, readable (unquoted) worktree.
+        check(("Worktree: " + worktree) in text, "prose worktree line lost the readable unquoted path")
+
+        # Extract the exact backtick-wrapped command and substitute a real, shell-quoted file for the
+        # `<files...>` placeholder, as a worker would. Then run it verbatim under a real shell.
+        py = text.index("python3 ")
+        open_bt = text.rindex("`", 0, py)
+        close_bt = text.index("`", py)
+        command = text[open_bt + 1:close_bt].replace("<files...>", shlex.quote(str(worker_file)))
+        result = subprocess.run(["bash", "-c", command], capture_output=True, text=True)
+
+        received = json.loads(argv_out.read_text()) if argv_out.exists() else None
+        check(received == ["check", "--worktree", worktree, str(worker_file)],
+              f"preflight did not receive one command with the file as its argv: {received!r}")
+        check(result.returncode == 0,
+              f"command exit status was {result.returncode}, not the preflight's 0 "
+              "(a newline split the backtick command into two)")
+        check(not exec_marker.exists(), "the worker file was executed as a separate command")
+        check(not never_marker.exists(), "the worktree path command-substituted instead of staying quoted")
 
 
 TESTS = (
