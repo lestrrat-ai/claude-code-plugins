@@ -312,18 +312,36 @@ def _append(state: dict, row: dict) -> None:
 
 def cmd_init(args) -> int:
     path = Path(args.file)
-    findings_path = Path(args.findings)
+    progress_path = Path(args.progress)
     if path.exists():
         raise AuditError(f"{path} already exists; an audit is initialized once and never overwritten")
-    if path.parent.resolve() != findings_path.parent.resolve():
-        raise AuditError("the audit and findings artifacts must be in the same run directory")
+    if path.parent.resolve() != progress_path.parent.resolve():
+        raise AuditError("the audit and progress artifacts must be in the same run directory")
     audit_match = audit_name(path)
-    source_match = source_name(findings_path)
-    if (
-        audit_match.group("pr") != source_match.group("pr")
-        or audit_match.group("pass") != source_match.group("pass")
-    ):
-        raise AuditError("the audit filename and findings filename must name the same PR and pass")
+    # Bind to the ACTIVE pass identity, not a raw findings path. The progress artifact's name says which
+    # pass and which launch attempt these bytes are, and its `pass_identity` line must AGREE with that name
+    # — both enforced by the schema owner. Without this, `init` accepted a DEAD attempt's
+    # `review-<pr>-<n>.findings.jsonl` while a relaunch (attempt >= 2) was live, and `fix-list` then
+    # returned the killed attempt's fix scope.
+    try:
+        pr, npass, attempt = R.parse_name(progress_path)
+        events = R.read_lines(progress_path, "progress file")
+        R.check_identity(events, pr, npass, attempt)
+    except R.Defect as exc:
+        raise AuditError(str(exc)) from exc
+    # A superseded attempt's findings must never enter fix scope: accept only the highest launch attempt
+    # for this (pr, pass) in the run directory — `active_attempts` is the owner's own selection.
+    actives = {candidate.resolve() for candidate in R.active_attempts(progress_path.parent)}
+    if progress_path.resolve() not in actives:
+        raise AuditError(
+            f"{progress_path.name} is not the active launch attempt for pass {npass} of PR {pr}; an audit "
+            "binds to the active attempt's findings, never a superseded one"
+        )
+    if audit_match.group("pr") != pr or audit_match.group("pass") != npass:
+        raise AuditError("the audit filename and progress filename must name the same PR and pass")
+    # Derive the findings artifact the ONE way `review-pass.py` does — from the progress file's name, never
+    # taken as its own argument, so no two doors can disagree about which attempt they belong to.
+    findings_path = R.findings_path(progress_path)
 
     findings = read_source(findings_path)
     indexed = enumerate_findings(findings)
@@ -493,10 +511,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=DESCRIPTION)
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    init = sub.add_parser("init", help="bind a new audit JSONL artifact to one strict findings artifact")
+    init = sub.add_parser("init", help="bind a new audit JSONL artifact to the active pass's findings")
     init.add_argument("--file", required=True, help="audit-<pr>-<pass>.jsonl to create atomically")
-    init.add_argument("--findings", required=True,
-                      help="active review-<pr>-<pass>[.a<attempt>].findings.jsonl in the same run directory")
+    init.add_argument("--progress", required=True,
+                      help="the ACTIVE review-<pr>-<pass>[.a<attempt>].progress.jsonl in the same run "
+                           "directory; its findings artifact is derived from this name")
 
     record = sub.add_parser("record", help="record exactly one evidenced verdict for one gating finding")
     record.add_argument("--file", required=True)

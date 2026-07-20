@@ -35,16 +35,19 @@ audit: it is recorded as a follow-up and the review moves on.
 ### Executable audit artifact
 
 **Read and write `audit-<pr>-<n>.jsonl` only through `scripts/finding-audit.py`.** It imports
-`review-pass.py`'s strict finding parser and gating rule, binds the audit to the active findings artifact,
-and assigns stable content-derived IDs. A changed source finding makes the audit stale; a missing,
-duplicate, unknown, or non-gating result is refused.
+`review-pass.py`'s strict finding parser and gating rule, binds the audit to the active launch attempt's
+findings, and assigns stable content-derived IDs. A changed source finding makes the audit stale; a
+missing, duplicate, unknown, or non-gating result is refused.
 
-Before dispatching the audit subagent, initialize the audit from the active launch attempt's findings:
+Before dispatching the audit subagent, initialize the audit from the active launch attempt. Pass its
+**progress** artifact — `init` validates its `pass_identity`, confirms it is the active attempt for the
+pass, and derives the findings path from its name exactly as `review-pass.py` does; the findings path is
+never passed in, so a superseded attempt's dead findings can never bind the audit:
 
 ```text
 python3 <skill-dir>/scripts/finding-audit.py init \
   --file <rundir>/audit-<pr>-<n>.jsonl \
-  --findings <rundir>/review-<pr>-<n>[.a<k>].findings.jsonl
+  --progress <rundir>/review-<pr>-<n>[.a<k>].progress.jsonl
 ```
 
 Pass `init`'s JSON output and the absolute script path to the context-isolated audit subagent. It records

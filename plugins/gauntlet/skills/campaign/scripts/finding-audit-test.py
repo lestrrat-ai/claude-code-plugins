@@ -63,14 +63,40 @@ def write_source(directory: Path, rows: list[dict], name: str = "review-41-1.fin
     return path
 
 
+def progress_name(attempt: int = 1, *, pr: str = "41", npass: str = "1") -> str:
+    stem = f"review-{pr}-{npass}"
+    return f"{stem}.progress.jsonl" if attempt == 1 else f"{stem}.a{attempt}.progress.jsonl"
+
+
+def write_progress(directory: Path, attempt: int = 1, *, pr: str = "41", npass: str = "1") -> Path:
+    """A valid single-line `pass_identity` progress file for the active launch attempt.
+
+    `init` now binds to this artifact and derives its findings path exactly as `review-pass.py` does, so
+    every fixture that initializes an audit first writes the attempt's progress file.
+    """
+    identity = {
+        "type": "pass_identity",
+        "pr": pr,
+        "pass": npass,
+        "head_sha": "0" * 40,
+        "launch_attempt": str(attempt),
+        "dispatched_at": "2026-01-01T00:00:00Z",
+    }
+    path = directory / progress_name(attempt, pr=pr, npass=npass)
+    path.write_text(json.dumps(identity, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
 def invoke(argv: list[str]):
     return capture_cli(A.main, argv)
 
 
-def initialize(directory: Path, rows: list[dict], *, source_name: str = "review-41-1.findings.jsonl"):
+def initialize(directory: Path, rows: list[dict], *, source_name: str = "review-41-1.findings.jsonl",
+               attempt: int = 1):
     source = write_source(directory, rows, source_name)
+    progress = write_progress(directory, attempt)
     audit = directory / "audit-41-1.jsonl"
-    code, out, err = invoke(["init", "--file", str(audit), "--findings", str(source)])
+    code, out, err = invoke(["init", "--file", str(audit), "--progress", str(progress)])
     check(code == 0, f"init failed: {err}")
     return source, audit, json.loads(out)
 
@@ -302,23 +328,64 @@ def t_hostile_payload_and_parent_path_round_trip_as_data() -> None:
 def t_init_refuses_wrong_names_existing_files_and_no_gating() -> None:
     with tempfile.TemporaryDirectory() as name:
         directory = Path(name)
-        source = write_source(directory, [finding(11)])
+        write_source(directory, [finding(11)])
+        progress = write_progress(directory)
         wrong = directory / "audit-42-1.jsonl"
-        code, _out, err = invoke(["init", "--file", str(wrong), "--findings", str(source)])
+        code, _out, err = invoke(["init", "--file", str(wrong), "--progress", str(progress)])
         check(code == 1 and "same PR and pass" in err, f"mismatched name must fail: {err}")
         audit = directory / "audit-41-1.jsonl"
         audit.write_text("keep me\n", encoding="utf-8")
-        code, _out, err = invoke(["init", "--file", str(audit), "--findings", str(source)])
+        code, _out, err = invoke(["init", "--file", str(audit), "--progress", str(progress)])
         check(code == 1 and audit.read_text(encoding="utf-8") == "keep me\n",
               "init must not overwrite an existing audit")
 
     with tempfile.TemporaryDirectory() as name:
         directory = Path(name)
-        source = write_source(directory, [finding(12, gating=False)])
+        write_source(directory, [finding(12, gating=False)])
+        progress = write_progress(directory)
         audit = directory / "audit-41-1.jsonl"
-        code, _out, err = invoke(["init", "--file", str(audit), "--findings", str(source)])
+        code, _out, err = invoke(["init", "--file", str(audit), "--progress", str(progress)])
         check(code == 1 and "no gating findings" in err and not audit.exists(),
               f"an all-non-gating pass has no audit to initialize: {err}")
+
+
+def t_init_binds_to_active_attempt_refusing_a_superseded_one() -> None:
+    """A relaunch is live (attempt 2); the DEAD attempt-1 findings must never enter the audit or fix scope.
+
+    Regression for the finding that `init` bound an audit to a directly-passed findings path with no
+    attempt binding, so it accepted attempt 1 while attempt 2 was the active pass and `fix-list` then
+    returned the killed attempt's scope.
+    """
+    with tempfile.TemporaryDirectory() as name:
+        directory = Path(name)
+        # DEAD attempt 1 and its findings; LIVE attempt 2 with its own findings and a valid pass_identity.
+        write_source(directory, [finding(11, file="scripts/dead-attempt1.py")],
+                     name="review-41-1.findings.jsonl")
+        dead_progress = write_progress(directory, 1)
+        write_source(directory, [finding(22, file="scripts/live-attempt2.py")],
+                     name="review-41-1.a2.findings.jsonl")
+        live_progress = write_progress(directory, 2)
+        audit = directory / "audit-41-1.jsonl"
+
+        # Pointing init at the dead attempt is refused, and no audit is written.
+        code, _out, err = invoke(["init", "--file", str(audit), "--progress", str(dead_progress)])
+        check(code == 1 and "not the active launch attempt" in err and not audit.exists(),
+              f"a superseded attempt must be refused fail-closed: code={code}, err={err!r}")
+
+        # The active attempt initializes, and its findings — not the dead attempt's — drive the audit.
+        code, out, err = invoke(["init", "--file", str(audit), "--progress", str(live_progress)])
+        check(code == 0, f"the active attempt must initialize: {err}")
+        summary = json.loads(out)
+        check(summary["findings"] == "review-41-1.a2.findings.jsonl",
+              f"init must derive the active attempt's findings artifact: {summary}")
+        check("scripts/live-attempt2.py" in json.dumps(summary)
+              and "scripts/dead-attempt1.py" not in json.dumps(summary),
+              f"only the live attempt's finding may enter the audit: {summary}")
+        fid = summary["gating"][0]["finding_id"]
+        check(record(audit, fid, "CONFIRMED")[0] == 0, "the live finding records")
+        code, payload, err = fix_list(audit)
+        check(code == 0 and [fix["file"] for fix in payload["fixes"]] == ["scripts/live-attempt2.py"],
+              f"fix scope must be the live attempt's, never the killed one: {err}, {payload}")
 
 
 def t_duplicate_source_findings_receive_distinct_stable_ids() -> None:
@@ -342,6 +409,7 @@ CASES = [
     t_atomic_failure_preserves_existing_audit,
     t_hostile_payload_and_parent_path_round_trip_as_data,
     t_init_refuses_wrong_names_existing_files_and_no_gating,
+    t_init_binds_to_active_attempt_refusing_a_superseded_one,
     t_duplicate_source_findings_receive_distinct_stable_ids,
 ]
 
