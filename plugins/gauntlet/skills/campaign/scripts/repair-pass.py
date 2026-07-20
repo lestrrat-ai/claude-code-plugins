@@ -406,7 +406,7 @@ def collect_rounds(rundir: Path, pr: str, expected_rounds: int) -> list[dict]:
         else:
             findings_artifact = artifact(findings_file, "", present=False)
 
-        audit_file = rundir / f"audit-{pr}-{round_no}.md"
+        audit_file = rundir / f"audit-{pr}-{round_no}.jsonl"
         gating_findings = sum(1 for finding in findings if RP.gating(finding))
         # F1 — every landed round's report now carries a terminal `VERDICT:` line, and #126's
         # `RP.parse_report` (the ONE sanctioned report reader, already called by `review-pass.py
@@ -437,7 +437,21 @@ def collect_rounds(rundir: Path, pr: str, expected_rounds: int) -> list[dict]:
                  f"records NO gating finding. A cap trips only on NOT SATISFIED, which by the coherence rule "
                  f"must carry at least one gating finding; this is history review-pass.py rejects as unusable")
         if audit_file.exists():
-            audit_artifact = artifact(audit_file, read_utf8(audit_file, "finding audit"))
+            audit_text = read_utf8(audit_file, "finding audit")
+            # A landed round's finding audit is HISTORICAL EVIDENCE embedded for the reassessment worker —
+            # NOT re-judged against the current intent. Read it structurally symmetric with the findings read
+            # in `load_historical_findings` right above, through the SAME non-re-anchoring door: review-pass.py's
+            # `parse_lines` proves the JSONL is well-formed and loads NO intent. NEVER read the audit through
+            # finding-audit.py's own door (`verify` / `load_audit`), which re-reads the round's source findings
+            # and re-anchors their `purpose` strings to the CURRENT `intent-<pr>.md`. After a REPAIR-INTENT
+            # re-authors that intent and drops a purpose an earlier round anchored to, that door would reject
+            # the round's audit and WEDGE the bundle — the same break `load_historical_findings` and
+            # `t_bundle_exempts_every_prior_cap_round` exist to prevent, on the audit's side.
+            try:
+                RP.parse_lines(audit_text, audit_file.name)
+            except RP.Defect as exc:
+                fail(f"pr {pr} review round {round_no} finding audit is unusable: {exc}")
+            audit_artifact = artifact(audit_file, audit_text)
         elif gating_findings and round_no not in cap_rounds:
             fail(f"missing required finding audit for pr {pr} review round {round_no}")
         else:
