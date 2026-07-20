@@ -97,6 +97,9 @@ PROGRESS_FILE = "review-41-1.progress.jsonl"
 PLAN_FILE = "review-41-1.plan.jsonl"
 FINDINGS_FILE = "review-41-1.findings.jsonl"
 INTENT_FILE = "intent-41.md"
+SAT_REPORT = "Report body.\nRESIDUAL-RISK: parser contract — exact framing is hardest to verify\nVERDICT: SATISFIED\n"
+NOT_SAT_REPORT = "Report body.\nVERDICT: NOT SATISFIED\n"
+DEFERRED_REPORT = "Report body.\nVERDICT: DEFERRED — fixture request must be handled first\n"
 
 # --- THE INTENT the fixtures are measured against -------------------------------------------------
 #
@@ -338,7 +341,8 @@ class Tables:
 
         # --- THE FINDINGS FAMILY --------------------------------------------------------------------
         #
-        # (plan, progress, findings lines, intent text or None, --verdict or None, want, needle, why)
+        # (plan, progress, findings lines, intent text or None, legacy verdict/report selector, want,
+        # needle, why). The legacy value only chooses fixture report bytes; `evaluate` ignores it.
         #
         # This is the family the whole PR exists for. A finding used to be PROSE, so nothing could validate
         # its citation, bound its writer, or ask what it DEFENDED — and therefore nothing could ever decline
@@ -424,26 +428,18 @@ class Tables:
                 "does not block. A rule that refused this would forbid the reviewer to report anything it "
                 "was not willing to block on — which is the 21-round spiral, re-armed"),
             "complete-pass-no-verdict": (
-                PLAN, WORKED, [R42_23], INTENT, None, UNUSABLE, "no verdict was given",
-                "**THE COHERENCE RULE'S OWN INPUT COULD BE ABSENT, AND THEN THE RULE NEVER FIRED.** This "
-                "exact pass — COMPLETE, sound, verified with NO verdict — used to come back `ok`, so a "
-                "driver that simply FORGOT the flag switched off the one machine-checked rule about the "
-                "reviewer's own verdict: a SATISFIED returned over a GATING finding sailed straight through "
-                "it. It is the same defect as an intent that could be missing on precisely the passes that "
-                "MERGE a PR, and it is closed the same way — the input is DEMANDED, not hoped for. A gate "
-                "must not depend on an agent remembering to pass something"),
+                PLAN, WORKED, [R42_23], INTENT, None, UNUSABLE, "no active review report",
+                "a complete pass with no report is unusable; no caller-retold verdict can replace it"),
             "in-flight-no-verdict": (
-                PLAN, [ident(), started("u01")], None, INTENT, None, INCOMPLETE, "has not covered its plan",
-                "…and the case the rule above must NOT catch, which is why it sits BELOW the completeness "
-                "check: a pass still WORKING has no verdict to state, and it is answered `incomplete` — not "
-                "refused for lacking one. `verify` is a door you come to with the report in hand; a pass in "
-                "flight is WATCHED, not verified"),
+                PLAN, [ident(), started("u01")], None, INTENT, None, UNUSABLE,
+                "no active review report",
+                "strict verify requires a report; torn in-flight output belongs to lenient `status`"),
 
             # --- `deferred` is NOT a verdict: it routes to the progress-file state --------------------
             #
             # A reviewer that raised a separate request the orchestrator must handle first — a
             # `plan_amendment_request`, or a broken-dispatch stop — ends its report with `VERDICT: DEFERRED`
-            # and the orchestrator passes `--verdict deferred`. That value NEVER reaches the coherence rule;
+            # and the parser derives DEFERRED. That result NEVER reaches the coherence rule;
             # the progress file is authoritative, and `decide` answers amended / incomplete / unusable.
             "deferred-with-amendment": (
                 PLAN, [ident(), started("u01"), done("u01"), amendment(), started("u02"), done("u02")],
@@ -489,7 +485,7 @@ class Tables:
                 "own contract, and an absent findings file is zero findings, not a defect. What it is not is "
                 "a licence to skip the intent"),
             "incomplete-no-intent": (
-                PLAN, [ident(), started("u01")], None, None, None, UNUSABLE, "THE RUN SKIPPED A STEP",
+                PLAN, [ident(), started("u01")], None, None, DEF, UNUSABLE, "THE RUN SKIPPED A STEP",
                 "the pass is still WORKING (u01 started, nothing done) and its PR has no intent — and it is "
                 "refused for the INTENT, not merely reported `incomplete`. A run that dispatched a reviewer "
                 "with nothing to measure it against is broken from the first heartbeat, and the earliest verdict "
@@ -606,6 +602,111 @@ class Tables:
                 "JSONL has no blank lines — here as anywhere else"),
         }
 
+        # --- the active report's strict terminal result ------------------------------------------
+        self.REPORT_CASES: "dict[str, dict]" = {
+            "valid-satisfied": {
+                "report": SAT_REPORT, "want": OK, "needle": "report verdict satisfied",
+                "why": "the parser derives SATISFIED and its immediately preceding residual risk",
+            },
+            "valid-not-satisfied": {
+                "report": NOT_SAT_REPORT, "findings": [finding()], "want": OK,
+                "needle": "report verdict not-satisfied",
+                "why": "NOT SATISFIED remains coherent when a gating finding stands",
+            },
+            "valid-deferred-amendment": {
+                "progress": [ident(), amendment()], "report": DEFERRED_REPORT, "want": AMENDED,
+                "needle": "not yet ruled on",
+                "why": "DEFERRED routes an unruled plan request without turning it into a judgment",
+            },
+            "valid-deferred-incomplete": {
+                "progress": [ident(), started("u01")], "report": DEFERRED_REPORT, "want": INCOMPLETE,
+                "needle": "has not covered its plan",
+                "why": "a broken-dispatch stop routes through incomplete progress",
+            },
+            "spurious-deferred": {
+                "report": DEFERRED_REPORT, "want": UNUSABLE, "needle": "nothing to defer to",
+                "why": "DEFERRED cannot replace a binary result on a finished pass with no request",
+            },
+            "missing": {
+                "report": None, "want": UNUSABLE, "needle": "no active review report",
+                "why": "a caller-retold verdict cannot stand in for an absent report",
+            },
+            "empty": {
+                "report": "", "want": UNUSABLE, "needle": "is empty",
+                "why": "an empty capture contains no review result",
+            },
+            "truncated": {
+                "report": "Report body only.\n", "want": UNUSABLE, "needle": "no exact `VERDICT:`",
+                "why": "a truncated report cannot count",
+            },
+            "duplicate-results": {
+                "report": "VERDICT: NOT SATISFIED\n" + SAT_REPORT, "want": UNUSABLE,
+                "needle": "2 `VERDICT:` result lines",
+                "why": "two results leave no single review judgment",
+            },
+            "trailing-text": {
+                "report": SAT_REPORT + "postscript\n", "want": UNUSABLE,
+                "needle": "not the last nonblank line",
+                "why": "a result followed by prose is not terminal",
+            },
+            "wrong-attempt-only": {
+                "progress_name": "review-41-1.a2.progress.jsonl",
+                "progress": [ident(launch_attempt="2")], "report": None,
+                "extra_reports": {"review-41-1.txt": SAT_REPORT},
+                "want": UNUSABLE, "needle": "review-41-1.a2.txt",
+                "why": "attempt 1 cannot supply attempt 2's result",
+            },
+            "active-attempt-wins": {
+                "progress_name": "review-41-1.a2.progress.jsonl",
+                "progress": [ident(launch_attempt="2"), started("u01"), done("u01"),
+                             started("u02"), done("u02", evidence="stage-2:161")],
+                "report": SAT_REPORT, "extra_reports": {"review-41-1.txt": NOT_SAT_REPORT},
+                "want": OK, "needle": "report verdict satisfied",
+                "why": "the active attempt's result wins while the dead attempt stays inert",
+            },
+            "missing-residual-risk": {
+                "report": "VERDICT: SATISFIED\n", "want": UNUSABLE,
+                "needle": "exactly one `RESIDUAL-RISK:`",
+                "why": "SATISFIED carries the required calibration line",
+            },
+            "malformed-residual-risk": {
+                "report": "RESIDUAL-RISK: parser contract - wrong separator\nVERDICT: SATISFIED\n",
+                "want": UNUSABLE, "needle": "residual risk must be exactly",
+                "why": "the residual-risk fields and em dash have one exact shape",
+            },
+            "misplaced-residual-risk": {
+                "report": "RESIDUAL-RISK: parser — hard\n\nVERDICT: SATISFIED\n",
+                "want": UNUSABLE, "needle": "immediately above",
+                "why": "the residual-risk line has one exact position",
+            },
+            "duplicate-residual-risk": {
+                "report": "RESIDUAL-RISK: first — hard\nRESIDUAL-RISK: second — hard\n"
+                          "VERDICT: SATISFIED\n",
+                "want": UNUSABLE, "needle": "exactly one `RESIDUAL-RISK:`",
+                "why": "one accepting pass contributes one residual-risk record",
+            },
+            "residual-on-not-satisfied": {
+                "report": "RESIDUAL-RISK: parser — hard\nVERDICT: NOT SATISFIED\n",
+                "want": UNUSABLE, "needle": "SATISFIED-only",
+                "why": "residual risk is forbidden on a blocking result",
+            },
+            "deferred-without-reason": {
+                "report": "VERDICT: DEFERRED\n", "want": UNUSABLE,
+                "needle": "terminal result 'VERDICT: DEFERRED' is malformed",
+                "why": "a request without a reason cannot be routed",
+            },
+            "hostile-bytes": {
+                "report": b"body \xff\nVERDICT: NOT SATISFIED\n", "want": UNUSABLE,
+                "needle": "cannot be read as UTF-8",
+                "why": "undecodable report bytes are refused rather than rewritten",
+            },
+            "hostile-path": {
+                "dirname": "report $() ' path", "report": SAT_REPORT, "want": OK,
+                "needle": "report verdict satisfied",
+                "why": "path punctuation remains data and does not affect report selection",
+            },
+        }
+
         # --- the WRITE doors ---------------------------------------------------------------------
         EMPTY: "list[str]" = []
         DISPATCHED = [ident()]                       # what the orchestrator leaves behind, before the launch
@@ -656,17 +757,16 @@ class Tables:
             (["verify", "--head-sha", SHA, "--amendments-ruled", "-1", "--verdict", "satisfied"], WORKED, 2,
              "smallest legal value is 0",
              "HEADLINE: A NEGATIVE RULING WEDGES A PASS THAT WAS EARNED. `decide` SUBTRACTS the ruling, so `0 - (-1) = 1` amendment 'not yet ruled on' that the reviewer never raised and no ruling can ever clear"),
-            (["verify", "--head-sha", SHA], WORKED, 2, "required: --verdict",
-             "**THE VERIFY DOOR'S OWN MISSING INPUT, REFUSED BY ARGPARSE — AT THE DOOR, NAMING THE FLAG.** This exact call exited 0 on this exact pass: the flag was OPTIONAL, so the coherence rule was OFF for a driver that forgot it, and the gate then merged whatever the report claimed. It is `required=True` now — the same cure `--check` needed one door over, for the same disease: a guard whose input can be ABSENT never fires"),
-            (["verify", "--head-sha", SHA, "--verdict", "not-satisfied"], WORKED, 1, "NO GATING finding",
-             "**THE NEW ONE, AT THE VERIFY DOOR:** a complete, perfectly sound pass that returns NOT SATISFIED and records nothing that may block. The artifacts are flawless and the pass still cannot count — a verdict that blocks a PR must name what blocks it"),
+            (["verify", "--head-sha", SHA], WORKED, 0, "report-verdict=satisfied",
+             "the active report supplies the result; no caller verdict is required"),
+            (["verify", "--head-sha", SHA, "--verdict", "not-satisfied"], WORKED, 0,
+             "report-verdict=satisfied",
+             "the compatibility flag is non-authoritative and cannot override the SATISFIED report"),
             (["verify", "--head-sha", SHA, "--verdict", "satisfied"], WORKED, 0, "0 gating finding(s)",
              "…and the same pass returning SATISFIED, which needs no finding at all"),
-            (["verify", "--head-sha", SHA, "--verdict", "deferred"], WORKED, 1, "nothing to defer to",
-             "**THE THIRD `--verdict` VALUE, AT THE DOOR.** argparse ACCEPTS `deferred` (it is a "
-             "`VERDICT_CHOICES` member, not an exit-2 rejection) and routes it to the progress file. On this "
-             "complete pass with no amendment there is nothing to defer to, so it comes back UNUSABLE — "
-             "proving the flag parses AND that `deferred` is never silently treated as a passing verdict"),
+            (["verify", "--head-sha", SHA, "--verdict", "deferred"], WORKED, 0,
+             "report-verdict=satisfied",
+             "the compatibility flag cannot turn a SATISFIED report into a deferral"),
 
             # THE AMENDMENT WRITE DOOR — the one progress event a reviewer used to hand-write, now with a door.
             (["amend", "--reason", "no unit covers the harness", "--id", "u09", "--kind", "file",
@@ -797,8 +897,7 @@ class Tables:
             "finding-add": (FINDINGS_FILE, None),       # …and the first finding in a findings file that does not
             FINDING_WRAPPER_DOOR: (FINDINGS_FILE, None),  # the reviewer's OTHER door, through its wrapper
             "intent-check": (INTENT_FILE, INTENT.splitlines()),
-            # a COMPLETE, sound pass — and the minimal invocation now CARRIES a `--verdict` (it is required),
-            # so the door check drives the rule as well as the shape: `satisfied`, 0 gating findings, exit 0
+            # a COMPLETE, sound pass; seed_door adds its active SATISFIED report
             "verify": (PROGRESS_FILE, WORKED),
             # status takes `--run`, not `--file`, and writes nothing — its minimal advertised invocation is
             # `status --run .`, which globs the cwd, finds no passes, and exits 0. So it needs no seed file.
@@ -1028,7 +1127,7 @@ class Tables:
             },
             "verify-column": {
                 "files": {PROGRESS_FILE: self.WORKED, PLAN_FILE: self.PLAN, INTENT_FILE: INTENT,
-                          "review-41-1.txt": "VERDICT: SATISFIED\n"},
+                          "review-41-1.txt": SAT_REPORT},
                 "now": "2026-07-06T00:03:00Z",
                 "flags": ["--verify", "--history"],   # `done` is terminal — --history reveals it
                 "expect": {"41-1": {"units": "2/2", "verdict": "SAT", "counts(--verify)": "ok"}},
@@ -1166,7 +1265,7 @@ PASSING = ("ok", "exit0")
 RULE_FUNCTIONS = (
     "hook", "read_text", "parse_lines", "read_lines", "check_id", "check_unit", "plan_units", "load_plan",
     "check_event", "check_progress", "walk_progress", "check_identity_shape", "check_identity",
-    "check_head", "check_progress_file", "check_plan_file", "decide", "parse_name", "check_ruled",
+    "check_head", "check_progress_file", "check_plan_file", "parse_report", "decide", "parse_name", "check_ruled",
     "before_text", "write_line", "cmd_emit", "cmd_identity", "cmd_plan_add", "cmd_verify",
     # …and the FINDINGS side: the intent, the anchor, the writer, and the artifact they live in.
     "parse_intent", "load_intent", "check_writer_repro", "check_finding", "findings_name",
@@ -1202,8 +1301,15 @@ def write_intent(d: Path, text: "str | None" = INTENT) -> None:
         (d / INTENT_FILE).write_text(text, encoding="utf-8")
 
 
+def report_for_result(R: types.ModuleType, verdict: "str | None") -> "str | None":
+    return {R.SATISFIED: SAT_REPORT, R.NOT_SATISFIED: NOT_SAT_REPORT,
+            R.DEFERRED: DEFERRED_REPORT, None: None}[verdict]
+
+
 def build(tmp: Path, name: str, plan: "list[str] | None", progress: "list[str] | bytes",
-          findings: "list[str] | None" = None, intent: "str | None" = INTENT) -> Path:
+          findings: "list[str] | None" = None, intent: "str | None" = INTENT, *,
+          progress_name: str = PROGRESS_FILE,
+          report: "str | bytes | None" = SAT_REPORT) -> Path:
     """Write a fixture pass to disk RAW — bypassing every write-side check, because half these fixtures
     hold exactly what the write side would have refused. That is the point: the READ side must catch them
     without being told how they got there. (`progress` as BYTES is how a fixture holds what is not text.)
@@ -1217,7 +1323,7 @@ def build(tmp: Path, name: str, plan: "list[str] | None", progress: "list[str] |
     """
     d = tmp / name
     d.mkdir(parents=True, exist_ok=True)
-    path = d / PROGRESS_FILE
+    path = d / progress_name
     if isinstance(progress, bytes):
         path.write_bytes(progress)
     else:
@@ -1225,7 +1331,14 @@ def build(tmp: Path, name: str, plan: "list[str] | None", progress: "list[str] |
     if plan is not None:
         (d / PLAN_FILE).write_text("".join(line + "\n" for line in plan), encoding="utf-8")
     if findings is not None:
-        (d / FINDINGS_FILE).write_text("".join(line + "\n" for line in findings), encoding="utf-8")
+        findings_path = d / (progress_name[: -len(".progress.jsonl")] + ".findings.jsonl")
+        findings_path.write_text("".join(line + "\n" for line in findings), encoding="utf-8")
+    if report is not None:
+        report_path = d / (progress_name[: -len(".progress.jsonl")] + ".txt")
+        if isinstance(report, bytes):
+            report_path.write_bytes(report)
+        else:
+            report_path.write_text(report, encoding="utf-8")
     write_intent(d, intent)
     return path
 
@@ -1239,10 +1352,8 @@ def reads_back(mod: types.ModuleType, artifact: str, path: Path) -> "tuple[bool,
     An exception is the loudest failure of all: the read side owes a VERDICT on any bytes, and a crash is
     not a verdict.
 
-    It asks for NO `--verdict`, and the question is why that is sound: a write door has just appended ONE
-    line, so the pass it produced is never a COMPLETE one (`WRITE_COMMANDS` never finishes the plan), and
-    the missing-verdict rule fires only on a complete pass. "Reads back" here means "not `unusable`" —
-    `incomplete` is the honest answer about a pass that is one `emit` old, and it holds.
+    Progress writes are checked through the same whole-file reader the write door uses. The report is a
+    separate reviewer output and cannot exist while an early progress event is being appended.
     """
     try:
         if artifact == PLAN_FILE:
@@ -1251,8 +1362,9 @@ def reads_back(mod: types.ModuleType, artifact: str, path: Path) -> "tuple[bool,
         if artifact == FINDINGS_FILE:
             mod.check_findings_file(path.read_text(encoding="utf-8"), path)
             return True, "the findings read back"
-        verdict, reason = mod.evaluate(path, SHA)
-        return verdict != mod.UNUSABLE, f"{verdict}: {reason}"
+        mod.check_progress_file(mod.read_text(path, "progress file"), path,
+                                lambda: mod.load_plan(mod.plan_path(path)))
+        return True, "the progress file reads back"
     except Exception as exc:  # noqa: BLE001 - a crash on READ is a violation, not an error to propagate
         return False, f"crash:{type(exc).__name__}: {exc}"
 
@@ -1332,12 +1444,8 @@ def run_cases(mod: types.ModuleType, T: Tables, tmp: Path) -> "dict[str, tuple[s
     A mutant that CRASHES has not returned a verdict, and "no verdict" is itself a deviation — recorded,
     never swallowed."""
     got: dict[str, tuple[str, str]] = {}
-    # **EVERY CASE STATES A VERDICT, and that default is the contract** — exactly as the intent sits beside
-    # every fixture unless one says otherwise. A COMPLETE pass verified with NO verdict is `unusable` (the
-    # coherence rule may not be switched off by omitting its input), so a case that is not ABOUT the verdict
-    # must supply one or it would be asserting the wrong refusal. These cases carry no findings file, so
-    # `satisfied` is the verdict that coheres; the cases that ARE about the verdict live in `FINDING_CASES`,
-    # which passes its own — including `None`.
+    # Every ordinary case receives one valid SATISFIED report. Cases about report framing live in
+    # REPORT_CASES; findings cases choose report bytes matching their expected coherence path.
     for name, (plan, progress, _, _, _) in T.CASES.items():  # drops want, needle, why
         path = build(tmp, f"case-{name}", plan, progress)
         try:
@@ -1345,7 +1453,8 @@ def run_cases(mod: types.ModuleType, T: Tables, tmp: Path) -> "dict[str, tuple[s
         except Exception as exc:  # noqa: BLE001 - a crash IS the result here
             got[name] = (f"crash:{type(exc).__name__}", str(exc))
     for name, (plan, progress, findings, intent, verdict, _, _, _) in T.FINDING_CASES.items():  # drops want, needle, why
-        path = build(tmp, f"find-{name}", plan, progress, findings, intent)
+        path = build(tmp, f"find-{name}", plan, progress, findings, intent,
+                     report=report_for_result(mod, verdict))
         try:
             got[f"[finding] {name}"] = mod.evaluate(path, SHA, 0, verdict)
         except Exception as exc:  # noqa: BLE001
@@ -1354,12 +1463,25 @@ def run_cases(mod: types.ModuleType, T: Tables, tmp: Path) -> "dict[str, tuple[s
         d = build(tmp, f"name-{i}", T.PLAN, T.WORKED).parent
         path = d / name
         path.write_text("".join(line + "\n" for line in T.WORKED), encoding="utf-8")
+        if mod.NAME_RE.match(name):
+            mod.report_path(path).write_text(SAT_REPORT, encoding="utf-8")
         try:
             # The pass is COMPLETE (`WORKED`) in every one of these, so it states a verdict for the same
             # reason `CASES` does — the FILENAME is what is under test here, and nothing else may refuse it.
             got[f"[name] {name}"] = mod.evaluate(path, SHA, 0, mod.SATISFIED)
         except Exception as exc:  # noqa: BLE001
             got[f"[name] {name}"] = (f"crash:{type(exc).__name__}", str(exc))
+    for name, case in T.REPORT_CASES.items():
+        progress_name = case.get("progress_name", PROGRESS_FILE)
+        path = build(tmp, case.get("dirname", f"report-{name}"), T.PLAN,
+                     case.get("progress", T.WORKED), case.get("findings"), INTENT,
+                     progress_name=progress_name, report=case["report"])
+        for filename, content in case.get("extra_reports", {}).items():
+            (path.parent / filename).write_text(content, encoding="utf-8")
+        try:
+            got[f"[report] {name}"] = mod.evaluate(path, SHA)
+        except Exception as exc:  # noqa: BLE001
+            got[f"[report] {name}"] = (f"crash:{type(exc).__name__}", str(exc))
     for i, (argv, seed, _, _, _) in enumerate(T.CLI_CASES):  # drops want, needle, why
         path = build(tmp, f"cli-{i}", T.PLAN, seed)
         try:
@@ -1392,6 +1514,8 @@ def expectations(T: Tables) -> "dict[str, tuple[str, str, str]]":
     out.update({f"[finding] {n}": (w, needle, why)
                 for n, (_, _, _, _, _, w, needle, why) in T.FINDING_CASES.items()})  # drops plan, progress, findings, intent, verdict
     out.update({f"[name] {n}": (w, needle, why) for n, w, needle, why in T.NAME_CASES})
+    out.update({f"[report] {n}": (c["want"], c["needle"], c["why"])
+                for n, c in T.REPORT_CASES.items()})
     out.update({cli_key(i, a): (f"exit{c}", needle, why)
                 for i, (a, _, c, needle, why) in enumerate(T.CLI_CASES)})  # drops seed
     out.update({f"[plan] {p} {' '.join(a)}": (f"exit{c}", needle, why)
@@ -1586,6 +1710,8 @@ def declared(p: argparse.ArgumentParser) -> "tuple[set[str], set[str]]":
     required: set[str] = set()
     optional: set[str] = set()
     for action in p._actions:  # noqa: SLF001 - the flags are the actions; there is no public view of them
+        if action.help == argparse.SUPPRESS:
+            continue
         longs = {opt for opt in action.option_strings if opt.startswith("--")} - {"--help"}
         (required if action.required else optional).update(longs)
     return required, optional
@@ -1618,6 +1744,8 @@ def seed_door(T: Tables, tmp: Path, door: str, case: str) -> "list[str]":
     target = d / artifact
     if lines is not None:
         target.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
+    if door == "verify":
+        (d / "review-41-1.txt").write_text(SAT_REPORT, encoding="utf-8")
     return ["--file", str(target)]
 
 
@@ -1810,7 +1938,7 @@ def check_amendment_door(R: types.ModuleType, tmp: Path) -> int:
         write_intent(d)
         return d
 
-    # 1) The owner's door: raise the amendment, then `verify --verdict deferred` must route `amended`.
+    # 1) The owner's door: raise the amendment, then the parsed DEFERRED report must route `amended`.
     d = seed("owner")
     progress = d / PROGRESS_FILE
     run_cli(R, ["identity", "--file", str(progress), "--head-sha", SHA, "--dispatched-at", TS])
@@ -1819,9 +1947,10 @@ def check_amendment_door(R: types.ModuleType, tmp: Path) -> int:
     if code != 0 or "u09" not in out:
         print(f"FAIL     [amend] the owner's door refused a valid amendment (exit {code}): {out.strip()}")
         failures += 1
-    code, out = run_cli(R, ["verify", "--file", str(progress), "--head-sha", SHA, "--verdict", "deferred"])
+    (d / "review-41-1.txt").write_text(DEFERRED_REPORT, encoding="utf-8")
+    code, out = run_cli(R, ["verify", "--file", str(progress), "--head-sha", SHA])
     if code != 1 or R.AMENDED not in out:
-        print(f"FAIL     [amend] `verify --verdict deferred` did not route {R.AMENDED!r} after a written "
+        print(f"FAIL     [amend] `verify` did not route the DEFERRED report to {R.AMENDED!r} after a written "
               f"amendment (exit {code}): {out.strip()}")
         failures += 1
     else:
@@ -1853,7 +1982,8 @@ def check_amendment_door(R: types.ModuleType, tmp: Path) -> int:
         print(f"FAIL     [amend] the `emit-amendment.py` shim refused a valid amendment "
               f"(exit {run.returncode}): {(run.stdout + run.stderr).strip()}")
         failures += 1
-    code, out = run_cli(R, ["verify", "--file", str(progress), "--head-sha", SHA, "--verdict", "deferred"])
+    (d / "review-41-1.txt").write_text(DEFERRED_REPORT, encoding="utf-8")
+    code, out = run_cli(R, ["verify", "--file", str(progress), "--head-sha", SHA])
     if code != 1 or R.AMENDED not in out:
         print(f"FAIL     [amend] `verify` did not accept the shim's line as {R.AMENDED!r} "
               f"(exit {code}): {out.strip()}")
@@ -2068,6 +2198,7 @@ def run(R: types.ModuleType, tmp: Path) -> int:
              f"every one of the {len(T.DOOR_SEEDS)} doors ({', '.join(sorted(T.DOOR_SEEDS))}) had the "
              f"MINIMAL invocation its OWN `--help` advertises EXECUTED, and it runs")
     print(f"all {len(T.CASES)} fixtures + {len(T.FINDING_CASES)} findings/intent fixtures + "
+          f"{len(T.REPORT_CASES)} report fixtures + "
           f"{len(T.NAME_CASES)} name cases + "
           f"{len(T.CLI_CASES) + len(T.PLAN_CLI_CASES) + len(T.FINDING_CLI_CASES)} CLI cases + "
           f"{len(T.WRITE_COMMANDS) * len(T.FILE_STATES)} round-trip cases + "

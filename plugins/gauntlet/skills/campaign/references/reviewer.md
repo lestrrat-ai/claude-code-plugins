@@ -92,7 +92,7 @@ is interpolated into shell source. **The prompt IS the
 contract**: whatever it
 requires of a `codex exec` reviewer it requires of a native worker — the same question ("does this PR achieve its
 stated Purpose…"), the same emit-only rule, the same anchored findings, the same `RESIDUAL-RISK` +
-single-`VERDICT:` ending. Its verdict is read and its artifacts verified by the same `review-pass.py verify`
+single-`VERDICT:` ending. Its terminal result and artifacts are read and verified by the same `review-pass.py verify`
 (Stage 2a, "Does this pass COUNT?"), so a pass dispatched without those inputs is not a lighter pass — it is
 an `unusable` one.
 

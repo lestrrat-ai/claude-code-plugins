@@ -31,13 +31,13 @@ So this file is the review pass's artifacts, executed:
               DOOR run in the shape its own `--help` advertises (a command the help promises and the tool
               refuses is the same trap, one layer up — `plan-add` shipped one)
 
-WHAT `verify` DOES NOT DO — AND THE LINE IS DELIBERATE. It never opens `review-<pr>-<n>.txt`, never
-parses the reviewer's prose, and CANNOT SAY `SATISFIED`. Its whole answer is about the pass's MECHANICS:
+`verify` reads only the report's strict terminal result contract; it never judges the report's prose.
+Its answer covers both the pass's MECHANICS and whether the report supplied exactly one usable result:
 is there an identity, does it name the commit the pass actually ran on, WAS THERE AN INTENT for this
 reviewer to be measured against, is every `done` for a unit that was really planned, did every `done`
 FOLLOW a `started` for that same unit, does every `done` carry evidence, were amendments raised, and does
-the verdict the orchestrator READ cohere with the findings the reviewer RECORDED. The VERDICT itself is
-the reviewer's JUDGMENT and stays theirs.
+does the parsed report result cohere with the findings the reviewer RECORDED. The verdict remains the
+reviewer's JUDGMENT; this tool validates only its exact terminal framing and coherence.
 
 That line is what keeps this tool from BECOMING the gate. `verify` can only ever SUBTRACT a pass — refuse
 one that is defective. It can never ADD a SATISFIED verdict, never raise `reviews_ok`, and never merge
@@ -81,21 +81,15 @@ door has a `--head-sha` to compare against. That gap is named there and nowhere 
 
 THE VERDICTS. Exactly one is printed, and there is no "counts, BUT…":
 
-  ok          the artifacts are sound AND the verdict you gave coheres with them; it may now be tallied
+  ok          the artifacts are sound AND the parsed report result coheres with them; it may be tallied
   incomplete  sound, but a planned unit has no `done` event — the pass did not cover its plan
   amended     sound, but the reviewer raised a plan amendment nobody has ruled on yet
   unusable    the artifacts are defective — this pass CANNOT count, whatever its report says
 
-`--verdict` IS REQUIRED, and that is the whole of what "a gate must not depend on a caller remembering"
-means here. It takes THREE values: `satisfied`/`not-satisfied` is the reviewer's binary verdict (the
-coherence rule below checks it); `deferred` is NOT a verdict — the reviewer raised a separate request
-instead (an amendment, or a broken-dispatch stop), so control routes to the progress file and the pass
-comes back amended/incomplete/unusable. You come to `verify` WITH the report's `VERDICT:` line in hand;
-you do not come to it to find out whether the reviewer is done. A pass still in flight is WATCHED, not
-verified — its progress file is the liveness evidence (stage-2-review-gate.md, "Launch check"). While the
-flag could be left out, a complete pass verified without it returned `ok`, so the one machine-checked rule
-about the reviewer's own verdict was OFF for any driver that forgot a flag — and a driver that forgot it
-merged a PR whose reviewer had returned SATISFIED over a GATING finding it recorded itself.
+The result is derived from the active launch attempt's report path. The compatibility-only `--verdict`
+flag is accepted but ignored; it cannot override, supply, or repair the report's result. A complete pass
+with a missing, malformed, duplicate, nonterminal, or wrong-attempt report is `unusable`. A pass still in
+flight is WATCHED through the lenient `status` command, not verified.
 
 `amended` is a VERDICT and not a footnote beside `ok` on purpose. A disclosure printed next to a pass is a
 trapdoor, not a disclosure: "this pass counts, but note that the reviewer says the plan is missing a
@@ -123,7 +117,7 @@ from typing import NoReturn
 
 # --- the contract (stage-2-review-gate.md) ------------------------------------------------------
 
-# Verdicts. `ok` is the ONLY one that lets a pass be counted — and even then only after its REPORT is read.
+# Verdicts. `ok` is the ONLY one that lets a pass be counted — after this tool reads its report result.
 OK = "ok"
 INCOMPLETE = "incomplete"
 AMENDED = "amended"
@@ -141,20 +135,20 @@ STARTED = "started"
 DONE = "done"
 STATUSES = (STARTED, DONE)
 
-# The REVIEWER'S VERDICT, as the orchestrator READ it off the report and TELLS this tool. This file still
-# never opens the report and still cannot say `SATISFIED` — it is handed the value so that ONE rule can be
-# machine-checked, and that rule is an IF AND ONLY IF (`decide`): **NOT SATISFIED exactly when at least one
+# The REVIEWER'S VERDICT, as this tool reads it from the active attempt's report. The parser does not judge
+# prose; it extracts one exact terminal result so the IF AND ONLY IF can be checked (`decide`): NOT
+# SATISFIED exactly when at least one
 # GATING finding stands.** Both halves of it refuse a pass and neither can grant one. The spelling is the
-# ledger's (`ledger.py verdict --verdict satisfied|not-satisfied`), because the same string is typed at both
-# doors by the same driver in the same step, and two spellings of one verdict is a bug waiting for a heartbeat.
+# ledger's (`ledger.py verdict --verdict satisfied|not-satisfied`) so the verifier's output feeds that door
+# without a second spelling.
 SATISFIED, NOT_SATISFIED = "satisfied", "not-satisfied"
 VERDICTS = (SATISFIED, NOT_SATISFIED)
 # `deferred` is NOT a verdict — it is the reviewer saying "I did not render a verdict, I raised a separate
 # request the orchestrator must handle first" (a `plan_amendment_request`, or the broken-dispatch "say so
 # and stop"). It is deliberately BLANKET: the reviewer does not self-classify why. It NEVER enters `VERDICTS`
-# (the binary coherence set) and is NEVER tallied by the ledger — `--verdict deferred` routes control to the
-# progress file, which `evaluate()` reads and answers with amended/incomplete/unusable. `VERDICT_CHOICES` is
-# what the CLI accepts, so the report marker `DEFERRED` and the flag `deferred` are isomorphic.
+# (the binary coherence set) and is NEVER tallied by the ledger — a parsed DEFERRED result routes control
+# to the progress file, which `evaluate()` reads and answers with amended/incomplete/unusable.
+# `VERDICT_CHOICES` remains only for the hidden, non-authoritative compatibility flag.
 DEFERRED = "deferred"
 VERDICT_CHOICES = (SATISFIED, NOT_SATISFIED, DEFERRED)
 
@@ -461,8 +455,19 @@ PLAN_NAME_RE = re.compile(rf"^review-{COUNT}-{COUNT}\.plan\.jsonl\Z")
 # (`review-<pr>-<n>.txt`), and a relaunched pass produces its own. So its name is the progress file's name
 # with one suffix swapped, and it is DERIVED from it exactly as the plan's is: no door takes a findings
 # path and a progress path that could disagree about which pass they belong to.
-PROGRESS_SUFFIX, FINDINGS_SUFFIX = ".progress.jsonl", ".findings.jsonl"
+PROGRESS_SUFFIX, FINDINGS_SUFFIX, REPORT_SUFFIX = ".progress.jsonl", ".findings.jsonl", ".txt"
 FINDINGS_NAME_RE = re.compile(rf"^review-(?P<pr>{COUNT})-{COUNT}(?:\.a{ATTEMPT})?\.findings\.jsonl\Z")
+
+# The strict terminal report contract. The prompt owns these exact lines; `parse_report` is their executable
+# reader. A deferred result includes a reason because it is a request the orchestrator must route. A
+# SATISFIED result includes the immediately preceding residual-risk line because that metadata is carried
+# into the campaign's final report.
+REPORT_SATISFIED = "VERDICT: SATISFIED"
+REPORT_NOT_SATISFIED = "VERDICT: NOT SATISFIED"
+REPORT_DEFERRED_RE = re.compile(r"^VERDICT: DEFERRED — (?P<reason>\S(?:.*\S)?)\Z")
+RESIDUAL_RISK_RE = re.compile(
+    r"^RESIDUAL-RISK: (?P<area>\S(?:.*\S)?) — (?P<why>\S(?:.*\S)?)\Z"
+)
 
 # The INTENT — what this PR is FOR. One per PR, written at adoption (`pr-adoption.md`), re-read every heartbeat
 # and never re-derived: a heartbeat is a fresh agent instance, and an intent held only in context is one that
@@ -941,6 +946,101 @@ def findings_path(progress: Path) -> Path:
     return progress.parent / (progress.name[: -len(PROGRESS_SUFFIX)] + FINDINGS_SUFFIX)
 
 
+def report_path(progress: Path) -> Path:
+    """The active launch attempt's report, derived from its validated progress artifact name."""
+    parse_name(progress)
+    return progress.parent / (progress.name[: -len(PROGRESS_SUFFIX)] + REPORT_SUFFIX)
+
+
+def parse_report(progress: Path) -> "dict[str, str | None]":
+    """Read one exact terminal result from the active attempt's report.
+
+    Report prose remains the reviewer's judgment. This parser owns only the framing that makes that
+    judgment usable: one terminal result on the last nonblank line, a reason for DEFERRED, and the
+    immediately preceding residual-risk line for SATISFIED.
+    """
+    path = report_path(progress)
+    text = read_text(path, "active review report")
+    lines = text.splitlines()
+    nonblank = [n for n, line in enumerate(lines) if line.strip()]
+    if not nonblank:
+        # MUTATE:report-empty:pass
+        raise Defect(
+            f"{path.name} is empty — a review report must end with exactly one terminal result"
+        )
+
+    last = nonblank[-1]
+    terminal = [n for n, line in enumerate(lines) if line.startswith("VERDICT:")]
+    if not terminal:
+        # MUTATE:report-result-missing:terminal = [last]
+        raise Defect(
+            f"{path.name} has no exact `VERDICT:` terminal result — truncated or prose-only output is not "
+            f"a review result"
+        )
+    if len(terminal) != 1:
+        # MUTATE:report-result-duplicate:terminal = terminal[-1:]
+        raise Defect(
+            f"{path.name} has {len(terminal)} `VERDICT:` result lines — a report yields exactly one result, "
+            f"not a choice among several"
+        )
+    if terminal[0] != last:
+        # MUTATE:report-result-not-terminal:pass
+        raise Defect(
+            f"{path.name}: the `VERDICT:` result is not the last nonblank line — trailing text makes the "
+            f"claimed terminal result nonterminal"
+        )
+
+    result_line = lines[last]
+    deferred = REPORT_DEFERRED_RE.match(result_line)
+    if result_line == REPORT_SATISFIED:
+        verdict = SATISFIED
+    elif result_line == REPORT_NOT_SATISFIED:
+        verdict = NOT_SATISFIED
+    elif deferred is not None:
+        verdict = DEFERRED
+    else:
+        # MUTATE:report-result-shape:verdict = SATISFIED
+        raise Defect(
+            f"{path.name}: terminal result {result_line!r} is malformed — use exactly "
+            f"{REPORT_SATISFIED!r}, {REPORT_NOT_SATISFIED!r}, or "
+            "'VERDICT: DEFERRED — <one-line reason>'"
+        )
+
+    residual_lines = [n for n, line in enumerate(lines) if line.startswith("RESIDUAL-RISK:")]
+    residual: "str | None" = None
+    if verdict == SATISFIED:
+        if len(residual_lines) != 1:
+            # MUTATE:report-residual-count:pass
+            raise Defect(
+                f"{path.name}: SATISFIED requires exactly one `RESIDUAL-RISK:` line; found "
+                f"{len(residual_lines)}"
+            )
+        if residual_lines[0] != last - 1:
+            # MUTATE:report-residual-position:pass
+            raise Defect(
+                f"{path.name}: SATISFIED requires its `RESIDUAL-RISK:` line immediately above the verdict"
+            )
+        residual = lines[last - 1]
+        if RESIDUAL_RISK_RE.match(residual) is None:
+            # MUTATE:report-residual-shape:pass
+            raise Defect(
+                f"{path.name}: residual risk must be exactly "
+                "'RESIDUAL-RISK: <area or file> — <why this was hardest to verify fully>'"
+            )
+    elif residual_lines:
+        # MUTATE:report-residual-binary-only:pass
+        raise Defect(
+            f"{path.name}: `RESIDUAL-RISK:` is SATISFIED-only and must not accompany "
+            f"{result_line!r}"
+        )
+
+    return {
+        "verdict": verdict,
+        "deferred_reason": deferred.group("reason") if deferred is not None else None,
+        "residual_risk": residual,
+    }
+
+
 def intent_path(parent: Path, pr: str) -> Path:
     """Where this PR's intent lives — beside the pass's artifacts, in the run dir.
 
@@ -1218,7 +1318,7 @@ def check_head(ident: dict, head_sha: str) -> None:
 
 def decide(events: "list[dict]", units: "dict[str, dict]", ruled: int,
            findings: "list[dict]", verdict: "str | None") -> "tuple[str, str]":
-    """Given SOUND artifacts: does this pass COUNT? (Its report is still not read. That is the point.)
+    """Given sound artifacts and the parsed report result: does this pass count?
 
     The per-event rules — planned unit, `done` follows `started`, no SECOND `done` — are `check_progress`,
     replayed here by `walk_progress`. They are not restated: they are the SAME statements `emit` runs, so
@@ -1230,23 +1330,10 @@ def decide(events: "list[dict]", units: "dict[str, dict]", ruled: int,
     not. Skip straight to "done" for every unit and the gate was satisfied on zero evidence of work. A
     `done` with no `started` is not progress, exactly as an empty plan is not a plan.
 
-    **`verdict` IS TOLD TO THIS TOOL, NEVER READ BY IT — AND THE LINE IS THE SAME LINE AS ALWAYS.** This
-    function still does not open `review-<pr>-<n>.txt` and still cannot SAY `SATISFIED`. The orchestrator
-    reads the reviewer's VERDICT line, exactly as before, and passes what it read (`--verdict`) so that ONE
-    coherence rule can be checked mechanically. **THE RULE IS AN IF AND ONLY IF, AND IT IS ENFORCED IN BOTH
-    DIRECTIONS: NOT SATISFIED exactly when at least one GATING finding stands.** The orchestrator may also
-    pass `deferred` — the report's terminal line was `VERDICT: DEFERRED`, meaning the reviewer raised a
-    separate request instead of ruling; that value is not a verdict and never reaches the coherence rule,
-    it just routes to the progress-file state (an unruled amendment returns `amended` above; a spurious
-    deferral with nothing outstanding is `unusable`).
-
-    **AND ON A COMPLETE PASS THE VERDICT IS NOT OPTIONAL — an ABSENT one is `unusable`, never `ok`.** It
-    was optional, and that made the coherence rule above a guard a caller could switch off by FORGETTING a
-    flag: a complete pass verified with no `--verdict` returned `ok`, so a driver that dropped it merged a
-    PR whose reviewer had returned SATISFIED over a GATING finding it had itself recorded. That is the same
-    defect as the intent that could be missing on exactly the passes that count — **a guard whose input can
-    be ABSENT never fires** — and it is closed the same way: the input is DEMANDED. A verdict a driver has
-    not read yet is not a reason to skip the rule; it is a reason not to be at this door yet.
+    `parse_report` derives `verdict` from the active attempt's report. The caller cannot supply it. The
+    coherence rule remains an if and only if in both directions: NOT SATISFIED exactly when at least one
+    GATING finding stands. DEFERRED is not a verdict; it routes through the progress state and is refused
+    when nothing is outstanding.
 
       * NOT SATISFIED and NO gating finding — a verdict that blocks a PR and names nothing that blocks it.
       * SATISFIED and a gating finding that STANDS — the reviewer recorded a defect that anchors to the PR's
@@ -1302,16 +1389,6 @@ def decide(events: "list[dict]", units: "dict[str, dict]", ruled: int,
             f"pass raised neither, so it is FINISHED and owes a binary verdict. Give one ({VERDICTS}), or "
             f"raise the request you meant to"
         )
-    if verdict is None:
-        # MUTATE:verdict-missing-on-complete:pass
-        return UNUSABLE, (
-            f"all {len(units)} planned units are done, so this pass is FINISHED — and no verdict was given "
-            f"to check it against ({VERDICTS} — what the report's `VERDICT:` line says). The coherence rule "
-            f"is the only thing standing between a reviewer that returns SATISFIED over a GATING finding it "
-            f"recorded itself and a PR that merges anyway, and a rule whose input may be OMITTED is a rule a "
-            f"caller switches off by forgetting a flag. Read the report's VERDICT line and state it"
-        )
-
     blocking = [f for f in findings if gating(f)]
     if verdict == NOT_SATISFIED and not blocking:
         # MUTATE:not-satisfied-without-gating-finding:pass
@@ -1338,9 +1415,10 @@ def decide(events: "list[dict]", units: "dict[str, dict]", ruled: int,
               f"ignorable in the verdict"
         )
     return OK, (
-        f"all {len(units)} planned units are done with evidence, on {events[0]['head_sha']}, no unruled "
+        f"report verdict {verdict}; all {len(units)} planned units are done with evidence, on "
+        f"{events[0]['head_sha']}, no unruled "
         f"amendments, {len(blocking)} gating finding(s) of {len(findings)}. This says the ARTIFACTS are "
-        f"sound — NOT that the pass is SATISFIED. Read the VERDICT line in the report"
+        f"sound and the parsed result coheres with them"
     )
 
 
@@ -1369,8 +1447,8 @@ def plan_path(progress: Path) -> Path:
     return progress.parent / PLAN_NAME.format(pr=pr, **{"pass": npass})
 
 
-def evaluate(progress: Path, head_sha: str, ruled: int = 0,
-             verdict: "str | None" = None) -> "tuple[str, str]":
+def evaluate_detail(progress: Path, head_sha: str, ruled: int = 0) -> \
+        "tuple[str, str, dict[str, str | None] | None]":
     """The whole read side. Every exception a rule can raise lands here as a VERDICT — never as a crash.
 
     **THE INTENT IS AN INPUT TO EVERY PASS, AND IT IS LOADED HERE FOR EXACTLY THAT REASON.** A pass is
@@ -1392,13 +1470,23 @@ def evaluate(progress: Path, head_sha: str, ruled: int = 0,
     try:
         plan = plan_path(progress)
         pr, _, _ = parse_name(progress)  # drops npass, attempt
+        report = parse_report(progress)
         events, units = check_progress_file(text=read_text(progress, "progress file"), path=progress,
                                             plan=lambda: load_plan(plan), head_sha=head_sha)
         # MUTATE:intent-required:pass
         load_intent(intent_path(progress.parent, pr))
-        return decide(events, units, ruled, load_findings(progress), verdict)
+        outcome, reason = decide(events, units, ruled, load_findings(progress), report["verdict"])
+        return outcome, reason, report
     except Defect as exc:
-        return UNUSABLE, str(exc)
+        return UNUSABLE, str(exc), None
+
+
+def evaluate(progress: Path, head_sha: str, ruled: int = 0,
+             legacy_verdict: "str | None" = None) -> "tuple[str, str]":
+    """Compatibility wrapper for in-process consumers; `legacy_verdict` is deliberately non-authoritative."""
+    del legacy_verdict
+    outcome, reason, _ = evaluate_detail(progress, head_sha, ruled)
+    return outcome, reason
 
 
 def check_events(events: "list[dict]", name: str) -> None:
@@ -1812,8 +1900,13 @@ def cmd_verify(args) -> int:
             f"a ruling can only ever answer an amendment that EXISTS, and an over-count would silently "
             f"clear the next one the reviewer raises"
         )
-    verdict, reason = evaluate(path, args.head_sha, args.amendments_ruled, args.verdict)
-    print(f"{verdict}: {reason}")
+    verdict, reason, report = evaluate_detail(path, args.head_sha, args.amendments_ruled)
+    detail = ""
+    if report is not None:
+        detail = f" report-verdict={report['verdict']}"
+        if report["residual_risk"] is not None:
+            detail += f"; {report['residual_risk']}"
+    print(f"{verdict}:{detail} {reason}")
     # `ok` is the ONLY exit-0 verdict — and it still is NOT `SATISFIED`.
     return 0 if verdict == OK else 1
 
@@ -1949,13 +2042,6 @@ def latest_pass_per_pr(rundir: Path) -> "dict[str, int]":
         if n > latest.get(pr, 0):
             latest[pr] = n
     return latest
-
-
-def report_path(progress: Path) -> Path:
-    """The reviewer's report (`review-<pr>-<n>.txt`) — per PASS, beside the progress file. `status` scrapes
-    its `VERDICT:` tail for a convenience read; `verify` never opens it and neither does the gate."""
-    pr, npass, _ = parse_name(progress)  # drops the attempt
-    return progress.parent / f"review-{pr}-{npass}.txt"
 
 
 def scrape_verdict(progress: Path) -> str:
@@ -2097,9 +2183,8 @@ def verify_column(progress: Path, events: "list[dict]", verdict: str) -> str:
     head = ident.get("head_sha") if isinstance(ident, dict) else None
     if not isinstance(head, str):
         head = "0" * 40   # no usable identity → evaluate() will say `unusable`, which is the honest answer
-    told = {V_SAT: SATISFIED, V_NOT_SAT: NOT_SATISFIED}.get(verdict)
     try:
-        return evaluate(progress, head, 0, told)[0]
+        return evaluate(progress, head)[0]
     except Exception:  # noqa: BLE001 - the opt-in column never crashes the table
         return "unreadable"
 
@@ -2459,31 +2544,16 @@ def build_parser() -> "tuple[argparse.ArgumentParser, list[str]]":
         "intent-check", help="refuse a missing or malformed intent block before review dispatch")
     intent.add_argument("--file", required=True, help="the PR's intent-<pr>.md artifact")
 
-    v = sub.add_parser("verify", help="DOES THIS PASS COUNT? (it never reads the reviewer's report)")
+    v = sub.add_parser("verify", help="DOES THIS PASS COUNT? (parses the active report result)")
     v.add_argument("--file", required=True, help="the ACTIVE launch attempt's progress.jsonl")
     v.add_argument("--head-sha", required=True, help="the PR's LIVE head — the pass must have run on it")
     v.add_argument("--amendments-ruled", type=int, default=0, metavar="N",
                    help="how many of this pass's plan amendments you have already ruled on — a count, so "
                         "N >= 0, and never more than the pass actually raised (default 0)")
-    # REQUIRED — and it was OPTIONAL, which is the same defect `--check` had one door over, in the shape
-    # that costs the most. The coherence rule is the ONLY mechanical check on the reviewer's own verdict,
-    # and while this flag could be left out, a complete pass verified WITHOUT it came back `ok`: the guard
-    # was OFF for any driver that simply forgot the flag, and the gate merged whatever the report claimed.
-    # A gate MUST NOT depend on an agent remembering to pass something. `verify` is a door you come to with
-    # the report in hand; a pass still in flight is not verified, it is WATCHED (its progress file is the
-    # liveness evidence — `stage-2-review-gate.md`, "Launch check"), and `decide` refuses an absent verdict
-    # only once the pass is COMPLETE, so an in-process caller still gets `incomplete` rather than a scolding.
-    v.add_argument("--verdict", choices=VERDICT_CHOICES, required=True,
-                   help="REQUIRED: the VERDICT line you read in the reviewer's report. `satisfied` / "
-                        "`not-satisfied` is the reviewer's BINARY verdict, and it buys ONE machine-checked "
-                        "rule, an IF AND ONLY IF: the pass is UNUSABLE if `not-satisfied` recorded NO gating "
-                        "finding (a verdict that blocks a PR must name what blocks it), and equally UNUSABLE "
-                        "if `satisfied` recorded ONE (a finding that gates cannot be waved through in the "
-                        "verdict). `deferred` when the report's terminal line is `VERDICT: DEFERRED` — the "
-                        "reviewer raised a separate request (an amendment, or a broken-dispatch stop) INSTEAD "
-                        "of a verdict; the tool then reads the progress file and returns amended / incomplete "
-                        "/ unusable. A pass verified without any of these is UNUSABLE too — a rule a caller "
-                        "can switch off by omitting a flag is not a gate")
+    # Narrow compatibility only. Older installed prose supplied this value; accepting it avoids an abrupt
+    # CLI break while making it unable to influence the gate. `cmd_verify` never reads it. Suppress it from
+    # help so new callers use the active report, the sole authority.
+    v.add_argument("--verdict", choices=VERDICT_CHOICES, help=argparse.SUPPRESS)
 
     # status is ADVISORY and READ-ONLY: it renders live progress and DECIDES NOTHING. Its flags are all
     # about the VIEW, never about a verdict — there is no `--head-sha`, no `--verdict`, and it writes no file.
