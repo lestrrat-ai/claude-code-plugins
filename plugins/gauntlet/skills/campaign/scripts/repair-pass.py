@@ -15,7 +15,9 @@ diff-growth curve, the PR's intent artifact, the current diff — and returns ex
 CLOSED enum. `references/repair-pass.md` is the definition; this is its enforcement.
 
 `bundle` assembles that history deterministically from validated active-attempt artifacts and Git reads;
-`decide` accepts only a record carrying the exact prepared bundle hash.
+`decide` accepts only a record carrying the exact prepared bundle hash AND declaring, in a machine-readable
+`DECISION: <enum>` field, the same decision `--decision` records — so the ledger can never disagree with the
+audit artifact.
 
 **A CAP IS A MODE SWITCH, NOT A DOORBELL.** It does not stop and ask the user. The driver stops dispatching
 targeted fixes and REPAIRS THE PR ITSELF — rescopes it back to its stated purpose, re-authors the intent the
@@ -91,6 +93,12 @@ RP = load_review_pass()
 BUNDLE_SCHEMA = "gauntlet-repair-bundle-v1"
 MANIFEST_SCHEMA = "gauntlet-repair-bundle-manifest-v1"
 BUNDLE_MARKER = "BUNDLE-SHA256"
+# The record's machine-readable OUTPUT marker. `BUNDLE_MARKER` binds the record to the exact prompt bytes it
+# was decided AGAINST; this binds it to the exact enum it CHOSE. The record is the sole carrier of the
+# decision across the fresh-heartbeat boundary, so the chosen enum must be a field `decide` can READ — not
+# prose it cannot — or the ledger could record `abort` while the record concluded `demote`.
+DECISION_MARKER = "DECISION"
+DECISION_LINE_RE = re.compile(r"^\s*DECISION:\s*(\S.*?)\s*$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}\Z")
 
 # --- the closed enum ----------------------------------------------------------
@@ -701,8 +709,11 @@ def cmd_bundle(path: Path, args) -> int:
         "REASSESSMENT PASS\n"
         "Read the complete JSON bundle below. Choose exactly one decision named in `permitted`; do not "
         "invent another decision. Explain how the complete history supports that decision. Write the "
-        "decision record with the following marker as its first nonblank line so `repair-pass.py decide` "
-        "can bind the decision to these exact bytes.\n"
+        "decision record with the following marker as its first nonblank line, and — on its own line — the "
+        f"single decision you chose as `{DECISION_MARKER}: <one of permitted>`, so `repair-pass.py decide` "
+        "can bind both the exact bytes AND the exact chosen decision. `decide` refuses if the "
+        f"`{DECISION_MARKER}:` line is absent, appears more than once, names a decision that is not "
+        "permitted, or disagrees with its `--decision` argument.\n"
         f"{marker}\n\n"
     ).encode("utf-8") + payload_bytes
 
@@ -875,6 +886,28 @@ def validate_decision_bundle(path: Path, header: dict, row: dict, pr: str, recor
         fail(f"decision record {record} is not bound to this bundle; first nonblank line must be `{marker}`")
 
 
+def record_decision(record_text: str, record: Path, allowed: "tuple[str, ...]") -> str:
+    """The ONE decision the record itself DECLARES — the reassessment's machine-readable output.
+
+    `validate_decision_bundle` binds the record to the exact prompt bytes it was decided against; this reads
+    the enum it CHOSE. The record is the sole carrier of the decision across the fresh-heartbeat context
+    boundary, so without a field `decide` can read, the chosen decision travels only as prose and the ledger
+    could record a terminal `abort` while the record concluded `demote`. Fail CLOSED: exactly one
+    `DECISION: <enum>` line, naming exactly one CURRENTLY-PERMITTED member.
+    """
+    declared = [match.group(1) for line in record_text.splitlines()
+                if (match := DECISION_LINE_RE.match(line))]
+    if len(declared) != 1:
+        fail(f"decision record {record} must declare exactly one `{DECISION_MARKER}: <enum>` line naming the "
+             f"chosen decision (found {len(declared)}). The record is the sole carrier of the decision across "
+             f"the fresh-heartbeat boundary, so decide reads the decision from that field, not from prose.")
+    chosen = declared[0]
+    if chosen not in allowed:
+        fail(f"decision record {record} declares `{DECISION_MARKER}: {chosen}`, which is not a permitted "
+             f"decision here. Permitted: {', '.join(allowed)}.")
+    return chosen
+
+
 def cmd_decide(path: Path, args) -> int:
     """Record the reassessment's decision. The ONLY sanctioned way — and it REFUSES more than it accepts."""
     pr = str(args.pr)
@@ -894,7 +927,8 @@ def cmd_decide(path: Path, args) -> int:
     # THE DECISION RECORD MUST EXIST BEFORE IT IS RECORDED. A decision whose reasoning is only in a dead
     # agent's context is a decision nobody can audit — and every heartbeat is a fresh agent instance.
     record = Path(args.record)
-    if not record.exists() or not read_utf8(record, "reassessment decision record", allow_empty=True).strip():
+    record_text = read_utf8(record, "reassessment decision record", allow_empty=True) if record.exists() else ""
+    if not record.exists() or not record_text.strip():
         fail(f"--record {record} does not exist or is empty. Write the reassessment's reasoning — the "
              f"round-by-round history it saw, the decision, and WHY — before recording the decision. A "
              f"decision with no record on disk cannot be audited by the next heartbeat, which remembers nothing.")
@@ -912,6 +946,16 @@ def cmd_decide(path: Path, args) -> int:
              f"campaign did not open this PR. It may be the user's or a third party's, and reshaping "
              f"someone else's work uninvited is not a repair. Permitted here: {', '.join(allowed)}. "
              f"(Targeted per-finding fixes are unaffected — this refusal is about the WHOLESALE rewrite.)")
+
+    # The record is the decision's sole carrier across the fresh-heartbeat boundary; the enum it DECLARES
+    # must equal the enum being recorded, or the ledger would say one thing while the audit artifact says
+    # another. `record_decision` has already proven the declared enum is exactly one permitted member.
+    declared = record_decision(record_text, record, allowed)
+    if declared != args.decision:
+        fail(f"decision record {record} declares `{DECISION_MARKER}: {declared}` but --decision is "
+             f"`{args.decision}`. The record is the audit artifact the next heartbeat reads, so decide "
+             f"refuses to record a decision the record does not name — recording `{args.decision}` here "
+             f"would let the ledger say one thing while the record says another.")
 
     row["repair_count"] = str(L.counter(row, "repair_count") + 1)
     row["repair_decision"] = f"{args.decision}@{now()}"
@@ -1031,7 +1075,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="; ".join(f"{k}: {v.split('.')[0]}" for k, v in DECISIONS.items()))
     d.add_argument("--record", required=True,
                    help="path to the decision record — the history the pass saw, the decision, and why. "
-                        "Refused if it does not exist or is empty")
+                        "Refused if it does not exist or is empty, or if its `DECISION: <enum>` line is "
+                        "absent, duplicated, not permitted, or disagrees with --decision")
     d.add_argument("--bundle-manifest", required=True,
                    help="manifest emitted by `bundle`; the record's first nonblank line must bind its hash")
 

@@ -75,11 +75,16 @@ def decision_repo(tmp: Path) -> "tuple[Path, str]":
     return repo, result.stdout.decode().strip()
 
 
-def setup(tmp: Path, name: str = "state.jsonl", **row) -> "tuple[Path, Path]":
-    """A ledger holding one PR at a cap, plus a written decision record.
+def setup(tmp: Path, name: str = "state.jsonl", *, decision: str = "demote", **row) -> "tuple[Path, Path]":
+    """A ledger holding one PR at a cap, plus a written decision record declaring `decision`.
 
     Written RAW (never through `dump()`), because `repair_count` and `review_rounds` have no CLI door —
     that is the point of them — so a fixture that needs a PR mid-budget must place it there directly.
+
+    `decision` is the enum the record's `DECISION:` line declares — decide requires it to equal `--decision`,
+    so a fixture whose decide call succeeds must set it to the decision it will pass. A fixture that expects
+    refusal BEFORE the decision-field check (wrong status, spent budget, external rewrite, bad bundle) may
+    leave the default: those never reach the `DECISION:` comparison.
     """
     path = tmp / name
     repo, head_sha = decision_repo(tmp)
@@ -91,7 +96,7 @@ def setup(tmp: Path, name: str = "state.jsonl", **row) -> "tuple[Path, Path]":
         + json.dumps({"type": "row", **fields}) + "\n"
     )
     record = tmp / f"repair-{name}.md"
-    bind_record(path, record, fields["pr"], fields["head_sha"], repo)
+    bind_record(path, record, fields["pr"], fields["head_sha"], repo, decision=decision)
     return path, record
 
 
@@ -100,8 +105,12 @@ def bundle_for(record: Path) -> Path:
     return R.bundle_manifest_path(prompt)
 
 
-def bind_record(ledger: Path, record: Path, pr: str, head_sha: str, worktree: Path) -> Path:
-    """Create the smallest valid prepared-bundle witness for decision-door fixtures."""
+def bind_record(ledger: Path, record: Path, pr: str, head_sha: str, worktree: Path,
+                decision: str = "demote") -> Path:
+    """Create the smallest valid prepared-bundle witness for decision-door fixtures.
+
+    The record declares its chosen decision in the machine-readable `DECISION: <decision>` line decide reads.
+    """
     _, rows = L.load(ledger)
     row = L.find_row(rows, pr)
     check(row is not None, f"fixture ledger has no row for pr {pr}")
@@ -144,7 +153,8 @@ def bind_record(ledger: Path, record: Path, pr: str, head_sha: str, worktree: Pa
         "rounds": [],
     }))
     record.write_text(
-        f"{marker}\n\n# reassessment\n\n21 rounds, the diff tripled, the findings left the purpose.\n")
+        f"{marker}\n\nDECISION: {decision}\n\n# reassessment\n\n"
+        f"21 rounds, the diff tripled, the findings left the purpose.\n")
     return manifest
 
 
@@ -174,7 +184,7 @@ def t_external_pr_is_never_rewritten(tmp: Path) -> None:
             f"it MUST be refused on an external PR, and this fixture must know about it")
 
     for decision in R.REWRITES_CONTENT:
-        path, record = setup(tmp, f"ext-{decision}.jsonl", pr_origin="external")
+        path, record = setup(tmp, f"ext-{decision}.jsonl", pr_origin="external", decision=decision)
         code, _, err = decide(path, record, decision)
         check(code == 1, f"[{decision}] an EXTERNAL PR was rewritten by an autonomous repair (exit {code})")
         check("did not open this PR" in err, f"[{decision}] refused for the wrong reason: {err!r}")
@@ -182,16 +192,20 @@ def t_external_pr_is_never_rewritten(tmp: Path) -> None:
         check(field(path, "repair_decision") == "-", f"[{decision}] a REFUSED decision was recorded")
 
     for decision in R.EXTERNAL_PERMITTED:
-        path, record = setup(tmp, f"ok-{decision}.jsonl", pr_origin="external")
+        path, record = setup(tmp, f"ok-{decision}.jsonl", pr_origin="external", decision=decision)
         code, _, err = decide(path, record, decision)
         check(code == 0, f"[{decision}] a PERMITTED repair on an external PR was refused: {err!r}")
         check(field(path, "repair_decision").startswith(decision), "the decision was not recorded")
 
 
 def t_gauntlet_pr_takes_every_repair(tmp: Path) -> None:
-    """A PR campaign itself opened may take ALL FIVE decisions — the guardrail is about OWNERSHIP, not fear."""
+    """A PR campaign itself opened may take ALL FIVE decisions — the guardrail is about OWNERSHIP, not fear.
+
+    Each fixture record DECLARES the decision it will pass, because decide now requires the record's
+    `DECISION:` line to equal `--decision`; a generic record shared across every enum would no longer bind.
+    """
     for decision in R.DECISIONS:
-        path, record = setup(tmp, f"own-{decision}.jsonl", pr_origin="gauntlet")
+        path, record = setup(tmp, f"own-{decision}.jsonl", pr_origin="gauntlet", decision=decision)
         code, _, err = decide(path, record, decision)
         check(code == 0, f"[{decision}] refused on a campaign-authored PR: {err!r}")
         check(field(path, "repair_decision").startswith(decision), f"[{decision}] not recorded")
@@ -234,7 +248,8 @@ def t_repair_budget_is_spent(tmp: Path) -> None:
         check(code == 1, f"[{decision}] a THIRD repair was permitted (exit {code}) — the repair loops")
         check("spent its repair budget" in err, f"[{decision}] refused for the wrong reason: {err!r}")
 
-    path, record = setup(tmp, "spent-abort.jsonl", pr_origin="gauntlet", repair_count=str(L.REPAIR_CAP))
+    path, record = setup(tmp, "spent-abort.jsonl", pr_origin="gauntlet", repair_count=str(L.REPAIR_CAP),
+                         decision="abort")
     code, _, err = decide(path, record, "abort")
     check(code == 0, f"ABORT must always remain available: {err!r}")
     check(field(path, "status") == "aborted", f"abort left the row {field(path, 'status')!r}")
@@ -251,7 +266,7 @@ def t_abort_is_terminal_and_leaves_the_pr_open(tmp: Path) -> None:
     Campaign never closes an adopted PR — it is the user's. The abort PROCEDURE is owned by
     `bailout-and-final-report.md`; this decision routes into it and does not invent a second one.
     """
-    path, record = setup(tmp, "abort.jsonl", pr_origin="gauntlet")
+    path, record = setup(tmp, "abort.jsonl", pr_origin="gauntlet", decision="abort")
     code, _, err = decide(path, record, "abort")
     check(code == 0, f"abort exited {code}: {err!r}")
     check(field(path, "status") == "aborted", "abort is terminal")
@@ -292,6 +307,43 @@ def t_a_decision_needs_a_record(tmp: Path) -> None:
     check(field(path, "repair_count") == "0", "a refused decision spent the budget anyway")
 
 
+def t_record_decision_must_match_the_argument(tmp: Path) -> None:
+    """The record's DECLARED decision must equal `--decision`, and the `DECISION:` field must be well-formed.
+
+    The record survives the fresh-heartbeat context boundary; `--decision` does not. If decide trusted
+    `--decision` alone, a record concluding DEMOTE could be recorded as a terminal, irreversible ABORT and
+    the ledger would silently disagree with the audit artifact. ABORT is the sharp case — it flips the row to
+    `aborted` and the driver drops the labels — so a mismatch must mutate NOTHING. This also pins the
+    fail-closed shape of the field itself: absent, duplicated, and not-permitted are each refused.
+    """
+    # gauntlet + budget unspent, so BOTH demote and abort are permitted: the refusal is the DECISION
+    # mismatch itself, not the ownership guardrail or the spent-budget rule.
+    path, record = setup(tmp, "mismatch.jsonl", pr_origin="gauntlet", decision="demote")
+    code, _, err = decide(path, record, "abort")
+    check(code == 1, f"a record declaring DEMOTE was recorded as ABORT (exit {code})")
+    check("declares" in err and "abort" in err, f"refused for the wrong reason: {err!r}")
+    check(field(path, "repair_count") == "0", "a refused mismatch spent the repair budget")
+    check(field(path, "repair_decision") == "-", "a refused mismatch recorded a decision")
+    check(field(path, "status") == L.REPAIR_STATUS,
+          f"a refused mismatch flipped the row to {field(path, 'status')!r} — the abort branch ran anyway")
+
+    marker_line = record.read_text().splitlines()[0]
+
+    def decide_record(text: str) -> "tuple[int, str, str]":
+        other = tmp / f"variant-{abs(hash(text))}.md"
+        other.write_text(text)
+        return R.run(["--file", str(path), "decide", "--pr", "1", "--decision", "demote",
+                      "--record", str(other), "--bundle-manifest", str(bundle_for(record))])
+
+    code, _, err = decide_record(f"{marker_line}\n\nno machine-readable decision line here at all.\n")
+    check(code == 1 and "exactly one" in err, f"a record with NO DECISION line was accepted: {err!r}")
+    code, _, err = decide_record(f"{marker_line}\n\nDECISION: demote\nDECISION: demote\n")
+    check(code == 1 and "exactly one" in err, f"a record with TWO DECISION lines was accepted: {err!r}")
+    code, _, err = decide_record(f"{marker_line}\n\nDECISION: teleport\n")
+    check(code == 1 and "not a permitted decision" in err, f"an unknown DECISION was accepted: {err!r}")
+    check(field(path, "repair_count") == "0", "a malformed DECISION field spent the repair budget")
+
+
 def t_decision_enum_is_closed(tmp: Path) -> None:
     """The enum is CLOSED — argparse refuses anything else, and the five have a definition each.
 
@@ -315,7 +367,7 @@ def t_the_repair_dispatch_gate(tmp: Path) -> None:
     This is the hole the guard would otherwise have: a driver could call its next targeted fix "the repair",
     dispatch it, and go on whacking moles under a new name. The decision must exist first.
     """
-    path, record = setup(tmp, "gate.jsonl", pr_origin="gauntlet")
+    path, record = setup(tmp, "gate.jsonl", pr_origin="gauntlet", decision="rescope")
 
     code, _, err = ledger_cli(["--file", str(path), "dispatch-check", "--pr", "1", "--action", "repair"])
     check(code == L.EXIT_STOP, f"a repair was dispatchable with NO decision recorded (exit {code})")
@@ -818,7 +870,8 @@ def t_bundle_identity_ignores_liveness_but_not_decision_fields(tmp: Path) -> Non
 
     # decide still ACCEPTS the bundle after the liveness drift — its staleness check reads only the projection.
     record = case["rundir"] / "repair-1-1.md"
-    record.write_text(f"{R.BUNDLE_MARKER}: {bundle_sha}\n\nDEMOTE — the finding is outside the PR's purpose.\n")
+    record.write_text(f"{R.BUNDLE_MARKER}: {bundle_sha}\n\nDECISION: demote\n\n"
+                      f"The finding is outside the PR's purpose.\n")
     code, _, err = R.run(["--file", str(case["ledger"]), "decide", "--pr", "1", "--decision", "demote",
                           "--record", str(record), "--bundle-manifest", str(manifest_path)])
     check(code == 0, f"decide refused a valid bundle after a mere liveness write: {err!r}")
@@ -836,7 +889,7 @@ def t_bundle_identity_ignores_liveness_but_not_decision_fields(tmp: Path) -> Non
     row["ns_streak"] = str(int(row["ns_streak"]) + 1)  # a decision field moved after the bundle was built
     drift["ledger"].write_text(header_line + "\n" + json.dumps(row) + "\n")
     drift_record = drift["rundir"] / "repair-1-1.md"
-    drift_record.write_text(f"{R.BUNDLE_MARKER}: {drift_sha}\n\nDEMOTE.\n")
+    drift_record.write_text(f"{R.BUNDLE_MARKER}: {drift_sha}\n\nDECISION: demote\n\nStale-bundle demote.\n")
     code, _, err = R.run(["--file", str(drift["ledger"]), "decide", "--pr", "1", "--decision", "demote",
                           "--record", str(drift_record),
                           "--bundle-manifest", str(R.bundle_manifest_path(drift_output))])
@@ -919,13 +972,14 @@ def t_decide_is_bound_to_prepared_bundle(tmp: Path) -> None:
     check(code == 0, f"bundle failed: {err!r}")
     manifest = json.loads(out)
     record = case["rundir"] / "repair-1-1.md"
-    record.write_text("BUNDLE-SHA256: " + "0" * 64 + "\n\nDEMOTE because the finding is outside purpose.\n")
+    record.write_text("BUNDLE-SHA256: " + "0" * 64 + "\n\nDECISION: demote\n\nThe finding is outside purpose.\n")
     argv = ["--file", str(case["ledger"]), "decide", "--pr", "1", "--decision", "demote",
             "--record", str(record), "--bundle-manifest", manifest["manifest_path"]]
     code, _, err = R.run(argv)
     check(code == 1 and "not bound to this bundle" in err, f"wrong bundle hash was accepted: {err!r}")
     check(field(case["ledger"], "repair_count") == "0", "wrong bundle hash spent the repair budget")
-    record.write_text(f"{R.BUNDLE_MARKER}: {manifest['bundle_sha256']}\n\nDEMOTE because it is outside purpose.\n")
+    record.write_text(f"{R.BUNDLE_MARKER}: {manifest['bundle_sha256']}\n\nDECISION: demote\n\n"
+                      f"It is outside purpose.\n")
 
     manifest_path = Path(manifest["manifest_path"])
     manifest_doc = json.loads(manifest_path.read_text())
@@ -955,7 +1009,7 @@ def t_decide_is_bound_to_prepared_bundle(tmp: Path) -> None:
     git(moved["repo"], "commit", "-q", "-m", "move after bundle")
     moved_record = moved["rundir"] / "repair-1-1.md"
     moved_record.write_text(
-        f"{R.BUNDLE_MARKER}: {moved_manifest['bundle_sha256']}\n\nDEMOTE based on the old head.\n")
+        f"{R.BUNDLE_MARKER}: {moved_manifest['bundle_sha256']}\n\nDECISION: demote\n\nBased on the old head.\n")
     code, _, err = R.run([
         "--file", str(moved["ledger"]), "decide", "--pr", "1", "--decision", "demote",
         "--record", str(moved_record), "--bundle-manifest", moved_manifest["manifest_path"],
@@ -1016,6 +1070,7 @@ CASES = [
     ("abort-leaves-it-open", "abort is terminal, leaves the PR OPEN, and reuses the existing procedure", t_abort_is_terminal_and_leaves_the_pr_open),
     ("only-a-capped-pr", "a PR that never hit a cap cannot be reassessed", t_only_a_capped_pr_may_be_reassessed),
     ("decision-needs-record", "no decision without its reasoning on disk", t_a_decision_needs_a_record),
+    ("record-decision-binds", "the record's DECISION field must be well-formed and equal --decision", t_record_decision_must_match_the_argument),
     ("enum-is-closed", "the decision enum is closed, and each member is defined", t_decision_enum_is_closed),
     ("repair-dispatch-gate", "a repair needs a recorded decision; ordinary work stays frozen", t_the_repair_dispatch_gate),
     ("bundle-order-active", "bundle orders rounds numerically and selects only the active relaunch", t_bundle_orders_rounds_and_selects_active_attempt),
