@@ -197,9 +197,8 @@ flowchart TD
     Q --> T[reset gate - verdicts and CI are SHA-pinned,<br/>re-triage tier on the new SHA]
     S --> T
     T --> M
-    R -- green --> U[merge: serialized, auto, squash<br/>no --delete-branch; repo auto-delete setting governs remote branch]
-    U --> U2[sync local base branch to remote ff-only]
-    U2 --> V[cleanup campaign-created worktree/branch only<br/>reused checkouts + branches left in place, mark merged]
+    R -- green --> U[merge.py run: resumable merge + base sync<br/>owned local cleanup + terminal ledger write]
+    U --> V[confirmed merged; reused local resources left in place<br/>no --delete-branch]
     V --> W{all PRs merged or aborted?}
     W -- no --> M
     W -- yes --> X[write carryover ledger + final report] --> X2([done])

@@ -203,7 +203,8 @@ Header field notes (the header fields above; per-row fields follow):
   enabled, GitHub deletes the head branch on merge; otherwise it stays. Either way it is not campaign's
   action. **Local cleanup** is governed solely by the per-PR flags: the worktree is removed only when
   `worktree_owned = yes` and the local branch deleted only when `branch_owned = yes`; a reused worktree,
-  the root/main checkout, and a reused local branch are **never** removed (see "Stage 3 — Merge").
+  the root/main checkout, and a reused local branch are **never** removed. `merge.py run` owns the
+  resumable enforcement; see Stage 3, **"Resumable merge execution"**.
 
 - `id` — `pr<N>` (the adopted PR number). `slug` — slugified PR title. Together they identify the row;
   re-adoption looks up by `pr`/`id` and refreshes in place, never appends a duplicate.

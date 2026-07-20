@@ -123,6 +123,8 @@ jobs:
             plugins/gauntlet/skills/campaign/scripts/worker-prompt-test.py
             plugins/gauntlet/skills/campaign/scripts/merge-check.py
             plugins/gauntlet/skills/campaign/scripts/merge-check-test.py
+            plugins/gauntlet/skills/campaign/scripts/merge.py
+            plugins/gauntlet/skills/campaign/scripts/merge-test.py
           )
           npx --yes pyright@1.1.410 --outputjson "${files[@]}" | tee pyright.json
           analyzed=$(jq '.summary.filesAnalyzed' pyright.json)
@@ -340,6 +342,11 @@ jobs:
       # no doc table to drift and no doc-check here. It NEVER performs the merge; it only decides.
       - name: Merge-check contract (the code-owned mapping, pinned by fixtures)
         run: python3 plugins/gauntlet/skills/campaign/scripts/merge-check.py self-test
+
+      # The executor imports merge-check rather than redefining readiness. Its mocked sibling fixtures pin
+      # every restart phase and ownership combination without contacting GitHub or merging a real PR.
+      - name: Resumable merge execution contract
+        run: python3 plugins/gauntlet/skills/campaign/scripts/merge.py self-test
 
       # The status-label reconciler's contract, executed. This tool is the ONE way the gate's label swap
       # (`gauntlet-accepted` <-> `gauntlet-reviewing`) is applied, so no driver hand-runs `gh pr edit` at
