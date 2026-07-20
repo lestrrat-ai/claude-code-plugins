@@ -260,6 +260,54 @@ def t_missing_or_wrong_intent_and_bad_plan_create_nothing() -> None:
         check(not list(Path(args.run_dir).glob("*.prompt.txt")), "malformed plan created a prompt")
 
 
+def t_overlapping_run_dir_and_worktree_create_nothing() -> None:
+    """An identical or either-way-nested run-dir/worktree pair refuses and materializes nothing."""
+
+    def _no_artifacts(rundir: Path) -> None:
+        check(
+            not list(rundir.glob("*.prompt.txt")) and not list(rundir.glob("*.progress.jsonl")),
+            "an overlapping run-dir/worktree pair created a launch artifact",
+        )
+
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw))
+        args.worktree = args.run_dir
+        _refused(args, "different directories")
+        _no_artifacts(Path(args.run_dir))
+
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw))
+        rundir = Path(args.run_dir)
+        nested = rundir / "nested-worktree"
+        nested.mkdir()
+        args.worktree = os.fspath(nested)
+        _refused(args, "nested inside --run-dir")
+        _no_artifacts(rundir)
+
+    with tempfile.TemporaryDirectory() as raw:
+        worktree = Path(raw) / "candidate worktree"
+        worktree.mkdir()
+        rundir = worktree / "nested-run"
+        rundir.mkdir()
+        intent_path = _write_inputs(rundir)
+        args = SimpleNamespace(
+            cmd="prepare",
+            run_dir=os.fspath(rundir),
+            pr="41",
+            review_pass="2",
+            launch_attempt="1",
+            worktree=os.fspath(worktree),
+            base="main",
+            route="native",
+            report_producer="native-worker-write",
+            head_sha=SHA,
+            dispatched_at=STAMP,
+            intent_file=os.fspath(intent_path),
+        )
+        _refused(args, "nested inside --worktree")
+        _no_artifacts(rundir)
+
+
 def t_every_existing_attempt_artifact_refuses_without_overwrite() -> None:
     for name in ("prompt", "progress", "findings", "report"):
         with tempfile.TemporaryDirectory() as raw:
@@ -445,6 +493,7 @@ CASES = [
     ("invalid-identifiers", "invalid identity fields create no artifacts", t_invalid_identifiers_create_nothing),
     ("invalid-utf8-path", "non-UTF-8 filesystem bytes produce a controlled refusal", t_invalid_utf8_filesystem_path_is_controlled_refusal),
     ("required-inputs", "missing/wrong intent and malformed plan create nothing", t_missing_or_wrong_intent_and_bad_plan_create_nothing),
+    ("distinct-run-dir-worktree", "identical or nested run-dir/worktree refuses and writes nothing", t_overlapping_run_dir_and_worktree_create_nothing),
     ("fresh-attempt", "every existing attempt artifact refuses without overwrite", t_every_existing_attempt_artifact_refuses_without_overwrite),
     ("atomic-rollback", "second-file failure rolls back the first file", t_second_install_failure_rolls_back_first_file),
     ("crash-recovery", "the exact inert prompt-only crash state is recoverable", t_prompt_only_crash_state_is_recoverable),

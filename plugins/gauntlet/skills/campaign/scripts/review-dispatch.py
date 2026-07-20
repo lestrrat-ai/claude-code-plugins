@@ -75,6 +75,33 @@ def _absolute_directory(path: Path, field: str) -> None:
         refuse(f"--{field} is not an existing directory: {path}")
 
 
+def _reject_overlapping_dirs(rundir: Path, worktree: Path) -> None:
+    """Refuse a run-dir/worktree pair that is the same directory or nests either way.
+
+    ``prepare`` derives every artifact from ``run-dir`` and writes into it, while ``worktree`` is
+    the candidate checkout the review must not mutate. When the two overlap, the materializer would
+    write launch artifacts inside the supplied worktree. The campaign driver never produces such a
+    pair (``run-dir`` is a ``.gauntlet/...`` path, ``worktree`` a ``.worktrees/<ref>`` path, so they
+    are structurally distinct), so this is cheap defense-in-depth for the tool's reject-malformed-
+    paths posture: exactly these three refusals, no path-isolation machinery beyond them.
+    """
+    real_rundir = Path(os.path.realpath(rundir))
+    real_worktree = Path(os.path.realpath(worktree))
+    if real_rundir == real_worktree:
+        refuse(
+            "--run-dir and --worktree must be different directories; both resolve to "
+            f"{real_rundir}"
+        )
+    if real_worktree in real_rundir.parents:
+        refuse(
+            f"--run-dir must not be nested inside --worktree; {real_rundir} is inside {real_worktree}"
+        )
+    if real_rundir in real_worktree.parents:
+        refuse(
+            f"--worktree must not be nested inside --run-dir; {real_worktree} is inside {real_rundir}"
+        )
+
+
 def attempt_paths(rundir: Path, pr: str, review_pass: str, launch_attempt: str) -> "dict[str, Path]":
     """Derive the complete artifact set from one validated attempt identity."""
     _validate_id("pr", pr)
@@ -260,6 +287,7 @@ def prepare(args) -> dict:
     intent_path = Path(args.intent_file)
     _absolute_directory(rundir, "run-dir")
     _absolute_directory(worktree, "worktree")
+    _reject_overlapping_dirs(rundir, worktree)
 
     _validate_id("pr", args.pr)
     _validate_id("pass", args.review_pass)

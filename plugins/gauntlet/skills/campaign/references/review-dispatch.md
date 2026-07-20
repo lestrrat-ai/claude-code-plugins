@@ -31,6 +31,9 @@ Inputs have these owners:
 - `route`, `report_producer`, and `launch_attempt` come from `runtime-adapter.md`, **Review preparation
   mapping**. `prepare` never selects, probes, or changes them.
 - `review_root`, `worktree`, and `base` come from the invocation's typed `RepositoryContext` and ledger.
+  `review_root` and `worktree` must be different directories with neither nested inside the other; the
+  command refuses an identical or either-way-nested pair before staging any artifact, so preparation never
+  writes launch files into the candidate worktree. This is a fail-closed input check, not an OS boundary.
 - `pr`, `review_pass`, `head_sha`, and `dispatched_at` name this launch attempt.
 - `intent_file` is the absolute derived `<rundir>/intent-<pr>.md` path. The command refuses another path.
 
