@@ -26,8 +26,10 @@ block. This file owns the dispatch procedure, not a second copy of prompt text.
 
 - **`proceed`** → the base is current; **dispatch the fix**.
 - **`rebase-first`** → the branch conflicts with its base or lacks the refreshed base; do **NOT** dispatch.
-  **REBASE the PR onto `<base>`** (per `stage-2-review-gate.md`'s judgment-path rebase — conflict-resolving or diff-changed), then **re-run the
-  pre-flight**.
+  **REBASE the PR onto `<base>`** through `stage-2-review-gate.md`'s base-currency handling, which runs
+  `clean-rebase.py` FIRST: a clean base-only rebase (exit 0) PRESERVES the verdicts and label, and only its
+  **exit 3** — conflict OR diff-changed — falls back to the JUDGMENT path that resets the gate and re-mirrors
+  the label. Then **re-run the pre-flight**.
 - **`recheck`** → mergeability is not computed yet, the view carried an unknown value, or base ancestry could
   not be verified; do **NOT** dispatch and do **NOT** rebase — **re-poll**, then **re-run the pre-flight**.
 
