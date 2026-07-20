@@ -97,12 +97,11 @@ LOCAL state against that same PR / its head; the PR itself is left in place.
 
   What replaces it is a **counter with a cap**, on disk, evaluated by the tool that records the verdict:
   `ledger.py verdict` bumps `review_rounds` / `ns_streak`, and at a cap it sets `status = repairing` and
-  **exits non-zero**. The driver then hands the PR's **whole history at once** to a context-isolated
-  reassessment pass, which returns ONE decision — **RESCOPE / REPAIR-INTENT / DEMOTE / ROOT-CAUSE /
-  ABORT** — and the driver executes it **without asking the user**. **A cap is a MODE SWITCH, not a
-  doorbell.** The root-cause pass is still exactly the right answer when the findings share one cause —
-  it is now **one of five decisions an agent that can see all the rounds gets to choose between**, rather
-  than a rule nothing could trigger.
+  **exits non-zero**. The driver runs `repair-pass.md`, **"Build the complete reassessment bundle"**, and
+  dispatches its exact prompt to a context-isolated reassessment worker. The driver executes the returned
+  bundle-bound decision **without asking the user**. **A cap is a MODE SWITCH, not a doorbell.** The
+  root-cause pass remains available through the closed decision set rather than through an unevaluable
+  history rule.
 
   **ABORT is the only decision that ends the PR, and it lands on the procedure below** (leave the PR OPEN,
   drop this run's labels, write `abort-<id>.md`) — reused, not reinvented. A **second failed repair**

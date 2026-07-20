@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fixtures for `repair-pass.py` — the reassessment decision, the ownership guardrail, and the repair cap.
+"""Fixtures for `repair-pass.py` — the reassessment bundle, decision, ownership guardrail, and repair cap.
 
 They live in a SIBLING file, and `repair-pass.py self-test` FAILS LOUDLY if it cannot load them.
 
@@ -11,6 +11,8 @@ rewrite a PR belonging to someone else, and repair forever.
 from __future__ import annotations
 
 import json
+import hashlib
+import subprocess
 import sys
 from pathlib import Path
 
@@ -43,6 +45,33 @@ def ledger_cli(argv: "list[str]") -> "tuple[int, str, str]":
     return capture_cli(L.main, argv)
 
 
+def decision_repo(tmp: Path) -> "tuple[Path, str]":
+    """One clean Git worktree shared by a fixture's decision-door ledgers."""
+    repo = tmp / "decision-worktree"
+    if not repo.exists():
+        repo.mkdir()
+        commands = [
+            ["git", "-C", str(repo), "init", "-q", "-b", "main"],
+            ["git", "-C", str(repo), "config", "user.name", "Gauntlet Test"],
+            ["git", "-C", str(repo), "config", "user.email", "gauntlet@example.invalid"],
+        ]
+        for argv in commands:
+            result = subprocess.run(argv, capture_output=True, check=False)
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr.decode(errors="replace"))
+        (repo / "base.txt").write_text("base\n")
+        for argv in (["git", "-C", str(repo), "add", "base.txt"],
+                     ["git", "-C", str(repo), "commit", "-q", "-m", "base"]):
+            result = subprocess.run(argv, capture_output=True, check=False)
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr.decode(errors="replace"))
+    result = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                            capture_output=True, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.decode(errors="replace"))
+    return repo, result.stdout.decode().strip()
+
+
 def setup(tmp: Path, name: str = "state.jsonl", **row) -> "tuple[Path, Path]":
     """A ledger holding one PR at a cap, plus a written decision record.
 
@@ -50,19 +79,71 @@ def setup(tmp: Path, name: str = "state.jsonl", **row) -> "tuple[Path, Path]":
     that is the point of them — so a fixture that needs a PR mid-budget must place it there directly.
     """
     path = tmp / name
-    fields = {**L.ROW_DEFAULTS, "pr": "1", "head_sha": SHA, "status": L.REPAIR_STATUS,
+    repo, head_sha = decision_repo(tmp)
+    fields = {**L.ROW_DEFAULTS, "pr": "1", "head_sha": head_sha, "worktree": str(repo.resolve()),
+              "status": L.REPAIR_STATUS,
               "review_rounds": str(L.ROUND_CAP), "ns_streak": "1", **row}
     path.write_text(
-        json.dumps({"type": "header", **L.HEADER_DEFAULTS}) + "\n"
+        json.dumps({"type": "header", **L.HEADER_DEFAULTS, "base_branch": "main"}) + "\n"
         + json.dumps({"type": "row", **fields}) + "\n"
     )
     record = tmp / f"repair-{name}.md"
-    record.write_text("# reassessment\n\n21 rounds, the diff tripled, the findings left the purpose.\n")
+    bind_record(path, record, fields["pr"], fields["head_sha"], repo)
     return path, record
 
 
+def bundle_for(record: Path) -> Path:
+    prompt = record.with_name(record.name + ".prompt.txt")
+    return R.bundle_manifest_path(prompt)
+
+
+def bind_record(ledger: Path, record: Path, pr: str, head_sha: str, worktree: Path) -> Path:
+    """Create the smallest valid prepared-bundle witness for decision-door fixtures."""
+    _, rows = L.load(ledger)
+    row = L.find_row(rows, pr)
+    check(row is not None, f"fixture ledger has no row for pr {pr}")
+    assert row is not None
+    permitted = R.permitted_record(row)
+    payload = R.canonical_json({
+        "schema": R.BUNDLE_SCHEMA,
+        "pr": pr,
+        "head_sha": head_sha,
+        "base_ref": "origin/main",
+        "ledger": {"path": str(ledger.resolve()), "row": row},
+        "intent": {},
+        "rounds": [],
+        "diff_growth": [],
+        "current_diff": "",
+        "permitted": permitted,
+        "decision_definitions": {name: R.DECISIONS[name] for name in permitted["permitted"]},
+    }).encode()
+    bundle_hash = hashlib.sha256(payload).hexdigest()
+    marker = f"{R.BUNDLE_MARKER}: {bundle_hash}"
+    prompt = record.with_name(record.name + ".prompt.txt")
+    prompt_bytes = f"REASSESSMENT PASS\n{marker}\n\n".encode() + payload
+    prompt.write_bytes(prompt_bytes)
+    manifest = bundle_for(record)
+    manifest.write_text(R.canonical_json({
+        "schema": R.MANIFEST_SCHEMA,
+        "bundle_sha256": bundle_hash,
+        "prompt_sha256": hashlib.sha256(prompt_bytes).hexdigest(),
+        "prompt_path": str(prompt),
+        "ledger_path": str(ledger.resolve()),
+        "run_dir": str(record.parent.resolve()),
+        "worktree": str(worktree.resolve()),
+        "pr": pr,
+        "head_sha": head_sha,
+        "base_ref": "origin/main",
+        "rounds": [],
+    }))
+    record.write_text(
+        f"{marker}\n\n# reassessment\n\n21 rounds, the diff tripled, the findings left the purpose.\n")
+    return manifest
+
+
 def decide(path: Path, record: Path, decision: str, pr: str = "1") -> "tuple[int, str, str]":
-    return R.run(["--file", str(path), "decide", "--pr", pr, "--decision", decision, "--record", str(record)])
+    return R.run(["--file", str(path), "decide", "--pr", pr, "--decision", decision,
+                  "--record", str(record), "--bundle-manifest", str(bundle_for(record))])
 
 
 def field(path: Path, name: str, pr: str = "1") -> str:
@@ -116,13 +197,15 @@ def t_unknown_origin_is_treated_as_external(tmp: Path) -> None:
     a field was never set. "I do not know who wrote this" must never resolve to "I did".
     """
     path = tmp / "unset.jsonl"
+    repo, head_sha = decision_repo(tmp)
     path.write_text(
-        json.dumps({"type": "header", **L.HEADER_DEFAULTS}) + "\n"
+        json.dumps({"type": "header", **L.HEADER_DEFAULTS, "base_branch": "main"}) + "\n"
         # A row written BEFORE `pr_origin` existed — no such key at all. It must read back `external`.
-        + json.dumps({"type": "row", "pr": "1", "head_sha": SHA, "status": L.REPAIR_STATUS}) + "\n"
+        + json.dumps({"type": "row", "pr": "1", "head_sha": head_sha, "worktree": str(repo.resolve()),
+                      "status": L.REPAIR_STATUS}) + "\n"
     )
     record = tmp / "r.md"
-    record.write_text("reassessment\n")
+    bind_record(path, record, "1", head_sha, repo)
     check(field(path, "pr_origin") == "external", "an unset pr_origin must read back as external")
     code, _, err = decide(path, record, "rescope")
     check(code == 1, f"a PR of UNKNOWN origin was rewritten (exit {code})")
@@ -187,17 +270,17 @@ def t_a_decision_needs_a_record(tmp: Path) -> None:
     the context of an agent that has already exited is a decision the next heartbeat — and the user — cannot
     audit, and it would be the one artifact of the mechanism that has no evidence behind it.
     """
-    path, _ = setup(tmp, "norec.jsonl", pr_origin="gauntlet")
+    path, record = setup(tmp, "norec.jsonl", pr_origin="gauntlet")
     missing = path.parent / "nope.md"
     code, _, err = R.run(["--file", str(path), "decide", "--pr", "1", "--decision", "demote",
-                          "--record", str(missing)])
+                          "--record", str(missing), "--bundle-manifest", str(bundle_for(record))])
     check(code == 1, f"a decision with NO record was accepted (exit {code})")
     check("does not exist or is empty" in err, f"wrong reason: {err!r}")
 
     empty = path.parent / "empty.md"
     empty.write_text("   \n\n")
     code, _, err = R.run(["--file", str(path), "decide", "--pr", "1", "--decision", "demote",
-                          "--record", str(empty)])
+                          "--record", str(empty), "--bundle-manifest", str(bundle_for(record))])
     check(code == 1, f"a decision with an EMPTY record was accepted (exit {code})")
     check(field(path, "repair_count") == "0", "a refused decision spent the budget anyway")
 
@@ -249,6 +332,361 @@ def t_the_repair_dispatch_gate(tmp: Path) -> None:
     check(code == 0, "the PR never returned to the gate after its repair")
     code, _, _ = ledger_cli(["--file", str(path), "dispatch-check", "--pr", "1", "--action", "repair"])
     check(code == L.EXIT_STOP, "a repair was still dispatchable after the PR returned to the gate")
+
+
+# --- the prepared reassessment bundle ----------------------------------------
+
+INTENT = """## Purpose
+- assemble complete repair history deterministically
+
+## Non-goals
+- deciding which repair is correct
+
+## Threat model
+- Who can write the inputs this code reads: the campaign driver and review workers
+- Who cannot: unrelated repository users
+"""
+
+
+def git(repo: Path, *argv: str) -> subprocess.CompletedProcess:
+    result = subprocess.run(["git", "-C", str(repo), *argv], capture_output=True, check=False)
+    check(result.returncode == 0,
+          f"git {' '.join(argv)} failed: {result.stderr.decode(errors='replace')!r}")
+    return result
+
+
+def init_repo(parent: Path, name: str = "worktree") -> "tuple[Path, str]":
+    repo = parent / name
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    git(repo, "config", "user.name", "Gauntlet Test")
+    git(repo, "config", "user.email", "gauntlet@example.invalid")
+    (repo / "feature.txt").write_text("base\n")
+    git(repo, "add", "feature.txt")
+    git(repo, "commit", "-q", "-m", "base")
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    git(repo, "switch", "-q", "-c", "feature")
+    (repo / "feature.txt").write_text("base\nfeature\n")
+    git(repo, "add", "feature.txt")
+    git(repo, "commit", "-q", "-m", "feature change")
+    return repo, git(repo, "rev-parse", "HEAD").stdout.decode().strip()
+
+
+def write_review_attempt(rundir: Path, round_no: int, attempt: int, head_sha: str,
+                         report: str, *, audit: "str | None" = None) -> Path:
+    RP = R.RP
+    stem = f"review-1-{round_no}" + (f".a{attempt}" if attempt >= 2 else "")
+    plan = rundir / f"review-1-{round_no}.plan.jsonl"
+    if not plan.exists():
+        plan.write_text(json.dumps({
+            "type": RP.UNIT,
+            "id": "u01",
+            "kind": "file",
+            "target": "feature.txt",
+            "checks": ["the complete PR diff and stated purpose"],
+        }) + "\n")
+    progress = rundir / f"{stem}.progress.jsonl"
+    records = [
+        {"type": RP.IDENTITY, "pr": "1", "pass": str(round_no), "head_sha": head_sha,
+         "launch_attempt": str(attempt), "dispatched_at": "2026-07-20T01:02:03Z"},
+        {"type": RP.PROGRESS, "unit": "u01", "status": RP.STARTED},
+        {"type": RP.PROGRESS, "unit": "u01", "status": RP.DONE,
+         "evidence": "feature.txt:1-2 reviewed against the purpose"},
+    ]
+    progress.write_text("".join(json.dumps(record) + "\n" for record in records))
+    (rundir / f"{stem}.txt").write_text(report)
+    if audit is not None:
+        (rundir / f"audit-1-{round_no}.md").write_text(audit)
+    return progress
+
+
+def bundle_setup(tmp: Path, *, rounds: int = 1, relaunch_round: "int | None" = None,
+                 origin: str = "external", hostile_names: bool = False) -> dict:
+    tmp.mkdir(parents=True, exist_ok=True)
+    repo_name = "worktree `quoted` --" if hostile_names else "worktree"
+    run_name = "run $value 'quoted' --" if hostile_names else "run"
+    repo, head_sha = init_repo(tmp, repo_name)
+    rundir = tmp / run_name
+    rundir.mkdir()
+    (rundir / "intent-1.md").write_text(INTENT)
+    for round_no in range(1, rounds + 1):
+        report = f"round {round_no}\n\nVERDICT: NOT SATISFIED\n"
+        write_review_attempt(rundir, round_no, 1, head_sha, report,
+                             audit="audit bytes for round 2\n" if round_no == 2 else None)
+        if relaunch_round == round_no:
+            write_review_attempt(rundir, round_no, 1, head_sha,
+                                 "DEAD ATTEMPT 1 MUST NOT ENTER THE BUNDLE\n")
+            write_review_attempt(rundir, round_no, 2, head_sha,
+                                 "ACTIVE ATTEMPT 2\n\nVERDICT: NOT SATISFIED\n",
+                                 audit="active audit\n" if round_no == 2 else None)
+
+    ledger = rundir / "state.jsonl"
+    row = {**L.ROW_DEFAULTS, "pr": "1", "head_sha": head_sha, "status": L.REPAIR_STATUS,
+           "review_rounds": str(rounds), "ns_streak": "1", "pr_origin": origin,
+           "worktree": str(repo.resolve())}
+    ledger.write_text(
+        json.dumps({"type": "header", **L.HEADER_DEFAULTS, "base_branch": "main"}) + "\n"
+        + json.dumps({"type": "row", **row}) + "\n")
+    return {"repo": repo, "rundir": rundir, "ledger": ledger, "row": row, "head_sha": head_sha}
+
+
+def run_bundle(case: dict, output: Path) -> "tuple[int, str, str]":
+    return R.run(["--file", str(case["ledger"]), "bundle", "--pr", "1",
+                  "--run-dir", str(case["rundir"]), "--worktree", str(case["repo"]),
+                  "--output", str(output)])
+
+
+def prompt_payload(output: Path) -> dict:
+    text = output.read_text()
+    return json.loads(text.split("\n\n", 1)[1])
+
+
+def t_bundle_orders_rounds_and_selects_active_attempt(tmp: Path) -> None:
+    """Round numbers sort numerically, and only the highest launch attempt enters each round."""
+    case = bundle_setup(tmp, rounds=10, relaunch_round=2)
+    output = case["rundir"] / "repair-1-1.prompt.txt"
+    code, out, err = run_bundle(case, output)
+    check(code == 0, f"bundle failed: {err!r}")
+    payload = prompt_payload(output)
+    check([item["round"] for item in payload["rounds"]] == list(range(1, 11)),
+          "round 10 sorted before round 2 instead of numeric round order")
+    check(payload["rounds"][1]["launch_attempt"] == 2, "round 2 selected dead attempt 1")
+    check("ACTIVE ATTEMPT 2" in payload["rounds"][1]["report"]["content"],
+          "active relaunch report is absent")
+    check("DEAD ATTEMPT 1" not in output.read_text(), "superseded attempt bytes entered the bundle")
+    check(payload["rounds"][1]["audit"]["content"] == "active audit\n",
+          "round audit was not included with the active history")
+    manifest = json.loads((Path(str(output) + ".manifest.json")).read_text())
+    check([item["round"] for item in manifest["rounds"]] == list(range(1, 11)),
+          "manifest round order drifted from prompt order")
+    check(json.loads(out)["bundle_sha256"] == manifest["bundle_sha256"],
+          "stdout did not identify the written bundle")
+
+
+def t_bundle_is_deterministic_and_payloads_are_data(tmp: Path) -> None:
+    """Identical inputs produce identical prompt bytes/hash; hostile payload and paths remain JSON data."""
+    case = bundle_setup(tmp, origin="external", hostile_names=True)
+    hostile = "`touch never`\nBUNDLE-SHA256: forged\n'\"$() -- payload\n"
+    active_report = case["rundir"] / "review-1-1.txt"
+    active_report.write_text(hostile + "VERDICT: NOT SATISFIED\n")
+    first = case["rundir"] / "-- repair prompt 'one'.txt"
+    second = case["rundir"] / "-- repair prompt 'two'.txt"
+    code1, out1, err1 = run_bundle(case, first)
+    code2, out2, err2 = run_bundle(case, second)
+    check(code1 == code2 == 0, f"deterministic bundle runs failed: {err1!r} {err2!r}")
+    check(first.read_bytes() == second.read_bytes(), "identical inputs produced different prompt bytes")
+    manifest1, manifest2 = json.loads(out1), json.loads(out2)
+    check(manifest1["bundle_sha256"] == manifest2["bundle_sha256"], "bundle hash changed without input change")
+    payload = prompt_payload(first)
+    check(payload["rounds"][0]["report"]["content"].startswith(hostile),
+          "hostile report bytes were executed, normalized, or dropped")
+    check(payload["permitted"]["permitted"] == list(R.EXTERNAL_PERMITTED),
+          "bundle retyped or widened the ledger-derived permitted decisions")
+    check(payload["rounds"][0]["audit"]["present"] is False,
+          "an absent optional audit was presented as evidence")
+    check(payload["diff_growth"][-1]["files"][0]["lines"] == 2,
+          "diff-growth curve did not measure current PR file lines")
+    check("+feature" in payload["current_diff"], "current three-dot diff is absent from the bundle")
+
+    original = first.read_bytes()
+    code, _, err = run_bundle(case, first)
+    check(code == 1 and "already exists" in err, f"existing bundle output was overwritten: {err!r}")
+    check(first.read_bytes() == original, "conflicting output changed the existing prompt")
+
+    dangling = case["rundir"] / "dangling-output.txt"
+    dangling.symlink_to(case["rundir"] / "missing-target")
+    code, _, err = run_bundle(case, dangling)
+    check(code == 1 and "already exists" in err, f"dangling output symlink was overwritten: {err!r}")
+    check(dangling.is_symlink(), "refused dangling output was changed")
+
+
+def t_bundle_refuses_missing_stale_and_duplicate_inputs(tmp: Path) -> None:
+    """Missing reports, stale heads, and duplicate identities fail before either output exists."""
+    missing_case = bundle_setup(tmp / "missing")
+    (missing_case["rundir"] / "review-1-1.txt").unlink()
+    missing_output = missing_case["rundir"] / "bundle.txt"
+    code, _, err = run_bundle(missing_case, missing_output)
+    check(code == 1 and "missing required review report" in err, f"missing report was not refused: {err!r}")
+    check(not missing_output.exists() and not Path(str(missing_output) + ".manifest.json").exists(),
+          "missing input left partial bundle output")
+
+    stale_case = bundle_setup(tmp / "stale")
+    stale_case["ledger"].write_text(
+        json.dumps({"type": "header", **L.HEADER_DEFAULTS, "base_branch": "main"}) + "\n"
+        + json.dumps({"type": "row", **stale_case["row"], "head_sha": "d" * 40}) + "\n")
+    stale_output = stale_case["rundir"] / "bundle.txt"
+    code, _, err = run_bundle(stale_case, stale_output)
+    check(code == 1 and "stale ledger head" in err, f"stale head was not refused: {err!r}")
+    check(not stale_output.exists(), "stale head left bundle output")
+
+    duplicate_case = bundle_setup(tmp / "duplicate")
+    progress = duplicate_case["rundir"] / "review-1-1.progress.jsonl"
+    lines = progress.read_text().splitlines()
+    progress.write_text(lines[0] + "\n" + lines[0] + "\n" + "\n".join(lines[1:]) + "\n")
+    duplicate_output = duplicate_case["rundir"] / "bundle.txt"
+    code, _, err = run_bundle(duplicate_case, duplicate_output)
+    check(code == 1 and "pass_identity" in err, f"duplicate active identity was not refused: {err!r}")
+    check(not duplicate_output.exists(), "duplicate active attempt left bundle output")
+
+    audit_case = bundle_setup(tmp / "missing-audit", rounds=2)
+    (audit_case["rundir"] / "review-1-1.findings.jsonl").write_text(json.dumps({
+        "type": R.RP.FINDING,
+        "file": "feature.txt",
+        "line": "2",
+        "writer": "end-user",
+        "purpose": "assemble complete repair history deterministically",
+        "repro": "supply the feature input through the documented user path",
+        "fix": "handle the feature input at the shared boundary",
+    }) + "\n")
+    audit_output = audit_case["rundir"] / "bundle.txt"
+    code, _, err = run_bundle(audit_case, audit_output)
+    check(code == 1 and "missing required finding audit" in err,
+          f"missing audit from an earlier gating round was accepted: {err!r}")
+    check(not audit_output.exists(), "missing earlier audit left bundle output")
+
+
+def t_bundle_preserves_findings_from_an_older_intent(tmp: Path) -> None:
+    """Old intent anchors remain readable, and a cap round may correctly have no finding audit yet."""
+    case = bundle_setup(tmp)
+    findings = case["rundir"] / "review-1-1.findings.jsonl"
+    findings.write_text(json.dumps({
+        "type": R.RP.FINDING,
+        "file": "feature.txt",
+        "line": "2",
+        "writer": "end-user",
+        "purpose": "purpose text from the intent that governed round 1",
+        "repro": "supply the feature input through the documented user path",
+        "fix": "handle the feature input at the shared boundary",
+    }) + "\n")
+    output = case["rundir"] / "bundle.txt"
+    code, _, err = run_bundle(case, output)
+    check(code == 0, f"historical purpose anchor was re-judged against the current intent: {err!r}")
+    payload = prompt_payload(output)
+    check("round 1" in payload["rounds"][0]["findings"]["content"],
+          "historical finding bytes were not preserved")
+    check(payload["rounds"][0]["gating_findings"] == 1
+          and payload["rounds"][0]["audit"]["present"] is False,
+          "the cap round incorrectly required an audit the NOT-SATISFIED sequence skips")
+
+
+def t_bundle_git_and_atomic_failures_leave_no_output(tmp: Path) -> None:
+    """A failed Git read or second promotion leaves neither prompt nor manifest behind."""
+    git_case = bundle_setup(tmp / "git-failure")
+    git_output = git_case["rundir"] / "bundle.txt"
+    real_git = R._run_git
+
+    def broken_git(worktree: Path, *argv: str) -> subprocess.CompletedProcess:
+        if argv[:2] == ("diff", "--binary"):
+            return subprocess.CompletedProcess([], 1, b"", b"injected diff failure")
+        return real_git(worktree, *argv)
+
+    setattr(R, "_run_git", broken_git)
+    try:
+        code, _, err = run_bundle(git_case, git_output)
+    finally:
+        setattr(R, "_run_git", real_git)
+    check(code == 1 and "Git read failed" in err, f"Git failure did not fail closed: {err!r}")
+    check(not git_output.exists() and not Path(str(git_output) + ".manifest.json").exists(),
+          "Git failure left partial output")
+
+    atomic_case = bundle_setup(tmp / "atomic-failure")
+    atomic_output = atomic_case["rundir"] / "bundle.txt"
+    real_replace = R.os.replace
+    calls = 0
+
+    def fail_second(source: object, target: object) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("injected manifest promotion failure")
+        real_replace(source, target)
+
+    R.os.replace = fail_second
+    try:
+        code, _, err = run_bundle(atomic_case, atomic_output)
+    finally:
+        R.os.replace = real_replace
+    check(code == 1 and "atomically" in err, f"atomic promotion failure was not reported: {err!r}")
+    check(not atomic_output.exists() and not Path(str(atomic_output) + ".manifest.json").exists(),
+          "second promotion failure left a partial bundle")
+    check(not list(atomic_output.parent.glob(".*.tmp")), "bundle failure left staged temp files")
+
+    moving_case = bundle_setup(tmp / "moving-head")
+    moving_output = moving_case["rundir"] / "bundle.txt"
+    real_git = R._run_git
+    moved = False
+
+    def moving_git(worktree: Path, *argv: str) -> subprocess.CompletedProcess:
+        nonlocal moved
+        if not moved and argv[:3] == ("diff", "--binary", "--no-ext-diff"):
+            (worktree / "moved-during-bundle.txt").write_text("new head\n")
+            git(worktree, "add", "moved-during-bundle.txt")
+            git(worktree, "commit", "-q", "-m", "move during bundle")
+            moved = True
+        return real_git(worktree, *argv)
+
+    setattr(R, "_run_git", moving_git)
+    try:
+        code, _, err = run_bundle(moving_case, moving_output)
+    finally:
+        setattr(R, "_run_git", real_git)
+    check(code == 1 and "HEAD moved while building" in err,
+          f"bundle mixed inputs from two heads instead of refusing: {err!r}")
+    check(not moving_output.exists() and not Path(str(moving_output) + ".manifest.json").exists(),
+          "moving head left a partial bundle")
+
+
+def t_decide_is_bound_to_prepared_bundle(tmp: Path) -> None:
+    """A decision record must copy the exact prepared bundle hash before it can spend the repair budget."""
+    case = bundle_setup(tmp, origin="external")
+    output = case["rundir"] / "repair-1-1.prompt.txt"
+    code, out, err = run_bundle(case, output)
+    check(code == 0, f"bundle failed: {err!r}")
+    manifest = json.loads(out)
+    record = case["rundir"] / "repair-1-1.md"
+    record.write_text("BUNDLE-SHA256: " + "0" * 64 + "\n\nDEMOTE because the finding is outside purpose.\n")
+    argv = ["--file", str(case["ledger"]), "decide", "--pr", "1", "--decision", "demote",
+            "--record", str(record), "--bundle-manifest", manifest["manifest_path"]]
+    code, _, err = R.run(argv)
+    check(code == 1 and "not bound to this bundle" in err, f"wrong bundle hash was accepted: {err!r}")
+    check(field(case["ledger"], "repair_count") == "0", "wrong bundle hash spent the repair budget")
+    record.write_text(f"{R.BUNDLE_MARKER}: {manifest['bundle_sha256']}\n\nDEMOTE because it is outside purpose.\n")
+
+    manifest_path = Path(manifest["manifest_path"])
+    manifest_doc = json.loads(manifest_path.read_text())
+    manifest_doc["rounds"] = []
+    manifest_path.write_text(R.canonical_json(manifest_doc))
+    code, _, err = R.run(argv)
+    check(code == 1 and "round summary" in err, f"manifest detached from its prompt was accepted: {err!r}")
+    check(field(case["ledger"], "repair_count") == "0", "detached manifest spent the repair budget")
+    manifest_doc["rounds"] = manifest["rounds"]
+    manifest_path.write_text(R.canonical_json(manifest_doc))
+
+    code, _, err = R.run(argv)
+    check(code == 0, f"matching bundle hash was refused: {err!r}")
+    check(field(case["ledger"], "repair_decision").startswith("demote@"),
+          "bundle-bound decision was not recorded")
+    code, _, err = R.run(argv)
+    check(code == 1 and "exactly one decision" in err, f"one bundle was replayed for a second decision: {err!r}")
+    check(field(case["ledger"], "repair_count") == "1", "replayed bundle spent the repair budget twice")
+
+    moved = bundle_setup(tmp / "moved", origin="external")
+    moved_output = moved["rundir"] / "repair-1-1.prompt.txt"
+    code, moved_out, err = run_bundle(moved, moved_output)
+    check(code == 0, f"second bundle failed: {err!r}")
+    moved_manifest = json.loads(moved_out)
+    (moved["repo"] / "after-bundle.txt").write_text("new head\n")
+    git(moved["repo"], "add", "after-bundle.txt")
+    git(moved["repo"], "commit", "-q", "-m", "move after bundle")
+    moved_record = moved["rundir"] / "repair-1-1.md"
+    moved_record.write_text(
+        f"{R.BUNDLE_MARKER}: {moved_manifest['bundle_sha256']}\n\nDEMOTE based on the old head.\n")
+    code, _, err = R.run([
+        "--file", str(moved["ledger"]), "decide", "--pr", "1", "--decision", "demote",
+        "--record", str(moved_record), "--bundle-manifest", moved_manifest["manifest_path"],
+    ])
+    check(code == 1 and "worktree HEAD moved" in err, f"decision for a moved head was accepted: {err!r}")
+    check(field(moved["ledger"], "repair_count") == "0", "stale post-bundle decision spent repair budget")
 
 
 def t_shared_module_loader_preserves_importlib_semantics(tmp: Path) -> None:
@@ -305,5 +743,11 @@ CASES = [
     ("decision-needs-record", "no decision without its reasoning on disk", t_a_decision_needs_a_record),
     ("enum-is-closed", "the decision enum is closed, and each member is defined", t_decision_enum_is_closed),
     ("repair-dispatch-gate", "a repair needs a recorded decision; ordinary work stays frozen", t_the_repair_dispatch_gate),
+    ("bundle-order-active", "bundle orders rounds numerically and selects only the active relaunch", t_bundle_orders_rounds_and_selects_active_attempt),
+    ("bundle-deterministic", "bundle bytes/hash are deterministic and hostile payloads stay data", t_bundle_is_deterministic_and_payloads_are_data),
+    ("bundle-refusals", "missing, stale, and duplicate active inputs fail before output", t_bundle_refuses_missing_stale_and_duplicate_inputs),
+    ("bundle-old-intent", "old intent anchors survive; the cap round may have no audit yet", t_bundle_preserves_findings_from_an_older_intent),
+    ("bundle-atomic", "Git and atomic-write failures leave no partial bundle", t_bundle_git_and_atomic_failures_leave_no_output),
+    ("decision-bundle-bound", "decide accepts only a record bound to the matching prepared bundle", t_decide_is_bound_to_prepared_bundle),
     ("shared-module-loader", "path loading preserves registration and exception behavior", t_shared_module_loader_preserves_importlib_semantics),
 ]

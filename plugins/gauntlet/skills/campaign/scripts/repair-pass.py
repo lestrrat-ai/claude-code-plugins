@@ -14,6 +14,9 @@ context-isolated agent is handed THE WHOLE HISTORY AT ONCE — every round's ver
 diff-growth curve, the PR's intent artifact, the current diff — and returns exactly ONE decision from a
 CLOSED enum. `references/repair-pass.md` is the definition; this is its enforcement.
 
+`bundle` assembles that history deterministically from validated active-attempt artifacts and Git reads;
+`decide` accepts only a record carrying the exact prepared bundle hash.
+
 **A CAP IS A MODE SWITCH, NOT A DOORBELL.** It does not stop and ask the user. The driver stops dispatching
 targeted fixes and REPAIRS THE PR ITSELF — rescopes it back to its stated purpose, re-authors the intent the
 reviewer had nothing to measure against, demotes findings that anchor to no purpose and no writer, fixes at
@@ -37,7 +40,11 @@ Three refusals this tool exists to make, all of them things a well-meaning drive
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
+import re
+import subprocess
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -47,9 +54,10 @@ from typing import NoReturn
 from _gauntlet.modules import load_module_from_path
 from _gauntlet.testing import capture_cli
 
-DESCRIPTION = "Record the reassessment pass's decision for a PR that has stopped converging."
+DESCRIPTION = "Build and bind the reassessment pass for a PR that has stopped converging."
 
 OWNER = Path(__file__).resolve().parent / "ledger.py"
+REVIEW_OWNER = Path(__file__).resolve().parent / "review-pass.py"
 
 
 def load_ledger():
@@ -67,6 +75,23 @@ def load_ledger():
 
 
 L = load_ledger()
+
+
+def load_review_pass():
+    """Load the review artifact owner by installed path, never by ambient cwd or import path."""
+    mod = load_module_from_path("repair_pass_review_owner", REVIEW_OWNER)
+    if mod is None:  # a broken install — never an input error
+        print(f"repair-pass: cannot load its review artifact owner at {REVIEW_OWNER}", file=sys.stderr)
+        raise SystemExit(1)
+    return mod
+
+
+RP = load_review_pass()
+
+BUNDLE_SCHEMA = "gauntlet-repair-bundle-v1"
+MANIFEST_SCHEMA = "gauntlet-repair-bundle-manifest-v1"
+BUNDLE_MARKER = "BUNDLE-SHA256"
+SHA256_RE = re.compile(r"^[0-9a-f]{64}\Z")
 
 # --- the closed enum ----------------------------------------------------------
 #
@@ -137,20 +162,11 @@ def permitted_for(row: dict) -> "tuple[str, ...]":
     return EXTERNAL_PERMITTED
 
 
-def get_row(path: Path, pr: str) -> dict:
-    _, rows = L.load(path)
-    row = L.find_row(rows, pr)
-    if row is None:
-        fail(f"no row for pr {pr}")
-    return row
-
-
-def cmd_permitted(path: Path, args) -> int:
-    """Print the decisions this PR may take, and why — the reassessment prompt is BUILT from this."""
-    row = get_row(path, str(args.pr))
+def permitted_record(row: dict) -> dict:
+    """The machine-readable decision set used by both `permitted` and `bundle`."""
     allowed = permitted_for(row)
     spent = L.counter(row, "repair_count") >= L.REPAIR_CAP
-    print(json.dumps({
+    return {
         "pr": row["pr"],
         "status": row["status"],
         "pr_origin": row["pr_origin"],
@@ -168,8 +184,518 @@ def cmd_permitted(path: Path, args) -> int:
             f"content: {', '.join(REWRITES_CONTENT)} are refused. Record findings, re-author the intent, or "
             f"leave it for its owner"
         ),
-    }))
+    }
+
+
+def get_row(path: Path, pr: str) -> dict:
+    _, rows = L.load(path)
+    row = L.find_row(rows, pr)
+    if row is None:
+        fail(f"no row for pr {pr}")
+    return row
+
+
+def cmd_permitted(path: Path, args) -> int:
+    """Print the decisions this PR may take, and why — the reassessment prompt is BUILT from this."""
+    row = get_row(path, str(args.pr))
+    print(json.dumps(permitted_record(row)))
     return 0
+
+
+# --- deterministic reassessment bundle --------------------------------------
+
+def canonical_json(value: object) -> str:
+    """Stable JSON bytes for prompts, hashes, and manifests."""
+    return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n"
+
+
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def read_utf8(path: Path, what: str, *, allow_empty: bool = False) -> str:
+    if not path.exists():
+        fail(f"missing required {what} at {path}")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        fail(f"cannot read {what} {path} as UTF-8: {exc}")
+    if not allow_empty and not text.strip():
+        fail(f"required {what} at {path} is empty")
+    return text
+
+
+def artifact(path: Path, content: str, *, present: bool = True) -> dict:
+    data = content.encode("utf-8")
+    return {
+        "path": str(path.resolve()),
+        "present": present,
+        "sha256": sha256_bytes(data),
+        "content": content,
+    }
+
+
+def _run_git(worktree: Path, *argv: str) -> subprocess.CompletedProcess:
+    """Run fixed Git argv in the supplied worktree. Dynamic values never enter shell source."""
+    try:
+        return subprocess.run(  # noqa: S603
+            ["git", "-c", "core.quotepath=true", "-C", str(worktree), *argv],
+            capture_output=True, check=False)
+    except OSError as exc:
+        fail(f"Git could not run in {worktree}: {exc}")
+
+
+def git_bytes(worktree: Path, *argv: str) -> bytes:
+    proc = _run_git(worktree, *argv)
+    if proc.returncode != 0:
+        detail = proc.stderr.decode("utf-8", errors="replace").strip()
+        fail(f"Git read failed (`git {' '.join(argv)}`) in {worktree}: {detail or f'exit {proc.returncode}'}")
+    return proc.stdout
+
+
+def git_text(worktree: Path, *argv: str) -> str:
+    return git_bytes(worktree, *argv).decode("utf-8", errors="surrogateescape")
+
+
+def attempt_report_path(progress: Path) -> Path:
+    """Derive the per-attempt report by replacing only the progress suffix."""
+    return progress.parent / (progress.name[: -len(RP.PROGRESS_SUFFIX)] + ".txt")
+
+
+def load_historical_findings(progress: Path) -> list[dict]:
+    """Validate a landed round's finding schema without re-anchoring it to a later repaired intent.
+
+    `review-pass.py verify` proved each finding against the intent that governed that round before its
+    verdict landed. REPAIR-INTENT may later replace the PR's one current intent artifact; re-validating old
+    purpose strings against that new file would make the complete history unreadable at the next cap. Keep
+    the artifact owner's strict reader and every non-anchor finding rule, while treating its recorded
+    purpose strings as historical evidence rather than claims about the current intent.
+    """
+    path = RP.findings_path(progress)
+    if not path.exists():
+        return []
+    RP.findings_name(path)
+    records = RP.parse_lines(RP.read_text(path, "findings file"), path.name)
+    historical_purposes = [rec.get("purpose") for rec in records
+                           if isinstance(rec.get("purpose"), str) and rec.get("purpose") != RP.NO_PURPOSE]
+    for line_no, rec in enumerate(records, start=1):
+        RP.check_finding(rec, f"{path.name} line {line_no}", historical_purposes)
+    return records
+
+
+def select_active_rounds(rundir: Path, pr: str, expected_rounds: int) -> "list[tuple[int, int, Path]]":
+    """Select one highest numbered launch attempt per numeric review round for this PR."""
+    attempts: dict[int, dict[int, Path]] = {}
+    for progress in rundir.glob("review-*-*" + RP.PROGRESS_SUFFIX):
+        try:
+            named_pr, named_round, named_attempt = RP.parse_name(progress)
+        except RP.Defect:
+            continue
+        if named_pr != pr:
+            continue
+        round_no, attempt_no = int(named_round), int(named_attempt)
+        by_attempt = attempts.setdefault(round_no, {})
+        if attempt_no in by_attempt:
+            fail(f"duplicate launch attempt {attempt_no} for pr {pr} review round {round_no}")
+        by_attempt[attempt_no] = progress
+
+    expected = list(range(1, expected_rounds + 1))
+    actual = sorted(attempts)
+    if actual != expected:
+        fail(f"review history for pr {pr} has numeric rounds {actual}, expected every round {expected}")
+    return [(round_no, max(attempts[round_no]), attempts[round_no][max(attempts[round_no])])
+            for round_no in expected]
+
+
+def collect_rounds(rundir: Path, pr: str, expected_rounds: int) -> list[dict]:
+    """Read exactly the active attempt's validated artifacts for every round."""
+    rounds = []
+    for round_no, attempt_no, progress in select_active_rounds(rundir, pr, expected_rounds):
+        try:
+            progress_text = RP.read_text(progress, "progress file")
+            events, units = RP.check_progress_file(
+                progress_text, progress, lambda p=progress: RP.load_plan(RP.plan_path(p)))
+            _, done = RP.walk_progress(events, units)
+            if len(done) != len(units):
+                fail(f"active attempt {attempt_no} of pr {pr} round {round_no} is incomplete "
+                     f"({len(done)} of {len(units)} plan units done)")
+            identity = RP.check_identity(events, pr, str(round_no), str(attempt_no))
+            findings = load_historical_findings(progress)
+        except RP.Defect as exc:
+            fail(f"active attempt {attempt_no} of pr {pr} round {round_no} is unusable: {exc}")
+
+        plan = RP.plan_path(progress)
+        plan_text = read_utf8(plan, "review plan")
+        report = attempt_report_path(progress)
+        report_text = read_utf8(report, "review report")
+        findings_file = RP.findings_path(progress)
+        if findings_file.exists():
+            findings_text = read_utf8(findings_file, "review findings", allow_empty=True)
+            findings_artifact = artifact(findings_file, findings_text)
+        else:
+            findings_artifact = artifact(findings_file, "", present=False)
+
+        audit_file = rundir / f"audit-{pr}-{round_no}.md"
+        gating_findings = sum(1 for finding in findings if RP.gating(finding))
+        if audit_file.exists():
+            audit_artifact = artifact(audit_file, read_utf8(audit_file, "finding audit"))
+        elif gating_findings and round_no != expected_rounds:
+            fail(f"missing required finding audit for pr {pr} review round {round_no}")
+        else:
+            # The NOT-SATISFIED action sequence intentionally skips its audit when `ledger.py verdict`
+            # moves the row straight to `repairing`; that cap round therefore has a valid absent audit.
+            audit_artifact = artifact(audit_file, "", present=False)
+
+        rounds.append({
+            "round": round_no,
+            "launch_attempt": attempt_no,
+            "review_head_sha": identity["head_sha"],
+            "dispatched_at": identity["dispatched_at"],
+            "plan": artifact(plan, plan_text),
+            "progress": artifact(progress, progress_text),
+            "report": artifact(report, report_text),
+            "findings": findings_artifact,
+            "audit": audit_artifact,
+            "gating_findings": gating_findings,
+        })
+    return rounds
+
+
+def diff_growth(worktree: Path, base_ref: str, head_sha: str) -> list[dict]:
+    """Measure every current PR path at every commit, in Git's numeric chronological order."""
+    raw_paths = git_bytes(worktree, "diff", "--name-only", "-z", f"{base_ref}...{head_sha}")
+    paths = sorted(part for part in raw_paths.split(b"\0") if part)
+    commits = [line for line in git_text(worktree, "rev-list", "--reverse", "--topo-order",
+                                          f"{base_ref}..{head_sha}").splitlines() if line]
+    curve = []
+    for commit in commits:
+        meta = git_bytes(worktree, "show", "-s", "--format=%aI%x00%s", commit).removesuffix(b"\n")
+        pieces = meta.split(b"\0", 1)
+        if len(pieces) != 2:
+            fail(f"Git returned malformed commit metadata for {commit}")
+        files = []
+        for raw_path in paths:
+            path = raw_path.decode("utf-8", errors="surrogateescape")
+            entry = git_bytes(worktree, "ls-tree", "--full-tree", "-z", commit, "--", f":(literal){path}")
+            if not entry:
+                files.append({"path": path, "object_type": "absent", "lines": None, "bytes": None})
+                continue
+            entries = [item for item in entry.split(b"\0") if item]
+            if len(entries) != 1 or b"\t" not in entries[0]:
+                fail(f"Git returned malformed tree data for {commit}:{path}")
+            metadata, returned_path = entries[0].split(b"\t", 1)
+            if returned_path != raw_path:
+                fail(f"Git returned the wrong tree path while measuring {commit}:{path}")
+            fields = metadata.split()
+            if len(fields) != 3:
+                fail(f"Git returned malformed tree metadata for {commit}:{path}")
+            object_type = fields[1].decode("ascii", errors="replace")
+            if object_type != "blob":
+                files.append({"path": path, "object_type": object_type, "lines": None, "bytes": None})
+                continue
+            content = git_bytes(worktree, "cat-file", "blob", f"{commit}:{path}")
+            files.append({"path": path, "object_type": "blob", "lines": len(content.splitlines()),
+                          "bytes": len(content)})
+        curve.append({
+            "commit": commit,
+            "authored_at": pieces[0].decode("utf-8", errors="surrogateescape"),
+            "subject": pieces[1].decode("utf-8", errors="surrogateescape"),
+            "files": files,
+        })
+    return curve
+
+
+def bundle_manifest_path(output: Path) -> Path:
+    return output.with_name(output.name + ".manifest.json")
+
+
+def _stage_bytes(path: Path, data: bytes, prefix: str) -> Path:
+    fd, name = tempfile.mkstemp(dir=str(path.parent), prefix=prefix, suffix=".tmp")
+    staged = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(staged, 0o600)
+        return staged
+    except BaseException:
+        staged.unlink(missing_ok=True)
+        raise
+
+
+def path_present(path: Path) -> bool:
+    """True for every directory entry, including a dangling symlink that `Path.exists()` misses."""
+    return path.exists() or path.is_symlink()
+
+
+def write_bundle(output: Path, prompt: bytes, manifest_path: Path, manifest: bytes) -> None:
+    """Stage both files before promotion; any reported failure leaves neither output behind."""
+    if path_present(output) or path_present(manifest_path):
+        conflicts = [str(path) for path in (output, manifest_path) if path_present(path)]
+        fail(f"bundle output already exists: {', '.join(conflicts)}")
+    if not output.parent.is_dir():
+        fail(f"bundle output parent does not exist: {output.parent}")
+
+    prompt_tmp = _stage_bytes(output, prompt, f".{output.name}.")
+    manifest_tmp: "Path | None" = None
+    prompt_promoted = False
+    manifest_promoted = False
+    try:
+        manifest_tmp = _stage_bytes(manifest_path, manifest, f".{manifest_path.name}.")
+        if path_present(output) or path_present(manifest_path):
+            fail("bundle output appeared while the bundle was being prepared; refusing to overwrite it")
+        os.replace(prompt_tmp, output)
+        prompt_promoted = True
+        os.replace(manifest_tmp, manifest_path)
+        manifest_promoted = True
+    except BaseException:
+        prompt_tmp.unlink(missing_ok=True)
+        if manifest_tmp is not None:
+            manifest_tmp.unlink(missing_ok=True)
+        if prompt_promoted:
+            output.unlink(missing_ok=True)
+        if manifest_promoted:
+            manifest_path.unlink(missing_ok=True)
+        raise
+
+
+def cmd_bundle(path: Path, args) -> int:
+    """Build the complete deterministic input for one context-isolated reassessment."""
+    pr = str(args.pr)
+    header, rows = L.load(path)
+    row = L.find_row(rows, pr)
+    if row is None:
+        fail(f"no row for pr {pr}")
+    if row["status"] != L.REPAIR_STATUS:
+        fail(f"pr {pr} is {row['status']}, not {L.REPAIR_STATUS} — no reassessment bundle is due")
+    if row["repair_decision"] != "-":
+        fail(f"pr {pr} already has reassessment decision {row['repair_decision']!r}; dispatch that decision "
+             f"instead of preparing another bundle")
+
+    rundir = Path(args.run_dir).resolve()
+    worktree = Path(args.worktree).resolve()
+    # Keep the final path component lexical so a dangling output symlink remains an existing artifact to
+    # refuse. `resolve()` would follow it to its missing target and silently replace that target instead.
+    output = Path(args.output).absolute()
+    if not rundir.is_dir():
+        fail(f"run directory does not exist: {rundir}")
+    if not worktree.is_dir():
+        fail(f"worktree does not exist: {worktree}")
+    if path.resolve().parent != rundir:
+        fail(f"--file {path.resolve()} is not inside --run-dir {rundir}; refusing to mix two runs' state")
+    if output.parent != rundir:
+        fail(f"--output {output} is not directly inside --run-dir {rundir}")
+    try:
+        recorded_worktree = Path(row["worktree"]).resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        fail(f"ledger worktree {row['worktree']!r} cannot be resolved: {exc}")
+    if worktree != recorded_worktree:
+        fail(f"--worktree {worktree} does not match pr {pr}'s ledger worktree {recorded_worktree}")
+
+    head_sha = git_text(worktree, "rev-parse", "HEAD").strip()
+    if not RP.SHA_RE.match(head_sha):
+        fail(f"Git returned a non-canonical HEAD {head_sha!r}")
+    if row["head_sha"] != head_sha:
+        fail(f"stale ledger head for pr {pr}: row has {row['head_sha']}, worktree HEAD is {head_sha}")
+
+    base = header.get("base_branch", "-")
+    if not isinstance(base, str) or not base.strip() or base == "-":
+        fail("ledger header has no usable base_branch")
+    base_ref = f"origin/{base}"
+    git_bytes(worktree, "rev-parse", "--verify", f"{base_ref}^{{commit}}")
+
+    try:
+        expected_rounds = int(row["review_rounds"])
+    except (TypeError, ValueError):
+        fail(f"pr {pr} has invalid review_rounds {row['review_rounds']!r}")
+    if expected_rounds < 1:
+        fail(f"pr {pr} is repairing with no landed review rounds")
+    rounds = collect_rounds(rundir, pr, expected_rounds)
+    if rounds[-1]["review_head_sha"] != head_sha:
+        fail(f"latest active review ran on {rounds[-1]['review_head_sha']}, not current head {head_sha}")
+
+    intent_file = rundir / f"intent-{pr}.md"
+    try:
+        RP.load_intent(intent_file)
+    except RP.Defect as exc:
+        fail(f"intent for pr {pr} is unusable: {exc}")
+    intent_text = read_utf8(intent_file, "intent")
+    current_diff = git_text(worktree, "diff", "--binary", "--no-ext-diff",
+                            f"{base_ref}...{head_sha}")
+    growth = diff_growth(worktree, base_ref, head_sha)
+    final_head = git_text(worktree, "rev-parse", "HEAD").strip()
+    if final_head != head_sha:
+        fail(f"worktree HEAD moved while building the bundle: started at {head_sha}, ended at {final_head}")
+    permitted = permitted_record(row)
+
+    payload = {
+        "schema": BUNDLE_SCHEMA,
+        "pr": pr,
+        "head_sha": head_sha,
+        "base_ref": base_ref,
+        "ledger": {"path": str(path.resolve()), "row": {field: row[field] for field in L.ROW_FIELDS}},
+        "intent": artifact(intent_file, intent_text),
+        "rounds": rounds,
+        "diff_growth": growth,
+        "current_diff": current_diff,
+        "permitted": permitted,
+        "decision_definitions": {name: DECISIONS[name] for name in permitted["permitted"]},
+    }
+    payload_bytes = canonical_json(payload).encode("utf-8")
+    bundle_hash = sha256_bytes(payload_bytes)
+    marker = f"{BUNDLE_MARKER}: {bundle_hash}"
+    prompt = (
+        "REASSESSMENT PASS\n"
+        "Read the complete JSON bundle below. Choose exactly one decision named in `permitted`; do not "
+        "invent another decision. Explain how the complete history supports that decision. Write the "
+        "decision record with the following marker as its first nonblank line so `repair-pass.py decide` "
+        "can bind the decision to these exact bytes.\n"
+        f"{marker}\n\n"
+    ).encode("utf-8") + payload_bytes
+
+    manifest_path = bundle_manifest_path(output)
+    manifest = {
+        "schema": MANIFEST_SCHEMA,
+        "bundle_sha256": bundle_hash,
+        "prompt_sha256": sha256_bytes(prompt),
+        "prompt_path": str(output),
+        "ledger_path": str(path.resolve()),
+        "run_dir": str(rundir),
+        "worktree": str(worktree),
+        "pr": pr,
+        "head_sha": head_sha,
+        "base_ref": base_ref,
+        "rounds": [{"round": item["round"], "launch_attempt": item["launch_attempt"],
+                    "review_head_sha": item["review_head_sha"]} for item in rounds],
+    }
+    manifest_bytes = canonical_json(manifest).encode("utf-8")
+    try:
+        write_bundle(output, prompt, manifest_path, manifest_bytes)
+    except OSError as exc:
+        fail(f"could not write bundle atomically: {exc}")
+    print(canonical_json({**manifest, "manifest_path": str(manifest_path)}), end="")
+    return 0
+
+
+MANIFEST_KEYS = {
+    "schema", "bundle_sha256", "prompt_sha256", "prompt_path", "ledger_path", "run_dir", "worktree",
+    "pr", "head_sha", "base_ref", "rounds",
+}
+BUNDLE_KEYS = {
+    "schema", "pr", "head_sha", "base_ref", "ledger", "intent", "rounds", "diff_growth",
+    "current_diff", "permitted", "decision_definitions",
+}
+
+
+def validate_decision_bundle(path: Path, header: dict, row: dict, pr: str, record: Path,
+                             manifest_path: Path) -> None:
+    """Prove the decision record names the exact prepared prompt bytes for this ledger row."""
+    text = read_utf8(manifest_path, "bundle manifest")
+    try:
+        manifest = json.loads(text, object_pairs_hook=RP.strict_object(manifest_path.name, 1))
+    except (json.JSONDecodeError, RP.Defect) as exc:
+        fail(f"bundle manifest {manifest_path} is not strict JSON: {exc}")
+    if not isinstance(manifest, dict) or set(manifest) != MANIFEST_KEYS:
+        fail(f"bundle manifest {manifest_path} has the wrong schema fields")
+    if canonical_json(manifest) != text:
+        fail(f"bundle manifest {manifest_path} is not canonical deterministic JSON")
+    if manifest["schema"] != MANIFEST_SCHEMA:
+        fail(f"bundle manifest {manifest_path} has unknown schema {manifest['schema']!r}")
+    if manifest["pr"] != pr:
+        fail(f"bundle manifest is for pr {manifest['pr']!r}, not pr {pr}")
+    if manifest["ledger_path"] != str(path.resolve()):
+        fail(f"bundle manifest is bound to ledger {manifest['ledger_path']!r}, not {str(path.resolve())!r}")
+    if manifest["run_dir"] != str(path.resolve().parent):
+        fail(f"bundle manifest is bound to run directory {manifest['run_dir']!r}, not {str(path.resolve().parent)!r}")
+    if manifest["head_sha"] != row["head_sha"]:
+        fail(f"bundle manifest is stale: it names {manifest['head_sha']!r}, row names {row['head_sha']!r}")
+    expected_base_ref = f"origin/{header.get('base_branch', '-')}"
+    if manifest["base_ref"] != expected_base_ref:
+        fail(f"bundle manifest is bound to base {manifest['base_ref']!r}, not {expected_base_ref!r}")
+    if not isinstance(manifest["worktree"], str):
+        fail("bundle manifest worktree is not a string")
+    try:
+        recorded_worktree = Path(row["worktree"]).resolve(strict=True)
+        manifest_worktree = Path(manifest["worktree"]).resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        fail(f"bundle worktree cannot be resolved: {exc}")
+    if manifest_worktree != recorded_worktree:
+        fail(f"bundle manifest is bound to worktree {manifest_worktree}, not {recorded_worktree}")
+    live_head = git_text(manifest_worktree, "rev-parse", "HEAD").strip()
+    if live_head != row["head_sha"]:
+        fail(f"bundle is stale: worktree HEAD moved to {live_head}, row and bundle name {row['head_sha']}")
+    for field in ("bundle_sha256", "prompt_sha256"):
+        if not isinstance(manifest[field], str) or not SHA256_RE.match(manifest[field]):
+            fail(f"bundle manifest field {field} is not a sha256")
+    if not isinstance(manifest["prompt_path"], str):
+        fail("bundle manifest prompt_path is not a string")
+    run_dir = path.resolve().parent
+    try:
+        prompt_path = Path(manifest["prompt_path"]).resolve(strict=True)
+        actual_manifest_path = manifest_path.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        fail(f"bundle prompt or manifest cannot be resolved: {exc}")
+    if prompt_path.parent != run_dir:
+        fail(f"bundle prompt {prompt_path} is not directly inside run directory {run_dir}")
+    if manifest["prompt_path"] != str(prompt_path):
+        fail(f"bundle manifest prompt_path is not canonical: {manifest['prompt_path']!r}")
+    expected_manifest_path = bundle_manifest_path(prompt_path)
+    if actual_manifest_path != expected_manifest_path:
+        fail(f"bundle manifest {actual_manifest_path} is not the prompt's sidecar {expected_manifest_path}")
+    try:
+        prompt = prompt_path.read_bytes()
+    except OSError as exc:
+        fail(f"cannot read bundle prompt {prompt_path}: {exc}")
+    if sha256_bytes(prompt) != manifest["prompt_sha256"]:
+        fail(f"bundle prompt {prompt_path} no longer matches its manifest hash")
+    marker = f"{BUNDLE_MARKER}: {manifest['bundle_sha256']}"
+    try:
+        prompt_text = prompt.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        fail(f"bundle prompt {prompt_path} is not UTF-8: {exc}")
+    if marker not in prompt_text.splitlines()[:8]:
+        fail(f"bundle prompt {prompt_path} does not carry its bundle hash marker")
+    prompt_parts = prompt.split(b"\n\n", 1)
+    if len(prompt_parts) != 2 or sha256_bytes(prompt_parts[1]) != manifest["bundle_sha256"]:
+        fail(f"bundle prompt {prompt_path} payload does not match its bundle hash")
+    try:
+        payload = json.loads(prompt_parts[1], object_pairs_hook=RP.strict_object(prompt_path.name, 1))
+    except (json.JSONDecodeError, RP.Defect) as exc:
+        fail(f"bundle prompt {prompt_path} payload is not strict JSON: {exc}")
+    if (not isinstance(payload, dict) or set(payload) != BUNDLE_KEYS or payload.get("schema") != BUNDLE_SCHEMA
+            or payload.get("pr") != pr or payload.get("head_sha") != row["head_sha"]):
+        fail(f"bundle prompt {prompt_path} payload is not for this PR and head")
+    if canonical_json(payload).encode("utf-8") != prompt_parts[1]:
+        fail(f"bundle prompt {prompt_path} payload is not canonical deterministic JSON")
+    if payload.get("base_ref") != manifest["base_ref"]:
+        fail("bundle prompt and manifest name different base refs")
+    ledger_snapshot = payload.get("ledger")
+    if not isinstance(ledger_snapshot, dict) or set(ledger_snapshot) != {"path", "row"}:
+        fail("bundle prompt has no valid ledger snapshot")
+    if ledger_snapshot["path"] != str(path.resolve()) or not isinstance(ledger_snapshot["row"], dict):
+        fail("bundle prompt is bound to a different ledger")
+    for field in ("status", "pr_origin", "review_rounds", "ns_streak", "repair_count", "repair_decision"):
+        if ledger_snapshot["row"].get(field) != row[field]:
+            fail(f"bundle prompt is stale: ledger field {field} changed after it was prepared")
+    if payload.get("permitted") != permitted_record(row):
+        fail("bundle prompt's permitted decisions no longer match the ledger row")
+    expected_definitions = {name: DECISIONS[name] for name in permitted_for(row)}
+    if payload.get("decision_definitions") != expected_definitions:
+        fail("bundle prompt's decision definitions do not match its permitted decisions")
+    if not isinstance(payload.get("rounds"), list) or not isinstance(manifest["rounds"], list):
+        fail("bundle prompt or manifest has an invalid rounds list")
+    try:
+        round_summary = [{"round": item["round"], "launch_attempt": item["launch_attempt"],
+                          "review_head_sha": item["review_head_sha"]} for item in payload["rounds"]]
+    except (KeyError, TypeError):
+        fail("bundle prompt has a malformed round record")
+    if manifest["rounds"] != round_summary:
+        fail("bundle manifest's round summary does not match the prompt payload")
+    record_text = read_utf8(record, "reassessment decision record")
+    first = next((line.strip() for line in record_text.splitlines() if line.strip()), "")
+    if first != marker:
+        fail(f"decision record {record} is not bound to this bundle; first nonblank line must be `{marker}`")
 
 
 def cmd_decide(path: Path, args) -> int:
@@ -184,14 +710,19 @@ def cmd_decide(path: Path, args) -> int:
         fail(f"pr {pr} is {row['status']}, not {L.REPAIR_STATUS} — it has NOT reached a review-loop cap, so "
              f"there is nothing to reassess. The reassessment is not a way around a review you disagree "
              f"with; it is what happens when the loop stops converging.")
+    if row["repair_decision"] != "-":
+        fail(f"pr {pr} already has reassessment decision {row['repair_decision']!r}; one cap accepts exactly "
+             f"one decision")
 
     # THE DECISION RECORD MUST EXIST BEFORE IT IS RECORDED. A decision whose reasoning is only in a dead
     # agent's context is a decision nobody can audit — and every heartbeat is a fresh agent instance.
     record = Path(args.record)
-    if not record.exists() or not record.read_text().strip():
+    if not record.exists() or not read_utf8(record, "reassessment decision record", allow_empty=True).strip():
         fail(f"--record {record} does not exist or is empty. Write the reassessment's reasoning — the "
              f"round-by-round history it saw, the decision, and WHY — before recording the decision. A "
              f"decision with no record on disk cannot be audited by the next heartbeat, which remembers nothing.")
+
+    validate_decision_bundle(path, header, row, pr, record, Path(args.bundle_manifest))
 
     allowed = permitted_for(row)
     if args.decision not in allowed:
@@ -311,6 +842,12 @@ def build_parser() -> argparse.ArgumentParser:
                                          "reassessment prompt from this — never from a retyped list)")
     p.add_argument("--pr", required=True, help="PR number (row key)")
 
+    b = sub.add_parser("bundle", help="build the complete deterministic reassessment prompt and manifest")
+    b.add_argument("--pr", required=True, help="PR number (row key)")
+    b.add_argument("--run-dir", required=True, help="this campaign run's artifact directory")
+    b.add_argument("--worktree", required=True, help="the PR-head worktree recorded in the ledger")
+    b.add_argument("--output", required=True, help="new prompt path; a .manifest.json sidecar is also written")
+
     d = sub.add_parser("decide", help="record the reassessment pass's ONE decision")
     d.add_argument("--pr", required=True, help="PR number (row key)")
     d.add_argument("--decision", required=True, choices=tuple(DECISIONS),
@@ -318,6 +855,8 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--record", required=True,
                    help="path to the decision record — the history the pass saw, the decision, and why. "
                         "Refused if it does not exist or is empty")
+    d.add_argument("--bundle-manifest", required=True,
+                   help="manifest emitted by `bundle`; the record's first nonblank line must bind its hash")
 
     sub.add_parser("self-test", help="run every fixture and assert the rules this file enforces still hold")
     return parser
@@ -329,7 +868,7 @@ def dispatch(args) -> int:
     if args.file is None:
         build_parser().error("the following arguments are required: --file")
     path = Path(args.file)
-    return {"permitted": cmd_permitted, "decide": cmd_decide}[args.cmd](path, args)
+    return {"permitted": cmd_permitted, "bundle": cmd_bundle, "decide": cmd_decide}[args.cmd](path, args)
 
 
 def main(argv: "list[str] | None" = None) -> int:

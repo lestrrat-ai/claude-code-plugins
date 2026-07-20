@@ -167,7 +167,7 @@ def reminders(header: dict, rows: list, n_followups: int, rundir: "Path | None",
         status = r["status"]
         if status == REPAIRING:
             if r.get("repair_decision", "-") == "-":
-                out.append(f"PR {pr}: repairing, no decision — run the reassessment pass.")
+                out.append(f"PR {pr}: repairing, no decision — run `repair-pass.py bundle`.")
             else:
                 out.append(f"PR {pr}: repairing — dispatch decision ({r['repair_decision']}), nothing else.")
         elif status in HELD:  # awaiting-user / awaiting-api

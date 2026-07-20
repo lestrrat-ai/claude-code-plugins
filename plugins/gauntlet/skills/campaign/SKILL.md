@@ -157,12 +157,10 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
     `awaiting-user`.
 18. Any campaign commit is PR content: it resets the gate, re-triages the tier, and is re-reviewed on
     the new SHA.
-19. At a review-loop cap -> `repair-pass.py` (`permitted` / `decide`): STOP dispatching targeted
-    fixes — a cap is a **mode switch, not a doorbell**. Hand the PR's WHOLE history at once to a
-    context-isolated reassessment pass and execute the ONE decision it returns — RESCOPE /
-    REPAIR-INTENT / DEMOTE / ROOT-CAUSE / ABORT — without asking the user, recorded through the tool
-    (`references/repair-pass.md`). On `pr_origin = external` (the default) only DEMOTE /
-    REPAIR-INTENT / ABORT are permitted, and a second failed repair aborts rather than looping.
+19. At a review-loop cap -> `repair-pass.py bundle` / `decide`: STOP dispatching targeted fixes — a cap
+    is a **mode switch, not a doorbell**. Build and dispatch the exact reassessment bundle, then execute
+    its bundle-bound decision without asking the user (`references/repair-pass.md`). The tool derives and
+    enforces the permitted decision set from PR ownership and remaining repair budget.
 
 **CI — stage 2b** (`references/stage-2-ci.md`)
 
@@ -258,7 +256,7 @@ a line the tool writes.
 | `merge-check.py` | `check` — decide merge-readiness (`merge` / `not-yet <reason>`) from the ledger row, live PR view, and fetched base ancestry | `references/stage-3-merge.md` |
 | `label-mirror.py` | `mirror` — reconcile a PR's status label with its review gate (the canonical idempotent `gauntlet-accepted`/`gauntlet-reviewing` swap), computed from the ledger row; touches only the two status labels | `references/stage-2-review-gate.md` |
 | `reconcile.py` | `fetch` — construct, validate, and atomically promote the canonical run-scoped PR snapshot; `detect` — compare it against the ledger and emit per-PR FACTS. Names no action; routing is skill policy | `references/files-and-ledger.md`, `references/loop-control.md` |
-| `repair-pass.py` | Reassessment pass's door: `permitted` / `decide` — the closed decision enum, ownership guardrail, repair cap | `references/repair-pass.md` |
+| `repair-pass.py` | Reassessment pass's door: `permitted` / `bundle` / `decide` — deterministic complete-history prompt, bundle hash binding, closed decision enum, ownership guardrail, repair cap | `references/repair-pass.md` |
 | `followups.py` | Schema-owning accessor for the follow-up store (`.gauntlet/followups.jsonl`) — a durable work QUEUE, not an archive: entries are deleted once recorded elsewhere, kept when nothing else would remember | `references/followups.md` |
 | `carryover.py` | `distill` — project a run's TERMINAL ledger into `.gauntlet/history/<run-id>.md` on normal exit: merged/aborted/API-declined facts, exactly once (refuses a live run and refuses to overwrite) | `references/carryover.md` |
 | `nudge.py` | Advisory reminder printer for heartbeat start; always exits 0 | its own module docstring |

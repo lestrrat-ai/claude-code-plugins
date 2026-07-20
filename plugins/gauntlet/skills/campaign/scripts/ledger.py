@@ -856,10 +856,9 @@ def cmd_verdict(path: Path, args) -> int:
     print(
         f"ledger: pr {pr} is NOT CONVERGING — {', '.join(which)}. The verdict IS recorded, and the row is "
         f"now `{REPAIR_STATUS}`.\n"
-        f"ledger: DO NOT dispatch a fix subagent and DO NOT launch another review pass for it. Run the "
-        f"REASSESSMENT PASS (`repair-pass.md`): hand a context-isolated agent the WHOLE history at once — "
-        f"every round's verdict and finding, the diff-growth curve, the intent, the current diff — and "
-        f"record the ONE decision it returns with `repair-pass.py decide`.\n"
+        f"ledger: DO NOT dispatch a fix subagent and DO NOT launch another review pass for it. Run "
+        f"`repair-pass.py bundle` exactly as `repair-pass.md`, 'Build the complete reassessment bundle', "
+        f"specifies; dispatch that prompt and record its bundle-bound decision with `repair-pass.py decide`.\n"
         f"ledger: repair_count={counter(row, 'repair_count')} of {REPAIR_CAP}"
         + (" — SPENT: this PR's repair budget is exhausted, so the only permitted decision is `abort`."
            if spent else "."),
@@ -918,7 +917,8 @@ def cmd_dispatch_check(path: Path, args) -> int:
             return EXIT_STOP
         if decision == "-":
             print(f"refused: pr {pr} is {REPAIR_STATUS} but NO REASSESSMENT DECISION is recorded. Run the "
-                  f"reassessment pass and record its decision with `repair-pass.py decide` FIRST — a repair "
+                  f"`repair-pass.py bundle` reassessment and record its bundle-bound decision with "
+                  f"`repair-pass.py decide` FIRST — a repair "
                   f"dispatched without one is just the next targeted fix wearing a new name, which is the "
                   f"loop this mechanism exists to stop.", file=sys.stderr)
             return EXIT_STOP

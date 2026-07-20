@@ -67,17 +67,25 @@ Dispatch **one context-isolated worker** in the **`session` class** (it decides 
 downgrade it; `SKILL.md`, "Worker Dispatch"), and hand it **THE WHOLE HISTORY AT ONCE**. This is the
 crux: **no heartbeat has ever had this view**, which is exactly why 21 rounds could pass unnoticed.
 
-It receives, in one prompt:
+### Build the complete reassessment bundle
 
-- **every round's verdict and finding** — all of `<rundir>/review-<pr>-*.txt`, in order, with each one's
-  verdict. Not a summary: the findings themselves.
-- **the diff-growth curve** — what the PR's main files measured at each of this run's commits:
-  `git log --oneline origin/<base>..HEAD` and, per commit, `git show <sha>:<file> | wc -l`.
-- **the PR's intent artifact** — its Purpose / Non-goals / Threat model.
-- **the current diff** — `git diff origin/<base>...HEAD`.
-- **the permitted decisions** — from `repair-pass.py --file <state.jsonl> permitted --pr <N>`, which
-  derives them from the row. **Build the prompt from that output; never retype the enum**, or the prompt
-  will drift from the rule the tool enforces.
+**Build the worker prompt only through `repair-pass.py bundle`:**
+
+```text
+repair-pass.py --file <state.jsonl> bundle --pr <N> --run-dir <rundir> \
+  --worktree <pr-worktree> --output <rundir>/repair-<pr>-<k>.prompt.txt
+```
+
+The command selects rounds numerically, selects each round's active launch attempt through
+`review-pass.py`'s identity rules, and validates the complete artifact set before writing anything. It
+includes the active reports/findings, any available audits with explicit absence markers, intent,
+cumulative per-commit file measurements, current three-dot diff, and the ledger-derived `permitted` result
+as JSON data. Dynamic bytes never become shell source.
+
+The command writes the prompt and `<output>.manifest.json`, then prints the manifest location and hashes.
+It refuses missing or duplicate active artifacts, an incomplete pass, a stale latest-review/ledger/worktree
+SHA, a failed Git read, or an existing output. Dispatch the exact prompt file to the reassessment worker;
+NEVER rebuild, reorder, summarize, or splice its inputs by hand.
 
 It returns **exactly ONE decision from a CLOSED enum**, and the driver executes it **without asking the
 user**:
@@ -93,12 +101,16 @@ user**:
 The decision is recorded through the tool, and **only** through the tool:
 
 ```
-repair-pass.py --file <state.jsonl> decide --pr <N> --decision <one of the five> --record <rundir>/repair-<pr>-<k>.md
+repair-pass.py --file <state.jsonl> decide --pr <N> --decision <one of the five> \
+  --record <rundir>/repair-<pr>-<k>.md \
+  --bundle-manifest <rundir>/repair-<pr>-<k>.prompt.txt.manifest.json
 ```
 
 `--record` is **refused if it does not exist or is empty**. The reasoning — the history the pass saw, the
 decision, and why — must be **on disk**: every heartbeat is a fresh agent instance, and a justification that
-lives only in the context of an agent that has already exited is one nobody can audit.
+lives only in the context of an agent that has already exited is one nobody can audit. Its first nonblank
+line must copy the prompt's exact `BUNDLE-SHA256: <hash>` marker. `decide` re-hashes the prompt payload and
+refuses a record or manifest for different bytes, PR, ledger, or head SHA.
 
 ### The repair is dispatched only after its decision is recorded
 

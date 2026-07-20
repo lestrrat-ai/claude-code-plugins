@@ -344,9 +344,9 @@
   "Verdict accounting and labels" above.
 - **A PR THAT STOPS CONVERGING IS REPAIRED, NOT PROMPTED.** At a review-loop cap `ledger.py verdict` sets
   `status = repairing` and **exits non-zero**: dispatch **no** further targeted fix and **no** further
-  review pass. Hand the PR's **whole history at once** to a context-isolated reassessment pass, which
-  returns ONE decision — **RESCOPE / REPAIR-INTENT / DEMOTE / ROOT-CAUSE / ABORT** — and execute it
-  **without asking the user** (`repair-pass.md`). **A cap is a MODE SWITCH, not a doorbell.**
+  review pass. Run `repair-pass.md`, **"Build the complete reassessment bundle"**, dispatch its exact
+  prompt to the reassessment worker, and execute its bundle-bound decision **without asking the user**.
+  **A cap is a MODE SWITCH, not a doorbell.**
 - **AUTONOMOUS REPAIR NEVER REWRITES A PR CAMPAIGN DOES NOT OWN.** On a PR with `pr_origin = external` —
   the user's, a teammate's, any PR adopted by number, **and the DEFAULT** — the permitted decisions are
   **only DEMOTE / REPAIR-INTENT / ABORT**. RESCOPE and ROOT-CAUSE reshape branch content wholesale, and

@@ -159,6 +159,8 @@ jobs:
       # while either PR is still finding genuine defects. A re-tuned cap that would have cut a real PR off
       # mid-hunt fails here, saying so. The ledger's own self-test above runs the counter/cap fixtures;
       # this one runs the decision enum, the ownership guardrail, and the repair cap.
+      # It also builds the complete reassessment bundle, selects active relaunches, and binds each decision
+      # record to the exact deterministic prompt hash.
       - name: Repair-pass contract (the reassessment decision, the guardrail, the cap)
         run: python3 plugins/gauntlet/skills/campaign/scripts/repair-pass.py self-test
 

@@ -325,12 +325,9 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
    **A `repairing` PR is the ONE held PR that still has machine work due — and it is NOT the work the
    other bullets describe.** Do not skip it and do not prompt the user; drive its repair to completion:
 
-   - **no `repair_decision` yet** → dispatch the **reassessment pass** (`repair-pass.md`): a
-     context-isolated worker in the **`session`** class, handed **every round's verdict and finding, the
-     diff-growth curve, the intent artifact, and the current diff — all at once**. No heartbeat has ever had
-     that view; it is why 21 rounds passed unnoticed. It returns ONE decision from a closed enum, recorded
-     with `repair-pass.py decide` (which refuses a decision this PR may not take — see the ownership
-     guardrail).
+   - **no `repair_decision` yet** → run `repair-pass.md`, **"Build the complete reassessment bundle"**.
+     Dispatch its exact prompt to one context-isolated **`session`** worker. Record the returned decision
+     through that section's bundle-bound `repair-pass.py decide` command.
    - **a `repair_decision` is recorded** → `ledger.py dispatch-check --pr <N> --action repair`, then
      execute **that** decision and no other work. When the repair has landed, return the row to the gate
      (`ledger.py … set --pr <N> --status in_review`). `review_rounds` is **not** reset — it never is.
