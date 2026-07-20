@@ -424,6 +424,21 @@ only as your semantic all-prose call — the tool never grants it), then replace
 `ledger.py … set --pr <N> --tier <decided tier>`. A refusal leaves the conservative bootstrap in place and
 blocks gate dispatch until the next heartbeat refreshes the worktree/head and derives successfully.
 
+**`required(tier)` is part of the gate projection, so this decided-tier write can change which status
+label is correct even when `reviews_ok` is untouched (STANDARD↔TRIVIAL flips `required` between 2 and 1);
+therefore in the SAME step, run `label-mirror.py mirror` for the PR** — idempotent, a no-op when the label
+already matches — so the tier, `required(tier)`, and the public status label move together
+(`stage-2-review-gate.md`, "Status labels mirror the review gate", owns the swap and the tool). **Run it
+on an UNCHANGED re-adoption too, NOT only a fresh one:** step 4 labelled against the *preserved* tier
+before this decision, and an unchanged re-adoption PRESERVES `reviews_ok` (>= 1), so a PR left
+`gauntlet-accepted` under a preserved TRIVIAL (`required` 1) keeps that false label until this mirror flips
+it to `gauntlet-reviewing` once the decision raises the tier to STANDARD (`required` 2). Never skip it as a
+presumed no-op — a fresh adoption's `reviews_ok=0` is the ONLY case the mirror is a guaranteed no-op.
+
+```
+python3 <skill-dir>/scripts/label-mirror.py mirror --ledger <state.jsonl> --pr <N> --repo owner/name
+```
+
 6. **Ensure a live CI watch when — and ONLY when — a check can still move.** The warrant for a watch is a
    **still-RUNNING evidence row** in the PR's snapshot, **never the `ci` value** (Stage 2b, `stage-2-ci.md`
    — "WATCH ONLY WHAT CAN MOVE"): a PR whose CI has **SETTLED** gets **no watch**, because
