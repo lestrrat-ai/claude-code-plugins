@@ -115,7 +115,7 @@ def bind_record(ledger: Path, record: Path, pr: str, head_sha: str, worktree: Pa
         "head_sha": head_sha,
         "base_ref": "origin/main",
         "base_sha": head_sha,
-        "ledger": {"path": str(ledger.resolve()), "row": row},
+        "ledger": {"path": str(ledger.resolve()), "row": R.decision_projection(row)},
         "intent": {},
         "rounds": [],
         "diff_growth": [],
@@ -784,6 +784,66 @@ def t_bundle_resumes_after_context_loss(tmp: Path) -> None:
     check(output.read_bytes() == b"not the prepared bundle\n", "the refused foreign output was overwritten")
 
 
+def t_bundle_identity_ignores_liveness_but_not_decision_fields(tmp: Path) -> None:
+    """A CI-observation write to a liveness field must NOT wedge resume; a decision-field change still does.
+
+    While a row is `repairing` the CI watch still OBSERVES the PR (observing is not mutating), so a liveness
+    counter such as `settled_strikes` legitimately moves between two `bundle` runs. That write must not shift
+    the bundle's deterministic identity — only the `DECISION_FIELDS` projection may — so the next `bundle`
+    RESUMES the pair byte-for-byte and `decide` still accepts the bundle a record was already bound to. The
+    mirror image also holds: a change to a decision field IS a real drift, so `decide` refuses it as stale.
+    """
+    case = bundle_setup(tmp / "liveness", origin="external")
+    output = case["rundir"] / "repair-1-1.prompt.txt"
+    manifest_path = R.bundle_manifest_path(output)
+    code, out1, err = run_bundle(case, output)
+    check(code == 0, f"the first bundle failed: {err!r}")
+    first_prompt, first_manifest = output.read_bytes(), manifest_path.read_bytes()
+    bundle_sha = json.loads(out1)["bundle_sha256"]
+
+    # A routine CI observation bumps a LIVENESS field on the repairing row; the decision fields are untouched.
+    header_line, row_line = case["ledger"].read_text().splitlines()
+    row = json.loads(row_line)
+    check(str(row["settled_strikes"]) != "2", "fixture assumed a settled_strikes value the row already held")
+    row["settled_strikes"] = "2"
+    case["ledger"].write_text(header_line + "\n" + json.dumps(row) + "\n")
+
+    # The next heartbeat re-runs bundle: the liveness write is OUT of the identity, so it resumes the pair.
+    code, out2, err = run_bundle(case, output)
+    check(code == 0, f"a liveness write wedged bundle resume: {err!r}")
+    check(output.read_bytes() == first_prompt and manifest_path.read_bytes() == first_manifest,
+          "a liveness write changed the deterministic bundle bytes")
+    check(json.loads(out2)["bundle_sha256"] == bundle_sha,
+          "a liveness write moved the bundle identity a decision record is bound to")
+
+    # decide still ACCEPTS the bundle after the liveness drift — its staleness check reads only the projection.
+    record = case["rundir"] / "repair-1-1.md"
+    record.write_text(f"{R.BUNDLE_MARKER}: {bundle_sha}\n\nDEMOTE — the finding is outside the PR's purpose.\n")
+    code, _, err = R.run(["--file", str(case["ledger"]), "decide", "--pr", "1", "--decision", "demote",
+                          "--record", str(record), "--bundle-manifest", str(manifest_path)])
+    check(code == 0, f"decide refused a valid bundle after a mere liveness write: {err!r}")
+    check(field(case["ledger"], "repair_decision").startswith("demote@"),
+          "the liveness-drift decision was not recorded")
+
+    # Mirror image: a DECISION-field change is a real drift, so the bundle-bound decide refuses it as stale.
+    drift = bundle_setup(tmp / "decision-drift", origin="external")
+    drift_output = drift["rundir"] / "repair-1-1.prompt.txt"
+    code, drift_out, err = run_bundle(drift, drift_output)
+    check(code == 0, f"the decision-drift bundle failed: {err!r}")
+    drift_sha = json.loads(drift_out)["bundle_sha256"]
+    header_line, row_line = drift["ledger"].read_text().splitlines()
+    row = json.loads(row_line)
+    row["ns_streak"] = str(int(row["ns_streak"]) + 1)  # a decision field moved after the bundle was built
+    drift["ledger"].write_text(header_line + "\n" + json.dumps(row) + "\n")
+    drift_record = drift["rundir"] / "repair-1-1.md"
+    drift_record.write_text(f"{R.BUNDLE_MARKER}: {drift_sha}\n\nDEMOTE.\n")
+    code, _, err = R.run(["--file", str(drift["ledger"]), "decide", "--pr", "1", "--decision", "demote",
+                          "--record", str(drift_record),
+                          "--bundle-manifest", str(R.bundle_manifest_path(drift_output))])
+    check(code == 1 and "ns_streak changed" in err, f"a decision-field drift was not caught as stale: {err!r}")
+    check(field(drift["ledger"], "repair_count") == "0", "a stale-bundle decision spent the repair budget")
+
+
 def t_bundle_git_and_atomic_failures_leave_no_output(tmp: Path) -> None:
     """A failed Git read or second promotion leaves neither prompt nor manifest behind."""
     git_case = bundle_setup(tmp / "git-failure")
@@ -967,6 +1027,7 @@ CASES = [
     ("bundle-report-needs-verdict", "a report with no terminal VERDICT line fails closed through parse_report", t_bundle_refuses_a_report_with_no_verdict),
     ("bundle-base-sha-pinned", "the base is pinned to one SHA before any read; a racing fetch cannot mix bases", t_bundle_pins_base_sha_against_a_racing_fetch),
     ("bundle-resume", "a bundle rebuilt after context loss reuses or regenerates, never wedges", t_bundle_resumes_after_context_loss),
+    ("bundle-identity-scope", "a liveness write never wedges resume; a decision-field drift is still stale", t_bundle_identity_ignores_liveness_but_not_decision_fields),
     ("bundle-atomic", "Git and atomic-write failures leave no partial bundle", t_bundle_git_and_atomic_failures_leave_no_output),
     ("decision-bundle-bound", "decide accepts only a record bound to the matching prepared bundle", t_decide_is_bound_to_prepared_bundle),
     ("shared-module-loader", "path loading preserves registration and exception behavior", t_shared_module_loader_preserves_importlib_semantics),

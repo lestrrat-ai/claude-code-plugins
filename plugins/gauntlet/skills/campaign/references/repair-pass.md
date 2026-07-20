@@ -117,8 +117,9 @@ repair-pass.py --file <state.jsonl> decide --pr <N> --decision <one of the five>
 decision, and why — must be **on disk**: every heartbeat is a fresh agent instance, and a justification that
 lives only in the context of an agent that has already exited is one nobody can audit. Its first nonblank
 line must copy the prompt's exact `BUNDLE-SHA256: <hash>` marker. `decide` re-hashes the prompt payload and
-refuses a record or manifest for different bytes, PR, decision-determining ledger fields (not the full
-row — liveness fields keep moving under the CI-observation exception), head SHA, or a base ref that has
+refuses a record or manifest for different bytes, PR, decision-determining ledger fields (the
+`DECISION_FIELDS` projection in `repair-pass.py`, not the full row — its liveness fields keep moving under
+the CI-observation exception, so they are excluded from the bundle bytes), head SHA, or a base ref that has
 moved since the bundle was built.
 
 ### The repair is dispatched only after its decision is recorded

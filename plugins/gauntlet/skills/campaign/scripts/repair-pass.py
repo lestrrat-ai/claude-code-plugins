@@ -136,6 +136,30 @@ EXTERNAL_PERMITTED = ("demote", "repair-intent", "abort")
 # The repairs that reshape someone's branch wholesale — the ones the ownership guardrail exists for.
 REWRITES_CONTENT = tuple(d for d in DECISIONS if d not in EXTERNAL_PERMITTED)
 
+# --- the decision-determining projection --------------------------------------
+#
+# The COMPLETE set of ledger fields that determine a reassessment decision, and the ONLY ledger data that
+# enters a bundle's DETERMINISTIC IDENTITY. `cmd_bundle` hashes exactly these into the bundle bytes, and
+# `decide`'s staleness check (`validate_decision_bundle`) compares exactly these — binding both guards to
+# this one tuple is what stops them from drifting apart.
+#
+# Falsifiable claim: the five decisions (rescope, repair-intent, demote, root-cause, abort) read no other
+# ledger field, and head_sha/worktree/base_sha are bound and re-verified live at decide time. The
+# liveness/observation fields (ci, reviews_ok, tier, api_approval, settled_strikes, ci_fingerprint, ...) are
+# DELIBERATELY EXCLUDED: they legitimately move during `repairing` under the CI-observation exception, so
+# admitting even one into the identity would let a routine CI write change the bundle bytes — refusing a
+# still-valid bundle at resume and WEDGING the repair path. If a new decision ever reads another field, add
+# it here (and nowhere else).
+DECISION_FIELDS = ("status", "pr_origin", "review_rounds", "ns_streak", "repair_count", "repair_decision")
+
+
+def decision_projection(row: dict) -> "dict[str, str]":
+    """The `DECISION_FIELDS` of `row`, in order — a bundle's deterministic identity.
+
+    Nothing outside this projection may enter the hashed bundle bytes; see `DECISION_FIELDS` for why.
+    """
+    return {field: row[field] for field in DECISION_FIELDS}
+
 
 def fail(msg: str) -> NoReturn:
     print(f"repair-pass: {msg}", file=sys.stderr)
@@ -546,8 +570,10 @@ def reuse_existing_bundle(output: Path, manifest_path: Path, prompt: bytes, mani
     bundle is DETERMINISTIC (`t_bundle_deterministic` pins it): identical inputs produce identical prompt and
     manifest BYTES. So an existing pair is THIS bundle if and ONLY if its bytes equal the freshly built bytes
     — that equality IS the validation against the live ledger, history, worktree, and head, needing no second
-    reader. The worktree HEAD was already proven current above, and `repairing` freezes ordinary gate work
-    (no fix, rebase, or merge), so the inputs cannot have shifted under a byte-for-byte matching pair.
+    reader. The worktree HEAD was already proven current above; the only ledger data in the bytes is the
+    decision-determining projection (`DECISION_FIELDS`), and `repairing` freezes every one of THOSE fields —
+    a routine CI-observation write bumps only the EXCLUDED liveness fields, which never enter the bytes — so
+    the inputs cannot have shifted under a byte-for-byte matching pair.
     """
     out_link, man_link = output.is_symlink(), manifest_path.is_symlink()
     if out_link or man_link:
@@ -660,7 +686,7 @@ def cmd_bundle(path: Path, args) -> int:
         "head_sha": head_sha,
         "base_ref": base_ref,
         "base_sha": base_sha,
-        "ledger": {"path": str(path.resolve()), "row": {field: row[field] for field in L.ROW_FIELDS}},
+        "ledger": {"path": str(path.resolve()), "row": decision_projection(row)},
         "intent": artifact(intent_file, intent_text),
         "rounds": rounds,
         "diff_growth": growth,
@@ -819,16 +845,15 @@ def validate_decision_bundle(path: Path, header: dict, row: dict, pr: str, recor
         fail("bundle prompt has no valid ledger snapshot")
     if ledger_snapshot["path"] != str(path.resolve()) or not isinstance(ledger_snapshot["row"], dict):
         fail("bundle prompt is bound to a different ledger")
-    # These SIX are the COMPLETE decision-determining set — nothing else in the row feeds the
-    # reassessment. Falsifiable claim: the five decisions (rescope, repair-intent, demote,
-    # root-cause, abort) read no other ledger field, and head_sha/worktree/base_sha are bound and
-    # re-verified live above. The liveness/observation fields (ci, reviews_ok, tier, api_approval,
-    # settled_strikes, ci_fingerprint, ...) are DELIBERATELY excluded: they legitimately move during
-    # `repairing` under the CI-observation exception, so a full-row equality check would let a routine
-    # CI write invalidate a valid bundle and wedge the repair path. If a new decision ever reads
-    # another field, add it here.
-    for field in ("status", "pr_origin", "review_rounds", "ns_streak", "repair_count", "repair_decision"):
-        if ledger_snapshot["row"].get(field) != row[field]:
+    # The snapshot carries EXACTLY the decision-determining projection `cmd_bundle` hashed into the bundle
+    # identity — the same `DECISION_FIELDS` (which owns the set and the reason the liveness fields are left
+    # out), and no other row field. Reject a snapshot carrying anything outside it, then compare the
+    # projection field-for-field against the live row so a change to one of these decision fields is stale.
+    snapshot_row = ledger_snapshot["row"]
+    if set(snapshot_row) != set(DECISION_FIELDS):
+        fail("bundle prompt's ledger snapshot is not the decision-determining projection")
+    for field in DECISION_FIELDS:
+        if snapshot_row.get(field) != row[field]:
             fail(f"bundle prompt is stale: ledger field {field} changed after it was prepared")
     if payload.get("permitted") != permitted_record(row):
         fail("bundle prompt's permitted decisions no longer match the ledger row")
