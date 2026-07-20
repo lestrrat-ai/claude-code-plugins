@@ -92,13 +92,17 @@ review gate"), and the review re-starts on the clean tip:
   <state.jsonl> --pr <pr> --worktree <worktree> --base <base>`**: it does the fetch/rebase/`--force-with-lease`
   push and the one ledger reset, and **refuses anything that is not clean**. **Exit 3 means it was NOT
   clean** — a conflict, or a rebase that applied textually but changed the PR's own diff — and it has already
-  aborted/reset and left the worktree at its original head; **fall back to the JUDGMENT path**: resolve the
-  conflict by hand (the driver's call, never the tool's), then apply the gate-reset rules for a
+  aborted/reset and left the worktree at its original head; **fall back to the JUDGMENT path**: **both**
+  exit-3 subcases land here — a conflict, AND a rebase that applied textually but changed the PR's own diff
+  — so resolve the conflict by hand where there is one, or accept the reshaped diff where there is none (the
+  driver's call, never the tool's), then apply the gate-reset rules for a
   content-changing rebase below. Clean base-only rebase with the PR diff unchanged keeps `reviews_ok` but still moves `head_sha`, so it
   sets `ci = pending`, and the tool writes the new head through the accessor, which
   **resets the liveness counters** at the door ("Status labels mirror the review gate"
   Exception, below, owns this rule; `stage-2-ci.md`, "THE LIVENESS COUNTERS");
-  conflict-resolving rebase changes PR content, so it resets the gate **as well** — here, at this site,
+  **a judgment-path rebase — conflict-resolving OR diff-changed — changes PR content**, so it resets the
+  gate **as well**, and in that same step you MUST reset `reviews_ok` to 0 **and run `label-mirror.py
+  mirror` for the PR** so the label reflects the new gate state — here, at this site,
   exactly as the step-6 reconcile does at its own (`stage-3-merge.md`), and it therefore **relabels in the
   same step** ("Status labels mirror the review gate", below).
 
@@ -838,7 +842,7 @@ that drop `reviews_ok` to 0):
 | Review-fix **or refutation** commit pushed (both are campaign commits to the PR head) | this file, verdict tally |
 | CI-fix commit pushed — economy tier **or** `session` tier | `stage-2-ci.md`, "Any campaign commit to the PR head resets the gate" |
 | Copilot-item fix pushed | Stage 2a preconditions, above |
-| Conflict-resolving rebase — at **either** of the two sites that rebase a PR | **Stage 2a preconditions, above** (the pre-review rebase of a `CONFLICTING`/`DIRTY`/`BEHIND` PR) **and** `stage-3-merge.md`'s step-6 reconcile. Naming only one of them is how the relabel goes missing at the other; the *event* owes the relabel, wherever it happens |
+| Judgment-path rebase (conflict-resolving **or** diff-changed) — at **either** of the two sites that rebase a PR | **Stage 2a preconditions, above** (the pre-review rebase of a `CONFLICTING`/`DIRTY`/`BEHIND` PR) **and** `stage-3-merge.md`'s step-6 reconcile. Both `clean-rebase.py` exit-3 subcases reset the gate — a conflict AND a no-conflict rebase that changed the PR's own diff — so naming only the conflict one, or only one of the two sites, is how the relabel goes missing; the *event* owes the relabel, wherever it happens |
 | Re-adoption refresh detects changed content | `pr-adoption.md` step 3 (step 4 then sets the status label from the **live** gate — `gauntlet-reviewing` here, but `gauntlet-accepted` for a re-adoption whose content did **not** change and whose verdicts step 3 preserved; either way it removes the other label) |
 | Any other PR-content change on the head branch — formatter/bot commit, manual push | **Loop control step 1's ledger refresh** — the heartbeat that *detects* it resets the gate, so it relabels there |
 

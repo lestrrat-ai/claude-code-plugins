@@ -165,7 +165,8 @@
   SATISFIED verdicts.** The label is a projection of `reviews_ok`, and it is the only run state a human
   sees on GitHub — a stale `gauntlet-accepted` publicly claims a PR passed a gauntlet it did not. So the
   **gate and the label move together, in the same step**: every action that drops `reviews_ok` to 0 (a
-  `NOT SATISFIED` verdict, a review/CI/copilot fix commit, a conflict-resolving rebase, any other
+  `NOT SATISFIED` verdict, a review/CI/copilot fix commit, a content-changing rebase (conflict-resolving
+  or diff-changed), any other
   content change on the head branch) MUST also reconcile the label by running `label-mirror.py mirror`
   for the PR — the ONE way that swap is applied — which restores `gauntlet-reviewing` on a PR carrying
   `gauntlet-accepted`. Never defer the swap to the next heartbeat — that leaves the label lying

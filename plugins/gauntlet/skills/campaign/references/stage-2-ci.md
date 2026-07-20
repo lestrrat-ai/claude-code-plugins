@@ -587,8 +587,8 @@ exactly two kinds of site, and the two RESET THEMSELVES DIFFERENTLY:
    Today's sites, **illustratively and NON-EXHAUSTIVELY**: **"Any campaign commit to the PR head resets the
    gate"** (below — CI-fix, review-fix, copilot-item fix, refutation commit); **Stage 2a's precondition
    rebase** (`stage-2-review-gate.md`) and **`stage-3-merge.md`, step 6's reconcile** — for each, BOTH
-   branches: a clean base-only rebase, which does **not** reset the gate, and a conflict-resolving rebase,
-   which does; **`loop-control.md` step 1's ledger refresh** and **`pr-adoption.md` step 3's row refresh** (a
+   branches: a clean base-only rebase, which does **not** reset the gate, and a content-changing rebase
+   (conflict-resolving or diff-changed), which does; **`loop-control.md` step 1's ledger refresh** and **`pr-adoption.md` step 3's row refresh** (a
    formatter/bot commit, a manual push, any content change this run did not dispatch). Each writes the new
    `head_sha` through the accessor, so each gets the reset from the door — none hand-resets.
 2. **An unpark by `retry`** (`loop-control.md` step 3) — no new head, but the user changed something
