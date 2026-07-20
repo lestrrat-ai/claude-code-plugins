@@ -84,8 +84,12 @@ as JSON data. Dynamic bytes never become shell source.
 
 The command writes the prompt and `<output>.manifest.json`, then prints the manifest location and hashes.
 It refuses missing or duplicate active artifacts, an incomplete pass, a stale latest-review/ledger/worktree
-SHA, a failed Git read, or an existing output. Dispatch the exact prompt file to the reassessment worker;
-NEVER rebuild, reorder, summarize, or splice its inputs by hand.
+SHA, or a failed Git read. **Re-running it while the decision is still unrecorded is safe and idempotent:**
+because the bundle is deterministic, an existing prompt/manifest pair whose bytes match the freshly rebuilt
+bundle is REUSED — so a heartbeat that built the bundle and died before `decide` simply resumes — a partial
+pair left by a crash mid-write is regenerated, and a non-matching or symlinked output is refused rather than
+overwritten. Dispatch the exact prompt file to the reassessment worker; NEVER rebuild, reorder, summarize,
+or splice its inputs by hand.
 
 It returns **exactly ONE decision from a CLOSED enum**, and the driver executes it **without asking the
 user**:

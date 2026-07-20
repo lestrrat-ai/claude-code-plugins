@@ -307,8 +307,41 @@ def select_active_rounds(rundir: Path, pr: str, expected_rounds: int) -> "list[t
             for round_no in expected]
 
 
+def prior_cap_rounds(rundir: Path, pr: str) -> "set[int]":
+    """Round numbers that ended at an EARLIER repair cap, recovered from the bundle manifests those caps
+    wrote.
+
+    A cap round legitimately carries no finding audit: the NOT-SATISFIED action sequence skips it when
+    `ledger.py verdict` moves the row straight to `repairing`. The CURRENT cap round is always
+    `review_rounds` (`expected_rounds`). But `REPAIR_CAP` allows a SECOND cap, and once it is reached the
+    FIRST cap round is no longer the latest — yet its absent audit is still legitimate. Each earlier cap
+    wrote a validated `repair-<pr>-<k>.prompt.txt.manifest.json` naming rounds 1..R; that R is the cap
+    round, and reading it back is how a later bundle still recognises the earlier cap. Deriving from the
+    manifests the caps already wrote — rather than adding ledger state — is the sanctioned recovery.
+    """
+    caps: "set[int]" = set()
+    for manifest_file in rundir.glob("*.manifest.json"):
+        try:
+            doc = json.loads(manifest_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue  # a manifest we cannot read names no cap round we can trust; skip it
+        if not isinstance(doc, dict) or doc.get("schema") != MANIFEST_SCHEMA or doc.get("pr") != pr:
+            continue
+        rounds = doc.get("rounds")
+        if not isinstance(rounds, list):
+            continue
+        nums = [item.get("round") for item in rounds
+                if isinstance(item, dict) and isinstance(item.get("round"), int)]
+        if nums:
+            caps.add(max(nums))
+    return caps
+
+
 def collect_rounds(rundir: Path, pr: str, expected_rounds: int) -> list[dict]:
     """Read exactly the active attempt's validated artifacts for every round."""
+    # The current cap round plus every EARLIER cap round (F2): each of these legitimately has no audit and
+    # must carry a gating finding, and this set is what tells the two rules below which rounds are caps.
+    cap_rounds = prior_cap_rounds(rundir, pr) | {expected_rounds}
     rounds = []
     for round_no, attempt_no, progress in select_active_rounds(rundir, pr, expected_rounds):
         try:
@@ -337,13 +370,27 @@ def collect_rounds(rundir: Path, pr: str, expected_rounds: int) -> list[dict]:
 
         audit_file = rundir / f"audit-{pr}-{round_no}.md"
         gating_findings = sum(1 for finding in findings if RP.gating(finding))
+        # F1 — a cap round's verdict is DERIVABLE from validated state: a cap trips ONLY on a NOT SATISFIED,
+        # and review-pass.py's coherence rule is an IF AND ONLY IF — NOT SATISFIED exactly when at least one
+        # GATING finding stands. So a cap round with zero gating findings is history review-pass.py itself
+        # would reject as `unusable`; refuse it here rather than hand the reassessment worker a NOT SATISFIED
+        # with nothing behind it. BOUNDARY: we check only the coherence the artifacts + the `repairing`
+        # status make derivable. A NON-cap round's verdict lives solely in the report PROSE, which
+        # review-pass.py deliberately never parses and neither do we — that round is left unchecked on
+        # purpose, not by oversight; a prose verdict reader would be a second, competing spelling of the rule.
+        if round_no in cap_rounds and not gating_findings:
+            fail(f"pr {pr} review round {round_no} reached a repair cap (status={L.REPAIR_STATUS}) but "
+                 f"records NO gating finding. A cap trips only on NOT SATISFIED, which by the coherence rule "
+                 f"must carry at least one gating finding; this is history review-pass.py rejects as unusable")
         if audit_file.exists():
             audit_artifact = artifact(audit_file, read_utf8(audit_file, "finding audit"))
-        elif gating_findings and round_no != expected_rounds:
+        elif gating_findings and round_no not in cap_rounds:
             fail(f"missing required finding audit for pr {pr} review round {round_no}")
         else:
             # The NOT-SATISFIED action sequence intentionally skips its audit when `ledger.py verdict`
-            # moves the row straight to `repairing`; that cap round therefore has a valid absent audit.
+            # moves the row straight to `repairing`; EVERY such cap round therefore has a valid absent
+            # audit, not only the latest one. `cap_rounds` names them all — the current `review_rounds`
+            # plus every earlier cap recovered from its bundle manifest (F2).
             audit_artifact = artifact(audit_file, "", present=False)
 
         rounds.append({
@@ -460,6 +507,50 @@ def write_bundle(output: Path, prompt: bytes, manifest_path: Path, manifest: byt
         raise
 
 
+def reuse_existing_bundle(output: Path, manifest_path: Path, prompt: bytes, manifest_bytes: bytes) -> bool:
+    """Decide what to do about a prompt/manifest pair that may already be on disk (F3 — resume).
+
+    Returns True when the EXACT prepared pair is already present: adopt it. This is the resume the
+    documented loop needs — a heartbeat that ran `bundle` and then ended before `decide` recorded a decision
+    re-enters the same `repair_decision == "-"` branch and re-runs `bundle`; without this it wedged forever
+    on "bundle output already exists". Returns False when nothing usable is present, having CLEARED a partial
+    leftover so the caller may write fresh. FAILS on a foreign/stale pair or a symlink — never silently
+    overwritten.
+
+    bundle is DETERMINISTIC (`t_bundle_deterministic` pins it): identical inputs produce identical prompt and
+    manifest BYTES. So an existing pair is THIS bundle if and ONLY if its bytes equal the freshly built bytes
+    — that equality IS the validation against the live ledger, history, worktree, and head, needing no second
+    reader. The worktree HEAD was already proven current above, and `repairing` freezes ordinary gate work
+    (no fix, rebase, or merge), so the inputs cannot have shifted under a byte-for-byte matching pair.
+    """
+    out_link, man_link = output.is_symlink(), manifest_path.is_symlink()
+    if out_link or man_link:
+        # A bundle this tool writes is a regular file promoted by os.replace, NEVER a symlink. A symlink at
+        # either path is foreign (or a hostile dangling link, which `resolve()` would follow off to its
+        # missing target): never follow it, never reuse it, never overwrite it.
+        conflicts = [str(p) for p, is_link in ((output, out_link), (manifest_path, man_link)) if is_link]
+        fail(f"bundle output already exists as a symlink (refusing to follow it): {', '.join(conflicts)}")
+    out_present, man_present = output.exists(), manifest_path.exists()
+    if not out_present and not man_present:
+        return False
+    if out_present and man_present:
+        try:
+            same = output.read_bytes() == prompt and manifest_path.read_bytes() == manifest_bytes
+        except OSError as exc:
+            fail(f"cannot read the existing bundle pair to validate it: {exc}")
+        if same:
+            return True
+        fail("a bundle already exists at this path and does NOT match the current ledger, history, and head "
+             "— refusing to overwrite it. If it is stale, delete the prompt and its .manifest.json and rebuild")
+    # Exactly one of the pair is present: a crash between the two atomic promotions left a PARTIAL bundle
+    # that can neither be dispatched nor validated. Regenerate rather than wedge the PR forever.
+    try:
+        (output if out_present else manifest_path).unlink()
+    except OSError as exc:
+        fail(f"cannot clear the partial bundle leftover to regenerate it: {exc}")
+    return False
+
+
 def cmd_bundle(path: Path, args) -> int:
     """Build the complete deterministic input for one context-isolated reassessment."""
     pr = str(args.pr)
@@ -570,6 +661,12 @@ def cmd_bundle(path: Path, args) -> int:
                     "review_head_sha": item["review_head_sha"]} for item in rounds],
     }
     manifest_bytes = canonical_json(manifest).encode("utf-8")
+    if reuse_existing_bundle(output, manifest_path, prompt, manifest_bytes):
+        # A prior heartbeat built this exact bundle and the process ended before `decide`; the bytes on disk
+        # ARE what we just rebuilt, so adopt them instead of wedging. Fresh, partial, or non-matching pairs
+        # have fallen through to write_bundle below (a partial one was cleared for regeneration).
+        print(canonical_json({**manifest, "manifest_path": str(manifest_path)}), end="")
+        return 0
     try:
         write_bundle(output, prompt, manifest_path, manifest_bytes)
     except OSError as exc:

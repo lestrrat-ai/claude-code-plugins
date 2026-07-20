@@ -400,8 +400,28 @@ def write_review_attempt(rundir: Path, round_no: int, attempt: int, head_sha: st
     return progress
 
 
+# One gating finding, reused wherever a cap round must carry the finding its NOT-SATISFIED verdict implies.
+GATING_FINDING = {
+    "file": "feature.txt",
+    "line": "2",
+    "writer": "end-user",
+    "purpose": "assemble complete repair history deterministically",
+    "repro": "supply the feature input through the documented user path",
+    "fix": "handle the feature input at the shared boundary",
+}
+
+
+def write_cap_finding(rundir: Path, round_no: int, attempt: int = 1) -> Path:
+    """Give a cap round the one gating finding it must carry: a cap trips only on NOT SATISFIED, and
+    review-pass.py's coherence rule (an IF AND ONLY IF) makes that mean at least one gating finding."""
+    stem = f"review-1-{round_no}" + (f".a{attempt}" if attempt >= 2 else "")
+    path = rundir / f"{stem}.findings.jsonl"
+    path.write_text(json.dumps({"type": R.RP.FINDING, **GATING_FINDING}) + "\n")
+    return path
+
+
 def bundle_setup(tmp: Path, *, rounds: int = 1, relaunch_round: "int | None" = None,
-                 origin: str = "external", hostile_names: bool = False) -> dict:
+                 origin: str = "external", hostile_names: bool = False, cap_finding: bool = True) -> dict:
     tmp.mkdir(parents=True, exist_ok=True)
     repo_name = "worktree `quoted` --" if hostile_names else "worktree"
     run_name = "run $value 'quoted' --" if hostile_names else "run"
@@ -419,6 +439,12 @@ def bundle_setup(tmp: Path, *, rounds: int = 1, relaunch_round: "int | None" = N
             write_review_attempt(rundir, round_no, 2, head_sha,
                                  "ACTIVE ATTEMPT 2\n\nVERDICT: NOT SATISFIED\n",
                                  audit="active audit\n" if round_no == 2 else None)
+
+    # The last round is the cap round (the NOT SATISFIED that tripped the cap and set `repairing`). By the
+    # coherence rule it must carry a gating finding; give it one so the history is usable. `cap_finding=False`
+    # builds the incoherent history the F1 refusal fixture needs.
+    if cap_finding:
+        write_cap_finding(rundir, rounds, 2 if relaunch_round == rounds else 1)
 
     ledger = rundir / "state.jsonl"
     row = {**L.ROW_DEFAULTS, "pr": "1", "head_sha": head_sha, "status": L.REPAIR_STATUS,
@@ -489,9 +515,14 @@ def t_bundle_is_deterministic_and_payloads_are_data(tmp: Path) -> None:
     check("+feature" in payload["current_diff"], "current three-dot diff is absent from the bundle")
 
     original = first.read_bytes()
-    code, _, err = run_bundle(case, first)
-    check(code == 1 and "already exists" in err, f"existing bundle output was overwritten: {err!r}")
-    check(first.read_bytes() == original, "conflicting output changed the existing prompt")
+    manifest_original = R.bundle_manifest_path(first).read_bytes()
+    code, resume_out, err = run_bundle(case, first)
+    check(code == 0, f"a re-run over the identical complete pair did not resume: {err!r}")
+    check(first.read_bytes() == original
+          and R.bundle_manifest_path(first).read_bytes() == manifest_original,
+          "resume rewrote the existing prompt/manifest instead of reusing them byte-for-byte")
+    check(json.loads(resume_out)["bundle_sha256"] == manifest1["bundle_sha256"],
+          "resume returned a different bundle than the one already on disk")
 
     dangling = case["rundir"] / "dangling-output.txt"
     dangling.symlink_to(case["rundir"] / "missing-target")
@@ -567,6 +598,105 @@ def t_bundle_preserves_findings_from_an_older_intent(tmp: Path) -> None:
     check(payload["rounds"][0]["gating_findings"] == 1
           and payload["rounds"][0]["audit"]["present"] is False,
           "the cap round incorrectly required an audit the NOT-SATISFIED sequence skips")
+
+
+def t_bundle_exempts_every_prior_cap_round(tmp: Path) -> None:
+    """A SECOND repair cap builds its bundle — an EARLIER cap round's legitimately absent audit is exempt too.
+
+    A cap round skips its audit (the NOT-SATISFIED sequence goes straight to `repairing`). `REPAIR_CAP`
+    allows a second cap, and once it is reached the FIRST cap round is no longer the latest. If only the
+    latest round were exempt, that earlier cap's absent audit would fail the bundle — so the repairing PR
+    could neither take its second repair nor even ABORT through the sanctioned door (both need a valid
+    bundle). The earlier cap is recovered from the manifest it wrote at the first cap.
+    """
+    case = bundle_setup(tmp, rounds=1)  # first cap at round 1 (gating finding, no audit)
+    first_output = case["rundir"] / "repair-1-1.prompt.txt"
+    code, _, err = run_bundle(case, first_output)
+    check(code == 0, f"the first cap bundle failed: {err!r}")
+    check(R.bundle_manifest_path(first_output).exists(),
+          "the first cap did not leave the manifest a later cap recovers its round from")
+
+    # The repair landed, the row returned to review, two more rounds ran, and round 3 is the SECOND cap.
+    head = case["head_sha"]
+    write_review_attempt(case["rundir"], 2, 1, head, "round 2\n\nVERDICT: SATISFIED\n")  # 0 gating, no audit
+    write_review_attempt(case["rundir"], 3, 1, head, "round 3\n\nVERDICT: NOT SATISFIED\n")
+    write_cap_finding(case["rundir"], 3)  # the second cap round carries its gating finding, no audit
+    # `review_rounds`/`repair_count` have no CLI door, so place the second-cap state directly.
+    row = {**case["row"], "review_rounds": "3", "repair_count": "1"}
+    case["ledger"].write_text(
+        json.dumps({"type": "header", **L.HEADER_DEFAULTS, "base_branch": "main"}) + "\n"
+        + json.dumps({"type": "row", **row}) + "\n")
+
+    second_output = case["rundir"] / "repair-1-2.prompt.txt"
+    code, out, err = run_bundle(case, second_output)
+    check(code == 0, f"the second cap bundle rejected the earlier cap round's absent audit: {err!r}")
+    payload = prompt_payload(second_output)
+    check([item["round"] for item in payload["rounds"]] == [1, 2, 3],
+          "the second cap history is not rounds 1..3")
+    check(payload["rounds"][0]["gating_findings"] == 1 and payload["rounds"][0]["audit"]["present"] is False,
+          "the FIRST cap round should keep its gating finding and its legitimately-absent audit")
+    check(payload["rounds"][2]["gating_findings"] == 1 and payload["rounds"][2]["audit"]["present"] is False,
+          "the SECOND cap round should keep its gating finding and its legitimately-absent audit")
+    check(json.loads(out)["bundle_sha256"] == R.sha256_bytes(
+              R.canonical_json(payload).encode("utf-8")),
+          "the emitted bundle hash does not cover the second cap payload")
+
+
+def t_bundle_refuses_a_cap_round_with_no_gating_finding(tmp: Path) -> None:
+    """A cap round that records NO gating finding is unusable history and is refused before any output.
+
+    A cap trips ONLY on a NOT SATISFIED, and review-pass.py's coherence rule is an IF AND ONLY IF: NOT
+    SATISFIED exactly when at least one gating finding stands. So a cap round with zero gating findings is a
+    NOT SATISFIED with nothing behind it — history review-pass.py itself rejects — and must not reach the
+    reassessment worker dressed as sound evidence.
+    """
+    case = bundle_setup(tmp, rounds=1, cap_finding=False)  # cap round 1 with NO findings at all
+    output = case["rundir"] / "bundle.txt"
+    code, _, err = run_bundle(case, output)
+    check(code == 1 and "NO gating finding" in err,
+          f"a cap round with zero gating findings was bundled as sound history: {err!r}")
+    check(not output.exists() and not R.bundle_manifest_path(output).exists(),
+          "the refused incoherent history left bundle output")
+
+
+def t_bundle_resumes_after_context_loss(tmp: Path) -> None:
+    """A heartbeat that built the bundle and died before `decide` re-runs `bundle` and RESUMES, not wedges.
+
+    The documented resume branch re-runs `bundle` whenever `repair_decision == "-"`, and every heartbeat is
+    a fresh agent. A complete, matching prompt/manifest pair on disk is reused byte-for-byte; a partial pair
+    left by a crash mid-write is regenerated; a foreign pair is refused rather than overwritten.
+    """
+    case = bundle_setup(tmp, origin="external")
+    output = case["rundir"] / "repair-1-1.prompt.txt"
+    manifest_path = R.bundle_manifest_path(output)
+    code, out1, err = run_bundle(case, output)
+    check(code == 0, f"the first bundle failed: {err!r}")
+    first_prompt = output.read_bytes()
+    first_manifest = manifest_path.read_bytes()
+
+    # A fresh heartbeat re-enters the same `repair_decision == "-"` branch and re-runs bundle.
+    code, out2, err = run_bundle(case, output)
+    check(code == 0, f"the resume run wedged instead of reusing the prepared bundle: {err!r}")
+    check(output.read_bytes() == first_prompt and manifest_path.read_bytes() == first_manifest,
+          "the resume run rewrote the prepared bundle instead of reusing it byte-for-byte")
+    check(json.loads(out2)["bundle_sha256"] == json.loads(out1)["bundle_sha256"],
+          "the resume run returned a different bundle than the one already on disk")
+
+    # A partial pair — the manifest never landed (killed between the two atomic promotions) — regenerates.
+    manifest_path.unlink()
+    code, out3, err = run_bundle(case, output)
+    check(code == 0, f"a partial (manifest-less) bundle was not regenerated: {err!r}")
+    check(manifest_path.exists() and output.read_bytes() == first_prompt,
+          "regenerating a partial bundle did not restore the complete deterministic pair")
+    check(json.loads(out3)["bundle_sha256"] == json.loads(out1)["bundle_sha256"],
+          "the regenerated bundle differs from the deterministic original")
+
+    # A foreign prompt at the path (bytes that are NOT this bundle) is refused, never reused or overwritten.
+    output.write_bytes(b"not the prepared bundle\n")
+    code, _, err = run_bundle(case, output)
+    check(code == 1 and "does NOT match" in err,
+          f"a foreign bundle at the output path was reused or overwritten: {err!r}")
+    check(output.read_bytes() == b"not the prepared bundle\n", "the refused foreign output was overwritten")
 
 
 def t_bundle_git_and_atomic_failures_leave_no_output(tmp: Path) -> None:
@@ -747,6 +877,9 @@ CASES = [
     ("bundle-deterministic", "bundle bytes/hash are deterministic and hostile payloads stay data", t_bundle_is_deterministic_and_payloads_are_data),
     ("bundle-refusals", "missing, stale, and duplicate active inputs fail before output", t_bundle_refuses_missing_stale_and_duplicate_inputs),
     ("bundle-old-intent", "old intent anchors survive; the cap round may have no audit yet", t_bundle_preserves_findings_from_an_older_intent),
+    ("bundle-prior-cap", "a second cap builds; every earlier cap round's absent audit is exempt", t_bundle_exempts_every_prior_cap_round),
+    ("bundle-cap-needs-finding", "a cap round with no gating finding is unusable history and refused", t_bundle_refuses_a_cap_round_with_no_gating_finding),
+    ("bundle-resume", "a bundle rebuilt after context loss reuses or regenerates, never wedges", t_bundle_resumes_after_context_loss),
     ("bundle-atomic", "Git and atomic-write failures leave no partial bundle", t_bundle_git_and_atomic_failures_leave_no_output),
     ("decision-bundle-bound", "decide accepts only a record bound to the matching prepared bundle", t_decide_is_bound_to_prepared_bundle),
     ("shared-module-loader", "path loading preserves registration and exception behavior", t_shared_module_loader_preserves_importlib_semantics),
