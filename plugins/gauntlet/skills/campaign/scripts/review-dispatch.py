@@ -260,43 +260,41 @@ def install_pair(
         raise
 
 
-def _identity_only(progress: Path, *, pr: str, review_pass: str, launch_attempt: str) -> bool:
-    """True iff ``progress`` is exactly this attempt's lone ``pass_identity`` line.
+def _identity_only(progress: Path) -> bool:
+    """True iff ``progress`` is exactly this attempt's lone, WELL-FORMED ``pass_identity`` line.
 
     ``prepare`` launches no reviewer, so until it returns the progress file holds only the single identity
     line and the reviewer has written nothing. One well-formed ``pass_identity`` for this attempt and no
     further line is therefore inert residue, not reviewer output; any extra line means the reviewer ran.
     The identity's ``dispatched_at``/``head_sha`` may differ from the current invocation (the stranded line
-    came from the interrupted run), so the match is on the attempt's ``pr``/``pass``/``launch_attempt``,
-    which name the same attempt this progress path is derived from.
+    came from the interrupted run), so no ``head_sha`` is pinned — a stale-but-well-formed identity is still
+    reclaimed.
+
+    The lone line is validated through the read door's OWN whole-file schema, ``RP.check_progress_file``
+    (no ``head_sha``) — the symmetric partner of the write door's ``identity_bytes`` (which validates the
+    same way before it is ever allowed to link an identity). That single call covers exact keys, duplicate-
+    key rejection, ``head_sha``/``dispatched_at`` shape and realness, and agreement between the record and
+    the attempt its filename names, so the schema is never re-stated here. Only the tool writes identities
+    and it validates fully first, so a MALFORMED lone identity is never the tool's own residue: any schema
+    defect returns ``False`` and the normal conflict check refuses, rather than unlinking a foreign writer's
+    evidence.
     """
     try:
         text = progress.read_text(encoding="utf-8")
     except OSError as exc:
         refuse(f"cannot recover interrupted preparation at {progress}: {exc}")
-    lines = text.splitlines()
-    if len(lines) != 1:
+    if len(text.splitlines()) != 1:
         return False
     try:
-        record = json.loads(lines[0])
-    except ValueError:
+        RP.check_progress_file(text, progress, dict)
+    except RP.Defect:
         return False
-    if not isinstance(record, dict) or record.get("type") != RP.IDENTITY:
-        return False
-    return (
-        str(record.get("pr")) == pr
-        and str(record.get("pass")) == review_pass
-        and str(record.get("launch_attempt")) == launch_attempt
-    )
+    return True
 
 
 def recover_inert_prompt(
     paths: "dict[str, Path]",
     expected_prompt: bytes,
-    *,
-    pr: str,
-    review_pass: str,
-    launch_attempt: str,
 ) -> None:
     """Reclaim any residue of a preparation that never launched a reviewer.
 
@@ -304,10 +302,11 @@ def recover_inert_prompt(
     progress file holds at most the orchestrator's single ``pass_identity`` line. Every abrupt-stop shape
     that leaves no reviewer output — the prompt alone, the identity alone, or both present but never
     reported as success — carries only this invocation's own inert bytes: a prompt whose bytes match, and a
-    progress file that is exactly this attempt's lone identity line. Reclaim (unlink) whichever is present
-    so the same-attempt prepare rebuilds the complete pair. Every other existing-artifact state — a
-    findings file, a report, or any extra progress line — is real reviewer evidence and is left for the
-    normal conflict check to refuse.
+    progress file that is exactly this attempt's lone, WELL-FORMED identity line (``_identity_only`` proves
+    it against the read door's schema, so a malformed lone identity is NOT reclaimed). Reclaim (unlink)
+    whichever is present so the same-attempt prepare rebuilds the complete pair. Every other
+    existing-artifact state — a findings file, a report, a malformed identity, or any extra progress line —
+    is not this invocation's inert residue and is left for the normal conflict check to refuse.
     """
     prompt = paths["prompt"]
     progress = paths["progress"]
@@ -335,7 +334,7 @@ def recover_inert_prompt(
     if progress_present:
         if progress.is_symlink() or not progress.is_file():
             return
-        if not _identity_only(progress, pr=pr, review_pass=review_pass, launch_attempt=launch_attempt):
+        if not _identity_only(progress):
             return
 
     try:
@@ -416,13 +415,7 @@ def prepare(args) -> dict:
         head_sha=args.head_sha,
         dispatched_at=args.dispatched_at,
     )
-    recover_inert_prompt(
-        paths,
-        prompt,
-        pr=args.pr,
-        review_pass=args.review_pass,
-        launch_attempt=args.launch_attempt,
-    )
+    recover_inert_prompt(paths, prompt)
     conflicts = [
         paths[name]
         for name in ("prompt", "progress", "findings", "report")

@@ -526,6 +526,64 @@ module.prepare(SimpleNamespace(**json.loads(sys.argv[2])))
               "same-attempt prepare did not recover a stale identity-only strand")
 
 
+def t_malformed_lone_identity_is_refused_not_reclaimed() -> None:
+    """A lone ``pass_identity`` that FAILS the read-door schema is foreign residue, not the tool's own inert
+    output: recovery leaves it in place and the conflict check refuses, rather than unlinking it and
+    silently rebuilding.
+
+    Only the tool writes identities, and it validates the whole record through ``check_progress_file``
+    before it ever links one, so it never leaves a MALFORMED lone identity. A malformed one is a hand-edit,
+    corruption, or a foreign writer of the driver-owned run file — deleting it destroys evidence. Every
+    shape the write door rejects must therefore be refused here too: a ``head_sha`` that is not 40 hex, a
+    record missing ``dispatched_at``, and a duplicate key that ``json.loads`` would silently collapse (the
+    exact hole plain parsing left). The stale-but-well-formed reclaim is exercised above; this is its
+    boundary.
+    """
+    malformed = {
+        "bad head_sha": json.dumps({
+            "type": "pass_identity", "pr": "41", "pass": "2", "head_sha": "bad",
+            "launch_attempt": "1", "dispatched_at": STAMP,
+        }, separators=(",", ":")),
+        "missing dispatched_at": json.dumps({
+            "type": "pass_identity", "pr": "41", "pass": "2", "head_sha": SHA,
+            "launch_attempt": "1",
+        }, separators=(",", ":")),
+        # A duplicate key: json.dumps cannot emit one, so this line is built by hand. json.loads keeps the
+        # LAST value and discards the truncated first; strict_object rejects the line outright.
+        "duplicate head_sha": (
+            '{"type":"pass_identity","pr":"41","pass":"2",'
+            '"head_sha":"a3f29c1","head_sha":"' + SHA + '",'
+            '"launch_attempt":"1","dispatched_at":"' + STAMP + '"}'
+        ),
+    }
+
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw))
+        progress = D.attempt_paths(Path(args.run_dir), "41", "2", "1")["progress"]
+        valid = json.dumps({
+            "type": "pass_identity", "pr": "41", "pass": "2", "head_sha": SHA,
+            "launch_attempt": "1", "dispatched_at": STAMP,
+        }, separators=(",", ":"))
+        progress.write_text(valid + "\n", encoding="utf-8")
+        check(D._identity_only(progress),
+              "a well-formed lone identity is no longer recognized as reclaimable inert residue")
+        for label, line in malformed.items():
+            progress.write_text(line + "\n", encoding="utf-8")
+            check(not D._identity_only(progress),
+                  f"{label}: a malformed lone identity was treated as reclaimable inert residue")
+
+    for label, line in malformed.items():
+        with tempfile.TemporaryDirectory() as raw:
+            args = _fixture(Path(raw))
+            paths = D.attempt_paths(Path(args.run_dir), args.pr, args.review_pass, args.launch_attempt)
+            paths["progress"].write_text(line + "\n", encoding="utf-8")
+            _refused(args, "already present")
+            check(paths["progress"].read_text(encoding="utf-8") == line + "\n",
+                  f"{label}: recovery altered the malformed lone identity instead of leaving it in place")
+            check(not paths["prompt"].exists(),
+                  f"{label}: a prompt was materialized despite the malformed-identity conflict")
+
+
 def t_external_attempt_two_has_native_attempt_three_recovery() -> None:
     with tempfile.TemporaryDirectory() as raw:
         args = _fixture(
@@ -644,6 +702,7 @@ CASES = [
     ("crash-recovery", "the exact inert prompt-only crash state is recoverable", t_prompt_only_crash_state_is_recoverable),
     ("interrupt-rollback", "an interrupt after the identity link rolls both files back", t_interrupt_after_identity_link_strands_no_residue),
     ("hard-stop-recovery", "both-files and identity-only hard-stop residue is recoverable", t_hard_stop_residue_is_recoverable),
+    ("malformed-identity-refused", "a malformed lone identity is refused, not reclaimed", t_malformed_lone_identity_is_refused_not_reclaimed),
     ("fallback-attempt-three", "external retry failure has a terminal native attempt-3 path", t_external_attempt_two_has_native_attempt_three_recovery),
     ("transition-mapping", "review actions map directly to route and producer", t_transition_actions_map_directly_to_prepare_inputs),
     ("unicode-delivery", "a Unicode path is delivered as UTF-8 bytes under ASCII stdout", t_unicode_worktree_delivers_under_ascii_stdout),

@@ -46,11 +46,14 @@ filesystem bytes is a controlled refusal before either launch artifact exists.
 **Recover any inert residue of a preparation that never launched a reviewer.** A reviewer starts only
 after `prepare` returns, so until then no findings or report exist and the progress file holds at most this
 attempt's single `pass_identity` line. Residue that carries only this invocation's own inert bytes — a
-prompt whose bytes exactly match, and a progress file that is exactly this attempt's lone `pass_identity`
-line, in whichever combination the interruption left (prompt alone, identity alone, or both) — is removed
-so the pair can be recreated. A findings file, a report, or any further progress line is real reviewer
-evidence: refuse it, along with any prompt or progress file that does not match this attempt. A non-zero
-exit prepares nothing usable; do not launch.
+prompt whose bytes exactly match, and a progress file that is exactly this attempt's lone, **well-formed**
+`pass_identity` line (validated through `review-pass.py`'s progress-file schema — the same read door the
+tool itself passes an identity through before it writes one), in whichever combination the interruption
+left (prompt alone, identity alone, or both) — is removed so the pair can be recreated. A findings file, a
+report, or any further progress line is real reviewer evidence; a lone identity that fails that schema
+(bad `head_sha`, missing `dispatched_at`, a duplicate key) is not this tool's own residue but a foreign
+writer's — refuse either, along with any prompt or progress file that does not match this attempt, and
+never delete it. A non-zero exit prepares nothing usable; do not launch.
 
 `review-<pr>-<n>.plan.jsonl` remains per-pass and `intent-<pr>.md` remains per-PR. Every other path in
 `transport` is per-attempt: attempt 1 uses `review-<pr>-<n>.*`; attempt `k >= 2` uses
