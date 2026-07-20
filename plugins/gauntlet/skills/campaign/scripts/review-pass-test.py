@@ -1105,6 +1105,19 @@ class Tables:
                 "why": "both attempt 1 and attempt 2 exist on disk; the default view collapses to the "
                        "highest launch_attempt, so only `7-1.a2` renders and the dead `7-1` is suppressed",
             },
+            "active-attempt-report": {
+                "files": {"review-7-1.progress.jsonl": [ident7(), started("u01")],
+                          "review-7-1.a2.progress.jsonl": [ident7(launch_attempt="2"), started("u01")],
+                          "review-7-1.plan.jsonl": self.PLAN,
+                          "review-7-1.txt": "VERDICT: SATISFIED\n",
+                          "review-7-1.a2.txt": "VERDICT: NOT SATISFIED\n"},
+                "now": "2026-07-06T00:03:00Z",
+                "flags": ["--history"],
+                "expect": {"7-1": {"health": "done", "verdict": "SAT"},
+                           "7-1.a2": {"health": "done", "verdict": "NOT-SAT"}},
+                "why": "each attempt reads its own report; conflicting attempt-1 and attempt-2 verdicts "
+                       "cannot overwrite the active relaunch's status",
+            },
             "plan-header-tolerated": {
                 "files": {PROGRESS_FILE: self.WORKED,
                           PLAN_FILE: [PLAN_HEADER, unit("u01"),

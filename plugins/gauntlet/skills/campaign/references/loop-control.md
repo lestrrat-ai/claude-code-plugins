@@ -34,10 +34,10 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
    `awaiting-user`).
    Three cases:
 
-   - **This run has live work → resume.** A dead review pass — no verdict, no live task — is resolved by
-     its relaunch budget alone (highest-numbered `launch_attempt`: `1` → relaunch once as attempt `2`;
-     `2` → **fresh-worker fallback**), **NOT by a blind re-launch**; the full algorithm and why launch
-     evidence is irrelevant on this path live in **"Resume after a killed session"** below (Stage 2a).
+   - **This run has live work → resume.** Resolve a dead review pass — no verdict, no live task — from its
+     highest-numbered `launch_attempt` through `runtime-adapter.md`, **Review preparation mapping**, **NOT
+     by a blind re-launch**. Why launch evidence is irrelevant on this path lives in **"Resume after a
+     killed session"** below (Stage 2a).
      **Reconcile against ground truth** — do NOT redo *completed* work; a CI task whose output file is
      missing may be re-launched, since in-flight tasks die with their session — then, for each of this
      run's branches/PRs read the live SHA, CI status, and verdict files, and refresh the ledger: write
@@ -383,11 +383,10 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      that file's `pass_identity.dispatched_at`) →
      it **never started** (Stage 2a launch check — a reviewer hung on stdin, a bad path, a sandbox
      denial). Kill the task, re-check the command for the known launch faults (above all the quoted
-     prompt-file stdin redirect), and re-dispatch the pass once into **attempt-scoped artifacts**
-     (`review-<pr>-<n>.a2.*`, fresh `pass_identity` with `launch_attempt: 2` — never the dead attempt's
-     files, which a surviving process could still write to); a dead `launch_attempt: 2` →
-     fresh-worker fallback. A failed launch yields no verdict: it never touches `reviews_ok` and
-     never bumps the row's `attempts`;
+     prompt-file stdin route), then take the next action and fresh attempt from `runtime-adapter.md`,
+     **Review preparation mapping**. `review-dispatch.py prepare` creates coherent attempt-scoped
+     artifacts, never the dead attempt's files, which a surviving process could still write to. A failed
+     launch yields no verdict: it never touches `reviews_ok` and never bumps the row's `attempts`;
    - CI red and no fix is already in flight for that PR/SHA → **CLASSIFY the failure from the check logs
      first (Stage 2b, "Classify, then set the model class") — never dispatch a worker straight off a red
      check.** The class picks the logical model class: a **formatting/lint** failure → a scoped CI-fix
@@ -568,15 +567,14 @@ tasks die with the session, but nothing authoritative is lost. A new invocation 
 git/gh and continues — completed work is never redone (existing PRs, landed verdict files); a CI task
 whose output file is missing re-launches, and a **review** with no verdict and no live task goes through
 **Stage 2a active-attempt resolution** rather than a blind re-launch: read the highest-numbered launch
-attempt's `pass_identity` and dispatch on `launch_attempt` alone — `1` → relaunch once as attempt `2`;
-`2` → fresh-worker fallback. **The relaunch budget lives on disk, not in the session**, so it survives
+attempt's `pass_identity` and take the exact branch in `runtime-adapter.md`, **Review preparation
+mapping**. **The relaunch budget lives on disk, not in the session**, so it survives
 the death of the agent that spent it — otherwise each new instance would rediscover a missing output
 file, relaunch the same hung reviewer, die, and repeat forever.
 
-**Every dead pass must land on exactly one of those two branches.** Do NOT gate the resume path on
-launch evidence: a dead attempt `2` that *did* write a `started` line before its session died would
-then satisfy neither "relaunch" (budget spent) nor "fall back" (evidence present) — no rule would fire
-and the PR would stall forever, which is the very failure this feature exists to prevent. Launch
+**Every dead pass must land on exactly one branch in Review preparation mapping.** Do NOT gate the resume
+path on launch evidence: a dead attempt that wrote a `started` line still has no process capable of
+finishing, so launch evidence cannot select or suppress its recovery branch. Launch
 evidence answers "is this **live** process working?" and is meaningful **only** for the in-flight
 ~5-min launch check; once the task is gone, the only question is how much relaunch budget remains. It
 binds to the run via

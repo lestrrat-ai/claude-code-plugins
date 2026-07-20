@@ -269,8 +269,9 @@
   diff, task, and protocol correlate them; same-reviewer passes also share model/prompt), so the gate
   is a miss-catcher, not a proof of correctness.
 - **A review pass's artifacts have a TOOL — `scripts/review-pass.py`. NEVER hand-parse one, NEVER
-  hand-write a line the tool writes** (Stage 2a). It owns the plan, the `pass_identity`, the unit-progress
-  events, **the findings**, and the read that answers **does this pass COUNT?** — `verify`, which validates
+  hand-write a line the tool writes** (Stage 2a). It owns the plan and event schemas, validates the
+  `pass_identity` written by `review-dispatch.py prepare`, and owns the read that answers **does this pass
+  COUNT?** — `verify`, which validates
   EVERY line of those files whatever produced it — every reviewer event now goes through a door
   (`emit-progress.py`, `emit-finding.py`, `emit-amendment.py`), and a hand-written line is caught on read
   all the same (Stage 2a owns that rule). **A verdict from a pass that does not verify `ok` is NEVER tallied**, and there are
@@ -301,10 +302,10 @@
   your work and then tell you the work does not count (it did — see Stage 2a). `ok` is **not** `SATISFIED`:
   the tool parses the terminal result but never judges the report's prose or writes the tally.
 - Before each review, write an orchestrator-owned `review-<pr>-<n>.plan.jsonl` (per-pass — a relaunch
-  reuses it; written through the tool above, never a heredoc). Build `runtime-adapter.md`'s one typed
-  transport record, JSON-bind it and the verbatim intent into the active `.prompt.txt` through
-  `write_bytes`, then pass it through `dispatch_native` or `run_argv` — never shell source. The record
-  carries the runtime adapter's final-report ownership assignment.
+  reuses it; written through the tool above, never a heredoc). Then run `review-dispatch.py prepare` as
+  `review-dispatch.md`, "Prepare the active attempt", specifies. It writes the validated `pass_identity`
+  and exact prompt and returns `runtime-adapter.md`'s one typed transport record; pass the prepared prompt
+  through `dispatch_native` or `run_argv` — never shell source. Never rebuild its attempt paths or bindings.
   Reviewers append progress events against planned units to the **active launch attempt's**
   progress file (`review-<pr>-<n>.progress.jsonl` for attempt 1, `review-<pr>-<n>.a<k>.progress.jsonl`
   for a relaunch — only the attempt named in the active `pass_identity` is read or counted). Meaningful
@@ -314,9 +315,9 @@
   → the pass never started → kill + relaunch into attempt-scoped artifacts per the Stage 2a launch
   check. **Meaningful progress** is the stronger bar (`done`/accepted amendment) — stale for ~15 min →
   suspicious review → retry/fallback per Stage 2a. Both bars judge a **live** process. A pass whose
-  task is **dead** with no verdict (killed session) ignores launch evidence entirely and dispatches on
-  `launch_attempt` alone: `1` → relaunch once; `2` → fresh-worker fallback. Never leave a dead pass
-  on neither branch.
+  task is **dead** with no verdict (killed session) ignores launch evidence entirely and follows
+  `runtime-adapter.md`, **Review preparation mapping**, from the highest `launch_attempt`. Never invent
+  another recovery branch.
 - Reviewers do not own the plan but must not treat it as presumptively complete: critically evaluate
   its coverage first, and raise any omitted dimension or materially wrong unit via a
   `plan_amendment_request` event rather than silently reviewing only the listed units. Never rewrite

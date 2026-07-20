@@ -8,10 +8,11 @@ renamed on a whim — inside every review prompt the orchestrator dispatches. Th
 running against INSTALLED copies of this skill: rename or remove this file and a live reviewer's emit call
 dies mid-pass.
 
-What has changed is what it ENFORCES. The whole review-pass artifact set now has ONE owner —
-`review-pass.py`, which also writes the plan and the `pass_identity`, and reads a pass back to answer
-"does this pass COUNT?". This file forwards to that owner instead of re-implementing half of it, so a
-progress event has exactly one definition and there is no second copy to drift.
+What has changed is what it ENFORCES. The whole review-pass artifact set now has ONE schema owner —
+`review-pass.py`, which writes the plan, validates the `pass_identity` prepared by `review-dispatch.py`,
+and reads a pass back to answer "does this pass COUNT?". This file forwards to that owner instead of
+re-implementing half of it, so a progress event has exactly one definition and there is no second copy
+to drift.
 
 The rule you are most likely to meet: **a unit that is NOT IN THE PLAN is refused.** "Progress counts only
 when it references a planned unit" was stated in prose and enforced by nobody — this tool used to accept a

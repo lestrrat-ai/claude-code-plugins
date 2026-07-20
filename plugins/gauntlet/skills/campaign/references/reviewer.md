@@ -84,12 +84,10 @@ open-ended review — *"is anything wrong with this code?"* — that the intent 
 native-worker path**, which is the fallback whenever a cross-engine reviewer is absent or fails. A stale
 summary is worse than no summary: it is the version people actually read, and it is believed.
 
-**Dispatch it by taking the review prompt from `review-dispatch.md` and calling
-`bind_review_prompt` for its two data bindings**: `<INTENT>` receives the intent block **verbatim**, while `<TRANSPORT-RECORD>` receives the
-JSON encoding of `runtime-adapter.md`'s typed record for the active attempt. That one record carries the
-worktree, base, emitter paths, attempt identity, progress/findings paths, and report ownership; no field
-is interpolated into shell source. **The prompt IS the
-contract**: whatever it
+**Prepare it with `review-dispatch.py prepare`, using the exact invocation in `review-dispatch.md`.** The
+command writes the one prompt every route receives and returns the active attempt's typed transport; do
+not derive its paths, bind its intent, or reconstruct its record here. **The prompt IS the contract**:
+whatever it
 requires of a `codex exec` reviewer it requires of a native worker — the same question ("does this PR achieve its
 stated Purpose…"), the same emit-only rule, the same anchored findings, the same `RESIDUAL-RISK` +
 single-`VERDICT:` ending. Its terminal result and artifacts are read and verified by the same `review-pass.py verify`
@@ -97,9 +95,8 @@ single-`VERDICT:` ending. Its terminal result and artifacts are read and verifie
 an `unusable` one.
 
 Only the **transport** differs from the external-reviewer form: it is a **background native-worker task**
-rather than a process. Set `report.producer` to `native-worker-write`, materialize the attempt-scoped
-prompt at `transport.prompt_path` with `write_bytes`, and pass those exact bytes through
-`dispatch_native`. The prompt explicitly
+rather than a process. Prepare route `native` with report producer `native-worker-write`, then pass the
+complete bytes at returned `transport.prompt_path` through `dispatch_native`. The prompt explicitly
 requires the worker to write the complete report to the record's `report.path` through the host file API
 before returning the same text; the orchestrator does not persist the returned task message. This exact
 producer rule applies to initial launch, relaunch, and native fallback. Run it in the **`session` class**

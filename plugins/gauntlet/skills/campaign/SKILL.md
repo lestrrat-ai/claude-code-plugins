@@ -136,6 +136,8 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
 14. Reviews are fresh, context-isolated, SHA-pinned, and sequential per PR (launch review 2 only
     after review 1 is SATISFIED). The gate: `required(tier)` SATISFIED verdicts on current content —
     **1 if TRIVIAL, else 2** (any code/agent-doc/sensitive change is 2) — plus green CI.
+    Before each launch, run `review-dispatch.py prepare` to write the attempt identity and exact prompt
+    and return the one typed transport; `references/review-dispatch.md` owns the invocation and handoff.
 15. The review is measured against the PR's INTENT, never "is anything wrong with this code?". The
     reviewer receives `intent-<pr>.md` verbatim and answers ONE question: does this PR achieve its
     stated Purpose, without breaking anything reachable by an actor named in its Threat model?
@@ -245,6 +247,7 @@ a line the tool writes.
 | `heartbeat.py` | Emit the scheduled-heartbeat callback command the driver arms for its next wake | `references/runtime-adapter.md` |
 | `ledger.py` | Schema-owning accessor for `state.jsonl` — plus `verdict`, the ONLY verdict recorder (tally, caps, `repairing` hold), and `dispatch-check`, the held-PR guard run before any mutating action | `references/files-and-ledger.md` |
 | `review-pass.py` | Executable contract for a review pass's artifacts — plan, `pass_identity`, progress, findings, active-attempt report result, `intent-check`, and the `verify` that answers "does this pass COUNT?" | `references/stage-2-review-gate.md` |
+| `review-dispatch.py` | `prepare` — validate one fresh review attempt, derive every artifact path, write `pass_identity` + exact bound prompt, and return the host-neutral typed transport record; never selects or launches a route | `references/review-dispatch.md` |
 | `emit-progress.py` | Reviewer's door: append one unit-progress event (the only sanctioned way) | `references/stage-2-review-gate.md` |
 | `emit-finding.py` | Reviewer's door: record one FINDING (the only sanctioned way; findings must anchor or they do not gate) | `references/stage-2-review-gate.md` |
 | `emit-amendment.py` | Reviewer's door: raise one plan amendment (the only sanctioned way; `ts` is tool-stamped, the proposed unit is validated like a plan unit) | `references/stage-2-review-gate.md` |

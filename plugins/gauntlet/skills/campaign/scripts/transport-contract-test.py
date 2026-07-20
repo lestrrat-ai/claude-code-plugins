@@ -12,10 +12,23 @@ import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 
+from _gauntlet.modules import load_module_from_path
+
 
 ROOT = Path(__file__).resolve().parents[1]
 REFS = ROOT / "references"
 COPILOT = ROOT.parent / "copilot-address-reviews"
+DISPATCH_PATH = ROOT / "scripts" / "review-dispatch.py"
+
+
+def _load_dispatch():
+    mod = load_module_from_path("transport_contract_review_dispatch", DISPATCH_PATH)
+    if mod is None:
+        raise RuntimeError(f"cannot load review dispatch materializer at {DISPATCH_PATH}")
+    return mod
+
+
+DISPATCH = _load_dispatch()
 
 
 def require(condition: bool, message: str) -> None:
@@ -31,6 +44,7 @@ def check_document_contract() -> None:
     runtime = read("runtime-adapter.md")
     stage = read("stage-2-review-gate.md")
     dispatch = read("review-dispatch.md")
+    prompt = (ROOT / "scripts" / "review-prompt.txt").read_text(encoding="utf-8")
     reviewer = read("reviewer.md")
     cross = read("cross-agent-reviewers.md")
     adoption = read("pr-adoption.md")
@@ -99,7 +113,7 @@ def check_document_contract() -> None:
         "ProcessResult.stdout",  # create_run_directory captures run-id.py's stdout from the RESULT (stdout_file null), not a mis-slotted arg
         "default_worktree(repository: RepositoryContext, head_ref_name: Text) -> Path",
         "run_argv(argv: list[Text]",
-        "bind_review_prompt(template: Bytes",
+        "review-dispatch.py prepare",
         "<TRANSPORT-RECORD>",
         '"native-worker-write" | "external-process-capture"',
         "ReviewIsolationCapability",
@@ -110,8 +124,24 @@ def check_document_contract() -> None:
         "Their absence NEVER blocks launch",
         "selected cross-engine route, paired CLI available | `launch-external`",
         "Missing native OS/startup controls alone never select",
+        "### Review preparation mapping",
+        "| `launch-external` / `retry-external` | selected capability's external route | "
+        "`external-process-capture` |",
+        "| `launch-native` / `fallback-native` | `native` | `native-worker-write` |",
+        "attempt `2` fails → prepare fresh native fallback attempt `3`",
+        "dead or unusable attempt `3` → `park-machine-blocker`",
     ):
         require(needle in runtime, f"runtime adapter lost typed owner: {needle}")
+
+    for needle in (
+        '["python3", review_dispatch_script, "prepare"',
+        "prepared = JSON_DECODE(result.stdout)",
+        "scripts/review-prompt.txt",
+        "using the returned `transport` without reconstructing",
+        "Every transport text value must encode as UTF-8",
+        "Recover any inert residue of a preparation that never launched a reviewer",
+    ):
+        require(needle in dispatch, f"review-dispatch.md lost preparation handoff: {needle}")
 
     for needle in (
         "TRANSPORT is this JSON-decoded ReviewTransport record:",
@@ -122,7 +152,7 @@ def check_document_contract() -> None:
         'RUN_ARGV(["python3", TRANSPORT.emit_finding_path',
         'RUN_ARGV(["python3", TRANSPORT.emit_amendment_path',
     ):
-        require(needle in dispatch, f"review-dispatch.md lost typed operation: {needle}")
+        require(needle in prompt, f"review-prompt.txt lost reviewer operation: {needle}")
 
     require("producer rule applies to initial launch, relaunch, and native fallback" in reviewer,
             "native report producer no longer covers every attempt state")
@@ -154,8 +184,8 @@ def check_document_contract() -> None:
         "owned transition instead of constructing this record",
     ):
         require(needle in cross, f"cross-agent capability/fallback contract drifted: {needle}")
-    require("no other action constructs this external record" in dispatch,
-            "Review dispatch launches external argv outside the owned transition")
+    require("Launch only the route named by `prepared.route`" in dispatch,
+            "Review dispatch can launch outside the prepared transition")
     retired_same_enumeration = "same enumeration " + "independently"
     retired_parallel_role = "parallel adversarial " + "reviewer"
     retired_supplementary_role = "supplementary " + "enumeration"
@@ -227,30 +257,32 @@ def run_hostile_fixtures() -> None:
             "payload ${IFS} and unicode 雪",
         ]
 
-        record = {
-            "attempt": {"pr": 58, "pass": 5, "launch_attempt": 2},
-            "review_root": hostile[0],
-            "worktree": hostile[1],
-            "base": "base$(printf${IFS}BAD)",
-            "prompt_path": hostile[6],
-            "plan_path": hostile[2],
-            "progress_path": hostile[3],
-            "findings_path": hostile[4],
-            "emit_progress_path": hostile[5],
-            "emit_finding_path": hostile[6],
-            "emit_amendment_path": hostile[2],
-            "report": {"producer": "native-worker-write", "path": hostile[0]},
-        }
+        review_root = root / hostile[0]
+        worktree = root / hostile[1]
+        paths = DISPATCH.attempt_paths(review_root, "58", "5", "2")
+        record = DISPATCH.build_transport(
+            rundir=review_root,
+            worktree=worktree,
+            base="base$(printf${IFS}BAD)",
+            pr="58",
+            review_pass="5",
+            launch_attempt="2",
+            producer="native-worker-write",
+            paths=paths,
+        )
         encoded_record = json.dumps(record, ensure_ascii=False)
         require(json.loads(encoded_record) == record,
                 "JSON transport record changed bytes/fields")
 
         template = b"before <TRANSPORT-RECORD> middle <INTENT> after"
         intent = b"literal <TRANSPORT-RECORD> and <INTENT> must not be rebound"
-        before_record, tail = template.split(b"<TRANSPORT-RECORD>", 1)
-        between, after_intent = tail.split(b"<INTENT>", 1)
-        bound = before_record + encoded_record.encode() + between + intent + after_intent
+        bound = DISPATCH.bind_prompt(template, record, intent)
         require(bound.endswith(intent + b" after"), "prompt binding rescanned inserted intent bytes")
+        require(paths["prompt"].name == "review-58-5.a2.prompt.txt" and
+                paths["progress"].name == "review-58-5.a2.progress.jsonl" and
+                paths["findings"].name == "review-58-5.a2.findings.jsonl" and
+                paths["report"].name == "review-58-5.a2.txt",
+                "the executable materializer mixed launch attempts")
 
         for launch_attempt in (1, 2, 7):
             for transport, producer in (
