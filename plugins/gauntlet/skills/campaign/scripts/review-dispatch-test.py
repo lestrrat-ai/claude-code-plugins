@@ -459,6 +459,42 @@ def t_transition_actions_map_directly_to_prepare_inputs() -> None:
         check(row in runtime, f"review_transition mapping row is missing: {row}")
 
 
+def t_unicode_worktree_delivers_under_ascii_stdout() -> None:
+    """A Unicode worktree path is delivered as UTF-8 bytes even with an ASCII-configured stdout.
+
+    The OUTPUT side must be symmetric with the already-guarded input side: text ``print`` would raise
+    UnicodeEncodeError on ``PYTHONIOENCODING=ascii`` after both launch artifacts are installed. The byte
+    delivery must instead exit 0 with a decodable UTF-8 JSON record carrying the raw Unicode path.
+    """
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        rundir = root / "run artifacts"
+        worktree = root / "雪-worktree"
+        rundir.mkdir(parents=True)
+        worktree.mkdir(parents=True)
+        intent_path = _write_inputs(rundir)
+        argv = [
+            "prepare", "--run-dir", os.fspath(rundir), "--pr", "41", "--pass", "2",
+            "--launch-attempt", "1", "--worktree", os.fspath(worktree), "--base", "main",
+            "--route", "native", "--report-producer", "native-worker-write",
+            "--head-sha", SHA, "--dispatched-at", STAMP, "--intent-file", os.fspath(intent_path),
+        ]
+        env = dict(os.environ)
+        env["PYTHONIOENCODING"] = "ascii"
+        completed = subprocess.run(
+            [sys.executable, os.fspath(OWNER), *argv],
+            capture_output=True,
+            env=env,
+            check=False,
+        )
+        check(completed.returncode == 0,
+              f"ascii-stdout Unicode-path prepare exited {completed.returncode}: {completed.stderr!r}")
+        check(completed.stdout.endswith(b"\n"), "delivered record lost its newline terminator")
+        payload = json.loads(completed.stdout.decode("utf-8"))
+        check(payload["transport"]["worktree"] == os.fspath(worktree),
+              "delivered transport lost the Unicode worktree path")
+
+
 def t_cli_emits_only_canonical_host_neutral_json() -> None:
     with tempfile.TemporaryDirectory() as raw:
         args = _fixture(Path(raw), route="external-codex", producer="external-process-capture")
@@ -499,5 +535,6 @@ CASES = [
     ("crash-recovery", "the exact inert prompt-only crash state is recoverable", t_prompt_only_crash_state_is_recoverable),
     ("fallback-attempt-three", "external retry failure has a terminal native attempt-3 path", t_external_attempt_two_has_native_attempt_three_recovery),
     ("transition-mapping", "review actions map directly to route and producer", t_transition_actions_map_directly_to_prepare_inputs),
+    ("unicode-delivery", "a Unicode path is delivered as UTF-8 bytes under ASCII stdout", t_unicode_worktree_delivers_under_ascii_stdout),
     ("host-neutral-json", "CLI emits canonical data and never launches", t_cli_emits_only_canonical_host_neutral_json),
 ]

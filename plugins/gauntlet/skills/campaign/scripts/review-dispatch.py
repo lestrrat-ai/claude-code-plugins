@@ -439,7 +439,25 @@ def main(argv: "list[str] | None" = None) -> int:
     except Refusal as exc:
         print(f"review-dispatch: REFUSED — {exc}", file=sys.stderr)
         return 1
-    print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+    # Deliver the canonical result as UTF-8 bytes so a valid Unicode worktree path cannot die in the
+    # text layer of an ASCII-configured stdout. This makes the OUTPUT side symmetric with bind_prompt's
+    # already-guarded INPUT side (a non-UTF-8 path is a controlled Refusal before any install). A
+    # remaining delivery OSError (e.g. a closed read end) maps to the same controlled refusal path.
+    # No rollback of the installed prompt/pass_identity pair is needed on a failed delivery: the driver
+    # allocates launch_attempt monotonically and never reuses a failed attempt's artifacts
+    # (runtime-adapter.md, "Review preparation mapping"), so the next attempt supersedes this one.
+    record = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    buffer = getattr(sys.stdout, "buffer", None)
+    try:
+        if buffer is not None:
+            buffer.write(record.encode("utf-8") + b"\n")
+            buffer.flush()
+        else:  # an in-process text capture (no byte buffer); encoding limits do not apply there
+            sys.stdout.write(record + "\n")
+            sys.stdout.flush()
+    except OSError as exc:
+        print(f"review-dispatch: REFUSED — could not deliver the prepared result: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 
