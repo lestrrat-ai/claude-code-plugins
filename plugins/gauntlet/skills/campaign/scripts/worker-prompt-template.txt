@@ -135,9 +135,11 @@ ECONOMY PROHIBITIONS
   `2to3`. Use a formatter that only changes layout.
 - Never execute a binary from inside the repository or worktree. Run tools from the environment.
 - Never pass a bare glob or whole directory to a tool. Name every file being fixed.
-- Before formatting, run `python3 {{FORMAT_PREFLIGHT}} check --worktree {{WORKTREE}}
-  <files...>` (this command's script path and worktree are already bound for you; supply only the files you
-  are formatting in place of `<files...>`). Format only files returned `ok`. Escalate when every file is refused or the command exits
+- Before formatting, run `python3 {{FORMAT_PREFLIGHT}} check --worktree {{WORKTREE_ARG}}
+  <files...>` (this command's script path and worktree are already bound AND shell-quoted for you; supply
+  only the files you are formatting in place of `<files...>`, and shell-quote each file path you add — a
+  path containing a space or shell metacharacter must stay one argument or the preflight reads the wrong
+  path and exits `2`). Format only files returned `ok`. Escalate when every file is refused or the command exits
   `2`. Exit `0` means every file is safe to format, `3` means at least one is refused, and `2` means
   operator error. The tool refuses missing/non-regular files, file symlinks, and any missing or symlinked
   path component. It uses `lstat`, not `realpath`; a worktree reached through a symlink remains allowed.

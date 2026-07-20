@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import tempfile
 from pathlib import Path
 
@@ -31,12 +32,12 @@ FIXTURE_FORMAT_PREFLIGHT = "/fixture/skill/scripts/format-preflight.py"
 GOLDEN_PROMPT_SHA256 = {
     "review": "586d63c999e4b027def4a5748ba4b88c6e31f5910bcd1f895df548e178f0acac",
     "ci-session": "07bad4c143b866ad03094cc0916ac3a8f17ad327dab932e527156f8f7be727f3",
-    "ci-economy": "f521bbe436bbf0b6ddffe23824008346757a577a898e055f234406e6a29d59fa",
+    "ci-economy": "4c8de49ae8173b63ad6853592d0e443bb278df1e300a3516c555f1fba2e3587a",
 }
 GOLDEN_METADATA_SHA256 = {
     "review": "e070e3e5618e093696610da7a0fd47cccaf44f3c01f9640154b4774c55a9c65d",
     "ci-session": "5a8ef32ab7a6f2227da4d2150dbea22f59fa26fd784246f1ffb06b873ac4e5c9",
-    "ci-economy": "4c1b13ffe2d88d78c5968cec542dc98821c0681cdc9f83ed5fbcbe93e75c2979",
+    "ci-economy": "8896c32512e99069a5d5988c99340f782d9602a018ce02a8ebdd587cee7bdde0",
 }
 
 
@@ -311,9 +312,46 @@ def t_economy_binds_runnable_preflight_command() -> None:
           "economy preflight command does not carry the bound absolute path and worktree")
 
 
+def t_economy_preflight_command_survives_word_splitting() -> None:
+    """A worktree/script path with a space and a shell metacharacter stays one argv token in the command.
+
+    Regression: the paths are bound into shell source inside backticks, so an unquoted spaced worktree
+    word-splits and the preflight reads only the prefix (exit 2). The bound paths must be `shlex.quote`d.
+    """
+    preflight = "/fixture/skill dir/scripts/format-preflight.py"
+    worktree = "/fixture/wt with spaces $(touch NEVER)"
+    prompt = M.render_prompt(
+        role="ci-economy",
+        project_root="/fixture/repo",
+        worktree=worktree,
+        pr=7,
+        base="main",
+        issues=ISSUES,
+        logs=LOGS,
+        format_preflight=preflight,
+        sections=M.load_template(),
+    )
+    text = prompt.decode("utf-8")
+    check(shlex.quote(worktree) in text, "economy preflight worktree was not shell-quoted")
+    check(shlex.quote(preflight) in text, "economy preflight script path was not shell-quoted")
+    # The prose `Worktree:` line still carries the raw, readable (unquoted) worktree.
+    check(("Worktree: " + worktree) in text, "prose worktree line lost the readable unquoted path")
+    # Reconstruct the emitted command (backtick-wrapped, `<files...>` on the next line) and prove it
+    # round-trips through shell word-splitting to the intended argv. A worker is told to shell-quote each
+    # file it appends, so model that here.
+    start = text.index("python3 ")
+    end = text.index("<files...>", start)
+    command = text[start:end].strip()
+    worker_file = "src/a b.go"
+    argv = shlex.split(command + " " + shlex.quote(worker_file))
+    check(argv == ["python3", preflight, "check", "--worktree", worktree, worker_file],
+          f"economy preflight command word-split instead of round-tripping: {argv!r}")
+
+
 TESTS = (
     ("golden bytes", t_golden_bytes_and_metadata),
     ("economy runnable preflight", t_economy_binds_runnable_preflight_command),
+    ("economy preflight word-split safety", t_economy_preflight_command_survives_word_splitting),
     ("role inclusion", t_roles_include_only_their_blocks),
     ("payload safety", t_payload_is_bound_once_as_data),
     ("missing prompt blocks", t_corrupt_templates_are_refused),

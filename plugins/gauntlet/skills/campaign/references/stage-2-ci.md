@@ -841,8 +841,10 @@ Its job, in order:
   publishes it.** Unlike every other bundled script — which the orchestrator resolves from `<skill-dir>` at
   use time — this command reaches an isolated worker that cannot resolve `<skill-dir>` itself, so
   `worker-prompt.py` binds `format-preflight.py`'s **absolute path** (and the worktree) into the prompt from
-  the active skill dir, the same source it uses for its own bundled scripts. The published command is
-  therefore already runnable; the worker supplies only the files:
+  the active skill dir, the same source it uses for its own bundled scripts, **shell-quoting each bound
+  path** (the command is shell source, so a path with a space or shell metacharacter must stay one
+  argument). The published command is therefore already runnable; the worker supplies only the files,
+  **shell-quoting each file path it adds** for the same reason:
 
   ```
   python3 <bound format-preflight.py absolute path> check --worktree <bound worktree> <files…>

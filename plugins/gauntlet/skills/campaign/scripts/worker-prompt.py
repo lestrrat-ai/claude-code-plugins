@@ -18,6 +18,7 @@ import argparse
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import stat
 import sys
@@ -49,10 +50,14 @@ COMMON_SLOTS = {
 CI_SLOTS = {b"{{LOGS_LENGTH}}", b"{{LOGS_SHA256}}", b"{{LOGS}}"}
 # The economy role's mandatory format-preflight command is bound, not left for the isolated worker to
 # resolve: `{{FORMAT_PREFLIGHT}}` receives `format-preflight.py`'s driver-resolved absolute path (from the
-# same active-skill-dir source this tool uses for its own bundled scripts) and `{{WORKTREE}}` the worktree,
-# so the published economy prompt runs the preflight from its own bytes. A fresh worker gets only those
-# bytes and cannot resolve `<skill-dir>` itself.
-CI_ECONOMY_SLOTS = CI_SLOTS | {b"{{FORMAT_PREFLIGHT}}", b"{{WORKTREE}}"}
+# same active-skill-dir source this tool uses for its own bundled scripts) and `{{WORKTREE_ARG}}` the
+# worktree, so the published economy prompt runs the preflight from its own bytes. Both are bound already
+# shell-quoted (`shlex.quote`) because the command is emitted as shell source inside backticks: a worktree
+# or script path containing a space or shell metacharacter must stay one argument, or the preflight reads a
+# truncated path and exits 2, silently skipping the mandatory check. `{{WORKTREE_ARG}}` is a distinct
+# command-only slot so the shared prose slot `{{WORKTREE}}` stays an unquoted, readable path. A fresh worker
+# gets only those bytes and cannot resolve `<skill-dir>` itself.
+CI_ECONOMY_SLOTS = CI_SLOTS | {b"{{FORMAT_PREFLIGHT}}", b"{{WORKTREE_ARG}}"}
 REQUIRED_SENTINELS = {
     "COMMON": (
         b"[GAUNTLET_FIX_PREFLIGHT_V1]",
@@ -221,14 +226,15 @@ def render_prompt(*, role: str, project_root: str, worktree: str, pr: int, base:
         role_block = role_template
     else:
         logs = validate_payload(logs, "logs")
-        # The economy section owns {{FORMAT_PREFLIGHT}} and {{WORKTREE}}; the session section owns neither,
-        # so those extra values are simply unused when binding the ci-session block.
+        # The economy section owns {{FORMAT_PREFLIGHT}} and {{WORKTREE_ARG}}, both bound shell-quoted so
+        # the emitted backtick command survives a spaced/metacharacter path; the session section owns
+        # neither, so those extra values are simply unused when binding the ci-session block.
         role_block = _bind_once(role_template, {
             b"{{LOGS_LENGTH}}": str(len(logs)).encode(),
             b"{{LOGS_SHA256}}": _payload_digest(logs),
             b"{{LOGS}}": logs,
-            b"{{FORMAT_PREFLIGHT}}": format_preflight.encode(),
-            b"{{WORKTREE}}": worktree.encode(),
+            b"{{FORMAT_PREFLIGHT}}": shlex.quote(format_preflight).encode(),
+            b"{{WORKTREE_ARG}}": shlex.quote(worktree).encode(),
         })
 
     values = {
