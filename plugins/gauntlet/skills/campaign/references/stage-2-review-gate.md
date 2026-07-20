@@ -839,13 +839,17 @@ one adversarial pass is proportionate.
 ### Status labels mirror the review gate — relabel is part of the reset, not a later chore
 
 A PR carries `gauntlet-reviewing` until its current HEAD holds `required(tier)` SATISFIED verdicts for
-the same live PR content, then `gauntlet-accepted`. The label is a **projection of `reviews_ok`**, so it
-is only ever as true as the moment it was last written.
+the same live PR content, then `gauntlet-accepted`. The label is a **projection of `reviews_ok` AND
+`required(tier)`**, so it is only ever as true as the moment it was last written — and because
+`required(tier)` is itself a per-heartbeat tier DECISION (`loop-control.md` re-triage runs the judgment
+for every PR every heartbeat), a tier change moves the projection even when `reviews_ok` is untouched.
 
-**THE RULE — the gate and the label move together, in the same step.** Any action that takes
-`reviews_ok` to `0` (or otherwise voids the tally) MUST, in that same step, restore
-`gauntlet-reviewing` on a PR that currently carries `gauntlet-accepted` — and, symmetrically, an action
-that brings the tally UP to `required(tier)` swaps it to `gauntlet-accepted`.
+**THE RULE — the gate and the label move together, in the same step.** Any action that changes the gate
+projection — one that takes `reviews_ok` to `0` (or otherwise voids the tally), OR a tier DECISION that
+changes `required(tier)` on unchanged content (e.g. STANDARD↔TRIVIAL flips `required` between 2 and 1) —
+MUST, in that same step, restore `gauntlet-reviewing` on a PR that currently carries `gauntlet-accepted`
+— and, symmetrically, an action that brings `reviews_ok` up to `required(tier)` (a new verdict, or a
+tier decision that LOWERS `required(tier)` to a tally already standing) swaps it to `gauntlet-accepted`.
 
 **`label-mirror.py mirror` is THE way that swap is applied — never a hand-run `gh pr edit`.** It reads the
 PR's ledger row, computes the desired label from `reviews_ok` and `required(tier)` exactly as the gate
@@ -869,8 +873,8 @@ passed its gauntlet** — the label is what a human reads on GitHub, and it is t
 run's state that is visible to people who will never see the ledger. Between the reset and the next
 reconcile it is simply wrong; if the session dies in that window it stays wrong indefinitely.
 
-**Every trigger that resets the gate must relabel** (this is the exhaustive list — the same events
-that drop `reviews_ok` to 0):
+**Every trigger that changes the gate projection must relabel** (this is the exhaustive list — every
+event that drops `reviews_ok` to 0, PLUS the tier decision that changes `required(tier)`):
 
 | Trigger | Where the reset happens — and therefore where the relabel is owed |
 |---|---|
@@ -881,15 +885,18 @@ that drop `reviews_ok` to 0):
 | Conflict-resolving rebase — at **either** of the two sites that rebase a PR | **Stage 2a preconditions, above** (the pre-review rebase of a `CONFLICTING`/`DIRTY`/`BEHIND` PR) **and** `stage-3-merge.md`'s step-6 reconcile. Naming only one of them is how the relabel goes missing at the other; the *event* owes the relabel, wherever it happens |
 | Re-adoption refresh detects changed content | `pr-adoption.md` step 3 (step 4 then sets the status label from the **live** gate — `gauntlet-reviewing` here, but `gauntlet-accepted` for a re-adoption whose content did **not** change and whose verdicts step 3 preserved; either way it removes the other label) |
 | Any other PR-content change on the head branch — formatter/bot commit, manual push | **Loop control step 1's ledger refresh** — the heartbeat that *detects* it resets the gate, so it relabels there |
+| Tier DECISION changes `required(tier)` (orchestrator re-triage picks a tier whose `required` differs — STANDARD↔TRIVIAL — on unchanged content, so `reviews_ok` is untouched) | **`loop-control.md` re-triage step, the tier write** — the same step that writes the tier runs `label-mirror.py mirror`, because `required(tier)` moved the projection even though nothing reset `reviews_ok`. The adoption-time tier write (`pr-adoption.md`) is the same event under this same rule; there `reviews_ok=0` makes the mirror a no-op, so it needs no special case |
 
-**Every row names a place where `reviews_ok` is written to 0 — never "the reconcile pass".** The
+**Every row names a place where the gate PROJECTION changes — `reviews_ok` written to 0, or
+`required(tier)` changed by a tier decision — never "the reconcile pass".** The
 label-reconcile in Loop control is the backstop that *heals* a missed swap; naming it as the mechanism
-for any trigger would defeat this rule. If you add a new site that resets the gate, it goes in this
+for any trigger would defeat this rule. If you add a new site that changes the projection, it goes in this
 table with the relabel attached, and the search that proves this table complete is for **everything that
-can take `reviews_ok` to 0**, not for any particular phrasing. **That is now TWO spellings, and a search
-for only the first will miss half the sites**: `ledger.py set --reviews-ok 0` (every content-change reset —
-the rows above) and **`ledger.py verdict … --verdict not-satisfied`** (the verdict tally, which voids it).
-Search for both.
+can take `reviews_ok` to 0 OR change `required(tier)`**, not for any particular phrasing. **That is now
+THREE spellings, and a search for only the first will miss the others**: `ledger.py set --reviews-ok 0`
+(every content-change reset — the rows above), **`ledger.py verdict … --verdict not-satisfied`** (the
+verdict tally, which voids it), and **`ledger.py … set --pr <N> --tier`** (the tier write, which changes
+`required(tier)` without touching `reviews_ok`). Search for all three.
 
 **Exception — a clean base-only rebase** (PR diff unchanged) carries `reviews_ok` forward and therefore
 **keeps** `gauntlet-accepted`. The gate did not reset, so the label does not move. Gate and label stay in

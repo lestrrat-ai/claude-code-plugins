@@ -180,8 +180,9 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
    the wrong label, or both.
 
    This reconcile is a **backstop, not the mechanism**. The relabel is owed at the moment the gate
-   resets, in the same step that writes `reviews_ok = 0` (`stage-2-review-gate.md`, "Status labels
-   mirror the review gate"); this pass only *self-heals* a swap that was somehow missed. A PR that
+   projection changes, in the same step that writes `reviews_ok = 0` or decides a tier that changes
+   `required(tier)` (`stage-2-review-gate.md`, "Status labels mirror the review gate"); this pass only
+   *self-heals* a swap that was somehow missed. A PR that
    reaches this point wearing a stale `gauntlet-accepted` — or both labels at once — means some reset
    site skipped its relabel: fix the label here, and treat it as a bug in that site, not as normal
    operation.
@@ -341,7 +342,12 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      and policy. Never classify files or modes here. On success, require output `head_sha` to equal the
      row, **decide the tier at or above `floor`** (`TRIVIAL` only when `floor` is `null` and you judge it
      truly human prose — the tool never grants it), and write it with `ledger.py … set --pr <N> --tier
-     <tier>`; re-run `derive --tier <decided>` to have the tool veto a below-floor mistake. On refusal,
+     <tier>`; re-run `derive --tier <decided>` to have the tool veto a below-floor mistake. **`required(tier)`
+     is part of the gate projection, so the tier write can change which status label is correct even though
+     `reviews_ok` is untouched (STANDARD↔TRIVIAL flips `required` between 2 and 1); therefore in the SAME
+     step, run `label-mirror.py mirror` for that PR** — idempotent, a no-op when the label already matches —
+     so the tier, `required(tier)`, and the public status label move together (`stage-2-review-gate.md`,
+     "Status labels mirror the review gate", owns the swap and the tool). On refusal,
      refresh the moving or mismatched input and retry; never carry a tier across content the command did
      not classify.
    - current tip has `reviews_ok < required(tier)`, has no unaddressed Copilot review items, CI is not red,
