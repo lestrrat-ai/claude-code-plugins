@@ -296,6 +296,42 @@ def t_nonregular_modes_are_never_prose() -> None:
               f"the reason must name the non-regular mode: {row!r}")
 
 
+def t_gitlink_change_survives_gitmodules_ignore_all() -> None:
+    """A commit that ADVANCES a submodule gitlink whose committed ``.gitmodules`` sets ``ignore = all`` must
+    still land in the inventory. Plain ``git diff --raw`` honors that committed ignore and OMITS the changed
+    ``160000`` row, so the remaining diff could read as all-prose and clear the escalate-only floor; the
+    ``--ignore-submodules=none`` argv forces the gitlink back in, where its mode floors it to at least CODE.
+    Uses ``git update-index --cacheinfo`` (not ``git add --all``, which would drop an on-disk-absent gitlink)."""
+    with tempfile.TemporaryDirectory() as directory:
+        repo = Path(directory)
+        git(repo, "init", "-q", "-b", "main")
+        git(repo, "config", "user.name", "Gauntlet Test")
+        git(repo, "config", "user.email", "gauntlet@example.invalid")
+        write(repo, "docs/guide.md", "# Guide\n")
+        git(repo, "update-index", "--add", "--cacheinfo",
+            "160000,1111111111111111111111111111111111111111,vendor/sub")
+        write(repo, ".gitmodules",
+              '[submodule "vendor/sub"]\n\tpath = vendor/sub\n\turl = ./sub.git\n\tignore = all\n')
+        git(repo, "add", "docs/guide.md", ".gitmodules")
+        git(repo, "commit", "-q", "-m", "base with ignore=all submodule")
+        base = os.fsdecode(git(repo, "rev-parse", "HEAD").stdout).strip()
+        git(repo, "update-index", "--cacheinfo",
+            "160000,2222222222222222222222222222222222222222,vendor/sub")
+        write(repo, "docs/guide.md", "# Guide v2\n")
+        git(repo, "add", "docs/guide.md")
+        git(repo, "commit", "-q", "-m", "advance gitlink and edit prose")
+        head = os.fsdecode(git(repo, "rev-parse", "HEAD").stdout).strip()
+        result = M.derive(worktree=str(repo), base=base, head_sha=head)
+    by_path = {row["path"]: row for row in result["files"]}
+    check("vendor/sub" in by_path,
+          f"the changed gitlink must be in the inventory despite .gitmodules ignore=all: {result!r}")
+    gitlink = by_path["vendor/sub"]
+    check(gitlink["new_mode"] == "160000" and gitlink["class"] == M.CODE,
+          f"the changed gitlink must carry Git mode 160000 and classify CODE: {gitlink!r}")
+    check(M._CLASS_RANK[gitlink["class"]] >= M._CLASS_RANK[M.CODE] and result["floor"] == M.STANDARD,
+          f"a changed gitlink must floor to at least STANDARD, not read as all-prose: {result!r}")
+
+
 def t_modification_classifies_base_and_head() -> None:
     """A single-path modification (status M) must classify BOTH its base and head content and keep the
     higher class. Stripping agent frontmatter leaves plain prose at HEAD but changed an agent-consumed
@@ -699,6 +735,7 @@ CASES = [
     ("delete-frontmatter", "deleted Markdown uses base content for frontmatter", t_deleted_agent_frontmatter_is_code),
     ("symlink-doc", "a symlink at a docs path is CODE, floors STANDARD, refuses TRIVIAL", t_symlink_at_human_doc_path_is_code),
     ("nonregular-modes", "symlink/gitlink/unrecognized modes are never prose", t_nonregular_modes_are_never_prose),
+    ("gitlink-ignore-all", "a gitlink change survives .gitmodules ignore=all in the inventory", t_gitlink_change_survives_gitmodules_ignore_all),
     ("modify-both-sides", "a modification classifies base and head; frontmatter strip stays CODE", t_modification_classifies_base_and_head),
     ("typechange-both-sides", "a type change classifies base and head", t_type_change_classifies_base_and_head),
     ("no-trivial-floor", "the tool never emits a TRIVIAL floor; all-prose is no-floor", t_tool_never_emits_trivial_floor),

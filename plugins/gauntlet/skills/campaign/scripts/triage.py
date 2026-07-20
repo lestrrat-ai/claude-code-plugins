@@ -535,9 +535,15 @@ def derive(*, worktree: str, base: str, head_sha: str, tier: str | None = None,
     # the A+D split even re-checks the executable mode on both sides). Forcing ``-l0`` or refusing on the
     # warning would instead make any legitimately large diff un-triageable — a fail-closed regression bought
     # for a floor that was already correct.
+    # ``--ignore-submodules=none`` overrides any committed ``submodule.<name>.ignore=all`` in ``.gitmodules``:
+    # without it a commit that advances a gitlink whose submodule is configured ``ignore=all`` is OMITTED from
+    # ``--raw`` output, so the changed gitlink would vanish from the inventory and the diff could read as
+    # all-prose. Forcing ``none`` can only ADD a gitlink row (a ``160000`` mode that ``_classify_change`` floors
+    # to at least CODE); it never removes a row and so never lowers the floor — escalate-only, like the tool.
     raw = _run(
         runner,
-        ["git", "diff", "--raw", "-z", "--no-abbrev", "--find-renames", diff_base_sha, head_sha, "--"],
+        ["git", "diff", "--raw", "-z", "--no-abbrev", "--find-renames", "--ignore-submodules=none",
+         diff_base_sha, head_sha, "--"],
         worktree,
         "reading the pinned raw diff",
     )
