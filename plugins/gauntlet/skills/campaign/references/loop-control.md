@@ -423,9 +423,10 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
 ### Step 4 — Merge queued PRs as a serialized drain
 
 4. **Merge** queued PRs as a serialized drain: re-confirm one candidate against the live SHA **and
-   re-check it is not parked** (the held-status guard binds the merge too — Stage 3), revalidate that it
-   contains the fetched current base, merge it, sync `<base>`, reconcile remaining candidates, and repeat
-   while another PR is immediately mergeable (Stage 3 owns the check).
+  re-check it is not parked** (the held-status guard binds the merge too — Stage 3), then run
+  `merge.py run` for that PR. It revalidates the fetched base, merges, syncs `<base>`, cleans owned local
+  resources, and records the terminal row as one resumable sequence. Reconcile remaining candidates and
+  repeat while another PR is immediately mergeable (Stage 3 owns the check).
 ### Step 5 — Reschedule or exit
 
 5. **Reschedule or exit.**

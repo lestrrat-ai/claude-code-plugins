@@ -50,6 +50,7 @@ def check_document_contract() -> None:
     adoption = read("pr-adoption.md")
     run_identity = read("run-identity-and-lease.md")
     merge = read("stage-3-merge.md")
+    merge_runner = (ROOT / "scripts" / "merge.py").read_text(encoding="utf-8")
     root_cause = read("root-cause-pass.md")
     files_ledger = read("files-and-ledger.md")
     loop_control = read("loop-control.md")
@@ -169,8 +170,10 @@ def check_document_contract() -> None:
             "adoption restored an unresolved project_root consumer")
     require("create_run_directory(repository)" in run_identity,
             "fresh-run creation bypasses the repository context owner")
-    require('cwd: repository.project_root' in merge and "argv: [\"git\", \"fetch\"" in merge,
-            "merge fetches bypass the typed repository context")
+    require("root = resolve_project_root(project_root)" in merge_runner and
+            '["git", "-C", str(root), "fetch"' in merge_runner and
+            "shell=True" not in merge_runner,
+            "merge runner bypasses the typed repository context/argv boundary")
     require("git -C $" not in merge and "cwd: project_root" not in stage
             and "cwd: project_root" not in dispatch,
             "merge/pre-review restored an ambient or unresolved Git cwd")

@@ -196,7 +196,8 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
     `ci == green`. Merge one at a time until no candidate remains immediately ready after base
     refresh. Campaign never passes `--delete-branch` — the repo's *Automatically delete head branches*
     setting governs the remote branch; local cleanup follows the per-PR `worktree_owned` /
-    `branch_owned` flags.
+    `branch_owned` flags. Execute each candidate through `merge.py run`; re-run that command after any
+    partial failure instead of hand-running its later phases.
 
 **Terminal** (`references/bailout-and-final-report.md`, `references/carryover.md`)
 
@@ -259,6 +260,7 @@ a line the tool writes.
 | `ci-snapshot.py` | Executable contract for the SHA-pinned CI snapshot artifact (used by `derive`) | `references/ci-derivation-spec.md` |
 | `mutate-ci-snapshot.py` | Mutation harness proving `ci-snapshot.py`'s rules are fixture-pinned; run by validation/CI, not the driver | `references/ci-derivation-spec.md` |
 | `merge-check.py` | `check` — decide merge-readiness (`merge` / `not-yet <reason>`) from the ledger row, live PR view, and fetched base ancestry | `references/stage-3-merge.md` |
+| `merge.py` | `run` — resumably execute one merge-check-approved PR merge, base sync, owned local cleanup, and terminal ledger write | `references/stage-3-merge.md` |
 | `label-mirror.py` | `mirror` — reconcile a PR's status label with its review gate (the canonical idempotent `gauntlet-accepted`/`gauntlet-reviewing` swap), computed from the ledger row; touches only the two status labels | `references/stage-2-review-gate.md` |
 | `reconcile.py` | `fetch` — construct, validate, and atomically promote the canonical run-scoped PR snapshot; `detect` — compare it against the ledger and emit per-PR FACTS. Names no action; routing is skill policy | `references/files-and-ledger.md`, `references/loop-control.md` |
 | `repair-pass.py` | Reassessment pass's door: `permitted` / `bundle` / `decide` — deterministic complete-history prompt, bundle hash binding, closed decision enum, ownership guardrail, repair cap | `references/repair-pass.md` |

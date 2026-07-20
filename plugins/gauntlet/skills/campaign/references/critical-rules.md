@@ -487,7 +487,7 @@
   be `main`** — it is the `baseRefName` of the adopted PRs (must agree across them, else prompt).
   Reviews diff `origin/<base>...HEAD` and PRs merge into `<base>`; a fix worktree branches off the PR's OWN
   head branch/SHA, never off `<base>` (see `pr-adoption.md`). Re-read it each heartbeat (see "Base branch").
-- After every merge, fast-forward local `<base>` to `origin/<base>` (Stage 3 step 4) so subsequent
-  `origin/<base>...HEAD` diffs and rebases branch off the just-merged tip, not a stale base. If the
-  fast-forward fails, bail out — never force it.
+- After every merge, let `merge.py run` fast-forward local `<base>` to `origin/<base>` (Stage 3,
+  **"Resumable merge execution"**) so later diffs and rebases use the just-merged tip. If it fails,
+  re-run the command after fixing the named cause — never force the base.
 - No "Test plan" section in PR bodies.
