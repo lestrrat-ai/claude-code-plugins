@@ -33,7 +33,17 @@ R = _load_owner()
 L = R.L  # the ledger — the ONE owner of the schema, the caps and the statuses
 # The audit's schema owner — fixtures now produce real `.jsonl` audits through it, the way the runtime does,
 # instead of hand-writing the old `.md` file the bundle no longer reads.
-FA = load_module_from_path("repair_pass_test_finding_audit", OWNER.parent / "finding-audit.py")
+def _load_finding_audit():
+    """Load finding-audit.py by path, guarding+raising so the value is non-Optional — the same shape as
+    `_load_owner`, so `FA.main` is well-typed inside every fixture. A module-level `assert FA is not None`
+    would NOT type-narrow the global inside function bodies; the guarded helper does."""
+    mod = load_module_from_path("repair_pass_test_finding_audit", OWNER.parent / "finding-audit.py")
+    if mod is None:
+        raise RuntimeError(f"cannot load the finding-audit accessor at {OWNER.parent / 'finding-audit.py'}")
+    return mod
+
+
+FA = _load_finding_audit()
 
 SHA = "c" * 40
 
