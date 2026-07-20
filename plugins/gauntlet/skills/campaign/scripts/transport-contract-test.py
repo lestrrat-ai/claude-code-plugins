@@ -139,7 +139,7 @@ def check_document_contract() -> None:
         "scripts/review-prompt.txt",
         "using the returned `transport` without reconstructing",
         "Every transport text value must encode as UTF-8",
-        "Recover only the exact inert prompt-only state",
+        "Recover any inert residue of a preparation that never launched a reviewer",
     ):
         require(needle in dispatch, f"review-dispatch.md lost preparation handoff: {needle}")
 

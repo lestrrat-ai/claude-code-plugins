@@ -417,6 +417,115 @@ module.prepare(SimpleNamespace(**json.loads(sys.argv[2])))
               "same-attempt recovery did not recreate the complete pair")
 
 
+def t_interrupt_after_identity_link_strands_no_residue() -> None:
+    """A SIGINT delivered after the identity link's syscall returns must strand neither file.
+
+    The identity is linked last, so the window is between that ``os.link`` returning and its bookkeeping.
+    Because the destination is registered for rollback BEFORE the link, the interrupt rolls back both
+    files instead of leaving an identity-only strand — and the attempt number is not wedged, so a
+    same-attempt prepare rebuilds the pair.
+    """
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw))
+        paths = D.attempt_paths(Path(args.run_dir), args.pr, args.review_pass, args.launch_attempt)
+        calls = 0
+
+        def sigint_after_second(source, target) -> None:
+            nonlocal calls
+            calls += 1
+            os.link(source, target)
+            if calls == 2:
+                raise KeyboardInterrupt("sigint right after the identity link syscall")
+
+        raised = False
+        try:
+            D.install_pair(paths["prompt"], b"prompt", paths["progress"], b"identity", link=sigint_after_second)
+        except KeyboardInterrupt:
+            raised = True
+        check(raised, "the post-identity-link interrupt must reach the caller")
+        check(not paths["prompt"].exists() and not paths["progress"].exists(),
+              "an interrupt after the identity link stranded a file instead of rolling both back")
+        check(not list(Path(args.run_dir).glob(".review-dispatch-*.tmp")),
+              "the interrupted install left staged temp files")
+
+        payload = D.prepare(args)
+        check(Path(payload["transport"]["progress_path"]) == paths["progress"],
+              "same-attempt prepare changed the progress path after a rolled-back interrupt")
+        check(paths["prompt"].is_file() and paths["progress"].is_file(),
+              "same-attempt prepare did not rebuild the pair after a rolled-back interrupt")
+
+
+def t_hard_stop_residue_is_recoverable() -> None:
+    """Every abrupt-stop residue that never launched a reviewer is reclaimed by the next prepare.
+
+    A machine stop (no rollback runs) can leave both files present, or an identity line alone, with no
+    reviewer output. Both are inert — the reviewer starts only after prepare returns — so a same-attempt
+    prepare must reclaim them and rebuild the pair, not refuse the wedged attempt number.
+    """
+    both_present_child = r'''\
+import importlib.util
+import json
+import os
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+owner = Path(sys.argv[1])
+sys.path.insert(0, os.fspath(owner.parent))
+spec = importlib.util.spec_from_file_location("crashing_review_dispatch", owner)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+real_install = module.install_pair
+
+def crash_install(prompt_path, prompt, progress_path, identity):
+    state = {"n": 0}
+    def crash_after_second_link(source, target):
+        state["n"] += 1
+        os.link(source, target)
+        if state["n"] == 2:
+            os._exit(92)
+    real_install(prompt_path, prompt, progress_path, identity, link=crash_after_second_link)
+
+module.install_pair = crash_install
+module.prepare(SimpleNamespace(**json.loads(sys.argv[2])))
+'''
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw))
+        paths = D.attempt_paths(Path(args.run_dir), args.pr, args.review_pass, args.launch_attempt)
+        crashed = subprocess.run(
+            [sys.executable, "-c", both_present_child, os.fspath(OWNER), json.dumps(vars(args))],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        check(crashed.returncode == 92, f"both-present crash fixture exited {crashed.returncode}, not 92")
+        check(paths["prompt"].is_file() and paths["progress"].is_file() and
+              not paths["findings"].exists() and not paths["report"].exists(),
+              "the hard stop did not leave both files present with no reviewer output")
+        D.prepare(args)
+        check(paths["prompt"].is_file() and paths["progress"].is_file(),
+              "same-attempt prepare did not recover the both-files hard-stop residue")
+        events = D.RP.parse_lines(paths["progress"].read_text(encoding="utf-8"), paths["progress"].name)
+        D.RP.check_identity(events, "41", "2", "1")
+
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw))
+        paths = D.attempt_paths(Path(args.run_dir), args.pr, args.review_pass, args.launch_attempt)
+        # An identity-only strand: the lone pass_identity line with no prompt and no reviewer output. Its
+        # dispatched_at is deliberately stale (an earlier interrupted run wrote it), proving recovery keys
+        # on the attempt identity, not on a byte match against the current invocation.
+        paths["progress"].write_text(
+            json.dumps({
+                "type": "pass_identity", "pr": "41", "pass": "2", "head_sha": SHA,
+                "launch_attempt": "1", "dispatched_at": "2026-07-19T00:00:00Z",
+            }, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        D.prepare(args)
+        check(paths["prompt"].is_file() and paths["progress"].is_file(),
+              "same-attempt prepare did not recover a stale identity-only strand")
+
+
 def t_external_attempt_two_has_native_attempt_three_recovery() -> None:
     with tempfile.TemporaryDirectory() as raw:
         args = _fixture(
@@ -533,6 +642,8 @@ CASES = [
     ("fresh-attempt", "every existing attempt artifact refuses without overwrite", t_every_existing_attempt_artifact_refuses_without_overwrite),
     ("atomic-rollback", "second-file failure rolls back the first file", t_second_install_failure_rolls_back_first_file),
     ("crash-recovery", "the exact inert prompt-only crash state is recoverable", t_prompt_only_crash_state_is_recoverable),
+    ("interrupt-rollback", "an interrupt after the identity link rolls both files back", t_interrupt_after_identity_link_strands_no_residue),
+    ("hard-stop-recovery", "both-files and identity-only hard-stop residue is recoverable", t_hard_stop_residue_is_recoverable),
     ("fallback-attempt-three", "external retry failure has a terminal native attempt-3 path", t_external_attempt_two_has_native_attempt_three_recovery),
     ("transition-mapping", "review actions map directly to route and producer", t_transition_actions_map_directly_to_prepare_inputs),
     ("unicode-delivery", "a Unicode path is delivered as UTF-8 bytes under ASCII stdout", t_unicode_worktree_delivers_under_ascii_stdout),

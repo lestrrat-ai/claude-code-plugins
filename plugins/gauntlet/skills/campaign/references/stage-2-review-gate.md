@@ -338,12 +338,13 @@ timestamp **that PARSES as a real moment**: `2026-99-99T99:99:99Z` has the exact
 99 is not a month — the launch deadline is arithmetic on this value, so a shape check alone cannot protect
 it). Three rules depend on it: a late verdict is ignored unless its attempt
 id still matches the active pass; `dispatched_at` is the clock the launch check below measures against;
-and `launch_attempt` (`1`, then `2` on a relaunch) is how a *later heartbeat* — possibly a fresh agent —
-knows whether this pass has already been relaunched once. A progress file holding **only** this line is
+and `launch_attempt` is how a *later heartbeat* — possibly a fresh agent — knows which recovery branch
+this pass has already consumed: the highest `launch_attempt` records how far it has walked the
+`runtime-adapter.md`, **Review preparation mapping** budget. A progress file holding **only** this line is
 therefore evidence that the reviewer has produced nothing — not evidence of a missing file.
 
 **The attempt id is `pr` + `pass` + `head_sha` + `launch_attempt` — all four.** A relaunch keeps the
-first three, so without `launch_attempt` the two launch attempts of one pass are indistinguishable and
+first three, so without `launch_attempt` the launch attempts of one pass are indistinguishable and
 a killed-but-not-dead attempt could be mistaken for the live one.
 
 #### Each launch attempt owns its own artifacts — a relaunch NEVER reuses the dead attempt's files

@@ -1225,7 +1225,7 @@ def check_identity_shape(ident: dict, where: str) -> None:
     The identity is the pass's attempt id and its dispatch clock, and three rules downstream depend on it:
     a late verdict is ignored unless its attempt id still matches; the ~5-minute launch deadline is
     measured from `dispatched_at`; `launch_attempt` is how a *later* heartbeat — possibly a fresh agent — knows
-    the pass was already relaunched once. Every one of those is a COMPARISON, and a comparison against a
+    how many times the pass was already relaunched. Every one of those is a COMPARISON, and a comparison against a
     malformed value is not one.
     """
     # FOUR IDENTIFIERS, ONE VALIDATOR. The sha rule and the number rules used to be written out here, and

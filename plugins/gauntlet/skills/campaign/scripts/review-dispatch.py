@@ -229,9 +229,12 @@ def install_pair(
 ) -> None:
     """Install prompt then identity with no overwrite and rollback on a controlled failure.
 
-    ``pass_identity`` is the launch evidence, so it is linked last. A prompt left by an abrupt process or
-    machine stop is inert and the next matching prepare recovers it; a returned success always has both
-    files. Ordinary link failures roll back both.
+    ``pass_identity`` is the launch evidence, so it is linked last. Residue left by an abrupt process or
+    machine stop — the prompt alone, the identity alone, or both without a reported success — is inert, and
+    the next matching prepare recovers it (``recover_inert_prompt``); a returned success always has both
+    files. Any failure or interruption in this call rolls back every destination it may have created: each
+    path is registered for cleanup **before** its ``link``, so an interruption landing in the window between
+    a ``link`` syscall returning and its own bookkeeping cannot strand a linked file.
     """
     staged_prompt: "Path | None" = None
     staged_identity: "Path | None" = None
@@ -239,12 +242,12 @@ def install_pair(
     try:
         staged_prompt = _stage_bytes(prompt_path, prompt)
         staged_identity = _stage_bytes(progress_path, identity)
-        link(staged_prompt, prompt_path)
         installed.append(prompt_path)
+        link(staged_prompt, prompt_path)
+        installed.append(progress_path)
+        link(staged_identity, progress_path)
         staged_prompt.unlink()
         staged_prompt = None
-        link(staged_identity, progress_path)
-        installed.append(progress_path)
         staged_identity.unlink()
         staged_identity = None
     except BaseException:
@@ -257,28 +260,91 @@ def install_pair(
         raise
 
 
-def recover_inert_prompt(paths: "dict[str, Path]", expected_prompt: bytes) -> None:
-    """Remove only an exact prompt-only residue from an interrupted preparation.
+def _identity_only(progress: Path, *, pr: str, review_pass: str, launch_attempt: str) -> bool:
+    """True iff ``progress`` is exactly this attempt's lone ``pass_identity`` line.
 
-    The identity is installed last and activates the attempt. A regular prompt whose bytes match this
-    invocation while progress, findings, and report are truly absent cannot belong to a launched reviewer.
-    Every other existing-artifact state remains evidence and is refused by the normal conflict check.
+    ``prepare`` launches no reviewer, so until it returns the progress file holds only the single identity
+    line and the reviewer has written nothing. One well-formed ``pass_identity`` for this attempt and no
+    further line is therefore inert residue, not reviewer output; any extra line means the reviewer ran.
+    The identity's ``dispatched_at``/``head_sha`` may differ from the current invocation (the stranded line
+    came from the interrupted run), so the match is on the attempt's ``pr``/``pass``/``launch_attempt``,
+    which name the same attempt this progress path is derived from.
+    """
+    try:
+        text = progress.read_text(encoding="utf-8")
+    except OSError as exc:
+        refuse(f"cannot recover interrupted preparation at {progress}: {exc}")
+    lines = text.splitlines()
+    if len(lines) != 1:
+        return False
+    try:
+        record = json.loads(lines[0])
+    except ValueError:
+        return False
+    if not isinstance(record, dict) or record.get("type") != RP.IDENTITY:
+        return False
+    return (
+        str(record.get("pr")) == pr
+        and str(record.get("pass")) == review_pass
+        and str(record.get("launch_attempt")) == launch_attempt
+    )
+
+
+def recover_inert_prompt(
+    paths: "dict[str, Path]",
+    expected_prompt: bytes,
+    *,
+    pr: str,
+    review_pass: str,
+    launch_attempt: str,
+) -> None:
+    """Reclaim any residue of a preparation that never launched a reviewer.
+
+    A reviewer starts only after ``prepare`` returns, so until then no findings or report exist and the
+    progress file holds at most the orchestrator's single ``pass_identity`` line. Every abrupt-stop shape
+    that leaves no reviewer output — the prompt alone, the identity alone, or both present but never
+    reported as success — carries only this invocation's own inert bytes: a prompt whose bytes match, and a
+    progress file that is exactly this attempt's lone identity line. Reclaim (unlink) whichever is present
+    so the same-attempt prepare rebuilds the complete pair. Every other existing-artifact state — a
+    findings file, a report, or any extra progress line — is real reviewer evidence and is left for the
+    normal conflict check to refuse.
     """
     prompt = paths["prompt"]
+    progress = paths["progress"]
 
     def present(path: Path) -> bool:
         return os.path.lexists(os.fspath(path))
 
-    if not present(prompt) or any(present(paths[name]) for name in ("progress", "findings", "report")):
+    # Any reviewer-owned output proves a reviewer ran: never inert, never reclaimed.
+    if present(paths["findings"]) or present(paths["report"]):
         return
-    if prompt.is_symlink() or not prompt.is_file():
+    prompt_present = present(prompt)
+    progress_present = present(progress)
+    if not prompt_present and not progress_present:
         return
-    try:
-        if prompt.read_bytes() != expected_prompt:
+
+    # Every present artifact must be this invocation's inert residue; one foreign artifact refuses all.
+    if prompt_present:
+        if prompt.is_symlink() or not prompt.is_file():
             return
-        prompt.unlink()
+        try:
+            if prompt.read_bytes() != expected_prompt:
+                return
+        except OSError as exc:
+            refuse(f"cannot recover interrupted preparation at {prompt}: {exc}")
+    if progress_present:
+        if progress.is_symlink() or not progress.is_file():
+            return
+        if not _identity_only(progress, pr=pr, review_pass=review_pass, launch_attempt=launch_attempt):
+            return
+
+    try:
+        if prompt_present:
+            prompt.unlink()
+        if progress_present:
+            progress.unlink()
     except OSError as exc:
-        refuse(f"cannot recover interrupted prompt-only preparation at {prompt}: {exc}")
+        refuse(f"cannot recover interrupted preparation: {exc}")
 
 
 def prepare(args) -> dict:
@@ -350,7 +416,13 @@ def prepare(args) -> dict:
         head_sha=args.head_sha,
         dispatched_at=args.dispatched_at,
     )
-    recover_inert_prompt(paths, prompt)
+    recover_inert_prompt(
+        paths,
+        prompt,
+        pr=args.pr,
+        review_pass=args.review_pass,
+        launch_attempt=args.launch_attempt,
+    )
     conflicts = [
         paths[name]
         for name in ("prompt", "progress", "findings", "report")

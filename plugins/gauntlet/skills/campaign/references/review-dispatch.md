@@ -43,11 +43,14 @@ installed script directory, writes the exact bound prompt, and writes the valida
 the progress file's first line. Every transport text value must encode as UTF-8; a path containing other
 filesystem bytes is a controlled refusal before either launch artifact exists.
 
-**Recover only the exact inert prompt-only state.** If the prompt is a regular file whose bytes exactly
-match this invocation and progress, findings, and report are all absent, an interrupted preparer stopped
-before installing the activating `pass_identity`; remove that prompt and recreate the pair. Refuse every
-other existing prompt, progress, findings, or report state. A non-zero exit prepares nothing usable; do
-not launch.
+**Recover any inert residue of a preparation that never launched a reviewer.** A reviewer starts only
+after `prepare` returns, so until then no findings or report exist and the progress file holds at most this
+attempt's single `pass_identity` line. Residue that carries only this invocation's own inert bytes — a
+prompt whose bytes exactly match, and a progress file that is exactly this attempt's lone `pass_identity`
+line, in whichever combination the interruption left (prompt alone, identity alone, or both) — is removed
+so the pair can be recreated. A findings file, a report, or any further progress line is real reviewer
+evidence: refuse it, along with any prompt or progress file that does not match this attempt. A non-zero
+exit prepares nothing usable; do not launch.
 
 `review-<pr>-<n>.plan.jsonl` remains per-pass and `intent-<pr>.md` remains per-PR. Every other path in
 `transport` is per-attempt: attempt 1 uses `review-<pr>-<n>.*`; attempt `k >= 2` uses
