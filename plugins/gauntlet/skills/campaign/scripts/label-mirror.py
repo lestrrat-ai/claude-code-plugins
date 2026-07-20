@@ -8,8 +8,8 @@ and it is the one piece of run state a human reads on GitHub — a stale `gauntl
 PUBLIC claim that a PR passed a gauntlet it did not.
 
 WHY THIS IS A COMMAND AND NOT A `gh pr edit` A DRIVER TYPES BY HAND. The swap was a two-command idiom the
-orchestrator ran at every gate-reset site — the verdict tally, a CI/review fix push, a conflict rebase, a
-re-adoption. A step a fresh-context heartbeat must re-derive and retype at N sites is a step it forgets at
+orchestrator ran at every gate-reset site — the verdict tally, a CI/review fix push, a content-changing
+rebase (conflict-resolving or diff-changed), a re-adoption. A step a fresh-context heartbeat must re-derive and retype at N sites is a step it forgets at
 one of them, and the miss is invisible until a human reads the wrong label on GitHub. This tool reads the
 ledger row, computes the desired label the same way the gate does, and applies the canonical idempotent
 swap — so no driver hand-runs it and no driver runs it wrong.

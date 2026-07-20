@@ -195,7 +195,8 @@ subagent at a check that is merely **still running**.
    (`loop-control.md` step 3,
    "held-status guard"): this reconcile MUTATES a PR, so it is exactly what the guard forbids. A clean
    rebase would move its `head_sha`, set `ci = pending` and — at that head write — the accessor would reset
-   its liveness counters (`stage-2-ci.md`, "THE LIVENESS COUNTERS"); a conflict-resolving rebase would reset
+   its liveness counters (`stage-2-ci.md`, "THE LIVENESS COUNTERS"); a judgment-path rebase (conflict-resolving
+   or diff-changed) would reset
    `reviews_ok`, relabel, and relaunch work — and would **change the PR's content**, which can invalidate
    the very refutation or API change the user was parked to adjudicate. **A parked PR that has fallen
    behind simply STAYS behind** until the user answers; it is re-reconciled normally on the heartbeat after it

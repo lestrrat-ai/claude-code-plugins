@@ -364,7 +364,7 @@
   needs only one SATISFIED pass, so there is no second review to sequence. (Reviews for *different* PRs
   still run concurrently; only the two for the same PR serialize. See Stage 2a.)
 - Verdicts are pinned to reviewed PR content: any PR-content change (review fix / CI fix /
-  conflict-resolving rebase / bot or manual PR-branch commit) makes prior verdicts stale. Base
+  judgment-path rebase — conflict-resolving or diff-changed / bot or manual PR-branch commit) makes prior verdicts stale. Base
   advancement with no conflict and unchanged PR diff does NOT invalidate verdicts; carry `reviews_ok`
   forward, update `head_sha` through `ledger.py … set --head-sha` — which **resets the liveness counters**
   at the door (`stage-2-ci.md`, "THE LIVENESS COUNTERS") — and require fresh CI.

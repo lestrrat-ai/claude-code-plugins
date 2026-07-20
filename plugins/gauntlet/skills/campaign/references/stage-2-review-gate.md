@@ -784,7 +784,7 @@ prose. Record the reviewed SHA
 continues to count after `<base>` advances if the PR is still non-conflicting and the PR diff/content
 is unchanged (e.g. clean base-only rebase); carry `reviews_ok` forward to the new `head_sha`, set
 `ci = pending` — writing the new head through the accessor **resets the liveness counters** at the door
-(`stage-2-ci.md`, "THE LIVENESS COUNTERS"). The moment PR content changes — review fix, CI fix, conflict-resolving rebase, a
+(`stage-2-ci.md`, "THE LIVENESS COUNTERS"). The moment PR content changes — review fix, CI fix, a judgment-path rebase (conflict-resolving or diff-changed), a
 formatter/bot commit on the PR branch, or manual push — earlier verdicts are stale and `reviews_ok`
 drops to 0. Pinning to SHA plus the clean-base-only exception makes the gate verifiable from git while
 not burning reviews merely because another PR merged cleanly. A `NOT SATISFIED` invalidates that
