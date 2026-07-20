@@ -74,6 +74,7 @@ _DEPENDENCY_NAMES = frozenset({
     "go.work.sum", "cargo.toml", "cargo.lock", "gemfile", "gemfile.lock", "composer.json",
     "composer.lock", "pom.xml", "gradle.lockfile", "mix.exs", "mix.lock", "pubspec.yaml",
     "pubspec.lock", "package.swift", "package.resolved", "nuget.config", "packages.lock.json",
+    "environment.yml", "environment.yaml", "conda.yml", "conda.yaml",
 })
 _DEPENDENCY_SUFFIXES = (".csproj", ".fsproj", ".vbproj")
 _IAC_SUFFIXES = frozenset({".tf", ".tfvars", ".hcl"})
@@ -230,7 +231,11 @@ def _dependency_reason(path: str) -> str | None:
     name = PurePosixPath(path).name.lower()
     if name in _DEPENDENCY_NAMES:
         return "dependency manifest or lockfile"
-    if name.startswith("requirements") and name.endswith(".txt"):
+    # pip requirements/constraints: the compiled ``requirements*.txt`` lockfile AND the human-authored
+    # ``requirements*.in`` source manifest pip-tools compiles from it; ``constraints*.txt`` pins alike.
+    if name.startswith("requirements") and name.endswith((".txt", ".in")):
+        return "dependency manifest or lockfile"
+    if name.startswith("constraints") and name.endswith(".txt"):
         return "dependency manifest or lockfile"
     if name.startswith(("build.gradle", "settings.gradle")):
         return "dependency manifest or lockfile"

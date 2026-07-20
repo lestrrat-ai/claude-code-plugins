@@ -603,6 +603,39 @@ def t_unterminated_frontmatter_fails_closed_to_code() -> None:
           f"unterminated frontmatter must fail closed to CODE: {cls}: {reasons}")
 
 
+def t_pip_source_and_conda_manifests_are_sensitive() -> None:
+    """The dependency recogniser covers the pip-tools source manifest (``requirements*.in``), pip
+    ``constraints*.txt`` pins, and conda environment manifests (``environment.yml``/``.yaml``,
+    ``conda.yml``/``.yaml``) — not only the compiled ``requirements*.txt`` lockfile. Each is SENSITIVE and
+    floors HIGH, so a decided --tier STANDARD or TRIVIAL is vetoed."""
+    for path in ("requirements.in", "requirements-dev.in", "constraints.txt", "environment.yml",
+                 "environment.yaml", "conda.yml", "conda.yaml"):
+        cls, reasons = M._path_class(path, b"content\n")
+        check(cls == M.SENSITIVE and reasons, f"{path} must be mechanically SENSITIVE, got {cls}: {reasons}")
+    # requirements.in end-to-end: floor HIGH, and both below-floor tiers are refused with no JSON.
+    with repository() as (repo, base):
+        write(repo, "requirements.in", "requests\nflask\n")
+        head = commit(repo, "pip-tools source manifest")
+        result = derive(repo, base)
+        check(result["floor"] == M.HIGH and one_file(result)["class"] == M.SENSITIVE,
+              f"requirements.in is a dependency manifest and must floor HIGH: {result!r}")
+        for below in (M.TRIVIAL, M.STANDARD):
+            code, out, err = capture_cli(M.main, [
+                "derive", "--worktree", str(repo), "--base", base, "--head-sha", head, "--tier", below])
+            check(code == M.EXIT_REFUSED and out == "",
+                  f"--tier {below} below requirements.in's HIGH floor must be refused: {code}/{out!r}")
+            check("below the mechanical floor" in err and "HIGH" in err,
+                  f"the refusal must name the HIGH floor: {err!r}")
+    # A conda environment manifest and a pip constraints file each floor HIGH end-to-end too.
+    for name in ("environment.yml", "constraints.txt"):
+        with repository() as (repo, base):
+            write(repo, name, "content\n")
+            commit(repo, name)
+            result = derive(repo, base)
+        check(result["floor"] == M.HIGH and one_file(result)["class"] == M.SENSITIVE,
+              f"{name} must floor HIGH as a dependency manifest: {result!r}")
+
+
 CASES = [
     ("human-doc", "an all-prose diff has no floor — the tool never grants TRIVIAL", t_human_docs_have_no_floor),
     ("human-names", "top-level README/CHANGELOG/LICENSE and prose suffixes are HUMAN-DOC", t_top_level_human_doc_names),
@@ -611,6 +644,7 @@ CASES = [
     ("agent-frontmatter", "Markdown carrying skill/agent frontmatter is CODE", t_agent_frontmatter_is_code),
     ("agent-paths", "agent instructions, skill references, .claude and prompts are CODE", t_agent_paths_are_code),
     ("sensitive-classes", "CI/scripts/manifests/IaC/auth/build paths are SENSITIVE", t_sensitive_classes_are_high),
+    ("pip-conda-manifests", "requirements.in, constraints.txt and conda env manifests are SENSITIVE", t_pip_source_and_conda_manifests_are_sensitive),
     ("mixed", "mixed files use the highest content class", t_mixed_content_uses_highest_class),
     ("executable-mode", "adding or removing executable mode is HIGH", t_executable_mode_add_and_remove_are_high),
     ("rename", "a rename classifies old and new paths", t_rename_classifies_both_paths),
