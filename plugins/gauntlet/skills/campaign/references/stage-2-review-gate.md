@@ -49,7 +49,7 @@ the row by column position). Default to **STANDARD** whenever you are unsure. `r
 dispatch-check --pr <N>`: it exits non-zero on every **HELD** status (`files-and-ledger.md`, `status` —
 the owner; `HELD_STATUSES` in `scripts/ledger.py` is the one place they are enumerated, so **never retype
 that list**). A held PR is **FROZEN**: take no action that **MUTATES** it — no review pass, no
-precondition fix (including the conflict rebase below), no CI fix, no review fix, no merge, and nothing
+precondition fix (including the judgment-path rebase below — conflict-resolving or diff-changed), no CI fix, no review fix, no merge, and nothing
 else that changes it (`loop-control.md` step 3, "held-status guard" — the governing property; these
 are only examples). Held leaves
 `reviews_ok < required(tier)`, so the review-launch rule MUST read `status` too — otherwise the next
