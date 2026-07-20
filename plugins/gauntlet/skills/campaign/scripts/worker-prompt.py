@@ -46,6 +46,13 @@ COMMON_SLOTS = {
     b"{{BASE}}", b"{{ISSUES_LENGTH}}", b"{{ISSUES_SHA256}}", b"{{ISSUES}}", b"{{ROLE_BLOCK}}",
 }
 CI_SLOTS = {b"{{LOGS_LENGTH}}", b"{{LOGS_SHA256}}", b"{{LOGS}}"}
+# `<skill-dir>` in the economy block's `python3 <skill-dir>/scripts/format-preflight.py` is deliberately
+# NOT a `{{...}}` slot and is never bound here. The fix worker resolves it from the actual path of the
+# active SKILL.md (references/runtime-adapter.md:"Resolve `<skill-dir>` from the actual path of the active
+# SKILL.md") — the same convention stage-2-ci.md's format-preflight command already ships. Binding it to an
+# absolute install path would break this tool's host-neutral contract (docstring). Falsifiable: if it were
+# a bound slot, `<skill-dir>` would appear in COMMON_SLOTS/CI_SLOTS and in load_template's slot check — it
+# does not, and the golden prompt bytes keep the literal `<skill-dir>`.
 REQUIRED_SENTINELS = {
     "COMMON": (
         b"[GAUNTLET_FIX_PREFLIGHT_V1]",
@@ -261,14 +268,19 @@ def publish_bundle(output_dir: Path, prompt: bytes, metadata: bytes,
     if any(ord(char) < 32 or ord(char) == 127 for char in output_text):
         raise Refusal("--output-dir contains control characters")
     parent = output_dir.parent
-    if not parent.is_dir() or parent.is_symlink():
-        raise Refusal(f"output parent must be an existing, non-symlink directory: {parent}")
-    if output_dir.exists() or output_dir.is_symlink():
-        raise Refusal(f"output already exists; refusing conflicting artifacts: {output_dir}")
 
-    staging = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.staging-", dir=parent))
+    # Every filesystem probe below can raise OSError (ENAMETOOLONG on an overlong basename, EROFS/ENOSPC
+    # under the parent) — including the pre-staging `is_dir`/`exists` probes and `mkdtemp` itself. They are
+    # inside this try so OSError becomes the documented controlled Refusal (exit 2), never an escaping
+    # traceback (exit 1). `staging` guards the cleanup because an early probe can fail before it is created.
+    staging: "Path | None" = None
     published = False
     try:
+        if not parent.is_dir() or parent.is_symlink():
+            raise Refusal(f"output parent must be an existing, non-symlink directory: {parent}")
+        if output_dir.exists() or output_dir.is_symlink():
+            raise Refusal(f"output already exists; refusing conflicting artifacts: {output_dir}")
+        staging = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.staging-", dir=parent))
         writer(staging / PROMPT_NAME, prompt)
         writer(staging / METADATA_NAME, metadata)
         directory_fd = os.open(staging, os.O_RDONLY)
@@ -285,7 +297,7 @@ def publish_bundle(output_dir: Path, prompt: bytes, metadata: bytes,
             raise
         raise Refusal(f"cannot publish prompt bundle {output_dir}: {exc}") from exc
     finally:
-        if not published:
+        if staging is not None and not published:
             shutil.rmtree(staging, ignore_errors=True)
 
 

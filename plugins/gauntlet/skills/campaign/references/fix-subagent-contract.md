@@ -1,8 +1,15 @@
 ## The fix-subagent contract — materialize the prompt, then dispatch its exact bytes
 
-**Use `scripts/worker-prompt.py fix` for every fix worker.** It materializes the complete prompt for the
-economy CI-fix, `session` CI-fix, or review-fix. Never assemble, shorten, or supplement a fix prompt from
+**Use `scripts/worker-prompt.py fix` for the three shipped fix-worker roles: economy CI-fix, `session`
+CI-fix, and review-fix.** It materializes the complete prompt for each. These three roles repair an
+**existing PR branch** and push to it. Never assemble, shorten, or supplement one of their prompts from
 prose.
+
+**The follow-up fixer that opens a NEW PR is a separate workflow, outside these three roles.** It creates
+a branch and opens its own PR — which no materializer role does — so its dispatch is owned by
+`followups.md`, not by this materializer. It still honors this file's SCOPE and SWEEP discipline; the
+no-supplement rule above binds only the three materializer roles, not that workflow's branch-and-PR
+creation.
 
 `scripts/worker-prompt-template.txt` is the **one owner of shared prompt wording**: preflight evidence,
 scope, semantic sweep, and report. It also owns each role-specific prompt block. `worker-prompt.py`
@@ -51,6 +58,14 @@ argv: ["python3", path_join(skill_dir, "scripts", "worker-prompt.py"), "fix",
 `prompt.txt` as the worker's complete prompt bytes. Read `metadata.json` and dispatch with its `role` and
 logical `model_class`; the runtime adapter maps that class to the active host. Never map a host model name
 inside this tool or add prompt text after materialization.
+
+**Bundle consistency is guaranteed per directory, never across directories.** A single `os.rename`
+publishes `prompt.txt` and `metadata.json` together, so within ONE published bundle directory the
+metadata's `prompt_sha256` always describes that exact `prompt.txt`. The tool verifies no pairing at
+consumption, and it does not need to: consume both files from the one directory it published. Reading
+`prompt.txt` from one bundle and `metadata.json` from a DIFFERENT one — a hand-paired mix of two
+git-ignored `.gauntlet/tmp` outputs — is a single-user footgun outside the threat model, not defended
+(`CLAUDE.md`, single-user advisory workflow).
 
 **Stop on every refusal.** Missing or conflicting role inputs, any preflight verdict other than `proceed`,
 invalid UTF-8/NUL payloads, unsafe paths, template drift, existing output, or partial publication produces

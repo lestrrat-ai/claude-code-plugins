@@ -392,8 +392,9 @@
   every ESCALATION from the economy tier → the `session` class**.
 - **CLASSIFY the failure from the check logs BEFORE dispatching anything** — never dispatch straight off a
   red check (`loop-control.md` step 3, `stage-2-ci.md`). The class picks the model.
-- **Materialize every fix prompt through `worker-prompt.py fix`** (`fix-subagent-contract.md`).
-  `worker-prompt-template.txt` is the only owner of shared and role-specific prompt wording. Never copy a
+- **Materialize the three fix-worker roles' prompts (review-fix, `session` CI-fix, economy CI-fix) through
+  `worker-prompt.py fix`** (`fix-subagent-contract.md`; the follow-up fixer that opens a new PR is outside
+  these roles). `worker-prompt-template.txt` is the only owner of shared and role-specific prompt wording. Never copy a
   prompt block from this lookup or `stage-2-ci.md`; dispatch exact `prompt.txt` bytes with the role and
   logical model class from `metadata.json`.
 - **ANY campaign commit to the PR head resets the gate** (`stage-2-ci.md`, "Any campaign commit to the PR
@@ -421,8 +422,9 @@
   **next** park too — the blocker silently self-clears with **no fresh user answer**, which is exactly what
   the durable record exists to prevent. `abort` is never cleared: it is terminal, and a terminal row is
   never re-parked.
-- **EVERY fix subagent — both CI tiers and review-fix — uses the fix-subagent materializer.** Follow
-  `fix-subagent-contract.md`; never rebuild its shared contract or role block from this lookup.
+- **The three materializer roles — both CI tiers and review-fix — use the fix-subagent materializer.** Follow
+  `fix-subagent-contract.md`; never rebuild its shared contract or role block from this lookup. The
+  follow-up fixer that opens a new PR is a separate workflow it names, outside these roles.
 - Default reviewer is the cross-engine route for the active host (Claude Code → Codex, Codex → Claude
   Code), which falls back to a fresh native worker when the paired CLI is absent; no external tool is
   required to run. Use the user's preferred reviewer when one is set — an explicit invocation, or a

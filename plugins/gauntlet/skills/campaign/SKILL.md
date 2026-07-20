@@ -294,10 +294,11 @@ name from one host into another.
 | **CI-fix — everything else**, and every **escalation** from the cheap tier | **`session`** | Authors code that gets merged. CI does **not** validate it: a wrong fix can turn CI green — by weakening a check, or by being plain wrong in product code no check covers. |
 
 **The gate, from-scratch fixes, and mapper are NEVER downgraded.** The formatting CI-fix tier is
-downgraded for its narrower formatter-and-verification job. `worker-prompt.py fix` is the only fix-prompt
-builder; its template owns the complete shared and role-specific wording. Read
-`references/fix-subagent-contract.md`, materialize the selected role, and dispatch only the exact
-`prompt.txt` bytes with the logical model class from `metadata.json`.
+downgraded for its narrower formatter-and-verification job. `worker-prompt.py fix` builds the prompt for
+each of the three fix-worker roles (review-fix and both CI tiers); its template owns the complete shared
+and role-specific wording. Read `references/fix-subagent-contract.md`, materialize the selected role, and
+dispatch only the exact `prompt.txt` bytes with the logical model class from `metadata.json`. The
+follow-up fixer that opens a new PR is a separate workflow, outside these roles (`fix-subagent-contract.md`).
 
 ## Load Discipline
 

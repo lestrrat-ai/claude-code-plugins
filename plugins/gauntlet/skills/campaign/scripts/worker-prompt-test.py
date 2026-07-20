@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import tempfile
 from pathlib import Path
 
@@ -227,6 +228,52 @@ def t_paths_and_payload_files_fail_closed() -> None:
                        "symlink output parent was accepted")
 
 
+def t_publish_probe_oserror_is_controlled_refusal() -> None:
+    """A pre-staging OSError (overlong basename, unwritable parent) is exit-2 REFUSED, not a traceback."""
+    with tempfile.TemporaryDirectory(prefix="worker prompt probe ") as raw:
+        root = Path(raw)
+        repo = root / "repo"
+        worktree = root / "worktree"
+        repo.mkdir()
+        worktree.mkdir()
+        issues = root / "issues.bin"
+        issues.write_bytes(ISSUES)
+
+        def fix_argv(output_dir: Path) -> list:
+            return ["fix", "--role", "review", "--project-root", str(repo), "--worktree",
+                    str(worktree), "--pr", "42", "--base", "main", "--preflight-verdict", "proceed",
+                    "--issues-file", str(issues), "--output-dir", str(output_dir)]
+
+        # Overlong output basename: `output_dir.exists()` raises ENAMETOOLONG before os.rename.
+        overlong = root / ("o" * 300)
+        code, _, err = capture_cli(M.main, fix_argv(overlong))
+        check(code == M.EXIT_REFUSED,
+              f"overlong output basename exited {code}, not the controlled {M.EXIT_REFUSED}")
+        check("REFUSED" in err and "Traceback" not in err,
+              "overlong output basename was not a controlled refusal")
+        # `overlong.exists()` would itself raise ENAMETOOLONG; list the parent instead.
+        check(("o" * 300) not in os.listdir(root) and
+              not any(name.startswith(".o") for name in os.listdir(root)),
+              "overlong output basename left a partial bundle or staging dir")
+
+        # Staging creation fails: tempfile.mkdtemp under a read-only parent raises OSError.
+        readonly = root / "readonly"
+        readonly.mkdir()
+        target = readonly / "out"
+        readonly.chmod(0o500)
+        try:
+            if os.access(readonly, os.W_OK):
+                return  # a write override (e.g. root) defeats the perm bit; skip the mkdtemp-failure leg
+            code, _, err = capture_cli(M.main, fix_argv(target))
+            check(code == M.EXIT_REFUSED,
+                  f"unwritable staging parent exited {code}, not the controlled {M.EXIT_REFUSED}")
+            check("REFUSED" in err and "Traceback" not in err,
+                  "unwritable staging parent was not a controlled refusal")
+            check(not target.exists(), "unwritable staging parent left a partial bundle")
+        finally:
+            readonly.chmod(0o700)
+
+
 def t_output_is_host_neutral() -> None:
     for role in M.ROLES:
         combined = fixed_render(role).lower() + M.metadata_bytes(role, fixed_render(role)).lower()
@@ -246,6 +293,7 @@ TESTS = (
     ("atomic bundle and conflict", t_atomic_bundle_and_conflict_refusal),
     ("partial rollback", t_partial_stage_rolls_back),
     ("hostile paths and bytes", t_paths_and_payload_files_fail_closed),
+    ("publish probe OSError refusal", t_publish_probe_oserror_is_controlled_refusal),
     ("host-neutral output", t_output_is_host_neutral),
 )
 
