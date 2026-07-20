@@ -112,6 +112,54 @@ hat. A follow-up records what the audit found **beside** the finding, never the 
 fix. And it is a **CANDIDATE, not an issue**: it stays local, and nothing in that store is published
 without the user's agreement on that specific item.
 
+### Materiality is NOT a verdict here — the audit SIGNALS it, it never DISCHARGES on it
+
+A stochastic reviewer keeps raising findings that are TRUE and ANCHORED but are trivial edge cases — the
+kind `AGENTS.md`/`CLAUDE.md` calls an **accepted single-user residual**. There is a strong temptation to
+let the audit demote such a finding to a follow-up and move on. **The audit MUST NOT.** "Is it MATERIAL
+enough to block this PR?" is a THIRD question, and it is answered in exactly ONE place: the **repair-pass
+DEMOTE** decision (`repair-pass.md`), reached at a review-loop cap by a worker handed **the whole history
+at once**, recorded on disk, bounded by `REPAIR_CAP`. That view — the round-by-round shape, the
+diff-growth curve, which findings are live vs. already-fixed vs. refuted — is the ONLY thing that makes a
+demotion safe, and it **does not exist at the finding-audit**. At the audit you cannot tell an
+immaterial-isolated finding from the first of a real cluster; #125's "edge of the machinery the loop just
+added" finding looked immaterial and was a REAL below-floor gap. So the invariant above holds without
+exception here: **a CONFIRMED finding is fixed; demotion belongs to the cap, not to this pass.**
+
+**Why the reviewer keeps raising them: `## Non-goals` binding is ADVISORY.** The reviewer is handed the
+intent's `## Non-goals` verbatim and told a finding that attacks one cannot gate — but `review-pass.py`'s
+`gating()` only checks `writer`/`purpose`; it never reads `## Non-goals`. So the binding takes effect ONLY
+if the stochastic reviewer honors it, and a reviewer that anchors an immaterial finding to a real
+`## Purpose` line produces a gating finding the declared Non-goal never stopped. The audit is the first
+INDEPENDENT context to read that finding against the intent, so it is where the mismatch is first visible.
+
+Two things the audit does about it — **a SIGNAL and a hand-off, never a discharge:**
+
+- **SIGNAL (in the verdict's `--evidence`).** When a CONFIRMED/ADJUSTED finding's harm is **fully
+  contained** by a declared `## Non-goals` line, or is an accepted single-user residual under the
+  calibration in `AGENTS.md`/`CLAUDE.md`, say so in the `--evidence` string and **quote the Non-goal line**.
+  This changes NOTHING about the disposition: the verdict stays CONFIRMED/ADJUSTED, the finding stays on
+  `fix-list`, and it is fixed like any other. The note is independent backing for the driver and the user,
+  not a fourth verdict. **Unsure whether the Non-goal FULLY contains the harm → it does not; verdict
+  CONFIRMED, fix it** (the same direction as "unsure → CONFIRMED, never REFUTED").
+- **HAND-OFF to the driver (proactive intent-bounding).** A single such finding is fixed and forgotten.
+  But when the signal **recurs** — a SECOND finding of the same residual shape — that is the CLAUDE.md
+  "a review keeps generating true-but-that-kind-of finding → **bound the intent**" case arriving early.
+  The driver may then author/tighten the intent `## Non-goals` so **future** reviewer rounds bind, and
+  surface the class to the user for a decisive ruling, driving the other PRs meanwhile. Three constraints
+  keep that from becoming a dodge: it is disclosed `authored` (`pr-adoption.md`); it must describe the
+  **class**, never be gerrymandered around one finding; and it **does NOT retroactively discharge the
+  finding in hand** — that finding is still fixed (or, if its mechanism is impossible, REFUTED on the
+  evidence). Bounding the intent changes what the NEXT independent reviewer measures against; it never
+  waves through the current one.
+
+**Never bound away a REAL guarantee.** A `## Non-goals` line waives a residual, NEVER a real guarantee. A
+finding that a guard fails OPEN on malformed input, that a NON-OWNER's destructive op is permitted, that a
+public `gauntlet-accepted` / a stricter tier would be under-reviewed, or that agent-consumed docs are
+INACCURATE, stays CONFIRMED and is fixed **regardless of any declared Non-goal** — these are the classes
+`AGENTS.md`/`CLAUDE.md` ("This does NOT lower the bar on REAL guarantees") holds above the single-user
+calibration. The signal above is for the residual class only; it can never reach one of these.
+
 ### The reachability test — CAN THE MECHANISM THE FINDING DESCRIBES ACTUALLY OCCUR?
 
 The test is **NOT** about where the trigger comes from. Provenance is the wrong question **for THIS
