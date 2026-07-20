@@ -837,12 +837,15 @@ Its job, in order:
   tree.
 - **NEVER hand a tool a bare glob or a whole directory** (`gofmt -w .`). **Name the files you are fixing.**
 - **PREFLIGHT EVERY FILE BEFORE FORMATTING IT — refuse any file whose write could land OUTSIDE the
-  worktree. Do NOT hand-run this with `lstat`; run the command** (resolved as
-  `<skill-dir>/scripts/format-preflight.py`, the same resolution rule as every other bundled script —
-  `SKILL.md`, "Bundled Scripts"):
+  worktree. Do NOT hand-run this with `lstat`; run the command exactly as the materialized economy prompt
+  publishes it.** Unlike every other bundled script — which the orchestrator resolves from `<skill-dir>` at
+  use time — this command reaches an isolated worker that cannot resolve `<skill-dir>` itself, so
+  `worker-prompt.py` binds `format-preflight.py`'s **absolute path** (and the worktree) into the prompt from
+  the active skill dir, the same source it uses for its own bundled scripts. The published command is
+  therefore already runnable; the worker supplies only the files:
 
   ```
-  python3 <skill-dir>/scripts/format-preflight.py check --worktree <worktree> <files…>
+  python3 <bound format-preflight.py absolute path> check --worktree <bound worktree> <files…>
   ```
 
   It prints one JSON object — a per-file `results` list, each `ok` or `refused` with a reason — and its

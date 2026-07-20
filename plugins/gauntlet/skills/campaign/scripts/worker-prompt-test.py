@@ -25,15 +25,18 @@ def _load_owner():
 M = _load_owner()
 ISSUES = b"- src/widget.py:19: preserve literal {{ROLE}} and $(touch NEVER)\n"
 LOGS = b"lint: src/widget.py needs layout; literal @@END COMMON@@ and unicode \xe9\x9b\xaa\n"
+# A deterministic, host-neutral stand-in for the driver-resolved format-preflight.py path so the goldens
+# below stay reproducible. The real bound path (M.FORMAT_PREFLIGHT) is exercised by the economy fixture.
+FIXTURE_FORMAT_PREFLIGHT = "/fixture/skill/scripts/format-preflight.py"
 GOLDEN_PROMPT_SHA256 = {
     "review": "586d63c999e4b027def4a5748ba4b88c6e31f5910bcd1f895df548e178f0acac",
     "ci-session": "07bad4c143b866ad03094cc0916ac3a8f17ad327dab932e527156f8f7be727f3",
-    "ci-economy": "935237071701873f018aced5dc98f7106755a57ccd6f028cb995944be5fcc91d",
+    "ci-economy": "f521bbe436bbf0b6ddffe23824008346757a577a898e055f234406e6a29d59fa",
 }
 GOLDEN_METADATA_SHA256 = {
     "review": "e070e3e5618e093696610da7a0fd47cccaf44f3c01f9640154b4774c55a9c65d",
     "ci-session": "5a8ef32ab7a6f2227da4d2150dbea22f59fa26fd784246f1ffb06b873ac4e5c9",
-    "ci-economy": "a053c0f2fcca94ad8b3f12effb0e8625012ebe1d19b40596f474501ed924a6e5",
+    "ci-economy": "4c1b13ffe2d88d78c5968cec542dc98821c0681cdc9f83ed5fbcbe93e75c2979",
 }
 
 
@@ -59,6 +62,7 @@ def fixed_render(role: str) -> bytes:
         base="main",
         issues=ISSUES,
         logs=None if role == "review" else LOGS,
+        format_preflight=FIXTURE_FORMAT_PREFLIGHT,
         sections=M.load_template(),
     )
 
@@ -127,7 +131,7 @@ def t_corrupt_templates_are_refused() -> None:
 def t_invalid_inputs_are_refused() -> None:
     sections = M.load_template()
     common = dict(role="review", project_root="/repo", worktree="/worktree", pr=1, base="main",
-                  issues=ISSUES, logs=None, sections=sections)
+                  issues=ISSUES, logs=None, format_preflight=FIXTURE_FORMAT_PREFLIGHT, sections=sections)
     expect_refusal(lambda: M.render_prompt(**{**common, "role": "unknown"}),
                    "an invalid role was accepted")
     expect_refusal(lambda: M.render_prompt(**{**common, "logs": LOGS}),
@@ -283,8 +287,33 @@ def t_output_is_host_neutral() -> None:
               f"{role} output tries to select a launch mechanism")
 
 
+def t_economy_binds_runnable_preflight_command() -> None:
+    """The economy prompt ships a real absolute format-preflight.py path, not an unresolved placeholder."""
+    bound = str(M.FORMAT_PREFLIGHT)
+    check(bound.endswith("/scripts/format-preflight.py"),
+          f"resolved format-preflight path is not the bundled script: {bound}")
+    prompt = M.render_prompt(
+        role="ci-economy",
+        project_root="/fixture/repo",
+        worktree="/fixture/worktree",
+        pr=7,
+        base="main",
+        issues=ISSUES,
+        logs=LOGS,
+        format_preflight=bound,
+        sections=M.load_template(),
+    )
+    check(b"<skill-dir>" not in prompt,
+          "economy prompt still ships an unresolved <skill-dir> placeholder")
+    check(b"{{FORMAT_PREFLIGHT}}" not in prompt and b"{{WORKTREE}}" not in prompt,
+          "economy prompt left a preflight slot unbound")
+    check(b"python3 " + bound.encode() + b" check --worktree /fixture/worktree" in prompt,
+          "economy preflight command does not carry the bound absolute path and worktree")
+
+
 TESTS = (
     ("golden bytes", t_golden_bytes_and_metadata),
+    ("economy runnable preflight", t_economy_binds_runnable_preflight_command),
     ("role inclusion", t_roles_include_only_their_blocks),
     ("payload safety", t_payload_is_bound_once_as_data),
     ("missing prompt blocks", t_corrupt_templates_are_refused),

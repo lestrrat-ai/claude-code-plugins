@@ -30,6 +30,7 @@ from _gauntlet.modules import load_module_from_path
 HERE = Path(__file__).resolve().parent
 TEMPLATE = HERE / "worker-prompt-template.txt"
 SIBLING = HERE / "worker-prompt-test.py"
+FORMAT_PREFLIGHT = HERE / "format-preflight.py"
 
 EXIT_OK = 0
 EXIT_REFUSED = 2
@@ -46,13 +47,12 @@ COMMON_SLOTS = {
     b"{{BASE}}", b"{{ISSUES_LENGTH}}", b"{{ISSUES_SHA256}}", b"{{ISSUES}}", b"{{ROLE_BLOCK}}",
 }
 CI_SLOTS = {b"{{LOGS_LENGTH}}", b"{{LOGS_SHA256}}", b"{{LOGS}}"}
-# `<skill-dir>` in the economy block's `python3 <skill-dir>/scripts/format-preflight.py` is deliberately
-# NOT a `{{...}}` slot and is never bound here. The fix worker resolves it from the actual path of the
-# active SKILL.md (references/runtime-adapter.md:"Resolve `<skill-dir>` from the actual path of the active
-# SKILL.md") — the same convention stage-2-ci.md's format-preflight command already ships. Binding it to an
-# absolute install path would break this tool's host-neutral contract (docstring). Falsifiable: if it were
-# a bound slot, `<skill-dir>` would appear in COMMON_SLOTS/CI_SLOTS and in load_template's slot check — it
-# does not, and the golden prompt bytes keep the literal `<skill-dir>`.
+# The economy role's mandatory format-preflight command is bound, not left for the isolated worker to
+# resolve: `{{FORMAT_PREFLIGHT}}` receives `format-preflight.py`'s driver-resolved absolute path (from the
+# same active-skill-dir source this tool uses for its own bundled scripts) and `{{WORKTREE}}` the worktree,
+# so the published economy prompt runs the preflight from its own bytes. A fresh worker gets only those
+# bytes and cannot resolve `<skill-dir>` itself.
+CI_ECONOMY_SLOTS = CI_SLOTS | {b"{{FORMAT_PREFLIGHT}}", b"{{WORKTREE}}"}
 REQUIRED_SENTINELS = {
     "COMMON": (
         b"[GAUNTLET_FIX_PREFLIGHT_V1]",
@@ -122,7 +122,7 @@ def load_template(path: Path = TEMPLATE) -> dict[str, bytes]:
         "COMMON": COMMON_SLOTS,
         "REVIEW": set(),
         "CI_SESSION": CI_SLOTS,
-        "CI_ECONOMY": CI_SLOTS,
+        "CI_ECONOMY": CI_ECONOMY_SLOTS,
     }
     for name, body in sections.items():
         actual = _slots(body)
@@ -206,7 +206,8 @@ def validate_text(value: str, label: str) -> str:
 
 
 def render_prompt(*, role: str, project_root: str, worktree: str, pr: int, base: str,
-                  issues: bytes, logs: "bytes | None", sections: dict[str, bytes]) -> bytes:
+                  issues: bytes, logs: "bytes | None", format_preflight: str,
+                  sections: dict[str, bytes]) -> bytes:
     if role not in ROLES:
         raise Refusal(f"invalid role {role!r}; expected one of {', '.join(ROLES)}")
     issues = validate_payload(issues, "issues")
@@ -220,10 +221,14 @@ def render_prompt(*, role: str, project_root: str, worktree: str, pr: int, base:
         role_block = role_template
     else:
         logs = validate_payload(logs, "logs")
+        # The economy section owns {{FORMAT_PREFLIGHT}} and {{WORKTREE}}; the session section owns neither,
+        # so those extra values are simply unused when binding the ci-session block.
         role_block = _bind_once(role_template, {
             b"{{LOGS_LENGTH}}": str(len(logs)).encode(),
             b"{{LOGS_SHA256}}": _payload_digest(logs),
             b"{{LOGS}}": logs,
+            b"{{FORMAT_PREFLIGHT}}": format_preflight.encode(),
+            b"{{WORKTREE}}": worktree.encode(),
         })
 
     values = {
@@ -311,7 +316,8 @@ def run_fix(args: argparse.Namespace) -> int:
     logs = _read_payload(args.logs_file, "logs") if args.logs_file is not None else None
     sections = load_template()
     prompt = render_prompt(role=args.role, project_root=project_root, worktree=worktree, pr=args.pr,
-                           base=base, issues=issues, logs=logs, sections=sections)
+                           base=base, issues=issues, logs=logs,
+                           format_preflight=str(FORMAT_PREFLIGHT), sections=sections)
     metadata = metadata_bytes(args.role, prompt)
     publish_bundle(Path(args.output_dir), prompt, metadata)
     print(metadata.decode("utf-8"), end="")
