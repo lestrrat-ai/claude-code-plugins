@@ -51,10 +51,10 @@ class Fake:
                  base_checked=True, fail_once: "str | None" = None,
                  live_head: str = SHA, reject_method: "str | None" = None,
                  view_head: "str | None" = None, view_branch: "str | None" = None,
-                 view_base: "str | None" = None):
+                 view_base: "str | None" = None, base: str = "main"):
         self.root = root
         self.branch = "feat-pr"
-        self.base = "main"
+        self.base = base
         self.worktree = root / ".worktrees" / self.branch
         self.worktree_owned = worktree_owned
         self.branch_owned = branch_owned
@@ -336,7 +336,10 @@ def t_owner_label_and_uncertain_view_refused():
 
 
 def t_base_checked_out_and_absent():
-    for checked, expected in ((True, ["merge", "--ff-only"]), (False, ["fetch", "origin", "main:main"])):
+    # The absent-base path fetches with a FULLY-QUALIFIED refspec (`refs/heads/<base>:refs/heads/<base>`, no
+    # leading `+`), never the bare `<base>:<base>` that git would option-parse from a dash-leading base name.
+    for checked, expected in ((True, ["merge", "--ff-only"]),
+                              (False, ["fetch", "origin", "refs/heads/main:refs/heads/main"])):
         td, root, f, led, real = scenario(base_checked=checked)
         try:
             code, _, err = invoke(f, led, root)
@@ -346,6 +349,47 @@ def t_base_checked_out_and_absent():
                   f"base checked={checked} did not use {expected}: {suffixes}")
         finally:
             finish(td, real)
+
+
+def t_dash_leading_base_is_never_option_parseable():
+    # A network-supplied base name (gh baseRefName) that begins with a dash is LEGAL git but would be
+    # option-parsed by `git fetch` if passed as a bare argv element. Both fetch sites must qualify it into
+    # a `refs/heads/...` refspec so a hostile base can never inject an option or a command path.
+
+    # F1 (_base_is_current, the merge-check ancestry refresh, on the worktree): tracking-ref form.
+    base = "--upload-pack=/bin/false"
+    td, root, f, led, real = scenario(base=base)
+    try:
+        code, _, err = invoke(f, led, root)
+        check(code == 0, f"dash-leading base broke the ancestry refresh: {err}")
+        worktree = str(f.worktree)
+        tracking = f"refs/heads/{base}:refs/remotes/origin/{base}"
+        wt_fetches = [argv for argv, _ in f.calls
+                      if argv[:5] == ["git", "-C", worktree, "fetch", "origin"]]
+        check(wt_fetches == [["git", "-C", worktree, "fetch", "origin", tracking]],
+              f"ancestry refresh did not use the safe tracking refspec: {wt_fetches}")
+        check(not any(argv[-1] == base for argv, _ in f.calls if "fetch" in argv),
+              "a fetch passed the dash-leading base as a bare option-parseable positional")
+    finally:
+        finish(td, real)
+
+    # F2 (_sync_base, the no-checked-out-base fast-forward): local-ref form, no leading `+`. The sync must
+    # SUCCEED so cleanup and the terminal write run — the bare `--prune:--prune` form wedged them forever.
+    base = "--prune"
+    td, root, f, led, real = scenario(base=base, base_checked=False)
+    try:
+        code, _, err = invoke(f, led, root)
+        check(code == 0, f"dash-leading base wedged the base-sync: {err}")
+        check(status(led) == "merged", "base-sync failure blocked the terminal write")
+        local = f"refs/heads/{base}:refs/heads/{base}"
+        root_fetches = [argv for argv, _ in f.calls
+                        if argv[:5] == ["git", "-C", str(root), "fetch", "origin"]]
+        check(["git", "-C", str(root), "fetch", "origin", local] in root_fetches,
+              f"absent-base sync did not use the safe local refspec: {root_fetches}")
+        check(not any(token == f"{base}:{base}" for argv, _ in f.calls for token in argv),
+              "the option-parseable bare `<base>:<base>` refspec is still assembled")
+    finally:
+        finish(td, real)
 
 
 def t_merge_and_confirmation_failures_resume():
@@ -602,6 +646,7 @@ CASES = [
     ("stale-malformed", "stale live SHA and malformed ownership fail closed", t_stale_head_and_malformed_ownership_refused),
     ("owner-and-view", "another run and uncertain GitHub state fail closed", t_owner_label_and_uncertain_view_refused),
     ("base-location", "checked-out and absent local base use their documented update paths", t_base_checked_out_and_absent),
+    ("dash-base-safe", "a dash-leading base name is fully-qualified at both fetch sites, never option-parseable", t_dash_leading_base_is_never_option_parseable),
     ("merge-resume", "merge and confirmation failures resume safely", t_merge_and_confirmation_failures_resume),
     ("postmerge-resume", "every post-merge phase resumes without another merge", t_postmerge_phase_failures_resume),
     ("merge-accepted", "MERGED confirmation outranks a lost merge response", t_merge_transport_failure_after_acceptance_continues),
