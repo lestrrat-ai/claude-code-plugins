@@ -144,8 +144,10 @@ review gate"), and the review re-starts on the clean tip:
   driver's call, never the tool's), then apply the gate-reset rules for a
   content-changing rebase below. Clean base-only rebase with the PR diff unchanged keeps `reviews_ok` but still moves `head_sha`, so it
   sets `ci = pending`, and the tool writes the new head through the accessor, which
-  **resets the liveness counters** at the door ("Status labels mirror the review gate"
-  Exception, below, owns this rule; `stage-2-ci.md`, "THE LIVENESS COUNTERS");
+  **resets the liveness counters and voids the base-preflight stamp `base_ok_sha`** at the door ("Status
+  labels mirror the review gate" Exception, below, owns this rule; `stage-2-ci.md`, "THE LIVENESS COUNTERS";
+  `files-and-ledger.md`, the `base_ok_sha` field), so a fresh base-preflight `proceed` must be re-earned
+  before the next verdict;
   **a judgment-path rebase — conflict-resolving OR diff-changed — changes PR content**, so it resets the
   gate **as well**, and in that same step you MUST reset `reviews_ok` to 0 **and run `label-mirror.py
   mirror` for the PR** so the label reflects the new gate state — here, at this site,

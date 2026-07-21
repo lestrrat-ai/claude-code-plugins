@@ -768,8 +768,10 @@ Every one of them MUST, in the same step:
   gate", owns the swap and the tool);
 - **re-derive `ci` from a fresh snapshot for the NEW `head_sha`, and launch a watch if — and only if —
   `liveness` then reports `watch_warranted`** ("WATCH ONLY WHAT CAN MOVE" above). Writing the new
-  `head_sha` through the accessor **resets the liveness counters** at the door ("THE LIVENESS COUNTERS"
-  above), so the PR gets a clean budget.
+  `head_sha` through the accessor **resets the liveness counters and voids the base-preflight stamp
+  `base_ok_sha`** at the door ("THE LIVENESS COUNTERS" above; `files-and-ledger.md`, the `base_ok_sha`
+  field), so the PR gets a clean budget and a fresh base-preflight `proceed` must be re-earned before the
+  next verdict.
   **NEVER launch the watch unconditionally on the push**: at that instant the checks may not have
   registered yet, so watch only if `liveness` reports `watch_warranted` ("WATCH ONLY WHAT
   CAN MOVE" above);

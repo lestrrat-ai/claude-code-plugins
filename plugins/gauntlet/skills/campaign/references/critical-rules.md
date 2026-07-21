@@ -117,7 +117,9 @@
   prefer a scoped subagent), and rebase away any conflict with `<base>`. PR-content changes reset
   verdicts. Clean base-only rebase with unchanged PR diff keeps `reviews_ok`, sets `ci = pending`, and
   moves `head_sha` — so writing the new head through `ledger.py … set --head-sha` makes the accessor
-  **reset the liveness counters** at the door (`stage-2-ci.md`, "THE LIVENESS COUNTERS"); never hand-reset.
+  **reset the liveness counters and void the base-preflight stamp `base_ok_sha`** at the door
+  (`stage-2-ci.md`, "THE LIVENESS COUNTERS"; `files-and-ledger.md`, the `base_ok_sha` field), so a fresh
+  base-preflight `proceed` must be re-earned before the next verdict; never hand-reset.
   The clean case is EXECUTED by `scripts/clean-rebase.py run` (fetch/rebase/`--force-with-lease` push +
   that ledger reset); it **refuses anything not clean** — a conflict or a diff-changing rebase is
   aborted/reset and handed back at **exit 3**, where **both** subcases fall to the driver's JUDGMENT
@@ -179,9 +181,10 @@
   mirror the review gate", owns the two-direction split). Never defer the swap to the next heartbeat — that leaves the label lying
   until reconcile, and lying forever if the session dies first. A **clean base-only rebase** with an
   unchanged PR diff does NOT reset the gate, so it correctly KEEPS `gauntlet-accepted` — it sets
-  `ci = pending` and, because it moves `head_sha`, the accessor **resets the liveness counters** at that
-  head write (`stage-2-ci.md`,
-  "THE LIVENESS COUNTERS"). Per-heartbeat label reconcile is the self-healing backstop, never the mechanism
+  `ci = pending` and, because it moves `head_sha`, the accessor **resets the liveness counters and voids
+  the base-preflight stamp `base_ok_sha`** at that head write (`stage-2-ci.md`, "THE LIVENESS COUNTERS";
+  `files-and-ledger.md`, the `base_ok_sha` field), so a fresh base-preflight `proceed` must be re-earned
+  before the next verdict. Per-heartbeat label reconcile is the self-healing backstop, never the mechanism
   (`stage-2-review-gate.md`, "Status labels mirror the review gate").
 - **YOUR OWN diagnosis is a claim too — REPRODUCE the failure before you "fix" working code.** The rule
   below audits a *reviewer's* finding. It binds **your own** with equal force, and that is where it keeps
@@ -414,8 +417,10 @@
   head resets the gate") — economy-class CI-fix, `session`-class CI-fix, review-fix, or **refutation commit** alike. In the SAME step: reset
   `reviews_ok` to 0 AND reconcile the label by running `label-mirror.py mirror` for the PR (it restores
   `gauntlet-reviewing` on a PR carrying `gauntlet-accepted`); the new commit
-  moves `head_sha`, so writing it through the accessor **resets the liveness counters** at the door
-  (`stage-2-ci.md`, "THE LIVENESS COUNTERS"); re-derive CI
+  moves `head_sha`, so writing it through the accessor **resets the liveness counters and voids the
+  base-preflight stamp `base_ok_sha`** at the door (`stage-2-ci.md`, "THE LIVENESS COUNTERS";
+  `files-and-ledger.md`, the `base_ok_sha` field), so a fresh base-preflight `proceed` must be re-earned
+  before the next verdict; re-derive CI
   for the new tip and watch it **only if `liveness` reports `watch_warranted`** (`stage-2-ci.md`, "WATCH
   ONLY WHAT CAN MOVE" — a watch launched on a tip whose checks have not registered yet has nothing to
   block on and exits in about a second), and re-enter Stage 2a. NEVER exempt a commit because it "only reformatted".

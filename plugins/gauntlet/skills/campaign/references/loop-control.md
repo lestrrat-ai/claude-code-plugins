@@ -54,9 +54,11 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      diff unchanged does not reset the gate, so it keeps `gauntlet-accepted`.)
 
      **And whenever this refresh writes a NEW `head_sha` — gate reset or not — the ledger accessor RESETS
-     THE LIVENESS COUNTERS for you** (`stage-2-ci.md`, "THE LIVENESS COUNTERS", which owns why): write the
+     THE LIVENESS COUNTERS AND VOIDS THE BASE-PREFLIGHT STAMP `base_ok_sha` for you** (`stage-2-ci.md`,
+     "THE LIVENESS COUNTERS", which owns why; `files-and-ledger.md`, the `base_ok_sha` field): write the
      new `head_sha` through `ledger.py … set --head-sha` and its door resets the whole set in the same row
-     write. This covers **both** cases above: the content change that resets the gate, **and** the clean
+     write, so a fresh base-preflight `proceed` must be re-earned before the next verdict. This covers
+     **both** cases above: the content change that resets the gate, **and** the clean
      base-only advance that does not. **Do NOT hand-reset the counters** — the door owns it, and a gloss
      that lists the set's members here is a **restatement** that goes stale the moment the set gains a
      member (this line's did, when `ci_stalled_since` joined).
@@ -88,7 +90,8 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      - **`head_moved`** — the live head differs from the row's `head_sha`: this is the **gate-reset and
        liveness-counter-reset** site — the two paragraphs directly above the command block own it. The tool
        reports only THAT the head moved; deciding whether the PR **diff** changed (reset `reviews_ok`,
-       relabel) or it was a **clean base-only advance** (counters only, gate kept) stays your judgement.
+       relabel) or it was a **clean base-only advance** (liveness counters and `base_ok_sha` reset, gate
+       kept) stays your judgement.
      - **`base_changed`** — the snapshot `baseRefName` differs from the header's `base_branch`: base-currency
        handling (`stage-2-review-gate.md`, "Base currency with `<base>`").
      - **`branch_mismatch`** — the snapshot `headRefName` differs from the row's recorded `branch`: reconcile
