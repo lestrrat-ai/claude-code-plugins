@@ -274,6 +274,28 @@ For each `#PR` to adopt:
      bounds the adversarial sweep, so be concrete: *"GitHub's API over the network; the CI system; a user's
      CLI arguments"* / *"nobody else — the store is a git-ignored local file only the driver writes"*.
 
+   **When you author, consult the durable REVIEW-LEARNINGS store.** Before writing the `## Non-goals`, run
+   `review-learnings.py table --fields id,state,claim,anchor,justification,falsifiability,provenance` — the
+   default columns omit the `claim`/`anchor` that say WHICH learning is which and the
+   justification/falsifiability the consult needs; use `review-learnings.py get --id <rl>` for one entry
+   (`review-learnings.md`). These invocations are SHORTHAND — the leading `--file <store>` is elided per
+   `SKILL.md`, "Bundled Scripts" ("SHORTHAND naming the tool … never a literal command line to paste"),
+   exactly as every `ledger.py`/`followups.py` example in these references elides it; the complete runnable
+   `python3 <skill-dir>/scripts/review-learnings.py --file <store> …` form is in `review-learnings.md`. The table shows **active** and **stale** rows (revoked is hidden) — **consult
+   only rows whose `state` is `active`**; a stale learning is set aside pending re-evaluation and is not
+   consulted. Check those active learnings for a residual class this campaign already
+   refuted or demoted that **THIS diff's own boundaries actually contain**, and state it proactively so a
+   fresh reviewer binds to it instead of re-raising it — disclosed `authored`, describing the CLASS, never
+   gerrymandered around a single finding. A class this diff does NOT contain is not a Non-goal to import:
+   that would narrow a review that should run. This is a driver-side read only: a learning is NEVER injected
+   into a review pass to tell a reviewer to stand down.
+
+   **If THIS diff meets a consulted learning's `falsifiability` condition, mark it stale BEFORE relying on
+   it.** A learning marked **stale** is not consulted until a fresh investigation reaffirms it — and staling
+   is a **MANUAL driver action**: `review-learnings.py stale --id rlN --reason …` (this PR wires the
+   consultation only; the store is DRIVER-POPULATED and auto-staling is out of scope). Do not import a Non-goal
+   from a learning whose anchor this diff just moved.
+
    **On a RE-ADOPTION, do not re-author.** `intent` is one of the fields the refresh **preserves** (step 3),
    and `intent-<pr>.md` is re-read, never re-derived — a heartbeat is a fresh agent instance, and an intent
    invented twice is two intents. Re-author only if the file is **gone** (a wiped `<rundir>`), and say so.

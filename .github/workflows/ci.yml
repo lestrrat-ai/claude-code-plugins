@@ -102,6 +102,8 @@ jobs:
             plugins/gauntlet/skills/campaign/scripts/repair-pass-test.py
             plugins/gauntlet/skills/campaign/scripts/followups.py
             plugins/gauntlet/skills/campaign/scripts/followups-test.py
+            plugins/gauntlet/skills/campaign/scripts/review-learnings.py
+            plugins/gauntlet/skills/campaign/scripts/review-learnings-test.py
             plugins/gauntlet/skills/campaign/scripts/nudge.py
             plugins/gauntlet/skills/campaign/scripts/nudge-test.py
             plugins/gauntlet/skills/campaign/scripts/pr-adopt.py
@@ -207,6 +209,15 @@ jobs:
       # A MISSING sibling fails loudly — it can never report an all-clear over a suite it did not run.
       - name: Follow-up store contract
         run: python3 plugins/gauntlet/skills/campaign/scripts/followups.py self-test
+
+      # The durable review-learnings store's contract, executed. A SIBLING of the follow-up store: unlike its
+      # intent, it ACCUMULATES and never auto-deletes, and it expires a learning to `stale`. The fixtures
+      # pin the load-bearing rules: no driver-only path reaches `revoked` or writes `promoted` (both are the
+      # user's), the store never deletes, a corrupt line is refused naming its line, and it renders through
+      # the shared table package checked by the ledger test's grid oracle. The sibling `review-learnings-
+      # test.py` is loaded by path; a MISSING sibling fails loudly.
+      - name: Review-learnings store contract
+        run: python3 plugins/gauntlet/skills/campaign/scripts/review-learnings.py self-test
 
       # The carryover distiller's contract, executed. On a run's normal exit it projects the TERMINAL
       # ledger into `.gauntlet/history/<run-id>.md` — the record a future run reads to de-dup against
