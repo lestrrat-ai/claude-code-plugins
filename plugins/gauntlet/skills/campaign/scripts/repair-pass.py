@@ -333,8 +333,20 @@ def load_historical_findings(progress: Path) -> list[dict]:
     return records
 
 
-def select_active_rounds(rundir: Path, pr: str, expected_rounds: int) -> "list[tuple[int, int, Path]]":
-    """Select one highest numbered launch attempt per numeric review round for this PR."""
+def select_active_rounds(rundir: Path, pr: str,
+                         expected_rounds: int) -> "tuple[list[tuple[int, int, Path]], list[dict]]":
+    """Select one highest numbered launch attempt per artifact pass, then map passes onto landed rounds.
+
+    A pass number is spent only by a LANDED verdict (`runtime-adapter.md`, "Review preparation mapping"):
+    a relaunch after a dead, unusable, or DEFERRED attempt keeps its pass number and takes the next launch
+    attempt, so an undrifted history has artifact passes exactly `1..review_rounds` and the fast path below
+    returns them unread. A history that instead opened a NEW pass after a deferral holds more artifact
+    passes than landed rounds. That drift is tolerated in exactly one shape — every surplus pass's active
+    attempt ends in an explicit `VERDICT: DEFERRED — …` — because such a pass landed no verdict and is
+    therefore not a round (the ledger's own model). Everything else — a hole in the numbering, more landed
+    verdicts than the ledger counted, fewer artifact passes than landed rounds, a verdictless LATEST pass —
+    stays a refusal that names the mismatch and the recovery.
+    """
     attempts: dict[int, dict[int, Path]] = {}
     for progress in rundir.glob("review-*-*" + RP.PROGRESS_SUFFIX):
         try:
@@ -349,12 +361,50 @@ def select_active_rounds(rundir: Path, pr: str, expected_rounds: int) -> "list[t
             fail(f"duplicate launch attempt {attempt_no} for pr {pr} review round {round_no}")
         by_attempt[attempt_no] = progress
 
-    expected = list(range(1, expected_rounds + 1))
     actual = sorted(attempts)
-    if actual != expected:
-        fail(f"review history for pr {pr} has numeric rounds {actual}, expected every round {expected}")
-    return [(round_no, max(attempts[round_no]), attempts[round_no][max(attempts[round_no])])
-            for round_no in expected]
+    if not actual:
+        fail(f"no review artifacts for pr {pr} in {rundir} — the ledger counts {expected_rounds} landed "
+             f"rounds, so this is the wrong --run-dir or lost history")
+    if actual != list(range(1, len(actual) + 1)):
+        missing = sorted(set(range(1, max(actual) + 1)) - set(attempts))
+        fail(f"review history for pr {pr} has artifact passes {actual}; passes {missing} are missing — "
+             f"every dispatched pass leaves its artifact set in the run directory, so a hole is lost "
+             f"history no bundle can rebuild")
+    if len(actual) < expected_rounds:
+        fail(f"the ledger counts {expected_rounds} landed review rounds for pr {pr} but only "
+             f"{len(actual)} artifact passes exist — landed history is missing, and a bundle built from "
+             f"partial history would misinform the reassessment")
+    active = {round_no: (max(attempts[round_no]), attempts[round_no][max(attempts[round_no])])
+              for round_no in actual}
+    if len(actual) == expected_rounds:
+        return ([(round_no, *active[round_no]) for round_no in actual], [])
+
+    # More artifact passes than landed rounds: arbitrate the surplus by each pass's active report. Only an
+    # explicit DEFERRED result marks a pass that legitimately landed no verdict; anything else means the
+    # ledger and the artifacts disagree about what happened, which no bundle rule may settle.
+    landed: "list[int]" = []
+    verdictless: "list[dict]" = []
+    for round_no in actual:
+        attempt_no, progress = active[round_no]
+        try:
+            result = RP.parse_report(progress)
+        except RP.Defect as exc:
+            fail(f"pr {pr} has {len(actual)} artifact passes but the ledger counts only {expected_rounds} "
+                 f"landed rounds, and pass {round_no}'s active report cannot arbitrate the surplus: {exc}")
+        if result["verdict"] == RP.DEFERRED:
+            verdictless.append({"round": round_no, "launch_attempt": attempt_no,
+                                "deferred_reason": result["deferred_reason"]})
+        else:
+            landed.append(round_no)
+    if len(landed) != expected_rounds:
+        fail(f"pr {pr} has {len(landed)} artifact passes with landed verdicts ({landed}) but the ledger "
+             f"counts {expected_rounds} review rounds — the ledger and the artifacts disagree about "
+             f"history, which no bundle rule can reconcile")
+    if actual[-1] not in landed:
+        fail(f"pr {pr}'s latest artifact pass {actual[-1]} is verdictless (DEFERRED) — a repair cap trips "
+             f"only on a landed NOT SATISFIED, so the latest pass must be a landed round; relaunch pass "
+             f"{actual[-1]} as its next launch attempt instead of bundling")
+    return ([(round_no, *active[round_no]) for round_no in landed], verdictless)
 
 
 def prior_cap_rounds(rundir: Path, pr: str) -> "set[int]":
@@ -392,13 +442,16 @@ def prior_cap_rounds(rundir: Path, pr: str) -> "set[int]":
     return caps
 
 
-def collect_rounds(rundir: Path, pr: str, expected_rounds: int) -> list[dict]:
-    """Read exactly the active attempt's validated artifacts for every round."""
+def collect_rounds(rundir: Path, pr: str, expected_rounds: int) -> "tuple[list[dict], list[dict]]":
+    """Read exactly the active attempt's validated artifacts for every landed round."""
+    selected, verdictless = select_active_rounds(rundir, pr, expected_rounds)
     # The current cap round plus every EARLIER cap round (F2): each of these legitimately has no audit and
     # must carry a gating finding, and this set is what tells the two rules below which rounds are caps.
-    cap_rounds = prior_cap_rounds(rundir, pr) | {expected_rounds}
+    # The current cap is the highest LANDED pass — equal to `expected_rounds` unless a verdictless pass
+    # shifted the artifact numbering.
+    cap_rounds = prior_cap_rounds(rundir, pr) | {selected[-1][0]}
     rounds = []
-    for round_no, attempt_no, progress in select_active_rounds(rundir, pr, expected_rounds):
+    for round_no, attempt_no, progress in selected:
         try:
             progress_text = RP.read_text(progress, "progress file")
             events, units = RP.check_progress_file(
@@ -437,8 +490,10 @@ def collect_rounds(rundir: Path, pr: str, expected_rounds: int) -> list[dict]:
         #   * the contract is an IF AND ONLY IF — NOT SATISFIED exactly when at least one GATING finding stands.
         verdict = report_result["verdict"]
         if verdict == RP.DEFERRED:
-            fail(f"pr {pr} review round {round_no} reports a DEFERRED verdict, not a binary one — a landed, "
-                 f"complete review round owes {RP.VERDICTS}; this is history review-pass.py rejects as unusable")
+            fail(f"pr {pr} review round {round_no} reports a DEFERRED verdict, not a binary one — a "
+                 f"deferral spends a launch attempt, never a pass number, so its relaunch keeps pass "
+                 f"{round_no}. The ledger counting this pass among its landed rounds means the ledger and "
+                 f"the artifacts disagree about history, which no bundle rule can reconcile")
         if verdict == RP.NOT_SATISFIED and not gating_findings:
             fail(f"pr {pr} review round {round_no} reports NOT SATISFIED but records NO gating finding — the "
                  f"coherence rule is an IF AND ONLY IF, so this is history review-pass.py rejects as unusable")
@@ -503,7 +558,7 @@ def collect_rounds(rundir: Path, pr: str, expected_rounds: int) -> list[dict]:
             "audit": audit_artifact,
             "gating_findings": gating_findings,
         })
-    return rounds
+    return rounds, verdictless
 
 
 def diff_growth(worktree: Path, base_sha: str, head_sha: str) -> list[dict]:
@@ -714,7 +769,7 @@ def cmd_bundle(path: Path, args) -> int:
         fail(f"pr {pr} has invalid review_rounds {row['review_rounds']!r}")
     if expected_rounds < 1:
         fail(f"pr {pr} is repairing with no landed review rounds")
-    rounds = collect_rounds(rundir, pr, expected_rounds)
+    rounds, verdictless_rounds = collect_rounds(rundir, pr, expected_rounds)
     if rounds[-1]["review_head_sha"] != head_sha:
         fail(f"latest active review ran on {rounds[-1]['review_head_sha']}, not current head {head_sha}")
 
@@ -741,6 +796,7 @@ def cmd_bundle(path: Path, args) -> int:
         "ledger": {"path": str(path.resolve()), "row": decision_projection(row)},
         "intent": artifact(intent_file, intent_text),
         "rounds": rounds,
+        "verdictless_rounds": verdictless_rounds,
         "diff_growth": growth,
         "current_diff": current_diff,
         "permitted": permitted,
@@ -797,8 +853,8 @@ MANIFEST_KEYS = {
     "pr", "head_sha", "base_ref", "base_sha", "rounds",
 }
 BUNDLE_KEYS = {
-    "schema", "pr", "head_sha", "base_ref", "base_sha", "ledger", "intent", "rounds", "diff_growth",
-    "current_diff", "permitted", "decision_definitions",
+    "schema", "pr", "head_sha", "base_ref", "base_sha", "ledger", "intent", "rounds", "verdictless_rounds",
+    "diff_growth", "current_diff", "permitted", "decision_definitions",
 }
 
 

@@ -689,7 +689,9 @@ prompt's exact form. The line is forbidden on NOT SATISFIED and DEFERRED results
 
 **A parsed DEFERRED result routes through progress state without becoming a judgment.** An unruled
 `plan_amendment_request` returns `amended`; an unfinished pass returns `incomplete`; a complete pass with
-nothing outstanding returns `unusable` because the deferral points at nothing.
+nothing outstanding returns `unusable` because the deferral points at nothing. None of these routes opens
+a NEW pass: a deferral spends no pass number, so any relaunch keeps the same pass and takes its next
+launch attempt (`runtime-adapter.md`, "Review preparation mapping").
 
 **A deferral whose reason names an UNWRITABLE progress/findings file is a DISPATCH fault, not a pass to
 route** — before any relaunch, re-check the launch argv against the canonical spelling
@@ -707,7 +709,7 @@ pass is a trapdoor, not a disclosure:
 | `ok` | 0 | the artifacts are sound: one strict result from the active attempt's report; a `pass_identity` naming **this** PR, **this** pass, **this** launch attempt and **the live head SHA**; a **usable intent block** for this PR; every planned unit `done` **once**, with concrete evidence, after a `started` for it; every `done` for a unit that is **actually in the plan**; no unruled amendment; and the parsed result **coheres** with the findings | tally the parsed binary result through `ledger.py verdict` |
 | `incomplete` | 1 | sound, but a planned unit has no `done` — the pass has not covered its plan | it is still working (or it stopped early — the meaningful-progress rule decides which). **Never tally a verdict from it** |
 | `amended` | 1 | sound, but the reviewer raised a `plan_amendment_request` nobody has ruled on | fold it into the plan and restart the pass, or ignore it with a note — then re-run with `--amendments-ruled N` |
-| `unusable` | 1 | the artifacts are **defective** — the active report is missing, empty, truncated, duplicate, nonterminal, malformed, or lacks SATISFIED's exact residual-risk line; a short SHA or other malformed identifier; invalid progress/identity/findings; **no usable intent block**; a parsed result that does not cohere with findings; or a spurious DEFERRED result | the pass **CANNOT count**. Fix skipped adoption inputs when named; otherwise retry or take the fresh-worker fallback |
+| `unusable` | 1 | the artifacts are **defective** — the active report is missing, empty, truncated, duplicate, nonterminal, malformed, or lacks SATISFIED's exact residual-risk line; a short SHA or other malformed identifier; invalid progress/identity/findings; **no usable intent block**; a parsed result that does not cohere with findings; or a spurious DEFERRED result | the pass **CANNOT count**. Fix skipped adoption inputs when named; otherwise retry — the same pass, next launch attempt (`runtime-adapter.md`, "Review preparation mapping") — or take the fresh-worker fallback |
 
 **`ok` is not SATISFIED.** The tool parses the reviewer's exact terminal result but does not judge the
 report's prose, raise `reviews_ok`, or merge. `ledger.py verdict` remains the only tally writer.

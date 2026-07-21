@@ -140,6 +140,7 @@ def bind_record(ledger: Path, record: Path, pr: str, head_sha: str, worktree: Pa
         "ledger": {"path": str(ledger.resolve()), "row": R.decision_projection(row)},
         "intent": {},
         "rounds": [],
+        "verdictless_rounds": [],
         "diff_growth": [],
         "current_diff": "",
         "permitted": permitted,
@@ -589,6 +590,77 @@ def t_bundle_orders_rounds_and_selects_active_attempt(tmp: Path) -> None:
           "manifest round order drifted from prompt order")
     check(json.loads(out)["bundle_sha256"] == manifest["bundle_sha256"],
           "stdout did not identify the written bundle")
+
+
+def t_bundle_skips_an_explicitly_deferred_pass(tmp: Path) -> None:
+    """A drifted history — a new pass opened after a DEFERRED instead of a relaunch — still bundles.
+
+    A pass that lands no verdict is not a round: pass 2's active attempt ends in an explicit
+    `VERDICT: DEFERRED — …`, so with the ledger counting 3 landed rounds across artifact passes 1..4 the
+    bundle excludes pass 2 from the round mapping, lists it under `verdictless_rounds` for the worker,
+    and treats the highest LANDED pass as the cap round.
+    """
+    case = bundle_setup(tmp, rounds=4)
+    (case["rundir"] / "review-1-2.txt").write_text(
+        "pass 2 parked itself\n\nVERDICT: DEFERRED — parked a plan question for the driver\n")
+    case["ledger"].write_text(
+        json.dumps({"type": "header", **L.HEADER_DEFAULTS, "base_branch": "main"}) + "\n"
+        + json.dumps({"type": "row", **case["row"], "review_rounds": "3"}) + "\n")
+    output = case["rundir"] / "repair-1-1.prompt.txt"
+    code, out, err = run_bundle(case, output)
+    check(code == 0, f"a tolerable verdictless pass wedged the bundle: {err!r}")
+    payload = prompt_payload(output)
+    check([item["round"] for item in payload["rounds"]] == [1, 3, 4],
+          f"landed rounds mapped wrong: {[item['round'] for item in payload['rounds']]}")
+    check(payload["verdictless_rounds"] == [
+        {"round": 2, "launch_attempt": 1, "deferred_reason": "parked a plan question for the driver"}],
+        f"verdictless pass was not surfaced to the worker: {payload['verdictless_rounds']!r}")
+    check(payload["rounds"][-1]["audit"]["present"] is False,
+          "the shifted cap round (pass 4) was still required to carry an audit")
+    manifest = json.loads(Path(str(output) + ".manifest.json").read_text())
+    check([item["round"] for item in manifest["rounds"]] == [1, 3, 4],
+          "manifest rounds drifted from the landed mapping")
+    check(json.loads(out)["bundle_sha256"] == manifest["bundle_sha256"],
+          "stdout did not identify the written bundle")
+
+
+def t_bundle_refuses_unreconcilable_pass_histories(tmp: Path) -> None:
+    """Only the explicit-DEFERRED surplus is tolerated; every other numbering drift stays a refusal."""
+
+    def reledger(case: dict, rounds: str) -> None:
+        case["ledger"].write_text(
+            json.dumps({"type": "header", **L.HEADER_DEFAULTS, "base_branch": "main"}) + "\n"
+            + json.dumps({"type": "row", **case["row"], "review_rounds": rounds}) + "\n")
+
+    # A surplus pass whose active attempt LANDED a verdict: ledger and artifacts disagree about history.
+    surplus = bundle_setup(tmp / "surplus", rounds=4)
+    reledger(surplus, "3")
+    code, _, err = run_bundle(surplus, surplus["rundir"] / "bundle.txt")
+    check(code == 1 and "disagree about" in err, f"a landed surplus pass was not refused: {err!r}")
+
+    # A hole in the artifact pass numbering is lost history, never a skip.
+    hole = bundle_setup(tmp / "hole", rounds=4)
+    for stale in hole["rundir"].glob("review-1-2.*"):
+        stale.unlink()
+    (hole["rundir"] / "audit-1-2.jsonl").unlink()
+    reledger(hole, "3")
+    code, _, err = run_bundle(hole, hole["rundir"] / "bundle.txt")
+    check(code == 1 and "missing" in err, f"a hole in pass numbering was not refused: {err!r}")
+
+    # A verdictless LATEST pass cannot be the cap round: the cap trips only on a landed NOT SATISFIED.
+    last = bundle_setup(tmp / "last", rounds=4)
+    (last["rundir"] / "review-1-4.txt").write_text("parked\n\nVERDICT: DEFERRED — parked at the cap\n")
+    reledger(last, "3")
+    code, _, err = run_bundle(last, last["rundir"] / "bundle.txt")
+    check(code == 1 and "latest artifact pass" in err,
+          f"a verdictless latest pass was not refused: {err!r}")
+
+    # A surplus pass whose report parses to NOTHING cannot arbitrate the mismatch.
+    torn = bundle_setup(tmp / "torn", rounds=4)
+    (torn["rundir"] / "review-1-2.txt").write_text("no terminal verdict line, torn output\n")
+    reledger(torn, "3")
+    code, _, err = run_bundle(torn, torn["rundir"] / "bundle.txt")
+    check(code == 1 and "cannot arbitrate" in err, f"a torn surplus report was not refused: {err!r}")
 
 
 def t_bundle_is_deterministic_and_payloads_are_data(tmp: Path) -> None:
@@ -1207,6 +1279,8 @@ CASES = [
     ("enum-is-closed", "the decision enum is closed, and each member is defined", t_decision_enum_is_closed),
     ("repair-dispatch-gate", "a repair needs a recorded decision; ordinary work stays frozen", t_the_repair_dispatch_gate),
     ("bundle-order-active", "bundle orders rounds numerically and selects only the active relaunch", t_bundle_orders_rounds_and_selects_active_attempt),
+    ("bundle-skips-deferred-pass", "a verdictless (DEFERRED) surplus pass is excluded, listed, and never wedges", t_bundle_skips_an_explicitly_deferred_pass),
+    ("bundle-pass-history-refusals", "every other pass-numbering drift is refused with the mismatch named", t_bundle_refuses_unreconcilable_pass_histories),
     ("bundle-deterministic", "bundle bytes/hash are deterministic and hostile payloads stay data", t_bundle_is_deterministic_and_payloads_are_data),
     ("bundle-refusals", "missing, stale, and duplicate active inputs fail before output", t_bundle_refuses_missing_stale_and_duplicate_inputs),
     ("bundle-old-intent", "old intent anchors survive; the cap round may have no audit yet", t_bundle_preserves_findings_from_an_older_intent),

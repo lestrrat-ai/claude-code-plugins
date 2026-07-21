@@ -193,6 +193,13 @@ one retry as attempt `2`; attempt `2` fails → prepare fresh native fallback at
 **A dead or unusable attempt `3` → `park-machine-blocker`.** Never reuse an attempt's artifacts, and never
 allocate attempt `4`.
 
+**A pass number is spent only by a LANDED verdict.** Every relaunch after a dead, unusable, or DEFERRED
+attempt — whatever its route — is the SAME `--pass` with the next `launch_attempt`, never a new pass
+number. Artifact passes (`review-<pr>-<n>`) therefore map 1:1, in order, onto the ledger's
+`review_rounds`, and `repair-pass.py bundle` reads review history by exactly that mapping
+(`repair-pass.md`, "Build the complete reassessment bundle"). Opening a new pass after a deferral leaves
+an orphan pass number that the bundle must later arbitrate; never do it.
+
 ### Review transport record and report ownership
 
 After `review_transition`, take **Review preparation mapping**, run `review-dispatch.py prepare` with its
