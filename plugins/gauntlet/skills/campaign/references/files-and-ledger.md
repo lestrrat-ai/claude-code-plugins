@@ -237,10 +237,12 @@ Header field notes (the header fields above; per-row fields follow):
   then carry `reviews_ok` forward to the new `head_sha` (a **depth-raising tier escalation** is the one
   same-SHA event that voids `reviews_ok` without a content change — `stage-2-review-gate.md`, "Status
   labels mirror the review gate"), set `ci = pending`, and — because the head
-  **moved** — the ledger accessor **resets the liveness counters** at the `set --head-sha` write itself
-  (`stage-2-ci.md`, "THE LIVENESS COUNTERS"; ledger.py's `apply_head_sha`). A clean rebase
-  does not reset the *gate*, but it **is** a `head_sha` change, and **every** `head_sha` change resets
-  those counters at the door: the old head's strikes and stall clock measured evidence that no longer exists.
+  **moved** — the ledger accessor **resets the liveness counters AND the base-preflight stamp `base_ok_sha`**
+  at the `set --head-sha` write itself (`stage-2-ci.md`, "THE LIVENESS COUNTERS"; `base_ok_sha` below;
+  ledger.py's `apply_head_sha`). A clean rebase does not reset the *gate*, but it **is** a `head_sha` change,
+  and **every** `head_sha` change resets them at the door: the old head's strikes and stall clock measured
+  evidence that no longer exists, and a base-preflight `proceed` decided for the old head no longer describes
+  the content — so the next verdict must wait on a fresh `proceed` for the new tip.
 - `reviews_ok` — number of fresh, context-isolated SATISFIED verdicts recorded against this PR's
   current content. Target = `required(tier)`: **1 if `tier == TRIVIAL`, else 2** (Stage **2a-triage**).
   **Only `ledger.py verdict` may RAISE it** — `set --reviews-ok <n>` refuses any value above the current
@@ -264,6 +266,17 @@ Header field notes (the header fields above; per-row fields follow):
   the **review** path carried none.
 - `ns_streak` — consecutive NOT SATISFIED verdicts. Cleared **only** by a SATISFIED — never by a fix, a
   rebase or a content change. Same owner, same absent flag, same reason.
+- `base_ok_sha` — the head a base-preflight **`proceed`** was last decided for: the **MECHANICAL** form of the
+  rebase-before-review precondition. **`ledger.py verdict` refuses unless `base_ok_sha == head_sha`** — for a
+  SATISFIED **or** a NOT SATISFIED, since a counted NOT SATISFIED spends `review_rounds`/`ns_streak` toward the
+  caps just the same — so a review verdict can never be recorded over a base no fresh `proceed` cleared.
+  **Written by exactly one thing: `base-preflight.py check`**, through `ledger.py base-ok`, when — and only
+  when — it decides `proceed` for the live head. It has **no `set`/`add-row` flag** (the same absent-door
+  mechanism as `review_rounds`): a hand-written stamp would forge a `proceed` no preflight ever decided,
+  recording a verdict over a conflicting or stale base, which is the exact waste this guard exists to stop. It
+  is SHA-bound and voided on a head move exactly like the liveness counters (`head_sha` above, the reset
+  family), and stamping it is **not activity** (it records a precondition, like re-arming the watchdog). The
+  default is `-`, which no 40-char head equals, so `verdict` **fails closed** until base-preflight runs.
 
   **What READS these counters is `ledger.py verdict` itself, and at a cap it STOPS THE LOOP.** They are
   sensors, and the reader is fused into the one door that cannot be skipped — deliberately: a cap
@@ -511,7 +524,8 @@ ledger.py watchdog interval                                       # print the in
 ledger.py --file <state.jsonl> add-row --pr N [--<field> <val> …] # register a row (refuses a duplicate pr; unset fields default)
 ledger.py --file <state.jsonl> set --pr N --<field> <val> [--<field> <val> …]  # update named fields on the row for PR N
 ledger.py --file <state.jsonl> verdict --pr N --head-sha <sha> --verdict satisfied|not-satisfied
-                                                                  # record ONE landed review verdict — the ONLY sanctioned path
+                                                                  # record ONE landed review verdict — the ONLY sanctioned path (refused unless base_ok_sha == head_sha)
+ledger.py --file <state.jsonl> base-ok --pr N --head-sha <sha>    # record a base-preflight `proceed` for the head (base_ok_sha) — written only by base-preflight.py, never hand-set
 ledger.py --file <state.jsonl> get --pr N [--field <f>]           # print the row as JSON, or one field
 ledger.py --file <state.jsonl> list [--where <field>=<val>]       # print matching rows' pr numbers (all if no filter)
 ledger.py --file <state.jsonl> table [--all] [--fields <f>,<f>,…] # print run header + the live rows as an aligned table (read-only)

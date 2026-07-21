@@ -218,7 +218,8 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
    (relaunch), and only a binary `satisfied`/`not-satisfied` ever reaches the ledger below.
    **Then record the verdict with `scripts/ledger.py verdict --pr <N> --head-sha <sha> --verdict …`** — the
    ONLY sanctioned path, and the only thing that bumps `review_rounds` (Stage 2a, "Recording a verdict");
-   never set `reviews_ok` by hand.
+   never set `reviews_ok` by hand. It refuses unless the base-preflight `proceed` above stamped `base_ok_sha`
+   for this head (the `--file` on the precondition run is what records it).
    For any completed task (review, CI watch,
    CI/review fix), record the result against the SHA it ran on and act per Stage 2.
 ### Step 3 — Dispatch due work
@@ -401,9 +402,11 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      review dispatch through the typed Stage 2a pre-review operation** — the review
      diffs `origin/<base>...HEAD`, a remote-tracking ref that always exists, since adoption fetches only
      the PR head and a local `<base>` may be absent or stale (see `pr-adoption.md` / Stage 2a). Then run
-     `base-preflight.py check --pr <N> --worktree <worktree> --base <base>`; only `proceed` clears the
-     review launch. Rebase on `rebase-first` or re-poll on `recheck` per Stage 2a, then restart this
-     precondition sequence. With `proceed`, evaluate the verdict transport through
+     `base-preflight.py check --pr <N> --worktree <worktree> --base <base> --file <state.jsonl>`; only
+     `proceed` clears the review launch, and — because a verdict follows — the `--file` is REQUIRED: on
+     `proceed` it records `base_ok_sha` for the head, without which `ledger.py verdict` refuses the verdict
+     it later records (Stage 2a, "Recording a verdict"). Rebase on `rebase-first` or re-poll on `recheck` per
+     Stage 2a, then restart this precondition sequence. With `proceed`, evaluate the verdict transport through
      `runtime-adapter.md`'s capability/transition owner before
      building its record and take only the action it returns;
      missing native cwd/mount/sandbox controls alone are not a machine blocker. Then launch **one**

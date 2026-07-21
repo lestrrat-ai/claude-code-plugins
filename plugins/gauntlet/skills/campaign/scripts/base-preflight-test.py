@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -313,6 +314,100 @@ def t_clean_view_with_current_base_proceeds():
               f"a current base must permit the candidate, got {out!r}")
 
 
+# --- `--file`: a real `proceed` RECORDS base_ok_sha on the ledger (the precondition `verdict` enforces) -----
+# base-preflight is the ONLY sanctioned writer of `base_ok_sha`: on a final `proceed`, and only when a ledger
+# is named, it resolves the worktree's HEAD and shells out to `ledger.py base-ok`. `decide()` stays pure;
+# these fixtures drive the CLI end to end (git worktree + a real sibling ledger), never `decide` directly.
+
+
+def _run_ledger(ledger: Path, *argv: str) -> subprocess.CompletedProcess:
+    proc = subprocess.run([sys.executable, str(M.LEDGER), "--file", str(ledger), *argv],
+                          capture_output=True, text=True, check=False)
+    check(proc.returncode == 0, f"ledger {' '.join(argv)} failed: {proc.stderr.strip()}")
+    return proc
+
+
+def _ledger_row(ledger: Path, pr: str, head_sha: str) -> None:
+    """Build a ledger through the REAL sibling accessor with one row for `pr` at `head_sha` (base_ok_sha `-`)."""
+    _run_ledger(ledger, "header", "set", "run_id", "t")
+    _run_ledger(ledger, "add-row", "--pr", pr, "--head-sha", head_sha)
+
+
+def _base_ok_sha(ledger: Path, pr: str) -> str:
+    return _run_ledger(ledger, "get", "--pr", pr, "--field", "base_ok_sha").stdout.strip()
+
+
+def _current_base_worktree(root: Path) -> "tuple[Path, str]":
+    """A candidate clone that CONTAINS fetched main (so base-preflight reaches `proceed`). Returns (worktree,
+    HEAD sha)."""
+    remote, seed, candidate = root / "remote.git", root / "seed", root / "candidate"
+    result = subprocess.run(["git", "init", "--bare", "-b", "main", str(remote)],
+                            capture_output=True, text=True, check=False)
+    check(result.returncode == 0, f"could not create fixture remote: {result.stderr.strip()}")
+    result = subprocess.run(["git", "clone", str(remote), str(seed)], capture_output=True, text=True, check=False)
+    check(result.returncode == 0, f"could not clone fixture seed: {result.stderr.strip()}")
+    _configure_repo(seed)
+    (seed / "f").write_text("base\n", encoding="utf-8")
+    _git(seed, "add", "f")
+    _git(seed, "commit", "-m", "base")
+    _git(seed, "push", "origin", "main")
+    result = subprocess.run(["git", "clone", str(remote), str(candidate)], capture_output=True, text=True, check=False)
+    check(result.returncode == 0, f"could not clone candidate worktree: {result.stderr.strip()}")
+    _configure_repo(candidate)
+    head = _git(candidate, "rev-parse", "HEAD").stdout.strip()
+    return candidate, head
+
+
+def t_proceed_with_file_records_base_ok():
+    """A final `proceed` with `--file` stamps `base_ok_sha` = the worktree HEAD; the SAME check WITHOUT `--file`
+    writes nothing (the pure decider is preserved)."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        candidate, head = _current_base_worktree(root)
+        vjson = root / "clean.json"
+        vjson.write_text(json.dumps(view()), encoding="utf-8")
+
+        # WITH --file: proceed, and the ledger row is stamped for the live head.
+        ledger = root / "state.jsonl"
+        _ledger_row(ledger, "9", head)
+        check(_base_ok_sha(ledger, "9") == "-", "fixture setup: base_ok_sha must start `-`")
+        code, out, err = capture_cli(M.main, ["check", "--pr", "9", "--view-json", str(vjson),
+                                              "--worktree", str(candidate), "--base", "main", "--file", str(ledger)])
+        check(code == 0, f"a current base with --file must proceed (stderr: {err})")
+        check(json.loads(out) == {"verdict": "proceed", "reason": "GitHub merge state permits base check"},
+              f"a current base must proceed, got {out!r}")
+        check(_base_ok_sha(ledger, "9") == head,
+              f"proceed with --file did not record base_ok_sha = {head!r}: {_base_ok_sha(ledger, '9')!r}")
+
+        # WITHOUT --file: still proceed, but NOTHING is written to a ledger.
+        ledger2 = root / "state2.jsonl"
+        _ledger_row(ledger2, "9", head)
+        code, out, err = capture_cli(M.main, ["check", "--pr", "9", "--view-json", str(vjson),
+                                              "--worktree", str(candidate), "--base", "main"])
+        check(code == 0, f"the same check without --file must still proceed (stderr: {err})")
+        check(_base_ok_sha(ledger2, "9") == "-",
+              f"a proceed with NO --file wrote base_ok_sha anyway: {_base_ok_sha(ledger2, '9')!r} — the pure "
+              f"decider must write nothing")
+
+
+def t_non_proceed_with_file_leaves_base_ok():
+    """`rebase-first` and `recheck` NEVER stamp — even with `--file`. Only the proceed branch records, so a
+    non-proceed decision leaves `base_ok_sha` at `-` and a later verdict stays refused."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        ledger = root / "state.jsonl"
+        _ledger_row(ledger, "9", "a" * 40)
+        for name, mss, want in (("rebase-first", "DIRTY", "rebase-first"), ("recheck", "UNKNOWN", "recheck")):
+            vjson = root / f"{name}.json"
+            vjson.write_text(json.dumps(view(mergeStateStatus=mss)), encoding="utf-8")
+            code, out, err = capture_cli(M.main, ["check", "--pr", "9", "--view-json", str(vjson),
+                                                  "--file", str(ledger)])
+            check(code != 0, f"[{name}] a non-proceed must exit non-zero (stderr: {err})")
+            check(json.loads(out)["verdict"] == want, f"[{name}] expected {want}, got {out!r}")
+            check(_base_ok_sha(ledger, "9") == "-",
+                  f"[{name}] a non-proceed decision stamped base_ok_sha: {_base_ok_sha(ledger, '9')!r}")
+
+
 CASES = [
     ("clean-proceeds", "CLEAN passes the enum screen", t_clean_proceeds),
     ("has-hooks-proceeds", "HAS_HOOKS passes the enum screen", t_has_hooks_proceeds),
@@ -344,4 +439,8 @@ CASES = [
      t_clean_view_with_stale_base_rebases),
     ("clean-view-current-base", "a CLEAN candidate containing fetched base proceeds",
      t_clean_view_with_current_base_proceeds),
+    ("proceed-file-records-base-ok", "a proceed with --file stamps base_ok_sha = HEAD; without --file writes nothing",
+     t_proceed_with_file_records_base_ok),
+    ("non-proceed-file-no-stamp", "rebase-first/recheck never stamp base_ok_sha, even with --file",
+     t_non_proceed_with_file_leaves_base_ok),
 ]

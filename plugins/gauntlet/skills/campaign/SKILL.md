@@ -153,7 +153,9 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
 16. Review verdict returned -> `ledger.py verdict`: the ONLY way to record it — NEVER hand-set
     `reviews_ok`. It bumps `review_rounds` (monotone, never reset — the loop's only memory across
     fresh-context heartbeats) and `ns_streak` atomically, and at a cap holds the PR `repairing` and
-    exits non-zero.
+    exits non-zero. It also **refuses a verdict — satisfied or not — unless a fresh base-preflight `proceed`
+    is on record for the head** (`base_ok_sha == head_sha`, written by `base-preflight.py … --file` on
+    `proceed`), so a review can never be counted over a base no pre-flight cleared.
 17. On `NOT SATISFIED`, findings are claims, not facts: a dispatched context-isolated audit subagent
     (never the orchestrator inline) verdicts each gating finding — CONFIRMED / ADJUSTED / REFUTED,
     with evidence — through `finding-audit.py`, BEFORE any fix is dispatched; **unsure -> CONFIRMED,
@@ -257,7 +259,7 @@ a line the tool writes.
 | `emit-finding.py` | Reviewer's door: record one FINDING (the only sanctioned way; findings must anchor or they do not gate) | `references/stage-2-review-gate.md` |
 | `emit-amendment.py` | Reviewer's door: raise one plan amendment (the only sanctioned way; `ts` is tool-stamped, the proposed unit is validated like a plan unit) | `references/stage-2-review-gate.md` |
 | `reviewer-liveness.py` | Probe whether a dispatched reviewer's output stream is still moving; decides nothing, always exits 0 | `references/stage-2-review-gate.md` |
-| `base-preflight.py` | Decide proceed / rebase-first / recheck from live merge-state plus fetched base ancestry before review or fix; performs no rebase | `references/stage-2-review-gate.md` |
+| `base-preflight.py` | Decide proceed / rebase-first / recheck from live merge-state plus fetched base ancestry before review or fix; performs no rebase — with `--file`, a `proceed` records `base_ok_sha` (the precondition `ledger.py verdict` enforces) | `references/stage-2-review-gate.md` |
 | `format-preflight.py` | `check` — refuse to format any file whose formatter-write could escape the worktree (the file, or any path component, is a symlink); reads only, formats nothing | `references/stage-2-ci.md` |
 | `worker-prompt.py` | `fix` — bind one complete review/CI fix prompt and logical model class, then atomically publish its exact bytes + metadata | `references/fix-subagent-contract.md` |
 | `clean-rebase.py` | `run` — EXECUTE the clean base-only rebase (fetch/rebase/force-with-lease push + the ledger write that **carries `reviews_ok` and the status label forward** on a shape-preserving rebase, resetting only `ci = pending` and the liveness counters) and REFUSE everything else: a conflict or a diff-changing rebase is aborted/reset and handed back (exit 3), never resolved | `references/stage-2-review-gate.md` |
