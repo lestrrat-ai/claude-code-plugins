@@ -278,7 +278,10 @@ For each `#PR` to adopt:
    `review-learnings.py table --fields id,state,claim,anchor,justification,falsifiability,provenance` — the
    default columns omit the `claim`/`anchor` that say WHICH learning is which and the
    justification/falsifiability the consult needs; use `review-learnings.py get --id <rl>` for one entry
-   (`review-learnings.md`). The table shows **active** and **stale** rows (revoked is hidden) — **consult
+   (`review-learnings.md`). These invocations are SHORTHAND — the leading `--file <store>` is elided per
+   `SKILL.md`, "Bundled Scripts" ("SHORTHAND naming the tool … never a literal command line to paste"),
+   exactly as every `ledger.py`/`followups.py` example in these references elides it; the complete runnable
+   `python3 <skill-dir>/scripts/review-learnings.py --file <store> …` form is in `review-learnings.md`. The table shows **active** and **stale** rows (revoked is hidden) — **consult
    only rows whose `state` is `active`**; a stale learning is set aside pending re-evaluation and is not
    consulted. Check those active learnings for a residual class this campaign already
    refuted or demoted that **THIS diff's own boundaries actually contain**, and state it proactively so a
