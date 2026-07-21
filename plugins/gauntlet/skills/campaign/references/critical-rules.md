@@ -419,12 +419,10 @@
   for the new tip and watch it **only if `liveness` reports `watch_warranted`** (`stage-2-ci.md`, "WATCH
   ONLY WHAT CAN MOVE" — a watch launched on a tip whose checks have not registered yet has nothing to
   block on and exits in about a second), and re-enter Stage 2a. NEVER exempt a commit because it "only reformatted".
-- **THE LIVENESS COUNTERS reset on EVERY `head_sha` change — gate reset or not — at the write door, not
-  at each site** (`files-and-ledger.md`, the `head_sha` field, "What a genuine head move resets", owns what
-  a head move resets; the counter set itself is owned by `stage-2-ci.md`, "THE LIVENESS COUNTERS"). Write
-  the new `head_sha` through `ledger.py … set --head-sha` and the door resets the set — no site hand-resets,
-  and no site retypes the membership. A `head_sha` change and a gate reset are **not** the same event — the
-  owner explains which resets which.
+- **A `head_sha` change and a gate reset are NOT the same event** — what a genuine head move voids at the
+  write door is owned by `files-and-ledger.md`, the `head_sha` field, "What a genuine head move resets";
+  the review gate's own reset rules are owned by `stage-2-review-gate.md`, "Status labels mirror the
+  review gate". Neither is restated here.
 - **A `blocker_ruling` is DURABLE *and* SPENT EXACTLY ONCE** (`stage-2-ci.md`, "THE RULING IS CONSUMED
   EXACTLY ONCE"): set to `-` when a machine-blocker park is **ENTERED** and when a `retry` is **CONSUMED**,
   each in the same `ledger.py … set` call as the `status` write. A ruling left on the row answers the
