@@ -373,8 +373,10 @@
 - Verdicts are pinned to reviewed PR content: any PR-content change (review fix / CI fix /
   judgment-path rebase — conflict-resolving or diff-changed / bot or manual PR-branch commit) makes prior verdicts stale. Base
   advancement with no conflict and unchanged PR diff does NOT invalidate verdicts; carry `reviews_ok`
-  forward, update `head_sha` through `ledger.py … set --head-sha` — which **resets the liveness counters**
-  at the door (`stage-2-ci.md`, "THE LIVENESS COUNTERS") — and require fresh CI.
+  forward, update `head_sha` through `ledger.py … set --head-sha` — which **resets the liveness counters
+  and voids the base-preflight stamp `base_ok_sha`** at the door (`stage-2-ci.md`, "THE LIVENESS COUNTERS";
+  `files-and-ledger.md`, the `base_ok_sha` field) — then require fresh CI **and a fresh base-preflight
+  `proceed`** (`ledger.py verdict` refuses the next verdict until `base_ok_sha == head_sha` again).
 - Resume vs. fresh run is decided by **liveness**, not by `state.jsonl` existing: live work → resume;
   a finished prior run → ask the user before a fresh run; `--new` → fresh run with
   carryover (Loop control step 1). A finished run must never silently exit "all done" or silently

@@ -6,8 +6,11 @@ describe, in prose, the same mechanical act: when `<base>` has moved and the PR 
 the PR onto the new base, and — **only if the PR's own diff is unchanged** — carry `reviews_ok` forward,
 set `ci = pending`, and reset the liveness counters (the "clean base-only rebase" Exception in
 `stage-2-review-gate.md`, "Status labels mirror the review gate", is the SEMANTIC OWNER of that reset;
-this tool CITES it and never re-decides it). That is git fetch/rebase/push plus a ledger write, transcribed
-by a model every heartbeat. This turns the CLEAN case into a command.
+this tool CITES it and never re-decides it). The head moves, so that SAME ledger write ALSO voids the
+base-preflight stamp `base_ok_sha` at the `set --head-sha` door (`ledger.py`'s `apply_head_sha`;
+`files-and-ledger.md`, the `base_ok_sha` field): a fresh base-preflight `proceed` must be re-earned before
+the next verdict, even though `reviews_ok` carried forward. That is git fetch/rebase/push plus a ledger
+write, transcribed by a model every heartbeat. This turns the CLEAN case into a command.
 
 **It does the CLEAN case and NOTHING else.** Conflict resolution is the driver's JUDGMENT and this tool
 NEVER attempts it: the moment `git rebase` reports a conflict it `--abort`s, restores HEAD, and exits
@@ -216,7 +219,8 @@ def run(args) -> int:
               "orig_head": orig_head, "branch": row_branch,
               "would": f"fetch {remote} {base}; rebase onto {remote}/{base}; verify the PR diff is "
                        f"unchanged; push --force-with-lease; then set head_sha, ci=pending and reset the "
-                       f"liveness counters in the ledger"})
+                       f"liveness counters in the ledger (the head move also voids base_ok_sha at that "
+                       f"write, so a fresh base-preflight proceed is needed before the next verdict)"})
         return EXIT_OK
 
     # --- EXECUTION ------------------------------------------------------------
@@ -289,6 +293,8 @@ def run(args) -> int:
     # case KEEPS the gate — the "clean base-only rebase" Exception in stage-2-review-gate.md, "Status labels
     # mirror the review gate", is the owner). It IS a head_sha change, so: new head_sha, ci=pending, and
     # reset the four liveness counters to their fresh-head ROW_DEFAULTS. `reviews_ok`/labels are NOT touched.
+    # The `set --head-sha` door ALSO voids `base_ok_sha` (apply_head_sha) — a new head is unverified until a
+    # fresh base-preflight `proceed` — and the emitted `ledger` object echoes that reset value below.
     ledger_argv = ["python3", str(LEDGER_PY), "--file", str(ledger_path), "set", "--pr", pr,
                    "--head-sha", new_head, "--ci", "pending"]
     for field in LIVENESS_COUNTERS:
@@ -305,6 +311,10 @@ def run(args) -> int:
 
     emit({"pr": pr, "old_head": orig_head, "new_head": new_head, "base": base, "pushed": True,
           "ledger": {"head_sha": new_head, "ci": "pending",
+                     # the head move voided base_ok_sha at the `set --head-sha` door; echo the value it was
+                     # reset to (from ROW_DEFAULTS, like the liveness counters) so the driver SEES it must
+                     # re-earn a base-preflight `proceed` before the next verdict.
+                     "base_ok_sha": str(L.ROW_DEFAULTS["base_ok_sha"]),
                      **{f: str(L.ROW_DEFAULTS[f]) for f in LIVENESS_COUNTERS}}})
     return EXIT_OK
 

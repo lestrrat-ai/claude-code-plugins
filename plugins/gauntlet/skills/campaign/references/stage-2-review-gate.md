@@ -851,8 +851,11 @@ prose. Record the reviewed SHA
 (`git rev-parse HEAD`) with each pass. A verdict counts while its SHA equals the live tip. It also
 continues to count after `<base>` advances if the PR is still non-conflicting and the PR diff/content
 is unchanged (e.g. clean base-only rebase); carry `reviews_ok` forward to the new `head_sha`, set
-`ci = pending` — writing the new head through the accessor **resets the liveness counters** at the door
-(`stage-2-ci.md`, "THE LIVENESS COUNTERS"). The moment PR content changes — review fix, CI fix, a judgment-path rebase (conflict-resolving or diff-changed), a
+`ci = pending` — writing the new head through the accessor **resets the liveness counters and voids the
+base-preflight stamp `base_ok_sha`** at the door (`stage-2-ci.md`, "THE LIVENESS COUNTERS";
+`files-and-ledger.md`, the `base_ok_sha` field). The already-recorded verdicts still count, but the voided
+`base_ok_sha` means **recording the NEXT verdict needs a fresh base-preflight `proceed` for the rebased
+head** — `ledger.py verdict` refuses until `base_ok_sha == head_sha` again. The moment PR content changes — review fix, CI fix, a judgment-path rebase (conflict-resolving or diff-changed), a
 formatter/bot commit on the PR branch, or manual push — earlier verdicts are stale and `reviews_ok`
 drops to 0. Pinning to SHA plus the clean-base-only exception makes the gate verifiable from git while
 not burning reviews merely because another PR merged cleanly. A `NOT SATISFIED` invalidates that
@@ -955,9 +958,12 @@ tier and voided tally move together, per `loop-control.md`/`pr-adoption.md`). Se
 **Exception — a clean base-only rebase** (PR diff unchanged) carries `reviews_ok` forward and therefore
 **keeps** `gauntlet-accepted`. The gate did not reset, so the label does not move. Gate and label stay in
 lockstep in both directions. **It is still a `head_sha` change, though**, so it sets `ci = pending`, and
-writing the new head through the accessor **resets the liveness counters** at the door (`stage-2-ci.md`,
-"THE LIVENESS COUNTERS") — the gate and the counters key off **different** events, and this row is exactly
-where they part company.
+writing the new head through the accessor **resets the liveness counters and voids the base-preflight stamp
+`base_ok_sha`** at the door (`stage-2-ci.md`, "THE LIVENESS COUNTERS"; `files-and-ledger.md`, the
+`base_ok_sha` field) — the gate and the counters key off **different** events, and this row is exactly
+where they part company. **The voided `base_ok_sha` is the one thing the carried-forward `reviews_ok` does
+NOT cover:** a fresh base-preflight `proceed` must be re-earned for the rebased head before the next
+verdict, or `ledger.py verdict` refuses it.
 
 **Reconcile is the backstop, not the mechanism.** Loop control re-derives every label from the live
 gate each heartbeat so a missed swap self-heals, exactly as the CI-watch heartbeat backstops a missed watch.

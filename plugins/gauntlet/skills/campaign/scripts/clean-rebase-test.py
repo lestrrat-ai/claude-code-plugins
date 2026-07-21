@@ -18,6 +18,7 @@ refuse it exactly as it refuses a conflict.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import tempfile
 from contextlib import redirect_stderr, redirect_stdout
@@ -169,8 +170,11 @@ def _scenario(tmp) -> Scenario:
 def t_clean_rebase_end_to_end():
     with tempfile.TemporaryDirectory() as tmp:
         s = _scenario(tmp)
+        # the fixture stamped base_ok_sha == orig_head (a base-preflight `proceed` on record) via base-ok
+        check(_field(s.ledger, PR_NUMBER, "base_ok_sha") == s.orig_head,
+              "fixture setup: a base-preflight proceed is on record for the pre-rebase head")
         s.advance_base({12: "12-BASE"})  # a FAR edit — outside the PR hunk's context, diff unchanged
-        code, _, err = s.invoke()
+        code, out, err = s.invoke()
         check(code == M.EXIT_OK, f"a clean base-only rebase must exit 0 (code={code}, err={err})")
         new_head = head(s.wt)
         check(new_head != s.orig_head, "the clean rebase moved the worktree HEAD to a new commit")
@@ -180,10 +184,21 @@ def t_clean_rebase_end_to_end():
         for f in M.LIVENESS_COUNTERS:
             check(_field(s.ledger, PR_NUMBER, f) == str(L.ROW_DEFAULTS[f]),
                   f"the clean rebase resets the liveness counter {f} to its fresh-head default")
+        # the head move ALSO voids base_ok_sha at the `set --head-sha` door — a fresh base-preflight
+        # `proceed` must be re-earned before the next verdict, even though reviews_ok carried forward.
+        check(_field(s.ledger, PR_NUMBER, "base_ok_sha") == str(L.ROW_DEFAULTS["base_ok_sha"]),
+              "the clean rebase VOIDS base_ok_sha — a moved head is unverified until a fresh proceed")
         check(_field(s.ledger, PR_NUMBER, "reviews_ok") == "2",
               "the clean case CARRIES reviews_ok FORWARD — the gate is not reset (the Exception rule)")
         check(_field(s.ledger, PR_NUMBER, "review_rounds") == "2",
               "review_rounds is monotone — a clean rebase never touches it")
+        # the emitted result-JSON `ledger` object ECHOES the reset base_ok_sha, so a driver reading it
+        # SEES the stamp was voided rather than discovering it only when `verdict` refuses.
+        result = json.loads(out.strip().splitlines()[-1])
+        check(result["ledger"]["base_ok_sha"] == str(L.ROW_DEFAULTS["base_ok_sha"]),
+              f"the result JSON must echo the voided base_ok_sha; got {result.get('ledger')!r}")
+        check(result["ledger"]["head_sha"] == new_head,
+              "the result JSON echoes the new head_sha it wrote")
         # the remote branch was force-with-lease pushed to the new head
         check(s.remote_pr_head() == new_head, "the remote PR branch was updated to the rebased head")
 
