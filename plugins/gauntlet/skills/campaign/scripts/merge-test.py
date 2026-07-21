@@ -53,7 +53,8 @@ class Fake:
                  view_head: "str | None" = None, view_branch: "str | None" = None,
                  view_base: "str | None" = None, base: str = "main",
                  labels: "list[dict] | None" = None, local_base: str = "absent",
-                 repo_identity: str = "o/r"):
+                 repo_identity: str = "o/r", mergeable: str = "MERGEABLE",
+                 merge_state_status: str = "CLEAN"):
         self.root = root
         self.branch = "feat-pr"
         self.base = base
@@ -95,6 +96,11 @@ class Fake:
         # ("o/r"), so existing fixtures pass the cross-repo guard; overriding it models a `--repo` that does
         # NOT name the checkout's own repository (the fail-closed the guard refuses before any live view).
         self.repo_identity = repo_identity
+        # The two GitHub merge enums the live view reports. Default MERGEABLE/CLEAN yields merge-check's MERGE
+        # verdict; overriding merge_state_status to "BLOCKED" yields its PROBE sentinel, which the runner must
+        # resolve through the SAME base-ancestry probe the MERGE path runs (behind -> rebase, current -> park).
+        self.mergeable = mergeable
+        self.merge_state_status = merge_state_status
 
     def ledger(self, path: Path, *, worktree: "Path | None" = None, branch: "str | None" = None,
                run_id="g1", worktree_field: "str | None" = None) -> None:
@@ -117,8 +123,8 @@ class Fake:
             "headRefName": self.view_branch,
             "baseRefName": self.view_base,
             "labels": self.labels,
-            "mergeable": "MERGEABLE",
-            "mergeStateStatus": "CLEAN",
+            "mergeable": self.mergeable,
+            "mergeStateStatus": self.merge_state_status,
             "isDraft": False,
         }
 
@@ -324,6 +330,42 @@ def t_gate_refusals():
             check(f.merged_calls == 0, f"{kwargs} reached merge")
         finally:
             finish(td, real)
+
+
+def t_blocked_probe_rebases_when_behind_parks_when_current():
+    # merge-check.decide returns its PROBE sentinel (not MERGE) for a BLOCKED PR, because BLOCKED alone
+    # cannot tell a genuine human/ruleset block from one that is merely BEHIND its base. The runner must
+    # resolve PROBE through the SAME base-ancestry probe the MERGE path runs, mirroring merge-check.check():
+    #   * BLOCKED + behind base  -> the rebase refusal (routes to a rebase, NOT a park).
+    #   * BLOCKED + current base  -> the genuine park refusal (up-to-date human/ruleset block).
+    # RED before the fix: _require_ready refused every non-MERGE verdict with the park reason immediately,
+    # so a behind-BLOCKED PR was parked instead of rebased and the ancestry probe never ran.
+
+    # BLOCKED + behind base: fail_once="stale-base" makes the worktree ancestry probe report behind (exit 1).
+    td, root, f, led, real = scenario(merge_state_status="BLOCKED", fail_once="stale-base")
+    try:
+        code, _result, err = invoke(f, led, root)
+        check(code != 0 and "base moved ahead" in err,
+              f"BLOCKED-behind must route to a rebase, not a park: code={code} err={err!r}")
+        check(f.merged_calls == 0, "a BLOCKED PROBE must never reach the merge command")
+        # The probe must actually have run — the rebase verdict comes from the ancestry check, not decide.
+        check(any(argv[:5] == ["git", "-C", str(f.worktree), "merge-base", "--is-ancestor"]
+                  for argv, _ in f.calls),
+              "the runner did not run the base-ancestry probe for a BLOCKED PROBE")
+    finally:
+        finish(td, real)
+
+    # BLOCKED + current base: the ancestry probe passes, so it is a genuine block and parks.
+    td, root, f, led, real = scenario(merge_state_status="BLOCKED")
+    try:
+        code, _result, err = invoke(f, led, root)
+        check(code != 0 and "BLOCKED" in err,
+              f"BLOCKED-current must park as a genuine block: code={code} err={err!r}")
+        check("base moved ahead" not in err, f"an up-to-date BLOCKED PR must not be told to rebase: {err}")
+        check(f.merged_calls == 0, "a parked BLOCKED PROBE must never reach the merge command")
+        check(status(led) == "in_review", "a parked BLOCKED row must stay live, not terminate")
+    finally:
+        finish(td, real)
 
 
 def t_stale_head_and_malformed_ownership_refused():
@@ -942,6 +984,7 @@ CASES = [
     ("ownership-matrix", "all worktree/branch ownership combinations clean only owned resources", t_reused_resources_are_left),
     ("root-foreign", "root cleanup and foreign branch are refused before merge", t_root_and_foreign_targets_refused),
     ("gate-refusals", "held, stale, red, pending, and short-tally rows never merge", t_gate_refusals),
+    ("blocked-probe-ancestry", "a BLOCKED PROBE resolves via the base-ancestry probe: behind rebases, up-to-date parks; neither merges", t_blocked_probe_rebases_when_behind_parks_when_current),
     ("stale-malformed", "stale live SHA and malformed ownership fail closed", t_stale_head_and_malformed_ownership_refused),
     ("owner-and-view", "another run and uncertain GitHub state fail closed", t_owner_label_and_uncertain_view_refused),
     ("base-location", "checked-out and absent local base use their documented update paths", t_base_checked_out_and_absent),

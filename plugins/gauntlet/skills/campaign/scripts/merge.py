@@ -248,11 +248,22 @@ def _base_is_current(row: dict, header: dict) -> None:
 
 
 def _require_ready(row: dict, header: dict, view: dict) -> None:
-    """Delegate policy to merge-check.py, then supply its fetched-base ancestry phase."""
+    """Delegate policy to merge-check.py, then supply its fetched-base ancestry phase.
+
+    merge-check.decide returns MERGE only for CLEAN/HAS_HOOKS; a BLOCKED PR is left as the PROBE sentinel
+    because `decide` alone cannot tell a genuine block from one that is merely BEHIND its base. Mirror
+    merge-check.check(): the ancestry probe runs for BOTH the MERGE and PROBE verdicts. `_base_is_current`
+    raises the rebase Refusal when the PR is behind its base, so a BLOCKED-behind PR is routed to a rebase
+    exactly as the gate does — NOT parked. A PROBE that survives the probe is BLOCKED-but-current: a genuine
+    human/ruleset block that parks. PROBE never reaches an actual merge; it can only refuse (rebase or park).
+    """
     result = MC.decide(row, view, required=MC.REQUIRED)
-    if result.get("verdict") != MC.MERGE:
+    verdict = result.get("verdict")
+    if verdict not in (MC.MERGE, MC.PROBE):
         raise Refusal(f"merge-check: {result.get('reason', 'not ready')}")
     _base_is_current(row, header)
+    if verdict == MC.PROBE:
+        raise Refusal(f"merge-check: {MC.BLOCKED_PARK_REASON}")
 
 
 def _parse_worktrees(data: str) -> list[dict[str, str]]:
