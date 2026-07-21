@@ -164,8 +164,9 @@ Two things the audit does about it — **a SIGNAL and a hand-off, never a discha
   whole-history** repair stage, NOT this per-finding audit. DEMOTE, the only record-without-fixing outcome,
   is reached only at a review-loop cap and only for a finding anchored to no Purpose line and no actor. So
   reading it as licence to skip the CONFIRMED fix in hand drops that routing (verify against `repair-pass.md`).
-  The driver may then author/tighten the intent `## Non-goals` so **future** reviewer rounds bind, and
-  surface the class to the user for a decisive ruling, driving the other PRs meanwhile. Three constraints
+  The driver may then author/tighten the intent `## Non-goals` so **future** reviewer rounds bind — the
+  autonomous cap-repair act (`repair-pass.md`, REPAIR-INTENT), which never stops to ask the user — and
+  surface the residual class to the user as a **non-blocking policy note**, driving the other PRs meanwhile. Three constraints
   keep that from becoming a dodge: it is disclosed `authored` (`pr-adoption.md`); it must describe the
   **class**, never be gerrymandered around one finding; and it **does NOT retroactively discharge the
   finding in hand** — that finding is still fixed (or, if its mechanism is impossible, REFUTED on the
