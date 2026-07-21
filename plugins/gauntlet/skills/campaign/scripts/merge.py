@@ -303,6 +303,19 @@ def _sync_base(root: Path, base: str) -> None:
             f"fast-forward of checked-out base {base}",
         )
     else:
+        # If the local base ref already EXISTS and already CONTAINS origin/<base> (origin is an ancestor of
+        # the local ref — the ref is equal to or LOCAL-AHEAD of origin), it is already synchronized: skip the
+        # fetch. A non-forced local-ref fetch would reject a local-ahead ref as a non-fast-forward (exit 1)
+        # and wedge post-merge finalization (cleanup + terminal write) even though nothing needs fetching.
+        # Both `refs/heads/<base>` and `origin/<base>` are prefixed, so a dash-leading base can never be
+        # option-parsed. A BEHIND local ref (origin ahead) and an ABSENT local ref both fall through to the
+        # non-forced fetch below: behind fast-forwards, diverged still refuses (fails closed — never a `+`).
+        exists = _run(["git", "-C", str(root), "show-ref", "--verify", "--quiet", branch_ref])
+        if exists.returncode == 0:
+            synced = _run(
+                ["git", "-C", str(root), "merge-base", "--is-ancestor", f"origin/{base}", branch_ref])
+            if synced.returncode == 0:
+                return
         # Fully-qualified refspec (no leading `+`, preserving fast-forward-only semantics) so a dash-leading
         # base name can never be parsed by git as an option — the same safety idiom used just above.
         local_ref = f"refs/heads/{base}:refs/heads/{base}"

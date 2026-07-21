@@ -52,7 +52,7 @@ class Fake:
                  live_head: str = SHA, reject_method: "str | None" = None,
                  view_head: "str | None" = None, view_branch: "str | None" = None,
                  view_base: "str | None" = None, base: str = "main",
-                 labels: "list[dict] | None" = None):
+                 labels: "list[dict] | None" = None, local_base: str = "absent"):
         self.root = root
         self.branch = "feat-pr"
         self.base = base
@@ -64,6 +64,12 @@ class Fake:
         self.reviews = reviews
         self.status = status
         self.base_checked = base_checked
+        # State of the LOCAL base ref on the no-checked-out-base path (_sync_base else branch):
+        #   "absent" — no local base ref; the non-forced fetch creates/advances it (default).
+        #   "synced" — the local ref exists and is equal-or-AHEAD of origin (origin is its ancestor); the
+        #              already-synced short-circuit must SKIP the fetch, which — modelling a local-ahead
+        #              non-fast-forward — is set to fail if ever attempted.
+        self.local_base = local_base
         self.worktree_present = True
         self.branch_present = True
         self.calls: list[tuple[list[str], str | None]] = []
@@ -158,12 +164,27 @@ class Fake:
             return bad("ancestry fetch failed") if self._fail("entry-fetch") else ok()
         if argv[:5] == ["git", "-C", str(self.worktree), "merge-base", "--is-ancestor"]:
             return bad("stale") if self._fail("stale-base") else ok()
+        base_ref = f"refs/heads/{self.base}"
+        # The already-synced short-circuit's two probes on the no-checked-out-base path: does the local base
+        # ref exist, and is origin/<base> an ancestor of it (local equal-or-ahead). "absent" fails the
+        # existence probe (fall through to fetch); "synced" passes both (skip fetch).
+        if (len(argv) >= 5 and argv[:4] == ["git", "-C", str(self.root), "show-ref"]
+                and argv[-1] == base_ref):
+            return ok() if self.local_base != "absent" else bad("no such local base ref")
+        if (argv[:5] == ["git", "-C", str(self.root), "merge-base", "--is-ancestor"]
+                and argv[-1] == base_ref):
+            return ok() if self.local_base == "synced" else bad("origin not an ancestor of local base")
         if len(argv) >= 6 and argv[:4] == ["git", "-C", str(self.root), "fetch"] and ":refs/remotes/" in argv[-1]:
             return bad("tracking fetch failed") if self._fail("sync-tracking") else ok()
         if argv[:6] == ["git", "-C", str(self.root), "worktree", "list", "--porcelain"]:
             return ok(self._worktrees())
         if len(argv) >= 6 and argv[:3] == ["git", "-C", str(self.root)] and argv[3:5] == ["fetch", "origin"]:
-            return bad("base ref fetch failed") if self._fail("sync-base") else ok()
+            # A local-AHEAD base ref makes this non-forced local-ref fetch a non-fast-forward that real git
+            # rejects (exit 1) — the wedge the already-synced short-circuit exists to avoid. Model that, plus
+            # the generic sync-base fail knob. With the fix in place this fetch is never reached when synced.
+            if self.local_base == "synced" or self._fail("sync-base"):
+                return bad("base ref fetch failed (non-fast-forward)")
+            return ok()
         if len(argv) >= 6 and argv[:3] == ["git", "-C", str(self.root)] and argv[3:5] == ["merge", "--ff-only"]:
             return bad("base ff failed") if self._fail("sync-base") else ok()
         if argv[:4] == ["git", "-C", str(self.worktree), "status"]:
@@ -396,6 +417,31 @@ def t_dash_leading_base_is_never_option_parseable():
               f"absent-base sync did not use the safe local refspec: {root_fetches}")
         check(not any(token == f"{base}:{base}" for argv, _ in f.calls for token in argv),
               "the option-parseable bare `<base>:<base>` refspec is still assembled")
+    finally:
+        finish(td, real)
+
+
+def t_local_ahead_base_skips_fetch_and_finalizes():
+    # A local base ref that is AHEAD of origin (unpushed commits; local already CONTAINS origin/<base>) is
+    # already synchronized. The non-forced local-ref fetch would reject that as a non-fast-forward (exit 1)
+    # and wedge post-merge finalization, so base-sync must SKIP the fetch and still reach cleanup + the
+    # terminal write. Row is still in_review; the live PR is externally MERGED — the resume path that owes
+    # the base-sync. RED before the fix: the fetch is attempted, fails non-ff, and blocks the terminal write.
+    td, root, f, led, real = scenario(state="MERGED", base_checked=False, local_base="synced")
+    try:
+        code, _result, err = invoke(f, led, root)
+        check(code == 0, err)
+        check(status(led) == "merged", "already-synced base must not block the terminal write")
+        check(not f.worktree_present and not f.branch_present,
+              "finalization must remove both owned resources after the skipped fetch")
+        local = f"refs/heads/{f.base}:refs/heads/{f.base}"
+        check(not any(argv[:5] == ["git", "-C", str(root), "fetch", "origin"] and argv[-1] == local
+                      for argv, _ in f.calls),
+              "a local-ahead base must NOT trigger the non-fast-forward local-ref fetch")
+        probe = ["git", "-C", str(root), "merge-base", "--is-ancestor", f"origin/{f.base}",
+                 f"refs/heads/{f.base}"]
+        check(any(argv == probe for argv, _ in f.calls),
+              "the already-synced short-circuit must probe origin-is-ancestor-of-local")
     finally:
         finish(td, real)
 
@@ -863,6 +909,7 @@ CASES = [
     ("owner-and-view", "another run and uncertain GitHub state fail closed", t_owner_label_and_uncertain_view_refused),
     ("base-location", "checked-out and absent local base use their documented update paths", t_base_checked_out_and_absent),
     ("dash-base-safe", "a dash-leading base name is fully-qualified at both fetch sites, never option-parseable", t_dash_leading_base_is_never_option_parseable),
+    ("local-ahead-base-synced", "a local-ahead base is already synced: base-sync skips the non-ff fetch and finalization reaches cleanup + terminal write", t_local_ahead_base_skips_fetch_and_finalizes),
     ("merge-resume", "merge and confirmation failures resume safely", t_merge_and_confirmation_failures_resume),
     ("postmerge-resume", "every post-merge phase resumes without another merge", t_postmerge_phase_failures_resume),
     ("merge-accepted", "MERGED confirmation outranks a lost merge response", t_merge_transport_failure_after_acceptance_continues),
