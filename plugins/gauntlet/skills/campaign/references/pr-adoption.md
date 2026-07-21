@@ -424,8 +424,9 @@ only as your semantic all-prose call — the tool never grants it). **Then, exac
 re-triage path does (`loop-control.md`), and BEFORE the ledger write, re-run `triage.py derive` with the
 IDENTICAL `--worktree`/`--base`/`--head-sha` inputs plus `--tier <decided>` so the tool VETOES a
 below-floor choice**; require its success and an output `head_sha` that still equals the row, and BLOCK
-gate dispatch on refusal (exit 2, no JSON). Only then replace the bootstrap with
-`ledger.py … set --pr <N> --tier <decided tier>`. Without this second veto derive the adoption path would
+gate dispatch on refusal (exit 2, no JSON). Only then replace the bootstrap — with **EXACTLY ONE
+directional `ledger.py … set`**, honouring the direction below, never a preliminary generic tier write
+followed by a second. Without this second veto derive the adoption path would
 write a below-floor tier straight through — gate work could start below the emitted floor, an
 under-reviewed stricter tier — the exact hole the heartbeat veto closes; the two paths are symmetric. A
 refusal from EITHER derive leaves the conservative bootstrap in place and blocks gate dispatch until the
@@ -444,7 +445,9 @@ decided-tier write must honour the direction before the mirror:
   next dispatch.
   Without this, a PR left `gauntlet-accepted` under a preserved STANDARD (`required` 2, `reviews_ok` 2) would
   stay accepted when raised to HIGH — a false public label with the deep sweep never run.
-- **De-escalation** (this decision lowers the tier): KEEP the preserved verdicts; only `required(tier)` moves.
+- **De-escalation, unchanged, or fresh adoption** (this decision lowers the tier, holds it, or first-sets it
+  on the bootstrap row): write the tier ALONE — `ledger.py … set --pr <N> --tier <decided>` — which KEEPS any
+  preserved verdicts; only `required(tier)` moves.
 **Then, in the SAME step, run `label-mirror.py mirror` for the PR** — idempotent, a no-op when the label
 already matches — so the tier, `required(tier)`, and the public status label move together
 (`stage-2-review-gate.md`, "Status labels mirror the review gate", owns the swap and the tool). **Run it

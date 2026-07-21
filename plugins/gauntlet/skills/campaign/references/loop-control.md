@@ -342,10 +342,14 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      mechanical inventory and `floor`. `stage-2-review-gate.md`, "2a-triage", owns the complete invocation
      and policy. Never classify files or modes here. On success, require output `head_sha` to equal the
      row, **decide the tier at or above `floor`** (`TRIVIAL` only when `floor` is `null` and you judge it
-     truly human prose — the tool never grants it), and write it with `ledger.py … set --pr <N> --tier
-     <tier>`; re-run `derive --tier <decided>` to have the tool veto a below-floor mistake. **A same-SHA
-     tier change is TWO events by direction, and the write differs by direction** (`stage-2-review-gate.md`,
-     "Status labels mirror the review gate", owns the split; depth order TRIVIAL < STANDARD < HIGH):
+     truly human prose — the tool never grants it). **VETO FIRST — BEFORE any ledger write:** re-run
+     `derive --tier <decided>` with the IDENTICAL `--worktree`/`--base`/`--head-sha` inputs so the tool
+     vetoes a below-floor mistake; require its success and an output `head_sha` still equal to the row, and
+     BLOCK gate dispatch on refusal (exit 2, no JSON). Only THEN write the tier, with **EXACTLY ONE
+     directional `ledger.py … set`** — never a preliminary generic tier write followed by a second. **A
+     same-SHA tier change is TWO events by direction, and the one write differs by direction**
+     (`stage-2-review-gate.md`, "Status labels mirror the review gate", owns the split; depth order
+     TRIVIAL < STANDARD < HIGH):
      - **Depth-raising escalation** (the decision raises the tier to a strictly deeper one — TRIVIAL→STANDARD,
        TRIVIAL→HIGH, STANDARD→HIGH; STANDARD→HIGH raises depth even though `required` stays 2): the standing
        verdicts were earned at a shallower depth and do NOT satisfy the new tier, so write the deeper tier and
@@ -355,8 +359,10 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
        read as no escalation). Then require a fresh tier-sized plan before the next dispatch (the plan-copy
        rule in `stage-2-review-gate.md` must NOT reuse the shallower plan). Do this even though the SHA is
        unchanged.
-     - **De-escalation** (the decision lowers the tier — STANDARD→TRIVIAL, HIGH→STANDARD, HIGH→TRIVIAL): the
-       verdicts were earned at a DEEPER depth (a superset), so KEEP `reviews_ok` and the plan; only
+     - **De-escalation, unchanged, or fresh adoption** (the decision lowers the tier — STANDARD→TRIVIAL,
+       HIGH→STANDARD, HIGH→TRIVIAL — or holds it, or first-sets it on a row that lacked one): any standing
+       verdicts were earned at a DEEPER-or-equal depth (a superset), so write the tier ALONE —
+       `ledger.py … set --pr <N> --tier <decided>` — which KEEPS `reviews_ok` and the plan; only
        `required(tier)` moves.
      **Then, in that SAME step, run `label-mirror.py mirror` for that PR** — idempotent, a no-op when the
      label already matches — so the tier, `required(tier)`, and the public status label move together: it

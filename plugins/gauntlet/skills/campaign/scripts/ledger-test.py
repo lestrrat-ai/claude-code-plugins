@@ -1200,6 +1200,36 @@ def t_escalation_reset_is_one_atomic_write(L: ModuleType, tmp: Path) -> None:
     check(out == "0\n", f"persisted reviews_ok is {out!r}, not '0' — tier and tally did not move together")
 
 
+def t_deescalation_is_a_tier_only_write(L: ModuleType, tmp: Path) -> None:
+    """A de-escalation (required-lowering flip) writes the tier ALONE and PRESERVES the tally.
+
+    The counterpart of the escalation reset: verdicts earned at a DEEPER depth are a superset that still
+    satisfies a shallower tier, so `set --tier <shallower>` with NO `--reviews-ok` flag must leave
+    `reviews_ok` standing (`loop-control.md`/`pr-adoption.md`/"Status labels mirror the review gate" — the
+    de-escalation branch keeps the verdicts; only `required(tier)` moves). This pins the tool contract the
+    prose deletion depends on: the single directional write is tier-only on a de-escalation, never a reset.
+    """
+    path = write_lines(tmp / "de.jsonl", header_line(L), row_line(L, pr="1", head_sha=SHA_A, tier="HIGH"))
+    # A standing tally at the DEEPER tier (earned, not hand-set — `set` cannot raise it).
+    cli(L, ["--file", str(path), "verdict", "--pr", "1", "--head-sha", SHA_A, "--verdict", "satisfied"])
+    cli(L, ["--file", str(path), "verdict", "--pr", "1", "--head-sha", SHA_A, "--verdict", "satisfied"])
+    code, out, _ = cli(L, ["--file", str(path), "get", "--pr", "1", "--field", "reviews_ok"])
+    check(out == "2\n", f"setup: the deep tally is {out!r}, not '2'")
+
+    # THE de-escalation: lower the tier ONLY — no --reviews-ok flag.
+    code, out, err = cli(L, ["--file", str(path), "set", "--pr", "1", "--tier", "STANDARD"])
+    check(code == 0, f"the tier-only de-escalation write was refused (exit {code}): {err!r}")
+    row = json.loads(out)
+    check(row["tier"] == "STANDARD", f"the shallower tier did not land: {row['tier']!r}")
+    check(row["reviews_ok"] == "2", f"the tally was voided by a tier-only write: {row['reviews_ok']!r}")
+
+    # And it is DURABLE — the preserved tally is in the persisted row, not just the printed one.
+    code, out, _ = cli(L, ["--file", str(path), "get", "--pr", "1", "--field", "tier"])
+    check(out == "STANDARD\n", f"persisted tier is {out!r}, not 'STANDARD'")
+    code, out, _ = cli(L, ["--file", str(path), "get", "--pr", "1", "--field", "reviews_ok"])
+    check(out == "2\n", f"persisted reviews_ok is {out!r}, not '2' — a de-escalation must preserve verdicts")
+
+
 def t_verdict_refuses_a_moved_head(L: ModuleType, tmp: Path) -> None:
     """A verdict for a SHA that is not the row's head is REFUSED — it describes content that is gone.
 
@@ -2238,6 +2268,7 @@ CASES = [
     ("rounds-never-reset", "NOTHING resets review_rounds/ns_streak — there is no flag, at any door", t_review_rounds_never_reset),
     ("tally-floor-only", "`set` may VOID reviews_ok, NEVER raise it — only a verdict adds a verdict", t_set_cannot_raise_the_tally),
     ("escalation-reset-atomic", "the depth-raising reset writes deeper tier + voided tally in ONE atomic set", t_escalation_reset_is_one_atomic_write),
+    ("deescalation-tier-only", "a de-escalation writes the tier ALONE and preserves the standing tally", t_deescalation_is_a_tier_only_write),
     ("verdict-head-pinned", "a verdict for a SUPERSEDED sha is refused — it describes content that is gone", t_verdict_refuses_a_moved_head),
     ("verdict-domain", "`verdict` needs a real row and one of exactly two verdicts", t_verdict_needs_a_row_and_a_known_verdict),
     ("counter-corrupt", "a counter field that is not a count is refused, never handed to int()", t_counter_refuses_a_corrupt_value),
