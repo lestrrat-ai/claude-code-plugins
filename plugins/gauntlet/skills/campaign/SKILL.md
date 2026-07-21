@@ -308,8 +308,7 @@ name from one host into another.
 | **Follow-up fixer** (opens a new PR) | **`session`** | Authors code from scratch that the gauntlet then judges — the review-fix reasoning, in the separate follow-up workflow (`references/followups.md`, `references/fix-subagent-contract.md`). |
 
 **Only the formatting CI-fix tier is downgraded** — for its narrower formatter-and-verification job.
-**Every other worker in this table is `session` and is NEVER downgraded** — the gate, the from-scratch
-fixes, the mapper, and the finding audit that scopes them most of all. `worker-prompt.py fix` builds the prompt for
+**Every other worker in this table is `session` and is NEVER downgraded.** `worker-prompt.py fix` builds the prompt for
 each of the three fix-worker roles (review-fix and both CI tiers); its template owns the complete shared
 and role-specific wording. Read `references/fix-subagent-contract.md`, materialize the selected role, and
 dispatch only the exact `prompt.txt` bytes with the logical model class from `metadata.json`. The
