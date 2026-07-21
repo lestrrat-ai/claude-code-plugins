@@ -195,7 +195,8 @@ subagent at a check that is merely **still running**.
    (`loop-control.md` step 3,
    "held-status guard"): this reconcile MUTATES a PR, so it is exactly what the guard forbids. A clean
    rebase would move its `head_sha`, set `ci = pending` and — at that head write — the accessor would reset
-   its liveness counters (`stage-2-ci.md`, "THE LIVENESS COUNTERS"); a conflict-resolving rebase would reset
+   its liveness counters (`stage-2-ci.md`, "THE LIVENESS COUNTERS"); a judgment-path rebase (conflict-resolving
+   or diff-changed) would reset
    `reviews_ok`, relabel, and relaunch work — and would **change the PR's content**, which can invalidate
    the very refutation or API change the user was parked to adjudicate. **A parked PR that has fallen
    behind simply STAYS behind** until the user answers; it is re-reconciled normally on the heartbeat after it
@@ -215,13 +216,14 @@ subagent at a check that is merely **still running**.
      liveness counters** at the door — new commit, new evidence — `stage-2-ci.md`, "THE LIVENESS
      COUNTERS"), `ci = pending`. **Exit 3 means it was NOT
      clean** — a conflict, or a rebase that changed the PR's own diff — and it has already aborted/reset to
-     the original head; the conflict-resolution bullet below then owns it. On a clean (exit 0) rebase,
+     the original head; the judgment-path bullet below then owns **both** exit-3 subcases. On a clean (exit 0) rebase,
      **re-derive CI from a snapshot of the new tip in the same heartbeat, launching a watch only if `liveness`
      then reports `watch_warranted`** ("WATCH ONLY WHAT CAN MOVE"). A rebased PR must not sit unwatched
      until the heartbeat while its checks are running — but it must not be watched when **nothing** is
      running either, which right after a push is the common case (no check has registered yet). CI must
      return green before merging.
-   - Rebase requiring conflict resolution → PR content changed → **reset `reviews_ok` to 0 AND, in that
+   - Judgment-path rebase — a conflict resolved by hand, OR a no-conflict rebase that reshaped the PR's own
+     diff (both `clean-rebase.py` exit-3 subcases) → PR content changed → **reset `reviews_ok` to 0 AND, in that
      same step, reconcile the label by running `label-mirror.py mirror` for the PR** (it restores
      `gauntlet-reviewing` on a PR carrying `gauntlet-accepted`) — the gate and its
      label move together (`stage-2-review-gate.md`, "Status labels mirror the review gate", owns the swap

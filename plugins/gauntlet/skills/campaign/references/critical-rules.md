@@ -120,8 +120,10 @@
   **reset the liveness counters** at the door (`stage-2-ci.md`, "THE LIVENESS COUNTERS"); never hand-reset.
   The clean case is EXECUTED by `scripts/clean-rebase.py run` (fetch/rebase/`--force-with-lease` push +
   that ledger reset); it **refuses anything not clean** — a conflict or a diff-changing rebase is
-  aborted/reset and handed back at **exit 3**, where the driver resolves the conflict by hand, never the
-  tool.
+  aborted/reset and handed back at **exit 3**, where **both** subcases fall to the driver's JUDGMENT
+  path, never the tool: resolve the conflict by hand where there is one, OR accept/verify the reshaped
+  diff where there is none, then apply the gate reset the stage-2 owner defines — `reviews_ok = 0` **and**
+  `label-mirror.py mirror` (`stage-2-review-gate.md`, "Status labels mirror the review gate").
   Never spend a review over open Copilot items, a red check, or a conflicting PR (Stage 2a).
 - The review gate is **tier-dependent**: `required(tier)` fresh, context-isolated `SATISFIED` verdicts
   on the same live PR content — **one if TRIVIAL, two otherwise** (any code / agent-doc / sensitive
@@ -165,7 +167,8 @@
   SATISFIED verdicts.** The label is a projection of `reviews_ok`, and it is the only run state a human
   sees on GitHub — a stale `gauntlet-accepted` publicly claims a PR passed a gauntlet it did not. So the
   **gate and the label move together, in the same step**: every action that drops `reviews_ok` to 0 (a
-  `NOT SATISFIED` verdict, a review/CI/copilot fix commit, a conflict-resolving rebase, any other
+  `NOT SATISFIED` verdict, a review/CI/copilot fix commit, a content-changing rebase (conflict-resolving
+  or diff-changed), any other
   content change on the head branch) MUST also reconcile the label by running `label-mirror.py mirror`
   for the PR — the ONE way that swap is applied — which restores `gauntlet-reviewing` on a PR carrying
   `gauntlet-accepted`. Never defer the swap to the next heartbeat — that leaves the label lying
@@ -363,7 +366,7 @@
   needs only one SATISFIED pass, so there is no second review to sequence. (Reviews for *different* PRs
   still run concurrently; only the two for the same PR serialize. See Stage 2a.)
 - Verdicts are pinned to reviewed PR content: any PR-content change (review fix / CI fix /
-  conflict-resolving rebase / bot or manual PR-branch commit) makes prior verdicts stale. Base
+  judgment-path rebase — conflict-resolving or diff-changed / bot or manual PR-branch commit) makes prior verdicts stale. Base
   advancement with no conflict and unchanged PR diff does NOT invalidate verdicts; carry `reviews_ok`
   forward, update `head_sha` through `ledger.py … set --head-sha` — which **resets the liveness counters**
   at the door (`stage-2-ci.md`, "THE LIVENESS COUNTERS") — and require fresh CI.

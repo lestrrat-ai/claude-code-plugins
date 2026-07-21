@@ -20,7 +20,7 @@ ledger.py --file <state.jsonl> verdict --pr <N> --head-sha <the live head> --ver
 
 **Hand-setting `reviews_ok` for a verdict is FORBIDDEN** — it applies the tally and silently skips the
 counters, restoring the amnesia. **But a gate RESET is not a verdict**: a content change (a fix commit, a
-CI fix, a conflict-resolving rebase, a bot push) still writes `reviews_ok = 0` through `ledger.py … set`,
+CI fix, a content-changing rebase (conflict-resolving or diff-changed), a bot push) still writes `reviews_ok = 0` through `ledger.py … set`,
 exactly as it always has. `verdict` records what a **reviewer decided**; `set` records what a **commit
 did**. Do not convert the reset sites into `verdict` calls.
 
