@@ -51,7 +51,8 @@ class Fake:
                  base_checked=True, fail_once: "str | None" = None,
                  live_head: str = SHA, reject_method: "str | None" = None,
                  view_head: "str | None" = None, view_branch: "str | None" = None,
-                 view_base: "str | None" = None, base: str = "main"):
+                 view_base: "str | None" = None, base: str = "main",
+                 labels: "list[dict] | None" = None):
         self.root = root
         self.branch = "feat-pr"
         self.base = base
@@ -80,6 +81,9 @@ class Fake:
         self.view_head = view_head or SHA
         self.view_branch = view_branch or self.branch
         self.view_base = view_base or self.base
+        # The live PR's labels. Default carries THIS run's owner label; passing [] models a HALF-ADOPTION
+        # whose PR never got `gh pr edit`-attached its label, and a foreign entry models another run's PR.
+        self.labels = labels if labels is not None else [{"name": "gauntlet-run-g1"}]
 
     def ledger(self, path: Path, *, worktree: "Path | None" = None, branch: "str | None" = None,
                run_id="g1", worktree_field: "str | None" = None) -> None:
@@ -101,7 +105,7 @@ class Fake:
             "headRefOid": self.view_head,
             "headRefName": self.view_branch,
             "baseRefName": self.view_base,
-            "labels": [{"name": "gauntlet-run-g1"}],
+            "labels": self.labels,
             "mergeable": "MERGEABLE",
             "mergeStateStatus": "CLEAN",
             "isDraft": False,
@@ -757,6 +761,98 @@ def t_absent_routing_decision():
             finish(td, real)
 
 
+def t_label_free_half_adopted_closed_out():
+    # A HALF-ADOPTION can fail even EARLIER than the worktree step: pr-adopt.py persists the ledger row and
+    # then, during its step-5 Git work, dies BEFORE `gh pr edit` attaches the run label. GitHub then reports
+    # the PR as CLOSED with labels=[]. The close-out is ledger-only (records `aborted`, merges and cleans
+    # NOTHING), so it must not require THIS run's own label to be present — over-strict validation refused
+    # the missing label and left status=in_review, and because a CLOSED PR is absent from the open snapshot
+    # the heartbeat re-routes it to this same finalizer forever (a wedge loop). The FOREIGN-label refusal is
+    # NOT relaxed, though: a `gauntlet-run-*` label belonging to ANOTHER run still fails closed.
+    td, root, f, led, real = scenario(state="CLOSED", worktree_owned="-", branch_owned="-", labels=[])
+    try:
+        f.ledger(led, worktree_field="-")  # half-adoption: cleanup fields unresolved AND no own label yet
+        code, result, err = invoke(f, led, root)
+        check(code == 0, f"label-free half-adopted CLOSED row did not close out (over-strict label?): {err}")
+        check(status(led) == "aborted",
+              f"label-free half-adopted CLOSED row must terminate as aborted, got {status(led)!r}")
+        check(result is not None and result["status"] == "closed-unmerged" and result["cleanup"] == {},
+              f"the close-out must report closed-unmerged with no cleanup: {result}")
+        check(f.merged_calls == 0, "the label-free close-out issued a merge command")
+        check(not any("worktree" in argv and "remove" in argv for argv, _ in f.calls),
+              "the label-free close-out performed a local cleanup operation")
+        check(f.worktree_present and f.branch_present, "the label-free close-out destroyed local resources")
+    finally:
+        finish(td, real)
+
+    # The FOREIGN-label variant of the SAME half-adopted CLOSED row must still REFUSE — run isolation is not
+    # relaxed just because own-label presence is.
+    td, root, f, led, real = scenario(state="CLOSED", worktree_owned="-", branch_owned="-",
+                                      labels=[{"name": "gauntlet-run-other"}])
+    try:
+        f.ledger(led, worktree_field="-")
+        code, _result, err = invoke(f, led, root)
+        check(code != 0 and "another run's owner label" in err,
+              f"a foreign-labelled half-adopted CLOSED row was not refused: code={code} err={err!r}")
+        check(f.merged_calls == 0, "the foreign-label refusal must precede any merge")
+    finally:
+        finish(td, real)
+
+
+def t_external_merge_while_held_resumes():
+    # A fully-adopted, still-HELD row (status in `L.HELD_STATUSES`) whose exact reviewed head a maintainer
+    # merges out-of-band: GitHub reports MERGED. The work LANDED, so the finalizer must RESUME the owed
+    # base-sync / owned cleanup / terminal write — not refuse "held" before ever reaching the MERGED-resume
+    # branch (the old order rejected the held status first, wedging every absent-row heartbeat). Iterate the
+    # enum so a new held status is covered with no edit.
+    for held in L.HELD_STATUSES:
+        td, root, f, led, real = scenario(state="MERGED", status=held)
+        try:
+            code, result, err = invoke(f, led, root)
+            check(code == 0, f"{held}: external MERGE of a held row did not resume: {err}")
+            check(f.merged_calls == 0, f"{held}: an externally-merged PR must not be re-merged")
+            check(status(led) == "merged", f"{held}: resume must finalize the terminal ledger row")
+            check(not f.worktree_present and not f.branch_present,
+                  f"{held}: resume must complete owned base-sync/cleanup per ownership")
+            check(result is not None and result["status"] == "merged", f"{held}: unexpected result: {result}")
+        finally:
+            finish(td, real)
+
+    # Guardrail: a live OPEN held row is STILL refused — the campaign must never INITIATE a merge on a held
+    # PR. Only an already-landed external MERGE resumes; OPEN keeps waiting on the human.
+    for held in L.HELD_STATUSES:
+        td, root, f, led, real = scenario(state="OPEN", status=held)
+        try:
+            code, _result, err = invoke(f, led, root)
+            check(code != 0 and f"held ({held})" in err,
+                  f"OPEN+{held} must stay refused as held, got code={code} err={err!r}")
+            check(f.merged_calls == 0, f"OPEN+{held} must never reach the merge command")
+        finally:
+            finish(td, real)
+
+
+def t_absent_held_row_external_merge_routes_to_resume():
+    # The ROUTING DECISION for the new resume: an absent-from-snapshot HELD row (held statuses are NON-terminal,
+    # so reconcile reports the absent fact exactly as it does for in_review) that GitHub has externally MERGED.
+    # The one `absent_from_snapshot` fact routes to `merge.py run`, which resumes the held row to `merged`.
+    td, root, f, led, real = scenario(state="MERGED", status="awaiting-user")
+    try:
+        prs = root / "prs.json"
+        prs.write_text("[]", encoding="utf-8")
+        facts = RECON.detect(led, prs, "g1")
+        row_fact = facts["rows"]["9"]
+        check(row_fact.get("absent_from_snapshot") is True,
+              f"reconcile did not report the held row absent: {row_fact}")
+        check("terminal" not in row_fact, f"a held row must not be pre-classified terminal: {row_fact}")
+        code, result, err = invoke(f, led, root)
+        check(code == 0, f"absent held+MERGED row did not resume through run: {err}")
+        check(status(led) == "merged", f"absent held row finalized to {status(led)!r}, expected merged")
+        check(f.merged_calls == 0, "an already-merged held PR must not be re-merged on resume")
+        check(result is not None and result["status"] == "merged", f"unexpected result: {result}")
+    finally:
+        finish(td, real)
+
+
 CASES = [
     ("happy-owned", "exact merge argv, owned cleanup, terminal write", t_happy_owned_cleanup_and_command),
     ("merged-live-row", "MERGED with live ledger resumes without another merge", t_merge_landed_ledger_live_resumes),
@@ -781,4 +877,7 @@ CASES = [
     ("closed-out-moved-refs", "the CLOSED close-out terminates as aborted despite a moved head, base, or branch", t_closed_out_terminates_despite_moved_head_base_or_branch),
     ("closed-out-held-statuses", "a CLOSED PR closes out every held status to aborted; merged+CLOSED stays refused", t_closed_out_terminates_every_held_status),
     ("absent-routing", "the absent fact routes reconcile -> merge.py run, which finalizes MERGED and CLOSED sides", t_absent_routing_decision),
+    ("label-free-half-adopted-closed", "a half-adopted CLOSED row with no own label closes out to aborted; a foreign label still refuses", t_label_free_half_adopted_closed_out),
+    ("external-merge-held-resume", "an external MERGE of a held row resumes to merged for every held status; OPEN+held stays refused", t_external_merge_while_held_resumes),
+    ("absent-held-merge-routing", "an absent held row externally MERGED routes reconcile -> merge.py run, which resumes it to merged", t_absent_held_row_external_merge_routes_to_resume),
 ]
