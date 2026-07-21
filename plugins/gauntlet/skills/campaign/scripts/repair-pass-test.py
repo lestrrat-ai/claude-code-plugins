@@ -625,7 +625,8 @@ def t_bundle_skips_an_explicitly_deferred_pass(tmp: Path) -> None:
 
 
 def t_bundle_refuses_unreconcilable_pass_histories(tmp: Path) -> None:
-    """Only the explicit-DEFERRED surplus is tolerated; every other numbering drift stays a refusal."""
+    """Only the explicit-DEFERRED surplus is tolerated; every other history mismatch stays a refusal
+    that names a supported recovery action (relaunch with budget, or park)."""
 
     def reledger(case: dict, rounds: str) -> None:
         case["ledger"].write_text(
@@ -696,6 +697,47 @@ def t_bundle_refuses_unreconcilable_pass_histories(tmp: Path) -> None:
           f"a verdictless latest pass was not refused: {err!r}")
     check("relaunch pass 4" in err,
           f"the verdictless-latest refusal names no recovery action: {err!r}")
+    check("park the PR for the user" in err,
+          f"the verdictless-latest refusal names no park fallback: {err!r}")
+
+    # A verdictless LATEST pass whose ACTIVE attempt is already 3 — the last launch attempt the runtime
+    # allocates (`runtime-adapter.md`: a dead or unusable attempt 3 parks as a machine blocker). The
+    # refusal must name the park fallback, because "relaunch as the next launch attempt" alone is
+    # unactionable once the budget is spent.
+    spent = bundle_setup(tmp / "spent", rounds=4)
+    write_review_attempt(spent["rundir"], 4, 2, spent["head_sha"],
+                         "SUPERSEDED ATTEMPT 2 MUST NOT BE READ\n")
+    write_review_attempt(spent["rundir"], 4, 3, spent["head_sha"],
+                         "parked\n\nVERDICT: DEFERRED — parked after the final launch attempt\n")
+    reledger(spent, "3")
+    code, _, err = run_bundle(spent, spent["rundir"] / "bundle.txt")
+    check(code == 1 and "latest artifact pass" in err,
+          f"a verdictless latest pass at attempt 3 was not refused: {err!r}")
+    check("park the PR for the user" in err,
+          f"the exhausted-relaunch refusal names no park recovery: {err!r}")
+
+    # Artifact passes EQUAL to the ledger's landed rounds take the fast path past surplus arbitration,
+    # so a DEFERRED active report on a round the ledger counts as landed is caught at collect time.
+    # The ledger and the artifacts disagree about history — the refusal must name the park recovery.
+    # First with the DEFERRED report in a MIDDLE pass...
+    eqmid = bundle_setup(tmp / "eqmid", rounds=4)
+    (eqmid["rundir"] / "review-1-2.txt").write_text(
+        "pass 2 parked itself\n\nVERDICT: DEFERRED — parked a plan question for the driver\n")
+    code, _, err = run_bundle(eqmid, eqmid["rundir"] / "bundle.txt")
+    check(code == 1 and "DEFERRED verdict, not a binary one" in err,
+          f"an equal-count landed-DEFERRED middle pass was not refused: {err!r}")
+    check("park the PR for the user" in err,
+          f"the landed-DEFERRED refusal names no recovery action: {err!r}")
+
+    # ...then in the LATEST pass (the cap round itself).
+    eqlast = bundle_setup(tmp / "eqlast", rounds=4)
+    (eqlast["rundir"] / "review-1-4.txt").write_text(
+        "pass 4 parked itself\n\nVERDICT: DEFERRED — parked at the cap\n")
+    code, _, err = run_bundle(eqlast, eqlast["rundir"] / "bundle.txt")
+    check(code == 1 and "DEFERRED verdict, not a binary one" in err,
+          f"an equal-count landed-DEFERRED latest pass was not refused: {err!r}")
+    check("park the PR for the user" in err,
+          f"the landed-DEFERRED cap refusal names no recovery action: {err!r}")
 
     # A surplus pass whose report parses to NOTHING cannot arbitrate the mismatch. Recovery here is a
     # relaunch of that pass so a parseable report can arbitrate — parking is only the fallback.

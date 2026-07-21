@@ -358,7 +358,10 @@ def select_active_rounds(rundir: Path, pr: str,
         round_no, attempt_no = int(named_round), int(named_attempt)
         by_attempt = attempts.setdefault(round_no, {})
         if attempt_no in by_attempt:
-            fail(f"duplicate launch attempt {attempt_no} for pr {pr} review round {round_no}")
+            fail(f"duplicate launch attempt {attempt_no} for pr {pr} review round {round_no} — two "
+                 f"artifact sets claim the same attempt, which no bundle rule can arbitrate; park the "
+                 f"PR for the user with this reason (machine blocker), never hand-edit the ledger or "
+                 f"artifacts")
         by_attempt[attempt_no] = progress
 
     actual = sorted(attempts)
@@ -414,7 +417,8 @@ def select_active_rounds(rundir: Path, pr: str,
     if actual[-1] not in landed:
         fail(f"pr {pr}'s latest artifact pass {actual[-1]} is verdictless (DEFERRED) — a repair cap trips "
              f"only on a landed NOT SATISFIED, so the latest pass must be a landed round; relaunch pass "
-             f"{actual[-1]} as its next launch attempt instead of bundling")
+             f"{actual[-1]} as its next launch attempt instead of bundling, or park the PR for the user "
+             f"if relaunch is exhausted")
     return ([(round_no, *active[round_no]) for round_no in landed], verdictless)
 
 
@@ -506,14 +510,18 @@ def collect_rounds(rundir: Path, pr: str, expected_rounds: int) -> "tuple[list[d
             fail(f"pr {pr} review round {round_no} reports a DEFERRED verdict, not a binary one — a "
                  f"deferral spends a launch attempt, never a pass number, so its relaunch keeps pass "
                  f"{round_no}. The ledger counting this pass among its landed rounds means the ledger and "
-                 f"the artifacts disagree about history, which no bundle rule can reconcile")
+                 f"the artifacts disagree about history, which no bundle rule can reconcile; park the PR "
+                 f"for the user with this reason (machine blocker), never hand-edit the ledger or artifacts")
         if verdict == RP.NOT_SATISFIED and not gating_findings:
             fail(f"pr {pr} review round {round_no} reports NOT SATISFIED but records NO gating finding — the "
-                 f"coherence rule is an IF AND ONLY IF, so this is history review-pass.py rejects as unusable")
+                 f"coherence rule is an IF AND ONLY IF, so this is history review-pass.py rejects as "
+                 f"unusable; park the PR for the user with this reason (machine blocker), never hand-edit "
+                 f"the ledger or artifacts")
         if verdict == RP.SATISFIED and gating_findings:
             fail(f"pr {pr} review round {round_no} reports SATISFIED while {gating_findings} gating finding(s) "
                  f"stand — the coherence rule is an IF AND ONLY IF, so this is history review-pass.py rejects "
-                 f"as unusable")
+                 f"as unusable; park the PR for the user with this reason (machine blocker), never hand-edit "
+                 f"the ledger or artifacts")
         # A cap round additionally must carry a gating finding: a cap trips ONLY on a NOT SATISFIED, and the
         # coherence rule above then requires at least one gating finding. This also refuses a cap round whose
         # report claims SATISFIED with no gating finding — incoherent with the `repairing` status a cap sets —
@@ -521,7 +529,9 @@ def collect_rounds(rundir: Path, pr: str, expected_rounds: int) -> "tuple[list[d
         if round_no in cap_rounds and not gating_findings:
             fail(f"pr {pr} review round {round_no} reached a repair cap (status={L.REPAIR_STATUS}) but "
                  f"records NO gating finding. A cap trips only on NOT SATISFIED, which by the coherence rule "
-                 f"must carry at least one gating finding; this is history review-pass.py rejects as unusable")
+                 f"must carry at least one gating finding; this is history review-pass.py rejects as "
+                 f"unusable — park the PR for the user with this reason (machine blocker), never hand-edit "
+                 f"the ledger or artifacts")
         if audit_file.exists():
             audit_text = read_utf8(audit_file, "finding audit")
             # A landed round's finding audit is HISTORICAL EVIDENCE embedded for the reassessment worker —
@@ -551,7 +561,9 @@ def collect_rounds(rundir: Path, pr: str, expected_rounds: int) -> "tuple[list[d
                 fail(f"pr {pr} review round {round_no} finding audit is unusable: {exc}")
             audit_artifact = artifact(audit_file, audit_text)
         elif gating_findings and round_no not in cap_rounds:
-            fail(f"missing required finding audit for pr {pr} review round {round_no}")
+            fail(f"missing required finding audit for pr {pr} review round {round_no} — a landed gating "
+                 f"round's audit is lost history no bundle can rebuild; park the PR for the user with "
+                 f"this reason (machine blocker), never hand-edit the ledger or artifacts")
         else:
             # The NOT-SATISFIED action sequence intentionally skips its audit when `ledger.py verdict`
             # moves the row straight to `repairing`; EVERY such cap round therefore has a valid absent
