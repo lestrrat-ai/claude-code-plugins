@@ -42,9 +42,14 @@ gh label create gauntlet-run-<run-id> --color 5319E7 --description "gauntlet: ru
 > The MECHANICAL steps below — **1, 2, 4, 5 and the row of step 3** — are performed by
 > `scripts/pr-adopt.py adopt` (`pr-adopt.py adopt --pr <N> --run-id <id> --file <state.jsonl> --tier <T>
 > --worktrees-root <p> --project-root <p>`). The driver still supplies the two JUDGMENT calls it does not
-> make: the review **TIER** (the `--tier` argument, triaged per Stage **2a-triage**) and the PR's
-> **INTENT** (step 3a). Its decision logic is a pure `build_plan` pinned by `pr-adopt-test.py`. The steps
-> stay below as the spec the tool implements; read them as the authority.
+> make: the **tier DECISION** (choosing the review tier at or above `triage.py derive`'s mechanical floor)
+> and the PR's **INTENT** (step 3a).
+> Adoption needs a row before it has resolved the PR-head worktree, so pass `--tier STANDARD` as the
+> conservative bootstrap value. `pr-adopt.py` launches no gate work. Immediately after step 5, run
+> `triage.py derive` as required below for the floor + inventory, decide the tier at or above that floor,
+> and write it through `ledger.py`; loop control repeats
+> the command before any review. Its decision logic is a pure `build_plan` pinned by `pr-adopt-test.py`.
+> The steps stay below as the spec the tool implements; read them as the authority.
 
 For each `#PR` to adopt:
 
@@ -129,7 +134,9 @@ For each `#PR` to adopt:
      it reused a pre-existing local branch or checkout;
      `pr` = `<N>`; `head_sha` = `headRefOid`.
    - **On a NEW row only, initialize:** `reviews_ok` = `0` (no verdicts yet); `ci` = `pending`;
-     `tier` = triage per `head_sha` (Stage **2a-triage**); `attempts` = `0` (no attempt has run yet —
+     `tier` = bootstrap `STANDARD`; after step 5 the orchestrator decides the real tier at or above
+     `triage.py derive`'s floor and writes it;
+     `attempts` = `0` (no attempt has run yet —
      `attempts` counts attempts **so far**, and seeding it at `1` silently spends half the retry-once
      budget before any work is dispatched); `started` = now;
      `api_approval` = `-`; `blocker_ruling` = `-`; `status` = `in_review`;
@@ -402,6 +409,57 @@ For each `#PR` to adopt:
    head branch on `origin`.
 
 #### Step 6 — Ensure a live CI watch when — and ONLY when — a check can still move
+
+Before starting any gate work, **get the mechanical floor + inventory from the resolved PR-head worktree
+and decide the tier at or above it**:
+
+```text
+python3 <skill-dir>/scripts/triage.py derive \
+    --worktree <ledger worktree> --base origin/<base> --head-sha <headRefOid>
+```
+
+`stage-2-review-gate.md`, "2a-triage", owns the command and classification policy. Require the output
+`head_sha` to equal the adoption snapshot, decide the tier at or above the reported `floor` (`TRIVIAL`
+only as your semantic all-prose call — the tool never grants it). **Then, exactly as the heartbeat
+re-triage path does (`loop-control.md`), and BEFORE the ledger write, re-run `triage.py derive` with the
+IDENTICAL `--worktree`/`--base`/`--head-sha` inputs plus `--tier <decided>` so the tool VETOES a
+below-floor choice**; require its success and an output `head_sha` that still equals the row, and BLOCK
+gate dispatch on refusal (exit 2, no JSON). Only then replace the bootstrap — with **EXACTLY ONE
+directional `ledger.py … set`**, honouring the direction below, never a preliminary generic tier write
+followed by a second. Without this second veto derive the adoption path would
+write a below-floor tier straight through — gate work could start below the emitted floor, an
+under-reviewed stricter tier — the exact hole the heartbeat veto closes; the two paths are symmetric. A
+refusal from EITHER derive leaves the conservative bootstrap in place and blocks gate dispatch until the
+next heartbeat refreshes the worktree/head and derives successfully.
+
+**A same-SHA tier change is TWO events by direction** (`stage-2-review-gate.md`, "Status labels mirror the
+review gate", owns the split; depth order TRIVIAL < STANDARD < HIGH), and on an UNCHANGED re-adoption
+`pr-adopt.py` PRESERVES `reviews_ok` (>= 1) (it preserves it when the head did not move), so this
+decided-tier write must honour the direction before the mirror:
+- **Depth-raising escalation** (this decision raises the preserved tier to a strictly deeper one —
+  TRIVIAL→STANDARD, TRIVIAL→HIGH, STANDARD→HIGH): the preserved verdicts were earned at a shallower depth
+  and do NOT satisfy the new tier, so write the deeper tier and the voided tally in ONE atomic ledger write —
+  `ledger.py … set --pr <N> --tier <deeper> --reviews-ok 0` (`ledger.py set` applies every field flag in a
+  single atomic write, so tier and reset land together and no driver death can leave the deeper tier beside a
+  stale tally the next heartbeat would read as no escalation) — and require a fresh tier-sized plan on the
+  next dispatch.
+  Without this, a PR left `gauntlet-accepted` under a preserved STANDARD (`required` 2, `reviews_ok` 2) would
+  stay accepted when raised to HIGH — a false public label with the deep sweep never run.
+- **De-escalation, unchanged, or fresh adoption** (this decision lowers the tier, holds it, or first-sets it
+  on the bootstrap row): write the tier ALONE — `ledger.py … set --pr <N> --tier <decided>` — which KEEPS any
+  preserved verdicts; only `required(tier)` moves.
+**Then, in the SAME step, run `label-mirror.py mirror` for the PR** — idempotent, a no-op when the label
+already matches — so the tier, `required(tier)`, and the public status label move together
+(`stage-2-review-gate.md`, "Status labels mirror the review gate", owns the swap and the tool). **Run it
+on an UNCHANGED re-adoption too, NOT only a fresh one:** step 4 labelled against the *preserved* tier
+before this decision, so a PR left `gauntlet-accepted` under a preserved lower tier keeps that false label
+until the mirror flips it to `gauntlet-reviewing` (the escalation reset above took the tally below
+`required`). Never skip it as a presumed no-op — a fresh adoption's `reviews_ok=0` is the ONLY case the
+mirror is a guaranteed no-op.
+
+```
+python3 <skill-dir>/scripts/label-mirror.py mirror --ledger <state.jsonl> --pr <N> --repo owner/name
+```
 
 6. **Ensure a live CI watch when — and ONLY when — a check can still move.** The warrant for a watch is a
    **still-RUNNING evidence row** in the PR's snapshot, **never the `ci` value** (Stage 2b, `stage-2-ci.md`

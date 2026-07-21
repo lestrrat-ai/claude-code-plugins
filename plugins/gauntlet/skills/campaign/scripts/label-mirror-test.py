@@ -99,6 +99,8 @@ def drive(led: Path, pr: str, repo: str, fake: FakeGh, *, dry_run=False) -> tupl
 REPO = "o/n"
 SWAP_TO_ACCEPTED = ["gh", "pr", "edit", "9", "--repo", REPO,
                     "--add-label", "gauntlet-accepted", "--remove-label", "gauntlet-reviewing"]
+SWAP_TO_REVIEWING = ["gh", "pr", "edit", "9", "--repo", REPO,
+                     "--add-label", "gauntlet-reviewing", "--remove-label", "gauntlet-accepted"]
 
 
 # --- the swap is applied, with the EXACT argv ---------------------------------
@@ -138,6 +140,30 @@ def t_reviewing_stays():
     check(code == 0, f"a short gate already reviewing is a no-op, got {code}")
     check(out["desired"] == "gauntlet-reviewing" and out["changed"] is False, f"expected reviewing no-op, got {out!r}")
     check(not fake.edited, "an already-reviewing label must trigger NO edit")
+
+
+# --- a re-adoption tier escalation flips a stale gauntlet-accepted back to reviewing --
+
+def t_readopt_escalation_flips_accepted_to_reviewing():
+    # An UNCHANGED re-adoption preserves reviews_ok (here 1), and pr-adopt.py's adoption-time labeling
+    # applied gauntlet-accepted under the PRESERVED TRIVIAL (required 1). The adoption-time tier DECISION
+    # then raises the tier to STANDARD (required 2), so 1/2 is short and the stale, publicly-visible
+    # gauntlet-accepted MUST flip to gauntlet-reviewing — the co-located mirror at pr-adoption.md step 6
+    # (and stage-2-review-gate.md's tier-DECISION row) is what makes that happen. It is NOT a no-op here.
+    with tempfile.TemporaryDirectory() as d:
+        led = build_ledger(Path(d), tier="STANDARD", reviews_ok="1")   # 1/2 -> reviewing
+        fake = FakeGh(view=view_with("gauntlet-accepted", "gauntlet-run-g1"))
+        code, out, _err = drive(led, "9", REPO, fake)
+    check(code == 0, f"a short gate after escalation must reconcile and exit 0, got {code}")
+    check(out is not None and out["changed"] is True,
+          f"an accepted->reviewing swap must report changed, got {out!r}")
+    check(out["desired"] == "gauntlet-reviewing", f"desired must be reviewing after escalation, got {out!r}")
+    check(out["required"] == 2 and out["reviews_ok"] == 1, f"tier/tally must be reported, got {out!r}")
+    check(out["current"] == ["gauntlet-accepted", "gauntlet-run-g1"],
+          f"current labels must be reported, got {out!r}")
+    check(out["argv"] == SWAP_TO_REVIEWING,
+          f"the argv must be the canonical reviewing-restoring swap, got {out.get('argv')!r}")
+    check(fake.edited, "the escalation swap must actually call `gh pr edit`")
 
 
 # --- refusals: a missing row and an unset tier, both before any gh call -------
@@ -237,6 +263,7 @@ def t_required_boundary():
 
 CASES = [
     ("reviewing-to-accepted", "a met gate swaps reviewing->accepted with the exact argv", t_reviewing_to_accepted_swaps),
+    ("readopt-escalation", "a re-adoption tier escalation flips a stale accepted->reviewing with the exact argv", t_readopt_escalation_flips_accepted_to_reviewing),
     ("accepted-stays", "an already-accepted PR is a no-op — no edit call", t_accepted_stays),
     ("reviewing-stays", "an already-reviewing short gate is a no-op — no edit call", t_reviewing_stays),
     ("missing-row", "a PR with no ledger row is refused (exit 2), before any gh call", t_missing_row_refused),
