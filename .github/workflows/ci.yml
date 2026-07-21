@@ -106,6 +106,8 @@ jobs:
             plugins/gauntlet/skills/campaign/scripts/nudge-test.py
             plugins/gauntlet/skills/campaign/scripts/pr-adopt.py
             plugins/gauntlet/skills/campaign/scripts/pr-adopt-test.py
+            plugins/gauntlet/skills/campaign/scripts/triage.py
+            plugins/gauntlet/skills/campaign/scripts/triage-test.py
             plugins/gauntlet/skills/campaign/scripts/reviewer-liveness.py
             plugins/gauntlet/skills/campaign/scripts/reviewer-liveness-test.py
             plugins/gauntlet/skills/campaign/scripts/lease.py
@@ -263,6 +265,13 @@ jobs:
       # with the suites above, the point of this step is that `py_compile` parses these files and runs neither.
       - name: Run pr-adopt contract
         run: python3 plugins/gauntlet/skills/campaign/scripts/pr-adopt.py self-test
+
+      # Deterministic campaign tier derivation, executed over real temporary Git repositories. The suite
+      # pins human/code/sensitive classes, agent frontmatter, modes, renames, deletions, unknown and
+      # systemic inputs, hostile path bytes, stable ordering, and stale/moving-head refusal. The sibling
+      # `triage-test.py` is loaded by path and a missing or empty suite fails loudly.
+      - name: Campaign tier derivation contract
+        run: python3 plugins/gauntlet/skills/campaign/scripts/triage.py self-test
 
       # The scheduled-heartbeat callback command, pinned. The rule it protects is the resume contract:
       # the callback carries ONLY --run and --token — never --heartbeat-id (acquire-time proof) and never

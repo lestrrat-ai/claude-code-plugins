@@ -180,8 +180,10 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
    the wrong label, or both.
 
    This reconcile is a **backstop, not the mechanism**. The relabel is owed at the moment the gate
-   resets, in the same step that writes `reviews_ok = 0` (`stage-2-review-gate.md`, "Status labels
-   mirror the review gate"); this pass only *self-heals* a swap that was somehow missed. A PR that
+   projection changes, in the same step that writes `reviews_ok = 0` (which includes a depth-raising tier
+   escalation) or decides a de-escalation that lowers `required(tier)`
+   (`stage-2-review-gate.md`, "Status labels mirror the review gate", owns the two-direction split); this pass only
+   *self-heals* a swap that was somehow missed. A PR that
    reaches this point wearing a stale `gauntlet-accepted` — or both labels at once — means some reset
    site skipped its relabel: fix the label here, and treat it as a bug in that site, not as normal
    operation.
@@ -335,11 +337,44 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      (`bailout-and-final-report.md`) — leave the PR **OPEN**, drop this run's labels, write `abort-<id>.md`.
 
    Then, for each PR that is **not held at all**:
-   - any newly-adopted PR whose ledger row lacks a `tier`, or any PR whose `head_sha` changed since it
-     was last triaged → **re-triage its tier** (deterministic file-class classification of the changed
-     files at that `head_sha`; agent-docs = code; default STANDARD on uncertainty — see the tiers
-     spec) and write it back with `ledger.py … set --pr <N> --tier <tier>`. The tier is pinned to
-     `head_sha` and sets `required(tier)` = **1 if TRIVIAL else 2**.
+   - any newly-adopted PR whose ledger row lacks a `tier`, and every PR on every heartbeat → **run
+     `triage.py derive --worktree <worktree> --base origin/<base> --head-sha <head_sha>`** for the
+     mechanical inventory and `floor`. `stage-2-review-gate.md`, "2a-triage", owns the complete invocation
+     and policy. Never classify files or modes here. On success, require output `head_sha` to equal the
+     row, **decide the tier at or above `floor`** (`TRIVIAL` only when `floor` is `null` and you judge it
+     truly human prose — the tool never grants it). **VETO FIRST — BEFORE any ledger write:** re-run
+     `derive --tier <decided>` with the IDENTICAL `--worktree`/`--base`/`--head-sha` inputs so the tool
+     vetoes a below-floor mistake; require its success and an output `head_sha` still equal to the row, and
+     BLOCK gate dispatch on refusal (exit 2, no JSON). Only THEN write the tier, with **EXACTLY ONE
+     directional `ledger.py … set`** — never a preliminary generic tier write followed by a second. **A
+     same-SHA tier change is TWO events by direction, and the one write differs by direction**
+     (`stage-2-review-gate.md`, "Status labels mirror the review gate", owns the split; depth order
+     TRIVIAL < STANDARD < HIGH):
+     - **Depth-raising escalation** (the decision raises the tier to a strictly deeper one — TRIVIAL→STANDARD,
+       TRIVIAL→HIGH, STANDARD→HIGH; STANDARD→HIGH raises depth even though `required` stays 2): the standing
+       verdicts were earned at a shallower depth and do NOT satisfy the new tier, so write the deeper tier and
+       the voided tally in ONE atomic ledger write — `ledger.py … set --pr <N> --tier <deeper> --reviews-ok 0`
+       (`ledger.py set` applies every field flag in a single atomic write, so tier and reset land together and
+       no driver death can leave the deeper tier standing beside a stale tally that the next heartbeat would
+       read as no escalation). **Also stop any review pass in flight on that PR first** (the same stop the
+       content-change rule below makes): the SHA is unchanged, so an in-flight shallow-depth pass keeps a
+       matching `head_sha`, and a late SATISFIED verdict would refill the just-voided tally against the
+       deeper tier. Then require a fresh tier-sized plan before the next dispatch (the plan-copy
+       rule in `stage-2-review-gate.md` must NOT reuse the shallower plan). Do this even though the SHA is
+       unchanged.
+     - **De-escalation, unchanged, or fresh adoption** (the decision lowers the tier — STANDARD→TRIVIAL,
+       HIGH→STANDARD, HIGH→TRIVIAL — or holds it, or first-sets it on a row that lacked one): any standing
+       verdicts were earned at a DEEPER-or-equal depth (a superset), so write the tier ALONE —
+       `ledger.py … set --pr <N> --tier <decided>` — which KEEPS `reviews_ok` and the plan; only
+       `required(tier)` moves.
+     **Then, in that SAME step, run `label-mirror.py mirror` for that PR** — idempotent, a no-op when the
+     label already matches — so the tier, `required(tier)`, and the public status label move together: it
+     restores `gauntlet-reviewing` on a depth-raising escalation (the voided tally no longer meets
+     `required`) and swaps a standing tally to `gauntlet-accepted` on a de-escalation that now meets the
+     lowered `required` (`stage-2-review-gate.md`, "Status labels mirror the review gate", owns the swap and
+     the tool). On refusal,
+     refresh the moving or mismatched input and retry; never carry a tier across content the command did
+     not classify.
    - current tip has `reviews_ok < required(tier)`, has no unaddressed Copilot review items, CI is not red,
      and no review is running for that SHA → **first ensure the PR's INTENT
      (`<rundir>/intent-<pr>.md`) and PR-head worktree exist.** The dispatch substitutes the intent block

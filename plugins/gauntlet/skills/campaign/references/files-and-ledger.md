@@ -231,7 +231,9 @@ Header field notes (the header fields above; per-row fields follow):
   and `tier` describe. `ci`
   and `tier` are pinned to this exact SHA (re-triage on any content change). `reviews_ok` is pinned to
   this SHA **unless** the only change is a clean base-only rebase/merge with the PR diff unchanged;
-  then carry `reviews_ok` forward to the new `head_sha`, set `ci = pending`, and — because the head
+  then carry `reviews_ok` forward to the new `head_sha` (a **depth-raising tier escalation** is the one
+  same-SHA event that voids `reviews_ok` without a content change — `stage-2-review-gate.md`, "Status
+  labels mirror the review gate"), set `ci = pending`, and — because the head
   **moved** — the ledger accessor **resets the liveness counters** at the `set --head-sha` write itself
   (`stage-2-ci.md`, "THE LIVENESS COUNTERS"; ledger.py's `apply_head_sha`). A clean rebase
   does not reset the *gate*, but it **is** a `head_sha` change, and **every** `head_sha` change resets
@@ -241,7 +243,9 @@ Header field notes (the header fields above; per-row fields follow):
   **Only `ledger.py verdict` may RAISE it** — `set --reviews-ok <n>` refuses any value above the current
   one, because a hand-raised tally is indistinguishable from an earned one and `reviews_ok >=
   required(tier)` is a merge precondition. `set --reviews-ok 0` stays available and correct: **voiding** the
-  tally on a PR-content change is not a verdict (`stage-2-review-gate.md`, "Recording a verdict").
+  tally on a PR-content change — or on a depth-raising tier escalation, which voids it on unchanged content
+  (`stage-2-review-gate.md`, "Status labels mirror the review gate") — is not a verdict
+  (`stage-2-review-gate.md`, "Recording a verdict").
 - `review_rounds` — **landed verdicts, ever, for this PR — and it is NEVER RESET.** Not by a fix, not by a
   rebase, not by a content change, not by a re-triage. Written **only** by `ledger.py verdict`, which is why
   there is **no `--review-rounds` flag at any door**: a door that can write a counter is a door that can
@@ -296,8 +300,11 @@ Header field notes (the header fields above; per-row fields follow):
   (`ledger.py verdict` at a cap), so a decision answers exactly the cap it was recorded for and a PR that
   reaches a cap **again** must earn a fresh `decide` (which spends `repair_count`, so the bound holds).
   `abort@…` is terminal and is never cleared.
-- `tier` — the adaptive review tier derived from `head_sha`: `TRIVIAL` | `STANDARD` | `HIGH`. Re-derived
-  every heartbeat and re-triaged on any content change; drives `required(tier)` and the review depth.
+- `tier` — the adaptive review tier for `head_sha`: `TRIVIAL` | `STANDARD` | `HIGH`. Every heartbeat and on
+  any content change, `triage.py derive` supplies the mechanical `floor` + inventory and the orchestrator
+  decides the tier at or above it; `stage-2-review-gate.md`, "2a-triage", owns the complete invocation and
+  policy. This field records the orchestrator's decided tier (never below the tool's floor; `TRIVIAL` only
+  as the orchestrator's all-prose call); it drives `required(tier)` and review depth.
 - `ci` — `green` / `red` / `pending` for `head_sha`. Recorded by `ci-status.py liveness` from `derive`'s
   JSON (`stage-2-ci.md`, "THE BOOKKEEPING IS A COMMAND"). (**There is no `none`.** It was documented but
   no procedure could ever write it.)

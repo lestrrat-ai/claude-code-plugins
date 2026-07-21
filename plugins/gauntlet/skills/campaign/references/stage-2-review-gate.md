@@ -6,40 +6,83 @@
 > - did the pass count → "Does this pass COUNT?"
 > - the status labels look wrong → "Status labels mirror the review gate"
 
-### 2a-triage. PR triage — file class & risk tier (deterministic, per `head_sha`)
+### 2a-triage. PR triage — file class & risk tier (deterministic mechanics, orchestrator-decided tier, per `head_sha`)
 
-Before the review gauntlet, triage each PR to a **risk tier**. Triage is **deterministic** and
-**size-agnostic** — there are **NO line-count or file-count thresholds**; only *what kind* of file the
-PR touches and whether the change is systemic. Re-derive the tier **every heartbeat** from the PR's current
-`head_sha` and pin it there; record it in the ledger `tier` column via `scripts/ledger.py … set --pr
-<N> --tier <tier>` (by field name — the schema-owning accessor, `files-and-ledger.md`; never hand-edit
-the row by column position). Default to **STANDARD** whenever you are unsure. `reviews_ok` target = `required(tier)`: **1 if `tier==TRIVIAL`, else 2**.
+**The tier is a SPLIT decision.** `scripts/triage.py derive` is a mechanical INPUT with **escalate-only**
+authority: it enumerates the diff and emits the per-file inventory and a **FLOOR** — the minimum the
+mechanics compel. **You, the orchestrator, DECIDE the tier at or above that floor.** The tool can raise the
+floor and veto a below-floor tier; it can **never grant `TRIVIAL`** — that is only ever your semantic
+"is this all human prose?" call. Re-run it every heartbeat against the ledger row's current `head_sha`;
+never classify a diff by eye:
+
+```text
+python3 <skill-dir>/scripts/triage.py derive \
+    --worktree <worktree> --base origin/<base> --head-sha <head_sha> \
+    [--tier <your decided tier>]
+```
+
+The command resolves the merge-base, reads Git's NUL-delimited raw diff and modes at the expected
+40-character head, and re-reads `HEAD` after classification. A stale expected head, moving head, malformed
+diff, or failed Git read is a refusal with no partial JSON; refresh the row/worktree and retry. On success
+the output carries `head_sha`, the per-file `files` inventory (class + reasons), and the `floor`
+(`HIGH`, `STANDARD`, or `null` for no floor). **Require output `head_sha` to equal the row.** Then DECIDE
+the tier at or above `floor`. **Guard it BEFORE any ledger write:** pass the decision back as
+`--tier <decided>` on a re-run derive with the IDENTICAL inputs — the command REFUSES (exit 2, no JSON) a
+tier below the floor — and block the ledger write on refusal. Only THEN record the tier through **EXACTLY
+ONE directional `scripts/ledger.py … set`** — never a preliminary generic tier write followed by a second;
+the direction (escalation vs. de-escalation/unchanged/fresh) sets the flags, and
+`loop-control.md`/`pr-adoption.md` own that split. `TRIVIAL` is admissible **only** when `floor` is `null`
+(every changed file is human prose) **and** you judge it truly human prose.
+
+The floor computation:
+
+- any **SENSITIVE** file → floor **HIGH**;
+- any non-HUMAN-DOC file, **or** an empty/unresolved diff → floor **STANDARD**;
+- nothing but HUMAN-DOC prose → **no floor** (`null`): the tier is yours to decide, `TRIVIAL` included.
+
+Triage is **deterministic** and **size-agnostic** — there are **NO line-count or file-count thresholds**;
+only *what kind* of file the PR touches. `triage.py` is the executable owner of file classification and the
+floor. The policy it executes is the block below. Default to **STANDARD** whenever a path, status, or
+content marker is uncertain. `reviews_ok` target = `required(tier)`: **1 if `tier==TRIVIAL`, else 2**.
 
 **File classes (classify every changed file; default CODE when unsure).**
 
-- **HUMAN-DOC** — human-facing prose only: top-level `README.md`, human `docs/**`, `CHANGELOG`,
-  `LICENSE`.
+- **HUMAN-DOC** — human-facing prose only: top-level `README.md`, human prose under `docs/**`,
+  `CHANGELOG`, `LICENSE`.
 - **CODE** — source files **and agent-consumed docs**: `SKILL.md`, a skill's `references/**`,
-  `CLAUDE.md`/`AGENTS.md`, `.claude/**`, prompt / agent-instruction files, any `.md` carrying
+  `CLAUDE.md`/`AGENTS.md`, `.claude/**`, prompt / agent-instruction files, any prose file carrying
   skill/agent frontmatter. Agent-docs are CODE, never HUMAN-DOC.
 - **SENSITIVE** (a CODE subset) — CI (`.github/**`), `scripts/**`, executables (`+x`),
   `Dockerfile`/`Makefile`, dependency manifests/lockfiles, IaC, auth/crypto/secret paths.
 
+Classify **every side of the change that exists** — the base content and the head content alike — and keep
+the higher class: a rename classifies its old and new paths, a deletion its old path, and a modification or
+type-change both its base and head content (so stripping agent frontmatter cannot read as prose at HEAD).
+Treat a file whose old **or** new Git mode is executable as SENSITIVE, and any **non-regular Git object** — a
+symlink, a gitlink, or any mode that is not a regular blob — as never HUMAN-DOC (at least CODE). These are
+diff properties, so filesystem inspection of only the new checkout is not a substitute.
+
 **Tiers (no size thresholds).**
 
-- **TRIVIAL** — **ALL** changed files are HUMAN-DOC → **1** review pass, **minimal** plan.
-- **STANDARD** — any CODE / agent-doc file changed, none SENSITIVE → **2** passes, plan **covers the
-  real review dimensions**.
-- **HIGH** — any SENSITIVE file changed, OR a systemic / cross-package / root-cause change → **2**
-  passes with **mandatory cross-cutting units + a deeper sweep** (Stage 2a-deep).
+- **TRIVIAL** — an **orchestrator-only** grant: **ALL** changed files are HUMAN-DOC (`floor` is `null`)
+  **and** you judge the change truly human prose → **1** review pass, **minimal** plan. The tool never
+  emits this; a systemic change to prose is still yours to escalate.
+- **STANDARD** — the floor when any CODE / agent-doc file changed, none SENSITIVE → **2** passes, plan
+  **covers the real review dimensions**.
+- **HIGH** — the floor when any SENSITIVE file changed → **2** passes with **mandatory cross-cutting units
+  + a deeper sweep** (Stage 2a-deep). Escalate to HIGH yourself for a systemic change even when the floor
+  is lower.
 
 **Escalation guardrails.**
 
-- Agent-docs are **never** TRIVIAL. A **single** non-HUMAN-DOC byte in the diff disqualifies TRIVIAL.
-- Re-triage and **escalate** (never de-escalate below what the content warrants) when: a `NOT
-  SATISFIED` lands, a `plan_amendment_request` is raised, or a content change **adds a
+- Agent-docs are **never** TRIVIAL. A **single** non-HUMAN-DOC byte in the diff sets a STANDARD floor,
+  which the tool's `--tier` veto enforces against a mistaken TRIVIAL.
+- Re-triage and **escalate** (never de-escalate below what the content warrants, and never below the
+  floor) when: a `NOT SATISFIED` lands, a `plan_amendment_request` is raised, or a content change **adds a
   CODE/agent-doc/SENSITIVE file** to a PR that was TRIVIAL.
-- Tier is pinned to `head_sha` and re-derived every heartbeat; on any uncertainty default STANDARD.
+- Tier is pinned to `head_sha`; the floor is re-derived and the tier re-decided every heartbeat. On any
+  uncertainty default STANDARD. The tool's floor may raise a tier and never lowers it; a systemic judgment
+  is yours to add on top of the floor.
 
 ### 2a. The review gauntlet
 
@@ -124,8 +167,11 @@ continuation influenced by the first.
 flight on a PR — CI turns red, Copilot items land, a conflict appears — or any content-changing fix
 is about to be dispatched for it, **stop the in-flight review task before dispatching the fix**: its
 verdict can only describe a SHA that is about to be replaced, so letting it run wastes both the
-tokens and the review slot. The freed slot immediately refills with the next due review (Loop
-control step 3).
+tokens and the review slot. **A depth-raising tier escalation is the same call on UNCHANGED content**:
+it voids the tally, and because the SHA does not move the in-flight pass keeps a matching `head_sha`, so
+a late SATISFIED verdict — planned at the now-too-shallow depth — would refill the just-voided tally
+against the deeper tier; stop that pass too (`loop-control.md` re-triage step). The freed slot
+immediately refills with the next due review (Loop control step 3).
 
 Route every selected reviewer through `runtime-adapter.md`'s capability/transition owner and
 `reviewer.md`'s retry budget. Any resulting native-worker pass receives this same complete review
@@ -233,7 +279,18 @@ Rules:
   **no fixed unit-count band** — size to what the tier and content demand.
 - The plan describes PR content, so **reuse it across passes on unchanged content**: for pass 2 on
   the same SHA (or clean base-only rebase, diff unchanged), copy pass 1's plan to
-  `review-<pr>-2.plan.jsonl` instead of re-deriving. Re-derive only when PR content changed.
+  `review-<pr>-2.plan.jsonl` instead of re-deriving. Re-derive when PR content changed — **and, even on
+  unchanged content, when a depth-raising tier escalation invalidated the standing plan.** The plan is
+  sized to the tier (TRIVIAL minimal, STANDARD real dimensions, HIGH cross-cutting + deep sweep), and
+  the depth order is **TRIVIAL < STANDARD < HIGH**. A tier decision that raises the tier to a strictly
+  deeper one — TRIVIAL→STANDARD, TRIVIAL→HIGH, or STANDARD→HIGH (STANDARD→HIGH raises depth even though
+  `required` stays 2) — leaves the standing plan sized to the SHALLOWER tier; copying it would review
+  the deeper tier at the old, thinner depth. So a **depth-raising escalation voids the standing tally
+  and rebuilds a FRESH plan sized to the new tier** for the next pass, exactly as a content change does,
+  even though the SHA is identical (the tally-void half is owned by "Status labels mirror the review
+  gate", below). A tier DE-escalation (STANDARD→TRIVIAL, HIGH→STANDARD, HIGH→TRIVIAL) is the opposite:
+  the standing verdicts were earned at a DEEPER depth, so they and their plan STAY — only the label
+  moves.
 - Each unit MUST name concrete `target` + concrete `checks`.
 - **A unit `id` has ONE legal form — "EVERY IDENTIFIER HAS ONE LEGAL FORM" above — and `plan-add`
   refuses anything else.** `U01`, `u 01`, ` u01 ` are not other ways of spelling `u01`; they are not ids.
@@ -803,13 +860,34 @@ one adversarial pass is proportionate.
 ### Status labels mirror the review gate — relabel is part of the reset, not a later chore
 
 A PR carries `gauntlet-reviewing` until its current HEAD holds `required(tier)` SATISFIED verdicts for
-the same live PR content, then `gauntlet-accepted`. The label is a **projection of `reviews_ok`**, so it
-is only ever as true as the moment it was last written.
+the same live PR content, then `gauntlet-accepted`. The label is a **projection of `reviews_ok` AND
+`required(tier)`**, so it is only ever as true as the moment it was last written — and because the tier
+is itself a per-heartbeat DECISION (`loop-control.md` re-triage runs the judgment for every PR every
+heartbeat), a tier change moves the projection. **A same-SHA tier change is NOT one event — it is two,
+by DIRECTION**, and this is the owner of that split (the plan-rebuild half lives with the plan-copy rule,
+"Plan JSONL schema" above; `required(tier)` = 1 if TRIVIAL else 2). The tiers order by review depth
+**TRIVIAL < STANDARD < HIGH**, and a verdict is earned against a plan sized to the tier in force when it
+was cast, so it only satisfies tiers **at or below** that depth:
 
-**THE RULE — the gate and the label move together, in the same step.** Any action that takes
-`reviews_ok` to `0` (or otherwise voids the tally) MUST, in that same step, restore
-`gauntlet-reviewing` on a PR that currently carries `gauntlet-accepted` — and, symmetrically, an action
-that brings the tally UP to `required(tier)` swaps it to `gauntlet-accepted`.
+- **A depth-raising escalation** — the new tier is strictly deeper (TRIVIAL→STANDARD, TRIVIAL→HIGH, or
+  STANDARD→HIGH; STANDARD→HIGH raises depth even though `required` stays 2) — **VOIDS THE TALLY.** The
+  standing verdicts were earned at a shallower depth and do not satisfy the new tier, so the ONE directional
+  ledger write that sets the deeper tier voids `reviews_ok` in that same write (`--tier <deeper>
+  --reviews-ok 0`), and a fresh tier-sized plan is required before the next dispatch. It is therefore a
+  `reviews_ok`→0 event, and the relabel is owed exactly as for any other tally-void.
+- **A de-escalation** — the new tier is strictly shallower (STANDARD→TRIVIAL, HIGH→STANDARD, HIGH→TRIVIAL)
+  — **KEEPS the verdicts and the plan.** They were earned at a DEEPER depth, which is a superset, so the
+  single tier write carries `--tier <decided>` alone, `reviews_ok` is untouched, and only `required(tier)`
+  and the label move. This is the ONLY tier change that leaves `reviews_ok` standing.
+
+**THE RULE — the gate and the label move together, in the same step.** Any action that changes the gate
+projection — one that takes `reviews_ok` to `0` (or otherwise voids the tally, **which now includes a
+depth-raising tier escalation**), OR a **de-escalation** that lowers `required(tier)` on unchanged content
+(e.g. STANDARD→TRIVIAL flips `required` from 2 to 1) —
+MUST, in that same step, reconcile the label: restore `gauntlet-reviewing` on a PR that currently carries
+`gauntlet-accepted` when the tally no longer meets `required(tier)`
+— and, symmetrically, an action that brings `reviews_ok` up to `required(tier)` (a new verdict, or a
+de-escalation that LOWERS `required(tier)` to a tally already standing) swaps it to `gauntlet-accepted`.
 
 **`label-mirror.py mirror` is THE way that swap is applied — never a hand-run `gh pr edit`.** It reads the
 PR's ledger row, computes the desired label from `reviews_ok` and `required(tier)` exactly as the gate
@@ -833,8 +911,9 @@ passed its gauntlet** — the label is what a human reads on GitHub, and it is t
 run's state that is visible to people who will never see the ledger. Between the reset and the next
 reconcile it is simply wrong; if the session dies in that window it stays wrong indefinitely.
 
-**Every trigger that resets the gate must relabel** (this is the exhaustive list — the same events
-that drop `reviews_ok` to 0):
+**Every trigger that changes the gate projection must relabel** (this is the exhaustive list — every
+event that drops `reviews_ok` to 0, which now includes a **depth-raising tier escalation**, PLUS a
+**tier de-escalation** that lowers `required(tier)` under a standing tally):
 
 | Trigger | Where the reset happens — and therefore where the relabel is owed |
 |---|---|
@@ -845,15 +924,22 @@ that drop `reviews_ok` to 0):
 | Judgment-path rebase (conflict-resolving **or** diff-changed) — at **either** of the two sites that rebase a PR | **Stage 2a preconditions, above** (the pre-review rebase of a `CONFLICTING`/`DIRTY`/`BEHIND` PR) **and** `stage-3-merge.md`'s step-6 reconcile. Both `clean-rebase.py` exit-3 subcases reset the gate — a conflict AND a no-conflict rebase that changed the PR's own diff — so naming only the conflict one, or only one of the two sites, is how the relabel goes missing; the *event* owes the relabel, wherever it happens |
 | Re-adoption refresh detects changed content | `pr-adoption.md` step 3 (step 4 then sets the status label from the **live** gate — `gauntlet-reviewing` here, but `gauntlet-accepted` for a re-adoption whose content did **not** change and whose verdicts step 3 preserved; either way it removes the other label) |
 | Any other PR-content change on the head branch — formatter/bot commit, manual push | **Loop control step 1's ledger refresh** — the heartbeat that *detects* it resets the gate, so it relabels there |
+| Tier DECISION is a **depth-raising escalation** (orchestrator re-triage raises the tier to a strictly deeper one — TRIVIAL→STANDARD, TRIVIAL→HIGH, STANDARD→HIGH — on unchanged content) | **`loop-control.md` re-triage step, the tier write** — this is a `reviews_ok`→0 event ("Status labels mirror the review gate" owns why): the same re-triage step writes the deeper tier and voids `reviews_ok` in ONE ledger write, requires a fresh tier-sized plan before the next dispatch, and runs `label-mirror.py mirror`, which restores `gauntlet-reviewing` because the voided tally no longer meets `required(tier)`. The adoption-time tier write (`pr-adoption.md` step 6) is the SAME event: an UNCHANGED re-adoption PRESERVES `reviews_ok` (>= 1) (`pr-adopt.py` preserves it when the head did not move), so a depth-raising decision there must void that preserved tally too — it is NOT a case that can be skipped |
+| Tier DECISION is a **de-escalation** that lowers `required(tier)` (STANDARD→TRIVIAL, on unchanged content, so `reviews_ok` is untouched) | **`loop-control.md` re-triage step, the tier write** — the same step runs `label-mirror.py mirror`; the verdicts STAY (they were earned at a deeper depth), and the mirror swaps a standing tally to `gauntlet-accepted` when the lowered `required(tier)` is now met. The adoption-time tier write (`pr-adoption.md` step 6) co-locates the SAME mirror; a FRESH adoption has `reviews_ok=0`, so it is a no-op there, but an UNCHANGED re-adoption whose preserved tally now meets the lowered `required` flips to `gauntlet-accepted` |
 
-**Every row names a place where `reviews_ok` is written to 0 — never "the reconcile pass".** The
+**Every row names a place where the gate PROJECTION changes — `reviews_ok` written to 0, or
+`required(tier)` changed by a tier decision — never "the reconcile pass".** The
 label-reconcile in Loop control is the backstop that *heals* a missed swap; naming it as the mechanism
-for any trigger would defeat this rule. If you add a new site that resets the gate, it goes in this
+for any trigger would defeat this rule. If you add a new site that changes the projection, it goes in this
 table with the relabel attached, and the search that proves this table complete is for **everything that
-can take `reviews_ok` to 0**, not for any particular phrasing. **That is now TWO spellings, and a search
-for only the first will miss half the sites**: `ledger.py set --reviews-ok 0` (every content-change reset —
-the rows above) and **`ledger.py verdict … --verdict not-satisfied`** (the verdict tally, which voids it).
-Search for both.
+can take `reviews_ok` to 0 OR change `required(tier)`**, not for any particular phrasing. **That is now
+THREE spellings, and a search for only the first will miss the others**: `ledger.py set --reviews-ok 0`
+(every content-change reset — the rows above — **and the depth-raising tier escalation, which resets the
+tally on unchanged content**), **`ledger.py verdict … --verdict not-satisfied`** (the
+verdict tally, which voids it), and **`ledger.py … set --pr <N> --tier`** (the tier write; a
+**de-escalation** changes `required(tier)` without touching `reviews_ok`, while a **depth-raising
+escalation** carries `--reviews-ok 0` in the SAME atomic write — one `ledger.py set` with both flags, so
+tier and voided tally move together, per `loop-control.md`/`pr-adoption.md`). Search for all three.
 
 **Exception — a clean base-only rebase** (PR diff unchanged) carries `reviews_ok` forward and therefore
 **keeps** `gauntlet-accepted`. The gate did not reset, so the label does not move. Gate and label stay in
