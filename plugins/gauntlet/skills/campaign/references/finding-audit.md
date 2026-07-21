@@ -117,14 +117,17 @@ without the user's agreement on that specific item.
 A stochastic reviewer keeps raising findings that are TRUE and ANCHORED but are trivial edge cases — the
 kind `AGENTS.md`/`CLAUDE.md` calls an **accepted single-user residual**. There is a strong temptation to
 let the audit demote such a finding to a follow-up and move on. **The audit MUST NOT.** "Is it MATERIAL
-enough to block this PR?" is a THIRD question, and it is answered in exactly ONE place: the **repair-pass
-DEMOTE** decision (`repair-pass.md`), reached at a review-loop cap by a worker handed **the whole history
-at once**, recorded on disk, bounded by `REPAIR_CAP`. That view — the round-by-round shape, the
-diff-growth curve, which findings are live vs. already-fixed vs. refuted — is the ONLY thing that makes a
-demotion safe, and it **does not exist at the finding-audit**. At the audit you cannot tell an
-immaterial-isolated finding from the first of a real cluster; #125's "edge of the machinery the loop just
-added" finding looked immaterial and was a REAL below-floor gap. So the invariant above holds without
-exception here: **a CONFIRMED finding is fixed; demotion belongs to the cap, not to this pass.**
+enough to block this PR?" is a THIRD question, and **the audit NEVER answers it** — its signal is
+non-dispositional, the verdict stays CONFIRMED, and the finding stays on the fix-list. The only shipped
+mechanism that discharges a finding as immaterial is the **repair-pass DEMOTE** decision (`repair-pass.md`,
+`repair-pass.py`), reached at a review-loop cap by a worker handed **the whole history at once**, recorded
+on disk, bounded by `REPAIR_CAP` — and it discharges **only** the findings its own test names: those that
+**anchor to no `## Purpose` line and no Threat-model actor**. That whole-history view — the round-by-round
+shape, the diff-growth curve, which findings are live vs. already-fixed vs. refuted — is the ONLY thing
+that makes even that demotion safe, and it **does not exist at the finding-audit**. At the audit you cannot
+tell an immaterial-isolated finding from the first of a real cluster; #125's "edge of the machinery the
+loop just added" finding looked immaterial and was a REAL below-floor gap. So the invariant above holds
+without exception here: **a CONFIRMED finding is fixed; demotion belongs to the cap, not to this pass.**
 
 **Why the reviewer keeps raising them: `## Non-goals` binding is ADVISORY.** The reviewer is handed the
 intent's `## Non-goals` verbatim and told a finding that attacks one cannot gate — but `review-pass.py`'s
@@ -133,15 +136,27 @@ if the stochastic reviewer honors it, and a reviewer that anchors an immaterial 
 `## Purpose` line produces a gating finding the declared Non-goal never stopped. The audit is the first
 INDEPENDENT context to read that finding against the intent, so it is where the mismatch is first visible.
 
+**And such a finding — anchored to a real `## Purpose` line — is OUTSIDE DEMOTE's test, so NOTHING
+discharges it as immaterial today.** DEMOTE requires no Purpose line AND no actor; a Purpose-anchored
+finding meets neither, so even the cap cannot demote it. That leaves the immaterial-but-Purpose-anchored
+finding an **OPEN design question, not a shipped capability**: TODAY it is fixed exactly like any other
+CONFIRMED finding. The driver's only lever is the hand-off below — bounding the intent for **FUTURE**
+rounds — and that changes what the NEXT reviewer measures against; it never discharges the finding in hand.
+Read no sentence in this section as claiming a current mechanism relieves it.
+
 Two things the audit does about it — **a SIGNAL and a hand-off, never a discharge:**
 
 - **SIGNAL (in the verdict's `--evidence`).** When a CONFIRMED/ADJUSTED finding's harm is **fully
   contained** by a declared `## Non-goals` line, or is an accepted single-user residual under the
-  calibration in `AGENTS.md`/`CLAUDE.md`, say so in the `--evidence` string and **quote the Non-goal line**.
-  This changes NOTHING about the disposition: the verdict stays CONFIRMED/ADJUSTED, the finding stays on
-  `fix-list`, and it is fixed like any other. The note is independent backing for the driver and the user,
-  not a fourth verdict. **Unsure whether the Non-goal FULLY contains the harm → it does not; verdict
-  CONFIRMED, fix it** (the same direction as "unsure → CONFIRMED, never REFUTED").
+  calibration in `AGENTS.md`/`CLAUDE.md`, say so in the `--evidence` string and **quote the GOVERNING
+  line** — the declared `## Non-goals` line for the Non-goal-containment branch, or the accepted-residual
+  calibration line from `AGENTS.md`/`CLAUDE.md` for the calibration-residual branch. A residual accepted by
+  that calibration may have NO matching `## Non-goals` entry, so the evidence must quote whichever line
+  ACTUALLY governs — never a Non-goal line that does not exist. This changes NOTHING about the disposition:
+  the verdict stays CONFIRMED/ADJUSTED, the finding stays on `fix-list`, and it is fixed like any other. The
+  note is independent backing for the driver and the user, not a fourth verdict. **Unsure whether that line
+  FULLY contains the harm → it does not; verdict CONFIRMED, fix it** (the same direction as "unsure →
+  CONFIRMED, never REFUTED").
 - **HAND-OFF to the driver (proactive intent-bounding).** A single such finding is fixed and forgotten.
   But when the signal **recurs** — a SECOND finding of the same residual shape — that is the CLAUDE.md
   "a review keeps generating true-but-that-kind-of finding → **bound the intent**" case arriving early.
