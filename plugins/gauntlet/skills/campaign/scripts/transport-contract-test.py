@@ -50,6 +50,7 @@ def check_document_contract() -> None:
     adoption = read("pr-adoption.md")
     run_identity = read("run-identity-and-lease.md")
     merge = read("stage-3-merge.md")
+    merge_runner = (ROOT / "scripts" / "merge.py").read_text(encoding="utf-8")
     root_cause = read("root-cause-pass.md")
     files_ledger = read("files-and-ledger.md")
     loop_control = read("loop-control.md")
@@ -169,8 +170,10 @@ def check_document_contract() -> None:
             "adoption restored an unresolved project_root consumer")
     require("create_run_directory(repository)" in run_identity,
             "fresh-run creation bypasses the repository context owner")
-    require('cwd: repository.project_root' in merge and "argv: [\"git\", \"fetch\"" in merge,
-            "merge fetches bypass the typed repository context")
+    require("root = resolve_project_root(project_root)" in merge_runner and
+            '["git", "-C", str(root), "fetch"' in merge_runner and
+            "shell=True" not in merge_runner,
+            "merge runner bypasses the typed repository context/argv boundary")
     require("git -C $" not in merge and "cwd: project_root" not in stage
             and "cwd: project_root" not in dispatch,
             "merge/pre-review restored an ambient or unresolved Git cwd")
@@ -428,10 +431,13 @@ def run_repository_context_fixtures() -> None:
             require((scratch_root / sibling).parent == scratch_root,
                     f"Copilot scratch sibling escaped its owner: {sibling}")
 
+        # Both fetch sites qualify a hostile, dash-leading base into a `refs/heads/...` refspec so git can
+        # never option-parse it (adoption: tracking ref; merge base-sync: local ref, no leading `+`).
         base = "--base with spaces\nand-newline"
         refresh_ref = f"refs/heads/{base}:refs/remotes/origin/{base}"
         adoption_fetch = ["git", "fetch", "origin", refresh_ref]
-        merge_direct_fetch = ["git", "fetch", "origin", f"{base}:{base}"]
+        merge_direct_ref = f"refs/heads/{base}:refs/heads/{base}"
+        merge_direct_fetch = ["git", "fetch", "origin", merge_direct_ref]
         map_a_git = {
             "A05 copilot process cwd": (copilot_argv, repository["project_root"]),
             "A15 adoption/pre-review Git cwd": (adoption_fetch, repository["project_root"]),
@@ -441,7 +447,7 @@ def run_repository_context_fixtures() -> None:
             require(len(argv) >= 4 and cwd == repository_root and cwd.is_absolute(),
                     f"{cell} shifted argv or lost the resolved absolute cwd")
         require(adoption_fetch == ["git", "fetch", "origin", refresh_ref] and
-                merge_direct_fetch == ["git", "fetch", "origin", f"{base}:{base}"],
+                merge_direct_fetch == ["git", "fetch", "origin", merge_direct_ref],
                 "repository Git argv shifted a hostile ref")
 
 

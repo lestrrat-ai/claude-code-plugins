@@ -30,8 +30,7 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
    exists — and scope **every** git/gh scan to this run's `gauntlet-run-<run-id>` label so another run's
    PRs are never mistaken for your own (adopted PRs keep their OWN head branch, so ownership is the
    LABEL only — never a branch prefix). Live work (this run) = any open PR carrying this run's label,
-   **OR** any non-terminal row in this run's `state.jsonl` (`in_review` / `awaiting-api` /
-   `awaiting-user`).
+   **OR** any non-terminal row in this run's `state.jsonl` (any status that is not terminal `merged`/`aborted`).
    Three cases:
 
    - **This run has live work → resume.** Resolve a dead review pass — no verdict, no live task — from its
@@ -80,9 +79,12 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      names which fact triggers which:
      - **`absent_from_snapshot`** — a live row whose PR dropped out of the validated canonical snapshot:
        it merged or closed, and **that absence IS the signal** (`scripts/reconcile.py fetch` owns the
-       query contract). Handle it as a **terminal** PR (this step's finished-run cases; the Stage 3
-       drain sets `merged`). **NEVER read absence as an error, and NEVER fetch anything to "resolve" it** —
-       a past change broke adoption by "fixing" absence with `--state all` (repo `CLAUDE.md`).
+       query contract). **NEVER read absence as an error, and NEVER fetch anything to "resolve" it or widen
+       the snapshot (`--state all`) to re-open whether the row is really terminal** — a past change broke
+       adoption by "fixing" absence with `--state all` (repo `CLAUDE.md`). ROUTE it to the **Stage 3 drain**
+       (Step 4), which FINALIZES it through `merge.py run`: that single per-row live view — NOT a snapshot
+       re-widening — distinguishes **MERGED** (resume the owed base-sync/cleanup/terminal-write phases) from
+       **CLOSED without merging** (the terminal close-out, which records `aborted` and touches no local refs).
      - **`head_moved`** — the live head differs from the row's `head_sha`: this is the **gate-reset and
        liveness-counter-reset** site — the two paragraphs directly above the command block own it. The tool
        reports only THAT the head moved; deciding whether the PR **diff** changed (reset `reviews_ok`,
@@ -458,9 +460,20 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
 ### Step 4 — Merge queued PRs as a serialized drain
 
 4. **Merge** queued PRs as a serialized drain: re-confirm one candidate against the live SHA **and
-   re-check it is not parked** (the held-status guard binds the merge too — Stage 3), revalidate that it
-   contains the fetched current base, merge it, sync `<base>`, reconcile remaining candidates, and repeat
-   while another PR is immediately mergeable (Stage 3 owns the check).
+  re-check it is not parked** (the held-status guard binds the merge too — Stage 3), then run
+  `merge.py run` for that PR. It revalidates the fetched base, merges, syncs `<base>`, cleans owned local
+  resources, and records the terminal row as one resumable sequence. Reconcile remaining candidates and
+  repeat while another PR is immediately mergeable (Stage 3 owns the check).
+
+  **An `absent_from_snapshot` row (Step 1 routes it here) whose ledger status is not yet terminal is
+  FINALIZED by this drain through `merge.py run`.** Such a row is the resume case: the process died after
+  `gh pr merge` landed `MERGED` but before base-sync/cleanup/terminal write, so the PR left the
+  `--state open` snapshot while its later phases stay pending. `merge.py run` re-reads the live PR ONCE and,
+  on `MERGED`, skips the merge and resumes exactly those remaining phases. When it instead finds the PR
+  **CLOSED without merging**, the SAME command performs the terminal close-out: it records the terminal
+  `aborted` status and does **no merge and no cleanup** — the branch content never reached `<base>`, so its
+  owned worktree/branch are left untouched for the user. Either way `merge.py run` is the single finalizer;
+  Step 1 only ROUTES the absent fact here, it does not finalize it itself.
 ### Step 5 — Reschedule or exit
 
 5. **Reschedule or exit.**

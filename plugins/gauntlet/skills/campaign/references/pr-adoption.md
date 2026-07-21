@@ -20,9 +20,8 @@ Two entry paths feed it (see "Run identity and concurrency" for the full grammar
 `base_branch` for the run = the adopted PR's `baseRefName`. When several PRs are adopted at once they
 **must agree** on `baseRefName`; if they disagree, stop and prompt the user (one run targets one base).
 
-Campaign **never** deletes the adopted PR's **remote** head branch — it never passes `--delete-branch`
-on merge; the repo's "Automatically delete head branches" setting governs remote-branch cleanup (see
-"Stage 3 — Merge").
+Campaign **never** deletes the adopted PR's **remote** head branch. Stage 3,
+**"Resumable merge execution"**, owns merge and cleanup enforcement.
 
 `worktree_owned`/`branch_owned` are tracked **per-PR** (below) and govern **local** cleanup — they alone
 decide whether the worktree/local branch is removed. A reused worktree, the root/main checkout, and a
@@ -401,9 +400,8 @@ For each `#PR` to adopt:
    via `-b`, `no` = reused a pre-existing local branch or checkout) in the row's `branch_owned` — all
    by field name through the accessor. **That `worktree` path is the source
    of truth the review and CI steps read/diff against**, and `worktree_owned`/`branch_owned` tell
-   Stage 3 cleanup what it may remove: it removes the worktree only when `worktree_owned = yes` and
-   deletes the local branch only when `branch_owned = yes` — a reused worktree or a pre-existing local
-   branch (`no`) is left in place, so campaign never deletes a ref the user owns. All fix commits for
+   `merge.py run` what it may remove; Stage 3, **"Resumable merge execution"**, owns that enforcement.
+   All fix commits for
    the PR also go here; stage only the specific
    source files changed (explicit paths, never `git add -A`). Fix commits are pushed back to the PR's
    head branch on `origin`.
