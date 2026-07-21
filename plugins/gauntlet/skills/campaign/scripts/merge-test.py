@@ -52,7 +52,8 @@ class Fake:
                  live_head: str = SHA, reject_method: "str | None" = None,
                  view_head: "str | None" = None, view_branch: "str | None" = None,
                  view_base: "str | None" = None, base: str = "main",
-                 labels: "list[dict] | None" = None, local_base: str = "absent"):
+                 labels: "list[dict] | None" = None, local_base: str = "absent",
+                 repo_identity: str = "o/r"):
         self.root = root
         self.branch = "feat-pr"
         self.base = base
@@ -90,6 +91,10 @@ class Fake:
         # The live PR's labels. Default carries THIS run's owner label; passing [] models a HALF-ADOPTION
         # whose PR never got `gh pr edit`-attached its label, and a foreign entry models another run's PR.
         self.labels = labels if labels is not None else [{"name": "gauntlet-run-g1"}]
+        # The nameWithOwner `gh repo view` derives from the checkout. Defaults to the `--repo` invoke passes
+        # ("o/r"), so existing fixtures pass the cross-repo guard; overriding it models a `--repo` that does
+        # NOT name the checkout's own repository (the fail-closed the guard refuses before any live view).
+        self.repo_identity = repo_identity
 
     def ledger(self, path: Path, *, worktree: "Path | None" = None, branch: "str | None" = None,
                run_id="g1", worktree_field: "str | None" = None) -> None:
@@ -141,6 +146,8 @@ class Fake:
             return ok(f"{self.root}\n")
         if "check-ref-format" in argv:
             return ok()
+        if argv[:3] == ["gh", "repo", "view"]:
+            return ok(f"{self.repo_identity}\n")
         if argv[:3] == ["gh", "pr", "view"]:
             if self.view_error_once and self.merged_calls:
                 self.view_error_once = False
@@ -899,8 +906,38 @@ def t_absent_held_row_external_merge_routes_to_resume():
         finish(td, real)
 
 
+def t_repo_identity_mismatch_refused_before_view():
+    # execute() scopes every gh call by `--repo` while operating in cwd=root, but a `--repo` that does NOT
+    # name the checkout's OWN repository (a collision across shared history or a fork on PR number, head_sha,
+    # branch, base, and run-label) would merge the reviewed HEAD onto an UN-reviewed base. The cross-repo
+    # guard derives the canonical repo from the checkout (`gh repo view --json nameWithOwner`) and refuses
+    # the mismatch BEFORE the first `gh pr view` — no live view, no merge. RED before the guard: root-derived
+    # "other/repo" != --repo "o/r" is unchecked, so the run proceeds through the view to the merge. GREEN
+    # after: it refuses naming both values.
+    td, root, f, led, real = scenario(repo_identity="other/repo")
+    try:
+        code, _result, err = invoke(f, led, root)  # invoke passes --repo "o/r"
+        check(code != 0, "a --repo that mismatches the checkout was not refused")
+        check("o/r" in err and "other/repo" in err,
+              f"the refusal must name both the passed --repo and the checkout repo: {err}")
+        check(not any(argv[:3] == ["gh", "pr", "view"] for argv, _ in f.calls),
+              "the repo-identity guard must fire BEFORE any live PR view")
+        check(f.merged_calls == 0, "a repo mismatch must never reach the merge command")
+    finally:
+        finish(td, real)
+
+    # GitHub owner/name is case-insensitive, so a case-ONLY difference must NOT refuse — the run proceeds.
+    td, root, f, led, real = scenario(repo_identity="O/R")
+    try:
+        code, _result, err = invoke(f, led, root)  # --repo "o/r" vs checkout identity "O/R"
+        check(code == 0, f"a case-only repo difference must be treated as a match: {err}")
+    finally:
+        finish(td, real)
+
+
 CASES = [
     ("happy-owned", "exact merge argv, owned cleanup, terminal write", t_happy_owned_cleanup_and_command),
+    ("repo-identity", "a --repo that does not name the checkout's own repository is refused before any live view (case-insensitive match)", t_repo_identity_mismatch_refused_before_view),
     ("merged-live-row", "MERGED with live ledger resumes without another merge", t_merge_landed_ledger_live_resumes),
     ("ownership-matrix", "all worktree/branch ownership combinations clean only owned resources", t_reused_resources_are_left),
     ("root-foreign", "root cleanup and foreign branch are refused before merge", t_root_and_foreign_targets_refused),

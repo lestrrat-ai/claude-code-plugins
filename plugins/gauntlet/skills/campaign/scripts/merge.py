@@ -416,6 +416,22 @@ def execute(ledger: Path, pr: str, project_root: Path, repo: str,
     row = L.find_row(rows, pr)
     if row is None:
         raise Refusal(f"no ledger row for PR {pr}")
+    # Cross-repo fail-closed guard. Every gh call below is scoped by `--repo repo` while operating in
+    # cwd=root, but NOTHING else confirms that `--repo` names the checkout's OWN GitHub repository — while
+    # resolve_project_root rigorously validates the checkout root. A mismatched `--repo` whose PR N collides
+    # on head_sha + branch + base + run-label (possible across shared history or a fork) would merge the
+    # reviewed HEAD onto an UN-reviewed base, then clean local resources and write the ledger merged. Derive
+    # the canonical repo from the checkout and refuse a mismatch BEFORE the first view. `gh repo view` runs
+    # in cwd=root through the same _run/_require, so an error or an ambiguous remote fails CLOSED. GitHub
+    # owner/name is case-insensitive, so compare case-insensitively.
+    canonical = _one_lf(_require(
+        _run(["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
+             cwd=str(root)),
+        "repository identity resolution",
+    ))
+    if not canonical or canonical.lower() != repo.lower():
+        raise Refusal(
+            f"--repo {repo!r} does not name the checkout's repository {canonical!r}")
     view = _view(pr, repo, root)
 
     # Classify the finalize PATH before validating — the tier the validation runs at depends on it.
@@ -485,6 +501,12 @@ def execute(ledger: Path, pr: str, project_root: Path, repo: str,
         # --match-head-commit pins the merge to the exact reviewed SHA. If a push advanced the live tip
         # in the window between the pre-merge view and this call, GitHub refuses fail-closed rather than
         # squashing the unreviewed head; the post-merge re-validation would only detect that after landing.
+        # Base is pinned only PRE-merge (the _validate_state above, check_live_refs) and re-checked POST-merge
+        # (confirmed, below). gh pr merge exposes no expected-base compare-and-swap — only --match-head-commit —
+        # so a base retarget in this window lands the reviewed HEAD onto the new base and is caught only after
+        # the fact. Accepted single-user residual (intent-134 Non-goal): head SHA is pinned, so only reviewed
+        # CONTENT lands, and the actor is the single user retargeting their own open PR. Falsify + fix here if
+        # gh pr merge ever gains an expected-base / --match-base flag: pin the base at the mutation boundary too.
         merge_argv = ["gh", "pr", "merge", pr, "--repo", repo, f"--{merge_method}",
                       "--match-head-commit", row["head_sha"]]
         merge_proc = _run(merge_argv, cwd=str(root))

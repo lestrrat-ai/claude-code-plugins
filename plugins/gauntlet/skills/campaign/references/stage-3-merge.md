@@ -117,9 +117,9 @@ Each phase leaves a durable or safely repeatable checkpoint. Re-run the same com
 GitHub `MERGED` skips the merge call; base updates are fast-forward-only; absent owned worktrees/branches
 count as completed cleanup; a terminal ledger row is a no-op. The command refuses held rows whose live PR is
 OPEN (a CLOSED held row is closed out to `aborted` — `loop-control.md` Step 4 — and a `MERGED` held row is an
-external merge, resumed to finalize base-sync/owned-cleanup/terminal write; neither is refused), stale gates,
-uncertain GitHub facts, another run's PR, foreign refs, root/reused cleanup targets, and cleanup before
-confirmed `MERGED`. Report `reused-left` cleanup results in the final report.
+external merge, resumed to finalize base-sync/owned-cleanup/terminal write; neither is refused), a `--repo`
+that does not name the checkout's own repository, stale gates, uncertain GitHub facts, another run's PR,
+foreign refs, root/reused cleanup targets, and cleanup before confirmed `MERGED`. Report `reused-left` cleanup results in the final report.
 
 Never hand-run a later phase after this command fails. Fix the named cause, then re-run the command so its
 ownership checks and phase order remain in force.
