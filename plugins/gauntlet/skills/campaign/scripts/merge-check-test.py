@@ -155,7 +155,10 @@ def t_mergestate_unstable():
 
 
 def t_mergestate_blocked():
-    expect(row(), view(mergeStateStatus="BLOCKED"), "not-yet", "GitHub says BLOCKED — park awaiting-user")
+    # BLOCKED is NO LONGER a final park at decide-level: `decide` returns the PROBE marker (it cannot tell a
+    # human/ruleset block from a merely-behind base without I/O), and `check` resolves it via the base-ancestry
+    # probe. The carried reason is the eventual park reason, used only when the probe proves the base current.
+    expect(row(), view(mergeStateStatus="BLOCKED"), M.PROBE, M.BLOCKED_PARK_REASON)
 
 
 def t_mergestate_unknown():
@@ -240,6 +243,52 @@ def t_cli_unverified_base_blocks_merge():
         "verdict": "not-yet",
         "reason": "could not verify base ancestry: could not fetch origin/main: unavailable",
     }, f"an unverified base must block merge, got {out!r}")
+
+
+def _cli_blocked(ancestry: tuple) -> "tuple[int, str, str]":
+    """Drive the real CLI over a BLOCKED view with a patched base-ancestry probe. BLOCKED routes to the PROBE
+    sentinel, so `check` resolves it HERE on `ancestry` — this exercises that resolution end to end."""
+    real_check = M.B.check_base_ancestry
+    M.B.check_base_ancestry = lambda *_args: ancestry
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            led = Path(d) / "state.jsonl"
+            L.dump(led, dict(L.HEADER_DEFAULTS, run_id="g1", base_branch="main"), [row()])
+            vjson = Path(d) / "view.json"
+            vjson.write_text(json.dumps(view(mergeStateStatus="BLOCKED")), encoding="utf-8")
+            return capture_cli(
+                M.main, ["check", "--pr", "9", "--file", str(led), "--view-json", str(vjson)])
+    finally:
+        M.B.check_base_ancestry = real_check
+
+
+def t_cli_blocked_behind_rebases():
+    """THE #134 REGRESSION TEST: a BLOCKED PR that is BEHIND its base must route to REBASE, not park. Run
+    against the OLD code (BLOCKED -> final park) this parked awaiting-user; now it must emit the rebase reason
+    Stage 3 routes on to clean-rebase.py, so the verdicts carry forward and the PR merges."""
+    code, out, err = _cli_blocked(("stale", ""))
+    check(code == 0, f"a behind BLOCKED PR is a computed not-yet result (stderr: {err})")
+    check(json.loads(out) == {"verdict": "not-yet", "reason": "base moved ahead — rebase"},
+          f"a BLOCKED PR behind its base must route to rebase, not park, got {out!r}")
+
+
+def t_cli_blocked_current_parks():
+    """A BLOCKED PR proven up-to-date is a genuine human/ruleset block — it still parks awaiting-user."""
+    code, out, err = _cli_blocked(("current", ""))
+    check(code == 0, f"an up-to-date BLOCKED PR is a computed not-yet result (stderr: {err})")
+    check(json.loads(out) == {"verdict": "not-yet", "reason": "GitHub says BLOCKED — park awaiting-user"},
+          f"a BLOCKED PR that is up to date must still park, got {out!r}")
+
+
+def t_cli_blocked_unverified_leaves():
+    """A BLOCKED PR whose base ancestry cannot be read fails CLOSED: leave/re-poll (exit 1), never invent a
+    merge and never park on a transient. Mirrors the CLEAN-path unverified fixture."""
+    code, out, err = _cli_blocked(("unverified", "could not fetch origin/main: unavailable"))
+    check(code != 0, f"unverifiable ancestry on a BLOCKED PR must fail closed (stderr: {err})")
+    check(json.loads(out) == {
+        "verdict": "not-yet",
+        "reason": "could not verify base ancestry: could not fetch origin/main: unavailable",
+    }, f"an unverifiable BLOCKED PR must leave/re-poll, never merge or park, got {out!r}")
 
 
 def t_cli_no_ledger_row():
@@ -331,7 +380,7 @@ CASES = [
     ("mss-behind", "BEHIND -> rebase", t_mergestate_behind),
     ("mss-dirty", "DIRTY -> rebase", t_mergestate_dirty),
     ("mss-unstable", "UNSTABLE -> non-passing, not campaign's ci", t_mergestate_unstable),
-    ("mss-blocked", "BLOCKED -> park awaiting-user", t_mergestate_blocked),
+    ("mss-blocked", "BLOCKED -> probe base ancestry (rebase if behind, else park)", t_mergestate_blocked),
     ("mss-unknown", "UNKNOWN merge state -> re-poll", t_mergestate_unknown),
     ("mergeable-conflicting", "CONFLICTING decided on .mergeable alone", t_conflicting_mergeable),
     ("mergeable-unknown", "UNKNOWN mergeability -> re-poll", t_unknown_mergeable),
@@ -340,6 +389,10 @@ CASES = [
     ("cli-injected-view", "check --view-json decides without gh and exits 0", t_cli_injected_view),
     ("cli-stale-base", "a CLEAN candidate behind refreshed base cannot merge", t_cli_stale_base_blocks_merge),
     ("cli-unverified-base", "an unreadable base ancestry fails closed", t_cli_unverified_base_blocks_merge),
+    ("cli-blocked-behind", "a BLOCKED PR behind its base routes to rebase (the #134 fix)",
+     t_cli_blocked_behind_rebases),
+    ("cli-blocked-current", "a BLOCKED PR up to date still parks awaiting-user", t_cli_blocked_current_parks),
+    ("cli-blocked-unverified", "a BLOCKED PR with unreadable ancestry fails closed", t_cli_blocked_unverified_leaves),
     ("cli-no-row", "a PR absent from the ledger decides `no ledger row`", t_cli_no_ledger_row),
     ("cli-view-missing-field", "a view missing a field fails closed, never KeyError", t_cli_view_missing_field),
     ("cli-view-wrong-type", "a view field of the wrong JSON type fails closed", t_cli_view_wrong_type_field),

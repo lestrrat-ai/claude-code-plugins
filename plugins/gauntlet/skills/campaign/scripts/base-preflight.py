@@ -69,7 +69,9 @@ MERGE_STATE_STATUS_VALUES = frozenset(
 # The `mergeStateStatus` values that pass the ENUM screen. UNSTABLE and BLOCKED are about
 # CHECKS/PERMISSIONS, not a stale base. This is not proof the branch contains the refreshed base; the graph
 # check in `check` supplies that proof. DIRTY/BEHIND/UNKNOWN are deliberately ABSENT: each is handled by an
-# earlier rule in `decide`.
+# earlier rule in `decide`. NOTE: the downstream merge gate (`merge-check.py`) now runs this SAME
+# `check_base_ancestry` probe on BLOCKED before it parks — a BLOCKED PR that is only behind its base rebases
+# rather than escalating — so both gates treat BLOCKED identically (enum screen, then graph proof).
 BASE_CURRENT_STATES = frozenset({"CLEAN", "HAS_HOOKS", "UNSTABLE", "BLOCKED"})
 
 
