@@ -159,7 +159,11 @@ Two things the audit does about it — **a SIGNAL and a hand-off, never a discha
   CONFIRMED, never REFUTED").
 - **HAND-OFF to the driver (proactive intent-bounding).** A single such finding is fixed and forgotten.
   But when the signal **recurs** — a SECOND finding of the same residual shape — that is the CLAUDE.md
-  "a review keeps generating true-but-that-kind-of finding → **bound the intent**" case arriving early.
+  "a review keeps generating true-but-that-kind-of finding → **bound the intent**" case arriving early —
+  and that `AGENTS.md`/`CLAUDE.md` sentence routes to `repair-pass.md`, REPAIR-INTENT: the **cap-level,
+  whole-history** repair stage, NOT this per-finding audit. DEMOTE, the only record-without-fixing outcome,
+  is reached only at a review-loop cap and only for a finding anchored to no Purpose line and no actor. So
+  reading it as licence to skip the CONFIRMED fix in hand drops that routing (verify against `repair-pass.md`).
   The driver may then author/tighten the intent `## Non-goals` so **future** reviewer rounds bind, and
   surface the class to the user for a decisive ruling, driving the other PRs meanwhile. Three constraints
   keep that from becoming a dodge: it is disclosed `authored` (`pr-adoption.md`); it must describe the
