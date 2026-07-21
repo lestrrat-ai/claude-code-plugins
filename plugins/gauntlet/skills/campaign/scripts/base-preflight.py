@@ -12,8 +12,14 @@ and PERFORMS NO REBASE: the driver rebases when told `rebase-first`, then re-run
 are two jobs and this is only the first — nothing here runs `git rebase`/`git merge` or edits a branch.
 
     base-preflight.py check --pr 31 [--repo owner/name] [--view-json <path>] [--project-root <dir>]
-        [--worktree <path> --base <branch> [--remote origin]]
+        [--worktree <path> --base <branch> [--remote origin]] [--file <ledger>]
     base-preflight.py self-test   run every fixture (base-preflight-test.py)
+
+On a final `proceed`, and ONLY when `--file <ledger>` is given, this records that base check on the ledger row
+by shelling out to `ledger.py base-ok` — resolving the worktree's live `HEAD` and stamping it as
+`base_ok_sha`. That stamp is the MECHANICAL precondition `ledger.py verdict` enforces: a review verdict cannot
+be recorded for a head with no fresh `proceed`. Without `--file` the tool is the pure decider it always was
+(it writes nothing); `decide()` itself stays pure regardless.
 
 The verdict is printed as JSON on stdout, and the EXIT CODE gates a caller's `$?`: 0 for `proceed`, non-zero
 for `rebase-first` and `recheck` (and for a view that could not be fetched or was malformed — those fail
@@ -34,6 +40,7 @@ from _gauntlet.modules import load_module_from_path
 
 _HERE = Path(__file__).resolve().parent
 SIBLING = _HERE / "base-preflight-test.py"     # the fixture suite — this tool's executable contract
+LEDGER = _HERE / "ledger.py"                   # the sibling that owns base_ok_sha; `base-ok` is its only writer
 
 
 # --- the verdicts -------------------------------------------------------------
@@ -199,10 +206,40 @@ def load_view(pr: str, repo: "str | None", view_json: "str | None",
         raise ViewError(f"gh response is not JSON ({exc})") from exc
 
 
+def record_base_ok(ledger_file: str, pr: str, worktree: "str | None") -> "str | None":
+    """On a `proceed`, stamp the ledger's `base_ok_sha` for the worktree's CURRENT head. Returns an error
+    string on failure, else `None`. Called ONLY from `check`'s proceed branch, so it never touches `decide`.
+
+    A `proceed` clears a review or fix onto THIS head, and the stamp is what lets the later `ledger.py verdict`
+    land: that door refuses unless `base_ok_sha == head_sha`. Resolving the head HERE (never trusting a caller
+    value) and writing through `ledger.py base-ok` (the only sanctioned writer) keeps the stamp a byproduct of
+    the check actually reaching `proceed`. A `proceed` guarantees the ancestry check ran, so `worktree` is set;
+    the guard is kept anyway so a caller change cannot silently reach a `rev-parse` with no worktree.
+    """
+    if not worktree:
+        return "proceed reached with no --worktree, so the head to stamp cannot be resolved"
+    head = subprocess.run(  # noqa: S603
+        ["git", "-C", worktree, "rev-parse", "HEAD"], capture_output=True, text=True, check=False)
+    if head.returncode != 0:
+        return f"could not resolve HEAD in {worktree}: {head.stderr.strip()}"
+    sha = head.stdout.strip()
+    stamp = subprocess.run(  # noqa: S603
+        [sys.executable, str(LEDGER), "--file", ledger_file, "base-ok", "--pr", str(pr), "--head-sha", sha],
+        capture_output=True, text=True, check=False)
+    if stamp.returncode != 0:
+        return f"`ledger.py base-ok` exited {stamp.returncode}: {stamp.stderr.strip()}"
+    return None
+
+
 def check(pr: str, repo: "str | None", view_json: "str | None", project_root: "str | None",
-          worktree: "str | None", base: "str | None", remote: str) -> int:
+          worktree: "str | None", base: "str | None", remote: str, ledger_file: "str | None") -> int:
     """Fetch the live view, decide, print the verdict as JSON. EXIT 0 only on `proceed`; every other outcome
-    (rebase-first, recheck, an unfetchable or malformed view) exits non-zero so a caller can gate on `$?`."""
+    (rebase-first, recheck, an unfetchable or malformed view) exits non-zero so a caller can gate on `$?`.
+
+    When `--file` is given, a final `proceed` also records `base_ok_sha` for the live head via `ledger.py
+    base-ok` (the mechanical precondition `ledger.py verdict` enforces). A recording failure fails CLOSED to
+    `recheck` — never a bare `proceed` whose verdict the ledger would then refuse. Without `--file`, nothing
+    is written."""
     try:
         view = load_view(pr, repo, view_json, project_root)
     except ViewError as exc:
@@ -221,6 +258,12 @@ def check(pr: str, repo: "str | None", view_json: "str | None", project_root: "s
             result = _verdict(REBASE_FIRST, "base has moved ahead — rebase first")
         elif ancestry == "unverified":
             result = _verdict(RECHECK, f"could not verify base ancestry: {detail}")
+    # ONLY on a final `proceed`, and ONLY when a ledger was named, record the proceed as `base_ok_sha` for the
+    # live head. Fail CLOSED to `recheck` on a recording failure so a `proceed` always implies the stamp landed.
+    if result["verdict"] == PROCEED and ledger_file is not None:
+        err = record_base_ok(ledger_file, pr, worktree)
+        if err is not None:
+            result = _verdict(RECHECK, f"could not record base_ok_sha: {err}")
     print(json.dumps(result))
     return 0 if result["verdict"] == PROCEED else 1
 
@@ -286,6 +329,8 @@ def main(argv: "list[str] | None" = None) -> int:
     c.add_argument("--worktree", help="the PR-head worktree used for the Git ancestry check")
     c.add_argument("--base", help="the PR base branch to fetch and compare")
     c.add_argument("--remote", default="origin", help="the worktree remote holding --base (default: origin)")
+    c.add_argument("--file", help="the ledger (state.jsonl); on `proceed`, record base_ok_sha for the live "
+                                  "head so `ledger.py verdict` can later count. Absent: the pure decider, no write")
 
     sub.add_parser("self-test", help="run every fixture (base-preflight-test.py)")
 
@@ -294,7 +339,7 @@ def main(argv: "list[str] | None" = None) -> int:
     if args.cmd == "self-test":
         return self_test()
     return check(args.pr, args.repo, args.view_json, args.project_root,
-                 args.worktree, args.base, args.remote)
+                 args.worktree, args.base, args.remote, args.file)
 
 
 if __name__ == "__main__":

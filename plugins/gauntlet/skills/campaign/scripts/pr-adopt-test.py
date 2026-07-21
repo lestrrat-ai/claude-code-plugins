@@ -250,6 +250,9 @@ def _set_row(ledger: Path, pr, **fields) -> None:
 
 
 def _record_verdict(ledger: Path, pr, head_sha, verdict="satisfied") -> None:
+    # `verdict` refuses unless a base-preflight `proceed` is on record for THIS head
+    # (base_ok_sha == head_sha); stamp it first, exactly as the real flow does (base-preflight.py -> base-ok).
+    _ledger("--file", str(ledger), "base-ok", "--pr", str(pr), "--head-sha", head_sha)
     _ledger("--file", str(ledger), "verdict", "--pr", str(pr), "--head-sha", head_sha, "--verdict", verdict)
 
 

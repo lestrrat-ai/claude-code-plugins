@@ -1073,7 +1073,7 @@ def t_verdict_counts_rounds(L: ModuleType, tmp: Path) -> None:
     gauntlet: fail, fail, pass, fail, pass, pass), and after them the row must say SIX. `reviews_ok` will
     have been voided and rebuilt twice on the way; `review_rounds` never moves but up.
     """
-    path = write_lines(tmp / "v.jsonl", header_line(L), row_line(L, pr="1", head_sha=SHA_A))
+    path = write_lines(tmp / "v.jsonl", header_line(L), row_line(L, pr="1", head_sha=SHA_A, base_ok_sha=SHA_A))
 
     def verdict(v: str) -> dict:
         code, out, err = cli(L, ["--file", str(path), "verdict", "--pr", "1",
@@ -1109,7 +1109,7 @@ def t_review_rounds_never_reset(L: ModuleType, tmp: Path) -> None:
     A rule that says "never reset it" is an exhortation, and the loop it guards ran for eight hours under
     three of those. Removing the door is a mechanism.
     """
-    path = write_lines(tmp / "nr.jsonl", header_line(L), row_line(L, pr="1", head_sha=SHA_A))
+    path = write_lines(tmp / "nr.jsonl", header_line(L), row_line(L, pr="1", head_sha=SHA_A, base_ok_sha=SHA_A))
     cli(L, ["--file", str(path), "verdict", "--pr", "1", "--head-sha", SHA_A, "--verdict", "not-satisfied"])
     cli(L, ["--file", str(path), "verdict", "--pr", "1", "--head-sha", SHA_A, "--verdict", "not-satisfied"])
 
@@ -1146,7 +1146,7 @@ def t_set_cannot_raise_the_tally(L: ModuleType, tmp: Path) -> None:
     importantly, it stays OPEN downward, because voiding the tally on a content change is a real and
     frequent event that is NOT a verdict (a fix commit, a conflict rebase, a formatter's push).
     """
-    path = write_lines(tmp / "t.jsonl", header_line(L), row_line(L, pr="1", head_sha=SHA_A))
+    path = write_lines(tmp / "t.jsonl", header_line(L), row_line(L, pr="1", head_sha=SHA_A, base_ok_sha=SHA_A))
     cli(L, ["--file", str(path), "verdict", "--pr", "1", "--head-sha", SHA_A, "--verdict", "satisfied"])
 
     code, out, err = cli(L, ["--file", str(path), "set", "--pr", "1", "--reviews-ok", "2"])
@@ -1179,7 +1179,8 @@ def t_escalation_reset_is_one_atomic_write(L: ModuleType, tmp: Path) -> None:
     re-triggers the reset — a stricter tier standing on a stale accepted tally. `set` already applies every
     field flag in ONE atomic write, so the single-write form is available; this pins that it is.
     """
-    path = write_lines(tmp / "e.jsonl", header_line(L), row_line(L, pr="1", head_sha=SHA_A, tier="STANDARD"))
+    path = write_lines(tmp / "e.jsonl", header_line(L),
+                       row_line(L, pr="1", head_sha=SHA_A, base_ok_sha=SHA_A, tier="STANDARD"))
     # A standing accepted tally at the shallower tier (earned, not hand-set — `set` cannot raise it).
     cli(L, ["--file", str(path), "verdict", "--pr", "1", "--head-sha", SHA_A, "--verdict", "satisfied"])
     cli(L, ["--file", str(path), "verdict", "--pr", "1", "--head-sha", SHA_A, "--verdict", "satisfied"])
@@ -1209,7 +1210,8 @@ def t_deescalation_is_a_tier_only_write(L: ModuleType, tmp: Path) -> None:
     de-escalation branch keeps the verdicts; only `required(tier)` moves). This pins the tool contract the
     prose deletion depends on: the single directional write is tier-only on a de-escalation, never a reset.
     """
-    path = write_lines(tmp / "de.jsonl", header_line(L), row_line(L, pr="1", head_sha=SHA_A, tier="HIGH"))
+    path = write_lines(tmp / "de.jsonl", header_line(L),
+                       row_line(L, pr="1", head_sha=SHA_A, base_ok_sha=SHA_A, tier="HIGH"))
     # A standing tally at the DEEPER tier (earned, not hand-set — `set` cannot raise it).
     cli(L, ["--file", str(path), "verdict", "--pr", "1", "--head-sha", SHA_A, "--verdict", "satisfied"])
     cli(L, ["--file", str(path), "verdict", "--pr", "1", "--head-sha", SHA_A, "--verdict", "satisfied"])
@@ -1277,7 +1279,8 @@ def t_counter_refuses_a_corrupt_value(L: ModuleType, tmp: Path) -> None:
     """
     for value in ("-", "two", "-1", "01", " 2"):
         path = write_lines(tmp / f"c-{value.strip() or 'blank'}.jsonl", header_line(L),
-                           json.dumps({"type": "row", "pr": "1", "head_sha": SHA_A, "review_rounds": value}))
+                           json.dumps({"type": "row", "pr": "1", "head_sha": SHA_A, "base_ok_sha": SHA_A,
+                                       "review_rounds": value}))
         code, out, err = cli(L, ["--file", str(path), "verdict", "--pr", "1",
                                  "--head-sha", SHA_A, "--verdict", "satisfied"])
         check(code == 1, f"review_rounds={value!r} was accepted as a number (exit {code}):\n{out}")
@@ -1356,6 +1359,130 @@ def t_set_head_sha_refuses_a_non_sha(L: ModuleType, tmp: Path) -> None:
         check(row[field] == want, f"a refused head_sha write reset {field} to {row[field]!r}, not {want!r}")
 
 
+# --- base_ok_sha: the MECHANICAL base-preflight precondition on `verdict` ------
+#
+# `verdict` refuses unless a base-preflight `proceed` is on record for THIS head (`base_ok_sha == head_sha`).
+# `base-ok` is the ONLY writer; a genuine head move voids the stamp; there is no `set` door (PREFLIGHT_OWNED);
+# and stamping is not activity. Together these make "run base-preflight before you record a verdict" a
+# mechanism, not a prose rule a fresh-context heartbeat is trusted to remember.
+
+def t_verdict_refused_without_base_ok(L: ModuleType, tmp: Path) -> None:
+    """A verdict is REFUSED unless `base_ok_sha == head_sha` — for BOTH verdicts — and ALLOWED once it is.
+
+    Skipping base-preflight leaves the stamp `-`, which no 40-hex head equals, so the door fails CLOSED: a
+    review verdict cannot be recorded over a base no `proceed` cleared. A counted NOT SATISFIED spends the loop
+    budget, so the guard covers not-satisfied exactly as it covers satisfied. A tool that can only REFUSE a
+    verdict can never merge anything.
+    """
+    for verdict in ("satisfied", "not-satisfied"):
+        path = write_lines(tmp / f"nobase-{verdict}.jsonl", header_line(L),
+                           row_line(L, pr="1", head_sha=SHA_A))  # base_ok_sha defaults to `-`
+        code, out, err = cli(L, ["--file", str(path), "verdict", "--pr", "1",
+                                 "--head-sha", SHA_A, "--verdict", verdict])
+        check(code == 1, f"[{verdict}] a verdict with no base-preflight proceed was recorded (exit {code}):\n{out}")
+        check("no fresh base-preflight `proceed`" in err, f"[{verdict}] refused for the wrong reason: {err!r}")
+        code, out, _ = cli(L, ["--file", str(path), "get", "--pr", "1", "--field", "review_rounds"])
+        check(out == "0\n", f"[{verdict}] the refused verdict still bumped review_rounds: {out!r}")
+
+    # A proceed on record for a DIFFERENT (earlier) head does not authorize a verdict on THIS content.
+    path = write_lines(tmp / "stale-base.jsonl", header_line(L),
+                       row_line(L, pr="1", head_sha=SHA_A, base_ok_sha=SHA_B))
+    code, _, err = cli(L, ["--file", str(path), "verdict", "--pr", "1", "--head-sha", SHA_A, "--verdict", "satisfied"])
+    check(code == 1, "a verdict authorized by a proceed for a DIFFERENT head was recorded")
+    check("no fresh base-preflight `proceed`" in err, f"refused for the wrong reason: {err!r}")
+
+    # …and with the proceed on record for THIS head, the same verdict LANDS.
+    path = write_lines(tmp / "withbase.jsonl", header_line(L),
+                       row_line(L, pr="1", head_sha=SHA_A, base_ok_sha=SHA_A))
+    code, out, err = cli(L, ["--file", str(path), "verdict", "--pr", "1", "--head-sha", SHA_A, "--verdict", "satisfied"])
+    check(code == 0, f"a verdict WITH a fresh proceed on record was refused (exit {code}): {err!r}")
+    check(json.loads(out)["review_rounds"] == "1", f"the allowed verdict did not land: {out!r}")
+
+
+def t_head_move_voids_base_ok(L: ModuleType, tmp: Path) -> None:
+    """A genuine head MOVE through `set --head-sha` voids `base_ok_sha` to `-`; a SAME-VALUE write leaves it.
+
+    A new head is UNVERIFIED until a fresh proceed — so the verdict allowed on the old head is now refused, and
+    only re-running base-preflight (here, `base-ok`) on the new head clears it again. THE MUTATION PIN: delete
+    the `base_ok_sha` reset in `apply_head_sha` and the first block goes red.
+    """
+    path = write_lines(tmp / "void.jsonl", header_line(L),
+                       row_line(L, pr="1", head_sha=SHA_A, base_ok_sha=SHA_A))
+    code, out, err = cli(L, ["--file", str(path), "set", "--pr", "1", "--head-sha", SHA_B])
+    check(code == 0, f"set exited {code}: {err!r}")
+    check(json.loads(out)["base_ok_sha"] == L.ROW_DEFAULTS["base_ok_sha"],
+          f"a head MOVE left base_ok_sha standing: {json.loads(out)['base_ok_sha']!r} — the proceed for the "
+          f"old head must not authorize the new content")
+    code, _, err = cli(L, ["--file", str(path), "verdict", "--pr", "1", "--head-sha", SHA_B, "--verdict", "satisfied"])
+    check(code == 1, "a verdict landed on a moved head whose proceed was voided")
+
+    # …and a SAME-VALUE head write is not a move: a stamp for that head is left standing.
+    cli(L, ["--file", str(path), "base-ok", "--pr", "1", "--head-sha", SHA_B])
+    code, out, _ = cli(L, ["--file", str(path), "set", "--pr", "1", "--head-sha", SHA_B])
+    check(json.loads(out)["base_ok_sha"] == SHA_B,
+          f"a SAME-VALUE head write voided a stamp it must not touch: {json.loads(out)['base_ok_sha']!r}")
+
+
+def t_base_ok_writes_and_refuses(L: ModuleType, tmp: Path) -> None:
+    """`base-ok` records `base_ok_sha` for the row's CURRENT head, and REFUSES a non-40-hex value, a head
+    mismatch, or a missing row — writing NOTHING on any refusal."""
+    path = write_lines(tmp / "bok.jsonl", header_line(L), row_line(L, pr="1", head_sha=SHA_A))
+    code, out, err = cli(L, ["--file", str(path), "base-ok", "--pr", "1", "--head-sha", SHA_A])
+    check(code == 0, f"base-ok on the current head exited {code}: {err!r}")
+    check(json.loads(out)["base_ok_sha"] == SHA_A, f"base-ok did not stamp base_ok_sha: {out!r}")
+
+    for bad in (SHA_A[:7], "g" * 40, SHA_A.upper()):
+        code, _, err = cli(L, ["--file", str(path), "base-ok", "--pr", "1", "--head-sha", bad])
+        check(code == 1, f"base-ok --head-sha {bad!r} was accepted (exit {code})")
+        check("40 LOWERCASE hex" in err, f"[{bad!r}] refused for the wrong reason: {err!r}")
+
+    code, _, err = cli(L, ["--file", str(path), "base-ok", "--pr", "1", "--head-sha", SHA_B])
+    check(code == 1, "base-ok stamped a head that is not the row's current one")
+    check("does not match" in err, f"refused for the wrong reason: {err!r}")
+
+    code, _, err = cli(L, ["--file", str(path), "base-ok", "--pr", "9", "--head-sha", SHA_A])
+    check(code == 1, "base-ok wrote a stamp for a PR with no row")
+    check("no row for pr 9" in err, f"refused for the wrong reason: {err!r}")
+
+    # …and the stamp for the current head is still exactly SHA_A after every refusal.
+    code, out, _ = cli(L, ["--file", str(path), "get", "--pr", "1", "--field", "base_ok_sha"])
+    check(out == SHA_A + "\n", f"a refused base-ok changed base_ok_sha: {out!r}")
+
+
+def t_base_ok_sha_has_no_set_door(L: ModuleType, tmp: Path) -> None:
+    """`base_ok_sha` cannot be written through `set`/`add-row` — the same mechanism as review_rounds and
+    repair_count (PREFLIGHT_OWNED). A door that can hand-write the proceed stamp is a door that can FORGE a
+    proceed no base-preflight ever decided, recording a verdict over a base that never passed. So there is no
+    `--base-ok-sha` flag: argparse refuses it, and only `base-ok` writes the field."""
+    check("base_ok_sha" in L.PREFLIGHT_OWNED, "base_ok_sha must be in PREFLIGHT_OWNED, or a set door can forge it")
+    check(not L.settable("base_ok_sha"), "settable() must refuse base_ok_sha — PREFLIGHT_OWNED")
+    path = write_lines(tmp / "bnodoor.jsonl", header_line(L), row_line(L, pr="1", head_sha=SHA_A))
+    for door in (["set", "--pr", "1"], ["add-row", "--pr", "77"]):
+        code, _, err = cli(L, ["--file", str(path), *door, "--base-ok-sha", SHA_A])
+        check(code == 2, f"`{door[0]} --base-ok-sha` was accepted (exit {code}) — a hand-write door can forge a proceed")
+        check("unrecognized arguments" in err,
+              f"`{door[0]} --base-ok-sha` failed, but not because the flag is ABSENT: {err!r}")
+
+
+def t_base_ok_is_not_activity(L: ModuleType, tmp: Path) -> None:
+    """`base-ok` writes with `activity=False` — recording a precondition is not the run doing meaningful work,
+    exactly as re-arming the watchdog is not. Also asserts base_ok_sha IS in ACTIVITY_EXEMPT (name the set)."""
+    check("base_ok_sha" in L.ACTIVITY_EXEMPT,
+          "base_ok_sha must be in ACTIVITY_EXEMPT — stamping a precondition must not reset the quiet sensor")
+    path = write_lines(tmp / "boa.jsonl", header_line(L, run_id="r1"),
+                       row_line(L, pr="1", head_sha=SHA_A, status="in_review"))
+    with frozen_clock(L, FROZEN_A):  # a real change first, to give last_activity a known value
+        code, _, err = cli(L, ["--file", str(path), "set", "--pr", "1", "--slug", "x"])
+        check(code == 0, f"baseline set exited {code}: {err!r}")
+    check(last_activity(L, path) == FROZEN_A, "the baseline change did not stamp last_activity")
+    with frozen_clock(L, FROZEN_B):  # a base-ok write — must NOT re-stamp
+        code, _, err = cli(L, ["--file", str(path), "base-ok", "--pr", "1", "--head-sha", SHA_A])
+        check(code == 0, f"base-ok exited {code}: {err!r}")
+    check(last_activity(L, path) == FROZEN_A,
+          f"base-ok re-stamped last_activity to {last_activity(L, path)!r} — stamping a precondition is not "
+          f"meaningful activity and must leave the quiet sensor alone")
+
+
 def t_write_is_atomic(L: ModuleType, tmp: Path) -> None:
     """**A LEDGER WRITE IS ALL OR NOTHING.** No crash, no full disk, may leave a store torn in half.
 
@@ -1371,7 +1498,8 @@ def t_write_is_atomic(L: ModuleType, tmp: Path) -> None:
     filesystems is a copy, and a copy tears exactly like the truncate did), the bytes were `fsync`ed
     before anything pointed at them, and nothing was left behind.
     """
-    path = write_lines(tmp / "atomic.jsonl", header_line(L), row_line(L, pr="1", head_sha=SHA_A))
+    path = write_lines(tmp / "atomic.jsonl", header_line(L),
+                       row_line(L, pr="1", head_sha=SHA_A, base_ok_sha=SHA_A))
     before = path.read_bytes()
 
     fsyncs = 0
@@ -1465,7 +1593,11 @@ def verdicts(L: ModuleType, path: Path, seq: str, pr: str = "1", move_head: bool
 
     `move_head` replays what really happens between rounds: a NOT SATISFIED sends a fix, the fix pushes,
     the head moves. That is what makes this a test of "`review_rounds` survives a fix" and not a rehearsal
-    on static content.
+    on static content. The head move voids `base_ok_sha`, so — exactly as the real flow re-runs
+    base-preflight on the rebased tip — this re-stamps `base-ok` for the new head before the next verdict.
+
+    The CALLER's row must start with `base_ok_sha == SHA_A` (a `proceed` on record for the first head), or
+    the very first verdict is refused; the verdict-driving fixtures set it beside `head_sha`.
     """
     sha = SHA_A
     for i, v in enumerate(seq, start=1):
@@ -1476,11 +1608,13 @@ def verdicts(L: ModuleType, path: Path, seq: str, pr: str = "1", move_head: bool
         if move_head and v == "N":
             sha = f"{i:040x}"
             cli(L, ["--file", str(path), "set", "--pr", pr, "--head-sha", sha])
+            cli(L, ["--file", str(path), "base-ok", "--pr", pr, "--head-sha", sha])  # re-preflight the new head
     return len(seq), 0
 
 
 def capped_row(L: ModuleType, tmp: Path, name: str, **over: str) -> Path:
-    fields = {"pr": "1", "head_sha": SHA_A, "status": "in_review", **over}
+    # base_ok_sha == head_sha: a base-preflight `proceed` on record for the head, so `verdict` may count.
+    fields = {"pr": "1", "head_sha": SHA_A, "base_ok_sha": SHA_A, "status": "in_review", **over}
     return write_lines(tmp / name, header_line(L), row_line(L, **fields))
 
 
@@ -1665,7 +1799,7 @@ def replay(L: ModuleType, tmp: Path, pr: str, stop_after: "int | None" = None) -
     assert isinstance(seq, str) and isinstance(passes, list)
     check(len(seq) == len(passes), f"[#{pr}] the fixture's own record is inconsistent")
     path = write_lines(tmp / f"replay-{pr}-{stop_after}.jsonl", header_line(L),
-                       row_line(L, pr=pr, head_sha=SHA_A, status="in_review"))
+                       row_line(L, pr=pr, head_sha=SHA_A, base_ok_sha=SHA_A, status="in_review"))
     sha = SHA_A
     for i, (v, npass) in enumerate(zip(seq, passes), start=1):
         if stop_after is not None and npass > stop_after:
@@ -1677,9 +1811,10 @@ def replay(L: ModuleType, tmp: Path, pr: str, stop_after: "int | None" = None) -
             check(out.strip() == L.REPAIR_STATUS, f"[#{pr}] the trigger left the row live")
             return npass
         check(code == 0, f"[#{pr}] verdict {i} (pass r{npass}) exited {code}")
-        if v == "N":  # a fix was dispatched and pushed: the head MOVED
+        if v == "N":  # a fix was dispatched and pushed: the head MOVED, and base-preflight re-ran on the new tip
             sha = f"{i:040x}"
             cli(L, ["--file", str(path), "set", "--pr", pr, "--head-sha", sha])
+            cli(L, ["--file", str(path), "base-ok", "--pr", pr, "--head-sha", sha])
     return None
 
 
@@ -1747,7 +1882,7 @@ def t_stale_repair_decision_cleared_at_cap(L: ModuleType, tmp: Path) -> None:
     # `repair_count`/`repair_decision` have NO `set` flag by design (t_the_repair_bound_has_no_door).
     stale = "rescope@2026-07-14T00:00:00Z"
     path = write_lines(tmp / "stale.jsonl", header_line(L),
-                       row_line(L, pr="1", head_sha=SHA_A, status="in_review",
+                       row_line(L, pr="1", head_sha=SHA_A, base_ok_sha=SHA_A, status="in_review",
                                 pr_origin="gauntlet", repair_count="1", repair_decision=stale))
     code, out, _ = cli(L, ["--file", str(path), "get", "--pr", "1", "--field", "repair_decision"])
     check(out.strip() == stale, f"fixture setup is wrong — the row does not carry the stale decision: {out!r}")
@@ -2041,7 +2176,7 @@ def t_verdict_stamps_activity(L: ModuleType, tmp: Path) -> None:
     """A landed `verdict` stamps `last_activity` — it always moves review_rounds, so it is always activity."""
     sha = "a" * 40
     path = write_lines(tmp / "v.jsonl", header_line(L, run_id="r1"),
-                       row_line(L, pr="1", head_sha=sha, status="in_review"))
+                       row_line(L, pr="1", head_sha=sha, base_ok_sha=sha, status="in_review"))
     with frozen_clock(L, FROZEN_A):
         code, _, err = cli(L, ["--file", str(path), "verdict", "--pr", "1", "--head-sha", sha,
                                "--verdict", "satisfied"])
@@ -2275,6 +2410,11 @@ CASES = [
     ("head-sha-resets-liveness", "a NEW head_sha through `set` resets THE LIVENESS COUNTERS; a same-value write does not", t_head_sha_change_resets_liveness),
     ("head-sha-explicit-counter-wins", "an explicit counter flag in the same call as a new head_sha wins over the auto-reset", t_head_sha_explicit_counter_wins),
     ("head-sha-refuses-non-sha", "`set --head-sha` refuses a non-40-hex value and writes nothing", t_set_head_sha_refuses_a_non_sha),
+    ("verdict-needs-base-ok", "a verdict is refused unless base_ok_sha == head_sha — both verdicts; allowed once stamped", t_verdict_refused_without_base_ok),
+    ("head-move-voids-base-ok", "a head MOVE voids base_ok_sha to `-`; a same-value write leaves it", t_head_move_voids_base_ok),
+    ("base-ok-writes-refuses", "`base-ok` stamps the current head; refuses non-40-hex, head-mismatch, no-row", t_base_ok_writes_and_refuses),
+    ("base-ok-sha-no-door", "base_ok_sha has NO set/add-row flag (PREFLIGHT_OWNED) — a hand-write door forges a proceed", t_base_ok_sha_has_no_set_door),
+    ("base-ok-not-activity", "a base-ok write does NOT stamp last_activity — stamping a precondition is not activity", t_base_ok_is_not_activity),
     ("write-atomic", "a write that dies mid-way leaves the OLD ledger intact — temp + fsync + os.replace", t_write_is_atomic),
     ("skill-version", "the header records WHICH VERSION of the rules governed the run; default `unknown`", t_skill_version_is_recorded),
     ("round-cap", "at ROUND_CAP a NOT SATISFIED holds the row `repairing` and exits non-zero", t_round_cap_fires),

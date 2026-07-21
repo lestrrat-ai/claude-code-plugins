@@ -124,12 +124,15 @@ review gate"), and the review re-starts on the clean tip:
   Handle failures **one at a time per PR/SHA**, and **prefer a scoped subagent** per failure; different
   PRs may fix CI concurrently within the cap.
 - **Base currency with `<base>`.** Before reviewing or dispatching a fix, run `python3
-  scripts/base-preflight.py check --pr <pr> --worktree <worktree> --base <base>`. It checks both GitHub's
+  scripts/base-preflight.py check --pr <pr> --worktree <worktree> --base <base> --file <state.jsonl>`. It checks both GitHub's
   merge states and whether fetched `origin/<base>` is an ancestor of the PR worktree's `HEAD`. A
   `rebase-first` verdict covers a conflict, GitHub reporting behind, or a CLEAN PR whose branch lacks the
   refreshed base. `recheck` covers an uncomputed/unrecognized GitHub value or ancestry the helper cannot
   verify; re-poll and re-run, never dispatch or rebase from incomplete evidence. `base-preflight.py` owns
   the decision and is the pre-flight gate for every fix subagent (`fix-subagent-contract.md`, PRE-FLIGHT).
+  **Run it with `--file <state.jsonl>`:** on `proceed` it records `base_ok_sha` for the current head — the
+  MECHANICAL precondition `ledger.py verdict` then enforces ("Recording a verdict", below), so a review verdict
+  can never be recorded for a head with no fresh `proceed`.
   Once it says `rebase-first`, **the CLEAN
   base-only case is EXECUTED — not hand-run — by `python3 scripts/clean-rebase.py run --ledger
   <state.jsonl> --pr <pr> --worktree <worktree> --base <base>`**: it does the fetch/rebase/`--force-with-lease`
@@ -718,6 +721,14 @@ As each verdict lands, record it with:
 python3 <skill-dir>/scripts/ledger.py --file <state.jsonl> verdict --pr <N> \
     --head-sha <the SHA the pass ran on> --verdict satisfied|not-satisfied
 ```
+
+**A verdict requires a fresh base-preflight `proceed` for the head, and is refused without one.** `verdict`
+checks `base_ok_sha == head_sha` — the record `base-preflight.py check … --file <state.jsonl>` writes on
+`proceed` (Preconditions, above) — and refuses a mismatch for **both** verdicts, because a counted NOT
+SATISFIED spends `review_rounds`/`ns_streak` toward the caps just the same. Skipping the pre-flight leaves the
+stamp `-`, so this door **fails closed**: run base-preflight on the current tip first. A rebase moves the head,
+which **voids** the stamp until base-preflight re-runs (`files-and-ledger.md`, the `base_ok_sha` field). Like
+the head-SHA check, this can only ever REFUSE a verdict — never manufacture a SATISFIED or merge anything.
 
 **NEVER set `reviews_ok` by hand to record a verdict.** The accessor owns the tally *and* the round
 counters, and it applies them **atomically**; hand-setting `reviews_ok` silently skips them. It is not an

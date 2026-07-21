@@ -20,11 +20,14 @@ block. This file owns the dispatch procedure, not a second copy of prompt text.
 ### PRE-FLIGHT — the base must be current before ANY fix is dispatched
 
 **BEFORE dispatching ANY fix subagent (review-fix or CI-fix) for a PR, run
-`python3 scripts/base-preflight.py check --pr <N> --worktree <worktree> --base <base>`.** It fetches
+`python3 scripts/base-preflight.py check --pr <N> --worktree <worktree> --base <base> --file <state.jsonl>`.** It fetches
 `origin/<base>` and prints ONE of three verdicts, and the action
 **splits by verdict** — only `proceed` clears the dispatch, and the other two are NOT the same response:
 
-- **`proceed`** → the base is current; **dispatch the fix**.
+- **`proceed`** → the base is current; **dispatch the fix**. The `--file` makes the `proceed` record
+  `base_ok_sha` for the current head — the MECHANICAL precondition `ledger.py verdict` enforces
+  (`stage-2-review-gate.md`, "Recording a verdict"): a review verdict is refused for a head with no fresh
+  `proceed`.
 - **`rebase-first`** → the branch conflicts with its base or lacks the refreshed base; do **NOT** dispatch.
   **REBASE the PR onto `<base>`** through `stage-2-review-gate.md`'s base-currency handling, which runs
   `clean-rebase.py` FIRST: a clean base-only rebase (exit 0) PRESERVES the verdicts and label, and only its

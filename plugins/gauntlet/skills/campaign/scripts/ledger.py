@@ -139,6 +139,23 @@ ROW_FIELDS = (
     # A heartbeat is a fresh agent instance. A counter that lives in the driver's head does not exist.
     "review_rounds",   # landed verdicts, ever, for this PR. MONOTONE — NEVER reset, by anything.
     "ns_streak",       # consecutive NOT SATISFIED. Reset ONLY by a SATISFIED.
+    # THE HEAD A BASE-PREFLIGHT `proceed` WAS LAST DECIDED FOR — the MECHANICAL form of the
+    # rebase-before-review precondition (stage-2-review-gate.md, "Recording a verdict"). `base-preflight.py
+    # check` writes it (through `base-ok`, the ONLY sanctioned writer) when — and only when — it decides
+    # `proceed` for the live head; `cmd_verdict` then REFUSES unless `base_ok_sha == head_sha`, so a review
+    # verdict can never be recorded — satisfied OR not-satisfied — over a base no fresh `proceed` cleared. A
+    # counted NOT SATISFIED spends `review_rounds`/`ns_streak` toward the caps, so the guard covers both.
+    #
+    # It is SHA-bound like THE LIVENESS COUNTERS and voided the same way: `apply_head_sha` resets it to its
+    # `ROW_DEFAULTS` value on a genuine head MOVE — a new head is unverified until a fresh `proceed` — and it
+    # has NO `set` door (`PREFLIGHT_OWNED`): a hand-written stamp would forge the precondition it exists to
+    # enforce, the same "remove the door" stance `review_rounds` takes. Its writes are activity-EXEMPT, because
+    # stamping a precondition is not "the run did something meaningful" (the same stance the liveness counters
+    # and `watchdog_due` take).
+    #
+    # The default is `-`, the schema's own "not set" spelling: an old ledger, or a head with no `proceed` yet,
+    # reads back `-`, which never equals a 40-hex head, so `verdict` fails CLOSED until base-preflight runs.
+    "base_ok_sha",
     # WHERE THIS PR'S INTENT CAME FROM — the PROVENANCE of `<rundir>/intent-<pr>.md`:
     #   `-`                not adopted yet
     #   `stated@<iso>`     the PR body already carried a usable intent block; it was COPIED VERBATIM
@@ -183,7 +200,7 @@ ROW_DEFAULTS = {
     "tier": "-", "attempts": "0", "started": "-", "api_approval": "-", "status": "pending",
     "ci_fingerprint": "-", "settled_strikes": "0", "unusable_refetches": "0",
     "ci_stalled_since": "-", "ci_reason": "-", "blocker_ruling": "-",
-    "review_rounds": "0", "ns_streak": "0", "intent": "-",
+    "review_rounds": "0", "ns_streak": "0", "base_ok_sha": "-", "intent": "-",
     "pr_origin": "external", "repair_count": "0", "repair_decision": "-",
 }
 
@@ -207,7 +224,10 @@ LIVENESS_COUNTERS = ("ci_fingerprint", "settled_strikes", "unusable_refetches", 
 #     "the run did something meaningful": it is the run promising to look again later. Stamping `last_activity`
 #     on it would let a bare `watchdog arm` masquerade as activity and reset the very quiet sensor the watchdog
 #     exists to back — so `watchdog arm` must NOT stamp, and this exemption is how that is guaranteed.
-ACTIVITY_EXEMPT = frozenset(LIVENESS_COUNTERS + ("last_activity", "watchdog_due"))
+#   * `base_ok_sha` — the base-preflight `proceed` stamp. Recording that the base is current for a head is a
+#     PRECONDITION being met, not the run advancing: `base-ok` writes it with `activity=False`, and this
+#     exemption is what guarantees a bare stamp cannot masquerade as activity and reset the quiet sensor.
+ACTIVITY_EXEMPT = frozenset(LIVENESS_COUNTERS + ("last_activity", "watchdog_due", "base_ok_sha"))
 
 # THE HEADER FIELDS WITH NO HAND-WRITE DOOR — `header set <field>` is REFUSED for each, mapped to the exact
 # refusal message. Both are TOOL-STAMPED: `last_activity` by `save()`'s side effect on a real change,
@@ -242,6 +262,14 @@ VERDICT_OWNED = ("review_rounds", "ns_streak")
 # write it is a door that can zero it, and a driver that could zero its own repair budget could repair
 # forever. The tool that decides a repair is the only thing that writes what it spent.
 REPAIR_OWNED = ("repair_count", "repair_decision")
+
+# The base-preflight stamp `base-ok` OWNS — settable through NO flag, the same mechanism as VERDICT_OWNED and
+# REPAIR_OWNED, for the same reason. `base_ok_sha` is the MECHANICAL base-currency precondition `verdict`
+# enforces (it refuses unless the stamp equals the row's head). A door that can hand-write it is a door that
+# can FORGE a `proceed` no base-preflight ever decided — recording a verdict over a conflicting or stale base,
+# the exact waste this guard exists to stop. So there is no `--base-ok-sha` flag: `base-preflight.py check`
+# writes it, through `base-ok`, only when it actually decides `proceed`, and nothing else writes it at all.
+PREFLIGHT_OWNED = ("base_ok_sha",)
 
 # The park/unpark TRANSITIONS `park`/`unpark` own — the same mechanism as VERDICT_OWNED, one level up at the
 # `status` field. A machine-blocker park and a retry unpark are each MULTI-FIELD atomic writes whose fields
@@ -650,9 +678,12 @@ def settable(name: str) -> bool:
     exclusion, and it is the mechanism behind "`review_rounds` is NEVER reset": a door that can write a
     counter is a door that can zero it, so those two fields simply have NO flag. `verdict` writes them.
     `REPAIR_OWNED` is the same mechanism for the repair's bound: a driver that could zero `repair_count`
-    could repair forever, so only `repair-pass.py decide` writes what a PR has spent.
+    could repair forever, so only `repair-pass.py decide` writes what a PR has spent. `PREFLIGHT_OWNED` is
+    the same mechanism for the base-currency precondition: a door that can hand-write `base_ok_sha` could
+    forge a `proceed` no base-preflight decided, so only `base-preflight.py` writes it, through `base-ok`.
     """
-    return name not in ("pr", "id") and name not in VERDICT_OWNED and name not in REPAIR_OWNED
+    return (name not in ("pr", "id") and name not in VERDICT_OWNED and name not in REPAIR_OWNED
+            and name not in PREFLIGHT_OWNED)
 
 
 def _named_field_values(args) -> dict:
@@ -716,14 +747,16 @@ def cmd_add_row(path: Path, args) -> int:
 
 
 def apply_head_sha(row: dict, new_sha: str) -> None:
-    """Write `new_sha` to `row['head_sha']`, resetting THE LIVENESS COUNTERS on a genuine head MOVE.
+    """Write `new_sha` to `row['head_sha']`, resetting THE LIVENESS COUNTERS and the base-preflight stamp
+    `base_ok_sha` on a genuine head MOVE.
 
     THE PROPERTY, enforced at the write door rather than by prose at each caller (stage-2-ci.md, "THE
     LIVENESS COUNTERS", reset-site class 1): a NEW `head_sha` is NEW evidence, so the old head's CI-liveness
-    says nothing about it. When `new_sha != row['head_sha']` this writes the head AND resets every
-    `LIVENESS_COUNTERS` field to its `ROW_DEFAULTS` value — READ from the defaults, never retyped — mutating
-    the SAME `row` dict, so the caller's single `dump()` lands the head move and the reset in ONE atomic write.
-    A SAME-VALUE write (`new_sha == row['head_sha']`) is not a move and changes NOTHING.
+    says nothing about it — and neither does a `proceed` decided for the old head. When `new_sha !=
+    row['head_sha']` this writes the head AND resets every `LIVENESS_COUNTERS` field, AND `base_ok_sha`, to its
+    `ROW_DEFAULTS` value — READ from the defaults, never retyped — mutating the SAME `row` dict, so the
+    caller's single `dump()` lands the head move and the reset in ONE atomic write. A SAME-VALUE write
+    (`new_sha == row['head_sha']`) is not a move and changes NOTHING.
 
     The shape is validated with `SHA_RE` FIRST and REFUSED otherwise (40 lowercase hex): a value that cannot
     be a commit id has no business becoming a row's head, and refusing before any mutation keeps a bad
@@ -742,6 +775,11 @@ def apply_head_sha(row: dict, new_sha: str) -> None:
     row["head_sha"] = new_sha
     for field in LIVENESS_COUNTERS:
         row[field] = ROW_DEFAULTS[field]  # fresh head, fresh budget — the value comes from ROW_DEFAULTS
+    # A new head is UNVERIFIED until a fresh base-preflight `proceed`: void the recorded proceed here too, so a
+    # `proceed` decided for the OLD head can never authorize a `verdict` on new content (the `base_ok_sha`
+    # field definition; `cmd_verdict`). Read from `ROW_DEFAULTS`, never a retyped literal, exactly like the
+    # counters above — a fresh-head `base_ok_sha` is its default `-`, which no 40-hex head equals.
+    row["base_ok_sha"] = ROW_DEFAULTS["base_ok_sha"]
 
 
 def cmd_set(path: Path, args) -> int:
@@ -790,6 +828,13 @@ def cmd_verdict(path: Path, args) -> int:
     door, so a late verdict from a superseded attempt can never reach the tally through a driver that
     skipped the check.
 
+    **The base-currency precondition is checked too, and refused if not met.** A `proceed` must be on record
+    for this head (`base_ok_sha == head_sha`), or the review ran over a base a fresh base-preflight never
+    cleared. This is the MECHANICAL form of the rebase-before-review rule the prose (stage-2-review-gate.md)
+    only asked for: `base-preflight.py` stamps `base_ok_sha` on a real `proceed`, and skipping it leaves the
+    stamp `-` (or a stale head), so this door refuses — satisfied OR not-satisfied, since a counted NOT
+    SATISFIED spends the loop budget just the same. Like the head check, this can only ever REFUSE a verdict.
+
     **The counters are SENSORS, and this door NEVER WRITES THEM BACKWARDS — but it does READ them, and at
     a cap it STOPS THE LOOP.** The hazard in fusing a reader into a sensor is that the reader comes to
     reset the counter it consumes; that hazard is structurally absent here, because the cap path writes
@@ -823,6 +868,18 @@ def cmd_verdict(path: Path, args) -> int:
         fail(f"this verdict ran on {args.head_sha} but pr {pr}'s head is {row['head_sha']} — it describes "
              f"content that is no longer there. A verdict for a superseded SHA never counts: reconcile the "
              f"row against `gh` first, and re-review the live tip")
+    # THE BASE-CURRENCY PRECONDITION, MECHANICAL. A `proceed` must be on record for THIS head, or the review
+    # ran over a base a fresh base-preflight never cleared and the verdict is refused — satisfied OR
+    # not-satisfied, since a counted NOT SATISFIED spends the loop budget just the same. Because the head
+    # check above already pinned `args.head_sha == row['head_sha']`, this transitively requires `base_ok_sha
+    # == row['head_sha']`: a `proceed` stamped for an EARLIER head (voided to `-` on the move) cannot
+    # authorize a review of new content.
+    if row["base_ok_sha"] != args.head_sha:
+        fail(f"pr {pr}'s head {args.head_sha} has no fresh base-preflight `proceed` on record (base_ok_sha is "
+             f"{row['base_ok_sha']!r}) — a review verdict is refused, satisfied or not, until the base is "
+             f"confirmed current for THIS head. Run `base-preflight.py check --pr {pr} --worktree <worktree> "
+             f"--base <base> --file <ledger>`; it records `base_ok_sha` only when it decides `proceed`, and a "
+             f"rebase moves the head, which voids the stamp until it is re-run")
 
     rounds = counter(row, "review_rounds") + 1   # MONOTONE. Bumped before anything can go wrong below.
     if args.verdict == SATISFIED:
@@ -865,6 +922,46 @@ def cmd_verdict(path: Path, args) -> int:
         file=sys.stderr,
     )
     return EXIT_STOP
+
+
+def cmd_base_ok(path: Path, args) -> int:
+    """Record a base-preflight `proceed` for the row's CURRENT head — the ONLY sanctioned writer of
+    `base_ok_sha`, and the MECHANICAL half of the rebase-before-review precondition.
+
+    `cmd_verdict` refuses unless `base_ok_sha == head_sha`; this is what makes that pass. It is written by
+    `base-preflight.py check` when — and ONLY when — the decider reaches `proceed` for the live head, so the
+    stamp is a BYPRODUCT of the check actually running, never a value a driver types in (there is no `set`
+    flag: `PREFLIGHT_OWNED`). A forged stamp would authorize a verdict over a base no `proceed` ever cleared,
+    which is the waste this guard exists to stop.
+
+    Refusals, none of which write anything:
+      * no row — `fail` (exit 1);
+      * a `--head-sha` that is not a git object id (40 LOWERCASE hex) — a stamp bound to a non-commit makes
+        the `verdict` comparison unfalsifiable, refused before any write (the SHA discipline `verdict` and
+        `apply_head_sha` hold);
+      * a `--head-sha` that is not the row's current head — a `proceed` is meaningful for the LIVE head only,
+        so a stamp for any other SHA is refused (the same coherence rule `verdict` enforces).
+
+    The write is activity-EXEMPT (`base_ok_sha` is in `ACTIVITY_EXEMPT`): stamping a precondition is not the
+    run doing meaningful work, exactly as re-arming the watchdog is not.
+    """
+    header, rows = load(path)
+    pr = str(args.pr)
+    row = find_row(rows, pr)
+    if row is None:
+        fail(f"no row for pr {pr}; use `add-row` to create it")
+    if not SHA_RE.match(args.head_sha):
+        fail(f"--head-sha {args.head_sha!r} is not a git object id (40 LOWERCASE hex) — a base-preflight "
+             f"`proceed` is recorded AGAINST a commit, and a value that cannot be one makes the `verdict` "
+             f"base-currency check unfalsifiable")
+    if row["head_sha"] != args.head_sha:
+        fail(f"a `proceed` for {args.head_sha} does not match pr {pr}'s head {row['head_sha']} — a preflight "
+             f"clears the LIVE head only, so a stamp for any other SHA is refused. Reconcile the row against "
+             f"`gh` and re-run base-preflight on the current tip")
+    row["base_ok_sha"] = args.head_sha
+    save(path, header, rows, activity=False)  # exempt: stamping a precondition is not meaningful activity
+    print(json.dumps(row))
+    return 0
 
 
 def held_reason(status: str) -> str:
@@ -1230,6 +1327,16 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--verdict", required=True, choices=VERDICTS,
                    help="the reviewer's VERDICT line, as the orchestrator read it")
 
+    # The ONLY sanctioned writer of `base_ok_sha` — there is no `--base-ok-sha` flag at `set`/`add-row`
+    # (PREFLIGHT_OWNED). `base-preflight.py check` calls this on a real `proceed`; nothing else records it.
+    b = sub.add_parser("base-ok", help="record a base-preflight `proceed` for the row's current head "
+                                       "(base_ok_sha) — the precondition `verdict` enforces; written only by "
+                                       "base-preflight.py on a real proceed, never hand-set")
+    b.add_argument("--pr", required=True, help="PR number (row key)")
+    b.add_argument("--head-sha", dest="head_sha", required=True,
+                   help="the head the `proceed` was decided for — must equal the row's head_sha, or the "
+                        "stamp describes a base check for content that is not the live tip and is refused")
+
     d = sub.add_parser("dispatch-check", help="may campaign ACT on this PR? run before every action that "
                                               f"MUTATES a PR; exits {EXIT_STOP} when the row is HELD")
     d.add_argument("--pr", required=True, help="PR number (row key)")
@@ -1284,6 +1391,7 @@ def main(argv: list[str]) -> int:
     path = Path(args.file)
     handlers = {
         "header": cmd_header, "add-row": cmd_add_row, "set": cmd_set, "verdict": cmd_verdict,
+        "base-ok": cmd_base_ok,
         "get": cmd_get, "list": cmd_list, "table": cmd_table,
         "dispatch-check": cmd_dispatch_check, "park": cmd_park, "unpark": cmd_unpark,
         "watchdog": cmd_watchdog,
