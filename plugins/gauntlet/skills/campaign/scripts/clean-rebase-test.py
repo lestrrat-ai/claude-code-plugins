@@ -127,6 +127,10 @@ class Scenario:
         _ledger("--file", str(self.ledger), "add-row", "--pr", PR_NUMBER, "--branch", PR_BRANCH,
                 "--head-sha", self.orig_head, "--worktree", str(self.wt), "--tier", "STANDARD",
                 "--status", status)
+        # `verdict` refuses unless a base-preflight `proceed` is on record for this head
+        # (base_ok_sha == head_sha); stamp it first, as the real flow does (base-preflight.py -> base-ok).
+        if reviews_ok:
+            _ledger("--file", str(self.ledger), "base-ok", "--pr", PR_NUMBER, "--head-sha", self.orig_head)
         for _ in range(reviews_ok):
             _ledger("--file", str(self.ledger), "verdict", "--pr", PR_NUMBER,
                     "--head-sha", self.orig_head, "--verdict", "satisfied")
