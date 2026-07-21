@@ -170,16 +170,20 @@ def flag_of(field: str) -> str:
     return "--" + field.replace("_", "-")
 
 
-# Fields a caller may EDIT after the fact — the PROSE of the claim a later run may legitimately sharpen.
-# `provenance` is deliberately ABSENT (it records what happened, not an opinion to revise), and so are
-# `state`/`recorded`/`evidence`/`decided`/`promoted` — records of the lifecycle, not settable strings.
+# Fields a caller may EDIT after the fact — the PROSE of the claim a later run may legitimately sharpen
+# WHILE THE ENTRY IS UNRULED. A durable USER ruling (a `revoke`, or the user's `promote`/`decided`) FREEZES
+# ALL of these: `set` refuses to touch ANY of them on a ruled entry, so a driver `set` cannot rewrite what
+# the user ruled on — the tier the user consented to rested on the `justification`, and a revoked record is
+# KEPT for audit. `provenance` is deliberately ABSENT (it records what happened, not an opinion to revise),
+# and so are `state`/`recorded`/`evidence`/`decided`/`promoted` — records of the lifecycle, not settable
+# strings. This exhausts the settable content: `INTAKE["set"]` wires exactly these flags and nothing else.
 EDITABLE = ("claim", "justification", "anchor", "falsifiability")
 
-# The subset of the content that DEFINES the class — the pair `record` and the twin guards match on. A
-# durable USER ruling (a `revoke`, or the user's `promote`/`decided`) FREEZES these on that entry: editing
-# them through `set` would move a retired or consented learning off the very identity the ruling was made
-# about, laundering a driver step into an undo of the user's call. The class-protection invariants
-# (revoked-twin refusal, promote consent, one live per class) hold at EVERY write door only because of it.
+# The subset of the content that DEFINES the class — the pair `record` and the twin guards match on. The
+# class-protection invariants (revoked-twin refusal, promote consent, one live per class) key on THIS pair.
+# The ruling-freeze (in `cmd_set`) covers all of EDITABLE, so editing `claim`/`anchor` on a ruled entry is
+# refused by that freeze before the twin check is ever reached — this pair is the class identity, not the
+# freeze key.
 CLASS_FIELDS = ("claim", "anchor")
 
 # --- intake: EVERY value the CLI takes IN (owned here, once) -------------------
@@ -456,12 +460,15 @@ def cmd_set(path: Path, args: argparse.Namespace) -> int:
             fail(f"no learning {args.id}")
         if not updates:
             fail(f"set requires at least one --<field> <value>; editable: {', '.join(EDITABLE)}")
-        # A durable USER ruling FREEZES the class-defining fields. Editing the `claim`/`anchor` of a
-        # revoked entry would walk a retired class back onto a new identity (undoing the revoke); editing
-        # them on a promoted/consented entry would rewrite what the user agreed to while keeping the
-        # consent stamp. Either is a driver `set` laundering the user's ruling — refuse, naming id+state.
-        touched = [f for f in CLASS_FIELDS if f in updates]
-        if touched:
+        # A durable USER ruling FREEZES the entry's WHOLE editable content, not just its class-defining
+        # pair. On a revoked entry any edit would alter what the user retired; on a promoted/consented entry
+        # it would rewrite what the user agreed to while keeping the consent stamp — and the tier was
+        # consented to on the strength of the `justification`, so leaving `justification`/`falsifiability`
+        # editable would let a driver `set` change the very reasoning the ruling rested on. So refuse ANY
+        # editable field on a ruled entry, naming id+state. A genuine post-ruling change is a fresh USER
+        # ruling, never a driver `set`.
+        edited = [f for f in EDITABLE if f in updates]
+        if edited:
             frozen_by = None
             if entry["state"] == "revoked":
                 frozen_by = "is revoked — a USER ruling, KEPT for audit"
@@ -470,15 +477,17 @@ def cmd_set(path: Path, args: argparse.Namespace) -> int:
             elif not is_blank(entry["decided"]):
                 frozen_by = "carries the USER's `decided` ruling"
             if frozen_by is not None:
-                fail(f"{args.id} {frozen_by}; its {' and '.join(touched)} define the class the ruling was "
-                     f"made about and are FROZEN. Edit its other prose, or ask the user. Nothing changed.")
+                fail(f"{args.id} {frozen_by}; its {', '.join(edited)} are what the ruling was made about "
+                     f"and are FROZEN. Ask the user for a fresh ruling. Nothing changed.")
         # `set` must enforce the SAME one-live-per-class invariant `record` does, at THIS door too: editing
         # an entry's claim+anchor onto ANY OTHER entry's pair — active, stale, or revoked — leaves two
         # records of one class, no two of which may ever share a claim+anchor. A revoked twin is the sharper
         # case (it silently resurrects a class the USER retired, under a fresh id), so it keeps its own
         # message; any active/stale twin splits one class across two ids and lets the driver consult the
-        # wrong copy. Either way, refuse before writing. (An entry that is itself revoked cannot reach here
-        # with a claim/anchor edit: the freeze above already refused it.)
+        # wrong copy. Either way, refuse before writing. (A RULED entry cannot reach here with a claim/anchor
+        # edit at all: the freeze above already refused ANY editable field on it — so this door only ever
+        # sees a claim/anchor edit on an UNRULED entry, and the twin key is just the class-defining pair.)
+        touched = [f for f in CLASS_FIELDS if f in updates]
         if touched:
             proposed_claim = updates.get("claim", entry["claim"])
             proposed_anchor = updates.get("anchor", entry["anchor"])

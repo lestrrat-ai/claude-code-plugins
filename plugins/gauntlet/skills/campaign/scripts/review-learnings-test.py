@@ -44,7 +44,6 @@ check = ledger_test.check
 # The accessor under test, and its schema constants bound as locals for the fixtures.
 SCRIPT = HERE / "review-learnings.py"
 A = _load("review_learnings_owner_for_test", "review-learnings.py")
-CLASS_FIELDS = A.CLASS_FIELDS
 DEFAULTS, EDITABLE, ENTRY_TYPE, FIELDS, INITIAL = A.DEFAULTS, A.EDITABLE, A.ENTRY_TYPE, A.FIELDS, A.INITIAL
 INTAKE, PLACEHOLDER, REQUIRED, SEQ_TYPE, STATES = A.INTAKE, A.PLACEHOLDER, A.REQUIRED, A.SEQ_TYPE, A.STATES
 TABLE_ALL_HIDDEN_MARKER, TABLE_EMPTY_MARKER = A.TABLE_ALL_HIDDEN_MARKER, A.TABLE_EMPTY_MARKER
@@ -329,37 +328,35 @@ def t_record_is_one_live_per_class(tmp: Path) -> None:
 
 
 def t_set_cannot_launder_a_ruling(tmp: Path) -> None:
-    """`set` cannot edit the class-defining `claim`/`anchor` of a learning under a durable USER ruling —
-    a revoked one, or a promoted/consented one — so no driver `set` walks a ruling off its identity.
+    """`set` cannot edit ANY field of a learning under a durable USER ruling — a revoked one, or a
+    promoted/consented one — so no driver `set` rewrites what the user ruled on.
 
     Without the freeze, `set --anchor other` on a revoked entry moves the retired class onto a new pair,
-    silently undoing the revoke; on a promoted entry it rewrites what the user consented to while keeping
-    the consent stamp. Only the non-class PROSE stays editable. The revoke also HOLDS across a set attempt:
-    the class the user retired can still not be re-recorded.
+    silently undoing the revoke; `set --justification` rewrites the reasoning the ruling rested on (the tier
+    the user consented to depended on it); on a promoted entry either rewrites what the user consented to
+    while keeping the consent stamp. A ruling freezes the entry's WHOLE editable content — every EDITABLE
+    field — and a genuine post-ruling change is a fresh USER ruling, not a driver `set`. The revoke also
+    HOLDS across a set attempt: the class the user retired can still not be re-recorded.
     """
-    # revoked: claim+anchor frozen, other prose still editable.
+    # revoked: every editable field is frozen — claim, anchor, and the prose alike.
     rpath = tmp / "sr.jsonl"
     (a,) = seed(rpath)                     # rl1: claim-0/anchor-0
     drive_to(rpath, a, "revoked")
-    for field in CLASS_FIELDS:
+    for field in EDITABLE:
         code, _, err = run(["--file", str(rpath), "set", "--id", a, A.flag_of(field), "moved"])
         check(code == 1, f"set --{field} on a revoked entry was ACCEPTED (exit {code}): {err!r}")
         check(a in err and "revoked" in err, f"the refusal does not name id+state: {err!r}")
-    code, _, err = run(["--file", str(rpath), "set", "--id", a, "--justification", "clearer wording"])
-    check(code == 0, f"set of a NON-class field on a revoked entry was refused: {err!r}")
     # the revoke HOLDS: the class still cannot be re-recorded after the frozen set attempts.
     code, _, err = run(["--file", str(rpath), *record_argv(0)])
     check(code == 1 and a in err, f"the revoke did not hold after a set attempt: {err!r}")
-    # promoted/consented: claim+anchor frozen, other prose still editable.
+    # promoted/consented: every editable field is frozen too.
     ppath = tmp / "sp.jsonl"
     (b,) = seed(ppath)
     run(["--file", str(ppath), "promote", "--id", b, "--tier", "repo"])   # active, promoted + decided
-    for field in CLASS_FIELDS:
+    for field in EDITABLE:
         code, _, err = run(["--file", str(ppath), "set", "--id", b, A.flag_of(field), "moved"])
         check(code == 1, f"set --{field} on a promoted entry was ACCEPTED (exit {code}): {err!r}")
         check(b in err, f"the refusal does not name the promoted id {b!r}: {err!r}")
-    code, _, err = run(["--file", str(ppath), "set", "--id", b, "--falsifiability", "narrower condition"])
-    check(code == 0, f"set of a NON-class field on a promoted entry was refused: {err!r}")
 
 
 def t_set_cannot_forge_a_revoked_twin(tmp: Path) -> None:
@@ -635,7 +632,7 @@ def t_concurrent_writers_lose_nothing(tmp: Path) -> None:
 def t_write_is_atomic_and_private(tmp: Path) -> None:
     """A failed replacement leaves the old store intact; a successful one keeps the store private (0600)."""
     # A plain ACTIVE learning under no ruling — `set --claim` edits its prose, so this exercises the
-    # atomic-replace path (a ruled entry would freeze claim+anchor and never reach the write).
+    # atomic-replace path (a ruled entry would freeze its whole content and never reach the write).
     path = write_lines(tmp / "atomic.jsonl", entry_line(id="rl1", promoted=PLACEHOLDER, decided=PLACEHOLDER))
     path.chmod(0o644)
     before = path.read_bytes()
@@ -748,7 +745,7 @@ CASES = [
     ("promote-tier-validated", "promotion names a real tier and keeps the learning locally consulted", t_promote_tier_is_validated),
     ("record-refuses-revoked-twin", "record refuses to resurrect a user-REVOKED class — same claim+anchor", t_record_refuses_revoked_twin),
     ("record-one-live-per-class", "record refuses an active OR stale twin — one live record per class", t_record_is_one_live_per_class),
-    ("set-cannot-launder-a-ruling", "set cannot edit claim/anchor under a revoke or a promote — no laundering", t_set_cannot_launder_a_ruling),
+    ("set-cannot-launder-a-ruling", "set cannot edit ANY field under a revoke or a promote — no laundering", t_set_cannot_launder_a_ruling),
     ("set-cannot-forge-revoked-twin", "set cannot edit an active entry onto a revoked class's claim+anchor", t_set_cannot_forge_a_revoked_twin),
     ("set-one-live-per-class", "set cannot edit onto an active OR stale entry's class — one live per class", t_set_is_one_live_per_class),
     ("promote-is-monotone", "promote only widens reach — a demoting --tier is refused, nothing moves", t_promote_is_monotone),

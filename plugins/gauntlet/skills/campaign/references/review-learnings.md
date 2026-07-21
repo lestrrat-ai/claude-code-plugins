@@ -101,9 +101,11 @@ because only the user un-retires a class; an `active`/`stale` twin because the c
 `set` enforces the SAME one-live invariant: it refuses to edit an entry **onto** ANY other entry's
 `claim`+`anchor` — active, stale, or revoked — so no `set` leaves two records of one class (editing onto a
 `revoked` class's pair is the sharper case: it would resurrect what the user retired). And a durable **user
-ruling FREEZES the class-defining `claim`+`anchor`**: `set` refuses to edit them on a `revoked` or a
-`promote`d/`decided` entry — so a driver `set` can neither split a class nor launder/undo a
-`revoke`/`promote`. Only the entry's other prose stays editable.
+ruling FREEZES ALL of a ruled entry's content** (`claim`, `anchor`, `justification`, `falsifiability`): on a
+`revoked` or a `promote`d/`decided` entry, `set` refuses to edit ANY of them — the tier the user consented
+to rested on the `justification`, and a revoked record is KEPT for audit — so a driver `set` can neither
+split a class nor rewrite what the user ruled on. Only a fresh **user ruling** changes a ruled learning;
+`claim`+`anchor` additionally define the class the twin guard matches on.
 
 Recording a learning **NEVER discharges a finding.** It is written only **after** a finding is already
 settled — refuted-and-dropped, or demoted at a review-loop cap — and its `provenance` names that settled
@@ -115,17 +117,23 @@ event. This store is a **memory of decisions the gate already made**, never a sh
 A store that could tell a reviewer "do NOT raise class X" would be a way to **BLIND THE GATE**: it could
 suppress a real defect in a *different* PR's code the reviewer never independently examined. So:
 
-- **Driver-facing consultation ONLY.** A learning is consulted at exactly two driver decision points, both
-  of which are re-submitted TO the gate:
+- **Driver-facing consultation ONLY.** A learning is consulted at exactly two driver decision points:
   1. **Authoring a new PR's intent Non-goals** (`pr-adoption.md` step 3a) — the authored Non-goal is
-     git-ignored intent a **fresh reviewer reads and may attack**; a wrong one only narrows *that* review,
-     which is a disclosed cost the intent block already carries.
+     git-ignored intent that is passed to the reviewer VERBATIM and **BINDS** it: a finding that attacks a
+     declared Non-goal **cannot gate** (`stage-2-review-gate.md`, "NON-GOALS BIND THE REVIEWER"). The
+     reviewer therefore does **NOT** re-judge a Non-goal — so a wrong one is **not caught** by it, it
+     **silently NARROWS** that review.
   2. **The finding audit's non-dispositional precedent** (`finding-audit.md`) — a matching learning is
      prior art the audit may **cite**; it does **not** discharge a CONFIRMED finding.
-- **No reviewer-facing injection.** A learning is **never** placed in a review pass's prompt to make a
-  reviewer stand down. A demotion stays safe only because the Non-goal it produces is **submitted TO the
-  gate**, re-judged by a fresh reviewer, never held against it. (A mechanically-enforced reviewer-facing
-  binding is a **separate** question and is **not** built here.)
+- **The reviewer is NOT the backstop — the DRIVER and the USER are.** Because a Non-goal BINDS the reviewer
+  rather than being re-judged by it, the safety cannot rest on a fresh reviewer catching a wrong demotion.
+  It rests entirely on: the driver's **relevance** check (the learning must actually apply to THIS PR's
+  anchor), the **never-suppress-a-real-guarantee** rule and the **falsifiability** condition (both below),
+  and the user-facing **`authored`-intent disclosure** in the final report — the driver names an `authored`
+  intent block as such (`stage-2-review-gate.md`), so the USER sees it and can overrule a wrong Non-goal. A
+  learning is **never** injected into a review pass's prompt to make a reviewer stand down; the point is
+  that even the Non-goal it produces is bound, not re-reviewed, so the demotion must be made safe
+  DRIVER-side, before it is ever authored.
 - **Never-suppress classes.** A learning may record only an **accepted residual**. It may **never** be
   recorded for a real-guarantee class — fail-closed on malformed input, a **non-owner's** destructive op,
   a false public `gauntlet-accepted` / an under-reviewed stricter tier, or **inaccurate agent-consumed
@@ -138,7 +146,8 @@ suppress a real defect in a *different* PR's code the reviewer never independent
 - **No auto-promotion.** The gauntlet-local learning is the **only** autonomous tier; every promotion
   beyond it is the user's explicit consent (below).
 
-Because a learning only ever feeds the driver's own, always-re-reviewed decision, this store is **not gate
+Because a learning only ever feeds the driver's own decision — one whose backstop is the DRIVER's
+never-suppress discipline plus the USER, not a reviewer re-judging it — this store is **not gate
 machinery**. It cannot raise a verdict, count one, or merge anything.
 
 ### Tiering by NATURE, and the promotion path — always the user's consent
@@ -171,7 +180,8 @@ promotion only **widens** its reach.
 is an immaterial accepted residual — by binding it to a declared Non-goal or demoting it at the cap. **This
 store makes that decision durable ACROSS PRs and runs.** The two are complementary and share the same
 guardrails: neither discharges a CONFIRMED finding on the driver's authority, neither is reviewer-facing
-suppression, and both keep the fresh reviewer plus the user as the backstop. Do not duplicate or contradict
+suppression, and both rest on the driver's own never-suppress-a-real-guarantee discipline plus the user —
+not on a reviewer re-judging the demotion, which a bound Non-goal is not. Do not duplicate or contradict
 that owner; a learning is only ever the **memory** of a settlement it already made.
 
 ---
