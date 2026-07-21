@@ -138,21 +138,34 @@ def _validate_ref(root: Path, value: str, role: str) -> None:
 
 
 def _validate_state(header: dict, row: dict, pr: str, root: Path, view: dict,
-                    *, check_live_refs: bool = True, check_cleanup_ownership: bool = True) -> None:
-    # Two INDEPENDENT relaxations, both defaulting to the FULL validation every cleanup-performing caller
-    # needs. A caller drops a relaxation ONLY when the path it guards does not use what that relaxation
-    # checks; the ledger-only CLOSED close-out and its aborted-repeat drop BOTH (they merge nothing and
-    # clean nothing), every other caller keeps both.
-    #   * `check_live_refs=False` drops the live head/base/branch equality pins below — the checks a MERGE
-    #     needs to land on the exact reviewed tip. A head push or base/branch rename before a CLOSED
-    #     close-out is irrelevant to a row that only records terminal `aborted`.
-    #   * `check_cleanup_ownership=False` drops the cleanup-ownership fields (`worktree`, `worktree_owned`,
-    #     `branch_owned`). The close-out performs NO local cleanup, so it must not require them resolved: a
-    #     HALF-ADOPTED row (pr-adopt.py registers the ledger row BEFORE it resolves the worktree, so its
-    #     documented git-failure path leaves those three at their ROW_DEFAULTS "-") that is then CLOSED on
-    #     GitHub must still TERMINATE, not wedge non-terminal forever — a CLOSED PR never re-enters the
-    #     open snapshot to be re-gated, so a refusal here re-routes the finalizer to the same failing
-    #     call every heartbeat. Every cleanup-performing caller keeps these (the default).
+                    *, check_live_refs: bool = True, require_resolved_ownership: bool = True,
+                    require_own_label: bool = True) -> None:
+    # Validation is SCOPED BY PATH, because the finalize reaches this from paths that do very different
+    # things. The three relaxations below default to the FULL validation the ONE merge-INITIATING path needs
+    # (a live OPEN state on an in_review row: it starts a merge, then cleans up its owned resources). Every
+    # OTHER path only FINALIZES an already-decided outcome — an external MERGE, a CLOSE, or a terminal repeat
+    # — so it merges nothing and requires only what its terminal write / owned cleanup actually touches. A
+    # relaxation is dropped ONLY on a path that does not use what it checks. The DESTRUCTIVE-OP guard below
+    # (an owned resource's identity) is NOT one of these relaxations: it runs on EVERY path whenever a
+    # resource is owned (`_owned=="yes"`), because that is exactly when `_cleanup` removes it — the guard
+    # between a bug and a destroyed worktree is never relaxed.
+    #   * `check_live_refs=False` drops the live head/base/branch equality pins — the checks a MERGE needs to
+    #     land on the exact reviewed tip, and the head pin a MERGED-resume keeps to confirm OUR reviewed head
+    #     is what landed. Only the CLOSED terminal paths drop it: a push or a base/branch rename before a
+    #     CLOSE is irrelevant to a row that only records terminal `aborted`, and a CLOSED PR never re-enters
+    #     the open snapshot to have its head_sha refreshed, so pinning it there would wedge the row forever.
+    #   * `require_resolved_ownership=False` drops the fail-closed that BOTH ownership fields are RESOLVED
+    #     (∈{yes,no}). That fail-closed is a MERGE-INITIATING sanity gate: a HALF-ADOPTION (pr-adopt.py
+    #     registers the ledger row BEFORE it resolves the worktree, so its documented git-failure path leaves
+    #     `worktree`/`worktree_owned`/`branch_owned` at their ROW_DEFAULTS "-") must never MERGE. A
+    #     finalize-only path merges nothing; an unresolved field there just means this run owns NOTHING to
+    #     clean, so the row must still TERMINATE, not wedge — the destructive guard already protects every
+    #     owned removal, so a half-adopted PR that is later CLOSED or externally MERGED still finalizes.
+    #   * `require_own_label=False` drops the requirement that the PR still carries THIS run's own label. A
+    #     half-adoption fails before `gh pr edit` attaches it, so a half-adopted PR that is later CLOSED or
+    #     externally MERGED carries no run label; requiring it on those finalize-only paths would wedge the
+    #     row forever. The FOREIGN-label refusal below is NEVER relaxed on any path — it is the real
+    #     run-isolation guard — so dropping own-label presence never lets a finalize act on another run's PR.
     if row.get("pr") != pr:
         raise Refusal(f"ledger row belongs to PR {row.get('pr')}, not PR {pr}")
     if not pr.isdecimal() or int(pr) < 1:
@@ -172,15 +185,13 @@ def _validate_state(header: dict, row: dict, pr: str, root: Path, view: dict,
         raise Refusal(f"ledger reviews_ok {row.get('reviews_ok')!r} is malformed")
     if row.get("ci") not in ("green", "red", "pending"):
         raise Refusal(f"ledger ci {row.get('ci')!r} is malformed")
-    if check_cleanup_ownership:
+    if require_resolved_ownership:
         if row.get("worktree_owned") not in ("yes", "no"):
             raise Refusal(f"ledger worktree_owned {row.get('worktree_owned')!r} is unresolved")
         if row.get("branch_owned") not in ("yes", "no"):
             raise Refusal(f"ledger branch_owned {row.get('branch_owned')!r} is unresolved")
-        if row["branch_owned"] == "yes" and row["worktree_owned"] != "yes":
-            raise Refusal("branch_owned=yes with worktree_owned=no is not an adoption-produced ownership state")
-        if not Path(row.get("worktree", "")).is_absolute():
-            raise Refusal("ledger worktree must be an absolute path")
+    if row.get("branch_owned") == "yes" and row.get("worktree_owned") != "yes":
+        raise Refusal("branch_owned=yes with worktree_owned=no is not an adoption-produced ownership state")
     if check_live_refs:
         if view["headRefOid"] != row["head_sha"]:
             raise Refusal(
@@ -194,13 +205,22 @@ def _validate_state(header: dict, row: dict, pr: str, root: Path, view: dict,
     labels = _labels(view)
     ours = f"{RUN_LABEL_PREFIX}{run_id}"
     run_labels = [name for name in labels if name.startswith(RUN_LABEL_PREFIX)]
-    if ours not in run_labels:
-        raise Refusal(f"PR {pr} does not carry this run's owner label {ours}")
+    # The FOREIGN-label refusal comes FIRST and is never relaxed — it is the run-isolation guard, and must
+    # fire even on a path where this run's OWN label presence is not required.
     foreign = [name for name in run_labels if name != ours]
     if foreign:
         raise Refusal(f"PR {pr} also carries another run's owner label {foreign[0]}")
-    if check_cleanup_ownership and row["worktree_owned"] == "yes":
-        worktree = Path(row["worktree"])
+    if require_own_label and ours not in run_labels:
+        raise Refusal(f"PR {pr} does not carry this run's owner label {ours}")
+    # DESTRUCTIVE-OP guard — UNCONDITIONAL, never gated on a relaxation flag. Whenever a resource is OWNED,
+    # `_cleanup` will remove it, so its identity must be exactly the repository-derived campaign resource. A
+    # half-adoption leaves `worktree_owned` at "-" (this guard skips it — nothing is owned to remove); an
+    # adopted row that owns the worktree must have it resolved to `<root>/.worktrees/<branch>`, never the
+    # repository root.
+    if row.get("worktree_owned") == "yes":
+        worktree = Path(row.get("worktree", ""))
+        if not worktree.is_absolute():
+            raise Refusal("owned worktree must be an absolute path")
         expected = root / ".worktrees" / branch
         if os.path.normpath(str(worktree)) != os.path.normpath(str(expected)):
             raise Refusal(
@@ -385,32 +405,32 @@ def execute(ledger: Path, pr: str, project_root: Path, repo: str,
         raise Refusal(f"no ledger row for PR {pr}")
     view = _view(pr, repo, root)
 
-    # CLOSED WITHOUT MERGING — the terminal close-out, the CLOSED side of the absent-row finalizer
-    # loop-control.md Step 4 routes here (a human closed the PR, or the driver died after `gh pr close`).
-    # There is NOTHING to merge and NOTHING to clean up: the branch content never reached `<base>`, so an
-    # owned worktree/branch holds UNMERGED work that removing it would destroy. This close-out is
-    # ledger-only, so NEITHER the live head/base/branch pins (`check_live_refs=False`) NOR the
-    # cleanup-ownership fields (`check_cleanup_ownership=False`) apply to it: a push that advanced the head
-    # before the close, a base/branch rename, OR a HALF-ADOPTED row whose worktree/ownership fields never
-    # resolved must still TERMINATE the row, not wedge it non-terminal forever (a CLOSED PR never re-enters
-    # the open snapshot to be re-gated, so a refusal here re-routes the finalizer to the same failure). ANY
-    # non-terminal row — `in_review` OR any held status (`L.HELD_STATUSES`) — is a real close-out: a CLOSED
-    # PR moots every held reason (nothing left to merge, approve, adjudicate, or repair), and a human
-    # closing a parked PR IS the resolution. Only a `merged` row with a CLOSED live state is a contradiction
-    # (a merged PR reports MERGED, not CLOSED), left to the fully-validated status gate below. Record the
-    # terminal `aborted` status (files-and-ledger.md, `status` taxonomy: any non-terminal status -> `aborted`)
-    # and stop.
+    # Classify the finalize PATH before validating — the tier the validation runs at depends on it.
+    #   * close_out: the CLOSED side of the absent-row finalizer (loop-control.md Step 4) — a human closed
+    #     the PR, or the driver died after `gh pr close`. There is NOTHING to merge and NOTHING to clean up:
+    #     the branch content never reached `<base>`, so an owned worktree/branch holds UNMERGED work that
+    #     removing it would destroy. ANY non-terminal row — `in_review` OR any held status
+    #     (`L.HELD_STATUSES`) — is a real close-out: a CLOSED PR moots every held reason, and a human closing
+    #     a parked PR IS the resolution. Only a `merged` row with a CLOSED live state is a contradiction (a
+    #     merged PR reports MERGED, not CLOSED), left to the terminal status gate below.
+    #   * aborted_repeat: an already-`aborted` row whose PR is still CLOSED — the terminal-repeat no-op,
+    #     symmetric with the `merged`-repeat below.
+    #   Both are LEDGER-ONLY (record `aborted`/no-op, merge and clean nothing), so both drop the live
+    #   head/base/branch pins (`check_live_refs=False`): a push or base/branch rename before the CLOSE must
+    #   not wedge a settled row, and a CLOSED PR never re-enters the open snapshot to be re-gated.
     close_out = view["state"] == "CLOSED" and row["status"] not in ("merged", "aborted")
-    # An already-`aborted` row whose PR is still CLOSED is the aborted TERMINAL-REPEAT, symmetric with the
-    # `merged`-repeat no-op below: like the fresh close-out it is ledger-only (nothing to merge or clean up),
-    # so it too drops BOTH the live head/base/branch pins and the cleanup-ownership fields — a push or
-    # base/branch rename that landed before the close, or an unresolved half-adoption worktree, must not
-    # turn a settled no-op into a spurious refusal. The `aborted` block below is its CLOSED-only guard; a
-    # live OPEN/MERGED keeps the full validation (its refusal is a contradiction, not a no-op).
     aborted_repeat = row["status"] == "aborted" and view["state"] == "CLOSED"
-    relaxed = close_out or aborted_repeat
+    ledger_only = close_out or aborted_repeat
+    # merge_initiating is the ONE path that STARTS a merge — a live OPEN state on an in_review row. It is the
+    # only path that requires the full merge-tip pins, RESOLVED ownership, and this run's OWN-label presence:
+    # a half-adoption (unresolved ownership, no own label yet) must never be merged. Every other path only
+    # finalizes an already-decided outcome (an external MERGE, a CLOSE, or a terminal repeat), so it merges
+    # nothing and tolerates a half-adoption (which then owns nothing to clean) rather than wedging it.
+    merge_initiating = view["state"] == "OPEN" and row["status"] == "in_review"
     _validate_state(header, row, pr, root, view,
-                    check_live_refs=not relaxed, check_cleanup_ownership=not relaxed)
+                    check_live_refs=not ledger_only,
+                    require_resolved_ownership=merge_initiating,
+                    require_own_label=merge_initiating)
     if close_out:
         _mark_terminal(ledger, pr, "aborted")
         return {"status": "closed-unmerged", "pr": pr, "cleanup": {}}
@@ -430,12 +450,24 @@ def execute(ledger: Path, pr: str, project_root: Path, repo: str,
             raise Refusal(
                 f"terminal ledger row says merged but GitHub state is {view['state']!r}")
         return {"status": "already-complete", "pr": pr, "cleanup": {}}
-    if row["status"] != "in_review":
+
+    # Only NONTERMINAL rows (in_review or a held status) remain. Classify by the LIVE state, not the row
+    # status, so an EXTERNAL merge finalizes the landed work regardless of a held row.
+    if view["state"] == "MERGED":
+        # A maintainer merged the exact reviewed head while this row was still nonterminal — in_review OR
+        # held (`L.HELD_STATUSES`). The full ownership validation above confirmed our reviewed head/base/
+        # branch on our owned resources, so the work LANDED: fall through to resume the owed base-sync /
+        # owned cleanup / terminal write. This is the ONLY way a held row proceeds; the campaign still never
+        # INITIATES a merge on a held (or OPEN) PR — that stays refused just below.
+        pass
+    elif row["status"] != "in_review":
+        # A nonterminal, non-MERGED row that is not in_review is HELD (or malformed). The campaign must
+        # never INITIATE a merge on it. (CLOSED already closed out above; a live-MERGED held row already
+        # resumed above — only a live OPEN held row reaches here.)
         if row["status"] in L.HELD_STATUSES:
             raise Refusal(f"PR {pr} is held ({row['status']})")
         raise Refusal(f"PR {pr} row status is {row['status']!r}, not in_review")
-
-    if view["state"] == "OPEN":
+    elif view["state"] == "OPEN":
         _require_ready(row, header, view)
         # --match-head-commit pins the merge to the exact reviewed SHA. If a push advanced the live tip
         # in the window between the pre-merge view and this call, GitHub refuses fail-closed rather than
@@ -453,8 +485,8 @@ def execute(ledger: Path, pr: str, project_root: Path, repo: str,
             raise Refusal(
                 f"merge command returned success but PR {pr} state is {confirmed['state']!r}, not MERGED")
         view = confirmed
-    elif view["state"] != "MERGED":
-        # CLOSED was already finalized by the close-out above; only OPEN and MERGED remain live here.
+    else:
+        # in_review but the live state is neither OPEN nor MERGED (CLOSED already finalized above).
         raise Refusal(f"PR {pr} state is {view['state']!r}; expected OPEN, MERGED, or CLOSED")
 
     # MERGED is confirmed before any local ref or worktree is changed. Each following phase is idempotent.
