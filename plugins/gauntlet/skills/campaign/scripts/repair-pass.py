@@ -368,12 +368,12 @@ def select_active_rounds(rundir: Path, pr: str,
     if actual != list(range(1, len(actual) + 1)):
         missing = sorted(set(range(1, max(actual) + 1)) - set(attempts))
         fail(f"review history for pr {pr} has artifact passes {actual}; passes {missing} are missing — "
-             f"every dispatched pass leaves its artifact set in the run directory, so a hole is lost "
-             f"history no bundle can rebuild")
+             f"a hole is lost history no bundle can rebuild; park the PR for the user with this reason "
+             f"(machine blocker), never hand-edit the ledger or artifacts")
     if len(actual) < expected_rounds:
         fail(f"the ledger counts {expected_rounds} landed review rounds for pr {pr} but only "
-             f"{len(actual)} artifact passes exist — landed history is missing, and a bundle built from "
-             f"partial history would misinform the reassessment")
+             f"{len(actual)} artifact passes exist — landed history is missing; park the PR for the "
+             f"user with this reason (machine blocker), never hand-edit the ledger or artifacts")
     active = {round_no: (max(attempts[round_no]), attempts[round_no][max(attempts[round_no])])
               for round_no in actual}
     if len(actual) == expected_rounds:
@@ -390,7 +390,9 @@ def select_active_rounds(rundir: Path, pr: str,
             result = RP.parse_report(progress)
         except RP.Defect as exc:
             fail(f"pr {pr} has {len(actual)} artifact passes but the ledger counts only {expected_rounds} "
-                 f"landed rounds, and pass {round_no}'s active report cannot arbitrate the surplus: {exc}")
+                 f"landed rounds, and pass {round_no}'s active report cannot arbitrate the surplus: {exc}; "
+                 f"relaunch pass {round_no} as its next launch attempt so a parseable report can "
+                 f"arbitrate, or park the PR for the user if relaunch is exhausted")
         if result["verdict"] == RP.DEFERRED:
             verdictless.append({"round": round_no, "launch_attempt": attempt_no,
                                 "deferred_reason": result["deferred_reason"]})
@@ -399,7 +401,8 @@ def select_active_rounds(rundir: Path, pr: str,
     if len(landed) != expected_rounds:
         fail(f"pr {pr} has {len(landed)} artifact passes with landed verdicts ({landed}) but the ledger "
              f"counts {expected_rounds} review rounds — the ledger and the artifacts disagree about "
-             f"history, which no bundle rule can reconcile")
+             f"history, which no bundle rule can reconcile; park the PR for the user with this reason "
+             f"(machine blocker), never hand-edit the ledger or artifacts")
     if actual[-1] not in landed:
         fail(f"pr {pr}'s latest artifact pass {actual[-1]} is verdictless (DEFERRED) — a repair cap trips "
              f"only on a landed NOT SATISFIED, so the latest pass must be a landed round; relaunch pass "
@@ -412,12 +415,14 @@ def prior_cap_rounds(rundir: Path, pr: str) -> "set[int]":
     wrote.
 
     A cap round legitimately carries no finding audit: the NOT-SATISFIED action sequence skips it when
-    `ledger.py verdict` moves the row straight to `repairing`. The CURRENT cap round is always
-    `review_rounds` (`expected_rounds`). But `REPAIR_CAP` allows a SECOND cap, and once it is reached the
-    FIRST cap round is no longer the latest — yet its absent audit is still legitimate. Each earlier cap
-    wrote a validated `repair-<pr>-<k>.prompt.txt.manifest.json` naming rounds 1..R; that R is the cap
-    round, and reading it back is how a later bundle still recognises the earlier cap. Deriving from the
-    manifests the caps already wrote — rather than adding ledger state — is the sanctioned recovery.
+    `ledger.py verdict` moves the row straight to `repairing`. The CURRENT cap round is the HIGHEST
+    LANDED artifact pass — equal to `review_rounds` (`expected_rounds`) only when no verdictless pass
+    shifted the numbering. But `REPAIR_CAP` allows a SECOND cap, and once it is reached the FIRST cap
+    round is no longer the latest — yet its absent audit is still legitimate. Each earlier cap wrote a
+    validated `repair-<pr>-<k>.prompt.txt.manifest.json` naming its landed artifact passes; the highest
+    of those is that cap round, and reading it back is how a later bundle still recognises the earlier
+    cap. Deriving from the manifests the caps already wrote — rather than adding ledger state — is the
+    sanctioned recovery.
     """
     caps: "set[int]" = set()
     for manifest_file in rundir.glob("*.manifest.json"):
@@ -542,8 +547,8 @@ def collect_rounds(rundir: Path, pr: str, expected_rounds: int) -> "tuple[list[d
         else:
             # The NOT-SATISFIED action sequence intentionally skips its audit when `ledger.py verdict`
             # moves the row straight to `repairing`; EVERY such cap round therefore has a valid absent
-            # audit, not only the latest one. `cap_rounds` names them all — the current `review_rounds`
-            # plus every earlier cap recovered from its bundle manifest (F2).
+            # audit, not only the latest one. `cap_rounds` names them all — the current cap (the highest
+            # LANDED artifact pass) plus every earlier cap recovered from its bundle manifest (F2).
             audit_artifact = artifact(audit_file, "", present=False)
 
         rounds.append({

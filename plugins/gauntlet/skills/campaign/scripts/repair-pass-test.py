@@ -633,12 +633,15 @@ def t_bundle_refuses_unreconcilable_pass_histories(tmp: Path) -> None:
             + json.dumps({"type": "row", **case["row"], "review_rounds": rounds}) + "\n")
 
     # A surplus pass whose active attempt LANDED a verdict: ledger and artifacts disagree about history.
+    # A machine blocker — the refusal directs the driver to park the PR, never to hand-edit history.
     surplus = bundle_setup(tmp / "surplus", rounds=4)
     reledger(surplus, "3")
     code, _, err = run_bundle(surplus, surplus["rundir"] / "bundle.txt")
     check(code == 1 and "disagree about" in err, f"a landed surplus pass was not refused: {err!r}")
+    check("park the PR for the user" in err,
+          f"the landed-surplus refusal names no recovery action: {err!r}")
 
-    # A hole in the artifact pass numbering is lost history, never a skip.
+    # A hole in the artifact pass numbering is lost history, never a skip. Another machine blocker.
     hole = bundle_setup(tmp / "hole", rounds=4)
     for stale in hole["rundir"].glob("review-1-2.*"):
         stale.unlink()
@@ -646,6 +649,26 @@ def t_bundle_refuses_unreconcilable_pass_histories(tmp: Path) -> None:
     reledger(hole, "3")
     code, _, err = run_bundle(hole, hole["rundir"] / "bundle.txt")
     check(code == 1 and "missing" in err, f"a hole in pass numbering was not refused: {err!r}")
+    check("park the PR for the user" in err,
+          f"the hole refusal names no recovery action: {err!r}")
+
+    # FEWER contiguous artifact passes than the ledger's landed rounds: landed history is missing.
+    # Also a machine blocker — park, never hand-edit.
+    fewer = bundle_setup(tmp / "fewer", rounds=2)
+    reledger(fewer, "3")
+    code, _, err = run_bundle(fewer, fewer["rundir"] / "bundle.txt")
+    check(code == 1 and "landed history is missing" in err,
+          f"fewer artifact passes than landed rounds was not refused: {err!r}")
+    check("park the PR for the user" in err,
+          f"the fewer-artifacts refusal names no recovery action: {err!r}")
+
+    # NO review artifacts at all: the wrong --run-dir or lost history.
+    empty = bundle_setup(tmp / "empty")
+    for progress in empty["rundir"].glob("review-1-*.progress.jsonl"):
+        progress.unlink()
+    code, _, err = run_bundle(empty, empty["rundir"] / "bundle.txt")
+    check(code == 1 and "no review artifacts" in err,
+          f"an empty review history was not refused: {err!r}")
 
     # A verdictless LATEST pass cannot be the cap round: the cap trips only on a landed NOT SATISFIED.
     last = bundle_setup(tmp / "last", rounds=4)
@@ -654,13 +677,18 @@ def t_bundle_refuses_unreconcilable_pass_histories(tmp: Path) -> None:
     code, _, err = run_bundle(last, last["rundir"] / "bundle.txt")
     check(code == 1 and "latest artifact pass" in err,
           f"a verdictless latest pass was not refused: {err!r}")
+    check("relaunch pass 4" in err,
+          f"the verdictless-latest refusal names no recovery action: {err!r}")
 
-    # A surplus pass whose report parses to NOTHING cannot arbitrate the mismatch.
+    # A surplus pass whose report parses to NOTHING cannot arbitrate the mismatch. Recovery here is a
+    # relaunch of that pass so a parseable report can arbitrate — parking is only the fallback.
     torn = bundle_setup(tmp / "torn", rounds=4)
     (torn["rundir"] / "review-1-2.txt").write_text("no terminal verdict line, torn output\n")
     reledger(torn, "3")
     code, _, err = run_bundle(torn, torn["rundir"] / "bundle.txt")
     check(code == 1 and "cannot arbitrate" in err, f"a torn surplus report was not refused: {err!r}")
+    check("relaunch pass 2" in err,
+          f"the unparseable-surplus refusal names no recovery action: {err!r}")
 
 
 def t_bundle_is_deterministic_and_payloads_are_data(tmp: Path) -> None:
@@ -1280,7 +1308,7 @@ CASES = [
     ("repair-dispatch-gate", "a repair needs a recorded decision; ordinary work stays frozen", t_the_repair_dispatch_gate),
     ("bundle-order-active", "bundle orders rounds numerically and selects only the active relaunch", t_bundle_orders_rounds_and_selects_active_attempt),
     ("bundle-skips-deferred-pass", "a verdictless (DEFERRED) surplus pass is excluded, listed, and never wedges", t_bundle_skips_an_explicitly_deferred_pass),
-    ("bundle-pass-history-refusals", "every other pass-numbering drift is refused with the mismatch named", t_bundle_refuses_unreconcilable_pass_histories),
+    ("bundle-pass-history-refusals", "every other pass-numbering drift is refused with the mismatch and recovery named", t_bundle_refuses_unreconcilable_pass_histories),
     ("bundle-deterministic", "bundle bytes/hash are deterministic and hostile payloads stay data", t_bundle_is_deterministic_and_payloads_are_data),
     ("bundle-refusals", "missing, stale, and duplicate active inputs fail before output", t_bundle_refuses_missing_stale_and_duplicate_inputs),
     ("bundle-old-intent", "old intent anchors survive; the cap round may have no audit yet", t_bundle_preserves_findings_from_an_older_intent),
