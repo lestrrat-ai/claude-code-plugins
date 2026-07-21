@@ -116,8 +116,9 @@
   GitHub Copilot review items (the active host form of `gauntlet:copilot-address-reviews <pr>`), fix any CI failures (one at a time,
   prefer a scoped subagent), and rebase away any conflict with `<base>`. PR-content changes reset
   verdicts. Clean base-only rebase with unchanged PR diff keeps `reviews_ok`, sets `ci = pending`, and
-  moves `head_sha` — so writing the new head through `ledger.py … set --head-sha` makes the accessor
-  **reset the liveness counters** at the door (`stage-2-ci.md`, "THE LIVENESS COUNTERS"); never hand-reset.
+  moves `head_sha` — so writing the new head through `ledger.py … set --head-sha` fires the head-move
+  reset at the door (`files-and-ledger.md`, the `head_sha` field, "What a genuine head move resets");
+  never hand-reset.
   The clean case is EXECUTED by `scripts/clean-rebase.py run` (fetch/rebase/`--force-with-lease` push +
   that ledger reset); it **refuses anything not clean** — a conflict or a diff-changing rebase is
   aborted/reset and handed back at **exit 3**, where **both** subcases fall to the driver's JUDGMENT
@@ -179,9 +180,9 @@
   mirror the review gate", owns the two-direction split). Never defer the swap to the next heartbeat — that leaves the label lying
   until reconcile, and lying forever if the session dies first. A **clean base-only rebase** with an
   unchanged PR diff does NOT reset the gate, so it correctly KEEPS `gauntlet-accepted` — it sets
-  `ci = pending` and, because it moves `head_sha`, the accessor **resets the liveness counters** at that
-  head write (`stage-2-ci.md`,
-  "THE LIVENESS COUNTERS"). Per-heartbeat label reconcile is the self-healing backstop, never the mechanism
+  `ci = pending` and, because it moves `head_sha`, the accessor fires the head-move reset at that head
+  write (`files-and-ledger.md`, the `head_sha` field, "What a genuine head move resets"). Per-heartbeat
+  label reconcile is the self-healing backstop, never the mechanism
   (`stage-2-review-gate.md`, "Status labels mirror the review gate").
 - **YOUR OWN diagnosis is a claim too — REPRODUCE the failure before you "fix" working code.** The rule
   below audits a *reviewer's* finding. It binds **your own** with equal force, and that is where it keeps
@@ -373,8 +374,9 @@
 - Verdicts are pinned to reviewed PR content: any PR-content change (review fix / CI fix /
   judgment-path rebase — conflict-resolving or diff-changed / bot or manual PR-branch commit) makes prior verdicts stale. Base
   advancement with no conflict and unchanged PR diff does NOT invalidate verdicts; carry `reviews_ok`
-  forward, update `head_sha` through `ledger.py … set --head-sha` — which **resets the liveness counters**
-  at the door (`stage-2-ci.md`, "THE LIVENESS COUNTERS") — and require fresh CI.
+  forward, update `head_sha` through `ledger.py … set --head-sha` — which fires the head-move reset
+  at the door (`files-and-ledger.md`, the `head_sha` field, "What a genuine head move resets") — and
+  require fresh CI.
 - Resume vs. fresh run is decided by **liveness**, not by `state.jsonl` existing: live work → resume;
   a finished prior run → ask the user before a fresh run; `--new` → fresh run with
   carryover (Loop control step 1). A finished run must never silently exit "all done" or silently
@@ -412,8 +414,8 @@
   head resets the gate") — economy-class CI-fix, `session`-class CI-fix, review-fix, or **refutation commit** alike. In the SAME step: reset
   `reviews_ok` to 0 AND reconcile the label by running `label-mirror.py mirror` for the PR (it restores
   `gauntlet-reviewing` on a PR carrying `gauntlet-accepted`); the new commit
-  moves `head_sha`, so writing it through the accessor **resets the liveness counters** at the door
-  (`stage-2-ci.md`, "THE LIVENESS COUNTERS"); re-derive CI
+  moves `head_sha`, so writing it through the accessor fires the head-move reset at the door
+  (`files-and-ledger.md`, the `head_sha` field, "What a genuine head move resets"); re-derive CI
   for the new tip and watch it **only if `liveness` reports `watch_warranted`** (`stage-2-ci.md`, "WATCH
   ONLY WHAT CAN MOVE" — a watch launched on a tip whose checks have not registered yet has nothing to
   block on and exits in about a second), and re-enter Stage 2a. NEVER exempt a commit because it "only reformatted".

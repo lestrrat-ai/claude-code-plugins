@@ -4,9 +4,9 @@
 `stage-2-review-gate.md`'s precondition-rebase site and `stage-3-merge.md`'s step-6 reconcile both
 describe, in prose, the same mechanical act: when `<base>` has moved and the PR does not conflict, rebase
 the PR onto the new base, and — **only if the PR's own diff is unchanged** — carry `reviews_ok` forward,
-set `ci = pending`, and reset the liveness counters (the "clean base-only rebase" Exception in
-`stage-2-review-gate.md`, "Status labels mirror the review gate", is the SEMANTIC OWNER of that reset;
-this tool CITES it and never re-decides it). That is git fetch/rebase/push plus a ledger write, transcribed
+set `ci = pending`, and fire the head-move reset (`files-and-ledger.md`, the `head_sha` field,
+"What a genuine head move resets", is the CANONICAL OWNER of that reset; this tool CITES it and never
+re-decides it). That is git fetch/rebase/push plus a ledger write, transcribed
 by a model every heartbeat. This turns the CLEAN case into a command.
 
 **It does the CLEAN case and NOTHING else.** Conflict resolution is the driver's JUDGMENT and this tool
@@ -303,9 +303,20 @@ def run(args) -> int:
               "ledger_written": False, "reason": "ledger set failed after a successful push"})
         return EXIT_PARTIAL
 
+    # Echo the ACTUAL post-write ledger values, re-read from the row `set` just wrote — NEVER the fresh-head
+    # ROW_DEFAULTS. `apply_head_sha` voids `base_ok_sha` ONLY on a genuine head move; on a same-head no-op
+    # (the base did not advance, so `new_head == orig_head`) it resets nothing and `base_ok_sha` keeps its
+    # stamp — hardcoding the ROW_DEFAULTS reset here would make the echo LIE about that case. Reading the row
+    # reports whichever actually happened: a reset `-` on a real move, the retained stamp on a no-op. This
+    # keeps every reported field consistent with the stored row (the liveness counters, force-written to
+    # their defaults by the explicit flags above, read the same value either way).
+    _, written_rows = L.load(ledger_path)
+    written = L.find_row(written_rows, pr) or {}
     emit({"pr": pr, "old_head": orig_head, "new_head": new_head, "base": base, "pushed": True,
-          "ledger": {"head_sha": new_head, "ci": "pending",
-                     **{f: str(L.ROW_DEFAULTS[f]) for f in LIVENESS_COUNTERS}}})
+          "ledger": {"head_sha": str(written.get("head_sha", new_head)),
+                     "ci": str(written.get("ci", "pending")),
+                     "base_ok_sha": str(written.get("base_ok_sha", L.ROW_DEFAULTS["base_ok_sha"])),
+                     **{f: str(written.get(f, L.ROW_DEFAULTS[f])) for f in LIVENESS_COUNTERS}}})
     return EXIT_OK
 
 

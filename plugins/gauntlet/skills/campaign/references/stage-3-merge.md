@@ -138,8 +138,8 @@ ownership checks and phase order remain in force.
    (`ledger.py … dispatch-check --pr <N>` — parked on a human, or `repairing`) is **FROZEN**
    (`loop-control.md` step 3,
    "held-status guard"): this reconcile MUTATES a PR, so it is exactly what the guard forbids. A clean
-   rebase would move its `head_sha`, set `ci = pending` and — at that head write — the accessor would reset
-   its liveness counters (`stage-2-ci.md`, "THE LIVENESS COUNTERS"); a judgment-path rebase (conflict-resolving
+   rebase would move its `head_sha`, set `ci = pending` and — at that head write — the accessor would fire
+   the head-move reset (`files-and-ledger.md`, the `head_sha` field, "What a genuine head move resets"); a judgment-path rebase (conflict-resolving
    or diff-changed) would reset
    `reviews_ok`, relabel, and relaunch work — and would **change the PR's content**, which can invalidate
    the very refutation or API change the user was parked to adjudicate. **A parked PR that has fallen
@@ -156,9 +156,9 @@ ownership checks and phase order remain in force.
      scripts/clean-rebase.py run --ledger <state.jsonl> --pr <N> --worktree <worktree> --base <base>`**: it
      does the fetch/rebase/`--force-with-lease` push, verifies the PR's own diff is unchanged, and writes the
      one ledger reset — keep `reviews_ok`, **keep its status label as-is** (the gate did not reset, so an
-     accepted PR stays `gauntlet-accepted`), new `head_sha` written through the accessor (which **resets the
-     liveness counters** at the door — new commit, new evidence — `stage-2-ci.md`, "THE LIVENESS
-     COUNTERS"), `ci = pending`. **Exit 3 means it was NOT
+     accepted PR stays `gauntlet-accepted`), new `head_sha` written through the accessor (which fires the
+     head-move reset at the door — new commit, new evidence — `files-and-ledger.md`, the `head_sha` field,
+     "What a genuine head move resets"), `ci = pending`. **Exit 3 means it was NOT
      clean** — a conflict, or a rebase that changed the PR's own diff — and it has already aborted/reset to
      the original head; the judgment-path bullet below then owns **both** exit-3 subcases. On a clean (exit 0) rebase,
      **re-derive CI from a snapshot of the new tip in the same heartbeat, launching a watch only if `liveness`
@@ -173,8 +173,8 @@ ownership checks and phase order remain in force.
      label move together (`stage-2-review-gate.md`, "Status labels mirror the review gate", owns the swap
      and the tool). Update
      `head_sha` to the
-     new tip through the accessor, which **resets the liveness counters** (a new head is new evidence — `stage-2-ci.md`, "THE
-     LIVENESS COUNTERS"; the clean-rebase branch above does the same, and this branch is no different in
+     new tip through the accessor, which fires the head-move reset (a new head is new evidence — `files-and-ledger.md`,
+     the `head_sha` field, "What a genuine head move resets"; the clean-rebase branch above does the same, and this branch is no different in
      that respect). Then re-derive CI for
      the new tip — watching it only if `liveness` reports `watch_warranted` ("WATCH ONLY WHAT CAN MOVE") — and re-enter
      Stage 2.

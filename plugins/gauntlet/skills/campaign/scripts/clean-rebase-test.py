@@ -18,6 +18,7 @@ refuse it exactly as it refuses a conflict.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import tempfile
 from contextlib import redirect_stderr, redirect_stdout
@@ -169,8 +170,11 @@ def _scenario(tmp) -> Scenario:
 def t_clean_rebase_end_to_end():
     with tempfile.TemporaryDirectory() as tmp:
         s = _scenario(tmp)
+        # the fixture stamped base_ok_sha == orig_head (a base-preflight `proceed` on record) via base-ok
+        check(_field(s.ledger, PR_NUMBER, "base_ok_sha") == s.orig_head,
+              "fixture setup: a base-preflight proceed is on record for the pre-rebase head")
         s.advance_base({12: "12-BASE"})  # a FAR edit — outside the PR hunk's context, diff unchanged
-        code, _, err = s.invoke()
+        code, out, err = s.invoke()
         check(code == M.EXIT_OK, f"a clean base-only rebase must exit 0 (code={code}, err={err})")
         new_head = head(s.wt)
         check(new_head != s.orig_head, "the clean rebase moved the worktree HEAD to a new commit")
@@ -180,12 +184,58 @@ def t_clean_rebase_end_to_end():
         for f in M.LIVENESS_COUNTERS:
             check(_field(s.ledger, PR_NUMBER, f) == str(L.ROW_DEFAULTS[f]),
                   f"the clean rebase resets the liveness counter {f} to its fresh-head default")
+        # the head move ALSO voids base_ok_sha at the `set --head-sha` door — a fresh base-preflight
+        # `proceed` must be re-earned before the next verdict, even though reviews_ok carried forward.
+        check(_field(s.ledger, PR_NUMBER, "base_ok_sha") == str(L.ROW_DEFAULTS["base_ok_sha"]),
+              "the clean rebase VOIDS base_ok_sha — a moved head is unverified until a fresh proceed")
         check(_field(s.ledger, PR_NUMBER, "reviews_ok") == "2",
               "the clean case CARRIES reviews_ok FORWARD — the gate is not reset (the Exception rule)")
         check(_field(s.ledger, PR_NUMBER, "review_rounds") == "2",
               "review_rounds is monotone — a clean rebase never touches it")
+        # the emitted result-JSON `ledger` object ECHOES the reset base_ok_sha, so a driver reading it
+        # SEES the stamp was voided rather than discovering it only when `verdict` refuses.
+        result = json.loads(out.strip().splitlines()[-1])
+        check(result["ledger"]["base_ok_sha"] == str(L.ROW_DEFAULTS["base_ok_sha"]),
+              f"the result JSON must echo the voided base_ok_sha; got {result.get('ledger')!r}")
+        check(result["ledger"]["head_sha"] == new_head,
+              "the result JSON echoes the new head_sha it wrote")
+        # the echo is read back from the ACTUAL stored row, so EVERY reported field equals what was written
+        # (no field is hardcoded from ROW_DEFAULTS) — on a genuine head move that is the reset value.
+        for f in ("head_sha", "ci", "base_ok_sha", *M.LIVENESS_COUNTERS):
+            check(result["ledger"][f] == str(_field(s.ledger, PR_NUMBER, f)),
+                  f"the result JSON echoes the ACTUAL stored {f}; "
+                  f"stored={_field(s.ledger, PR_NUMBER, f)!r} echoed={result['ledger'].get(f)!r}")
         # the remote branch was force-with-lease pushed to the new head
         check(s.remote_pr_head() == new_head, "the remote PR branch was updated to the rebased head")
+
+
+# --- a NO-OP rebase: base did not advance, head unchanged, base_ok_sha RETAINED --
+
+def t_noop_rebase_echoes_retained_base_ok_sha():
+    with tempfile.TemporaryDirectory() as tmp:
+        s = _scenario(tmp)
+        # NO advance_base(): the base has not moved, so `git rebase` is a no-op and new_head == orig_head.
+        # apply_head_sha treats a same-head write as "not a move" and resets NOTHING — so base_ok_sha keeps
+        # the stamp the fixture recorded (== orig_head). The result JSON must echo that RETAINED value, NOT
+        # the fresh-head "-" a genuine move produces: the echo is read from the written row, never hardcoded.
+        check(_field(s.ledger, PR_NUMBER, "base_ok_sha") == s.orig_head,
+              "fixture setup: base_ok_sha is stamped to the pre-rebase head")
+        code, out, err = s.invoke()
+        check(code == M.EXIT_OK, f"a no-op clean rebase still exits 0 (code={code}, err={err})")
+        check(head(s.wt) == s.orig_head, "a no-op rebase leaves the worktree HEAD unchanged")
+        stored = _field(s.ledger, PR_NUMBER, "base_ok_sha")
+        check(stored == s.orig_head,
+              "a same-head no-op does NOT void base_ok_sha — the accessor only voids it on a genuine move")
+        result = json.loads(out.strip().splitlines()[-1])
+        # the echo matches the STORED row for every field — base_ok_sha included — so a no-op reports the
+        # retained stamp, not a reset that never happened.
+        for f in ("head_sha", "ci", "base_ok_sha", *M.LIVENESS_COUNTERS):
+            check(result["ledger"][f] == str(_field(s.ledger, PR_NUMBER, f)),
+                  f"the no-op result JSON echoes the ACTUAL stored {f}; "
+                  f"stored={_field(s.ledger, PR_NUMBER, f)!r} echoed={result['ledger'].get(f)!r}")
+        check(result["ledger"]["base_ok_sha"] == s.orig_head,
+              f"the no-op echoes the RETAINED base_ok_sha (the original stamp), not the fresh-head '-'; "
+              f"got {result['ledger'].get('base_ok_sha')!r}")
 
 
 # --- a CONFLICT: abort, restore, refuse (exit 3), touch nothing ---------------
@@ -355,6 +405,8 @@ def t_dry_run_mutates_nothing():
 CASES = [
     ("clean-rebase-e2e", "a clean base-only rebase pushes and updates the ledger, keeping reviews_ok",
      t_clean_rebase_end_to_end),
+    ("noop-rebase-retains-base-ok-sha", "a no-op rebase (base unchanged) echoes the RETAINED base_ok_sha, "
+     "not a reset — the result JSON reads the actual row", t_noop_rebase_echoes_retained_base_ok_sha),
     ("conflict-aborts", "a conflicting rebase aborts, restores HEAD, refuses (exit 3), mutates nothing",
      t_conflict_aborts_and_refuses),
     ("diff-changed-resets", "a textually-clean rebase that changes the PR diff resets and refuses (exit 3)",

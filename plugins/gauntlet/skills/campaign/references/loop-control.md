@@ -86,9 +86,11 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
        re-widening — distinguishes **MERGED** (resume the owed base-sync/cleanup/terminal-write phases) from
        **CLOSED without merging** (the terminal close-out, which records `aborted` and touches no local refs).
      - **`head_moved`** — the live head differs from the row's `head_sha`: this is the **gate-reset and
-       liveness-counter-reset** site — the two paragraphs directly above the command block own it. The tool
+       head-move-reset** site — the two paragraphs directly above the command block own it. The tool
        reports only THAT the head moved; deciding whether the PR **diff** changed (reset `reviews_ok`,
-       relabel) or it was a **clean base-only advance** (counters only, gate kept) stays your judgement.
+       relabel) or it was a **clean base-only advance** — which fires the head-move reset at the door
+       (`files-and-ledger.md`, the `head_sha` field, "What a genuine head move resets"), gate kept — stays
+       your judgement.
      - **`base_changed`** — the snapshot `baseRefName` differs from the header's `base_branch`: base-currency
        handling (`stage-2-review-gate.md`, "Base currency with `<base>`").
      - **`branch_mismatch`** — the snapshot `headRefName` differs from the row's recorded `branch`: reconcile
