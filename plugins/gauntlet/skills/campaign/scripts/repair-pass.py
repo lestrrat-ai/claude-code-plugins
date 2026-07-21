@@ -364,7 +364,9 @@ def select_active_rounds(rundir: Path, pr: str,
     actual = sorted(attempts)
     if not actual:
         fail(f"no review artifacts for pr {pr} in {rundir} — the ledger counts {expected_rounds} landed "
-             f"rounds, so this is the wrong --run-dir or lost history")
+             f"rounds, so this is the wrong --run-dir or lost history; retry with the correct --run-dir, "
+             f"or if the history is genuinely lost park the PR for the user with this reason "
+             f"(machine blocker), never hand-edit the ledger or artifacts")
     if actual != list(range(1, len(actual) + 1)):
         missing = sorted(set(range(1, max(actual) + 1)) - set(attempts))
         fail(f"review history for pr {pr} has artifact passes {actual}; passes {missing} are missing — "

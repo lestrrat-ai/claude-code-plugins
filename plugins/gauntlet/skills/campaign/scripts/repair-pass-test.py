@@ -662,13 +662,16 @@ def t_bundle_refuses_unreconcilable_pass_histories(tmp: Path) -> None:
     check("park the PR for the user" in err,
           f"the fewer-artifacts refusal names no recovery action: {err!r}")
 
-    # NO review artifacts at all: the wrong --run-dir or lost history.
+    # NO review artifacts at all: the wrong --run-dir or lost history. Recovery is a retry with the
+    # correct --run-dir; genuinely lost history is a machine blocker — park, never hand-edit.
     empty = bundle_setup(tmp / "empty")
     for progress in empty["rundir"].glob("review-1-*.progress.jsonl"):
         progress.unlink()
     code, _, err = run_bundle(empty, empty["rundir"] / "bundle.txt")
     check(code == 1 and "no review artifacts" in err,
           f"an empty review history was not refused: {err!r}")
+    check("park the PR for the user" in err,
+          f"the empty-history refusal names no recovery action: {err!r}")
 
     # A verdictless LATEST pass cannot be the cap round: the cap trips only on a landed NOT SATISFIED.
     last = bundle_setup(tmp / "last", rounds=4)
