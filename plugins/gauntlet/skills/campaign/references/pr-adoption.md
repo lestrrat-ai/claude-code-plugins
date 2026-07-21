@@ -185,8 +185,8 @@ For each `#PR` to adopt:
      (`files-and-ledger.md`, the `head_sha` field, "What a genuine head move resets") — **whether or not the gate reset with it**: write the new
      `head_sha` through `ledger.py … set --head-sha` (or `pr-adopt`, which routes through it) and its door
      resets the whole set in the same row write. A clean base-only advance moves the head without touching
-     `reviews_ok`, and it still means the old head's strikes, stall clock and refetch count describe evidence
-     that no longer exists; carried onto the new head they park a healthy PR early — the door prevents that.
+     `reviews_ok`, and it still means the old head's liveness evidence no longer describes the new tip;
+     carried onto the new head it parks a healthy PR early — the door prevents that.
      **Do NOT hand-reset the counters here** — the accessor owns it, and a list retyped at this site goes
      stale the next time the set gains a member. (This is one of the **explicit recomputes** the
      preserve-by-default rule above defers to: the counters are pinned to `head_sha`, not to the user, so a

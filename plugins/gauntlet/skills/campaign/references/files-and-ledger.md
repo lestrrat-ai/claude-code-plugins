@@ -246,8 +246,8 @@ Header field notes (the header fields above; per-row fields follow):
   SEPARATE decision and is NOT in this set: `reviews_ok` carries forward on a clean base-only rebase, and
   every other reset of the gate tally is owned by `stage-2-review-gate.md`, "Status labels mirror the
   review gate" — its conditions are not restated here.
-  **Every** `head_sha` change fires this reset, gate reset or not: the old head's strikes and stall clock
-  measured evidence that no longer exists, and a base-preflight `proceed` decided for the old head no longer
+  **Every** `head_sha` change fires this reset, gate reset or not: the old head's liveness evidence no
+  longer describes the tip, and a base-preflight `proceed` decided for the old head no longer
   describes the content — so the next verdict must wait on a fresh `proceed` for the new tip.
 - `reviews_ok` — number of fresh, context-isolated SATISFIED verdicts recorded against this PR's
   current content. Target = `required(tier)`: **1 if `tier == TRIVIAL`, else 2** (Stage **2a-triage**).
