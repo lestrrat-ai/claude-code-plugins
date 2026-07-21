@@ -303,9 +303,12 @@ name from one host into another.
 | **Reassessment pass** (a PR at a review-loop cap) | **`session`** | It reads a PR's ENTIRE history at once and decides the **acceptance path**. It is gate machinery; a weaker model mis-diagnoses the loop and repairs the wrong thing (`repair-pass.md`). |
 | **CI-fix — formatting/lint failure** | **`economy`** | **Downgraded ON PURPOSE when the host has a configured economy mapping.** It does not author a fix: it runs a deterministic formatter, **READS the resulting diff**, verifies it, and **escalates** anything it cannot verify (`references/stage-2-ci.md`). |
 | **CI-fix — everything else**, and every **escalation** from the cheap tier | **`session`** | Authors code that gets merged. CI does **not** validate it: a wrong fix can turn CI green — by weakening a check, or by being plain wrong in product code no check covers. |
+| **Finding-audit worker** (verdicts each gating finding) | **`session`** | Gate-adjacent: its CONFIRMED / ADJUSTED / REFUTED verdict decides **whether and what** gets fixed (`references/finding-audit.md` owns the disposition→fix rule). A weaker model mis-verdicts a finding and the wrong thing, or nothing, gets fixed. Never downgraded. |
+| **Follow-up investigator** (Tier-1, read-only) | **`session`** | Read-only but NOT low-judgment, exactly like the mapper: it must **reproduce or refute** a claim, and a weaker model rubber-stamps instead of refuting (`references/followups.md`). "Read-only" is not a licence to downgrade. |
+| **Follow-up fixer** (opens a new PR) | **`session`** | Authors code from scratch that the gauntlet then judges — the review-fix reasoning, in the separate follow-up workflow (`references/followups.md`, `references/fix-subagent-contract.md`). |
 
-**The gate, from-scratch fixes, and mapper are NEVER downgraded.** The formatting CI-fix tier is
-downgraded for its narrower formatter-and-verification job. `worker-prompt.py fix` builds the prompt for
+**Only the formatting CI-fix tier is downgraded** — for its narrower formatter-and-verification job.
+**Every other worker in this table is `session` and is NEVER downgraded.** `worker-prompt.py fix` builds the prompt for
 each of the three fix-worker roles (review-fix and both CI tiers); its template owns the complete shared
 and role-specific wording. Read `references/fix-subagent-contract.md`, materialize the selected role, and
 dispatch only the exact `prompt.txt` bytes with the logical model class from `metadata.json`. The
