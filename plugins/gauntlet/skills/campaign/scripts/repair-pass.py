@@ -368,10 +368,16 @@ def select_active_rounds(rundir: Path, pr: str,
              f"or if the history is genuinely lost park the PR for the user with this reason "
              f"(machine blocker), never hand-edit the ledger or artifacts")
     if actual != list(range(1, len(actual) + 1)):
-        missing = sorted(set(range(1, max(actual) + 1)) - set(attempts))
-        fail(f"review history for pr {pr} has artifact passes {actual}; passes {missing} are missing — "
-             f"a hole is lost history no bundle can rebuild; park the PR for the user with this reason "
-             f"(machine blocker), never hand-edit the ledger or artifacts")
+        # Name the FIRST break by walking the sorted passes against their expected positions. Never
+        # materialize a range up to max(actual): its size is the numeric VALUE of a pass number, and a
+        # hand-edited absurd one (review-1-999999999.*) would die in MemoryError before the refusal is
+        # delivered. Everything reported here — `actual` included — stays proportional to the artifact
+        # sets on disk. The guard above guarantees a mismatch position exists.
+        expected, found = next((exp, got) for exp, got in enumerate(actual, start=1) if exp != got)
+        fail(f"review history for pr {pr} has artifact passes {actual}; pass {expected} is missing "
+             f"(found pass {found} in its place) — a hole is lost history no bundle can rebuild; park "
+             f"the PR for the user with this reason (machine blocker), never hand-edit the ledger or "
+             f"artifacts")
     if len(actual) < expected_rounds:
         fail(f"the ledger counts {expected_rounds} landed review rounds for pr {pr} but only "
              f"{len(actual)} artifact passes exist — landed history is missing; park the PR for the "

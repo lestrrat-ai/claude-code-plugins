@@ -648,9 +648,23 @@ def t_bundle_refuses_unreconcilable_pass_histories(tmp: Path) -> None:
     (hole["rundir"] / "audit-1-2.jsonl").unlink()
     reledger(hole, "3")
     code, _, err = run_bundle(hole, hole["rundir"] / "bundle.txt")
-    check(code == 1 and "missing" in err, f"a hole in pass numbering was not refused: {err!r}")
+    check(code == 1 and "pass 2 is missing" in err,
+          f"a hole in pass numbering was not refused: {err!r}")
     check("park the PR for the user" in err,
           f"the hole refusal names no recovery action: {err!r}")
+
+    # A hole made by a hand-edited ABSURD pass number: the refusal must be DELIVERED, never a
+    # MemoryError from materializing a range the size of the pass number's numeric value. The fixture
+    # needs no memory pressure — with the walk in place the message simply arrives.
+    huge = bundle_setup(tmp / "huge", rounds=4)
+    for artifact in sorted(huge["rundir"].glob("review-1-4.*")):
+        artifact.rename(artifact.with_name(artifact.name.replace("review-1-4.", "review-1-999999999.", 1)))
+    reledger(huge, "3")
+    code, _, err = run_bundle(huge, huge["rundir"] / "bundle.txt")
+    check(code == 1 and "pass 4 is missing" in err and "999999999" in err,
+          f"an absurd hand-edited pass number was not refused with the mismatch named: {err!r}")
+    check("park the PR for the user" in err,
+          f"the absurd-pass refusal names no recovery action: {err!r}")
 
     # FEWER contiguous artifact passes than the ledger's landed rounds: landed history is missing.
     # Also a machine blocker — park, never hand-edit.
