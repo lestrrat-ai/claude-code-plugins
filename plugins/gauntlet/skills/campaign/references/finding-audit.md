@@ -160,13 +160,18 @@ Two things the audit does about it — **a SIGNAL and a hand-off, never a discha
 - **HAND-OFF to the driver (proactive intent-bounding).** A single such finding is fixed and forgotten.
   But when the signal **recurs** — a SECOND finding of the same residual shape — that is the CLAUDE.md
   "a review keeps generating true-but-that-kind-of finding → **bound the intent**" case arriving early —
-  and that `AGENTS.md`/`CLAUDE.md` sentence routes to `repair-pass.md`, REPAIR-INTENT: the **cap-level,
-  whole-history** repair stage, NOT this per-finding audit. DEMOTE, the only record-without-fixing outcome,
+  and that `AGENTS.md`/`CLAUDE.md` "bound the intent" case has two realizations: **pre-cap, a
+  proactive plain edit of the local intent by the driver** (below), and, **only once a review-loop cap
+  is reached, `repair-pass.md`'s cap-level REPAIR-INTENT decision** — never this per-finding audit,
+  which only fixes the finding in hand. DEMOTE, the only record-without-fixing outcome,
   is reached only at a review-loop cap and only for a finding anchored to no Purpose line and no actor. So
   reading it as licence to skip the CONFIRMED fix in hand drops that routing (verify against `repair-pass.md`).
-  The driver may then author/tighten the intent `## Non-goals` so **future** reviewer rounds bind — the
-  autonomous cap-repair act (`repair-pass.md`, REPAIR-INTENT), which never stops to ask the user — and
-  surface the residual class to the user as a **non-blocking policy note**, driving the other PRs meanwhile. Three constraints
+  The driver may then author/tighten the intent `## Non-goals` **directly — a plain driver edit of the
+  local intent artifact, needing no repair-pass** — so **future** reviewer rounds bind, and surface the
+  residual class to the user as a **non-blocking policy note**, driving the other PRs meanwhile. (The
+  cap-level `repair-pass.md` REPAIR-INTENT decision re-authors the whole intent the same way, but is
+  reachable only once a review-loop cap sets `status = repairing` — it is NOT the mechanism for this
+  early, pre-cap signal.) Three constraints
   keep that from becoming a dodge: it is disclosed `authored` (`pr-adoption.md`); it must describe the
   **class**, never be gerrymandered around one finding; and it **does NOT retroactively discharge the
   finding in hand** — that finding is still fixed (or, if its mechanism is impossible, REFUTED on the
