@@ -9,7 +9,7 @@ have `ci-snapshot.py`. The lease had four reference docs and an `echo`.
 And it is not a value-write — it is a CHECK-AND-SET: take a lock, read, decide, write, read back, unlock,
 plus a stale-lock sweep and a staleness rule. Hand-rolled from prose, on every heartbeat, by a fresh agent
 instance that remembers nothing. In run `g260717-1748-d76f0acb` a driver hand-rolled it with
-`mkdir`/`openssl`/`echo`/`rmdir`, eyeballed the read-back instead of comparing tokens, and skipped the
+`mkdir`/`echo`/`rmdir`, eyeballed the read-back instead of comparing tokens, and skipped the
 stale-lock sweep entirely. It was safe only because the lease was absent and nobody else was driving.
 
 Four refusals this file exists to make, each one a thing the prose left undefined or a well-meaning driver

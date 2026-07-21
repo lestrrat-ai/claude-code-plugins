@@ -3,7 +3,7 @@
 
 A run-id namespaces everything a run owns — its `<rundir>`, its ledger, and its `gauntlet-run-<run-id>`
 PR labels. Until now, minting one was an inline shell snippet in `run-identity-and-lease.md`
-(`run_id="g$(date +%y%m%d-%H%M)-$(openssl rand -hex 4)"`) and the "create the run dir atomically, retry on
+(a minute-resolution timestamp plus a short random hex suffix) and the "create the run dir atomically, retry on
 the rare clash" step was adapter **pseudocode** (`create_run_directory(...)`) with no bundled
 implementation. THIS script now owns both — the mint and the atomic create + retry — and the adapter's
 `create_run_directory` delegates here. That
@@ -32,8 +32,8 @@ from _gauntlet.modules import load_module_from_path
 _HERE = Path(__file__).resolve().parent
 SIBLING = _HERE / "run-id-test.py"
 
-# `openssl rand -hex 4` in the prose = 4 bytes = 8 hex chars = 32 bits, the same width `lease.py mint`
-# uses for the agent token. Kept identical so the two random values read the same.
+# 4 bytes = 8 hex chars = 32 bits, the same width `lease.py mint` uses for the agent token.
+# Kept identical so the two random values read the same.
 RAND_BYTES = 4
 # Minute-resolution timestamps collide only for runs started in the same minute; the random suffix then
 # carries uniqueness, and the atomic mkdir + retry is the backstop. A handful of attempts is plenty — the
