@@ -53,13 +53,12 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      reconcile is a backstop, not the mechanism", below). (A clean base-only advance with the PR
      diff unchanged does not reset the gate, so it keeps `gauntlet-accepted`.)
 
-     **And whenever this refresh writes a NEW `head_sha` — gate reset or not — the ledger accessor RESETS
-     THE LIVENESS COUNTERS for you** (`stage-2-ci.md`, "THE LIVENESS COUNTERS", which owns why): write the
-     new `head_sha` through `ledger.py … set --head-sha` and its door resets the whole set in the same row
-     write. This covers **both** cases above: the content change that resets the gate, **and** the clean
-     base-only advance that does not. **Do NOT hand-reset the counters** — the door owns it, and a gloss
-     that lists the set's members here is a **restatement** that goes stale the moment the set gains a
-     member (this line's did, when `ci_stalled_since` joined).
+     **And whenever this refresh writes a NEW `head_sha` — gate reset or not — the ledger accessor FIRES
+     THE HEAD-MOVE RESET** (`files-and-ledger.md`, the `head_sha` field, "What a genuine head move resets"):
+     write the new `head_sha` through `ledger.py … set --head-sha` and its door performs the reset in the
+     same row write. This covers **both** cases above: the content change that resets the
+     gate, **and** the clean base-only advance that does not. **Do NOT hand-reset any field here** — the
+     door owns it.
 
      Produce **one batched snapshot per heartbeat** through **"The canonical `prs.json` command"** in
      `files-and-ledger.md`. Its executable owner is `scripts/reconcile.py fetch`; NEVER reconstruct its

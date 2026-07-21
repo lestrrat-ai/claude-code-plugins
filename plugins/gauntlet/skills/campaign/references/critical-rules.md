@@ -419,16 +419,12 @@
   for the new tip and watch it **only if `liveness` reports `watch_warranted`** (`stage-2-ci.md`, "WATCH
   ONLY WHAT CAN MOVE" — a watch launched on a tip whose checks have not registered yet has nothing to
   block on and exits in about a second), and re-enter Stage 2a. NEVER exempt a commit because it "only reformatted".
-- **THE LIVENESS COUNTERS reset on EVERY `head_sha` change — gate reset or not, and the ledger accessor
-  enforces it at the head write** (`stage-2-ci.md`, "THE LIVENESS COUNTERS", which names every site): write
-  the new `head_sha` through `ledger.py … set --head-sha` and its door resets the set — no site hand-resets.
-  A `head_sha` change and a gate reset are **not** the same
-  event: a `NOT SATISFIED` verdict resets the gate with no new head (the counters stay — CI did not move),
-  and a **clean base-only rebase** moves the head without resetting the gate (the counters reset — the old
-  head's evidence is gone). Carried onto a new head, the old head's counters park a **healthy** PR early,
-  on strikes and stalled time it never earned there. **Never retype the set's membership here** — it is
-  named in one place, and a counter added there (as `ci_stalled_since` was) is inherited by every reset
-  site with no edit.
+- **THE LIVENESS COUNTERS reset on EVERY `head_sha` change — gate reset or not — at the write door, not
+  at each site** (`files-and-ledger.md`, the `head_sha` field, "What a genuine head move resets", owns what
+  a head move resets; the counter set itself is owned by `stage-2-ci.md`, "THE LIVENESS COUNTERS"). Write
+  the new `head_sha` through `ledger.py … set --head-sha` and the door resets the set — no site hand-resets,
+  and no site retypes the membership. A `head_sha` change and a gate reset are **not** the same event — the
+  owner explains which resets which.
 - **A `blocker_ruling` is DURABLE *and* SPENT EXACTLY ONCE** (`stage-2-ci.md`, "THE RULING IS CONSUMED
   EXACTLY ONCE"): set to `-` when a machine-blocker park is **ENTERED** and when a `retry` is **CONSUMED**,
   each in the same `ledger.py … set` call as the `status` write. A ruling left on the row answers the
