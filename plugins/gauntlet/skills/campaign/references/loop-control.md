@@ -53,13 +53,12 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      reconcile is a backstop, not the mechanism", below). (A clean base-only advance with the PR
      diff unchanged does not reset the gate, so it keeps `gauntlet-accepted`.)
 
-     **And whenever this refresh writes a NEW `head_sha` — gate reset or not — the ledger accessor RESETS
-     THE LIVENESS COUNTERS for you** (`stage-2-ci.md`, "THE LIVENESS COUNTERS", which owns why): write the
-     new `head_sha` through `ledger.py … set --head-sha` and its door resets the whole set in the same row
-     write. This covers **both** cases above: the content change that resets the gate, **and** the clean
-     base-only advance that does not. **Do NOT hand-reset the counters** — the door owns it, and a gloss
-     that lists the set's members here is a **restatement** that goes stale the moment the set gains a
-     member (this line's did, when `ci_stalled_since` joined).
+     **And whenever this refresh writes a NEW `head_sha` — gate reset or not — the ledger accessor FIRES
+     THE HEAD-MOVE RESET** (`files-and-ledger.md`, the `head_sha` field, "What a genuine head move resets"):
+     write the new `head_sha` through `ledger.py … set --head-sha` and its door performs the reset in the
+     same row write. This covers **both** cases above: the content change that resets the
+     gate, **and** the clean base-only advance that does not. **Do NOT hand-reset any field here** — the
+     door owns it.
 
      Produce **one batched snapshot per heartbeat** through **"The canonical `prs.json` command"** in
      `files-and-ledger.md`. Its executable owner is `scripts/reconcile.py fetch`; NEVER reconstruct its
@@ -86,9 +85,11 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
        re-widening — distinguishes **MERGED** (resume the owed base-sync/cleanup/terminal-write phases) from
        **CLOSED without merging** (the terminal close-out, which records `aborted` and touches no local refs).
      - **`head_moved`** — the live head differs from the row's `head_sha`: this is the **gate-reset and
-       liveness-counter-reset** site — the two paragraphs directly above the command block own it. The tool
+       head-move-reset** site — the two paragraphs directly above the command block own it. The tool
        reports only THAT the head moved; deciding whether the PR **diff** changed (reset `reviews_ok`,
-       relabel) or it was a **clean base-only advance** (counters only, gate kept) stays your judgement.
+       relabel) or it was a **clean base-only advance** — which fires the head-move reset at the door
+       (`files-and-ledger.md`, the `head_sha` field, "What a genuine head move resets"), gate kept — stays
+       your judgement.
      - **`base_changed`** — the snapshot `baseRefName` differs from the header's `base_branch`: base-currency
        handling (`stage-2-review-gate.md`, "Base currency with `<base>`").
      - **`branch_mismatch`** — the snapshot `headRefName` differs from the row's recorded `branch`: reconcile

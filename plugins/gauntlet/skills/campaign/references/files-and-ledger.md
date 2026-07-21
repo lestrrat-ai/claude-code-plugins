@@ -234,15 +234,21 @@ Header field notes (the header fields above; per-row fields follow):
   and `tier` describe. `ci`
   and `tier` are pinned to this exact SHA (re-triage on any content change). `reviews_ok` is pinned to
   this SHA **unless** the only change is a clean base-only rebase/merge with the PR diff unchanged;
-  then carry `reviews_ok` forward to the new `head_sha` (a **depth-raising tier escalation** is the one
-  same-SHA event that voids `reviews_ok` without a content change — `stage-2-review-gate.md`, "Status
-  labels mirror the review gate"), set `ci = pending`, and — because the head
-  **moved** — the ledger accessor **resets the liveness counters AND the base-preflight stamp `base_ok_sha`**
-  at the `set --head-sha` write itself (`stage-2-ci.md`, "THE LIVENESS COUNTERS"; `base_ok_sha` below;
-  ledger.py's `apply_head_sha`). A clean rebase does not reset the *gate*, but it **is** a `head_sha` change,
-  and **every** `head_sha` change resets them at the door: the old head's strikes and stall clock measured
-  evidence that no longer exists, and a base-preflight `proceed` decided for the old head no longer describes
-  the content — so the next verdict must wait on a fresh `proceed` for the new tip.
+  then carry `reviews_ok` forward to the new `head_sha`, set `ci = pending`, and — because the head
+  **moved** — the ledger
+  accessor performs the head-move reset at the `set --head-sha` write itself (`ledger.py`'s
+  `apply_head_sha`).
+
+  **What a genuine head move resets — THE CANONICAL SET; every other site POINTS here and re-lists
+  nothing:** the liveness counters (`stage-2-ci.md`, "THE LIVENESS COUNTERS", owns that set and every
+  member) **and** the base-preflight stamp `base_ok_sha` (the `base_ok_sha` field below owns it) — both
+  read from `ROW_DEFAULTS` by `apply_head_sha`, never a list retyped anywhere. The review **gate** is a
+  SEPARATE decision and is NOT in this set: `reviews_ok` carries forward on a clean base-only rebase, and
+  every other reset of the gate tally is owned by `stage-2-review-gate.md`, "Status labels mirror the
+  review gate" — its conditions are not restated here.
+  **Every** `head_sha` change fires this reset, gate reset or not: the old head's liveness evidence no
+  longer describes the tip, and a base-preflight `proceed` decided for the old head no longer
+  describes the content — so the next verdict must wait on a fresh `proceed` for the new tip.
 - `reviews_ok` — number of fresh, context-isolated SATISFIED verdicts recorded against this PR's
   current content. Target = `required(tier)`: **1 if `tier == TRIVIAL`, else 2** (Stage **2a-triage**).
   **Only `ledger.py verdict` may RAISE it** — `set --reviews-ok <n>` refuses any value above the current
