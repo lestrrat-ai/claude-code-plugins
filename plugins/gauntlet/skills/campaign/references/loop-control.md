@@ -356,7 +356,10 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
        the voided tally in ONE atomic ledger write — `ledger.py … set --pr <N> --tier <deeper> --reviews-ok 0`
        (`ledger.py set` applies every field flag in a single atomic write, so tier and reset land together and
        no driver death can leave the deeper tier standing beside a stale tally that the next heartbeat would
-       read as no escalation). Then require a fresh tier-sized plan before the next dispatch (the plan-copy
+       read as no escalation). **Also stop any review pass in flight on that PR first** (the same stop the
+       content-change rule below makes): the SHA is unchanged, so an in-flight shallow-depth pass keeps a
+       matching `head_sha`, and a late SATISFIED verdict would refill the just-voided tally against the
+       deeper tier. Then require a fresh tier-sized plan before the next dispatch (the plan-copy
        rule in `stage-2-review-gate.md` must NOT reuse the shallower plan). Do this even though the SHA is
        unchanged.
      - **De-escalation, unchanged, or fresh adoption** (the decision lowers the tier — STANDARD→TRIVIAL,

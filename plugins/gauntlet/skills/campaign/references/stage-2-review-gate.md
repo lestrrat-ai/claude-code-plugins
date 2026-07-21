@@ -163,8 +163,11 @@ continuation influenced by the first.
 flight on a PR — CI turns red, Copilot items land, a conflict appears — or any content-changing fix
 is about to be dispatched for it, **stop the in-flight review task before dispatching the fix**: its
 verdict can only describe a SHA that is about to be replaced, so letting it run wastes both the
-tokens and the review slot. The freed slot immediately refills with the next due review (Loop
-control step 3).
+tokens and the review slot. **A depth-raising tier escalation is the same call on UNCHANGED content**:
+it voids the tally, and because the SHA does not move the in-flight pass keeps a matching `head_sha`, so
+a late SATISFIED verdict — planned at the now-too-shallow depth — would refill the just-voided tally
+against the deeper tier; stop that pass too (`loop-control.md` re-triage step). The freed slot
+immediately refills with the next due review (Loop control step 3).
 
 Route every selected reviewer through `runtime-adapter.md`'s capability/transition owner and
 `reviewer.md`'s retry budget. Any resulting native-worker pass receives this same complete review
