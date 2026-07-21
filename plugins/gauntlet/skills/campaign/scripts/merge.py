@@ -482,6 +482,13 @@ def execute(ledger: Path, pr: str, project_root: Path, repo: str,
         if confirmed["state"] != "MERGED":
             if merge_proc.returncode != 0:
                 _require(merge_proc, f"merge of PR {pr}")
+            # Out of scope: a base branch that requires a GitHub merge queue. There, `gh pr merge` returns
+            # success while leaving the PR OPEN-and-queued, so this branch raises Refusal WITHOUT mutating
+            # any state (no _sync_base / _cleanup / _mark_terminal below run). That is fail-CLOSED and safe:
+            # no duplicate merge (a reissue is pinned to head_sha by --match-head-commit above) and no
+            # ledger write. This repo runs no merge-queue ruleset; the queued-OPEN response is only
+            # reachable if the single user enables a merge queue on their own repo. Resuming an accepted
+            # queued request is a deliberate feature gap, not a defect.
             raise Refusal(
                 f"merge command returned success but PR {pr} state is {confirmed['state']!r}, not MERGED")
         view = confirmed
