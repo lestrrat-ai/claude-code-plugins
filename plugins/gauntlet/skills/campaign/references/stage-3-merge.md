@@ -40,11 +40,14 @@ yields `merge`), then confirms `origin/<base>` is an ancestor of `HEAD`. Both en
 - `not-yet <reason>` → do **NOT** merge; the reason names the block. Route on the reason's **action**
   (the phrase the tool emits), never on a hand-copied list of enum values — a value the tool newly parks
   then routes correctly with no edit here:
-  - `rebase` reasons (base moved ahead / conflicts) → refresh the PR per step 6.
+  - `rebase` reasons (base moved ahead / conflicts) → refresh the PR per step 6. A `BLOCKED` merge state
+    that is merely **behind its base** emits a `rebase` reason here (the tool probes ancestry before
+    parking), so it refreshes and re-gates rather than escalating to the user.
   - the tool's **`— park`** reasons (any `not-yet` reason that ends in `— park` / `park awaiting-user`)
     → park and name the blocker (below). This is the tool's catch-all for a merge GitHub blocks for a
-    cause campaign cannot clear itself — a draft, a `BLOCKED` merge state, **and any value neither enum
-    recognizes** — so routing on the `— park` action, not a fixed value list, keeps this bucket total.
+    cause campaign cannot clear itself — a draft, a `BLOCKED` merge state that is **up to date** (a genuine
+    human/ruleset block, not a stale base), **and any value neither enum recognizes** — so routing on the
+    `— park` action, not a fixed value list, keeps this bucket total.
   - `re-poll` reasons (merge state / mergeability not computed yet — `UNKNOWN`) → the **UNKNOWN re-poll
     bound** (below).
   - Everything else (`ci is …`, `N of M approvals`, `held`, stale head) → leave the PR; the next
@@ -69,7 +72,7 @@ the in-heartbeat cap is a fixed 3, and the coarse retry is the heartbeat loop it
 park whose exit event never comes is the same wedge it was meant to prevent. Run **`ledger.py … park --pr
 <N> --reason <the blocker>`** — the sanctioned writer of a non-CI machine-blocker park (`stage-2-ci.md`,
 "ESCALATE"). It sets `status = awaiting-user`, `ci_reason` = the blocker **named** (the draft state,
-`BLOCKED`, or the unrecognized value verbatim), and `blocker_ruling = -` in ONE atomic write (park entry
+an up-to-date `BLOCKED` merge state, or the unrecognized value verbatim), and `blocker_ruling = -` in ONE atomic write (park entry
 spends nothing and answers nothing — a ruling already on the row belongs to a **previous** park;
 `stage-2-ci.md`, "THE RULING IS CONSUMED EXACTLY ONCE"), and it refuses a blank reason, a terminal row, and
 a second park over an open question. It is then resolved through `blocker_ruling` = `retry` / `abort` — the
@@ -81,11 +84,15 @@ unparks a PR"; never invent a second mechanism here.
 
 **`BLOCKED` does NOT mean "a required check is missing or failing."** It means the merge is blocked **for
 any reason** — including a **draft** PR, or one **awaiting a human approving review**, or a ruleset
-campaign cannot read. Verified: `cli/cli` PR #13856 reads `BLOCKED` with `mergeable = MERGEABLE` **and a
-fully `SUCCESS` rollup**, purely because it is a draft. Mapping `BLOCKED` → `ci = pending` → "relaunch the
-CI watch" therefore **LIVELOCKS**: the CI is already green, no CI event will ever fire, campaign never
-approves PRs and never asks the user to — so it watches a settled PR forever. **Park it and name the
-blocker instead.**
+campaign cannot read, **or simply a branch that has fallen behind its base**. Verified: `cli/cli` PR #13856
+reads `BLOCKED` with `mergeable = MERGEABLE` **and a fully `SUCCESS` rollup**, purely because it is a draft.
+Mapping `BLOCKED` → `ci = pending` → "relaunch the CI watch" therefore **LIVELOCKS**: the CI is already
+green, no CI event will ever fire, campaign never approves PRs and never asks the user to — so it watches a
+settled PR forever. **Probe the base ancestry before parking: a `BLOCKED` PR that is only behind its base
+rebases (`merge-check.py` emits the `rebase` reason, verdicts carried), and only a `BLOCKED` PR proven up to
+date parks — name the blocker instead.** GitHub's merge-state enum is not a reliable "behind" signal (a
+behind PR can read `CLEAN` or `BLOCKED` under the same ruleset), so the Git ancestry check is the sound one,
+which is why `base-preflight.py` already runs it and the merge gate now matches.
 
 **`UNSTABLE` means non-*passing*, which includes *pending*.** Treating it as red would dispatch a CI-fix
 subagent at a check that is merely **still running**.

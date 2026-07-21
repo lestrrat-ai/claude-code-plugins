@@ -16,7 +16,10 @@ two enums are crossed, so nobody does it by hand and nobody does it wrong.
 
 `.mergeable = MERGEABLE` is NECESSARY BUT NOT SUFFICIENT: it falls THROUGH to `.mergeStateStatus`, which is
 the only field that yields a preliminary `merge`. Before emitting `merge`, the shared preflight helper
-fetches the ledger base and proves it is an ancestor of the candidate `HEAD`. Both enums are mapped TOTALLY
+fetches the ledger base and proves it is an ancestor of the candidate `HEAD`. `BLOCKED` runs that SAME
+ancestry probe before it parks: a BLOCKED PR that is merely BEHIND its base is routed to a rebase (which the
+gate carries forward), not parked on the user; only a BLOCKED PR proven up-to-date is a genuine human/ruleset
+block and parks. The probe NEVER yields a new merge — it can only turn a park into a rebase. Both enums are mapped TOTALLY
 — every value GitHub's schema declares has its own row, and a value with NO row is a WEDGE, so the catch-all
 PARKS it rather than guessing. This mapping
 is the OWNER of the merge-readiness decision; `references/stage-3-merge.md` now DELEGATES that decision to a
@@ -79,19 +82,24 @@ MERGEABLE = {
     "UNKNOWN": "mergeability not computed yet — re-poll",
 }
 
-# `.mergeStateStatus` — CLEAN and HAS_HOOKS are the ONLY two that clear the merge; every other value is a
-# terminal not-yet. This mapping is the OWNER of the merge-readiness decision; `stage-3-merge.md` DELEGATES
-# to it. A value with no row here parks via the catch-all in `decide`, never guesses; the sibling fixtures
-# pin every value's verdict.
+# `.mergeStateStatus` — CLEAN and HAS_HOOKS are the ONLY two that can clear the merge; BLOCKED cannot be
+# decided by `decide` alone (it might merely be BEHIND its base, which a rebase fixes), so it routes to the
+# PROBE sentinel and `check` resolves it with the base-ancestry probe it already runs for the merge path;
+# every other value is a terminal not-yet. This mapping is the OWNER of the merge-readiness decision;
+# `stage-3-merge.md` DELEGATES to it. A value with no row here parks via the catch-all in `decide`, never
+# guesses; the sibling fixtures pin every value's verdict.
 MERGE = "merge"
 NOT_YET = "not-yet"
+PROBE = "probe-base"                              # BLOCKED: decide can't finish; check() resolves via ancestry
+REBASE_REASON = "base moved ahead — rebase"       # Stage 3 routes on the `rebase` phrase to clean-rebase.py
+BLOCKED_PARK_REASON = "GitHub says BLOCKED — park awaiting-user"
 MERGE_STATE_STATUS = {
     "CLEAN": (MERGE, ""),
     "HAS_HOOKS": (MERGE, ""),
-    "BEHIND": (NOT_YET, "base moved ahead — rebase"),
+    "BEHIND": (NOT_YET, REBASE_REASON),
     "DIRTY": (NOT_YET, "conflicts — rebase"),
     "UNSTABLE": (NOT_YET, "a check is non-passing (may still be running) — not campaign's ci signal"),
-    "BLOCKED": (NOT_YET, "GitHub says BLOCKED — park awaiting-user"),
+    "BLOCKED": (PROBE, BLOCKED_PARK_REASON),
     "UNKNOWN": (NOT_YET, "merge state not computed yet — re-poll"),
 }
 
@@ -102,6 +110,12 @@ def _merge() -> dict:
 
 def _not_yet(reason: str) -> dict:
     return {"verdict": NOT_YET, "reason": reason}
+
+
+def _probe(reason: str) -> dict:
+    """A BLOCKED verdict `decide` cannot finish: `check` runs the base-ancestry probe and resolves it to
+    rebase (behind) / park (up-to-date, the carried `reason`) / leave (unverifiable). NEVER printed."""
+    return {"verdict": PROBE, "reason": reason}
 
 
 def _short(sha: str) -> str:
@@ -169,7 +183,11 @@ def decide(row: dict, view: dict, *, required) -> dict:
     if row_mss is None:
         return _not_yet(f"unknown merge state {mss} — park, never guess")
     verdict, reason = row_mss
-    return _merge() if verdict == MERGE else _not_yet(reason)
+    if verdict == MERGE:
+        return _merge()
+    if verdict == PROBE:
+        return _probe(reason)
+    return _not_yet(reason)
 
 
 # --- obtain the live PR view ---------------------------------------------------
@@ -255,21 +273,28 @@ def check(pr: str, ledger_path: Path, repo: "str | None", view_json: "str | None
         print(json.dumps(_not_yet(f"malformed PR view: {problem}")))
         return 1
     result = decide(row, view, required=REQUIRED)
-    if result["verdict"] != MERGE:
+    verdict = result["verdict"]
+    if verdict == NOT_YET:
         print(json.dumps(result))
         return 0
 
-    # GitHub may still call the PR MERGEABLE/CLEAN after an earlier campaign merge advances an unprotected
-    # base. Re-fetch and compare actual ancestry before the final merge decision; the shared preflight helper
-    # owns the graph check so review dispatch and Stage 3 cannot disagree about what "current base" means.
+    # MERGE and PROBE (BLOCKED) BOTH resolve here on the same base-ancestry probe; they differ ONLY in the
+    # `current` outcome. GitHub may still call a PR MERGEABLE/CLEAN after an earlier campaign merge advances an
+    # unprotected base, and a BLOCKED PR may merely be BEHIND its base — a rebase fixes both. So re-fetch and
+    # compare actual ancestry before the final decision; the shared preflight helper owns the graph check so
+    # review dispatch and Stage 3 cannot disagree about what "current base" means.
     ancestry, detail = B.check_base_ancestry(row.get("worktree"), header.get("base_branch"), "origin")
-    if ancestry == "stale":
-        print(json.dumps(_not_yet("base moved ahead — rebase")))
+    if ancestry == "stale":                       # behind base -> rebase (BOTH paths; never a merge)
+        print(json.dumps(_not_yet(REBASE_REASON)))
         return 0
-    if ancestry == "unverified":
+    if ancestry == "unverified":                  # fail closed -> leave/re-poll (BOTH paths)
         print(json.dumps(_not_yet(f"could not verify base ancestry: {detail}")))
         return 1
-    print(json.dumps(result))
+    # ancestry == current: MERGE clears; PROBE (BLOCKED but up-to-date) is a genuine human/ruleset block -> park.
+    if verdict == MERGE:
+        print(json.dumps(_merge()))
+        return 0
+    print(json.dumps(_not_yet(result["reason"])))
     return 0
 
 
