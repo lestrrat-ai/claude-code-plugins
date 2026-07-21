@@ -763,9 +763,11 @@ def apply_head_sha(row: dict, new_sha: str) -> None:
     `--head-sha` from resetting the counters.
 
     PRECEDENCE — an explicit counter flag in the SAME `set` call WINS over the automatic reset. This helper
-    touches ONLY `head_sha` and the counters; `cmd_set` calls it and THEN applies the remaining named updates,
-    so the explicit flag is written AFTER the reset. `set --head-sha <new> --settled-strikes 5` records 5,
-    while every counter NOT named still resets to its default (pinned by `t_head_sha_explicit_counter_wins`).
+    resets `head_sha`, the liveness counters, AND `base_ok_sha`; `cmd_set` calls it and THEN applies the
+    remaining named updates, so an explicit liveness-counter flag is written AFTER the reset. `set --head-sha
+    <new> --settled-strikes 5` records 5, while every counter NOT named still resets to its default (pinned by
+    `t_head_sha_explicit_counter_wins`). This precedence concerns the liveness-counter flags ALONE:
+    `base_ok_sha` has no `set` door of its own, so it is reset here and can never be re-set in the same call.
     """
     if not SHA_RE.match(new_sha):
         fail(f"--head-sha {new_sha!r} is not a git object id (40 LOWERCASE hex) — a value that cannot be a "

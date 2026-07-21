@@ -293,8 +293,9 @@ def run(args) -> int:
     # case KEEPS the gate — the "clean base-only rebase" Exception in stage-2-review-gate.md, "Status labels
     # mirror the review gate", is the owner). It IS a head_sha change, so: new head_sha, ci=pending, and
     # reset the four liveness counters to their fresh-head ROW_DEFAULTS. `reviews_ok`/labels are NOT touched.
-    # The `set --head-sha` door ALSO voids `base_ok_sha` (apply_head_sha) — a new head is unverified until a
-    # fresh base-preflight `proceed` — and the emitted `ledger` object echoes that reset value below.
+    # The `set --head-sha` door ALSO voids `base_ok_sha` (apply_head_sha) on a genuine head move — a new head
+    # is unverified until a fresh base-preflight `proceed` — and the emitted `ledger` object below echoes the
+    # RESULTING value re-read from the row (the reset `-` on a real move; the retained stamp on a no-op).
     ledger_argv = ["python3", str(LEDGER_PY), "--file", str(ledger_path), "set", "--pr", pr,
                    "--head-sha", new_head, "--ci", "pending"]
     for field in LIVENESS_COUNTERS:
@@ -309,13 +310,20 @@ def run(args) -> int:
               "ledger_written": False, "reason": "ledger set failed after a successful push"})
         return EXIT_PARTIAL
 
+    # Echo the ACTUAL post-write ledger values, re-read from the row `set` just wrote — NEVER the fresh-head
+    # ROW_DEFAULTS. `apply_head_sha` voids `base_ok_sha` ONLY on a genuine head move; on a same-head no-op
+    # (the base did not advance, so `new_head == orig_head`) it resets nothing and `base_ok_sha` keeps its
+    # stamp — hardcoding the ROW_DEFAULTS reset here would make the echo LIE about that case. Reading the row
+    # reports whichever actually happened: a reset `-` on a real move, the retained stamp on a no-op. This
+    # keeps every reported field consistent with the stored row (the liveness counters, force-written to
+    # their defaults by the explicit flags above, read the same value either way).
+    _, written_rows = L.load(ledger_path)
+    written = L.find_row(written_rows, pr) or {}
     emit({"pr": pr, "old_head": orig_head, "new_head": new_head, "base": base, "pushed": True,
-          "ledger": {"head_sha": new_head, "ci": "pending",
-                     # the head move voided base_ok_sha at the `set --head-sha` door; echo the value it was
-                     # reset to (from ROW_DEFAULTS, like the liveness counters) so the driver SEES it must
-                     # re-earn a base-preflight `proceed` before the next verdict.
-                     "base_ok_sha": str(L.ROW_DEFAULTS["base_ok_sha"]),
-                     **{f: str(L.ROW_DEFAULTS[f]) for f in LIVENESS_COUNTERS}}})
+          "ledger": {"head_sha": str(written.get("head_sha", new_head)),
+                     "ci": str(written.get("ci", "pending")),
+                     "base_ok_sha": str(written.get("base_ok_sha", L.ROW_DEFAULTS["base_ok_sha"])),
+                     **{f: str(written.get(f, L.ROW_DEFAULTS[f])) for f in LIVENESS_COUNTERS}}})
     return EXIT_OK
 
 

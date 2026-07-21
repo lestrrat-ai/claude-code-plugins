@@ -261,9 +261,10 @@ def cmd_adopt(args) -> int:
     # must recompute and everything else survives untouched. What that is depends on whether the head moved:
     #   * NEW row: initialize the SHA-bound gate fields AND `status` (the fresh row's starting state).
     #   * MOVED head on an existing row: the new head is new evidence, so reset the SHA-bound EVIDENCE — the
-    #     review tally and ci here, and THE LIVENESS COUNTERS at the accessor. The `--head-sha` write below
-    #     resets those counters itself (ledger.py's `apply_head_sha`; stage-2-ci.md, "THE LIVENESS COUNTERS")
-    #     — this refresh MUST NOT hand-reset them. `status` is PRESERVED: it tracks a HUMAN decision, not the
+    #     review tally and ci here, and THE LIVENESS COUNTERS and the base-preflight stamp `base_ok_sha` at the
+    #     accessor. The `--head-sha` write below resets the counters AND voids `base_ok_sha` itself (ledger.py's
+    #     `apply_head_sha`; stage-2-ci.md, "THE LIVENESS COUNTERS"; files-and-ledger.md, the `base_ok_sha`
+    #     field) — this refresh MUST NOT hand-reset them. `status` is PRESERVED: it tracks a HUMAN decision, not the
     #     SHA, so a head refresh must never un-hold a PR the user has not ruled on (awaiting-user, aborted,
     #     repairing).
     #   * UNCHANGED head on an existing row: name none of the SHA-bound fields — the accumulated verdicts,
