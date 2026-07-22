@@ -602,8 +602,9 @@ review-standoff park/unpark (`finding-audit.md`) is answered through `finding-au
 recorded (`set --blocker-ruling retry@<iso>`), which `unpark` then consumes.
 
 `table` is the user-facing status view: the end-of-heartbeat report renders it whenever the run goes back
-to waiting (`loop-control.md`, "Reschedule or exit"). It renders state and decides nothing — no gate
-logic, no derived values.
+to waiting (`loop-control.md`, "Reschedule or exit"). It renders state and makes NO gate decisions; its
+one computed value is the display-only `base` column (the `base` bullet under "It shows only SOME fields",
+below).
 
 **Read the ledger by FIELD NAME through `ledger.py get`** (or `list`) — **never by parsing the table**.
 A SHA (or any value) recovered from `table`'s grid is a truncated, escaped rendering, and feeding one back
