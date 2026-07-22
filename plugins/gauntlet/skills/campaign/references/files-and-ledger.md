@@ -126,12 +126,15 @@ shortened SHA into the store, and never reconstruct one from a display.** The ON
 shortened is `table`'s rendering (below) — that is display-only and does not exist on disk.
 
 Header-record fields: `run_id` (this run's identity — namespaces its dir/label/heartbeats; set once),
-`base_branch` (the adopted PRs' baseRefName — the branch they merge into & diffs measure against; set
-once, see "Base branch"), `api_changes` (`ask` | `allowed`, run-wide; set once from the invocation),
-`reviewer` (`default` (per-host cross-engine route with native fallback — see "The reviewer") | `codex` | `claude` | `<other>` — the selected reviewer; set once, see
-"The reviewer"), `required_set` (what `base_branch` **requires** — `stage-2-ci.md`, "What were we
-expecting to see?", owns the three states, the format, and the reads that produce them; re-read every
-heartbeat while it is `unknown`), `skill_version` (**which copy of the rules actually governed this run**),
+`base_branch` (**the LEGACY base fallback** — the base a PR merges into is now **per-row** state, and this
+header field is only what a row carrying no explicit base inherits through `effective_base`; see "Base
+branch" and the row `base_branch` field below), `api_changes` (`ask` | `allowed`, run-wide; set once from
+the invocation), `reviewer` (`default` (per-host cross-engine route with native fallback — see "The
+reviewer") | `codex` | `claude` | `<other>` — the selected reviewer; set once, see "The reviewer"),
+`required_set` (**the LEGACY required-set fallback** — the required set is now **per-row** state too, and
+this header field is only what a row carrying no explicit set inherits through `effective_required_set`;
+`stage-2-ci.md`, "What were we expecting to see?", owns the three states and the format; see the row
+`required_set` field below), `skill_version` (**which copy of the rules actually governed this run**),
 `last_activity` (**when this run last did something MEANINGFUL** — a UTC ISO-8601 stamp the write doors
 maintain; the quiet-run sensor `nudge.py` reads, defined below), `watchdog_due` (**the durable
 health-pass deadline** — a UTC ISO-8601 stamp `ledger.py watchdog` stamps and reads, defined below),
@@ -147,12 +150,14 @@ the run recorded which version it was**, so no report could say so, and the fail
 human went looking. It defaults to `unknown` for the same reason `required_set` does: *"I did not look"* is
 a different fact from any version number, and must never be spelled as one.
 
-`required_set` is a property of the **base branch**, not of a PR, which is why it lives in the header. It
-defaults to **`unknown`**, and that default is **load-bearing, not a placeholder**: `unknown` **cannot go
-green** (`stage-2-ci.md`), so a run that never performed the read merges **nothing**. **"I have not
-looked" and "I looked and there are none" are different facts**, and the default is the one that claims
-nothing — a `none` that really meant "I could not see" is how a green gets recorded for a commit whose
-required check never registered.
+The header `required_set` is a property of the **base branch** — and the base is now **per-row** state, so
+the canonical required set is a **row field** too (below). This header field is the **legacy fallback**
+`effective_required_set` reads for a row that carries no explicit set; an old single-base ledger keeps its
+header value and every one of its rows inherits it. It defaults to **`unknown`**, and that default is
+**load-bearing, not a placeholder**: `unknown` **cannot go green** (`stage-2-ci.md`), so a run that never
+performed the read merges **nothing**. **"I have not looked" and "I looked and there are none" are
+different facts**, and the default is the one that claims nothing — a `none` that really meant "I could not
+see" is how a green gets recorded for a commit whose required check never registered.
 
 `last_activity` records **when this run last did something MEANINGFUL**, so a fresh-context heartbeat can
 tell **how long nothing has moved** without holding the history in its head — the same lesson as
@@ -293,6 +298,34 @@ Header field notes (the header fields above; per-row fields follow):
   row goes **`repairing`** and the command **exits non-zero** (`repair-pass.md` owns the caps, the
   reassessment, and the repair). **This paragraph is the owner of the sensors-and-fused-reader design
   rationale** — the procedure docs point here rather than restate it.
+- `base_branch` — **the base this PR merges into**, the target `baseRefName` from live GitHub, written
+  once at row creation (`add-row --base-branch`). A run may hold rows on **different** bases, so the base
+  is **per-row**, not per-run; the header `base_branch` is only the **legacy fallback** a row with none
+  inherits. `ledger.py`'s `effective_base(header, row)` — an explicit row value, else the header — is the
+  one place the fallback lives, and it is the **sanctioned door** for resolving a row's base. **This is
+  stage 1 of 3: the field and the resolver exist, and consumers are deliberately unchanged** — today only
+  `table`'s computed, display-only `base` column resolves per row; adoption does not yet record an explicit
+  row base, and every other consumer still reads the header field directly. Stages 2-3 move them through
+  the resolver. It is **TOOL-OWNED and
+  IMMUTABLE after creation** (`CREATE_ONLY` in `scripts/ledger.py`): `add-row` writes it and **`set` has no
+  `--base-branch` flag**, so the recorded base can never be rewritten — the campaign does not migrate a row
+  to a new base. The default is **`-`**, which is both the schema's "not set" spelling **and** its "inherit
+  the legacy header" signal, and is **DISTINCT from any explicit base name**: a `-` row inherits, an
+  explicit-base row does not — which is what lets one run mix legacy inheriting rows with new explicit-base
+  rows. An old ledger's rows read back `-` and resolve exactly as they always did, with no migration.
+- `required_set` — **the canonical required-check set for this row's effective base**. Required checks are a
+  property of the base, and the base is row state, so this is too; the header `required_set` is the **legacy
+  fallback**. `effective_required_set(header, row)` — an explicit row value, else the header — is the
+  resolver, the same sanctioned door as `effective_base` and **staged the same way: the resolver exists
+  today, and consumers still read the header field directly until stages 2-3 move them.** Its three states
+  (`declared:<json>` / `none` / `unknown`) are owned by `stage-2-ci.md` exactly as the header field's are.
+  Unlike `base_branch` it is **an ordinary settable field** — the stage-2 grouped required-set refresh will
+  write the canonical value through `set`, so that door stays open. The default is **`-`**, which — like
+  `base_branch` — means **inherit the header**, and is **DISTINCT from `unknown`**: `-` says "this row owns
+  no set; read the header", while `unknown` is an **explicit** row value meaning a read for THIS base was
+  attempted and failed, so it **fails closed and cannot go green** and must **never** be silently replaced
+  by the header. An old row reads back `-` and inherits; once stages 2-3 land, a new run will write
+  `unknown` per row until a grouped read succeeds.
 - `intent` — the PROVENANCE of `<rundir>/intent-<pr>.md` (the file itself is markdown, so it lives in the
   run dir, not in this one-object-per-line store): `-` (not adopted yet) | `stated@<iso>` (the PR body
   already carried a usable intent block, copied verbatim) | `authored@<iso>` (the driver **inferred** it
@@ -569,8 +602,9 @@ review-standoff park/unpark (`finding-audit.md`) is answered through `finding-au
 recorded (`set --blocker-ruling retry@<iso>`), which `unpark` then consumes.
 
 `table` is the user-facing status view: the end-of-heartbeat report renders it whenever the run goes back
-to waiting (`loop-control.md`, "Reschedule or exit"). It renders state and decides nothing — no gate
-logic, no derived values.
+to waiting (`loop-control.md`, "Reschedule or exit"). It renders state and makes NO gate decisions; its
+one computed value is the display-only `base` column (the `base` bullet under "It shows only SOME fields",
+below).
 
 **Read the ledger by FIELD NAME through `ledger.py get`** (or `list`) — **never by parsing the table**.
 A SHA (or any value) recovered from `table`'s grid is a truncated, escaped rendering, and feeding one back
@@ -601,6 +635,11 @@ human*, and the formatting is lossy in four ways:
   hand-typed list of hidden fields would be **stale the next time a row field is added — by a change its
   author never sees**, and that is exactly how this paragraph broke before: it named seven hidden fields,
   a later PR added six more row fields, and neither author touched the other's work.
+
+  One default column is **not a stored field at all**: `base` is **computed** — `effective_base(header,
+  row)`, the row's resolved base (`TABLE_BASE_COLUMN` in `scripts/ledger.py`) — so a `-` row shows the
+  header base it inherits rather than a bare `-`. It is **display-only and decides nothing**; the raw stored
+  value is still `ledger.py … get --pr N --field base_branch`, and `--fields base_branch` prints it raw.
 - **It shortens the SHA.** `table` prints `head_sha` truncated to its first **8 characters**. This is a
   **display-only** truncation and applies to **`table` alone** — nothing else in campaign ever shortens a
   SHA. The stored value, and the one every other subcommand returns, stays the full 40-char `headRefOid`:

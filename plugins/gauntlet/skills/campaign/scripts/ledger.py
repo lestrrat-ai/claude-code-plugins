@@ -41,6 +41,13 @@ HEADER_FIELDS = ("run_id", "base_branch", "api_changes", "reviewer", "required_s
                  "last_activity", "watchdog_due", "pending_adoption")
 HEADER_DEFAULTS = {
     "run_id": "-",
+    # LEGACY FALLBACK for the base branch. The base a PR merges into is now ROW state (`base_branch` in
+    # ROW_FIELDS), written once at row creation. This header field is only what a row with NO explicit base
+    # inherits, through `effective_base` — the schema-owned resolver, the sanctioned door for base
+    # consumers. This is STAGE 1 of the per-row-base work: the field and resolver exist, and consumers are
+    # deliberately unchanged — TODAY they still read this header field directly; stages 2-3 move them
+    # through the resolver. An old single-base ledger keeps its header value and every one of its rows
+    # reads it. files-and-ledger.md, "Base branch", owns the field.
     "base_branch": "-",
     "api_changes": "ask",
     "reviewer": "default",
@@ -57,8 +64,15 @@ HEADER_DEFAULTS = {
     # The default is `unknown` for the same reason `required_set`'s is: "I did not look" is a different
     # fact from any version number, and it must never be spelled as one.
     "skill_version": "unknown",
-    # What `base_branch` REQUIRES (stage-2-ci.md, "WHAT WERE WE EXPECTING TO SEE?", which owns the three
-    # states and the format). A property of the BASE BRANCH, not of a PR, so it lives here, not on the rows.
+    # LEGACY FALLBACK for the required-check set. Required checks are a property of the BASE BRANCH, and
+    # the base is now ROW state (`base_branch` in ROW_FIELDS), so the canonical required set is row state
+    # too (`required_set` in ROW_FIELDS). This header field is only what a row with NO explicit value
+    # inherits, through `effective_required_set` — the schema-owned resolver, the sanctioned door for
+    # consumers, staged exactly like `effective_base` above: TODAY consumers still read this header field
+    # directly; stages 2-3 move them through the resolver. An old single-base ledger keeps its header value
+    # and every one of its rows reads it; once stages 2-3 land, a new run will write `unknown` here and the
+    # canonical set on each row. stage-2-ci.md, "WHAT WERE WE EXPECTING TO SEE?",
+    # owns the three states and the format:
     #
     #   declared:<json>  the required checks, READ. `ci-snapshot.py --required-set` is the one parser.
     #   none             both reads succeeded and the set is EMPTY — a read FACT: nothing is required.
@@ -156,6 +170,34 @@ ROW_FIELDS = (
     # The default is `-`, the schema's own "not set" spelling: an old ledger, or a head with no `proceed` yet,
     # reads back `-`, which never equals a 40-hex head, so `verdict` fails CLOSED until base-preflight runs.
     "base_ok_sha",
+    # THE BASE THIS ROW MERGES INTO — the target `baseRefName` from live GitHub, written once at row
+    # creation (`add-row --base-branch`; stage-2 work wires adoption to record it). A run may hold rows on
+    # DIFFERENT bases (`v3`, `main`), so the base is per-ROW, not per-run: the header `base_branch` is only
+    # a LEGACY FALLBACK for a row that carries none. `effective_base(header, row)` is the schema-owned
+    # resolver — an explicit row value, else the header. files-and-ledger.md, "Base branch", owns the field.
+    #
+    # It is TOOL-OWNED and CREATION-ONLY (`CREATE_ONLY`): `add-row` writes it when the row appears and
+    # NOTHING changes it after — there is no `--base-branch` flag at `set`. The campaign never migrates a row
+    # to a new base; a live base that no longer matches the recorded one is an unsupported change a consumer
+    # parks for the user (stage-2 work), never a value `set` rewrites.
+    #
+    # The default is `-`, the schema's own "not set" spelling AND its "inherit the legacy header" signal:
+    # an old ledger's rows read back `-` and resolve through the header, exactly as they always did. A `-`
+    # here is DISTINCT from an explicit base of any name — that is what lets one run mix legacy inheriting
+    # rows with new explicit-base rows.
+    "base_branch",
+    # THE CANONICAL REQUIRED-CHECK SET FOR THIS ROW'S EFFECTIVE BASE — required checks are a property of the
+    # base, and the base is row state, so this is too. `effective_required_set(header, row)` resolves it: an
+    # explicit row value, else the header `required_set` (the LEGACY FALLBACK). Its three states are
+    # `declared:<json>` / `none` / `unknown`, owned by stage-2-ci.md exactly as the header field's are.
+    #
+    # The default is `-`, which — like `base_branch` — means "inherit the legacy header", and is DISTINCT
+    # from `unknown`: `-` says "this row owns no set; read the header", while `unknown` says "a read was
+    # attempted for THIS base and failed, so fail closed and do not go green" (stage-2-ci.md). An old row
+    # reads back `-` and inherits; a new run will write `unknown` on each row until a grouped read succeeds
+    # (stage-2 work). An ordinary settable field: the stage-2 grouped required-set refresh will write the
+    # canonical value through `set` (unlike `base_branch`, which is immutable after creation).
+    "required_set",
     # WHERE THIS PR'S INTENT CAME FROM — the PROVENANCE of `<rundir>/intent-<pr>.md`:
     #   `-`                not adopted yet
     #   `stated@<iso>`     the PR body already carried a usable intent block; it was COPIED VERBATIM
@@ -200,7 +242,8 @@ ROW_DEFAULTS = {
     "tier": "-", "attempts": "0", "started": "-", "api_approval": "-", "status": "pending",
     "ci_fingerprint": "-", "settled_strikes": "0", "unusable_refetches": "0",
     "ci_stalled_since": "-", "ci_reason": "-", "blocker_ruling": "-",
-    "review_rounds": "0", "ns_streak": "0", "base_ok_sha": "-", "intent": "-",
+    "review_rounds": "0", "ns_streak": "0", "base_ok_sha": "-",
+    "base_branch": "-", "required_set": "-", "intent": "-",
     "pr_origin": "external", "repair_count": "0", "repair_decision": "-",
 }
 
@@ -270,6 +313,16 @@ REPAIR_OWNED = ("repair_count", "repair_decision")
 # the exact waste this guard exists to stop. So there is no `--base-ok-sha` flag: `base-preflight.py check`
 # writes it, through `base-ok`, only when it actually decides `proceed`, and nothing else writes it at all.
 PREFLIGHT_OWNED = ("base_ok_sha",)
+
+# The row fields that `add-row` may write ONCE, at row creation, and that `set` may NEVER change afterward.
+# `base_branch` is the target `baseRefName` recorded from live GitHub at adoption; the campaign never
+# migrates a row to a new base, so the field is TOOL-OWNED and IMMUTABLE after creation. The mechanism is
+# the same absent-door one `PREFLIGHT_OWNED` uses, but ASYMMETRIC across the two write doors: the flag is
+# present at `add-row` (creation must be able to record the base) and ABSENT at `set` (argparse then refuses
+# `set --base-branch`, so nothing can rewrite it). A field here is still `settable()`; CREATE_ONLY narrows
+# only WHICH door may write it. (`required_set` is NOT here — the stage-2 grouped required-set refresh will
+# rewrite it through `set`, so that door stays open; only the base itself is fixed for a row's life.)
+CREATE_ONLY = ("base_branch",)
 
 # The park/unpark TRANSITIONS `park`/`unpark` own — the same mechanism as VERDICT_OWNED, one level up at the
 # `status` field. A machine-blocker park and a retry unpark are each MULTI-FIELD atomic writes whose fields
@@ -597,6 +650,39 @@ def find_row(rows: list[dict], pr: str) -> "dict | None":
     return None
 
 
+# --- effective base / required set: row-owned, with the header as the LEGACY FALLBACK -----------------
+#
+# The base a PR merges into, and the required-check set that base demands, are now per-ROW state. These two
+# accessors are the ONE place the fallback lives: a row's explicit value if it has one, otherwise the legacy
+# header value. They are STAGE 1 of the per-row-base work — the sanctioned door every base/required-set
+# consumer resolves through once stages 2-3 convert them. TODAY the only non-test caller is `table`'s
+# computed, display-only `base` column; every other consumer still reads the header field directly, exactly
+# as it did before this stage. `-` is the row default and means exactly "inherit the header": an old
+# ledger's rows carry `-` and resolve to the header value they always used, while a row with an explicit
+# base (or an explicit required set) has that value returned unchanged. This is what lets legacy inheriting
+# rows and new explicit-base rows coexist in one run.
+
+def effective_base(header: dict, row: dict) -> str:
+    """The base branch that governs `row`: its explicit `base_branch`, else the legacy header `base_branch`."""
+    value = row.get("base_branch", ROW_DEFAULTS["base_branch"])
+    if value != "-":
+        return value
+    return header.get("base_branch", HEADER_DEFAULTS["base_branch"])
+
+
+def effective_required_set(header: dict, row: dict) -> str:
+    """The required-check set for `row`: its explicit `required_set`, else the legacy header `required_set`.
+
+    `-` on the row means "inherit the header"; it is DISTINCT from `unknown`, which is an explicit row value
+    meaning a read for this base failed and must fail closed (stage-2-ci.md). So a new row's `unknown` is
+    returned as `unknown` and never silently replaced by the header, while an old row's `-` reads the header.
+    """
+    value = row.get("required_set", ROW_DEFAULTS["required_set"])
+    if value != "-":
+        return value
+    return header.get("required_set", HEADER_DEFAULTS["required_set"])
+
+
 def check_field(name: str, valid: "tuple[str, ...]") -> None:
     if name not in valid:
         fail(f"unknown field '{name}'; valid: {', '.join(valid)}")
@@ -686,11 +772,18 @@ def settable(name: str) -> bool:
             and name not in PREFLIGHT_OWNED)
 
 
-def _named_field_values(args) -> dict:
-    """Collect the --<row-field> options that were actually supplied."""
+def _named_field_values(args, *, creating: bool) -> dict:
+    """Collect the --<row-field> options that were actually supplied.
+
+    `creating` distinguishes the two doors: `add-row` (creating=True) may write a `CREATE_ONLY` field,
+    `set` (creating=False) may not. The `set` parser does not even register those flags, so this is a
+    belt-and-braces skip; it keeps the collection honest even if a flag is added by mistake.
+    """
     values = {}
     for name in ROW_FIELDS:
         if not settable(name):
+            continue
+        if not creating and name in CREATE_ONLY:
             continue
         val = getattr(args, name, None)
         if val is not None:
@@ -732,7 +825,8 @@ def cmd_add_row(path: Path, args) -> int:
     if find_row(rows, pr) is not None:
         fail(f"a row for pr {pr} already exists; use `set` to update it")
     row = dict(ROW_DEFAULTS)
-    updates = _named_field_values(args)  # pr/id/VERDICT_OWNED excluded — they are derived or verdict-owned
+    # creating=True: `add-row` is the ONE door that may write a CREATE_ONLY field (row `base_branch`).
+    updates = _named_field_values(args, creating=True)  # pr/id/VERDICT_OWNED excluded — derived or verdict-owned
     # A NEW row has run no reviews, so its tally is 0 and the floor rule applies from the defaults: a
     # `--reviews-ok 2` at CREATION is the same forged verdict as one at `set`, and it used to be the one
     # door where it went through.
@@ -790,7 +884,8 @@ def cmd_set(path: Path, args) -> int:
     row = find_row(rows, pr)
     if row is None:
         fail(f"no row for pr {pr}; use `add-row` to create it")
-    updates = _named_field_values(args)
+    # creating=False: `set` may NOT write a CREATE_ONLY field (row `base_branch` is fixed after creation).
+    updates = _named_field_values(args, creating=False)
     if not updates:
         fail("set requires at least one --<field> <value>")
     check_tally(updates, row)
@@ -1163,8 +1258,15 @@ def cmd_list(path: Path, args) -> int:
 # IDENTICALLY — which is exactly what happened: the only reader who could see the spiral was a human who
 # happened to hold every round in one context, and stopping it took them. A round count in the status view
 # is how the next one is visible at a glance.
-TABLE_DEFAULT_FIELDS = ("pr", "slug", "tier", "reviews_ok", "review_rounds", "ci", "attempts", "status",
-                        "head_sha")
+TABLE_DEFAULT_FIELDS = ("pr", "slug", "base", "tier", "reviews_ok", "review_rounds", "ci", "attempts",
+                        "status", "head_sha")
+
+# A COMPUTED, DISPLAY-ONLY column: the row's EFFECTIVE base (`effective_base(header, row)`), not a stored
+# field. It shows the base that actually governs a row — an explicit row base, or the legacy header value a
+# `-` row inherits — so a mixed-base run reads at a glance and a legacy run shows its real base rather than a
+# column of `-`. It is a valid `--fields` selector (resolved here, never a `ROW_FIELDS` key), and it decides
+# nothing: `get`/`list` still read the raw stored `base_branch` by name.
+TABLE_BASE_COLUMN = "base"
 
 # Display-only truncation: a 40-char SHA would dominate the table. The full
 # value stays on disk and in `get`; the table is a projection, not a source.
@@ -1210,7 +1312,8 @@ def cmd_table(path: Path, args) -> int:
     if args.fields is not None:  # an empty --fields is malformed, not "omitted"
         fields = tuple(f.strip() for f in args.fields.split(","))
         for f in fields:
-            check_field(f, ROW_FIELDS)
+            # `base` is a valid selector — a computed, display-only column, not a stored field.
+            check_field(f, ROW_FIELDS + (TABLE_BASE_COLUMN,))
     else:
         fields = TABLE_DEFAULT_FIELDS
     # The DEFAULT view drops finished work (see TABLE_HIDDEN_STATUSES); --all shows the whole ledger.
@@ -1228,8 +1331,15 @@ def cmd_table(path: Path, args) -> int:
     # the reader sees.
     #
     # The sha is truncated HERE, on the RAW value, before `grid_lines()` escapes it — so a cut never
-    # splits an escape sequence in half and leaves a dangling backslash behind.
-    cells = [[row[f][:TABLE_SHA_WIDTH] if f == "head_sha" else row[f] for f in fields] for row in shown]
+    # splits an escape sequence in half and leaves a dangling backslash behind. The `base` column is
+    # COMPUTED (effective_base) rather than read from a field; it is escaped by `grid_lines()` like any cell.
+    def table_cell(row: dict, f: str) -> str:
+        if f == TABLE_BASE_COLUMN:
+            return effective_base(header, row)
+        if f == "head_sha":
+            return row[f][:TABLE_SHA_WIDTH]
+        return row[f]
+    cells = [[table_cell(row, f) for f in fields] for row in shown]
     for line in grid_lines(fields, cells):
         print(line)
     if not cells:
@@ -1296,12 +1406,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="'arm' stamps the deadline now+interval; 'check' prints unset/ok/due/invalid "
                         "(read-only, always exit 0); 'interval' prints the interval in minutes (reads no ledger)")
 
-    def add_row_field_opts(p) -> None:
+    def add_row_field_opts(p, *, creating: bool) -> None:
         for name in ROW_FIELDS:
             # pr is the row key (via --pr); id is derived; VERDICT_OWNED has no flag AT ALL, at either
             # door — `review_rounds` is the loop's memory, and the only way to guarantee nothing resets it
             # is to give nothing a way to write it (`settable`).
             if not settable(name):
+                continue
+            # A CREATE_ONLY field (row `base_branch`) gets a flag at `add-row` ONLY — no `set` flag, so
+            # `set --base-branch` is an "unrecognized arguments" refusal and the recorded base is immutable.
+            if not creating and name in CREATE_ONLY:
                 continue
             # Canonical flag is dash-form (--reviews-ok); accept the underscore
             # alias too. dest stays the underscore field name so getattr(args,
@@ -1313,11 +1427,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     a = sub.add_parser("add-row", help="append a new row for --pr")
     a.add_argument("--pr", required=True, help="PR number (row key)")
-    add_row_field_opts(a)
+    add_row_field_opts(a, creating=True)   # add-row may write CREATE_ONLY fields (row base_branch)
 
     s = sub.add_parser("set", help="update named fields on the row for --pr")
     s.add_argument("--pr", required=True, help="PR number (row key)")
-    add_row_field_opts(s)
+    add_row_field_opts(s, creating=False)  # set may NOT write CREATE_ONLY fields — no --base-branch flag
 
     # The ONE door that records a review verdict — and the only writer of `review_rounds`/`ns_streak`.
     v = sub.add_parser("verdict", help="record ONE landed review verdict: bumps review_rounds, applies "
