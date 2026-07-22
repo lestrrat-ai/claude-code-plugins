@@ -68,8 +68,13 @@ def check(cond, msg):
 
 def t_heartbeat_always_fires():
     for rows in ([], [row(1, "in_review")], [row(1, "merged")]):
-        check(has(fire(rows), "heartbeat is armed"),
-              "the heartbeat reminder must fire EVERY heartbeat, whatever the ledger holds")
+        lines = fire(rows)
+        pointers = [l for l in lines if "Primary continuity" in l]
+        check(len(pointers) == 1,
+              "exactly one Primary continuity pointer must fire EVERY heartbeat, whatever the ledger holds")
+        check(not has(lines, "check the heartbeat is armed") and not has(lines, "confirm the next heartbeat"),
+              "the reminder must NEVER tell the driver to check or confirm armed state — inspection is "
+              "unavailable on a scheduled host (loop-control.md, Primary continuity)")
 
 
 def t_header_reread_always_fires():
@@ -200,8 +205,6 @@ def t_quiet_run_fires_when_stale():
     check(has(stale, "review-pass.py status --run <rundir> --verify"),
           "the sweep must remind to run the review-pass status check with --verify")
     check(has(stale, "re-derive CI"), "the sweep must remind to re-derive CI for rows that can move")
-    check(has(stale, "confirm the next heartbeat is armed before you sleep"),
-          "the sweep must remind to arm the next heartbeat before sleeping")
     fresh = fire([row(1, "in_review", ci="green")], hdr=header(run_id="g1", last_activity=stamp(_QUIET_MIN - 5)), now=NOW)
     check(not has(fresh, "QUIET"), "a run with recent activity must NOT fire the quiet sweep")
 

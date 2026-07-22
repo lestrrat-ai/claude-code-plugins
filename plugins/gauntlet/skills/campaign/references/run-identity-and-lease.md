@@ -154,8 +154,10 @@ the verdict the tool prints.
    the prompt's `--token`, without `--watchdog`) → `refresh`: `owned` → reconcile, continue;
    `superseded` → stand down; refused because the lease is gone → re-arm, then `acquire` (the turn-split
    in "Take a run" applies on a turn-ending scheduler: the `acquire` runs on the wake the re-arm
-   produces). **Session watchdog** (`--run <id> --token <tok> --watchdog`) → first run the runtime
-   adapter's read-only primary and watchdog inspections, then take the same `refresh`: `owned` → run
+   produces). **Session watchdog** (`--run <id> --token <tok> --watchdog`) → run the runtime
+   adapter's capability-aware inspections (`runtime-adapter.md`, "Session watchdog nudge" — `primary
+   inspect` is optional and advisory; where the host exposes no such operation it records `unavailable`
+   or `not-applicable` without inventing a host call), then take the same `refresh`: `owned` → run
    the soundness audit before normal reconciliation (`loop-control.md`, "Reschedule or exit"); any refusal
    or `superseded` → report the inspections and stop. It NEVER calls `acquire`,
    `--allow-takeover`, or adoption: it is a live-session audit, not a recovery path.

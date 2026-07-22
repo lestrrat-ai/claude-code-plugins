@@ -320,7 +320,10 @@ completion into the same reconcile loop regardless of the host mechanism that re
 
 For the heartbeat fallback, choose exactly one lifecycle:
 
-1. **Scheduled-heartbeat host:** do NOT hand-assemble the wake. Run `scripts/heartbeat.py callback`
+1. **Scheduled-heartbeat host:** **the scheduled operation is arm-or-replace.** The host exposes one
+   replaceable pending-wake slot, so scheduling ARMS it when empty and REPLACES whatever occupies it — no
+   pre-inspection of scheduler state is required or performed (`loop-control.md`, "Primary continuity",
+   owns the unconditional re-arm). Do NOT hand-assemble the wake. Run `scripts/heartbeat.py callback`
    (resolve `scripts/` from the active `SKILL.md`, per **Bundled resources** above) with the host
    invocation, run-id, and token — `heartbeat.py callback --run <run-id> --token <agent-token>
    --invocation <campaign-invocation>` — render the status — the `ledger.py table` output
@@ -419,16 +422,23 @@ On a host with a session-watchdog capability, use these idempotent operations, k
   invocation. The nudge reaches the same session; it never launches an independent driver.
 - `inspect` — report whether the nudge remains armed for this session.
 - `remove` — delete the nudge during normal finalization.
-- `primary inspect` — on a scheduled-heartbeat host, report whether the next primary callback names this
-  run and owner token. A missing callback is repaired by this turn's final normal scheduling action; a
-  bounded-wait host reports that no callback exists to inspect.
+- `primary inspect` — **OPTIONAL and advisory only.** Where a scheduled-heartbeat host exposes it, it
+  reports one of four results, and none of them decides whether the primary re-arm happens
+  (`loop-control.md`, "Primary continuity", owns that — the re-arm is unconditional):
+  - `armed` — inspection confirmed the pending callback matches this run and owner token.
+  - `missing` — inspection was available and confirmed no matching callback.
+  - `unavailable` — the scheduled host exposes no inspection operation. It causes NO attempted host call
+    and NEVER blocks the watchdog audit.
+  - `not-applicable` — the host is using bounded wait and has no primary callback.
+  All four results return to `loop-control.md`'s "Primary continuity"; they inform the status render, not
+  the re-arm decision.
 
 None of these operations ends the turn. The primary heartbeat's final scheduling action still ends it.
 
-| Host | Session watchdog |
-|---|---|
-| Claude Code | Harness cron, scoped to this session. Its entry must deliver the watchdog command into this session, not create a new worker. |
-| Codex | Absent. The bounded-wait loop still honors `watchdog_due`, but has no separate audit wake. |
+| Host | Session watchdog | Primary inspection |
+|---|---|---|
+| Claude Code | Harness cron, scoped to this session. Its entry must deliver the watchdog command into this session, not create a new worker. | Unavailable — the scheduler exposes no inspection operation, so `primary inspect` returns `unavailable`. Its scheduler has one replaceable pending-wake slot; the turn-ending schedule call arms-or-replaces it unconditionally ("Primary continuity"). |
+| Codex | Absent. The bounded-wait loop still honors `watchdog_due`, but has no separate audit wake. | `not-applicable` — the current scheduler-less bounded-wait path has no primary callback. |
 
 An absent capability or failed `ensure` is non-blocking. State the boundary in the run-start and status
 reports: normal heartbeat health checks remain, but no separate session watchdog is armed. Do not claim

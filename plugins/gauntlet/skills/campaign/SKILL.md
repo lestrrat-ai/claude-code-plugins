@@ -114,9 +114,10 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
    the contract and the inline fallback). When the run is **QUIET** (nudge, no meaningful
    ledger activity for its window) **OR** `ledger.py watchdog check` says the long-cadence deadline is
    `due`/`unset`/`invalid`, run the **health pass** (one pass, then one `ledger.py watchdog arm`)
-   before rescheduling and lead the status with the diagnosis. A `--watchdog` wake audits that the primary
-   heartbeat is armed; it runs the health pass only when one of those normal triggers applies
-   (`references/loop-control.md`, "Reschedule or exit").
+   before rescheduling and lead the status with the diagnosis. A `--watchdog` wake runs the runtime
+   adapter's advisory inspections (`references/runtime-adapter.md`, "Session watchdog nudge") and runs the
+   health pass only when one of those normal triggers applies; it never decides the primary re-arm —
+   `references/loop-control.md`, "Primary continuity", owns continuing the loop.
 9. `ci-status.py required-set --ledger <rundir>/state.jsonl`: refresh the required set before any CI
    derivation this heartbeat.
 10. Mutating action due on a PR -> `ledger.py … dispatch-check --pr <N>`: run before ANY action that
@@ -129,13 +130,13 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
     reviews doomed by a content change.
 12. Before sleeping, audit: re-run the dispatch scan across both concurrency pools and confirm every
     due launch actually happened, every PR at a liveness cap was escalated rather than left spinning,
-    and a heartbeat or bounded wait is armed whenever non-terminal work remains. NEVER sleep with due
-    work un-launched or no path to the next reconcile. Then follow `references/loop-control.md`,
-    "Reschedule or exit", exactly: a scheduled-heartbeat host renders the status — the `ledger.py table`
-    output that block defines — and then schedules as the turn's LAST action (scheduling ends the turn
-    on that host: `references/runtime-adapter.md`, "Scheduled-heartbeat host"); a scheduler-less host
-    renders the same status, performs one bounded wait, and returns to the reconcile step while
-    non-terminal work remains.
+    and the loop continues per `references/loop-control.md`, "Primary continuity", whenever non-terminal
+    work remains. NEVER sleep with due work un-launched or no path to the next reconcile. Then follow
+    `references/loop-control.md`, "Reschedule or exit", exactly: a scheduled-heartbeat host renders the
+    status — the `ledger.py table` output that block defines — and then schedules-or-replaces the primary
+    wake as the turn's LAST action ("Primary continuity"; scheduling ends the turn on that host:
+    `references/runtime-adapter.md`, "Scheduled-heartbeat host"); a scheduler-less host renders the same
+    status, performs one bounded wait, and returns to the reconcile step while non-terminal work remains.
 
 **Review gate — stage 2a** (`references/stage-2-review-gate.md`)
 
