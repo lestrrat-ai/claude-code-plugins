@@ -184,7 +184,10 @@ class Fake:
         return "".join(entries)
 
     def run(self, argv: list[str], *, cwd: "str | None" = None,
-            text: bool = True) -> subprocess.CompletedProcess:
+            text: bool = True, env: "dict[str, str] | None" = None) -> subprocess.CompletedProcess:
+        # `env` mirrors the real `_run` kwarg — _sync_base's checked-out-base ff now passes a forced C locale.
+        # The Fake ignores it (its diagnostics are hardcoded knobs), but the parameter must exist so the call
+        # does not raise a TypeError.
         self.calls.append((list(argv), cwd))
         ok = lambda out="": subprocess.CompletedProcess(argv, 0, out, "")
         bad = lambda why: subprocess.CompletedProcess(argv, 1, "", why)
@@ -1481,6 +1484,69 @@ def t_realgit_ff_capture_survives_non_utf8_filename():
               f"the 0xff byte must round-trip via surrogateescape, not be lost to a crash: {msg!r}")
 
 
+def t_realgit_stale_index_lock_falls_back_to_raw_error():
+    # ROOT-CAUSE fixture: an UNRELATED fast-forward failure — a stale `.git/index.lock` left by a crashed git
+    # process — must NOT trigger the tailored "uncommitted paths block ... Stash the listed changes" refusal,
+    # even though an overlapping uncommitted path IS present. The read-only blocker probe does not need the
+    # index lock, so it still names that path (blockers non-empty) — the exact state the OLD `if blockers:`
+    # trigger fired the tailored message on, FALSELY blaming the paths and advising a stash that cannot clear
+    # a lock. git's overwrite refusals carry `overwritten by merge`; the index.lock error does not, so the
+    # trigger is now gated on that verified signal and _sync_base falls back to git's raw lock diagnostic.
+    # Driving the REAL _sync_base needs a real `origin` remote (its fetch) with the base checked out on
+    # refs/heads/main, so this clones an upstream and moves local main behind origin/main (mirrors the
+    # non-utf8 fixture above).
+    with tempfile.TemporaryDirectory() as td:
+        up = Path(td) / "up"
+        work = Path(td) / "work"
+        subprocess.run(["git", "init", "-q", "-b", "main", str(up)],
+                       env=_GIT_ENV, capture_output=True, check=True)
+        _rg_write(up, b"notes.md", b"v0\n")
+        _rg_git(up, "add", "-A")
+        _rg_git(up, "commit", "-q", "-m", "C0")
+        c0 = _rg_head(up)
+        _rg_write(up, b"notes.md", b"v1\n")                            # C1 rewrites notes.md -> incoming path
+        _rg_git(up, "add", "-A")
+        _rg_git(up, "commit", "-q", "-m", "C1")
+        subprocess.run(["git", "clone", "-q", str(up), str(work)],
+                       env=_GIT_ENV, capture_output=True, check=True)  # real `origin` remote, origin/main=C1
+        _rg_git(work, "reset", "-q", "--hard", c0)                     # local main behind origin/main
+        _rg_write(work, b"notes.md", b"local edit\n")                  # overlapping uncommitted edit -> blocker
+        # A stale index.lock a crashed git process would leave behind. Real `git merge --ff-only` fails on
+        # THIS — an unrelated reason — not on the overwrite the tailored refusal is meant for.
+        with open(os.path.join(str(work), ".git", "index.lock"), "wb"):
+            pass
+        # Preconditions, verified against real git: the read-only probe STILL names the overlapping path
+        # (so the old trigger would have fired), yet the ff failure does NOT carry the overwrite signal.
+        blockers = M._blocking_uncommitted_paths(str(work), "main")
+        check(blockers == [json.dumps("notes.md")],
+              f"precondition: the overlapping path must still be detected as a blocker: {blockers}")
+        ff = M._run(["git", "-C", str(work), "merge", "--ff-only", "origin/main"],
+                    text=False, env={**os.environ, "LC_ALL": "C"})
+        check(ff.returncode != 0, "precondition: the stale index.lock must make ff-only fail")
+        detail = M._ff_detail(ff)
+        check("index.lock" in detail, f"precondition: the raw failure must be the lock error: {detail!r}")
+        check(not M._is_overwrite_refusal(detail),
+              f"precondition (C locale): the lock error must NOT carry the overwrite signal: {detail!r}")
+        # The real _sync_base must refuse (the base-sync is owed) but WITHOUT the tailored path-list/stash
+        # message, falling back to git's raw lock diagnostic instead.
+        try:
+            M._sync_base(work, "main")
+        except M.Refusal as exc:
+            msg = str(exc)
+        else:
+            raise M.SelfTestFailure("_sync_base must refuse when the base fast-forward fails on a stale lock")
+        check("uncommitted paths block" not in msg,
+              f"a stale index.lock must NOT fire the tailored uncommitted-paths refusal: {msg!r}")
+        check("Stash the listed changes" not in msg,
+              f"the stash recovery advice must not be given for a non-overwrite failure: {msg!r}")
+        check("notes.md" not in msg,
+              f"no path may be blamed when the ff failed for an unrelated reason: {msg!r}")
+        check("fast-forward of checked-out base main failed" in msg,
+              f"the raw _require backstop diagnostic must be preserved: {msg!r}")
+        check("index.lock" in msg,
+              f"git's original lock error must survive to the refusal: {msg!r}")
+
+
 CASES = [
     ("happy-owned", "exact merge argv, owned cleanup, terminal write", t_happy_owned_cleanup_and_command),
     ("repo-identity", "a --repo that does not name the checkout's own repository is refused before any live view (case-insensitive match)", t_repo_identity_mismatch_refused_before_view),
@@ -1527,4 +1593,5 @@ CASES = [
     ("realgit-unmerged-index", "REAL git: an unmerged-index ff failure makes the helper decline, preserving git's raw unresolved-conflict error", t_realgit_unmerged_index_keeps_raw_error),
     ("realgit-staged-equal-incoming", "REAL git: a path staged to exactly its incoming content does not block ff-only and is not named; only the true blocker is (finding 1)", t_realgit_staged_equal_incoming_not_named),
     ("realgit-ff-capture-non-utf8", "REAL git: _sync_base's checked-out-base ff capture survives a non-UTF-8 (0xff) blocking filename under core.quotePath=false — no crash, names the path, preserves git's original diagnostic (finding 2)", t_realgit_ff_capture_survives_non_utf8_filename),
+    ("realgit-stale-index-lock-raw", "REAL git: a stale .git/index.lock makes the checked-out-base ff fail for an UNRELATED reason (no `overwritten by merge`); _sync_base does NOT fire the tailored path-list/stash refusal even though the probe still names an overlapping path — it falls back to git's raw lock error", t_realgit_stale_index_lock_falls_back_to_raw_error),
 ]

@@ -143,10 +143,13 @@ switch back to the base — then re-run the same command to resume the owed base
 to commit on the checked-out base itself, which would create a diverged sibling commit the re-run's
 fast-forward would refuse; and it **never** commits, stashes, resets, restores, checks out, or cleans those
 paths — the campaign does not own them. Because the base-sync runs before cleanup and the terminal write,
-those phases stay pending until the re-run. A fast-forward that fails for any OTHER reason — a genuine
-divergence, an **unmerged/conflicted index** (which git will not let you stash or commit away, so the
-tailored recovery advice would be wrong), or a diagnostic probe that could not run — keeps git's original raw
-error unchanged. The command refuses held rows whose live PR is
+those phases stay pending until the re-run. The tailored path-list + stash guidance is emitted **only** when
+git itself refused the fast-forward because uncommitted work would be overwritten (its `overwritten by merge`
+diagnostic, matched under a forced C locale) **and** the paths were confidently detected; every other
+fast-forward failure — a genuine divergence, an **unmerged/conflicted index** (which git will not let you
+stash or commit away, so the tailored recovery advice would be wrong), a stale `.git/index.lock`, a nested
+untracked repository, or a diagnostic probe that could not run — falls back to git's original raw error
+unchanged, even if the read-only probe still named candidate paths. The command refuses held rows whose live PR is
 OPEN (a CLOSED held row is closed out to `aborted` — `loop-control.md` Step 4 — and a `MERGED` held row is an
 external merge, resumed to finalize base-sync/owned-cleanup/terminal write; neither is refused), a `--repo`
 that does not name the checkout's own repository, stale gates, uncertain GitHub facts, another run's PR,

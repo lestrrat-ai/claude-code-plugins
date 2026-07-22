@@ -60,14 +60,16 @@ class Refusal(RuntimeError):
 
 
 def _run(argv: list[str], *, cwd: "str | None" = None,
-         text: bool = True) -> subprocess.CompletedProcess:
+         text: bool = True, env: "dict[str, str] | None" = None) -> subprocess.CompletedProcess:
     # text defaults to True — every readiness/merge/cleanup call wants decoded str. The NUL-delimited path
     # plumbing passes text=False to capture RAW BYTES: a path can carry a non-UTF-8 byte (which text=True
     # would raise UnicodeDecodeError on — a ValueError this handler does not catch) or a CR (which text=True's
     # universal-newline translation would rewrite to LF, naming a DIFFERENT path). Byte mode does neither; the
     # caller splits on the NUL byte and decodes each field itself (see _nul_fields).
+    # env defaults to None (inherit the parent environment). _sync_base passes a forced C locale so git's
+    # fast-forward diagnostic is deterministic English — the substring the overwrite-refusal gate matches on.
     try:
-        return subprocess.run(argv, cwd=cwd, capture_output=True, text=text, check=False)  # noqa: S603
+        return subprocess.run(argv, cwd=cwd, capture_output=True, text=text, check=False, env=env)  # noqa: S603
     except OSError as exc:
         return subprocess.CompletedProcess(argv, 127, "" if text else b"", str(exc) if text else b"")
 
@@ -96,6 +98,20 @@ def _ff_detail(proc: subprocess.CompletedProcess) -> str:
                        if isinstance(stream, (bytes, bytearray)) else stream)
             return decoded.strip()
     return "no diagnostic"
+
+
+def _is_overwrite_refusal(detail: str) -> bool:
+    """Positively identify git's OVERWRITE refusal from a fast-forward's diagnostic. Under a forced C locale
+    (see _sync_base) git's two overwrite refusals — "Your local changes to the following files would be
+    overwritten by merge:" (tracked) and "The following untracked working tree files would be overwritten by
+    merge:" (untracked) — both carry the substring `overwritten by merge`. NO OTHER fast-forward failure does:
+    a stale `.git/index.lock`, a genuine divergence, an unmerged index, or a transient error contains it zero
+    times (verified against git 2.43.0). This is the POSITIVE signal that gates the tailored path-list +
+    stash-recovery refusal: only a fast-forward git actually refused BECAUSE uncommitted work would be
+    overwritten may blame the listed paths and advise a stash. Every other failure — even when the read-only
+    path probe (which does not need the index lock) still names candidate paths — must fall back to git's raw
+    diagnostic, because naming paths and advising a stash that cannot fix an unrelated failure would LIE."""
+    return "overwritten by merge" in detail
 
 
 def resolve_project_root(checkout: Path) -> Path:
@@ -424,11 +440,23 @@ def _sync_base(root: Path, base: str) -> None:
         # BYTE mode: with core.quotePath=false git emits a blocking filename's raw non-UTF-8 byte in stderr,
         # which a text=True capture raises UnicodeDecodeError on (escaping past main and discarding BOTH
         # diagnostics). Capture raw and decode the detail via _ff_detail at BOTH surfaces that read it.
-        ff = _run(["git", "-C", checked[0], "merge", "--ff-only", f"origin/{base}"], text=False)
+        # Forced C locale: git's diagnostic is deterministic English, so _is_overwrite_refusal below can match
+        # the stable `overwritten by merge` substring — the positive signal that this ff failed BECAUSE of
+        # uncommitted work, not some unrelated cause. (It also makes the preserved "Original Git diagnostic"
+        # always English, a diagnostic improvement.)
+        ff = _run(["git", "-C", checked[0], "merge", "--ff-only", f"origin/{base}"],
+                  text=False, env={**os.environ, "LC_ALL": "C"})
         if ff.returncode != 0:
             blockers = _blocking_uncommitted_paths(checked[0], base)
             detail = _ff_detail(ff)
-            if blockers:
+            # The tailored path-list + stash refusal is gated on a POSITIVELY VERIFIED overwrite failure AND
+            # confident path detection. `blockers` alone is NOT enough: the read-only path probe does not need
+            # the index lock, so an UNRELATED ff failure (a stale `.git/index.lock`, etc.) still yields a
+            # non-empty `blockers` list — and blaming those paths + advising a stash that cannot fix the real
+            # cause would be a false, misleading refusal. Only when git itself refused because uncommitted work
+            # would be overwritten (`_is_overwrite_refusal(detail)`) may this message name paths and propose a
+            # stash. Every other failure falls through to the raw-error backstop below, unchanged.
+            if blockers and _is_overwrite_refusal(detail):
                 listed = "\n".join(f"  - {path}" for path in blockers)
                 # Diagnose-only: name the offending paths and PROPOSE the safe fix. NEVER commit, stash,
                 # reset, restore, checkout, or clean — the campaign does not own these paths.
@@ -441,7 +469,8 @@ def _sync_base(root: Path, base: str) -> None:
                     "Do NOT commit on the checked-out base itself: that makes a diverged sibling commit "
                     "the re-run's fast-forward would refuse. The campaign left these paths untouched.\n"
                     f"Original Git diagnostic: {detail}")
-            # No proven uncommitted-work block (divergence, or a plumbing probe failed): keep the raw error.
+            # Not a verified overwrite block (a stale index lock, a divergence, an unmerged index, a plumbing
+            # probe that failed, or any other cause): keep git's raw error.
             # `ff` is byte-mode, so hand _require the surrogateescape-decoded detail — never raw bytes, whose
             # repr would leak `b'...'` into the message. _require here always raises (returncode != 0).
             _require(
