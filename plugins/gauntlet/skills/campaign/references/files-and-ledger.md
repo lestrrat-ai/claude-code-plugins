@@ -209,7 +209,16 @@ STRING** of bullet **bodies** (no `- ` prefix), each unique, trimmed, nonempty a
 `ledger.py`'s `parse_default_non_goals` is the **ONE validator** and `default_non_goals(header)` the **ONE
 decode door** — no consumer decodes the raw value. `header set default_non_goals '["<body>", …]'`
 **validates and canonicalizes** it; malformed JSON, a non-array, or a blank/multi-line/duplicate entry is
-**REFUSED without mutating the ledger** (fail closed). It **defaults to `[]`** — the canonical "no run
+**REFUSED without mutating the ledger** (fail closed).
+
+A change that **BROADENS** scope — **removes or shrinks** an existing default — is additionally **REFUSED
+while any non-terminal PR still holds banked review credit** (`reviews_ok > 0`). A default is an exclusion
+the reviewer is told cannot gate; removing one **widens** the review, but a PR's banked SATISFIED credit was
+earned under the **narrower** scope, and a header write moves **no head SHA**, so the merge gate never voids
+that tally — the PR could otherwise merge with the now-in-scope area **never reviewed**. Reset those rows
+first (`ledger.py set --pr <N> --reviews-ok 0`, re-opening each for a fresh review under the broadened
+scope), then re-declare. **ADDING** a default **narrows** scope, under which banked credit stays valid, so an
+add is always allowed. It **defaults to `[]`** — the canonical "no run
 defaults", which an old ledger back-fills to. Its run-wide meaning is realized in each PR by
 `pr-adopt.py intent-sync`, which folds the current defaults into that PR's `intent-<pr>.md`
 **MANAGED block** inside `## Non-goals` (`pr-adoption.md` OWNS the block's format); `review-pass.py

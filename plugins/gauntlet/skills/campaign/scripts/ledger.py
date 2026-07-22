@@ -124,7 +124,9 @@ HEADER_DEFAULTS = {
     # The default is `[]`, the canonical "no run defaults": an old ledger written before this field existed
     # back-fills to it, so a run with nothing declared folds nothing. `header set default_non_goals` validates
     # and CANONICALIZES the value; malformed JSON, a non-array, a blank/multiline/duplicate entry is REFUSED
-    # without mutating the ledger (fail closed). files-and-ledger.md, "default_non_goals", owns the field.
+    # without mutating the ledger (fail closed), and a BROADENING change (a default removed) is refused while
+    # banked review credit stands (`guard_default_non_goals_change`). files-and-ledger.md, "default_non_goals",
+    # owns the field and that lifecycle rule.
     "default_non_goals": "[]",
 }
 
@@ -409,6 +411,11 @@ REPAIR_STATUS = "repairing"
 # The ONE exception, for every member alike: OBSERVING a PR is not mutating it, so the CI watch follows
 # its normal policy, and reconcile still READS a held PR and records what it read.
 HELD_STATUSES = ("awaiting-api", "awaiting-user", REPAIR_STATUS)
+
+# TERMINAL — the statuses in which a row is DONE and out of the live gate: `merged` finished successfully,
+# `aborted` gave up. Named ONCE so any check asking "is this row still ACTIVE?" reads the set instead of
+# retyping the pair (`cmd_park` and the `default_non_goals` broadening guard both resolve through it).
+TERMINAL_STATUSES = ("merged", "aborted")
 
 # `fail()` keeps 1 for "your input was rejected". A HELD/AT-CAP answer is NOT an input error — the command
 # did its job and the answer is STOP — so it gets its own code. A driver that proceeds anyway has a FAILED
@@ -808,6 +815,54 @@ def default_non_goals(header: dict) -> "list[str]":
     return parse_default_non_goals(header.get("default_non_goals", HEADER_DEFAULTS["default_non_goals"]))
 
 
+def prs_with_review_credit(rows: "list[dict]") -> "list[str]":
+    """The PRs of every NON-TERMINAL row that still holds BANKED review credit (`reviews_ok > 0`).
+
+    A `merged`/`aborted` row is DONE and out of the gate (`TERMINAL_STATUSES`), so it is skipped; every
+    other row whose SATISFIED tally is above zero is one whose credit a scope-BROADENING default change would
+    silently preserve. Named as its own door so the broadening guard reads the set and a fixture can pin
+    exactly which rows count."""
+    return [r.get("pr", "-") for r in rows
+            if r.get("status") not in TERMINAL_STATUSES and counter(r, "reviews_ok") > 0]
+
+
+def guard_default_non_goals_change(header: dict, rows: "list[dict]", new_defaults: "list[str]") -> None:
+    """FAIL CLOSED on a `default_non_goals` change that BROADENS the run's review scope while banked review
+    credit still stands. Files-and-ledger.md, "default_non_goals", owns this rule; this is its enforcement.
+
+    A default is an exclusion the reviewer is told CANNOT gate. REMOVING one (or shrinking the set) lifts an
+    exclusion, so the review scope WIDENS. Any `reviews_ok` a PR already banked was earned under the OLD,
+    NARROWER scope — a finding that attacked the now-in-scope area was legitimately discharged as out of
+    scope — and NOTHING in a header write moves a head SHA, so the merge gate never voids that tally. The PR
+    could then merge with the newly in-scope area NEVER reviewed: a genuine false-permissive merge.
+
+    So a broadening change is refused whenever any non-terminal PR holds credit (`prs_with_review_credit`);
+    the operator resets those rows first (`set --pr N --reviews-ok 0`, re-opening them for a fresh review
+    under the wider scope) and then re-declares. The asymmetry is deliberate and load-bearing: ADDING a
+    default NARROWS scope, under which banked credit stays valid, so an add is always allowed. This is ONE
+    guard, not a per-pass versioning subsystem — the single-user operator resets and re-declares.
+
+    A malformed CURRENT stored value cannot be diffed for broadening; that is a hand-edited store the new
+    (validated) value repairs, so the guard steps aside rather than block the repair (single-user residual).
+    """
+    try:
+        old_defaults = default_non_goals(header)
+    except ValueError:
+        return  # current stored value is malformed (hand-edited) — this change repairs it; let it land
+    removed = [d for d in old_defaults if d not in new_defaults]
+    if not removed:
+        return  # nothing removed -> scope only NARROWS (or is unchanged): banked credit stays valid
+    credit_prs = prs_with_review_credit(rows)
+    if not credit_prs:
+        return  # no active row holds credit -> the next review runs fresh under the broadened scope
+    fail(f"default_non_goals change would REMOVE {removed!r}, BROADENING the review scope — but pr(s) "
+         f"{', '.join(credit_prs)} still hold SATISFIED review credit earned under the narrower scope. "
+         f"Nothing here moves a head SHA, so the merge gate would NOT void it, and those PRs could merge "
+         f"with the now-in-scope area never reviewed. Reset each first "
+         f"(`ledger.py set --pr <N> --reviews-ok 0`, re-opening it for a fresh review under the broadened "
+         f"scope), then re-run `header set default_non_goals`. The ledger is unchanged")
+
+
 # --- subcommands --------------------------------------------------------------
 
 def cmd_header(path: Path, args) -> int:
@@ -831,9 +886,13 @@ def cmd_header(path: Path, args) -> int:
         # VALIDATE and CANONICALIZE through the schema's own parser — the ONE place this field is decoded.
         # A refusal raises BEFORE `save`, so a malformed value never mutates the ledger (fail closed).
         try:
-            value = json.dumps(parse_default_non_goals(args.value))
+            new_defaults = parse_default_non_goals(args.value)
         except ValueError as exc:
             fail(f"default_non_goals {exc} — refused; the ledger is unchanged")
+        value = json.dumps(new_defaults)
+        # A BROADENING change (a default removed) while banked review credit stands is a false-permissive
+        # merge in waiting — refuse it, fail closed, BEFORE `save`. `guard_default_non_goals_change` owns why.
+        guard_default_non_goals_change(header, rows, new_defaults)
     activity = header.get(args.field) != value
     header[args.field] = value
     save(path, header, rows, activity=activity)
@@ -1268,7 +1327,7 @@ def cmd_park(path: Path, args) -> int:
              f"actionable (stage-2-ci.md, ESCALATE). `ci_reason` is the question the user is asked to rule "
              f"on, so an empty or `-` reason parks a PR on a question nobody can read")
     status = row["status"]
-    if status in ("merged", "aborted"):
+    if status in TERMINAL_STATUSES:
         fail(f"pr {pr} is {status} — a terminal row is never parked; nothing waits on a human for it")
     if status == "awaiting-user":
         print(f"ledger: pr {pr} is ALREADY awaiting-user — a park is open and NOT yet answered, so a second "

@@ -1055,6 +1055,40 @@ def t_default_non_goals(L: ModuleType, tmp: Path) -> None:
         pass
 
 
+def t_default_non_goals_broadening_guard(L: ModuleType, tmp: Path) -> None:
+    """A `default_non_goals` change that BROADENS scope (removes/shrinks a default) is REFUSED while any
+    non-terminal PR still holds banked review credit (`reviews_ok > 0`) — the false-permissive-merge guard.
+    A narrowing change (an ADD) is always allowed; a broadening change is allowed once no active row holds
+    credit (its crediting rows are at 0, or terminal)."""
+    def ledger(name: str, *rows: str) -> Path:
+        return write_lines(tmp / name,
+                           header_line(L, run_id="r", default_non_goals=json.dumps(["D", "E"])), *rows)
+
+    # BROADENING (drop "D") while pr 1 (in_review) holds credit -> REFUSED, exit 1, ledger UNCHANGED.
+    path = ledger("credit.jsonl", row_line(L, pr="1", status="in_review", reviews_ok="2"))
+    before = path.read_text()
+    code, _, err = cli(L, ["--file", str(path), "header", "set", "default_non_goals", json.dumps(["E"])])
+    check(code == 1, f"a broadening change while credit stands was ACCEPTED (exit {code})")
+    check("BROADENING" in err and "1" in err, f"the refusal did not name the breach and the PR: {err!r}")
+    check(path.read_text() == before, "a refused broadening change MUTATED the ledger")
+
+    # ADDING a default ("F") NARROWS scope — always allowed, even with credit standing.
+    code, _, err = cli(L, ["--file", str(path), "header", "set", "default_non_goals", json.dumps(["D", "E", "F"])])
+    check(code == 0, f"an add (narrowing) was refused while credit stands: {err!r}")
+    code, out, _ = cli(L, ["--file", str(path), "header", "get", "default_non_goals"])
+    check(out == '["D", "E", "F"]\n', f"the narrowing add did not land canonically: {out!r}")
+
+    # No ACTIVE credit -> the same broadening is allowed. A reviews_ok=0 row and a merged (terminal) row
+    # with a standing tally both leave the guard idle: the next review runs fresh under the wider scope.
+    for n, (why, row) in enumerate((("a zero-credit active row", row_line(L, pr="2", status="in_review", reviews_ok="0")),
+                                    ("a merged terminal row", row_line(L, pr="3", status="merged", reviews_ok="2")))):
+        p = ledger(f"clear-{n}.jsonl", row)
+        code, _, err = cli(L, ["--file", str(p), "header", "set", "default_non_goals", json.dumps(["E"])])
+        check(code == 0, f"a broadening change was refused with only {why}: {err!r}")
+        code, out, _ = cli(L, ["--file", str(p), "header", "get", "default_non_goals"])
+        check(out == '["E"]\n', f"the broadening change did not land with only {why}: {out!r}")
+
+
 def t_values_are_strings(L: ModuleType, tmp: Path) -> None:
     """Every ingested value is coerced to `str`, so the on-disk JSON's type cannot change a comparison."""
     path = write_lines(tmp / "num.jsonl", header_line(L),
@@ -2647,6 +2681,7 @@ CASES = [
     ("defaults-backfill", "a row written before a field existed still reads back complete", t_defaults_backfill),
     ("values-are-strings", "every ingested value is coerced to str", t_values_are_strings),
     ("default-non-goals", "default_non_goals: old headers back-fill [], valid arrays canonicalize, malformed values are refused unmutated, decode only through the accessor", t_default_non_goals),
+    ("default-non-goals-broadening-guard", "a BROADENING default_non_goals change is refused while a non-terminal PR holds review credit; an add, or no active credit, is allowed", t_default_non_goals_broadening_guard),
     ("null-reads-as-default", "a present JSON null reads back as the field default, not the string \"None\"", t_null_reads_as_default),
     ("verdict-counts-rounds", "`verdict` bumps review_rounds on EVERY verdict and applies the tally atomically", t_verdict_counts_rounds),
     ("rounds-never-reset", "NOTHING resets review_rounds/ns_streak — there is no flag, at any door", t_review_rounds_never_reset),
