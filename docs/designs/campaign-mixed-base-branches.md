@@ -239,8 +239,8 @@ The transition sets `status: awaiting-user`, records the reason in `ci_reason`, 
 `blocker_ruling` as the existing park contract requires, and runs the normal status-label mirror. The
 mirror keeps projecting the review tally; no label shows the hold (see Labels, lease, and host
 compatibility). The row remains in the run, but held-status guards prevent review, repair, CI action,
-rebase, and merge. A held row is also ineligible for the grouped required-set refresh (see Required
-checks and CI).
+rebase, and merge. A held row is also ineligible for the grouped required-set refresh, though it still
+counts as settlement evidence for its base (see Required checks and CI).
 
 Do not update `base_branch`, `required_set`, review tallies, CI state, preflight stamps, or launch records.
 Do not add a new transition or artifact identity. The feature treats the mismatch as an unsupported user
@@ -275,22 +275,33 @@ portable to another target.
 ### Required checks and CI
 
 `required_set` becomes row state because its owner, the base, is row state. The grouped refresh keeps
-the existing settle-once CI procedure, applied per base group instead of per run.
+the existing settle-once CI procedure, applied per base group instead of per run. The refresh separates
+two concepts, defined here and nowhere else:
 
-Refresh eligibility: a row is eligible when it is nonterminal and not held (`status: awaiting-user`).
-A base-mismatch-parked row is therefore never grouped — its recorded base is no longer the PR's live
-target, and a read against it would stamp requirements for a branch the PR no longer targets. After an
-unpark, the next refresh covers the row again.
+Settlement evidence — who can witness a base's settled value. Any row whose `effective_base` is the
+group's base witnesses the settled canonical value when its `effective_required_set` is `declared:` or
+`none`. Held and terminal rows count as witnesses: their stored values were read for this base and stay
+valid even though those rows take no further campaign action. In particular, a base-mismatch-held row's
+`required_set` was read for its recorded base and remains evidence for that base — the hold forbids new
+reads and writes for the row, not reuse of the value it already carries. A legacy group can also be
+settled purely through its header fallback.
 
-During each required-set refresh, group eligible rows by `effective_base`. A group is settled when at
-least one eligible row's `effective_required_set` is `declared:` or `none` — a legacy group can be
-settled purely through its header fallback. A settled group is never reread: the refresh copies the
-settled value, without touching GitHub, to any eligible row in the group whose effective value is still
-`unknown` (a newly adopted or just-unparked row). A group with no settled value gets one GitHub read,
-and a success writes the canonical result to every eligible row in the group — including a legacy row,
-whose inherited `-` becomes an explicit value at that point. Rows on the same base therefore resolve
-the same value, while rows on different bases may use different policies. A mid-run policy change for a
-settled base is not observed; see the accepted residuals.
+Refresh eligibility — who the refresh may write. A row is eligible when it is nonterminal and not held
+(`status: awaiting-user`). Only eligible rows are written, and only eligible rows get CI work. A
+base-mismatch-parked row is therefore never a write target, and no GitHub read is performed on its
+behalf — a fresh read for its recorded base would stamp requirements for a branch the PR no longer
+targets. After an unpark, the next refresh covers the row again.
+
+During each required-set refresh, group rows by `effective_base`. A group is settled when any of its
+rows — eligible or not — witnesses the settled value, or when the header fallback settles a legacy
+group. A settled group is never reread for the rest of the run: the refresh copies the settled value,
+without touching GitHub, to any eligible row in the group whose effective value is still `unknown` (a
+newly adopted or just-unparked row) — even when every witness is now held or terminal. A group with no
+settled value and at least one eligible row gets one GitHub read, and a success writes the canonical
+result to every eligible row in the group — including a legacy row, whose inherited `-` becomes an
+explicit value at that point. A group with no eligible rows is never read. Rows on the same base
+therefore resolve the same value, while rows on different bases may use different policies. A mid-run
+policy change for a settled base is not observed; see the accepted residuals.
 
 `ci-status.py required-set` must support the grouped operation or a selected base group without returning
 to header-owned storage. `ci-status.py derive` receives the selected row's
@@ -441,7 +452,7 @@ only run-state file that gains fields, and those fields are per PR.
 | Merge | `references/stage-3-merge.md`, `scripts/merge-check.py`, `scripts/merge.py` | Use the selected row base for ancestry, readiness, merge, and local sync; compare live and recorded bases at both merge doors. |
 | Carryover and reports | `references/carryover.md`, `references/followups.md`, `references/bailout-and-final-report.md`, `scripts/carryover.py`, `scripts/nudge.py` | Write/read carryover v2 per-PR bases; keep v1 fallback; report bases and required sets per row or grouped by base. |
 | Labels, lease, and runtime | `scripts/label-mirror.py`, `scripts/run-id.py`, `scripts/lease.py`, `scripts/heartbeat.py`, `references/runtime-adapter.md` | No schema or host-route change. Update only wording or tests that assume one header base; hold divergence with the existing `awaiting-user` ledger status (labels unchanged). |
-| Tests and fixtures | Campaign helper suites | Cover old-header fallback, mixed `v3`/`main`, grouped required-set reads (settle-once per group, held-row ineligibility), unsupported live base changes, preflight mismatch, carryover v1/v2, and merge mismatch. |
+| Tests and fixtures | Campaign helper suites | Cover old-header fallback, mixed `v3`/`main`, grouped required-set reads (settle-once per group, settlement evidence from held and terminal rows, held-row write-ineligibility), unsupported live base changes, preflight mismatch, carryover v1/v2, and merge mismatch. |
 
 Update adjacent quick references, examples, fixtures, and comments that restate header ownership in the same
 implementation PR as their owner. Before completing implementation, enumerate every consumer of
