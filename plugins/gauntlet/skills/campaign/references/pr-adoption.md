@@ -20,10 +20,10 @@ Two entry paths feed it (see "Run identity and concurrency" for the full grammar
 Each adopted PR **records its own live `baseRefName`** on its ledger row — the row's `base_branch`, written
 **once at creation** by `pr-adopt.py` (`add-row --base-branch`) and **immutable** afterward (`files-and-ledger.md`,
 the row `base_branch` field). Resolve a row's base through `ledger.py`'s `effective_base` (an explicit row
-value, else the legacy header fallback), never the raw header field. **For now, when several PRs are adopted
-at once they still must agree on `baseRefName`** — mixed bases in one run are a later stage; if they disagree,
-stop and prompt the user. The header `base_branch` is only the legacy fallback a row with no explicit base
-inherits.
+value, else the legacy header fallback), never the raw header field. **Adopting several PRs at once does
+NOT require their bases to agree** — one run may hold PRs targeting different bases (some on `v3`, others on
+`main`), each driven against its own recorded base (`run-identity-and-lease.md`, "Base branch"). The header
+`base_branch` is only the legacy fallback a row with no explicit base inherits.
 
 Campaign **never** deletes the adopted PR's **remote** head branch. Stage 3,
 **"Resumable merge execution"**, owns merge and cleanup enforcement.

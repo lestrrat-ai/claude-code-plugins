@@ -36,6 +36,15 @@ def _load_owner():
 M = _load_owner()
 
 
+def _sibling(name: str, filename: str):
+    """Load a sibling campaign tool as a module for the cross-script integration fixture below. Guards the
+    `None` return exactly as `_load_owner` does, so every attribute access is on a real module."""
+    mod = load_module_from_path(name, Path(__file__).resolve().parent / filename)
+    if mod is None:
+        raise RuntimeError(f"cannot load the sibling tool at {filename}")
+    return mod
+
+
 def check(cond, msg) -> None:
     if not cond:
         raise M.SelfTestFailure(msg)
@@ -841,7 +850,135 @@ def t_readopt_base_mismatch_already_held_keeps_question():
               "the pending ruling on the open park is untouched")
 
 
+# --- CROSS-SCRIPT: one mixed-base run walks the real tools end to end -----------------------------------
+
+def t_mixed_base_end_to_end():
+    """A v3 row and a main row walk ONE ledger through the REAL tools, in sequence: adopt (pr-adopt) ->
+    grouped required-set (ci-status) -> merge door (merge-check) -> park-on-retarget (reconcile + ledger
+    park) -> distill (carryover). Each tool CONSUMES the ledger the previous one wrote.
+
+    The isolated suites each build their OWN synthetic ledger, so only this fixture proves the row
+    `base_branch` that `pr-adopt` writes at admission is the same value every downstream base door resolves
+    through `effective_base` — the whole point of mixed-base admission. It exercises the composition, not any
+    one tool's internal rules (those stay pinned by their own suites)."""
+    CI = _sibling("mbi_ci_status", "ci-status.py")
+    RC = _sibling("mbi_reconcile", "reconcile.py")
+    MC = _sibling("mbi_merge_check", "merge-check.py")
+    CO = _sibling("mbi_carryover", "carryover.py")
+    with tempfile.TemporaryDirectory() as dd:
+        d = Path(dd)
+        wroot = d / "wt"
+        ledger = d / "state.jsonl"
+        run_id = "g1"
+        # A NEW-run header: the base is per-row now, so `base_branch` stays its `-` default and
+        # `required_set` stays `unknown` — never a run-wide value (design: "Resolve row-owned state").
+        _init_ledger(ledger, run_id=run_id, base_branch="-")
+
+        # 1. ADMIT two PRs on DIFFERENT bases into ONE run — no common-base agreement required.
+        sha_v3, sha_main = "a" * 40, "b" * 40
+        v_v3 = view(number=41, headRefName="fix-v3", headRefOid=sha_v3, baseRefName="v3", title="v3 fix")
+        v_main = view(number=52, headRefName="fix-main", headRefOid=sha_main, baseRefName="main",
+                      title="main fix")
+        code, _, err, _ = _adopt(d, ledger, v_v3, wroot=wroot, run_id=run_id)
+        check(code == 0, f"adopt of the v3 PR succeeds (got {code}: {err})")
+        code, _, err, _ = _adopt(d, ledger, v_main, wroot=wroot, run_id=run_id)
+        check(code == 0, f"adopt of the main PR succeeds in the SAME run (got {code}: {err})")
+        check(_field(ledger, 41, "base_branch") == "v3" and _field(ledger, 52, "base_branch") == "main",
+              "each row records its OWN live base — mixed bases admitted into one run")
+        header_after, _ = M.L.load(ledger)
+        check(header_after["base_branch"] == "-",
+              "the run header base stays `-` — the base is per-row, never a run-wide header value")
+
+        # 2. GROUPED required-set (ci-status): one GitHub read per DISTINCT base, written to that base's rows.
+        v3_set = CI.canonical_required_set([("v3-test", CI.SNAP.ANY_APP)])
+        main_set = CI.canonical_required_set([("main-test", CI.SNAP.ANY_APP)])
+        seen: list = []
+
+        def fetch(source: str, argv: list) -> object:
+            endpoint = str(argv[-1])
+            base = "v3" if endpoint.endswith(CI.quote("v3", safe="")) else (
+                "main" if endpoint.endswith(CI.quote("main", safe="")) else None)
+            if base is None:
+                raise CI.FetchError(f"unexpected endpoint {endpoint!r}")
+            if source.endswith("classic"):
+                seen.append(base)
+                ctx = "v3-test" if base == "v3" else "main-test"
+                return {"protection": {"enabled": True,
+                        "required_status_checks": {"checks": [{"context": ctx, "app_id": None}]}}}
+            return [[]]   # ruleset: one empty page
+
+        out = CI.refresh_required_set(fetch, ledger, "o/r")
+        check(out["settled"], f"both base groups settle: {out!r}")
+        check(sorted(seen) == ["main", "v3"], f"each DISTINCT base is read exactly once: {seen!r}")
+        check(_field(ledger, 41, "required_set") == v3_set, "the v3 row gets v3's required set")
+        check(_field(ledger, 52, "required_set") == main_set, "the main row gets main's required set")
+        header_now, _ = M.L.load(ledger)
+        check(header_now["required_set"] == "unknown",
+              "the new-run header required_set stays unknown — never materialized from a base group")
+
+        # 3. MERGE DOOR (merge-check) resolves the SELECTED row's effective base. The v3 row seen live on
+        #    `main` is an unsupported retarget -> the shared park reason; seen live on `v3` it clears the base
+        #    step (and stops later only because its CI is still pending — proof the base door PASSED).
+        hdr, rows = M.L.load(ledger)
+        r41 = M.L.find_row(rows, "41")
+        assert r41 is not None
+        eff41 = M.L.effective_base(hdr, r41)
+        check(eff41 == "v3", f"the merge door resolves #41's effective base to v3; got {eff41!r}")
+
+        def mview(base_ref: str) -> dict:
+            return {"mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "isDraft": False,
+                    "state": "OPEN", "headRefOid": sha_v3, "baseRefName": base_ref}
+
+        retarget = MC.decide(r41, mview("main"), required=MC.REQUIRED, effective_base=eff41)
+        check(retarget["reason"] == M.BASE_CHANGE_PARK_REASON.format(recorded="v3", live="main"),
+              f"a live retarget parks with the SHARED base-change reason; got {retarget!r}")
+        onbase = MC.decide(r41, mview("v3"), required=MC.REQUIRED, effective_base=eff41)
+        check("ci is pending" in onbase["reason"],
+              f"on its own base the retarget check passes and decision proceeds; got {onbase!r}")
+
+        # 4. PARK ON RETARGET (reconcile detects, ledger parks). Snapshot: #41 now targets `main`, #52 still
+        #    `main`. reconcile flags #41 against its RECORDED v3; #52 on its own base is clean.
+        prs = d / "prs.json"
+        run_label = M.RUN_LABEL_PREFIX + run_id
+
+        def entry(number: int, branch: str, base: str, head: str) -> dict:
+            return {"number": number, "headRefName": branch, "headRefOid": head, "title": f"t{number}",
+                    "baseRefName": base, "state": "OPEN", "mergeable": "MERGEABLE",
+                    "mergeStateStatus": "CLEAN",
+                    "labels": [{"name": run_label}, {"name": M.REVIEWING_LABEL}]}
+
+        prs.write_text(json.dumps([entry(41, "fix-v3", "main", sha_v3),
+                                   entry(52, "fix-main", "main", sha_main)]), encoding="utf-8")
+        facts = RC.detect(ledger, prs, run_id)
+        f41 = facts["rows"]["41"]
+        check(f41.get("base_changed") == {"ledger": "v3", "snapshot": "main"},
+              f"reconcile flags #41's retarget against its RECORDED v3, not the header: {f41!r}")
+        check("base_changed" not in facts["rows"]["52"],
+              f"the main PR on its own base is NOT flagged: {facts['rows']['52']!r}")
+        park_reason = M.BASE_CHANGE_PARK_REASON.format(recorded=f41["base_changed"]["ledger"],
+                                                       live=f41["base_changed"]["snapshot"])
+        _ledger("--file", str(ledger), "park", "--pr", "41", "--reason", park_reason)
+        check(_field(ledger, 41, "status") == "awaiting-user", "the retargeted row is PARKED")
+        check(_field(ledger, 41, "ci_reason") == "base changed from v3 to main; not supported mid-run",
+              f"the durable park reason is EXACT; got {_field(ledger, 41, 'ci_reason')!r}")
+        check(_field(ledger, 41, "base_branch") == "v3",
+              "the recorded base is immutable — a park never rewrites it")
+
+        # 5. DISTILL (carryover v2): each terminal object carries its OWN base; metadata lists both, sorted.
+        _set_row(ledger, 41, status="aborted")
+        _set_row(ledger, 52, status="merged")
+        out_dir = d / "history"
+        summary = CO.distill(M.L, ledger, out_dir, "2026-07-22T00:00:00Z", force=False)
+        check(summary["base_branches"] == ["main", "v3"],
+              f"carryover v2 records the run's distinct bases, sorted: {summary!r}")
+        text = (out_dir / f"{run_id}.md").read_text(encoding="utf-8")
+        check("base_branches: [\"main\", \"v3\"]" in text,
+              f"the distilled v2 metadata names both release lines: {text!r}")
+
+
 CASES = [
+    ("mixed_base_end_to_end", "one mixed-base run walks adopt -> grouped required-set -> merge door -> "
+                              "reconcile park -> distill on ONE ledger", t_mixed_base_end_to_end),
     ("refuse_fork", "a fork PR is refused, fail closed", t_refuse_fork),
     ("refuse_foreign_run", "a PR owned by another run is refused", t_refuse_foreign_run),
     ("refuse_closed", "a MERGED/CLOSED PR is refused", t_refuse_closed),
