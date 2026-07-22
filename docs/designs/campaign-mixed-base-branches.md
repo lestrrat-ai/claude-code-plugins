@@ -59,8 +59,11 @@ contains `base_branch` and `required_set`, while PR rows contain neither. It des
 set once and `required_set` as the requirements of that one branch.
 
 The loader already supports additive schema changes. `ledger.py:404-458` fills missing declared fields
-from defaults. Row additions therefore do not require rewriting an old JSONL file, provided the defaults
-distinguish legacy header inheritance from an explicit row value.
+from defaults, so an old JSONL file loads without migration. The write side is whole-store: `dump()`
+writes every declared field of every row, and every mutating door routes through it, so the first write
+after a schema addition stores the new fields at their defaults on every legacy row. A row addition
+therefore needs no migration step, provided the default value itself carries legacy header inheritance
+rather than relying on field absence.
 
 ### Adoption sees each base but discards it from row state
 
@@ -72,8 +75,11 @@ Discovery is already run-scoped rather than base-scoped. `scripts/reconcile.py:7
 run label and includes `baseRefName` in the snapshot without filtering it. The conflict appears later:
 `reconcile.py:308-318` and `347-372` compare every live PR base with the one header base.
 
-No label schema change is needed. `scripts/label-mirror.py:162-203` derives visible status from row gate
-state and tier, not from its base. The existing held status can represent an unsupported base change.
+No label schema change is needed. `scripts/label-mirror.py:162-203` chooses between the two status
+labels from the review tally and tier alone; it reads row `status` only to skip terminal rows and
+projects no held state into any label. The existing `awaiting-user` ledger status can represent an
+unsupported base change — it is ledger state, visible in `status` and `ci_reason`, not in a label —
+and none of that projection depends on the base.
 
 ### Rebase, review, and repair receive the run base
 
@@ -167,8 +173,8 @@ no host-specific command, environment variable, typed transport revision, or hea
    parks the row for the user.
 4. The campaign never updates a row to a new base and never automatically runs the gate again because a
    live base changed.
-5. Required checks are stored per row and read once per distinct effective base during each grouped
-   refresh.
+5. Required checks are stored per row. The grouped refresh keeps the existing settle-once CI
+   procedure per distinct effective base: at most one successful GitHub read per base per run.
 6. One run may contain any number of distinct bases, but merging remains serialized.
 7. Run identity, lease, heartbeat scheduling, owner labels, and status-label names remain run-wide.
 
@@ -192,10 +198,13 @@ the argument becomes an assertion and must equal `effective_base`; it is not ano
 
 New runs write `base_branch: "-"` and `required_set: "unknown"` in the header. Every new row writes an
 explicit `base_branch`, even in a single-base run. Its row `required_set` starts as `unknown` until the
-grouped read succeeds.
+grouped refresh supplies the canonical value.
 
-Old rows keep their missing-field defaults and continue to inherit the old header values. Loading or
-writing an old ledger does not materialize row values and does not rewrite the file into a new shape.
+Old rows load with `base_branch: "-"` and `required_set: "-"` and resolve the old header values through
+the accessors. Inheritance lives in the `-` sentinel and the accessors, not in field absence: every
+ledger write serializes the whole store with the full declared schema, so the first write after the
+schema addition stores the `-` defaults explicitly on every legacy row. That rewrite is expected and
+lossless — a stored `-` resolves exactly as a missing field does.
 
 ### Adoption and discovery
 
@@ -227,8 +236,11 @@ base changed from <recorded> to <live>; not supported mid-run
 ```
 
 The transition sets `status: awaiting-user`, records the reason in `ci_reason`, clears
-`blocker_ruling` as the existing park contract requires, and uses the normal status-label mirror.
-The row remains in the run, but held-status guards prevent review, repair, CI action, rebase, and merge.
+`blocker_ruling` as the existing park contract requires, and runs the normal status-label mirror. The
+mirror keeps projecting the review tally; no label shows the hold (see Labels, lease, and host
+compatibility). The row remains in the run, but held-status guards prevent review, repair, CI action,
+rebase, and merge. A held row is also ineligible for the grouped required-set refresh (see Required
+checks and CI).
 
 Do not update `base_branch`, `required_set`, review tallies, CI state, preflight stamps, or launch records.
 Do not add a new transition or artifact identity. The feature treats the mismatch as an unsupported user
@@ -262,10 +274,23 @@ portable to another target.
 
 ### Required checks and CI
 
-`required_set` becomes row state because its owner, the base, is row state. During each required-set
-refresh, group nonterminal rows by `effective_base`, perform one GitHub read per distinct base, and write
-the canonical result to every row in that group. Rows on the same base therefore store the same value,
-while rows on different bases may use different policies.
+`required_set` becomes row state because its owner, the base, is row state. The grouped refresh keeps
+the existing settle-once CI procedure, applied per base group instead of per run.
+
+Refresh eligibility: a row is eligible when it is nonterminal and not held (`status: awaiting-user`).
+A base-mismatch-parked row is therefore never grouped — its recorded base is no longer the PR's live
+target, and a read against it would stamp requirements for a branch the PR no longer targets. After an
+unpark, the next refresh covers the row again.
+
+During each required-set refresh, group eligible rows by `effective_base`. A group is settled when at
+least one eligible row's `effective_required_set` is `declared:` or `none` — a legacy group can be
+settled purely through its header fallback. A settled group is never reread: the refresh copies the
+settled value, without touching GitHub, to any eligible row in the group whose effective value is still
+`unknown` (a newly adopted or just-unparked row). A group with no settled value gets one GitHub read,
+and a success writes the canonical result to every eligible row in the group — including a legacy row,
+whose inherited `-` becomes an explicit value at that point. Rows on the same base therefore resolve
+the same value, while rows on different bases may use different policies. A mid-run policy change for a
+settled base is not observed; see the accepted residuals.
 
 `ci-status.py required-set` must support the grouped operation or a selected base group without returning
 to header-owned storage. `ci-status.py derive` receives the selected row's
@@ -273,8 +298,9 @@ to header-owned storage. `ci-status.py derive` receives the selected row's
 is added.
 
 `unknown` keeps its current fail-closed meaning. A failed read for one base writes or preserves `unknown`
-only for rows in that group and blocks those rows from becoming green. Other base groups continue
-independently. A later heartbeat retries the grouped read under the existing CI procedure.
+only for eligible rows in that group and blocks those rows from becoming green. Other base groups continue
+independently. A later heartbeat retries the read for a still-unsettled group under the existing CI
+procedure.
 
 ### Merge and local base synchronization
 
@@ -323,8 +349,11 @@ target. Every resulting PR enters through normal adoption, which records live `b
 
 ### Labels, lease, and host compatibility
 
-No base-specific label is added. The owner label continues to mean membership in one run. Status labels
-continue to show per-PR gate state, including the existing held-for-user state on a base mismatch.
+No base-specific label is added, and the label mirror does not change. The owner label continues to
+mean membership in one run. The two status labels keep their current meaning: they project the row's
+review tally against its tier and skip terminal rows. No label shows a held state today, and this
+design adds none — a base-mismatch hold is visible in the ledger row's `status` and `ci_reason` and in
+the ledger table, not in any label.
 
 The lease and heartbeat remain per run. `pending_adoption` remains a list of PR numbers. No lease proof,
 owner identity, run ID, or run-state file gains a base dimension.
@@ -384,9 +413,16 @@ An old row loads with `base_branch: "-"` and `required_set: "-"`. The accessors 
 values. Reconciliation and base preflight compare the inherited base with live `baseRefName` exactly as
 they do for an explicit row base.
 
+Because every ledger write serializes the whole store, the first write after the schema addition also
+stores those `-` sentinels explicitly on legacy rows. That is the expected on-disk shape, not a
+migration: a stored `-` resolves exactly as a missing field does. A legacy row's `base_branch` stays `-`
+for the life of the row — row base is creation-only, and the row predates the field. Its `required_set`
+stays `-` while its base group is settled through the header fallback; a fresh grouped read for the
+group replaces it with an explicit canonical value, exactly as for explicit rows.
+
 An existing valid `base_ok_sha` remains a head stamp. Before any new `proceed`, base preflight confirms
-that the live base still equals `effective_base`. No compatibility write backfills row values, and no
-migration command is added.
+that the live base still equals `effective_base`. No migration command is added, and no write converts a
+`-` into a resolved copy of the header value.
 
 ### Lease and run state
 
@@ -404,8 +440,8 @@ only run-state file that gains fields, and those fields are per PR.
 | CI policy | `references/stage-2-ci.md`, `references/ci-derivation-spec.md`, `scripts/ci-status.py`, `scripts/ci-snapshot.py` | Store required sets per row; group live reads by distinct effective base; derive each row with `effective_required_set`; update header-owned wording. |
 | Merge | `references/stage-3-merge.md`, `scripts/merge-check.py`, `scripts/merge.py` | Use the selected row base for ancestry, readiness, merge, and local sync; compare live and recorded bases at both merge doors. |
 | Carryover and reports | `references/carryover.md`, `references/followups.md`, `references/bailout-and-final-report.md`, `scripts/carryover.py`, `scripts/nudge.py` | Write/read carryover v2 per-PR bases; keep v1 fallback; report bases and required sets per row or grouped by base. |
-| Labels, lease, and runtime | `scripts/label-mirror.py`, `scripts/run-id.py`, `scripts/lease.py`, `scripts/heartbeat.py`, `references/runtime-adapter.md` | No schema or host-route change. Update only wording or tests that assume one header base; use existing held status for divergence. |
-| Tests and fixtures | Campaign helper suites | Cover old-header fallback, mixed `v3`/`main`, grouped required-set reads, unsupported live base changes, preflight mismatch, carryover v1/v2, and merge mismatch. |
+| Labels, lease, and runtime | `scripts/label-mirror.py`, `scripts/run-id.py`, `scripts/lease.py`, `scripts/heartbeat.py`, `references/runtime-adapter.md` | No schema or host-route change. Update only wording or tests that assume one header base; hold divergence with the existing `awaiting-user` ledger status (labels unchanged). |
+| Tests and fixtures | Campaign helper suites | Cover old-header fallback, mixed `v3`/`main`, grouped required-set reads (settle-once per group, held-row ineligibility), unsupported live base changes, preflight mismatch, carryover v1/v2, and merge mismatch. |
 
 Update adjacent quick references, examples, fixtures, and comments that restate header ownership in the same
 implementation PR as their owner. Before completing implementation, enumerate every consumer of
@@ -414,9 +450,11 @@ for every search result.
 
 ## Backward compatibility
 
-- Old ledgers are accepted unchanged. Missing row fields use existing header values through the two
-  schema-owned accessors.
-- There is no eager or lazy migration. Normal writes do not materialize inherited row values.
+- Old ledgers load without migration. Legacy rows resolve header values through the two schema-owned
+  accessors; the `-` sentinel carries that inheritance whether the field is absent at load or stored by
+  a later write.
+- There is no migration command. Ordinary writes serialize the full declared schema, so legacy rows gain
+  explicit `-` sentinels on the first write; every value they resolve stays the same.
 - Existing single-base runs keep their review counts, CI meaning, and merge order. They resolve the same
   effective base for every old row.
 - A legacy base-preflight head stamp remains usable only with a successful live-base preflight before the
@@ -439,9 +477,11 @@ for every search result.
 - **Base and head differ in one snapshot:** park on the base mismatch first. After the user restores the
   base and retries, normal head reconciliation processes the current head.
 - **Required rules differ across bases:** derive one canonical set per distinct base and copy it to that
-  base's rows. `unknown` blocks only the affected group.
-- **Required rules change for one base:** the next grouped refresh updates rows for that base. Other groups
-  remain unchanged.
+  base's eligible rows. `unknown` blocks only the affected group.
+- **Required rules change for one base:** a settled group keeps its settled value for the rest of the
+  run — the retained settle-once procedure never rereads a settled group, matching current single-base
+  behavior. Only a group still unsettled observes the new policy when its read is retried. Other groups
+  are unaffected either way.
 - **A base ref is deleted or unreadable:** reconciliation, preflight, and merge fail closed through the
   existing actionable machine-blocker path.
 - **A row is already held:** preserve its open question and report the base mismatch. If divergence remains
@@ -459,8 +499,9 @@ owners, cross-process transactions, or a database.
 - A user can change a PR base in the short interval inside `gh pr merge`. The existing post-merge check
   can report it, but current campaign machinery cannot make the GitHub merge conditional on an expected
   base.
-- GitHub branch protection or rulesets can change immediately after they are read. The next grouped
-  refresh observes the new policy; the design does not lock repository policy.
+- GitHub branch protection or rulesets can change immediately after they are read. A settled base group
+  keeps the value it read for the rest of the run — settle-once, unchanged from today. The design adds
+  no mid-run invalidation and does not lock repository policy.
 - A hand-edited ignored ledger can be made inconsistent. Loaders and write doors still fail closed on
   malformed state; the design does not defend against every coherent but false value the sole user could
   type.
