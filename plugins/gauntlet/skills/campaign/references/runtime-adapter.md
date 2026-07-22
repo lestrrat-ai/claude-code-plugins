@@ -423,10 +423,9 @@ On a host with a session-watchdog capability, use these idempotent operations, k
 - `available?` — report whether the host can schedule an additional wake into this live session.
 - `ensure` — create the recurring nudge if missing. Use `ledger.py watchdog interval` for its cadence
   and schedule only `heartbeat.py watchdog`'s stdout, built with run id, owner token, and campaign
-  invocation. The nudge reaches the same session; it never launches an independent driver. Scheduling the
-  lean watchdog prompt is valid only because this entry is same-session ("Lean prompt vs. full invocation"
-  above owns the boundary — a watchdog scheduler that could outlive the session or create a new one leads
-  with the full invocation instead).
+  invocation. The nudge reaches the same session; it never launches an independent driver. Whether this
+  entry may schedule the lean prompt is owned by "Lean prompt vs. full invocation — the boundary" under
+  "Background work and heartbeats" above.
 - `inspect` — report whether the nudge remains armed for this session.
 - `remove` — delete the nudge during normal finalization.
 - `primary inspect` — on a scheduled-heartbeat host, report whether the next primary callback names this
