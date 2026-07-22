@@ -19,8 +19,8 @@ must already carry the orchestrator's `pass_identity`.
 accepts, so the amendment you raise is one `verify` can always order against the others. A `ts` you typed is
 a `ts` you could get wrong; there is no flag for it.
 
-Raising an amendment is how you say the plan MISSES a dimension — never rewrite the plan or self-grant a
-unit. After it lands, this pass verifies `amended` until the orchestrator folds the proposed unit into the
+Raising an amendment is how you say the plan MISSES a dimension — or that a waiver row's reason does not
+hold — never rewrite the plan or self-grant a unit. After it lands, this pass verifies `amended` until the orchestrator folds the proposed unit into the
 plan and restarts the pass (or records why not), and you end your report `VERDICT: DEFERRED`.
 
 A non-zero exit means the amendment was REJECTED, not that the tool is broken: read the message, fix the

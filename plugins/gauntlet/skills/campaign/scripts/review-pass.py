@@ -22,6 +22,11 @@ evidence. Reading a progress file by eye is the same hole, one layer up.
 So this file is the review pass's artifacts, executed:
 
   plan-add    append ONE validated unit to a pass's plan          (the plan stops being a heredoc)
+  plan-waive  record that ONE default dimension does not apply    (a default is dropped out loud, never
+                                                                   by omission)
+  plan-check  is every default dimension covered or waived?       (run before dispatch — the omitted
+                                                                   tests/docs/public-api unit stops
+                                                                   costing an amendment + full re-review)
   identity    low-level `pass_identity` schema/write door         (campaign uses review-dispatch prepare)
   emit        append ONE progress event                           (what `emit-progress.py` calls)
   verify      READ a pass and answer: DOES THIS PASS COUNT?       (the tally stops being by eye)
@@ -57,8 +62,9 @@ at both. Those are two halves of one discipline, and each half has already faile
     helped the reviewer commit. The reviewer was told it had succeeded.
   * and a rule enforced at both doors by TWO implementations is a rule waiting to acquire two definitions.
 
-So there are no per-door copies. `check_event`, `check_unit`, `check_identity_shape`, `check_progress` and
-`plan_units` ARE the rules; `emit`, `identity` and `plan-add` call exactly the functions `verify` calls.
+So there are no per-door copies. `check_event`, `check_unit`, `check_waiver`, `check_identity_shape`,
+`check_progress` and `plan_records` ARE the rules; `emit`, `identity`, `plan-add` and `plan-waive` call
+exactly the functions `verify` calls.
 
 **AND THE RULES ARE NOT ENOUGH — ANYTHING THIS TOOL CAN WRITE, IT MUST BE ABLE TO READ BACK.** That is a
 property of the doors TOGETHER, and every individual rule can be right at both doors while it fails. It
@@ -172,6 +178,15 @@ UNIT_KEYS = {"type", "id", "kind", "target", "checks"}
 # below. Stating a weaker rule for it here as well is how a value comes to have two definitions.
 UNIT_STRINGS = ("kind", "target")
 UNIT = "unit"
+
+# The plan's OTHER row type: a WAIVER records the orchestrator's judgment that one DEFAULT DIMENSION does
+# not apply to this pass — so a default can be dropped only OUT LOUD, never by omission. `DIMENSIONS` is
+# the closed set of defaults a non-TRIVIAL plan must cover or waive (stage-2-review-gate.md, "Review
+# work-plan ledger", owns the rule): a dimension is COVERED by a unit whose `kind` IS the dimension name,
+# and WAIVED by one `waiver` row carrying the reason the reviewer will judge.
+WAIVER = "waiver"
+DIMENSIONS = ("tests", "docs", "public-api")
+WAIVER_KEYS = {"type", "dimension", "reason"}
 
 
 # --- THE FINDING, and the INTENT it must ANCHOR to ------------------------------------------------
@@ -623,7 +638,8 @@ def check_unit(unit: object, where: str) -> None:
         )
     if unit["type"] != UNIT:
         # MUTATE:plan-row-type:pass
-        raise Defect(f"{where}: type is {unit['type']!r}, and a plan holds only {UNIT!r} records")
+        raise Defect(f"{where}: type is {unit['type']!r}, not {UNIT!r} — a plan holds only {UNIT!r} and "
+                     f"{WAIVER!r} records, and an amendment proposes exactly a {UNIT!r}")
     # The id is an IDENTIFIER — the value the progress events MATCH — so it is checked by `check_id` and by
     # nothing else, here or at any other door. This is the intake: a unit whose id is not an id never
     # reaches the plan, so the plan can never come to hold a unit `emit` is unable to name.
@@ -645,23 +661,76 @@ def check_unit(unit: object, where: str) -> None:
         )
 
 
-def plan_units(records: "list[dict]", name: str) -> "dict[str, dict]":
-    """These plan records' units, by id — each validated, and a REPEATED id refused. ONE implementation,
-    and therefore the same rule at both doors: `load_plan` runs it over the file the reviewer is judged
-    against, and `cmd_plan_add` runs it over that file PLUS the unit it is about to append, so the write
-    door refuses a duplicate id by the SAME statement the read door refuses it with.
+def check_waiver(waiver: "dict[str, object]", where: str) -> None:
+    """A plan waiver — the orchestrator's RECORDED judgment that one default dimension does not apply.
+
+    The waiver exists so a default dimension can never be dropped by OMISSION: the plan either covers it
+    with a unit or carries this row saying why not, and the reviewer judges that reason like any other
+    plan decision — amending when it is wrong. Only `plan_records` routes rows here, and only rows whose
+    `type` already reads `waiver`; everything else (including a non-object row) is `check_unit`'s refusal.
+    """
+    if set(waiver) != WAIVER_KEYS:
+        missing = sorted(WAIVER_KEYS - set(waiver))
+        extra = sorted(set(waiver) - WAIVER_KEYS)
+        # MUTATE:waiver-keys:pass
+        raise Defect(
+            f"{where}: a waiver carries EXACTLY {sorted(WAIVER_KEYS)}"
+            + (f"; missing {missing}" if missing else "")
+            + (f"; unexpected key(s) {extra} — nothing reads them, so whatever they assert is neither "
+               f"verified nor refuted" if extra else "")
+        )
+    if waiver["dimension"] not in DIMENSIONS:
+        # MUTATE:waiver-dimension:pass
+        raise Defect(
+            f"{where}: `dimension` is {waiver['dimension']!r} — a waiver names one of the default "
+            f"dimensions {list(DIMENSIONS)}, and anything else waives nothing"
+        )
+    reason = waiver["reason"]
+    if not isinstance(reason, str) or not reason.strip():
+        # MUTATE:waiver-reason:pass
+        raise Defect(
+            f"{where}: `reason` is {reason!r} — a waiver IS its reason: the reviewer judges it, and a "
+            f"blank one records a judgment nobody can judge"
+        )
+
+
+def plan_records(records: "list[dict]", name: str) -> "tuple[dict[str, dict], dict[str, dict]]":
+    """These plan records' units by id AND waivers by dimension — each validated, duplicates refused,
+    and a dimension both planned and waived refused. ONE implementation, and therefore the same rules at
+    both doors: `load_plan` and `cmd_plan_check` run it over the file the reviewer is judged against, and
+    `cmd_plan_add`/`cmd_plan_waive` run it over that file PLUS the row they are about to append, so the
+    write doors refuse a duplicate by the SAME statement the read door refuses it with.
     """
     units: dict[str, dict] = {}
+    waivers: dict[str, dict] = {}
     for n, rec in enumerate(records, start=1):
-        check_unit(rec, f"{name} line {n}")
+        where = f"{name} line {n}"
+        if isinstance(rec, dict) and rec.get("type") == WAIVER:
+            check_waiver(rec, where)
+            if rec["dimension"] in waivers:
+                # MUTATE:plan-duplicate-waiver:pass
+                raise Defect(
+                    f"{where}: dimension {rec['dimension']!r} is waived twice — one waiver per "
+                    f"dimension; a second records nothing the first did not"
+                )
+            waivers[rec["dimension"]] = rec
+            continue
+        check_unit(rec, where)
         if rec["id"] in units:
             # MUTATE:plan-duplicate-id:pass
             raise Defect(
-                f"{name} line {n}: duplicate unit id {rec['id']!r} — a `done` naming it would be "
+                f"{where}: duplicate unit id {rec['id']!r} — a `done` naming it would be "
                 f"ambiguous about WHICH unit was checked"
             )
         units[rec["id"]] = rec
-    return units
+    for dimension in waivers:
+        if any(u["kind"] == dimension for u in units.values()):
+            # MUTATE:plan-waiver-contradiction:pass
+            raise Defect(
+                f"{name}: dimension {dimension!r} is both planned (a unit's `kind`) and waived — the "
+                f"plan says it will be reviewed AND that it need not be; drop one of the two"
+            )
+    return units, waivers
 
 
 def load_plan(path: Path) -> "dict[str, dict]":
@@ -675,13 +744,17 @@ def load_plan(path: Path) -> "dict[str, dict]":
     how a plan STOPS being empty, so a write door that refused an empty plan could never write the first
     unit. The rule is about a plan a pass is JUDGED against, and that is the read door's question. Every
     other plan rule is `check_plan_file` — the same statement `plan-add` runs over the plan it produces.
+
+    Emptiness counts UNITS, never rows: a waiver reviews nothing, so a plan of nothing but waivers is as
+    empty as no plan at all.
     """
-    units = check_plan_file(read_text(path, "plan"), path)
+    units, _ = check_plan_file(read_text(path, "plan"), path)
     if not units:
         # MUTATE:plan-empty:pass
         raise Defect(
             f"{path.name} holds no units — 'every planned unit is done' is VACUOUSLY TRUE of an empty "
-            f"plan, so a pass that reviewed nothing at all would verify {OK}"
+            f"plan, so a pass that reviewed nothing at all would verify {OK} (waivers are not units and "
+            f"do not count)"
         )
     return units
 
@@ -1534,7 +1607,7 @@ def check_progress_file(text: str, path: Path, plan: "Callable[[], dict[str, dic
     return events, units
 
 
-def check_plan_file(text: str, path: Path) -> "dict[str, dict]":
+def check_plan_file(text: str, path: Path) -> "tuple[dict[str, dict], dict[str, dict]]":
     """…and the same, one artifact over: every rule `load_plan` derives from a plan file's BYTES.
 
     `load_plan`'s EMPTINESS rule is deliberately not here, and that is not an inconsistency — it is the
@@ -1550,7 +1623,7 @@ def check_plan_file(text: str, path: Path) -> "dict[str, dict]":
             f"under any other name is a plan nothing will ever read. The pass would be refused for a "
             f"MISSING plan while its units sat on disk one filename away"
         )
-    return plan_units(parse_lines(text, path.name), path.name)
+    return plan_records(parse_lines(text, path.name), path.name)
 
 
 def check_ruled(ruled: int) -> None:
@@ -1816,6 +1889,59 @@ def cmd_plan_add(args) -> int:
     # name is not a file this tool reads at all, so `before_text` is not asked about it.
     text = before_text(path) if PLAN_NAME_RE.match(path.name) else ""
     sys.stdout.write(write_line(path, text, rec, lambda after: check_plan_file(after, path)))
+    return 0
+
+
+def cmd_plan_waive(args) -> int:
+    """Record that ONE default dimension does not apply to this pass's plan — out loud, with a reason.
+
+    The row is validated exactly as `plan-add` validates a unit, and by the same statement the read door
+    uses: the plan as it WOULD be goes through `check_plan_file`, so a duplicate waiver or a waiver
+    contradicting a planned unit is refused at the write door too.
+    """
+    path = Path(args.file)
+    rec: "dict[str, object]" = {"type": WAIVER, "dimension": args.dimension, "reason": args.reason}
+    check_waiver(rec, "the waiver you asked to record")
+    text = before_text(path) if PLAN_NAME_RE.match(path.name) else ""
+    sys.stdout.write(write_line(path, text, rec, lambda after: check_plan_file(after, path)))
+    return 0
+
+
+def cmd_plan_check(args) -> int:
+    """Does the plan account for EVERY default dimension — covered by a unit or waived out loud?
+
+    Run it before dispatching the pass. A TRIVIAL tier owes no defaults (its plan is minimal by rule);
+    ANY other `--tier` value owes all of them, so a misspelled tier fails closed toward owing them. This
+    is the mechanical form of the rule that used to be prose — the omitted tests/docs/public-API unit a
+    reviewer could only report as a `plan_amendment_request`, at the price of a full re-review.
+    """
+    path = Path(args.file)
+    units = load_plan(path)
+    _, waivers = check_plan_file(read_text(path, "plan"), path)
+    due = () if args.tier == "TRIVIAL" else DIMENSIONS
+    lines: "list[str]" = []
+    missing: "list[str]" = []
+    for dimension in due:
+        covering = sorted(uid for uid, u in units.items() if u["kind"] == dimension)
+        if covering:
+            lines.append(f"{dimension}: covered by {', '.join(covering)}")
+        elif dimension in waivers:
+            lines.append(f"{dimension}: waived — {waivers[dimension]['reason']}")
+        else:
+            missing.append(dimension)
+    if missing:
+        # MUTATE:plan-check-missing:pass
+        raise Defect(
+            f"{path.name}: default dimension(s) {missing} are neither covered nor waived — a non-TRIVIAL "
+            f"plan accounts for EVERY default dimension: add a unit whose `kind` is the dimension "
+            f"(`plan-add`), or record why it does not apply (`plan-waive --dimension <d> --reason …`). "
+            f"An omission here is what a reviewer must otherwise raise as a plan amendment, at the price "
+            f"of a full re-review"
+        )
+    if not due:
+        print(f"{path.name}: tier {args.tier} owes no default dimensions; the minimal plan stands")
+    for line in lines:
+        print(line)
     return 0
 
 
@@ -2533,6 +2659,21 @@ def build_parser() -> "tuple[argparse.ArgumentParser, list[str]]":
     a.add_argument("--check", action="append", default=[], required=True,
                    help="a concrete check; REQUIRED, and repeatable — a unit with no checks is not a unit")
 
+    w = sub.add_parser("plan-waive",
+                       help="record that ONE default dimension does not apply to this pass's plan")
+    w.add_argument("--file", required=True, help="the pass's plan.jsonl")
+    w.add_argument("--dimension", required=True, choices=list(DIMENSIONS),
+                   help="the default dimension being waived")
+    w.add_argument("--reason", required=True,
+                   help="why it does not apply — the reviewer judges this, and amends when it is wrong")
+
+    pc = sub.add_parser("plan-check",
+                        help="is every default dimension covered or waived? (run before dispatch)")
+    pc.add_argument("--file", required=True, help="the pass's plan.jsonl")
+    pc.add_argument("--tier", required=True,
+                    help="the PR's decided tier; TRIVIAL owes no defaults, ANY other value owes all of "
+                         "them — a misspelled tier fails closed toward owing them")
+
     add_amendment_args(sub.add_parser(
         "amend", help="raise ONE plan_amendment_request, ts stamped by the tool (what emit-amendment.py calls)"))
 
@@ -2585,6 +2726,7 @@ def dispatch(args) -> int:
         return self_test()
     try:
         return {"emit": cmd_emit, "identity": cmd_identity, "plan-add": cmd_plan_add,
+                "plan-waive": cmd_plan_waive, "plan-check": cmd_plan_check,
                 "amend": cmd_amend, "finding-add": cmd_finding_add, "intent-check": cmd_intent_check,
                 "verify": cmd_verify, "status": cmd_status}[args.cmd](args)
     except Defect as exc:

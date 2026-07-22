@@ -199,6 +199,11 @@ file is a plaintext file in a directory the reviewer can write to.
 # Every line is an argv list passed through runtime-adapter.md's run_argv; fields are data.
 ["python3", review_pass_script, "plan-add", "--file", plan_file,
  "--id", "u01", "--kind", "file", "--target", target, "--check", check, ...]
+["python3", review_pass_script, "plan-waive", "--file", plan_file,
+ "--dimension", dimension, "--reason", reason]
+    # record that ONE default dimension does not apply ("Review work-plan ledger" owns the rule)
+["python3", review_pass_script, "plan-check", "--file", plan_file, "--tier", tier]
+    # every default dimension covered or waived? MUST pass before dispatch — a refusal blocks the launch
 ["python3", review_pass_script, "emit", "--file", progress_file,
  "--unit", unit, "--status", status, "--evidence", evidence]
 ["python3", review_pass_script, "amend", "--file", progress_file,
@@ -265,12 +270,29 @@ Derive units from the review target, not from fixed global stages:
   tone/audience, repetition, terminology/cross-document consistency, citations/sources if present.
 - **Mixed target** → include both code-shaped and artifact-shaped units.
 
-Plan JSONL schema:
+Plan JSONL schema — a plan holds exactly TWO row types, `unit` and `waiver`:
 
 ```
 {"type":"unit","id":"u01","kind":"file","target":"xsd/validate_idc.go","checks":["value canonicalization","union member selection"]}
 {"type":"unit","id":"u02","kind":"cross-cutting","target":"IDC key equality","checks":["primitive tags","list boundaries","keyref parity"]}
+{"type":"waiver","dimension":"docs","reason":"internal refactor; no user-facing doc covers this area"}
 ```
+
+**Default dimensions — each one covered or waived, never dropped by omission.** Every non-TRIVIAL plan
+must account for the three default dimensions `tests`, `docs`, `public-api`: a dimension is COVERED by a
+unit whose `kind` is exactly the dimension name, or WAIVED by one `waiver` row (written through
+`review-pass.py plan-waive`, exactly as units go through `plan-add`) recording why it does not apply.
+`review-pass.py plan-check --file <plan> --tier <tier>` enforces this mechanically and MUST pass before
+the pass is dispatched — a refusal blocks the launch (the review-launch precondition in loop-control.md
+Step 3 points here). Tier exactly `TRIVIAL` owes no defaults (its plan is minimal by rule); ANY other
+`--tier` value owes all three, so a misspelled tier fails closed toward owing them. A waiver row is the
+**orchestrator's recorded judgment**; the reviewer judges the reason like the rest of the plan and raises
+a `plan_amendment_request` when it is wrong, exactly as for a missing unit. One waiver per dimension; a
+dimension both planned (a unit's `kind`) and waived is a plan that contradicts itself, and both doors
+refuse it. Waivers are not units: a waiver demands no progress events, and a plan of nothing but waivers
+holds no units and is refused as empty. This rule exists because the omitted tests/docs/public-API unit
+was the recurring amendment: each omission cost a `plan_amendment_request`, a fold, and a full re-review
+that a pre-dispatch check would have prevented.
 
 Rules:
 
