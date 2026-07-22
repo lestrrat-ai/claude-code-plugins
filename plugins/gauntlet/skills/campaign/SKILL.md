@@ -7,7 +7,8 @@ description: >-
 # Campaign
 
 Self-looping, reactive PR-review-to-merge pipeline. The active host is orchestrator + gatekeeper:
-reviews, CI watches, and fixes run as background tasks; gates and merges stay centralized. Campaign
+reviews, CI watches, and fixes run as background tasks — and the heartbeat reconcile in a fresh
+synchronous worker where the host provides one; gates and merges stay centralized. Campaign
 gates **existing** PRs — adopted, never generated — and never writes a fix from scratch. To find issues
 first, use `gauntlet:review`; after its report it can open one PR per confirmed fix and hand them here
 (`/gauntlet:campaign #PRs` in Claude Code, `$gauntlet:campaign #PRs` in Codex).
@@ -107,7 +108,10 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
    reminders — computed from durable state, decides nothing, always exits 0 (`references/loop-control.md`
    step 1). Then produce the run's validated PR snapshot through `reconcile.py fetch`, reconcile it
    through `reconcile.py detect` (treat `state.jsonl` as cache), and fold completed
-   review / CI / fix tasks against the SHA each ran on. When the run is **QUIET** (nudge, no meaningful
+   review / CI / fix tasks against the SHA each ran on. On a host with a fresh-worker mechanism, the
+   Step 1 reconcile runs in ONE fresh reconcile worker per heartbeat and the driver folds, dispatches,
+   and reschedules from its compact report (`references/runtime-adapter.md`, "Reconcile worker" — owns
+   the contract and the inline fallback). When the run is **QUIET** (nudge, no meaningful
    ledger activity for its window) **OR** `ledger.py watchdog check` says the long-cadence deadline is
    `due`/`unset`/`invalid`, run the **health pass** (one pass, then one `ledger.py watchdog arm`)
    before rescheduling and lead the status with the diagnosis. A `--watchdog` wake audits that the primary
@@ -250,7 +254,7 @@ a line the tool writes.
 | `lease.py` | Run-lease accessor: `mint` / `acquire` / `refresh` / `release` / `read` | `references/run-identity-and-lease.md` |
 | `pr-adopt.py` | `plan` / `adopt` — mechanically adopt an existing first-party PR into a run: refuse fork/foreign/non-open, register the ledger row + ownership/status labels, discover-or-create the PR-head worktree | `references/pr-adoption.md` |
 | `triage.py` | `derive` — classify one stable, SHA-pinned PR diff and emit the per-file inventory + reasons and a mechanical FLOOR tier (SENSITIVE→HIGH, any non-prose→STANDARD, all-prose→no floor; never TRIVIAL — the orchestrator decides the tier); optional `--tier` vetoes a below-floor tier | `references/stage-2-review-gate.md` |
-| `heartbeat.py` | Emit the scheduled-heartbeat callback command the driver arms for its next wake | `references/runtime-adapter.md` |
+| `heartbeat.py` | Emit the lean same-session wake prompts (scheduled heartbeat and session watchdog) the driver arms for its next wake | `references/runtime-adapter.md` |
 | `ledger.py` | Schema-owning accessor for `state.jsonl` — plus `verdict`, the ONLY verdict recorder (tally, caps, `repairing` hold), and `dispatch-check`, the held-PR guard run before any mutating action | `references/files-and-ledger.md` |
 | `review-pass.py` | Executable contract for a review pass's artifacts — plan, `pass_identity`, progress, findings, active-attempt report result, `intent-check`, and the `verify` that answers "does this pass COUNT?" | `references/stage-2-review-gate.md` |
 | `review-dispatch.py` | `prepare` — validate one fresh review attempt, derive every artifact path, write `pass_identity` + exact bound prompt, and return the host-neutral typed transport record; never selects or launches a route | `references/review-dispatch.md` |
@@ -296,6 +300,7 @@ name from one host into another.
 
 | Worker | Model class | Why |
 |---|---|---|
+| **Reconcile worker** (heartbeat Step 1) | **`session`** | It routes snapshot facts and judges head moves and liveness for the whole run, and the driver dispatches from its report — a weaker model mis-routes a fact and the driver acts on a wrong picture (`references/runtime-adapter.md`, "Reconcile worker"). |
 | Review pass (default reviewer) | **`session`** | It *is* the gate. A weaker verdict is a worse gate — the one thing never worth cheapening. |
 | Fresh-worker fallback review | **`session`** | Same job as a review pass; counts toward the gate identically. |
 | Review-fix (after `NOT SATISFIED`) | **`session`** | Authors code from scratch, judged only by another full review pass. A cheap bad fix burns a whole review pass and a gate reset — it *costs* more than the tier saves. |

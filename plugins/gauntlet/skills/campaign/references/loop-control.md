@@ -6,6 +6,12 @@ The skill is **event-driven**. Read `runtime-adapter.md` before waiting. Reconci
 invocation, a scheduled heartbeat when the host provides one, a **background task completing**, or the
 bounded-wait fallback returning. A completion may be a CI watch, a review, or a CI/review fix.
 
+**Who executes Step 1:** on a host with a fresh-worker mechanism, a heartbeat that resumes an
+already-bound run executes Step 1 through ONE fresh reconcile worker, and the driver executes Steps 2–5
+from its compact report; inline Step 1 is the fallback (no worker mechanism, or a dead/unusable
+worker). `runtime-adapter.md`, "Reconcile worker", owns the contract — what the driver passes in, what
+the worker returns, and what never moves into it. The steps below are unchanged whoever executes them.
+
 **Every heartbeat — reconcile, dispatch, reschedule:**
 
 ### Step 1 — Resolve repository context, then the run + lease, then init / resume / start fresh
@@ -484,9 +490,10 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
    - Any non-terminal PR remains (in review, pending CI, or awaiting a user ruling on a review-finding
      standoff / API approval / precondition) →
      refresh this run's lease, then choose the runtime adapter's scheduled-heartbeat or bounded-wait
-     branch. A scheduled heartbeat does not hand-assemble its callback: the **Scheduled-heartbeat host**
+     branch. A scheduled heartbeat does not hand-assemble its wake: the **Scheduled-heartbeat host**
      step in `runtime-adapter.md` ("Background work and heartbeats") owns building it — it runs
-     `heartbeat.py callback` and schedules that tool's stdout, which is why the callback carries exactly
+     `heartbeat.py callback` and schedules that tool's stdout (a lean same-session wake prompt, never a
+     leading skill re-invocation), which is why the wake carries exactly
      `--run` and `--token` and never `--new`/`#PR` or `--heartbeat-id`. A scheduler-less bounded
      wait retains the current invocation and token instead of constructing a scheduled heartbeat. Both are a
      **fallback lifecycle, not a tight poll**: background completions are the primary heartbeat. A scheduled
@@ -506,8 +513,8 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
        quiet window is a real check, not a bare re-reconcile.
      - **Otherwise → ~15 min:** matching the Stage 2a meaningful-progress
        threshold — with no launch deadline pending, nothing can declare a review stalled before then, so a
-       shorter interval only re-reconciles git/gh with no new signal (and pays a fresh-context cost per
-       heartbeat).
+       shorter interval only re-reconciles git/gh with no new signal (and pays a full reconcile — plus
+       added driver-session context — per heartbeat).
 
      **And whatever tier you picked, NEVER schedule the primary heartbeat past the watchdog deadline** —
      cap the delay at the time `ledger.py watchdog check` says remains. A host with the session-watchdog
@@ -579,7 +586,7 @@ bounded-wait fallback returning. A completion may be a CI watch, a review, or a 
      imply dead-session recovery. Then take exactly one runtime branch:
      - **Scheduled-heartbeat host:** with the status above already rendered, schedule the heartbeat as
        the turn's LAST action — scheduling ends the turn on this host (`runtime-adapter.md`,
-       "Scheduled-heartbeat host"), so nothing runs after it. The scheduled invocation begins again at
+       "Scheduled-heartbeat host"), so nothing runs after it. The scheduled wake begins again at
        step 1.
      - **Scheduler-less bounded-wait host:** render the same status, wait only until the first task
        completion or the nearest protected deadline, then go directly back to step 1 and reconcile.
