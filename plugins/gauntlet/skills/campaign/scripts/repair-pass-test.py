@@ -140,6 +140,7 @@ def bind_record(ledger: Path, record: Path, pr: str, head_sha: str, worktree: Pa
         "ledger": {"path": str(ledger.resolve()), "row": R.decision_projection(row)},
         "intent": {},
         "rounds": [],
+        "verdictless_rounds": [],
         "diff_growth": [],
         "current_diff": "",
         "permitted": permitted,
@@ -589,6 +590,164 @@ def t_bundle_orders_rounds_and_selects_active_attempt(tmp: Path) -> None:
           "manifest round order drifted from prompt order")
     check(json.loads(out)["bundle_sha256"] == manifest["bundle_sha256"],
           "stdout did not identify the written bundle")
+
+
+def t_bundle_skips_an_explicitly_deferred_pass(tmp: Path) -> None:
+    """A drifted history — a new pass opened after a DEFERRED instead of a relaunch — still bundles.
+
+    A pass that lands no verdict is not a round: pass 2's active attempt ends in an explicit
+    `VERDICT: DEFERRED — …`, so with the ledger counting 3 landed rounds across artifact passes 1..4 the
+    bundle excludes pass 2 from the round mapping, lists it under `verdictless_rounds` for the worker,
+    and treats the highest LANDED pass as the cap round.
+    """
+    case = bundle_setup(tmp, rounds=4)
+    (case["rundir"] / "review-1-2.txt").write_text(
+        "pass 2 parked itself\n\nVERDICT: DEFERRED — parked a plan question for the driver\n")
+    case["ledger"].write_text(
+        json.dumps({"type": "header", **L.HEADER_DEFAULTS, "base_branch": "main"}) + "\n"
+        + json.dumps({"type": "row", **case["row"], "review_rounds": "3"}) + "\n")
+    output = case["rundir"] / "repair-1-1.prompt.txt"
+    code, out, err = run_bundle(case, output)
+    check(code == 0, f"a tolerable verdictless pass wedged the bundle: {err!r}")
+    payload = prompt_payload(output)
+    check([item["round"] for item in payload["rounds"]] == [1, 3, 4],
+          f"landed rounds mapped wrong: {[item['round'] for item in payload['rounds']]}")
+    check(payload["verdictless_rounds"] == [
+        {"round": 2, "launch_attempt": 1, "deferred_reason": "parked a plan question for the driver"}],
+        f"verdictless pass was not surfaced to the worker: {payload['verdictless_rounds']!r}")
+    check(payload["rounds"][-1]["audit"]["present"] is False,
+          "the shifted cap round (pass 4) was still required to carry an audit")
+    manifest = json.loads(Path(str(output) + ".manifest.json").read_text())
+    check([item["round"] for item in manifest["rounds"]] == [1, 3, 4],
+          "manifest rounds drifted from the landed mapping")
+    check(json.loads(out)["bundle_sha256"] == manifest["bundle_sha256"],
+          "stdout did not identify the written bundle")
+
+
+def t_bundle_refuses_unreconcilable_pass_histories(tmp: Path) -> None:
+    """Only the explicit-DEFERRED surplus is tolerated; every other history mismatch stays a refusal
+    that names a supported recovery action (relaunch with budget, or park)."""
+
+    def reledger(case: dict, rounds: str) -> None:
+        case["ledger"].write_text(
+            json.dumps({"type": "header", **L.HEADER_DEFAULTS, "base_branch": "main"}) + "\n"
+            + json.dumps({"type": "row", **case["row"], "review_rounds": rounds}) + "\n")
+
+    # A surplus pass whose active attempt LANDED a verdict: ledger and artifacts disagree about history.
+    # A machine blocker — the refusal directs the driver to park the PR, never to hand-edit history.
+    surplus = bundle_setup(tmp / "surplus", rounds=4)
+    reledger(surplus, "3")
+    code, _, err = run_bundle(surplus, surplus["rundir"] / "bundle.txt")
+    check(code == 1 and "disagree about" in err, f"a landed surplus pass was not refused: {err!r}")
+    check("park the PR for the user" in err,
+          f"the landed-surplus refusal names no recovery action: {err!r}")
+
+    # A hole in the artifact pass numbering is lost history, never a skip. Another machine blocker.
+    hole = bundle_setup(tmp / "hole", rounds=4)
+    for stale in hole["rundir"].glob("review-1-2.*"):
+        stale.unlink()
+    (hole["rundir"] / "audit-1-2.jsonl").unlink()
+    reledger(hole, "3")
+    code, _, err = run_bundle(hole, hole["rundir"] / "bundle.txt")
+    check(code == 1 and "pass 2 is missing" in err,
+          f"a hole in pass numbering was not refused: {err!r}")
+    check("park the PR for the user" in err,
+          f"the hole refusal names no recovery action: {err!r}")
+
+    # A hole made by a hand-edited ABSURD pass number: the refusal must be DELIVERED, never a
+    # MemoryError from materializing a range the size of the pass number's numeric value. The fixture
+    # needs no memory pressure — with the walk in place the message simply arrives.
+    huge = bundle_setup(tmp / "huge", rounds=4)
+    for artifact in sorted(huge["rundir"].glob("review-1-4.*")):
+        artifact.rename(artifact.with_name(artifact.name.replace("review-1-4.", "review-1-999999999.", 1)))
+    reledger(huge, "3")
+    code, _, err = run_bundle(huge, huge["rundir"] / "bundle.txt")
+    check(code == 1 and "pass 4 is missing" in err and "999999999" in err,
+          f"an absurd hand-edited pass number was not refused with the mismatch named: {err!r}")
+    check("park the PR for the user" in err,
+          f"the absurd-pass refusal names no recovery action: {err!r}")
+
+    # FEWER contiguous artifact passes than the ledger's landed rounds: landed history is missing.
+    # Also a machine blocker — park, never hand-edit.
+    fewer = bundle_setup(tmp / "fewer", rounds=2)
+    reledger(fewer, "3")
+    code, _, err = run_bundle(fewer, fewer["rundir"] / "bundle.txt")
+    check(code == 1 and "landed history is missing" in err,
+          f"fewer artifact passes than landed rounds was not refused: {err!r}")
+    check("park the PR for the user" in err,
+          f"the fewer-artifacts refusal names no recovery action: {err!r}")
+
+    # NO review artifacts at all: the wrong --run-dir or lost history. Recovery is a retry with the
+    # correct --run-dir; genuinely lost history is a machine blocker — park, never hand-edit.
+    empty = bundle_setup(tmp / "empty")
+    for progress in empty["rundir"].glob("review-1-*.progress.jsonl"):
+        progress.unlink()
+    code, _, err = run_bundle(empty, empty["rundir"] / "bundle.txt")
+    check(code == 1 and "no review artifacts" in err,
+          f"an empty review history was not refused: {err!r}")
+    check("park the PR for the user" in err,
+          f"the empty-history refusal names no recovery action: {err!r}")
+
+    # A verdictless LATEST pass cannot be the cap round: the cap trips only on a landed NOT SATISFIED.
+    last = bundle_setup(tmp / "last", rounds=4)
+    (last["rundir"] / "review-1-4.txt").write_text("parked\n\nVERDICT: DEFERRED — parked at the cap\n")
+    reledger(last, "3")
+    code, _, err = run_bundle(last, last["rundir"] / "bundle.txt")
+    check(code == 1 and "latest artifact pass" in err,
+          f"a verdictless latest pass was not refused: {err!r}")
+    check("relaunch pass 4" in err,
+          f"the verdictless-latest refusal names no recovery action: {err!r}")
+    check("park the PR for the user" in err,
+          f"the verdictless-latest refusal names no park fallback: {err!r}")
+
+    # A verdictless LATEST pass whose ACTIVE attempt is already 3 — the last launch attempt the runtime
+    # allocates (`runtime-adapter.md`: a dead or unusable attempt 3 parks as a machine blocker). The
+    # refusal must name the park fallback, because "relaunch as the next launch attempt" alone is
+    # unactionable once the budget is spent.
+    spent = bundle_setup(tmp / "spent", rounds=4)
+    write_review_attempt(spent["rundir"], 4, 2, spent["head_sha"],
+                         "SUPERSEDED ATTEMPT 2 MUST NOT BE READ\n")
+    write_review_attempt(spent["rundir"], 4, 3, spent["head_sha"],
+                         "parked\n\nVERDICT: DEFERRED — parked after the final launch attempt\n")
+    reledger(spent, "3")
+    code, _, err = run_bundle(spent, spent["rundir"] / "bundle.txt")
+    check(code == 1 and "latest artifact pass" in err,
+          f"a verdictless latest pass at attempt 3 was not refused: {err!r}")
+    check("park the PR for the user" in err,
+          f"the exhausted-relaunch refusal names no park recovery: {err!r}")
+
+    # Artifact passes EQUAL to the ledger's landed rounds take the fast path past surplus arbitration,
+    # so a DEFERRED active report on a round the ledger counts as landed is caught at collect time.
+    # The ledger and the artifacts disagree about history — the refusal must name the park recovery.
+    # First with the DEFERRED report in a MIDDLE pass...
+    eqmid = bundle_setup(tmp / "eqmid", rounds=4)
+    (eqmid["rundir"] / "review-1-2.txt").write_text(
+        "pass 2 parked itself\n\nVERDICT: DEFERRED — parked a plan question for the driver\n")
+    code, _, err = run_bundle(eqmid, eqmid["rundir"] / "bundle.txt")
+    check(code == 1 and "DEFERRED verdict, not a binary one" in err,
+          f"an equal-count landed-DEFERRED middle pass was not refused: {err!r}")
+    check("park the PR for the user" in err,
+          f"the landed-DEFERRED refusal names no recovery action: {err!r}")
+
+    # ...then in the LATEST pass (the cap round itself).
+    eqlast = bundle_setup(tmp / "eqlast", rounds=4)
+    (eqlast["rundir"] / "review-1-4.txt").write_text(
+        "pass 4 parked itself\n\nVERDICT: DEFERRED — parked at the cap\n")
+    code, _, err = run_bundle(eqlast, eqlast["rundir"] / "bundle.txt")
+    check(code == 1 and "DEFERRED verdict, not a binary one" in err,
+          f"an equal-count landed-DEFERRED latest pass was not refused: {err!r}")
+    check("park the PR for the user" in err,
+          f"the landed-DEFERRED cap refusal names no recovery action: {err!r}")
+
+    # A surplus pass whose report parses to NOTHING cannot arbitrate the mismatch. Recovery here is a
+    # relaunch of that pass so a parseable report can arbitrate — parking is only the fallback.
+    torn = bundle_setup(tmp / "torn", rounds=4)
+    (torn["rundir"] / "review-1-2.txt").write_text("no terminal verdict line, torn output\n")
+    reledger(torn, "3")
+    code, _, err = run_bundle(torn, torn["rundir"] / "bundle.txt")
+    check(code == 1 and "cannot arbitrate" in err, f"a torn surplus report was not refused: {err!r}")
+    check("relaunch pass 2" in err,
+          f"the unparseable-surplus refusal names no recovery action: {err!r}")
 
 
 def t_bundle_is_deterministic_and_payloads_are_data(tmp: Path) -> None:
@@ -1207,6 +1366,8 @@ CASES = [
     ("enum-is-closed", "the decision enum is closed, and each member is defined", t_decision_enum_is_closed),
     ("repair-dispatch-gate", "a repair needs a recorded decision; ordinary work stays frozen", t_the_repair_dispatch_gate),
     ("bundle-order-active", "bundle orders rounds numerically and selects only the active relaunch", t_bundle_orders_rounds_and_selects_active_attempt),
+    ("bundle-skips-deferred-pass", "a verdictless (DEFERRED) surplus pass is excluded, listed, and never wedges", t_bundle_skips_an_explicitly_deferred_pass),
+    ("bundle-pass-history-refusals", "every other pass-numbering drift is refused with the mismatch and recovery named", t_bundle_refuses_unreconcilable_pass_histories),
     ("bundle-deterministic", "bundle bytes/hash are deterministic and hostile payloads stay data", t_bundle_is_deterministic_and_payloads_are_data),
     ("bundle-refusals", "missing, stale, and duplicate active inputs fail before output", t_bundle_refuses_missing_stale_and_duplicate_inputs),
     ("bundle-old-intent", "old intent anchors survive; the cap round may have no audit yet", t_bundle_preserves_findings_from_an_older_intent),
