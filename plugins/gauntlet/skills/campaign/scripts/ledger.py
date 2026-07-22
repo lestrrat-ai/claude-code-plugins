@@ -722,7 +722,8 @@ def require_effective_base(header: dict, row: dict, pr: str) -> "tuple[str | Non
     Returns `(base, None)` when the base is usable, or `(None, reason)` — a ready-to-emit refusal message naming
     the PR — when it is not. `-` on BOTH the row and the header means "no base was ever resolved" (`effective_base`
     faithfully returns it); it is NOT a branch a caller may rebase onto, write to history, or diff against, so it
-    is refused here. This mirrors `base_agrees`, which already refuses `-`. A normal run never reaches this: the
+    is refused here. This function is the ONLY one that refuses `-`: `base_agrees` does NOT — it checks
+    equality first, so `base_agrees("-", "-")` returns True. A normal run never reaches this: the
     header base is filled at run start and each row's at adoption, so `effective_base` returns a real branch; a
     both-`-` ledger is a driver-authored/hand-edited state (a single-user foot-gun), and this is the cheap
     fail-closed insurance against it — not machinery to defend the user from themselves."""

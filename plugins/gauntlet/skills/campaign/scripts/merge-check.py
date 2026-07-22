@@ -288,9 +288,15 @@ def check(pr: str, ledger_path: Path, repo: "str | None", view_json: "str | None
         print(json.dumps(_not_yet(f"malformed PR view: {problem}")))
         return 1
     # The ROW owns the base: resolve its `effective_base` (its explicit `base_branch`, else the legacy header)
-    # through `ledger.py`'s accessor. `decide` compares it with the live `baseRefName` for a retarget, and the
-    # ancestry probe below measures against the base the row actually tracks — never the one header base.
-    effective_base = L.effective_base(header, row)
+    # through `ledger.require_effective_base` — the ONE owner of the consumer-side "fail CLOSED on an unresolved
+    # base" contract (its blank/`-` refusal), the SAME guard `base-preflight.py` routes through. An unresolved
+    # base is NEVER a merge: refuse it HERE, before `decide` and before the ancestry probe, with the owner's
+    # ready-to-emit reason naming the PR. Without this, a both-`-` ledger + a `baseRefName="-"` view slips the
+    # retarget check (`"-" == "-"`) and false-permits a `merge` over a base that was never resolved.
+    effective_base, base_problem = L.require_effective_base(header, row, str(pr))
+    if base_problem is not None:
+        print(json.dumps(_not_yet(base_problem)))
+        return 1
     result = decide(row, view, required=REQUIRED, effective_base=effective_base)
     verdict = result["verdict"]
     if verdict == NOT_YET:
