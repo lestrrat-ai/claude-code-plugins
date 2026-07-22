@@ -495,8 +495,10 @@
   `baseRefName` and **not assumed to be `main`**. One run may hold PRs on different bases; they need **NOT**
   agree. Resolve a PR's base through `effective_base` (its row value, else the legacy header fallback).
   Reviews diff `origin/<base>...HEAD` and each PR merges into its `<base>`; a fix worktree branches off the
-  PR's OWN head branch/SHA, never off `<base>` (see `pr-adoption.md`). Re-resolve it each heartbeat (see
-  "Base branch").
+  PR's OWN head branch/SHA, never off `<base>` (see `pr-adoption.md`). That recorded row base is
+  **immutable** — the campaign never migrates a row to a new base; a live `baseRefName` retarget **PARKS the
+  row** (never rewrites `base_branch`), through the park procedure owned by `pr-adoption.md` (re-adoption
+  base gate) and `loop-control.md` (`base_changed` route). Re-resolve it each heartbeat (see "Base branch").
 - After every merge, let `merge.py run` fast-forward local `<base>` to `origin/<base>` (Stage 3,
   **"Resumable merge execution"**) so later diffs and rebases use the just-merged tip. If it fails,
   re-run the command after fixing the named cause — never force the base.

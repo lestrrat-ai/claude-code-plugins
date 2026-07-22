@@ -144,7 +144,8 @@ the worker returns, and what never moves into it. The steps below are unchanged 
      run state**: read every PR's metadata (`gh pr view`, including each PR's `baseRefName`) and run the
      refusal checks (foreign-owned, cross-repo/fork per `pr-adoption.md`). **The PRs need NOT share a
      base** — one run may hold PRs targeting different bases, each driven against its own recorded base
-     (`run-identity-and-lease.md`, "Base branch"); preflight only confirms each PR exists and is open.
+     (`run-identity-and-lease.md`, "Base branch"). Preflight imposes no cross-row base agreement; every
+     PR must still pass all `pr-adoption.md` refusal checks (foreign-owner, cross-repo/fork).
      This touches **no** run-id, `<rundir>`, lease, `state.jsonl`, label, worktree, or CI watch. **If any
      PR is refused, prompt and create nothing** — so a rejected set never leaves an
      empty orphan run behind. **Only once the full set passes preflight**: call `create_run_directory`
