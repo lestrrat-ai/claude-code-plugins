@@ -557,8 +557,9 @@ nothing was looking. Three checks close that, and **none is optional**:
 - **`ci-status.py doc-check` checks every `gh` INVOCATION in this file against the argv the code really
   issues** — *every copy of them*, not just the spec block (a recap that drops `,headRefOid` reconstructs a
   fetch the MOVED-HEAD rule can never fire on; that copy had drifted, and this is what caught it). It sweeps
-  **every copy of the `ci-status.py derive` command across every skill doc** for `--required-set`, too — the
-  flag that decides a merge must not be droppable by a recap.
+  **every copy of the `ci-status.py derive` command across every skill doc** for a named required set
+  (`--ledger`, which resolves the row's `effective_required_set`, or an explicit `--required-set`), too — the
+  set that decides a merge must not be droppable by a recap.
 
 **TWO refusals are CROSS-SOURCE and no single-fetch filter can state them** — the rollup's `StatusContext`
 **coverage**, and the **AGREEMENT** of the two sources about a check they both report. One `jq` filter sees

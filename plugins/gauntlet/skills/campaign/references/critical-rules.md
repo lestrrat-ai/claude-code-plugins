@@ -450,13 +450,14 @@
   The gate is unchanged; record the selected route and resulting reviewer in the report. See "The
   reviewer".
 - **RUN `scripts/ci-status.py required-set --ledger <rundir>/state.jsonl` before CI derivation on every
-  heartbeat.** It owns both base-branch declaration reads, their strict parse and union, and the atomic ledger
-  write. A settled value is reused; only `unknown` is retried. See `stage-2-ci.md`, "WHAT WERE WE EXPECTING
-  TO SEE?".
+  heartbeat.** It groups nonterminal rows by `effective_base`, owns both declaration reads per **distinct
+  base**, their strict parse and union, and the atomic per-row ledger write. A settled group is reused; only
+  an `unknown` group is retried. See `stage-2-ci.md`, "WHAT WERE WE EXPECTING TO SEE?".
 - **DERIVE `ci` BY RUNNING `scripts/ci-status.py derive --pr <N> --head-sha <the ledger's> --rundir
-  <rundir> --required-set <the ledger header's>`, and by NOTHING ELSE.** It fetches, promotes, verifies and
+  <rundir> --ledger <rundir>/state.jsonl`, and by NOTHING ELSE.** It fetches, promotes, verifies and
   decides, and prints the verdict, the `ci` value and the liveness `fingerprint` as JSON (`stage-2-ci.md`,
-  "THE DERIVATION IS A COMMAND", which owns the exact invocation — **`--required-set` is MANDATORY**: the evidence says what
+  "THE DERIVATION IS A COMMAND", which owns the exact invocation — **the required set is NAMED, never
+  defaulted**: `--ledger` resolves the row's `effective_required_set`; the evidence says what
   showed up, and only the base branch's declared set says what was SUPPOSED to).  **NEVER derive `ci` by
   READING the output of a command and judging it.** That is not a style preference: every rule below was already
   correct when a driver ran `gh pr checks`, saw that no checks were reported, and wrote **`ci = green`** —
