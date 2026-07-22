@@ -286,8 +286,10 @@ valid even though those rows take no further campaign action. In particular, a b
 reads and writes for the row, not reuse of the value it already carries. A legacy group can also be
 settled purely through its header fallback.
 
-Refresh eligibility — who the refresh may write. A row is eligible when it is nonterminal and not held
-(`status: awaiting-user`). Only eligible rows are written, and only eligible rows get CI work. A
+Refresh eligibility — who the refresh may write. A row is eligible when it is nonterminal and its
+status is outside the ledger's held set — the schema-owned `HELD_STATUSES` enumeration in `ledger.py`
+that `dispatch-check` enforces, not a member list restated here. Only eligible rows are written, and
+only eligible rows get CI work. A
 base-mismatch-parked row is therefore never a write target, and no GitHub read is performed on its
 behalf — a fresh read for its recorded base would stamp requirements for a branch the PR no longer
 targets. After an unpark, the next refresh covers the row again.
@@ -452,7 +454,7 @@ only run-state file that gains fields, and those fields are per PR.
 | Merge | `references/stage-3-merge.md`, `scripts/merge-check.py`, `scripts/merge.py` | Use the selected row base for ancestry, readiness, merge, and local sync; compare live and recorded bases at both merge doors. |
 | Carryover and reports | `references/carryover.md`, `references/followups.md`, `references/bailout-and-final-report.md`, `scripts/carryover.py`, `scripts/nudge.py` | Write/read carryover v2 per-PR bases; keep v1 fallback; report bases and required sets per row or grouped by base. |
 | Labels, lease, and runtime | `scripts/label-mirror.py`, `scripts/run-id.py`, `scripts/lease.py`, `scripts/heartbeat.py`, `references/runtime-adapter.md` | No schema or host-route change. Update only wording or tests that assume one header base; hold divergence with the existing `awaiting-user` ledger status (labels unchanged). |
-| Tests and fixtures | Campaign helper suites | Cover old-header fallback, mixed `v3`/`main`, grouped required-set reads (settle-once per group, settlement evidence from held and terminal rows, held-row write-ineligibility), unsupported live base changes, preflight mismatch, carryover v1/v2, and merge mismatch. |
+| Tests and fixtures | Campaign helper suites | Cover old-header fallback, mixed `v3`/`main`, grouped required-set reads (settle-once per group, settlement evidence from held and terminal rows, held-row write-ineligibility for every status in `HELD_STATUSES`), unsupported live base changes, preflight mismatch, carryover v1/v2, and merge mismatch. |
 
 Update adjacent quick references, examples, fixtures, and comments that restate header ownership in the same
 implementation PR as their owner. Before completing implementation, enumerate every consumer of
