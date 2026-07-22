@@ -96,10 +96,33 @@ def t_labels_fire_only_with_an_active_pr():
 # --- run-level ----------------------------------------------------------------
 
 def t_required_set_unknown():
-    check(has(fire([], hdr=header(required_set="unknown")), "required_set is unknown"),
-          "an unknown required_set must nudge to derive it")
-    check(not has(fire([], hdr=header(required_set="none")), "required_set is unknown"),
-          "a known required_set must NOT fire the derive nudge")
+    # An active row whose EFFECTIVE required set is unknown (here inherited from the legacy header) nudges
+    # to run the grouped read, NAMING the base it blocks.
+    hdr = header(run_id="g1", base_branch="main", required_set="unknown")
+    lines = fire([row(1, "in_review")], hdr=hdr)  # row base/required_set `-` → inherit header
+    check(has(lines, "required set unknown for base main"),
+          "an unknown effective required set must nudge to run the grouped read, naming the base")
+    # A row with its OWN settled required set does NOT fire — even when the header fallback is unknown.
+    check(not has(fire([row(1, "in_review", required_set="none")], hdr=hdr), "required set unknown"),
+          "a row with an explicit, settled required set must NOT fire the derive nudge")
+    # No active PR → there is no per-base required set to derive, whatever the header holds.
+    check(not has(fire([], hdr=hdr), "required set unknown"),
+          "with no active PR there is no per-base required set to derive")
+
+
+def t_required_set_unknown_is_per_base():
+    # A mixed-base run: one base is settled, one is still unknown. Only the unsettled base is reminded,
+    # named with its PR(s) — the grouped read is per distinct effective base.
+    hdr = header(run_id="g1", base_branch="-", required_set="unknown")
+    rows = [
+        row(1, "in_review", base_branch="v3", required_set="declared:[]"),  # settled for v3
+        row(2, "in_review", base_branch="main", required_set="unknown"),    # unsettled for main
+    ]
+    lines = fire(rows, hdr=hdr)
+    check(has(lines, "required set unknown for base main (PR(s) 2)"),
+          "only the unsettled base is reminded, naming its PR(s)")
+    check(not has(lines, "base v3"),
+          "a base whose required set is already settled must NOT be reminded")
 
 
 def t_fanout_fires_only_with_open_work():
@@ -292,7 +315,10 @@ CASES = [
     ("heartbeat-always", "the heartbeat reminder fires every heartbeat", t_heartbeat_always_fires),
     ("header-always", "the header-reread reminder fires every heartbeat", t_header_reread_always_fires),
     ("labels-active-only", "the labels reminder fires only with an active PR", t_labels_fire_only_with_an_active_pr),
-    ("required-set-unknown", "unknown required_set nudges to derive it", t_required_set_unknown),
+    ("required-set-unknown", "an unknown effective required set nudges to run the grouped read",
+     t_required_set_unknown),
+    ("required-set-per-base", "the unknown-required-set nudge is per distinct effective base",
+     t_required_set_unknown_is_per_base),
     ("fanout-open-only", "fan-out nudges only with open work", t_fanout_fires_only_with_open_work),
     ("followups-open-only", "follow-ups nudge only when open, with the count", t_followups_fire_only_when_open),
     ("parked-short-circuits", "a parked PR fires only its held reminder", t_parked_pr_fires_only_its_own_reminder),

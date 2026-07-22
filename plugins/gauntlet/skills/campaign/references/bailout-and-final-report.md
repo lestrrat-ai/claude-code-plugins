@@ -143,17 +143,19 @@ When the loop exits, summarize:
   than `stated@…`. **An `authored` intent is the DRIVER'S CLAIM about what the PR is for**, not the
   author's, and a wrong one silently **narrows** a review. It is a real cost and it is disclosed here rather
   than buried; a `stated@…` intent came from the PR body and needs no flag.
-- **Merged** — PR number + slug, one-line description, and tier.
+- **Merged** — PR number + slug, one-line description, tier, and the **base it merged into** (its
+  `effective_base`), so a mixed-base run shows which release line each PR shipped to.
 - **Residual risk** — for each merged PR, each accepting SATISFIED pass's `RESIDUAL-RISK` line (the
   least-certain area it named — `required(tier)` lines, so two for a STANDARD/HIGH PR and one for a
   TRIVIAL PR), and a flag when two accepting passes name the same area. This is non-actionable,
   non-gating calibration metadata — a place a human might look, never a reopened finding (Stage 2a).
-- **What the base branch REQUIRED** — the ledger's `required_set` (`stage-2-ci.md` owns its states). Report
-  **which state the run was in**, because it is what every `green` in this report rests on: `declared:…` —
-  name the checks that had to pass; `none` — the base branch required nothing, **read and confirmed**, not
-  merely unobserved. **NEVER report `unknown` as "no required checks"**: it means campaign **could not
-  read** them, nothing merged on it, and any PR that reached it **escalated** — say which read failed, so
-  the user can fix the access rather than wonder why the run stalled.
+- **What each base REQUIRED** — the required-check set, now **per base** (`effective_required_set`;
+  `stage-2-ci.md` owns its states). A run may span several bases (`v3`, `main`), so report **each distinct
+  base and which state it was in**, because it is what every `green` on that base rests on: `declared:…` —
+  name the checks that had to pass; `none` — that base required nothing, **read and confirmed**, not merely
+  unobserved. **NEVER report `unknown` as "no required checks"**: it means campaign **could not read** them
+  **for that base**, nothing merged on it, and any PR that reached it **escalated** — say which base's read
+  failed, so the user can fix the access rather than wonder why those PRs stalled.
 - **Repaired** — every PR that reached a review-loop cap: its `review_rounds`, the decision the
   reassessment pass returned, and a pointer to `repair-<pr>-<k>.md` (`repair-pass.md`). **Report a DEMOTE's
   demoted findings explicitly** — they are true findings that were deliberately **not fixed**, and burying

@@ -29,6 +29,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Callable
 
 from _gauntlet.atomic import replace_text
 from _gauntlet.modules import load_module_from_path
@@ -39,7 +40,7 @@ HERE = Path(__file__).resolve().parent
 LEDGER_PY = HERE / "ledger.py"          # the schema owner — its loader's strictness is reused, never re-rolled
 TEST_PY = HERE / "carryover-test.py"    # the fixture suite — this tool's executable contract, a SIBLING
 
-FORMAT_VERSION = "1"
+FORMAT_VERSION = "2"
 
 # Exit codes, per the house split (mirrors ledger.py's `fail`=1 / EXIT_STOP=3 shape, one tier up):
 #   2  OPERATOR ERROR — the tool was pointed at something that is not a distillable ledger: bad args
@@ -62,6 +63,10 @@ TERMINAL_STATUSES = ("merged", "aborted")
 #   aborted       — the durable WHY a PR could not clear the bar: `ci_reason` (the machine blocker) and
 #                   `blocker_ruling` (the user's answer, e.g. abort@<iso>).
 #   api-declined  — the parked API fact to remind the user about: the PR and its `api_approval` verdict.
+# EVERY projected object ALSO carries `base_branch` (v2): the row's EFFECTIVE base at distillation
+# (`ledger.effective_base` — its own recorded base, else the run's legacy header base). It is added by
+# `render`, not listed here, because it is a COMPUTED value, not a raw field read. Pruning uses each
+# PR/base pair, so history for one base never prunes against another (`carryover.md`).
 MERGED_FIELDS = ("pr", "slug", "head_sha", "tier", "review_rounds")
 ABORTED_FIELDS = ("pr", "slug", "ci_reason", "blocker_ruling")
 API_DECLINED_FIELDS = ("pr", "slug", "api_approval")
@@ -100,10 +105,15 @@ def sections(rows: list[dict]) -> "list[tuple[str, tuple[str, ...], list[dict]]]
     ]
 
 
-def render(run_id: str, base_branch: str, now: str,
-           projected: "list[tuple[str, tuple[str, ...], list[dict]]]") -> str:
+def render(run_id: str, base_branches: "list[str]", now: str,
+           projected: "list[tuple[str, tuple[str, ...], list[dict]]]",
+           base_of: "Callable[[dict], str]") -> str:
     """The history file as text — a self-describing artifact. The leading comment DOCUMENTS the format so
     the file explains itself; the data is one JSON object per PR (fields, never sentences).
+
+    `base_branches` is the sorted, deduplicated set of every projected row's effective base — the v2
+    metadata that replaces v1's single `base_branch:` line. `base_of` resolves one row's effective base
+    (`ledger.effective_base`), stamped onto every object so history prunes per PR/base pair.
     """
     out: list[str] = []
     out.append(f"<!-- gauntlet carryover history — format v{FORMAT_VERSION}")
@@ -112,22 +122,29 @@ def render(run_id: str, base_branch: str, now: str,
     out.append("DO NOT hand-edit, and it is never re-distilled (an existing file means a previous exit")
     out.append("already wrote it). Object keys are ledger field names (scripts/ledger.py ROW_FIELDS).")
     out.append("Each `## <section>` heading is followed by zero or more rows, one JSON object per PR:")
-    out.append("  merged        pr, slug, head_sha (at merge), tier, review_rounds")
-    out.append("  aborted       pr, slug, ci_reason, blocker_ruling  (the durable why it stopped)")
-    out.append("  api-declined  pr, slug, api_approval. A declined PR is ALSO aborted, so it appears in")
-    out.append("                BOTH sections — this is a reminder projection, not double-counting.")
+    out.append("  merged        pr, slug, head_sha (at merge), tier, review_rounds, base_branch")
+    out.append("  aborted       pr, slug, ci_reason, blocker_ruling, base_branch  (the durable why it stopped)")
+    out.append("  api-declined  pr, slug, api_approval, base_branch. A declined PR is ALSO aborted, so it")
+    out.append("                appears in BOTH sections — this is a reminder projection, not double-counting.")
+    out.append("Each object's `base_branch` is the row's EFFECTIVE base at distillation (its own recorded")
+    out.append("base, else the run's legacy header base). `base_branches` below is the sorted, deduplicated")
+    out.append("set of those bases; prune each entry against ITS OWN base, never the run's (carryover.md).")
+    out.append("A v1 file instead carries a single `base_branch:` metadata line and NO per-object base — in")
+    out.append("that file, that one base is the effective base of every object (carryover.md owns the read).")
     out.append("Follow-ups are NOT here: they live in .gauntlet/followups.jsonl (followups.md).")
     out.append("-->")
     out.append(f"# carryover {run_id}")
     out.append("")
     out.append(f"run_id: {run_id}")
-    out.append(f"base_branch: {base_branch}")
+    out.append(f"base_branches: {json.dumps(base_branches)}")
     out.append(f"distilled_at: {now}")
     for name, fields, rows in projected:
         out.append("")
         out.append(f"## {name}")
         for row in rows:
-            out.append(json.dumps({f: row[f] for f in fields}))
+            obj = {f: row[f] for f in fields}
+            obj["base_branch"] = base_of(row)
+            out.append(json.dumps(obj))
     return "\n".join(out) + "\n"
 
 
@@ -141,18 +158,19 @@ def check_now(now: str) -> str:
     return now
 
 
-def check_run_identity(header: dict) -> "tuple[str, str]":
-    """A distillable ledger names its run. `run_id`/`base_branch` default to `-` (unset) when absent, so a
-    `-` here means the header carries no run identity — not a distill source.
+def check_run_id(header: dict) -> str:
+    """A distillable ledger names its run. `run_id` defaults to `-` (unset) when absent, so a `-` here
+    means the header carries no run identity — not a distill source.
+
+    The base branch is NO LONGER a header-level gate (v2): the base a PR merges into is per-ROW state
+    (`ledger.effective_base`), so a new run's header base is `-` and each row carries its own explicit
+    base. A run's bases are read from its rows, not this one header field, so a `-` header base is normal.
     """
-    run_id, base_branch = header.get("run_id", "-"), header.get("base_branch", "-")
+    run_id = header.get("run_id", "-")
     if not run_id.strip() or run_id == "-":
         raise Refusal(EXIT_OPERATOR, "the ledger header has no run_id — this is not a run's ledger, so there "
                                      "is nothing to distill")
-    if not base_branch.strip() or base_branch == "-":
-        raise Refusal(EXIT_OPERATOR, f"the ledger header for run {run_id} has no base_branch — a distillable "
-                                     f"run records the branch its PRs merged into")
-    return run_id, base_branch
+    return run_id
 
 
 def check_terminal(rows: list[dict]) -> None:
@@ -171,7 +189,7 @@ def distill(ledger, ledger_path: Path, out_dir: Path, now: str, *, force: bool) 
     """
     now = check_now(now)
     header, rows = ledger.load(ledger_path)  # the schema owner's loader — its strictness IS the validation
-    run_id, base_branch = check_run_identity(header)
+    run_id = check_run_id(header)
     check_terminal(rows)
 
     out_path = out_dir / f"{run_id}.md"
@@ -180,8 +198,15 @@ def distill(ledger, ledger_path: Path, out_dir: Path, now: str, *, force: bool) 
                                  f"distilled exactly once). Pass --force ONLY to re-run after a crash that "
                                  f"died mid-write")
 
+    # Each row's EFFECTIVE base resolves through the schema owner (its own recorded base, else the legacy
+    # header) — never a second copy of that fallback. `base_branches` is the sorted, deduplicated set for
+    # the v2 metadata; `base_of` stamps each object so history prunes per PR/base pair.
+    def base_of(row: dict) -> str:
+        return ledger.effective_base(header, row)
+
+    base_branches = sorted({base_of(r) for r in rows})
     projected = sections(rows)
-    text = render(run_id, base_branch, now, projected)
+    text = render(run_id, base_branches, now, projected, base_of)
     out_dir.mkdir(parents=True, exist_ok=True)
     # Same-directory temp + os.replace: a reader sees the whole old file or the whole new one, never a torn
     # write, and a failure leaves the ORIGINAL untouched and takes the temp with it (the house pattern).
@@ -190,6 +215,7 @@ def distill(ledger, ledger_path: Path, out_dir: Path, now: str, *, force: bool) 
     return {
         "run_id": run_id,
         "path": str(out_path),
+        "base_branches": base_branches,
         **{name.replace("-", "_"): len(rows) for name, _fields, rows in projected},
     }
 

@@ -86,8 +86,10 @@ it — no trigger means the step runs unconditionally at that point in the seque
    **installed plugin cache**, so a merged, version-bumped rule governs nothing until that cache
    refreshes; record what is actually running.
 5. Run start -> set `reviewer` in the ledger header (`references/reviewer.md`) — once, never
-   re-derived from memory. Header fields are DATA: re-read `base_branch` and `reviewer` from the
-   ledger every heartbeat, never assume `main`, never trust memory.
+   re-derived from memory. Header fields are DATA: re-read `reviewer` from the ledger every heartbeat,
+   never trust memory. The base a PR merges into is **per-row** now (`effective_base` — the row's
+   recorded base, else the header's legacy `base_branch` fallback), so **re-resolve each active PR's
+   effective base every heartbeat**, never assume `main`.
 
 **Adoption** (`references/pr-adoption.md`) — for each explicit `#PR` arg, and on every heartbeat for
 every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snapshot):
