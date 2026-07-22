@@ -86,8 +86,10 @@ it — no trigger means the step runs unconditionally at that point in the seque
    **installed plugin cache**, so a merged, version-bumped rule governs nothing until that cache
    refreshes; record what is actually running.
 5. Run start -> set `reviewer` in the ledger header (`references/reviewer.md`) — once, never
-   re-derived from memory. Header fields are DATA: re-read `base_branch` and `reviewer` from the
-   ledger every heartbeat, never assume `main`, never trust memory.
+   re-derived from memory. Header fields are DATA: re-read `reviewer` from the ledger every heartbeat,
+   never trust memory. The base a PR merges into is **per-row** now (`effective_base` — the row's
+   recorded base, else the header's legacy `base_branch` fallback), so **re-resolve each active PR's
+   effective base every heartbeat**, never assume `main`.
 
 **Adoption** (`references/pr-adoption.md`) — for each explicit `#PR` arg, and on every heartbeat for
 every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snapshot):
@@ -181,7 +183,8 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
 
 20. `ci-status.py derive`: how `ci` is DERIVED — always, the only way ("THE DERIVATION IS A COMMAND"
     owns the exact invocation): a SHA-pinned snapshot of BOTH check families, verified before parsing,
-    decided against the header's required set. NEVER from `gh pr checks` (its output carries no SHA),
+    decided against the selected row's `effective_required_set` that `--ledger` resolves ("THE REQUIRED
+    SET IS NAMED, AND IT HAS NO DEFAULT" owns it). NEVER from `gh pr checks` (its output carries no SHA),
     NEVER by reading command output and judging it by eye. `ci-status.py liveness` then RECORDS that
     JSON — `ci`, the fingerprint, the strike/stall/refetch counters, and any cap park ("THE BOOKKEEPING
     IS A COMMAND" owns the invocation): the arithmetic is never applied by hand.

@@ -67,6 +67,8 @@ def _fixture(
     route: str = "native",
     producer: str = "native-worker-write",
     intent: bytes | None = None,
+    base: str = "main",
+    file: str | None = None,
 ) -> SimpleNamespace:
     rundir = root / "run artifacts"
     worktree = root / "candidate worktree"
@@ -80,12 +82,13 @@ def _fixture(
         review_pass=review_pass,
         launch_attempt=launch_attempt,
         worktree=os.fspath(worktree),
-        base="main",
+        base=base,
         route=route,
         report_producer=producer,
         head_sha=SHA,
         dispatched_at=STAMP,
         intent_file=os.fspath(intent_path),
+        file=file,
     )
 
 
@@ -682,6 +685,96 @@ def t_cli_emits_only_canonical_host_neutral_json() -> None:
               "materializer must not select or launch a host process")
 
 
+def _build_ledger(directory: Path, pr: str, base_branch: str) -> Path:
+    """A real ledger (through ledger.py) with one row for `pr` carrying an EXPLICIT `base_branch`."""
+    ledger = directory / "state.jsonl"
+    for argv in (["header", "set", "run_id", "t"],
+                 ["add-row", "--pr", pr, "--head-sha", "a" * 40, "--base-branch", base_branch]):
+        proc = subprocess.run([sys.executable, os.fspath(D.LEDGER), "--file", os.fspath(ledger), *argv],  # noqa: S603
+                              capture_output=True, text=True, check=False)
+        check(proc.returncode == 0, f"ledger {' '.join(argv)} failed: {proc.stderr.strip()}")
+    return ledger
+
+
+def t_ledger_base_assertion_matches_prepares() -> None:
+    """A `--file` whose row base equals `--base` passes the assertion and prepares one record as usual."""
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        ledger = _build_ledger(root, "41", "main")
+        args = _fixture(root, base="main", file=os.fspath(ledger))
+        payload = D.prepare(args)
+        check(payload["transport"]["base"] == "main", f"the matching base must ride the transport: {payload!r}")
+
+
+def t_ledger_base_assertion_mismatch_refuses() -> None:
+    """A `--file` whose row base disagrees with `--base` refuses — --base is an assertion, not a source."""
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        ledger = _build_ledger(root, "41", "main")
+        args = _fixture(root, base="v3", file=os.fspath(ledger))
+        _refused(args, "disagrees")
+
+
+def t_ledger_origin_named_base_matches() -> None:
+    """A row base LITERALLY named `origin/rel` (a legal branch name) matches an identical `--base` — the
+    assertion routes through `ledger.py base_agrees`, where identical strings always agree. The bare form
+    refuses: the STORED base is never stripped."""
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        ledger = _build_ledger(root, "41", "origin/rel")
+        args = _fixture(root, base="origin/rel", file=os.fspath(ledger))
+        payload = D.prepare(args)
+        check(payload["transport"]["base"] == "origin/rel",
+              f"identical origin/rel strings must pass the assertion and prepare: {payload!r}")
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        ledger = _build_ledger(root, "41", "origin/rel")
+        args = _fixture(root, base="rel", file=os.fspath(ledger))
+        _refused(args, "disagrees")
+
+
+def t_ledger_variant_spelling_uses_row_base() -> None:
+    """A `--base` spelling `base_agrees` accepts but that names a DIFFERENT git ref than the row's base must
+    NOT ride the transport. The reviewer diffs `origin/<TRANSPORT.base>...HEAD`, so an `origin/main` transport
+    base against a row base `main` would diff `origin/origin/main` — a doubled, usually-nonexistent ref. The
+    transport carries the ROW's resolved `effective_base`, so both `main` and the accepted `origin/main` form
+    prepare the SAME `base=main`. FAILS if the raw `--base` rides the transport instead of the row's base."""
+    for spelling in ("main", "origin/main"):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            ledger = _build_ledger(root, "41", "main")
+            args = _fixture(root, base=spelling, file=os.fspath(ledger))
+            transport = D.prepare(args)["transport"]
+            check(transport["base"] == "main",
+                  f"--base {spelling} must ride the transport as the row's effective base 'main', "
+                  f"got {transport['base']!r}")
+
+
+def t_ledger_unresolved_base_refuses() -> None:
+    """A both-`-` ledger (header base unset AND row base unset) resolves through `effective_base` to the `-`
+    sentinel — an UNRESOLVED base. `--base` is refused as "no usable effective base" BEFORE it can ride the
+    transport, never accepted (`ledger.py require_effective_base`, the one owner). If that guard is deleted,
+    the base assertion is SKIPPED and a caller `--base` prepares a transport unvalidated — so this FAILS."""
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        ledger = root / "state.jsonl"
+        for argv in (["header", "set", "run_id", "t"],                      # base_branch left `-`
+                     ["add-row", "--pr", "41", "--head-sha", "a" * 40]):    # row base-branch left `-`
+            proc = subprocess.run([sys.executable, os.fspath(D.LEDGER), "--file", os.fspath(ledger), *argv],  # noqa: S603
+                                  capture_output=True, text=True, check=False)
+            check(proc.returncode == 0, f"ledger {' '.join(argv)} failed: {proc.stderr.strip()}")
+        args = _fixture(root, base="v3", file=os.fspath(ledger))
+        _refused(args, "no usable effective base")
+
+
+def t_ledger_missing_row_refuses() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        ledger = _build_ledger(root, "99", "main")
+        args = _fixture(root, pr="41", base="main", file=os.fspath(ledger))
+        _refused(args, "no ledger row for pr 41")
+
+
 CASES = [
     (
         "relaunch-path-coherence",
@@ -707,4 +800,16 @@ CASES = [
     ("transition-mapping", "review actions map directly to route and producer", t_transition_actions_map_directly_to_prepare_inputs),
     ("unicode-delivery", "a Unicode path is delivered as UTF-8 bytes under ASCII stdout", t_unicode_worktree_delivers_under_ascii_stdout),
     ("host-neutral-json", "CLI emits canonical data and never launches", t_cli_emits_only_canonical_host_neutral_json),
+    ("ledger-base-match", "--file with a matching row base passes the assertion and prepares",
+     t_ledger_base_assertion_matches_prepares),
+    ("ledger-base-mismatch", "--file with a disagreeing row base refuses (--base is an assertion)",
+     t_ledger_base_assertion_mismatch_refuses),
+    ("ledger-origin-named-base", "a base literally named origin/<x> matches itself; the bare form refuses",
+     t_ledger_origin_named_base_matches),
+    ("ledger-variant-spelling-row-base",
+     "an accepted origin/<base> spelling rides the transport as the row's effective base, not the raw arg",
+     t_ledger_variant_spelling_uses_row_base),
+    ("ledger-unresolved-base", "--file resolving to a `-`/blank effective base refuses before the assertion",
+     t_ledger_unresolved_base_refuses),
+    ("ledger-missing-row", "--file naming an unknown PR row refuses", t_ledger_missing_row_refuses),
 ]

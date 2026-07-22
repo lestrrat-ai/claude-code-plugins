@@ -119,24 +119,29 @@ def bundle_for(record: Path) -> Path:
 
 
 def bind_record(ledger: Path, record: Path, pr: str, head_sha: str, worktree: Path,
-                decision: str = "demote") -> Path:
+                decision: str = "demote", base_ref: str = "origin/main",
+                base_sha: "str | None" = None) -> Path:
     """Create the smallest valid prepared-bundle witness for decision-door fixtures.
 
     The record declares its chosen decision in the machine-readable `DECISION: <decision>` line decide reads.
+    `base_ref`/`base_sha` default to the header base (`origin/main`, at `head_sha`); a row-base fixture passes
+    the row's effective base so decide can re-derive it through `L.effective_base(header, row)`.
     """
     _, rows = L.load(ledger)
     row = L.find_row(rows, pr)
     check(row is not None, f"fixture ledger has no row for pr {pr}")
     assert row is not None
     permitted = R.permitted_record(row)
+    if base_sha is None:
+        base_sha = head_sha
     # `decision_repo` points `origin/main` at its single commit, which is also this fixture's `head_sha`, so
-    # the bundle's pinned base SHA (F2) is `head_sha` here — decide re-resolves `origin/main` and matches it.
+    # the bundle's pinned base SHA (F2) is `head_sha` here — decide re-resolves the base ref and matches it.
     payload = R.canonical_json({
         "schema": R.BUNDLE_SCHEMA,
         "pr": pr,
         "head_sha": head_sha,
-        "base_ref": "origin/main",
-        "base_sha": head_sha,
+        "base_ref": base_ref,
+        "base_sha": base_sha,
         "ledger": {"path": str(ledger.resolve()), "row": R.decision_projection(row)},
         "intent": {},
         "rounds": [],
@@ -162,8 +167,8 @@ def bind_record(ledger: Path, record: Path, pr: str, head_sha: str, worktree: Pa
         "worktree": str(worktree.resolve()),
         "pr": pr,
         "head_sha": head_sha,
-        "base_ref": "origin/main",
-        "base_sha": head_sha,
+        "base_ref": base_ref,
+        "base_sha": base_sha,
         "rounds": [],
     }))
     record.write_text(
@@ -1088,6 +1093,64 @@ def t_bundle_pins_base_sha_against_a_racing_fetch(tmp: Path) -> None:
           f"{len(payload['diff_growth'])} commits")
 
 
+def t_bundle_uses_row_effective_base_over_header(tmp: Path) -> None:
+    """The bundle binds THIS row's effective base, not the one header base. A row whose explicit
+    `base_branch` differs from the header's `main` resolves `origin/<row-base>` — so a mixed-base run bundles
+    each PR against its own release line."""
+    case = bundle_setup(tmp)
+    repo, head = case["repo"], case["head_sha"]
+    header_line, row_line = case["ledger"].read_text().splitlines()
+    row = json.loads(row_line)
+    row["base_branch"] = "release"  # an explicit ROW base, differing from the header's `main`
+    case["ledger"].write_text(header_line + "\n" + json.dumps(row) + "\n")
+    git(repo, "update-ref", "refs/remotes/origin/release", head)  # make the row base resolvable
+    output = case["rundir"] / "repair-1-1.prompt.txt"
+    code, _, err = run_bundle(case, output)
+    check(code == 0, f"bundle refused a row-based base: {err!r}")
+    payload = prompt_payload(output)
+    manifest = json.loads(R.bundle_manifest_path(output).read_text())
+    check(payload["base_ref"] == "origin/release",
+          f"bundle used the header base, not the row's effective base: {payload['base_ref']!r}")
+    check(manifest["base_ref"] == "origin/release",
+          f"manifest bound the header base, not the row's effective base: {manifest['base_ref']!r}")
+
+
+def _row_base_decide_ledger(tmp: Path, name: str) -> "tuple[Path, str, Path]":
+    """A cap-status gauntlet-owned row with an EXPLICIT `base_branch` of `release` (differing from the header
+    `main`), plus a decision worktree carrying an `origin/release` ref. Returns (ledger, head_sha, repo)."""
+    repo, head_sha = decision_repo(tmp)
+    git(repo, "update-ref", "refs/remotes/origin/release", head_sha)
+    path = tmp / name
+    fields = {**L.ROW_DEFAULTS, "pr": "1", "head_sha": head_sha, "worktree": str(repo.resolve()),
+              "status": L.REPAIR_STATUS, "review_rounds": str(L.ROUND_CAP), "ns_streak": "1",
+              "pr_origin": "gauntlet", "base_branch": "release"}
+    path.write_text(
+        json.dumps({"type": "header", **L.HEADER_DEFAULTS, "base_branch": "main"}) + "\n"
+        + json.dumps({"type": "row", **fields}) + "\n")
+    return path, head_sha, repo
+
+
+def t_decide_uses_row_effective_base_over_header(tmp: Path) -> None:
+    """decide re-derives the ROW's effective base: a manifest bound to `origin/release` (the row's explicit
+    base) validates, while one still bound to the header base `origin/main` is refused as the wrong base."""
+    # Accepted: the manifest built from the row's effective base.
+    path, head_sha, repo = _row_base_decide_ledger(tmp, "rowbase-ok.jsonl")
+    record = tmp / "rowbase-ok.md"
+    bind_record(path, record, "1", head_sha, repo, decision="demote", base_ref="origin/release")
+    code, _, err = decide(path, record, "demote")
+    check(code == 0, f"decide refused a bundle bound to the row's effective base: {err!r}")
+    check(field(path, "repair_decision").startswith("demote"), "the row-base decision was not recorded")
+
+    # Refused: a manifest bound to the HEADER base is stale against the row's effective base.
+    stale_path, stale_head, stale_repo = _row_base_decide_ledger(tmp, "rowbase-stale.jsonl")
+    stale_record = tmp / "rowbase-stale.md"
+    bind_record(stale_path, stale_record, "1", stale_head, stale_repo, decision="demote", base_ref="origin/main")
+    code, _, err = decide(stale_path, stale_record, "demote")
+    check(code == 1, f"a header-base manifest was accepted against a release-base row (exit {code})")
+    check("origin/release" in err,
+          f"the refusal must name the row's effective base as the expected one: {err!r}")
+
+
 def t_bundle_resumes_after_context_loss(tmp: Path) -> None:
     """A heartbeat that built the bundle and died before `decide` re-runs `bundle` and RESUMES, not wedges.
 
@@ -1378,6 +1441,8 @@ CASES = [
     ("bundle-cap-needs-finding", "a cap round with no gating finding is unusable history and refused", t_bundle_refuses_a_cap_round_with_no_gating_finding),
     ("bundle-report-needs-verdict", "a report with no terminal VERDICT line fails closed through parse_report", t_bundle_refuses_a_report_with_no_verdict),
     ("bundle-base-sha-pinned", "the base is pinned to one SHA before any read; a racing fetch cannot mix bases", t_bundle_pins_base_sha_against_a_racing_fetch),
+    ("bundle-row-effective-base", "the bundle binds the row's effective base, not the one header base", t_bundle_uses_row_effective_base_over_header),
+    ("decide-row-effective-base", "decide re-derives the row's effective base; a header-base manifest is stale", t_decide_uses_row_effective_base_over_header),
     ("bundle-resume", "a bundle rebuilt after context loss reuses or regenerates, never wedges", t_bundle_resumes_after_context_loss),
     ("bundle-identity-scope", "a liveness write never wedges resume; a decision-field drift is still stale", t_bundle_identity_ignores_liveness_but_not_decision_fields),
     ("bundle-atomic", "Git and atomic-write failures leave no partial bundle", t_bundle_git_and_atomic_failures_leave_no_output),

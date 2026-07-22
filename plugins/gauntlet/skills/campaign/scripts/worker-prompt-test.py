@@ -8,6 +8,7 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -380,6 +381,98 @@ def t_economy_preflight_command_survives_word_splitting() -> None:
         check(not never_marker.exists(), "the worktree path command-substituted instead of staying quoted")
 
 
+def _build_ledger(directory: Path, pr: str, base_branch: str) -> Path:
+    """A real ledger (through ledger.py) with one row for `pr` carrying an EXPLICIT `base_branch`."""
+    ledger = directory / "state.jsonl"
+    for argv in (["header", "set", "run_id", "t"],
+                 ["add-row", "--pr", pr, "--head-sha", "a" * 40, "--base-branch", base_branch]):
+        proc = subprocess.run([sys.executable, str(M.LEDGER), "--file", str(ledger), *argv],  # noqa: S603
+                              capture_output=True, text=True, check=False)
+        check(proc.returncode == 0, f"ledger {' '.join(argv)} failed: {proc.stderr.strip()}")
+    return ledger
+
+
+def _fix_argv(root: Path, base: str, ledger: "Path | None") -> "list[str]":
+    repo = root / "repo"
+    worktree = root / "worktree"
+    repo.mkdir(exist_ok=True)
+    worktree.mkdir(exist_ok=True)
+    issues = root / "issues.bin"
+    issues.write_bytes(ISSUES)
+    argv = ["fix", "--role", "review", "--project-root", str(repo), "--worktree", str(worktree),
+            "--pr", "42", "--base", base, "--preflight-verdict", "proceed",
+            "--issues-file", str(issues), "--output-dir", str(root / "out")]
+    if ledger is not None:
+        argv += ["--file", str(ledger)]
+    return argv
+
+
+def t_ledger_base_assertion_matches() -> None:
+    """`--file` whose row base equals `--base` passes the assertion and publishes the bundle (exit 0)."""
+    with tempfile.TemporaryDirectory(prefix="worker prompt base match ") as raw:
+        root = Path(raw)
+        ledger = _build_ledger(root, "42", "main")
+        code, _, err = capture_cli(M.main, _fix_argv(root, "main", ledger))
+        check(code == M.EXIT_OK, f"a matching --base must pass and publish (code={code}, err={err!r})")
+
+
+def t_ledger_base_assertion_mismatch_refuses() -> None:
+    """`--file` whose row base disagrees with `--base` refuses — --base is an assertion, not a source."""
+    with tempfile.TemporaryDirectory(prefix="worker prompt base mismatch ") as raw:
+        root = Path(raw)
+        ledger = _build_ledger(root, "42", "main")
+        code, _, err = capture_cli(M.main, _fix_argv(root, "v3", ledger))
+        check(code == M.EXIT_REFUSED and "disagrees" in err and "effective base" in err,
+              f"a disagreeing --base must refuse naming the disagreement (code={code}, err={err!r})")
+        check(not (root / "out").exists(), "a refused base assertion must publish no bundle")
+
+
+def t_ledger_origin_named_base_matches() -> None:
+    """A row base LITERALLY named `origin/rel` (a legal branch name) matches an identical `--base` — the
+    assertion routes through `ledger.py base_agrees`, where identical strings always agree. The bare form
+    refuses: the STORED base is never stripped."""
+    with tempfile.TemporaryDirectory(prefix="worker prompt origin named base ") as raw:
+        root = Path(raw)
+        ledger = _build_ledger(root, "42", "origin/rel")
+        code, _, err = capture_cli(M.main, _fix_argv(root, "origin/rel", ledger))
+        check(code == M.EXIT_OK,
+              f"identical origin/rel strings must pass the assertion and publish (code={code}, err={err!r})")
+    with tempfile.TemporaryDirectory(prefix="worker prompt origin named bare ") as raw:
+        root = Path(raw)
+        ledger = _build_ledger(root, "42", "origin/rel")
+        code, _, err = capture_cli(M.main, _fix_argv(root, "rel", ledger))
+        check(code == M.EXIT_REFUSED and "disagrees" in err,
+              f"a bare --base must disagree with a stored origin/-named base (code={code}, err={err!r})")
+
+
+def t_ledger_unresolved_base_refuses() -> None:
+    """A both-`-` ledger (header base unset AND row base unset) resolves through `effective_base` to the `-`
+    sentinel — an UNRESOLVED base. `--base` is refused as "no usable effective base" and NO bundle is
+    published (`ledger.py require_effective_base`, the one owner). If that guard is deleted, the base
+    assertion is SKIPPED and the fix bundle is PUBLISHED with the caller `--base` baked in — so this FAILS."""
+    with tempfile.TemporaryDirectory(prefix="worker prompt unresolved base ") as raw:
+        root = Path(raw)
+        ledger = root / "state.jsonl"
+        for argv in (["header", "set", "run_id", "t"],                      # base_branch left `-`
+                     ["add-row", "--pr", "42", "--head-sha", "a" * 40]):    # row base-branch left `-`
+            proc = subprocess.run([sys.executable, str(M.LEDGER), "--file", str(ledger), *argv],  # noqa: S603
+                                  capture_output=True, text=True, check=False)
+            check(proc.returncode == 0, f"ledger {' '.join(argv)} failed: {proc.stderr.strip()}")
+        code, _, err = capture_cli(M.main, _fix_argv(root, "v3", ledger))
+        check(code == M.EXIT_REFUSED and "no usable effective base" in err,
+              f"an unresolved (`-`) base must refuse (code={code}, err={err!r})")
+        check(not (root / "out").exists(), "a refused unresolved base must publish no bundle")
+
+
+def t_ledger_missing_row_refuses() -> None:
+    with tempfile.TemporaryDirectory(prefix="worker prompt base norow ") as raw:
+        root = Path(raw)
+        ledger = _build_ledger(root, "99", "main")
+        code, _, err = capture_cli(M.main, _fix_argv(root, "main", ledger))
+        check(code == M.EXIT_REFUSED and "no ledger row for pr 42" in err,
+              f"an unknown row must refuse naming the PR (code={code}, err={err!r})")
+
+
 TESTS = (
     ("golden bytes", t_golden_bytes_and_metadata),
     ("economy runnable preflight", t_economy_binds_runnable_preflight_command),
@@ -394,6 +487,11 @@ TESTS = (
     ("hostile paths and bytes", t_paths_and_payload_files_fail_closed),
     ("publish probe OSError refusal", t_publish_probe_oserror_is_controlled_refusal),
     ("host-neutral output", t_output_is_host_neutral),
+    ("ledger base assertion matches", t_ledger_base_assertion_matches),
+    ("ledger base assertion mismatch refuses", t_ledger_base_assertion_mismatch_refuses),
+    ("ledger origin-named base matches itself", t_ledger_origin_named_base_matches),
+    ("ledger unresolved base refuses", t_ledger_unresolved_base_refuses),
+    ("ledger missing row refuses", t_ledger_missing_row_refuses),
 )
 
 

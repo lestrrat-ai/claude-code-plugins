@@ -30,11 +30,48 @@ actively-driven run owns — so there is still no write contention with a live w
 `history.md`, if present from before this split, is still read as read-only history; leave it in
 place.)
 
+### The carryover file format — v2, with a v1 fallback
+
+`carryover.py distill` always writes **format v2**, single-base runs included. A run may hold PRs on
+**different bases** (`v3`, `main`), so the base is per **PR**, not per run:
+
+- Each projected object carries its own **`base_branch`** — the row's **effective base** at distillation
+  (its recorded base, else the run's legacy header base).
+- The metadata carries a **`base_branches`** array: the sorted, deduplicated set of those bases. It
+  replaces v1's single `base_branch:` line.
+
+```text
+run_id: g260722-0900-acde1234
+base_branches: ["main", "v3"]
+distilled_at: 2026-07-22T18:00:00Z
+
+## merged
+{"pr": "41", "slug": "fix-v3-parser", ..., "base_branch": "v3"}
+{"pr": "52", "slug": "fix-main-parser", ..., "base_branch": "main"}
+```
+
+**A v1 file stays readable.** A pre-v2 file has a single top-level `base_branch:` line and its objects
+carry **no** `base_branch`. In that file, that one base is the **effective base of every object** — read
+it that way and prune each object against it:
+
+```text
+run_id: g260601-1000-01020304
+base_branch: main
+distilled_at: 2026-06-01T12:00:00Z
+
+## merged
+{"pr": "12", "slug": "fix-typo", ...}
+```
+
+Existing history is never rewritten; a v1 file remains v1 on disk.
+
 ### Pruning the ledger
 
-The store grows one file per run, so **prune it regularly** — early in every fresh run, once that
-run's PRs are adopted and its `base_branch` is resolved (pruning keys off the base), and any time the
-user asks. The goal is to drop entries that **no longer apply to the current code**:
+The store grows one file per run, so **prune it regularly** — early in every fresh run, once that run's
+PRs are adopted, and any time the user asks. Pruning keys off the base, and the base is **per entry**:
+prune each object against **its own** `base_branch` (a v1 object against that file's single base). History
+for one base never prunes against another. The goal is to drop entries that **no longer apply to the
+current code**:
 
 - **aborted** whose cited `file:line` no longer exists, or whose PR has since merged/closed by other
   means — the recorded blocker can't still hold.
@@ -73,10 +110,11 @@ above); it never reads or duplicates the follow-up store.
 1. **Start the run per `loop-control.md` step 1's fresh-run path** — preflight the `#PR` set read-only
    first, and only then create run state and adopt. That step owns the ordering and the refusal
    behavior; never restate it here.
-2. **Read every file in `.gauntlet/history/`, then prune against the resolved `base_branch`** (drop
-   entries no longer applicable to that base; uncertain deletions are asked about **without blocking**
-   — keep the entries and proceed, see "Pruning the ledger"). Pruning only ever edits **finished**
-   runs' own files (no live writer), so there's nothing to race.
+2. **Read every file in `.gauntlet/history/`, then prune each entry against its OWN recorded base**
+   (a v2 object's `base_branch`, a v1 object against that file's single base; drop entries no longer
+   applicable to that base; uncertain deletions are asked about **without blocking** — keep the entries
+   and proceed, see "Pruning the ledger"). Pruning only ever edits **finished** runs' own files (no live
+   writer), so there's nothing to race.
 3. Enter the loop as normal, on the clean `<rundir>`. Carryover is advisory historical context only —
    it de-dups against already-merged/aborted work and reminds the user of parked API-declined changes;
    it never auto-adopts or auto-skips a PR.

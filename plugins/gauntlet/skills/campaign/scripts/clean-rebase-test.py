@@ -328,6 +328,60 @@ def t_no_row_refused():
         check('"refused": "no-row"' in out, f"the refusal names the missing row; got {out!r}")
 
 
+def t_base_mismatch_refused():
+    # `--base` is an ASSERTION: a value disagreeing with the row's effective base is refused BEFORE any
+    # fetch/rebase, and nothing mutates. The scenario's row inherits header base `main`; assert `v3`.
+    with tempfile.TemporaryDirectory() as tmp:
+        s = _scenario(tmp)
+        code, out, _ = capture_cli(M.main, ["run", "--ledger", str(s.ledger), "--pr", PR_NUMBER,
+                                            "--worktree", str(s.wt), "--base", "v3"])
+        check(code == M.EXIT_PRECONDITION, f"a --base disagreeing with the row is refused at exit 2 (code={code})")
+        check('"refused": "base-mismatch"' in out, f"the refusal names the base mismatch; got {out!r}")
+        check("v3" in out and "main" in out, "the refusal names BOTH the passed --base and the effective base")
+        check(_field(s.ledger, PR_NUMBER, "head_sha") == s.orig_head, "nothing mutated — head_sha untouched")
+
+
+def t_unresolved_base_refused():
+    # A both-`-` ledger (header base_branch unset AND row base-branch unset) resolves through
+    # `effective_base` to the `-` sentinel — an UNRESOLVED base. It is refused at step 1a as `no-base`
+    # BEFORE any fetch/rebase, never treated as a real branch (`ledger.py require_effective_base`, the one
+    # owner). If that guard is deleted, the base assertion is SKIPPED and execution falls through to a later
+    # precondition (worktree-missing), so this fixture FAILS — that is exactly the bug the guard fixes.
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        ledger = tmp / "state.jsonl"
+        _ledger("--file", str(ledger), "header", "set", "run_id", "t")            # base_branch left `-`
+        _ledger("--file", str(ledger), "add-row", "--pr", PR_NUMBER, "--status", "in_review")  # base `-`
+        code, out, _ = capture_cli(M.main, ["run", "--ledger", str(ledger), "--pr", PR_NUMBER,
+                                            "--worktree", str(tmp / "missing"), "--base", "v3"])
+        check(code == M.EXIT_PRECONDITION, f"an unresolved (`-`) base is refused at exit 2 (code={code})")
+        check('"refused": "no-base"' in out, f"the refusal names the unresolved base as no-base; got {out!r}")
+        check("no usable effective base" in out, f"the refusal explains the unresolved base; got {out!r}")
+
+
+def t_origin_named_base_agrees():
+    # A row base LITERALLY named `origin/rel` (a legal branch name) matches an identical `--base` — the
+    # assertion routes through `ledger.py base_agrees`, where identical strings always agree. The refusal
+    # that follows is the MISSING WORKTREE (step 3), proving the base assertion (step 1a) passed. The bare
+    # form still refuses `base-mismatch`: the STORED base is never stripped.
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        ledger = tmp / "state.jsonl"
+        _ledger("--file", str(ledger), "header", "set", "run_id", "t")
+        _ledger("--file", str(ledger), "add-row", "--pr", "12", "--head-sha", "a" * 40,
+                "--base-branch", "origin/rel", "--status", "in_review")
+        code, out, _ = capture_cli(M.main, ["run", "--ledger", str(ledger), "--pr", "12",
+                                            "--worktree", str(tmp / "missing"), "--base", "origin/rel"])
+        check(code == M.EXIT_PRECONDITION, f"the missing worktree still refuses at exit 2 (code={code})")
+        check('"refused": "worktree-missing"' in out and '"base-mismatch"' not in out,
+              f"identical origin/rel strings must pass the base assertion and reach the worktree check; "
+              f"got {out!r}")
+        code, out, _ = capture_cli(M.main, ["run", "--ledger", str(ledger), "--pr", "12",
+                                            "--worktree", str(tmp / "missing"), "--base", "rel"])
+        check(code == M.EXIT_PRECONDITION and '"refused": "base-mismatch"' in out,
+              f"a bare --base must disagree with a stored origin/-named base; got {out!r}")
+
+
 def t_absent_remote_refused():
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
@@ -385,6 +439,28 @@ def t_push_rejected_preserves_local_rebase():
               "the remote PR branch was not clobbered (force-with-lease refused it)")
 
 
+def t_variant_spelling_rebases_against_row_base():
+    # `--base origin/main` against a row whose effective base is `main` is ACCEPTED by `base_agrees` (a
+    # leading `origin/` on the argument is stripped). The operational fetch/rebase must target the ROW's
+    # resolved base, so this runs `git fetch origin main` / rebase onto `origin/main` — the SAME clean rebase
+    # as `--base main`, exit 0, remote pushed. Trusting the raw `--base` (the reverted bug) would instead run
+    # `git fetch origin origin/main`, which has no such remote ref → `fetch-failed`, refused at exit 2. This
+    # FAILS if the operational ref is taken from the raw `--base` rather than the row's effective base.
+    with tempfile.TemporaryDirectory() as tmp:
+        s = _scenario(tmp)
+        s.advance_base({12: "12-BASE"})  # a clean FAR edit — the rebase itself succeeds
+        argv = ["run", "--ledger", str(s.ledger), "--pr", PR_NUMBER, "--worktree", str(s.wt),
+                "--base", "origin/main"]
+        code, out, err = capture_cli(M.main, argv)
+        check(code == M.EXIT_OK,
+              f"--base origin/main must rebase against the row's effective base 'main' and exit 0 "
+              f"(code={code}, out={out!r}, err={err!r})")
+        new_head = head(s.wt)
+        check(new_head != s.orig_head, "the clean rebase moved the worktree HEAD")
+        check(s.remote_pr_head() == new_head,
+              "the remote PR branch was force-with-lease pushed to the rebased head")
+
+
 # --- --dry-run mutates nothing -----------------------------------------------
 
 def t_dry_run_mutates_nothing():
@@ -417,6 +493,15 @@ CASES = [
      t_head_mismatch_refused),
     ("held-refused", "a held row is refused at exit 2 and never rebased", t_held_row_refused),
     ("no-row-refused", "a PR with no ledger row is refused at exit 2", t_no_row_refused),
+    ("origin-named-base-agrees", "a base literally named origin/<x> matches itself; the bare form disagrees",
+     t_origin_named_base_agrees),
+    ("base-mismatch-refused", "a --base disagreeing with the row's effective base is refused at exit 2",
+     t_base_mismatch_refused),
+    ("variant-spelling-rebases-row-base",
+     "an accepted origin/main spelling rebases against the row's effective base 'main', not the raw arg",
+     t_variant_spelling_rebases_against_row_base),
+    ("unresolved-base-refused", "a both-`-` ledger resolves to `-`; the unresolved base is refused as no-base at exit 2",
+     t_unresolved_base_refused),
     ("no-remote-refused", "an absent default remote is refused at exit 2", t_absent_remote_refused),
     ("worktree-missing-refused", "a missing/non-git worktree is refused at exit 2", t_worktree_missing_refused),
     ("push-rejected-preserves-rebase", "a rejected push preserves the local rebase and does NOT write the "

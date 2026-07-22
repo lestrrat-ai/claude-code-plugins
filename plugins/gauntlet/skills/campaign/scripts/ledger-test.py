@@ -2372,9 +2372,9 @@ def t_pending_adoption_is_an_ordinary_field(L: ModuleType, tmp: Path) -> None:
 # --- row-owned base / required set, with the header as the LEGACY FALLBACK -------------------------------
 #
 # `base_branch` and `required_set` are per-ROW state now; the header fields are only what a row with no
-# explicit value inherits. These fixtures pin the schema half of static mixed-base support (the consumers
-# that resolve through the accessors are converted in a later stage): the two accessors, the immutable
-# creation-only row base, and the `-` (inherit) vs `unknown` (explicit, fail-closed) distinction.
+# explicit value inherits. These fixtures pin the schema half of mixed-base support (each consumer's own
+# resolution through the accessors is exercised by that consumer's test suite): the two accessors, the
+# immutable creation-only row base, and the `-` (inherit) vs `unknown` (explicit, fail-closed) distinction.
 
 def t_old_ledger_resolves_through_the_header(L: ModuleType, tmp: Path) -> None:
     """An old ledger — written before the row base fields existed — loads and resolves through the header.
@@ -2447,11 +2447,11 @@ def t_row_base_is_creation_only(L: ModuleType, tmp: Path) -> None:
     # …and the stored base is untouched by the refused write.
     code, out, _ = cli(L, ["--file", str(path), "get", "--pr", "1", "--field", "base_branch"])
     check(out == "v3\n", f"the recorded base changed despite the refusal: {out!r}")
-    # `required_set` is NOT creation-only: the stage-2 grouped refresh will rewrite it through `set`.
+    # `required_set` is NOT creation-only: the grouped required-set refresh rewrites it through `set`.
     check("required_set" not in L.CREATE_ONLY,
-          "required_set must stay settable via `set` — the stage-2 grouped refresh will write it")
+          "required_set must stay settable via `set` — the grouped required-set refresh writes it")
     code, _, err = cli(L, ["--file", str(path), "set", "--pr", "1", "--required-set", "none"])
-    check(code == 0, f"`set --required-set` must stay open for the stage-2 grouped refresh: exit {code}, {err!r}")
+    check(code == 0, f"`set --required-set` must stay open for the grouped required-set refresh: exit {code}, {err!r}")
 
 
 def t_required_set_dash_vs_unknown(L: ModuleType, tmp: Path) -> None:
@@ -2479,6 +2479,61 @@ def t_required_set_dash_vs_unknown(L: ModuleType, tmp: Path) -> None:
           "a `-` base must inherit the header")
     check(L.effective_base({"base_branch": "main"}, {"base_branch": "v3"}) == "v3",
           "an explicit base must win over the header")
+
+    # A `-` row inherits the header required_set ONLY when its base IS the header base — the header describes
+    # the header base alone. A `-` row on a DIFFERENT base (a mixed-base config) has no settled set here and
+    # stays the fail-closed `unknown`, never reading as the header base's set (a false green). This is the
+    # SAME base-agreement rule the grouped refresh applies (ci-status.refresh_required_set).
+    mixed_header = {"base_branch": "main", "required_set": "none"}
+    check(L.effective_required_set(mixed_header, {"base_branch": "main", "required_set": "-"}) == "none",
+          "a `-` row on the header base must inherit the settled header")
+    other = L.effective_required_set(mixed_header, {"base_branch": "v3", "required_set": "-"})
+    check(other == L.HEADER_DEFAULTS["required_set"],
+          f"a `-` row on a DIFFERENT base must NOT read as the header base's set — fail closed: {other!r}")
+
+
+def t_base_agrees(L: ModuleType, _tmp: Path) -> None:
+    """`base_agrees` — the ONE owner of the `--base`-assertion comparison every consumer routes through.
+
+    Identical strings ALWAYS agree — a base literally named `origin/<x>` (a legal branch name) must match
+    itself, so `--base origin/release` against a stored `origin/release` can never be read as a
+    disagreement. A leading `origin/` is stripped from the ARGUMENT only (the review-diff form asserting a
+    bare stored base); the STORED base is never stripped, so a bare argument cannot assert a base literally
+    named `origin/<x>`.
+    """
+    check(L.base_agrees("main", "main"), "identical bare names must agree")
+    check(L.base_agrees("origin/main", "main"), "an origin/-prefixed ARGUMENT asserts the bare stored base")
+    check(L.base_agrees("origin/release", "origin/release"),
+          "identical strings must ALWAYS agree — a base literally named origin/release matches itself")
+    check(not L.base_agrees("release", "origin/release"),
+          "the STORED base is never stripped — a bare argument cannot assert a base literally named "
+          "origin/release")
+    check(not L.base_agrees("v3", "main"), "different names must disagree")
+    check(not L.base_agrees("origin/v3", "main"), "a stripped argument naming a different base must disagree")
+
+
+def t_require_effective_base(L: ModuleType, _tmp: Path) -> None:
+    """`require_effective_base` — the ONE owner of "a resolved-base consumer fails closed on an unresolved base".
+
+    A usable base is returned as `(base, None)`; an unresolved one — blank, whitespace-only, or the `-` unset
+    sentinel on BOTH the row and the header — is refused as `(None, reason)`, the reason naming the PR. This is
+    what every base-USING consumer (clean-rebase, review-dispatch, worker-prompt, carryover, base-preflight,
+    triage, repair-pass) routes through, so a `-` base is refused BEFORE it is compared, written, or diffed.
+    """
+    # A real resolved base passes through unchanged, with no problem.
+    base, problem = L.require_effective_base({"base_branch": "main"}, {"base_branch": "-"}, "1")
+    check(base == "main" and problem is None, f"a `-` row inheriting a real header base is usable: {base!r} {problem!r}")
+    base, problem = L.require_effective_base({"base_branch": "main"}, {"base_branch": "v3"}, "1")
+    check(base == "v3" and problem is None, f"an explicit row base is usable: {base!r} {problem!r}")
+    # The both-`-` state (row AND header unset) — `effective_base` returns `-` — is REFUSED, not returned.
+    base, problem = L.require_effective_base({"base_branch": "-"}, {"base_branch": "-"}, "999")
+    check(base is None and problem == "pr 999 has no usable effective base in the ledger",
+          f"a both-`-` ledger must fail closed, naming the PR: {base!r} {problem!r}")
+    # A blank or whitespace-only resolved base is unresolved too — never a branch a caller may use.
+    base, problem = L.require_effective_base({"base_branch": ""}, {"base_branch": "-"}, "5")
+    check(base is None and problem is not None, f"a blank effective base must fail closed: {base!r} {problem!r}")
+    base, problem = L.require_effective_base({"base_branch": "  "}, {"base_branch": "-"}, "5")
+    check(base is None and problem is not None, f"a whitespace-only effective base must fail closed: {base!r} {problem!r}")
 
 
 def t_table_shows_the_effective_base(L: ModuleType, tmp: Path) -> None:
@@ -2597,6 +2652,8 @@ CASES = [
     ("new-row-owns-its-base", "a new row's explicit base wins over the header, per row", t_new_row_owns_its_base),
     ("row-base-creation-only", "the row base is written once at add-row and immutable — no `set --base-branch`", t_row_base_is_creation_only),
     ("required-set-dash-vs-unknown", "`-` inherits the header; explicit `unknown` fails closed, never inherits", t_required_set_dash_vs_unknown),
+    ("base-agrees", "base_agrees: identical strings always agree; only the ARGUMENT's origin/ is stripped", t_base_agrees),
+    ("require-effective-base", "require_effective_base: a usable base passes; a blank/whitespace/`-` base fails closed naming the PR", t_require_effective_base),
     ("table-effective-base", "table shows a computed `base` column — the effective base, escaped like any cell", t_table_shows_the_effective_base),
 ]
 

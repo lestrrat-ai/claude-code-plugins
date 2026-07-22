@@ -23,7 +23,7 @@ campaign commit to the PR head resets the gate", below, through `scripts/ledger.
 
 ```sh
 python3 <skill>/scripts/ci-status.py derive --pr <N> --head-sha <the LEDGER's head_sha> --rundir <rundir> \
-  --required-set "$(python3 <skill>/scripts/ledger.py --file <rundir>/state.jsonl header get required_set)"
+  --ledger <rundir>/state.jsonl
 ```
 
 It performs every step of the spec — FETCH (SHA-pinned, paginated, **both** families), PROMOTE (atomic),
@@ -40,14 +40,17 @@ behind. It exits `0` **only** on green.
 same JSON to `ci-status.py liveness` ("THE BOOKKEEPING IS A COMMAND", below), which records it and does
 the counter arithmetic.
 
-**`--required-set` IS MANDATORY, AND IT HAS NO DEFAULT.** It is the ledger header's `required_set`, passed
-straight through (`declared:<json>` | `none` | `unknown` — "WHAT WERE WE EXPECTING TO SEE?", below). The
-evidence can only ever say what **showed up**; what was **supposed** to show up is a property of the base
-branch, and **a required check that never registered is NO ROW AT ALL** — invisible to the counts, to
-containment, and to the rollup cross-check alike. So the tool refuses to guess it: a caller who omits the
-flag gets an error, and a spec it cannot parse is **exit 2**, never a quiet `none`. `unknown` is a legal
-value and **can never go green** — which is what makes a run that never performed the read merge **nothing**
-rather than merge everything with a footnote.
+**THE REQUIRED SET IS NAMED, AND IT HAS NO DEFAULT.** `--ledger` resolves the selected **row's**
+`effective_required_set` — its explicit `required_set`, else the legacy header value — because the required
+set is a property of the base and the base is now per-row state (`declared:<json>` | `none` | `unknown` —
+"WHAT WERE WE EXPECTING TO SEE?", below). (`--required-set <spec>` still passes a set straight through for a
+pure/out-of-run derivation; alongside `--ledger` it is an **assertion** that must equal the row's effective
+set, never a second source.) The evidence can only ever say what **showed up**; what was **supposed** to show
+up is a property of the base branch, and **a required check that never registered is NO ROW AT ALL** —
+invisible to the counts, to containment, and to the rollup cross-check alike. So the tool refuses to guess
+it: a derive with neither `--ledger` nor `--required-set` gets an error, and a spec it cannot parse is
+**exit 2**, never a quiet `none`. `unknown` is a legal value and **can never go green** — which is what makes
+a run that never performed the read merge **nothing** rather than merge everything with a footnote.
 
 **A MOVED HEAD FAILS CLOSED — `head_moved: true` is NEVER a green, and never a red either.** The fetch is
 pinned to the `head_sha` **the ledger holds**, and a push can land at any moment — including *while the tool
@@ -145,12 +148,22 @@ Run the required-set command before CI derivation on every heartbeat:
 python3 <skill>/scripts/ci-status.py required-set --ledger <rundir>/state.jsonl [--repo <owner>/<repo>]
 ```
 
-The command reads `base_branch` through `ledger.py`, URL-encodes it as an API path segment, scopes every
-GitHub call to one repository, reads both declaration sources, validates every response field, unions and
-sorts the declarations, validates the result through `ci-snapshot.py`'s strict parser, and writes the
-canonical value through `ledger.py`'s atomic store. It exits 0 for a settled `declared:…` or `none`, 1 for
-`unknown`, and 2 for a caller or ledger error. A settled value is returned without another GitHub read, so
-the same command is safe to run on every heartbeat and retries only an `unknown` value.
+The command GROUPS the nonterminal rows by `effective_base` and reads each **distinct** base once: it
+resolves each base through `ledger.py`, URL-encodes it as an API path segment, scopes every GitHub call to
+one repository, reads both declaration sources, validates every response field, unions and sorts the
+declarations, validates the result through `ci-snapshot.py`'s strict parser, and writes the canonical value
+to that base's rows **still needing one** through `ledger.py`'s atomic store (legacy `-` rows inherit the
+header, which the same command settles as their fallback channel — no inherited row value is materialized).
+A value already settled for a base is **never overwritten** — not by a failed read, not by a fresh one — and
+an unsettled row on that base ADOPTS it with no new GitHub read. That settled value may come from EITHER
+channel that holds base B's set: a group **sibling** row's own settled value, **or the header's** when B **is
+the header base** (the header describes base B for that base alone — never a different one, which would
+settle a base off another base's set). So a `-`/`unknown` row on the header base heals from the header's
+settled value with no read, and a failed read cannot knock it back to `unknown`. It
+exits 0 when every group is settled (`declared:…` or `none`), 1 while any group is still `unknown`, and 2
+for a caller or ledger error. A settled group is returned without another GitHub read, and a read that
+fails for one base leaves only that base's unsettled rows `unknown` while the others settle — so the same
+command is safe to run on every heartbeat and retries only the `unknown` groups.
 
 The command owns two mandatory reads. They do **not** need the same permission: **`GET
 /repos/{o}/{r}/branches/{b}` needs `Contents: read`**, while **`GET
@@ -178,19 +191,20 @@ it is not optional.
 
 ##### THREE states, NEVER two — "I CANNOT SEE ANY" IS NOT "THERE ARE NONE"
 
-The command persists the outcome in the ledger header as `required_set` — **a state it cannot persist is a
-state it does not have** (`files-and-ledger.md` owns the field; this block owns its meaning and format).
+The command persists the outcome **per row** as `required_set` — **a state it cannot persist is a
+state it does not have** (`files-and-ledger.md` owns the field; this block owns its meaning and format). The
+header `required_set` is the legacy fallback for a row carrying no explicit set.
 
 **WHEN: run the COMMAND every heartbeat, and let IT decide whether GitHub is read** — that split is the
 whole policy, and it is why the two sentences that follow do not conflict. The GitHub **read** happens once
-per run, before the first CI derivation — the set is a property of `base_branch`, which is itself set once
-(`files-and-ledger.md`, "Base branch"), so one read serves every PR in the run — **and is retried, every
-heartbeat, for as long as the value is `unknown`**: that is the whole of its retry policy, and it is what
-keeps a transient failure (a network blip, a rate limit) from parking PRs that were never really blocked —
-a read that recovers before the STRIKE CAP costs the run nothing at all. **Once it is `declared:…` or
-`none`, it is SETTLED — the command returns the ledger's value without touching GitHub**, and never
+per **distinct base**, before the first CI derivation — the set is a property of the base, and every row on
+the same base shares one read (`files-and-ledger.md`, "Base branch") — **and is retried, every heartbeat,
+for as long as that base's value is `unknown`**: that is the whole of its retry policy, and it is what keeps
+a transient failure (a network blip, a rate limit) from parking PRs that were never really blocked — a read
+that recovers before the STRIKE CAP costs the run nothing at all. **Once a base's set is `declared:…` or
+`none`, it is SETTLED — the command returns that group's value without touching GitHub**, and never
 overwrites a successful read with a later failure. So there is no "should I run it this time?" question:
-always run it; a settled value makes it a cheap local no-op.
+always run it; a settled group makes it a cheap local no-op.
 
 | State | `required_set` | When | What `green` may claim |
 |---|---|---|---|

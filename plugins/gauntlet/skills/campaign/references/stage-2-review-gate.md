@@ -18,8 +18,13 @@ never classify a diff by eye:
 ```text
 python3 <skill-dir>/scripts/triage.py derive \
     --worktree <worktree> --base origin/<base> --head-sha <head_sha> \
-    [--tier <your decided tier>]
+    --file <state.jsonl> --pr <pr> [--tier <your decided tier>]
 ```
+
+Here `<base>` is **this PR row's effective base** — its explicit `base_branch`, else the legacy header
+fallback (`ledger.py`'s `effective_base`), never the one header base. Passing `--file <state.jsonl> --pr
+<pr>` makes `--base` an **assertion**: `triage.py` refuses (exit 2, no JSON) if `origin/<base>` does not
+name that row's effective base, so the diff can never be measured against a branch the row does not track.
 
 The command resolves the merge-base, reads Git's NUL-delimited raw diff and modes at the expected
 40-character head, and re-reads `HEAD` after classification. A stale expected head, moving head, malformed
@@ -123,20 +128,29 @@ review gate"), and the review re-starts on the clean tip:
 - **CI failures.** If `ci` is red for the current tip, do NOT review — fix CI first (Stage 2b).
   Handle failures **one at a time per PR/SHA**, and **prefer a scoped subagent** per failure; different
   PRs may fix CI concurrently within the cap.
-- **Base currency with `<base>`.** Before reviewing or dispatching a fix, run `python3
-  scripts/base-preflight.py check --pr <pr> --worktree <worktree> --base <base> --file <state.jsonl>`. It checks both GitHub's
-  merge states and whether fetched `origin/<base>` is an ancestor of the PR worktree's `HEAD`. A
-  `rebase-first` verdict covers a conflict, GitHub reporting behind, or a CLEAN PR whose branch lacks the
-  refreshed base. `recheck` covers an uncomputed/unrecognized GitHub value or ancestry the helper cannot
-  verify; re-poll and re-run, never dispatch or rebase from incomplete evidence. `base-preflight.py` owns
-  the decision and is the pre-flight gate for every fix subagent (`fix-subagent-contract.md`, PRE-FLIGHT).
-  **Run it with `--file <state.jsonl>`:** on `proceed` it records `base_ok_sha` for the current head — the
-  MECHANICAL precondition `ledger.py verdict` then enforces ("Recording a verdict", below), so a review verdict
-  can never be recorded for a head with no fresh `proceed`.
+- **Base currency with `<base>`.** Throughout Stage 2, `<base>` is **this PR row's effective base** — its
+  explicit `base_branch`, else the legacy header fallback (`ledger.py`'s `effective_base`), never the one
+  header base; a mixed-base run resolves it per row. Before reviewing or dispatching a fix, run `python3
+  scripts/base-preflight.py check --pr <pr> --worktree <worktree> --base <base> --file <state.jsonl>`. With
+  `--file`, the ROW owns the base: `--base` is an **assertion** that must equal the row's effective base, and
+  the helper also compares the PR's **live** `baseRefName` against it. It checks GitHub's merge states and
+  whether fetched `origin/<base>` is an ancestor of the PR worktree's `HEAD`. A `rebase-first` verdict covers
+  a conflict, GitHub reporting behind, or a CLEAN PR whose branch lacks the refreshed base — a base that
+  merely **ADVANCED** (same branch NAME, new commits). `recheck` covers an uncomputed/unrecognized GitHub
+  value, ancestry the helper cannot verify, **or a live retarget** — the PR now targets a different branch
+  NAME, an unsupported mid-run change the helper refuses with the same machine-blocker reason a
+  reconcile/re-adoption park records (`base changed from <recorded> to <live>; not supported mid-run`); park
+  the row through that path and do not proceed. Re-poll and re-run, never dispatch or rebase from incomplete
+  evidence. `base-preflight.py` owns the decision and is the pre-flight gate for every fix subagent
+  (`fix-subagent-contract.md`, PRE-FLIGHT). **Run it with `--file <state.jsonl>`:** on `proceed` it records
+  `base_ok_sha` for the current head — the MECHANICAL precondition `ledger.py verdict` then enforces
+  ("Recording a verdict", below), so a review verdict can never be recorded for a head with no fresh
+  `proceed`.
   Once it says `rebase-first`, **the CLEAN
   base-only case is EXECUTED — not hand-run — by `python3 scripts/clean-rebase.py run --ledger
   <state.jsonl> --pr <pr> --worktree <worktree> --base <base>`**: it does the fetch/rebase/`--force-with-lease`
-  push and the one ledger reset, and **refuses anything that is not clean**. **Exit 3 means it was NOT
+  push and the one ledger reset, and **refuses anything that is not clean**. Its `--base` is an assertion too
+  — it refuses (exit 2, no mutation) before any fetch if `--base` disagrees with the row's effective base. **Exit 3 means it was NOT
   clean** — a conflict, or a rebase that applied textually but changed the PR's own diff — and it has already
   aborted/reset and left the worktree at its original head; **fall back to the JUDGMENT path**: **both**
   exit-3 subcases land here — a conflict, AND a rebase that applied textually but changed the PR's own diff

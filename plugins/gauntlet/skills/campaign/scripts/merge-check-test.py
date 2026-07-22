@@ -36,21 +36,28 @@ SHA_A = "a" * 40   # the reviewed head
 SHA_B = "b" * 40   # a head the tip has moved to
 
 
-def row(*, status="in_review", head_sha=SHA_A, ci="green", tier="HIGH", reviews_ok=2) -> dict:
+def row(*, status="in_review", head_sha=SHA_A, ci="green", tier="HIGH", reviews_ok=2,
+        base_branch="-") -> dict:
     r = dict(L.ROW_DEFAULTS)
-    r.update(pr="9", status=status, head_sha=head_sha, ci=ci, tier=tier, reviews_ok=str(reviews_ok))
+    r.update(pr="9", status=status, head_sha=head_sha, ci=ci, tier=tier, reviews_ok=str(reviews_ok),
+             base_branch=base_branch)
     r["id"] = "pr9"
     return r
 
 
 def view(*, mergeable="MERGEABLE", mergeStateStatus="CLEAN", isDraft=False, state="OPEN",
-         headRefOid=SHA_A) -> dict:
+         headRefOid=SHA_A, baseRefName="main") -> dict:
     return {"mergeable": mergeable, "mergeStateStatus": mergeStateStatus, "isDraft": isDraft,
-            "state": state, "headRefOid": headRefOid}
+            "state": state, "headRefOid": headRefOid, "baseRefName": baseRefName}
+
+
+# The header carries base_branch "main", so a `-` row inherits "main" and matches view()'s default
+# baseRefName — the effective base every fixture below decides under, unless it sets one explicitly.
+_HEADER = {"base_branch": "main"}
 
 
 def decide(r: dict, v: dict) -> dict:
-    return M.decide(r, v, required=M.REQUIRED)
+    return M.decide(r, v, required=M.REQUIRED, effective_base=L.effective_base(_HEADER, r))
 
 
 def check(cond: bool, msg: str) -> None:
@@ -363,9 +370,57 @@ def t_cli_gh_spawn_failure():
           f"the reason must name the failed view fetch, got {result['reason']!r}")
 
 
+def t_cli_unresolved_base_never_merges():
+    """THE FINDING #2 REGRESSION TEST: a both-`-` ledger (header AND row base_branch='-', so effective_base
+    resolves to '-') with a CLEAN/MERGEABLE/OPEN view whose baseRefName='-' must NEVER merge — even when the
+    base-ancestry probe would report `current` (a git branch literally named '-' that HEAD descends from).
+    The '-' == '-' coincidence slips `decide`'s retarget check, so the guard MUST be the shared
+    `require_effective_base` fail-closed at the top of `check`, before `decide` and before the probe. Run
+    against the pre-fix code (which resolved the base through the raw `effective_base` accessor with no
+    refusal) this printed `{"verdict":"merge"}` at exit 0 — a false permissive at the merge gate."""
+    real_check = M.B.check_base_ancestry
+    # `current` is the WORST case: even if the probe would clear, the unresolved base must still block merge.
+    M.B.check_base_ancestry = lambda *_args: ("current", "")
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            led = Path(d) / "state.jsonl"
+            # header base '-' too, so a `-` row's effective base stays the unresolved '-' sentinel.
+            L.dump(led, dict(L.HEADER_DEFAULTS, run_id="g1", base_branch="-"), [row(base_branch="-")])
+            vjson = Path(d) / "view.json"
+            vjson.write_text(json.dumps(view(baseRefName="-")), encoding="utf-8")
+            code, out, err = capture_cli(
+                M.main, ["check", "--pr", "9", "--file", str(led), "--view-json", str(vjson)])
+    finally:
+        M.B.check_base_ancestry = real_check
+    check(code != 0, f"an unresolved base must fail closed (exit non-zero), got {code} (stderr: {err})")
+    result = json.loads(out)
+    check(result["verdict"] == "not-yet",
+          f"an unresolved base must decide not-yet, NEVER merge, got {result!r}")
+    check(result["reason"] == "pr 9 has no usable effective base in the ledger",
+          f"the reason must be require_effective_base's ready-to-emit refusal, got {result['reason']!r}")
+
+
+def t_base_retarget_parks():
+    # A fully clean+green+in_review PR whose live base no longer matches its recorded (effective) base. The
+    # recorded base is IMMUTABLE; a retarget is unsupported and parks with the SAME machine-blocker wording
+    # every base door records. This fixture pins that the merge door catches it and uses the shared reason.
+    expected = M.PA.BASE_CHANGE_PARK_REASON.format(recorded="v3", live="main")
+    expect(row(base_branch="v3"), view(baseRefName="main"), "not-yet", expected)
+
+
+def t_base_advance_is_not_a_retarget():
+    # SAME base name on both sides — this is NOT a retarget, so the base step falls through to the enums and
+    # (with a CLEAN view) reaches merge. A base that ADVANCED with new commits is the ancestry probe's job,
+    # not this equality check. Guards against over-firing the retarget park on a normal base advance.
+    expect(row(base_branch="v3"), view(baseRefName="v3"), "merge", "")
+
+
 CASES = [
     ("clean-all-met", "CLEAN + every precondition met -> merge", t_clean_and_all_met),
     ("has-hooks", "HAS_HOOKS -> merge", t_has_hooks_merges),
+    ("base-retarget-parks", "a live base retarget parks with the shared reason", t_base_retarget_parks),
+    ("base-advance-not-retarget", "same base name is not a retarget -> reaches merge",
+     t_base_advance_is_not_a_retarget),
     ("held-frozen", "a held PR never merges, whatever the counters/enums say", t_held_never_merges),
     ("terminal-frozen", "a terminal row (aborted/merged) never merges — the allow-list repro",
      t_terminal_status_never_merges),
@@ -387,6 +442,8 @@ CASES = [
     ("mss-unknown-value-parks", "an unrecognised merge state parks (totality)", t_unknown_mergestate_value_parks),
     ("mergeable-unknown-value-parks", "an unrecognised mergeable value parks", t_unknown_mergeable_value_parks),
     ("cli-injected-view", "check --view-json decides without gh and exits 0", t_cli_injected_view),
+    ("cli-unresolved-base", "a both-`-` unresolved base never merges — the finding #2 false-permissive fix",
+     t_cli_unresolved_base_never_merges),
     ("cli-stale-base", "a CLEAN candidate behind refreshed base cannot merge", t_cli_stale_base_blocks_merge),
     ("cli-unverified-base", "an unreadable base ancestry fails closed", t_cli_unverified_base_blocks_merge),
     ("cli-blocked-behind", "a BLOCKED PR behind its base routes to rebase (the #134 fix)",

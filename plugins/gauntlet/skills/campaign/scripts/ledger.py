@@ -44,10 +44,11 @@ HEADER_DEFAULTS = {
     # LEGACY FALLBACK for the base branch. The base a PR merges into is now ROW state (`base_branch` in
     # ROW_FIELDS), written once at row creation. This header field is only what a row with NO explicit base
     # inherits, through `effective_base` — the schema-owned resolver, the sanctioned door for base
-    # consumers. This is STAGE 1 of the per-row-base work: the field and resolver exist, and consumers are
-    # deliberately unchanged — TODAY they still read this header field directly; stages 2-3 move them
-    # through the resolver. An old single-base ledger keeps its header value and every one of its rows
-    # reads it. files-and-ledger.md, "Base branch", owns the field.
+    # consumers. Per-row base resolution is LIVE: adoption records each row's base and every consumer
+    # resolves through the accessor, never this header directly. What remains is mixed-base ADMISSION (the
+    # rollout's final PR — docs/designs/campaign-mixed-base-branches.md, "Staged implementation plan"). An
+    # old single-base ledger keeps its header value and every one of its rows reads it.
+    # files-and-ledger.md, "Base branch", owns the field.
     "base_branch": "-",
     "api_changes": "ask",
     "reviewer": "default",
@@ -68,10 +69,9 @@ HEADER_DEFAULTS = {
     # the base is now ROW state (`base_branch` in ROW_FIELDS), so the canonical required set is row state
     # too (`required_set` in ROW_FIELDS). This header field is only what a row with NO explicit value
     # inherits, through `effective_required_set` — the schema-owned resolver, the sanctioned door for
-    # consumers, staged exactly like `effective_base` above: TODAY consumers still read this header field
-    # directly; stages 2-3 move them through the resolver. An old single-base ledger keeps its header value
-    # and every one of its rows reads it; once stages 2-3 land, a new run will write `unknown` here and the
-    # canonical set on each row. stage-2-ci.md, "WHAT WERE WE EXPECTING TO SEE?",
+    # consumers, resolved per row LIVE exactly like `effective_base` above. An old single-base ledger keeps
+    # its header value and every one of its rows reads it; a new run writes `unknown` on each row until a
+    # grouped read succeeds. stage-2-ci.md, "WHAT WERE WE EXPECTING TO SEE?",
     # owns the three states and the format:
     #
     #   declared:<json>  the required checks, READ. `ci-snapshot.py --required-set` is the one parser.
@@ -171,7 +171,7 @@ ROW_FIELDS = (
     # reads back `-`, which never equals a 40-hex head, so `verdict` fails CLOSED until base-preflight runs.
     "base_ok_sha",
     # THE BASE THIS ROW MERGES INTO — the target `baseRefName` from live GitHub, written once at row
-    # creation (`add-row --base-branch`; stage-2 work wires adoption to record it). A run may hold rows on
+    # creation (`add-row --base-branch`; adoption records it). A run may hold rows on
     # DIFFERENT bases (`v3`, `main`), so the base is per-ROW, not per-run: the header `base_branch` is only
     # a LEGACY FALLBACK for a row that carries none. `effective_base(header, row)` is the schema-owned
     # resolver — an explicit row value, else the header. files-and-ledger.md, "Base branch", owns the field.
@@ -179,7 +179,7 @@ ROW_FIELDS = (
     # It is TOOL-OWNED and CREATION-ONLY (`CREATE_ONLY`): `add-row` writes it when the row appears and
     # NOTHING changes it after — there is no `--base-branch` flag at `set`. The campaign never migrates a row
     # to a new base; a live base that no longer matches the recorded one is an unsupported change a consumer
-    # parks for the user (stage-2 work), never a value `set` rewrites.
+    # parks for the user, never a value `set` rewrites.
     #
     # The default is `-`, the schema's own "not set" spelling AND its "inherit the legacy header" signal:
     # an old ledger's rows read back `-` and resolve through the header, exactly as they always did. A `-`
@@ -192,10 +192,13 @@ ROW_FIELDS = (
     # `declared:<json>` / `none` / `unknown`, owned by stage-2-ci.md exactly as the header field's are.
     #
     # The default is `-`, which — like `base_branch` — means "inherit the legacy header", and is DISTINCT
-    # from `unknown`: `-` says "this row owns no set; read the header", while `unknown` says "a read was
-    # attempted for THIS base and failed, so fail closed and do not go green" (stage-2-ci.md). An old row
-    # reads back `-` and inherits; a new run will write `unknown` on each row until a grouped read succeeds
-    # (stage-2 work). An ordinary settable field: the stage-2 grouped required-set refresh will write the
+    # from `unknown`: `-` says "this row owns no set; inherit the header — but only for the header's OWN base"
+    # (`effective_required_set` returns the header value ONLY when the row's effective base IS the header base;
+    # a row on a different base has no set here and stays `unknown` until read — the header never describes
+    # another base's set), while `unknown` says "a read was attempted for THIS base and failed, so fail closed
+    # and do not go green" (stage-2-ci.md). An old single-base row reads back `-` and inherits (its base IS the
+    # header base); a new run writes `unknown` on each row until a grouped read succeeds.
+    # An ordinary settable field: the grouped required-set refresh writes the
     # canonical value through `set` (unlike `base_branch`, which is immutable after creation).
     "required_set",
     # WHERE THIS PR'S INTENT CAME FROM — the PROVENANCE of `<rundir>/intent-<pr>.md`:
@@ -320,8 +323,8 @@ PREFLIGHT_OWNED = ("base_ok_sha",)
 # the same absent-door one `PREFLIGHT_OWNED` uses, but ASYMMETRIC across the two write doors: the flag is
 # present at `add-row` (creation must be able to record the base) and ABSENT at `set` (argparse then refuses
 # `set --base-branch`, so nothing can rewrite it). A field here is still `settable()`; CREATE_ONLY narrows
-# only WHICH door may write it. (`required_set` is NOT here — the stage-2 grouped required-set refresh will
-# rewrite it through `set`, so that door stays open; only the base itself is fixed for a row's life.)
+# only WHICH door may write it. (`required_set` is NOT here — the grouped required-set refresh
+# rewrites it through `set`, so that door stays open; only the base itself is fixed for a row's life.)
 CREATE_ONLY = ("base_branch",)
 
 # The park/unpark TRANSITIONS `park`/`unpark` own — the same mechanism as VERDICT_OWNED, one level up at the
@@ -654,10 +657,11 @@ def find_row(rows: list[dict], pr: str) -> "dict | None":
 #
 # The base a PR merges into, and the required-check set that base demands, are now per-ROW state. These two
 # accessors are the ONE place the fallback lives: a row's explicit value if it has one, otherwise the legacy
-# header value. They are STAGE 1 of the per-row-base work — the sanctioned door every base/required-set
-# consumer resolves through once stages 2-3 convert them. TODAY the only non-test caller is `table`'s
-# computed, display-only `base` column; every other consumer still reads the header field directly, exactly
-# as it did before this stage. `-` is the row default and means exactly "inherit the header": an old
+# header value. They are the sanctioned door every base/required-set consumer resolves through, and that
+# resolution is LIVE: adoption records each row's base, and every consumer routes through these accessors
+# rather than reading the header field directly. What remains is mixed-base ADMISSION
+# (docs/designs/campaign-mixed-base-branches.md, "Staged implementation plan").
+# `-` is the row default and means exactly "inherit the header": an old
 # ledger's rows carry `-` and resolve to the header value they always used, while a row with an explicit
 # base (or an explicit required set) has that value returned unchanged. This is what lets legacy inheriting
 # rows and new explicit-base rows coexist in one run.
@@ -676,11 +680,57 @@ def effective_required_set(header: dict, row: dict) -> str:
     `-` on the row means "inherit the header"; it is DISTINCT from `unknown`, which is an explicit row value
     meaning a read for this base failed and must fail closed (stage-2-ci.md). So a new row's `unknown` is
     returned as `unknown` and never silently replaced by the header, while an old row's `-` reads the header.
+
+    But the header required_set describes the HEADER base ONLY. A `-` row inherits it only when its effective
+    base IS that base; a row on a DIFFERENT base (a mixed-base config) has no settled set here and stays the
+    fail-closed `unknown` default until its OWN base is read — a header `none` must never read as another
+    base's set (a false green). This is the SAME base-agreement rule the grouped refresh applies when it folds
+    the header into a base's settled sources (ci-status.refresh_required_set): the two never disagree.
     """
     value = row.get("required_set", ROW_DEFAULTS["required_set"])
     if value != "-":
         return value
-    return header.get("required_set", HEADER_DEFAULTS["required_set"])
+    if effective_base(header, row) == header.get("base_branch", HEADER_DEFAULTS["base_branch"]):
+        return header.get("required_set", HEADER_DEFAULTS["required_set"])
+    return HEADER_DEFAULTS["required_set"]  # the `unknown` fail-closed default — this base has no read yet
+
+
+def base_agrees(base_arg: str, effective: str) -> bool:
+    """Does a caller's `--base` assertion agree with a row's effective base?
+
+    Identical strings ALWAYS agree — a base literally named `origin/<x>` (a legal branch name) must match
+    itself, so equality is checked BEFORE any normalization. Otherwise a leading `origin/` on the ARGUMENT
+    (the review-diff `origin/<base>` form) is stripped and compared against the stored base. The STORED base
+    is never stripped: `origin/x` in the ledger names a branch literally called that, and stripping it would
+    let `--base x` assert a different branch. This is the ONE owner of the comparison for every
+    `--base`-assertion consumer (base-preflight, triage, clean-rebase, worker-prompt, review-dispatch) —
+    never a second copy of this rule."""
+    if base_arg == effective:
+        return True
+    return base_arg.startswith("origin/") and base_arg[len("origin/"):] == effective
+
+
+def require_effective_base(header: dict, row: dict, pr: str) -> "tuple[str | None, str | None]":
+    """Resolve `row`'s effective base and REFUSE it when it is unresolved — blank/whitespace or the `-` sentinel.
+
+    THE one owner of the consumer-side contract "a resolved-base consumer must FAIL CLOSED on an unresolved
+    effective base BEFORE using it." Every consumer that resolves an effective base and then USES it — compares
+    a `--base` assertion against it, writes it into the durable history, bakes it into a published bundle, or
+    diffs `origin/<base>` — routes through here instead of inlining its own `effective_base(...) == "-"` test,
+    so the refusal rule and its wording live in ONE place, not once per consumer.
+
+    Returns `(base, None)` when the base is usable, or `(None, reason)` — a ready-to-emit refusal message naming
+    the PR — when it is not. `-` on BOTH the row and the header means "no base was ever resolved" (`effective_base`
+    faithfully returns it); it is NOT a branch a caller may rebase onto, write to history, or diff against, so it
+    is refused here. This function is the ONLY one that refuses `-`: `base_agrees` does NOT — it checks
+    equality first, so `base_agrees("-", "-")` returns True. A normal run never reaches this: the
+    header base is filled at run start and each row's at adoption, so `effective_base` returns a real branch; a
+    both-`-` ledger is a driver-authored/hand-edited state (a single-user foot-gun), and this is the cheap
+    fail-closed insurance against it — not machinery to defend the user from themselves."""
+    base = effective_base(header, row)
+    if not base.strip() or base == "-":
+        return None, f"pr {pr} has no usable effective base in the ledger"
+    return base, None
 
 
 def check_field(name: str, valid: "tuple[str, ...]") -> None:

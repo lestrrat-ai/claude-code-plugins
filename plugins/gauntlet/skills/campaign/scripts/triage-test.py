@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -24,6 +25,7 @@ from _gauntlet.modules import load_module_from_path
 from _gauntlet.testing import capture_cli
 
 OWNER = Path(__file__).resolve().parent / "triage.py"
+LEDGER = Path(__file__).resolve().parent / "ledger.py"
 
 
 def _load_owner():
@@ -94,6 +96,17 @@ def derive(repo: Path, base: str, *, tier: str | None = None) -> dict:
 def one_file(result: dict) -> dict:
     check(len(result["files"]) == 1, f"expected one changed file, got {result['files']!r}")
     return result["files"][0]
+
+
+def _build_ledger(directory: Path, pr: str, base_branch: str) -> Path:
+    """A real ledger (through ledger.py) with one row for `pr` carrying an EXPLICIT `base_branch`."""
+    ledger = directory / "state.jsonl"
+    for argv in (["header", "set", "run_id", "t"],
+                 ["add-row", "--pr", pr, "--head-sha", "a" * 40, "--base-branch", base_branch]):
+        proc = subprocess.run([sys.executable, str(LEDGER), "--file", str(ledger), *argv],  # noqa: S603
+                              capture_output=True, text=True, check=False)
+        check(proc.returncode == 0, f"ledger {' '.join(argv)} failed: {proc.stderr.strip()}")
+    return ledger
 
 
 def t_human_docs_have_no_floor() -> None:
@@ -718,6 +731,120 @@ def t_pip_source_and_conda_manifests_are_sensitive() -> None:
               f"{name} must floor HIGH as a dependency manifest: {result!r}")
 
 
+def t_ledger_base_assertion_passes() -> None:
+    # `--file --pr` with a `--base` that MATCHES the row's effective base falls through to the normal
+    # analysis. `origin/main` is normalized to `main` for the assertion AND resolved as the diff base — so a
+    # real remote-tracking ref is set at the base commit and a source change on main gives a STANDARD floor.
+    with repository() as (repo, base):
+        write(repo, "src/widget.py", "value = 1\n")
+        head = commit(repo, "source change")
+        git(repo, "update-ref", "refs/remotes/origin/main", base)
+        with tempfile.TemporaryDirectory() as d:
+            ledger = _build_ledger(Path(d), "31", "main")
+            code, out, err = capture_cli(M.main, [
+                "derive", "--worktree", str(repo), "--base", "origin/main", "--head-sha", head,
+                "--file", str(ledger), "--pr", "31"])
+        check(code == M.EXIT_OK, f"a matching --base must pass the assertion and derive (code={code}, err={err!r})")
+        check(json.loads(out)["floor"] == M.STANDARD, f"a source change floors STANDARD: {out!r}")
+
+
+def t_ledger_base_assertion_refuses() -> None:
+    # `--base` disagreeing with the row's effective base is refused BEFORE any analysis, and emits no JSON.
+    with repository() as (repo, _base):
+        head = os.fsdecode(git(repo, "rev-parse", "HEAD").stdout).strip()
+        with tempfile.TemporaryDirectory() as d:
+            ledger = _build_ledger(Path(d), "31", "main")
+            code, out, err = capture_cli(M.main, [
+                "derive", "--worktree", str(repo), "--base", "origin/v3", "--head-sha", head,
+                "--file", str(ledger), "--pr", "31"])
+        check(code == M.EXIT_REFUSED and out == "",
+              f"a --base disagreeing with the row must refuse without JSON (code={code}, out={out!r})")
+        check("disagrees" in err and "effective base" in err, f"the refusal must name the disagreement: {err!r}")
+
+
+def t_ledger_origin_named_base_agrees() -> None:
+    # A row base LITERALLY named `origin/rel` (a legal branch name) matches an identical `--base` — the
+    # assertion routes through `ledger.py base_agrees`, where identical strings always agree. The bare form
+    # disagrees: the STORED base is never stripped.
+    with tempfile.TemporaryDirectory() as d:
+        ledger = _build_ledger(Path(d), "31", "origin/rel")
+        resolved, problem = M._assert_ledger_base(str(ledger), "31", "origin/rel")
+        check(problem is None and resolved == "origin/rel",
+              f"identical origin/rel strings must pass and return the row base, got {resolved!r}/{problem!r}")
+        resolved, problem = M._assert_ledger_base(str(ledger), "31", "rel")
+        check(resolved is None and problem is not None and "disagrees" in problem,
+              f"a bare --base must disagree with a stored origin/-named base, got {resolved!r}/{problem!r}")
+
+
+def t_ledger_variant_spelling_floors_canonically() -> None:
+    # A row whose effective base is LITERALLY `origin/rel` (a sibling `rel` branch also exists). `base_agrees`
+    # accepts BOTH `origin/origin/rel` (canonical) and `origin/rel` (variant) as the assertion — but git
+    # resolves those two spellings to DIFFERENT refs: `origin/origin/rel` -> the literal base (no deploy.sh),
+    # `origin/rel` -> the ordinary sibling's tracking ref (has deploy.sh via the merge-base). Triage must build
+    # its diff ref from the ROW's resolved base, so BOTH spellings floor HIGH and veto TRIVIAL. Trusting the
+    # raw `--base` (the reverted bug) makes the variant diff the sibling, drop the SENSITIVE file, floor null,
+    # and ACCEPT TRIVIAL — a false permissive that under-triages a sensitive change. This fixture FAILS if the
+    # operational ref is taken from the raw `--base` instead of the row's effective base.
+    with tempfile.TemporaryDirectory() as directory:
+        repo = Path(directory)
+        git(repo, "init", "-q", "-b", "main")
+        git(repo, "config", "user.name", "Gauntlet Test")
+        git(repo, "config", "user.email", "gauntlet@example.invalid")
+        write(repo, "README.md", "readme\n")
+        base0 = commit(repo, "base0")
+        # ordinary sibling `rel`: adds the SENSITIVE script; its tracking ref becomes `origin/rel`.
+        git(repo, "checkout", "-q", "-b", "rel", base0)
+        write(repo, "scripts/deploy.sh", "#!/bin/sh\necho deploy\n", 0o755)
+        rel_tip = commit(repo, "rel: add deploy.sh")
+        # head (the PR) descends FROM the sibling, so the merge-base against `origin/rel` HIDES deploy.sh;
+        # its only own change is a prose doc. Against the literal base (base0) deploy.sh is a fresh add.
+        git(repo, "checkout", "-q", "-b", "pr-head", rel_tip)
+        write(repo, "docs/notes.md", "notes\n")
+        head = commit(repo, "pr: add notes")
+        # remote-tracking layout: origin/rel -> sibling (has deploy.sh); origin/origin/rel -> literal base.
+        git(repo, "update-ref", "refs/remotes/origin/rel", rel_tip)
+        git(repo, "update-ref", "refs/remotes/origin/origin/rel", base0)
+        with tempfile.TemporaryDirectory() as d:
+            ledger = _build_ledger(Path(d), "31", "origin/rel")
+            for spelling in ("origin/origin/rel", "origin/rel"):
+                code, out, err = capture_cli(M.main, [
+                    "derive", "--worktree", str(repo), "--base", spelling, "--head-sha", head,
+                    "--file", str(ledger), "--pr", "31"])
+                check(code == M.EXIT_OK, f"--base {spelling} must derive against the row base (code={code}, err={err!r})")
+                check(json.loads(out)["floor"] == M.HIGH,
+                      f"--base {spelling} must floor HIGH from the row's literal base, not a sibling: {out!r}")
+                code, out, err = capture_cli(M.main, [
+                    "derive", "--worktree", str(repo), "--base", spelling, "--head-sha", head,
+                    "--tier", M.TRIVIAL, "--file", str(ledger), "--pr", "31"])
+                check(code == M.EXIT_REFUSED and out == "",
+                      f"--base {spelling} with --tier TRIVIAL must be vetoed by the HIGH floor (code={code}, out={out!r})")
+
+
+def t_ledger_file_without_pr_refuses() -> None:
+    # `--file` needs `--pr` to select the row; without it, refuse rather than silently skip the assertion.
+    with repository() as (repo, _base):
+        head = os.fsdecode(git(repo, "rev-parse", "HEAD").stdout).strip()
+        with tempfile.TemporaryDirectory() as d:
+            ledger = _build_ledger(Path(d), "31", "main")
+            code, out, err = capture_cli(M.main, [
+                "derive", "--worktree", str(repo), "--base", "origin/main", "--head-sha", head,
+                "--file", str(ledger)])
+        check(code == M.EXIT_REFUSED and out == "", f"--file without --pr must refuse (code={code}, out={out!r})")
+        check("--pr" in err, f"the refusal must name the missing --pr: {err!r}")
+
+
+def t_ledger_missing_row_refuses() -> None:
+    with repository() as (repo, _base):
+        head = os.fsdecode(git(repo, "rev-parse", "HEAD").stdout).strip()
+        with tempfile.TemporaryDirectory() as d:
+            ledger = _build_ledger(Path(d), "31", "main")
+            code, out, err = capture_cli(M.main, [
+                "derive", "--worktree", str(repo), "--base", "origin/main", "--head-sha", head,
+                "--file", str(ledger), "--pr", "99"])
+        check(code == M.EXIT_REFUSED and out == "", f"an unknown row must refuse (code={code}, out={out!r})")
+        check("no ledger row for pr 99" in err, f"the refusal must name the missing row: {err!r}")
+
+
 CASES = [
     ("human-doc", "an all-prose diff has no floor — the tool never grants TRIVIAL", t_human_docs_have_no_floor),
     ("human-names", "top-level README/CHANGELOG/LICENSE and prose suffixes are HUMAN-DOC", t_top_level_human_doc_names),
@@ -756,6 +883,17 @@ CASES = [
     ("frontmatter-extensions", "the frontmatter check runs for .txt/.rst prose too", t_frontmatter_runs_for_all_prose_extensions),
     ("frontmatter-long", "frontmatter closing past line 100 still classifies CODE", t_frontmatter_closing_past_line_100_is_code),
     ("frontmatter-unterminated", "an unterminated frontmatter block fails closed to CODE", t_unterminated_frontmatter_fails_closed_to_code),
+    ("ledger-base-assert-pass", "--file --pr with a matching --base passes the assertion and derives",
+     t_ledger_base_assertion_passes),
+    ("ledger-base-assert-refuse", "--file --pr with a disagreeing --base refuses without JSON",
+     t_ledger_base_assertion_refuses),
+    ("ledger-origin-named-base", "a base literally named origin/<x> matches itself; the bare form disagrees",
+     t_ledger_origin_named_base_agrees),
+    ("ledger-variant-spelling-floors-canonically",
+     "both origin/rel and origin/origin/rel resolve to the row's literal base and floor HIGH (no under-triage)",
+     t_ledger_variant_spelling_floors_canonically),
+    ("ledger-file-needs-pr", "--file without --pr is refused", t_ledger_file_without_pr_refuses),
+    ("ledger-missing-row", "--file --pr naming an unknown row is refused", t_ledger_missing_row_refuses),
 ]
 
 

@@ -173,7 +173,9 @@ def _validate_state(header: dict, row: dict, pr: str, root: Path, view: dict,
     run_id = header.get("run_id", "-")
     if not run_id or run_id == "-":
         raise Refusal("ledger run_id is unresolved")
-    base = header.get("base_branch", "-")
+    # The ROW owns the base: its explicit `base_branch`, else the legacy header, through `ledger.py`'s
+    # accessor. A run may hold rows on different bases, so every base check here is per-row, never the header.
+    base = L.effective_base(header, row)
     branch = row.get("branch", "-")
     _validate_ref(root, base, "base_branch")
     _validate_ref(root, branch, "row branch")
@@ -200,8 +202,10 @@ def _validate_state(header: dict, row: dict, pr: str, root: Path, view: dict,
             raise Refusal(
                 f"live head branch {view['headRefName']!r} differs from ledger branch {branch!r}")
         if view["baseRefName"] != base:
-            raise Refusal(
-                f"live base {view['baseRefName']!r} differs from ledger base {base!r}")
+            # A live retarget away from the recorded base is an unsupported mid-run change — fail closed with
+            # the SAME machine-blocker wording every other base door records (pr-adopt.py owns it, via
+            # merge-check). A base that merely ADVANCED (same name) is handled by _base_is_current, not here.
+            raise Refusal(MC.PA.BASE_CHANGE_PARK_REASON.format(recorded=base, live=view["baseRefName"]))
     labels = _labels(view)
     ours = f"{RUN_LABEL_PREFIX}{run_id}"
     run_labels = [name for name in labels if name.startswith(RUN_LABEL_PREFIX)]
@@ -231,7 +235,7 @@ def _validate_state(header: dict, row: dict, pr: str, root: Path, view: dict,
 
 def _base_is_current(row: dict, header: dict) -> None:
     worktree = row["worktree"]
-    base = header["base_branch"]
+    base = L.effective_base(header, row)
     # Fully-qualified refspec so a dash-leading base name (network-supplied via baseRefName) can never be
     # parsed by git as an option; the same safety idiom as _sync_base and pr-adopt.py. This updates the very
     # origin/<base> remote-tracking ref the ancestry probe below reads.
@@ -257,7 +261,7 @@ def _require_ready(row: dict, header: dict, view: dict) -> None:
     exactly as the gate does — NOT parked. A PROBE that survives the probe is BLOCKED-but-current: a genuine
     human/ruleset block that parks. PROBE never reaches an actual merge; it can only refuse (rebase or park).
     """
-    result = MC.decide(row, view, required=MC.REQUIRED)
+    result = MC.decide(row, view, required=MC.REQUIRED, effective_base=L.effective_base(header, row))
     verdict = result.get("verdict")
     if verdict not in (MC.MERGE, MC.PROBE):
         raise Refusal(f"merge-check: {result.get('reason', 'not ready')}")
@@ -543,7 +547,8 @@ def execute(ledger: Path, pr: str, project_root: Path, repo: str,
         raise Refusal(f"PR {pr} state is {view['state']!r}; expected OPEN, MERGED, or CLOSED")
 
     # MERGED is confirmed before any local ref or worktree is changed. Each following phase is idempotent.
-    _sync_base(root, header["base_branch"])
+    # Post-merge local sync targets THIS row's base — after a v3 PR, local v3; after a main PR, local main.
+    _sync_base(root, L.effective_base(header, row))
     cleanup = _cleanup(root, row)
     _mark_terminal(ledger, pr, "merged")
     return {"status": "merged", "pr": pr, "cleanup": cleanup}

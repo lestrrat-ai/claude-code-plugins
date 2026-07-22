@@ -17,8 +17,13 @@ Two entry paths feed it (see "Run identity and concurrency" for the full grammar
   A fetch refusal produces no discovery input. Keep the previous snapshot untouched and resolve the
   reported blocker before adoption.
 
-`base_branch` for the run = the adopted PR's `baseRefName`. When several PRs are adopted at once they
-**must agree** on `baseRefName`; if they disagree, stop and prompt the user (one run targets one base).
+Each adopted PR **records its own live `baseRefName`** on its ledger row — the row's `base_branch`, written
+**once at creation** by `pr-adopt.py` (`add-row --base-branch`) and **immutable** afterward (`files-and-ledger.md`,
+the row `base_branch` field). Resolve a row's base through `ledger.py`'s `effective_base` (an explicit row
+value, else the legacy header fallback), never the raw header field. **For now, when several PRs are adopted
+at once they still must agree on `baseRefName`** — mixed bases in one run are a later stage; if they disagree,
+stop and prompt the user. The header `base_branch` is only the legacy fallback a row with no explicit base
+inherits.
 
 Campaign **never** deletes the adopted PR's **remote** head branch. Stage 3,
 **"Resumable merge execution"**, owns merge and cleanup enforcement.
@@ -123,6 +128,14 @@ For each `#PR` to adopt:
    one: the schema lives in the script, and a copy of it retyped here would be stale the next time a row
    field is added.
 
+   **Re-adoption base gate — BEFORE any refresh write.** The recorded row `base_branch` is immutable, and
+   the campaign never migrates a row to a new base. On a re-adoption, `pr-adopt.py` first compares the PR's
+   live `baseRefName` with the row's `effective_base`; **if they differ it PARKS the row** (machine-blocker,
+   `status = awaiting-user`, `ci_reason` = `base changed from <recorded> to <live>; not supported mid-run`,
+   `blocker_ruling` cleared — the same reason and park the reconcile `base_changed` route uses) and STOPS,
+   refreshing no evidence, rewriting no base, and applying no label. An already-held row keeps its open
+   question. Only a matching (or brand-new) base proceeds to the refresh below.
+
    - `id` = `pr<N>`; `slug` = slugified PR title; `branch` = the PR's **own** `headRefName` (adopted PRs
      keep their branch — do NOT mint a `fix-<run-id>-...` branch); `worktree` = `-`,
      `worktree_owned` = `-`, and `branch_owned` = `-` until the head worktree is resolved in step 5
@@ -132,7 +145,9 @@ For each `#PR` to adopt:
      `branch_owned` = `yes` **only** when campaign created the local branch (the `-b` path) / `no` when
      it reused a pre-existing local branch or checkout;
      `pr` = `<N>`; `head_sha` = `headRefOid`.
-   - **On a NEW row only, initialize:** `reviews_ok` = `0` (no verdicts yet); `ci` = `pending`;
+   - **On a NEW row only, initialize:** `base_branch` = the PR's live `baseRefName` (recorded ONCE through
+     `add-row --base-branch`, immutable after — this is the per-row base every later action resolves through
+     `effective_base`); `reviews_ok` = `0` (no verdicts yet); `ci` = `pending`;
      `tier` = bootstrap `STANDARD`; after step 5 the orchestrator decides the real tier at or above
      `triage.py derive`'s floor and writes it;
      `attempts` = `0` (no attempt has run yet —

@@ -128,21 +128,26 @@ def t_terminal_ledger_is_distilled() -> None:
         check(len(parsed["api-declined"]) == 1, "one api-declined row in the file")
 
         merged = parsed["merged"][0]
+        # v2: every object also carries its effective base. These legacy-inheriting rows (base_branch `-`)
+        # resolve to the header base `main`.
         check(merged == {"pr": "41", "slug": "fix-null-deref", "head_sha": SHA_A, "tier": "STANDARD",
-                         "review_rounds": "3"},
-              f"the merged row projects exactly its documented fields (full 40-char SHA): {merged}")
+                         "review_rounds": "3", "base_branch": "main"},
+              f"the merged row projects exactly its documented fields plus effective base: {merged}")
 
         declined = parsed["api-declined"][0]
         check(declined == {"pr": "60", "slug": "change-signature",
-                           "api_approval": "declined@2026-07-04T16:00:00Z"},
-              f"the api-declined row carries pr/slug/api_approval: {declined}")
+                           "api_approval": "declined@2026-07-04T16:00:00Z", "base_branch": "main"},
+              f"the api-declined row carries pr/slug/api_approval/base_branch: {declined}")
         # The declined PR is ALSO aborted — it appears in BOTH sections (a reminder projection).
         check(any(r["pr"] == "60" for r in parsed["aborted"]),
               "a declined-API PR is terminal-aborted and appears in the aborted section too")
 
         meta = out_path.read_text(encoding="utf-8")
         check(f"distilled_at: {NOW}" in meta, "the distilled-at stamp is the --now value, verbatim")
-        check("base_branch: main" in meta, "the header records base_branch")
+        check('base_branches: ["main"]' in meta,
+              "v2 metadata is a sorted, deduplicated base_branches array (here just the header base)")
+        check("format v2" in meta, "the file declares carryover format v2")
+        check(summary["base_branches"] == ["main"], f"the summary carries the base set: {summary}")
 
 
 def t_head_sha_is_never_shortened() -> None:
@@ -156,7 +161,75 @@ def t_head_sha_is_never_shortened() -> None:
               "the carryover file stores the FULL 40-char SHA — never a display truncation")
 
 
+# --- v2: mixed bases, per-object base, and the sorted/deduplicated array -------
+
+def t_mixed_bases_per_object_and_sorted_array() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        # One run, THREE rows on TWO bases — plus a legacy-inheriting row (base `-`) that resolves to the
+        # header base. This exercises both channels of `effective_base` in one file.
+        header = _header(base_branch="main")
+        rows = [
+            _row("41", slug="fix-v3", status="merged", head_sha=SHA_A, tier="STANDARD",
+                 review_rounds="2", base_branch="v3"),
+            _row("52", slug="fix-main", status="merged", head_sha=SHA_B, tier="TRIVIAL",
+                 review_rounds="1"),  # base_branch `-` → inherits header `main`
+            _row("60", slug="also-v3", status="aborted", head_sha=SHA_C, base_branch="v3",
+                 ci_reason="required check absent", blocker_ruling="abort@2026-07-04T16:30:00Z"),
+        ]
+        code, out, err, out_dir = _distill(tmp, header, rows)
+        check(code == 0, f"a mixed-base terminal ledger distills; stderr={err!r}")
+
+        summary = json.loads(out)
+        check(summary["base_branches"] == ["main", "v3"],
+              f"base_branches is sorted and deduplicated across every row: {summary}")
+
+        text = (out_dir / "g260704-0915-a3f29c1b.md").read_text(encoding="utf-8")
+        check('base_branches: ["main", "v3"]' in text,
+              "the metadata array is sorted and deduplicated, one entry per distinct base")
+        parsed = _parse_sections(text)
+        bases = {r["pr"]: r["base_branch"] for sec in parsed.values() for r in sec}
+        check(bases == {"41": "v3", "52": "main", "60": "v3"},
+              f"each object carries ITS OWN effective base (explicit, else inherited): {bases}")
+
+
+def t_header_base_dash_is_accepted() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        # A new run writes header base `-` (the legacy fallback is unset) and an explicit base per row.
+        header = _header(base_branch="-")
+        rows = [_row("41", slug="s", status="merged", head_sha=SHA_A, tier="TRIVIAL",
+                     review_rounds="1", base_branch="main")]
+        code, out, err, out_dir = _distill(tmp, header, rows)
+        check(code == 0, f"a `-` header base is NO LONGER refused — base is per-row now; stderr={err!r}")
+        summary = json.loads(out)
+        check(summary["base_branches"] == ["main"], f"bases come from the rows, not the header: {summary}")
+        parsed = _parse_sections((out_dir / "g260704-0915-a3f29c1b.md").read_text(encoding="utf-8"))
+        check(parsed["merged"][0]["base_branch"] == "main", "the row's explicit base is projected")
+
+
 # --- refusal: a live (non-terminal) run is never distilled --------------------
+
+def t_unresolved_effective_base_is_refused() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        # BOTH the header base and the row base are `-` (the ROW_DEFAULTS default): `effective_base` resolves
+        # to `-`, an UNRESOLVED base. distill must REFUSE rather than stamp `-` into the durable history,
+        # where it would poison future per-base prunes (`ledger.py require_effective_base`, the one owner). If
+        # that guard is deleted, distill writes `base_branches: ["-"]` and a per-object `base_branch: "-"` —
+        # so this fixture FAILS.
+        header = _header(base_branch="-")
+        rows = [_row("41", slug="done", status="merged", head_sha=SHA_A, tier="STANDARD", review_rounds="2")]
+        code, out, err, out_dir = _distill(tmp, header, rows)
+        check(code == C.EXIT_STOP,
+              f"an unresolved (`-`) base is refused with EXIT_STOP ({C.EXIT_STOP}); got {code}")
+        check("41" in err and "no usable effective base" in err,
+              f"the refusal NAMES the offending PR and the unresolved base: {err!r}")
+        check(out.strip() == "", "a refused distill prints no summary on stdout")
+        check(not (out_dir / "g260704-0915-a3f29c1b.md").exists(),
+              "a refused distill writes NO history file")
+        check(_temp_files(out_dir) == [], "a refused distill leaves NO temp file behind")
+
 
 def t_non_terminal_row_is_refused_naming_the_pr() -> None:
     with tempfile.TemporaryDirectory() as d:
@@ -225,8 +298,8 @@ def t_malformed_ledger_is_refused() -> None:
 def t_header_without_run_id_is_refused() -> None:
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)
-        # A header whose run_id/base_branch are unset (`-`) is not a run's ledger.
-        header = dict(L.HEADER_DEFAULTS)  # run_id and base_branch default to "-"
+        # A header whose run_id is unset (`-`) is not a run's ledger. (The base is no longer gated here.)
+        header = dict(L.HEADER_DEFAULTS)  # run_id defaults to "-"
         rows = [_row("41", slug="s", status="merged", head_sha=SHA_A, tier="TRIVIAL", review_rounds="1")]
         code, out, err, out_dir = _distill(tmp, header, rows)
         check(code == C.EXIT_OPERATOR,
@@ -288,6 +361,12 @@ CASES = [
      t_terminal_ledger_is_distilled),
     ("full-sha", "the carryover file stores the full 40-char SHA, never a truncation",
      t_head_sha_is_never_shortened),
+    ("mixed-bases", "v2 stamps each object's effective base and a sorted, deduplicated base_branches array",
+     t_mixed_bases_per_object_and_sorted_array),
+    ("header-base-dash", "a `-` header base is accepted (base is per-row); bases come from the rows",
+     t_header_base_dash_is_accepted),
+    ("unresolved-base-refused", "a both-`-` ledger (row and header base unset) is refused, writing no `-` into history",
+     t_unresolved_effective_base_is_refused),
     ("non-terminal-refused", "a live run is refused, naming the offending PR, writing nothing",
      t_non_terminal_row_is_refused_naming_the_pr),
     ("once-only", "an existing file is not overwritten without --force; --force overwrites",

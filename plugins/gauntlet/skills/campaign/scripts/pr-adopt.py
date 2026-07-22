@@ -56,6 +56,15 @@ RUN_LABEL_COLOR = "5319E7"
 # it opens). It is the ONLY thing that makes `pr_origin` = `gauntlet`; a driver cannot assert it by flag.
 GAUNTLET_AUTHORED_LABEL = "gauntlet-authored"
 
+# The EXACT durable reason recorded in `ci_reason` when a re-adoption sees the PR's live base diverge from
+# its recorded base. The campaign does NOT migrate a row to a new base; the mismatch is an unsupported user
+# change that PARKS the row through the existing machine-blocker transition (design:
+# campaign-mixed-base-branches.md, "Unsupported base changes park the row"). The reconcile→loop-control
+# routing parks with this SAME wording built from the `base_changed` fact, so the string is a shared
+# contract — search `not supported mid-run` to reconcile every site. `{recorded}` is the row's
+# `effective_base`, `{live}` the live `baseRefName`.
+BASE_CHANGE_PARK_REASON = "base changed from {recorded} to {live}; not supported mid-run"
+
 
 def _load(name: str, filename: str):
     mod = load_module_from_path(name, _HERE / filename)
@@ -171,9 +180,10 @@ def build_plan(view: dict, *, run_id: str, tier: str, worktrees_root: str) -> di
         return {"verdict": "refuse", "reason": f"PR is {state}, not open"}
 
     branch = view["headRefName"]
-    # COMPUTED fields only. `base_branch` is a HEADER field, not a row field, so `baseRefName` rides the
-    # plan under `base` for the caller and is never written as a row field. `worktree_owned`/`branch_owned`
-    # are decided at worktree creation (step 5), never here.
+    # COMPUTED fields only. The row's `base_branch` is TOOL-OWNED and CREATION-ONLY, so it is NOT in this
+    # plan row: `baseRefName` rides the plan under `base`, and the EXECUTOR records it once via `add-row
+    # --base-branch` when it creates the row (never here, and never rewritten on a re-adoption).
+    # `worktree_owned`/`branch_owned` are decided at worktree creation (step 5), never here.
     row = {
         "head_sha": view["headRefOid"],
         "tier": tier,
@@ -213,6 +223,30 @@ def cmd_plan(args) -> int:
     return 0
 
 
+def _park_base_mismatch(args, pr: str, recorded: str, live: str) -> int:
+    """A re-adoption saw the PR's live base diverge from its recorded base. PARK the row on the user through
+    the existing machine-blocker transition (`ledger.py park`) with the design's exact reason, and STOP —
+    no refresh, no relabel, no base rewrite. The park is the ONE mechanism; this reuses it rather than adding
+    a transition. An ALREADY-held row keeps its open question: `park` returns `EXIT_STOP` and leaves the
+    existing `ci_reason` untouched (design: "An already-held row keeps its open question")."""
+    reason = BASE_CHANGE_PARK_REASON.format(recorded=recorded, live=live)
+    park_argv = ["python3", str(LEDGER_PY), "--file", args.file, "park", "--pr", pr, "--reason", reason]
+    proc = _run(park_argv, cwd=args.project_root)
+    mismatch = {"recorded": recorded, "live": live}
+    if proc.returncode == L.EXIT_STOP:
+        # Already awaiting-user — a park is open and its question is preserved. Nothing to do but report it.
+        print(json.dumps({"pr": pr, "run_id": args.run_id, "parked": False,
+                          "already_held": True, "base_mismatch": mismatch}))
+        return 0
+    if proc.returncode != 0:
+        # A terminal row (or other park refusal) — parking does not apply; surface it fail-closed.
+        return _refuse(f"PR {pr} base changed (recorded {recorded}, live {live}) but the row could NOT be "
+                       f"parked: {proc.stderr.strip()}")
+    print(json.dumps({"pr": pr, "run_id": args.run_id, "parked": True,
+                      "reason": reason, "base_mismatch": mismatch}))
+    return 0
+
+
 def cmd_adopt(args) -> int:
     pr = str(args.pr)
     run_label = f"{RUN_LABEL_PREFIX}{args.run_id}"
@@ -246,6 +280,21 @@ def cmd_adopt(args) -> int:
     row = plan["row"]
     planned_head = str(row["head_sha"])
 
+    # Load the ledger ONCE for the re-adoption checks here and the row refresh in step 4.
+    header, rows = L.load(Path(args.file))
+    existing = L.find_row(rows, pr)
+
+    # RE-ADOPTION BASE GATE — runs BEFORE any write. The recorded row base is IMMUTABLE (ledger CREATE_ONLY),
+    # and the campaign never migrates a row to a new base. If the PR's live base no longer matches the row's
+    # `effective_base` (its explicit base, else the legacy header), PARK the row on the user through the
+    # existing machine-blocker transition and STOP — refresh no evidence, rewrite no base, apply no label
+    # (design: "Unsupported base changes park the row"). A NEW row (existing is None) has no recorded base to
+    # diverge from; it records the live base in step 4.
+    if existing is not None:
+        recorded_base = L.effective_base(header, existing)
+        if recorded_base != base:
+            return _park_base_mismatch(args, pr, recorded_base, base)
+
     # 3. Ensure the run owner label exists (idempotent — `--force` creates or updates).
     label_argv = ["gh", "label", "create", run_label, "--color", RUN_LABEL_COLOR,
                   "--description", f"gauntlet: run {args.run_id}", "--force"]
@@ -269,8 +318,8 @@ def cmd_adopt(args) -> int:
     #   * UNCHANGED head on an existing row: name none of the SHA-bound fields — the accumulated verdicts,
     #     ci and liveness state all describe content that is still there and are preserved (the accessor's
     #     same-value `--head-sha` write is a no-op, so the counters are untouched).
-    _, rows = L.load(Path(args.file))
-    existing = L.find_row(rows, pr)
+    # `existing`/`rows` were loaded above (the re-adoption base gate needs them); nothing has written the
+    # ledger since, so they are still current.
     head_changed = existing is not None and existing.get("head_sha") != planned_head
     verb = "set" if existing is not None else "add-row"
     ledger_argv = ["python3", str(LEDGER_PY), "--file", args.file, verb, "--pr", pr,
@@ -279,7 +328,11 @@ def cmd_adopt(args) -> int:
                    "--slug", str(row["slug"]),
                    "--pr-origin", str(row["pr_origin"])]
     if existing is None:
-        ledger_argv += ["--tier", str(row["tier"]),
+        # A NEW row RECORDS its live base once, through the CREATE_ONLY `--base-branch` door. Every new row
+        # carries an explicit base — even in a single-base run — so the base is per-row from creation. `set`
+        # has no `--base-branch` flag, so a re-adoption can never rewrite it (the gate above parks instead).
+        ledger_argv += ["--base-branch", base,
+                        "--tier", str(row["tier"]),
                         "--ci", str(row["ci"]),
                         "--status", str(row["status"]),
                         "--reviews-ok", str(row["reviews_ok"])]

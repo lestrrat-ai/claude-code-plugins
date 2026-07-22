@@ -305,16 +305,22 @@ def fetch_snapshot(
     return len(entries)
 
 
-def _facts_for_present_row(row: dict, base_branch: str, entry: dict) -> dict:
+def _facts_for_present_row(row: dict, effective_base: str, entry: dict) -> dict:
     """The facts for a LIVE row that IS present in the snapshot. Neutral observations only — a detected
     change (head/base/branch) appears as a `{ledger, snapshot}` pair, and the verbatim GitHub fields are
-    passed through as-is. No key here names or implies an action."""
+    passed through as-is. No key here names or implies an action.
+
+    `effective_base` is THIS row's effective base — its explicit `base_branch`, else the legacy header
+    fallback, resolved by the caller through `ledger.py`'s `effective_base(header, row)`. A run may hold
+    rows on different bases, so the comparison is per-row, never against the one header base. `base_changed`
+    reports the row's RECORDED base as `ledger` and the live `baseRefName` as `snapshot`; loop-control.md
+    routes that fact to the machine-blocker park (an unsupported mid-run base change is not migrated)."""
     facts: dict = {"absent_from_snapshot": False}
     # A detected difference is emitted ONLY when it differs — the key's PRESENCE is the fact.
     if entry["headRefOid"] != row["head_sha"]:
         facts["head_moved"] = {"ledger": row["head_sha"], "snapshot": entry["headRefOid"]}
-    if entry["baseRefName"] != base_branch:
-        facts["base_changed"] = {"ledger": base_branch, "snapshot": entry["baseRefName"]}
+    if entry["baseRefName"] != effective_base:
+        facts["base_changed"] = {"ledger": effective_base, "snapshot": entry["baseRefName"]}
     if entry["headRefName"] != row["branch"]:
         facts["branch_mismatch"] = {"ledger": row["branch"], "snapshot": entry["headRefName"]}
     # Verbatim GitHub observations — always reported when present, never judged.
@@ -344,7 +350,6 @@ def detect(ledger_path: Path, prs_path: Path, run_id: str) -> dict:
 
     entries = read_snapshot(prs_path, run_id)
     by_pr = {str(e["number"]): e for e in entries}
-    base_branch = header["base_branch"]
 
     ledger_prs = {row["pr"] for row in rows}
     result_rows: dict[str, dict] = {}
@@ -369,7 +374,7 @@ def detect(ledger_path: Path, prs_path: Path, run_id: str) -> dict:
             result_rows[pr] = {"absent_from_snapshot": True}
             absent_n += 1
             continue
-        facts = _facts_for_present_row(row, base_branch, entry)
+        facts = _facts_for_present_row(row, L.effective_base(header, row), entry)
         result_rows[pr] = facts
         present_n += 1
         head_moved_n += "head_moved" in facts

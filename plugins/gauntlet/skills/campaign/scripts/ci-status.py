@@ -24,9 +24,9 @@ WHAT WAS SUPPOSED TO BE THERE IS NOT A QUESTION THE EVIDENCE CAN ANSWER — SO I
 Every rule below quantifies over the rows we GOT. A REQUIRED CHECK THAT HAS NOT REGISTERED IS NO ROW AT ALL,
 so no count, no marker and no cross-check can see it: they all agree, correctly, about a set that is missing
 the one member that matters. The base branch's REQUIRED SET is the other half of the question, it is read
-from branch protection AND rulesets (`stage-2-ci.md`, "WHAT WERE WE EXPECTING TO SEE?"), it is carried in the
-ledger header, and it is passed in here — MANDATORY, with NO DEFAULT, because a caller who forgot must never
-be handed the permissive answer. `unknown` (the read FAILED) is a PENDING outcome that escalates; it can
+from branch protection AND rulesets (`stage-2-ci.md`, "WHAT WERE WE EXPECTING TO SEE?"), it is stored per ROW
+(its base is per-row, so its required set is too — the header value is only the legacy fallback), and it is
+passed in here — NAMED, with NO DEFAULT, because a caller who forgot must never be handed the permissive answer. `unknown` (the read FAILED) is a PENDING outcome that escalates; it can
 NEVER go green. `ci-snapshot.py` owns the rule, this tool's job is to HAND IT THE SET — see `derive()`.
 
 SCOPE — WHY THIS IS A SEPARATE FILE FROM `ci-snapshot.py`, AND NOT A SUBCOMMAND OF IT.
@@ -391,10 +391,33 @@ def check_required_set(spec: str):
     except SNAP.SpecError as exc:
         fail(
             f"--required-set {spec!r} cannot be read ({exc}) — and a spec we cannot read is NOT `none`. "
-            f"It is the ledger header's `required_set` (`ledger.py … header get required_set`), and "
-            f"guessing at it would say 'the base branch requires nothing' on the strength of a value we "
-            f"failed to parse."
+            f"It is the row's `effective_required_set` (its explicit `required_set`, else the legacy header "
+            f"value), and guessing at it would say 'the base branch requires nothing' on the strength of a "
+            f"value we failed to parse."
         )
+
+
+def resolve_required_for_derive(ledger_file: str, pr: str, required_set_arg: "str | None"):
+    """Resolve the required set `derive` decides under from the ledger ROW, not the header.
+
+    The set is a property of the base, and the base is per-ROW state, so the value is the selected row's
+    `effective_required_set` — its explicit `required_set`, else the legacy header value, through the ONE
+    schema-owned accessor (never a second copy of that fallback). Any `--required-set` given ALONGSIDE
+    `--ledger` becomes an ASSERTION that must equal it — the same "argument is an assertion, not a second
+    source of truth" contract base-preflight uses for `--base`. Fails CLOSED on a missing row or a malformed
+    value; `unknown` parses through as its fail-closed self (it can NEVER green — a `pending` bullet in DECIDE).
+    """
+    header, rows = LEDGER.load(Path(ledger_file))
+    row = LEDGER.find_row(rows, str(pr))
+    if row is None:
+        fail(f"derive: no ledger row for pr {pr} — its required set cannot be resolved")
+    spec = LEDGER.effective_required_set(header, row)
+    if required_set_arg is not None and required_set_arg != spec:
+        fail(
+            f"derive: --required-set {required_set_arg!r} disagrees with pr {pr}'s effective required set "
+            f"{spec!r} — with --ledger, --required-set is an ASSERTION, not a second source of truth"
+        )
+    return check_required_set(spec)
 
 
 # --- REQUIRED SET -------------------------------------------------------------------------------
@@ -471,46 +494,181 @@ def fetch_required_set(fetch: Fetch, repo: str, base_branch: str) -> tuple[str, 
         return SNAP.CANNOT_READ, str(exc)
 
 
-def refresh_required_set(fetch: Fetch, ledger_path: Path, repo: str | None = None) -> dict:
-    """Settle the ledger header once, retrying only while its value is `unknown`."""
-    header, rows = LEDGER.load(ledger_path)
-    current_spec = header["required_set"]
+# The two TERMINAL row statuses — ledger.py's park guard names them (`merged`/`aborted`). A terminal row's
+# required set is frozen with its campaign record and is never re-read; the grouped refresh below quantifies
+# over NONTERMINAL rows only.
+TERMINAL_STATUSES = ("merged", "aborted")
+
+
+def _read_needed(spec: str) -> bool:
+    """Does this required-set spec still need a (re)read? `unknown` does, and so does a value we cannot even
+    parse (forced to re-read rather than trusted — the same fail-closed stance the header path always took).
+    `declared:<json>` and `none` are SETTLED reads and are never re-read: the head-SHA liveness checks are
+    the freshness boundary, NOT a policy-revision field (stage-2-ci.md, "WHAT WERE WE EXPECTING TO SEE?")."""
     try:
-        current = SNAP.parse_required_set(current_spec)
+        return SNAP.parse_required_set(spec).state == SNAP.CANNOT_READ
+    except SNAP.SpecError:
+        return True
+
+
+def refresh_required_set(fetch: Fetch, ledger_path: Path, repo: str | None = None) -> dict:
+    """Settle the required-check set PER BASE, retrying only the groups whose value is still `unknown`.
+
+    Required checks are a property of the base, and the base is per-ROW state, so the required set is too.
+    This GROUPS the nonterminal rows by `effective_base`, reads each DISTINCT base's requirements ONCE from
+    GitHub, and writes the canonical result to that base's rows STILL NEEDING one (`ledger.py`'s writer,
+    never a second copy of the file format). A row whose stored value is already settled is NEVER
+    overwritten — by a failed read or a fresh one; an unsettled row joining a settled base adopts the
+    group's settled value with no new read. A read that fails leaves ONLY that base's unsettled rows
+    `unknown` (fail-closed, never `none`); other groups settle independently. Legacy `-` rows carry no explicit base or set: they inherit the HEADER
+    through `effective_required_set`, which this settles as its own (legacy) channel — so an old single-base
+    ledger, down to a zero-row one, keeps working exactly as before and NO inherited row value is materialized.
+    """
+    header, rows = LEDGER.load(ledger_path)
+    nonterminal = [r for r in rows if r.get("status") not in TERMINAL_STATUSES]
+
+    # The header MUST parse before anything overwrites it — a malformed value is a hand-edit to fail on, not
+    # to clobber (preserves the old header-path refusal).
+    header_spec = header["required_set"]
+    try:
+        SNAP.parse_required_set(header_spec)
     except SNAP.SpecError as exc:
-        fail(f"ledger required_set {current_spec!r} is malformed ({exc}); refusing to overwrite it")
+        fail(f"ledger required_set {header_spec!r} is malformed ({exc}); refusing to overwrite it")
 
-    if current.state != SNAP.CANNOT_READ:
-        return {
-            "base_branch": header["base_branch"],
-            "repo": repo,
-            "required_set": current_spec,
-            "state": current.state,
-            "settled": True,
-            "reason": "the ledger already holds a settled required set; no GitHub read was made",
-        }
+    # Explicit-base rows STORE their own `required_set`; group them by that base. Legacy `-` rows inherit the
+    # header, so they are NOT grouped here — the header channel below is their storage.
+    explicit_groups: "dict[str, list[dict]]" = {}
+    has_legacy = False
+    for row in nonterminal:
+        if row.get("base_branch", LEDGER.ROW_DEFAULTS["base_branch"]) == "-":
+            has_legacy = True
+            continue
+        explicit_groups.setdefault(LEDGER.effective_base(header, row), []).append(row)
 
-    base_branch = header["base_branch"]
-    if not base_branch or base_branch == "-":
-        fail("ledger base_branch is not set; required checks cannot be read without it")
-    if repo is None:
-        try:
-            repo = resolve_repo(fetch)
-        except FetchError as exc:
-            fail(f"cannot determine the repo ({exc}) — pass --repo owner/name")
+    # One GitHub read per DISTINCT base, memoized so a base shared by the header channel and an explicit group
+    # is read at most once. Repo is resolved LAZILY — only if some group actually needs a read.
+    reads: "dict[str, tuple[str, str]]" = {}
+    state: dict = {"repo": repo}
 
-    value, reason = fetch_required_set(fetch, repo, base_branch)
-    header["required_set"] = value
-    LEDGER.dump(ledger_path, header, rows)
-    parsed = SNAP.parse_required_set(value)
-    return {
-        "base_branch": base_branch,
-        "repo": repo,
-        "required_set": value,
-        "state": parsed.state,
-        "settled": parsed.state != SNAP.CANNOT_READ,
-        "reason": reason,
+    def read_base(base: str) -> "tuple[str, str]":
+        if base in reads:
+            return reads[base]
+        if state["repo"] is None:
+            try:
+                state["repo"] = resolve_repo(fetch)
+            except FetchError as exc:
+                fail(f"cannot determine the repo ({exc}) — pass --repo owner/name")
+        value = fetch_required_set(fetch, state["repo"], base)
+        reads[base] = value
+        return value
+
+    groups_out: list[dict] = []
+    dirty = False
+    header_base = header.get("base_branch", LEDGER.HEADER_DEFAULTS["base_branch"])
+
+    # THE HEADER / LEGACY CHANNEL. Settle the header when a legacy `-` row inherits it (or there are no rows at
+    # all — the compatibility case of a header-only ledger) and its value is still `unknown`. A new run's
+    # header base is `-`, so this is skipped and the row groups own the read.
+    if (has_legacy or not nonterminal) and _read_needed(header_spec):
+        if not header_base or header_base == "-":
+            fail("ledger base_branch is not set; required checks cannot be read without it")
+        value, reason = read_base(header_base)
+        header["required_set"] = value
+        dirty = True
+        parsed = SNAP.parse_required_set(value)
+        groups_out.append({"base": header_base, "storage": "header", "required_set": value,
+                           "state": parsed.state, "settled": parsed.state != SNAP.CANNOT_READ,
+                           "reason": reason})
+
+    # EXPLICIT-BASE ROW GROUPS. Act on a group when any row's OWN stored `required_set` is unsettled — the
+    # row STORES its base's set (an explicit `-` row has simply not had ITS base read yet: `_read_needed("-")`
+    # is True). A SETTLED value for the group's base is NEVER overwritten — not by a failed read (which would
+    # clobber it with `unknown`) and not by a fresh read (settled reads are never re-read: `_read_needed`). So
+    # when the group's base already holds exactly one settled value, the unsettled rows ADOPT it with no
+    # GitHub read; only a group with no settled value (or with disagreeing settled values — a hand-edit this
+    # never papers over) reads GitHub, and the result lands ONLY on the rows that needed it. A base that is
+    # unusable (blank/`-`) cannot be read — leave the group `unknown` rather than fabricate a permissive answer.
+    #
+    # "THE SETTLED SET FOR BASE B" HAS TWO STORAGE CHANNELS, and they are ONE fact: each group row's OWN
+    # settled value, AND the header value WHEN B IS the header base and the header is itself settled. The
+    # header describes base B only for B == header base (a legacy single-base run, or a migrated one whose
+    # header settled before a new same-base row joined), so it is unioned in ONLY then — never for a DIFFERENT
+    # base, which would settle a base off another base's set (a false green). Folding it in is what makes a
+    # `-` row on the header base ADOPT the header's settled value with no read, and what stops a FAILED read
+    # from clobbering a value already settled through the header channel — the round-1 row-adoption rule,
+    # extended to the header's copy of the same fact. `effective_required_set` (ledger.py) draws the SAME
+    # base-agreement line for the single-row accessor, so the two never disagree.
+    for base, group_rows in explicit_groups.items():
+        unsettled = []
+        settled_values = set()
+        for r in group_rows:
+            spec = r.get("required_set", LEDGER.ROW_DEFAULTS["required_set"])
+            if _read_needed(spec):
+                unsettled.append(r)
+            else:
+                settled_values.add(spec)
+        if base == header_base and not _read_needed(header_spec):
+            settled_values.add(header_spec)
+        if not unsettled:
+            continue
+        prs = [r["pr"] for r in group_rows]
+        if not base or base == "-":
+            groups_out.append({"base": base, "storage": "rows", "prs": prs,
+                               "required_set": SNAP.CANNOT_READ, "state": SNAP.CANNOT_READ,
+                               "settled": False, "reason": f"pr(s) {prs} have no usable base to read"})
+            continue
+        if len(settled_values) == 1:
+            value = next(iter(settled_values))
+            reason = "adopted the group's settled value; settled reads are never re-read"
+        else:
+            value, reason = read_base(base)
+        for r in unsettled:
+            r["required_set"] = value
+        dirty = True
+        parsed = SNAP.parse_required_set(value)
+        groups_out.append({"base": base, "storage": "rows", "prs": prs, "required_set": value,
+                           "state": parsed.state, "settled": parsed.state != SNAP.CANNOT_READ,
+                           "reason": reason})
+
+    if dirty:
+        LEDGER.dump(ledger_path, header, rows)
+
+    settled = all(g["settled"] for g in groups_out)
+    result = {
+        "repo": state["repo"],
+        "base_branch": header_base,
+        "required_set": header["required_set"],
+        "groups": groups_out,
+        "settled": settled,
+        "reason": ("no group needed a read; every nonterminal row's required set is already settled"
+                   if not groups_out
+                   else f"settled {sum(g['settled'] for g in groups_out)} of {len(groups_out)} base group(s)"),
     }
+
+    # SINGLE-BASE TOP-LEVEL CONTRACT. When the whole run resolves to ONE effective base, restore the pre-PR
+    # top-level summary: `base_branch`/`required_set`/`state` describe that one base (the settled value, not the
+    # header's stale `unknown`), and the `state` key is present. This is the promise "single-base runs stay
+    # behaviorally unchanged" — it must hold for a NEW explicit-base row too, not only legacy `-` rows. A
+    # MIXED-base run has no single base to summarize, so it keeps `groups` as the signal and omits `state`.
+    effective_bases = set(explicit_groups)
+    if has_legacy or not nonterminal:
+        effective_bases.add(header_base)
+    if len(effective_bases) == 1:
+        base = next(iter(effective_bases))
+        acted = next((g for g in groups_out if g["base"] == base), None)
+        if acted is not None:
+            value, base_state = acted["required_set"], acted["state"]
+        else:
+            # Fully settled already (no read this call): read the settled value from its storage — the explicit
+            # rows' own value, or the header for a legacy / row-less ledger.
+            group_rows = explicit_groups.get(base)
+            value = group_rows[0]["required_set"] if group_rows else header["required_set"]
+            base_state = SNAP.parse_required_set(value).state
+        result["base_branch"] = base
+        result["required_set"] = value
+        result["state"] = base_state
+
+    return result
 
 
 # --- FETCH ---------------------------------------------------------------------------------------
@@ -1349,7 +1507,7 @@ def derive(fetch: Fetch, repo: str, pr: str, head_sha: str, rundir: Path, requir
     about the WRONG THING, and merging on it merges code whose checks never ran.
 
     AND ONE QUESTION THE EVIDENCE CANNOT ANSWER EITHER, WHICH IS WHY IT ARRIVES AS AN ARGUMENT. `required` is
-    what the BASE BRANCH declared (`--required-set`, from the ledger header). Every rule that reads the
+    what the BASE BRANCH declared (the row's `effective_required_set`, resolved from `--ledger`). Every rule that reads the
     artifact quantifies over the rows that ARE in it, and a required check that has not registered is NO ROW:
     invisible to the counts, to containment, and to the rollup cross-check alike — all three agree, correctly,
     about a set that is missing the one member that decides the merge. Only a DECLARED set can see it,
@@ -1445,8 +1603,8 @@ def result(pr: str, head_sha: str, verdict: str, reason: str, path: Path | None,
         # arrive on the old one.
         "head_sha_now": head_now,
         "head_moved": head_moved(head_sha, head_now),
-        # THE SET THIS VERDICT WAS DECIDED UNDER — `declared` / `none` / `unknown`, exactly as the ledger
-        # header holds it. It is an INPUT, recorded so the answer can be reproduced, and it is NOT a caveat
+        # THE SET THIS VERDICT WAS DECIDED UNDER — `declared` / `none` / `unknown`, the row's
+        # `effective_required_set`. It is an INPUT, recorded so the answer can be reproduced, and it is NOT a caveat
         # channel: `unknown` NEVER accompanies a green (it is a `pending` bullet in `decide()`), so this can
         # never become "green, but note that we could not read what was required".
         "required_set": required.state,
@@ -1984,11 +2142,12 @@ def check_gh_invocations(text: str, argv: dict[str, list[str]]) -> list[str]:
 def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]:
     """EVERY COPY OF THE DERIVE COMMAND, IN EVERY SKILL DOC — not just the one in the doc under test.
 
-    THE FLAG THAT DECIDES A MERGE MUST NOT BE DROPPABLE BY A RECAP. `--required-set` is what makes `green`
-    mean *the required set passed*; a copy of the command that omits it is a reader reconstructing an
-    invocation the tool REFUSES (it is a required argument). This repo has already paid for the class TWICE:
-    a fourth copy of a canonical command that had gone stale, and a doc recap that dropped `,headRefOid`
-    from the rollup fetch.
+    THE FLAG THAT NAMES THE REQUIRED SET MUST NOT BE DROPPABLE BY A RECAP. The required set is what makes
+    `green` mean *the required set passed*, and it is now the ROW's `effective_required_set`: a copy names it
+    with `--ledger` (resolve the row's set — the production form) OR with an explicit `--required-set`. A copy
+    carrying NEITHER is a reader reconstructing an invocation the tool REFUSES. This repo has already paid for
+    the class TWICE: a fourth copy of a canonical command that had gone stale, and a doc recap that dropped
+    `,headRefOid` from the rollup fetch.
 
     A copy is any occurrence that RUNS the command (`ci-status.py derive` carrying `--pr`) — prose that
     merely NAMES the command is not a copy, and is not checked. **THE UNIT IS THE COMMAND, NOT THE LINE**:
@@ -2008,12 +2167,12 @@ def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]
                 continue  # prose that NAMES the command, not a copy of it
             n = text.count("\n", 0, m.start()) + 1
             copies.append(f"{md.name}:{n}")
-            if "--required-set" not in command:
+            if "--ledger" not in command and "--required-set" not in command:
                 problems.append(
-                    f"{md.name}:{n} runs `ci-status.py derive` WITHOUT `--required-set` — the flag that "
-                    f"makes `green` mean the REQUIRED SET passed. A reader following this copy issues a "
-                    f"command the tool refuses; a reader who 'fixes' it by dropping the flag gets a verdict "
-                    f"about the rows that showed up, which is the registration gap, reopened by a recap."
+                    f"{md.name}:{n} runs `ci-status.py derive` WITHOUT `--ledger` OR `--required-set` — the "
+                    f"flag that makes `green` mean the REQUIRED SET passed. A reader following this copy "
+                    f"issues a command the tool refuses; a reader who 'fixes' it by dropping the set gets a "
+                    f"verdict about the rows that showed up, which is the registration gap, reopened by a recap."
                 )
     if not copies:
         problems.append(
@@ -2058,7 +2217,7 @@ def check_liveness_copies(root: Path | None = None) -> tuple[list[str], list[str
 
 
 def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list[str]]:
-    """Every runnable required-set copy names the ledger whose header the command owns."""
+    """Every runnable required-set copy names the ledger whose per-row required sets the command persists."""
     problems, copies = [], []
     for md in sorted((root or HERE.parent).rglob("*.md")):
         text = md.read_text(encoding="utf-8")
@@ -2197,7 +2356,7 @@ def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) 
     problems += derive_problems
     if not derive_problems:
         held.append(f"{'the derive invocations':32} {len(derive_copies)} copies across the skill's docs, "
-                    f"every one of them passing --required-set")
+                    f"every one naming the required set (--ledger or --required-set)")
     required_problems, required_copies = check_required_set_copies()
     problems += required_problems
     if not required_problems:
@@ -2303,18 +2462,25 @@ def main() -> int:
     d.add_argument("--head-sha", required=True, help="the LEDGER's head_sha — the commit to pin the fetch to")
     d.add_argument("--rundir", required=True, type=Path, help="where the snapshot is promoted")
     d.add_argument("--repo", help="owner/name (default: the current checkout's, via `gh repo view`)")
-    # MANDATORY, AND WITH NO DEFAULT — the same rule `ci-snapshot.evaluate()` enforces on ITS callers, and
-    # for the same reason: a caller who forgot to say what the base branch requires must not be handed the
-    # permissive answer. It is the ledger header's value, verbatim:
-    #   --required-set "$(python3 <skill>/scripts/ledger.py --file <rundir>/state.jsonl header get required_set)"
-    # `unknown` is a legal value and it can NEVER go green (it is a `pending` bullet in DECIDE) — which is
+    # THE REQUIRED SET IS NAMED, NEVER DEFAULTED — the same rule `ci-snapshot.evaluate()` enforces on ITS
+    # callers, and for the same reason: a caller who forgot to say what the base branch requires must not be
+    # handed the permissive answer. It is now the selected ROW's `effective_required_set` (the base is
+    # per-row, so its required set is too), resolved from the ledger:
+    #   --ledger <rundir>/state.jsonl
+    # `--required-set` remains for the pure/explicit path (tests, an out-of-run spec): with `--ledger` it is
+    # an ASSERTION that must equal the row's effective set; without `--ledger` it IS the set, verbatim. One of
+    # the two is REQUIRED. `unknown` is a legal value that can NEVER go green (a `pending` bullet in DECIDE) —
     # exactly what makes a run that never performed the read merge NOTHING, instead of merging everything.
-    d.add_argument("--required-set", required=True,
-                   help="the ledger header's `required_set`: `declared:<json>` | `none` | `unknown`")
+    d.add_argument("--ledger", type=Path,
+                   help="the run's state.jsonl — resolve the row's `effective_required_set` (its explicit "
+                        "`required_set`, else the legacy header value). The canonical production form")
+    d.add_argument("--required-set",
+                   help="an explicit required set (`declared:<json>` | `none` | `unknown`); with --ledger it "
+                        "is an ASSERTION that must equal the row's effective set, not a second source")
 
     r = sub.add_parser(
         "required-set",
-        help="read both required-check sources and persist their canonical union in the ledger",
+        help="read each distinct base's required-check sources and persist the canonical union per row",
     )
     r.add_argument("--ledger", required=True, type=Path, help="the run's state.jsonl")
     r.add_argument("--repo", help="owner/name (default: the current checkout's, via `gh repo view`)")
@@ -2377,7 +2543,16 @@ def main() -> int:
     # during promotion, or as a verdict about the PR — is a defect reported against the wrong thing.
     check_head_sha(args.head_sha)
     check_rundir(args.rundir)
-    required = check_required_set(args.required_set)
+    # The required set is the ROW's effective set when a ledger is named (the production form); an explicit
+    # `--required-set` is the pure/test path AND, with `--ledger`, an assertion. One of the two is required —
+    # a derive with NEITHER would have no set to decide under, and defaulting one is the false green this
+    # whole tool exists to kill.
+    if args.ledger is not None:
+        required = resolve_required_for_derive(str(args.ledger), args.pr, args.required_set)
+    elif args.required_set is not None:
+        required = check_required_set(args.required_set)
+    else:
+        fail("derive needs --ledger (resolve the row's effective required set) or an explicit --required-set")
 
     repo = args.repo
     if not repo:

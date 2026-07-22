@@ -187,8 +187,9 @@ UNCLASSIFIED = "unclassified"  # a value NO rule maps — escalate to a human; N
 # statement about what SHOWED UP; `green` is supposed to be a statement about what was REQUIRED.
 #
 # That was the REGISTRATION GAP, and it is what this section closes: the expected set is READ from the base
-# branch (branch protection AND rulesets — stage-2-ci.md owns the two reads), carried in the ledger header's
-# `required_set`, and passed in here. `green` now requires every declared check to be PRESENT and PASSING.
+# branch (branch protection AND rulesets — stage-2-ci.md owns the two reads), stored PER ROW as `required_set`
+# (the base is per-row state, so its required set is too; the ledger header value is only the legacy
+# fallback), and passed in here. `green` now requires every declared check to be PRESENT and PASSING.
 #
 # THREE STATES, NEVER TWO. "I could not see any" is NOT "there are none":
 DECLARED = "declared"  # both reads succeeded, the union is non-empty — these checks must be present+passing
@@ -201,7 +202,7 @@ CANNOT_READ = "unknown"  # a read FAILED. We do not know what was required — s
 # PENDING outcome that escalates (stage-2-ci.md, SETTLED) — and it is `ledger.py`'s DEFAULT, which makes a
 # run that never performed the read merge NOTHING instead of merging everything with a footnote.
 
-# The spec, as it is written in the ledger header: `declared:<json>` | `none` | `unknown`.
+# The spec, as it is written in the ledger row's `required_set` (header is the legacy fallback): `declared:<json>` | `none` | `unknown`.
 #
 # The `declared:` payload is a JSON ARRAY, not a comma-separated list, and that is not fussiness: A REQUIRED
 # CHECK'S NAME MAY CONTAIN A COMMA. A matrix job is named `job (a, b)` — 40 of the 100 check runs on
@@ -1387,7 +1388,8 @@ def main() -> int:
         "--required-set",
         required=True,
         help=(
-            "what the BASE BRANCH requires — the ledger header's `required_set`, VERBATIM: "
+            "what the BASE BRANCH requires — the row's `effective_required_set` (the ledger header value is "
+            "only its legacy fallback), VERBATIM: "
             "`declared:<json>` | `none` | `unknown` (stage-2-ci.md, 'WHAT WERE WE EXPECTING TO SEE?'). "
             "REQUIRED, with no default: a snapshot can be nonempty and all-passing while a REQUIRED check "
             "has not registered at all — that is no row, not a failing one, and no rule that reads only "

@@ -45,7 +45,9 @@ needs no OS sandbox. A same-engine process (Codex → another `codex exec`, Clau
 -p`) provides fresh context only and must not be reported as diversity. A fresh native worker on the
 active host is the complete, valid **fallback** when the paired CLI is absent or the cross-engine process
 fails after its retry. The cost benefit compounds the diversity one: review passes dominate campaign's
-native-worker spend — each re-reads the **whole** `origin/<base>...HEAD` diff, runs `required(tier)` times
+native-worker spend — each re-reads the **whole** `origin/<base>...HEAD` diff (where `<base>` is the
+selected PR row's **effective base** — its explicit `base_branch`, else the legacy header fallback,
+resolved through `ledger.py`'s `effective_base`, never the one header base), runs `required(tier)` times
 per SHA, and re-runs **from scratch** on every gate reset (a content change voids the tally), so a PR that
 takes several fix rounds can spend many full-diff passes — and the default cross-engine route moves all of
 that off the native-worker pool, while a native-worker fallback (paired CLI absent) does not. Both are

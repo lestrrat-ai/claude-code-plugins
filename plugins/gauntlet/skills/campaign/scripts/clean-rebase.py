@@ -146,11 +146,33 @@ def run(args) -> int:
     # --- PRECONDITIONS: each fails CLOSED at exit 2, mutating NOTHING ----------
 
     # 1. The ledger row must exist — there is nothing to rebase for a PR the run does not track.
-    _, rows = L.load(ledger_path)
+    header, rows = L.load(ledger_path)
     row = L.find_row(rows, pr)
     if row is None:
         return refuse("no-row", f"no ledger row for pr {pr} — adopt it first (`pr-adopt.py adopt`)",
                       EXIT_PRECONDITION)
+
+    # 1a. `--base` is an ASSERTION, not a base source: the ROW owns the base. It must equal the row's
+    #     `effective_base` (its explicit `base_branch`, else the legacy header fallback — resolved through
+    #     `ledger.py`'s accessor, never a second copy of that rule). An UNRESOLVED base (blank or the `-`
+    #     sentinel) is refused FIRST through `ledger.py`'s `require_effective_base` — the one owner of that
+    #     fail-closed rule — so a `-` base is never treated as a real branch. Then refuse a disagreement BEFORE
+    #     any fetch/rebase so a caller can never rebase this PR onto a branch the row does not track. Agreement
+    #     is decided by `ledger.py`'s `base_agrees` — the one owner of that comparison. (A base that merely
+    #     ADVANCED — same branch, new commits — is exactly what this rebase HANDLES; only a different branch
+    #     NAME disagrees.)
+    effective_base, base_problem = L.require_effective_base(header, row, pr)
+    if base_problem is not None:
+        return refuse("no-base", base_problem, EXIT_PRECONDITION)
+    if not L.base_agrees(base, effective_base):
+        return refuse("base-mismatch",
+                      f"--base {base!r} disagrees with pr {pr}'s ledger effective base {effective_base!r} — "
+                      f"--base is an assertion, not a base source", EXIT_PRECONDITION)
+    # Operate on the ROW's resolved base, never the raw `--base` spelling: two spellings `base_agrees`
+    # accepts (`main` vs `origin/main`) fetch/rebase against different refs (`git fetch origin main` vs
+    # `git fetch origin origin/main`), so every operational fetch/rebase/patch-identity below follows the
+    # row, not the caller's argument.
+    base = effective_base
 
     # 2. A HELD PR is FROZEN — no rebase (a mutation) is dispatched on it — and a TERMINAL PR is done.
     status = row.get("status", "-")

@@ -17,7 +17,12 @@ DECIDED; the command then acts as a LOWER-BOUND check and REFUSES a tier below t
 It never grants a tier and never lowers one.
 
     triage.py derive --worktree <path> --base <ref> --head-sha <40-hex> [--tier TRIVIAL|STANDARD|HIGH]
+        [--file <ledger> --pr <N>]
     triage.py self-test
+
+When ``--file <ledger> --pr <N>`` is given, ``--base`` is an ASSERTION checked against the selected row's
+effective base (its explicit ``base_branch``, else the legacy header fallback), never an independent base
+source; a disagreement refuses.  Omit them and ``--base`` is used exactly as before.
 
 Success prints one deterministic JSON object and exits 0.  Any Git failure, malformed evidence, stale
 expected head, moving head, or a ``--tier`` below the floor prints no JSON, explains the refusal on
@@ -40,6 +45,17 @@ from _gauntlet.modules import load_module_from_path
 
 _HERE = Path(__file__).resolve().parent
 SIBLING = _HERE / "triage-test.py"
+LEDGER_PY = _HERE / "ledger.py"
+
+
+def _load_ledger():
+    mod = load_module_from_path("triage_ledger", LEDGER_PY)
+    if mod is None:
+        raise RuntimeError(f"cannot load the ledger accessor at {LEDGER_PY}")
+    return mod
+
+
+L = _load_ledger()
 
 EXIT_OK = 0
 EXIT_REFUSED = 2
@@ -572,11 +588,52 @@ def derive(*, worktree: str, base: str, head_sha: str, tier: str | None = None,
     }
 
 
+def _assert_ledger_base(file: str, pr: str, base: str) -> "tuple[str | None, str | None]":
+    """When a ledger is supplied, `--base` is an ASSERTION, not a base source: the ROW owns the base. Resolve
+    the row's `effective_base` (its explicit `base_branch`, else the legacy header fallback, through
+    `ledger.py`'s accessor — never a second copy of that rule) and return `(effective_base, None)` when
+    `--base` agrees, else `(None, <error string>)`. Triage passes `--base` as `origin/<base>`; agreement is
+    decided by `ledger.py`'s `base_agrees` (the one owner of that comparison — identical strings always
+    agree, and a leading `origin/` on the ARGUMENT is stripped, never on the stored base). Only a different
+    branch NAME disagrees; this never inspects live GitHub.
+
+    The RESOLVED `effective_base` is returned so the caller builds the operational git ref from the ROW's
+    base, not the raw `--base` spelling: two spellings `base_agrees` accepts (`rel` vs `origin/rel`) resolve
+    to DIFFERENT git refs, so trusting the raw string would diff against the wrong branch (a false permissive
+    that under-triages a sensitive change). The row's base is authoritative; the operational ref follows it."""
+    try:
+        header, rows = L.load(Path(file))
+    except SystemExit as exc:
+        return None, f"could not read ledger {file}: {exc}"
+    row = L.find_row(rows, str(pr))
+    if row is None:
+        return None, f"no ledger row for pr {pr} — its base cannot be resolved"
+    effective_base, base_problem = L.require_effective_base(header, row, pr)
+    if base_problem is not None:
+        return None, base_problem
+    if not L.base_agrees(base, effective_base):
+        return None, (f"--base {base!r} disagrees with pr {pr}'s ledger effective base {effective_base!r} — "
+                      f"--base is an assertion, not a base source")
+    return effective_base, None
+
+
 def cmd_derive(args: argparse.Namespace) -> int:
+    base = args.base
+    if args.file is not None:
+        if args.pr is None:
+            print("triage: REFUSED — --file requires --pr to select the ledger row", file=sys.stderr)
+            return EXIT_REFUSED
+        effective_base, problem = _assert_ledger_base(args.file, args.pr, args.base)
+        if problem is not None:
+            print(f"triage: REFUSED — {problem}", file=sys.stderr)
+            return EXIT_REFUSED
+        # Build the operational git ref from the ROW's resolved base, never the raw `--base` spelling:
+        # `origin/<effective_base>` is the remote-tracking ref triage diffs against.
+        base = f"origin/{effective_base}"
     try:
         result = derive(
             worktree=args.worktree,
-            base=args.base,
+            base=base,
             head_sha=args.head_sha,
             tier=args.tier,
         )
@@ -622,6 +679,11 @@ def parser() -> argparse.ArgumentParser:
     derive_parser.add_argument(
         "--tier", choices=sorted(TIER_VALUES),
         help="the caller's DECIDED tier; refused if it is below the mechanical floor (veto-downward)")
+    derive_parser.add_argument(
+        "--file", help="OPTIONAL ledger (state.jsonl); when given, --base is asserted against the selected "
+                       "row's effective base (requires --pr). Absent: --base is used as-is, as before")
+    derive_parser.add_argument(
+        "--pr", help="PR number (row key) selecting the ledger row for the --file base assertion")
     derive_parser.set_defaults(func=cmd_derive)
     test_parser = sub.add_parser("self-test", help="run the sibling fixture suite")
     test_parser.set_defaults(func=cmd_self_test)

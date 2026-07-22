@@ -29,12 +29,16 @@ two wires is what turns a blocked merge into an infinite CI watch.
 
 **The merge-readiness decision is COMPUTED, never read by eye:**
 `python3 <skill-dir>/scripts/merge-check.py check --pr <N> --file <state.jsonl>`. It reads the ledger
-row + the live PR view (`gh pr view <pr> --json mergeable,mergeStateStatus,isDraft,state,headRefOid`),
-fetches the ledger base into the PR worktree, and prints `{"verdict":"merge"|"not-yet","reason":…}`.
-It crosses — in ONE place — the held/open/draft/stale-head/ci/reviews preconditions and then **BOTH** GitHub enums (`.mergeable` first — `CONFLICTING`
+row + the live PR view (`gh pr view <pr> --json mergeable,mergeStateStatus,isDraft,state,headRefOid,baseRefName`),
+resolves the row's **effective base** (its explicit `base_branch`, else the legacy header) and fetches THAT
+base into the PR worktree, and prints `{"verdict":"merge"|"not-yet","reason":…}`.
+It crosses — in ONE place — the held/open/draft/**base-retarget**/stale-head/ci/reviews preconditions and then **BOTH** GitHub enums (`.mergeable` first — `CONFLICTING`
 and `UNKNOWN` decide on their own, `MERGEABLE` falls through — then `.mergeStateStatus`, which alone
-yields `merge`), then confirms `origin/<base>` is an ancestor of `HEAD`. Both enums are crossed
-**TOTALLY**: a value GitHub's schema does not declare **parks**, never guesses. Act on the verdict:
+yields `merge`), then confirms `origin/<effective-base>` is an ancestor of `HEAD`. Both enums are crossed
+**TOTALLY**: a value GitHub's schema does not declare **parks**, never guesses. A live `baseRefName` that no
+longer matches the row's recorded base is an unsupported retarget: it fails closed with the shared
+machine-blocker reason (`base changed from <recorded> to <live>; not supported mid-run`), and the next
+reconcile parks the row. Act on the verdict:
 
 - `merge` → run the command in **"Resumable merge execution"** below.
 - `not-yet <reason>` → do **NOT** merge; the reason names the block. Route on the reason's **action**
@@ -50,6 +54,8 @@ yields `merge`), then confirms `origin/<base>` is an ancestor of `HEAD`. Both en
     `— park` action, not a fixed value list, keeps this bucket total.
   - `re-poll` reasons (merge state / mergeability not computed yet — `UNKNOWN`) → the **UNKNOWN re-poll
     bound** (below).
+  - the **`not supported mid-run`** reason (a live base retarget) → leave the PR; the next reconcile detects
+    the base change and parks the row on the user (the merge door only refuses — reconcile owns the park).
   - Everything else (`ci is …`, `N of M approvals`, `held`, stale head) → leave the PR; the next
     heartbeat re-evaluates once that precondition changes.
 
@@ -110,8 +116,11 @@ python3 <skill-dir>/scripts/merge.py run \
 `merge.py` imports `merge-check.py`; readiness policy stays owned by **"The merge precondition"** above.
 The command re-reads the live PR and exact head, checks this run's owner label, executes the established
 `gh pr merge <N> --<merge-method> --match-head-commit <head_sha>` call without `--delete-branch`, confirms
-`MERGED`, updates local `<base>`, cleans only ledger-owned local resources, then records `status = merged`
-through the ledger accessor.
+`MERGED`, updates the local **row base** (`effective_base` — after a `v3` PR, local `v3`; after a `main` PR,
+local `main`), cleans only ledger-owned local resources, then records `status = merged`
+through the ledger accessor. Every base door in the command — the pre-merge validation, the merge-check
+ancestry, and this post-merge sync — targets the row's base, and refuses a live retarget with the shared
+`base changed … not supported mid-run` reason.
 
 `--match-head-commit` pins the merge to the exact reviewed head SHA: a push that advanced the live tip
 between the readiness view and the merge call makes GitHub refuse fail-closed, rather than squashing the
@@ -149,8 +158,10 @@ ownership checks and phase order remain in force.
    ONLY WHAT CAN MOVE") — relaunched while a row is still RUNNING, **not** relaunched once CI has settled.
 
    For each **non-parked** open PR, run `python3 scripts/base-preflight.py check --pr <pr> --worktree
-   <worktree> --base <base>`. It fetches `origin/<base>` and requires it to be an ancestor of `HEAD` even
-   when GitHub still reports CLEAN. On `recheck`, re-poll and leave the candidate alone. On
+   <worktree> --base <base> --file <state.jsonl>`, where `<base>` is that row's **effective base** (its
+   explicit `base_branch`, else the legacy header — a run may hold PRs on different bases, so it is resolved
+   per PR, and `--base` is asserted against it). It fetches `origin/<base>` and requires it to be an ancestor
+   of `HEAD` even when GitHub still reports CLEAN. On `recheck`, re-poll and leave the candidate alone. On
    `rebase-first`, rebase before considering the candidate for another review or merge:
    - Clean rebase (no conflicts, PR diff unchanged) → **EXECUTED — not hand-run — by `python3
      scripts/clean-rebase.py run --ledger <state.jsonl> --pr <N> --worktree <worktree> --base <base>`**: it
@@ -182,6 +193,9 @@ ownership checks and phase order remain in force.
      to **"Resumable merge execution"** in the same heartbeat; `merge.py` imports `merge-check.py` and
      repeats the ancestry check before merging.
 
-Stop the merge loop only when no remaining PR is immediately mergeable after the latest base refresh.
+The drain stays **serialized — one PR at a time across the whole run**, even when PRs target different bases
+(`v3`, `main`). There is no run-wide checkout pinned to one branch: each merge resolves, validates, and syncs
+its own row's base, so a mixed-base run drains in one serial order and each merge updates only its base's
+local ref. Stop the merge loop only when no remaining PR is immediately mergeable after the latest base refresh.
 
 ---

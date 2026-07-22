@@ -94,9 +94,12 @@ refused with the mismatch and recovery named.
 The command writes the prompt and `<output>.manifest.json`, then prints the manifest location and hashes.
 It refuses missing or duplicate active artifacts, an incomplete pass, a report whose framing `review-pass.py`
 rejects (no terminal `VERDICT:` line, or a verdict incoherent with the round's findings), a stale
-latest-review/ledger/worktree SHA, or a failed Git read. It resolves `origin/<base>` to one immutable commit
-SHA before any read and binds it, so every diff is measured against a single base and `decide` can detect a
-base that moved. **Re-running it while the decision is still unrecorded is safe and idempotent:**
+latest-review/ledger/worktree SHA, or a failed Git read. `<base>` is **this PR row's effective base** — its
+explicit `base_branch`, else the legacy header fallback (`ledger.py`'s `effective_base`), never the one
+header base — so a mixed-base run bundles each PR against its own release line. It resolves `origin/<base>`
+to one immutable commit SHA before any read and binds it, so every diff is measured against a single base and
+`decide` can detect a base that moved (`decide` re-derives that same effective base from the row, so a
+manifest bound to a different base is refused). **Re-running it while the decision is still unrecorded is safe and idempotent:**
 because the bundle is deterministic, an existing prompt/manifest pair whose bytes match the freshly rebuilt
 bundle is REUSED — so a heartbeat that built the bundle and died before `decide` simply resumes — a partial
 pair left by a crash mid-write is regenerated, and a non-matching or symlinked output is refused rather than

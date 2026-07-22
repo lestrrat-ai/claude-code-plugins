@@ -117,10 +117,11 @@ def t_adopt_same_repo():
     check(p["labels_add"] == ["gauntlet-run-g1", "gauntlet-reviewing"],
           "labels_add == [our owner label, gauntlet-reviewing]")
     check(p["worktree"] == str(Path("/wt") / "feat-x"), "worktree == worktrees_root / headRefName")
-    check(p["base"] == "main", "base == baseRefName (a HEADER field, carried under `base`)")
-    # teeth: base/worktree/ownership flags are NOT row fields — they are the caller's or step 5's
+    check(p["base"] == "main", "base == baseRefName, carried under `base` for the executor to record per-row")
+    # teeth: base/worktree/ownership flags are NOT in the PLAN row — the executor writes the row base_branch
+    # (add-row --base-branch), and step 5 decides worktree ownership; build_plan carries neither.
     check("base" not in row and "base_branch" not in row and "worktree" not in row,
-          "base/base_branch/worktree must NOT be written as row fields")
+          "base/base_branch/worktree must NOT be in the plan row (base rides `base`; the executor records it)")
     check("worktree_owned" not in row and "branch_owned" not in row,
           "worktree_owned/branch_owned are decided at step 5, never in the plan row")
 
@@ -231,8 +232,12 @@ def _ledger(*args) -> int:
         return M.L.main(list(args))
 
 
-def _init_ledger(ledger: Path, run_id: str = "g1") -> None:
+def _init_ledger(ledger: Path, run_id: str = "g1", base_branch: str = "main") -> None:
+    # A legacy-style header carries the run's real base (the `view()` default `baseRefName` is "main"), so a
+    # re-adopted legacy row with NO explicit row base resolves through `effective_base` to the live base and
+    # does not trip the re-adoption base gate. Pass a different `base_branch` to exercise a mismatch/park.
     _ledger("--file", str(ledger), "header", "set", "run_id", run_id)
+    _ledger("--file", str(ledger), "header", "set", "base_branch", base_branch)
 
 
 def _add_row(ledger: Path, pr, **fields) -> None:
@@ -751,6 +756,91 @@ def t_absent_creates_and_verifies():
               "with a local branch present, the add is plain `worktree add <path> <branch>` (no -b)")
 
 
+# --- mixed-base: the row RECORDS its live base at creation; a re-adoption mismatch PARKS ----------------
+
+def t_adopt_records_row_base():
+    """A fresh adoption RECORDS the PR's live `baseRefName` on the new row via `add-row --base-branch`.
+
+    The base is per-row from creation (design: every new row writes an explicit base, even in a single-base
+    run). It rides the plan under `base` and the executor writes it once; the plan row itself never carries it.
+    """
+    with tempfile.TemporaryDirectory() as dd:
+        d = Path(dd)
+        ledger = d / "state.jsonl"
+        # A NEW-run-style header (base_branch "-"); the row still records its own explicit base.
+        _init_ledger(ledger, base_branch="-")
+        code, _, err, rec = _adopt(d, ledger, view(baseRefName="v4"), wroot=d / "wt")
+        check(code == 0, f"a clean adopt succeeds (got {code}: {err})")
+        check(_field(ledger, 12, "base_branch") == "v4",
+              f"the new row must record its live baseRefName; got {_field(ledger, 12, 'base_branch')!r}")
+        # The executor wrote it through add-row --base-branch (the CREATE_ONLY door), not a bare set.
+        addrow = next((c["argv"] for c in rec.calls
+                       if c["argv"][:1] == ["python3"] and "add-row" in c["argv"]), None)
+        check(addrow is not None and "--base-branch" in addrow and addrow[addrow.index("--base-branch") + 1] == "v4",
+              f"add-row must carry --base-branch v4; got {addrow!r}")
+
+
+def t_readopt_base_mismatch_parks():
+    """A re-adoption whose live base no longer matches the row's effective_base PARKS the row and stops.
+
+    The recorded base is immutable; the campaign does not migrate it. pr-adopt parks through the existing
+    machine-blocker transition with the EXACT reason, rewrites no base, and refreshes no SHA-bound evidence.
+    """
+    with tempfile.TemporaryDirectory() as dd:
+        d = Path(dd)
+        wroot = d / "wt"
+        sha = "a" * 40
+        ledger = d / "state.jsonl"
+        _init_ledger(ledger, base_branch="main")        # header base main
+        _add_row(ledger, 12, head_sha=sha, base_branch="v3", status="in_review", tier="HIGH")
+        _record_verdict(ledger, 12, sha)                # reviews_ok -> 1 (evidence that must survive)
+        # Live target is the view default `main`, which differs from the row's recorded `v3`.
+        code, out, err, rec = _adopt(d, ledger, view(headRefOid=sha, baseRefName="main"),
+                                     wroot=wroot, worktree_head=sha)
+        check(code == 0, f"a base-mismatch re-adoption exits 0 after parking (got {code}: {err})")
+        summary = json.loads(out)
+        check(summary.get("parked") is True, f"the summary must report the park; got {summary!r}")
+        check(_field(ledger, 12, "status") == "awaiting-user", "a base mismatch PARKS the row (awaiting-user)")
+        check(_field(ledger, 12, "ci_reason") == "base changed from v3 to main; not supported mid-run",
+              f"the durable park reason must be EXACT; got {_field(ledger, 12, 'ci_reason')!r}")
+        check(_field(ledger, 12, "blocker_ruling") == "-", "the park clears blocker_ruling (park contract)")
+        # The recorded base is NOT rewritten, and SHA-bound evidence is NOT refreshed.
+        check(_field(ledger, 12, "base_branch") == "v3", "the recorded row base is immutable — never rewritten")
+        check(_field(ledger, 12, "reviews_ok") == "1", "a parked mismatch refreshes no review evidence")
+        # It stopped BEFORE touching any label — only the `gh pr view` (step 1) ran, no create/edit.
+        ghs = [c["argv"][:3] for c in rec.gh_calls()]
+        check(ghs == [["gh", "pr", "view"]],
+              f"a parked mismatch applies no labels — only the pr view runs; got {ghs!r}")
+
+
+def t_readopt_base_mismatch_already_held_keeps_question():
+    """An ALREADY-held row keeps its open question — a base mismatch does not overwrite it.
+
+    `ledger.py park` refuses a second park (EXIT_STOP) and leaves the existing `ci_reason` untouched; the
+    executor reports the mismatch without disturbing the open blocker (design: held row keeps its question).
+    """
+    with tempfile.TemporaryDirectory() as dd:
+        d = Path(dd)
+        wroot = d / "wt"
+        sha = "a" * 40
+        ledger = d / "state.jsonl"
+        _init_ledger(ledger, base_branch="main")
+        _add_row(ledger, 12, head_sha=sha, base_branch="v3", tier="HIGH")
+        # The row is already parked on a DIFFERENT question, with a ruling the park is waiting on.
+        _set_row(ledger, 12, status="awaiting-user", ci_reason="CI has settled and is still not green",
+                 blocker_ruling="retry@2026-01-01T00:00:00Z")
+        code, out, err, _ = _adopt(d, ledger, view(headRefOid=sha, baseRefName="main"),
+                                   wroot=wroot, worktree_head=sha)
+        check(code == 0, f"an already-held mismatch exits 0 (got {code}: {err})")
+        summary = json.loads(out)
+        check(summary.get("already_held") is True and summary.get("parked") is False,
+              f"the summary must report the row was already held; got {summary!r}")
+        check(_field(ledger, 12, "ci_reason") == "CI has settled and is still not green",
+              "the existing open question must be PRESERVED, not overwritten by the base mismatch")
+        check(_field(ledger, 12, "blocker_ruling") == "retry@2026-01-01T00:00:00Z",
+              "the pending ruling on the open park is untouched")
+
+
 CASES = [
     ("refuse_fork", "a fork PR is refused, fail closed", t_refuse_fork),
     ("refuse_foreign_run", "a PR owned by another run is refused", t_refuse_foreign_run),
@@ -780,4 +870,7 @@ CASES = [
     ("different_branch_at_path_refused", "a DIFFERENT branch at the default path fails closed", t_different_branch_at_path_refused),
     ("dirty_at_path_refused", "a DIRTY reused checkout fails closed, touches nothing further", t_dirty_at_path_refused),
     ("absent_creates_and_verifies", "an absent branch is created (with/without a pre-existing local branch), SHA-verified", t_absent_creates_and_verifies),
+    ("adopt_records_row_base", "a fresh adoption records the live base on the new row (add-row --base-branch)", t_adopt_records_row_base),
+    ("readopt_base_mismatch_parks", "a re-adoption whose live base diverges from effective_base parks the row, exact reason, no rewrite", t_readopt_base_mismatch_parks),
+    ("readopt_base_mismatch_already_held", "an already-held row keeps its open question on a base mismatch", t_readopt_base_mismatch_already_held_keeps_question),
 ]

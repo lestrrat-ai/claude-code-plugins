@@ -54,10 +54,14 @@ class Fake:
                  view_base: "str | None" = None, base: str = "main",
                  labels: "list[dict] | None" = None, local_base: str = "absent",
                  repo_identity: str = "o/r", mergeable: str = "MERGEABLE",
-                 merge_state_status: str = "CLEAN"):
+                 merge_state_status: str = "CLEAN", header_base: "str | None" = None):
         self.root = root
         self.branch = "feat-pr"
+        # `base` is the row's RECORDED base — an explicit row `base_branch`, unless `header_base` is given, in
+        # which case the row inherits it as a legacy `-` row. Either way `effective_base` resolves to `base`,
+        # which is what every base door (validate, ancestry, sync) must target.
         self.base = base
+        self.header_base = header_base
         self.worktree = root / ".worktrees" / self.branch
         self.worktree_owned = worktree_owned
         self.branch_owned = branch_owned
@@ -104,7 +108,12 @@ class Fake:
 
     def ledger(self, path: Path, *, worktree: "Path | None" = None, branch: "str | None" = None,
                run_id="g1", worktree_field: "str | None" = None) -> None:
-        header = dict(L.HEADER_DEFAULTS, run_id=run_id, base_branch=self.base)
+        # Default: legacy shape — header holds the base, the row inherits it as `-`. With `header_base` set,
+        # the row owns an EXPLICIT `base_branch` (self.base) and the header carries `header_base` (e.g. "-"):
+        # the mixed-base shape. `effective_base` resolves to self.base either way.
+        header_base = self.header_base if self.header_base is not None else self.base
+        row_base = self.base if self.header_base is not None else "-"
+        header = dict(L.HEADER_DEFAULTS, run_id=run_id, base_branch=header_base)
         row = dict(L.ROW_DEFAULTS)
         # `worktree_field` writes the row's worktree column VERBATIM — passing the ROW_DEFAULTS "-" models a
         # HALF-ADOPTION (pr-adopt.py registered the row before it resolved the worktree). Otherwise the
@@ -113,7 +122,7 @@ class Fake:
         row.update(pr="9", id="pr9", branch=branch or self.branch,
                    worktree=wt, worktree_owned=self.worktree_owned,
                    branch_owned=self.branch_owned, head_sha=SHA, reviews_ok=self.reviews,
-                   ci=self.ci, tier="HIGH", status=self.status)
+                   ci=self.ci, tier="HIGH", status=self.status, base_branch=row_base)
         L.dump(path, header, [row])
 
     def view(self) -> dict:
@@ -466,6 +475,37 @@ def t_dash_leading_base_is_never_option_parseable():
               f"absent-base sync did not use the safe local refspec: {root_fetches}")
         check(not any(token == f"{base}:{base}" for argv, _ in f.calls for token in argv),
               "the option-parseable bare `<base>:<base>` refspec is still assembled")
+    finally:
+        finish(td, real)
+
+
+def t_live_base_retarget_refuses_with_shared_reason():
+    # The live PR base no longer matches the row's recorded base: an unsupported mid-run retarget. The merge
+    # runner must REFUSE (never merge onto the new base) with the SAME machine-blocker wording every base door
+    # records — pr-adopt.py owns it, reached here via merge-check (M.MC.PA).
+    td, root, f, led, real = scenario(view_base="v9")
+    try:
+        code, _result, err = invoke(f, led, root)
+        expected = M.MC.PA.BASE_CHANGE_PARK_REASON.format(recorded="main", live="v9")
+        check(code != 0, f"a live base retarget must refuse, not merge: {err}")
+        check(expected in err, f"the refusal must use the shared base-change reason, got: {err!r}")
+    finally:
+        finish(td, real)
+
+
+def t_explicit_row_base_drives_every_base_door():
+    # A MIXED-BASE row: header base is `-`, the row owns an explicit base_branch ("v3"). Every base door
+    # (validate, ancestry, post-merge sync) must target the ROW's base, not the header. A clean external MERGE
+    # exercises validate + sync end to end; landing at merged proves the row base drove them.
+    td, root, f, led, real = scenario(state="MERGED", base="v3", header_base="-")
+    try:
+        code, _result, err = invoke(f, led, root)
+        check(code == 0, f"an explicit-row-base merge must finalize through the row base: {err}")
+        check(status(led) == "merged", "the row must reach terminal merged")
+        # the post-merge sync fetched origin/v3 (the ROW's base), never the header's `-`.
+        synced = [argv for argv, _ in f.calls
+                  if argv[:5] == ["git", "-C", str(root), "fetch", "origin"] and "v3" in argv[-1]]
+        check(bool(synced), f"post-merge sync must target the row base v3: {[a for a, _ in f.calls]!r}")
     finally:
         finish(td, real)
 
@@ -989,6 +1029,8 @@ CASES = [
     ("owner-and-view", "another run and uncertain GitHub state fail closed", t_owner_label_and_uncertain_view_refused),
     ("base-location", "checked-out and absent local base use their documented update paths", t_base_checked_out_and_absent),
     ("dash-base-safe", "a dash-leading base name is fully-qualified at both fetch sites, never option-parseable", t_dash_leading_base_is_never_option_parseable),
+    ("live-base-retarget", "a live base retarget refuses with the shared machine-blocker reason", t_live_base_retarget_refuses_with_shared_reason),
+    ("explicit-row-base", "an explicit row base_branch (header `-`) drives validate/ancestry/sync", t_explicit_row_base_drives_every_base_door),
     ("local-ahead-base-synced", "a local-ahead base is already synced: base-sync skips the non-ff fetch and finalization reaches cleanup + terminal write", t_local_ahead_base_skips_fetch_and_finalizes),
     ("merge-resume", "merge and confirmation failures resume safely", t_merge_and_confirmation_failures_resume),
     ("postmerge-resume", "every post-merge phase resumes without another merge", t_postmerge_phase_failures_resume),

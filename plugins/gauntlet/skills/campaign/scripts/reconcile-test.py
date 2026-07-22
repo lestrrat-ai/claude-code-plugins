@@ -322,12 +322,37 @@ def t_head_moved():
 
 
 def t_base_changed():
+    # A LEGACY row (no explicit base_branch) inherits the header base through effective_base, so the
+    # comparison is against "main" — the same result the old header-only compare gave, now via the accessor.
     code, res, err = scenario([row(41)], [entry(41, base="develop")], base_branch="main")
     check(code == 0, f"exit 0, got {code} (stderr {err!r})")
     facts = res["rows"]["41"]
     check(facts.get("base_changed") == {"ledger": "main", "snapshot": "develop"},
-          f"base_changed compares snapshot baseRefName to the HEADER base_branch, got {facts!r}")
+          f"base_changed compares snapshot baseRefName to the row's effective_base (legacy row inherits the "
+          f"header), got {facts!r}")
     check(res["counts"]["base_changed"] == 1, f"base_changed count drifted, got {res['counts']!r}")
+
+
+def t_base_changed_uses_row_effective_base():
+    """base_changed compares against the ROW's effective_base, not the one header base — the mixed-base rule.
+
+    A row on `v3` (explicit row base) whose live target is `v3` is UNCHANGED even though the header base is
+    `main`; the same row whose live target reverted to `main` is a base_changed{ledger: v3, snapshot: main}
+    — the row's recorded base, not the header, is the currency. loop-control.md routes that fact to the park.
+    """
+    # Explicit row base v3 matches the live v3 target -> no base_changed, even though the header base is main.
+    code, res, err = scenario([row(41, base_branch="v3")], [entry(41, base="v3")], base_branch="main")
+    check(code == 0, f"exit 0, got {code} (stderr {err!r})")
+    facts = res["rows"]["41"]
+    check("base_changed" not in facts,
+          f"a row whose live base equals its EXPLICIT row base is unchanged, header base notwithstanding: {facts!r}")
+    check(res["counts"]["base_changed"] == 0, f"base_changed count should be 0, got {res['counts']!r}")
+    # The same row retargeted back to the header's `main` DIFFERS from its recorded `v3` -> base_changed.
+    code, res, err = scenario([row(41, base_branch="v3")], [entry(41, base="main")], base_branch="main")
+    check(code == 0, f"exit 0, got {code} (stderr {err!r})")
+    facts = res["rows"]["41"]
+    check(facts.get("base_changed") == {"ledger": "v3", "snapshot": "main"},
+          f"the recorded row base v3 is the currency, not the header main: {facts!r}")
 
 
 def t_branch_mismatch():
@@ -577,7 +602,8 @@ CASES = [
     ("merged-by-absence", "an absent live row -> absent_from_snapshot:true, exit 0, NOT an error",
      t_merged_by_absence),
     ("head-moved", "headRefOid != row head_sha -> head_moved{ledger,snapshot}", t_head_moved),
-    ("base-changed", "baseRefName != header base_branch -> base_changed{ledger,snapshot}", t_base_changed),
+    ("base-changed", "baseRefName != a legacy row's inherited effective_base -> base_changed{ledger,snapshot}", t_base_changed),
+    ("base-changed-row-effective", "base_changed compares against the row's effective_base, not the header base", t_base_changed_uses_row_effective_base),
     ("branch-mismatch", "headRefName != row branch -> branch_mismatch{ledger,snapshot}", t_branch_mismatch),
     ("all-three-changes", "head+base+branch differ together -> all three keys + verbatim fields",
      t_all_three_changes_together),
