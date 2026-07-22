@@ -838,7 +838,9 @@ def guard_default_non_goals_change(header: dict, rows: "list[dict]", new_default
 
     So a broadening change is refused whenever any non-terminal PR holds credit (`prs_with_review_credit`);
     the operator resets those rows first (`set --pr N --reviews-ok 0`, re-opening them for a fresh review
-    under the wider scope) and then re-declares. The asymmetry is deliberate and load-bearing: ADDING a
+    under the wider scope) and, in that same step, runs `label-mirror.py mirror` for each to restore its
+    `gauntlet-reviewing` label (a `reviews_ok`->0 reset owes the relabel; `stage-2-review-gate.md`), then
+    re-declares. The asymmetry is deliberate and load-bearing: ADDING a
     default NARROWS scope, under which banked credit stays valid, so an add is always allowed. This is ONE
     guard, not a per-pass versioning subsystem — the single-user operator resets and re-declares.
 
@@ -860,7 +862,8 @@ def guard_default_non_goals_change(header: dict, rows: "list[dict]", new_default
          f"Nothing here moves a head SHA, so the merge gate would NOT void it, and those PRs could merge "
          f"with the now-in-scope area never reviewed. Reset each first "
          f"(`ledger.py set --pr <N> --reviews-ok 0`, re-opening it for a fresh review under the broadened "
-         f"scope), then re-run `header set default_non_goals`. The ledger is unchanged")
+         f"scope) AND, in that same step, run `label-mirror.py mirror --pr <N>` to restore its "
+         f"`gauntlet-reviewing` label; then re-run `header set default_non_goals`. The ledger is unchanged")
 
 
 # --- subcommands --------------------------------------------------------------
