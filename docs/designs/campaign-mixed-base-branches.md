@@ -77,9 +77,12 @@ run label and includes `baseRefName` in the snapshot without filtering it. The c
 
 No label schema change is needed. `scripts/label-mirror.py:162-203` chooses between the two status
 labels from the review tally and tier alone; it reads row `status` only to skip terminal rows and
-projects no held state into any label. The existing `awaiting-user` ledger status can represent an
-unsupported base change — it is ledger state, visible in `status` and `ci_reason`, not in a label —
-and none of that projection depends on the base.
+projects no held state into any label. The mirror is a PR mutation, so `ledger.py dispatch-check`
+already freezes it for a held row along with every other mutating action (`ledger.py:1032-1033` names
+relabel in the held-row refusal); a held row's labels therefore stay as they are until the hold clears.
+The existing `awaiting-user` ledger status can represent an unsupported base change — it is ledger
+state, visible in `status` and `ci_reason`, not in a label — and none of that projection depends on
+the base.
 
 ### Rebase, review, and repair receive the run base
 
@@ -170,7 +173,7 @@ no host-specific command, environment variable, typed transport revision, or hea
 1. Every nonterminal PR row has one effective base branch.
 2. A new row stores the live `baseRefName` observed during adoption. That stored value never changes.
 3. Reconciliation compares the stored value with live `baseRefName` before dispatching work. A mismatch
-   parks the row for the user.
+   parks the row for the user; a row already held parks when its hold clears through its own exit.
 4. The campaign never updates a row to a new base and never automatically runs the gate again because a
    live base changed.
 5. Required checks are stored per row. The grouped refresh keeps the existing settle-once CI
@@ -228,19 +231,24 @@ while newly adopted rows store different explicit bases in the same run.
 On every reconciliation snapshot, compare each open row's `effective_base` with live `baseRefName` before
 head reconciliation, dispatch, CI derivation, or merge scheduling.
 
-When the values differ, run the existing machine-blocker park transition for that row. The durable reason
-is:
+When the values differ on a row that is not already held, run the existing machine-blocker park
+transition for that row; an already-held row follows the held-row rule later in this section. The
+durable reason is:
 
 ```text
 base changed from <recorded> to <live>; not supported mid-run
 ```
 
-The transition sets `status: awaiting-user`, records the reason in `ci_reason`, clears
-`blocker_ruling` as the existing park contract requires, and runs the normal status-label mirror. The
-mirror keeps projecting the review tally; no label shows the hold (see Labels, lease, and host
-compatibility). The row remains in the run, but held-status guards prevent review, repair, CI action,
-rebase, and merge. A held row is also ineligible for the grouped required-set refresh, though it still
-counts as settlement evidence for its base (see Required checks and CI).
+The transition sets `status: awaiting-user`, records the reason in `ci_reason`, and clears
+`blocker_ruling` as the existing park contract requires — one atomic ledger write and nothing else.
+The park performs no label work: once the row is held, `dispatch-check` forbids every action that
+mutates the PR, relabel included (`ledger.py:1032-1033`), so the row's labels are left as they are
+until unpark, when the normal status-label mirror covers the row again. No label work is owed at park
+time anyway: the status labels project only the review tally against the tier, which the park does
+not change, and no label shows the hold (see Labels, lease, and host compatibility). The row remains
+in the run, but held-status guards prevent review, repair, CI action, rebase, and merge. A held row is
+also ineligible for the grouped required-set refresh, though it still counts as settlement evidence for
+its base (see Required checks and CI).
 
 Do not update `base_branch`, `required_set`, review tallies, CI state, preflight stamps, or launch records.
 Do not add a new transition or artifact identity. The feature treats the mismatch as an unsupported user
@@ -254,19 +262,32 @@ The user resolves the park through the existing ruling path:
 - `retry` while the mismatch remains causes the next reconciliation pass to park the row again with a new
   blocker question. A spent ruling never answers the new park.
 
-An already-held row keeps its open question. Reconciliation reports the additional base mismatch without
-overwriting that question; if the mismatch remains after the original hold is cleared, the next pass parks
-with the base-change reason. Terminal rows remain immutable.
+An already-held row keeps its open question, and the held-row freeze means reconciliation reports the
+additional base mismatch in its own output without writing the frozen row or overwriting that question.
+Parking waits for the hold to clear through that hold's own exit, because the existing transitions
+permit nothing else: `ledger.py park` refuses `awaiting-api` and `repairing` rows — "that state has its
+own owner … Resolve it through its own path, not a park" (`ledger.py:1073-1075`) — and `unpark` applies
+only to `awaiting-user` (`ledger.py:1106-1108`). So an `awaiting-user` row clears through its ruling, an
+`awaiting-api` row through API approval, and a `repairing` row by completing its decided repair — a live
+target change does not block the repair, because repair bundles validate the recorded base locally (see
+Base preflight, rebase, review, and repair). Whatever the exit, the next reconciliation pass compares
+bases again and, if the mismatch remains, parks the now-actionable row with the base-change reason; a
+hold that exits into a terminal status (an `abort` ruling, a repair decided as abort) needs no park.
+Terminal rows remain immutable.
 
 ### Base preflight, rebase, review, and repair
 
 `base-preflight.py` loads the selected row, resolves `effective_base`, and fetches live `baseRefName`. It
-refuses `proceed` on a mismatch and routes the reason through the same machine-blocker path. A successful
-check continues to stamp the existing `base_ok_sha`; no extra preflight field is needed.
+refuses `proceed` on a mismatch and routes the reason through the same machine-blocker path. Preflight
+gates only work that `dispatch-check` has already cleared for the row, so the row is never held when
+preflight parks it. A successful check continues to stamp the existing `base_ok_sha`; no extra preflight
+field is needed.
 
 `clean-rebase.py`, `triage.py`, `review-dispatch.py`, fix prompts, and `repair-pass.py` receive the row's
 effective base. Any retained `--base` argument must match the accessor. Repair bundles keep their existing
-base-ref/base-SHA checks.
+base-ref/base-SHA checks; those checks validate the recorded base locally and do not read live
+`baseRefName`, so a decided repair runs to completion even when the live target has changed, and the
+mismatch is handled at the repair's exit (see Unsupported base changes park the row).
 
 Review pass identities, fix completion records, repair records, and typed runtime transports do not gain
 new version or revision fields. Base changes are unsupported and park the row instead of making evidence
@@ -448,13 +469,13 @@ only run-state file that gains fields, and those fields are per PR.
 | --- | --- | --- |
 | Run contract and orchestration | `SKILL.md`, `references/run-identity-and-lease.md`, `references/loop-control.md`, `references/pr-adoption.md` | Remove common-base admission; record one live base per new row; resolve row bases on every action; park live mismatches. |
 | Ledger ownership | `references/files-and-ledger.md`, `scripts/ledger.py` | Add row `base_branch` and `required_set`; own both effective-value accessors; make row base creation-only; keep header fallback and existing park/unpark transitions. |
-| Adoption and reconciliation | `scripts/pr-adopt.py`, `scripts/reconcile.py` | Persist each new row's planned base; fetch distinct bases; compare each existing row with live `baseRefName`; park instead of changing row base. |
+| Adoption and reconciliation | `scripts/pr-adopt.py`, `scripts/reconcile.py` | Persist each new row's planned base; fetch distinct bases; compare each existing row with live `baseRefName`; park instead of changing row base, deferring an already-held row to its hold's exit. |
 | Review and repair path | `references/reviewer.md`, `references/stage-2-review-gate.md`, `scripts/triage.py`, `scripts/base-preflight.py`, `scripts/clean-rebase.py`, `scripts/review-dispatch.py`, `scripts/worker-prompt.py`, `scripts/repair-pass.py` | Supply `effective_base`; assert retained `--base` values; make preflight compare live and recorded bases. Keep existing artifact identities. |
 | CI policy | `references/stage-2-ci.md`, `references/ci-derivation-spec.md`, `scripts/ci-status.py`, `scripts/ci-snapshot.py` | Store required sets per row; group live reads by distinct effective base; derive each row with `effective_required_set`; update header-owned wording. |
 | Merge | `references/stage-3-merge.md`, `scripts/merge-check.py`, `scripts/merge.py` | Use the selected row base for ancestry, readiness, merge, and local sync; compare live and recorded bases at both merge doors. |
 | Carryover and reports | `references/carryover.md`, `references/followups.md`, `references/bailout-and-final-report.md`, `scripts/carryover.py`, `scripts/nudge.py` | Write/read carryover v2 per-PR bases; keep v1 fallback; report bases and required sets per row or grouped by base. |
 | Labels, lease, and runtime | `scripts/label-mirror.py`, `scripts/run-id.py`, `scripts/lease.py`, `scripts/heartbeat.py`, `references/runtime-adapter.md` | No schema or host-route change. Update only wording or tests that assume one header base; hold divergence with the existing `awaiting-user` ledger status (labels unchanged). |
-| Tests and fixtures | Campaign helper suites | Cover old-header fallback, mixed `v3`/`main`, grouped required-set reads (settle-once per group, settlement evidence from held and terminal rows, held-row write-ineligibility for every status in `HELD_STATUSES`), unsupported live base changes, preflight mismatch, carryover v1/v2, and merge mismatch. |
+| Tests and fixtures | Campaign helper suites | Cover old-header fallback, mixed `v3`/`main`, grouped required-set reads (settle-once per group, settlement evidence from held and terminal rows, held-row write-ineligibility for every status in `HELD_STATUSES`), unsupported live base changes (actionable rows park; held rows defer to their hold's exit), preflight mismatch, carryover v1/v2, and merge mismatch. |
 
 Update adjacent quick references, examples, fixtures, and comments that restate header ownership in the same
 implementation PR as their owner. Before completing implementation, enumerate every consumer of
@@ -497,8 +518,9 @@ for every search result.
   are unaffected either way.
 - **A base ref is deleted or unreadable:** reconciliation, preflight, and merge fail closed through the
   existing actionable machine-blocker path.
-- **A row is already held:** preserve its open question and report the base mismatch. If divergence remains
-  after unpark, the next reconciliation pass creates the base-change park.
+- **A row is already held:** preserve its open question and report the base mismatch. Parking waits for
+  the hold to clear through its own exit (owner: Unsupported base changes park the row); the next
+  reconciliation pass then creates the base-change park if divergence remains.
 - **A terminal PR's live base later changes:** do not reopen or rewrite the terminal row. Carryover retains
   the base recorded for that campaign row.
 - **One base is protected and another has no required checks:** each row preserves the existing
@@ -539,6 +561,10 @@ are enough:
 1. **Add row ownership and compatibility accessors.** Add row `base_branch` and `required_set`, immutable
    base creation, effective-value fallback, table output, and legacy-ledger tests. Keep common-base
    admission and current consumers unchanged.
+   <!-- "Table output" here enacts the Resolved question above, which itself directs "an unconditional
+        column added with the row field in PR 1" — the plan and the decision give one answer, not two.
+        The same decision pre-authorizes dropping or deferring the column without affecting anything
+        else; that latitude is stated once, at the decision's owning site. -->
 2. **Convert consumers and fail closed on divergence.** Move adoption, reconciliation, triage, preflight,
    rebase, review/fix/repair inputs, grouped CI policy, merge checks, merge synchronization, carryover v2,
    nudge, and reports to effective row state. Add mismatch parking and all focused fixtures. Keep
