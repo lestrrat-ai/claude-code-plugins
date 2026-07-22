@@ -733,6 +733,23 @@ def t_ledger_origin_named_base_matches() -> None:
         _refused(args, "disagrees")
 
 
+def t_ledger_variant_spelling_uses_row_base() -> None:
+    """A `--base` spelling `base_agrees` accepts but that names a DIFFERENT git ref than the row's base must
+    NOT ride the transport. The reviewer diffs `origin/<TRANSPORT.base>...HEAD`, so an `origin/main` transport
+    base against a row base `main` would diff `origin/origin/main` — a doubled, usually-nonexistent ref. The
+    transport carries the ROW's resolved `effective_base`, so both `main` and the accepted `origin/main` form
+    prepare the SAME `base=main`. FAILS if the raw `--base` rides the transport instead of the row's base."""
+    for spelling in ("main", "origin/main"):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            ledger = _build_ledger(root, "41", "main")
+            args = _fixture(root, base=spelling, file=os.fspath(ledger))
+            transport = D.prepare(args)["transport"]
+            check(transport["base"] == "main",
+                  f"--base {spelling} must ride the transport as the row's effective base 'main', "
+                  f"got {transport['base']!r}")
+
+
 def t_ledger_unresolved_base_refuses() -> None:
     """A both-`-` ledger (header base unset AND row base unset) resolves through `effective_base` to the `-`
     sentinel — an UNRESOLVED base. `--base` is refused as "no usable effective base" BEFORE it can ride the
@@ -789,6 +806,9 @@ CASES = [
      t_ledger_base_assertion_mismatch_refuses),
     ("ledger-origin-named-base", "a base literally named origin/<x> matches itself; the bare form refuses",
      t_ledger_origin_named_base_matches),
+    ("ledger-variant-spelling-row-base",
+     "an accepted origin/<base> spelling rides the transport as the row's effective base, not the raw arg",
+     t_ledger_variant_spelling_uses_row_base),
     ("ledger-unresolved-base", "--file resolving to a `-`/blank effective base refuses before the assertion",
      t_ledger_unresolved_base_refuses),
     ("ledger-missing-row", "--file naming an unknown PR row refuses", t_ledger_missing_row_refuses),

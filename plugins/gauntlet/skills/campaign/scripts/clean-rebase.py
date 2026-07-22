@@ -168,6 +168,11 @@ def run(args) -> int:
         return refuse("base-mismatch",
                       f"--base {base!r} disagrees with pr {pr}'s ledger effective base {effective_base!r} — "
                       f"--base is an assertion, not a base source", EXIT_PRECONDITION)
+    # Operate on the ROW's resolved base, never the raw `--base` spelling: two spellings `base_agrees`
+    # accepts (`main` vs `origin/main`) fetch/rebase against different refs (`git fetch origin main` vs
+    # `git fetch origin origin/main`), so every operational fetch/rebase/patch-identity below follows the
+    # row, not the caller's argument.
+    base = effective_base
 
     # 2. A HELD PR is FROZEN — no rebase (a mutation) is dispatched on it — and a TERMINAL PR is done.
     status = row.get("status", "-")

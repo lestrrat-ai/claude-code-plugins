@@ -1,11 +1,17 @@
 ## Base branch
 
-The run targets a **base branch** — the branch every adopted PR merges into and every review diff is
-measured against. It is **not assumed to be `main`**: it is the **adopted PRs' `baseRefName`** (from
-`gh pr view`), which may be a release or integration branch. When several PRs are adopted at once they
-must **agree** on `baseRefName`; if they disagree, stop and prompt (one run targets one base). Resolve
-it **once** at the start of a run and record it in the ledger header as `base_branch`; re-read it from
-the ledger every heartbeat, never from memory.
+The run targets a **base branch** — the branch a PR merges into and its review diff is measured
+against. It is **not assumed to be `main`**: it is a PR's **`baseRefName`** (from `gh pr view`), which
+may be a release or integration branch. PRs adopted together must **agree** on `baseRefName`; if they
+disagree, stop and prompt — **adoption admits only one base per run today** (mixed-base admission is the
+rollout's final, not-yet-shipped stage).
+
+The base is **per-row** state, recorded on each row at adoption (`pr-adopt.py` → `add-row
+--base-branch`); the ledger **header** `base_branch` is only the **legacy fallback** a row carrying none
+inherits. Every consumer resolves a row's base through `ledger.py`'s `effective_base(header, row)` (and
+`require_effective_base`, its fail-closed form, before acting on it) — never by re-reading the one header
+field. The field, its accessors, and the `CREATE_ONLY` rule are owned by the `base_branch` field in
+`files-and-ledger.md`.
 
 Throughout this doc, `<base>` means that branch and `origin/<base>` its remote-tracking branch.
 Concretely: adopted PRs already target `<base>` (their `baseRefName`), every review diffs
@@ -44,7 +50,7 @@ host-specific `repository.scratch_root` and owns that invocation. The atomic cre
 retry live in `run-id.py`; the caller no longer mints an id or retries. Do not unpack that operation here.
 
 Record it in the ledger header field `run_id` (`ledger.py --file <state.jsonl> header set run_id
-<run-id>`) and re-read it every heartbeat (`ledger.py … header get run_id`, like `base_branch`); never trust
+<run-id>`) and re-read it every heartbeat (`ledger.py … header get run_id`); never trust
 in-context memory for it — a heartbeat may be a fresh agent instance. It flows into:
 
 | Owned by the run | Namespaced form |

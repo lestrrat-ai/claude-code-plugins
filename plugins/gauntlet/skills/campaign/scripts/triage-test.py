@@ -768,12 +768,56 @@ def t_ledger_origin_named_base_agrees() -> None:
     # disagrees: the STORED base is never stripped.
     with tempfile.TemporaryDirectory() as d:
         ledger = _build_ledger(Path(d), "31", "origin/rel")
-        problem = M._assert_ledger_base(str(ledger), "31", "origin/rel")
-        check(problem is None,
-              f"identical origin/rel strings must pass the assertion, got {problem!r}")
-        problem = M._assert_ledger_base(str(ledger), "31", "rel")
-        check(problem is not None and "disagrees" in problem,
-              f"a bare --base must disagree with a stored origin/-named base, got {problem!r}")
+        resolved, problem = M._assert_ledger_base(str(ledger), "31", "origin/rel")
+        check(problem is None and resolved == "origin/rel",
+              f"identical origin/rel strings must pass and return the row base, got {resolved!r}/{problem!r}")
+        resolved, problem = M._assert_ledger_base(str(ledger), "31", "rel")
+        check(resolved is None and problem is not None and "disagrees" in problem,
+              f"a bare --base must disagree with a stored origin/-named base, got {resolved!r}/{problem!r}")
+
+
+def t_ledger_variant_spelling_floors_canonically() -> None:
+    # A row whose effective base is LITERALLY `origin/rel` (a sibling `rel` branch also exists). `base_agrees`
+    # accepts BOTH `origin/origin/rel` (canonical) and `origin/rel` (variant) as the assertion — but git
+    # resolves those two spellings to DIFFERENT refs: `origin/origin/rel` -> the literal base (no deploy.sh),
+    # `origin/rel` -> the ordinary sibling's tracking ref (has deploy.sh via the merge-base). Triage must build
+    # its diff ref from the ROW's resolved base, so BOTH spellings floor HIGH and veto TRIVIAL. Trusting the
+    # raw `--base` (the reverted bug) makes the variant diff the sibling, drop the SENSITIVE file, floor null,
+    # and ACCEPT TRIVIAL — a false permissive that under-triages a sensitive change. This fixture FAILS if the
+    # operational ref is taken from the raw `--base` instead of the row's effective base.
+    with tempfile.TemporaryDirectory() as directory:
+        repo = Path(directory)
+        git(repo, "init", "-q", "-b", "main")
+        git(repo, "config", "user.name", "Gauntlet Test")
+        git(repo, "config", "user.email", "gauntlet@example.invalid")
+        write(repo, "README.md", "readme\n")
+        base0 = commit(repo, "base0")
+        # ordinary sibling `rel`: adds the SENSITIVE script; its tracking ref becomes `origin/rel`.
+        git(repo, "checkout", "-q", "-b", "rel", base0)
+        write(repo, "scripts/deploy.sh", "#!/bin/sh\necho deploy\n", 0o755)
+        rel_tip = commit(repo, "rel: add deploy.sh")
+        # head (the PR) descends FROM the sibling, so the merge-base against `origin/rel` HIDES deploy.sh;
+        # its only own change is a prose doc. Against the literal base (base0) deploy.sh is a fresh add.
+        git(repo, "checkout", "-q", "-b", "pr-head", rel_tip)
+        write(repo, "docs/notes.md", "notes\n")
+        head = commit(repo, "pr: add notes")
+        # remote-tracking layout: origin/rel -> sibling (has deploy.sh); origin/origin/rel -> literal base.
+        git(repo, "update-ref", "refs/remotes/origin/rel", rel_tip)
+        git(repo, "update-ref", "refs/remotes/origin/origin/rel", base0)
+        with tempfile.TemporaryDirectory() as d:
+            ledger = _build_ledger(Path(d), "31", "origin/rel")
+            for spelling in ("origin/origin/rel", "origin/rel"):
+                code, out, err = capture_cli(M.main, [
+                    "derive", "--worktree", str(repo), "--base", spelling, "--head-sha", head,
+                    "--file", str(ledger), "--pr", "31"])
+                check(code == M.EXIT_OK, f"--base {spelling} must derive against the row base (code={code}, err={err!r})")
+                check(json.loads(out)["floor"] == M.HIGH,
+                      f"--base {spelling} must floor HIGH from the row's literal base, not a sibling: {out!r}")
+                code, out, err = capture_cli(M.main, [
+                    "derive", "--worktree", str(repo), "--base", spelling, "--head-sha", head,
+                    "--tier", M.TRIVIAL, "--file", str(ledger), "--pr", "31"])
+                check(code == M.EXIT_REFUSED and out == "",
+                      f"--base {spelling} with --tier TRIVIAL must be vetoed by the HIGH floor (code={code}, out={out!r})")
 
 
 def t_ledger_file_without_pr_refuses() -> None:
@@ -845,6 +889,9 @@ CASES = [
      t_ledger_base_assertion_refuses),
     ("ledger-origin-named-base", "a base literally named origin/<x> matches itself; the bare form disagrees",
      t_ledger_origin_named_base_agrees),
+    ("ledger-variant-spelling-floors-canonically",
+     "both origin/rel and origin/origin/rel resolve to the row's literal base and floor HIGH (no under-triage)",
+     t_ledger_variant_spelling_floors_canonically),
     ("ledger-file-needs-pr", "--file without --pr is refused", t_ledger_file_without_pr_refuses),
     ("ledger-missing-row", "--file --pr naming an unknown row is refused", t_ledger_missing_row_refuses),
 ]

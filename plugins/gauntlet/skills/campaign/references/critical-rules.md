@@ -387,9 +387,11 @@
 - A fresh run carries over prior knowledge from `.gauntlet/history/` (merged/aborted PR record, to
   dedup and inform) but still judges every adopted PR fresh — carryover is advisory, never
   auto-accept/reject.
-- Prune `.gauntlet/history/` at every fresh run: drop only entries unambiguously moot against
-  current `<base>`; for anything uncertain, list it and ask the user before deleting. Never silently
-  prune an entry you're unsure about.
+- Prune `.gauntlet/history/` at every fresh run: drop only entries unambiguously moot against **their
+  own recorded base** — each object prunes against its OWN `base_branch` (a v1 object against that
+  file's single base); history for one base never prunes against another (`carryover.md`, "Pruning the
+  ledger", owns the rule). For anything uncertain, list it and ask the user before deleting. Never
+  silently prune an entry you're unsure about.
 
 ### Fix dispatch and worker models
 
@@ -489,10 +491,12 @@
 
 ### Merge and base hygiene
 
-- The run targets a **base branch** (`base_branch` in the ledger header), which is **not assumed to
-  be `main`** — it is the `baseRefName` of the adopted PRs (must agree across them, else prompt).
-  Reviews diff `origin/<base>...HEAD` and PRs merge into `<base>`; a fix worktree branches off the PR's OWN
-  head branch/SHA, never off `<base>` (see `pr-adoption.md`). Re-read it each heartbeat (see "Base branch").
+- The run targets a **base branch**, **not assumed to be `main`** — it is the `baseRefName` of the
+  adopted PRs (must agree across them, else prompt). The base is **per-row** state, resolved through
+  `ledger.py`'s `effective_base` (a row's explicit `base_branch`, else the legacy header fallback), never
+  re-read from the one header field (see "Base branch"). Reviews diff `origin/<base>...HEAD` and PRs merge
+  into `<base>`; a fix worktree branches off the PR's OWN head branch/SHA, never off `<base>` (see
+  `pr-adoption.md`).
 - After every merge, let `merge.py run` fast-forward local `<base>` to `origin/<base>` (Stage 3,
   **"Resumable merge execution"**) so later diffs and rebases use the just-merged tip. If it fails,
   re-run the command after fixing the named cause — never force the base.

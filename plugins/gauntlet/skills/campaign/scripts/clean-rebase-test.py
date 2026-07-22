@@ -439,6 +439,28 @@ def t_push_rejected_preserves_local_rebase():
               "the remote PR branch was not clobbered (force-with-lease refused it)")
 
 
+def t_variant_spelling_rebases_against_row_base():
+    # `--base origin/main` against a row whose effective base is `main` is ACCEPTED by `base_agrees` (a
+    # leading `origin/` on the argument is stripped). The operational fetch/rebase must target the ROW's
+    # resolved base, so this runs `git fetch origin main` / rebase onto `origin/main` — the SAME clean rebase
+    # as `--base main`, exit 0, remote pushed. Trusting the raw `--base` (the reverted bug) would instead run
+    # `git fetch origin origin/main`, which has no such remote ref → `fetch-failed`, refused at exit 2. This
+    # FAILS if the operational ref is taken from the raw `--base` rather than the row's effective base.
+    with tempfile.TemporaryDirectory() as tmp:
+        s = _scenario(tmp)
+        s.advance_base({12: "12-BASE"})  # a clean FAR edit — the rebase itself succeeds
+        argv = ["run", "--ledger", str(s.ledger), "--pr", PR_NUMBER, "--worktree", str(s.wt),
+                "--base", "origin/main"]
+        code, out, err = capture_cli(M.main, argv)
+        check(code == M.EXIT_OK,
+              f"--base origin/main must rebase against the row's effective base 'main' and exit 0 "
+              f"(code={code}, out={out!r}, err={err!r})")
+        new_head = head(s.wt)
+        check(new_head != s.orig_head, "the clean rebase moved the worktree HEAD")
+        check(s.remote_pr_head() == new_head,
+              "the remote PR branch was force-with-lease pushed to the rebased head")
+
+
 # --- --dry-run mutates nothing -----------------------------------------------
 
 def t_dry_run_mutates_nothing():
@@ -475,6 +497,9 @@ CASES = [
      t_origin_named_base_agrees),
     ("base-mismatch-refused", "a --base disagreeing with the row's effective base is refused at exit 2",
      t_base_mismatch_refused),
+    ("variant-spelling-rebases-row-base",
+     "an accepted origin/main spelling rebases against the row's effective base 'main', not the raw arg",
+     t_variant_spelling_rebases_against_row_base),
     ("unresolved-base-refused", "a both-`-` ledger resolves to `-`; the unresolved base is refused as no-base at exit 2",
      t_unresolved_base_refused),
     ("no-remote-refused", "an absent default remote is refused at exit 2", t_absent_remote_refused),

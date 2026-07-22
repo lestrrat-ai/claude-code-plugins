@@ -378,6 +378,7 @@ def prepare(args) -> dict:
     # legacy header fallback, through `ledger.py`'s accessor — never a second copy of that rule). Agreement
     # is decided by `ledger.py`'s `base_agrees` — the one owner of that comparison. Absent `--file`,
     # `--base` is carried as-is, as before.
+    operational_base = args.base
     if args.file is not None:
         try:
             header, rows = L.load(Path(args.file))
@@ -392,6 +393,10 @@ def prepare(args) -> dict:
         if not L.base_agrees(args.base, effective_base):
             refuse(f"--base {args.base!r} disagrees with pr {args.pr}'s ledger effective base "
                    f"{effective_base!r} — --base is an assertion, not a base source")
+        # The transport carries the ROW's resolved base, never the raw `--base` spelling: two spellings
+        # `base_agrees` accepts (`main` vs `origin/main`) make the reviewer diff `origin/<base>...HEAD`
+        # against different refs, so the transport must follow the row, not the caller's argument.
+        operational_base = effective_base
 
     if args.route not in ROUTE_PRODUCERS:
         refuse(f"unknown review route {args.route!r}; expected one of {list(ROUTE_PRODUCERS)}")
@@ -427,7 +432,7 @@ def prepare(args) -> dict:
     transport = build_transport(
         rundir=rundir,
         worktree=worktree,
-        base=args.base,
+        base=operational_base,
         pr=args.pr,
         review_pass=args.review_pass,
         launch_attempt=args.launch_attempt,
