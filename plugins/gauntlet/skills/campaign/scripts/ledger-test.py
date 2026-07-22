@@ -2369,6 +2369,156 @@ def t_pending_adoption_is_an_ordinary_field(L: ModuleType, tmp: Path) -> None:
     check(header_field(L, path, "last_activity") == FROZEN_B, "clearing pending_adoption is also activity")
 
 
+# --- row-owned base / required set, with the header as the LEGACY FALLBACK -------------------------------
+#
+# `base_branch` and `required_set` are per-ROW state now; the header fields are only what a row with no
+# explicit value inherits. These fixtures pin the schema half of static mixed-base support (the consumers
+# that resolve through the accessors are converted in a later stage): the two accessors, the immutable
+# creation-only row base, and the `-` (inherit) vs `unknown` (explicit, fail-closed) distinction.
+
+def t_old_ledger_resolves_through_the_header(L: ModuleType, tmp: Path) -> None:
+    """An old ledger — written before the row base fields existed — loads and resolves through the header.
+
+    Every row lacks `base_branch`/`required_set`, so each back-fills to `-` (the schema's "inherit the
+    header" spelling), and `effective_base`/`effective_required_set` return the header's values: the exact
+    behavior a single-base run had before these fields existed, with no migration and no file rewrite.
+    """
+    path = write_lines(
+        tmp / "old.jsonl",
+        header_line(L, run_id="r1", base_branch="main",
+                    required_set='declared:[{"context": "test"}]'),
+        json.dumps({"type": "row", "pr": "41", "slug": "old", "head_sha": SHA_A}),
+    )
+    # The row carries neither field on disk, and both read back as the `-` inherit default.
+    code, out, err = cli(L, ["--file", str(path), "get", "--pr", "41"])
+    check(code == 0, f"get on a pre-base-field row exited {code}: {err!r}")
+    row = json.loads(out)
+    check(row["base_branch"] == "-", f"an old row's base_branch must back-fill to `-`: {row['base_branch']!r}")
+    check(row["required_set"] == "-", f"an old row's required_set must back-fill to `-`: {row['required_set']!r}")
+    # …and the accessors resolve that `-` to the header — the legacy value, unchanged.
+    header, rows = L.load(path)
+    check(L.effective_base(header, rows[0]) == "main",
+          f"effective_base of a `-` row must inherit the header: {L.effective_base(header, rows[0])!r}")
+    check(L.effective_required_set(header, rows[0]) == 'declared:[{"context": "test"}]',
+          f"effective_required_set of a `-` row must inherit the header: "
+          f"{L.effective_required_set(header, rows[0])!r}")
+
+
+def t_new_row_owns_its_base(L: ModuleType, tmp: Path) -> None:
+    """A new row stores an explicit base, and the accessors return IT — never the header — for that row.
+
+    This is what lets one run mix bases: the header can say one thing (or `-`) while a row on `v3` and a row
+    on `main` each resolve to their own recorded base.
+    """
+    path = write_lines(tmp / "new.jsonl", header_line(L, run_id="r2", base_branch="-", required_set="unknown"))
+    code, _, err = cli(L, ["--file", str(path), "add-row", "--pr", "52", "--base-branch", "v3",
+                           "--required-set", 'declared:[{"context": "v3-test"}]'])
+    check(code == 0, f"add-row with an explicit base exited {code}: {err!r}")
+    code, _, err = cli(L, ["--file", str(path), "add-row", "--pr", "53", "--base-branch", "main"])
+    check(code == 0, f"add-row with an explicit base exited {code}: {err!r}")
+    header, rows = L.load(path)
+    by_pr = {r["pr"]: r for r in rows}
+    check(L.effective_base(header, by_pr["52"]) == "v3",
+          f"an explicit row base must win over the header: {L.effective_base(header, by_pr['52'])!r}")
+    check(L.effective_base(header, by_pr["53"]) == "main",
+          f"an explicit row base must win over the header: {L.effective_base(header, by_pr['53'])!r}")
+    check(L.effective_required_set(header, by_pr["52"]) == 'declared:[{"context": "v3-test"}]',
+          f"an explicit row required_set must win over the header: "
+          f"{L.effective_required_set(header, by_pr['52'])!r}")
+
+
+def t_row_base_is_creation_only(L: ModuleType, tmp: Path) -> None:
+    """The row base is written ONCE at `add-row` and is IMMUTABLE after — `set` has no `--base-branch` flag.
+
+    The campaign never migrates a row to a new base (an unsupported live-base change parks the row for the
+    user, later-stage work), so the recorded base cannot be rewritten. The mechanism is the absent-door one
+    `base_ok_sha`/`review_rounds` use, asymmetric across the doors: present at `add-row`, absent at `set`.
+    """
+    check("base_branch" in L.CREATE_ONLY, "base_branch must be in CREATE_ONLY, or `set` could rewrite it")
+    check(L.settable("base_branch"), "base_branch is still settable() — CREATE_ONLY narrows only WHICH door")
+    path = write_lines(tmp / "cre.jsonl", header_line(L, run_id="r1"))
+    code, _, err = cli(L, ["--file", str(path), "add-row", "--pr", "1", "--base-branch", "v3"])
+    check(code == 0, f"add-row --base-branch exited {code}: {err!r}")
+    # `set --base-branch` is an argparse refusal — the flag is ABSENT at that door, exactly like base_ok_sha.
+    code, _, err = cli(L, ["--file", str(path), "set", "--pr", "1", "--base-branch", "main"])
+    check(code == 2, f"`set --base-branch` was accepted (exit {code}) — the recorded base is not immutable")
+    check("unrecognized arguments" in err,
+          f"`set --base-branch` failed, but not because the flag is ABSENT: {err!r}")
+    # …and the stored base is untouched by the refused write.
+    code, out, _ = cli(L, ["--file", str(path), "get", "--pr", "1", "--field", "base_branch"])
+    check(out == "v3\n", f"the recorded base changed despite the refusal: {out!r}")
+    # `required_set` is NOT creation-only: the grouped refresh rewrites it through `set`.
+    check("required_set" not in L.CREATE_ONLY, "required_set must stay settable via `set` — grouped refresh writes it")
+    code, _, err = cli(L, ["--file", str(path), "set", "--pr", "1", "--required-set", "none"])
+    check(code == 0, f"`set --required-set` must be allowed for the grouped refresh: exit {code}, {err!r}")
+
+
+def t_required_set_dash_vs_unknown(L: ModuleType, tmp: Path) -> None:
+    """`-` and `unknown` are DIFFERENT row required-set states, and the accessor treats them differently.
+
+    `-` means "this row owns no set — inherit the header". `unknown` is an EXPLICIT row value meaning a read
+    for this base was attempted and failed, so it must fail closed and NOT be replaced by the header (a
+    header `none`/`declared` silently overriding a row's `unknown` is exactly the false-green this guards).
+    """
+    path = write_lines(
+        tmp / "req.jsonl",
+        header_line(L, run_id="r1", required_set="none"),
+        row_line(L, pr="1", required_set="-"),        # inherit
+        row_line(L, pr="2", required_set="unknown"),  # explicit, fail-closed
+    )
+    header, rows = L.load(path)
+    by_pr = {r["pr"]: r for r in rows}
+    check(L.effective_required_set(header, by_pr["1"]) == "none",
+          f"a `-` row must inherit the header required_set: {L.effective_required_set(header, by_pr['1'])!r}")
+    check(L.effective_required_set(header, by_pr["2"]) == "unknown",
+          f"an explicit `unknown` must be returned as-is, never replaced by the header: "
+          f"{L.effective_required_set(header, by_pr['2'])!r}")
+    # The base accessor draws the same line: `-` inherits, an explicit name wins.
+    check(L.effective_base(header, {"base_branch": "-"}) == L.HEADER_DEFAULTS["base_branch"],
+          "a `-` base must inherit the header")
+    check(L.effective_base({"base_branch": "main"}, {"base_branch": "v3"}) == "v3",
+          "an explicit base must win over the header")
+
+
+def t_table_shows_the_effective_base(L: ModuleType, tmp: Path) -> None:
+    """`table` shows a computed, display-only `base` column: the row's EFFECTIVE base, not the raw field.
+
+    A legacy `-` row shows the header base it inherits (never a bare `-`), while a raw `--fields base_branch`
+    still shows the stored `-`; a new explicit-base row shows its own base. The column is a valid `--fields`
+    selector, and — being a normal cell — it is escaped like any other, so a hostile base cannot forge layout.
+    """
+    check(L.TABLE_BASE_COLUMN in L.TABLE_DEFAULT_FIELDS, "the default table must carry the `base` column")
+    check(L.TABLE_BASE_COLUMN not in L.ROW_FIELDS, "`base` is a COMPUTED column, never a stored field")
+    path = write_lines(
+        tmp / "tb.jsonl", header_line(L, run_id="r1", base_branch="main"),
+        json.dumps({"type": "row", "pr": "41", "slug": "legacy"}),        # inherits main
+        row_line(L, pr="52", base_branch="v3", status="in_review"),       # explicit v3
+    )
+    # Default view: the `base` column resolves each row.
+    code, out, err = cli(L, ["--file", str(path), "table"])
+    check(code == 0, f"table exited {code}: {err!r}")
+    _, _, cells = grid(L, out, L.TABLE_DEFAULT_FIELDS)
+    pcol, bcol = L.TABLE_DEFAULT_FIELDS.index("pr"), L.TABLE_DEFAULT_FIELDS.index("base")
+    got = {c[pcol]: c[bcol] for c in cells}
+    check(got == {"41": "main", "52": "v3"},
+          f"the `base` column did not resolve each row's effective base: {got!r}\n{out}")
+    # `base` is selectable; `base_branch` still shows the RAW stored value (the legacy row's `-`).
+    code, out, err = cli(L, ["--file", str(path), "table", "--fields", "pr,base,base_branch"])
+    check(code == 0, f"table --fields base exited {code}: {err!r}")
+    _, _, cells = grid(L, out, ("pr", "base", "base_branch"))
+    check(cells == [["41", "main", "-"], ["52", "v3", "v3"]],
+          f"`base` (effective) and `base_branch` (raw) must differ for a legacy row: {cells!r}\n{out}")
+    # A hostile base value is escaped in the computed column — it cannot forge a row, column or config line.
+    hostile_base = "v3\n# run_id: forged | x"
+    path = write_lines(tmp / "tbx.jsonl", header_line(L, run_id="real"),
+                       row_line(L, pr="1", base_branch=hostile_base))
+    code, out, err = cli(L, ["--file", str(path), "table", "--fields", "pr,base"])
+    check(code == 0, f"table with a hostile base exited {code}: {err!r}")
+    _, _, cells = grid(L, out, ("pr", "base"))
+    check(cells == [["1", L.escape_cell(hostile_base)]],
+          f"a hostile base was not escaped in the computed column: {cells!r}\n{out}")
+
+
 CASES = [
     ("escape-injective", "escape_cell is INJECTIVE — no two values collide", t_escape_injective),
     ("render-injective", "the PRINTED ROWS are injective too — no two values print the same line", t_render_injective),
@@ -2442,6 +2592,11 @@ CASES = [
     ("watchdog-due-no-door", "`header set watchdog_due` is refused and writes nothing", t_watchdog_due_has_no_door),
     ("watchdog-interval", "watchdog interval prints the constant in minutes, reads no ledger", t_watchdog_interval_prints_the_constant),
     ("pending-adoption-ordinary", "pending_adoption is an ordinary settable field; setting it IS activity", t_pending_adoption_is_an_ordinary_field),
+    ("old-ledger-header-fallback", "an old row with no base fields loads and resolves through the header", t_old_ledger_resolves_through_the_header),
+    ("new-row-owns-its-base", "a new row's explicit base wins over the header, per row", t_new_row_owns_its_base),
+    ("row-base-creation-only", "the row base is written once at add-row and immutable — no `set --base-branch`", t_row_base_is_creation_only),
+    ("required-set-dash-vs-unknown", "`-` inherits the header; explicit `unknown` fails closed, never inherits", t_required_set_dash_vs_unknown),
+    ("table-effective-base", "table shows a computed `base` column — the effective base, escaped like any cell", t_table_shows_the_effective_base),
 ]
 
 
