@@ -106,7 +106,7 @@ def reminders(header: dict, rows: list, n_followups: int, rundir: "Path | None",
     active = [r for r in rows if r["status"] not in TERMINAL]
 
     # --- always-fire floor -----------------------------------------------------
-    out.append("check the heartbeat is armed.")
+    out.append('follow loop-control.md, "Primary continuity", before yielding.')
     out.append("re-read the ledger header (base_branch, reviewer, required_set, skill_version).")
     if active:
         out.append("check each active PR's labels match its gate state.")
@@ -156,7 +156,6 @@ def reminders(header: dict, rows: list, n_followups: int, rundir: "Path | None",
             tail = f": {why}" if why and why != "-" else ""
             out.append(f"PR {r['pr']}: parked — LEAD your next status to the user with this question and how "
                        f"long it has waited (≥ ~{quiet_min}m quiet){tail}.")
-        out.append("confirm the next heartbeat is armed before you sleep.")
 
     # --- per-PR reminders ------------------------------------------------------
     # A HELD PR (parked or repairing) fires ONLY its held reminder. That exclusion is enforced by the

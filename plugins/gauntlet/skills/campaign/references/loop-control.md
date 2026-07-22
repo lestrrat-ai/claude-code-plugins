@@ -489,6 +489,26 @@ the worker returns, and what never moves into it. The steps below are unchanged 
   Step 1 only ROUTES the absent fact here, it does not finalize it itself.
 ### Step 5 — Reschedule or exit
 
+#### Primary continuity
+
+**Every turn with non-terminal work continues the fallback lifecycle — no matter how the turn was
+entered:** a scheduled wake, a session-watchdog wake, a background-task completion, or a manual `--run`
+resume. This block OWNS when the loop continues; every other site points here, never restates it.
+
+- **Scheduled-heartbeat host: schedule-or-replace the primary wake UNCONDITIONALLY, as the turn's last
+  action.** The host has one replaceable pending-wake slot (`runtime-adapter.md`, "Background work and
+  heartbeats"), so the schedule call arms it when empty or replaces whatever occupies it. **NEVER gate
+  that call on remembered or inspected scheduler state** — not on a belief that a wake is "still armed",
+  not on a `primary inspect` result. Inspection is advisory only (`runtime-adapter.md`, "Session watchdog
+  nudge"); it never decides whether this re-arm happens.
+- **Completion-driven turns re-arm too.** A turn entered by a background completion (CI watch, review, or
+  fix) that still finds work remaining schedules-or-replaces exactly like a scheduled wake — the entry
+  path changes nothing.
+- **Scheduler-less host: start the bounded wait instead** (`runtime-adapter.md`, "Scheduler-less host").
+- **Recalculate the delay from current state every turn** — sized by the tiers below and capped at the
+  time `ledger.py watchdog check` says remains (the `watchdog_due` cap below). Never carry a delay
+  forward.
+
 5. **Reschedule or exit.**
    - Any non-terminal PR remains (in review, pending CI, or awaiting a user ruling on a review-finding
      standoff / API approval / precondition) →
@@ -538,11 +558,13 @@ the worker returns, and what never moves into it. The steps below are unchanged 
 
      The first is #112's quiet sensor (the durable `last_activity` stamp); the second is the durable
      long-cadence deadline (`ledger.py watchdog`, `files-and-ledger.md`). The separate session watchdog
-     nudge (`runtime-adapter.md`, "Session watchdog nudge") audits both wakes during run resolution. It
+     nudge (`runtime-adapter.md`, "Session watchdog nudge") may REPORT scheduler state during run
+     resolution, but it never decides whether the final re-arm happens — "Primary continuity" above owns
+     that, and the re-arm is unconditional. It
      does NOT add a deep-health trigger: a watchdog and primary heartbeat can arrive together, and the first
-     health pass re-arms the deadline for the second. Re-arm a missing primary only as this turn's final
-     normal scheduling action; re-ensure a missing watchdog nudge before that action. A bounded-wait host
-     reports that it has no separate nudge.
+     health pass re-arms the deadline for the second. The primary wake is continued per "Primary
+     continuity" (this turn's final scheduling action); re-ensure a missing watchdog nudge before that
+     action. A bounded-wait host reports that it has no separate nudge.
      **When `need_health` — and open PRs remain — this heartbeat runs exactly ONE health pass and then exactly ONE
      `ledger.py --file <state.jsonl> watchdog arm`, and
      completes BOTH before the status render and the turn's final scheduling action** (the last-action rule
@@ -564,8 +586,8 @@ the worker returns, and what never moves into it. The steps below are unchanged 
      ledger table:** every parked question restated with its waiting age, and every stalled-review finding,
      first; then the mandatory table below. **When every open PR is parked, the run is not stalled — it is
      idle BECAUSE it waits on the user**, and the status says so plainly, leading with the unanswered
-     question rather than presenting the idleness as a fault to chase. Then confirm the next heartbeat is
-     armed, exactly as always.
+     question rather than presenting the idleness as a fault to chase. Then continue the loop per "Primary
+     continuity" above (this turn's final scheduling action), exactly as always.
 
      **The honest boundary: the session watchdog checks a live session, not a dead one.** If the primary
      heartbeat is missing while the session remains live, the watchdog nudge fires, audits it, and the final
@@ -573,8 +595,8 @@ the worker returns, and what never moves into it. The steps below are unchanged 
      a **MANUAL RESUME on every host**: the next `--run <id>` finds a stale lease and adoption reports the
      run as **orphaned**, not merely resumed (`run-identity-and-lease.md`, "Adopt only an orphaned run").
 
-     ALWAYS keep a heartbeat or bounded wait active whenever non-terminal work remains — skipping
-     both means a hung or orphaned run wakes no one. **Now render the status — this happens on EVERY
+     Continue the loop per "Primary continuity" above whenever non-terminal work remains — skipping the
+     re-arm means a hung or orphaned run wakes no one. **Now render the status — this happens on EVERY
      heartbeat that reschedules, never skipped. Its first and mandatory element is the ledger table
      itself** (a health-pass diagnosis, when one fired above, leads *in front of* the table — it never
      replaces or reorders it). Run
@@ -585,12 +607,17 @@ the worker returns, and what never moves into it. The steps below are unchanged 
      presented as the whole ledger. Never re-type, trim, or re-align it. Then one line per remaining
      wait naming what it waits on (review in flight, CI watch, parked on the user's answer). Render it
      after every ledger write during this heartbeat — the ledger was reconciled this heartbeat, so the table is the
-     state the next reconcile resumes from. State whether the session watchdog is armed or unavailable; never
-     imply dead-session recovery. Then take exactly one runtime branch:
-     - **Scheduled-heartbeat host:** with the status above already rendered, schedule the heartbeat as
-       the turn's LAST action — scheduling ends the turn on this host (`runtime-adapter.md`,
-       "Scheduled-heartbeat host"), so nothing runs after it. The scheduled wake begins again at
-       step 1.
+     state the next reconcile resumes from. State whether the session watchdog is armed or unavailable. For
+     the primary wake, report the active host's `primary inspect` result — `runtime-adapter.md`, "Session
+     watchdog nudge", owns that result set and each host's value — never a claim that the primary wake is
+     already armed: nothing arms it before the turn's final action, and the status names that final action
+     as whichever runtime branch below the active host takes ("Primary continuity" above). Never imply
+     dead-session recovery. Then take
+     exactly one runtime branch:
+     - **Scheduled-heartbeat host:** with the status above already rendered, schedule-or-replace the
+       primary wake as the turn's LAST action ("Primary continuity" above) — scheduling ends the turn on
+       this host (`runtime-adapter.md`, "Scheduled-heartbeat host"), so nothing runs after it. The
+       scheduled wake begins again at step 1.
      - **Scheduler-less bounded-wait host:** render the same status, wait only until the first task
        completion or the nearest protected deadline, then go directly back to step 1 and reconcile.
        Repeat this status/wait/reconcile cycle while non-terminal work remains. Do **not** execute the
