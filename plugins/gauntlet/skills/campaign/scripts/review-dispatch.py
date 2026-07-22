@@ -386,8 +386,10 @@ def prepare(args) -> dict:
         row = L.find_row(rows, str(args.pr))
         if row is None:
             refuse(f"no ledger row for pr {args.pr} — its base cannot be resolved")
-        effective_base = L.effective_base(header, row)
-        if effective_base and effective_base != "-" and not L.base_agrees(args.base, effective_base):
+        effective_base, base_problem = L.require_effective_base(header, row, str(args.pr))
+        if base_problem is not None:
+            refuse(base_problem)
+        if not L.base_agrees(args.base, effective_base):
             refuse(f"--base {args.base!r} disagrees with pr {args.pr}'s ledger effective base "
                    f"{effective_base!r} — --base is an assertion, not a base source")
 

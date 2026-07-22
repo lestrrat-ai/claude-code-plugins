@@ -445,6 +445,25 @@ def t_ledger_origin_named_base_matches() -> None:
               f"a bare --base must disagree with a stored origin/-named base (code={code}, err={err!r})")
 
 
+def t_ledger_unresolved_base_refuses() -> None:
+    """A both-`-` ledger (header base unset AND row base unset) resolves through `effective_base` to the `-`
+    sentinel — an UNRESOLVED base. `--base` is refused as "no usable effective base" and NO bundle is
+    published (`ledger.py require_effective_base`, the one owner). If that guard is deleted, the base
+    assertion is SKIPPED and the fix bundle is PUBLISHED with the caller `--base` baked in — so this FAILS."""
+    with tempfile.TemporaryDirectory(prefix="worker prompt unresolved base ") as raw:
+        root = Path(raw)
+        ledger = root / "state.jsonl"
+        for argv in (["header", "set", "run_id", "t"],                      # base_branch left `-`
+                     ["add-row", "--pr", "42", "--head-sha", "a" * 40]):    # row base-branch left `-`
+            proc = subprocess.run([sys.executable, str(M.LEDGER), "--file", str(ledger), *argv],  # noqa: S603
+                                  capture_output=True, text=True, check=False)
+            check(proc.returncode == 0, f"ledger {' '.join(argv)} failed: {proc.stderr.strip()}")
+        code, _, err = capture_cli(M.main, _fix_argv(root, "v3", ledger))
+        check(code == M.EXIT_REFUSED and "no usable effective base" in err,
+              f"an unresolved (`-`) base must refuse (code={code}, err={err!r})")
+        check(not (root / "out").exists(), "a refused unresolved base must publish no bundle")
+
+
 def t_ledger_missing_row_refuses() -> None:
     with tempfile.TemporaryDirectory(prefix="worker prompt base norow ") as raw:
         root = Path(raw)
@@ -471,6 +490,7 @@ TESTS = (
     ("ledger base assertion matches", t_ledger_base_assertion_matches),
     ("ledger base assertion mismatch refuses", t_ledger_base_assertion_mismatch_refuses),
     ("ledger origin-named base matches itself", t_ledger_origin_named_base_matches),
+    ("ledger unresolved base refuses", t_ledger_unresolved_base_refuses),
     ("ledger missing row refuses", t_ledger_missing_row_refuses),
 )
 

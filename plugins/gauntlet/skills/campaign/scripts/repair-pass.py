@@ -787,9 +787,9 @@ def cmd_bundle(path: Path, args) -> int:
     # The base is ROW state: resolve this row's `effective_base` (its explicit `base_branch`, else the legacy
     # header fallback) through `ledger.py`'s accessor — never the one header base, so a mixed-base run bundles
     # each PR against the base its own row tracks.
-    base = L.effective_base(header, row)
-    if not base.strip() or base == "-":
-        fail(f"pr {pr} has no usable effective base in the ledger")
+    base, base_problem = L.require_effective_base(header, row, pr)
+    if base_problem is not None:
+        fail(base_problem)
     base_ref = f"origin/{base}"
     # F2 — resolve the symbolic remote-tracking ref to ONE immutable commit SHA BEFORE any bundle read, and
     # use that SHA (never `base_ref`) for the current diff and every growth query below. `origin/<base>` is
@@ -919,8 +919,12 @@ def validate_decision_bundle(path: Path, header: dict, row: dict, pr: str, recor
     if manifest["head_sha"] != row["head_sha"]:
         fail(f"bundle manifest is stale: it names {manifest['head_sha']!r}, row names {row['head_sha']!r}")
     # The bundle was built against THIS row's effective base (its explicit `base_branch`, else the legacy
-    # header fallback), so re-derive it the same way — never the one header base.
-    expected_base_ref = f"origin/{L.effective_base(header, row)}"
+    # header fallback), so re-derive it the same way — never the one header base. An unresolved base is refused
+    # here exactly as `bundle` refused to build one (`ledger.py`'s `require_effective_base`, the one owner).
+    base, base_problem = L.require_effective_base(header, row, pr)
+    if base_problem is not None:
+        fail(base_problem)
+    expected_base_ref = f"origin/{base}"
     if manifest["base_ref"] != expected_base_ref:
         fail(f"bundle manifest is bound to base {manifest['base_ref']!r}, not {expected_base_ref!r}")
     if not isinstance(manifest["worktree"], str):

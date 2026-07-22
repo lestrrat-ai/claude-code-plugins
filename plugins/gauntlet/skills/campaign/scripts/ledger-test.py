@@ -2512,6 +2512,30 @@ def t_base_agrees(L: ModuleType, _tmp: Path) -> None:
     check(not L.base_agrees("origin/v3", "main"), "a stripped argument naming a different base must disagree")
 
 
+def t_require_effective_base(L: ModuleType, _tmp: Path) -> None:
+    """`require_effective_base` — the ONE owner of "a resolved-base consumer fails closed on an unresolved base".
+
+    A usable base is returned as `(base, None)`; an unresolved one — blank, whitespace-only, or the `-` unset
+    sentinel on BOTH the row and the header — is refused as `(None, reason)`, the reason naming the PR. This is
+    what every base-USING consumer (clean-rebase, review-dispatch, worker-prompt, carryover, base-preflight,
+    triage, repair-pass) routes through, so a `-` base is refused BEFORE it is compared, written, or diffed.
+    """
+    # A real resolved base passes through unchanged, with no problem.
+    base, problem = L.require_effective_base({"base_branch": "main"}, {"base_branch": "-"}, "1")
+    check(base == "main" and problem is None, f"a `-` row inheriting a real header base is usable: {base!r} {problem!r}")
+    base, problem = L.require_effective_base({"base_branch": "main"}, {"base_branch": "v3"}, "1")
+    check(base == "v3" and problem is None, f"an explicit row base is usable: {base!r} {problem!r}")
+    # The both-`-` state (row AND header unset) — `effective_base` returns `-` — is REFUSED, not returned.
+    base, problem = L.require_effective_base({"base_branch": "-"}, {"base_branch": "-"}, "999")
+    check(base is None and problem == "pr 999 has no usable effective base in the ledger",
+          f"a both-`-` ledger must fail closed, naming the PR: {base!r} {problem!r}")
+    # A blank or whitespace-only resolved base is unresolved too — never a branch a caller may use.
+    base, problem = L.require_effective_base({"base_branch": ""}, {"base_branch": "-"}, "5")
+    check(base is None and problem is not None, f"a blank effective base must fail closed: {base!r} {problem!r}")
+    base, problem = L.require_effective_base({"base_branch": "  "}, {"base_branch": "-"}, "5")
+    check(base is None and problem is not None, f"a whitespace-only effective base must fail closed: {base!r} {problem!r}")
+
+
 def t_table_shows_the_effective_base(L: ModuleType, tmp: Path) -> None:
     """`table` shows a computed, display-only `base` column: the row's EFFECTIVE base, not the raw field.
 
@@ -2629,6 +2653,7 @@ CASES = [
     ("row-base-creation-only", "the row base is written once at add-row and immutable — no `set --base-branch`", t_row_base_is_creation_only),
     ("required-set-dash-vs-unknown", "`-` inherits the header; explicit `unknown` fails closed, never inherits", t_required_set_dash_vs_unknown),
     ("base-agrees", "base_agrees: identical strings always agree; only the ARGUMENT's origin/ is stripped", t_base_agrees),
+    ("require-effective-base", "require_effective_base: a usable base passes; a blank/whitespace/`-` base fails closed naming the PR", t_require_effective_base),
     ("table-effective-base", "table shows a computed `base` column — the effective base, escaped like any cell", t_table_shows_the_effective_base),
 ]
 

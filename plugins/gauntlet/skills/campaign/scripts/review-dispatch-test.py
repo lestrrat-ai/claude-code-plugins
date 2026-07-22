@@ -733,6 +733,23 @@ def t_ledger_origin_named_base_matches() -> None:
         _refused(args, "disagrees")
 
 
+def t_ledger_unresolved_base_refuses() -> None:
+    """A both-`-` ledger (header base unset AND row base unset) resolves through `effective_base` to the `-`
+    sentinel — an UNRESOLVED base. `--base` is refused as "no usable effective base" BEFORE it can ride the
+    transport, never accepted (`ledger.py require_effective_base`, the one owner). If that guard is deleted,
+    the base assertion is SKIPPED and a caller `--base` prepares a transport unvalidated — so this FAILS."""
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        ledger = root / "state.jsonl"
+        for argv in (["header", "set", "run_id", "t"],                      # base_branch left `-`
+                     ["add-row", "--pr", "41", "--head-sha", "a" * 40]):    # row base-branch left `-`
+            proc = subprocess.run([sys.executable, os.fspath(D.LEDGER), "--file", os.fspath(ledger), *argv],  # noqa: S603
+                                  capture_output=True, text=True, check=False)
+            check(proc.returncode == 0, f"ledger {' '.join(argv)} failed: {proc.stderr.strip()}")
+        args = _fixture(root, base="v3", file=os.fspath(ledger))
+        _refused(args, "no usable effective base")
+
+
 def t_ledger_missing_row_refuses() -> None:
     with tempfile.TemporaryDirectory() as raw:
         root = Path(raw)
@@ -772,5 +789,7 @@ CASES = [
      t_ledger_base_assertion_mismatch_refuses),
     ("ledger-origin-named-base", "a base literally named origin/<x> matches itself; the bare form refuses",
      t_ledger_origin_named_base_matches),
+    ("ledger-unresolved-base", "--file resolving to a `-`/blank effective base refuses before the assertion",
+     t_ledger_unresolved_base_refuses),
     ("ledger-missing-row", "--file naming an unknown PR row refuses", t_ledger_missing_row_refuses),
 ]

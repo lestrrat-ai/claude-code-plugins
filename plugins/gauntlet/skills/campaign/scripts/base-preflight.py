@@ -287,9 +287,9 @@ def resolve_ledger_base(ledger_file: str, pr: str, base_arg: "str | None",
     row = L.find_row(rows, str(pr))
     if row is None:
         return None, _verdict(RECHECK, f"no ledger row for pr {pr} — its base cannot be resolved")
-    effective_base = L.effective_base(header, row)
-    if not effective_base or effective_base == "-":
-        return None, _verdict(RECHECK, f"pr {pr} has no usable effective base in the ledger")
+    effective_base, base_problem = L.require_effective_base(header, row, pr)
+    if base_problem is not None:
+        return None, _verdict(RECHECK, base_problem)
     if base_arg is not None and not L.base_agrees(base_arg, effective_base):
         return None, _verdict(
             RECHECK, f"--base {base_arg!r} disagrees with pr {pr}'s ledger effective base "

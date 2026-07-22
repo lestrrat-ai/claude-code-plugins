@@ -341,6 +341,24 @@ def t_base_mismatch_refused():
         check(_field(s.ledger, PR_NUMBER, "head_sha") == s.orig_head, "nothing mutated — head_sha untouched")
 
 
+def t_unresolved_base_refused():
+    # A both-`-` ledger (header base_branch unset AND row base-branch unset) resolves through
+    # `effective_base` to the `-` sentinel — an UNRESOLVED base. It is refused at step 1a as `no-base`
+    # BEFORE any fetch/rebase, never treated as a real branch (`ledger.py require_effective_base`, the one
+    # owner). If that guard is deleted, the base assertion is SKIPPED and execution falls through to a later
+    # precondition (worktree-missing), so this fixture FAILS — that is exactly the bug the guard fixes.
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        ledger = tmp / "state.jsonl"
+        _ledger("--file", str(ledger), "header", "set", "run_id", "t")            # base_branch left `-`
+        _ledger("--file", str(ledger), "add-row", "--pr", PR_NUMBER, "--status", "in_review")  # base `-`
+        code, out, _ = capture_cli(M.main, ["run", "--ledger", str(ledger), "--pr", PR_NUMBER,
+                                            "--worktree", str(tmp / "missing"), "--base", "v3"])
+        check(code == M.EXIT_PRECONDITION, f"an unresolved (`-`) base is refused at exit 2 (code={code})")
+        check('"refused": "no-base"' in out, f"the refusal names the unresolved base as no-base; got {out!r}")
+        check("no usable effective base" in out, f"the refusal explains the unresolved base; got {out!r}")
+
+
 def t_origin_named_base_agrees():
     # A row base LITERALLY named `origin/rel` (a legal branch name) matches an identical `--base` — the
     # assertion routes through `ledger.py base_agrees`, where identical strings always agree. The refusal
@@ -457,6 +475,8 @@ CASES = [
      t_origin_named_base_agrees),
     ("base-mismatch-refused", "a --base disagreeing with the row's effective base is refused at exit 2",
      t_base_mismatch_refused),
+    ("unresolved-base-refused", "a both-`-` ledger resolves to `-`; the unresolved base is refused as no-base at exit 2",
+     t_unresolved_base_refused),
     ("no-remote-refused", "an absent default remote is refused at exit 2", t_absent_remote_refused),
     ("worktree-missing-refused", "a missing/non-git worktree is refused at exit 2", t_worktree_missing_refused),
     ("push-rejected-preserves-rebase", "a rejected push preserves the local rebase and does NOT write the "

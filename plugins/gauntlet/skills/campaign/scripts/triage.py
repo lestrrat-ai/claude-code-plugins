@@ -603,9 +603,9 @@ def _assert_ledger_base(file: str, pr: str, base: str) -> "str | None":
     row = L.find_row(rows, str(pr))
     if row is None:
         return f"no ledger row for pr {pr} — its base cannot be resolved"
-    effective_base = L.effective_base(header, row)
-    if not effective_base or effective_base == "-":
-        return f"pr {pr} has no usable effective base in the ledger"
+    effective_base, base_problem = L.require_effective_base(header, row, pr)
+    if base_problem is not None:
+        return base_problem
     if not L.base_agrees(base, effective_base):
         return (f"--base {base!r} disagrees with pr {pr}'s ledger effective base {effective_base!r} — "
                 f"--base is an assertion, not a base source")

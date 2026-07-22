@@ -154,13 +154,17 @@ def run(args) -> int:
 
     # 1a. `--base` is an ASSERTION, not a base source: the ROW owns the base. It must equal the row's
     #     `effective_base` (its explicit `base_branch`, else the legacy header fallback — resolved through
-    #     `ledger.py`'s accessor, never a second copy of that rule). Refuse a disagreement BEFORE any
-    #     fetch/rebase so a caller can never rebase this PR onto a branch the row does not track. Agreement
+    #     `ledger.py`'s accessor, never a second copy of that rule). An UNRESOLVED base (blank or the `-`
+    #     sentinel) is refused FIRST through `ledger.py`'s `require_effective_base` — the one owner of that
+    #     fail-closed rule — so a `-` base is never treated as a real branch. Then refuse a disagreement BEFORE
+    #     any fetch/rebase so a caller can never rebase this PR onto a branch the row does not track. Agreement
     #     is decided by `ledger.py`'s `base_agrees` — the one owner of that comparison. (A base that merely
     #     ADVANCED — same branch, new commits — is exactly what this rebase HANDLES; only a different branch
     #     NAME disagrees.)
-    effective_base = L.effective_base(header, row)
-    if effective_base and effective_base != "-" and not L.base_agrees(base, effective_base):
+    effective_base, base_problem = L.require_effective_base(header, row, pr)
+    if base_problem is not None:
+        return refuse("no-base", base_problem, EXIT_PRECONDITION)
+    if not L.base_agrees(base, effective_base):
         return refuse("base-mismatch",
                       f"--base {base!r} disagrees with pr {pr}'s ledger effective base {effective_base!r} — "
                       f"--base is an assertion, not a base source", EXIT_PRECONDITION)

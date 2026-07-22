@@ -709,6 +709,28 @@ def base_agrees(base_arg: str, effective: str) -> bool:
     return base_arg.startswith("origin/") and base_arg[len("origin/"):] == effective
 
 
+def require_effective_base(header: dict, row: dict, pr: str) -> "tuple[str | None, str | None]":
+    """Resolve `row`'s effective base and REFUSE it when it is unresolved — blank/whitespace or the `-` sentinel.
+
+    THE one owner of the consumer-side contract "a resolved-base consumer must FAIL CLOSED on an unresolved
+    effective base BEFORE using it." Every consumer that resolves an effective base and then USES it — compares
+    a `--base` assertion against it, writes it into the durable history, bakes it into a published bundle, or
+    diffs `origin/<base>` — routes through here instead of inlining its own `effective_base(...) == "-"` test,
+    so the refusal rule and its wording live in ONE place, not once per consumer.
+
+    Returns `(base, None)` when the base is usable, or `(None, reason)` — a ready-to-emit refusal message naming
+    the PR — when it is not. `-` on BOTH the row and the header means "no base was ever resolved" (`effective_base`
+    faithfully returns it); it is NOT a branch a caller may rebase onto, write to history, or diff against, so it
+    is refused here. This mirrors `base_agrees`, which already refuses `-`. A normal run never reaches this: the
+    header base is filled at run start and each row's at adoption, so `effective_base` returns a real branch; a
+    both-`-` ledger is a driver-authored/hand-edited state (a single-user foot-gun), and this is the cheap
+    fail-closed insurance against it — not machinery to defend the user from themselves."""
+    base = effective_base(header, row)
+    if not base.strip() or base == "-":
+        return None, f"pr {pr} has no usable effective base in the ledger"
+    return base, None
+
+
 def check_field(name: str, valid: "tuple[str, ...]") -> None:
     if name not in valid:
         fail(f"unknown field '{name}'; valid: {', '.join(valid)}")

@@ -210,6 +210,27 @@ def t_header_base_dash_is_accepted() -> None:
 
 # --- refusal: a live (non-terminal) run is never distilled --------------------
 
+def t_unresolved_effective_base_is_refused() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        # BOTH the header base and the row base are `-` (the ROW_DEFAULTS default): `effective_base` resolves
+        # to `-`, an UNRESOLVED base. distill must REFUSE rather than stamp `-` into the durable history,
+        # where it would poison future per-base prunes (`ledger.py require_effective_base`, the one owner). If
+        # that guard is deleted, distill writes `base_branches: ["-"]` and a per-object `base_branch: "-"` —
+        # so this fixture FAILS.
+        header = _header(base_branch="-")
+        rows = [_row("41", slug="done", status="merged", head_sha=SHA_A, tier="STANDARD", review_rounds="2")]
+        code, out, err, out_dir = _distill(tmp, header, rows)
+        check(code == C.EXIT_STOP,
+              f"an unresolved (`-`) base is refused with EXIT_STOP ({C.EXIT_STOP}); got {code}")
+        check("41" in err and "no usable effective base" in err,
+              f"the refusal NAMES the offending PR and the unresolved base: {err!r}")
+        check(out.strip() == "", "a refused distill prints no summary on stdout")
+        check(not (out_dir / "g260704-0915-a3f29c1b.md").exists(),
+              "a refused distill writes NO history file")
+        check(_temp_files(out_dir) == [], "a refused distill leaves NO temp file behind")
+
+
 def t_non_terminal_row_is_refused_naming_the_pr() -> None:
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)
@@ -344,6 +365,8 @@ CASES = [
      t_mixed_bases_per_object_and_sorted_array),
     ("header-base-dash", "a `-` header base is accepted (base is per-row); bases come from the rows",
      t_header_base_dash_is_accepted),
+    ("unresolved-base-refused", "a both-`-` ledger (row and header base unset) is refused, writing no `-` into history",
+     t_unresolved_effective_base_is_refused),
     ("non-terminal-refused", "a live run is refused, naming the offending PR, writing nothing",
      t_non_terminal_row_is_refused_naming_the_pr),
     ("once-only", "an existing file is not overwritten without --force; --force overwrites",

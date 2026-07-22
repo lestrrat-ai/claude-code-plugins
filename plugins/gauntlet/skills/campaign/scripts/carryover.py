@@ -199,10 +199,17 @@ def distill(ledger, ledger_path: Path, out_dir: Path, now: str, *, force: bool) 
                                  f"died mid-write")
 
     # Each row's EFFECTIVE base resolves through the schema owner (its own recorded base, else the legacy
-    # header) — never a second copy of that fallback. `base_branches` is the sorted, deduplicated set for
-    # the v2 metadata; `base_of` stamps each object so history prunes per PR/base pair.
+    # header) — never a second copy of that fallback. An UNRESOLVED base (blank or the `-` sentinel) is
+    # REFUSED before it can be stamped into the durable history: `ledger.require_effective_base` is the one
+    # owner of that fail-closed rule, and history that recorded `-` as a branch name would poison every
+    # future prune ("prune each entry against ITS OWN base"). `base_branches` is the sorted, deduplicated set
+    # for the v2 metadata; `base_of` stamps each object so history prunes per PR/base pair.
     def base_of(row: dict) -> str:
-        return ledger.effective_base(header, row)
+        base, base_problem = ledger.require_effective_base(header, row, row.get("pr", "-"))
+        if base_problem is not None:
+            raise Refusal(EXIT_STOP, f"{base_problem} — refusing to distill an unresolved base into the durable "
+                                     f"history, where it would poison future per-base prunes")
+        return base
 
     base_branches = sorted({base_of(r) for r in rows})
     projected = sections(rows)
