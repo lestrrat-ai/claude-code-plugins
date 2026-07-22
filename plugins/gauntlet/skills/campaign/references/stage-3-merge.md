@@ -134,7 +134,7 @@ GitHub `MERGED` skips the merge call; base updates are fast-forward-only; absent
 count as completed cleanup; a terminal ledger row is a no-op.
 
 When the checked-out local base is what git fast-forwards and an unrelated actor's **uncommitted** edits in
-that checkout block it, the command **refuses and lists the exact blocking paths** (each staged, unstaged,
+that checkout block it, the command **refuses and lists the blocking paths it detected** (each staged, unstaged,
 or untracked path the incoming fast-forward would overwrite — a change to an *unrelated* path, or a path
 already staged to exactly the incoming content, does not block a fast-forward and is not listed), then
 proposes the graph-safe fix:
@@ -145,11 +145,17 @@ fast-forward would refuse; and it **never** commits, stashes, resets, restores, 
 paths — the campaign does not own them. Because the base-sync runs before cleanup and the terminal write,
 those phases stay pending until the re-run. The tailored path-list + stash guidance is emitted **only** when
 git itself refused the fast-forward because uncommitted work would be overwritten (its `overwritten by merge`
-diagnostic, matched under a forced C locale) **and** the paths were confidently detected; every other
+diagnostic, matched under a forced C locale) **and** paths were detected; every other
 fast-forward failure — a genuine divergence, an **unmerged/conflicted index** (which git will not let you
-stash or commit away, so the tailored recovery advice would be wrong), a stale `.git/index.lock`, a nested
-untracked repository, or a diagnostic probe that could not run — falls back to git's original raw error
-unchanged, even if the read-only probe still named candidate paths. The command refuses held rows whose live PR is
+stash or commit away, so the tailored recovery advice would be wrong), a stale `.git/index.lock`, or a
+diagnostic probe that could not run — falls back to git's original raw error
+unchanged, even if the read-only probe still named candidate paths. **This tailored path-list is best-effort:
+a read-only probe that cannot reproduce git's full fast-forward-blocking decision computes it, so in unusual
+working-tree states (submodule gitlinks, nested untracked repositories, assume-unchanged / skip-worktree /
+sparse-checkout entries) it MAY over- or under-name paths — it is a convenience, never the authority. Every
+refused fast-forward, INCLUDING this tailored refusal, appends git's own diagnostic verbatim as
+`Original Git diagnostic:`, and THAT raw diagnostic — not the tailored list — is the authoritative account of
+what actually blocks the fast-forward.** The command refuses held rows whose live PR is
 OPEN (a CLOSED held row is closed out to `aborted` — `loop-control.md` Step 4 — and a `MERGED` held row is an
 external merge, resumed to finalize base-sync/owned-cleanup/terminal write; neither is refused), a `--repo`
 that does not name the checkout's own repository, stale gates, uncertain GitHub facts, another run's PR,
