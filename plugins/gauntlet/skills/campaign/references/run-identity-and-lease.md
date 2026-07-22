@@ -1,24 +1,33 @@
 ## Base branch
 
-The run targets a **base branch** — the branch a PR merges into and its review diff is measured
-against. It is **not assumed to be `main`**: it is a PR's **`baseRefName`** (from `gh pr view`), which
-may be a release or integration branch. PRs adopted together must **agree** on `baseRefName`; if they
-disagree, stop and prompt — **adoption admits only one base per run today** (mixed-base admission is the
-rollout's final, not-yet-shipped stage).
+A run is a **set of PRs, each with its OWN base branch** — the branch that PR merges into and its review
+diff is measured against. It is **not assumed to be `main`**: it is a PR's **`baseRefName`** (from `gh pr
+view`), which may be a release or integration branch. A run is **not** confined to one base: some PRs may
+target `v3`, others `main`, in the same run, and PRs adopted together need **NOT** agree on `baseRefName`.
 
-The base is **per-row** state, recorded on each row at adoption (`pr-adopt.py` → `add-row
---base-branch`); the ledger **header** `base_branch` is only the **legacy fallback** a row carrying none
-inherits. Every consumer resolves a row's base through `ledger.py`'s `effective_base(header, row)` (and
+The base is **per-row** state, recorded on each row **once** at adoption (`pr-adopt.py` → `add-row
+--base-branch`) from its live `baseRefName`; that recorded value is **immutable** — the campaign never
+migrates a row to a new base (a live retarget PARKS the row, see `pr-adoption.md`, `loop-control.md`). The
+ledger **header** `base_branch` is only the **legacy fallback** a row carrying none inherits. Every
+consumer resolves a row's base through `ledger.py`'s `effective_base(header, row)` (and
 `require_effective_base`, its fail-closed form, before acting on it) — never by re-reading the one header
 field. The field, its accessors, and the `CREATE_ONLY` rule are owned by the `base_branch` field in
 `files-and-ledger.md`.
 
-Throughout this doc, `<base>` means that branch and `origin/<base>` its remote-tracking branch.
-Concretely: adopted PRs already target `<base>` (their `baseRefName`), every review diffs
-`origin/<base>...HEAD`, and after each merge local `<base>` is fast-forwarded to `origin/<base>`. **Fix
-worktrees do NOT branch off `<base>`** — they branch off the PR's **own head** (see "PR adoption"),
-since the PR's commits live there. Where examples below show `main`, read it as `<base>` — `main` is
-only the common default.
+Resolve a PR's base through `ledger.py`'s **`effective_base`** — the row's explicit `base_branch`, else
+the legacy header `base_branch` fallback (`files-and-ledger.md`). **Re-resolve each active PR's effective
+base every heartbeat**, from the ledger, never from memory. The header `base_branch` is **only** the
+fallback an old row with no explicit base inherits; a new run leaves it at its `-` default.
+
+Throughout this doc, **`<base>` means the SELECTED PR row's `effective_base`** and `origin/<base>` its
+remote-tracking branch — resolved per PR, not one value for the run. Concretely: an adopted PR already
+targets its `<base>` (its recorded `baseRefName`), its review diffs `origin/<base>...HEAD`, and after
+merging that PR local `<base>` is fast-forwarded to `origin/<base>`. **Fix worktrees do NOT branch off
+`<base>`** — they branch off the PR's **own head** (see "PR adoption"), since the PR's commits live there.
+Where examples below show `main`, read it as that PR's `<base>` — `main` is only a common default.
+
+**Run identity stays run-wide.** One run keeps one run ID, one lease, one heartbeat schedule, one owner
+label, and one serialized merge drain, no matter how many distinct bases its PRs target (below).
 
 ## Run identity and concurrency
 
@@ -50,7 +59,7 @@ host-specific `repository.scratch_root` and owns that invocation. The atomic cre
 retry live in `run-id.py`; the caller no longer mints an id or retries. Do not unpack that operation here.
 
 Record it in the ledger header field `run_id` (`ledger.py --file <state.jsonl> header set run_id
-<run-id>`) and re-read it every heartbeat (`ledger.py … header get run_id`); never trust
+<run-id>`) and re-read it every heartbeat (`ledger.py … header get run_id`, like `reviewer`); never trust
 in-context memory for it — a heartbeat may be a fresh agent instance. It flows into:
 
 | Owned by the run | Namespaced form |

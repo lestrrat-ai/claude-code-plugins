@@ -45,9 +45,9 @@ HEADER_DEFAULTS = {
     # ROW_FIELDS), written once at row creation. This header field is only what a row with NO explicit base
     # inherits, through `effective_base` — the schema-owned resolver, the sanctioned door for base
     # consumers. Per-row base resolution is LIVE: adoption records each row's base and every consumer
-    # resolves through the accessor, never this header directly. What remains is mixed-base ADMISSION (the
-    # rollout's final PR — docs/designs/campaign-mixed-base-branches.md, "Staged implementation plan"). An
-    # old single-base ledger keeps its header value and every one of its rows reads it.
+    # resolves through the accessor, never this header directly. Mixed-base ADMISSION is ENABLED: adoption
+    # admits PRs on DIFFERENT bases into one run and each admitted row owns its immutable base. A new run
+    # leaves this header at `-`; an old single-base ledger keeps its header value and every one of its rows reads it.
     # files-and-ledger.md, "Base branch", owns the field.
     "base_branch": "-",
     "api_changes": "ask",
@@ -659,8 +659,8 @@ def find_row(rows: list[dict], pr: str) -> "dict | None":
 # accessors are the ONE place the fallback lives: a row's explicit value if it has one, otherwise the legacy
 # header value. They are the sanctioned door every base/required-set consumer resolves through, and that
 # resolution is LIVE: adoption records each row's base, and every consumer routes through these accessors
-# rather than reading the header field directly. What remains is mixed-base ADMISSION
-# (docs/designs/campaign-mixed-base-branches.md, "Staged implementation plan").
+# rather than reading the header field directly. Mixed-base ADMISSION is ENABLED: adoption admits PRs on
+# DIFFERENT bases into one run and each admitted row owns its immutable base.
 # `-` is the row default and means exactly "inherit the header": an old
 # ledger's rows carry `-` and resolve to the header value they always used, while a row with an explicit
 # base (or an explicit required set) has that value returned unchanged. This is what lets legacy inheriting
@@ -723,9 +723,10 @@ def require_effective_base(header: dict, row: dict, pr: str) -> "tuple[str | Non
     the PR — when it is not. `-` on BOTH the row and the header means "no base was ever resolved" (`effective_base`
     faithfully returns it); it is NOT a branch a caller may rebase onto, write to history, or diff against, so it
     is refused here. This function is the ONLY one that refuses `-`: `base_agrees` does NOT — it checks
-    equality first, so `base_agrees("-", "-")` returns True. A normal run never reaches this: the
-    header base is filled at run start and each row's at adoption, so `effective_base` returns a real branch; a
-    both-`-` ledger is a driver-authored/hand-edited state (a single-user foot-gun), and this is the cheap
+    equality first, so `base_agrees("-", "-")` returns True. A normal run never reaches this: a new row carries
+    an explicit base from adoption while its new-run header stays `-`, and a legacy `-` row inherits a populated
+    legacy header — either way `effective_base` returns a real branch. Only the both-`-` shape stays unresolved,
+    and it is a driver-authored/hand-edited state (a single-user foot-gun); this is the cheap
     fail-closed insurance against it — not machinery to defend the user from themselves."""
     base = effective_base(header, row)
     if not base.strip() or base == "-":

@@ -141,20 +141,26 @@ the worker returns, and what never moves into it. The steps below are unchanged 
      orphan run that later no-arg invocations rediscover as bogus state.
 
      When there **are** `#PR` args, **preflight the whole set FIRST — read-only, before creating any
-     run state**: read every PR's metadata (`gh pr view`), run the refusal checks (foreign-owned,
-     cross-repo/fork per `pr-adoption.md`), and verify all share a common `baseRefName`. This touches
-     **no** run-id, `<rundir>`, lease, `state.jsonl`, label, worktree, or CI watch. **If the bases
-     disagree or any PR is refused, prompt and create nothing** — so a rejected set never leaves an
+     run state**: read every PR's metadata (`gh pr view`, including each PR's `baseRefName`) and run the
+     refusal checks (foreign-owned, cross-repo/fork per `pr-adoption.md`). **The PRs need NOT share a
+     base** — one run may hold PRs targeting different bases, each driven against its own recorded base
+     (`run-identity-and-lease.md`, "Base branch"). Preflight imposes no cross-row base agreement; every
+     PR must still pass all `pr-adoption.md` refusal checks (foreign-owner, cross-repo/fork).
+     This touches **no** run-id, `<rundir>`, lease, `state.jsonl`, label, worktree, or CI watch. **If any
+     PR is refused, prompt and create nothing** — so a rejected set never leaves an
      empty orphan run behind. **Only once the full set passes preflight**: call `create_run_directory`
      **first** — it mints the run-id and atomically creates `<rundir>` — and derive `run_id` from the
      returned directory's final path component; **then** take the run per `run-identity-and-lease.md`,
      "Take a run" (which, BEFORE arming, records `pending_adoption` = this set's PR list; then token,
      heartbeat arming, `lease.py acquire` — in that order),
-     and write the `state.jsonl` header — now with `run_id` set and `base_branch` filled
-     from the agreed `baseRefName` (known from preflight). Then **adopt** each PR
+     and write the `state.jsonl` header with `run_id` set. **The header `base_branch` stays its `-`
+     default** — the base is per-row now, recorded on each row at adoption from that PR's live
+     `baseRefName`, never a run-wide header value (`files-and-ledger.md`, the row `base_branch` field).
+     Then **adopt** each PR
      (ledger row + labels + worktree, and a CI watch **only when one is due** — `pr-adoption.md` owns what
-     adoption produces and when the watch is warranted); a death mid-adoption still leaves
-     a discoverable, adoptable run. **When the whole requested set is adopted, clear the checkpoint —
+     adoption produces and when the watch is warranted; adoption fetches **each PR's own base ref**, so a
+     set spanning several bases fetches each of them once at its adoption). A death mid-adoption still
+     leaves a discoverable, adoptable run. **When the whole requested set is adopted, clear the checkpoint —
      `ledger.py … header set pending_adoption -`** (this is adoption's final step; a later entry that
      still sees it set knows setup did not finish and resumes it). Then fall through to dispatch/reschedule.
    - **This run's `state.jsonl` is fully terminal — every row `merged`/`aborted`, no open PR carrying this
