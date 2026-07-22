@@ -332,9 +332,10 @@
   `runtime-adapter.md`, **Review preparation mapping**, from the highest `launch_attempt`. Never invent
   another recovery branch.
 - Reviewers do not own the plan but must not treat it as presumptively complete: critically evaluate
-  its coverage first, and raise any omitted dimension or materially wrong unit via a
+  its coverage first — its waiver rows included — and raise any plan gap via a
   `plan_amendment_request` event rather than silently reviewing only the listed units. Never rewrite
-  the plan or self-grant units (Stage 2a).
+  the plan or self-grant units. What an amendment may raise is owned by `stage-2-review-gate.md`,
+  "Review work-plan ledger".
 - After finishing every planned unit, a pass runs a brief UNSTRUCTURED ADVERSARIAL SWEEP for defects
   outside the plan's decomposition (cross-unit interactions, unstated assumptions, edge cases,
   unenumerated categories). It complements — never replaces — the plan, reports only concrete

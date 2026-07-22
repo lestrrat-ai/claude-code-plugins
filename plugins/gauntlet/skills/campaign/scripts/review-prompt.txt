@@ -21,7 +21,9 @@ THE QUESTION YOU ARE ANSWERING IS: does this PR achieve its stated Purpose, with
    cover the review dimensions this change actually needs — the plan is the orchestrator's starting
    point, not a guarantee of complete coverage. The plan may also carry waiver rows
    ({"type":"waiver",...}): each records the orchestrator's judgment that one default dimension does
-   not apply, and its reason is yours to judge like any other plan decision. If an important dimension
+   not apply, and its reason is yours to judge like any other plan decision. (Maintainer note:
+   stage-2-review-gate.md, "Review work-plan ledger", owns this rule; this prompt is self-contained —
+   you need not read that file.) If an important dimension
    is missing, a unit is wrong, or a waiver's reason does not hold, raise it by running
    RUN_ARGV(["python3", TRANSPORT.emit_amendment_path, "--file", TRANSPORT.progress_path,
    "--reason", reason, "--id", unit_id, "--kind", kind, "--target", target, "--check", check]) naming
