@@ -3,9 +3,13 @@
 
     worker-prompt.py fix --role review|ci-session|ci-economy \
         --project-root <absolute-path> --worktree <absolute-path> \
-        --pr <N> --base <base> --preflight-verdict proceed \
+        --pr <N> --base <base> [--file <ledger>] --preflight-verdict proceed \
         --issues-file <path> [--logs-file <path>] --output-dir <new-directory>
     worker-prompt.py self-test
+
+When `--file <ledger>` is given, `--base` is an ASSERTION checked against the `--pr` row's effective base
+(its explicit `base_branch`, else the legacy header fallback), never an independent base source; a
+disagreement refuses. Omit it and `--base` is used exactly as before.
 
 The tool binds dynamic values once as bytes. It launches no worker, chooses no host model name, and
 judges no fix. The published directory appears only after both `prompt.txt` and `metadata.json` are
@@ -32,6 +36,17 @@ HERE = Path(__file__).resolve().parent
 TEMPLATE = HERE / "worker-prompt-template.txt"
 SIBLING = HERE / "worker-prompt-test.py"
 FORMAT_PREFLIGHT = HERE / "format-preflight.py"
+LEDGER = HERE / "ledger.py"
+
+
+def _load_ledger():
+    mod = load_module_from_path("worker_prompt_ledger", LEDGER)
+    if mod is None:
+        raise RuntimeError(f"cannot load the ledger accessor at {LEDGER}")
+    return mod
+
+
+L = _load_ledger()
 
 EXIT_OK = 0
 EXIT_REFUSED = 2
@@ -318,6 +333,24 @@ def run_fix(args: argparse.Namespace) -> int:
     project_root = validate_context_path(args.project_root, "--project-root")
     worktree = validate_context_path(args.worktree, "--worktree")
     base = validate_text(args.base, "--base")
+    # The base goes into the fix prompt as DATA. When a ledger is supplied, that data is an ASSERTION against
+    # the row's source of truth: the row OWNS the base, so `--base` must equal the selected row's
+    # `effective_base` (its explicit `base_branch`, else the legacy header fallback, through `ledger.py`'s
+    # accessor — never a second copy of that rule). A leading `origin/` is stripped first. Absent `--file`,
+    # the base is used as-is, as before.
+    if args.file is not None:
+        try:
+            header, rows = L.load(Path(args.file))
+        except SystemExit as exc:
+            raise Refusal(f"could not read ledger {args.file}: {exc}") from exc
+        row = L.find_row(rows, str(args.pr))
+        if row is None:
+            raise Refusal(f"no ledger row for pr {args.pr} — its base cannot be resolved")
+        effective_base = L.effective_base(header, row)
+        normalized = base[len("origin/"):] if base.startswith("origin/") else base
+        if effective_base and effective_base != "-" and normalized != effective_base:
+            raise Refusal(f"--base {base!r} disagrees with pr {args.pr}'s ledger effective base "
+                          f"{effective_base!r} — --base is an assertion, not a base source")
     issues = _read_payload(args.issues_file, "issues")
     logs = _read_payload(args.logs_file, "logs") if args.logs_file is not None else None
     sections = load_template()
@@ -352,6 +385,8 @@ def main(argv: "list[str] | None" = None) -> int:
     fix.add_argument("--worktree", required=True)
     fix.add_argument("--pr", required=True, type=int)
     fix.add_argument("--base", required=True)
+    fix.add_argument("--file", help="OPTIONAL ledger (state.jsonl); when given, --base is asserted against "
+                                    "the --pr row's effective base")
     fix.add_argument("--preflight-verdict", required=True)
     fix.add_argument("--issues-file", required=True)
     fix.add_argument("--logs-file")

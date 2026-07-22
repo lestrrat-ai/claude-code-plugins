@@ -15,11 +15,20 @@ are two jobs and this is only the first — nothing here runs `git rebase`/`git 
         [--worktree <path> --base <branch> [--remote origin]] [--file <ledger>]
     base-preflight.py self-test   run every fixture (base-preflight-test.py)
 
+When `--file <ledger>` is given, the ledger ROW owns the base: this resolves the selected PR row's
+`effective_base` (its explicit `base_branch`, else the legacy header fallback, through `ledger.py`), and any
+`--base` argument becomes an ASSERTION that must equal it — not an independent base source. It also compares
+the live PR view's `baseRefName` with that effective base and REFUSES `proceed` when they differ: the PR was
+retargeted to a different branch NAME, an unsupported mid-run change, so it fails closed to `recheck` with the
+same `BASE_CHANGE_PARK_REASON` wording a re-adoption/reconcile park records and the driver parks the row. (A
+base that merely ADVANCED — same branch, new commits — is NOT a retarget; that stays the ancestry
+`rebase-first` below.)
+
 On a final `proceed`, and ONLY when `--file <ledger>` is given, this records that base check on the ledger row
 by shelling out to `ledger.py base-ok` — resolving the worktree's live `HEAD` and stamping it as
 `base_ok_sha`. That stamp is the MECHANICAL precondition `ledger.py verdict` enforces: a review verdict cannot
 be recorded for a head with no fresh `proceed`. Without `--file` the tool is the pure decider it always was
-(it writes nothing); `decide()` itself stays pure regardless.
+(it writes nothing, and `--base` is the base it fetches); `decide()` itself stays pure regardless.
 
 The verdict is printed as JSON on stdout, and the EXIT CODE gates a caller's `$?`: 0 for `proceed`, non-zero
 for `rebase-first` and `recheck` (and for a view that could not be fetched or was malformed — those fail
@@ -41,6 +50,38 @@ from _gauntlet.modules import load_module_from_path
 _HERE = Path(__file__).resolve().parent
 SIBLING = _HERE / "base-preflight-test.py"     # the fixture suite — this tool's executable contract
 LEDGER = _HERE / "ledger.py"                   # the sibling that owns base_ok_sha; `base-ok` is its only writer
+PR_ADOPT = _HERE / "pr-adopt.py"               # owns BASE_CHANGE_PARK_REASON — reused, never re-spelt here
+
+
+def _load_ledger():
+    mod = load_module_from_path("base_preflight_ledger", LEDGER)
+    if mod is None:
+        raise RuntimeError(f"cannot load the ledger accessor at {LEDGER}")
+    return mod
+
+
+L = _load_ledger()
+
+# Loaded LAZILY (only when a live retarget is found) so the pure decider and self-test never pull the
+# adoption module chain: pr-adopt.py OWNS `BASE_CHANGE_PARK_REASON`, the EXACT machine-blocker wording a
+# re-adoption/reconcile park records. A preflight retarget-refusal reuses that one owner so the reason reads
+# identically everywhere — never a second copy of the string here.
+_PA = None
+
+
+def _base_change_reason(recorded: str, live: str) -> str:
+    global _PA
+    if _PA is None:
+        _PA = load_module_from_path("base_preflight_pr_adopt", PR_ADOPT)
+        if _PA is None:
+            raise RuntimeError(f"cannot load pr-adopt.py for the base-change reason at {PR_ADOPT}")
+    return _PA.BASE_CHANGE_PARK_REASON.format(recorded=recorded, live=live)
+
+
+def _strip_remote(ref: str) -> str:
+    """`origin/main` -> `main`; anything without that prefix is returned unchanged. Lets a `--base` passed as
+    `origin/<base>` (the review-diff form) be compared against the row's bare `effective_base`."""
+    return ref[len("origin/"):] if ref.startswith("origin/") else ref
 
 
 # --- the verdicts -------------------------------------------------------------
@@ -150,7 +191,7 @@ def decide(view: dict) -> dict:
 
 # --- obtain the live PR view ---------------------------------------------------
 
-VIEW_FIELDS = "mergeable,mergeStateStatus"
+VIEW_FIELDS = "mergeable,mergeStateStatus,baseRefName"
 
 # Every field `decide` reads off the view, each a string. `validate_view` pins this at the boundary so
 # `decide` may assume a shaped view and never raises `KeyError`/`TypeError` on a value the caller handed in.
@@ -233,6 +274,40 @@ def record_base_ok(ledger_file: str, pr: str, worktree: "str | None") -> "str | 
     return None
 
 
+def resolve_ledger_base(ledger_file: str, pr: str, base_arg: "str | None",
+                        view: dict) -> "tuple[str | None, dict | None]":
+    """When a ledger is named the ROW owns the base — `--base` is only an assertion, never a base source.
+
+    Load the row for `pr`, resolve its `effective_base` (its explicit `base_branch`, else the legacy header
+    fallback, through `ledger.py`'s accessor — never a second copy of that rule), then fail CLOSED unless:
+    the row exists and has a usable base; any `--base` given equals it (an `origin/<base>` form is stripped
+    first); and the PR's LIVE `baseRefName` still equals it. A live mismatch is an unsupported retarget: it
+    routes the SAME `BASE_CHANGE_PARK_REASON` wording a re-adoption/reconcile park records, so the driver
+    parks the row through the existing machine-blocker path. (A base that merely ADVANCED — same branch NAME,
+    new commits — is NOT this: it is the ancestry `rebase-first` in `check`.) Returns `(effective_base, None)`
+    to continue with that base, or `(None, verdict)` — always a `recheck`, never `proceed` — to refuse."""
+    try:
+        header, rows = L.load(Path(ledger_file))
+    except SystemExit as exc:
+        return None, _verdict(RECHECK, f"could not read ledger {ledger_file}: {exc}")
+    row = L.find_row(rows, str(pr))
+    if row is None:
+        return None, _verdict(RECHECK, f"no ledger row for pr {pr} — its base cannot be resolved")
+    effective_base = L.effective_base(header, row)
+    if not effective_base or effective_base == "-":
+        return None, _verdict(RECHECK, f"pr {pr} has no usable effective base in the ledger")
+    if base_arg is not None and _strip_remote(base_arg) != effective_base:
+        return None, _verdict(
+            RECHECK, f"--base {base_arg!r} disagrees with pr {pr}'s ledger effective base "
+                     f"{effective_base!r} — --base is an assertion, not a base source")
+    live = view.get("baseRefName")
+    if not isinstance(live, str) or not live:
+        return None, _verdict(RECHECK, "malformed PR view: missing baseRefName, so the live base is unknown")
+    if live != effective_base:
+        return None, _verdict(RECHECK, _base_change_reason(effective_base, live))
+    return effective_base, None
+
+
 def check(pr: str, repo: "str | None", view_json: "str | None", project_root: "str | None",
           worktree: "str | None", base: "str | None", remote: str, ledger_file: "str | None") -> int:
     """Fetch the live view, decide, print the verdict as JSON. EXIT 0 only on `proceed`; every other outcome
@@ -253,6 +328,15 @@ def check(pr: str, repo: "str | None", view_json: "str | None", project_root: "s
     if problem is not None:
         print(json.dumps(_verdict(RECHECK, f"malformed PR view: {problem}")))
         return 1
+    # When a ledger is named, the ROW owns the base: resolve `effective_base`, assert any `--base` matches it,
+    # and refuse (fail CLOSED to `recheck`) if the PR's live target no longer equals it. On success `base` is
+    # the row's effective base, so the ancestry fetch below measures against the base the row actually tracks
+    # — never a `--base` a caller could have handed in disagreeing with the ledger.
+    if ledger_file is not None:
+        base, refusal = resolve_ledger_base(ledger_file, pr, base, view)
+        if refusal is not None:
+            print(json.dumps(refusal))
+            return 1
     result = decide(view)
     if result["verdict"] == PROCEED:
         ancestry, detail = check_base_ancestry(worktree, base, remote)
@@ -329,10 +413,13 @@ def main(argv: "list[str] | None" = None) -> int:
     c.add_argument("--view-json", help="a recorded `gh pr view` JSON — decide without calling gh")
     c.add_argument("--project-root", help="run `gh pr view` with this as its working directory")
     c.add_argument("--worktree", help="the PR-head worktree used for the Git ancestry check")
-    c.add_argument("--base", help="the PR base branch to fetch and compare")
-    c.add_argument("--remote", default="origin", help="the worktree remote holding --base (default: origin)")
-    c.add_argument("--file", help="the ledger (state.jsonl); on `proceed`, record base_ok_sha for the live "
-                                  "head so `ledger.py verdict` can later count. Absent: the pure decider, no write")
+    c.add_argument("--base", help="the PR base branch to fetch and compare; with --file it is an ASSERTION "
+                                  "that must equal the row's effective base, not an independent base source")
+    c.add_argument("--remote", default="origin", help="the worktree remote holding the base (default: origin)")
+    c.add_argument("--file", help="the ledger (state.jsonl); resolves the row's effective base (asserting "
+                                  "--base and refusing a live retarget), and on `proceed` records base_ok_sha "
+                                  "for the live head so `ledger.py verdict` can later count. Absent: the pure "
+                                  "decider, no write, --base is the base it fetches")
 
     sub.add_parser("self-test", help="run every fixture (base-preflight-test.py)")
 

@@ -67,6 +67,8 @@ def _fixture(
     route: str = "native",
     producer: str = "native-worker-write",
     intent: bytes | None = None,
+    base: str = "main",
+    file: str | None = None,
 ) -> SimpleNamespace:
     rundir = root / "run artifacts"
     worktree = root / "candidate worktree"
@@ -80,12 +82,13 @@ def _fixture(
         review_pass=review_pass,
         launch_attempt=launch_attempt,
         worktree=os.fspath(worktree),
-        base="main",
+        base=base,
         route=route,
         report_producer=producer,
         head_sha=SHA,
         dispatched_at=STAMP,
         intent_file=os.fspath(intent_path),
+        file=file,
     )
 
 
@@ -682,6 +685,44 @@ def t_cli_emits_only_canonical_host_neutral_json() -> None:
               "materializer must not select or launch a host process")
 
 
+def _build_ledger(directory: Path, pr: str, base_branch: str) -> Path:
+    """A real ledger (through ledger.py) with one row for `pr` carrying an EXPLICIT `base_branch`."""
+    ledger = directory / "state.jsonl"
+    for argv in (["header", "set", "run_id", "t"],
+                 ["add-row", "--pr", pr, "--head-sha", "a" * 40, "--base-branch", base_branch]):
+        proc = subprocess.run([sys.executable, os.fspath(D.LEDGER), "--file", os.fspath(ledger), *argv],  # noqa: S603
+                              capture_output=True, text=True, check=False)
+        check(proc.returncode == 0, f"ledger {' '.join(argv)} failed: {proc.stderr.strip()}")
+    return ledger
+
+
+def t_ledger_base_assertion_matches_prepares() -> None:
+    """A `--file` whose row base equals `--base` passes the assertion and prepares one record as usual."""
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        ledger = _build_ledger(root, "41", "main")
+        args = _fixture(root, base="main", file=os.fspath(ledger))
+        payload = D.prepare(args)
+        check(payload["transport"]["base"] == "main", f"the matching base must ride the transport: {payload!r}")
+
+
+def t_ledger_base_assertion_mismatch_refuses() -> None:
+    """A `--file` whose row base disagrees with `--base` refuses — --base is an assertion, not a source."""
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        ledger = _build_ledger(root, "41", "main")
+        args = _fixture(root, base="v3", file=os.fspath(ledger))
+        _refused(args, "disagrees")
+
+
+def t_ledger_missing_row_refuses() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        ledger = _build_ledger(root, "99", "main")
+        args = _fixture(root, pr="41", base="main", file=os.fspath(ledger))
+        _refused(args, "no ledger row for pr 41")
+
+
 CASES = [
     (
         "relaunch-path-coherence",
@@ -707,4 +748,9 @@ CASES = [
     ("transition-mapping", "review actions map directly to route and producer", t_transition_actions_map_directly_to_prepare_inputs),
     ("unicode-delivery", "a Unicode path is delivered as UTF-8 bytes under ASCII stdout", t_unicode_worktree_delivers_under_ascii_stdout),
     ("host-neutral-json", "CLI emits canonical data and never launches", t_cli_emits_only_canonical_host_neutral_json),
+    ("ledger-base-match", "--file with a matching row base passes the assertion and prepares",
+     t_ledger_base_assertion_matches_prepares),
+    ("ledger-base-mismatch", "--file with a disagreeing row base refuses (--base is an assertion)",
+     t_ledger_base_assertion_mismatch_refuses),
+    ("ledger-missing-row", "--file naming an unknown PR row refuses", t_ledger_missing_row_refuses),
 ]

@@ -14,7 +14,7 @@ result = run_argv(
   argv: ["python3", review_dispatch_script, "prepare",
          "--run-dir", review_root,
          "--pr", pr, "--pass", review_pass, "--launch-attempt", launch_attempt,
-         "--worktree", worktree, "--base", base,
+         "--worktree", worktree, "--base", base, "--file", ledger,
          "--route", route, "--report-producer", report_producer,
          "--head-sha", head_sha, "--dispatched-at", dispatched_at,
          "--intent-file", intent_file],
@@ -31,9 +31,14 @@ Inputs have these owners:
 - `route`, `report_producer`, and `launch_attempt` come from `runtime-adapter.md`, **Review preparation
   mapping**. `prepare` never selects, probes, or changes them.
 - `review_root`, `worktree`, and `base` come from the invocation's typed `RepositoryContext` and ledger.
-  `review_root` and `worktree` must be different directories with neither nested inside the other; the
-  command refuses an identical or either-way-nested pair before staging any artifact, so preparation never
-  writes launch files into the candidate worktree. This is a fail-closed input check, not an OS boundary.
+  `base` is **this PR row's effective base** — its explicit `base_branch`, else the legacy header fallback
+  (`ledger.py`'s `effective_base`), never the one header base. It rides the typed transport as data (the
+  reviewer diffs `origin/<base>...HEAD`); `--file <review_root>/state.jsonl` makes `--base` an **assertion**
+  that must equal the selected `--pr` row's effective base, and `prepare` refuses a disagreement — the row is
+  the source of truth, the flag is not. `review_root` and `worktree` must be different directories with
+  neither nested inside the other; the command refuses an identical or either-way-nested pair before staging
+  any artifact, so preparation never writes launch files into the candidate worktree. This is a fail-closed
+  input check, not an OS boundary.
 - `pr`, `review_pass`, `head_sha`, and `dispatched_at` name this launch attempt.
 - `intent_file` is the absolute derived `<rundir>/intent-<pr>.md` path. The command refuses another path.
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -24,6 +25,7 @@ from _gauntlet.modules import load_module_from_path
 from _gauntlet.testing import capture_cli
 
 OWNER = Path(__file__).resolve().parent / "triage.py"
+LEDGER = Path(__file__).resolve().parent / "ledger.py"
 
 
 def _load_owner():
@@ -94,6 +96,17 @@ def derive(repo: Path, base: str, *, tier: str | None = None) -> dict:
 def one_file(result: dict) -> dict:
     check(len(result["files"]) == 1, f"expected one changed file, got {result['files']!r}")
     return result["files"][0]
+
+
+def _build_ledger(directory: Path, pr: str, base_branch: str) -> Path:
+    """A real ledger (through ledger.py) with one row for `pr` carrying an EXPLICIT `base_branch`."""
+    ledger = directory / "state.jsonl"
+    for argv in (["header", "set", "run_id", "t"],
+                 ["add-row", "--pr", pr, "--head-sha", "a" * 40, "--base-branch", base_branch]):
+        proc = subprocess.run([sys.executable, str(LEDGER), "--file", str(ledger), *argv],  # noqa: S603
+                              capture_output=True, text=True, check=False)
+        check(proc.returncode == 0, f"ledger {' '.join(argv)} failed: {proc.stderr.strip()}")
+    return ledger
 
 
 def t_human_docs_have_no_floor() -> None:
@@ -718,6 +731,62 @@ def t_pip_source_and_conda_manifests_are_sensitive() -> None:
               f"{name} must floor HIGH as a dependency manifest: {result!r}")
 
 
+def t_ledger_base_assertion_passes() -> None:
+    # `--file --pr` with a `--base` that MATCHES the row's effective base falls through to the normal
+    # analysis. `origin/main` is normalized to `main` for the assertion AND resolved as the diff base — so a
+    # real remote-tracking ref is set at the base commit and a source change on main gives a STANDARD floor.
+    with repository() as (repo, base):
+        write(repo, "src/widget.py", "value = 1\n")
+        head = commit(repo, "source change")
+        git(repo, "update-ref", "refs/remotes/origin/main", base)
+        with tempfile.TemporaryDirectory() as d:
+            ledger = _build_ledger(Path(d), "31", "main")
+            code, out, err = capture_cli(M.main, [
+                "derive", "--worktree", str(repo), "--base", "origin/main", "--head-sha", head,
+                "--file", str(ledger), "--pr", "31"])
+        check(code == M.EXIT_OK, f"a matching --base must pass the assertion and derive (code={code}, err={err!r})")
+        check(json.loads(out)["floor"] == M.STANDARD, f"a source change floors STANDARD: {out!r}")
+
+
+def t_ledger_base_assertion_refuses() -> None:
+    # `--base` disagreeing with the row's effective base is refused BEFORE any analysis, and emits no JSON.
+    with repository() as (repo, _base):
+        head = os.fsdecode(git(repo, "rev-parse", "HEAD").stdout).strip()
+        with tempfile.TemporaryDirectory() as d:
+            ledger = _build_ledger(Path(d), "31", "main")
+            code, out, err = capture_cli(M.main, [
+                "derive", "--worktree", str(repo), "--base", "origin/v3", "--head-sha", head,
+                "--file", str(ledger), "--pr", "31"])
+        check(code == M.EXIT_REFUSED and out == "",
+              f"a --base disagreeing with the row must refuse without JSON (code={code}, out={out!r})")
+        check("disagrees" in err and "effective base" in err, f"the refusal must name the disagreement: {err!r}")
+
+
+def t_ledger_file_without_pr_refuses() -> None:
+    # `--file` needs `--pr` to select the row; without it, refuse rather than silently skip the assertion.
+    with repository() as (repo, _base):
+        head = os.fsdecode(git(repo, "rev-parse", "HEAD").stdout).strip()
+        with tempfile.TemporaryDirectory() as d:
+            ledger = _build_ledger(Path(d), "31", "main")
+            code, out, err = capture_cli(M.main, [
+                "derive", "--worktree", str(repo), "--base", "origin/main", "--head-sha", head,
+                "--file", str(ledger)])
+        check(code == M.EXIT_REFUSED and out == "", f"--file without --pr must refuse (code={code}, out={out!r})")
+        check("--pr" in err, f"the refusal must name the missing --pr: {err!r}")
+
+
+def t_ledger_missing_row_refuses() -> None:
+    with repository() as (repo, _base):
+        head = os.fsdecode(git(repo, "rev-parse", "HEAD").stdout).strip()
+        with tempfile.TemporaryDirectory() as d:
+            ledger = _build_ledger(Path(d), "31", "main")
+            code, out, err = capture_cli(M.main, [
+                "derive", "--worktree", str(repo), "--base", "origin/main", "--head-sha", head,
+                "--file", str(ledger), "--pr", "99"])
+        check(code == M.EXIT_REFUSED and out == "", f"an unknown row must refuse (code={code}, out={out!r})")
+        check("no ledger row for pr 99" in err, f"the refusal must name the missing row: {err!r}")
+
+
 CASES = [
     ("human-doc", "an all-prose diff has no floor — the tool never grants TRIVIAL", t_human_docs_have_no_floor),
     ("human-names", "top-level README/CHANGELOG/LICENSE and prose suffixes are HUMAN-DOC", t_top_level_human_doc_names),
@@ -756,6 +825,12 @@ CASES = [
     ("frontmatter-extensions", "the frontmatter check runs for .txt/.rst prose too", t_frontmatter_runs_for_all_prose_extensions),
     ("frontmatter-long", "frontmatter closing past line 100 still classifies CODE", t_frontmatter_closing_past_line_100_is_code),
     ("frontmatter-unterminated", "an unterminated frontmatter block fails closed to CODE", t_unterminated_frontmatter_fails_closed_to_code),
+    ("ledger-base-assert-pass", "--file --pr with a matching --base passes the assertion and derives",
+     t_ledger_base_assertion_passes),
+    ("ledger-base-assert-refuse", "--file --pr with a disagreeing --base refuses without JSON",
+     t_ledger_base_assertion_refuses),
+    ("ledger-file-needs-pr", "--file without --pr is refused", t_ledger_file_without_pr_refuses),
+    ("ledger-missing-row", "--file --pr naming an unknown row is refused", t_ledger_missing_row_refuses),
 ]
 
 

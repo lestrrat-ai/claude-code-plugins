@@ -33,8 +33,10 @@ def _load_owner():
 M = _load_owner()
 
 
-def view(*, mergeable="MERGEABLE", mergeStateStatus="CLEAN") -> dict:
-    return {"mergeable": mergeable, "mergeStateStatus": mergeStateStatus}
+def view(*, mergeable="MERGEABLE", mergeStateStatus="CLEAN", baseRefName="main") -> dict:
+    # `baseRefName` is the PR's LIVE base: `check --file` compares it with the row's effective base and refuses
+    # a retarget. `decide()` ignores it, so the pure-decide fixtures below are unaffected by its presence.
+    return {"mergeable": mergeable, "mergeStateStatus": mergeStateStatus, "baseRefName": baseRefName}
 
 
 def check(cond: bool, msg: str) -> None:
@@ -327,9 +329,18 @@ def _run_ledger(ledger: Path, *argv: str) -> subprocess.CompletedProcess:
     return proc
 
 
-def _ledger_row(ledger: Path, pr: str, head_sha: str) -> None:
-    """Build a ledger through the REAL sibling accessor with one row for `pr` at `head_sha` (base_ok_sha `-`)."""
+def _ledger_row(ledger: Path, pr: str, head_sha: str, base: str = "main") -> None:
+    """Build a ledger through the REAL sibling accessor with one row for `pr` at `head_sha` (base_ok_sha `-`),
+    carrying an EXPLICIT row base — the shape `pr-adopt.py` writes for every new row (`--base-branch`)."""
     _run_ledger(ledger, "header", "set", "run_id", "t")
+    _run_ledger(ledger, "add-row", "--pr", pr, "--head-sha", head_sha, "--base-branch", base)
+
+
+def _legacy_ledger_row(ledger: Path, pr: str, head_sha: str, header_base: str = "main") -> None:
+    """An OLD-shape ledger: the row carries NO explicit base (`base_branch` stays `-`), so its effective base
+    INHERITS the legacy header `base_branch`. Proves `check --file` resolves through the accessor's fallback."""
+    _run_ledger(ledger, "header", "set", "run_id", "t")
+    _run_ledger(ledger, "header", "set", "base_branch", header_base)
     _run_ledger(ledger, "add-row", "--pr", pr, "--head-sha", head_sha)
 
 
@@ -408,6 +419,97 @@ def t_non_proceed_with_file_leaves_base_ok():
                   f"[{name}] a non-proceed decision stamped base_ok_sha: {_base_ok_sha(ledger, '9')!r}")
 
 
+# --- `--file`: the ROW owns the base — `--base` is an assertion, a live retarget refuses --------------------
+# These drive the CLI with `--view-json` so no gh/git worktree is needed: the base checks all run BEFORE the
+# ancestry probe, so a refusal is reached without a real base to fetch.
+
+
+def t_file_base_assertion_mismatch_rechecks():
+    """`--base` disagreeing with the row's effective base is REFUSED — the flag is an assertion, not a source."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        ledger = root / "state.jsonl"
+        _ledger_row(ledger, "9", "a" * 40, base="main")
+        vjson = root / "v.json"
+        vjson.write_text(json.dumps(view(baseRefName="main")), encoding="utf-8")
+        code, out, err = capture_cli(M.main, ["check", "--pr", "9", "--view-json", str(vjson),
+                                              "--base", "v3", "--file", str(ledger)])
+        check(code != 0, f"a --base disagreeing with the row must fail closed (stderr: {err})")
+        result = json.loads(out)
+        check(result["verdict"] == "recheck", f"a --base mismatch must recheck, never proceed, got {result!r}")
+        check("disagrees" in result["reason"] and "effective base" in result["reason"],
+              f"the reason must name the --base disagreement, got {result['reason']!r}")
+
+
+def t_file_origin_prefixed_base_matches():
+    """An `origin/<base>` form of `--base` matches the row's bare effective base (the prefix is stripped)."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        ledger = root / "state.jsonl"
+        _ledger_row(ledger, "9", "a" * 40, base="main")
+        vjson = root / "v.json"
+        # DIRTY so the run stops at the (post-assertion) decide step, not the ancestry probe — proving the
+        # `origin/main` assertion PASSED (a refusal there would name the disagreement instead).
+        vjson.write_text(json.dumps(view(mergeStateStatus="DIRTY", baseRefName="main")), encoding="utf-8")
+        code, out, err = capture_cli(M.main, ["check", "--pr", "9", "--view-json", str(vjson),
+                                              "--base", "origin/main", "--file", str(ledger)])
+        check(code != 0, f"a DIRTY view still rebases (stderr: {err})")
+        result = json.loads(out)
+        check(result["verdict"] == "rebase-first",
+              f"origin/main must satisfy the assertion and fall through to decide, got {result!r}")
+
+
+def t_file_live_retarget_rechecks():
+    """The PR's live `baseRefName` differs from the row's effective base -> the retarget refusal, with the
+    EXACT machine-blocker wording a re-adoption/reconcile park records (never proceed, never rebase-first)."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        ledger = root / "state.jsonl"
+        _ledger_row(ledger, "9", "a" * 40, base="main")
+        vjson = root / "v.json"
+        vjson.write_text(json.dumps(view(baseRefName="v9")), encoding="utf-8")
+        code, out, err = capture_cli(M.main, ["check", "--pr", "9", "--view-json", str(vjson),
+                                              "--base", "main", "--file", str(ledger)])
+        check(code != 0, f"a live retarget must fail closed (stderr: {err})")
+        result = json.loads(out)
+        check(result["verdict"] == "recheck", f"a retarget must recheck, never proceed, got {result!r}")
+        check(result["reason"] == "base changed from main to v9; not supported mid-run",
+              f"the retarget reason must be the exact machine-blocker wording, got {result['reason']!r}")
+
+
+def t_file_legacy_row_inherits_header_base():
+    """An OLD row (no explicit base) resolves through the legacy header, and the live comparison uses THAT
+    inherited base: a live `baseRefName` differing from the header base refuses with the header value named."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        ledger = root / "state.jsonl"
+        _legacy_ledger_row(ledger, "9", "a" * 40, header_base="main")
+        vjson = root / "v.json"
+        vjson.write_text(json.dumps(view(baseRefName="v9")), encoding="utf-8")
+        code, out, err = capture_cli(M.main, ["check", "--pr", "9", "--view-json", str(vjson),
+                                              "--file", str(ledger)])
+        check(code != 0, f"a legacy row whose live base moved must fail closed (stderr: {err})")
+        result = json.loads(out)
+        check(result["reason"] == "base changed from main to v9; not supported mid-run",
+              f"the inherited header base must drive the comparison, got {result['reason']!r}")
+
+
+def t_file_missing_row_rechecks():
+    """`--file` naming a PR with no ledger row fails closed — the base cannot be resolved, never proceed."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        ledger = root / "state.jsonl"
+        _ledger_row(ledger, "9", "a" * 40, base="main")
+        vjson = root / "v.json"
+        vjson.write_text(json.dumps(view()), encoding="utf-8")
+        code, out, err = capture_cli(M.main, ["check", "--pr", "77", "--view-json", str(vjson),
+                                              "--file", str(ledger)])
+        check(code != 0, f"an unknown PR row must fail closed (stderr: {err})")
+        result = json.loads(out)
+        check(result["verdict"] == "recheck" and "no ledger row for pr 77" in result["reason"],
+              f"a missing row must recheck and name the PR, got {result!r}")
+
+
 CASES = [
     ("clean-proceeds", "CLEAN passes the enum screen", t_clean_proceeds),
     ("has-hooks-proceeds", "HAS_HOOKS passes the enum screen", t_has_hooks_proceeds),
@@ -443,4 +545,13 @@ CASES = [
      t_proceed_with_file_records_base_ok),
     ("non-proceed-file-no-stamp", "rebase-first/recheck never stamp base_ok_sha, even with --file",
      t_non_proceed_with_file_leaves_base_ok),
+    ("file-base-assertion-mismatch", "--file: --base disagreeing with the row's effective base rechecks",
+     t_file_base_assertion_mismatch_rechecks),
+    ("file-origin-prefixed-base", "--file: an origin/<base> --base satisfies the assertion",
+     t_file_origin_prefixed_base_matches),
+    ("file-live-retarget", "--file: a live baseRefName retarget rechecks with the machine-blocker wording",
+     t_file_live_retarget_rechecks),
+    ("file-legacy-row-header-base", "--file: an old row inherits the header base for the live comparison",
+     t_file_legacy_row_inherits_header_base),
+    ("file-missing-row", "--file: an unknown PR row fails closed to recheck", t_file_missing_row_rechecks),
 ]

@@ -20,8 +20,11 @@ block. This file owns the dispatch procedure, not a second copy of prompt text.
 ### PRE-FLIGHT — the base must be current before ANY fix is dispatched
 
 **BEFORE dispatching ANY fix subagent (review-fix or CI-fix) for a PR, run
-`python3 scripts/base-preflight.py check --pr <N> --worktree <worktree> --base <base> --file <state.jsonl>`.** It fetches
-`origin/<base>` and prints ONE of three verdicts, and the action
+`python3 scripts/base-preflight.py check --pr <N> --worktree <worktree> --base <base> --file <state.jsonl>`.**
+`<base>` is **this PR row's effective base** — its explicit `base_branch`, else the legacy header fallback
+(`ledger.py`'s `effective_base`), never the one header base. With `--file`, the ROW owns the base: `--base`
+is an **assertion** that must equal the row's effective base, and the helper also compares the PR's live
+`baseRefName` against it. It fetches `origin/<base>` and prints ONE of three verdicts, and the action
 **splits by verdict** — only `proceed` clears the dispatch, and the other two are NOT the same response:
 
 - **`proceed`** → the base is current; **dispatch the fix**. The `--file` makes the `proceed` record
@@ -33,8 +36,13 @@ block. This file owns the dispatch procedure, not a second copy of prompt text.
   `clean-rebase.py` FIRST: a clean base-only rebase (exit 0) PRESERVES the verdicts and label, and only its
   **exit 3** — conflict OR diff-changed — falls back to the JUDGMENT path that resets the gate and re-mirrors
   the label. Then **re-run the pre-flight**.
-- **`recheck`** → mergeability is not computed yet, the view carried an unknown value, or base ancestry could
-  not be verified; do **NOT** dispatch and do **NOT** rebase — **re-poll**, then **re-run the pre-flight**.
+- **`recheck`** → mergeability is not computed yet, the view carried an unknown value, base ancestry could
+  not be verified, **or the PR was retargeted** — its live `baseRefName` no longer equals the row's effective
+  base (a different branch NAME, not a mere ADVANCE of the same branch). A retarget is an unsupported mid-run
+  change: the reason is the machine-blocker wording a reconcile/re-adoption park records (`base changed from
+  <recorded> to <live>; not supported mid-run`); **park the row** on the user through that path rather than
+  dispatch. For the other recheck causes, do **NOT** dispatch and do **NOT** rebase — **re-poll**, then
+  **re-run the pre-flight**.
 
 A fix authored on a stale or conflicting base is wasted work: it is re-reviewed against the rebased tip
 anyway, and its diff may not even apply. The tool fetches and decides only — it performs no rebase; the
@@ -53,13 +61,17 @@ argv: ["python3", path_join(skill_dir, "scripts", "worker-prompt.py"), "fix",
        "--worktree", worktree,
        "--pr", pr,
        "--base", base,
+       "--file", state_jsonl,
        "--preflight-verdict", "proceed",
        "--issues-file", issues_file,
        optional_ci("--logs-file", logs_file),
        "--output-dir", attempt_prompt_bundle]
 ```
 
-`role` is exactly `review`, `ci-session`, or `ci-economy`. The output directory must not exist. Use
+`role` is exactly `review`, `ci-session`, or `ci-economy`. `base` is this PR row's effective base (as in the
+pre-flight above); `--file <state.jsonl>` makes `worker-prompt.py` assert `--base` equals the `--pr` row's
+effective base and refuse a disagreement, so the base baked into the fix prompt can never be a branch the row
+does not track. The output directory must not exist. Use
 `prompt.txt` as the worker's complete prompt bytes. Read `metadata.json` and dispatch with its `role` and
 logical `model_class`; the runtime adapter maps that class to the active host. Never map a host model name
 inside this tool or add prompt text after materialization.

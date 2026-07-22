@@ -26,6 +26,7 @@ _HERE = Path(__file__).resolve().parent
 SIBLING = _HERE / "review-dispatch-test.py"
 TEMPLATE = _HERE / "review-prompt.txt"
 REVIEW_PASS = _HERE / "review-pass.py"
+LEDGER = _HERE / "ledger.py"
 
 TRANSPORT_SLOT = b"<TRANSPORT-RECORD>"
 INTENT_SLOT = b"<INTENT>"
@@ -47,6 +48,16 @@ def _load_review_pass():
 
 
 RP = _load_review_pass()
+
+
+def _load_ledger():
+    mod = load_module_from_path("review_dispatch_ledger", LEDGER)
+    if mod is None:
+        raise RuntimeError(f"cannot load the ledger accessor at {LEDGER}")
+    return mod
+
+
+L = _load_ledger()
 
 
 class Refusal(Exception):
@@ -361,6 +372,25 @@ def prepare(args) -> dict:
     if not args.base.strip():
         refuse("--base must be non-blank text")
 
+    # The base rides the typed transport as DATA (the reviewer diffs `origin/<base>...HEAD`). When a ledger
+    # is supplied, that data is an ASSERTION against the row's source of truth: the row OWNS the base, so
+    # `--base` must equal the selected row's `effective_base` (its explicit `base_branch`, else the legacy
+    # header fallback, through `ledger.py`'s accessor — never a second copy of that rule). A leading
+    # `origin/` is stripped before the compare. Absent `--file`, `--base` is carried as-is, as before.
+    if args.file is not None:
+        try:
+            header, rows = L.load(Path(args.file))
+        except SystemExit as exc:
+            refuse(f"could not read ledger {args.file}: {exc}")
+        row = L.find_row(rows, str(args.pr))
+        if row is None:
+            refuse(f"no ledger row for pr {args.pr} — its base cannot be resolved")
+        effective_base = L.effective_base(header, row)
+        normalized = args.base[len("origin/"):] if args.base.startswith("origin/") else args.base
+        if effective_base and effective_base != "-" and normalized != effective_base:
+            refuse(f"--base {args.base!r} disagrees with pr {args.pr}'s ledger effective base "
+                   f"{effective_base!r} — --base is an assertion, not a base source")
+
     if args.route not in ROUTE_PRODUCERS:
         refuse(f"unknown review route {args.route!r}; expected one of {list(ROUTE_PRODUCERS)}")
     if args.report_producer not in REPORT_PRODUCERS:
@@ -483,7 +513,10 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--pass", dest="review_pass", required=True, help="positive decimal review pass")
     command.add_argument("--launch-attempt", required=True, help="positive decimal launch attempt")
     command.add_argument("--worktree", required=True, help="absolute candidate worktree directory")
-    command.add_argument("--base", required=True, help="base branch text carried as data")
+    command.add_argument("--base", required=True, help="base branch text carried as data; with --file it is "
+                                                        "asserted against the row's effective base")
+    command.add_argument("--file", help="OPTIONAL ledger (state.jsonl); when given, --base is asserted "
+                                        "against the selected --pr row's effective base")
     command.add_argument("--route", required=True, choices=tuple(ROUTE_PRODUCERS),
                          help="route already selected by the host adapter")
     command.add_argument("--report-producer", required=True, choices=REPORT_PRODUCERS,

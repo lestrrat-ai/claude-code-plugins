@@ -328,6 +328,19 @@ def t_no_row_refused():
         check('"refused": "no-row"' in out, f"the refusal names the missing row; got {out!r}")
 
 
+def t_base_mismatch_refused():
+    # `--base` is an ASSERTION: a value disagreeing with the row's effective base is refused BEFORE any
+    # fetch/rebase, and nothing mutates. The scenario's row inherits header base `main`; assert `v3`.
+    with tempfile.TemporaryDirectory() as tmp:
+        s = _scenario(tmp)
+        code, out, _ = capture_cli(M.main, ["run", "--ledger", str(s.ledger), "--pr", PR_NUMBER,
+                                            "--worktree", str(s.wt), "--base", "v3"])
+        check(code == M.EXIT_PRECONDITION, f"a --base disagreeing with the row is refused at exit 2 (code={code})")
+        check('"refused": "base-mismatch"' in out, f"the refusal names the base mismatch; got {out!r}")
+        check("v3" in out and "main" in out, "the refusal names BOTH the passed --base and the effective base")
+        check(_field(s.ledger, PR_NUMBER, "head_sha") == s.orig_head, "nothing mutated — head_sha untouched")
+
+
 def t_absent_remote_refused():
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
@@ -417,6 +430,8 @@ CASES = [
      t_head_mismatch_refused),
     ("held-refused", "a held row is refused at exit 2 and never rebased", t_held_row_refused),
     ("no-row-refused", "a PR with no ledger row is refused at exit 2", t_no_row_refused),
+    ("base-mismatch-refused", "a --base disagreeing with the row's effective base is refused at exit 2",
+     t_base_mismatch_refused),
     ("no-remote-refused", "an absent default remote is refused at exit 2", t_absent_remote_refused),
     ("worktree-missing-refused", "a missing/non-git worktree is refused at exit 2", t_worktree_missing_refused),
     ("push-rejected-preserves-rebase", "a rejected push preserves the local rebase and does NOT write the "
