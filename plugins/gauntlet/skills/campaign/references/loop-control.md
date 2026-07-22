@@ -231,10 +231,15 @@ the worker returns, and what never moves into it. The steps below are unchanged 
    uses `.prompt.txt` and writes `review-<pr>-<n>.txt` / `.progress.jsonl` / `.findings.jsonl`; a
    relaunch uses and writes `review-<pr>-<n>.a<k>.*`, and
    only the attempt named in the current `pass_identity` is read or counted (Stage 2a). **Before a
-   review verdict is counted, the pass's artifacts must verify** — run `scripts/review-pass.py verify`
-   against the active attempt's progress file, never parse the report by hand. The tool derives the
-   attempt-scoped report path and prints its strict result; anything but `ok` is not tallied (Stage 2a,
-   "Does this pass COUNT?"). The coherence rule is an if and only if: `not-satisfied` exactly when at least one GATING
+   review verdict is counted, the pass's artifacts must verify** — run `scripts/review-pass.py verify
+   --ledger <rundir>/state.jsonl` against the active attempt's progress file, never parse the report by
+   hand. The tool derives the attempt-scoped report path and prints its strict result; anything but `ok`
+   is not tallied (Stage 2a, "Does this pass COUNT?"). **`--ledger` is a TALLY PRECONDITION, not an
+   option:** it re-checks that the pass's `intent-<pr>.md` still matches the run header's current
+   `default_non_goals`, so a verdict a reviewer earned under a scope the operator has since changed is
+   refused as `unusable` rather than counted (Stage 2a, "Does this pass COUNT?" owns the rule). This
+   closes the in-flight window: step 2 tallies BEFORE step 3 resyncs the intent, so without it a stale
+   SATISFIED could merge an area now in scope but never reviewed. The coherence rule is an if and only if: `not-satisfied` exactly when at least one GATING
    finding stands — a verdict that blocks a PR
    must name what blocks it, and a finding that blocks a PR cannot be waved through by the verdict. Either
    way round is `unusable` (Stage 2a, "Does this pass COUNT?").

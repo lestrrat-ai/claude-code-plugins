@@ -1036,8 +1036,13 @@ def t_default_non_goals(L: ModuleType, tmp: Path) -> None:
 
     # Every malformed value is REFUSED (exit 1) and leaves the stored value EXACTLY as it was.
     before = path.read_text()
+    # ` ` (a Unicode LINE SEPARATOR) is the case a bare `"\n" in body` check let through: it is not
+    # `\n`/`\r`, so it once parsed and stored, and the downstream managed-block reader's `splitlines()` then
+    # split it into two lines and raised an UNCAUGHT `Defect`. `parse_default_non_goals` now splits with the
+    # SAME `splitlines()`, so this is refused at the door — exit 1, ledger byte-identical, no traceback.
     for bad, why in (('{"a": 1}', "a non-array"), ('["a", "a"]', "a duplicate entry"),
                      ('["a", ""]', "a blank entry"), ('["a\\nb"]', "a multi-line entry"),
+                     ('["a b"]', "a U+2028 line-separator entry"),
                      ('not json', "malformed JSON"), ('[1, 2]', "a non-string entry")):
         code, _, err = cli(L, ["--file", str(path), "header", "set", "default_non_goals", bad])
         check(code == 1, f"{why} ({bad!r}) was ACCEPTED (exit {code})")

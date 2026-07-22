@@ -799,7 +799,12 @@ def parse_default_non_goals(value: str) -> "list[str]":
         body = item.strip()
         if not body:
             raise ValueError("an entry is blank — an empty exclusion states nothing")
-        if "\n" in body or "\r" in body:
+        if len(body.splitlines()) > 1:
+            # `splitlines` is the EXACT line-splitter the downstream managed-block reader uses
+            # (`review-pass.py scan_managed_block`), so this rejects every separator it would split on —
+            # `\n`/`\r` AND the Unicode ones (U+2028, U+0085, …) a bare `"\n" in body` check let through to
+            # land as an uncaught `Defect` there. `body` is already `.strip()`ed, so this fires on an
+            # INTERNAL separator alone, never a trailing one.
             raise ValueError(f"entry {item!r} spans multiple lines — one Non-goal is one line")
         if body in seen:
             raise ValueError(f"duplicate entry {body!r} — one exclusion cannot be stated twice")

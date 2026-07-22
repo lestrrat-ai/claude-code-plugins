@@ -418,6 +418,24 @@ class Tables:
                       + "\n\n## Non-goals\n- a pr specific exclusion\n" + _mb_tail)
         MB_NON_BULLET = _mb_head + MS + "\n- run default one\nnot a bullet line\n" + ME + _mb_tail
 
+        # --- `verify --ledger`: the PRE-TALLY scope-sync check (fu, finding B) ---------------------------
+        # A complete, SATISFIED pass whose intent-<pr>.md carries a run-default managed block for ["area X"].
+        # The reviewer measured that narrower scope. If the operator has since BROADENED the header (removed
+        # X) while this pass was in flight, a bare `verify` still counts the stale SATISFIED and the PR merges
+        # with X — now in scope — never reviewed. `verify --ledger` closes that: at tally time the intent
+        # still fences [X] while the header says [], so the pass is refused as `unusable`. Each case's intent
+        # text is folded through the REAL module (never the mutant) — it is fixed test data, not under test.
+        _intent_x = R.merge_default_non_goals(INTENT, ["area X"], Path(INTENT_FILE))
+        # name -> (intent text, ledger defaults, ledger in a SIBLING dir?, want exit, needle)
+        self.LEDGER_CASES: "dict[str, tuple[str, list[str], bool, int, str]]" = {
+            # broadening drift: intent fences [X], header now [] -> the stale SATISFIED must NOT count
+            "scope-drift-refused": (_intent_x, [], False, 1, "OUT OF SYNC"),
+            # in sync: intent fences [X], header still [X] -> the pass counts, exactly as a bare verify would
+            "in-sync-counts": (_intent_x, ["area X"], False, 0, "report-verdict=satisfied"),
+            # a --ledger from ANOTHER run measures the pass against the wrong scope -> operator error (exit 2)
+            "cross-run-refused": (_intent_x, ["area X"], True, 2, "same run directory"),
+        }
+
         self.FINDING_CASES: "dict[str, tuple]" = {
             # --- THE ACCEPTANCE TEST: the real record, classified -------------------------------------
             "real-43-r11-gates": (
@@ -1644,6 +1662,18 @@ def run_cases(mod: types.ModuleType, T: Tables, tmp: Path) -> "dict[str, tuple[s
             got[find_key(i, fname)] = (f"exit{code}", text)
         except Exception as exc:  # noqa: BLE001
             got[find_key(i, fname)] = (f"crash:{type(exc).__name__}", str(exc))
+    for name, (intent_text, defaults, sibling, _, _) in T.LEDGER_CASES.items():  # drops want, needle
+        path = build(tmp, f"ledger-{name}", T.PLAN, T.WORKED, intent=intent_text)
+        run_dir = path.parent
+        ledger_dir = run_dir.parent / f"ledger-{name}-otherrun" if sibling else run_dir
+        ledger_dir.mkdir(parents=True, exist_ok=True)
+        ledger = _write_ledger(ledger_dir / "state.jsonl", defaults)
+        try:
+            code, text = run_cli(mod, ["verify", "--file", str(path), "--head-sha", SHA,
+                                       "--ledger", str(ledger)])
+            got[f"[ledger] {name}"] = (f"exit{code}", text)
+        except Exception as exc:  # noqa: BLE001 - the CLI owes an exit code, and a crash is not one
+            got[f"[ledger] {name}"] = (f"crash:{type(exc).__name__}", str(exc))
     got.update(round_trip(mod, T, tmp))
     got.update(cross_door(mod, tmp))
     return got
@@ -1667,6 +1697,10 @@ def expectations(T: Tables) -> "dict[str, tuple[str, str, str]]":
                 for n, (_, _, c, needle, why) in T.PLAN_CHECK_CASES.items()})  # drops plan, tier
     out.update({find_key(i, p): (f"exit{c}", needle, why)
                 for i, (p, _, c, needle, why) in enumerate(T.FINDING_CLI_CASES)})  # drops argv
+    out.update({f"[ledger] {n}": (f"exit{c}", needle,
+                                  "`verify --ledger` refuses a pass whose intent scope drifted from the "
+                                  "run's current default_non_goals — a stale-scope SATISFIED never counts")
+                for n, (_, _, _, c, needle) in T.LEDGER_CASES.items()})  # drops intent, defaults, sibling
     # The two PROPERTIES. Their expectation IS the property and not a particular rule — demanding a needle
     # would be demanding a specific defect where the case only demands a sound outcome.
     out.update({f"[round-trip] {cmd} on a {state} file": (
@@ -2410,6 +2444,7 @@ def run(R: types.ModuleType, tmp: Path) -> int:
           f"{len(T.REPORT_CASES)} report fixtures + "
           f"{len(T.NAME_CASES)} name cases + "
           f"{len(T.CLI_CASES) + len(T.PLAN_CLI_CASES) + len(T.WAIVE_CLI_CASES) + len(T.PLAN_CHECK_CASES) + len(T.FINDING_CLI_CASES)} CLI cases + "
+          f"{len(T.LEDGER_CASES)} verify --ledger scope-sync cases + "
           f"{len(T.WRITE_COMMANDS) * len(T.FILE_STATES)} round-trip cases + "
           f"{len(CROSS_DOOR_IDS)} cross-door cases + {len(T.BOUNDARY_CASES)} boundary cases "
           f"({len(T.DOMAINS)} bounded values, each probed JUST INSIDE and JUST OUTSIDE its declared "

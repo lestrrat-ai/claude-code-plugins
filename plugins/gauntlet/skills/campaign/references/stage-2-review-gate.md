@@ -227,8 +227,9 @@ file is a plaintext file in a directory the reviewer can write to.
  "--path", path, "--line", line, "--writer", writer, "--purpose", purpose,
  "--repro", repro, "--fix", fix]
 ["python3", review_pass_script, "intent-check", "--file", intent_file, "--ledger", ledger_file]
-    # refuse a missing/malformed intent block, or one whose run-default managed block has drifted from the
-    # ledger header default_non_goals, BEFORE dispatch, not at verify
+    # the PRE-DISPATCH scope door: refuse a missing/malformed intent block, or one whose run-default
+    # managed block has drifted from the ledger header default_non_goals, before a reviewer is launched.
+    # verify --ledger below re-runs the SAME scope check as the PRE-TALLY door
 ["python3", review_dispatch_script, "prepare", "--run-dir", review_root,
  "--pr", pr, "--pass", review_pass, "--launch-attempt", launch_attempt,
  "--worktree", worktree, "--base", base, "--route", route,
@@ -236,7 +237,9 @@ file is a plaintext file in a directory the reviewer can write to.
  "--dispatched-at", utc_timestamp, "--intent-file", intent_file]
     # write identity + exact prompt and return the one typed transport record; review-dispatch.md owns it
 ["python3", review_pass_script, "verify", "--file", progress_file,
- "--head-sha", live_head_sha, "--amendments-ruled", count]
+ "--head-sha", live_head_sha, "--amendments-ruled", count, "--ledger", ledger_file]
+    # --ledger is a TALLY PRECONDITION: it re-runs intent-check's scope test, so a verdict earned under a
+    # scope the operator has since changed is refused as unusable, never counted
 ["python3", review_pass_script, "status", "--run", rundir]
     # ADVISORY read-only glance at in-flight passes; never a gate input
 ["python3", review_pass_script, "self-test"]
@@ -600,7 +603,8 @@ intents. It is **local, git-ignored driver bookkeeping**: campaign never writes 
 Its `## Non-goals` also carries the run's **default Non-goals** — the exclusions the operator declared once
 for the whole run — folded in by `pr-adopt.py intent-sync` as a MANAGED block (`pr-adoption.md` owns that
 block's format). `review-pass.py intent-check --ledger` refuses a PR whose managed block has drifted from
-the run header before the reviewer is ever launched.
+the run header before the reviewer is ever launched, and `verify --ledger` re-checks it at tally so a
+verdict earned under a since-changed scope is not counted ("Does this pass COUNT?" owns that rule).
 
 **It is passed to the reviewer VERBATIM**, in the dispatch prompt (`review-dispatch.md`). Three things follow:
 
@@ -694,7 +698,8 @@ makes the pass `unusable` and no verdict is tallied from it. **What "usable" mea
 `pr-adoption.md` step 3a states it for the human writing the file, and `review-pass.py`'s parser IS the
 definition (`review-pass.py intent-check --file <rundir>/intent-<pr>.md --ledger <rundir>/state.jsonl` is
 the pre-dispatch form of the same check, plus the run-default managed-block sync — run it before
-dispatching rather than discovering the gap at `verify`). A missing intent is
+dispatching rather than wasting a review, though `verify --ledger` re-runs that sync at tally time as the
+backstop; "Does this pass COUNT?" owns it). A missing intent is
 the one `unusable` that is **not** a reviewer failure: write the block, then re-dispatch.
 
 The reviewer runs the review contract defined in `review-dispatch.md`, which also owns the dispatch
@@ -722,8 +727,20 @@ the pass that produced it, and deciding "was this pass real?" by eye is the same
 a false `ci = green` — one layer up.
 
 ```
-review-pass.py verify --file <rundir>/<active attempt's progress file> --head-sha <the PR's LIVE head>
+review-pass.py verify --file <rundir>/<active attempt's progress file> --head-sha <the PR's LIVE head> --ledger <rundir>/state.jsonl
 ```
+
+**`--ledger` is a TALLY PRECONDITION, and this section owns why.** A verdict counts only if the intent the
+reviewer measured still matches the run's CURRENT scope. With `--ledger`, `verify` re-runs `intent-check`'s
+scope test — the pass's `intent-<pr>.md` managed block against the header's current `default_non_goals` —
+and refuses the pass as `unusable` when they have drifted apart, so a verdict earned under a scope the
+operator changed while the review was in flight is never counted. This closes a real window: the operator
+may BROADEN `default_non_goals` (the banked-credit guard in `files-and-ledger.md` allows it while nothing is
+banked), the in-flight reviewer returns SATISFIED against the narrower intent it was dispatched with, and
+the loop tallies that verdict BEFORE the next heartbeat resyncs the intent — so without this check a stale
+SATISFIED could merge an area now in scope but never reviewed. The pass is superseded and re-reviewed under
+the new scope next heartbeat. Symmetric by design: a mid-flight ADD (scope narrows) also voids the pass,
+which is safe — the re-review is a superset.
 
 **`verify` derives the active attempt's report path from the progress artifact and parses the result.**
 It requires exactly one terminal result on the last nonblank line: `VERDICT: SATISFIED`, `VERDICT: NOT

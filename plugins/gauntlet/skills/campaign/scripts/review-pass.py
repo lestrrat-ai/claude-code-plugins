@@ -1027,6 +1027,38 @@ def check_default_non_goals(text: str, defaults: "list[str]", path: Path) -> Non
         )
 
 
+def check_intent_scope(intent: Path, ledger: Path) -> "list[str]":
+    """The intent still measures the CURRENT run scope: its run-default managed block matches the ledger
+    header's `default_non_goals`. ONE statement of that check, shared by BOTH doors where a scope that
+    drifted out from under a review would otherwise be measured against the wrong defaults:
+
+    - `intent-check` runs it BEFORE a reviewer is launched — a pass never starts against stale defaults;
+    - `verify --ledger` runs it BEFORE a verdict is COUNTED — the hole this closes. A TRIVIAL PR at
+      `reviews_ok=0` with a review in flight can have its defaults BROADENED (`header set default_non_goals`
+      allows it while nothing is banked); the in-flight reviewer, measured against the NARROWER intent it was
+      dispatched with, returns SATISFIED; loop-control step 2 tallies that verdict BEFORE step 3 resyncs the
+      intent, and pass identity carries no scope digest — so a stale SATISFIED would meet the gate and MERGE
+      an area now in scope but never reviewed. At tally time the pass's `intent-<pr>.md` STILL fences the
+      scope the reviewer measured, while the header has already moved, so this comparison catches the drift
+      and the pass is refused (its verdict is superseded; the next heartbeat re-reviews under the new scope).
+
+    Symmetric by design: a mid-flight ADD (scope NARROWS) also voids the in-flight pass, which is SAFE — the
+    re-review is a superset — and matches the "any scope change voids in-flight work" posture. Returns the
+    run defaults (their count is all the pre-dispatch door reports).
+    """
+    Lmod = load_ledger_module()
+    header, _ = Lmod.load(ledger)
+    try:
+        defaults = Lmod.default_non_goals(header)
+    except ValueError as exc:
+        raise Defect(
+            f"{ledger}: header `default_non_goals` is malformed ({exc}) — the run defaults cannot be read, "
+            f"so the intent cannot be checked against them. Repair the ledger header"
+        )
+    check_default_non_goals(read_text(intent, "intent block"), defaults, intent)
+    return defaults
+
+
 def load_intent(path: Path) -> "dict[str, list[str]]":
     """The PR's intent, or a Defect saying it is not there.
 
@@ -1700,7 +1732,8 @@ def plan_path(progress: Path) -> Path:
     return progress.parent / PLAN_NAME.format(pr=pr, **{"pass": npass})
 
 
-def evaluate_detail(progress: Path, head_sha: str, ruled: int = 0) -> \
+def evaluate_detail(progress: Path, head_sha: str, ruled: int = 0,
+                    ledger: "Path | None" = None) -> \
         "tuple[str, str, dict[str, str | None] | None]":
     """The whole read side. Every exception a rule can raise lands here as a VERDICT — never as a crash.
 
@@ -1726,8 +1759,16 @@ def evaluate_detail(progress: Path, head_sha: str, ruled: int = 0) -> \
         report = parse_report(progress)
         events, units = check_progress_file(text=read_text(progress, "progress file"), path=progress,
                                             plan=lambda: load_plan(plan), head_sha=head_sha)
+        ipath = intent_path(progress.parent, pr)
         # MUTATE:intent-required:pass
-        load_intent(intent_path(progress.parent, pr))
+        load_intent(ipath)
+        # A verdict is only countable if the intent the reviewer measured STILL fences the run's CURRENT
+        # scope. When a `--ledger` reaches here (from `verify --ledger`), a pass whose defaults drifted out
+        # from under it is refused as `unusable` via the shared door — the stale SATISFIED never counts, and
+        # the next heartbeat re-reviews under the new scope. `check_intent_scope` owns why.
+        # MUTATE:intent-scope-synced:pass
+        if ledger is not None:
+            check_intent_scope(ipath, ledger)
         outcome, reason = decide(events, units, ruled, load_findings(progress), report["verdict"])
         return outcome, reason, report
     except Defect as exc:
@@ -2206,7 +2247,21 @@ def cmd_verify(args) -> int:
             f"a ruling can only ever answer an amendment that EXISTS, and an over-count would silently "
             f"clear the next one the reviewer raises"
         )
-    verdict, reason, report = evaluate_detail(path, args.head_sha, args.amendments_ruled)
+    # `--ledger` opts into the pre-tally scope-sync check: a pass whose intent no longer matches the run's
+    # CURRENT `default_non_goals` is not countable (`check_intent_scope`). The ledger and the pass are two
+    # artifacts of ONE run and share its directory; a `--ledger` from a DIFFERENT run would measure the pass
+    # against the wrong scope, so — like `intent-check` — that pairing is enforced here, as an OPERATOR
+    # mistake (exit 2), not a verdict about the pass.
+    ledger: "Path | None" = None
+    if args.ledger is not None:
+        ledger = Path(args.ledger)
+        if ledger.resolve().parent != path.resolve().parent:
+            # MUTATE:verify-ledger-run-dir:pass
+            raise OperatorError(
+                f"--ledger {ledger} and --file {path} are not in the same run directory — a pass is counted "
+                f"against ITS run's current defaults, never another run's. Pass the run's own state.jsonl"
+            )
+    verdict, reason, report = evaluate_detail(path, args.head_sha, args.amendments_ruled, ledger)
     detail = ""
     if report is not None:
         detail = f" report-verdict={report['verdict']}"
@@ -2231,16 +2286,9 @@ def cmd_intent_check(args) -> int:
             f"checked against ITS run's defaults, never another run's. Pass the run's own state.jsonl"
         )
     sections = load_intent(path)
-    Lmod = load_ledger_module()
-    header, _ = Lmod.load(ledger_path)
-    try:
-        defaults = Lmod.default_non_goals(header)
-    except ValueError as exc:
-        raise Defect(
-            f"{ledger_path}: header `default_non_goals` is malformed ({exc}) — the run defaults cannot be "
-            f"read, so the intent cannot be checked against them. Repair the ledger header"
-        )
-    check_default_non_goals(read_text(path, "intent block"), defaults, path)
+    # The scope-sync check is `check_intent_scope`, shared verbatim with `verify --ledger` (the pre-tally
+    # door) so the pre-dispatch and pre-tally doors can never judge "in sync" differently.
+    defaults = check_intent_scope(path, ledger_path)
     print(
         f"ok: {path} is a usable intent block, in sync with {len(defaults)} run default Non-goal(s) "
         f"({len(sections[PURPOSE_H])} purpose, {len(sections[NON_GOALS_H])} non-goal, "
@@ -2895,6 +2943,12 @@ def build_parser() -> "tuple[argparse.ArgumentParser, list[str]]":
     v.add_argument("--amendments-ruled", type=int, default=0, metavar="N",
                    help="how many of this pass's plan amendments you have already ruled on — a count, so "
                         "N >= 0, and never more than the pass actually raised (default 0)")
+    v.add_argument("--ledger",
+                   help="the run's state.jsonl (same run directory as --file) — opts into the pre-tally "
+                        "scope-sync check: a pass whose intent-<pr>.md no longer matches the header's "
+                        "current `default_non_goals` is refused as `unusable`, so a verdict measured against "
+                        "superseded defaults is never counted. Loop-control step 2 passes it before recording "
+                        "a verdict")
     # Narrow compatibility only. Older installed prose supplied this value; accepting it avoids an abrupt
     # CLI break while making it unable to influence the gate. `cmd_verify` never reads it. Suppress it from
     # help so new callers use the active report, the sole authority.
