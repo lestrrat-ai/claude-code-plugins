@@ -222,8 +222,8 @@ restored to `gauntlet-reviewing` — a `reviews_ok`→0 reset owes the relabel e
 (`stage-2-review-gate.md`, status-label projection); then re-declare. **ADDING** a default **narrows** scope, under which banked credit stays valid, so an
 add is always allowed. This banked-credit guard covers a PR that has **already** banked SATISFIED credit;
 the complementary window — a PR at `reviews_ok = 0` with a review **in flight** — is closed at tally time,
-not here: `verify --ledger` refuses a verdict whose intent scope no longer matches this field
-(`stage-2-review-gate.md`, "Does this pass COUNT?"). It **defaults to `[]`** — the canonical "no run
+not here: `verify --ledger` refuses a verdict whose DISPATCH-TIME `pass_identity.default_non_goals` binding
+no longer matches this field (`stage-2-review-gate.md`, "Does this pass COUNT?"). It **defaults to `[]`** — the canonical "no run
 defaults", which an old ledger back-fills to. Its run-wide meaning is realized in each PR by
 `pr-adopt.py intent-sync`, which folds the current defaults into that PR's `intent-<pr>.md`
 **MANAGED block** inside `## Non-goals` (`pr-adoption.md` OWNS the block's format); `review-pass.py

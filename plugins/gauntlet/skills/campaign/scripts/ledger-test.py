@@ -1042,6 +1042,7 @@ def t_default_non_goals(L: ModuleType, tmp: Path) -> None:
     # SAME `splitlines()`, so this is refused at the door — exit 1, ledger byte-identical, no traceback.
     for bad, why in (('{"a": 1}', "a non-array"), ('["a", "a"]', "a duplicate entry"),
                      ('["a", ""]', "a blank entry"), ('["a\\nb"]', "a multi-line entry"),
+                     ('["- prefixed"]', "a `- `-bullet-prefixed entry the fold would double-bullet"),
                      ('["a b"]', "a U+2028 line-separator entry"),
                      ('not json', "malformed JSON"), ('[1, 2]', "a non-string entry")):
         code, _, err = cli(L, ["--file", str(path), "header", "set", "default_non_goals", bad])

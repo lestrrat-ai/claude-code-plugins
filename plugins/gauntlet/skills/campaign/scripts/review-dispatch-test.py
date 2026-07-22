@@ -69,6 +69,7 @@ def _fixture(
     intent: bytes | None = None,
     base: str = "main",
     file: str | None = None,
+    default_non_goals: str = "[]",
 ) -> SimpleNamespace:
     rundir = root / "run artifacts"
     worktree = root / "candidate worktree"
@@ -87,6 +88,7 @@ def _fixture(
         report_producer=producer,
         head_sha=SHA,
         dispatched_at=STAMP,
+        default_non_goals=default_non_goals,
         intent_file=os.fspath(intent_path),
         file=file,
     )
@@ -520,7 +522,7 @@ module.prepare(SimpleNamespace(**json.loads(sys.argv[2])))
         paths["progress"].write_text(
             json.dumps({
                 "type": "pass_identity", "pr": "41", "pass": "2", "head_sha": SHA,
-                "launch_attempt": "1", "dispatched_at": "2026-07-19T00:00:00Z",
+                "launch_attempt": "1", "dispatched_at": "2026-07-19T00:00:00Z", "default_non_goals": [],
             }, separators=(",", ":")) + "\n",
             encoding="utf-8",
         )
@@ -545,18 +547,18 @@ def t_malformed_lone_identity_is_refused_not_reclaimed() -> None:
     malformed = {
         "bad head_sha": json.dumps({
             "type": "pass_identity", "pr": "41", "pass": "2", "head_sha": "bad",
-            "launch_attempt": "1", "dispatched_at": STAMP,
+            "launch_attempt": "1", "dispatched_at": STAMP, "default_non_goals": [],
         }, separators=(",", ":")),
         "missing dispatched_at": json.dumps({
             "type": "pass_identity", "pr": "41", "pass": "2", "head_sha": SHA,
-            "launch_attempt": "1",
+            "launch_attempt": "1", "default_non_goals": [],
         }, separators=(",", ":")),
         # A duplicate key: json.dumps cannot emit one, so this line is built by hand. json.loads keeps the
         # LAST value and discards the truncated first; strict_object rejects the line outright.
         "duplicate head_sha": (
             '{"type":"pass_identity","pr":"41","pass":"2",'
             '"head_sha":"a3f29c1","head_sha":"' + SHA + '",'
-            '"launch_attempt":"1","dispatched_at":"' + STAMP + '"}'
+            '"launch_attempt":"1","dispatched_at":"' + STAMP + '","default_non_goals":[]}'
         ),
     }
 
@@ -565,7 +567,7 @@ def t_malformed_lone_identity_is_refused_not_reclaimed() -> None:
         progress = D.attempt_paths(Path(args.run_dir), "41", "2", "1")["progress"]
         valid = json.dumps({
             "type": "pass_identity", "pr": "41", "pass": "2", "head_sha": SHA,
-            "launch_attempt": "1", "dispatched_at": STAMP,
+            "launch_attempt": "1", "dispatched_at": STAMP, "default_non_goals": [],
         }, separators=(",", ":"))
         progress.write_text(valid + "\n", encoding="utf-8")
         check(D._identity_only(progress),
@@ -647,7 +649,8 @@ def t_unicode_worktree_delivers_under_ascii_stdout() -> None:
             "prepare", "--run-dir", os.fspath(rundir), "--pr", "41", "--pass", "2",
             "--launch-attempt", "1", "--worktree", os.fspath(worktree), "--base", "main",
             "--route", "native", "--report-producer", "native-worker-write",
-            "--head-sha", SHA, "--dispatched-at", STAMP, "--intent-file", os.fspath(intent_path),
+            "--head-sha", SHA, "--dispatched-at", STAMP, "--default-non-goals", "[]",
+            "--intent-file", os.fspath(intent_path),
         ]
         env = dict(os.environ)
         env["PYTHONIOENCODING"] = "ascii"
@@ -673,7 +676,7 @@ def t_cli_emits_only_canonical_host_neutral_json() -> None:
             "--launch-attempt", args.launch_attempt, "--worktree", args.worktree, "--base", args.base,
             "--route", args.route, "--report-producer", args.report_producer,
             "--head-sha", args.head_sha, "--dispatched-at", args.dispatched_at,
-            "--intent-file", args.intent_file,
+            "--default-non-goals", args.default_non_goals, "--intent-file", args.intent_file,
         ]
         code, out, err = capture_cli(D.main, argv)
         check(code == 0 and err == "", f"prepare CLI failed: code={code}, stderr={err!r}")
@@ -704,6 +707,23 @@ def t_ledger_base_assertion_matches_prepares() -> None:
         args = _fixture(root, base="main", file=os.fspath(ledger))
         payload = D.prepare(args)
         check(payload["transport"]["base"] == "main", f"the matching base must ride the transport: {payload!r}")
+
+
+def t_default_non_goals_binds_into_identity() -> None:
+    """The run's default Non-goals ride `--default-non-goals` and are BOUND into the pass_identity — the
+    immutable, canonical dispatch-time scope the tally measures the verdict against (`check_scope`). A
+    malformed value refuses before any identity is written; a non-canonical one is canonicalized through the
+    ledger's ONE validator, so what lands is exactly what `verify --ledger` compares."""
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw), default_non_goals='["  area X  ", "y"]')
+        D.prepare(args)
+        progress = D.attempt_paths(Path(args.run_dir), "41", "2", "1")["progress"]
+        events = D.RP.parse_lines(progress.read_text(encoding="utf-8"), progress.name)
+        ident = D.RP.check_identity(events, "41", "2", "1")
+        check(ident["default_non_goals"] == ["area X", "y"],
+              f"the identity must carry the CANONICAL run defaults, got {ident.get('default_non_goals')!r}")
+    with tempfile.TemporaryDirectory() as raw:
+        _refused(_fixture(Path(raw), default_non_goals="not-json"), "canonical JSON array")
 
 
 def t_ledger_base_assertion_mismatch_refuses() -> None:
@@ -802,6 +822,8 @@ CASES = [
     ("host-neutral-json", "CLI emits canonical data and never launches", t_cli_emits_only_canonical_host_neutral_json),
     ("ledger-base-match", "--file with a matching row base passes the assertion and prepares",
      t_ledger_base_assertion_matches_prepares),
+    ("scope-binds-into-identity", "the run defaults bind into pass_identity as the canonical dispatch-time scope",
+     t_default_non_goals_binds_into_identity),
     ("ledger-base-mismatch", "--file with a disagreeing row base refuses (--base is an assertion)",
      t_ledger_base_assertion_mismatch_refuses),
     ("ledger-origin-named-base", "a base literally named origin/<x> matches itself; the bare form refuses",

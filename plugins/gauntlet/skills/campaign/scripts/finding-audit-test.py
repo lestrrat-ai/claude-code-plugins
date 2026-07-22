@@ -92,6 +92,7 @@ def write_progress(directory: Path, attempt: int = 1, *, pr: str = "41", npass: 
         "head_sha": "0" * 40,
         "launch_attempt": str(attempt),
         "dispatched_at": "2026-01-01T00:00:00Z",
+        "default_non_goals": [],
     }
     path = directory / progress_name(attempt, pr=pr, npass=npass)
     path.write_text(json.dumps(identity, sort_keys=True) + "\n", encoding="utf-8")

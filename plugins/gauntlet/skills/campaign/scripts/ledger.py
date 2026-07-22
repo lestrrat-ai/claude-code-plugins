@@ -799,6 +799,14 @@ def parse_default_non_goals(value: str) -> "list[str]":
         body = item.strip()
         if not body:
             raise ValueError("an entry is blank — an empty exclusion states nothing")
+        if body.startswith("- "):
+            # The managed-block reader renders each body as `- <body>` (`review-pass.py merge_default_non_goals`),
+            # so a body that ITSELF begins with the `- ` bullet delimiter would render `- - <rest>` — a double
+            # bullet the block's own schema forbids ("bodies WITHOUT the `- ` prefix"). Reject it at the door,
+            # never store one that the fold would render malformed. A lone `-`, `-x`, or an internal `a - b`
+            # carries no bullet delimiter and stays valid.
+            raise ValueError(f"entry {item!r} begins with the bullet delimiter `- ` — a Non-goal body is the "
+                             f"bullet's TEXT, not another bullet; drop the leading `- `")
         if len(body.splitlines()) > 1:
             # `splitlines` is the EXACT line-splitter the downstream managed-block reader uses
             # (`review-pass.py scan_managed_block`), so this rejects every separator it would split on —

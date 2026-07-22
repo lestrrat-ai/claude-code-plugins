@@ -227,19 +227,22 @@ file is a plaintext file in a directory the reviewer can write to.
  "--path", path, "--line", line, "--writer", writer, "--purpose", purpose,
  "--repro", repro, "--fix", fix]
 ["python3", review_pass_script, "intent-check", "--file", intent_file, "--ledger", ledger_file]
-    # the PRE-DISPATCH scope door: refuse a missing/malformed intent block, or one whose run-default
+    # the PRE-DISPATCH scope door ONLY: refuse a missing/malformed intent block, or one whose run-default
     # managed block has drifted from the ledger header default_non_goals, before a reviewer is launched.
-    # verify --ledger below re-runs the SAME scope check as the PRE-TALLY door
+    # It does NOT gate the tally — the tally reads the dispatch-time pass_identity binding, not this intent
 ["python3", review_dispatch_script, "prepare", "--run-dir", review_root,
  "--pr", pr, "--pass", review_pass, "--launch-attempt", launch_attempt,
  "--worktree", worktree, "--base", base, "--route", route,
  "--report-producer", report_producer, "--head-sha", head_sha,
- "--dispatched-at", utc_timestamp, "--intent-file", intent_file]
-    # write identity + exact prompt and return the one typed transport record; review-dispatch.md owns it
+ "--dispatched-at", utc_timestamp, "--default-non-goals", ledger_default_non_goals,
+ "--intent-file", intent_file]
+    # write identity (BINDING the run's default_non_goals as the dispatch-time scope) + exact prompt and
+    # return the one typed transport record; review-dispatch.md owns it
 ["python3", review_pass_script, "verify", "--file", progress_file,
  "--head-sha", live_head_sha, "--amendments-ruled", count, "--ledger", ledger_file]
-    # --ledger is a TALLY PRECONDITION: it re-runs intent-check's scope test, so a verdict earned under a
-    # scope the operator has since changed is refused as unusable, never counted
+    # --ledger is a TALLY PRECONDITION: it compares the pass's dispatch-time pass_identity.default_non_goals
+    # binding to the header's current defaults, so a verdict earned under a scope the operator has since
+    # changed is refused as unusable, never counted
 ["python3", review_pass_script, "status", "--run", rundir]
     # ADVISORY read-only glance at in-flight passes; never a gate input
 ["python3", review_pass_script, "self-test"]
@@ -416,7 +419,7 @@ the reviewer:
 {"type":"progress","unit":"u01","status":"started"}
 {"type":"progress","unit":"u01","status":"done","evidence":"validate_idc.go:42 `canonicalizeValue`; edge case tested at validate_idc_test.go:88"}
 {"type":"plan_amendment_request","ts":"2026-07-06T00:05:00Z","reason":"diff changes generated docs; add doc consistency unit","proposed_unit":{"type":"unit","id":"u99","kind":"docs","target":"docs/generated.md","checks":["sync with API behavior"]}}
-{"type":"pass_identity","pr":"41","pass":"1","head_sha":"a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c","launch_attempt":"1","dispatched_at":"2026-07-06T00:00:00Z"}
+{"type":"pass_identity","pr":"41","pass":"1","head_sha":"a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c","launch_attempt":"1","dispatched_at":"2026-07-06T00:00:00Z","default_non_goals":[]}
 ```
 
 A **finding** is a record too, and it lives in its own artifact — `review-<pr>-<n>.findings.jsonl`, per
@@ -698,8 +701,9 @@ makes the pass `unusable` and no verdict is tallied from it. **What "usable" mea
 `pr-adoption.md` step 3a states it for the human writing the file, and `review-pass.py`'s parser IS the
 definition (`review-pass.py intent-check --file <rundir>/intent-<pr>.md --ledger <rundir>/state.jsonl` is
 the pre-dispatch form of the same check, plus the run-default managed-block sync — run it before
-dispatching rather than wasting a review, though `verify --ledger` re-runs that sync at tally time as the
-backstop; "Does this pass COUNT?" owns it). A missing intent is
+dispatching rather than wasting a review. The tally's scope backstop is separate: `verify --ledger`
+compares the pass's dispatch-time `pass_identity` scope binding to the header, not this intent block;
+"Does this pass COUNT?" owns it. A missing intent is
 the one `unusable` that is **not** a reviewer failure: write the block, then re-dispatch.
 
 The reviewer runs the review contract defined in `review-dispatch.md`, which also owns the dispatch
@@ -730,17 +734,26 @@ a false `ci = green` — one layer up.
 review-pass.py verify --file <rundir>/<active attempt's progress file> --head-sha <the PR's LIVE head> --ledger <rundir>/state.jsonl
 ```
 
-**`--ledger` is a TALLY PRECONDITION, and this section owns why.** A verdict counts only if the intent the
-reviewer measured still matches the run's CURRENT scope. With `--ledger`, `verify` re-runs `intent-check`'s
-scope test — the pass's `intent-<pr>.md` managed block against the header's current `default_non_goals` —
-and refuses the pass as `unusable` when they have drifted apart, so a verdict earned under a scope the
-operator changed while the review was in flight is never counted. This closes a real window: the operator
-may BROADEN `default_non_goals` (the banked-credit guard in `files-and-ledger.md` allows it while nothing is
-banked), the in-flight reviewer returns SATISFIED against the narrower intent it was dispatched with, and
-the loop tallies that verdict BEFORE the next heartbeat resyncs the intent — so without this check a stale
-SATISFIED could merge an area now in scope but never reviewed. The pass is superseded and re-reviewed under
-the new scope next heartbeat. Symmetric by design: a mid-flight ADD (scope narrows) also voids the pass,
-which is safe — the re-review is a superset.
+**`--ledger` is a TALLY PRECONDITION, and this section owns why.** A verdict counts only if the run's review
+scope is still the scope the pass was DISPATCHED under — and that scope is BOUND into the immutable
+`pass_identity.default_non_goals` at dispatch, never inferred at tally from the mutable `intent-<pr>.md`.
+With `--ledger`, `verify` compares the pass's dispatch-time binding to the header's current
+`default_non_goals` (`check_scope`, the scope analogue of the `head_sha` check) and refuses the pass as
+`unusable` when they have drifted apart, so a verdict earned under a scope the operator changed while the
+review was in flight is never counted. This closes a real window: the operator may BROADEN
+`default_non_goals` (the banked-credit guard in `files-and-ledger.md` allows it while nothing is banked),
+the in-flight reviewer returns SATISFIED against the narrower scope it was dispatched with, and the loop
+tallies that verdict BEFORE the next heartbeat re-reviews — so without this check a stale SATISFIED could
+merge an area now in scope but never reviewed.
+
+**The binding — not the intent — is what fences the scope here, and that distinction is load-bearing.**
+Per-heartbeat re-adoption RE-SYNCS the in-flight PR's `intent-<pr>.md` managed block to the header BEFORE
+the tally (`pr-adoption.md`, "do not re-author — but DO re-sync"), so a tally that read the intent would
+pass the instant the intent was resynced, and the stale SATISFIED would count. Binding the scope into
+`pass_identity` at dispatch is immutable and no later re-sync can move it. The pass is superseded and
+re-reviewed under the new scope next heartbeat. Symmetric by design: a mid-flight ADD (scope narrows) also
+voids the pass, which is safe — the re-review is a superset. (`intent-check`'s intent-vs-header scope test
+still runs PRE-DISPATCH, refusing a launch against an already-stale intent; it does not gate the tally.)
 
 **`verify` derives the active attempt's report path from the progress artifact and parses the result.**
 It requires exactly one terminal result on the last nonblank line: `VERDICT: SATISFIED`, `VERDICT: NOT

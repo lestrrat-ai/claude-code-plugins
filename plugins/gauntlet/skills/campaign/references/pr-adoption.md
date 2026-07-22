@@ -301,9 +301,10 @@ For each `#PR` to adopt:
    exit refuses adoption for that PR until the artifact is corrected. This is the same parser `verify` uses,
    moved before review dispatch, PLUS a check that the managed block is in sync with the run header's
    `default_non_goals` (the two files must share the run directory); never spend a review to learn that its
-   intent could not be read or that its run defaults were stale. `verify --ledger` re-runs that same sync
-   check at tally, so a scope that drifts mid-review is caught even when it passed here
-   (`stage-2-review-gate.md`, "Does this pass COUNT?").
+   intent could not be read or that its run defaults were stale. This managed-block sync is the PRE-DISPATCH
+   door only. A scope that drifts mid-review is caught at tally by a SEPARATE mechanism — `verify --ledger`
+   compares the pass's dispatch-time `pass_identity.default_non_goals` binding to the header, not this intent
+   block (`stage-2-review-gate.md`, "Does this pass COUNT?").
 
    **The file is READ BY THE TOOL, on every pass.** `review-pass.py verify` loads `intent-<pr>.md` for
    **every** pass it judges — whatever that pass found, and even when it found nothing — so an absent,

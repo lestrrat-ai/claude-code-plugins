@@ -163,7 +163,8 @@ VERDICT_CHOICES = (SATISFIED, NOT_SATISFIED, DEFERRED)
 # progress events are keyed by (type, status) because a `started` carrying `evidence` is exactly as wrong
 # as a `done` without it — the evidence rule and the no-evidence rule are ONE rule, stated once.
 EVENT_KEYS: "dict[tuple[str, str | None], set[str]]" = {
-    (IDENTITY, None): {"type", "pr", "pass", "head_sha", "launch_attempt", "dispatched_at"},
+    (IDENTITY, None): {"type", "pr", "pass", "head_sha", "launch_attempt", "dispatched_at",
+                       "default_non_goals"},
     (PROGRESS, STARTED): {"type", "unit", "status"},
     (PROGRESS, DONE): {"type", "unit", "status", "evidence"},
     (AMENDMENT, None): {"type", "ts", "reason", "proposed_unit"},
@@ -1027,34 +1028,38 @@ def check_default_non_goals(text: str, defaults: "list[str]", path: Path) -> Non
         )
 
 
-def check_intent_scope(intent: Path, ledger: Path) -> "list[str]":
-    """The intent still measures the CURRENT run scope: its run-default managed block matches the ledger
-    header's `default_non_goals`. ONE statement of that check, shared by BOTH doors where a scope that
-    drifted out from under a review would otherwise be measured against the wrong defaults:
+def current_default_non_goals(ledger: Path) -> "list[str]":
+    """The run header's CURRENT default Non-goals, decoded through the ledger's ONE accessor.
 
-    - `intent-check` runs it BEFORE a reviewer is launched — a pass never starts against stale defaults;
-    - `verify --ledger` runs it BEFORE a verdict is COUNTED — the hole this closes. A TRIVIAL PR at
-      `reviews_ok=0` with a review in flight can have its defaults BROADENED (`header set default_non_goals`
-      allows it while nothing is banked); the in-flight reviewer, measured against the NARROWER intent it was
-      dispatched with, returns SATISFIED; loop-control step 2 tallies that verdict BEFORE step 3 resyncs the
-      intent, and pass identity carries no scope digest — so a stale SATISFIED would meet the gate and MERGE
-      an area now in scope but never reviewed. At tally time the pass's `intent-<pr>.md` STILL fences the
-      scope the reviewer measured, while the header has already moved, so this comparison catches the drift
-      and the pass is refused (its verdict is superseded; the next heartbeat re-reviews under the new scope).
-
-    Symmetric by design: a mid-flight ADD (scope NARROWS) also voids the in-flight pass, which is SAFE — the
-    re-review is a superset — and matches the "any scope change voids in-flight work" posture. Returns the
-    run defaults (their count is all the pre-dispatch door reports).
+    Fails CLOSED (Defect -> `unusable`) on a malformed stored value, so neither the pre-dispatch intent door
+    nor the tally gate is ever run against a run scope that cannot even be read. This is the ONE place
+    `review-pass.py` turns the ledger header into the run's live scope; every consumer here reads it through
+    this, never the raw header value.
     """
     Lmod = load_ledger_module()
     header, _ = Lmod.load(ledger)
     try:
-        defaults = Lmod.default_non_goals(header)
+        return Lmod.default_non_goals(header)
     except ValueError as exc:
         raise Defect(
             f"{ledger}: header `default_non_goals` is malformed ({exc}) — the run defaults cannot be read, "
-            f"so the intent cannot be checked against them. Repair the ledger header"
+            f"so the run's scope cannot be checked. Repair the ledger header"
         )
+
+
+def check_intent_scope(intent: Path, ledger: Path) -> "list[str]":
+    """The intent still measures the CURRENT run scope: its run-default managed block matches the ledger
+    header's `default_non_goals`. This is the PRE-DISPATCH door and its ONLY door: `intent-check` runs it
+    BEFORE a reviewer is launched, so a pass never STARTS against stale defaults.
+
+    It does NOT gate the tally. A verdict's scope is bound into the immutable `pass_identity` at dispatch and
+    compared at tally by `check_scope` — never re-derived from this mutable intent block, which per-heartbeat
+    re-adoption RE-SYNCS to the header before the tally (so reading it at tally would let a stale-scope
+    SATISFIED through the moment the intent was resynced). This door only stops a launch against an intent
+    that is already stale; `stage-2-review-gate.md`, "Does this pass COUNT?", owns why the tally is bound,
+    not inferred. Returns the run defaults (their count is all the pre-dispatch door reports).
+    """
+    defaults = current_default_non_goals(ledger)
     check_default_non_goals(read_text(intent, "intent block"), defaults, intent)
     return defaults
 
@@ -1390,7 +1395,7 @@ def check_event(rec: dict, where: str) -> None:
             + (f"; unexpected key(s) {extra} — nothing reads them, so they are present and NOT COUNTED"
                if extra else "")
         )
-    for field in sorted(keys - {"proposed_unit"}):
+    for field in sorted(keys - {"proposed_unit", "default_non_goals"}):
         if not isinstance(rec[field], str):
             # MUTATE:non-string:continue
             raise Defect(
@@ -1504,15 +1509,35 @@ def walk_progress(events: "list[dict]", units: "dict[str, dict]") -> "tuple[set[
     return announced, done
 
 
+def _canonical_scope(value: object) -> "list[str] | None":
+    """The canonical form of a `pass_identity`'s `default_non_goals` binding, or None when `value` is not one.
+
+    Reuses ledger.py `parse_default_non_goals` — the ONE validator for this list — so the pass's dispatch-time
+    scope binding obeys EXACTLY the rules the run header does. `value` must be a native JSON array ALREADY in
+    canonical form (a list of unique, trimmed, single-line strings in declared order, `[]` when the run
+    declares none); anything else — a non-list, a non-string entry, a blank/multi-line/duplicate one, or a
+    non-canonical ordering — returns None, so the caller fails closed exactly as `head_sha` does on a value
+    that is not a commit id.
+    """
+    if not isinstance(value, list):
+        return None
+    try:
+        canon = load_ledger_module().parse_default_non_goals(json.dumps(value))
+    except ValueError:
+        return None
+    return canon if canon == value else None
+
+
 def check_identity_shape(ident: dict, where: str) -> None:
     """Every VALUE in a `pass_identity`, checked once — and therefore at BOTH doors, because `identity`
     (write) and `check_identity` (read) both call this and there is no second implementation to drift.
 
-    The identity is the pass's attempt id and its dispatch clock, and three rules downstream depend on it:
-    a late verdict is ignored unless its attempt id still matches; the ~5-minute launch deadline is
-    measured from `dispatched_at`; `launch_attempt` is how a *later* heartbeat — possibly a fresh agent — knows
-    how many times the pass was already relaunched. Every one of those is a COMPARISON, and a comparison against a
-    malformed value is not one.
+    The identity is the pass's attempt id, its dispatch clock, AND the run scope it was DISPATCHED under, and
+    four rules downstream depend on it: a late verdict is ignored unless its attempt id still matches; the
+    ~5-minute launch deadline is measured from `dispatched_at`; `launch_attempt` is how a *later* heartbeat —
+    possibly a fresh agent — knows how many times the pass was already relaunched; and `default_non_goals` is
+    the scope the pass's verdict is measured against at tally (`check_scope`). Every one of those is a
+    COMPARISON, and a comparison against a malformed value is not one.
     """
     # FOUR IDENTIFIERS, ONE VALIDATOR. The sha rule and the number rules used to be written out here, and
     # writing a rule out is how it comes to exist in two places: the sha is ALSO what `verify`'s caller
@@ -1534,6 +1559,15 @@ def check_identity_shape(ident: dict, where: str) -> None:
             f"time. A month 99 is not a month. The shape check alone could not fire on this, and the "
             f"deadline it exists to protect is measured by ARITHMETIC on this value: a moment that does "
             f"not exist is one no clock ever passes"
+        )
+    if _canonical_scope(ident["default_non_goals"]) is None:
+        # MUTATE:identity-scope:pass
+        raise Defect(
+            f"{where}: `default_non_goals` is {ident['default_non_goals']!r} — the pass's DISPATCH-TIME scope "
+            f"binding must be a canonical JSON array of run-default Non-goals (a list of unique, trimmed, "
+            f"single-line strings in declared order, `[]` when the run declares none), stored DIRECTLY so "
+            f"`verify --ledger` can compare it to the run's CURRENT defaults (`check_scope`). It is the scope "
+            f"analogue of `head_sha`: an immutable binding, fail-closed on malformed, never repaired"
         )
 
 
@@ -1596,6 +1630,34 @@ def check_head(ident: dict, head_sha: str) -> None:
         raise Defect(
             f"this pass ran on {ident['head_sha']} but the PR's head is {head_sha} — its verdict describes "
             f"content that is no longer there, and PR content changing is exactly what voids a tally"
+        )
+
+
+def check_scope(ident: dict, current: "list[str]") -> None:
+    """The pass's DISPATCH-TIME default-non-goals binding against the run's CURRENT defaults — the scope
+    analogue of `check_head`, and the ONE thing the tally gate measures scope against.
+
+    A verdict counts only if the run's review scope is still the scope the pass was DISPATCHED under, and
+    that scope is BOUND into the immutable `pass_identity` at dispatch — never INFERRED from the mutable
+    `intent-<pr>.md`. That distinction is the whole point: per-heartbeat re-adoption RE-SYNCS the in-flight
+    PR's intent block to the header BEFORE the tally, so a check that read the intent at tally would pass the
+    instant the intent was resynced — and a stale-scope SATISFIED (earned under the OLD defaults) would count,
+    merging an area the operator has since brought back into scope but nobody reviewed. Binding the scope at
+    dispatch closes that: it is fixed the moment the reviewer is launched and no later re-sync can move it.
+
+    So this compares the bound scope to the header's live `default_non_goals`; a mismatch VOIDS the tally
+    exactly as a moved head does, and the next heartbeat re-reviews under the new scope. It is symmetric — a
+    mid-flight ADD (scope NARROWS) also voids the pass, which is safe, the re-review being a superset.
+    `check_identity_shape` has already proven the binding is a canonical list, so this only compares.
+    """
+    bound = ident["default_non_goals"]
+    if bound != current:
+        # MUTATE:identity-scope-drift:pass
+        raise Defect(
+            f"this pass was DISPATCHED under default Non-goals {bound!r} but the run's current defaults are "
+            f"{current!r} — the operator changed the run's review scope while this review was in flight, so "
+            f"its verdict describes a scope that has moved. Like a moved head, that voids the tally; the next "
+            f"heartbeat re-reviews under the new scope"
         )
 
 
@@ -1762,13 +1824,17 @@ def evaluate_detail(progress: Path, head_sha: str, ruled: int = 0,
         ipath = intent_path(progress.parent, pr)
         # MUTATE:intent-required:pass
         load_intent(ipath)
-        # A verdict is only countable if the intent the reviewer measured STILL fences the run's CURRENT
-        # scope. When a `--ledger` reaches here (from `verify --ledger`), a pass whose defaults drifted out
-        # from under it is refused as `unusable` via the shared door — the stale SATISFIED never counts, and
-        # the next heartbeat re-reviews under the new scope. `check_intent_scope` owns why.
+        # A verdict is only countable if the run's review scope is STILL the scope the pass was DISPATCHED
+        # under. When a `--ledger` reaches here (from `verify --ledger`), the pass's DISPATCH-TIME
+        # `pass_identity.default_non_goals` binding is compared to the header's live `default_non_goals`; a
+        # pass whose scope drifted out from under it is refused as `unusable`. The binding — not the mutable
+        # `intent-<pr>.md`, which re-adoption RE-SYNCS before the tally — is what fences the scope here.
+        # `check_scope` owns why.
         # MUTATE:intent-scope-synced:pass
         if ledger is not None:
-            check_intent_scope(ipath, ledger)
+            # `events[0]` is the `pass_identity`: `check_progress_file` ran `check_identity`, which refuses any
+            # file whose first line is not it, so this is the validated, canonical-scope binding.
+            check_scope(events[0], current_default_non_goals(ledger))
         outcome, reason = decide(events, units, ruled, load_findings(progress), report["verdict"])
         return outcome, reason, report
     except Defect as exc:
@@ -2076,12 +2142,24 @@ def cmd_identity(args) -> int:
             f"line — `verify` refuses the pass for exactly that, so writing here would produce an artifact "
             f"this tool would then refuse to read"
         )
+    # The dispatch-time scope binding: the run's default Non-goals, canonicalized through the ledger's ONE
+    # validator and stored DIRECTLY as a JSON array (never a hash). `verify --ledger` compares this immutable
+    # value to the run's CURRENT defaults, so a scope the operator later moves voids the tally (`check_scope`).
+    try:
+        scope = load_ledger_module().parse_default_non_goals(args.default_non_goals)
+    except ValueError as exc:
+        # MUTATE:identity-scope-flag:scope = []
+        raise Defect(
+            f"--default-non-goals {args.default_non_goals!r} is not a canonical JSON array of run-default "
+            f"Non-goals ({exc}) — pass the run header's `default_non_goals` value verbatim (`[]` when the run "
+            f"declares none). It is the immutable scope this pass's verdict is measured against"
+        )
     rec: "dict[str, object]" = {
         "type": IDENTITY, "pr": pr, "pass": npass, "head_sha": args.head_sha,
-        "launch_attempt": attempt, "dispatched_at": args.dispatched_at,
+        "launch_attempt": attempt, "dispatched_at": args.dispatched_at, "default_non_goals": scope,
     }
     # The SAME two functions the read side runs — so a `pass_identity` this door writes is one `verify`
-    # can never call malformed, and the sha/clock rules exist in exactly one place.
+    # can never call malformed, and the sha/clock/scope rules exist in exactly one place.
     check_event(rec, "the pass_identity you asked to write")
     check_identity_shape(rec, "the pass_identity you asked to write")
     # …and then the file it would PRODUCE, through the read side's own whole-file function. The EMPTY plan
@@ -2247,11 +2325,11 @@ def cmd_verify(args) -> int:
             f"a ruling can only ever answer an amendment that EXISTS, and an over-count would silently "
             f"clear the next one the reviewer raises"
         )
-    # `--ledger` opts into the pre-tally scope-sync check: a pass whose intent no longer matches the run's
-    # CURRENT `default_non_goals` is not countable (`check_intent_scope`). The ledger and the pass are two
-    # artifacts of ONE run and share its directory; a `--ledger` from a DIFFERENT run would measure the pass
-    # against the wrong scope, so — like `intent-check` — that pairing is enforced here, as an OPERATOR
-    # mistake (exit 2), not a verdict about the pass.
+    # `--ledger` opts into the pre-tally scope check: a pass whose DISPATCH-TIME `pass_identity`
+    # `default_non_goals` binding no longer matches the run's CURRENT `default_non_goals` is not countable
+    # (`check_scope`). The ledger and the pass are two artifacts of ONE run and share its directory; a
+    # `--ledger` from a DIFFERENT run would measure the pass against the wrong scope, so — like `intent-check`
+    # — that pairing is enforced here, as an OPERATOR mistake (exit 2), not a verdict about the pass.
     ledger: "Path | None" = None
     if args.ledger is not None:
         ledger = Path(args.ledger)
@@ -2286,8 +2364,10 @@ def cmd_intent_check(args) -> int:
             f"checked against ITS run's defaults, never another run's. Pass the run's own state.jsonl"
         )
     sections = load_intent(path)
-    # The scope-sync check is `check_intent_scope`, shared verbatim with `verify --ledger` (the pre-tally
-    # door) so the pre-dispatch and pre-tally doors can never judge "in sync" differently.
+    # The scope-sync check is `check_intent_scope`, the PRE-DISPATCH door: it refuses launching a reviewer
+    # against an intent whose managed block already drifted from the header. The tally gate does NOT re-run
+    # it — a verdict's scope is bound into `pass_identity` at dispatch and compared by `check_scope` — so
+    # this door and the tally judge scope from different, deliberately-separate inputs.
     defaults = check_intent_scope(path, ledger_path)
     print(
         f"ok: {path} is a usable intent block, in sync with {len(defaults)} run default Non-goal(s) "
@@ -2891,6 +2971,9 @@ def build_parser() -> "tuple[argparse.ArgumentParser, list[str]]":
     i.add_argument("--file", required=True, help="the launch attempt's progress.jsonl — it must not exist yet")
     i.add_argument("--head-sha", required=True, help="`git rev-parse HEAD` — 40 hex, NEVER an abbreviation")
     i.add_argument("--dispatched-at", required=True, help="UTC ISO-8601, e.g. 2026-07-06T00:00:00Z")
+    i.add_argument("--default-non-goals", required=True,
+                   help="the run header's `default_non_goals` value (a canonical JSON array, `[]` when the run "
+                        "declares none) — the immutable scope this pass's verdict is measured against at tally")
 
     a = sub.add_parser("plan-add", help="append one validated unit to a pass's plan")
     a.add_argument("--file", required=True, help="the pass's plan.jsonl")
@@ -2945,10 +3028,10 @@ def build_parser() -> "tuple[argparse.ArgumentParser, list[str]]":
                         "N >= 0, and never more than the pass actually raised (default 0)")
     v.add_argument("--ledger",
                    help="the run's state.jsonl (same run directory as --file) — opts into the pre-tally "
-                        "scope-sync check: a pass whose intent-<pr>.md no longer matches the header's "
-                        "current `default_non_goals` is refused as `unusable`, so a verdict measured against "
-                        "superseded defaults is never counted. Loop-control step 2 passes it before recording "
-                        "a verdict")
+                        "scope check: a pass whose DISPATCH-TIME `pass_identity.default_non_goals` binding no "
+                        "longer matches the header's current `default_non_goals` is refused as `unusable`, so "
+                        "a verdict measured against superseded defaults is never counted. Loop-control step 2 "
+                        "passes it before recording a verdict")
     # Narrow compatibility only. Older installed prose supplied this value; accepting it avoids an abrupt
     # CLI break while making it unable to influence the gate. `cmd_verify` never reads it. Suppress it from
     # help so new callers use the active report, the sole authority.

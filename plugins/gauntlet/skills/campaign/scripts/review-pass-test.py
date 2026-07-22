@@ -172,7 +172,7 @@ class Tables:
 
         def ident(**over: Value) -> str:
             return _rec({"type": R.IDENTITY, "pr": "41", "pass": "1", "head_sha": SHA,
-                         "launch_attempt": "1", "dispatched_at": TS}, over)
+                         "launch_attempt": "1", "dispatched_at": TS, "default_non_goals": []}, over)
 
         def unit(uid: str = "u01", **over: Value) -> str:
             return _rec({"type": R.UNIT, "id": uid, "kind": "file", "target": "scripts/review-pass.py",
@@ -302,6 +302,13 @@ class Tables:
                                        "A DATE THAT CANNOT EXIST, in the right SHAPE. The regex matched it and the whole pass verified `ok` — month 99, hour 99. The shape check could not fire on the one input that defeats the deadline it protects"),
             "identity-missing-key": (PLAN, [ident(dispatched_at=DROP), done("u01")], UNUSABLE, "carries EXACTLY",
                                      "a pass_identity with no dispatch clock at all"),
+            "identity-noncanonical-scope": (PLAN, [ident(default_non_goals=["dup", "dup"]), done("u01"), done("u02")],
+                                            UNUSABLE, "DISPATCH-TIME scope",
+                                            "a pass_identity whose default_non_goals binding is not a canonical list "
+                                            "(a duplicate entry) — the scope analogue of a truncated sha, fail-closed"),
+            "identity-scope-not-list": (PLAN, [ident(default_non_goals="area X"), done("u01"), done("u02")],
+                                        UNUSABLE, "DISPATCH-TIME scope",
+                                        "the scope binding stored as a bare STRING, not the JSON array `verify --ledger` compares"),
 
             # The plan.
             "plan-empty": ([], WORKED, UNUSABLE, "VACUOUSLY TRUE",
@@ -418,22 +425,29 @@ class Tables:
                       + "\n\n## Non-goals\n- a pr specific exclusion\n" + _mb_tail)
         MB_NON_BULLET = _mb_head + MS + "\n- run default one\nnot a bullet line\n" + ME + _mb_tail
 
-        # --- `verify --ledger`: the PRE-TALLY scope-sync check (fu, finding B) ---------------------------
-        # A complete, SATISFIED pass whose intent-<pr>.md carries a run-default managed block for ["area X"].
-        # The reviewer measured that narrower scope. If the operator has since BROADENED the header (removed
-        # X) while this pass was in flight, a bare `verify` still counts the stale SATISFIED and the PR merges
-        # with X — now in scope — never reviewed. `verify --ledger` closes that: at tally time the intent
-        # still fences [X] while the header says [], so the pass is refused as `unusable`. Each case's intent
-        # text is folded through the REAL module (never the mutant) — it is fixed test data, not under test.
-        _intent_x = R.merge_default_non_goals(INTENT, ["area X"], Path(INTENT_FILE))
-        # name -> (intent text, ledger defaults, ledger in a SIBLING dir?, want exit, needle)
-        self.LEDGER_CASES: "dict[str, tuple[str, list[str], bool, int, str]]" = {
-            # broadening drift: intent fences [X], header now [] -> the stale SATISFIED must NOT count
-            "scope-drift-refused": (_intent_x, [], False, 1, "OUT OF SYNC"),
-            # in sync: intent fences [X], header still [X] -> the pass counts, exactly as a bare verify would
-            "in-sync-counts": (_intent_x, ["area X"], False, 0, "report-verdict=satisfied"),
+        # --- `verify --ledger`: the DISPATCH-TIME scope binding at tally (fu, finding B) ------------------
+        # A complete, SATISFIED pass DISPATCHED under the run defaults ["area X"] — the scope is bound into the
+        # immutable `pass_identity.default_non_goals`, NOT inferred from the mutable intent-<pr>.md. If the
+        # operator BROADENS the header (removes X) while this pass is in flight, the stale SATISFIED (earned
+        # under [X], X now removed) must NOT count, or area X merges unreviewed. The tuple sets the identity's
+        # BOUND scope, the intent block's defaults (to prove the tally IGNORES it), and the header's live
+        # defaults independently — so a case can reproduce the exact defeat the mutable-intent check missed:
+        # re-adoption RE-SYNCS the intent to [] before the tally, yet the pass is still refused because the
+        # BINDING says [X]. Each intent text is folded through the REAL module — fixed test data, not under test.
+        # name -> (identity-bound scope, intent-block defaults, header defaults, ledger in a SIBLING dir?, want exit, needle)
+        self.LEDGER_CASES: "dict[str, tuple[list[str], list[str], list[str] | str, bool, int, str]]" = {
+            # THE DEFEAT, CLOSED: pass bound to [X]; the intent has been RE-SYNCED to [] to MATCH the header
+            # (the exact move the mutable-intent check waved through) — yet the pass is refused, because the
+            # tally reads the BINDING, not the intent.
+            "resynced-intent-stale-scope-refused": (["area X"], [], [], False, 1, "DISPATCHED under"),
+            # symmetric: a mid-flight ADD narrows scope; the binding [] no longer matches [X] -> voided (safe)
+            "scope-added-refused": ([], ["area X"], ["area X"], False, 1, "DISPATCHED under"),
+            # in sync: bound to [X], header still [X] -> the pass counts, exactly as a bare verify would
+            "in-sync-counts": (["area X"], ["area X"], ["area X"], False, 0, "report-verdict=satisfied"),
+            # a malformed header default_non_goals -> the run scope cannot be read -> fail closed, never count
+            "malformed-header-fails-closed": ([], [], "not-json{", False, 1, "malformed"),
             # a --ledger from ANOTHER run measures the pass against the wrong scope -> operator error (exit 2)
-            "cross-run-refused": (_intent_x, ["area X"], True, 2, "same run directory"),
+            "cross-run-refused": (["area X"], ["area X"], ["area X"], True, 2, "same run directory"),
         }
 
         self.FINDING_CASES: "dict[str, tuple]" = {
@@ -827,19 +841,23 @@ class Tables:
              "HEADLINE, WRITE DOOR: THE FINDING. `plan-add --id ' u01 '` used to exit 0 while this door silently STRIPPED the padding — so the plan held a unit whose progress could never be recorded"),
             (["emit", "--unit", "u02", "--status", "started"], [ident(), '{"type":"progress","unit_id":"u01","status":"done","evidence":"x"}'], 1, "carries EXACTLY",
              "the file it is APPENDING TO is evidence too: a hand-written line already in it makes the pass unusable"),
-            (["identity", "--head-sha", SHA, "--dispatched-at", TS], EMPTY, 0, '"launch_attempt":"1"',
+            (["identity", "--head-sha", SHA, "--dispatched-at", TS, "--default-non-goals", "[]"], EMPTY, 0, '"launch_attempt":"1"',
              "the line that was a `printf` — pr/pass/attempt now come from the FILENAME"),
-            (["identity", "--head-sha", SHA[:7], "--dispatched-at", TS], EMPTY, 1, "escaped into this repo's real state",
+            (["identity", "--head-sha", SHA, "--dispatched-at", TS, "--default-non-goals", '["area X"]'], EMPTY, 0, '"default_non_goals":["area X"]',
+             "the dispatch-time scope binding is stored DIRECTLY as a JSON array — the immutable value the tally compares to the run's current defaults"),
+            (["identity", "--head-sha", SHA, "--dispatched-at", TS, "--default-non-goals", "not-json"], EMPTY, 1, "canonical JSON array",
+             "a malformed `--default-non-goals`: the run scope must decode through the ledger's ONE validator, or the binding names no scope"),
+            (["identity", "--head-sha", SHA[:7], "--dispatched-at", TS, "--default-non-goals", "[]"], EMPTY, 1, "escaped into this repo's real state",
              "HEADLINE, WRITE DOOR: the truncated sha that got written into a real pass_identity"),
-            (["identity", "--head-sha", SHA.upper(), "--dispatched-at", TS], EMPTY, 1, "LOWERCASE",
+            (["identity", "--head-sha", SHA.upper(), "--dispatched-at", TS, "--default-non-goals", "[]"], EMPTY, 1, "LOWERCASE",
              "an UPPERCASE sha: no producer of ours emits one, so it did not come from `git rev-parse`"),
-            (["identity", "--head-sha", SHA, "--dispatched-at", "just now"], EMPTY, 1, "LAUNCH DEADLINE's clock",
+            (["identity", "--head-sha", SHA, "--dispatched-at", "just now", "--default-non-goals", "[]"], EMPTY, 1, "LAUNCH DEADLINE's clock",
              "a dispatch clock the launch deadline cannot be measured from"),
-            (["identity", "--head-sha", SHA, "--dispatched-at", "2026-99-99T99:99:99Z"], EMPTY, 1, "not a real UTC time",
+            (["identity", "--head-sha", SHA, "--dispatched-at", "2026-99-99T99:99:99Z", "--default-non-goals", "[]"], EMPTY, 1, "not a real UTC time",
              "…and the one the SHAPE rule cannot see: an impossible date in the right shape"),
-            (["identity", "--head-sha", OTHER_SHA, "--dispatched-at", TS], [ident()], 1, "NOT EMPTY",
+            (["identity", "--head-sha", OTHER_SHA, "--dispatched-at", TS, "--default-non-goals", "[]"], [ident()], 1, "NOT EMPTY",
              "a SECOND identity into a live pass's file — how one pass ends up describing two commits"),
-            (["identity", "--head-sha", SHA, "--dispatched-at", TS], [""], 1, "NOT EMPTY",
+            (["identity", "--head-sha", SHA, "--dispatched-at", TS, "--default-non-goals", "[]"], [""], 1, "NOT EMPTY",
              "HEADLINE, WRITE DOOR: a WHITESPACE-ONLY file. This door decided 'empty' with `.strip()`, wrote the identity below the blank line, exited 0 — and `verify` then refused the artifact FOR THAT BLANK LINE. EMPTY now means NO BYTES, at both doors"),
             (["verify", "--head-sha", SHA[:7], "--verdict", "satisfied"], EMPTY, 2, "No verdict beats a wrong one",
              "an OPERATOR error is not a snapshot verdict: exit 2"),
@@ -996,7 +1014,7 @@ class Tables:
 
         self.WRITE_COMMANDS: "dict[str, tuple[str, list[str]]]" = {
             "emit": (PROGRESS_FILE, ["--unit", "u01", "--status", R.STARTED]),
-            "identity": (PROGRESS_FILE, ["--head-sha", SHA, "--dispatched-at", TS]),
+            "identity": (PROGRESS_FILE, ["--head-sha", SHA, "--dispatched-at", TS, "--default-non-goals", "[]"]),
             "plan-add": (PLAN_FILE, ["--id", "u09", "--kind", "file", "--target", "x.py", "--check", "a"]),
             "plan-waive": (PLAN_FILE, ["--dimension", "docs", "--reason", "internal-only change"]),
             "amend": (PROGRESS_FILE, ["--reason", "harness gap", "--id", "u09", "--kind", "file",
@@ -1032,7 +1050,7 @@ class Tables:
 
         self.FLAG_VALUES: "dict[str, list[str]]" = {
             "--unit": ["u01"], "--status": [R.STARTED], "--evidence": ["f.py:1"],
-            "--head-sha": [SHA], "--dispatched-at": [TS],
+            "--head-sha": [SHA], "--dispatched-at": [TS], "--default-non-goals": ["[]"],
             "--id": ["u09"], "--kind": ["file"], "--target": ["x.py"], "--check": ["a"],
             "--reason": ["no unit covers the harness"],
             "--dimension": ["docs"], "--tier": ["TRIVIAL"],
@@ -1405,7 +1423,7 @@ RULE_FUNCTIONS = (
     "hook", "read_text", "parse_lines", "read_lines", "check_id", "check_unit", "check_waiver",
     "plan_records", "load_plan",
     "check_event", "check_progress", "walk_progress", "check_identity_shape", "check_identity",
-    "check_head", "check_progress_file", "check_plan_file", "parse_report", "decide", "parse_name", "check_ruled",
+    "check_head", "check_scope", "check_progress_file", "check_plan_file", "parse_report", "decide", "parse_name", "check_ruled",
     "before_text", "write_line", "cmd_emit", "cmd_identity", "cmd_plan_add", "cmd_plan_waive",
     "cmd_plan_check", "cmd_verify",
     # …and the FINDINGS side: the intent, the anchor, the writer, and the artifact they live in.
@@ -1564,7 +1582,7 @@ def cross_door(mod: types.ModuleType, tmp: Path) -> "dict[str, tuple[str, str]]"
                 got[key] = (HOLDS, f"the PLAN door REFUSED it (exit {code}), so no plan can hold it: "
                                    f"{text.strip()}")
                 continue
-            run_cli(mod, ["identity", "--file", str(progress), "--head-sha", SHA, "--dispatched-at", TS])
+            run_cli(mod, ["identity", "--file", str(progress), "--head-sha", SHA, "--dispatched-at", TS, "--default-non-goals", "[]"])
             code, text = run_cli(mod, ["emit", "--file", str(progress), "--unit", uid, "--status", "started"])
             got[key] = ((HOLDS if code == 0 else VIOLATED),
                         f"the plan door PLANNED it, and the emit door exited {code}: {text.strip()}")
@@ -1662,8 +1680,13 @@ def run_cases(mod: types.ModuleType, T: Tables, tmp: Path) -> "dict[str, tuple[s
             got[find_key(i, fname)] = (f"exit{code}", text)
         except Exception as exc:  # noqa: BLE001
             got[find_key(i, fname)] = (f"crash:{type(exc).__name__}", str(exc))
-    for name, (intent_text, defaults, sibling, _, _) in T.LEDGER_CASES.items():  # drops want, needle
-        path = build(tmp, f"ledger-{name}", T.PLAN, T.WORKED, intent=intent_text)
+    for name, (bound_scope, intent_defaults, defaults, sibling, _, _) in T.LEDGER_CASES.items():  # drops want, needle
+        # The identity carries the DISPATCH-TIME scope binding; the intent block carries `intent_defaults`
+        # (which the tally must IGNORE); the header carries `defaults`. A resynced-but-stale case sets the
+        # intent to MATCH the header while the binding names the old scope — the exact defeat.
+        intent_text = mod.merge_default_non_goals(INTENT, intent_defaults, Path(INTENT_FILE))
+        worked = [T.ident(default_non_goals=list(bound_scope))] + T.WORKED[1:]
+        path = build(tmp, f"ledger-{name}", T.PLAN, worked, intent=intent_text)
         run_dir = path.parent
         ledger_dir = run_dir.parent / f"ledger-{name}-otherrun" if sibling else run_dir
         ledger_dir.mkdir(parents=True, exist_ok=True)
@@ -1698,9 +1721,10 @@ def expectations(T: Tables) -> "dict[str, tuple[str, str, str]]":
     out.update({find_key(i, p): (f"exit{c}", needle, why)
                 for i, (p, _, c, needle, why) in enumerate(T.FINDING_CLI_CASES)})  # drops argv
     out.update({f"[ledger] {n}": (f"exit{c}", needle,
-                                  "`verify --ledger` refuses a pass whose intent scope drifted from the "
-                                  "run's current default_non_goals — a stale-scope SATISFIED never counts")
-                for n, (_, _, _, c, needle) in T.LEDGER_CASES.items()})  # drops intent, defaults, sibling
+                                  "`verify --ledger` refuses a pass whose DISPATCH-TIME pass_identity scope "
+                                  "binding drifted from the run's current default_non_goals — a stale-scope "
+                                  "SATISFIED never counts, even when the mutable intent was resynced to match")
+                for n, (_, _, _, _, c, needle) in T.LEDGER_CASES.items()})  # drops bound, intent, defaults, sibling
     # The two PROPERTIES. Their expectation IS the property and not a particular rule — demanding a needle
     # would be demanding a specific defect where the case only demands a sound outcome.
     out.update({f"[round-trip] {cmd} on a {state} file": (
@@ -2184,7 +2208,7 @@ def check_amendment_door(R: types.ModuleType, tmp: Path) -> int:
     # 1) The owner's door: raise the amendment, then the parsed DEFERRED report must route `amended`.
     d = seed("owner")
     progress = d / PROGRESS_FILE
-    run_cli(R, ["identity", "--file", str(progress), "--head-sha", SHA, "--dispatched-at", TS])
+    run_cli(R, ["identity", "--file", str(progress), "--head-sha", SHA, "--dispatched-at", TS, "--default-non-goals", "[]"])
     code, out = run_cli(R, ["amend", "--file", str(progress), "--reason", "no unit covers the harness",
                             "--id", "u09", "--kind", "file", "--target", "harness.py", "--check", "it runs"])
     if code != 0 or "u09" not in out:
@@ -2216,7 +2240,7 @@ def check_amendment_door(R: types.ModuleType, tmp: Path) -> int:
     # 3) The reviewer-facing shim, as a caller runs it (subprocess) — its line `verify` accepts.
     d = seed("shim")
     progress = d / PROGRESS_FILE
-    run_cli(R, ["identity", "--file", str(progress), "--head-sha", SHA, "--dispatched-at", TS])
+    run_cli(R, ["identity", "--file", str(progress), "--head-sha", SHA, "--dispatched-at", TS, "--default-non-goals", "[]"])
     run = subprocess.run(  # noqa: S603 - our own script
         [sys.executable, str(AMENDMENT_WRAPPER), "--file", str(progress), "--reason", "harness gap",
          "--id", "u09", "--kind", "docs", "--target", "y.md", "--check", "b"],
@@ -2444,7 +2468,7 @@ def run(R: types.ModuleType, tmp: Path) -> int:
           f"{len(T.REPORT_CASES)} report fixtures + "
           f"{len(T.NAME_CASES)} name cases + "
           f"{len(T.CLI_CASES) + len(T.PLAN_CLI_CASES) + len(T.WAIVE_CLI_CASES) + len(T.PLAN_CHECK_CASES) + len(T.FINDING_CLI_CASES)} CLI cases + "
-          f"{len(T.LEDGER_CASES)} verify --ledger scope-sync cases + "
+          f"{len(T.LEDGER_CASES)} verify --ledger dispatch-scope-binding cases + "
           f"{len(T.WRITE_COMMANDS) * len(T.FILE_STATES)} round-trip cases + "
           f"{len(CROSS_DOOR_IDS)} cross-door cases + {len(T.BOUNDARY_CASES)} boundary cases "
           f"({len(T.DOMAINS)} bounded values, each probed JUST INSIDE and JUST OUTSIDE its declared "

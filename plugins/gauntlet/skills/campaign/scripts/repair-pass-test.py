@@ -466,7 +466,7 @@ def write_review_attempt(rundir: Path, round_no: int, attempt: int, head_sha: st
     progress = rundir / f"{stem}.progress.jsonl"
     records = [
         {"type": RP.IDENTITY, "pr": "1", "pass": str(round_no), "head_sha": head_sha,
-         "launch_attempt": str(attempt), "dispatched_at": "2026-07-20T01:02:03Z"},
+         "launch_attempt": str(attempt), "dispatched_at": "2026-07-20T01:02:03Z", "default_non_goals": []},
         {"type": RP.PROGRESS, "unit": "u01", "status": RP.STARTED},
         {"type": RP.PROGRESS, "unit": "u01", "status": RP.DONE,
          "evidence": "feature.txt:1-2 reviewed against the purpose"},
