@@ -393,6 +393,16 @@ def select_active_rounds(rundir: Path, pr: str,
     # More artifact passes than landed rounds: arbitrate the surplus by each pass's active report. Only an
     # explicit DEFERRED result marks a pass that legitimately landed no verdict; anything else means the
     # ledger and the artifacts disagree about what happened, which no bundle rule may settle.
+    #
+    # No pass_identity corroboration is performed on a skipped pass, deliberately. The listed round and
+    # attempt come from the FILENAME, which the artifact model makes the authoritative binding
+    # (review-pass.py parse_name: the filename is the only thing that says which pass and which launch
+    # attempt these bytes are), and the identity write door derives pr/pass/attempt from that filename at
+    # write time — so a pass_identity that disagrees can exist only if someone hand-edits this git-ignored
+    # run directory. The verdictless listing is advisory context for the reassessment worker: it feeds no
+    # verdict tally, no cap accounting, and no manifest, so the filename-derived entry stays correct even
+    # then. Landed rounds, whose interior events DO become gate evidence, are identity-checked in
+    # collect_rounds (RP.check_identity).
     landed: "list[int]" = []
     verdictless: "list[dict]" = []
     for round_no in actual:
