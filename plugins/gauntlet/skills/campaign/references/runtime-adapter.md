@@ -14,6 +14,11 @@ first wait or heartbeat. The gate rules do not change between hosts.
 `<campaign-invocation>` elsewhere in this skill means the active row above. A self-resume always adds
 exactly `--run <run-id> --token <agent-token>`; it never repeats `--new` or the original PR arguments.
 
+A **scheduled wake never schedules this invocation as the prompt**: it schedules the lean same-session
+wake prompt `heartbeat.py callback` prints, which embeds the invocation only as its not-in-context
+fallback ("Background work and heartbeats" below owns the shape and the reason). The invocation itself
+is for a user or a fresh session — starting, adopting, or manually resuming a run.
+
 Do not put either invocation in a shell command. These are host UI forms, not shell syntax.
 
 ## Bundled resources
@@ -249,7 +254,9 @@ to pin these mappings with hostile path/ref/payload and exact-byte fixtures.
 - Use a background or otherwise asynchronous worker whenever the host supports one.
 - Preserve each role's read/write limits and output artifact paths exactly.
 - If the host cannot create a fresh worker, an explicitly configured external reviewer may fill a
-  review role. It does not fill audit, mapper, reassessment, or fix roles.
+  review role. It does not fill audit, mapper, reassessment, fix, or reconcile roles (a missing
+  reconcile worker falls back to inline Step 1 — "Reconcile worker" below — never to an external
+  process).
 - If neither a native fresh worker nor the required role's allowed fallback exists, park the PR as a
   machine blocker. Never run a conversational-isolation gate inline merely to keep moving.
 
@@ -313,13 +320,20 @@ completion into the same reconcile loop regardless of the host mechanism that re
 
 For the heartbeat fallback, choose exactly one lifecycle:
 
-1. **Scheduled-heartbeat host:** do NOT hand-assemble the callback. Run `scripts/heartbeat.py callback`
+1. **Scheduled-heartbeat host:** do NOT hand-assemble the wake. Run `scripts/heartbeat.py callback`
    (resolve `scripts/` from the active `SKILL.md`, per **Bundled resources** above) with the host
    invocation, run-id, and token — `heartbeat.py callback --run <run-id> --token <agent-token>
    --invocation <campaign-invocation>` — render the status — the `ledger.py table` output
    `loop-control.md` "Reschedule or exit" defines — and then, as the turn's last action, schedule the
-   tool's **stdout** (the `<campaign-invocation> --run <run-id> --token <agent-token>` line it prints)
-   at the delay selected by `loop-control.md`. **On this host, scheduling ENDS THE TURN** — the
+   tool's **stdout** (the lean same-session wake prompt it prints)
+   at the delay selected by `loop-control.md`. **The wake fires into the SAME live session, where the
+   campaign skill is already loaded — so the prompt re-enters the loaded skill's heartbeat entry and
+   never LEADS with `<campaign-invocation>`**: on a slash-command host a leading invocation is a skill
+   re-invocation that re-injects the entire `SKILL.md` into the session on every wake, and a long
+   campaign then walks the driver into context exhaustion. The prompt carries exactly
+   `--run <run-id> --token <agent-token>` and embeds the full `<campaign-invocation> --run <run-id>
+   --token <agent-token>` line exactly once, as the explicit fallback for a session whose context no
+   longer holds the skill contract. **On this host, scheduling ENDS THE TURN** — the
    scheduler answers that there is nothing more to do this turn and the harness yields until the wakeup
    fires (verified empirically on Claude Code) — so the schedule call is ALWAYS the LAST action of a
    turn, and everything the turn still owes (status render, ledger writes, dispatches) happens BEFORE
@@ -327,11 +341,11 @@ For the heartbeat fallback, choose exactly one lifecycle:
    turn, and `acquire` plus the rest of setup run on the heartbeat that arming produced — the acquire
    proof is that arming, which is already done (`run-identity-and-lease.md`, "Take a run" owns the
    sequence; `loop-control.md` "Reschedule or exit" sizes the setup delay so a fresh run resumes in
-   about a minute instead of idling a full interval looking stalled). Letting the tool build the line
-   is what enforces the guarantee: the callback
+   about a minute instead of idling a full interval looking stalled). Letting the tool build the prompt
+   is what enforces the guarantee: the wake
    carries **only** `--run` and `--token` and **never** `--new`/`#PR` (start-time args that would mint a
    fresh run each heartbeat) or `--heartbeat-id` (an acquire-time proof) — and the tool refuses any value
-   that is empty or carries whitespace, closing the argument-injection seam. The future invocation begins
+   that is empty or carries whitespace, closing the argument-injection seam. The future wake begins
    at the heartbeat/reconcile entry.
 2. **Scheduler-less host:** keep the current campaign invocation alive, render the status (the
    `ledger.py table` output `loop-control.md` "Reschedule or exit" defines), and use the host's
@@ -342,6 +356,52 @@ For the heartbeat fallback, choose exactly one lifecycle:
 The second path is how Codex CLI sessions operate when no scheduled-heartbeat capability is available. If
 the process is killed, durable run state and the lease takeover rules allow a later invocation to resume;
 the skill does not pretend a heartbeat was scheduled when none was.
+
+### The wake resumes the SAME session — plan the hand-off
+
+A scheduled wake is NOT a fresh agent instance: it resumes the same live session, and everything that
+session has already seen stays in its context. Every wake and every task completion adds to it, so a
+long campaign's driver grows even though the durable state needs none of that history. The lean wake
+prompt above and the reconcile worker below **bound** the per-wake cost; they do not zero it.
+
+For a long campaign, the fresh context the design assumes comes from the **hand-off**: end the session
+and resume in a fresh one with `<campaign-invocation> --run <run-id>` — the durable state exists
+precisely so a fresh instance rebuilds everything (`loop-control.md`, "Resume after a killed session").
+When the driver's context is visibly heavy, say so in the status render and recommend that hand-off
+rather than walking silently toward a context limit.
+
+### Reconcile worker — heartbeat Step 1 in a fresh context
+
+`loop-control.md` Step 1 — the snapshot, fact routing, ledger refresh, and label reconcile — is the
+token-heavy body of every heartbeat, and nothing in it needs the driver's accumulated context. On a
+host with a fresh-worker mechanism, a heartbeat that RESUMES an already-bound run executes Step 1
+through ONE fresh reconcile worker, and the driver executes Steps 2–5 from its report. Inline Step 1 is
+the fallback, not a peer option: take it only when the host has no fresh-worker mechanism or the
+dispatched worker dies or returns an unusable report.
+
+- Dispatch the worker synchronously in the `session` class (routing facts and judging a head move are
+  judgment calls — never `economy`). Pass it: the run-id, the owner token, `<rundir>`, the absolute
+  `<skill-dir>`, the `RepositoryContext` paths, and the driver's live-task inventory (which background
+  tasks are still in flight — a fact only the driver holds).
+- The worker reads `loop-control.md` Step 1 and its owners from `<skill-dir>/references/` itself and
+  executes the step exactly as written — the same accessors, the same ledger and label writes, the
+  same refusal handling. Delegation changes WHO executes the step, never WHAT it does.
+- It acts as the owner's delegate under the owner's token — it refreshes the lease as Step 1 specifies
+  and is not a second driver: the driver blocks on it, so each run still has exactly one actor at a
+  time.
+- It returns a COMPACT report, not transcripts: the lease verdict, the nudge reminders, per-PR routed
+  facts with the resulting ledger state, completions awaiting Step 2, due-work candidates for Step 3,
+  and any question that must be surfaced to the user.
+- The worker launches no background task, records no verdict, merges nothing, schedules nothing, and
+  prompts no one — gates and merges stay centralized in the driver (`SKILL.md`). The driver acts on
+  the report the way Steps 2–5 already prescribe, including every per-action guard those steps name
+  (`dispatch-check`, `review-pass.py verify`, `base-preflight.py`, `merge-check.py`): the report tells
+  the driver where to look; it never replaces a guard.
+- A `superseded` or refused lease verdict in the report stands the driver down exactly as if it had
+  run Step 1 inline.
+- First invocation, fresh-run setup, adoption of `#PR` args, and the finished-run prompt stay in the
+  driver: they are arg-driven and interactive. A worker that finds nothing live — or every row
+  terminal — reports that fact, and the driver takes the matching Step 1 branch itself.
 
 ### Session watchdog nudge
 

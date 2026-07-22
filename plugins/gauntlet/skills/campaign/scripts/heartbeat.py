@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
-"""Emit the scheduled heartbeat and session-watchdog commands.
+"""Emit the scheduled heartbeat and session-watchdog wake prompts.
 
-A scheduled heartbeat is the SAME owner resuming its own run, so when that callback runs it goes through
-`lease.py`'s REFRESH path, not `acquire`. Per the single-user policy (`AGENTS.md`), an owner's refresh needs
-NO heartbeat proof. So the callback this tool prints carries ONLY two flags:
+A scheduled wake fires INTO THE SAME LIVE SESSION — it is the SAME owner resuming its own run, one turn
+later, with the campaign skill contract already loaded. It is NOT a fresh agent instance. So the wake this
+tool prints is a LEAN PROMPT that re-enters the loaded skill's heartbeat entry; it does NOT lead with the
+campaign invocation, because on a slash-command host a leading invocation re-injects the entire `SKILL.md`
+into the session on every wake, and over a long campaign that walks the driver into context exhaustion
+(field feedback from a live 8-PR run). The invocation appears exactly once, at the tail, as the explicit
+fallback for a session whose context no longer holds the skill contract.
 
-    <invocation> --run <run-id> --token <agent-token>
+The wake carries ONLY two flags:
 
-and nothing else. In particular:
+    --run <run-id> --token <agent-token>
+
+and never any other. A resuming owner goes through `lease.py`'s REFRESH path, not `acquire` — per the
+single-user policy (`AGENTS.md`), an owner's refresh needs NO heartbeat proof. In particular:
 
 - It NEVER carries `--heartbeat-id`. That is an ACQUIRE-TIME proof — minted when the heartbeat is armed and
   handed to `lease.py acquire` to take the run. A resuming heartbeat refreshes and re-proves nothing, so the
-  proof has no place in the callback. (This is the one thing the old `lease.py` NO_HEARTBEAT message got
+  proof has no place in the wake. (This is the one thing the old `lease.py` NO_HEARTBEAT message got
   wrong, and this tool is the corrected owner of that command.)
 - It NEVER carries `--new` or a `#PR` argument. Those are START-TIME args that CREATE or ADOPT a run;
   replaying them on every heartbeat would mint a fresh run each wake. `--run` RESUMES the existing one.
@@ -23,7 +30,7 @@ adds `--watchdog`, which makes the campaign audit its soundness before reschedul
 recovery path and never claims to survive a dead session.
 
 This tool does NOT arm either wake. Arming is the host's own scheduler call, which is an agent-only action
-that cannot be scripted — `runtime-adapter.md` owns that mechanism. This tool only PRINTS the command the
+that cannot be scripted — `runtime-adapter.md` owns that mechanism. This tool only PRINTS the prompt the
 agent then schedules through it.
 """
 
@@ -35,26 +42,40 @@ from pathlib import Path
 
 from _gauntlet.modules import load_module_from_path
 
-DESCRIPTION = "Print a scheduled heartbeat or session-watchdog campaign command."
+DESCRIPTION = "Print a scheduled heartbeat or session-watchdog wake prompt."
 
 _HERE = Path(__file__).resolve().parent
 SIBLING = _HERE / "heartbeat-test.py"
 
 
-def callback_command(invocation: str, run_id: str, token: str) -> str:
-    """Assemble the scheduled-heartbeat callback: EXACTLY two flags, `--run` and `--token`.
+def _wake_prompt(intro: str, invocation: str, flags: str) -> str:
+    """One lean same-session wake shape for both wakes: intro, the two-flag identity, then the
+    invocation exactly once as the not-in-context fallback — never as the leading token, where a
+    slash-command host would expand it into a full skill re-injection every wake."""
+    return (f"{intro} — {flags}. Only if the campaign skill contract is no longer in context, "
+            f"re-invoke it first: {invocation} {flags}")
 
-    A scheduled heartbeat resumes the same owner, hitting `lease.py`'s refresh path, which needs no proof —
-    so the callback never carries `--heartbeat-id` (acquire-time only) and never carries `--new`/`#PR`
-    (start-time args that would mint a fresh run each wake). The host form is supplied by the caller as
-    `invocation`, so this stays host-neutral.
+
+def callback_command(invocation: str, run_id: str, token: str) -> str:
+    """Assemble the scheduled-heartbeat wake prompt: EXACTLY two flags, `--run` and `--token`.
+
+    A scheduled heartbeat resumes the same owner in the same live session, hitting `lease.py`'s refresh
+    path, which needs no proof — so the wake never carries `--heartbeat-id` (acquire-time only) and never
+    carries `--new`/`#PR` (start-time args that would mint a fresh run each wake). The host form is
+    supplied by the caller as `invocation`, so this stays host-neutral.
     """
-    return f"{invocation} --run {run_id} --token {token}"
+    return _wake_prompt(
+        "Gauntlet campaign heartbeat: resume the run per the campaign skill already loaded in this "
+        "session, at its loop-control heartbeat entry",
+        invocation, f"--run {run_id} --token {token}")
 
 
 def watchdog_command(invocation: str, run_id: str, token: str) -> str:
-    """Build a session-scoped soundness-audit wake for the current owner."""
-    return f"{invocation} --run {run_id} --token {token} --watchdog"
+    """Build a session-scoped soundness-audit wake prompt for the current owner."""
+    return _wake_prompt(
+        "Gauntlet campaign session-watchdog wake: audit the run per the campaign skill already loaded "
+        "in this session (loop-control, Reschedule or exit)",
+        invocation, f"--run {run_id} --token {token} --watchdog")
 
 
 # --- cli ----------------------------------------------------------------------
@@ -63,14 +84,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=DESCRIPTION)
     sub = parser.add_subparsers(dest="cmd")
 
-    cb = sub.add_parser("callback", help="print the command to schedule for the next heartbeat")
+    cb = sub.add_parser("callback", help="print the wake prompt to schedule for the next heartbeat")
     cb.add_argument("--run", required=True, help="the run id to RESUME (never mints a new run)")
     cb.add_argument("--token", required=True, help="the agent token the heartbeat carries")
     cb.add_argument("--invocation", required=True,
                     help="the host campaign invocation (Claude Code `/gauntlet:campaign`, "
                          "Codex `$gauntlet:campaign`) — passed in so this tool hardcodes no host form")
 
-    wd = sub.add_parser("watchdog", help="print the session-watchdog soundness-audit wake command")
+    wd = sub.add_parser("watchdog", help="print the session-watchdog soundness-audit wake prompt")
     wd.add_argument("--run", required=True, help="the existing run id the watchdog audits")
     wd.add_argument("--token", required=True, help="the current owner token")
     wd.add_argument("--invocation", required=True,
@@ -83,8 +104,9 @@ def build_parser() -> argparse.ArgumentParser:
 def _reject_unusable(fields: "list[tuple[str, str]]") -> bool:
     """Fail closed on any required value that is empty OR contains ANY whitespace:
     whitespace is the argument-injection seam — a `--run "g1 --new #99"` would smuggle extra
-    tokens past the fixed-shape guarantee once the printed line is re-split into argv. No legitimate value (a
-    `g<date>-<rand>` run-id, a hex token, a `/gauntlet:campaign` invocation) carries whitespace. On a bad
+    tokens past the fixed-shape guarantee once the wake's two-flag identity or its embedded fallback
+    invocation is re-split into argv. No legitimate value (a `g<date>-<rand>` run-id, a hex token, a
+    `/gauntlet:campaign` invocation) carries whitespace. On a bad
     value: print the refusal on stderr, print NOTHING on stdout, return True so the caller returns non-zero.
     """
     for flag, val in fields:
