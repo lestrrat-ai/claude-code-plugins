@@ -183,7 +183,8 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
 
 20. `ci-status.py derive`: how `ci` is DERIVED — always, the only way ("THE DERIVATION IS A COMMAND"
     owns the exact invocation): a SHA-pinned snapshot of BOTH check families, verified before parsing,
-    decided against the header's required set. NEVER from `gh pr checks` (its output carries no SHA),
+    decided against the selected row's `effective_required_set` that `--ledger` resolves ("THE REQUIRED
+    SET IS NAMED, AND IT HAS NO DEFAULT" owns it). NEVER from `gh pr checks` (its output carries no SHA),
     NEVER by reading command output and judging it by eye. `ci-status.py liveness` then RECORDS that
     JSON — `ci`, the fingerprint, the strike/stall/refetch counters, and any cap park ("THE BOOKKEEPING
     IS A COMMAND" owns the invocation): the arithmetic is never applied by hand.
