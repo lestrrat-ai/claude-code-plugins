@@ -2447,10 +2447,11 @@ def t_row_base_is_creation_only(L: ModuleType, tmp: Path) -> None:
     # …and the stored base is untouched by the refused write.
     code, out, _ = cli(L, ["--file", str(path), "get", "--pr", "1", "--field", "base_branch"])
     check(out == "v3\n", f"the recorded base changed despite the refusal: {out!r}")
-    # `required_set` is NOT creation-only: the grouped refresh rewrites it through `set`.
-    check("required_set" not in L.CREATE_ONLY, "required_set must stay settable via `set` — grouped refresh writes it")
+    # `required_set` is NOT creation-only: the stage-2 grouped refresh will rewrite it through `set`.
+    check("required_set" not in L.CREATE_ONLY,
+          "required_set must stay settable via `set` — the stage-2 grouped refresh will write it")
     code, _, err = cli(L, ["--file", str(path), "set", "--pr", "1", "--required-set", "none"])
-    check(code == 0, f"`set --required-set` must be allowed for the grouped refresh: exit {code}, {err!r}")
+    check(code == 0, f"`set --required-set` must stay open for the stage-2 grouped refresh: exit {code}, {err!r}")
 
 
 def t_required_set_dash_vs_unknown(L: ModuleType, tmp: Path) -> None:
