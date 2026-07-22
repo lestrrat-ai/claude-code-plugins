@@ -54,7 +54,13 @@ class Fake:
                  view_base: "str | None" = None, base: str = "main",
                  labels: "list[dict] | None" = None, local_base: str = "absent",
                  repo_identity: str = "o/r", mergeable: str = "MERGEABLE",
-                 merge_state_status: str = "CLEAN", header_base: "str | None" = None):
+                 merge_state_status: str = "CLEAN", header_base: "str | None" = None,
+                 base_ff_blocked: bool = False, ancestor_ok: bool = True,
+                 plumb_fail: "str | None" = None,
+                 staged_paths: "list[str] | None" = None,
+                 unstaged_paths: "list[str] | None" = None,
+                 untracked_paths: "list[str] | None" = None,
+                 incoming_paths: "list[str] | None" = None):
         self.root = root
         self.branch = "feat-pr"
         # `base` is the row's RECORDED base — an explicit row `base_branch`, unless `header_base` is given, in
@@ -105,6 +111,19 @@ class Fake:
         # resolve through the SAME base-ancestry probe the MERGE path runs (behind -> rebase, current -> park).
         self.mergeable = mergeable
         self.merge_state_status = merge_state_status
+        # Post-merge base-sync diagnostic knobs, all modeled on checked[0] (the checkout holding the base,
+        # which the fixtures set to root). `base_ff_blocked` forces the checked-out-base `merge --ff-only`
+        # to fail as git does against uncommitted work. `ancestor_ok` is the `merge-base --is-ancestor HEAD
+        # origin/<base>` probe result (False models a genuine divergence, which must keep the raw error).
+        # `plumb_fail` names the ONE plumbing probe that fails (staged/unstaged/untracked/incoming), which
+        # must also keep the raw error. The four path lists are what the plumbing reports.
+        self.base_ff_blocked = base_ff_blocked
+        self.ancestor_ok = ancestor_ok
+        self.plumb_fail = plumb_fail
+        self.staged_paths = staged_paths or []
+        self.unstaged_paths = unstaged_paths or []
+        self.untracked_paths = untracked_paths or []
+        self.incoming_paths = incoming_paths or []
 
     def ledger(self, path: Path, *, worktree: "Path | None" = None, branch: "str | None" = None,
                run_id="g1", worktree_field: "str | None" = None) -> None:
@@ -186,6 +205,22 @@ class Fake:
             return bad("ancestry fetch failed") if self._fail("entry-fetch") else ok()
         if argv[:5] == ["git", "-C", str(self.worktree), "merge-base", "--is-ancestor"]:
             return bad("stale") if self._fail("stale-base") else ok()
+        # Post-merge base-sync diagnostic plumbing on checked[0] (== root): all read-only. The is-ancestor
+        # HEAD probe carries origin/<base> as its LAST arg, distinct from the no-checkout probe below whose
+        # last arg is refs/heads/<base>, so the two never alias.
+        checkout = str(self.root)
+        nul = lambda paths: "".join(f"{p}\0" for p in paths)
+        if (argv[:3] == ["git", "-C", checkout]
+                and argv[3:6] == ["merge-base", "--is-ancestor", "HEAD"]):
+            return ok() if self.ancestor_ok else bad("HEAD is not an ancestor of origin base")
+        if argv[:4] == ["git", "-C", checkout, "diff-index"]:
+            return bad("diff-index failed") if self.plumb_fail == "staged" else ok(nul(self.staged_paths))
+        if argv[:4] == ["git", "-C", checkout, "diff-files"]:
+            return bad("diff-files failed") if self.plumb_fail == "unstaged" else ok(nul(self.unstaged_paths))
+        if argv[:4] == ["git", "-C", checkout, "ls-files"]:
+            return bad("ls-files failed") if self.plumb_fail == "untracked" else ok(nul(self.untracked_paths))
+        if argv[:4] == ["git", "-C", checkout, "diff-tree"]:
+            return bad("diff-tree failed") if self.plumb_fail == "incoming" else ok(nul(self.incoming_paths))
         base_ref = f"refs/heads/{self.base}"
         # The already-synced short-circuit's two probes on the no-checked-out-base path: does the local base
         # ref exist, and is origin/<base> an ancestor of it (local equal-or-ahead). "absent" fails the
@@ -208,7 +243,9 @@ class Fake:
                 return bad("base ref fetch failed (non-fast-forward)")
             return ok()
         if len(argv) >= 6 and argv[:3] == ["git", "-C", str(self.root)] and argv[3:5] == ["merge", "--ff-only"]:
-            return bad("base ff failed") if self._fail("sync-base") else ok()
+            if self.base_ff_blocked or self._fail("sync-base"):
+                return bad("Your local changes to the following files would be overwritten by merge")
+            return ok()
         if argv[:4] == ["git", "-C", str(self.worktree), "status"]:
             return ok("dirty\n") if self._fail("dirty") else ok()
         if argv[:5] == ["git", "-C", str(self.root), "worktree", "remove"]:
@@ -1017,6 +1054,135 @@ def t_repo_identity_mismatch_refused_before_view():
         finish(td, real)
 
 
+def _mutating_calls(fake: "Fake") -> list:
+    # Any file-mutating git subcommand the diagnostic path must NEVER issue. `checkout` (git -C <path>)
+    # and `restore` collide on the token "checkout"/"restore"; scan the SUBCOMMAND slot (argv[3]) plus a
+    # bare `stash`/`clean`/`reset`, which is what these commands look like in argv.
+    banned = {"stash", "reset", "restore", "checkout", "clean", "add"}
+    return [argv for argv, _ in fake.calls if len(argv) > 3 and argv[3] in banned]
+
+
+def t_base_ff_blocked_names_uncommitted_paths():
+    # A checked-out-base fast-forward blocked by an unrelated actor's uncommitted edits must NAME the
+    # offending paths and PROPOSE commit-or-stash + re-run, WITHOUT touching any path. Staged paths always
+    # block; unstaged/untracked block only when they overlap a path the incoming fast-forward updates.
+    td, root, f, led, real = scenario(
+        base_ff_blocked=True,
+        staged_paths=["z-staged.txt"],
+        unstaged_paths=["docs/notes.md", "harmless.txt", "build"],
+        untracked_paths=["scratch/new.txt", "unrelated-new.txt"],
+        incoming_paths=["docs/notes.md", "scratch/new.txt", "build/output", "src/main.py"])
+    try:
+        code, _result, err = invoke(f, led, root)
+        check(code != 0, "a blocked base fast-forward must refuse")
+        for named in ('"build"', '"docs/notes.md"', '"scratch/new.txt"', '"z-staged.txt"'):
+            check(named in err, f"blocking path {named} was not named: {err!r}")
+        for spared in ("harmless.txt", "unrelated-new.txt"):
+            check(spared not in err, f"a path the fast-forward does not touch was named: {spared} in {err!r}")
+        # The tailored refusal proposes the safe recovery and names the checkout.
+        for needle in ("Commit", "stash", "re-run", "resume the owed base-sync",
+                       str(root), "Original Git diagnostic"):
+            check(needle in err, f"refusal missing {needle!r}: {err!r}")
+        # Fail-CLOSED and non-destructive: the PR is durably MERGED, the row stays live, owned resources are
+        # untouched, and NOT ONE mutating git command was issued.
+        check(f.state == "MERGED", "the merge must remain durable across the base-sync refusal")
+        check(status(led) == "in_review", "a refused base-sync must leave the ledger row live")
+        check(f.worktree_present and f.branch_present,
+              "a base-sync refusal must not clean any owned resource")
+        check(f.merged_calls == 1, "the merge command must have run exactly once")
+        check(_mutating_calls(f) == [], f"the diagnostic issued a mutating command: {_mutating_calls(f)}")
+    finally:
+        finish(td, real)
+
+
+def t_base_ff_odd_filenames_quoted_and_ordered():
+    # Odd filenames (space, tab, newline) must be JSON-quoted so a newline cannot forge a "  - " line, and
+    # the listing must be deterministically sorted by raw path. All three are staged, so all three block.
+    names = ["a normal.txt", "b\ttab.txt", "c\nnewline.txt"]
+    td, root, f, led, real = scenario(base_ff_blocked=True, staged_paths=names)
+    try:
+        code, _result, err = invoke(f, led, root)
+        check(code != 0, "a blocked base fast-forward must refuse")
+        quoted = [json.dumps(n) for n in sorted(names)]
+        check('"c\\nnewline.txt"' in quoted[2], "the newline name must be escaped, not literal")
+        positions = [err.find(q) for q in quoted]
+        check(all(p >= 0 for p in positions), f"a quoted odd filename is missing: {err!r}")
+        check(positions == sorted(positions), f"blocking paths are not deterministically ordered: {err!r}")
+        # No raw newline may leak a forged bullet line: exactly one bullet per blocker.
+        bullets = [ln for ln in err.splitlines() if ln.startswith("  - ")]
+        check(len(bullets) == len(names), f"a forged or missing bullet line: {bullets!r}")
+    finally:
+        finish(td, real)
+
+
+def t_base_ff_divergent_keeps_raw_diagnostic():
+    # A fast-forward the GRAPH forbids (HEAD not an ancestor of origin/<base>) is a genuine divergence, not
+    # an uncommitted-work block. The diagnostic must decline and the original raw _require() error stands.
+    td, root, f, led, real = scenario(base_ff_blocked=True, ancestor_ok=False,
+                                      staged_paths=["would-be-named.txt"])
+    try:
+        code, _result, err = invoke(f, led, root)
+        check(code != 0, "a diverged base fast-forward must still refuse")
+        check("fast-forward of checked-out base main failed" in err,
+              f"the raw _require diagnostic must be preserved for a divergence: {err!r}")
+        check("uncommitted paths block" not in err,
+              f"a divergence must not be reported as an uncommitted-work block: {err!r}")
+        check("would-be-named.txt" not in err, "no path may be named when the graph forbids the fast-forward")
+    finally:
+        finish(td, real)
+
+
+def t_base_ff_plumbing_failure_keeps_raw_diagnostic():
+    # If any diagnostic plumbing probe fails, the helper returns None and the ORIGINAL fast-forward error is
+    # preserved — never replaced by a secondary diagnostic failure.
+    for probe in ("staged", "unstaged", "untracked", "incoming"):
+        td, root, f, led, real = scenario(base_ff_blocked=True, plumb_fail=probe,
+                                          staged_paths=["x.txt"], incoming_paths=["x.txt"])
+        try:
+            code, _result, err = invoke(f, led, root)
+            check(code != 0, f"{probe}: a blocked base fast-forward must refuse")
+            check("fast-forward of checked-out base main failed" in err,
+                  f"{probe}: a diagnostic-probe failure must keep the raw error: {err!r}")
+            check("uncommitted paths block" not in err,
+                  f"{probe}: a diagnostic-probe failure must not fabricate a blocker list: {err!r}")
+        finally:
+            finish(td, real)
+
+
+def t_base_ff_block_clears_then_resumes():
+    # After the blocking paths are committed/stashed, a second invocation completes the owed base-sync,
+    # cleanup, and terminal write — WITHOUT another gh pr merge (the merge is durably MERGED).
+    td, root, f, led, real = scenario(base_ff_blocked=True, staged_paths=["blocker.txt"])
+    try:
+        first, _result, err = invoke(f, led, root)
+        check(first != 0 and status(led) == "in_review", f"first invocation must refuse and stay live: {err}")
+        check(f.merged_calls == 1, "the first invocation must have merged exactly once")
+        # The user commits/stashes the blocker; the base-sync is now unobstructed.
+        f.base_ff_blocked = False
+        f.staged_paths = []
+        second, _result, err = invoke(f, led, root)
+        check(second == 0 and status(led) == "merged", f"resume did not finalize: {err}")
+        check(f.merged_calls == 1, "resume must not re-issue gh pr merge")
+        check(not f.worktree_present and not f.branch_present,
+              "resume must clean both owned resources once base-sync succeeds")
+    finally:
+        finish(td, real)
+
+
+def t_dirty_owned_worktree_cleanup_refusal_unchanged():
+    # The pre-existing dirty-owned-worktree cleanup refusal is a SEPARATE fail-closed boundary and is not
+    # affected by the base-sync diagnostic: base-sync succeeds, then cleanup refuses the dirty owned worktree.
+    td, root, f, led, real = scenario(fail_once="dirty")
+    try:
+        code, _result, err = invoke(f, led, root)
+        check(code != 0 and "is dirty; refusing cleanup" in err,
+              f"the dirty owned-worktree cleanup refusal must stand unchanged: {err!r}")
+        check(f.state == "MERGED", "cleanup refusal must follow a confirmed merge")
+        check(_mutating_calls(f) == [], f"cleanup refusal must issue no mutating command: {_mutating_calls(f)}")
+    finally:
+        finish(td, real)
+
+
 CASES = [
     ("happy-owned", "exact merge argv, owned cleanup, terminal write", t_happy_owned_cleanup_and_command),
     ("repo-identity", "a --repo that does not name the checkout's own repository is refused before any live view (case-insensitive match)", t_repo_identity_mismatch_refused_before_view),
@@ -1049,4 +1215,10 @@ CASES = [
     ("label-free-half-adopted-closed", "a half-adopted CLOSED row with no own label closes out to aborted; a foreign label still refuses", t_label_free_half_adopted_closed_out),
     ("external-merge-held-resume", "an external MERGE of a held row resumes to merged for every held status; OPEN+held stays refused", t_external_merge_while_held_resumes),
     ("absent-held-merge-routing", "an absent held row externally MERGED routes reconcile -> merge.py run, which resumes it to merged", t_absent_held_row_external_merge_routes_to_resume),
+    ("base-ff-blocked-named", "a checked-out base fast-forward blocked by uncommitted paths names them and proposes commit-or-stash + re-run, touching nothing", t_base_ff_blocked_names_uncommitted_paths),
+    ("base-ff-odd-names", "odd blocking filenames are JSON-quoted (no forged line) and deterministically ordered", t_base_ff_odd_filenames_quoted_and_ordered),
+    ("base-ff-divergent-raw", "a diverged base fast-forward keeps the raw git diagnostic, names no path", t_base_ff_divergent_keeps_raw_diagnostic),
+    ("base-ff-plumb-fail-raw", "a diagnostic-probe failure keeps the original fast-forward error", t_base_ff_plumbing_failure_keeps_raw_diagnostic),
+    ("base-ff-clears-resumes", "committing/stashing the blockers lets a second run finish base-sync + cleanup with no re-merge", t_base_ff_block_clears_then_resumes),
+    ("dirty-cleanup-refusal", "the pre-existing dirty owned-worktree cleanup refusal is unchanged and separate", t_dirty_owned_worktree_cleanup_refusal_unchanged),
 ]

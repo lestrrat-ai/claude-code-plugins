@@ -131,7 +131,16 @@ branch — the repo's "Automatically delete head branches" setting alone governs
 
 Each phase leaves a durable or safely repeatable checkpoint. Re-run the same command after any failure:
 GitHub `MERGED` skips the merge call; base updates are fast-forward-only; absent owned worktrees/branches
-count as completed cleanup; a terminal ledger row is a no-op. The command refuses held rows whose live PR is
+count as completed cleanup; a terminal ledger row is a no-op.
+
+When the checked-out local base is what git fast-forwards and an unrelated actor's **uncommitted** edits in
+that checkout block it, the command **refuses and lists the exact blocking paths** (staged paths, plus
+unstaged or untracked paths overlapping what the incoming fast-forward updates), then proposes the fix:
+**commit or stash the listed work — including untracked files where applicable — and re-run the same command
+to resume the owed base-sync.** It **never** commits, stashes, resets, restores, checks out, or cleans those
+paths; the campaign does not own them. Because the base-sync runs before cleanup and the terminal write,
+those phases stay pending until the re-run. A fast-forward that fails for any OTHER reason — a genuine
+divergence, or a diagnostic probe that could not run — keeps git's original raw error unchanged. The command refuses held rows whose live PR is
 OPEN (a CLOSED held row is closed out to `aborted` — `loop-control.md` Step 4 — and a `MERGED` held row is an
 external merge, resumed to finalize base-sync/owned-cleanup/terminal write; neither is refused), a `--repo`
 that does not name the checkout's own repository, stale gates, uncertain GitHub facts, another run's PR,

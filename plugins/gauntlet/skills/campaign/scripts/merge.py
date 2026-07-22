@@ -294,6 +294,64 @@ def _worktree_listing(root: Path) -> list[dict[str, str]]:
     return _parse_worktrees(out)
 
 
+def _nul_fields(data: str) -> list[str]:
+    """Split NUL-delimited plumbing output; drop the trailing empty field. NUL cannot appear in a path,
+    so a path carrying spaces/tabs/newlines survives as one field and can never be split into two."""
+    return [field for field in data.split("\0") if field]
+
+
+def _quote_path(path: str) -> str:
+    """JSON-quote a path so spaces, tabs, and newlines are escaped and can never forge a message line."""
+    return json.dumps(path)
+
+
+def _path_conflicts(path: str, incoming: "set[str]") -> bool:
+    """A working-tree path conflicts with the incoming fast-forward when it equals an incoming path or is
+    a file/directory prefix of one (either direction) — the shape git rejects as it updates that path."""
+    if path in incoming:
+        return True
+    return any(path.startswith(f"{inc}/") or inc.startswith(f"{path}/") for inc in incoming)
+
+
+def _blocking_uncommitted_paths(checkout: str, base: str) -> "list[str] | None":
+    """After a checked-out-base fast-forward fails, name the uncommitted paths that block it.
+
+    Read-only: runs only git plumbing (merge-base/diff-index/diff-files/ls-files/diff-tree) and mutates
+    nothing. Returns JSON-quoted, deduplicated, sorted paths, or None when this is NOT a diagnosable
+    uncommitted-work block (the graph forbids a fast-forward, or any plumbing command failed) — in which
+    case the caller keeps the original raw git error rather than replacing it with a secondary failure.
+    """
+    # A fast-forward is only possible when HEAD is already an ancestor of origin/<base>. If it is not,
+    # the failure is a genuine divergence, not an uncommitted-work block — keep the raw refusal.
+    ancestor = _run(["git", "-C", checkout, "merge-base", "--is-ancestor", "HEAD", f"origin/{base}"])
+    if ancestor.returncode != 0:
+        return None
+
+    def plumb(args: "list[str]") -> "list[str] | None":
+        proc = _run(["git", "-C", checkout, *args])
+        if proc.returncode != 0:
+            return None
+        return _nul_fields(proc.stdout)
+
+    staged = plumb(["diff-index", "--cached", "--name-only", "-z", "--no-renames", "HEAD", "--"])
+    unstaged = plumb(["diff-files", "--name-only", "-z", "--no-renames", "--"])
+    untracked = plumb(["ls-files", "--others", "--exclude-standard", "-z", "--"])
+    incoming = plumb(
+        ["diff-tree", "--no-commit-id", "-r", "--name-only", "-z", "--no-renames",
+         "HEAD", f"origin/{base}", "--"])
+    if staged is None or unstaged is None or untracked is None or incoming is None:
+        return None
+
+    incoming_set = set(incoming)
+    # Git rejects ANY staged index change on a fast-forward; it rejects an unstaged or untracked path only
+    # when that path overlaps one the incoming fast-forward must update.
+    blockers = set(staged)
+    for path in (*unstaged, *untracked):
+        if _path_conflicts(path, incoming_set):
+            blockers.add(path)
+    return [_quote_path(path) for path in sorted(blockers)]
+
+
 def _sync_base(root: Path, base: str) -> None:
     remote_ref = f"refs/heads/{base}:refs/remotes/origin/{base}"
     _require(
@@ -313,10 +371,23 @@ def _sync_base(root: Path, base: str) -> None:
         # Downstream diffs/rebases read origin/<base> (freshly fetched above), not this local branch, so a
         # local-ahead checkout poisons nothing; local-ahead means origin is an ancestor of local, i.e. local
         # already contains the merged tip. The dangerous diverged case still fails ff-only and refuses below.
-        _require(
-            _run(["git", "-C", checked[0], "merge", "--ff-only", f"origin/{base}"]),
-            f"fast-forward of checked-out base {base}",
-        )
+        ff = _run(["git", "-C", checked[0], "merge", "--ff-only", f"origin/{base}"])
+        if ff.returncode != 0:
+            blockers = _blocking_uncommitted_paths(checked[0], base)
+            if blockers:
+                detail = (ff.stderr or ff.stdout or "no diagnostic").strip()
+                listed = "\n".join(f"  - {path}" for path in blockers)
+                # Diagnose-only: name the offending paths and PROPOSE the safe fix. NEVER commit, stash,
+                # reset, restore, checkout, or clean — the campaign does not own these paths.
+                raise Refusal(
+                    f"fast-forward of checked-out base {base!r} at {checked[0]} refused because "
+                    f"uncommitted paths block the update:\n{listed}\n"
+                    "The PR is already merged. Commit the listed changes, or stash them (including "
+                    "untracked files where applicable), then re-run the same merge.py run command to "
+                    "resume the owed base-sync. The campaign left these paths untouched.\n"
+                    f"Original Git diagnostic: {detail}")
+            # No proven uncommitted-work block (divergence, or a plumbing probe failed): keep the raw error.
+            _require(ff, f"fast-forward of checked-out base {base}")
     else:
         # If the local base ref already EXISTS and already CONTAINS origin/<base> (origin is an ancestor of
         # the local ref — the ref is equal to or LOCAL-AHEAD of origin), it is already synchronized: skip the
