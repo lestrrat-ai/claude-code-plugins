@@ -762,6 +762,20 @@ def t_ledger_base_assertion_refuses() -> None:
         check("disagrees" in err and "effective base" in err, f"the refusal must name the disagreement: {err!r}")
 
 
+def t_ledger_origin_named_base_agrees() -> None:
+    # A row base LITERALLY named `origin/rel` (a legal branch name) matches an identical `--base` — the
+    # assertion routes through `ledger.py base_agrees`, where identical strings always agree. The bare form
+    # disagrees: the STORED base is never stripped.
+    with tempfile.TemporaryDirectory() as d:
+        ledger = _build_ledger(Path(d), "31", "origin/rel")
+        problem = M._assert_ledger_base(str(ledger), "31", "origin/rel")
+        check(problem is None,
+              f"identical origin/rel strings must pass the assertion, got {problem!r}")
+        problem = M._assert_ledger_base(str(ledger), "31", "rel")
+        check(problem is not None and "disagrees" in problem,
+              f"a bare --base must disagree with a stored origin/-named base, got {problem!r}")
+
+
 def t_ledger_file_without_pr_refuses() -> None:
     # `--file` needs `--pr` to select the row; without it, refuse rather than silently skip the assertion.
     with repository() as (repo, _base):
@@ -829,6 +843,8 @@ CASES = [
      t_ledger_base_assertion_passes),
     ("ledger-base-assert-refuse", "--file --pr with a disagreeing --base refuses without JSON",
      t_ledger_base_assertion_refuses),
+    ("ledger-origin-named-base", "a base literally named origin/<x> matches itself; the bare form disagrees",
+     t_ledger_origin_named_base_agrees),
     ("ledger-file-needs-pr", "--file without --pr is refused", t_ledger_file_without_pr_refuses),
     ("ledger-missing-row", "--file --pr naming an unknown row is refused", t_ledger_missing_row_refuses),
 ]

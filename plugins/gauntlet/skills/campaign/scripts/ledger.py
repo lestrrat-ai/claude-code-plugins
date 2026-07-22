@@ -683,6 +683,21 @@ def effective_required_set(header: dict, row: dict) -> str:
     return header.get("required_set", HEADER_DEFAULTS["required_set"])
 
 
+def base_agrees(base_arg: str, effective: str) -> bool:
+    """Does a caller's `--base` assertion agree with a row's effective base?
+
+    Identical strings ALWAYS agree — a base literally named `origin/<x>` (a legal branch name) must match
+    itself, so equality is checked BEFORE any normalization. Otherwise a leading `origin/` on the ARGUMENT
+    (the review-diff `origin/<base>` form) is stripped and compared against the stored base. The STORED base
+    is never stripped: `origin/x` in the ledger names a branch literally called that, and stripping it would
+    let `--base x` assert a different branch. This is the ONE owner of the comparison for every
+    `--base`-assertion consumer (base-preflight, triage, clean-rebase, worker-prompt, review-dispatch) —
+    never a second copy of this rule."""
+    if base_arg == effective:
+        return True
+    return base_arg.startswith("origin/") and base_arg[len("origin/"):] == effective
+
+
 def check_field(name: str, valid: "tuple[str, ...]") -> None:
     if name not in valid:
         fail(f"unknown field '{name}'; valid: {', '.join(valid)}")

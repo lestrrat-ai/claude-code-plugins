@@ -459,6 +459,36 @@ def t_file_origin_prefixed_base_matches():
               f"origin/main must satisfy the assertion and fall through to decide, got {result!r}")
 
 
+def t_file_origin_named_base_matches_itself():
+    """A base LITERALLY named `origin/<x>` (a legal branch name) matches itself: `--base origin/release`
+    against a stored `origin/release` must pass the assertion, never be read as a disagreement because one
+    side was stripped (`ledger.py base_agrees` — identical strings always agree). A bare `--base release`
+    still disagrees: the STORED base is never stripped."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        ledger = root / "state.jsonl"
+        _ledger_row(ledger, "9", "a" * 40, base="origin/release")
+        vjson = root / "v.json"
+        # DIRTY so the run stops at the (post-assertion) decide step, not the ancestry probe — proving the
+        # identical-string assertion PASSED (a refusal there would name the disagreement instead).
+        vjson.write_text(json.dumps(view(mergeStateStatus="DIRTY", baseRefName="origin/release")),
+                         encoding="utf-8")
+        code, out, err = capture_cli(M.main, ["check", "--pr", "9", "--view-json", str(vjson),
+                                              "--base", "origin/release", "--file", str(ledger)])
+        check(code != 0, f"a DIRTY view still rebases (stderr: {err})")
+        result = json.loads(out)
+        check(result["verdict"] == "rebase-first",
+              f"identical origin/release strings must agree and fall through to decide, got {result!r}")
+        # The bare form does NOT assert a base literally named origin/release — the stored base is never
+        # stripped, so this refuses as a disagreement.
+        code, out, err = capture_cli(M.main, ["check", "--pr", "9", "--view-json", str(vjson),
+                                              "--base", "release", "--file", str(ledger)])
+        check(code != 0, f"a bare --base against an origin/-named stored base must fail closed (stderr: {err})")
+        result = json.loads(out)
+        check(result["verdict"] == "recheck" and "disagrees" in result["reason"],
+              f"a bare --base must disagree with a stored origin/-named base, got {result!r}")
+
+
 def t_file_live_retarget_rechecks():
     """The PR's live `baseRefName` differs from the row's effective base -> the retarget refusal, with the
     EXACT machine-blocker wording a re-adoption/reconcile park records (never proceed, never rebase-first)."""
@@ -549,6 +579,8 @@ CASES = [
      t_file_base_assertion_mismatch_rechecks),
     ("file-origin-prefixed-base", "--file: an origin/<base> --base satisfies the assertion",
      t_file_origin_prefixed_base_matches),
+    ("file-origin-named-base", "--file: a base literally named origin/<x> matches itself; a bare form disagrees",
+     t_file_origin_named_base_matches_itself),
     ("file-live-retarget", "--file: a live baseRefName retarget rechecks with the machine-blocker wording",
      t_file_live_retarget_rechecks),
     ("file-legacy-row-header-base", "--file: an old row inherits the header base for the live comparison",

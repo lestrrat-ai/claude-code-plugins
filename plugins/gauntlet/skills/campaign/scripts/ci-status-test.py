@@ -518,6 +518,40 @@ def grouped_required_set_cases(ci, tmp: Path) -> list[str]:
     if mlseen != ["v3"] or not mlout["settled"]:
         problems.append(f"[grouped] settled main header must not be re-read; only v3: seen={mlseen!r}")
 
+    # 3c. A SETTLED ROW IS NEVER CLOBBERED — AND ITS VALUE IS ADOPTED. pr 1 holds a settled `none`; pr 2 just
+    #    joined the same base with `-`. The refresh must not touch GitHub at all (a transient FetchError here
+    #    used to write `unknown` over pr 1's settled `none`, and a successful read would have overwritten it
+    #    too — the same class): pr 2 ADOPTS the group's settled value, pr 1 keeps it.
+    adopt = tmp / "adopt-settled.jsonl"
+    ci.LEDGER.dump(adopt, dict(mheader), [mrow("1", "main", required_set="none"), mrow("2", "main")])
+    aout = ci.refresh_required_set(must_not_fetch, adopt, "o/r")
+    _ah, arows = ci.LEDGER.load(adopt)
+    agot = {r["pr"]: r["required_set"] for r in arows}
+    if agot.get("1") != "none":
+        problems.append(f"[grouped] a settled row was clobbered by a group refresh: {agot!r}")
+    if agot.get("2") != "none":
+        problems.append(f"[grouped] a fresh row must adopt its base's settled value with no read: {agot!r}")
+    if not aout["settled"]:
+        problems.append(f"[grouped] the adopting group must report settled: {aout!r}")
+
+    # 3d. DISAGREEING settled values (a hand-edit this never papers over) force a fresh read — which lands
+    #    ONLY on the rows that needed it: both settled rows keep their values even though the read succeeded
+    #    with a third value.
+    dis = tmp / "disagree-settled.jsonl"
+    ci.LEDGER.dump(dis, dict(mheader), [mrow("1", "main", required_set="none"),
+                                        mrow("2", "main", required_set=v3_set),
+                                        mrow("3", "main")])
+    df, dseen = mk_fetch({"main": "main-test"})
+    ci.refresh_required_set(df, dis, "o/r")
+    _dh, drows = ci.LEDGER.load(dis)
+    dgot = {r["pr"]: r["required_set"] for r in drows}
+    if dgot.get("1") != "none" or dgot.get("2") != v3_set:
+        problems.append(f"[grouped] a successful fresh read overwrote a settled row: {dgot!r}")
+    if dgot.get("3") != main_set:
+        problems.append(f"[grouped] the unsettled row must take the fresh read: {dgot!r}")
+    if dseen != ["main"]:
+        problems.append(f"[grouped] disagreeing settled values must force exactly one read: {dseen!r}")
+
     # 4. `derive` resolves the ROW's effective required set from --ledger; --required-set is an ASSERTION.
     parsed = ci.resolve_required_for_derive(str(mixed), "1", None)
     if parsed.state != ci.SNAP.parse_required_set(v3_set).state:

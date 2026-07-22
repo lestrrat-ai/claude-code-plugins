@@ -516,9 +516,11 @@ def refresh_required_set(fetch: Fetch, ledger_path: Path, repo: str | None = Non
 
     Required checks are a property of the base, and the base is per-ROW state, so the required set is too.
     This GROUPS the nonterminal rows by `effective_base`, reads each DISTINCT base's requirements ONCE from
-    GitHub, and writes the canonical result to that base's rows (`ledger.py`'s writer, never a second copy of
-    the file format). A read that fails leaves ONLY that base's group `unknown` (fail-closed, never `none`);
-    other groups settle independently. Legacy `-` rows carry no explicit base or set: they inherit the HEADER
+    GitHub, and writes the canonical result to that base's rows STILL NEEDING one (`ledger.py`'s writer,
+    never a second copy of the file format). A row whose stored value is already settled is NEVER
+    overwritten — by a failed read or a fresh one; an unsettled row joining a settled base adopts the
+    group's settled value with no new read. A read that fails leaves ONLY that base's unsettled rows
+    `unknown` (fail-closed, never `none`); other groups settle independently. Legacy `-` rows carry no explicit base or set: they inherit the HEADER
     through `effective_required_set`, which this settles as its own (legacy) channel — so an old single-base
     ledger, down to a zero-row one, keeps working exactly as before and NO inherited row value is materialized.
     """
@@ -578,14 +580,26 @@ def refresh_required_set(fetch: Fetch, ledger_path: Path, repo: str | None = Non
                            "state": parsed.state, "settled": parsed.state != SNAP.CANNOT_READ,
                            "reason": reason})
 
-    # EXPLICIT-BASE ROW GROUPS. Read a group when any row's OWN stored `required_set` is unsettled — the row
-    # STORES its base's set, and its base may differ from the header base, so the header fallback must NOT
-    # settle it here (an explicit `-` row has simply not had ITS base read yet: `_read_needed("-")` is True).
-    # Write the canonical value to EVERY row in the group so a base's rows always agree. A base that is
-    # unusable (blank/`-`) cannot be read — leave the group `unknown` rather than fabricate a permissive answer.
+    # EXPLICIT-BASE ROW GROUPS. Act on a group when any row's OWN stored `required_set` is unsettled — the
+    # row STORES its base's set, and its base may differ from the header base, so the header fallback must
+    # NOT settle it here (an explicit `-` row has simply not had ITS base read yet: `_read_needed("-")` is
+    # True). A SETTLED row's value (`declared:<json>`/`none`) is NEVER overwritten — not by a failed read
+    # (which would clobber it with `unknown`) and not by a fresh read (settled reads are never re-read:
+    # `_read_needed`). So when the group already holds exactly one settled value, the unsettled rows ADOPT it
+    # with no GitHub read; only a group with no settled value (or with disagreeing settled values — a
+    # hand-edit this never papers over) reads GitHub, and the result lands ONLY on the rows that needed it.
+    # A base that is unusable (blank/`-`) cannot be read — leave the group `unknown` rather than fabricate a
+    # permissive answer.
     for base, group_rows in explicit_groups.items():
-        if not any(_read_needed(r.get("required_set", LEDGER.ROW_DEFAULTS["required_set"]))
-                   for r in group_rows):
+        unsettled = []
+        settled_values = set()
+        for r in group_rows:
+            spec = r.get("required_set", LEDGER.ROW_DEFAULTS["required_set"])
+            if _read_needed(spec):
+                unsettled.append(r)
+            else:
+                settled_values.add(spec)
+        if not unsettled:
             continue
         prs = [r["pr"] for r in group_rows]
         if not base or base == "-":
@@ -593,8 +607,12 @@ def refresh_required_set(fetch: Fetch, ledger_path: Path, repo: str | None = Non
                                "required_set": SNAP.CANNOT_READ, "state": SNAP.CANNOT_READ,
                                "settled": False, "reason": f"pr(s) {prs} have no usable base to read"})
             continue
-        value, reason = read_base(base)
-        for r in group_rows:
+        if len(settled_values) == 1:
+            value = next(iter(settled_values))
+            reason = "adopted the group's settled value; settled reads are never re-read"
+        else:
+            value, reason = read_base(base)
+        for r in unsettled:
             r["required_set"] = value
         dirty = True
         parsed = SNAP.parse_required_set(value)

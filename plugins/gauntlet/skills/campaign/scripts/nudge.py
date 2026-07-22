@@ -117,19 +117,25 @@ def reminders(header: dict, rows: list, n_followups: int, rundir: "Path | None",
                    "base_branch/required_set are only the legacy fallback for a row that carries none).")
 
     # --- run-level -------------------------------------------------------------
-    # Required checks are per-BASE row state. Group active rows by effective base; a base whose effective
-    # required set is still `unknown` (a read failed or never ran) FAILS CLOSED — it cannot go green — and
-    # blocks only ITS group, so the reminder names the base and its PRs. `-` is NOT `unknown`: it means
-    # "inherit the header", which `effective_required_set` resolves; a new run's rows read the header's
-    # `unknown` until the grouped read (ci-status.py required-set) writes each base's canonical set.
-    unknown_bases: "dict[str, list]" = {}
+    # Required checks are per-BASE row state. Group active rows by (effective base, effective required set)
+    # and REPORT every pairing — naming each active row's effective base and required set is the point, not
+    # only the blocked ones. A settled pairing is stated verbatim (the raw ledger spelling — nudge never
+    # parses a required-set spec); a base whose effective set is still `unknown` (a read failed or never
+    # ran) FAILS CLOSED — it cannot go green — and blocks only ITS group, so ITS line also says to run the
+    # grouped read. `-` is NOT `unknown`: it means "inherit the header", which `effective_required_set`
+    # resolves; a new run's rows read the header's `unknown` until the grouped read (ci-status.py
+    # required-set) writes each base's canonical set.
+    base_groups: "dict[tuple, list]" = {}
     for r in active:
-        if L.effective_required_set(header, r) == "unknown":
-            unknown_bases.setdefault(L.effective_base(header, r), []).append(r["pr"])
-    for base in sorted(unknown_bases):
-        prs = ", ".join(unknown_bases[base])
-        out.append(f"required set unknown for base {base} (PR(s) {prs}) — run the grouped required-set "
-                   f"read (ci-status.py required-set).")
+        key = (L.effective_base(header, r), L.effective_required_set(header, r))
+        base_groups.setdefault(key, []).append(r["pr"])
+    for base, rset in sorted(base_groups):
+        prs = ", ".join(base_groups[(base, rset)])
+        if rset == "unknown":
+            out.append(f"required set unknown for base {base} (PR(s) {prs}) — run the grouped required-set "
+                       f"read (ci-status.py required-set).")
+        else:
+            out.append(f"base {base} (PR(s) {prs}): required set {rset}.")
     if active:
         out.append(f"{len(active)} PR(s) open — reconcile and fan out work up to caps.")
     if n_followups:

@@ -427,6 +427,24 @@ def t_ledger_base_assertion_mismatch_refuses() -> None:
         check(not (root / "out").exists(), "a refused base assertion must publish no bundle")
 
 
+def t_ledger_origin_named_base_matches() -> None:
+    """A row base LITERALLY named `origin/rel` (a legal branch name) matches an identical `--base` — the
+    assertion routes through `ledger.py base_agrees`, where identical strings always agree. The bare form
+    refuses: the STORED base is never stripped."""
+    with tempfile.TemporaryDirectory(prefix="worker prompt origin named base ") as raw:
+        root = Path(raw)
+        ledger = _build_ledger(root, "42", "origin/rel")
+        code, _, err = capture_cli(M.main, _fix_argv(root, "origin/rel", ledger))
+        check(code == M.EXIT_OK,
+              f"identical origin/rel strings must pass the assertion and publish (code={code}, err={err!r})")
+    with tempfile.TemporaryDirectory(prefix="worker prompt origin named bare ") as raw:
+        root = Path(raw)
+        ledger = _build_ledger(root, "42", "origin/rel")
+        code, _, err = capture_cli(M.main, _fix_argv(root, "rel", ledger))
+        check(code == M.EXIT_REFUSED and "disagrees" in err,
+              f"a bare --base must disagree with a stored origin/-named base (code={code}, err={err!r})")
+
+
 def t_ledger_missing_row_refuses() -> None:
     with tempfile.TemporaryDirectory(prefix="worker prompt base norow ") as raw:
         root = Path(raw)
@@ -452,6 +470,7 @@ TESTS = (
     ("host-neutral output", t_output_is_host_neutral),
     ("ledger base assertion matches", t_ledger_base_assertion_matches),
     ("ledger base assertion mismatch refuses", t_ledger_base_assertion_mismatch_refuses),
+    ("ledger origin-named base matches itself", t_ledger_origin_named_base_matches),
     ("ledger missing row refuses", t_ledger_missing_row_refuses),
 )
 

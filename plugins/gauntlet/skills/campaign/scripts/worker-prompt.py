@@ -336,8 +336,8 @@ def run_fix(args: argparse.Namespace) -> int:
     # The base goes into the fix prompt as DATA. When a ledger is supplied, that data is an ASSERTION against
     # the row's source of truth: the row OWNS the base, so `--base` must equal the selected row's
     # `effective_base` (its explicit `base_branch`, else the legacy header fallback, through `ledger.py`'s
-    # accessor — never a second copy of that rule). A leading `origin/` is stripped first. Absent `--file`,
-    # the base is used as-is, as before.
+    # accessor — never a second copy of that rule). Agreement is decided by `ledger.py`'s `base_agrees` —
+    # the one owner of that comparison. Absent `--file`, the base is used as-is, as before.
     if args.file is not None:
         try:
             header, rows = L.load(Path(args.file))
@@ -347,8 +347,7 @@ def run_fix(args: argparse.Namespace) -> int:
         if row is None:
             raise Refusal(f"no ledger row for pr {args.pr} — its base cannot be resolved")
         effective_base = L.effective_base(header, row)
-        normalized = base[len("origin/"):] if base.startswith("origin/") else base
-        if effective_base and effective_base != "-" and normalized != effective_base:
+        if effective_base and effective_base != "-" and not L.base_agrees(base, effective_base):
             raise Refusal(f"--base {base!r} disagrees with pr {args.pr}'s ledger effective base "
                           f"{effective_base!r} — --base is an assertion, not a base source")
     issues = _read_payload(args.issues_file, "issues")

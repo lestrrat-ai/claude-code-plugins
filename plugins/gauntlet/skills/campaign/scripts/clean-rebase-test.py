@@ -341,6 +341,29 @@ def t_base_mismatch_refused():
         check(_field(s.ledger, PR_NUMBER, "head_sha") == s.orig_head, "nothing mutated — head_sha untouched")
 
 
+def t_origin_named_base_agrees():
+    # A row base LITERALLY named `origin/rel` (a legal branch name) matches an identical `--base` — the
+    # assertion routes through `ledger.py base_agrees`, where identical strings always agree. The refusal
+    # that follows is the MISSING WORKTREE (step 3), proving the base assertion (step 1a) passed. The bare
+    # form still refuses `base-mismatch`: the STORED base is never stripped.
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        ledger = tmp / "state.jsonl"
+        _ledger("--file", str(ledger), "header", "set", "run_id", "t")
+        _ledger("--file", str(ledger), "add-row", "--pr", "12", "--head-sha", "a" * 40,
+                "--base-branch", "origin/rel", "--status", "in_review")
+        code, out, _ = capture_cli(M.main, ["run", "--ledger", str(ledger), "--pr", "12",
+                                            "--worktree", str(tmp / "missing"), "--base", "origin/rel"])
+        check(code == M.EXIT_PRECONDITION, f"the missing worktree still refuses at exit 2 (code={code})")
+        check('"refused": "worktree-missing"' in out and '"base-mismatch"' not in out,
+              f"identical origin/rel strings must pass the base assertion and reach the worktree check; "
+              f"got {out!r}")
+        code, out, _ = capture_cli(M.main, ["run", "--ledger", str(ledger), "--pr", "12",
+                                            "--worktree", str(tmp / "missing"), "--base", "rel"])
+        check(code == M.EXIT_PRECONDITION and '"refused": "base-mismatch"' in out,
+              f"a bare --base must disagree with a stored origin/-named base; got {out!r}")
+
+
 def t_absent_remote_refused():
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
@@ -430,6 +453,8 @@ CASES = [
      t_head_mismatch_refused),
     ("held-refused", "a held row is refused at exit 2 and never rebased", t_held_row_refused),
     ("no-row-refused", "a PR with no ledger row is refused at exit 2", t_no_row_refused),
+    ("origin-named-base-agrees", "a base literally named origin/<x> matches itself; the bare form disagrees",
+     t_origin_named_base_agrees),
     ("base-mismatch-refused", "a --base disagreeing with the row's effective base is refused at exit 2",
      t_base_mismatch_refused),
     ("no-remote-refused", "an absent default remote is refused at exit 2", t_absent_remote_refused),

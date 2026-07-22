@@ -2481,6 +2481,26 @@ def t_required_set_dash_vs_unknown(L: ModuleType, tmp: Path) -> None:
           "an explicit base must win over the header")
 
 
+def t_base_agrees(L: ModuleType, _tmp: Path) -> None:
+    """`base_agrees` — the ONE owner of the `--base`-assertion comparison every consumer routes through.
+
+    Identical strings ALWAYS agree — a base literally named `origin/<x>` (a legal branch name) must match
+    itself, so `--base origin/release` against a stored `origin/release` can never be read as a
+    disagreement. A leading `origin/` is stripped from the ARGUMENT only (the review-diff form asserting a
+    bare stored base); the STORED base is never stripped, so a bare argument cannot assert a base literally
+    named `origin/<x>`.
+    """
+    check(L.base_agrees("main", "main"), "identical bare names must agree")
+    check(L.base_agrees("origin/main", "main"), "an origin/-prefixed ARGUMENT asserts the bare stored base")
+    check(L.base_agrees("origin/release", "origin/release"),
+          "identical strings must ALWAYS agree — a base literally named origin/release matches itself")
+    check(not L.base_agrees("release", "origin/release"),
+          "the STORED base is never stripped — a bare argument cannot assert a base literally named "
+          "origin/release")
+    check(not L.base_agrees("v3", "main"), "different names must disagree")
+    check(not L.base_agrees("origin/v3", "main"), "a stripped argument naming a different base must disagree")
+
+
 def t_table_shows_the_effective_base(L: ModuleType, tmp: Path) -> None:
     """`table` shows a computed, display-only `base` column: the row's EFFECTIVE base, not the raw field.
 
@@ -2597,6 +2617,7 @@ CASES = [
     ("new-row-owns-its-base", "a new row's explicit base wins over the header, per row", t_new_row_owns_its_base),
     ("row-base-creation-only", "the row base is written once at add-row and immutable — no `set --base-branch`", t_row_base_is_creation_only),
     ("required-set-dash-vs-unknown", "`-` inherits the header; explicit `unknown` fails closed, never inherits", t_required_set_dash_vs_unknown),
+    ("base-agrees", "base_agrees: identical strings always agree; only the ARGUMENT's origin/ is stripped", t_base_agrees),
     ("table-effective-base", "table shows a computed `base` column — the effective base, escaped like any cell", t_table_shows_the_effective_base),
 ]
 

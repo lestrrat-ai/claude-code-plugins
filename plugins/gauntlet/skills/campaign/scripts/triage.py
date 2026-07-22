@@ -592,8 +592,10 @@ def _assert_ledger_base(file: str, pr: str, base: str) -> "str | None":
     """When a ledger is supplied, `--base` is an ASSERTION, not a base source: the ROW owns the base. Resolve
     the row's `effective_base` (its explicit `base_branch`, else the legacy header fallback, through
     `ledger.py`'s accessor — never a second copy of that rule) and return an error string if `--base`
-    disagrees, else `None`. Triage passes `--base` as `origin/<base>`, so a leading `origin/` is stripped
-    before the compare. Only a different branch NAME disagrees; this never inspects live GitHub."""
+    disagrees, else `None`. Triage passes `--base` as `origin/<base>`; agreement is decided by `ledger.py`'s
+    `base_agrees` (the one owner of that comparison — identical strings always agree, and a leading
+    `origin/` on the ARGUMENT is stripped, never on the stored base). Only a different branch NAME
+    disagrees; this never inspects live GitHub."""
     try:
         header, rows = L.load(Path(file))
     except SystemExit as exc:
@@ -604,8 +606,7 @@ def _assert_ledger_base(file: str, pr: str, base: str) -> "str | None":
     effective_base = L.effective_base(header, row)
     if not effective_base or effective_base == "-":
         return f"pr {pr} has no usable effective base in the ledger"
-    normalized = base[len("origin/"):] if base.startswith("origin/") else base
-    if normalized != effective_base:
+    if not L.base_agrees(base, effective_base):
         return (f"--base {base!r} disagrees with pr {pr}'s ledger effective base {effective_base!r} — "
                 f"--base is an assertion, not a base source")
     return None

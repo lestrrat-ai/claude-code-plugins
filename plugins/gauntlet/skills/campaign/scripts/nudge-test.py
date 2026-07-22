@@ -121,8 +121,28 @@ def t_required_set_unknown_is_per_base():
     lines = fire(rows, hdr=hdr)
     check(has(lines, "required set unknown for base main (PR(s) 2)"),
           "only the unsettled base is reminded, naming its PR(s)")
-    check(not has(lines, "base v3"),
-          "a base whose required set is already settled must NOT be reminded")
+    check(not has(lines, "required set unknown for base v3"),
+          "a base whose required set is already settled must NOT fire the unknown reminder")
+    check(has(lines, "base v3 (PR(s) 1): required set declared:[]."),
+          "a settled base is REPORTED with its effective base and required set instead")
+
+
+def t_settled_base_report():
+    # The intent's purpose bullet: nudge NAMES each active row's effective base and required set. A settled
+    # single-base ledger (legacy channel: header base + required set, rows inheriting) must report both
+    # values — not only the generic re-resolve instruction; an explicit row value reports the same way.
+    hdr = header(run_id="g1", base_branch="release/v3", required_set="none")
+    lines = fire([row(1, "in_review")], hdr=hdr)  # row base/required_set `-` → inherit header
+    check(has(lines, "base release/v3 (PR(s) 1): required set none."),
+          "a settled base must be reported naming its effective base and required set")
+    lines = fire([row(2, "in_review", base_branch="v3", required_set="declared:[]")], hdr=hdr)
+    check(has(lines, "base v3 (PR(s) 2): required set declared:[]."),
+          "an explicit row base/required set must drive the report (row-owned, not the header)")
+    # Teeth: the report is computed from ACTIVE rows — no active row, no report line.
+    check(not has(fire([], hdr=hdr), "required set"),
+          "with no active PR there is no per-base report")
+    check(not has(fire([row(1, "merged")], hdr=hdr), "base release/v3"),
+          "a terminal row must not be reported")
 
 
 def t_fanout_fires_only_with_open_work():
@@ -319,6 +339,8 @@ CASES = [
      t_required_set_unknown),
     ("required-set-per-base", "the unknown-required-set nudge is per distinct effective base",
      t_required_set_unknown_is_per_base),
+    ("settled-base-report", "each active base is reported with its effective base and required set",
+     t_settled_base_report),
     ("fanout-open-only", "fan-out nudges only with open work", t_fanout_fires_only_with_open_work),
     ("followups-open-only", "follow-ups nudge only when open, with the count", t_followups_fire_only_when_open),
     ("parked-short-circuits", "a parked PR fires only its held reminder", t_parked_pr_fires_only_its_own_reminder),

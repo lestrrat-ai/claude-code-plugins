@@ -374,9 +374,10 @@ def prepare(args) -> dict:
 
     # The base rides the typed transport as DATA (the reviewer diffs `origin/<base>...HEAD`). When a ledger
     # is supplied, that data is an ASSERTION against the row's source of truth: the row OWNS the base, so
-    # `--base` must equal the selected row's `effective_base` (its explicit `base_branch`, else the legacy
-    # header fallback, through `ledger.py`'s accessor — never a second copy of that rule). A leading
-    # `origin/` is stripped before the compare. Absent `--file`, `--base` is carried as-is, as before.
+    # `--base` must agree with the selected row's `effective_base` (its explicit `base_branch`, else the
+    # legacy header fallback, through `ledger.py`'s accessor — never a second copy of that rule). Agreement
+    # is decided by `ledger.py`'s `base_agrees` — the one owner of that comparison. Absent `--file`,
+    # `--base` is carried as-is, as before.
     if args.file is not None:
         try:
             header, rows = L.load(Path(args.file))
@@ -386,8 +387,7 @@ def prepare(args) -> dict:
         if row is None:
             refuse(f"no ledger row for pr {args.pr} — its base cannot be resolved")
         effective_base = L.effective_base(header, row)
-        normalized = args.base[len("origin/"):] if args.base.startswith("origin/") else args.base
-        if effective_base and effective_base != "-" and normalized != effective_base:
+        if effective_base and effective_base != "-" and not L.base_agrees(args.base, effective_base):
             refuse(f"--base {args.base!r} disagrees with pr {args.pr}'s ledger effective base "
                    f"{effective_base!r} — --base is an assertion, not a base source")
 

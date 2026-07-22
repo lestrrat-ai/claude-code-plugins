@@ -715,6 +715,24 @@ def t_ledger_base_assertion_mismatch_refuses() -> None:
         _refused(args, "disagrees")
 
 
+def t_ledger_origin_named_base_matches() -> None:
+    """A row base LITERALLY named `origin/rel` (a legal branch name) matches an identical `--base` — the
+    assertion routes through `ledger.py base_agrees`, where identical strings always agree. The bare form
+    refuses: the STORED base is never stripped."""
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        ledger = _build_ledger(root, "41", "origin/rel")
+        args = _fixture(root, base="origin/rel", file=os.fspath(ledger))
+        payload = D.prepare(args)
+        check(payload["transport"]["base"] == "origin/rel",
+              f"identical origin/rel strings must pass the assertion and prepare: {payload!r}")
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        ledger = _build_ledger(root, "41", "origin/rel")
+        args = _fixture(root, base="rel", file=os.fspath(ledger))
+        _refused(args, "disagrees")
+
+
 def t_ledger_missing_row_refuses() -> None:
     with tempfile.TemporaryDirectory() as raw:
         root = Path(raw)
@@ -752,5 +770,7 @@ CASES = [
      t_ledger_base_assertion_matches_prepares),
     ("ledger-base-mismatch", "--file with a disagreeing row base refuses (--base is an assertion)",
      t_ledger_base_assertion_mismatch_refuses),
+    ("ledger-origin-named-base", "a base literally named origin/<x> matches itself; the bare form refuses",
+     t_ledger_origin_named_base_matches),
     ("ledger-missing-row", "--file naming an unknown PR row refuses", t_ledger_missing_row_refuses),
 ]

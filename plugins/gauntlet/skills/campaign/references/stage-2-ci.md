@@ -152,12 +152,14 @@ The command GROUPS the nonterminal rows by `effective_base` and reads each **dis
 resolves each base through `ledger.py`, URL-encodes it as an API path segment, scopes every GitHub call to
 one repository, reads both declaration sources, validates every response field, unions and sorts the
 declarations, validates the result through `ci-snapshot.py`'s strict parser, and writes the canonical value
-to that base's rows through `ledger.py`'s atomic store (legacy `-` rows inherit the header, which the same
-command settles as their fallback channel — no inherited row value is materialized). It exits 0 when every
-group is settled (`declared:…` or `none`), 1 while any group is still `unknown`, and 2 for a caller or ledger
-error. A settled group is returned without another GitHub read, and a read that fails for one base leaves
-only that group `unknown` while the others settle — so the same command is safe to run on every heartbeat
-and retries only the `unknown` groups.
+to that base's rows **still needing one** through `ledger.py`'s atomic store (legacy `-` rows inherit the
+header, which the same command settles as their fallback channel — no inherited row value is materialized).
+A row whose stored value is already settled is **never overwritten** — by a failed read or a fresh one; an
+unsettled row joining a base with a settled sibling adopts that settled value with no new GitHub read. It
+exits 0 when every group is settled (`declared:…` or `none`), 1 while any group is still `unknown`, and 2
+for a caller or ledger error. A settled group is returned without another GitHub read, and a read that
+fails for one base leaves only that base's unsettled rows `unknown` while the others settle — so the same
+command is safe to run on every heartbeat and retries only the `unknown` groups.
 
 The command owns two mandatory reads. They do **not** need the same permission: **`GET
 /repos/{o}/{r}/branches/{b}` needs `Contents: read`**, while **`GET

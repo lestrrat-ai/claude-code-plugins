@@ -78,12 +78,6 @@ def _base_change_reason(recorded: str, live: str) -> str:
     return _PA.BASE_CHANGE_PARK_REASON.format(recorded=recorded, live=live)
 
 
-def _strip_remote(ref: str) -> str:
-    """`origin/main` -> `main`; anything without that prefix is returned unchanged. Lets a `--base` passed as
-    `origin/<base>` (the review-diff form) be compared against the row's bare `effective_base`."""
-    return ref[len("origin/"):] if ref.startswith("origin/") else ref
-
-
 # --- the verdicts -------------------------------------------------------------
 #
 # `proceed` is the ONLY verdict that clears a review/fix onto this branch; `rebase-first` says the base is
@@ -280,8 +274,8 @@ def resolve_ledger_base(ledger_file: str, pr: str, base_arg: "str | None",
 
     Load the row for `pr`, resolve its `effective_base` (its explicit `base_branch`, else the legacy header
     fallback, through `ledger.py`'s accessor — never a second copy of that rule), then fail CLOSED unless:
-    the row exists and has a usable base; any `--base` given equals it (an `origin/<base>` form is stripped
-    first); and the PR's LIVE `baseRefName` still equals it. A live mismatch is an unsupported retarget: it
+    the row exists and has a usable base; any `--base` given agrees with it (`ledger.py`'s `base_agrees` —
+    the one owner of that comparison); and the PR's LIVE `baseRefName` still equals it. A live mismatch is an unsupported retarget: it
     routes the SAME `BASE_CHANGE_PARK_REASON` wording a re-adoption/reconcile park records, so the driver
     parks the row through the existing machine-blocker path. (A base that merely ADVANCED — same branch NAME,
     new commits — is NOT this: it is the ancestry `rebase-first` in `check`.) Returns `(effective_base, None)`
@@ -296,7 +290,7 @@ def resolve_ledger_base(ledger_file: str, pr: str, base_arg: "str | None",
     effective_base = L.effective_base(header, row)
     if not effective_base or effective_base == "-":
         return None, _verdict(RECHECK, f"pr {pr} has no usable effective base in the ledger")
-    if base_arg is not None and _strip_remote(base_arg) != effective_base:
+    if base_arg is not None and not L.base_agrees(base_arg, effective_base):
         return None, _verdict(
             RECHECK, f"--base {base_arg!r} disagrees with pr {pr}'s ledger effective base "
                      f"{effective_base!r} — --base is an assertion, not a base source")
