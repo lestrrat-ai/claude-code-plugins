@@ -348,8 +348,8 @@ def _blocking_uncommitted_paths(checkout: str, base: str) -> "list[str] | None":
         return _nul_fields(proc.stdout)
 
     # An UNMERGED (conflicted) index makes ff-only fail with git's own unresolved-conflict error, and git
-    # REFUSES both `commit` and `stash` while the index is unmerged — so the commit-or-stash advice would be
-    # wrong here. Detect it read-only and decline, preserving git's raw diagnostic. The ancestor guard above
+    # REFUSES both `commit` and `stash` while the index is unmerged — so the tailored recovery advice would
+    # be wrong here. Detect it read-only and decline, preserving git's raw diagnostic. The ancestor guard above
     # does NOT catch this: a conflicted merge leaves HEAD un-advanced, so HEAD is still an ancestor of
     # origin/<base>. (A non-empty ls-files --unmerged listing means at least one path is at stage > 0.)
     unmerged = plumb(["ls-files", "--unmerged", "-z", "--"])
@@ -407,9 +407,11 @@ def _sync_base(root: Path, base: str) -> None:
                 raise Refusal(
                     f"fast-forward of checked-out base {base!r} at {checked[0]} refused because "
                     f"uncommitted paths block the update:\n{listed}\n"
-                    "The PR is already merged. Commit the listed changes, or stash them (including "
-                    "untracked files where applicable), then re-run the same merge.py run command to "
-                    "resume the owed base-sync. The campaign left these paths untouched.\n"
+                    "The PR is already merged. Stash the listed changes (use `git stash -u` to include "
+                    "untracked files) — or commit them on a SEPARATE branch and switch back to "
+                    f"{base!r} — then re-run the same merge.py run command to resume the owed base-sync. "
+                    "Do NOT commit on the checked-out base itself: that makes a diverged sibling commit "
+                    "the re-run's fast-forward would refuse. The campaign left these paths untouched.\n"
                     f"Original Git diagnostic: {detail}")
             # No proven uncommitted-work block (divergence, or a plumbing probe failed): keep the raw error.
             _require(ff, f"fast-forward of checked-out base {base}")

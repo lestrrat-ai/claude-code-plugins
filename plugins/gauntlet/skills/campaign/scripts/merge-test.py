@@ -1077,7 +1077,8 @@ def _mutating_calls(fake: "Fake") -> list:
 
 def t_base_ff_blocked_names_uncommitted_paths():
     # A checked-out-base fast-forward blocked by an unrelated actor's uncommitted edits must NAME the
-    # offending paths and PROPOSE commit-or-stash + re-run, WITHOUT touching any path. A staged, unstaged,
+    # offending paths and PROPOSE the graph-safe recovery (stash, or commit on a SEPARATE branch) + re-run,
+    # WITHOUT touching any path. A staged, unstaged,
     # or untracked path blocks ONLY when it overlaps a path the incoming fast-forward updates; an unrelated
     # change in ANY category (including a staged one) does not block a fast-forward and must not be named.
     td, root, f, led, real = scenario(
@@ -1094,9 +1095,11 @@ def t_base_ff_blocked_names_uncommitted_paths():
         # An unrelated STAGED path must NOT be named (finding: staged is overlap-filtered, not unconditional).
         for spared in ("harmless.txt", "unrelated-new.txt", "z-unrelated-staged.txt"):
             check(spared not in err, f"a path the fast-forward does not touch was named: {spared} in {err!r}")
-        # The tailored refusal proposes the safe recovery and names the checkout.
-        for needle in ("Commit", "stash", "re-run", "resume the owed base-sync",
-                       str(root), "Original Git diagnostic"):
+        # The tailored refusal proposes the graph-safe recovery (stash, or commit on a SEPARATE branch)
+        # and names the checkout. It must NOT advise committing on the checked-out base itself, which
+        # would create a diverged sibling commit the re-run's fast-forward would refuse.
+        for needle in ("git stash -u", "SEPARATE branch", "re-run", "resume the owed base-sync",
+                       "Do NOT commit on the checked-out base", str(root), "Original Git diagnostic"):
             check(needle in err, f"refusal missing {needle!r}: {err!r}")
         # Fail-CLOSED and non-destructive: the PR is durably MERGED, the row stays live, owned resources are
         # untouched, and NOT ONE mutating git command was issued.
@@ -1150,7 +1153,7 @@ def t_base_ff_divergent_keeps_raw_diagnostic():
 
 def t_base_ff_unmerged_index_keeps_raw_diagnostic():
     # An UNMERGED (conflicted) index makes ff-only fail with git's unresolved-conflict error, and git refuses
-    # both commit and stash while unmerged — so the commit-or-stash advice would be wrong. The helper must
+    # both commit and stash while unmerged — so the tailored recovery advice would be wrong. The helper must
     # detect the stage>0 index (ls-files --unmerged non-empty) and decline, keeping git's raw error. The
     # ancestor guard does NOT catch this (a conflicted merge leaves HEAD un-advanced, still an ancestor).
     td, root, f, led, real = scenario(
@@ -1163,7 +1166,7 @@ def t_base_ff_unmerged_index_keeps_raw_diagnostic():
         check("fast-forward of checked-out base main failed" in err,
               f"an unmerged index must keep the raw git error: {err!r}")
         check("uncommitted paths block" not in err,
-              f"an unmerged index must not be reported as a commit-or-stash-able block: {err!r}")
+              f"an unmerged index must not be reported as a tailored-recovery-able block: {err!r}")
         check("conflicted.txt" not in err, "no path may be named when the index is unmerged")
     finally:
         finish(td, real)
@@ -1187,14 +1190,14 @@ def t_base_ff_plumbing_failure_keeps_raw_diagnostic():
 
 
 def t_base_ff_block_clears_then_resumes():
-    # After the blocking paths are committed/stashed, a second invocation completes the owed base-sync,
-    # cleanup, and terminal write — WITHOUT another gh pr merge (the merge is durably MERGED).
+    # After the blocking paths are stashed (or committed on a separate branch), a second invocation completes
+    # the owed base-sync, cleanup, and terminal write — WITHOUT another gh pr merge (the merge is durably MERGED).
     td, root, f, led, real = scenario(base_ff_blocked=True, staged_paths=["blocker.txt"])
     try:
         first, _result, err = invoke(f, led, root)
         check(first != 0 and status(led) == "in_review", f"first invocation must refuse and stay live: {err}")
         check(f.merged_calls == 1, "the first invocation must have merged exactly once")
-        # The user commits/stashes the blocker; the base-sync is now unobstructed.
+        # The user stashes (or commits elsewhere) the blocker; the base-sync is now unobstructed.
         f.base_ff_blocked = False
         f.staged_paths = []
         second, _result, err = invoke(f, led, root)
@@ -1333,7 +1336,7 @@ def t_realgit_odd_byte_and_cr_filenames_named():
 
 def t_realgit_unmerged_index_keeps_raw_error():
     # An UNMERGED index (a conflicting merge left in progress) makes ff-only fail with git's unresolved
-    # -conflict error; git refuses both commit and stash while unmerged, so the commit-or-stash advice would
+    # -conflict error; git refuses both commit and stash while unmerged, so the tailored recovery advice would
     # be wrong. HEAD stays un-advanced during the conflict, so it is STILL an ancestor of origin/main — the
     # ancestor guard does not catch this. The unmerged probe must, so the helper declines and the raw error
     # stands.
@@ -1405,12 +1408,12 @@ CASES = [
     ("label-free-half-adopted-closed", "a half-adopted CLOSED row with no own label closes out to aborted; a foreign label still refuses", t_label_free_half_adopted_closed_out),
     ("external-merge-held-resume", "an external MERGE of a held row resumes to merged for every held status; OPEN+held stays refused", t_external_merge_while_held_resumes),
     ("absent-held-merge-routing", "an absent held row externally MERGED routes reconcile -> merge.py run, which resumes it to merged", t_absent_held_row_external_merge_routes_to_resume),
-    ("base-ff-blocked-named", "a checked-out base fast-forward blocked by uncommitted paths names them and proposes commit-or-stash + re-run, touching nothing", t_base_ff_blocked_names_uncommitted_paths),
+    ("base-ff-blocked-named", "a checked-out base fast-forward blocked by uncommitted paths names them and proposes the graph-safe recovery (stash, or commit on a SEPARATE branch) + re-run, touching nothing", t_base_ff_blocked_names_uncommitted_paths),
     ("base-ff-odd-names", "odd blocking filenames are JSON-quoted (no forged line) and deterministically ordered", t_base_ff_odd_filenames_quoted_and_ordered),
     ("base-ff-divergent-raw", "a diverged base fast-forward keeps the raw git diagnostic, names no path", t_base_ff_divergent_keeps_raw_diagnostic),
-    ("base-ff-unmerged-raw", "an unmerged/conflicted index keeps the raw git error and names no path (commit/stash advice would be wrong)", t_base_ff_unmerged_index_keeps_raw_diagnostic),
+    ("base-ff-unmerged-raw", "an unmerged/conflicted index keeps the raw git error and names no path (tailored recovery advice would be wrong)", t_base_ff_unmerged_index_keeps_raw_diagnostic),
     ("base-ff-plumb-fail-raw", "a diagnostic-probe failure keeps the original fast-forward error", t_base_ff_plumbing_failure_keeps_raw_diagnostic),
-    ("base-ff-clears-resumes", "committing/stashing the blockers lets a second run finish base-sync + cleanup with no re-merge", t_base_ff_block_clears_then_resumes),
+    ("base-ff-clears-resumes", "stashing (or committing elsewhere) the blockers lets a second run finish base-sync + cleanup with no re-merge", t_base_ff_block_clears_then_resumes),
     ("dirty-cleanup-refusal", "the pre-existing dirty owned-worktree cleanup refusal is unchanged and separate", t_dirty_owned_worktree_cleanup_refusal_unchanged),
     ("realgit-unrelated-staged-ff", "REAL git: an unrelated staged path survives a successful ff (the 'any staged change blocks' assumption is false)", t_realgit_unrelated_staged_survives_ff),
     ("realgit-blocked-ff-spares-staged", "REAL git: a blocked ff names only the overlapping incoming path, never an unrelated staged one", t_realgit_blocked_ff_spares_unrelated_staged),
