@@ -96,8 +96,21 @@ the worker returns, and what never moves into it. The steps below are unchanged 
        relabel) or it was a **clean base-only advance** — which fires the head-move reset at the door
        (`files-and-ledger.md`, the `head_sha` field, "What a genuine head move resets"), gate kept — stays
        your judgement.
-     - **`base_changed`** — the snapshot `baseRefName` differs from the header's `base_branch`: base-currency
-       handling (`stage-2-review-gate.md`, "Base currency with `<base>`").
+     - **`base_changed`** — the snapshot `baseRefName` differs from this row's **`effective_base`** (its
+       explicit row `base_branch`, else the legacy header fallback; `detect` resolves it per row through
+       `ledger.py`'s `effective_base`, never against the one header base). The PR's TARGET moved, and the
+       campaign does **not** migrate a row to a new base — **PARK the row** on the user through the existing
+       machine-blocker path and do **NOT** act on `head_moved`/dispatch/CI/merge for it this pass (base
+       currency is decided FIRST): run **`ledger.py … park --pr <N> --reason "base changed from <ledger> to
+       <snapshot>; not supported mid-run"`** with the `base_changed` fact's own `ledger` (recorded) and
+       `snapshot` (live) values — the EXACT durable reason, recorded in `ci_reason`; the park sets
+       `status = awaiting-user` and clears `blocker_ruling`, and the label reconcile below mirrors it. An
+       **already-held** row keeps its open question — `park` returns `EXIT_STOP` and leaves the existing
+       `ci_reason` intact; report the mismatch, do not overwrite. The user resolves it through the ordinary
+       machine-blocker ruling path (`retry` after restoring the base / `abort`) at "PARKED" below. (This is
+       the PR being **retargeted** — a different base branch NAME. A base branch that merely ADVANCED, same
+       name, is not this fact; it is caught by base-preflight ancestry — `stage-2-review-gate.md`, "Base
+       currency with `<base>`".)
      - **`branch_mismatch`** — the snapshot `headRefName` differs from the row's recorded `branch`: reconcile
        the row's `branch` (adopted PRs keep their **own** head branch — the `gauntlet-run-<run-id>` label is
        the ownership marker, never a branch prefix; `files-and-ledger.md`, `branch`).
