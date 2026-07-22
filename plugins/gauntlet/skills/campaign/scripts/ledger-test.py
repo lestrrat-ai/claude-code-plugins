@@ -1013,6 +1013,48 @@ def t_defaults_backfill(L: ModuleType, tmp: Path) -> None:
         check(out == L.HEADER_DEFAULTS[f] + "\n", f"header default for {f} did not back-fill: {out!r}")
 
 
+def t_default_non_goals(L: ModuleType, tmp: Path) -> None:
+    """`default_non_goals` is a schema-owned run field: old headers back-fill `[]`, valid arrays round-trip
+    CANONICALLY, and every malformed value is REFUSED without mutating the ledger. Consumers decode ONLY
+    through the accessor, never the raw header value."""
+    # A header written before the field existed reads back the canonical empty default, both ways.
+    old = write_lines(tmp / "old.jsonl", json.dumps({"type": "header", "run_id": "r"}))
+    code, out, err = cli(L, ["--file", str(old), "header", "get", "default_non_goals"])
+    check((code, out) == (0, "[]\n"), f"an old header did not back-fill default_non_goals to []: {out!r} {err!r}")
+    header, _ = L.load(old)
+    check(L.default_non_goals(header) == [], f"the accessor did not decode the back-filled default: {header!r}")
+
+    # A valid array sets, canonicalizes (whitespace trimmed, JSON re-emitted), and the accessor decodes it.
+    path = write_lines(tmp / "dng.jsonl", header_line(L, run_id="r"))
+    code, _, err = cli(L, ["--file", str(path), "header", "set", "default_non_goals", '["  a b  ", "c"]'])
+    check(code == 0, f"a valid default_non_goals array was refused: {err!r}")
+    code, out, _ = cli(L, ["--file", str(path), "header", "get", "default_non_goals"])
+    check(out == '["a b", "c"]\n', f"default_non_goals did not canonicalize on set: {out!r}")
+    header, _ = L.load(path)
+    check(L.default_non_goals(header) == ["a b", "c"],
+          f"the accessor did not decode the stored array: {header!r}")
+
+    # Every malformed value is REFUSED (exit 1) and leaves the stored value EXACTLY as it was.
+    before = path.read_text()
+    for bad, why in (('{"a": 1}', "a non-array"), ('["a", "a"]', "a duplicate entry"),
+                     ('["a", ""]', "a blank entry"), ('["a\\nb"]', "a multi-line entry"),
+                     ('not json', "malformed JSON"), ('[1, 2]', "a non-string entry")):
+        code, _, err = cli(L, ["--file", str(path), "header", "set", "default_non_goals", bad])
+        check(code == 1, f"{why} ({bad!r}) was ACCEPTED (exit {code})")
+        check("default_non_goals" in err and "refused" in err, f"{why} failed for the wrong reason: {err!r}")
+        check(path.read_text() == before, f"a refused set for {why} MUTATED the ledger")
+
+    # The accessor FAILS CLOSED on a hand-edited malformed stored value — it never guesses a list.
+    corrupt = write_lines(tmp / "corrupt.jsonl",
+                          json.dumps({"type": "header", "run_id": "r", "default_non_goals": "not-json"}))
+    header, _ = L.load(corrupt)
+    try:
+        L.default_non_goals(header)
+        check(False, "the accessor decoded a malformed stored default_non_goals instead of failing closed")
+    except ValueError:
+        pass
+
+
 def t_values_are_strings(L: ModuleType, tmp: Path) -> None:
     """Every ingested value is coerced to `str`, so the on-disk JSON's type cannot change a comparison."""
     path = write_lines(tmp / "num.jsonl", header_line(L),
@@ -2604,6 +2646,7 @@ CASES = [
     ("id-derived", "id is always pr<pr> — never trusted from the file, never caller-set", t_id_is_derived),
     ("defaults-backfill", "a row written before a field existed still reads back complete", t_defaults_backfill),
     ("values-are-strings", "every ingested value is coerced to str", t_values_are_strings),
+    ("default-non-goals", "default_non_goals: old headers back-fill [], valid arrays canonicalize, malformed values are refused unmutated, decode only through the accessor", t_default_non_goals),
     ("null-reads-as-default", "a present JSON null reads back as the field default, not the string \"None\"", t_null_reads_as_default),
     ("verdict-counts-rounds", "`verdict` bumps review_rounds on EVERY verdict and applies the tally atomically", t_verdict_counts_rounds),
     ("rounds-never-reset", "NOTHING resets review_rounds/ns_streak — there is no flag, at any door", t_review_rounds_never_reset),

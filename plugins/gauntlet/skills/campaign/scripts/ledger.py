@@ -38,7 +38,7 @@ TEST_PY = HERE / "ledger-test.py"     # the fixture suite — this accessor's ex
 # --- schema (owned here, once) ------------------------------------------------
 
 HEADER_FIELDS = ("run_id", "base_branch", "api_changes", "reviewer", "required_set", "skill_version",
-                 "last_activity", "watchdog_due", "pending_adoption")
+                 "last_activity", "watchdog_due", "pending_adoption", "default_non_goals")
 HEADER_DEFAULTS = {
     "run_id": "-",
     # LEGACY FALLBACK for the base branch. The base a PR merges into is now ROW state (`base_branch` in
@@ -115,6 +115,17 @@ HEADER_DEFAULTS = {
     #
     # The default is `-`: nothing is pending. This is not a sensor and carries no liveness meaning.
     "pending_adoption": "-",
+    # THE RUN-WIDE DEFAULT NON-GOALS — the exclusions the operator declares ONCE for the whole run, folded
+    # into every adopted PR's `intent-<pr>.md` "## Non-goals" as a MANAGED block at adoption/re-adoption
+    # (pr-adoption.md owns that block's format). A JSON ARRAY STRING of bullet BODIES (no `- ` prefix), each
+    # unique, trimmed, nonempty and single-line — `parse_default_non_goals` is the ONE validator and
+    # `default_non_goals(header)` the ONE decode door; no consumer decodes this value itself.
+    #
+    # The default is `[]`, the canonical "no run defaults": an old ledger written before this field existed
+    # back-fills to it, so a run with nothing declared folds nothing. `header set default_non_goals` validates
+    # and CANONICALIZES the value; malformed JSON, a non-array, a blank/multiline/duplicate entry is REFUSED
+    # without mutating the ledger (fail closed). files-and-ledger.md, "default_non_goals", owns the field.
+    "default_non_goals": "[]",
 }
 
 ROW_FIELDS = (
@@ -758,6 +769,45 @@ def parse_ruling(value: str) -> "tuple[str, str] | None":
     return kind, stamp
 
 
+def parse_default_non_goals(value: str) -> "list[str]":
+    """The run's default Non-goals, as a validated list of bullet BODIES — the ONE parser and validator.
+
+    The stored form is a JSON ARRAY STRING; this decodes it and accepts ONLY a list of unique, trimmed,
+    nonempty, single-line strings (each a `## Non-goals` bullet body WITHOUT the `- ` prefix). Anything else
+    — malformed JSON, a non-array, a non-string / blank / multi-line / duplicate entry — is REFUSED by
+    raising `ValueError`, which the write door turns into a fail-closed refusal that never mutates the
+    ledger. Returns the canonical (whitespace-trimmed) list in declared order.
+    """
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise ValueError(f"not valid JSON ({exc})")
+    if not isinstance(parsed, list):
+        raise ValueError(f"must be a JSON array, not {type(parsed).__name__}")
+    out: "list[str]" = []
+    seen: "set[str]" = set()
+    for item in parsed:
+        if not isinstance(item, str):
+            raise ValueError(f"every entry must be a string, not {type(item).__name__}")
+        body = item.strip()
+        if not body:
+            raise ValueError("an entry is blank — an empty exclusion states nothing")
+        if "\n" in body or "\r" in body:
+            raise ValueError(f"entry {item!r} spans multiple lines — one Non-goal is one line")
+        if body in seen:
+            raise ValueError(f"duplicate entry {body!r} — one exclusion cannot be stated twice")
+        seen.add(body)
+        out.append(body)
+    return out
+
+
+def default_non_goals(header: dict) -> "list[str]":
+    """The run's default Non-goals, DECODED — the ONE door every consumer reads them through (never the raw
+    header value). Fails CLOSED (raises `ValueError`) on a malformed stored value; the write door
+    canonicalizes on every `set`, so that only ever happens to a hand-edited store."""
+    return parse_default_non_goals(header.get("default_non_goals", HEADER_DEFAULTS["default_non_goals"]))
+
+
 # --- subcommands --------------------------------------------------------------
 
 def cmd_header(path: Path, args) -> int:
@@ -776,8 +826,16 @@ def cmd_header(path: Path, args) -> int:
     # (nor, by writing an old date, forge "it is stalled" or "the deadline already passed").
     if args.field in NO_SET_HEADER:
         fail(NO_SET_HEADER[args.field])
-    activity = header.get(args.field) != args.value
-    header[args.field] = args.value
+    value = args.value
+    if args.field == "default_non_goals":
+        # VALIDATE and CANONICALIZE through the schema's own parser — the ONE place this field is decoded.
+        # A refusal raises BEFORE `save`, so a malformed value never mutates the ledger (fail closed).
+        try:
+            value = json.dumps(parse_default_non_goals(args.value))
+        except ValueError as exc:
+            fail(f"default_non_goals {exc} — refused; the ledger is unchanged")
+    activity = header.get(args.field) != value
+    header[args.field] = value
     save(path, header, rows, activity=activity)
     return 0
 

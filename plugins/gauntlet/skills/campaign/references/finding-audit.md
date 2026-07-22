@@ -168,7 +168,12 @@ Two things the audit does about it — **a SIGNAL and a hand-off, never a discha
   reading it as licence to skip the CONFIRMED fix in hand drops that routing (verify against `repair-pass.md`).
   The driver may then author/tighten the intent `## Non-goals` **directly — a plain driver edit of the
   local intent artifact, needing no repair-pass** — so **future** reviewer rounds bind, and surface the
-  residual class to the user as a **non-blocking policy note**, driving the other PRs meanwhile. (The
+  residual class to the user as a **non-blocking policy note**, driving the other PRs meanwhile. **Scope
+  decides the lever.** A **PR-SPECIFIC** exclusion stays a per-PR edit of that intent's own `## Non-goals`
+  (a bullet OUTSIDE the managed block). A genuinely **RUN-WIDE** class — the same residual attacking several
+  of the run's PRs — is declared ONCE in the run header (`ledger.py header set default_non_goals …`,
+  `files-and-ledger.md`) and folded into every PR by `pr-adopt.py intent-sync`, rather than hand-editing
+  each `intent-<pr>.md`; either way it is disclosed and describes the class. (The
   cap-level `repair-pass.md` REPAIR-INTENT decision re-authors the whole intent the same way, but is
   reachable only once a review-loop cap sets `status = repairing` — it is NOT the mechanism for this
   early, pre-cap signal.) Three constraints

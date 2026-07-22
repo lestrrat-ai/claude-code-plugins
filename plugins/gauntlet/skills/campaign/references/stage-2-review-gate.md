@@ -226,8 +226,9 @@ file is a plaintext file in a directory the reviewer can write to.
 ["python3", review_pass_script, "finding-add", "--file", findings_file,
  "--path", path, "--line", line, "--writer", writer, "--purpose", purpose,
  "--repro", repro, "--fix", fix]
-["python3", review_pass_script, "intent-check", "--file", intent_file]
-    # refuse a missing/malformed intent block BEFORE dispatch, not at verify
+["python3", review_pass_script, "intent-check", "--file", intent_file, "--ledger", ledger_file]
+    # refuse a missing/malformed intent block, or one whose run-default managed block has drifted from the
+    # ledger header default_non_goals, BEFORE dispatch, not at verify
 ["python3", review_dispatch_script, "prepare", "--run-dir", review_root,
  "--pr", pr, "--pass", review_pass, "--launch-attempt", launch_attempt,
  "--worktree", worktree, "--base", base, "--route", route,
@@ -596,9 +597,15 @@ intents. It is **local, git-ignored driver bookkeeping**: campaign never writes 
 - Who cannot: <...>
 ```
 
+Its `## Non-goals` also carries the run's **default Non-goals** — the exclusions the operator declared once
+for the whole run — folded in by `pr-adopt.py intent-sync` as a MANAGED block (`pr-adoption.md` owns that
+block's format). `review-pass.py intent-check --ledger` refuses a PR whose managed block has drifted from
+the run header before the reviewer is ever launched.
+
 **It is passed to the reviewer VERBATIM**, in the dispatch prompt (`review-dispatch.md`). Three things follow:
 
-- **NON-GOALS BIND THE REVIEWER.** A finding that attacks a declared non-goal **cannot gate**. "This PR does
+- **NON-GOALS BIND THE REVIEWER.** A finding that attacks a declared non-goal **cannot gate** — and a run
+  default is a declared non-goal like any other. "This PR does
   not harden its own self-test against a developer editing it" is a *decision*, and re-litigating a decision
   is not review — it is the loop arguing with itself.
 - **EVERY FINDING MUST ANCHOR TO THE INTENT.** It names **either** the `## Purpose` line it defends (quoted
@@ -609,9 +616,10 @@ intents. It is **local, git-ignored driver bookkeeping**: campaign never writes 
   threat model rather than by nothing. Hunt as hostilely as ever; then say who can reach what you found.
 
 **The intent is the DRIVER'S CLAIM unless the PR's author wrote it** (the ledger's `intent` column says
-which: `stated@<iso>` = copied from the PR body, `authored@<iso>` = inferred by the driver from the title,
-body and diff). A wrong intent block silently NARROWS a review, so an `authored` one is named as such in the
-final report. That is a real, disclosed cost — and it is bought against a reviewer that was previously
+which, for the BASE sections only: `stated@<iso>` = base sections copied from the PR body, `authored@<iso>`
+= inferred by the driver from the title, body and diff — either way the managed run-default block is added
+mechanically afterward, so `stated@` does not mean the whole file is verbatim). A wrong intent block
+silently NARROWS a review, so an `authored` one is named as such in the final report. That is a real, disclosed cost — and it is bought against a reviewer that was previously
 measured against **nothing at all**.
 
 ### Findings are RECORDS, not prose — `emit-finding.py` is the ONLY way to report one
@@ -684,8 +692,9 @@ case — the one that **merges the PR**. `verify` derives the PR from the progre
 file's own name and loads `<rundir>/intent-<pr>.md` on **every** pass; anything short of a **usable** block
 makes the pass `unusable` and no verdict is tallied from it. **What "usable" means is NOT restated here** —
 `pr-adoption.md` step 3a states it for the human writing the file, and `review-pass.py`'s parser IS the
-definition (`review-pass.py intent-check --file <rundir>/intent-<pr>.md` is the pre-dispatch form of the
-same check — run it before dispatching rather than discovering the gap at `verify`). A missing intent is
+definition (`review-pass.py intent-check --file <rundir>/intent-<pr>.md --ledger <rundir>/state.jsonl` is
+the pre-dispatch form of the same check, plus the run-default managed-block sync — run it before
+dispatching rather than discovering the gap at `verify`). A missing intent is
 the one `unusable` that is **not** a reviewer failure: write the block, then re-dispatch.
 
 The reviewer runs the review contract defined in `review-dispatch.md`, which also owns the dispatch

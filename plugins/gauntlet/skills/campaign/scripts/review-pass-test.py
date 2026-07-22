@@ -402,6 +402,22 @@ class Tables:
         )
         self.R43_11, self.R42_23, self.R43_15 = R43_11, R42_23, R43_15
 
+        # --- run-default MANAGED-BLOCK intents, for `scan_managed_block`'s structural rules ------------
+        # A valid intent whose `## Non-goals` holds a well-formed managed block, and four that break its
+        # fence one way each. Each malformed one is a COMPLETE, otherwise-valid intent, so `parse_intent`
+        # reaches the managed-block scan and refuses THERE, not on an earlier section rule.
+        MS, ME = R.MANAGED_START, R.MANAGED_END
+        _mb_head = "## Purpose\n- never emit a false green\n\n## Non-goals\n- a pr specific exclusion\n"
+        _mb_tail = "\n## Threat model\n- Who can write the inputs this code reads: the network\n"
+        MB_VALID = _mb_head + MS + "\n- run default one\n" + ME + _mb_tail
+        MB_DUPLICATE = (_mb_head + MS + "\n- run default one\n" + ME + "\n"
+                        + MS + "\n- run default two\n" + ME + _mb_tail)
+        MB_UNTERMINATED = _mb_head + MS + "\n- run default one\n" + _mb_tail
+        MB_INVERTED = _mb_head + ME + "\n- run default one\n" + MS + _mb_tail
+        MB_OUTSIDE = ("## Purpose\n- never emit a false green\n" + MS + "\n- run default one\n" + ME
+                      + "\n\n## Non-goals\n- a pr specific exclusion\n" + _mb_tail)
+        MB_NON_BULLET = _mb_head + MS + "\n- run default one\nnot a bullet line\n" + ME + _mb_tail
+
         self.FINDING_CASES: "dict[str, tuple]" = {
             # --- THE ACCEPTANCE TEST: the real record, classified -------------------------------------
             "real-43-r11-gates": (
@@ -619,6 +635,36 @@ class Tables:
                 "VERBATIM carried `purpose == '-'`, which `gating()` reads as 'anchors to no purpose' and "
                 "discharges. A REAL, anchored finding would be waved through as non-gating. The write door "
                 "now REFUSES the `-` bullet, so real purpose lines and the absent-marker can never collide"),
+
+            # --- the run-default MANAGED block's STRUCTURE (scan_managed_block) -----------------------
+            #
+            # The operator's run defaults sit inside `## Non-goals` between two markers. A reviewer must
+            # never be handed an intent whose fence is ambiguous, so `parse_intent` refuses a malformed one
+            # at the same door it refuses a malformed section. A well-formed block is invisible to the
+            # verdict — the bullets are ordinary Non-goals — so the valid case must STILL pass.
+            "managed-block-valid": (
+                PLAN, WORKED, None, MB_VALID, SAT, OK, "0 gating finding(s)",
+                "a well-formed run-default managed block is just Non-goals bullets with a fence; it parses "
+                "and the pass is judged normally"),
+            "managed-block-duplicate": (
+                PLAN, WORKED, None, MB_DUPLICATE, SAT, UNUSABLE, "appears more than once",
+                "TWO managed blocks — a nested/duplicated fence `intent-sync` can no longer own. One run, "
+                "one block"),
+            "managed-block-unterminated": (
+                PLAN, WORKED, None, MB_UNTERMINATED, SAT, UNUSABLE, "unterminated",
+                "a start marker with no end — one without the other fences nothing, so the operator's "
+                "defaults blur into the PR-specific bullets below"),
+            "managed-block-inverted": (
+                PLAN, WORKED, None, MB_INVERTED, SAT, UNUSABLE, "inside out",
+                "the end marker precedes the start — the fence encloses nothing and everything at once"),
+            "managed-block-outside-nongoals": (
+                PLAN, WORKED, None, MB_OUTSIDE, SAT, UNUSABLE, "NOT inside",
+                "the block sits under `## Purpose` — run defaults are Non-goals and belong in that section "
+                "alone, or `intent-sync` would rewrite the wrong part of the intent"),
+            "managed-block-non-bullet": (
+                PLAN, WORKED, None, MB_NON_BULLET, SAT, UNUSABLE, "non-bullet line",
+                "a prose line between the markers — the managed block holds ONLY `- ` run-default bullets, "
+                "so anything else is a hand-edit `intent-sync` did not write"),
 
             # --- the findings file's own line shape --------------------------------------------------
             "findings-not-json": (
@@ -1898,6 +1944,16 @@ def check_door(T: Tables, door: str, parser: argparse.ArgumentParser, tmp: Path)
         for flag in sorted(flags):
             if flag == "--file":
                 argv += seed_door(T, tmp, door, case)
+            elif door == "intent-check" and flag == "--ledger":
+                # intent-check's --ledger must name a REAL ledger in the SAME run dir as the seeded intent
+                # (a static FLAG_VALUES path could satisfy neither), so seed one there with empty defaults —
+                # the seeded INTENT carries no managed block, so empty defaults is exactly in sync.
+                seed_dir = tmp / f"door-{door}-{case}"
+                seed_dir.mkdir(parents=True, exist_ok=True)
+                ledger = seed_dir / "state.jsonl"
+                ledger.write_text(
+                    '{"type": "header", "run_id": "door", "default_non_goals": "[]"}\n', encoding="utf-8")
+                argv += ["--ledger", str(ledger)]
             else:
                 argv += [arg for value in T.FLAG_VALUES[flag] for arg in (flag, value)]
         return run_door(door, words, argv)
@@ -1998,26 +2054,78 @@ def check_commands_covered(R: types.ModuleType, T: Tables) -> "list[str]":
     return problems
 
 
+def _write_ledger(path: Path, defaults: "list[str] | str") -> Path:
+    """A minimal one-line ledger header naming this run's `default_non_goals`. `defaults` is a list (encoded
+    to the canonical JSON-array string) or a raw string (to plant a MALFORMED value the accessor must
+    refuse). `ledger.load()` back-fills every other header field, so one line is a complete header."""
+    dng = json.dumps(defaults) if isinstance(defaults, list) else defaults
+    path.write_text(
+        json.dumps({"type": "header", "run_id": "r1", "default_non_goals": dng}) + "\n", encoding="utf-8")
+    return path
+
+
 def check_intent_door(R: types.ModuleType, tmp: Path) -> int:
-    """Drive intent-check through its real CLI with one sound and one malformed artifact."""
-    cases = {
-        "usable": (INTENT, 0, "usable intent block"),
-        "missing-threat-model": (
-            "## Purpose\n- do the work\n\n## Non-goals\n",
-            1,
-            "missing ['## Threat model']",
-        ),
+    """Drive intent-check through its real CLI: structural refusals, AND the run-default sync enforcement.
+
+    Each case gets its own run dir holding the intent and the run's `state.jsonl` (same dir, as the real
+    flow lays them out). The sync cases are what pin `check_default_non_goals`: remove that enforcement and
+    `missing-default`/`stale-default`/`malformed-managed` all go from exit 1 to exit 0, and these fail.
+    """
+    in_sync = R.merge_default_non_goals(INTENT, ["run default X"], Path("intent.md"))
+    stale = R.merge_default_non_goals(INTENT, ["an old default"], Path("intent.md"))
+    dup_block = in_sync.replace(
+        R.MANAGED_END, R.MANAGED_END + "\n" + R.MANAGED_START + "\n- dup\n" + R.MANAGED_END, 1)
+    # name -> (intent text, ledger defaults, want exit, needle). A None ledger-defaults means "no ledger row
+    # field", i.e. empty defaults.
+    cases: "dict[str, tuple[str, list[str], int, str]]" = {
+        "usable-empty-defaults": (INTENT, [], 0, "usable intent block"),
+        "missing-threat-model": ("## Purpose\n- do the work\n\n## Non-goals\n", [], 1,
+                                 "missing ['## Threat model']"),
+        "in-sync": (in_sync, ["run default X"], 0, "in sync with 1 run default"),
+        "missing-default": (INTENT, ["run default X"], 1, "OUT OF SYNC"),
+        "stale-default": (stale, ["run default X"], 1, "OUT OF SYNC"),
+        "malformed-managed": (dup_block, ["run default X"], 1, "appears more than once"),
     }
     failures = 0
-    for name, (content, want, needle) in cases.items():
-        path = tmp / f"intent-door-{name}.md"
+    for name, (content, defaults, want, needle) in cases.items():
+        d = tmp / f"intent-door-{name}"
+        d.mkdir(parents=True, exist_ok=True)
+        path = d / INTENT_FILE
         path.write_text(content, encoding="utf-8")
-        code, output = run_cli(R, ["intent-check", "--file", str(path)])
+        ledger = _write_ledger(d / "state.jsonl", defaults)
+        code, output = run_cli(R, ["intent-check", "--file", str(path), "--ledger", str(ledger)])
         if code != want or needle not in output:
             print(f"FAIL     [intent-check] {name}: exit {code}, expected {want}; output: {output.strip()}")
             failures += 1
         else:
             print(f"ok       [intent-check] {name:24} exit {code}: {needle}")
+
+    # A malformed ledger `default_non_goals` fails CLOSED — the defaults cannot be read, so the intent
+    # cannot be judged against them.
+    d = tmp / "intent-door-malformed-ledger"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / INTENT_FILE).write_text(INTENT, encoding="utf-8")
+    ledger = _write_ledger(d / "state.jsonl", "not-json{")
+    code, output = run_cli(R, ["intent-check", "--file", str(d / INTENT_FILE), "--ledger", str(ledger)])
+    if code != 1 or "malformed" not in output:
+        print(f"FAIL     [intent-check] malformed-ledger: exit {code}, expected 1; output: {output.strip()}")
+        failures += 1
+    else:
+        print(f"ok       [intent-check] {'malformed-ledger':24} exit {code}: fails closed")
+
+    # The ledger and intent MUST share a run directory — a mismatch is the operator's error (exit 2).
+    d = tmp / "intent-door-crossrun"
+    (d / "run-a").mkdir(parents=True, exist_ok=True)
+    (d / "run-b").mkdir(parents=True, exist_ok=True)
+    (d / "run-a" / INTENT_FILE).write_text(INTENT, encoding="utf-8")
+    ledger = _write_ledger(d / "run-b" / "state.jsonl", [])
+    code, output = run_cli(R, ["intent-check", "--file", str(d / "run-a" / INTENT_FILE),
+                               "--ledger", str(ledger)])
+    if code != 2 or "same run directory" not in output:
+        print(f"FAIL     [intent-check] cross-run: exit {code}, expected 2; output: {output.strip()}")
+        failures += 1
+    else:
+        print(f"ok       [intent-check] {'cross-run-dir':24} exit {code}: refused")
     return failures
 
 

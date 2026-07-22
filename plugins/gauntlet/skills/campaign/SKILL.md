@@ -89,20 +89,25 @@ it — no trigger means the step runs unconditionally at that point in the seque
    re-derived from memory. Header fields are DATA: re-read `reviewer` from the ledger every heartbeat,
    never trust memory. The base a PR merges into is **per-row** now (`effective_base` — the row's
    recorded base, else the header's legacy `base_branch` fallback), so **re-resolve each active PR's
-   effective base every heartbeat**, never assume `main`.
+   effective base every heartbeat**, never assume `main`. To rule a class out of scope for the WHOLE run
+   in one place, set the run's default Non-goals once (`ledger.py header set default_non_goals '["<body>",
+   …]'`, `references/files-and-ledger.md`); `pr-adopt.py intent-sync` folds them into every adopted PR's
+   intent, so you never hand-edit each `intent-<pr>.md`.
 
 **Adoption** (`references/pr-adoption.md`) — for each explicit `#PR` arg, and on every heartbeat for
 every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snapshot):
 
-6. Fetch the PR; REFUSE foreign-owned and cross-repo/fork PRs. Write the PR's intent artifact
+6. Fetch the PR; REFUSE foreign-owned and cross-repo/fork PRs. Write the PR's **base** intent artifact
    (`intent-<pr>.md`: `## Purpose` / `## Non-goals` / `## Threat model`; local, git-ignored, never
-   written back to the PR). Register the ledger row (refresh on re-adoption, never duplicate), run
+   written back to the PR), then `pr-adopt.py intent-sync` to fold the run's default Non-goals into its
+   managed block (`pr-adoption.md`). Register the ledger row (refresh on re-adoption, never duplicate), run
    label, status label, and worktree. Run `triage.py derive` on that resolved worktree for the mechanical
    floor + inventory, decide the SHA-pinned tier at or above that floor, and record it before gate work.
    Start a CI watch only if a check can still move.
-7. `review-pass.py intent-check --file <rundir>/intent-<pr>.md`: run immediately after writing an
-   intent artifact and before dispatching the PR's first review — the same parser every pass later
-   loads, so a malformed intent fails before review work is spent.
+7. `review-pass.py intent-check --file <rundir>/intent-<pr>.md --ledger <rundir>/state.jsonl`: run
+   immediately after writing an intent artifact and syncing it, before dispatching the PR's first review —
+   the same parser every pass later loads, plus a check that the managed block is in sync with the run
+   header's `default_non_goals`, so a malformed or stale intent fails before review work is spent.
 
 **Heartbeat loop** (`references/loop-control.md` — read at each heartbeat before dispatch)
 
@@ -152,9 +157,10 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
     then run `review-dispatch.py prepare` to write the attempt identity and exact prompt
     and return the one typed transport; `references/review-dispatch.md` owns the invocation and handoff.
 15. The review is measured against the PR's INTENT, never "is anything wrong with this code?". The
-    reviewer receives `intent-<pr>.md` verbatim and answers ONE question: does this PR achieve its
-    stated Purpose, without breaking anything reachable by an actor named in its Threat model?
-    Non-goals BIND. A pass with no usable intent earns no verdicts at all. Every finding is a record
+    reviewer receives `intent-<pr>.md` verbatim — its base Purpose/Non-goals/Threat model PLUS the run's
+    default Non-goals, folded into the managed block by `intent-sync` — and answers ONE question: does
+    this PR achieve its stated Purpose, without breaking anything reachable by an actor named in its
+    Threat model? Non-goals BIND, the run defaults among them. A pass with no usable intent earns no verdicts at all. Every finding is a record
     (`emit-finding.py`) that must ANCHOR — a `## Purpose` line quoted verbatim, or the writer who can
     actually supply the bad input; a finding that anchors to neither is NON-GATING (a follow-up, never
     a `NOT SATISFIED`, never a fix). The rule is an if-and-only-if: `NOT SATISFIED` exactly when at

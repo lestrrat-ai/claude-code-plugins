@@ -142,7 +142,12 @@ When the loop exits, summarize:
 - **Whose intent the review was measured against** — name every PR whose `intent` is `authored@…` rather
   than `stated@…`. **An `authored` intent is the DRIVER'S CLAIM about what the PR is for**, not the
   author's, and a wrong one silently **narrows** a review. It is a real cost and it is disclosed here rather
-  than buried; a `stated@…` intent came from the PR body and needs no flag.
+  than buried; a `stated@…` intent's **base sections** came from the PR body and need no flag (the managed
+  run-default block is folded in mechanically either way, so `stated@` is not "wholly verbatim").
+- **The run's default Non-goals** — when `default_non_goals` is non-empty, state them explicitly. They
+  narrowed **every** adopted PR's review — both `stated@` and `authored@` intents alike — by folding into
+  each managed block, so a residual class ruled out run-wide is disclosed here beside the per-PR `authored`
+  flag, never left implicit.
 - **Merged** — PR number + slug, one-line description, tier, and the **base it merged into** (its
   `effective_base`), so a mixed-base run shows which release line each PR shipped to.
 - **Residual risk** — for each merged PR, each accepting SATISFIED pass's `RESIDUAL-RISK` line (the

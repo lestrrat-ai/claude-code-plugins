@@ -413,7 +413,12 @@ the worker returns, and what never moves into it. The steps below are unchanged 
      without one is `unusable` and its verdict cannot be tallied** — the review would be spent for nothing.
      If the file is
      missing (a wiped `<rundir>`), write it **per `pr-adoption.md` step 3a** and record its provenance in
-     the row's `intent`. Then **ensure the PR-head worktree exists**
+     the row's `intent`. Whether it was just re-authored or already present from adoption, **run
+     `pr-adopt.py intent-sync --file <state.jsonl> --pr <N>` then `review-pass.py intent-check --file
+     <rundir>/intent-<pr>.md --ledger <state.jsonl>` before dispatch** — the sync folds the run's current
+     default Non-goals into the managed block, and the check refuses a stale or malformed one, so the
+     reviewer is never launched against defaults the operator has since changed. Then **ensure the PR-head
+     worktree exists**
      (the reviewer receives `<worktree>` as explicit review input under the transport-specific isolation
      contract in `runtime-adapter.md` — the
      PR row's ledger `worktree` column value, the

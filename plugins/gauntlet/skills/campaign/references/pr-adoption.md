@@ -217,9 +217,11 @@ For each `#PR` to adopt:
    MEASURED AGAINST"). Without it, the reviewer is asked *"is anything wrong with this code?"* — a question
    with no fixed point, and one that ran a PR through 21 review rounds without converging.
 
-   The three-branch decision:
-   - **A PR whose body already carries a usable intent block** (by the test below) → **COPY IT VERBATIM**
-     into `intent-<pr>.md`. Record `intent = stated@<iso>`.
+   The three-branch decision decides the **base** intent — the `intent` provenance describes THAT, not the
+   final file (the run-default managed block is added mechanically afterward, below):
+   - **A PR whose body already carries a usable intent block** (by the test below) → **COPY ITS THREE
+     SECTIONS VERBATIM** into `intent-<pr>.md`. Record `intent = stated@<iso>` — the base sections came
+     from the PR body.
    - **Otherwise the driver AUTHORS it** — from the PR's **diff, title and body** — writes it to
      `intent-<pr>.md`, and **proceeds**. Record `intent = authored@<iso>`. "Otherwise" includes a body
      that carries the three headings but leaves an anchor empty: author the missing section rather than
@@ -244,6 +246,39 @@ For each `#PR` to adopt:
    edit`, no comment, no commit. The PR belongs to its author; this is the driver's working note about it,
    and it lives with the run's other artifacts under `<rundir>`.
 
+   ##### The run-default Non-goals MANAGED block (this section OWNS its format)
+
+   A run can declare **default Non-goals ONCE** — exclusions the operator has ruled out of scope for the
+   WHOLE run — in the ledger header field `default_non_goals` (`ledger.py header set default_non_goals
+   '["<body>", …]'`; `files-and-ledger.md` owns the field). `pr-adopt.py intent-sync` folds them into each
+   adopted PR's `## Non-goals` as a **MANAGED block**, so the operator need not hand-edit every
+   `intent-<pr>.md`. The block is fenced by two HTML-comment markers and holds one `- ` bullet per run
+   default:
+
+   ```markdown
+   ## Non-goals
+   - <a PR-specific exclusion the driver wrote — OUTSIDE the block, never touched by sync>
+   <!-- gauntlet:run-default-non-goals:start -->
+   - <a run default, folded in from the ledger header>
+   <!-- gauntlet:run-default-non-goals:end -->
+   ```
+
+   The rules, enforced mechanically by `pr-adopt.py intent-sync` and `review-pass.py intent-check`:
+   - The driver authors **Purpose, PR-specific Non-goals, Threat model and provenance**; `intent-sync` owns
+     **only** the bullets BETWEEN the markers, and never a bullet outside them.
+   - Running `intent-sync` twice is **byte-identical**; a default already stated as a PR-specific Non-goal
+     outside the block is **not duplicated** inside it.
+   - **Changing the header replaces the managed portion** on the next sync — it adds and removes run
+     defaults correctly and **never rewrites the PR-specific bullets**. An **empty** `default_non_goals`
+     removes the block entirely, leaving the PR-specific Non-goals untouched.
+   - Operator defaults are **run policy**; every bullet outside the managed block stays **PR-specific**.
+
+   **After copying or authoring the base artifact, run `pr-adopt.py intent-sync --file <rundir>/state.jsonl
+   --pr <pr>`** to fold in the run defaults (it reports `updated`, `unchanged`, or `pending-intent`).
+   Adoption also runs it automatically at the end of `pr-adopt.py adopt`, so a re-adoption whose intent
+   artifact is present is synced without a separate call; the explicit invocation is for the fresh-adoption
+   path, where the driver authors the base intent first and then syncs.
+
    **USABLE means the parser will take it — `review-pass.py` is the definition, and this is the same rule
    stated for a human:** all three headings, **at least one `## Purpose` bullet, AND at least one
    `## Threat model` bullet**. `## Non-goals` **may be empty** — and only that one may. **No `## Purpose`
@@ -261,10 +296,12 @@ For each `#PR` to adopt:
    **A block that fails that test is NOT a usable intent, and copying it is worse than authoring one** — the
    pass would be refused as `unusable` on the first `verify`, and the PR would sit there earning no verdicts.
 
-   **Validate the artifact immediately after writing it:** run
-   `review-pass.py intent-check --file <rundir>/intent-<pr>.md`. A non-zero exit refuses adoption for that
-   PR until the artifact is corrected. This is the same parser `verify` uses, moved before review dispatch;
-   never spend a review to learn that its intent could not be read.
+   **Validate the artifact immediately after `intent-sync`:** run
+   `review-pass.py intent-check --file <rundir>/intent-<pr>.md --ledger <rundir>/state.jsonl`. A non-zero
+   exit refuses adoption for that PR until the artifact is corrected. This is the same parser `verify` uses,
+   moved before review dispatch, PLUS a check that the managed block is in sync with the run header's
+   `default_non_goals` (the two files must share the run directory); never spend a review to learn that its
+   intent could not be read or that its run defaults were stale.
 
    **The file is READ BY THE TOOL, on every pass.** `review-pass.py verify` loads `intent-<pr>.md` for
    **every** pass it judges — whatever that pass found, and even when it found nothing — so an absent,
@@ -311,9 +348,14 @@ For each `#PR` to adopt:
    consultation only; the store is DRIVER-POPULATED and auto-staling is out of scope). Do not import a Non-goal
    from a learning whose anchor this diff just moved.
 
-   **On a RE-ADOPTION, do not re-author.** `intent` is one of the fields the refresh **preserves** (step 3),
-   and `intent-<pr>.md` is re-read, never re-derived — a heartbeat is a fresh agent instance, and an intent
-   invented twice is two intents. Re-author only if the file is **gone** (a wiped `<rundir>`), and say so.
+   **On a RE-ADOPTION, do not re-author — but DO re-sync.** `intent` is one of the fields the refresh
+   **preserves** (step 3), and the base `intent-<pr>.md` is re-read, never re-derived — a heartbeat is a
+   fresh agent instance, and an intent invented twice is two intents. The run-default managed block IS
+   re-synced, automatically, by `pr-adopt.py adopt` (it runs `intent-sync` at the end), so a header change
+   propagates on the next re-adoption without re-authoring the base. Re-author only if the file is **gone**
+   (a wiped `<rundir>`) — then re-run `intent-sync` and `intent-check` after authoring, exactly as a fresh
+   adoption does — and say so. After a `REPAIR-INTENT` re-authoring (`repair-pass.md`), likewise re-run
+   `intent-sync` and the intent check.
 
 #### Step 4 — Label it ours, and set the status label from the LIVE gate
 

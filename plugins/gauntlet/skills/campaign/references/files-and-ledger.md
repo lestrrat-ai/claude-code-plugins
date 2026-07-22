@@ -16,7 +16,7 @@ resume, reuse the existing dir). Per-run dirs are what keep concurrent runs' fil
 | `review-<pr>-<n>.plan.jsonl` | Orchestrator-authored review work plan for pass `n` (per-pass — a relaunch reuses it): unit and waiver rows, written through `scripts/review-pass.py plan-add` and `plan-waive`, never a heredoc. `stage-2-review-gate.md`, "Review work-plan ledger", owns the plan rules |
 | `review-<pr>-<n>.progress.jsonl` | Reviewer progress events against the plan for pass `n` (launch attempt 1), opened by `review-dispatch.py prepare` with an orchestrator-owned `pass_identity` validated through `review-pass.py`. **Every line is READ and validated through `scripts/review-pass.py`, and every reviewer-written line goes through one of its doors.** Unit-progress events use `emit-progress.py`; a `plan_amendment_request` uses `emit-amendment.py`, which forwards to `review-pass.py amend`. `stage-2-review-gate.md` owns the artifact rule |
 | `review-<pr>-<n>.findings.jsonl` | The FINDINGS of pass `n` (launch attempt 1) — one validated record per finding, written **only** through `scripts/emit-finding.py`. A finding used to be prose in the report, so nothing could check its citation, bound its writer, or ask what it DEFENDED — and therefore nothing could ever **decline** one. Each record ANCHORS to the PR's intent: a `## Purpose` line quoted verbatim, or the actor who can actually write the bad input. `stage-2-review-gate.md` owns the schema and the gating rule |
-| `intent-<pr>.md` | **What this PR is FOR** — `## Purpose` / `## Non-goals` / `## Threat model`. Written at adoption (`pr-adoption.md`), from the PR body when it carries one and **authored by the driver** from the diff/title/body when it does not; re-read every heartbeat, never re-derived. It is passed to the reviewer **verbatim**, and it is what the **pass** is measured against: `review-pass.py verify` loads it for **every** pass it judges — including one that found nothing — so a PR with no usable block here earns **no verdicts at all** (`stage-2-review-gate.md`, "Does this pass COUNT?"). **LOCAL and git-ignored — campaign NEVER writes it back to the PR** |
+| `intent-<pr>.md` | **What this PR is FOR** — a **base** of `## Purpose` / `## Non-goals` / `## Threat model` PLUS the operator's run-default **MANAGED block** inside `## Non-goals` (folded in by `pr-adopt.py intent-sync` from the header `default_non_goals`; `pr-adoption.md` owns its format). The base is written at adoption (`pr-adoption.md`), from the PR body when it carries one and **authored by the driver** from the diff/title/body when it does not; re-read every heartbeat, never re-derived. It is passed to the reviewer **verbatim**, and it is what the **pass** is measured against: `review-pass.py verify` loads it for **every** pass it judges — including one that found nothing — so a PR with no usable block here earns **no verdicts at all** (`stage-2-review-gate.md`, "Does this pass COUNT?"). **LOCAL and git-ignored — campaign NEVER writes it back to the PR** |
 | `review-<pr>-<n>.a<k>.prompt.txt` / `.a<k>.txt` / `.a<k>.progress.jsonl` / `.a<k>.findings.jsonl` | The same four per-attempt artifacts for **launch attempt `k ≥ 2`** — a relaunched pass writes here, never over attempt 1's files, so a killed-but-alive attempt can't corrupt the live one. `review-pass.py verify` derives `.a<k>.txt` from `.a<k>.progress.jsonl`; only that attempt is read or counted. The plan and intent remain per-pass/per-PR |
 | `ci-<pr>-<head_sha>.txt` | Latest **SHA-pinned** CI snapshot for a PR — check runs **AND** commit statuses, written **BY THE HEARTBEAT** running **`scripts/ci-status.py derive`** after the watch completes (**the watch never writes it**), promoted atomically, and **stamped with the `head_sha` it describes** (verify the stamp before parsing). Carries a **`source` completion marker per mandatory source**, so a source that was **never queried** is `unusable`, not a silent green (`ci-derivation-spec.md`). Never the watch stream, and never `gh pr checks` — its output carries **no SHA** |
 | `audit-<pr>-<n>.jsonl` | Schema-owned audit of the gating findings from the round pass `n`'s landed verdict produced, and any standoff ruling. Read/written only through `scripts/finding-audit.py`; `finding-audit.md`, **Executable audit artifact**, owns the complete procedure |
@@ -108,7 +108,7 @@ following line is one adopted PR's row record (`{"type": "row", …}`). Every re
 — fields are keyed by NAME, never by column position:
 
 ```
-{"type": "header", "run_id": "g260704-0915-a3f29c1b", "base_branch": "main", "api_changes": "ask", "reviewer": "codex", "required_set": "declared:[{\"context\": \"build\", \"app\": \"-\"}, {\"context\": \"test (3.12, ubuntu)\", \"app\": \"15368\"}]", "skill_version": "0.1.4", "last_activity": "2026-07-04T09:40:00Z", "watchdog_due": "2026-07-04T10:25:00Z", "pending_adoption": "-"}
+{"type": "header", "run_id": "g260704-0915-a3f29c1b", "base_branch": "main", "api_changes": "ask", "reviewer": "codex", "required_set": "declared:[{\"context\": \"build\", \"app\": \"-\"}, {\"context\": \"test (3.12, ubuntu)\", \"app\": \"15368\"}]", "skill_version": "0.1.4", "last_activity": "2026-07-04T09:40:00Z", "watchdog_due": "2026-07-04T10:25:00Z", "pending_adoption": "-", "default_non_goals": "[\"hardening a self-test against a developer who edits it\"]"}
 {"type": "row", "id": "pr41", "slug": "fix-null-deref", "branch": "fix-null-deref", "worktree": "/srv/example-repo/.worktrees/fix-null-deref", "worktree_owned": "yes", "branch_owned": "yes", "pr": "41", "head_sha": "a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c", "reviews_ok": "2", "ci": "green", "tier": "STANDARD", "attempts": "1", "started": "2026-07-04T09:15:00Z", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:9f2c\u2026", "settled_strikes": "0", "unusable_refetches": "0", "ci_stalled_since": "-", "ci_reason": "-", "blocker_ruling": "-", "review_rounds": "3", "ns_streak": "0", "intent": "stated@2026-07-04T09:15:00Z", "pr_origin": "gauntlet", "repair_count": "0", "repair_decision": "-"}
 {"type": "row", "id": "pr52", "slug": "add-retry-flag", "branch": "add-retry-flag", "worktree": "/home/example/checkouts/add-retry-flag", "worktree_owned": "no", "branch_owned": "no", "pr": "52", "head_sha": "b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7089a1b", "reviews_ok": "0", "ci": "pending", "tier": "HIGH", "attempts": "0", "started": "-", "api_approval": "-", "status": "in_review", "ci_fingerprint": "sha256:4a71\u2026", "settled_strikes": "1", "unusable_refetches": "0", "ci_stalled_since": "-", "ci_reason": "required check absent: integration-tests", "blocker_ruling": "-", "review_rounds": "5", "ns_streak": "2", "intent": "authored@2026-07-04T09:20:00Z", "pr_origin": "external", "repair_count": "0", "repair_decision": "-"}
 ```
@@ -139,7 +139,7 @@ this header field is only what a row carrying no explicit set inherits through `
 maintain; the quiet-run sensor `nudge.py` reads, defined below), `watchdog_due` (**the durable
 health-pass deadline** — a UTC ISO-8601 stamp `ledger.py watchdog` stamps and reads, defined below),
 `pending_adoption` (**the run-intent checkpoint** — the requested PR list recorded at setup, defined
-below).
+below), `default_non_goals` (**the run-wide default Non-goals**, defined below).
 
 `skill_version` is read at startup from the **running plugin's** `plugin.json` (`SKILL.md`) and stated in
 the final report. **It is not cosmetic.** The harness loads this skill from the **installed plugin cache**,
@@ -202,6 +202,18 @@ carries no liveness meaning). Adoption clears it back to `-` as its final step, 
 armed wake, a watchdog nudge after it refreshes this owner, or a manual resume — that finds it set resumes
 setup idempotently from exactly those PRs (`loop-control.md` step 1). It **defaults to `-`**: nothing is
 pending.
+
+`default_non_goals` records **the RUN-WIDE DEFAULT NON-GOALS** — the exclusions the operator declares
+**ONCE** for the whole run, so several PRs need not be hand-edited one at a time. It is a **JSON ARRAY
+STRING** of bullet **bodies** (no `- ` prefix), each unique, trimmed, nonempty and single-line;
+`ledger.py`'s `parse_default_non_goals` is the **ONE validator** and `default_non_goals(header)` the **ONE
+decode door** — no consumer decodes the raw value. `header set default_non_goals '["<body>", …]'`
+**validates and canonicalizes** it; malformed JSON, a non-array, or a blank/multi-line/duplicate entry is
+**REFUSED without mutating the ledger** (fail closed). It **defaults to `[]`** — the canonical "no run
+defaults", which an old ledger back-fills to. Its run-wide meaning is realized in each PR by
+`pr-adopt.py intent-sync`, which folds the current defaults into that PR's `intent-<pr>.md`
+**MANAGED block** inside `## Non-goals` (`pr-adoption.md` OWNS the block's format); `review-pass.py
+intent-check --ledger` refuses a PR whose managed block has drifted from this field.
 
 Header field notes (the header fields above; per-row fields follow):
 
@@ -331,12 +343,15 @@ Header field notes (the header fields above; per-row fields follow):
   attempted and failed, so it **fails closed and cannot go green** and must **never** be silently replaced
   by the header. An old single-base row reads back `-` and inherits (its base IS the header base); a new
   run writes `unknown` per row until a grouped read succeeds.
-- `intent` — the PROVENANCE of `<rundir>/intent-<pr>.md` (the file itself is markdown, so it lives in the
-  run dir, not in this one-object-per-line store): `-` (not adopted yet) | `stated@<iso>` (the PR body
-  already carried a usable intent block, copied verbatim) | `authored@<iso>` (the driver **inferred** it
-  from the PR's title, body and diff). Set at adoption (`pr-adoption.md` step 3a) and **preserved** — never
-  re-derived — by every refresh (a heartbeat is a fresh agent instance; `blocker_ruling` below owns the
-  durability rule).
+- `intent` — the PROVENANCE of the **base** intent in `<rundir>/intent-<pr>.md` (the file itself is
+  markdown, so it lives in the run dir, not in this one-object-per-line store): `-` (not adopted yet) |
+  `stated@<iso>` (the PR body already carried a usable intent block, whose three sections were copied
+  verbatim) | `authored@<iso>` (the driver **inferred** it from the PR's title, body and diff). It describes
+  the **base** three sections **only**: either value may also carry the operator-owned run-default MANAGED
+  block, which `pr-adopt.py intent-sync` adds MECHANICALLY afterward (`pr-adoption.md`) — so `stated@` does
+  **not** mean the whole file is verbatim from the PR, only that its base sections are. Set at adoption
+  (`pr-adoption.md` step 3a) and **preserved** — never re-derived — by every refresh (a heartbeat is a fresh
+  agent instance; `blocker_ruling` below owns the durability rule).
 
   The distinction is the honest one and the final report states it: an `authored` intent is **the driver's
   CLAIM about what the PR is for**, not the author's, and a wrong intent block silently **narrows** a

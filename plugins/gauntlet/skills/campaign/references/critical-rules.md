@@ -137,7 +137,9 @@
   achieve its stated Purpose, without breaking anything reachable by an actor named in its Threat model?**
   The open-ended question **has no fixed point** — there is always one more true thing to say about a diff,
   and asking it ran one PR through **21 review rounds** of true, reproduced, irrelevant findings until a
-  human stopped it. **Declared non-goals BIND the reviewer**: a finding that attacks one cannot gate. The
+  human stopped it. **Declared non-goals BIND the reviewer**: a finding that attacks one cannot gate — and
+  "declared non-goals" includes the run's **default Non-goals**, folded into the intent's managed block from
+  the ledger header (`pr-adoption.md`, `files-and-ledger.md`), exactly as much as a PR-specific one. The
   adversarial sweep **stays** — bounded by the threat model rather than by nothing
   (`stage-2-review-gate.md`, "What the review is MEASURED AGAINST").
 - **A finding must ANCHOR, or it does NOT gate.** Every finding is a record written by

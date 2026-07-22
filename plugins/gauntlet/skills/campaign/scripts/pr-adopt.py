@@ -6,7 +6,11 @@ step 3. It does NOT decide the review TIER: adoption passes a conservative `STAN
 PR-head worktree does not exist until this command resolves it, then — after step 5 — `triage.py derive`
 supplies the mechanical floor and the orchestrator decides the tier at or above it before gate work. It does
 NOT author the PR's INTENT (step 3a — the driver's working note about what the PR
-is for). Everything here is MECHANICS that a model transcribing a doc gets subtly wrong under load:
+is for): the driver decides Purpose, PR-specific Non-goals, Threat model and provenance. What this tool
+DOES do for intent is MECHANICAL — `intent-sync` folds the operator's run-wide default Non-goals (the
+ledger header `default_non_goals`) into the PR's `intent-<pr>.md` managed block, idempotently, deciding no
+Non-goal text of its own. Everything here is MECHANICS that a model transcribing a doc gets subtly wrong
+under load:
 
   * READ the PR (one `gh pr view` for the fields the ledger row needs, including the cross-repo field);
   * REFUSE fork/foreign/closed PRs — FAIL CLOSED, touching nothing when it refuses (step 2);
@@ -24,6 +28,8 @@ commands around that plan.
   pr-adopt.py plan  --view-json <f> --run-id <id> --tier <T>   # PURE: parse a view, print the plan, exit 0
   pr-adopt.py adopt --pr <N> --run-id <id> --file <state.jsonl> --tier <T> \
                     --worktrees-root <p> --project-root <p>    # the real thing: gh + git + ledger
+  pr-adopt.py intent-sync --file <state.jsonl> --pr <N>        # fold the run's default Non-goals into the
+                                                              # PR's intent managed block (idempotent)
 
 pr-adopt performs NO review and NO merge. It gets a PR INTO the run; Loop control drives it from there.
 """
@@ -36,6 +42,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from _gauntlet.atomic import replace_text
 from _gauntlet.modules import load_module_from_path
 
 DESCRIPTION = next(iter((__doc__ or "").splitlines()), "")
@@ -244,6 +251,59 @@ def _park_base_mismatch(args, pr: str, recorded: str, live: str) -> int:
                        f"parked: {proc.stderr.strip()}")
     print(json.dumps({"pr": pr, "run_id": args.run_id, "parked": True,
                       "reason": reason, "base_mismatch": mismatch}))
+    return 0
+
+
+def intent_path(ledger_path: str, pr: str) -> Path:
+    """The PR's intent artifact, DERIVED as the sibling of the ledger — never an arbitrary output path. The
+    intent lives beside `state.jsonl` in the run dir, and `review-pass.py` owns the `intent-<pr>.md` name;
+    reuse its deriver so the two never disagree about where the file is."""
+    return RP.intent_path(Path(ledger_path).parent, str(pr))
+
+
+def sync_intent_defaults(ledger_path: str, pr: str) -> str:
+    """Fold the run's default Non-goals into the PR's intent managed block — MECHANICAL, idempotent, atomic.
+
+    Returns `updated` (bytes changed), `unchanged` (already in sync), or `pending-intent` (no intent artifact
+    yet — a fresh adoption authors it first, then re-runs this). REFUSES a missing ledger row or an intent
+    that will not parse: this tool applies the operator's defaults, it never invents an intent. The defaults
+    are read ONLY through `L.default_non_goals`, the managed block is rewritten ONLY through
+    `RP.merge_default_non_goals`, and the result is re-validated before it replaces the file.
+    """
+    header, rows = L.load(Path(ledger_path))
+    if L.find_row(rows, str(pr)) is None:
+        raise ValueError(f"no ledger row for PR {pr} — adopt it before syncing its intent")
+    path = intent_path(ledger_path, pr)
+    if not path.exists():
+        return "pending-intent"
+    try:
+        defaults = L.default_non_goals(header)
+    except ValueError as exc:
+        raise ValueError(f"ledger header `default_non_goals` is malformed ({exc}); repair it before syncing")
+    text = path.read_text(encoding="utf-8")
+    # Refuse to fold defaults into an intent that is not a usable intent block — a broken base is the
+    # driver's to fix (re-author), not this tool's to paper over.
+    try:
+        RP.parse_intent(text, path)
+    except RP.Defect as exc:
+        raise ValueError(f"{path.name} is not a usable intent block ({exc}); re-author it before syncing")
+    merged = RP.merge_default_non_goals(text, defaults, path)
+    # Re-validate the RESULT: the fold must itself produce a usable, in-sync intent, or it does not land.
+    RP.parse_intent(merged, path)
+    RP.check_default_non_goals(merged, defaults, path)
+    if merged == text:
+        return "unchanged"
+    replace_text(path, merged, temp_prefix=f".{path.name}.", encoding="utf-8")
+    return "updated"
+
+
+def cmd_intent_sync(args) -> int:
+    """`intent-sync --file <state.jsonl> --pr <N>` — fold the run defaults into ONE PR's intent block."""
+    try:
+        result = sync_intent_defaults(args.file, str(args.pr))
+    except ValueError as exc:
+        return _refuse(str(exc))
+    print(json.dumps({"pr": str(args.pr), "intent_sync": result}))
     return 0
 
 
@@ -458,7 +518,17 @@ def cmd_adopt(args) -> int:
         return _refuse(f"`gh pr edit {pr}` (labels) failed: {proc.stderr.strip()} "
                        f"(the ledger row and worktree for PR {pr} were already written)")
 
-    # 7. Adoption summary.
+    # 7. Fold the run's default Non-goals into the PR's intent managed block. On a RE-ADOPTION the intent
+    # artifact is already present, so this syncs it automatically; on a FRESH adoption it does not exist yet
+    # (the driver authors it next, then runs `intent-sync`), so this reports `pending-intent`. A malformed
+    # ledger/intent surfaces as a refusal rather than a silent skip — but the row and labels already landed,
+    # exactly like a half-adoption, and re-running `intent-sync` recovers it.
+    try:
+        intent_sync = sync_intent_defaults(args.file, pr)
+    except ValueError as exc:
+        return _refuse(f"row and labels for PR {pr} landed, but intent-sync failed: {exc}")
+
+    # 8. Adoption summary.
     print(json.dumps({
         "pr": pr,
         "run_id": args.run_id,
@@ -467,6 +537,7 @@ def cmd_adopt(args) -> int:
         "worktree_owned": worktree_owned,
         "labels_added": [run_label, status_label],
         "label_removed": other_label,
+        "intent_sync": intent_sync,
     }))
     return 0
 
@@ -496,6 +567,11 @@ def main(argv: "list[str] | None" = None) -> int:
     a.add_argument("--project-root", required=True, help="the repo checkout git/ledger commands run in")
     a.add_argument("--repo", help="owner/name (default: the project-root checkout's)")
 
+    s = sub.add_parser("intent-sync",
+                       help="fold the run's default Non-goals into ONE PR's intent-<pr>.md managed block")
+    s.add_argument("--file", required=True, help="the run ledger (<rundir>/state.jsonl)")
+    s.add_argument("--pr", required=True, help="PR number whose intent to sync")
+
     sub.add_parser("self-test", help="run every fixture (pr-adopt-test.py's CASES)")
 
     args = parser.parse_args(argv)
@@ -503,6 +579,8 @@ def main(argv: "list[str] | None" = None) -> int:
         return self_test()
     if args.cmd == "plan":
         return cmd_plan(args)
+    if args.cmd == "intent-sync":
+        return cmd_intent_sync(args)
     return cmd_adopt(args)
 
 
