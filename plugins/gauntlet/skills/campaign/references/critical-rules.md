@@ -313,7 +313,9 @@
   your work and then tell you the work does not count (it did — see Stage 2a). `ok` is **not** `SATISFIED`:
   the tool parses the terminal result but never judges the report's prose or writes the tally.
 - Before each review, write an orchestrator-owned `review-<pr>-<n>.plan.jsonl` (per-pass — a relaunch
-  reuses it; written through the tool above, never a heredoc). Then run `review-dispatch.py prepare` as
+  reuses it; written through the tool above, never a heredoc), and it must pass
+  `review-pass.py plan-check --file <plan> --tier <tier>` before dispatch — a refusal blocks the launch
+  (Stage 2a, "Review work-plan ledger", owns the rule it enforces). Then run `review-dispatch.py prepare` as
   `review-dispatch.md`, "Prepare the active attempt", specifies. It writes the validated `pass_identity`
   and exact prompt and returns `runtime-adapter.md`'s one typed transport record; pass the prepared prompt
   through `dispatch_native` or `run_argv` — never shell source. Never rebuild its attempt paths or bindings.
@@ -330,9 +332,10 @@
   `runtime-adapter.md`, **Review preparation mapping**, from the highest `launch_attempt`. Never invent
   another recovery branch.
 - Reviewers do not own the plan but must not treat it as presumptively complete: critically evaluate
-  its coverage first, and raise any omitted dimension or materially wrong unit via a
+  its coverage first — its waiver rows included — and raise any plan gap via a
   `plan_amendment_request` event rather than silently reviewing only the listed units. Never rewrite
-  the plan or self-grant units (Stage 2a).
+  the plan or self-grant units. What an amendment may raise is owned by `stage-2-review-gate.md`,
+  "Review work-plan ledger".
 - After finishing every planned unit, a pass runs a brief UNSTRUCTURED ADVERSARIAL SWEEP for defects
   outside the plan's decomposition (cross-unit interactions, unstated assumptions, edge cases,
   unenumerated categories). It complements — never replaces — the plan, reports only concrete

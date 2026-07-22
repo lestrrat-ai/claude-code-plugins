@@ -416,7 +416,10 @@ the worker returns, and what never moves into it. The steps below are unchanged 
      Stage 2a, then restart this precondition sequence. With `proceed`, evaluate the verdict transport through
      `runtime-adapter.md`'s capability/transition owner before
      building its record and take only the action it returns;
-     missing native cwd/mount/sandbox controls alone are not a machine blocker. Then launch **one**
+     missing native cwd/mount/sandbox controls alone are not a machine blocker. Then **ensure the pass's
+     plan exists, sized to the tier, and passes `review-pass.py plan-check --file <plan> --tier <tier>`**
+     — a refusal blocks the launch; repair the plan per `stage-2-review-gate.md` ("Review work-plan
+     ledger" owns the plan and the default-dimensions rule this command enforces). Then launch **one**
      review pass as a **background**
      task (one at a time per PR — the second, when the tier requires two, only after the first is
      SATISFIED; Stage 2a). If a precondition is dirty, clear it first (address Copilot items / fix CI /

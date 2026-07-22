@@ -194,8 +194,12 @@ class Tables:
                          "repro": "a rollup whose headRefOid moved while the REST page still read green",
                          "fix": "refuse a snapshot whose head moved under the fetch"}, over)
 
+        def waiver(dimension: str = "docs", **over: Value) -> str:
+            return _rec({"type": R.WAIVER, "dimension": dimension,
+                         "reason": "internal-only change; no user-facing doc covers this area"}, over)
+
         self.ident, self.unit, self.started, self.done = ident, unit, started, done
-        self.amendment, self.finding = amendment, finding
+        self.amendment, self.finding, self.waiver = amendment, finding, waiver
 
         self.PLAN = [unit("u01"),
                      unit("u02", target="stage-2-review-gate.md", checks=["the docs match the tool"])]
@@ -215,6 +219,29 @@ class Tables:
         self.CASES: "dict[str, tuple]" = {
             "worked": (PLAN, WORKED, OK, "ARTIFACTS are sound",
                        "the shape of a pass that counts — and the tool STILL does not say SATISFIED"),
+
+            # THE WAIVERS — the plan's other row type: the orchestrator's recorded judgment that one
+            # default dimension does not apply. A waiver demands no progress, and its rules hold at the
+            # read door, which never assumes the write tool was used.
+            "waived-plan": (PLAN + [waiver("docs")], WORKED, OK, "ARTIFACTS are sound",
+                            "a waiver is a plan row, not a unit — it demands no progress and blocks nothing"),
+            "waiver-unknown-dimension": (PLAN + [waiver("performance")], WORKED, UNUSABLE, "waives nothing",
+                                         "a waiver naming a dimension outside the closed set waives nothing"),
+            "waiver-extra-key": (PLAN + [waiver("docs", ts=TS)], WORKED, UNUSABLE, "a waiver carries EXACTLY",
+                                 "a waiver carrying a key nothing reads — the exact-keys rule, one row type over"),
+            "waiver-blank-reason": (PLAN + [waiver("docs", reason="  ")], WORKED, UNUSABLE, "a waiver IS its reason",
+                                    "a blank reason records a judgment nobody can judge"),
+            "waiver-duplicate": (PLAN + [waiver("docs"), waiver("docs", reason="said twice")], WORKED, UNUSABLE,
+                                 "waived twice",
+                                 "one waiver per dimension — a second records nothing the first did not"),
+            "waiver-contradicts-unit": (PLAN + [unit("u03", kind="docs", target="README.md",
+                                                     checks=["the README matches the change"]),
+                                                waiver("docs")],
+                                        WORKED + [started("u03"), done("u03", evidence="README.md:1")],
+                                        UNUSABLE, "both planned",
+                                        "a dimension both planned and waived — the plan contradicts itself, and with this rule deleted the pass verifies clean"),
+            "waivers-only-plan": ([waiver("docs")], [ident()], UNUSABLE, "holds no units",
+                                  "emptiness counts UNITS: a plan of nothing but waivers reviewed nothing"),
 
             # THE HEADLINES.
             "unplanned-done": (PLAN, [ident(), done("u99")], UNUSABLE, "NOT IN THE PLAN",
@@ -819,6 +846,36 @@ class Tables:
              "the plan's name was enforced at the READ door BY CONSTRUCTION and at the write door NOT AT ALL: this wrote a valid plan to a name nothing will ever open"),
         ]
 
+        # plan-waive: (plan name, argv, exit, needle, why) — the waiver's own write door.
+        self.WAIVE_CLI_CASES = [
+            (PLAN_FILE, ["--dimension", "docs", "--reason", "internal-only change"], 0, '"dimension":"docs"',
+             "the waiver door: a default dimension is dropped OUT LOUD, validated as it lands"),
+            (PLAN_FILE, ["--dimension", "docs", "--reason", "   "], 1, "a waiver IS its reason",
+             "the check argparse cannot make: a --reason that is present and BLANK"),
+            (PLAN_FILE, ["--dimension", "performance", "--reason", "x"], 2, "invalid choice",
+             "a dimension outside the closed set — refused by ARGPARSE, at the door, naming the flag"),
+            ("plan.jsonl", ["--dimension", "docs", "--reason", "x"], 1, "not a plan artifact's name",
+             "the same name rule as plan-add: a waiver written under a name nothing reads waives nothing"),
+        ]
+
+        # plan-check: name -> (plan lines, tier, exit, needle, why) — the pre-dispatch door for the rule
+        # that used to be prose: every default dimension covered or waived.
+        self.PLAN_CHECK_CASES: "dict[str, tuple]" = {
+            "trivial-owes-nothing": (PLAN, "TRIVIAL", 0, "owes no default dimensions",
+                                     "a TRIVIAL plan is minimal by rule; no defaults are due"),
+            "standard-missing": (PLAN, "STANDARD", 1, "neither covered nor waived",
+                                 "THE HEADLINE: the omitted tests/docs/public-api unit that used to cost a plan amendment plus a full re-review is refused BEFORE dispatch"),
+            "standard-accounted": (PLAN + [unit("u03", kind="tests", target="scripts/review-pass-test.py",
+                                                checks=["the change is covered"]),
+                                           unit("u04", kind="public-api", target="exported surface",
+                                                checks=["no exported symbol changed unreviewed"]),
+                                           waiver("docs")],
+                                   "STANDARD", 0, "waived —",
+                                   "every default accounted for: two covered by units, one waived out loud"),
+            "typo-tier-fails-closed": (PLAN, "trivial", 1, "neither covered nor waived",
+                                       "a tier that is not exactly TRIVIAL owes the defaults — a typo can only ask for MORE accounting, never less"),
+        }
+
         FIND_OK = ["--path", "scripts/ci-status.py", "--line", "769", "--writer", "network",
                    "--purpose", PURPOSE_GREEN, "--repro", "a paginated reply with no `statuses` member",
                    "--fix", "refuse a missing row array"]
@@ -877,14 +934,16 @@ class Tables:
             "emit": (PROGRESS_FILE, ["--unit", "u01", "--status", R.STARTED]),
             "identity": (PROGRESS_FILE, ["--head-sha", SHA, "--dispatched-at", TS]),
             "plan-add": (PLAN_FILE, ["--id", "u09", "--kind", "file", "--target", "x.py", "--check", "a"]),
+            "plan-waive": (PLAN_FILE, ["--dimension", "docs", "--reason", "internal-only change"]),
             "amend": (PROGRESS_FILE, ["--reason", "harness gap", "--id", "u09", "--kind", "file",
                                       "--target", "x.py", "--check", "a"]),
             "finding-add": (FINDINGS_FILE, FIND_OK),
         }
         # `status` writes NOTHING — it is an ADVISORY read-only view — so the round trip does not drive it
         # (there is no produced artifact to read back), and it is declared read-only here so the
-        # command-coverage check is satisfied the day the subcommand is added.
-        self.READ_ONLY_COMMANDS = frozenset({"intent-check", "verify", "self-test", "status"})
+        # command-coverage check is satisfied the day the subcommand is added. `plan-check` likewise reads
+        # the plan and writes nothing.
+        self.READ_ONLY_COMMANDS = frozenset({"intent-check", "verify", "self-test", "status", "plan-check"})
 
         # --- the DOORS ---------------------------------------------------------------------------
         self.DOOR_SEEDS: "dict[str, tuple[str | None, Sequence[str] | None]]" = {
@@ -892,6 +951,8 @@ class Tables:
             WRAPPER_DOOR: (PROGRESS_FILE, DISPATCHED),  # …and the same door, through the wrapper it runs
             "identity": (PROGRESS_FILE, None),          # it writes into a file that must hold NO BYTES
             "plan-add": (PLAN_FILE, None),              # the first unit lands in a plan that does not exist
+            "plan-waive": (PLAN_FILE, None),            # …and the first waiver may too (emptiness is read-side)
+            "plan-check": (PLAN_FILE, PLAN),            # reads an existing plan; --tier TRIVIAL owes nothing
             "amend": (PROGRESS_FILE, DISPATCHED),       # the amendment appends after the identity, like emit
             AMENDMENT_WRAPPER_DOOR: (PROGRESS_FILE, DISPATCHED),  # …and the same door, through its wrapper
             "finding-add": (FINDINGS_FILE, None),       # …and the first finding in a findings file that does not
@@ -910,6 +971,7 @@ class Tables:
             "--head-sha": [SHA], "--dispatched-at": [TS],
             "--id": ["u09"], "--kind": ["file"], "--target": ["x.py"], "--check": ["a"],
             "--reason": ["no unit covers the harness"],
+            "--dimension": ["docs"], "--tier": ["TRIVIAL"],
             "--amendments-ruled": ["0"], "--verdict": [R.SATISFIED],
             "--path": ["scripts/ci-status.py"], "--line": ["769"], "--writer": ["network"],
             "--purpose": [PURPOSE_GREEN], "--repro": ["a reply with no rows"], "--fix": ["refuse it"],
@@ -1276,10 +1338,12 @@ PASSING = ("ok", "exit0")
 # rule enforced by MAKING A CALL is mutated (the call is deleted) and must still be killed by a fixture. It
 # is `unmarked` below, not this tuple, that is scoped to the functions which refuse.
 RULE_FUNCTIONS = (
-    "hook", "read_text", "parse_lines", "read_lines", "check_id", "check_unit", "plan_units", "load_plan",
+    "hook", "read_text", "parse_lines", "read_lines", "check_id", "check_unit", "check_waiver",
+    "plan_records", "load_plan",
     "check_event", "check_progress", "walk_progress", "check_identity_shape", "check_identity",
     "check_head", "check_progress_file", "check_plan_file", "parse_report", "decide", "parse_name", "check_ruled",
-    "before_text", "write_line", "cmd_emit", "cmd_identity", "cmd_plan_add", "cmd_verify",
+    "before_text", "write_line", "cmd_emit", "cmd_identity", "cmd_plan_add", "cmd_plan_waive",
+    "cmd_plan_check", "cmd_verify",
     # …and the FINDINGS side: the intent, the anchor, the writer, and the artifact they live in.
     "parse_intent", "load_intent", "check_writer_repro", "check_finding", "findings_name",
     "check_findings_file", "load_findings", "cmd_finding_add",
@@ -1370,7 +1434,11 @@ def reads_back(mod: types.ModuleType, artifact: str, path: Path) -> "tuple[bool,
     """
     try:
         if artifact == PLAN_FILE:
-            mod.load_plan(path)
+            # The write door's own whole-file check, NOT `load_plan`: emptiness ("holds no units") is a
+            # rule about a plan a pass is JUDGED against, not about whether the bytes read back — and a
+            # waivers-only plan is a legal intermediate state (the first `plan-waive` may land before the
+            # first `plan-add`; `plan-check` still refuses to dispatch against it).
+            mod.check_plan_file(mod.read_text(path, "plan"), path)
             return True, "the plan reads back"
         if artifact == FINDINGS_FILE:
             mod.check_findings_file(path.read_text(encoding="utf-8"), path)
@@ -1509,6 +1577,20 @@ def run_cases(mod: types.ModuleType, T: Tables, tmp: Path) -> "dict[str, tuple[s
             got[f"[plan] {pname} {' '.join(argv)}"] = (f"exit{code}", text)
         except Exception as exc:  # noqa: BLE001
             got[f"[plan] {pname} {' '.join(argv)}"] = (f"crash:{type(exc).__name__}", str(exc))
+    for i, (pname, argv, _, _, _) in enumerate(T.WAIVE_CLI_CASES):  # drops want, needle, why
+        plan = build(tmp, f"waive-cli-{i}", T.PLAN, []).parent / pname
+        try:
+            code, text = run_cli(mod, ["plan-waive", "--file", str(plan), *argv])
+            got[f"[waive] {pname} {' '.join(argv)}"] = (f"exit{code}", text)
+        except Exception as exc:  # noqa: BLE001
+            got[f"[waive] {pname} {' '.join(argv)}"] = (f"crash:{type(exc).__name__}", str(exc))
+    for name, (plan_lines, tier, _, _, _) in T.PLAN_CHECK_CASES.items():  # drops want, needle, why
+        plan = build(tmp, f"plan-check-{name}", plan_lines, []).parent / PLAN_FILE
+        try:
+            code, text = run_cli(mod, ["plan-check", "--file", str(plan), "--tier", tier])
+            got[f"[plan-check] {name}"] = (f"exit{code}", text)
+        except Exception as exc:  # noqa: BLE001
+            got[f"[plan-check] {name}"] = (f"crash:{type(exc).__name__}", str(exc))
     for i, (fname, argv, _, _, _) in enumerate(T.FINDING_CLI_CASES):  # drops want, needle, why
         d = build(tmp, f"find-cli-{i}", T.PLAN, T.DISPATCHED, None, INTENT).parent
         try:
@@ -1533,6 +1615,10 @@ def expectations(T: Tables) -> "dict[str, tuple[str, str, str]]":
                 for i, (a, _, c, needle, why) in enumerate(T.CLI_CASES)})  # drops seed
     out.update({f"[plan] {p} {' '.join(a)}": (f"exit{c}", needle, why)
                 for p, a, c, needle, why in T.PLAN_CLI_CASES})
+    out.update({f"[waive] {p} {' '.join(a)}": (f"exit{c}", needle, why)
+                for p, a, c, needle, why in T.WAIVE_CLI_CASES})
+    out.update({f"[plan-check] {n}": (f"exit{c}", needle, why)
+                for n, (_, _, c, needle, why) in T.PLAN_CHECK_CASES.items()})  # drops plan, tier
     out.update({find_key(i, p): (f"exit{c}", needle, why)
                 for i, (p, _, c, needle, why) in enumerate(T.FINDING_CLI_CASES)})  # drops argv
     # The two PROPERTIES. Their expectation IS the property and not a particular rule — demanding a needle
@@ -1607,7 +1693,7 @@ def doc_examples(R: types.ModuleType) -> "list[tuple[str, int, dict]]":
     # which a module built by the mutation harness sets to a synthetic name and which the type system
     # correctly says may be `None`.
     docs = OWNER.parent.parent
-    types_ = {R.UNIT, R.PROGRESS, R.AMENDMENT, R.IDENTITY, R.FINDING}
+    types_ = {R.UNIT, R.WAIVER, R.PROGRESS, R.AMENDMENT, R.IDENTITY, R.FINDING}
     found: list[tuple[str, int, dict]] = []
     for md in sorted(docs.rglob("*.md")):
         for n, line in enumerate(md.read_text(encoding="utf-8").splitlines(), start=1):
@@ -1626,12 +1712,14 @@ def doc_examples(R: types.ModuleType) -> "list[tuple[str, int, dict]]":
 def check_docs(R: types.ModuleType) -> int:
     """Every documented example, through the tool. Returns the number that the tool would REFUSE."""
     examples = doc_examples(R)
-    want = {R.UNIT, R.PROGRESS, R.AMENDMENT, R.IDENTITY, R.FINDING}
+    want = {R.UNIT, R.WAIVER, R.PROGRESS, R.AMENDMENT, R.IDENTITY, R.FINDING}
     failures = 0
     for where, n, rec in examples:
         try:
             if rec["type"] == R.UNIT:
                 R.check_unit(rec, f"{where}:{n}")
+            elif rec["type"] == R.WAIVER:
+                R.check_waiver(rec, f"{where}:{n}")
             elif rec["type"] == R.FINDING:
                 # The doc's finding example must anchor to the doc's OWN purpose lines — and the intent
                 # block the docs show is the one this suite feeds it. A documented finding the tool would
@@ -2213,7 +2301,7 @@ def run(R: types.ModuleType, tmp: Path) -> int:
     print(f"all {len(T.CASES)} fixtures + {len(T.FINDING_CASES)} findings/intent fixtures + "
           f"{len(T.REPORT_CASES)} report fixtures + "
           f"{len(T.NAME_CASES)} name cases + "
-          f"{len(T.CLI_CASES) + len(T.PLAN_CLI_CASES) + len(T.FINDING_CLI_CASES)} CLI cases + "
+          f"{len(T.CLI_CASES) + len(T.PLAN_CLI_CASES) + len(T.WAIVE_CLI_CASES) + len(T.PLAN_CHECK_CASES) + len(T.FINDING_CLI_CASES)} CLI cases + "
           f"{len(T.WRITE_COMMANDS) * len(T.FILE_STATES)} round-trip cases + "
           f"{len(CROSS_DOOR_IDS)} cross-door cases + {len(T.BOUNDARY_CASES)} boundary cases "
           f"({len(T.DOMAINS)} bounded values, each probed JUST INSIDE and JUST OUTSIDE its declared "
