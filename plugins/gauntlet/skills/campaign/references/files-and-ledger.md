@@ -302,11 +302,13 @@ Header field notes (the header fields above; per-row fields follow):
   once at row creation (`add-row --base-branch`). A run may hold rows on **different** bases, so the base
   is **per-row**, not per-run; the header `base_branch` is only the **legacy fallback** a row with none
   inherits. `ledger.py`'s `effective_base(header, row)` — an explicit row value, else the header — is the
-  one place the fallback lives, and it is the **sanctioned door** for resolving a row's base. **This is
-  stage 1 of 3: the field and the resolver exist, and consumers are deliberately unchanged** — today only
-  `table`'s computed, display-only `base` column resolves per row; adoption does not yet record an explicit
-  row base, and every other consumer still reads the header field directly. Stages 2-3 move them through
-  the resolver. It is **TOOL-OWNED and
+  one place the fallback lives, and it is the **sanctioned door** for resolving a row's base;
+  `require_effective_base` is the fail-closed form the resolved-base consumers route through. **Per-row
+  base resolution is LIVE:** adoption records each new row's base at creation (`add-row --base-branch`),
+  and every consumer resolves a row's base through those accessors, never the one header base. What
+  REMAINS is mixed-base **admission** — surfacing PRs on DIFFERENT bases into one run; adoption still
+  admits only the run's one agreed base (the mixed-base rollout's final PR —
+  `docs/designs/campaign-mixed-base-branches.md`, "Staged implementation plan"). It is **TOOL-OWNED and
   IMMUTABLE after creation** (`CREATE_ONLY` in `scripts/ledger.py`): `add-row` writes it and **`set` has no
   `--base-branch` flag**, so the recorded base can never be rewritten — the campaign does not migrate a row
   to a new base. The default is **`-`**, which is both the schema's "not set" spelling **and** its "inherit
@@ -316,19 +318,19 @@ Header field notes (the header fields above; per-row fields follow):
 - `required_set` — **the canonical required-check set for this row's effective base**. Required checks are a
   property of the base, and the base is row state, so this is too; the header `required_set` is the **legacy
   fallback**. `effective_required_set(header, row)` — an explicit row value, else the header — is the
-  resolver, the same sanctioned door as `effective_base` and **staged the same way: the resolver exists
-  today, and consumers still read the header field directly until stages 2-3 move them.** Its three states
+  resolver, the same sanctioned door as `effective_base`, and **resolves per row LIVE, exactly like it.**
+  Its three states
   (`declared:<json>` / `none` / `unknown`) are owned by `stage-2-ci.md` exactly as the header field's are.
-  Unlike `base_branch` it is **an ordinary settable field** — the stage-2 grouped required-set refresh will
-  write the canonical value through `set`, so that door stays open. The default is **`-`**, which — like
+  Unlike `base_branch` it is **an ordinary settable field** — the grouped required-set refresh writes the
+  canonical per-base value through `set`, so that door stays open. The default is **`-`**, which — like
   `base_branch` — means **inherit the header**, and is **DISTINCT from `unknown`**: `-` says "this row owns
   no set; inherit the header — but only for the header's OWN base", which `effective_required_set` enforces:
   it returns the header value only when this row's effective base IS the header base, and otherwise stays
   `unknown` (a row on a different base has no set here until its base is read — the header never describes
   another base's set). `unknown` is an **explicit** row value meaning a read for THIS base was
   attempted and failed, so it **fails closed and cannot go green** and must **never** be silently replaced
-  by the header. An old single-base row reads back `-` and inherits (its base IS the header base); once
-  stages 2-3 land, a new run will write `unknown` per row until a grouped read succeeds.
+  by the header. An old single-base row reads back `-` and inherits (its base IS the header base); a new
+  run writes `unknown` per row until a grouped read succeeds.
 - `intent` — the PROVENANCE of `<rundir>/intent-<pr>.md` (the file itself is markdown, so it lives in the
   run dir, not in this one-object-per-line store): `-` (not adopted yet) | `stated@<iso>` (the PR body
   already carried a usable intent block, copied verbatim) | `authored@<iso>` (the driver **inferred** it

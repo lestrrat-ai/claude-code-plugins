@@ -2372,9 +2372,9 @@ def t_pending_adoption_is_an_ordinary_field(L: ModuleType, tmp: Path) -> None:
 # --- row-owned base / required set, with the header as the LEGACY FALLBACK -------------------------------
 #
 # `base_branch` and `required_set` are per-ROW state now; the header fields are only what a row with no
-# explicit value inherits. These fixtures pin the schema half of static mixed-base support (the consumers
-# that resolve through the accessors are converted in a later stage): the two accessors, the immutable
-# creation-only row base, and the `-` (inherit) vs `unknown` (explicit, fail-closed) distinction.
+# explicit value inherits. These fixtures pin the schema half of mixed-base support (each consumer's own
+# resolution through the accessors is exercised by that consumer's test suite): the two accessors, the
+# immutable creation-only row base, and the `-` (inherit) vs `unknown` (explicit, fail-closed) distinction.
 
 def t_old_ledger_resolves_through_the_header(L: ModuleType, tmp: Path) -> None:
     """An old ledger — written before the row base fields existed — loads and resolves through the header.
@@ -2447,11 +2447,11 @@ def t_row_base_is_creation_only(L: ModuleType, tmp: Path) -> None:
     # …and the stored base is untouched by the refused write.
     code, out, _ = cli(L, ["--file", str(path), "get", "--pr", "1", "--field", "base_branch"])
     check(out == "v3\n", f"the recorded base changed despite the refusal: {out!r}")
-    # `required_set` is NOT creation-only: the stage-2 grouped refresh will rewrite it through `set`.
+    # `required_set` is NOT creation-only: the grouped required-set refresh rewrites it through `set`.
     check("required_set" not in L.CREATE_ONLY,
-          "required_set must stay settable via `set` — the stage-2 grouped refresh will write it")
+          "required_set must stay settable via `set` — the grouped required-set refresh writes it")
     code, _, err = cli(L, ["--file", str(path), "set", "--pr", "1", "--required-set", "none"])
-    check(code == 0, f"`set --required-set` must stay open for the stage-2 grouped refresh: exit {code}, {err!r}")
+    check(code == 0, f"`set --required-set` must stay open for the grouped required-set refresh: exit {code}, {err!r}")
 
 
 def t_required_set_dash_vs_unknown(L: ModuleType, tmp: Path) -> None:
