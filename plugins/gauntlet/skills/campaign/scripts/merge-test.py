@@ -59,6 +59,7 @@ class Fake:
                  base_ff_blocked: bool = False, ancestor_ok: bool = True,
                  plumb_fail: "str | None" = None,
                  staged_paths: "list[str] | None" = None,
+                 staged_incoming_paths: "list[str] | None" = None,
                  unstaged_paths: "list[str] | None" = None,
                  untracked_paths: "list[str] | None" = None,
                  incoming_paths: "list[str] | None" = None,
@@ -124,6 +125,13 @@ class Fake:
         self.ancestor_ok = ancestor_ok
         self.plumb_fail = plumb_fail
         self.staged_paths = staged_paths or []
+        # The staged paths whose staged content DIFFERS from the incoming tree (the `diff-index --cached
+        # origin/<base>` probe). A staged path EQUAL to the incoming target content does not block ff-only, so
+        # it appears in `staged_paths` (staged vs HEAD) but NOT here, and the overlap filter must drop it.
+        # Default: every staged path differs from incoming (pre-finding behavior), leaving existing fixtures
+        # unchanged; a fixture omits a path here to model one staged to exactly its incoming content.
+        self.staged_incoming_paths = (staged_incoming_paths if staged_incoming_paths is not None
+                                      else list(self.staged_paths))
         self.unstaged_paths = unstaged_paths or []
         self.untracked_paths = untracked_paths or []
         self.incoming_paths = incoming_paths or []
@@ -226,6 +234,12 @@ class Fake:
         # branch, since both share the `ls-files` subcommand slot; keyed on `--unmerged`.
         if argv[:4] == ["git", "-C", checkout, "ls-files"] and "--unmerged" in argv:
             return bad("ls-files -u failed") if self.plumb_fail == "unmerged" else okb(nulb(self.unmerged_paths))
+        # Two diff-index --cached probes: vs HEAD (which paths are staged) and vs origin/<base> (which staged
+        # paths DIFFER from the incoming tree). Keyed on their last ref arg so they never alias; each has its
+        # own fail knob so a probe failure keeps the raw error.
+        if argv[:4] == ["git", "-C", checkout, "diff-index"] and f"origin/{self.base}" in argv:
+            return (bad("diff-index vs incoming failed") if self.plumb_fail == "staged-incoming"
+                    else okb(nulb(self.staged_incoming_paths)))
         if argv[:4] == ["git", "-C", checkout, "diff-index"]:
             return bad("diff-index failed") if self.plumb_fail == "staged" else okb(nulb(self.staged_paths))
         if argv[:4] == ["git", "-C", checkout, "diff-files"]:
@@ -256,9 +270,12 @@ class Fake:
                 return bad("base ref fetch failed (non-fast-forward)")
             return ok()
         if len(argv) >= 6 and argv[:3] == ["git", "-C", str(self.root)] and argv[3:5] == ["merge", "--ff-only"]:
+            # The checked-out-base ff capture runs text=False (byte-safe against a non-UTF-8 blocking
+            # filename), so its stderr/stdout are BYTES — mirror real git here. _ff_detail decodes them.
             if self.base_ff_blocked or self._fail("sync-base"):
-                return bad("Your local changes to the following files would be overwritten by merge")
-            return ok()
+                return subprocess.CompletedProcess(
+                    argv, 1, b"", b"Your local changes to the following files would be overwritten by merge")
+            return okb()
         if argv[:4] == ["git", "-C", str(self.worktree), "status"]:
             return ok("dirty\n") if self._fail("dirty") else ok()
         if argv[:5] == ["git", "-C", str(self.root), "worktree", "remove"]:
@@ -1113,6 +1130,28 @@ def t_base_ff_blocked_names_uncommitted_paths():
         finish(td, real)
 
 
+def t_base_ff_staged_equal_incoming_is_dropped():
+    # Finding: a path staged to EXACTLY the incoming target content does NOT block `git merge --ff-only` —
+    # git names only the real blocker — so naming every staged-and-incoming path over-reported it. `staged`
+    # (index vs HEAD) still identifies which paths are staged, but the index-vs-origin/<base> probe drops any
+    # already equal to the incoming tree BEFORE the overlap filter. `target-equal.txt` is staged AND incoming
+    # yet equals the incoming content (absent from staged_incoming_paths); `real-blocker.txt` is staged,
+    # incoming, AND diverged. Only the diverged one may be named.
+    td, root, f, led, real = scenario(
+        base_ff_blocked=True,
+        staged_paths=["target-equal.txt", "real-blocker.txt"],
+        staged_incoming_paths=["real-blocker.txt"],
+        incoming_paths=["target-equal.txt", "real-blocker.txt"])
+    try:
+        code, _result, err = invoke(f, led, root)
+        check(code != 0, "a diverged staged blocker must still refuse")
+        check('"real-blocker.txt"' in err, f"the diverged staged blocker must be named: {err!r}")
+        check("target-equal.txt" not in err,
+              f"a staged path equal to the incoming content must not be named (finding 1): {err!r}")
+    finally:
+        finish(td, real)
+
+
 def t_base_ff_odd_filenames_quoted_and_ordered():
     # Odd filenames (space, tab, newline) must be JSON-quoted so a newline cannot forge a "  - " line, and
     # the listing must be deterministically sorted by raw path. All three are staged AND incoming, so each
@@ -1175,7 +1214,7 @@ def t_base_ff_unmerged_index_keeps_raw_diagnostic():
 def t_base_ff_plumbing_failure_keeps_raw_diagnostic():
     # If any diagnostic plumbing probe fails, the helper returns None and the ORIGINAL fast-forward error is
     # preserved — never replaced by a secondary diagnostic failure.
-    for probe in ("unmerged", "staged", "unstaged", "untracked", "incoming"):
+    for probe in ("unmerged", "staged", "staged-incoming", "unstaged", "untracked", "incoming"):
         td, root, f, led, real = scenario(base_ff_blocked=True, plumb_fail=probe,
                                           staged_paths=["x.txt"], incoming_paths=["x.txt"])
         try:
@@ -1376,6 +1415,72 @@ def t_realgit_unmerged_index_keeps_raw_error():
               f"an unmerged index must make the helper decline so git's raw error stands, got: {blockers}")
 
 
+def t_realgit_staged_equal_incoming_not_named():
+    # Finding 1, ground truth: a path staged to EXACTLY the incoming target content does NOT block
+    # `git merge --ff-only` — git names only the real blocker. Stage f.txt to its incoming bytes and leave
+    # g.txt (also incoming) modified in the worktree: real ff names ONLY g.txt, and the helper must too — the
+    # target-equal staged f.txt must drop out (before the fix it was over-named, being staged AND incoming).
+    with tempfile.TemporaryDirectory() as td:
+        work = Path(td) / "checkout"
+        work.mkdir()
+        _rg_setup_ahead(work, [b"f.txt", b"g.txt"])   # incoming rewrites both v0 -> v1
+        _rg_write(work, b"f.txt", b"v1\n")            # stage f.txt to EXACTLY the incoming content -> no block
+        _rg_git(work, "add", "f.txt")
+        _rg_write(work, b"g.txt", b"local edit\n")    # worktree edit to incoming g.txt -> the true blocker
+        ff = _rg_git(work, "merge", "--ff-only", "origin/main", check=False)
+        check(ff.returncode != 0, "the worktree edit to incoming g.txt must block the fast-forward")
+        raw = (ff.stdout + ff.stderr)
+        check(b"g.txt" in raw and b"f.txt" not in raw,
+              f"precondition: real git must name ONLY g.txt as the blocker: {raw!r}")
+        blockers = M._blocking_uncommitted_paths(str(work), "main")
+        check(blockers == [json.dumps("g.txt")],
+              f"only the true blocker g.txt may be named; the target-equal staged f.txt must drop: {blockers}")
+
+
+def t_realgit_ff_capture_survives_non_utf8_filename():
+    # Finding 2, ground truth: the checked-out-base `git merge --ff-only` capture ran text=True. With
+    # core.quotePath=false git emits a blocking filename's raw 0xff byte in stderr, and text=True raises
+    # UnicodeDecodeError — escaping past main and discarding BOTH the tailored refusal and git's original
+    # error, then re-crashing on every resume. _sync_base must capture in BYTE mode: no crash, a Refusal that
+    # names the odd path AND preserves the surrogate-escaped original git diagnostic. Driving the REAL
+    # _sync_base needs a real `origin` remote (its fetch) and the base checked out on refs/heads/main, so this
+    # clones an upstream and moves local main behind origin/main.
+    odd = b"bad\xffname.txt"
+    with tempfile.TemporaryDirectory() as td:
+        up = Path(td) / "up"
+        work = Path(td) / "work"
+        subprocess.run(["git", "init", "-q", "-b", "main", str(up)],
+                       env=_GIT_ENV, capture_output=True, check=True)
+        _rg_write(up, odd, b"v0\n")
+        _rg_git(up, "add", "-A")
+        _rg_git(up, "commit", "-q", "-m", "C0")
+        c0 = _rg_head(up)
+        _rg_write(up, odd, b"v1\n")                   # C1 rewrites the odd file -> it is an incoming path
+        _rg_git(up, "add", "-A")
+        _rg_git(up, "commit", "-q", "-m", "C1")
+        subprocess.run(["git", "clone", "-q", str(up), str(work)],
+                       env=_GIT_ENV, capture_output=True, check=True)  # real `origin` remote, origin/main=C1
+        _rg_git(work, "config", "core.quotePath", "false")            # git emits the raw 0xff byte, unquoted
+        _rg_git(work, "reset", "-q", "--hard", c0)                    # local main behind origin/main
+        _rg_write(work, odd, b"local\n")                             # worktree edit to the incoming odd file
+        try:
+            M._sync_base(work, "main")
+        except UnicodeDecodeError as exc:  # the exact finding-2 crash
+            raise M.SelfTestFailure(
+                f"the ff capture crashed on a non-UTF-8 filename (finding 2 regression): {exc}")
+        except M.Refusal as exc:
+            msg = str(exc)
+        else:
+            raise M.SelfTestFailure(
+                "_sync_base must refuse when an uncommitted path blocks the base fast-forward")
+        check(json.dumps(odd.decode("utf-8", "surrogateescape")) in msg,
+              f"the odd blocking path was not named in the refusal: {msg!r}")
+        check("Original Git diagnostic" in msg,
+              f"git's ORIGINAL diagnostic must survive the byte-safe capture: {msg!r}")
+        check("\udcff" in msg,
+              f"the 0xff byte must round-trip via surrogateescape, not be lost to a crash: {msg!r}")
+
+
 CASES = [
     ("happy-owned", "exact merge argv, owned cleanup, terminal write", t_happy_owned_cleanup_and_command),
     ("repo-identity", "a --repo that does not name the checkout's own repository is refused before any live view (case-insensitive match)", t_repo_identity_mismatch_refused_before_view),
@@ -1409,6 +1514,7 @@ CASES = [
     ("external-merge-held-resume", "an external MERGE of a held row resumes to merged for every held status; OPEN+held stays refused", t_external_merge_while_held_resumes),
     ("absent-held-merge-routing", "an absent held row externally MERGED routes reconcile -> merge.py run, which resumes it to merged", t_absent_held_row_external_merge_routes_to_resume),
     ("base-ff-blocked-named", "a checked-out base fast-forward blocked by uncommitted paths names them and proposes the graph-safe recovery (stash, or commit on a SEPARATE branch) + re-run, touching nothing", t_base_ff_blocked_names_uncommitted_paths),
+    ("base-ff-staged-equal-incoming-dropped", "a staged path equal to the incoming target content does not block ff-only and is not named; only a diverged staged blocker is", t_base_ff_staged_equal_incoming_is_dropped),
     ("base-ff-odd-names", "odd blocking filenames are JSON-quoted (no forged line) and deterministically ordered", t_base_ff_odd_filenames_quoted_and_ordered),
     ("base-ff-divergent-raw", "a diverged base fast-forward keeps the raw git diagnostic, names no path", t_base_ff_divergent_keeps_raw_diagnostic),
     ("base-ff-unmerged-raw", "an unmerged/conflicted index keeps the raw git error and names no path (tailored recovery advice would be wrong)", t_base_ff_unmerged_index_keeps_raw_diagnostic),
@@ -1419,4 +1525,6 @@ CASES = [
     ("realgit-blocked-ff-spares-staged", "REAL git: a blocked ff names only the overlapping incoming path, never an unrelated staged one", t_realgit_blocked_ff_spares_unrelated_staged),
     ("realgit-odd-filenames", "REAL git: a 0xff-byte and a CR filename go through the byte-mode probe and are named verbatim (no crash, no CR->LF)", t_realgit_odd_byte_and_cr_filenames_named),
     ("realgit-unmerged-index", "REAL git: an unmerged-index ff failure makes the helper decline, preserving git's raw unresolved-conflict error", t_realgit_unmerged_index_keeps_raw_error),
+    ("realgit-staged-equal-incoming", "REAL git: a path staged to exactly its incoming content does not block ff-only and is not named; only the true blocker is (finding 1)", t_realgit_staged_equal_incoming_not_named),
+    ("realgit-ff-capture-non-utf8", "REAL git: _sync_base's checked-out-base ff capture survives a non-UTF-8 (0xff) blocking filename under core.quotePath=false — no crash, names the path, preserves git's original diagnostic (finding 2)", t_realgit_ff_capture_survives_non_utf8_filename),
 ]

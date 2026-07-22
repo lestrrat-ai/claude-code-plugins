@@ -135,8 +135,9 @@ count as completed cleanup; a terminal ledger row is a no-op.
 
 When the checked-out local base is what git fast-forwards and an unrelated actor's **uncommitted** edits in
 that checkout block it, the command **refuses and lists the exact blocking paths** (each staged, unstaged,
-or untracked path that overlaps what the incoming fast-forward updates — an index or working-tree change to
-an *unrelated* path does not block a fast-forward and is not listed), then proposes the graph-safe fix:
+or untracked path the incoming fast-forward would overwrite — a change to an *unrelated* path, or a path
+already staged to exactly the incoming content, does not block a fast-forward and is not listed), then
+proposes the graph-safe fix:
 **stash the listed work (`git stash -u` to include untracked files), or commit it on a SEPARATE branch and
 switch back to the base — then re-run the same command to resume the owed base-sync.** It **never** tells you
 to commit on the checked-out base itself, which would create a diverged sibling commit the re-run's

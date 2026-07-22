@@ -83,6 +83,21 @@ def _one_lf(value: str) -> str:
     return value[:-1] if value.endswith("\n") else value
 
 
+def _ff_detail(proc: subprocess.CompletedProcess) -> str:
+    """Decode a BYTE-mode fast-forward capture's diagnostic. The checked-out-base `git merge --ff-only` in
+    _sync_base runs text=False: with core.quotePath=false git emits a blocking filename's raw non-UTF-8 byte
+    in stderr, and a text=True capture would raise UnicodeDecodeError — discarding BOTH the tailored refusal
+    AND git's original error, then re-crashing every resume on the same input. Byte mode never raises;
+    surrogateescape round-trips the odd byte into the message instead. A str stream (a fixture Fake, or a
+    text-mode caller) is accepted verbatim so the same decode serves both surfaces that read the ff detail."""
+    for stream in (proc.stderr, proc.stdout):
+        if stream:
+            decoded = (stream.decode("utf-8", "surrogateescape")
+                       if isinstance(stream, (bytes, bytearray)) else stream)
+            return decoded.strip()
+    return "no diagnostic"
+
+
 def resolve_project_root(checkout: Path) -> Path:
     """Resolve the typed repository root once, following runtime-adapter.md's boundary."""
     if not checkout.is_absolute():
@@ -357,13 +372,23 @@ def _blocking_uncommitted_paths(checkout: str, base: str) -> "list[str] | None":
         return None
 
     staged = plumb(["diff-index", "--cached", "--name-only", "-z", "--no-renames", "HEAD", "--"])
+    # A path staged to EXACTLY the incoming target content does NOT block `git merge --ff-only` — git names
+    # only the real blocker, so naming it over-reports. `staged` (index vs HEAD) identifies WHICH paths are
+    # staged; this second probe (index vs origin/<base>) keeps only those whose staged content DIFFERS from
+    # the incoming tree, dropping any already equal to it, BEFORE the incoming-overlap test below.
+    staged_vs_incoming = plumb(
+        ["diff-index", "--cached", "--name-only", "-z", "--no-renames", f"origin/{base}", "--"])
     unstaged = plumb(["diff-files", "--name-only", "-z", "--no-renames", "--"])
     untracked = plumb(["ls-files", "--others", "--exclude-standard", "-z", "--"])
     incoming = plumb(
         ["diff-tree", "--no-commit-id", "-r", "--name-only", "-z", "--no-renames",
          "HEAD", f"origin/{base}", "--"])
-    if staged is None or unstaged is None or untracked is None or incoming is None:
+    if (staged is None or staged_vs_incoming is None or unstaged is None
+            or untracked is None or incoming is None):
         return None
+
+    diverged_from_incoming = set(staged_vs_incoming)
+    staged = [path for path in staged if path in diverged_from_incoming]
 
     incoming_set = set(incoming)
     # git merge --ff-only rejects a staged, unstaged, OR untracked path only when it overlaps a path the
@@ -396,11 +421,14 @@ def _sync_base(root: Path, base: str) -> None:
         # Downstream diffs/rebases read origin/<base> (freshly fetched above), not this local branch, so a
         # local-ahead checkout poisons nothing; local-ahead means origin is an ancestor of local, i.e. local
         # already contains the merged tip. The dangerous diverged case still fails ff-only and refuses below.
-        ff = _run(["git", "-C", checked[0], "merge", "--ff-only", f"origin/{base}"])
+        # BYTE mode: with core.quotePath=false git emits a blocking filename's raw non-UTF-8 byte in stderr,
+        # which a text=True capture raises UnicodeDecodeError on (escaping past main and discarding BOTH
+        # diagnostics). Capture raw and decode the detail via _ff_detail at BOTH surfaces that read it.
+        ff = _run(["git", "-C", checked[0], "merge", "--ff-only", f"origin/{base}"], text=False)
         if ff.returncode != 0:
             blockers = _blocking_uncommitted_paths(checked[0], base)
+            detail = _ff_detail(ff)
             if blockers:
-                detail = (ff.stderr or ff.stdout or "no diagnostic").strip()
                 listed = "\n".join(f"  - {path}" for path in blockers)
                 # Diagnose-only: name the offending paths and PROPOSE the safe fix. NEVER commit, stash,
                 # reset, restore, checkout, or clean — the campaign does not own these paths.
@@ -414,7 +442,11 @@ def _sync_base(root: Path, base: str) -> None:
                     "the re-run's fast-forward would refuse. The campaign left these paths untouched.\n"
                     f"Original Git diagnostic: {detail}")
             # No proven uncommitted-work block (divergence, or a plumbing probe failed): keep the raw error.
-            _require(ff, f"fast-forward of checked-out base {base}")
+            # `ff` is byte-mode, so hand _require the surrogateescape-decoded detail — never raw bytes, whose
+            # repr would leak `b'...'` into the message. _require here always raises (returncode != 0).
+            _require(
+                subprocess.CompletedProcess(ff.args, ff.returncode, "", detail),
+                f"fast-forward of checked-out base {base}")
     else:
         # If the local base ref already EXISTS and already CONTAINS origin/<base> (origin is an ancestor of
         # the local ref — the ref is equal to or LOCAL-AHEAD of origin), it is already synchronized: skip the
