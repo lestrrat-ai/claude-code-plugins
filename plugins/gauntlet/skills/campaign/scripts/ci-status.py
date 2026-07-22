@@ -581,15 +581,23 @@ def refresh_required_set(fetch: Fetch, ledger_path: Path, repo: str | None = Non
                            "reason": reason})
 
     # EXPLICIT-BASE ROW GROUPS. Act on a group when any row's OWN stored `required_set` is unsettled — the
-    # row STORES its base's set, and its base may differ from the header base, so the header fallback must
-    # NOT settle it here (an explicit `-` row has simply not had ITS base read yet: `_read_needed("-")` is
-    # True). A SETTLED row's value (`declared:<json>`/`none`) is NEVER overwritten — not by a failed read
-    # (which would clobber it with `unknown`) and not by a fresh read (settled reads are never re-read:
-    # `_read_needed`). So when the group already holds exactly one settled value, the unsettled rows ADOPT it
-    # with no GitHub read; only a group with no settled value (or with disagreeing settled values — a
-    # hand-edit this never papers over) reads GitHub, and the result lands ONLY on the rows that needed it.
-    # A base that is unusable (blank/`-`) cannot be read — leave the group `unknown` rather than fabricate a
-    # permissive answer.
+    # row STORES its base's set (an explicit `-` row has simply not had ITS base read yet: `_read_needed("-")`
+    # is True). A SETTLED value for the group's base is NEVER overwritten — not by a failed read (which would
+    # clobber it with `unknown`) and not by a fresh read (settled reads are never re-read: `_read_needed`). So
+    # when the group's base already holds exactly one settled value, the unsettled rows ADOPT it with no
+    # GitHub read; only a group with no settled value (or with disagreeing settled values — a hand-edit this
+    # never papers over) reads GitHub, and the result lands ONLY on the rows that needed it. A base that is
+    # unusable (blank/`-`) cannot be read — leave the group `unknown` rather than fabricate a permissive answer.
+    #
+    # "THE SETTLED SET FOR BASE B" HAS TWO STORAGE CHANNELS, and they are ONE fact: each group row's OWN
+    # settled value, AND the header value WHEN B IS the header base and the header is itself settled. The
+    # header describes base B only for B == header base (a legacy single-base run, or a migrated one whose
+    # header settled before a new same-base row joined), so it is unioned in ONLY then — never for a DIFFERENT
+    # base, which would settle a base off another base's set (a false green). Folding it in is what makes a
+    # `-` row on the header base ADOPT the header's settled value with no read, and what stops a FAILED read
+    # from clobbering a value already settled through the header channel — the round-1 row-adoption rule,
+    # extended to the header's copy of the same fact. `effective_required_set` (ledger.py) draws the SAME
+    # base-agreement line for the single-row accessor, so the two never disagree.
     for base, group_rows in explicit_groups.items():
         unsettled = []
         settled_values = set()
@@ -599,6 +607,8 @@ def refresh_required_set(fetch: Fetch, ledger_path: Path, repo: str | None = Non
                 unsettled.append(r)
             else:
                 settled_values.add(spec)
+        if base == header_base and not _read_needed(header_spec):
+            settled_values.add(header_spec)
         if not unsettled:
             continue
         prs = [r["pr"] for r in group_rows]

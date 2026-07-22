@@ -2480,6 +2480,17 @@ def t_required_set_dash_vs_unknown(L: ModuleType, tmp: Path) -> None:
     check(L.effective_base({"base_branch": "main"}, {"base_branch": "v3"}) == "v3",
           "an explicit base must win over the header")
 
+    # A `-` row inherits the header required_set ONLY when its base IS the header base — the header describes
+    # the header base alone. A `-` row on a DIFFERENT base (a mixed-base config) has no settled set here and
+    # stays the fail-closed `unknown`, never reading as the header base's set (a false green). This is the
+    # SAME base-agreement rule the grouped refresh applies (ci-status.refresh_required_set).
+    mixed_header = {"base_branch": "main", "required_set": "none"}
+    check(L.effective_required_set(mixed_header, {"base_branch": "main", "required_set": "-"}) == "none",
+          "a `-` row on the header base must inherit the settled header")
+    other = L.effective_required_set(mixed_header, {"base_branch": "v3", "required_set": "-"})
+    check(other == L.HEADER_DEFAULTS["required_set"],
+          f"a `-` row on a DIFFERENT base must NOT read as the header base's set — fail closed: {other!r}")
+
 
 def t_base_agrees(L: ModuleType, _tmp: Path) -> None:
     """`base_agrees` — the ONE owner of the `--base`-assertion comparison every consumer routes through.

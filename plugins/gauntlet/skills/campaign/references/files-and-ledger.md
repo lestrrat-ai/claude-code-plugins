@@ -322,10 +322,13 @@ Header field notes (the header fields above; per-row fields follow):
   Unlike `base_branch` it is **an ordinary settable field** — the stage-2 grouped required-set refresh will
   write the canonical value through `set`, so that door stays open. The default is **`-`**, which — like
   `base_branch` — means **inherit the header**, and is **DISTINCT from `unknown`**: `-` says "this row owns
-  no set; read the header", while `unknown` is an **explicit** row value meaning a read for THIS base was
+  no set; inherit the header — but only for the header's OWN base", which `effective_required_set` enforces:
+  it returns the header value only when this row's effective base IS the header base, and otherwise stays
+  `unknown` (a row on a different base has no set here until its base is read — the header never describes
+  another base's set). `unknown` is an **explicit** row value meaning a read for THIS base was
   attempted and failed, so it **fails closed and cannot go green** and must **never** be silently replaced
-  by the header. An old row reads back `-` and inherits; once stages 2-3 land, a new run will write
-  `unknown` per row until a grouped read succeeds.
+  by the header. An old single-base row reads back `-` and inherits (its base IS the header base); once
+  stages 2-3 land, a new run will write `unknown` per row until a grouped read succeeds.
 - `intent` — the PROVENANCE of `<rundir>/intent-<pr>.md` (the file itself is markdown, so it lives in the
   run dir, not in this one-object-per-line store): `-` (not adopted yet) | `stated@<iso>` (the PR body
   already carried a usable intent block, copied verbatim) | `authored@<iso>` (the driver **inferred** it

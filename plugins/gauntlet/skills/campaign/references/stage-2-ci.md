@@ -154,8 +154,12 @@ one repository, reads both declaration sources, validates every response field, 
 declarations, validates the result through `ci-snapshot.py`'s strict parser, and writes the canonical value
 to that base's rows **still needing one** through `ledger.py`'s atomic store (legacy `-` rows inherit the
 header, which the same command settles as their fallback channel — no inherited row value is materialized).
-A row whose stored value is already settled is **never overwritten** — by a failed read or a fresh one; an
-unsettled row joining a base with a settled sibling adopts that settled value with no new GitHub read. It
+A value already settled for a base is **never overwritten** — not by a failed read, not by a fresh one — and
+an unsettled row on that base ADOPTS it with no new GitHub read. That settled value may come from EITHER
+channel that holds base B's set: a group **sibling** row's own settled value, **or the header's** when B **is
+the header base** (the header describes base B for that base alone — never a different one, which would
+settle a base off another base's set). So a `-`/`unknown` row on the header base heals from the header's
+settled value with no read, and a failed read cannot knock it back to `unknown`. It
 exits 0 when every group is settled (`declared:…` or `none`), 1 while any group is still `unknown`, and 2
 for a caller or ledger error. A settled group is returned without another GitHub read, and a read that
 fails for one base leaves only that base's unsettled rows `unknown` while the others settle — so the same

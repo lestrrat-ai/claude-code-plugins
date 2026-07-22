@@ -192,9 +192,12 @@ ROW_FIELDS = (
     # `declared:<json>` / `none` / `unknown`, owned by stage-2-ci.md exactly as the header field's are.
     #
     # The default is `-`, which — like `base_branch` — means "inherit the legacy header", and is DISTINCT
-    # from `unknown`: `-` says "this row owns no set; read the header", while `unknown` says "a read was
-    # attempted for THIS base and failed, so fail closed and do not go green" (stage-2-ci.md). An old row
-    # reads back `-` and inherits; a new run will write `unknown` on each row until a grouped read succeeds
+    # from `unknown`: `-` says "this row owns no set; inherit the header — but only for the header's OWN base"
+    # (`effective_required_set` returns the header value ONLY when the row's effective base IS the header base;
+    # a row on a different base has no set here and stays `unknown` until read — the header never describes
+    # another base's set), while `unknown` says "a read was attempted for THIS base and failed, so fail closed
+    # and do not go green" (stage-2-ci.md). An old single-base row reads back `-` and inherits (its base IS the
+    # header base); a new run will write `unknown` on each row until a grouped read succeeds
     # (stage-2 work). An ordinary settable field: the stage-2 grouped required-set refresh will write the
     # canonical value through `set` (unlike `base_branch`, which is immutable after creation).
     "required_set",
@@ -676,11 +679,19 @@ def effective_required_set(header: dict, row: dict) -> str:
     `-` on the row means "inherit the header"; it is DISTINCT from `unknown`, which is an explicit row value
     meaning a read for this base failed and must fail closed (stage-2-ci.md). So a new row's `unknown` is
     returned as `unknown` and never silently replaced by the header, while an old row's `-` reads the header.
+
+    But the header required_set describes the HEADER base ONLY. A `-` row inherits it only when its effective
+    base IS that base; a row on a DIFFERENT base (a mixed-base config) has no settled set here and stays the
+    fail-closed `unknown` default until its OWN base is read — a header `none` must never read as another
+    base's set (a false green). This is the SAME base-agreement rule the grouped refresh applies when it folds
+    the header into a base's settled sources (ci-status.refresh_required_set): the two never disagree.
     """
     value = row.get("required_set", ROW_DEFAULTS["required_set"])
     if value != "-":
         return value
-    return header.get("required_set", HEADER_DEFAULTS["required_set"])
+    if effective_base(header, row) == header.get("base_branch", HEADER_DEFAULTS["base_branch"]):
+        return header.get("required_set", HEADER_DEFAULTS["required_set"])
+    return HEADER_DEFAULTS["required_set"]  # the `unknown` fail-closed default — this base has no read yet
 
 
 def base_agrees(base_arg: str, effective: str) -> bool:

@@ -399,6 +399,7 @@ def required_set_cases(ci, tmp: Path) -> list[str]:
         problems.append(f"[required-set] producer-to-verifier chain returned {verdict}: {verdict_reason}")
 
     problems += grouped_required_set_cases(ci, tmp)
+    problems += required_set_matrix_cases(ci, tmp)
     return problems
 
 
@@ -601,6 +602,130 @@ def grouped_required_set_cases(ci, tmp: Path) -> list[str]:
                         f"{sout.get('base_branch')!r}")
     if not sout.get("settled"):
         problems.append(f"[single-base] a single-base run that read `none` must be settled: {sout!r}")
+
+    return problems
+
+
+def required_set_matrix_cases(ci, tmp: Path) -> list[str]:
+    """The EXHAUSTIVE state matrix for "the settled required set for a base B".
+
+    B lives in TWO storage channels — the ledger HEADER (only when B IS the header base) and the explicit-base
+    GROUP rows — and three review rounds each clipped one cell where they were not treated as ONE fact. This
+    table pins the DECIDED value for every reachable cell of
+        (base relation: row base == header base | != | legacy `-` inherits header base)
+      x (row required_set: `-` | `none` | `declared:` | `unknown`)
+      x (header required_set: `unknown` | `none` | `declared:`)
+      x (read outcome: not-needed | success | failed).
+    Delete either half of the fix and a NAMED cell below fails: the header-fold in
+    `ci-status.refresh_required_set` (a `-`/`unknown` row on the header base adopts a settled header value with
+    NO read, and a FAILED read never clobbers it), or the base-agreement gate in
+    `ledger.effective_required_set` (a `-` row on a DIFFERENT base than the header stays `unknown`, never
+    reads as the header base's set). No cell is a false green: every unread base fails closed as `unknown`.
+    """
+    L = ci.LEDGER
+    problems: list[str] = []
+    UNKNOWN = L.HEADER_DEFAULTS["required_set"]  # the fail-closed `unknown` default, from its owner
+
+    def declared(base: str) -> str:
+        return ci.canonical_required_set([(f"{base}-req", ci.SNAP.ANY_APP)])
+
+    def run_cell(name: str, header_base: str, header_req: str, row_base: str, row_req: str, read: str) -> dict:
+        """One single-row ledger driven once through `refresh_required_set`.
+
+        `read`: `none` = assert NO GitHub read happens; `ok` = the (single) base's read succeeds with its own
+        distinct declared set; `fail` = that read raises. The fetch records every base it is asked for, so
+        `seen == []` mechanically proves adoption/skip rather than a read.
+        """
+        path = tmp / f"matrix-{name}.jsonl"
+        header = dict(L.HEADER_DEFAULTS)
+        header.update({"run_id": name, "base_branch": header_base, "required_set": header_req})
+        row = dict(L.ROW_DEFAULTS)
+        row.update({"pr": "1", "branch": "b1", "base_branch": row_base,
+                    "required_set": row_req, "status": "in_review"})
+        L.dump(path, header, [row])
+        hb, rb0 = L.load(path)
+        eff_before = L.effective_required_set(hb, rb0[0])
+        target = L.effective_base(hb, rb0[0])
+        seen: list[str] = []
+
+        def fetch(source: str, _argv: list[str]):
+            if source.endswith("classic"):
+                seen.append(target)
+            if read == "fail":
+                raise ci.FetchError(f"simulated outage on {target}")
+            if source.endswith("classic"):
+                return {"protection": {"enabled": True, "required_status_checks":
+                        {"checks": [{"context": f"{target}-req", "app_id": None}]}}}
+            return [[]]
+
+        out = ci.refresh_required_set(fetch, path, "o/r")
+        ha, ra = L.load(path)
+        return {"row": ra[0]["required_set"], "header": ha["required_set"], "settled": out["settled"],
+                "seen": seen, "eff_before": eff_before, "eff_after": L.effective_required_set(ha, ra[0])}
+
+    MAIN, V3 = declared("main"), declared("v3")
+
+    # name, HB, HR, RB, RR, read -> expected row, header, settled, seen, eff_before, eff_after
+    cells = [
+        # --- A. ROW BASE == HEADER BASE ("main"): the header is base B's OTHER settled channel (round 3) ---
+        # A `-` row adopts the settled header with NO read; a FAILED read can never clobber it (the round-3 repro).
+        ("A1-adopt-none-noread",    "main", "none",         "main", "-",       "none", "none", "none",         True,  [],       "none",         "none"),
+        ("A2-adopt-none-underfail", "main", "none",         "main", "-",       "fail", "none", "none",         True,  [],       "none",         "none"),
+        ("A3-adopt-declared",       "main", MAIN,           "main", "-",       "none", MAIN,   MAIN,           True,  [],       MAIN,           MAIN),
+        # An explicit `unknown` row on the header base HEALS from the header's settled read, no re-read.
+        ("A4-unknown-adopts",       "main", "none",         "main", "unknown", "fail", "none", "none",         True,  [],       "unknown",      "none"),
+        # An already-settled row with an `unknown` header needs nothing — no read, value kept.
+        ("A5-settled-hdr-unknown",  "main", UNKNOWN,        "main", "none",    "none", "none", UNKNOWN,        True,  [],       "none",         "none"),
+        ("A6-declared-row-kept",    "main", UNKNOWN,        "main", MAIN,      "none", MAIN,   UNKNOWN,        True,  [],       MAIN,           MAIN),
+        # --- B. ROW BASE != HEADER BASE ("v3" vs "main"), MIXED (stage-3 non-goal): header NEVER leaks ---
+        # A different base is read for its OWN set; before the read the `-` row is `unknown`, NOT the header's `none`.
+        ("B1-mixed-reads-own",      "main", "none",         "v3",   "-",       "ok",   V3,     "none",         True,  ["v3"],   "unknown",      V3),
+        ("B2-mixed-fail-closed",    "main", "none",         "v3",   "-",       "fail", UNKNOWN,"none",         False, ["v3"],   "unknown",      "unknown"),
+        ("B3-mixed-declared-noleak","main", MAIN,           "v3",   "-",       "ok",   V3,     MAIN,           True,  ["v3"],   "unknown",      V3),
+        # --- C. LEGACY `-` BASE ROW (inherits header base "main"): the HEADER channel, row never materialized ---
+        ("C1-legacy-settles-hdr",   "main", UNKNOWN,        "-",    "-",       "ok",   "-",    MAIN,           True,  ["main"], "unknown",      MAIN),
+        ("C2-legacy-hdr-settled",   "main", "none",         "-",    "-",       "none", "-",    "none",         True,  [],       "none",         "none"),
+        # --- D. NEW-RUN SHAPE (header base "-", header `unknown`): explicit-base row owns the read ---
+        ("D1-newrun-reads",         "-",    UNKNOWN,        "main", "-",       "ok",   MAIN,   UNKNOWN,        True,  ["main"], "unknown",      MAIN),
+        ("D2-newrun-fail-closed",   "-",    UNKNOWN,        "main", "-",       "fail", UNKNOWN,UNKNOWN,        False, ["main"], "unknown",      "unknown"),
+    ]
+    for (name, hb, hr, rb, rr, read, e_row, e_hdr, e_settled, e_seen, e_eff_b, e_eff_a) in cells:
+        got = run_cell(name, hb, hr, rb, rr, read)
+        want = {"row": e_row, "header": e_hdr, "settled": e_settled, "seen": e_seen,
+                "eff_before": e_eff_b, "eff_after": e_eff_a}
+        for key, wanted in want.items():
+            if got[key] != wanted:
+                problems.append(f"[matrix {name}] {key} = {got[key]!r}, expected {wanted!r} (full: {got!r})")
+
+    # A header value that DISAGREES with a settled ROW on the same base is a hand-edit, never papered over:
+    # the header is folded in as one more settled SOURCE, so two distinct values force EXACTLY one read, which
+    # lands ONLY on the unsettled `-` row; the settled row and the header both keep their values.
+    dis = tmp / "matrix-header-row-disagree.jsonl"
+    dh = dict(L.HEADER_DEFAULTS)
+    dh.update({"run_id": "hdr-disagree", "base_branch": "main", "required_set": "none"})
+    mk_row = lambda pr, rs: {**dict(L.ROW_DEFAULTS), "pr": pr, "branch": f"b{pr}",
+                             "base_branch": "main", "required_set": rs, "status": "in_review"}
+    L.dump(dis, dh, [mk_row("1", MAIN), mk_row("2", "-")])
+    dseen: list[str] = []
+
+    def dfetch(source: str, _argv: list[str]):
+        if source.endswith("classic"):
+            dseen.append("main")
+            return {"protection": {"enabled": True, "required_status_checks":
+                    {"checks": [{"context": "main-req", "app_id": None}]}}}
+        return [[]]
+
+    dout = ci.refresh_required_set(dfetch, dis, "o/r")
+    _dh2, drows = L.load(dis)
+    dgot = {r["pr"]: r["required_set"] for r in drows}
+    if dgot.get("1") != MAIN:
+        problems.append(f"[matrix disagree] a settled row must survive the forced read: {dgot!r}")
+    if dgot.get("2") != MAIN:
+        problems.append(f"[matrix disagree] the unsettled `-` row must take the fresh read: {dgot!r}")
+    if dseen != ["main"]:
+        problems.append(f"[matrix disagree] header-vs-row disagreement forces EXACTLY one read: {dseen!r}")
+    if not dout["settled"]:
+        problems.append(f"[matrix disagree] the group must settle after the read: {dout!r}")
 
     return problems
 
