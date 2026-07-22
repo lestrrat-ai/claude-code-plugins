@@ -624,7 +624,7 @@ def refresh_required_set(fetch: Fetch, ledger_path: Path, repo: str | None = Non
         LEDGER.dump(ledger_path, header, rows)
 
     settled = all(g["settled"] for g in groups_out)
-    return {
+    result = {
         "repo": state["repo"],
         "base_branch": header_base,
         "required_set": header["required_set"],
@@ -634,6 +634,31 @@ def refresh_required_set(fetch: Fetch, ledger_path: Path, repo: str | None = Non
                    if not groups_out
                    else f"settled {sum(g['settled'] for g in groups_out)} of {len(groups_out)} base group(s)"),
     }
+
+    # SINGLE-BASE TOP-LEVEL CONTRACT. When the whole run resolves to ONE effective base, restore the pre-PR
+    # top-level summary: `base_branch`/`required_set`/`state` describe that one base (the settled value, not the
+    # header's stale `unknown`), and the `state` key is present. This is the promise "single-base runs stay
+    # behaviorally unchanged" — it must hold for a NEW explicit-base row too, not only legacy `-` rows. A
+    # MIXED-base run has no single base to summarize, so it keeps `groups` as the signal and omits `state`.
+    effective_bases = set(explicit_groups)
+    if has_legacy or not nonterminal:
+        effective_bases.add(header_base)
+    if len(effective_bases) == 1:
+        base = next(iter(effective_bases))
+        acted = next((g for g in groups_out if g["base"] == base), None)
+        if acted is not None:
+            value, base_state = acted["required_set"], acted["state"]
+        else:
+            # Fully settled already (no read this call): read the settled value from its storage — the explicit
+            # rows' own value, or the header for a legacy / row-less ledger.
+            group_rows = explicit_groups.get(base)
+            value = group_rows[0]["required_set"] if group_rows else header["required_set"]
+            base_state = SNAP.parse_required_set(value).state
+        result["base_branch"] = base
+        result["required_set"] = value
+        result["state"] = base_state
+
+    return result
 
 
 # --- FETCH ---------------------------------------------------------------------------------------

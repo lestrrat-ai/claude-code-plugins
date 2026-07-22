@@ -571,6 +571,37 @@ def grouped_required_set_cases(ci, tmp: Path) -> list[str]:
     except SystemExit:
         pass
 
+    # 5. SINGLE-BASE TOP-LEVEL CONTRACT (regression guard). A new single-base run (one explicit-base row,
+    #    header still `unknown`) that settles to `none` must report the PRE-PR top-level summary: the
+    #    top-level base_branch/required_set/state describe that ONE settled base — NEVER a stale header
+    #    `unknown` sitting beside settled=true, and the `state` key must be PRESENT. (Mixed-base runs keep
+    #    `groups` as the signal and are covered above; there the top-level summary intentionally has no
+    #    single base to report.)
+    single = tmp / "single-base-toplevel.jsonl"
+    sheader = dict(ci.LEDGER.HEADER_DEFAULTS)
+    sheader.update({"run_id": "single", "base_branch": "main", "required_set": "unknown"})
+    ci.LEDGER.dump(single, sheader, [mrow("147", "main")])
+
+    def none_fetch(source: str, _argv: list[str]):
+        return {"protection": {"enabled": False}} if source.endswith("classic") else [[]]
+
+    sout = ci.refresh_required_set(none_fetch, single, "o/r")
+    for key in ("base_branch", "repo", "required_set", "state", "settled", "reason"):
+        if key not in sout:
+            problems.append(f"[single-base] top-level key {key!r} dropped from the return: {sorted(sout)!r}")
+    none_state = ci.SNAP.parse_required_set(ci.SNAP.NONE_DECLARED).state
+    if sout.get("required_set") != ci.SNAP.NONE_DECLARED:
+        problems.append(f"[single-base] top-level required_set must be the settled `none`, not a stale "
+                        f"header `unknown`: {sout.get('required_set')!r}")
+    if sout.get("state") != none_state:
+        problems.append(f"[single-base] top-level state must report the settled base's state, not be absent: "
+                        f"{sout.get('state')!r}")
+    if sout.get("base_branch") != "main":
+        problems.append(f"[single-base] top-level base_branch must be the single base: "
+                        f"{sout.get('base_branch')!r}")
+    if not sout.get("settled"):
+        problems.append(f"[single-base] a single-base run that read `none` must be settled: {sout!r}")
+
     return problems
 
 

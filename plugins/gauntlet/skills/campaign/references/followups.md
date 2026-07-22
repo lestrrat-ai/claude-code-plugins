@@ -197,18 +197,24 @@ about and one whose partial rejection strands the rest.
    (`fix-subagent-contract.md`) that authors the fix **and opens a PR** for it. The driver hands the fixer
    a **worktree branched from the base the follow-up targets**, and the fixer branches, commits, pushes,
    and opens the PR against that base — its worktree and scope requirements are owned by
-   `fix-subagent-contract.md`, not restated here. **The target is per follow-up, not per run** (a run may
-   hold PRs on different bases): a follow-up **derived from one PR** takes **that PR's recorded base**
-   (`effective_base` of its ledger row) as the proposed target; a **run-level** follow-up has **no
-   implicit target**, so the **user chooses** it. The user may override the proposed target before the PR
-   is opened. Either way the resulting PR then enters through **normal adoption**, which records its live
-   `baseRefName` once (`pr-adoption.md`). That PR is opened
+   `fix-subagent-contract.md`, not restated here. **The target is per follow-up**: a follow-up **derived
+   from one PR** takes **that PR's recorded base** (`effective_base` of its ledger row) as the proposed
+   target; a **run-level** follow-up has **no implicit target**, so the **user chooses** it. The user may
+   override the proposed target before the PR is opened. The resulting PR then enters through **normal
+   adoption**, which records its live `baseRefName` once (`pr-adoption.md`). **Adoption still admits only
+   the run's one agreed base** (`pr-adoption.md`, "PR adoption") — mixed bases in one run are a later
+   stage (stage 3, PR #148). So the follow-up folds into THIS run (step 4) **only when its target equals
+   the run's agreed base**; a follow-up targeting a **different** base is NOT adopted here — surface it
+   (step 5) for its own run and leave the entry open. In a single-base run a PR-derived follow-up always
+   shares that base, so this only diverts a user-chosen different-base target. When the target is the
+   run's base, that PR is opened
    **`gauntlet-authored`** and adopted into the current run so `pr-adoption.md` reads it as
    `pr_origin=gauntlet` — without the label it defaults to `external`, which then blocks campaign's own
    later autonomous repair of the very PR it authored. Record the PR with `followups.py open-pr --id fuN
    --pr <ref>`; the entry stays `in-pr` and names which PR is addressing it.
 
-4. **FOLD THE PR INTO THE CURRENT CAMPAIGN.** The follow-up's PR is **adopted into this run** like any other
+4. **FOLD THE PR INTO THE CURRENT CAMPAIGN.** The follow-up's PR — which step 3 admitted only on the run's
+   agreed base — is **adopted into this run** like any other
    (`pr-adoption.md` — the `gauntlet-authored` label, ledger row, intent, CI) and **gated by the same
    review gauntlet**. This is the
    whole point of "self-accepted, not accepted": the driver may take a follow-up up on its own, but the PR
