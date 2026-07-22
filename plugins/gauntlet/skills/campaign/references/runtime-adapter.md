@@ -14,9 +14,9 @@ first wait or heartbeat. The gate rules do not change between hosts.
 `<campaign-invocation>` elsewhere in this skill means the active row above. A self-resume always adds
 exactly `--run <run-id> --token <agent-token>`; it never repeats `--new` or the original PR arguments.
 
-**"Background work and heartbeats" below owns scheduled-entry prompt selection** — whether a scheduler
-entry may schedule the lean `heartbeat.py` wake prompt or must lead with this invocation. The invocation
-itself is for a user or a fresh session — starting, adopting, or manually resuming a run.
+**"Background work and heartbeats" below, "Lean prompt vs. full invocation — the boundary", owns
+scheduled-entry prompt selection.** The invocation itself is for a user or a fresh session — starting,
+adopting, or manually resuming a run.
 
 Do not put either invocation in a shell command. These are host UI forms, not shell syntax.
 

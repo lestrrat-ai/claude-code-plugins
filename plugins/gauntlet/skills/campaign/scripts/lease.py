@@ -332,6 +332,13 @@ def emit(verdict: str, rec: "dict | None", **extra) -> None:
 # exits non-zero and its stderr says what happened, WHAT STATE CHANGED, what NOT to do, and what to do
 # instead. It names no host mechanism — `runtime-adapter.md` owns that mapping — and it offers NO
 # alternative, because the moment it names a way to proceed without a proof, that way becomes the default.
+#
+# This message concerns the ACQUIRE-TIME heartbeat proof (`--heartbeat-id` presented here to take the
+# lease), NOT the same-session wake-prompt SHAPE (lean prompt vs. full invocation) owned by
+# runtime-adapter.md "Background work and heartbeats". Evidence it does not restate that boundary: the
+# text is unchanged by the wake-shape PR (not in its diff), it delegates the host mechanism to
+# runtime-adapter.md by name rather than reconstructing it, and heartbeat.py callback — not this string —
+# still prints the wake prompt. A driver following this message consults that owner for the shape.
 
 NO_HEARTBEAT = """\
 lease: REFUSED — the lease was NOT taken. Nothing was written, and this run is still UNDRIVEN.
