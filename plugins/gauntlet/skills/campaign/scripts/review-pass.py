@@ -1020,11 +1020,16 @@ def check_default_non_goals(text: str, defaults: "list[str]", path: Path) -> Non
     block = scan_managed_block(text, path)
     desired = _desired_managed(block, defaults)
     have = block.bullets if block.present else []
-    if have != desired:
+    # In sync = the block holds EXACTLY `desired` AND is present IFF `desired` is nonempty. `have` conflates
+    # an ABSENT block with an empty-but-PRESENT one (both read `[]`), so an empty managed block under empty
+    # defaults must be caught by the presence test, not the bullet test — the format leaves NO block there.
+    if have != desired or block.present != bool(desired):
+        state = f"holds {have!r}" if block.present else "is absent"
+        want = f"{desired!r}" if desired else "NO managed block (empty defaults leave none)"
         raise Defect(
-            f"{path.name}: the run-default managed block is OUT OF SYNC with the run header — it holds "
-            f"{have!r} but the current run defaults call for {desired!r}. Run `pr-adopt.py intent-sync "
-            f"--file <state.jsonl> --pr <n>` to fold the current defaults in, then re-check"
+            f"{path.name}: the run-default managed block is OUT OF SYNC with the run header — it {state} "
+            f"but the current run defaults call for {want}. Run `pr-adopt.py intent-sync --file "
+            f"<state.jsonl> --pr <n>` to fold the current defaults in, then re-check"
         )
 
 
@@ -2339,6 +2344,17 @@ def cmd_verify(args) -> int:
                 f"--ledger {ledger} and --file {path} are not in the same run directory — a pass is counted "
                 f"against ITS run's current defaults, never another run's. Pass the run's own state.jsonl"
             )
+        # A same-dir --ledger that DOES NOT EXIST is not "no scope": `ledger.load` back-fills a missing file
+        # to the header defaults (`default_non_goals` `[]`), so a typo'd path would read as ZERO run defaults
+        # and let a scoped pass verify `ok` against an EMPTY scope — silently disabling this gate. A run has
+        # a ledger; a missing one fails closed.
+        if not ledger.is_file():
+            # MUTATE:verify-ledger-exists:pass
+            raise OperatorError(
+                f"--ledger {ledger} does not exist — a missing ledger reads as NO run defaults and would "
+                f"count this pass against an empty scope, disabling the scope check. Pass the run's real "
+                f"state.jsonl"
+            )
     verdict, reason, report = evaluate_detail(path, args.head_sha, args.amendments_ruled, ledger)
     detail = ""
     if report is not None:
@@ -2362,6 +2378,13 @@ def cmd_intent_check(args) -> int:
         raise OperatorError(
             f"--ledger {ledger_path} and --file {path} are not in the same run directory — an intent is "
             f"checked against ITS run's defaults, never another run's. Pass the run's own state.jsonl"
+        )
+    # A same-dir `--ledger` that does NOT EXIST back-fills to the header defaults (`default_non_goals` `[]`),
+    # so a typo'd path would read as ZERO run defaults and wave a stale managed block through. Fail closed.
+    if not ledger_path.is_file():
+        raise OperatorError(
+            f"--ledger {ledger_path} does not exist — a missing ledger reads as NO run defaults and would "
+            f"check this intent against an empty scope. Pass the run's real state.jsonl"
         )
     sections = load_intent(path)
     # The scope-sync check is `check_intent_scope`, the PRE-DISPATCH door: it refuses launching a reviewer
@@ -3026,12 +3049,12 @@ def build_parser() -> "tuple[argparse.ArgumentParser, list[str]]":
     v.add_argument("--amendments-ruled", type=int, default=0, metavar="N",
                    help="how many of this pass's plan amendments you have already ruled on — a count, so "
                         "N >= 0, and never more than the pass actually raised (default 0)")
-    v.add_argument("--ledger",
-                   help="the run's state.jsonl (same run directory as --file) — opts into the pre-tally "
-                        "scope check: a pass whose DISPATCH-TIME `pass_identity.default_non_goals` binding no "
-                        "longer matches the header's current `default_non_goals` is refused as `unusable`, so "
-                        "a verdict measured against superseded defaults is never counted. Loop-control step 2 "
-                        "passes it before recording a verdict")
+    v.add_argument("--ledger", required=True,
+                   help="the run's state.jsonl (same run directory as --file) — REQUIRED, so the pre-tally "
+                        "scope check ALWAYS runs: a pass whose DISPATCH-TIME `pass_identity.default_non_goals` "
+                        "binding no longer matches the header's current `default_non_goals` is refused as "
+                        "`unusable`, so a verdict measured against superseded defaults is never counted. "
+                        "Loop-control step 2 passes it before recording a verdict")
     # Narrow compatibility only. Older installed prose supplied this value; accepting it avoids an abrupt
     # CLI break while making it unable to influence the gate. `cmd_verify` never reads it. Suppress it from
     # help so new callers use the active report, the sole authority.

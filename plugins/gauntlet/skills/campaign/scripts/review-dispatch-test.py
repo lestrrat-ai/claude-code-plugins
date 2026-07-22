@@ -795,6 +795,44 @@ def t_ledger_missing_row_refuses() -> None:
         _refused(args, "no ledger row for pr 41")
 
 
+def _build_ledger_scope(directory: Path, pr: str, base_branch: str, default_non_goals: str) -> Path:
+    """A real ledger (through ledger.py) with one row for `pr` and a header `default_non_goals` set — the
+    LIVE run scope `prepare`'s `--default-non-goals` assertion (F3) is checked against."""
+    ledger = _build_ledger(directory, pr, base_branch)
+    proc = subprocess.run(  # noqa: S603
+        [sys.executable, os.fspath(D.LEDGER), "--file", os.fspath(ledger),
+         "header", "set", "default_non_goals", default_non_goals],
+        capture_output=True, text=True, check=False)
+    check(proc.returncode == 0, f"ledger header set default_non_goals failed: {proc.stderr.strip()}")
+    return ledger
+
+
+def t_ledger_default_non_goals_assertion_matches_prepares() -> None:
+    """F3: with `--file` present, `--default-non-goals` is an ASSERTION against the header's live scope. A
+    value EQUAL to the header's `default_non_goals` passes and binds that scope into the pass_identity."""
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        ledger = _build_ledger_scope(root, "41", "main", '["area X"]')
+        args = _fixture(root, base="main", file=os.fspath(ledger), default_non_goals='["area X"]')
+        D.prepare(args)
+        progress = D.attempt_paths(Path(args.run_dir), "41", "2", "1")["progress"]
+        events = D.RP.parse_lines(progress.read_text(encoding="utf-8"), progress.name)
+        ident = D.RP.check_identity(events, "41", "2", "1")
+        check(ident["default_non_goals"] == ["area X"],
+              f"the matching scope must bind into the identity, got {ident.get('default_non_goals')!r}")
+
+
+def t_ledger_default_non_goals_assertion_mismatch_refuses() -> None:
+    """F3: with `--file` present, a `--default-non-goals` that DISAGREES with the header's live scope refuses
+    — the header owns the scope, `--default-non-goals` only asserts it. Mirrors the base-mismatch refusal one
+    field over; delete the check and a stale scope binds a value the run has since left, unrefused."""
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        ledger = _build_ledger_scope(root, "41", "main", '["area X"]')
+        args = _fixture(root, base="main", file=os.fspath(ledger), default_non_goals="[]")
+        _refused(args, "disagrees with pr 41's ledger header default_non_goals")
+
+
 CASES = [
     (
         "relaunch-path-coherence",
@@ -834,4 +872,10 @@ CASES = [
     ("ledger-unresolved-base", "--file resolving to a `-`/blank effective base refuses before the assertion",
      t_ledger_unresolved_base_refuses),
     ("ledger-missing-row", "--file naming an unknown PR row refuses", t_ledger_missing_row_refuses),
+    ("ledger-default-non-goals-match",
+     "--file with --default-non-goals equal to the header scope prepares and binds it",
+     t_ledger_default_non_goals_assertion_matches_prepares),
+    ("ledger-default-non-goals-mismatch",
+     "--file with --default-non-goals disagreeing with the header scope refuses (an assertion, not a source)",
+     t_ledger_default_non_goals_assertion_mismatch_refuses),
 ]

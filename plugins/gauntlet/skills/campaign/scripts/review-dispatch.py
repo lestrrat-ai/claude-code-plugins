@@ -415,6 +415,20 @@ def prepare(args) -> dict:
         # `base_agrees` accepts (`main` vs `origin/main`) make the reviewer diff `origin/<base>...HEAD`
         # against different refs, so the transport must follow the row, not the caller's argument.
         operational_base = effective_base
+        # …and the SAME assertion, one field over: `--default-non-goals` is bound into the pass_identity, and
+        # when a ledger is supplied that binding must agree with the header's LIVE `default_non_goals` — the
+        # header OWNS the scope, `--default-non-goals` only asserts it. A defense-in-depth mirror of the base
+        # check: the pre-dispatch `intent-check` door already fences the intent block, this fences the bound
+        # value against the same header so a stale `--default-non-goals` cannot bind a scope the run left.
+        try:
+            live_default_non_goals = L.default_non_goals(header)
+        except ValueError as exc:
+            refuse(f"ledger {args.file} header `default_non_goals` is malformed ({exc}) — the run's scope "
+                   f"cannot be read, so the dispatched binding cannot be checked against it")
+        if default_non_goals != live_default_non_goals:
+            refuse(f"--default-non-goals {default_non_goals!r} disagrees with pr {args.pr}'s ledger header "
+                   f"default_non_goals {live_default_non_goals!r} — --default-non-goals is an assertion of "
+                   f"the run's current scope, not a scope source. Pass the header's value verbatim")
 
     if args.route not in ROUTE_PRODUCERS:
         refuse(f"unknown review route {args.route!r}; expected one of {list(ROUTE_PRODUCERS)}")

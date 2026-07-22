@@ -737,10 +737,10 @@ review-pass.py verify --file <rundir>/<active attempt's progress file> --head-sh
 **`--ledger` is a TALLY PRECONDITION, and this section owns why.** A verdict counts only if the run's review
 scope is still the scope the pass was DISPATCHED under — and that scope is BOUND into the immutable
 `pass_identity.default_non_goals` at dispatch, never inferred at tally from the mutable `intent-<pr>.md`.
-With `--ledger`, `verify` compares the pass's dispatch-time binding to the header's current
-`default_non_goals` (`check_scope`, the scope analogue of the `head_sha` check) and refuses the pass as
-`unusable` when they have drifted apart, so a verdict earned under a scope the operator changed while the
-review was in flight is never counted. This closes a real window: the operator may BROADEN
+`verify` REQUIRES `--ledger` (it errors without it), so the scope check ALWAYS runs: `verify` compares the
+pass's dispatch-time binding to the header's current `default_non_goals` (`check_scope`, the scope analogue
+of the `head_sha` check) and refuses the pass as `unusable` when they have drifted apart, so a verdict
+earned under a scope the operator changed while the review was in flight is never counted. This closes a real window: the operator may BROADEN
 `default_non_goals` (the banked-credit guard in `files-and-ledger.md` allows it while nothing is banked),
 the in-flight reviewer returns SATISFIED against the narrower scope it was dispatched with, and the loop
 tallies that verdict BEFORE the next heartbeat re-reviews — so without this check a stale SATISFIED could
