@@ -62,6 +62,10 @@ def _load(name: str, filename: str):
 L = _load("merge_check_ledger", "ledger.py")
 HELD_STATUSES = L.HELD_STATUSES
 B = _load("merge_check_base_preflight", "base-preflight.py")
+# pr-adopt.py OWNS `BASE_CHANGE_PARK_REASON` — the EXACT machine-blocker wording a re-adoption / reconcile /
+# preflight park records. Both merge doors reuse that one owner so a live-base retarget reads identically
+# everywhere; never a second copy of the string here.
+PA = _load("merge_check_pr_adopt", "pr-adopt.py")
 
 # `required(tier)` — 1 if TRIVIAL else 2 — is REUSED, never retyped. The rule already lives in `nudge.py`
 # (and `review-pass.py`); a third copy here would be the drift this repo keeps killing. So merge-check
@@ -123,13 +127,15 @@ def _short(sha: str) -> str:
     return sha[:7] if len(sha) > 7 else sha
 
 
-def decide(row: dict, view: dict, *, required) -> dict:
+def decide(row: dict, view: dict, *, required, effective_base: str) -> dict:
     """PURE. Return `{"verdict": "merge"|"not-yet", "reason": str}` for one PR. No I/O.
 
     The order is FIRST-FAILING-CHECK-WINS, and it is deliberate: the status ALLOW-LIST is asked before
     anything else, so a PR that is not `in_review` (held, terminal, or anything else) is frozen regardless
     of counters; the two GitHub enums are asked LAST, only once every ledger precondition has already
-    passed. `required` is the gate's `required(tier)` helper, passed in.
+    passed. `required` is the gate's `required(tier)` helper, passed in. `effective_base` is the row's
+    RECORDED base (its explicit `base_branch`, else the legacy header — resolved by the caller through
+    `ledger.py`'s accessor), compared against the live `baseRefName` to catch an unsupported retarget.
     """
     # 1. STATUS ALLOW-LIST — only an `in_review` row is EVER a merge candidate. This is an ALLOW-LIST, not a
     #    reject-list, and that is the whole point: every OTHER status parks, so nothing can slip through to a
@@ -146,6 +152,15 @@ def decide(row: dict, view: dict, *, required) -> dict:
     state = view["state"]
     if state != "OPEN":
         return _not_yet(f"pr is {state}, not open")
+
+    # 2b. BASE RETARGET — the live target no longer matches the row's recorded (effective) base. The recorded
+    #     base is IMMUTABLE, and a retarget is an unsupported mid-run change: fail closed with the SAME
+    #     machine-blocker wording a re-adoption / reconcile / preflight park records, so the driver parks the
+    #     row. (A base that merely ADVANCED — same NAME, new commits — is NOT this; that is the ancestry probe
+    #     in `check`, which routes a behind-base candidate to a rebase.)
+    base_now = view["baseRefName"]
+    if base_now != effective_base:
+        return _not_yet(PA.BASE_CHANGE_PARK_REASON.format(recorded=effective_base, live=base_now))
 
     # 3. DRAFT — GitHub blocks the merge regardless of CI.
     if view["isDraft"]:
@@ -192,7 +207,7 @@ def decide(row: dict, view: dict, *, required) -> dict:
 
 # --- obtain the live PR view ---------------------------------------------------
 
-VIEW_FIELDS = "mergeable,mergeStateStatus,isDraft,state,headRefOid"
+VIEW_FIELDS = "mergeable,mergeStateStatus,isDraft,state,headRefOid,baseRefName"
 
 
 class ViewError(Exception):
@@ -202,7 +217,7 @@ class ViewError(Exception):
 # Every field `decide` reads off the view, with the JSON type it requires. `isDraft` is a bool; the other
 # four are strings. `validate_view` pins this at the boundary so `decide` may assume a shaped view and never
 # raises `KeyError`/`TypeError` on a value the caller handed in.
-_VIEW_STR_FIELDS = ("mergeable", "mergeStateStatus", "state", "headRefOid")
+_VIEW_STR_FIELDS = ("mergeable", "mergeStateStatus", "state", "headRefOid", "baseRefName")
 
 
 def validate_view(view: object) -> "str | None":
@@ -272,7 +287,11 @@ def check(pr: str, ledger_path: Path, repo: "str | None", view_json: "str | None
     if problem is not None:
         print(json.dumps(_not_yet(f"malformed PR view: {problem}")))
         return 1
-    result = decide(row, view, required=REQUIRED)
+    # The ROW owns the base: resolve its `effective_base` (its explicit `base_branch`, else the legacy header)
+    # through `ledger.py`'s accessor. `decide` compares it with the live `baseRefName` for a retarget, and the
+    # ancestry probe below measures against the base the row actually tracks — never the one header base.
+    effective_base = L.effective_base(header, row)
+    result = decide(row, view, required=REQUIRED, effective_base=effective_base)
     verdict = result["verdict"]
     if verdict == NOT_YET:
         print(json.dumps(result))
@@ -283,7 +302,7 @@ def check(pr: str, ledger_path: Path, repo: "str | None", view_json: "str | None
     # unprotected base, and a BLOCKED PR may merely be BEHIND its base — a rebase fixes both. So re-fetch and
     # compare actual ancestry before the final decision; the shared preflight helper owns the graph check so
     # review dispatch and Stage 3 cannot disagree about what "current base" means.
-    ancestry, detail = B.check_base_ancestry(row.get("worktree"), header.get("base_branch"), "origin")
+    ancestry, detail = B.check_base_ancestry(row.get("worktree"), effective_base, "origin")
     if ancestry == "stale":                       # behind base -> rebase (BOTH paths; never a merge)
         print(json.dumps(_not_yet(REBASE_REASON)))
         return 0

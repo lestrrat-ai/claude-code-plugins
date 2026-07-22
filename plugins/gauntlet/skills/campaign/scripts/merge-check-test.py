@@ -36,21 +36,28 @@ SHA_A = "a" * 40   # the reviewed head
 SHA_B = "b" * 40   # a head the tip has moved to
 
 
-def row(*, status="in_review", head_sha=SHA_A, ci="green", tier="HIGH", reviews_ok=2) -> dict:
+def row(*, status="in_review", head_sha=SHA_A, ci="green", tier="HIGH", reviews_ok=2,
+        base_branch="-") -> dict:
     r = dict(L.ROW_DEFAULTS)
-    r.update(pr="9", status=status, head_sha=head_sha, ci=ci, tier=tier, reviews_ok=str(reviews_ok))
+    r.update(pr="9", status=status, head_sha=head_sha, ci=ci, tier=tier, reviews_ok=str(reviews_ok),
+             base_branch=base_branch)
     r["id"] = "pr9"
     return r
 
 
 def view(*, mergeable="MERGEABLE", mergeStateStatus="CLEAN", isDraft=False, state="OPEN",
-         headRefOid=SHA_A) -> dict:
+         headRefOid=SHA_A, baseRefName="main") -> dict:
     return {"mergeable": mergeable, "mergeStateStatus": mergeStateStatus, "isDraft": isDraft,
-            "state": state, "headRefOid": headRefOid}
+            "state": state, "headRefOid": headRefOid, "baseRefName": baseRefName}
+
+
+# The header carries base_branch "main", so a `-` row inherits "main" and matches view()'s default
+# baseRefName — the effective base every fixture below decides under, unless it sets one explicitly.
+_HEADER = {"base_branch": "main"}
 
 
 def decide(r: dict, v: dict) -> dict:
-    return M.decide(r, v, required=M.REQUIRED)
+    return M.decide(r, v, required=M.REQUIRED, effective_base=L.effective_base(_HEADER, r))
 
 
 def check(cond: bool, msg: str) -> None:
@@ -363,9 +370,27 @@ def t_cli_gh_spawn_failure():
           f"the reason must name the failed view fetch, got {result['reason']!r}")
 
 
+def t_base_retarget_parks():
+    # A fully clean+green+in_review PR whose live base no longer matches its recorded (effective) base. The
+    # recorded base is IMMUTABLE; a retarget is unsupported and parks with the SAME machine-blocker wording
+    # every base door records. This fixture pins that the merge door catches it and uses the shared reason.
+    expected = M.PA.BASE_CHANGE_PARK_REASON.format(recorded="v3", live="main")
+    expect(row(base_branch="v3"), view(baseRefName="main"), "not-yet", expected)
+
+
+def t_base_advance_is_not_a_retarget():
+    # SAME base name on both sides — this is NOT a retarget, so the base step falls through to the enums and
+    # (with a CLEAN view) reaches merge. A base that ADVANCED with new commits is the ancestry probe's job,
+    # not this equality check. Guards against over-firing the retarget park on a normal base advance.
+    expect(row(base_branch="v3"), view(baseRefName="v3"), "merge", "")
+
+
 CASES = [
     ("clean-all-met", "CLEAN + every precondition met -> merge", t_clean_and_all_met),
     ("has-hooks", "HAS_HOOKS -> merge", t_has_hooks_merges),
+    ("base-retarget-parks", "a live base retarget parks with the shared reason", t_base_retarget_parks),
+    ("base-advance-not-retarget", "same base name is not a retarget -> reaches merge",
+     t_base_advance_is_not_a_retarget),
     ("held-frozen", "a held PR never merges, whatever the counters/enums say", t_held_never_merges),
     ("terminal-frozen", "a terminal row (aborted/merged) never merges — the allow-list repro",
      t_terminal_status_never_merges),
