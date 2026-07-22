@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -60,7 +61,8 @@ class Fake:
                  staged_paths: "list[str] | None" = None,
                  unstaged_paths: "list[str] | None" = None,
                  untracked_paths: "list[str] | None" = None,
-                 incoming_paths: "list[str] | None" = None):
+                 incoming_paths: "list[str] | None" = None,
+                 unmerged_paths: "list[str] | None" = None):
         self.root = root
         self.branch = "feat-pr"
         # `base` is the row's RECORDED base — an explicit row `base_branch`, unless `header_base` is given, in
@@ -115,8 +117,9 @@ class Fake:
         # which the fixtures set to root). `base_ff_blocked` forces the checked-out-base `merge --ff-only`
         # to fail as git does against uncommitted work. `ancestor_ok` is the `merge-base --is-ancestor HEAD
         # origin/<base>` probe result (False models a genuine divergence, which must keep the raw error).
-        # `plumb_fail` names the ONE plumbing probe that fails (staged/unstaged/untracked/incoming), which
-        # must also keep the raw error. The four path lists are what the plumbing reports.
+        # `plumb_fail` names the ONE plumbing probe that fails (unmerged/staged/unstaged/untracked/incoming),
+        # which must also keep the raw error. The path lists are what the plumbing reports; a non-empty
+        # `unmerged_paths` models a conflicted (stage > 0) index, which must keep the raw error too.
         self.base_ff_blocked = base_ff_blocked
         self.ancestor_ok = ancestor_ok
         self.plumb_fail = plumb_fail
@@ -124,6 +127,7 @@ class Fake:
         self.unstaged_paths = unstaged_paths or []
         self.untracked_paths = untracked_paths or []
         self.incoming_paths = incoming_paths or []
+        self.unmerged_paths = unmerged_paths or []
 
     def ledger(self, path: Path, *, worktree: "Path | None" = None, branch: "str | None" = None,
                run_id="g1", worktree_field: "str | None" = None) -> None:
@@ -171,10 +175,16 @@ class Fake:
                 f"worktree {self.worktree}\0HEAD {SHA}\0branch refs/heads/{self.branch}\0\0")
         return "".join(entries)
 
-    def run(self, argv: list[str], *, cwd: "str | None" = None) -> subprocess.CompletedProcess:
+    def run(self, argv: list[str], *, cwd: "str | None" = None,
+            text: bool = True) -> subprocess.CompletedProcess:
         self.calls.append((list(argv), cwd))
         ok = lambda out="": subprocess.CompletedProcess(argv, 0, out, "")
         bad = lambda why: subprocess.CompletedProcess(argv, 1, "", why)
+        # The path plumbing is captured in BYTE mode (text=False), so its success stdout must be bytes; the
+        # runner splits on the NUL byte before decoding. `okb`/`nulb` mirror `ok`/`nul` in bytes. A failing
+        # probe returns `bad` (returncode 1) whose stdout the runner never reads, so it may stay str.
+        okb = lambda out=b"": subprocess.CompletedProcess(argv, 0, out, b"")
+        nulb = lambda paths: b"".join(p.encode("utf-8", "surrogateescape") + b"\0" for p in paths)
 
         if argv[:5] == ["git", "-C", str(self.root), "rev-parse", "--show-toplevel"]:
             return ok(f"{self.root}\n")
@@ -209,18 +219,21 @@ class Fake:
         # HEAD probe carries origin/<base> as its LAST arg, distinct from the no-checkout probe below whose
         # last arg is refs/heads/<base>, so the two never alias.
         checkout = str(self.root)
-        nul = lambda paths: "".join(f"{p}\0" for p in paths)
         if (argv[:3] == ["git", "-C", checkout]
                 and argv[3:6] == ["merge-base", "--is-ancestor", "HEAD"]):
             return ok() if self.ancestor_ok else bad("HEAD is not an ancestor of origin base")
+        # The unmerged-index probe (`ls-files --unmerged`) comes BEFORE the untracked `ls-files --others`
+        # branch, since both share the `ls-files` subcommand slot; keyed on `--unmerged`.
+        if argv[:4] == ["git", "-C", checkout, "ls-files"] and "--unmerged" in argv:
+            return bad("ls-files -u failed") if self.plumb_fail == "unmerged" else okb(nulb(self.unmerged_paths))
         if argv[:4] == ["git", "-C", checkout, "diff-index"]:
-            return bad("diff-index failed") if self.plumb_fail == "staged" else ok(nul(self.staged_paths))
+            return bad("diff-index failed") if self.plumb_fail == "staged" else okb(nulb(self.staged_paths))
         if argv[:4] == ["git", "-C", checkout, "diff-files"]:
-            return bad("diff-files failed") if self.plumb_fail == "unstaged" else ok(nul(self.unstaged_paths))
+            return bad("diff-files failed") if self.plumb_fail == "unstaged" else okb(nulb(self.unstaged_paths))
         if argv[:4] == ["git", "-C", checkout, "ls-files"]:
-            return bad("ls-files failed") if self.plumb_fail == "untracked" else ok(nul(self.untracked_paths))
+            return bad("ls-files failed") if self.plumb_fail == "untracked" else okb(nulb(self.untracked_paths))
         if argv[:4] == ["git", "-C", checkout, "diff-tree"]:
-            return bad("diff-tree failed") if self.plumb_fail == "incoming" else ok(nul(self.incoming_paths))
+            return bad("diff-tree failed") if self.plumb_fail == "incoming" else okb(nulb(self.incoming_paths))
         base_ref = f"refs/heads/{self.base}"
         # The already-synced short-circuit's two probes on the no-checked-out-base path: does the local base
         # ref exist, and is origin/<base> an ancestor of it (local equal-or-ahead). "absent" fails the
@@ -1064,20 +1077,22 @@ def _mutating_calls(fake: "Fake") -> list:
 
 def t_base_ff_blocked_names_uncommitted_paths():
     # A checked-out-base fast-forward blocked by an unrelated actor's uncommitted edits must NAME the
-    # offending paths and PROPOSE commit-or-stash + re-run, WITHOUT touching any path. Staged paths always
-    # block; unstaged/untracked block only when they overlap a path the incoming fast-forward updates.
+    # offending paths and PROPOSE commit-or-stash + re-run, WITHOUT touching any path. A staged, unstaged,
+    # or untracked path blocks ONLY when it overlaps a path the incoming fast-forward updates; an unrelated
+    # change in ANY category (including a staged one) does not block a fast-forward and must not be named.
     td, root, f, led, real = scenario(
         base_ff_blocked=True,
-        staged_paths=["z-staged.txt"],
+        staged_paths=["src/main.py", "z-unrelated-staged.txt"],
         unstaged_paths=["docs/notes.md", "harmless.txt", "build"],
         untracked_paths=["scratch/new.txt", "unrelated-new.txt"],
         incoming_paths=["docs/notes.md", "scratch/new.txt", "build/output", "src/main.py"])
     try:
         code, _result, err = invoke(f, led, root)
         check(code != 0, "a blocked base fast-forward must refuse")
-        for named in ('"build"', '"docs/notes.md"', '"scratch/new.txt"', '"z-staged.txt"'):
+        for named in ('"build"', '"docs/notes.md"', '"scratch/new.txt"', '"src/main.py"'):
             check(named in err, f"blocking path {named} was not named: {err!r}")
-        for spared in ("harmless.txt", "unrelated-new.txt"):
+        # An unrelated STAGED path must NOT be named (finding: staged is overlap-filtered, not unconditional).
+        for spared in ("harmless.txt", "unrelated-new.txt", "z-unrelated-staged.txt"):
             check(spared not in err, f"a path the fast-forward does not touch was named: {spared} in {err!r}")
         # The tailored refusal proposes the safe recovery and names the checkout.
         for needle in ("Commit", "stash", "re-run", "resume the owed base-sync",
@@ -1097,9 +1112,10 @@ def t_base_ff_blocked_names_uncommitted_paths():
 
 def t_base_ff_odd_filenames_quoted_and_ordered():
     # Odd filenames (space, tab, newline) must be JSON-quoted so a newline cannot forge a "  - " line, and
-    # the listing must be deterministically sorted by raw path. All three are staged, so all three block.
+    # the listing must be deterministically sorted by raw path. All three are staged AND incoming, so each
+    # overlaps the fast-forward and blocks it.
     names = ["a normal.txt", "b\ttab.txt", "c\nnewline.txt"]
-    td, root, f, led, real = scenario(base_ff_blocked=True, staged_paths=names)
+    td, root, f, led, real = scenario(base_ff_blocked=True, staged_paths=names, incoming_paths=names)
     try:
         code, _result, err = invoke(f, led, root)
         check(code != 0, "a blocked base fast-forward must refuse")
@@ -1132,10 +1148,31 @@ def t_base_ff_divergent_keeps_raw_diagnostic():
         finish(td, real)
 
 
+def t_base_ff_unmerged_index_keeps_raw_diagnostic():
+    # An UNMERGED (conflicted) index makes ff-only fail with git's unresolved-conflict error, and git refuses
+    # both commit and stash while unmerged — so the commit-or-stash advice would be wrong. The helper must
+    # detect the stage>0 index (ls-files --unmerged non-empty) and decline, keeping git's raw error. The
+    # ancestor guard does NOT catch this (a conflicted merge leaves HEAD un-advanced, still an ancestor).
+    td, root, f, led, real = scenario(
+        base_ff_blocked=True, ancestor_ok=True,
+        unmerged_paths=["conflicted.txt"],
+        staged_paths=["conflicted.txt"], incoming_paths=["conflicted.txt"])
+    try:
+        code, _result, err = invoke(f, led, root)
+        check(code != 0, "an unmerged-index base fast-forward must still refuse")
+        check("fast-forward of checked-out base main failed" in err,
+              f"an unmerged index must keep the raw git error: {err!r}")
+        check("uncommitted paths block" not in err,
+              f"an unmerged index must not be reported as a commit-or-stash-able block: {err!r}")
+        check("conflicted.txt" not in err, "no path may be named when the index is unmerged")
+    finally:
+        finish(td, real)
+
+
 def t_base_ff_plumbing_failure_keeps_raw_diagnostic():
     # If any diagnostic plumbing probe fails, the helper returns None and the ORIGINAL fast-forward error is
     # preserved — never replaced by a secondary diagnostic failure.
-    for probe in ("staged", "unstaged", "untracked", "incoming"):
+    for probe in ("unmerged", "staged", "unstaged", "untracked", "incoming"):
         td, root, f, led, real = scenario(base_ff_blocked=True, plumb_fail=probe,
                                           staged_paths=["x.txt"], incoming_paths=["x.txt"])
         try:
@@ -1183,6 +1220,159 @@ def t_dirty_owned_worktree_cleanup_refusal_unchanged():
         finish(td, real)
 
 
+# ------------------------------------------------------------------------------------------------------
+# REAL-git fixtures. The Fake above cannot exercise the byte-mode path capture, the overlap-filtered staged
+# semantics against a real `git merge --ff-only`, or a real unmerged index — its `nul` returns a Python
+# object and its ff/plumbing results are hardcoded knobs. These build throwaway real repos in a tempdir and
+# call `_blocking_uncommitted_paths` (and real `git merge --ff-only`) directly, with the real `_run`. They
+# need a real `git` binary. Global/system config is neutralised for the SETUP commits (isolated env); the
+# read-only probes the helper runs are config-independent (`-z` disables path quoting).
+_GIT_ENV = {
+    **os.environ,
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_SYSTEM": os.devnull,
+    "GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@example.com",
+    "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@example.com",
+    "GIT_TERMINAL_PROMPT": "0",
+}
+
+
+def _rg_git(work: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(work), *args], env=_GIT_ENV,
+                          capture_output=True, check=check)
+
+
+def _rg_head(work: Path, rev: str = "HEAD") -> str:
+    return _rg_git(work, "rev-parse", rev).stdout.decode().strip()
+
+
+def _rg_write(work: Path, rel: bytes, content: bytes) -> None:
+    # Write through BYTE paths so a filename carrying a non-UTF-8 byte (0xff) or a CR round-trips verbatim.
+    full = os.path.join(os.fsencode(str(work)), rel)
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    with open(full, "wb") as fh:
+        fh.write(content)
+
+
+def _rg_setup_ahead(work: Path, incoming: "list[bytes]") -> None:
+    # Commit C0 (each incoming path at v0), advance to C1 (each rewritten to v1), point origin/main at C1,
+    # then reset HEAD --hard back to C0. HEAD is now an ancestor of origin/main and `git diff C0..C1` (the
+    # incoming set) is exactly `incoming` — the shape a real post-merge base fast-forward would apply.
+    subprocess.run(["git", "init", "-q", str(work)], env=_GIT_ENV, capture_output=True, check=True)
+    for rel in incoming:
+        _rg_write(work, rel, b"v0\n")
+    _rg_git(work, "add", "-A")
+    _rg_git(work, "commit", "-q", "-m", "C0")
+    c0 = _rg_head(work)
+    for rel in incoming:
+        _rg_write(work, rel, b"v1\n")
+    _rg_git(work, "add", "-A")
+    _rg_git(work, "commit", "-q", "-m", "C1")
+    _rg_git(work, "update-ref", "refs/remotes/origin/main", "HEAD")
+    _rg_git(work, "reset", "-q", "--hard", c0)
+
+
+def t_realgit_unrelated_staged_survives_ff():
+    # Finding: `blockers = set(staged)` assumed EVERY staged path blocks a fast-forward. Real git disproves
+    # it — `git merge --ff-only` SUCCEEDS with an unrelated staged file present, because the fast-forward
+    # touches only the incoming paths. This is the ground truth the overlap filter is built on.
+    with tempfile.TemporaryDirectory() as td:
+        work = Path(td) / "checkout"
+        work.mkdir()
+        _rg_setup_ahead(work, [b"docs/notes.md"])
+        _rg_write(work, b"z-staged.txt", b"unrelated\n")  # a NEW file, not touched by the fast-forward
+        _rg_git(work, "add", "z-staged.txt")
+        ff = _rg_git(work, "merge", "--ff-only", "origin/main", check=False)
+        check(ff.returncode == 0,
+              f"git ff-only must SUCCEED with only an unrelated staged file (the 'any staged change blocks' "
+              f"assumption is false): rc={ff.returncode} {ff.stderr!r}")
+        check(_rg_head(work) == _rg_head(work, "origin/main"),
+              "the successful fast-forward must have advanced HEAD to origin/main")
+
+
+def t_realgit_blocked_ff_spares_unrelated_staged():
+    # A real blocked fast-forward (a local edit to an incoming path) with an unrelated staged file also
+    # present must name ONLY the overlapping incoming path — never the unrelated staged one.
+    with tempfile.TemporaryDirectory() as td:
+        work = Path(td) / "checkout"
+        work.mkdir()
+        _rg_setup_ahead(work, [b"docs/notes.md"])
+        _rg_write(work, b"docs/notes.md", b"local edit\n")  # unstaged edit to an INCOMING path -> blocks
+        _rg_write(work, b"z-staged.txt", b"unrelated\n")
+        _rg_git(work, "add", "z-staged.txt")               # unrelated staged file present
+        ff = _rg_git(work, "merge", "--ff-only", "origin/main", check=False)
+        check(ff.returncode != 0, "a local edit to an incoming path must block the fast-forward")
+        blockers = M._blocking_uncommitted_paths(str(work), "main")
+        check(blockers == [json.dumps("docs/notes.md")],
+              f"only the overlapping incoming path may be named, not the unrelated staged file: {blockers}")
+
+
+def t_realgit_odd_byte_and_cr_filenames_named():
+    # A non-UTF-8 (0xff) filename and a CR filename must go through the byte-mode probe and be named
+    # correctly. BEFORE the fix, text=True capture raised UnicodeDecodeError on the 0xff byte (a crash that
+    # discarded the original ff error), and universal-newline translation rewrote the CR to LF (naming a
+    # DIFFERENT path). Byte-mode split-before-decode with surrogateescape names both verbatim.
+    cr = b"cr\rname.txt"
+    odd = b"bad\xffname.txt"
+    with tempfile.TemporaryDirectory() as td:
+        work = Path(td) / "checkout"
+        work.mkdir()
+        _rg_setup_ahead(work, [cr, odd])
+        _rg_write(work, cr, b"local\n")   # unstaged edits to both incoming odd-named files -> block + named
+        _rg_write(work, odd, b"local\n")
+        ff = _rg_git(work, "merge", "--ff-only", "origin/main", check=False)
+        check(ff.returncode != 0, "local edits to incoming odd-named files must block the fast-forward")
+        blockers = M._blocking_uncommitted_paths(str(work), "main")
+        check(blockers is not None, "the odd-filename probe must not crash or decline")
+        expect = sorted([json.dumps(odd.decode("utf-8", "surrogateescape")),
+                         json.dumps(cr.decode("utf-8", "surrogateescape"))])
+        check(blockers == expect, f"odd-named blockers were misnamed: {blockers} != {expect}")
+        check(any("\r" in json.loads(b) for b in blockers),
+              f"the CR in a filename was translated away (text-mode capture leaked): {blockers}")
+
+
+def t_realgit_unmerged_index_keeps_raw_error():
+    # An UNMERGED index (a conflicting merge left in progress) makes ff-only fail with git's unresolved
+    # -conflict error; git refuses both commit and stash while unmerged, so the commit-or-stash advice would
+    # be wrong. HEAD stays un-advanced during the conflict, so it is STILL an ancestor of origin/main — the
+    # ancestor guard does not catch this. The unmerged probe must, so the helper declines and the raw error
+    # stands.
+    with tempfile.TemporaryDirectory() as td:
+        work = Path(td) / "checkout"
+        work.mkdir()
+        subprocess.run(["git", "init", "-q", str(work)], env=_GIT_ENV, capture_output=True, check=True)
+        _rg_write(work, b"g.txt", b"base\n")
+        _rg_write(work, b"f.txt", b"f\n")
+        _rg_git(work, "add", "-A")
+        _rg_git(work, "commit", "-q", "-m", "C0")
+        c0 = _rg_head(work)
+        _rg_git(work, "checkout", "-q", "-b", "side")
+        _rg_write(work, b"g.txt", b"side\n")
+        _rg_git(work, "add", "-A")
+        _rg_git(work, "commit", "-q", "-m", "Cs")
+        _rg_git(work, "checkout", "-q", "-b", "work", c0)
+        _rg_write(work, b"g.txt", b"work\n")            # a conflicting change to g.txt from the same base
+        _rg_git(work, "add", "-A")
+        _rg_git(work, "commit", "-q", "-m", "Cc")
+        cc = _rg_head(work)
+        _rg_write(work, b"incoming.txt", b"up\n")       # advance origin/main beyond Cc, then reset to Cc
+        _rg_git(work, "add", "-A")
+        _rg_git(work, "commit", "-q", "-m", "Cn")
+        _rg_git(work, "update-ref", "refs/remotes/origin/main", "HEAD")
+        _rg_git(work, "reset", "-q", "--hard", cc)
+        conflict = _rg_git(work, "merge", "side", check=False)  # leaves an unmerged index + MERGE_HEAD
+        check(conflict.returncode != 0, "the merge must conflict, leaving an unmerged index")
+        check(_rg_git(work, "ls-files", "--unmerged").stdout.strip() != b"",
+              "precondition: the index must carry stage>0 entries")
+        check(_rg_git(work, "merge-base", "--is-ancestor", "HEAD", "origin/main", check=False).returncode == 0,
+              "precondition: HEAD must still be an ancestor of origin/main (the ancestor guard passes)")
+        ff = _rg_git(work, "merge", "--ff-only", "origin/main", check=False)
+        check(ff.returncode != 0, "ff-only must fail while a merge is unresolved")
+        blockers = M._blocking_uncommitted_paths(str(work), "main")
+        check(blockers is None,
+              f"an unmerged index must make the helper decline so git's raw error stands, got: {blockers}")
+
+
 CASES = [
     ("happy-owned", "exact merge argv, owned cleanup, terminal write", t_happy_owned_cleanup_and_command),
     ("repo-identity", "a --repo that does not name the checkout's own repository is refused before any live view (case-insensitive match)", t_repo_identity_mismatch_refused_before_view),
@@ -1218,7 +1408,12 @@ CASES = [
     ("base-ff-blocked-named", "a checked-out base fast-forward blocked by uncommitted paths names them and proposes commit-or-stash + re-run, touching nothing", t_base_ff_blocked_names_uncommitted_paths),
     ("base-ff-odd-names", "odd blocking filenames are JSON-quoted (no forged line) and deterministically ordered", t_base_ff_odd_filenames_quoted_and_ordered),
     ("base-ff-divergent-raw", "a diverged base fast-forward keeps the raw git diagnostic, names no path", t_base_ff_divergent_keeps_raw_diagnostic),
+    ("base-ff-unmerged-raw", "an unmerged/conflicted index keeps the raw git error and names no path (commit/stash advice would be wrong)", t_base_ff_unmerged_index_keeps_raw_diagnostic),
     ("base-ff-plumb-fail-raw", "a diagnostic-probe failure keeps the original fast-forward error", t_base_ff_plumbing_failure_keeps_raw_diagnostic),
     ("base-ff-clears-resumes", "committing/stashing the blockers lets a second run finish base-sync + cleanup with no re-merge", t_base_ff_block_clears_then_resumes),
     ("dirty-cleanup-refusal", "the pre-existing dirty owned-worktree cleanup refusal is unchanged and separate", t_dirty_owned_worktree_cleanup_refusal_unchanged),
+    ("realgit-unrelated-staged-ff", "REAL git: an unrelated staged path survives a successful ff (the 'any staged change blocks' assumption is false)", t_realgit_unrelated_staged_survives_ff),
+    ("realgit-blocked-ff-spares-staged", "REAL git: a blocked ff names only the overlapping incoming path, never an unrelated staged one", t_realgit_blocked_ff_spares_unrelated_staged),
+    ("realgit-odd-filenames", "REAL git: a 0xff-byte and a CR filename go through the byte-mode probe and are named verbatim (no crash, no CR->LF)", t_realgit_odd_byte_and_cr_filenames_named),
+    ("realgit-unmerged-index", "REAL git: an unmerged-index ff failure makes the helper decline, preserving git's raw unresolved-conflict error", t_realgit_unmerged_index_keeps_raw_error),
 ]

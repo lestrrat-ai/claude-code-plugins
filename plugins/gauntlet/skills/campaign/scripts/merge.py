@@ -59,11 +59,17 @@ class Refusal(RuntimeError):
     """A fail-closed boundary or phase failure."""
 
 
-def _run(argv: list[str], *, cwd: "str | None" = None) -> subprocess.CompletedProcess:
+def _run(argv: list[str], *, cwd: "str | None" = None,
+         text: bool = True) -> subprocess.CompletedProcess:
+    # text defaults to True — every readiness/merge/cleanup call wants decoded str. The NUL-delimited path
+    # plumbing passes text=False to capture RAW BYTES: a path can carry a non-UTF-8 byte (which text=True
+    # would raise UnicodeDecodeError on — a ValueError this handler does not catch) or a CR (which text=True's
+    # universal-newline translation would rewrite to LF, naming a DIFFERENT path). Byte mode does neither; the
+    # caller splits on the NUL byte and decodes each field itself (see _nul_fields).
     try:
-        return subprocess.run(argv, cwd=cwd, capture_output=True, text=True, check=False)  # noqa: S603
+        return subprocess.run(argv, cwd=cwd, capture_output=True, text=text, check=False)  # noqa: S603
     except OSError as exc:
-        return subprocess.CompletedProcess(argv, 127, "", str(exc))
+        return subprocess.CompletedProcess(argv, 127, "" if text else b"", str(exc) if text else b"")
 
 
 def _require(proc: subprocess.CompletedProcess, what: str) -> str:
@@ -294,10 +300,13 @@ def _worktree_listing(root: Path) -> list[dict[str, str]]:
     return _parse_worktrees(out)
 
 
-def _nul_fields(data: str) -> list[str]:
-    """Split NUL-delimited plumbing output; drop the trailing empty field. NUL cannot appear in a path,
-    so a path carrying spaces/tabs/newlines survives as one field and can never be split into two."""
-    return [field for field in data.split("\0") if field]
+def _nul_fields(data: bytes) -> list[str]:
+    """Split BYTE-mode NUL-delimited plumbing output; drop the trailing empty field. The split happens on
+    the NUL byte BEFORE decoding, so no text-mode universal-newline translation can rewrite a CR or CRLF
+    inside a path, and a non-UTF-8 byte cannot raise. NUL cannot appear in a path, so a path carrying
+    spaces, tabs, CR, LF, or CRLF survives as one field and can never be split into two. Each field is then
+    decoded utf-8/surrogateescape, so a non-UTF-8 byte round-trips instead of crashing the probe."""
+    return [field.decode("utf-8", "surrogateescape") for field in data.split(b"\0") if field]
 
 
 def _quote_path(path: str) -> str:
@@ -306,8 +315,9 @@ def _quote_path(path: str) -> str:
 
 
 def _path_conflicts(path: str, incoming: "set[str]") -> bool:
-    """A working-tree path conflicts with the incoming fast-forward when it equals an incoming path or is
-    a file/directory prefix of one (either direction) — the shape git rejects as it updates that path."""
+    """A staged, unstaged, or untracked path conflicts with the incoming fast-forward when it equals an
+    incoming path or is a file/directory prefix of one (either direction) — the shape git rejects as it
+    updates that path. A change to any OTHER path is left alone by the fast-forward and does not block it."""
     if path in incoming:
         return True
     return any(path.startswith(f"{inc}/") or inc.startswith(f"{path}/") for inc in incoming)
@@ -316,10 +326,11 @@ def _path_conflicts(path: str, incoming: "set[str]") -> bool:
 def _blocking_uncommitted_paths(checkout: str, base: str) -> "list[str] | None":
     """After a checked-out-base fast-forward fails, name the uncommitted paths that block it.
 
-    Read-only: runs only git plumbing (merge-base/diff-index/diff-files/ls-files/diff-tree) and mutates
+    Read-only: runs only git plumbing (merge-base/ls-files/diff-index/diff-files/diff-tree) and mutates
     nothing. Returns JSON-quoted, deduplicated, sorted paths, or None when this is NOT a diagnosable
-    uncommitted-work block (the graph forbids a fast-forward, or any plumbing command failed) — in which
-    case the caller keeps the original raw git error rather than replacing it with a secondary failure.
+    uncommitted-work block (the graph forbids a fast-forward, the index is unmerged/conflicted, or any
+    plumbing command failed) — in which case the caller keeps the original raw git error rather than
+    replacing it with a secondary failure.
     """
     # A fast-forward is only possible when HEAD is already an ancestor of origin/<base>. If it is not,
     # the failure is a genuine divergence, not an uncommitted-work block — keep the raw refusal.
@@ -328,10 +339,22 @@ def _blocking_uncommitted_paths(checkout: str, base: str) -> "list[str] | None":
         return None
 
     def plumb(args: "list[str]") -> "list[str] | None":
-        proc = _run(["git", "-C", checkout, *args])
+        # BYTE mode: a -z path can carry a non-UTF-8 byte or a CR, so capture raw and split on the NUL byte
+        # BEFORE decoding (see _nul_fields). A spawn failure or nonzero exit yields None, so the caller keeps
+        # the original raw fast-forward error rather than a secondary diagnostic failure.
+        proc = _run(["git", "-C", checkout, *args], text=False)
         if proc.returncode != 0:
             return None
         return _nul_fields(proc.stdout)
+
+    # An UNMERGED (conflicted) index makes ff-only fail with git's own unresolved-conflict error, and git
+    # REFUSES both `commit` and `stash` while the index is unmerged — so the commit-or-stash advice would be
+    # wrong here. Detect it read-only and decline, preserving git's raw diagnostic. The ancestor guard above
+    # does NOT catch this: a conflicted merge leaves HEAD un-advanced, so HEAD is still an ancestor of
+    # origin/<base>. (A non-empty ls-files --unmerged listing means at least one path is at stage > 0.)
+    unmerged = plumb(["ls-files", "--unmerged", "-z", "--"])
+    if unmerged is None or unmerged:
+        return None
 
     staged = plumb(["diff-index", "--cached", "--name-only", "-z", "--no-renames", "HEAD", "--"])
     unstaged = plumb(["diff-files", "--name-only", "-z", "--no-renames", "--"])
@@ -343,10 +366,12 @@ def _blocking_uncommitted_paths(checkout: str, base: str) -> "list[str] | None":
         return None
 
     incoming_set = set(incoming)
-    # Git rejects ANY staged index change on a fast-forward; it rejects an unstaged or untracked path only
-    # when that path overlaps one the incoming fast-forward must update.
-    blockers = set(staged)
-    for path in (*unstaged, *untracked):
+    # git merge --ff-only rejects a staged, unstaged, OR untracked path only when it overlaps a path the
+    # incoming fast-forward must update. A staged, unstaged, or untracked change to an UNRELATED path does
+    # NOT block the fast-forward (git updates only the incoming paths and leaves the rest alone), so every
+    # category is filtered through the same incoming-overlap test — never added unconditionally.
+    blockers: "set[str]" = set()
+    for path in (*staged, *unstaged, *untracked):
         if _path_conflicts(path, incoming_set):
             blockers.add(path)
     return [_quote_path(path) for path in sorted(blockers)]
