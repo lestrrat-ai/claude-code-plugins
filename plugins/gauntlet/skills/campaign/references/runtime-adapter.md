@@ -14,10 +14,9 @@ first wait or heartbeat. The gate rules do not change between hosts.
 `<campaign-invocation>` elsewhere in this skill means the active row above. A self-resume always adds
 exactly `--run <run-id> --token <agent-token>`; it never repeats `--new` or the original PR arguments.
 
-A **scheduled wake never schedules this invocation as the prompt**: it schedules the lean same-session
-wake prompt `heartbeat.py callback` prints, which embeds the invocation only as its not-in-context
-fallback ("Background work and heartbeats" below owns the shape and the reason). The invocation itself
-is for a user or a fresh session — starting, adopting, or manually resuming a run.
+**"Background work and heartbeats" below, "Lean prompt vs. full invocation — the boundary", owns
+scheduled-entry prompt selection.** The invocation itself is for a user or a fresh session — starting,
+adopting, or manually resuming a run.
 
 Do not put either invocation in a shell command. These are host UI forms, not shell syntax.
 
@@ -318,6 +317,14 @@ cost but does not lower the gate.
 Reviews, fixes, audits, reassessments, and CI watches remain asynchronous logical tasks. Fold a
 completion into the same reconcile loop regardless of the host mechanism that reports it.
 
+**Lean prompt vs. full invocation — the boundary.** The lean `heartbeat.py` wake prompts are valid ONLY
+when the scheduler delivers the wake into the SAME live session, where the skill contract is already
+loaded — the case both current hosts provide. A scheduler entry that can OUTLIVE that session or CREATE a
+new one MUST NOT schedule the lean prompt; its adapter lifecycle instead leads with the full
+`<campaign-invocation> --run <run-id> --token <agent-token>` (`/gauntlet:campaign` on Claude Code,
+`$gauntlet:campaign` on Codex — the "Skill invocation" rows) so the fresh session loads the campaign
+contract before resuming.
+
 For the heartbeat fallback, choose exactly one lifecycle:
 
 1. **Scheduled-heartbeat host:** **the scheduled operation is arm-or-replace.** The host exposes one
@@ -419,7 +426,9 @@ On a host with a session-watchdog capability, use these idempotent operations, k
 - `available?` — report whether the host can schedule an additional wake into this live session.
 - `ensure` — create the recurring nudge if missing. Use `ledger.py watchdog interval` for its cadence
   and schedule only `heartbeat.py watchdog`'s stdout, built with run id, owner token, and campaign
-  invocation. The nudge reaches the same session; it never launches an independent driver.
+  invocation. The nudge reaches the same session; it never launches an independent driver. Whether this
+  entry may schedule the lean prompt is owned by "Lean prompt vs. full invocation — the boundary" under
+  "Background work and heartbeats" above.
 - `inspect` — report whether the nudge remains armed for this session.
 - `remove` — delete the nudge during normal finalization.
 - `primary inspect` — **OPTIONAL and advisory only.** Where a scheduled-heartbeat host exposes it, it
