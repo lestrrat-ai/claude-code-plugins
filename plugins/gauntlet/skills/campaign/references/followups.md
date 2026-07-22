@@ -201,20 +201,17 @@ about and one whose partial rejection strands the rest.
    from one PR** takes **that PR's recorded base** (`effective_base` of its ledger row) as the proposed
    target; a **run-level** follow-up has **no implicit target**, so the **user chooses** it. The user may
    override the proposed target before the PR is opened. The resulting PR then enters through **normal
-   adoption**, which records its live `baseRefName` once (`pr-adoption.md`). **Adoption still admits only
-   the run's one agreed base** (`pr-adoption.md`, "PR adoption") — mixed bases in one run are a later
-   stage (stage 3, PR #148). So the follow-up folds into THIS run (step 4) **only when its target equals
-   the run's agreed base**; a follow-up targeting a **different** base is NOT adopted here — surface it
-   (step 5) for its own run and leave the entry open. In a single-base run a PR-derived follow-up always
-   shares that base, so this only diverts a user-chosen different-base target. When the target is the
-   run's base, that PR is opened
+   adoption**, which records its live `baseRefName` once as its immutable row base (`pr-adoption.md`).
+   **Adoption admits PRs on DIFFERENT bases into one run** (`pr-adoption.md`, "PR adoption"), so the
+   follow-up folds into THIS run (step 4) **regardless of whether its target matches the existing rows** —
+   a different-base target is adopted here, never diverted for base disagreement. That PR is opened
    **`gauntlet-authored`** and adopted into the current run so `pr-adoption.md` reads it as
    `pr_origin=gauntlet` — without the label it defaults to `external`, which then blocks campaign's own
    later autonomous repair of the very PR it authored. Record the PR with `followups.py open-pr --id fuN
    --pr <ref>`; the entry stays `in-pr` and names which PR is addressing it.
 
-4. **FOLD THE PR INTO THE CURRENT CAMPAIGN.** The follow-up's PR — which step 3 admitted only on the run's
-   agreed base — is **adopted into this run** like any other
+4. **FOLD THE PR INTO THE CURRENT CAMPAIGN.** The follow-up's PR — which step 3 admitted on its own
+   recorded base — is **adopted into this run** like any other
    (`pr-adoption.md` — the `gauntlet-authored` label, ledger row, intent, CI) and **gated by the same
    review gauntlet**. This is the
    whole point of "self-accepted, not accepted": the driver may take a follow-up up on its own, but the PR

@@ -305,10 +305,10 @@ Header field notes (the header fields above; per-row fields follow):
   one place the fallback lives, and it is the **sanctioned door** for resolving a row's base;
   `require_effective_base` is the fail-closed form the resolved-base consumers route through. **Per-row
   base resolution is LIVE:** adoption records each new row's base at creation (`add-row --base-branch`),
-  and every consumer resolves a row's base through those accessors, never the one header base. What
-  REMAINS is mixed-base **admission** — surfacing PRs on DIFFERENT bases into one run; adoption still
-  admits only the run's one agreed base (the mixed-base rollout's final PR —
-  `docs/designs/campaign-mixed-base-branches.md`, "Staged implementation plan"). It is **TOOL-OWNED and
+  and every consumer resolves a row's base through those accessors, never the one header base. Mixed-base
+  **admission** is LIVE too: adoption surfaces PRs on DIFFERENT bases into one run, each row owning the
+  base it was created with, and PRs adopted together need **NOT** agree on `baseRefName` (`pr-adoption.md`,
+  "PR adoption"). A new run leaves the header `base_branch` at `-` and records only per-row bases. It is **TOOL-OWNED and
   IMMUTABLE after creation** (`CREATE_ONLY` in `scripts/ledger.py`): `add-row` writes it and **`set` has no
   `--base-branch` flag**, so the recorded base can never be rewritten — the campaign does not migrate a row
   to a new base. The default is **`-`**, which is both the schema's "not set" spelling **and** its "inherit
