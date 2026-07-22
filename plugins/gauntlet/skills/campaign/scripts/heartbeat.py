@@ -9,6 +9,11 @@ into the session on every wake, and over a long campaign that walks the driver i
 (field feedback from a live 8-PR run). The invocation appears exactly once, at the tail, as the explicit
 fallback for a session whose context no longer holds the skill contract.
 
+These lean prompts are valid ONLY because the current hosts deliver the wake into the same live session;
+`runtime-adapter.md`, "Background work and heartbeats", owns the boundary — a scheduler entry that can
+outlive the session or create a new one must instead lead with the full `<campaign-invocation> --run
+--token`, not this lean prompt.
+
 The wake carries ONLY two flags:
 
     --run <run-id> --token <agent-token>
