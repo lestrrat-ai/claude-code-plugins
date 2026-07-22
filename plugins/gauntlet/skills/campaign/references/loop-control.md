@@ -607,10 +607,12 @@ resume. This block OWNS when the loop continues; every other site points here, n
      presented as the whole ledger. Never re-type, trim, or re-align it. Then one line per remaining
      wait naming what it waits on (review in flight, CI watch, parked on the user's answer). Render it
      after every ledger write during this heartbeat — the ledger was reconciled this heartbeat, so the table is the
-     state the next reconcile resumes from. State whether the session watchdog is armed or unavailable; on
-     a host without primary inspection, report `primary inspection unavailable; scheduling/replacing as
-     final action` rather than claiming the primary wake is already armed — it is not armed until the
-     turn-ending schedule call ("Primary continuity" above). Never imply dead-session recovery. Then take
+     state the next reconcile resumes from. State whether the session watchdog is armed or unavailable. For
+     the primary wake, report the active host's `primary inspect` result — `runtime-adapter.md`, "Session
+     watchdog nudge", owns that result set and each host's value — never a claim that the primary wake is
+     already armed: nothing arms it before the turn's final action, and the status names that final action
+     as whichever runtime branch below the active host takes ("Primary continuity" above). Never imply
+     dead-session recovery. Then take
      exactly one runtime branch:
      - **Scheduled-heartbeat host:** with the status above already rendered, schedule-or-replace the
        primary wake as the turn's LAST action ("Primary continuity" above) — scheduling ends the turn on

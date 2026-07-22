@@ -233,9 +233,10 @@ jobs:
       - name: Carryover distiller contract
         run: python3 plugins/gauntlet/skills/campaign/scripts/carryover.py self-test
 
-      # The nudge printer's rules, executed. It reminds the orchestrator each wake of what to check
-      # (heartbeat armed, fan out work, PR labels, a review that may have died) — a sticky-note printer,
-      # not gate machinery: it decides nothing and always exits 0. Each fixture pins a rule with teeth
+      # The nudge printer's rules, executed. It reminds the orchestrator each wake of what to check —
+      # the reminder inventory is owned by nudge.py's rules and pinned by its fixtures, never restated
+      # here — a sticky-note printer, not gate machinery: it decides nothing and always exits 0. Each
+      # fixture pins a rule with teeth
       # (fires when its condition holds, absent when it does not), so a printer that emitted every line
       # unconditionally would go red. The sibling `nudge-test.py` is loaded by path; a MISSING sibling
       # fails loudly, so this can never report health over a suite it did not run. As with the triage

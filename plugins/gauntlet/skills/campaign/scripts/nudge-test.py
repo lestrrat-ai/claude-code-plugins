@@ -73,8 +73,8 @@ def t_heartbeat_always_fires():
         check(len(pointers) == 1,
               "exactly one Primary continuity pointer must fire EVERY heartbeat, whatever the ledger holds")
         check(not has(lines, "check the heartbeat is armed") and not has(lines, "confirm the next heartbeat"),
-              "the reminder must NEVER tell the driver to check or confirm armed state — inspection is "
-              "unavailable on a scheduled host (loop-control.md, Primary continuity)")
+              "the reminder must NEVER tell the driver to check or confirm armed state — the re-arm is "
+              "unconditional, never gated on inspected state (loop-control.md, Primary continuity)")
 
 
 def t_header_reread_always_fires():
