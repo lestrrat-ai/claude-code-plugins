@@ -68,8 +68,8 @@ jobs:
       #
       # DELIBERATELY FILE-SCOPED, not repo-wide. The other scripts here are not type-clean yet, and a
       # repo-wide gate would fail builds for reasons that have nothing to do with the change under review —
-      # a gate that is red for everyone is a gate nobody can use. Add each file to this list as it is fixed;
-      # the list is the record of what is CLEAN, and nothing may fall back out of it.
+      # a gate that is red for everyone is a gate nobody can use. Add or remove the exact `# ci: pyright`
+      # marker in each Python file as its type-clean status changes.
       #
       # The `filesAnalyzed` assertion is the load-bearing half of this step, not a flourish. Pyright analyses
       # ZERO files IN SILENCE when a path matches nothing it will look at — it prints "0 errors" and exits 0.
@@ -81,7 +81,7 @@ jobs:
           # Exact `# ci: pyright` marker lines, with either LF or CRLF endings, are the SINGLE SOURCE OF
           # TRUTH for the type-clean set. The filesAnalyzed count is DERIVED from the discovered set size
           # (`${#files[@]}`), never hardcoded.
-          mapfile -t files < <(git grep -l -e '^# ci: pyright$' -e $'^# ci: pyright\r$' -- '*.py')
+          mapfile -d '' -t files < <(git grep -l -z -e '^# ci: pyright$' -e $'^# ci: pyright\r$' -- '*.py')
           if ((${#files[@]} == 0)); then
             echo "::error::no Python files carry the exact # ci: pyright marker"
             exit 1
@@ -92,7 +92,7 @@ jobs:
             echo "::error::the tracked CRLF marker fixture did not match exactly: ${crlf_fixture}"
             exit 1
           fi
-          npx --yes pyright@1.1.410 --outputjson "${files[@]}" | tee pyright.json
+          npx --yes pyright@1.1.410 --outputjson "${files[@]/#/./}" | tee pyright.json
           analyzed=$(jq '.summary.filesAnalyzed' pyright.json)
           expected=${#files[@]}
           echo "filesAnalyzed=${analyzed} expected=${expected}"
