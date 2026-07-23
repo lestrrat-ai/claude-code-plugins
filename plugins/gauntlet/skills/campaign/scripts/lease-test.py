@@ -149,17 +149,27 @@ def t_argparse_must_not_steal_the_refusal(work: Path) -> None:
     L.check(err.startswith("lease: REFUSED"), "the refusal must be OUR message")
 
 
-def t_no_token_refuses_and_never_mints(work: Path) -> None:
-    """A live owner missing its token must recover it, never mint a replacement."""
-    p = put(work, {"agent": "t1", "heartbeat": "w0", "updated": L.now()})
+def t_no_token_refuses_with_caller_scoped_recovery(work: Path) -> None:
+    """A missing token must distinguish owner recovery from stale-run adoption."""
+    p = put(work, {
+        "agent": "previous-owner-token",
+        "heartbeat": "w0",
+        "updated": L.now() - L.LEASE_STALE_AFTER - 1,
+    })
     before = p.read_bytes()
     code, out, err = run_before_lease_access(
         ["--file", str(p), "acquire", "--heartbeat-id", "hb-1"])
     assert_precondition_refusal(code, out, err, p, before, "acquire without --token")
-    L.check("SAME token" in err and "do NOT mint a replacement" in err,
-            "an existing owner must be told to recover its token, never mint a replacement")
-    L.check("first acquire" in err and "lease.py mint" in err,
-            "the acquire refusal must separately explain recovery when no token exists yet")
+    L.check("if YOU already hold this run" in err and "YOUR OWN token" in err,
+            "owner recovery must be scoped to the caller, not a token found in run state")
+    L.check("session or from the heartbeat prompt" in err,
+            "owner recovery must name caller-scoped sources for the token")
+    L.check("NEVER from `lease.json` or `lease.py read`" in err,
+            "owner recovery must reject run-scoped sources that may identify the previous holder")
+    L.check("adopting an absent or stale run" in err and "lease.py mint" in err,
+            "a stale-run adopter without its own token must be routed through mint")
+    L.check("do NOT mint a replacement" in err,
+            "a current owner must be told to recover its own token, never mint a replacement")
     L.check("acquire --token <tok> --heartbeat-id <proof>" in err,
             "the acquire refusal must name the exact retry")
 
@@ -182,8 +192,8 @@ def t_release_without_token_refuses_before_ownership_check(work: Path) -> None:
     before = p.read_bytes()
     code, out, err = run_before_lease_access(["--file", str(p), "release"])
     assert_precondition_refusal(code, out, err, p, before, "release without --token")
-    L.check("release --token <tok>" in err and "SAME owner token" in err,
-            "release must tell the owner to recover the matching token and name the exact retry")
+    L.check("release --token <tok>" in err and "your own token from your session" in err,
+            "release must name the caller-scoped token source and the exact retry")
     L.check("do NOT delete or alter the lease" in err,
             "release without the owner token must say to leave the lease untouched")
 
@@ -768,8 +778,8 @@ CASES = [
      t_empty_heartbeat_is_not_a_proof),
     ("refusal-is-ours", "argparse must not steal the refusal — the instruction IS the mechanism",
      t_argparse_must_not_steal_the_refusal),
-    ("no-token", "no token, no ownership check — an existing owner never mints a replacement",
-     t_no_token_refuses_and_never_mints),
+    ("no-token", "no token, no ownership check — owner recovery and stale adoption stay separate",
+     t_no_token_refuses_with_caller_scoped_recovery),
     ("refresh-no-token", "refresh without a token checks no ownership and preserves the lease",
      t_refresh_without_token_refuses_before_ownership_check),
     ("release-no-token", "release without a token checks no ownership and preserves the lease",

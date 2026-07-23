@@ -29,7 +29,8 @@ would otherwise do:
    "cannot start". The refusal happens before the lock or lease read, so it cannot claim who drives the run.
 4. **No `--token`, no ownership check.** `acquire`, `refresh`, and `release` all refuse before the lock or
    lease read, produce no stdout, preserve lease bytes, and say how to recover for that command. `acquire` never
-   mints a token: a first acquire must mint and arm, while an existing owner must reuse its token.
+   mints a token: fresh starts and absent/stale adopters mint and arm, while a current owner recovers its own
+   token from its session or heartbeat prompt.
 
 A future `updated` (clock skew) reads as FRESH, not stale — fail closed, same direction as (1).
 """
@@ -353,9 +354,12 @@ NO_TOKEN_ACQUIRE = """\
 lease: REFUSED — acquire stopped before the lease read, so ownership was NOT checked. Nothing was written;
        the lease and ownership state are unchanged.
 lease: acquire requires --token, and it does NOT mint one for you.
-lease: DO THIS: if this run already has an owner token, recover that SAME token and re-run
-       `acquire --token <tok> --heartbeat-id <proof>`; do NOT mint a replacement. For a first acquire with
-       no token yet, run `lease.py mint`, arm the heartbeat with that token, then acquire with both values."""
+lease: DO THIS: if YOU already hold this run and only lost your token, recover YOUR OWN token from your
+       session or from the heartbeat prompt that carries it — NEVER from `lease.json` or `lease.py read`,
+       which show whoever held the run before — then re-run
+       `acquire --token <tok> --heartbeat-id <proof>`; do NOT mint a replacement. Otherwise, including when
+       adopting an absent or stale run, run `lease.py mint`, arm the heartbeat with that token, then acquire
+       with both values."""
 
 NO_TOKEN_REFRESH = """\
 lease: REFUSED — refresh stopped before the lease read, so ownership was NOT checked. Nothing was written;
@@ -369,8 +373,9 @@ NO_TOKEN_RELEASE = """\
 lease: REFUSED — release stopped before the lease read, so ownership was NOT checked. Nothing was written;
        the lease and ownership state are unchanged.
 lease: release requires --token.
-lease: DO THIS: recover the SAME owner token and re-run `release --token <tok>`. If that token is unavailable,
-       do NOT delete or alter the lease; leave it for the owner or the documented adoption flow."""
+lease: DO THIS: recover your own token from your session and re-run `release --token <tok>`. If your token
+       is unavailable, do NOT delete or alter the lease; leave it for the owner or the documented adoption
+       flow."""
 
 
 # --- commands -----------------------------------------------------------------
@@ -605,8 +610,9 @@ def build_parser() -> argparse.ArgumentParser:
     # NO_HEARTBEAT / NO_TOKEN_* messages own that contract; `lease-test.py` pins it.
     a = sub.add_parser("acquire", help="take or refresh ownership of this run — the door every heartbeat goes "
                                        "through first")
-    a.add_argument("--token", help="REQUIRED. Existing owners reuse their token; only first-acquire setup "
-                                   "should mint one. Without it, acquire stops before checking ownership")
+    a.add_argument("--token", help="REQUIRED. A current owner reuses its own token from its session or "
+                                   "heartbeat prompt; fresh starts and absent/stale adopters mint a new "
+                                   "token. Without it, acquire stops before checking ownership")
     a.add_argument("--heartbeat-id",
                    help="REQUIRED. Your PROOF that you have ALREADY armed the heartbeat. Never inspected — "
                         "taken on your word, which is why it must name something already done. "
@@ -621,7 +627,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     d = sub.add_parser("release", help="release on normal exit. Refuses unless the token matches")
     d.add_argument("--token", help="REQUIRED. The existing owner's token. Without it, release stops before "
-                                   "checking ownership; recover the same token and retry")
+                                   "checking ownership; recover your own token from your session and retry")
 
     sub.add_parser("read", help="ADVISORY read-only status (no lock — may race a write). For discovery "
                                 "bucketing; never decide ownership from it")
