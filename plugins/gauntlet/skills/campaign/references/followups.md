@@ -237,8 +237,8 @@ about and one whose partial rejection strands the rest.
 
 **Record `reject-pending` BEFORE starting campaign disposition, then finish disposition BEFORE recording
 terminal `reject`.** `reject-pending` keeps the entry `in-pr` and writes `reject@<iso>` to its existing
-`decided` field. That marker makes a fresh heartbeat return here instead of re-adopting or reopening the
-PR. If `decided` does not already start with `reject@`, run
+`decided` field. That marker makes a fresh heartbeat return here before ordinary adoption or reopening.
+If `decided` does not already start with `reject@`, run
 `followups.py --file <store> reject-pending --id fuN`. Then resolve the recorded PR's live state and use
 the matching sequence. **`reject@<iso>` is the only campaign-owned pending-rejection sensor.** A terminal
 ledger row records PR disposition, not a user ruling, and MUST NOT route here by itself. If legacy evidence
@@ -247,8 +247,14 @@ outside the follow-up entry indicates user rejection without the marker, SURFACE
 **If this procedure is interrupted, the `in-pr` resume rule routes back here.** Re-resolve the recorded
 PR's live state and continue with the matching branch.
 
-- **OPEN** — run the permanent-abort procedure in `bailout-and-final-report.md`, **1-hour cap per task**,
-  to completion. Then run `followups.py --file <store> reject --id fuN`.
+- **OPEN** — inspect this run's owner label and ledger row before aborting. If the PR lacks this run's
+  owner label or ledger row and no existing row records terminal disposition, complete the existing
+  idempotent ADOPTION (step 4) solely to establish the ownership records required by the permanent-abort
+  procedure. This is the `open-pr`-before-ADOPTION interruption path; do not start review work. Then run
+  the permanent-abort procedure in `bailout-and-final-report.md`, **1-hour cap per task**, to completion,
+  followed by `followups.py --file <store> reject --id fuN`. If an existing ledger row already records
+  terminal `aborted`, NEVER re-adopt; permanent abort is already complete, so run terminal `reject`
+  directly. A PR resolved as merged belongs to the MERGED branch below.
 - **CLOSED WITHOUT MERGING** — run `merge.py run` through its existing terminal close-out
   (`loop-control.md`, "Step 4 — Merge queued PRs as a serialized drain"). Then run
   `followups.py --file <store> reject --id fuN`.
