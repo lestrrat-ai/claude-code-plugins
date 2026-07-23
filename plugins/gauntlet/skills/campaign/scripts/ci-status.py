@@ -2213,7 +2213,8 @@ def check_gh_invocations(text: str, argv: dict[str, list[str]]) -> list[str]:
 
 def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, str]]:
     """Find runnable-command candidates, allowing the subcommand to wrap within its paragraph."""
-    needle = re.compile(rf"ci-status\.py\s+{re.escape(subcommand)}\b")
+    separator = r"(?:\s+|[ \t]+\\\r?\n[ \t]*|[ \t]*\\\r?\n[ \t]+)"
+    needle = re.compile(rf"ci-status\.py{separator}{re.escape(subcommand)}\b")
     copies: list[tuple[Path, int, str]] = []
     for md in sorted(root.rglob("*.md")):
         text = md.read_text(encoding="utf-8")

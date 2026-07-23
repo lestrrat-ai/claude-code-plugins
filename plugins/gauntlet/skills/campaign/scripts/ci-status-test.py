@@ -799,16 +799,19 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
     for subcommand, (check, valid, invalid, detached, problem_needle) in fixtures.items():
         root = tmp / f"doc-copy-{subcommand}"
         root.mkdir()
+        shell_valid = valid.replace("ci-status.py\n", "ci-status.py \\\n")
+        shell_invalid = invalid.replace("ci-status.py\n", "ci-status.py \\\n")
         (root / "wrapped.md").write_text(
-            f"{valid}\n\n{invalid}\n\n{detached}\n",
+            f"{valid}\n\n{invalid}\n\n{shell_valid}\n\n{shell_invalid}\n\n{detached}\n",
             encoding="utf-8",
         )
         found_problems, copies = check(root)
-        if len(copies) != 2:
-            problems.append(f"[doc-copy {subcommand}] found {len(copies)} wrapped copies, expected 2: {copies!r}")
-        if len(found_problems) != 1 or problem_needle not in found_problems[0]:
+        if len(copies) != 4:
+            problems.append(f"[doc-copy {subcommand}] found {len(copies)} wrapped copies, expected 4: {copies!r}")
+        if len(found_problems) != 2 or any(problem_needle not in problem for problem in found_problems):
             problems.append(
-                f"[doc-copy {subcommand}] invalid wrapped copy was not rejected by its own missing flag: "
+                f"[doc-copy {subcommand}] invalid plain and shell-wrapped copies were not rejected by "
+                f"their own missing flag: "
                 f"{found_problems!r}"
             )
     return problems
