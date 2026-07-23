@@ -126,10 +126,36 @@ neither anchor, so no valid current bundle could meet it.
 
 **Preserve an existing `repair_decision = demote@<iso>` row and finish its recorded decision.** Do not
 rerun `decide`, rewrite its repair record, or migrate the ledger. Run
-`ledger.py … dispatch-check --pr <N> --action repair`, record the true findings named by that historical
-record as follow-ups, leave them unfixed, then return the row to `in_review`. Existing review-learning
-entries produced by that decision remain valid legacy data and stay readable through
-`review-learnings.py`.
+`ledger.py … dispatch-check --pr <N> --action repair`.
+
+**Recover the final cap's finding list from the bundle-bound historical artifact, never from decision-record
+prose.** A valid legacy record may contain only its bundle hash, `DECISION: demote`, and generic reasoning.
+Use this fail-closed procedure:
+
+1. Read the first nonblank `BUNDLE-SHA256: <hash>` line from `repair-<pr>-<k>.md`. Locate its
+   `repair-<pr>-<k>.prompt.txt` and `.prompt.txt.manifest.json` pair directly inside the same run directory.
+   Require exactly one `DECISION: demote` line in the record.
+   If the expected name is unavailable, accept only the single prompt in that run whose payload hash equals
+   the record marker and whose sidecar names that exact prompt. Zero or multiple matches are lost history.
+2. Validate the historical pair before reading findings: the record marker, prompt marker, manifest
+   `bundle_sha256`, and SHA-256 of the prompt payload bytes must agree; SHA-256 of the complete prompt must
+   equal manifest `prompt_sha256`; and the payload, manifest, and live ledger row must agree on PR and head.
+   The payload and manifest round summaries must also agree. The final `payload.rounds[-1]` entry is the cap
+   round because the bundle orders the validated landed rounds and ends with the round that entered
+   `repairing`.
+3. Use only that final round's `findings` artifact. Require `present = true`; require SHA-256 of its embedded
+   UTF-8 `content` to equal its `sha256`; require its `path` to be the active findings path derived from the
+   final round's progress artifact; and validate each JSONL row through the historical, non-re-anchoring
+   schema path owned by `repair-pass.py`'s `load_historical_findings`. If the active findings file still
+   exists, its bytes must equal the embedded content. If it is absent, the validated embedded content is the
+   bundle-bound source of truth.
+4. Record one follow-up for every row in that recovered final-cap list, leave every row unfixed, and use the
+   same list in the final report. Then return the row to `in_review`.
+
+**Park the PR with a machine-blocker reason when any binding, hash, identity, artifact, or schema check fails,
+or when the final-cap list cannot be recovered.** Never infer missing findings from generic record prose,
+another round, or the current diff. Existing review-learning entries produced by the legacy decision remain
+valid data and stay readable through `review-learnings.py`.
 
 The final report's **Repaired** entry names the legacy DEMOTE, links its `repair-<pr>-<k>.md`, and lists
 each true finding deliberately left unfixed (`bailout-and-final-report.md`).

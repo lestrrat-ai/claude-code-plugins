@@ -864,6 +864,58 @@ def t_bundle_preserves_findings_from_an_older_intent(tmp: Path) -> None:
           "the cap round incorrectly required an audit the NOT-SATISFIED sequence skips")
 
 
+def t_bundle_preserves_non_gating_findings_beside_the_required_gate(tmp: Path) -> None:
+    """One gating finding makes the cap valid; it does not make every bundled finding gating or anchored."""
+    case = bundle_setup(tmp)
+    findings = case["rundir"] / "review-1-1.findings.jsonl"
+    records = [
+        {"type": R.RP.FINDING, **GATING_FINDING},
+        {
+            "type": R.RP.FINDING,
+            "file": "feature.txt",
+            "line": "2",
+            "writer": "dev-time",
+            "purpose": R.RP.NO_PURPOSE,
+            "repro": "edit the local fixture before running the helper",
+            "fix": "add a local-only diagnostic",
+        },
+    ]
+    findings.write_text("".join(json.dumps(record) + "\n" for record in records))
+
+    output = case["rundir"] / "bundle.txt"
+    code, _, err = run_bundle(case, output)
+    check(code == 0, f"a cap bundle rejected a valid non-gating companion row: {err!r}")
+    bundled_round = prompt_payload(output)["rounds"][0]
+    bundled_records = [
+        json.loads(line) for line in bundled_round["findings"]["content"].splitlines() if line
+    ]
+    check(bundled_round["gating_findings"] == 1,
+          f"the cap's gating count changed: {bundled_round['gating_findings']!r}")
+    check(bundled_records == records,
+          f"the bundle did not preserve both finding rows: {bundled_records!r}")
+
+
+def t_docs_recover_legacy_demote_findings_from_the_bound_cap_artifact(tmp: Path) -> None:
+    """The legacy completion path gets its exact final-cap list from validated bundle bytes, not record prose."""
+    del tmp
+    references = OWNER.parent.parent / "references"
+    audit_doc = (references / "finding-audit.md").read_text(encoding="utf-8")
+    repair_doc = (references / "repair-pass.md").read_text(encoding="utf-8")
+    legacy = repair_doc.split("### Complete a legacy DEMOTE", 1)[1].split(
+        "### The repair is dispatched only after its decision is recorded", 1)[0]
+
+    check("Other findings in that bundle may be non-gating and unanchored" in audit_doc,
+          "finding-audit.md lost the mixed-bundle boundary")
+    for needle in (
+        "payload.rounds[-1]",
+        "load_historical_findings",
+        "one follow-up for every row",
+        "same list in the final report",
+        "Park the PR with a machine-blocker reason",
+    ):
+        check(needle in legacy, f"legacy DEMOTE recovery lost required rule {needle!r}")
+
+
 def t_bundle_exempts_every_prior_cap_round(tmp: Path) -> None:
     """A SECOND repair cap builds its bundle — an EARLIER cap round's legitimately absent audit is exempt too.
 
@@ -1556,6 +1608,8 @@ CASES = [
     ("bundle-deterministic", "bundle bytes/hash are deterministic and hostile payloads stay data", t_bundle_is_deterministic_and_payloads_are_data),
     ("bundle-refusals", "missing, stale, and duplicate active inputs fail before output", t_bundle_refuses_missing_stale_and_duplicate_inputs),
     ("bundle-old-intent", "old intent anchors survive; the cap round may have no audit yet", t_bundle_preserves_findings_from_an_older_intent),
+    ("bundle-mixed-findings", "a gating cap may retain non-gating, unanchored companion findings", t_bundle_preserves_non_gating_findings_beside_the_required_gate),
+    ("legacy-demote-docs", "legacy DEMOTE recovers its exact final-cap list from validated bundle bytes", t_docs_recover_legacy_demote_findings_from_the_bound_cap_artifact),
     ("bundle-prior-cap", "a second cap builds; every earlier cap round's absent audit is exempt", t_bundle_exempts_every_prior_cap_round),
     ("bundle-audit-no-re-anchor", "a historical audit reads back after the intent is re-authored (no re-anchor)", t_bundle_audit_read_does_not_re_anchor),
     ("bundle-audit-header-only", "a header-only (incomplete) audit is refused, not embedded as present", t_bundle_refuses_a_header_only_audit),

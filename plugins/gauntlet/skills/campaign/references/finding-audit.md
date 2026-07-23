@@ -119,11 +119,14 @@ kind `AGENTS.md`/`CLAUDE.md` calls an **accepted single-user residual**. There i
 let the audit demote such a finding to a follow-up and move on. **The audit MUST NOT.** "Is it MATERIAL
 enough to block this PR?" is a THIRD question, and **the audit NEVER answers it** — its signal is
 non-dispositional, the verdict stays CONFIRMED, and the finding stays on the fix-list. No current repair
-decision discharges a finding as immaterial: every valid cap bundle contains a gating finding, so every
-finding the reassessment receives has a Purpose or Threat-model actor anchor (`repair-pass.md`, "DEMOTE is
-not a current decision"). At the audit you cannot tell an immaterial-isolated finding from the first of a
-real cluster; #125's "edge of the machinery the loop just added" finding looked immaterial and was a REAL
-below-floor gap. The invariant holds without exception: **a CONFIRMED finding is fixed.**
+decision discharges a finding as immaterial: every valid cap bundle contains at least one gating finding,
+and that finding has a Purpose or Threat-model actor anchor. That required anchored finding means the
+bundle as a whole cannot satisfy DEMOTE's old all-findings-unanchored precondition (`repair-pass.md`,
+"DEMOTE is not a current decision"). Other findings in that bundle may be non-gating and unanchored; never
+infer that every bundled finding is anchored. At the audit you cannot tell an immaterial-isolated finding
+from the first of a real cluster; #125's "edge of the machinery the loop just added" finding looked
+immaterial and was a REAL below-floor gap. The invariant holds without exception: **a CONFIRMED finding is
+fixed.**
 
 **Why the reviewer keeps raising them: `## Non-goals` binding is ADVISORY.** The reviewer is handed the
 intent's `## Non-goals` verbatim and told a finding that attacks one cannot gate — but `review-pass.py`'s
