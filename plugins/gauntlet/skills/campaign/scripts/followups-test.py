@@ -312,8 +312,9 @@ def t_transition_graph(tmp: Path) -> None:
     must not move. A new state or edge is covered the moment it is added to `TRANSITIONS`: this fixture
     reads the graph rather than restating it, so it cannot go stale behind it.
 
-    The `in-pr` → `rejected` edge has one additional ordering precondition: campaign disposition starts
-    only after `reject-pending` writes its marker. Its allowed-state case therefore carries that marker.
+    Two `in-pr` edges have pending-ruling preconditions. `reject` requires the marker because campaign
+    disposition must start only after `reject-pending` writes it. `closed-unmerged` requires no marker
+    because a pending rejection must finish disposition and become `rejected`, never `reopened`.
 
     A DELETING edge is checked the same way, on its own terms: from an allowed state the entry is GONE (and
     the store still LOADS); from a forbidden one it is untouched. Nothing else may remove an entry.
@@ -778,14 +779,13 @@ def t_deletion_needs_a_durable_record(tmp: Path) -> None:
 
 
 def t_a_closed_pr_returns_the_entry_to_open_work(tmp: Path) -> None:
-    """A PR CLOSED WITHOUT MERGING RETURNS THE ENTRY TO OPEN WORK — it does not vanish, and it does not sit
-    in `in-pr` forever.
+    """A PR CLOSED WITHOUT MERGING AND WITHOUT A PENDING REJECTION RETURNS TO OPEN WORK.
 
     This is what buys the right to delete on the merge. A PR can be closed, abandoned or rejected in review,
     and the work is then exactly as undone as it was before anyone touched it — so the entry goes back to
     being work, with its history (the finding, the ACT grounds or the user's ruling, and the PR that DIED)
-    intact. Two failure modes are both refused here: the entry silently VANISHING with the PR, and the entry
-    STUCK in "being worked on" with no way out.
+    intact. The pending-rejection path is covered separately: its PR disposition must finish before terminal
+    `reject`, so `closed-unmerged` must not reopen it.
     """
     reopened = TRANSITIONS["closed-unmerged"][1]
     check(reopened != DELETED,
@@ -1057,6 +1057,14 @@ def t_in_pr_rejection_finishes_campaign_disposition_first(tmp: Path) -> None:
           f"`reject-pending` lost the resumable PR record: {pending!r}")
     check(pending["decided"] == marker,
           f"`reject-pending` did not leave a distinct durable routing marker: {pending!r}")
+    code, _, err = run(["--file", str(store), "closed-unmerged", "--id", fid])
+    check(code == 1,
+          f"`closed-unmerged` reopened a pending rejection before campaign disposition (exit {code})")
+    check("finish campaign disposition" in err and "`reject`" in err,
+          f"`closed-unmerged` refused the pending rejection without naming its required next step: {err!r}")
+    after_close_refusal = json.loads(run(["--file", str(store), "get", "--id", fid])[1])
+    check(after_close_refusal == pending,
+          f"refused `closed-unmerged` changed the pending rejection: {after_close_refusal!r}")
     code, out, err = run(["--file", str(store), "reject", "--id", fid])
     check(code == 0, f"terminal `reject` exited {code}: {err!r}")
     rejected = json.loads(out)
@@ -1158,13 +1166,34 @@ def t_in_pr_rejection_finishes_campaign_disposition_first(tmp: Path) -> None:
     check("If an existing ledger row already records" in open_branch
           and "terminal `aborted`, NEVER re-adopt" in open_branch,
           f"{heading!r} does not preserve terminal disposition during interrupted rejection")
-    closed_branch = ordered("- **CLOSED WITHOUT MERGING**", "- **MERGED**", "`merge.py run`",
-                            "terminal close-out", "`followups.py --file <store> reject --id fuN`")
+    closed_branch = ordered(
+        "- **CLOSED WITHOUT MERGING**", "- **MERGED**",
+        "inspect this run's ledger",
+        "If no row names the recorded\n  PR",
+        "live **CLOSED**",
+        "complete campaign disposition",
+        "NEVER run `merge.py` or `pr-adopt.py`",
+        "`followups.py --file <store> reject --id fuN`",
+        "If a row exists",
+        "`merge.py run`",
+        "terminal close-out",
+        "`followups.py --file <store> reject --id fuN`",
+    )
     check("closed-unmerged" not in closed_branch,
           f"{heading!r} parks a rejected closed PR in resumable open work before recording the ruling")
-    ordered("- **MERGED**", "\n\nThe existing", "`merge.py run`",
-            "`followups.py --file <store> merged --id fuN`",
-            "Do not record `reject`")
+    ordered(
+        "- **MERGED**", "\n\nThe existing",
+        "inspect this run's ledger",
+        "If no row names the recorded PR",
+        "live **MERGED**",
+        "complete\n  campaign disposition",
+        "NEVER run `merge.py` or `pr-adopt.py`",
+        "`followups.py --file <store> merged --id fuN`",
+        "If a row exists",
+        "`merge.py run`",
+        "`followups.py --file <store> merged --id fuN`",
+        "Do not record\n  `reject`",
+    )
 
 
 def t_ids_are_assigned_and_never_reused(tmp: Path) -> None:
@@ -1542,7 +1571,7 @@ def t_fields_and_lookup(tmp: Path) -> None:
 CASES = [
     ("user-step-unskippable", "no driver-only path reaches `accepted`, nor any state `publish` leaves from — proved on the graph", t_user_ruling_is_unskippable),
     ("delete-needs-a-record", "an entry is deleted only once a DURABLE RECORD exists elsewhere — never on take-up", t_deletion_needs_a_durable_record),
-    ("closed-pr-reopens", "a PR closed WITHOUT merging returns the entry to open work — it never vanishes with it", t_a_closed_pr_returns_the_entry_to_open_work),
+    ("closed-pr-reopens", "an unmarked PR closed WITHOUT merging returns to open work; pending rejection does not", t_a_closed_pr_returns_the_entry_to_open_work),
     ("rejection-kept", "a REJECTED follow-up is kept — deleting it is how the next run re-raises it", t_a_rejection_is_never_deleted),
     ("act-needs-conditions", "the autonomous ACT edge must EVIDENCE every condition, or it is refused", t_act_edge_needs_every_condition),
     ("self-accept-distinct", "a DRIVER-accepted follow-up is never mistaken for a USER-accepted one", t_self_accepted_is_never_mistaken_for_accepted),

@@ -49,9 +49,9 @@ file that grows.
     did we do this"), or it was PUBLISHED as an issue (the issue is then the record).
   * NEVER DELETED ON TAKE-UP. An entry deleted when work STARTS is an entry a closed, abandoned or
     rejected PR takes down with it — the work still undone, and nothing left to remember it. So while a PR
-    is OPEN the entry STAYS and records which PR is addressing it (`in-pr`), and a PR CLOSED WITHOUT
-    MERGING returns it to OPEN WORK (`reopened`) — never a silent vanish, never stuck in "being worked on"
-    forever.
+    is OPEN the entry STAYS and records which PR is addressing it (`in-pr`). A PR CLOSED WITHOUT MERGING
+    returns it to OPEN WORK (`reopened`) only when no pending rejection exists; a pending rejection keeps
+    it `in-pr` until campaign disposition finishes and terminal `reject` records the ruling.
   * REJECTIONS STAY. A rejection is worth remembering PRECISELY so it is not re-raised: delete it and the
     next run rediscovers the same thing, records it again, and asks the user again. It is hidden from the
     default view; it is not deleted. (A published one CAN be deleted for the same test: the ISSUE is the
@@ -343,7 +343,8 @@ FLAG_HELP = {
     "published": "where it was published (issue ref or URL) — the ISSUE is now the record, so the entry "
                  "is DELETED",
     "pr": "the PR addressing it (#N or URL). The entry STAYS while that PR is open: `merged` then deletes "
-          "it (the PR is the record), `closed-unmerged` returns it to open work (nothing recorded it)",
+          "it (the PR is the record); without a pending rejection, `closed-unmerged` returns it to open "
+          "work (nothing recorded it)",
     **{w: f"ACT condition '{c}' — {why}" for c, w, why in ACT_CONDITIONS if w in ACT_FLAGS},
 }
 
@@ -756,6 +757,12 @@ def cmd_transition(path: Path, args) -> int:
             fail(
                 f"{args.id} is 'in-pr' without a pending rejection marker — run `reject-pending` before "
                 "campaign disposition, then run `reject` only after disposition finishes."
+            )
+        if (cmd == "closed-unmerged"
+                and entry["decided"].startswith(PENDING_REJECTION_PREFIX)):
+            fail(
+                f"{args.id} has a pending rejection marker — finish campaign disposition, then run "
+                "`reject`; `closed-unmerged` applies only when no pending rejection exists."
             )
         # WHEN this step was taken. The user's ruling is DURABLE DATA, exactly like the ledger's
         # `api_approval`: a later run — or a fresh agent that never saw the conversation — reads it and does
