@@ -244,8 +244,9 @@ Header field notes (the header fields above; per-row fields follow):
   the root/main checkout, and a reused local branch are **never** removed. `merge.py run` owns the
   resumable enforcement; see Stage 3, **"Resumable merge execution"**.
 
-- `id` — `pr<N>` (the adopted PR number). `slug` — slugified PR title. Together they identify the row;
-  re-adoption looks up by `pr`/`id` and refreshes in place, never appends a duplicate.
+- `id` — `pr<N>` (the adopted PR number). `slug` — slugified PR title. Together they identify the row.
+  Re-adoption looks up by `pr`/`id`. An existing non-terminal row refreshes in place. A terminal row is
+  final, so adoption refuses it before any refresh. Adoption never appends a duplicate.
 - `branch` — the PR's **own** `headRefName`. Adopted PRs keep their branch — campaign does NOT mint a
   `fix-<run-id>-...` branch, so the branch name won't carry the run id. **The `gauntlet-run-<run-id>`
   label is the ownership marker**, not the branch prefix.
