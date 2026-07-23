@@ -144,7 +144,17 @@ jobs:
 
           # Exact marker lines, with either LF or CRLF endings, define the current type-clean set.
           # filesAnalyzed is derived from this discovered set, never from the baseline.
-          mapfile -d '' -t files < <(git grep -l -z "${marker_args[@]}" -- '*.py')
+          discovery_file=$(mktemp "${RUNNER_TEMP}/pyright-markers.XXXXXX")
+          trap 'rm -f "${discovery_file}" pyright.json' EXIT
+          if git grep -l -z "${marker_args[@]}" -- '*.py' > "${discovery_file}"; then
+            mapfile -d '' -t files < "${discovery_file}"
+          else
+            grep_status=$?
+            if [ "${grep_status}" -ne 1 ]; then
+              exit "${grep_status}"
+            fi
+            files=()
+          fi
           if ((${#files[@]} == 0)); then
             echo "::error::no Python files carry the exact # ci: pyright marker"
             exit 1
@@ -174,7 +184,6 @@ jobs:
                  " every discovered file must be analysed."
             exit 1
           fi
-          rm -f pyright.json
 
       # The CI-snapshot contract, executed. The rules it pins are prose in stage-2-ci.md, and prose
       # cannot be run — three defects shipped in that prose, each of which dies instantly against a
