@@ -1307,7 +1307,8 @@ def t_set_cannot_raise_the_tally(L: ModuleType, tmp: Path) -> None:
 
 def t_escalation_reset_is_one_atomic_write(L: ModuleType, tmp: Path) -> None:
     """The depth-raising escalation reset — the deeper `tier` AND the voided `reviews_ok` — lands in ONE
-    `set` invocation, so the two move together (`loop-control.md`/`pr-adoption.md` re-triage steps).
+    `set` invocation, so the two move together (`loop-control.md` re-triage step and `pr-adoption.md`,
+    "Adoption-time tier decision").
 
     Two separate writes (`set --tier HIGH` then `set --reviews-ok 0`) open a window: a driver death between
     them leaves `tier=HIGH, reviews_ok=2`, and the next heartbeat sees no escalation (HIGH→HIGH) so never
@@ -1341,9 +1342,10 @@ def t_deescalation_is_a_tier_only_write(L: ModuleType, tmp: Path) -> None:
 
     The counterpart of the escalation reset: verdicts earned at a DEEPER depth are a superset that still
     satisfies a shallower tier, so `set --tier <shallower>` with NO `--reviews-ok` flag must leave
-    `reviews_ok` standing (`loop-control.md`/`pr-adoption.md`/"Status labels mirror the review gate" — the
-    de-escalation branch keeps the verdicts; only `required(tier)` moves). This pins the tool contract the
-    prose deletion depends on: the single directional write is tier-only on a de-escalation, never a reset.
+    `reviews_ok` standing (`loop-control.md` re-triage step; `pr-adoption.md`, "Adoption-time tier decision";
+    "Status labels mirror the review gate" — the de-escalation branch keeps the verdicts; only
+    `required(tier)` moves). This pins the tool contract the prose deletion depends on: the single directional
+    write is tier-only on a de-escalation, never a reset.
     """
     path = write_lines(tmp / "de.jsonl", header_line(L),
                        row_line(L, pr="1", head_sha=SHA_A, base_ok_sha=SHA_A, tier="HIGH"))

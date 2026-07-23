@@ -493,7 +493,7 @@ For each `#PR` to adopt:
    source files changed (explicit paths, never `git add -A`). Fix commits are pushed back to the PR's
    head branch on `origin`.
 
-#### Step 6 — Ensure a live CI watch when — and ONLY when — a check can still move
+#### Adoption-time tier decision
 
 Before starting any gate work, **get the mechanical floor + inventory from the resolved PR-head worktree
 and decide the tier at or above it**:
@@ -545,6 +545,8 @@ mirror is a guaranteed no-op.
 ```
 python3 <skill-dir>/scripts/label-mirror.py mirror --ledger <state.jsonl> --pr <N> --repo owner/name
 ```
+
+#### Step 6 — Ensure a live CI watch when — and ONLY when — a check can still move
 
 6. **Ensure a live CI watch when — and ONLY when — a check can still move.** The warrant for a watch is a
    **still-RUNNING evidence row** in the PR's snapshot, **never the `ci` value** (Stage 2b, `stage-2-ci.md`
