@@ -104,9 +104,9 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
    `## Non-goals` / `## Threat model`;
    local, git-ignored, never written back to the PR) and `pr-adopt.py intent-sync` to fold the run's
    default Non-goals into its managed block — the row must exist FIRST, because `intent-sync` REFUSES a PR
-   with no ledger row (`pr-adoption.md`). Run `triage.py derive` on that resolved worktree for the
-   mechanical floor + inventory, decide the SHA-pinned tier at or above that floor, and record it before
-   gate work. Start a CI watch only if a check can still move.
+   with no ledger row (`pr-adoption.md`). Before gate work, follow
+   `references/stage-2-review-gate.md`, "2a-triage", for the complete adoption-time procedure.
+   Start a CI watch only if a check can still move.
 7. `review-pass.py intent-check --file <rundir>/intent-<pr>.md --ledger <rundir>/state.jsonl`: run
    immediately after writing an intent artifact and syncing it, before dispatching the PR's first review —
    the same parser every pass later loads, plus a check that the managed block is in sync with the run
@@ -132,10 +132,8 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
    derivation this heartbeat.
 10. Mutating action due on a PR -> `ledger.py … dispatch-check --pr <N>`: run before ANY action that
     mutates a PR — it exits non-zero for a HELD one.
-11. `triage.py derive`: re-derive each PR's tier from its `head_sha` — the tool emits the mechanical floor
-    + inventory, the orchestrator decides the tier at or above that floor and never grants TRIVIAL to a
-    diff with a non-prose file (`references/stage-2-review-gate.md`, "2a-triage") — then launch ALL due
-    work up to caps — reviews,
+11. Follow `references/stage-2-review-gate.md`, "2a-triage", for each non-held PR's complete heartbeat
+    triage procedure, then launch ALL due work up to caps — reviews,
     CI watches/fixes, precondition clearing, base refresh — skipping HELD PRs, and stop in-flight
     reviews doomed by a content change.
 12. Before sleeping, audit: re-run the dispatch scan across both concurrency pools and confirm every
