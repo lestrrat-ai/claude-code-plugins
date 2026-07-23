@@ -182,6 +182,7 @@ WATCH_ACTION_CONSUMERS = (
     ("references/pr-adoption.md", "**CI watch action.**"),
     ("references/stage-2-review-gate.md", "**Held-PR watch action.**"),
 )
+WATCH_DISPATCH_SUMMARY = ("SKILL.md", "**Due-work dispatch.**")
 WATCH_POLICY_OWNER = Path("references/stage-2-ci.md")
 
 # A git object id, as GitHub returns it: 40 LOWERCASE hex. Same rule, same reason, as `ci-snapshot.py` —
@@ -2331,8 +2332,8 @@ def backtick_run_is_escaped(text: str, index: int) -> bool:
     return backslashes % 2 == 1
 
 
-def has_matching_backtick_run(text: str, start: int, width: int) -> bool:
-    """An inline-code opener is real only when its Markdown block has an unescaped closing run."""
+def matching_backtick_run(text: str, start: int, width: int) -> int | None:
+    """Return an inline-code closer only when it is unescaped and in the same Markdown block."""
     end = len(text)
     for boundary in (r"\r?\n[ \t]*\r?\n", r"\r?\n {0,3}<!--",
                      r"\r?\n {0,3}(?:`{3,}|~{3,})"):
@@ -2342,8 +2343,13 @@ def has_matching_backtick_run(text: str, start: int, width: int) -> bool:
     for match in re.finditer(r"`+", text[start:end]):
         index = start + match.start()
         if len(match.group()) == width and not backtick_run_is_escaped(text, index):
-            return True
-    return False
+            return index
+    return None
+
+
+def has_matching_backtick_run(text: str, start: int, width: int) -> bool:
+    """An inline-code opener is real only when its Markdown block has an unescaped closing run."""
+    return matching_backtick_run(text, start, width) is not None
 
 
 def markdown_visible_text(text: str) -> str:
@@ -2411,9 +2417,69 @@ def markdown_visible_text(text: str) -> str:
     return "".join(visible)
 
 
+def markdown_action_text(text: str) -> str:
+    """Mask literal-code directives while preserving source offsets and inline identifier references."""
+    text = markdown_visible_text(text)
+    visible = list(text)
+    fence: tuple[str, int] | None = None
+    offset = 0
+
+    def mask(start: int, end: int) -> None:
+        for position in range(start, end):
+            if visible[position] not in "\r\n":
+                visible[position] = " "
+
+    for line in text.splitlines(keepends=True):
+        body = line.rstrip("\r\n")
+        if fence is not None:
+            marker, width = fence
+            closing = re.fullmatch(rf" {{0,3}}{re.escape(marker)}{{{width},}}[ \t]*", body)
+            mask(offset, offset + len(line))
+            if closing is not None:
+                fence = None
+            offset += len(line)
+            continue
+
+        opening = re.match(r" {0,3}(`{3,}|~{3,})(.*)", body)
+        if opening is not None:
+            marker = opening.group(1)
+            info = opening.group(2)
+            if marker[0] != "`" or "`" not in info:
+                fence = (marker[0], len(marker))
+                mask(offset, offset + len(line))
+                offset += len(line)
+                continue
+
+        index = 0
+        while index < len(line):
+            if line[index] != "`":
+                index += 1
+                continue
+            end = index + 1
+            while end < len(line) and line[end] == "`":
+                end += 1
+            width = end - index
+            if backtick_run_is_escaped(text, offset + index):
+                index = end
+                continue
+            closing = matching_backtick_run(text, offset + end, width)
+            if closing is None:
+                index = end
+                continue
+            content = text[offset + end:closing].strip()
+            # Inline identifiers are operands of surrounding prose, not standalone directives. A
+            # prose-sized code span is only a literal example and cannot satisfy an action requirement.
+            if re.fullmatch(r"[A-Za-z0-9_.:/-]+", content) is None:
+                mask(offset + index, closing + width)
+            index = closing - offset + width
+        offset += len(line)
+
+    return "".join(visible)
+
+
 def watch_action_block_problems(path: Path, text: str, anchor: str) -> list[str]:
     """One named consumer acts on the returned fact and points to the owner without restating its rule."""
-    text = markdown_visible_text(text)
+    text = markdown_action_text(text)
     positions = [match.start() for match in re.finditer(re.escape(anchor), text)]
     if len(positions) != 1:
         return [f"{path}:{anchor!r} occurs {len(positions)} times — each named watch-action block must "
@@ -2429,12 +2495,18 @@ def watch_action_block_problems(path: Path, text: str, anchor: str) -> list[str]
     if re.search(rf"\b{negator}\b.{{0,40}}\b(?:ensure|relaunch)\b.{{0,80}}\bwatch\b",
                  block, re.IGNORECASE):
         problems.append(f"{path}:{line} negates the required ensure/relaunch watch action")
-    if not re.search(r"\brun\b.{0,20}\bliveness\b", block, re.IGNORECASE):
-        problems.append(f"{path}:{line} does not run `liveness` before deciding the watch action")
-    if not re.search(r"\bwatch_warranted\b.{0,80}\btrue\b", block, re.IGNORECASE):
+    liveness = re.search(r"\brun\b.{0,20}\bliveness\b", block, re.IGNORECASE)
+    warrant = re.search(r"\bwatch_warranted\b.{0,80}\btrue\b", block, re.IGNORECASE)
+    action = re.search(r"\b(?:ensure|relaunch)\b.{0,80}\bwatch\b", block, re.IGNORECASE)
+    if liveness is None:
+        problems.append(f"{path}:{line} does not run `liveness`")
+    if warrant is None:
         problems.append(f"{path}:{line} does not act only when returned `watch_warranted` is `true`")
-    if not re.search(r"\b(?:ensure|relaunch)\b.{0,80}\bwatch\b", block, re.IGNORECASE):
+    if action is None:
         problems.append(f"{path}:{line} does not name the ensure/relaunch watch action")
+    if (liveness is not None and warrant is not None and action is not None
+            and liveness.start() > min(warrant.start(), action.start())):
+        problems.append(f"{path}:{line} decides the watch action before running `liveness`")
     if "stage-2-ci.md" not in block or "WATCH ONLY WHAT CAN MOVE" not in block:
         problems.append(f"{path}:{line} does not point to `stage-2-ci.md`, \"WATCH ONLY WHAT CAN MOVE\"")
     if not re.search(r"\bparked status\b.{0,80}\bdoes not override\b", block, re.IGNORECASE):
@@ -2442,9 +2514,50 @@ def watch_action_block_problems(path: Path, text: str, anchor: str) -> list[str]
     return problems
 
 
+def watch_dispatch_summary_problems(path: Path, text: str, anchor: str) -> list[str]:
+    """The entry summary skips held PRs only for mutations and delegates watch dispatch to item 21."""
+    text = markdown_action_text(text)
+    positions = [match.start() for match in re.finditer(re.escape(anchor), text)]
+    if len(positions) != 1:
+        return [f"{path}:{anchor!r} occurs {len(positions)} times — the due-work summary must occur once"]
+    start = positions[0]
+    end = text.find("\n\n", start)
+    block = " ".join(text[start:end if end >= 0 else len(text)].split())
+    line = text.count("\n", 0, start) + 1
+    problems = []
+    held_skip = re.search(r"\bmutating\b.{0,240}\bskipping HELD PRs\b", block, re.IGNORECASE)
+    watch_dispatch = re.search(
+        r"\bCI watch(?:es)?\b.{0,160}\bitem 21\b.{0,160}\bwatch_warranted\b",
+        block,
+        re.IGNORECASE,
+    )
+    held_watch = re.search(
+        r"\bwatch_warranted\b.{0,80}\bincluding for HELD PRs\b",
+        block,
+        re.IGNORECASE,
+    )
+    if held_skip is None:
+        problems.append(f"{path}:{line} does not limit the HELD-PR skip to mutating due work")
+    if watch_dispatch is None:
+        problems.append(
+            f"{path}:{line} does not dispatch CI watches from item 21's returned `watch_warranted` action"
+        )
+    if held_watch is None:
+        problems.append(f"{path}:{line} does not keep item 21's watch dispatch active for HELD PRs")
+    if held_skip is not None and watch_dispatch is not None and watch_dispatch.start() < held_skip.end():
+        problems.append(f"{path}:{line} groups CI watches under the HELD-PR mutation skip")
+    return problems
+
+
 def watch_formula_problems(path: Path, text: str) -> list[str]:
     """Reject consumer-side watch predicates; stage-2-ci.md and executable tests own those details."""
     text = markdown_visible_text(text)
+    text = re.sub(
+        r"[\"“]WATCH\s+ONLY\s+WHAT\s+CAN\s+MOVE[\"”]",
+        lambda match: "".join(char if char in "\r\n" else " " for char in match.group()),
+        text,
+        flags=re.IGNORECASE,
+    )
     patterns = (
         ("a `buckets.RUNNING` predicate",
          re.compile(r"(?:\bbuckets\b|\[\s*[\"']buckets[\"']\s*\]|"
@@ -2453,19 +2566,23 @@ def watch_formula_problems(path: Path, text: str) -> list[str]:
                     r"\.\s*get\(\s*[\"']RUNNING[\"']\s*(?:,\s*[^()]*)?\))")),
         ("an explicit `watch_warranted` formula", re.compile(r"\bwatch_warranted\s*=")),
         ("a consumer `ci` verdict predicate",
-         re.compile(r"(?:\b(?:launch|relaunch|ensure|start)\b.{0,80}\bwatch\b.{0,160}"
-                    r"\b(?:when(?:ever)?|if|while)\b.{0,80}\bci\b\s*(?:==|=|is)\s*"
-                    r"(?:green|red|pending)\b|"
-                    r"\b(?:when(?:ever)?|if|while)\b.{0,80}\bci\b\s*(?:==|=|is)\s*"
-                    r"(?:green|red|pending)\b.{0,160}\b(?:launch|relaunch|ensure|start)\b"
-                    r".{0,80}\bwatch\b)", re.IGNORECASE)),
+         re.compile(r"(?:\b(?:launch|relaunch|ensure|start)\b.{0,80}\bwatch\b|"
+                    r"\b(?:watch\w*|warrant\w*)\b).{0,160}"
+                    r"\b(?:when(?:ever)?|if|while)\b.{0,80}\bci\b\s*"
+                    r"(?:==|=|is|remains|becomes)\s*(?:green|red|pending)\b|"
+                    r"\b(?:when(?:ever)?|if|while)\b.{0,80}\bci\b\s*"
+                    r"(?:==|=|is|remains|becomes)\s*(?:green|red|pending)\b.{0,160}"
+                    r"(?:\b(?:launch|relaunch|ensure|start)\b.{0,80}\bwatch\b|"
+                    r"\b(?:watch\w*|warrant\w*)\b)", re.IGNORECASE)),
         ("a still-RUNNING watch rule",
          re.compile(r"(?:\bwatch\w*|\bwarrant\w*).{0,160}\bstill-?\s*RUNNING\b|"
                     r"\bstill-?\s*RUNNING\b.{0,160}(?:\bwatch\w*|\bwarrant\w*)", re.IGNORECASE)),
         ("a can-move watch rule",
          re.compile(r"(?:\bwatch\w*|\bwarrant\w*).{0,160}"
-                    r"\b(?:can(?:\s+\w+){0,6}\s+still|could|nothing can)\s+move\b|"
-                    r"\b(?:can(?:\s+\w+){0,6}\s+still|could|nothing can)\s+move\b"
+                    r"\b(?:can(?:\s+\w+){0,6}\s+(?:still\s+)?move|could\s+move|"
+                    r"nothing\s+can\s+move)\b|"
+                    r"\b(?:can(?:\s+\w+){0,6}\s+(?:still\s+)?move|could\s+move|"
+                    r"nothing\s+can\s+move)\b"
                     r".{0,160}(?:\bwatch\w*|\bwarrant\w*)",
                     re.IGNORECASE)),
         ("a negated terminal-status watch rule",
@@ -2510,6 +2627,19 @@ def check_watch_action_docs(root: Path | None = None) -> tuple[list[str], list[s
         problems += found
         if not found:
             blocks.append(f"{relative}:{anchor}")
+
+    summary_relative, summary_anchor = WATCH_DISPATCH_SUMMARY
+    summary_path = base / summary_relative
+    if not summary_path.exists():
+        problems.append(
+            f"{summary_relative}:{summary_anchor!r} is missing — the due-work summary has no subject"
+        )
+    else:
+        problems += watch_dispatch_summary_problems(
+            Path(summary_relative),
+            summary_path.read_text(encoding="utf-8"),
+            summary_anchor,
+        )
 
     for path in sorted(base.rglob("*.md")):
         relative = path.relative_to(base)

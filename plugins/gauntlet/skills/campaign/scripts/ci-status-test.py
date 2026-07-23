@@ -1019,6 +1019,16 @@ def watch_doc_cases(ci) -> list[str]:
     if not any("can-move watch rule" in problem for problem in got):
         problems.append("[watch-doc] an intervening-subject can-move watch predicate was accepted")
 
+    formula = (WATCH_DOC_FIXTURES / "can-move-without-still-formula.md").read_text(encoding="utf-8")
+    got = ci.watch_formula_problems(Path("can-move-without-still-formula.md"), formula)
+    if not any("can-move watch rule" in problem for problem in got):
+        problems.append("[watch-doc] a conditional can-move watch predicate was accepted")
+
+    formula = (WATCH_DOC_FIXTURES / "ci-remains-pending-formula.md").read_text(encoding="utf-8")
+    got = ci.watch_formula_problems(Path("ci-remains-pending-formula.md"), formula)
+    if not any("consumer `ci` verdict predicate" in problem for problem in got):
+        problems.append("[watch-doc] a `CI remains pending` watch predicate was accepted")
+
     for name in ("inline-comment-token.md", "fenced-comment-token.md"):
         formula = (WATCH_DOC_FIXTURES / name).read_text(encoding="utf-8")
         got = ci.watch_formula_problems(Path(name), formula)
@@ -1045,6 +1055,31 @@ def watch_doc_cases(ci) -> list[str]:
     got = ci.watch_action_block_problems(Path("negated-action.md"), negated, anchor)
     if not any("negates" in problem for problem in got):
         problems.append("[watch-doc] a named consumer with opposite watch instructions was accepted")
+
+    for name in ("fenced-code-only-requirements.md", "inline-code-only-requirements.md"):
+        hidden = (WATCH_DOC_FIXTURES / name).read_text(encoding="utf-8")
+        got = ci.watch_action_block_problems(Path(name), hidden, anchor)
+        if len(got) != 5:
+            problems.append(f"[watch-doc] literal-code-only action requirements in {name} were accepted")
+
+    reversed_action = (WATCH_DOC_FIXTURES / "reversed-action.md").read_text(encoding="utf-8")
+    got = ci.watch_action_block_problems(Path("reversed-action.md"), reversed_action, anchor)
+    if not any("before running `liveness`" in problem for problem in got):
+        problems.append("[watch-doc] a watch decision made before `liveness` was accepted")
+
+    dispatch_anchor = "**Fixture due-work dispatch.**"
+    valid_dispatch = (WATCH_DOC_FIXTURES / "held-dispatch-good.md").read_text(encoding="utf-8")
+    got = ci.watch_dispatch_summary_problems(
+        Path("held-dispatch-good.md"), valid_dispatch, dispatch_anchor
+    )
+    if got:
+        problems.append(f"[watch-doc] valid HELD dispatch summary was rejected: {'; '.join(got)}")
+    invalid_dispatch = (WATCH_DOC_FIXTURES / "held-dispatch-skips-watch.md").read_text(encoding="utf-8")
+    got = ci.watch_dispatch_summary_problems(
+        Path("held-dispatch-skips-watch.md"), invalid_dispatch, dispatch_anchor
+    )
+    if not any("groups CI watches" in problem for problem in got):
+        problems.append("[watch-doc] a HELD dispatch summary that suppresses CI watches was accepted")
     return problems
 
 

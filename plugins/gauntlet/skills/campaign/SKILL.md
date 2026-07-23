@@ -132,12 +132,12 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
    derivation this heartbeat.
 10. Mutating action due on a PR -> `ledger.py … dispatch-check --pr <N>`: run before ANY action that
     mutates a PR — it exits non-zero for a HELD one.
-11. `triage.py derive`: re-derive each PR's tier from its `head_sha` — the tool emits the mechanical floor
+11. **Due-work dispatch.** `triage.py derive`: re-derive each PR's tier from its `head_sha` — the tool emits the mechanical floor
     + inventory, the orchestrator decides the tier at or above that floor and never grants TRIVIAL to a
-    diff with a non-prose file (`references/stage-2-review-gate.md`, "2a-triage") — then launch ALL due
-    work up to caps — reviews,
-    CI watches/fixes, precondition clearing, base refresh — skipping HELD PRs, and stop in-flight
-    reviews doomed by a content change.
+    diff with a non-prose file (`references/stage-2-review-gate.md`, "2a-triage"). Then launch ALL due
+    mutating work up to caps — reviews, CI fixes, precondition clearing, base refresh — skipping HELD PRs,
+    and stop in-flight reviews doomed by a content change. CI watches follow item 21's returned
+    `watch_warranted` action, including for HELD PRs.
 12. Before sleeping, audit: re-run the dispatch scan across both concurrency pools and confirm every
     due launch actually happened, every PR at a liveness cap was escalated rather than left spinning,
     and the loop continues per `references/loop-control.md`, "Primary continuity", whenever non-terminal
