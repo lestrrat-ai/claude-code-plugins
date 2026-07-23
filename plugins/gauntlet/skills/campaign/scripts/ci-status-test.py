@@ -999,10 +999,25 @@ def watch_doc_cases(ci) -> list[str]:
     if not any("buckets.RUNNING" in problem for problem in got):
         problems.append("[watch-doc] a nested mapping `buckets.RUNNING` watch predicate was accepted")
 
+    formula = (WATCH_DOC_FIXTURES / "get-chain-formula.md").read_text(encoding="utf-8")
+    got = ci.watch_formula_problems(Path("get-chain-formula.md"), formula)
+    if not any("buckets.RUNNING" in problem for problem in got):
+        problems.append("[watch-doc] a chained-get `buckets.RUNNING` watch predicate was accepted")
+
     formula = (WATCH_DOC_FIXTURES / "consumer-ci-formula.md").read_text(encoding="utf-8")
     got = ci.watch_formula_problems(Path("consumer-ci-formula.md"), formula)
     if not any("consumer `ci` verdict predicate" in problem for problem in got):
         problems.append("[watch-doc] a consumer `ci == pending` watch predicate was accepted")
+
+    formula = (WATCH_DOC_FIXTURES / "terminal-status-formula.md").read_text(encoding="utf-8")
+    got = ci.watch_formula_problems(Path("terminal-status-formula.md"), formula)
+    if not any("negated terminal-status watch rule" in problem for problem in got):
+        problems.append("[watch-doc] a negated terminal-status watch predicate was accepted")
+
+    formula = (WATCH_DOC_FIXTURES / "can-any-check-move-formula.md").read_text(encoding="utf-8")
+    got = ci.watch_formula_problems(Path("can-any-check-move-formula.md"), formula)
+    if not any("can-move watch rule" in problem for problem in got):
+        problems.append("[watch-doc] an intervening-subject can-move watch predicate was accepted")
 
     for name in ("inline-comment-token.md", "fenced-comment-token.md"):
         formula = (WATCH_DOC_FIXTURES / name).read_text(encoding="utf-8")
@@ -1018,6 +1033,18 @@ def watch_doc_cases(ci) -> list[str]:
     if formula_got:
         problems.append(f"[watch-doc] an HTML-comment-only formula was treated as visible: "
                         f"{'; '.join(formula_got)}")
+
+    for name in ("unmatched-backtick-comment-only-requirements.md",
+                 "escaped-backtick-comment-only-requirements.md"):
+        hidden = (WATCH_DOC_FIXTURES / name).read_text(encoding="utf-8")
+        got = ci.watch_action_block_problems(Path(name), hidden, anchor)
+        if len(got) != 5:
+            problems.append(f"[watch-doc] {name} made HTML-comment-only action requirements visible")
+
+    negated = (WATCH_DOC_FIXTURES / "negated-action.md").read_text(encoding="utf-8")
+    got = ci.watch_action_block_problems(Path("negated-action.md"), negated, anchor)
+    if not any("negates" in problem for problem in got):
+        problems.append("[watch-doc] a named consumer with opposite watch instructions was accepted")
     return problems
 
 

@@ -2321,6 +2321,31 @@ def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list
     return problems, copies
 
 
+def backtick_run_is_escaped(text: str, index: int) -> bool:
+    """A Markdown backslash escape consumes an odd run of backslashes before a backtick."""
+    backslashes = 0
+    index -= 1
+    while index >= 0 and text[index] == "\\":
+        backslashes += 1
+        index -= 1
+    return backslashes % 2 == 1
+
+
+def has_matching_backtick_run(text: str, start: int, width: int) -> bool:
+    """An inline-code opener is real only when its Markdown block has an unescaped closing run."""
+    end = len(text)
+    for boundary in (r"\r?\n[ \t]*\r?\n", r"\r?\n {0,3}<!--",
+                     r"\r?\n {0,3}(?:`{3,}|~{3,})"):
+        match = re.search(boundary, text[start:])
+        if match is not None:
+            end = min(end, start + match.start())
+    for match in re.finditer(r"`+", text[start:end]):
+        index = start + match.start()
+        if len(match.group()) == width and not backtick_run_is_escaped(text, index):
+            return True
+    return False
+
+
 def markdown_visible_text(text: str) -> str:
     """Remove Markdown HTML comments while preserving literal code and source offsets."""
     visible = list(text)
@@ -2365,9 +2390,10 @@ def markdown_visible_text(text: str) -> str:
                 while end < len(line) and line[end] == "`":
                     end += 1
                 width = end - index
-                if inline_ticks == 0:
+                escaped = backtick_run_is_escaped(text, offset + index)
+                if inline_ticks == 0 and not escaped and has_matching_backtick_run(text, offset + end, width):
                     inline_ticks = width
-                elif inline_ticks == width:
+                elif inline_ticks == width and not escaped:
                     inline_ticks = 0
                 index = end
                 continue
@@ -2397,6 +2423,12 @@ def watch_action_block_problems(path: Path, text: str, anchor: str) -> list[str]
     block = " ".join(text[start:end if end >= 0 else len(text)].split())
     line = text.count("\n", 0, start) + 1
     problems = []
+    negator = r"(?:do\s+not|don't|never|must\s+not|should\s+not)"
+    if re.search(rf"\b{negator}\b.{{0,40}}\brun\b.{{0,20}}\bliveness\b", block, re.IGNORECASE):
+        problems.append(f"{path}:{line} negates the required `liveness` action")
+    if re.search(rf"\b{negator}\b.{{0,40}}\b(?:ensure|relaunch)\b.{{0,80}}\bwatch\b",
+                 block, re.IGNORECASE):
+        problems.append(f"{path}:{line} negates the required ensure/relaunch watch action")
     if not re.search(r"\brun\b.{0,20}\bliveness\b", block, re.IGNORECASE):
         problems.append(f"{path}:{line} does not run `liveness` before deciding the watch action")
     if not re.search(r"\bwatch_warranted\b.{0,80}\btrue\b", block, re.IGNORECASE):
@@ -2415,8 +2447,10 @@ def watch_formula_problems(path: Path, text: str) -> list[str]:
     text = markdown_visible_text(text)
     patterns = (
         ("a `buckets.RUNNING` predicate",
-         re.compile(r"(?:\bbuckets\b|\[\s*[\"']buckets[\"']\s*\])"
-                    r"\s*(?:\.\s*RUNNING\b|\[\s*[\"']RUNNING[\"']\s*\])")),
+         re.compile(r"(?:\bbuckets\b|\[\s*[\"']buckets[\"']\s*\]|"
+                    r"\.\s*get\(\s*[\"']buckets[\"']\s*(?:,\s*[^()]*)?\))"
+                    r"\s*(?:\.\s*RUNNING\b|\[\s*[\"']RUNNING[\"']\s*\]|"
+                    r"\.\s*get\(\s*[\"']RUNNING[\"']\s*(?:,\s*[^()]*)?\))")),
         ("an explicit `watch_warranted` formula", re.compile(r"\bwatch_warranted\s*=")),
         ("a consumer `ci` verdict predicate",
          re.compile(r"(?:\b(?:launch|relaunch|ensure|start)\b.{0,80}\bwatch\b.{0,160}"
@@ -2429,9 +2463,15 @@ def watch_formula_problems(path: Path, text: str) -> list[str]:
          re.compile(r"(?:\bwatch\w*|\bwarrant\w*).{0,160}\bstill-?\s*RUNNING\b|"
                     r"\bstill-?\s*RUNNING\b.{0,160}(?:\bwatch\w*|\bwarrant\w*)", re.IGNORECASE)),
         ("a can-move watch rule",
-         re.compile(r"(?:\bwatch\w*|\bwarrant\w*).{0,160}\b(?:can still|could|nothing can) move\b|"
-                    r"\b(?:can still|could|nothing can) move\b.{0,160}(?:\bwatch\w*|\bwarrant\w*)",
+         re.compile(r"(?:\bwatch\w*|\bwarrant\w*).{0,160}"
+                    r"\b(?:can(?:\s+\w+){0,6}\s+still|could|nothing can)\s+move\b|"
+                    r"\b(?:can(?:\s+\w+){0,6}\s+still|could|nothing can)\s+move\b"
+                    r".{0,160}(?:\bwatch\w*|\bwarrant\w*)",
                     re.IGNORECASE)),
+        ("a negated terminal-status watch rule",
+         re.compile(r"\bstatus\b\s*!=\s*[\"']?\bCOMPLETED\b[\"']?|"
+                    r"\b(?:any\s+)?(?:check|row)\b.{0,40}"
+                    r"\b(?:is\s+not|isn't|not)\s+(?:yet\s+)?terminal\b", re.IGNORECASE)),
         ("a no-moving-row watch rule",
          re.compile(r"(?:\bwatch\w*|\bwarrant\w*).{0,160}\b(?:nothing is running|no row moving)\b|"
                     r"\b(?:nothing is running|no row moving)\b.{0,160}(?:\bwatch\w*|\bwarrant\w*)",
