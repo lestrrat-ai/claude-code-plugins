@@ -1008,6 +1008,59 @@ def t_the_doc_and_the_code_agree(tmp: Path) -> None:
               f"step it has not been told exists")
 
 
+def t_in_pr_rejection_finishes_campaign_disposition_first(tmp: Path) -> None:
+    """REJECTING AN `in-pr` FOLLOW-UP FINISHES ITS RECORDED PR'S CAMPAIGN DISPOSITION FIRST.
+
+    `reject` remains a legal store edge from `in-pr`: the graph preserves the PR reference and the durable
+    user ruling. But `rejected` is terminal, so the active loop will never return to finish an adopted PR
+    after that edge. The campaign procedure must therefore finish the PR before recording the rejection.
+
+    This fixture pins the order in the driver's canonical procedure for each live PR outcome. It does not
+    invent another store state or move the campaign disposition into `followups.py`.
+    """
+    check("in-pr" in TRANSITIONS["reject"][0] and "reopened" in TRANSITIONS["reject"][0],
+          "the rejection procedure changed the store graph instead of preserving the `in-pr`/`reopened` "
+          "edges and their PR history")
+    check("rejected" in TERMINAL,
+          "`rejected` is not terminal — this fixture's ordering requirement no longer describes the graph")
+
+    doc = Path(__file__).resolve().parent.parent / "references" / "followups.md"
+    text = doc.read_text()
+    heading = "#### Rejecting an `in-pr` follow-up"
+    match = re.search(
+        rf"^{re.escape(heading)}\n(?P<body>.*?)(?=^#{{1,4}} |\Z)",
+        text,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    if match is None:
+        raise SelfTestFailure(f"{doc.name} has no canonical {heading!r} procedure")
+    body = match.group("body")
+    rule = "**Finish the recorded PR's campaign disposition BEFORE recording `reject`.**"
+    check(rule in body, f"{heading!r} does not require the PR disposition before the durable rejection")
+
+    def ordered(branch: str, next_branch: str, *needles: str) -> None:
+        start = body.find(branch)
+        check(start >= 0, f"{heading!r} has no {branch!r} branch")
+        end = body.find(next_branch, start + len(branch))
+        check(end > start, f"{heading!r} has no end marker {next_branch!r} after {branch!r}")
+        branch_body = body[start:end]
+        cursor = 0
+        for needle in needles:
+            found = branch_body.find(needle, cursor)
+            check(found >= 0,
+                  f"{heading!r} does not place {needle!r} after {branch!r}; the disposition order is lost")
+            cursor = found + len(needle)
+
+    ordered("- **OPEN**", "- **CLOSED WITHOUT MERGING**", "permanent-abort procedure",
+            "`followups.py --file <store> reject --id fuN`")
+    ordered("- **CLOSED WITHOUT MERGING**", "- **MERGED**", "`merge.py run`", "terminal close-out",
+            "`followups.py --file <store> closed-unmerged --id fuN`",
+            "`followups.py --file <store> reject --id fuN`")
+    ordered("- **MERGED**", "\n\nThe existing", "`merge.py run`",
+            "`followups.py --file <store> merged --id fuN`",
+            "Do not record `reject`")
+
+
 def t_ids_are_assigned_and_never_reused(tmp: Path) -> None:
     """`id` is assigned by the STORE (`fu<N>`, one past the highest EVER HANDED OUT) — never by the caller,
     and NEVER REUSED, not even after the entry that held it was DELETED.
@@ -1388,6 +1441,7 @@ CASES = [
     ("act-needs-conditions", "the autonomous ACT edge must EVIDENCE every condition, or it is refused", t_act_edge_needs_every_condition),
     ("self-accept-distinct", "a DRIVER-accepted follow-up is never mistaken for a USER-accepted one", t_self_accepted_is_never_mistaken_for_accepted),
     ("doc-and-code-agree", "the ACT conditions the driver READS are the ones the code ENFORCES", t_the_doc_and_the_code_agree),
+    ("in-pr-reject-orders-pr", "an `in-pr` rejection finishes the recorded PR's campaign disposition before becoming terminal", t_in_pr_rejection_finishes_campaign_disposition_first),
     ("investigation-evidence", "an investigation shows its work; the finding APPENDS and never clobbers", t_investigation_shows_its_work),
     ("refutation-stays", "a refuted follow-up stays in the store, stays visible, and stays overturnable", t_refutation_stays_in_the_store),
     ("state-not-settable", "`set` writes neither `state` nor any evidence a transition left behind", t_state_and_evidence_are_not_settable),
