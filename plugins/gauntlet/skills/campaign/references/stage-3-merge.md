@@ -179,9 +179,10 @@ ownership checks and phase order remain in force.
    `reviews_ok`, relabel, and relaunch work — and would **change the PR's content**, which can invalidate
    the very refutation or API change the user was parked to adjudicate. **A parked PR that has fallen
    behind simply STAYS behind** until the user answers; it is re-reconciled normally on the heartbeat after it
-   unparks. **Do NOT drop its row** — it stays in the run, and the park **does not change its CI watch
-   either way** (observation, not mutation): the watch follows the normal policy (`stage-2-ci.md`, "WATCH
-   ONLY WHAT CAN MOVE") — relaunched while a row is still RUNNING, **not** relaunched once CI has settled.
+   unparks. **Do NOT drop its row** — it stays in the run. **Held-PR watch action.** Observation is not
+   mutation. Run `liveness`, then ensure or relaunch a watch only when returned
+   `watch_warranted` is `true` (`stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE"). Parked status does not
+   override that result.
 
    For each **non-parked** open PR, run `python3 scripts/base-preflight.py check --pr <pr> --worktree
    <worktree> --base <base> --file <state.jsonl>`, where `<base>` is that row's **effective base** (its
@@ -200,10 +201,7 @@ ownership checks and phase order remain in force.
      clean** — a conflict, or a rebase that changed the PR's own diff — and it has already aborted/reset to
      the original head; the judgment-path bullet below then owns **both** exit-3 subcases. On a clean (exit 0) rebase,
      **re-derive CI from a snapshot of the new tip in the same heartbeat, launching a watch only if `liveness`
-     then reports `watch_warranted`** ("WATCH ONLY WHAT CAN MOVE"). A rebased PR must not sit unwatched
-     until the heartbeat while its checks are running — but it must not be watched when **nothing** is
-     running either, which right after a push is the common case (no check has registered yet). CI must
-     return green before merging.
+     then reports `watch_warranted`** ("WATCH ONLY WHAT CAN MOVE"). CI must return green before merging.
    - Judgment-path rebase — a conflict resolved by hand, OR a no-conflict rebase that reshaped the PR's own
      diff (both `clean-rebase.py` exit-3 subcases) → PR content changed → **reset `reviews_ok` to 0 AND, in that
      same step, reconcile the label by running `label-mirror.py mirror` for the PR** (it restores

@@ -167,6 +167,23 @@ SPEC_DOC = HERE.parent / "references" / "ci-derivation-spec.md"
 DRIVER_DOC = HERE.parent / "references" / "stage-2-ci.md"
 FIXTURES = HERE / "fixtures" / "ci-status"
 
+# These are the driver-facing blocks that decide whether a CI watch is launched or relaunched. Each one
+# must consume `liveness`'s returned fact and point to the policy owner, never reconstruct its predicate.
+# The anchor is the block's stable name, not a line number.
+WATCH_ACTION_CONSUMERS = (
+    ("SKILL.md", "**CI watch action.**"),
+    ("references/ci-derivation-spec.md", "**CI watch action.**"),
+    ("references/stage-3-merge.md", "**Held-PR watch action.**"),
+    ("references/critical-rules.md", "- **CI watch action.**"),
+    ("references/critical-rules.md", "**Held-PR watch action.**"),
+    ("references/files-and-ledger.md", "**Held-PR watch action.**"),
+    ("references/loop-control.md", "**Held-PR watch action.**"),
+    ("references/loop-control.md", "- **CI watch action.**"),
+    ("references/pr-adoption.md", "**CI watch action.**"),
+    ("references/stage-2-review-gate.md", "**Held-PR watch action.**"),
+)
+WATCH_POLICY_OWNER = Path("references/stage-2-ci.md")
+
 # A git object id, as GitHub returns it: 40 LOWERCASE hex. Same rule, same reason, as `ci-snapshot.py` —
 # a `--head-sha` of any other shape makes every comparison downstream unfalsifiable, so it is an OPERATOR
 # ERROR (exit 2), never a verdict.
@@ -2304,6 +2321,89 @@ def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list
     return problems, copies
 
 
+def watch_action_block_problems(path: Path, text: str, anchor: str) -> list[str]:
+    """One named consumer acts on the returned fact and points to the owner without restating its rule."""
+    positions = [match.start() for match in re.finditer(re.escape(anchor), text)]
+    if len(positions) != 1:
+        return [f"{path}:{anchor!r} occurs {len(positions)} times — each named watch-action block must "
+                f"occur exactly once"]
+    start = positions[0]
+    end = text.find("\n\n", start)
+    block = " ".join(text[start:end if end >= 0 else len(text)].split())
+    line = text.count("\n", 0, start) + 1
+    problems = []
+    if not re.search(r"\brun\b.{0,20}\bliveness\b", block, re.IGNORECASE):
+        problems.append(f"{path}:{line} does not run `liveness` before deciding the watch action")
+    if not re.search(r"\bwatch_warranted\b.{0,80}\btrue\b", block, re.IGNORECASE):
+        problems.append(f"{path}:{line} does not act only when returned `watch_warranted` is `true`")
+    if not re.search(r"\b(?:ensure|relaunch)\b.{0,80}\bwatch\b", block, re.IGNORECASE):
+        problems.append(f"{path}:{line} does not name the ensure/relaunch watch action")
+    if "stage-2-ci.md" not in block or "WATCH ONLY WHAT CAN MOVE" not in block:
+        problems.append(f"{path}:{line} does not point to `stage-2-ci.md`, \"WATCH ONLY WHAT CAN MOVE\"")
+    if not re.search(r"\bparked status\b.{0,80}\bdoes not override\b", block, re.IGNORECASE):
+        problems.append(f"{path}:{line} does not say parked status leaves the returned warrant unchanged")
+    return problems
+
+
+def watch_formula_problems(path: Path, text: str) -> list[str]:
+    """Reject consumer-side watch predicates; stage-2-ci.md and executable tests own those details."""
+    patterns = (
+        ("a `buckets.RUNNING` predicate", re.compile(r"\bbuckets(?:\.RUNNING|\[[\"']RUNNING[\"']\])")),
+        ("an explicit `watch_warranted` formula", re.compile(r"\bwatch_warranted\s*=")),
+        ("a still-RUNNING watch rule",
+         re.compile(r"(?:\bwatch\w*|\bwarrant\w*).{0,160}\bstill-?\s*RUNNING\b|"
+                    r"\bstill-?\s*RUNNING\b.{0,160}(?:\bwatch\w*|\bwarrant\w*)", re.IGNORECASE)),
+        ("a can-move watch rule",
+         re.compile(r"(?:\bwatch\w*|\bwarrant\w*).{0,160}\b(?:can still|could|nothing can) move\b|"
+                    r"\b(?:can still|could|nothing can) move\b.{0,160}(?:\bwatch\w*|\bwarrant\w*)",
+                    re.IGNORECASE)),
+        ("a no-moving-row watch rule",
+         re.compile(r"(?:\bwatch\w*|\bwarrant\w*).{0,160}\b(?:nothing is running|no row moving)\b|"
+                    r"\b(?:nothing is running|no row moving)\b.{0,160}(?:\bwatch\w*|\bwarrant\w*)",
+                    re.IGNORECASE)),
+        ("an alive-while watch rule",
+         re.compile(r"(?:\bwatch\w*|\bwarrant\w*).{0,160}\balive while\b|"
+                    r"\balive while\b.{0,160}(?:\bwatch\w*|\bwarrant\w*)", re.IGNORECASE)),
+    )
+    problems = []
+    offset = 0
+    for paragraph in re.split(r"\n\s*\n", text):
+        plain = " ".join(paragraph.replace("`", "").split())
+        if "watch" not in plain.lower():
+            offset += len(paragraph)
+            continue
+        start = text.find(paragraph, offset)
+        line = text.count("\n", 0, start) + 1 if start >= 0 else 1
+        offset = start + len(paragraph) if start >= 0 else offset + len(paragraph)
+        for what, pattern in patterns:
+            if pattern.search(plain):
+                problems.append(f"{path}:{line} restates {what} outside the watch policy owner")
+    return problems
+
+
+def check_watch_action_docs(root: Path | None = None) -> tuple[list[str], list[str]]:
+    """Named watch-action blocks consume `watch_warranted`; other docs never define a second predicate."""
+    base = root or HERE.parent
+    problems, blocks = [], []
+    for relative, anchor in WATCH_ACTION_CONSUMERS:
+        path = base / relative
+        if not path.exists():
+            problems.append(f"{relative}:{anchor!r} is missing — the named watch-action block has no subject")
+            continue
+        text = path.read_text(encoding="utf-8")
+        found = watch_action_block_problems(Path(relative), text, anchor)
+        problems += found
+        if not found:
+            blocks.append(f"{relative}:{anchor}")
+
+    for path in sorted(base.rglob("*.md")):
+        relative = path.relative_to(base)
+        if relative == WATCH_POLICY_OWNER or "fixtures" in relative.parts:
+            continue
+        problems += watch_formula_problems(relative, path.read_text(encoding="utf-8"))
+    return problems, blocks
+
+
 def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) -> int:
     """Assert the DOC, the CODE, and this tool's DECIDE_ORDER all say the same thing.
 
@@ -2465,6 +2565,11 @@ def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) 
     if not liveness_problems:
         held.append(f"{'the liveness invocations':32} {len(liveness_copies)} runnable copies, every one "
                     f"answering --machine-action")
+    watch_problems, watch_blocks = check_watch_action_docs()
+    problems += watch_problems
+    if not watch_problems:
+        held.append(f"{'the CI watch actions':32} {len(watch_blocks)} named consumer blocks act on returned "
+                    f"watch_warranted; no consumer doc defines another predicate")
     for line in held:
         print(f"ok       {line}")
     for problem in problems:
@@ -2478,7 +2583,8 @@ def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) 
         return 1
     print(f"{len(checks) + len(held)} checks: {spec_doc.name}, {driver_doc.name}, ci-snapshot.py and "
           f"ci-status.py agree — enums, CLASSIFY buckets, TOTALITY, the DECIDE order, the caps, the "
-          f"FINGERPRINT lines, moved-head and liveness contracts, and every copy of every command.")
+          f"FINGERPRINT lines, moved-head and liveness contracts, every command copy, and every named "
+          f"watch action.")
     return 0
 
 

@@ -49,6 +49,7 @@ from typing import Callable
 
 HERE = Path(__file__).resolve().parent
 STATUS_PY = HERE / "ci-status.py"
+WATCH_DOC_FIXTURES = HERE / "fixtures" / "ci-status-doc-watch"
 
 
 # --- the fingerprint canonicalization, pinned to the BYTE -----------------------------------------
@@ -972,6 +973,29 @@ def liveness_cases(ci, tmp: Path) -> list[str]:
     return problems
 
 
+def watch_doc_cases(ci) -> list[str]:
+    """Focused fixtures pin the consumer action and the ban on a second watch predicate."""
+    problems = []
+    anchor = "**Fixture watch action.**"
+
+    good = (WATCH_DOC_FIXTURES / "good.md").read_text(encoding="utf-8")
+    got = (ci.watch_action_block_problems(Path("good.md"), good, anchor)
+           + ci.watch_formula_problems(Path("good.md"), good))
+    if got:
+        problems.append(f"[watch-doc] valid returned-fact consumer was rejected: {'; '.join(got)}")
+
+    missing = (WATCH_DOC_FIXTURES / "missing-warrant.md").read_text(encoding="utf-8")
+    got = ci.watch_action_block_problems(Path("missing-warrant.md"), missing, anchor)
+    if not any("watch_warranted" in problem for problem in got):
+        problems.append("[watch-doc] a named consumer that omits `watch_warranted` was accepted")
+
+    formula = (WATCH_DOC_FIXTURES / "independent-formula.md").read_text(encoding="utf-8")
+    got = ci.watch_formula_problems(Path("independent-formula.md"), formula)
+    if not any("buckets.RUNNING" in problem for problem in got):
+        problems.append("[watch-doc] an independent `buckets.RUNNING` watch predicate was accepted")
+    return problems
+
+
 def run(ci, tmp: Path) -> int:
     """Every fixture, then the seams, then `doc-check`. Non-zero on any failure.
 
@@ -1021,6 +1045,14 @@ def run(ci, tmp: Path) -> int:
               f"to the cap, the stall clock, the refetch cap, machine-action stop, held observation, "
               f"stale-head refusal, retained moved-head artifact, and the watch_warranted reduction "
               f"(incl. the UNCLASSIFIED exclusion)")
+
+    watch_doc_problems = watch_doc_cases(ci)
+    for problem in watch_doc_problems:
+        failures += 1
+        print(f"FAIL     {problem}")
+    if not watch_doc_problems:
+        print(f"ok       {'watch-action doc fixtures':32} -> returned-field consumer accepted; missing field "
+              f"and independent predicate refused")
 
     print()
     print(f"--- doc-check: {ci.SPEC_DOC.name} + {ci.DRIVER_DOC.name} vs the code that runs ---")
