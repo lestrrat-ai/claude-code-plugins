@@ -993,6 +993,20 @@ def watch_doc_cases(ci) -> list[str]:
     got = ci.watch_formula_problems(Path("independent-formula.md"), formula)
     if not any("buckets.RUNNING" in problem for problem in got):
         problems.append("[watch-doc] an independent `buckets.RUNNING` watch predicate was accepted")
+
+    formula = (WATCH_DOC_FIXTURES / "consumer-ci-formula.md").read_text(encoding="utf-8")
+    got = ci.watch_formula_problems(Path("consumer-ci-formula.md"), formula)
+    if not any("consumer `ci` verdict predicate" in problem for problem in got):
+        problems.append("[watch-doc] a consumer `ci == pending` watch predicate was accepted")
+
+    hidden = (WATCH_DOC_FIXTURES / "comment-only-requirements.md").read_text(encoding="utf-8")
+    action_got = ci.watch_action_block_problems(Path("comment-only-requirements.md"), hidden, anchor)
+    if len(action_got) != 5:
+        problems.append("[watch-doc] HTML-comment-only action requirements were accepted")
+    formula_got = ci.watch_formula_problems(Path("comment-only-requirements.md"), hidden)
+    if formula_got:
+        problems.append(f"[watch-doc] an HTML-comment-only formula was treated as visible: "
+                        f"{'; '.join(formula_got)}")
     return problems
 
 

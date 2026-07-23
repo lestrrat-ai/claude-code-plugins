@@ -2321,8 +2321,19 @@ def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list
     return problems, copies
 
 
+def markdown_visible_text(text: str) -> str:
+    """Remove HTML comments while preserving offsets and line numbers."""
+    return re.sub(
+        r"<!--.*?(?:-->|$)",
+        lambda match: re.sub(r"[^\n]", " ", match.group(0)),
+        text,
+        flags=re.DOTALL,
+    )
+
+
 def watch_action_block_problems(path: Path, text: str, anchor: str) -> list[str]:
     """One named consumer acts on the returned fact and points to the owner without restating its rule."""
+    text = markdown_visible_text(text)
     positions = [match.start() for match in re.finditer(re.escape(anchor), text)]
     if len(positions) != 1:
         return [f"{path}:{anchor!r} occurs {len(positions)} times — each named watch-action block must "
@@ -2347,9 +2358,17 @@ def watch_action_block_problems(path: Path, text: str, anchor: str) -> list[str]
 
 def watch_formula_problems(path: Path, text: str) -> list[str]:
     """Reject consumer-side watch predicates; stage-2-ci.md and executable tests own those details."""
+    text = markdown_visible_text(text)
     patterns = (
         ("a `buckets.RUNNING` predicate", re.compile(r"\bbuckets(?:\.RUNNING|\[[\"']RUNNING[\"']\])")),
         ("an explicit `watch_warranted` formula", re.compile(r"\bwatch_warranted\s*=")),
+        ("a consumer `ci` verdict predicate",
+         re.compile(r"(?:\b(?:launch|relaunch|ensure|start)\b.{0,80}\bwatch\b.{0,160}"
+                    r"\b(?:when(?:ever)?|if|while)\b.{0,80}\bci\b\s*(?:==|=|is)\s*"
+                    r"(?:green|red|pending)\b|"
+                    r"\b(?:when(?:ever)?|if|while)\b.{0,80}\bci\b\s*(?:==|=|is)\s*"
+                    r"(?:green|red|pending)\b.{0,160}\b(?:launch|relaunch|ensure|start)\b"
+                    r".{0,80}\bwatch\b)", re.IGNORECASE)),
         ("a still-RUNNING watch rule",
          re.compile(r"(?:\bwatch\w*|\bwarrant\w*).{0,160}\bstill-?\s*RUNNING\b|"
                     r"\bstill-?\s*RUNNING\b.{0,160}(?:\bwatch\w*|\bwarrant\w*)", re.IGNORECASE)),
