@@ -158,6 +158,17 @@ class Scenario:
         git(self.seed, "push", "origin", f"HEAD:refs/heads/{self.base}")
         git(self.seed, "checkout", PR_BRANCH)
 
+    def rewrite_base(self, overrides: "dict[int, str]"):
+        """Force-rewrite the remote base to a sibling of the worktree's tracked base."""
+        if self.base == "main":
+            git(self.seed, "checkout", "main")
+        else:
+            git(self.seed, "checkout", "--detach", f"refs/heads/{self.base}")
+        (self.seed / "f").write_text(_numbered(overrides), encoding="utf-8")
+        git(self.seed, "commit", "--amend", "-am", "rewritten base")
+        git(self.seed, "push", "--force", "origin", f"HEAD:refs/heads/{self.base}")
+        git(self.seed, "checkout", PR_BRANCH)
+
     def move_remote_pr(self):
         """A concurrent push moves remote `pr` past the worktree's stale tracking ref (breaks the lease)."""
         git(self.seed, "checkout", PR_BRANCH)
@@ -573,6 +584,28 @@ def t_variant_spelling_rebases_against_row_base():
               "the remote PR branch was force-with-lease pushed to the rebased head")
 
 
+def t_force_rewritten_base_refreshes_and_rebases():
+    with tempfile.TemporaryDirectory() as tmp:
+        s = _scenario(tmp)
+        tracking_ref = "refs/remotes/origin/main"
+        s.advance_base({12: "12-FIRST"})
+        git(s.wt, "fetch", "origin", "main")
+        old_base = head(s.wt, tracking_ref)
+        s.rewrite_base({12: "12-REWRITTEN"})
+        rewritten_base = head(s.remote, "refs/heads/main")
+        check(old_base != rewritten_base,
+              "fixture setup: the remote base rewrite must differ from the stale tracking ref")
+
+        code, out, err = s.invoke()
+        check(code == M.EXIT_OK,
+              f"a clean rebase onto a force-rewritten base must succeed "
+              f"(code={code}, out={out!r}, err={err!r})")
+        check(head(s.wt, tracking_ref) == rewritten_base,
+              "the fetch must force-refresh origin/main to the rewritten remote base")
+        check(head(s.wt) != s.orig_head,
+              "the clean rebase onto the rewritten base must move HEAD")
+
+
 def t_dash_leading_base_fetch_refreshes_tracking_ref():
     with tempfile.TemporaryDirectory() as tmp:
         s = Scenario(Path(tmp), base=DASH_BASE).build()
@@ -585,7 +618,7 @@ def t_dash_leading_base_fetch_refreshes_tracking_ref():
         code, out, err = s.invoke("--dry-run")
         check(code == M.EXIT_OK, f"dash-leading base dry-run preconditions must pass (code={code}, err={err})")
         plan = json.loads(out.strip().splitlines()[-1])
-        refspec = f"refs/heads/{DASH_BASE}:refs/remotes/origin/{DASH_BASE}"
+        refspec = f"+refs/heads/{DASH_BASE}:refs/remotes/origin/{DASH_BASE}"
         check(plan["would"].startswith(f"fetch origin {refspec};"),
               f"the dry-run must show the fully qualified safe refspec, got {plan['would']!r}")
         check(head(s.wt, tracking_ref) == stale_base,
@@ -607,7 +640,7 @@ def t_dash_leading_fetch_failure_names_safe_refspec():
         check(code == M.EXIT_PRECONDITION,
               f"a missing dash-leading base must refuse at exit 2 (code={code}, err={err!r})")
         detail = json.loads(out.strip().splitlines()[-1])["detail"]
-        refspec = f"refs/heads/{DASH_BASE}:refs/remotes/origin/{DASH_BASE}"
+        refspec = f"+refs/heads/{DASH_BASE}:refs/remotes/origin/{DASH_BASE}"
         check(detail.startswith(f"`git fetch origin {refspec}` failed:"),
               f"the fetch diagnostic must show the safe fully qualified refspec, got {detail!r}")
 
@@ -660,6 +693,9 @@ CASES = [
     ("variant-spelling-rebases-row-base",
      "an accepted origin/main spelling rebases against the row's effective base 'main', not the raw arg",
      t_variant_spelling_rebases_against_row_base),
+    ("force-rewritten-base",
+     "a non-fast-forward base rewrite force-refreshes its tracking ref and rebases cleanly",
+     t_force_rewritten_base_refreshes_and_rebases),
     ("dash-base-safe-fetch",
      "a dash-leading base uses a fully qualified fetch, refreshes its tracking ref, and rebases cleanly",
      t_dash_leading_base_fetch_refreshes_tracking_ref),

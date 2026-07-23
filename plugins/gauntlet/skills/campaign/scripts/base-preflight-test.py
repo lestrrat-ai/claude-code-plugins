@@ -317,6 +317,51 @@ def t_clean_view_with_current_base_proceeds():
               f"a current base must permit the candidate, got {out!r}")
 
 
+def t_force_rewritten_base_refreshes_and_rebases():
+    """A rewritten remote base is refreshed before ancestry is decided."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        remote = root / "remote.git"
+        seed = root / "seed"
+        candidate = root / "candidate"
+
+        result = subprocess.run(["git", "init", "--bare", "-b", "main", str(remote)],
+                                capture_output=True, text=True, check=False)
+        check(result.returncode == 0, f"could not create fixture remote: {result.stderr.strip()}")
+        result = subprocess.run(["git", "clone", str(remote), str(seed)],
+                                capture_output=True, text=True, check=False)
+        check(result.returncode == 0, f"could not clone fixture seed: {result.stderr.strip()}")
+        _configure_repo(seed)
+        (seed / "f").write_text("base\n", encoding="utf-8")
+        _git(seed, "add", "f")
+        _git(seed, "commit", "-m", "base")
+        _git(seed, "push", "origin", "main")
+
+        result = subprocess.run(["git", "clone", str(remote), str(candidate)],
+                                capture_output=True, text=True, check=False)
+        check(result.returncode == 0, f"could not clone fixture candidate: {result.stderr.strip()}")
+
+        (seed / "f").write_text("first advance\n", encoding="utf-8")
+        _git(seed, "commit", "-am", "first advance")
+        _git(seed, "push", "origin", "main")
+        _git(candidate, "fetch", "origin", "main")
+        old_base = _git(candidate, "rev-parse", "refs/remotes/origin/main").stdout.strip()
+
+        (seed / "f").write_text("rewritten advance\n", encoding="utf-8")
+        _git(seed, "commit", "--amend", "-am", "rewritten base")
+        rewritten_base = _git(seed, "rev-parse", "HEAD").stdout.strip()
+        _git(seed, "push", "--force", "origin", "HEAD:refs/heads/main")
+        check(old_base != rewritten_base,
+              "fixture setup: the remote base rewrite must differ from the stale tracking ref")
+
+        result = M.check_base_ancestry(str(candidate), "main", "origin")
+        refreshed_base = _git(candidate, "rev-parse", "refs/remotes/origin/main").stdout.strip()
+        check(result == ("stale", ""),
+              f"a candidate based on the replaced base must be sent to rebase, got {result!r}")
+        check(refreshed_base == rewritten_base,
+              "the ancestry check must force-refresh origin/main to the rewritten remote base")
+
+
 DASH_BASE = "--upload-pack=/bin/false"
 
 
@@ -709,6 +754,8 @@ CASES = [
      t_clean_view_with_stale_base_rebases),
     ("clean-view-current-base", "a CLEAN candidate containing fetched base proceeds",
      t_clean_view_with_current_base_proceeds),
+    ("force-rewritten-base", "a rewritten remote base is refreshed before ancestry reports stale",
+     t_force_rewritten_base_refreshes_and_rebases),
     ("dash-base-current", "a dash-leading base refreshes its tracking ref and reports current ancestry",
      t_dash_leading_current_base_refreshes_and_proceeds),
     ("dash-base-stale", "a dash-leading base refreshes its tracking ref and reports stale ancestry",

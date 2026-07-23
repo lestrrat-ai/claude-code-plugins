@@ -237,7 +237,8 @@ def run(args) -> int:
 
     # Fully qualify both sides of the refspec so a legal dash-leading base is ref data, never a Git option.
     # The destination is the same remote-tracking ref every later diff/rebase reads.
-    fetch_refspec = f"refs/heads/{base}:refs/remotes/{remote}/{base}"
+    # Force-update the remote-tracking destination, matching Git's default remote fetch refspec.
+    fetch_refspec = f"+refs/heads/{base}:refs/remotes/{remote}/{base}"
 
     # --- --dry-run STOPS HERE — before the first mutation (fetch moves a tracking ref) ------------------
     if args.dry_run:

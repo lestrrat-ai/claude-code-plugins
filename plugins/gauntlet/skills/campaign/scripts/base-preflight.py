@@ -126,7 +126,8 @@ def check_base_ancestry(worktree: "str | None", base: "str | None", remote: str)
     """
     if not worktree or not base:
         return "unverified", "base ancestry requires --worktree and --base"
-    tracking_refspec = f"refs/heads/{base}:refs/remotes/{remote}/{base}"
+    # Force-update the remote-tracking destination, matching Git's default remote fetch refspec.
+    tracking_refspec = f"+refs/heads/{base}:refs/remotes/{remote}/{base}"
     fetch = subprocess.run(  # noqa: S603
         ["git", "-C", worktree, "fetch", remote, tracking_refspec],
         capture_output=True, text=True, check=False)
