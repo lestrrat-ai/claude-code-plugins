@@ -13,6 +13,7 @@ check outranks the enums.
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -63,6 +64,14 @@ def decide(r: dict, v: dict) -> dict:
 def check(cond: bool, msg: str) -> None:
     if not cond:
         raise M.SelfTestFailure(msg)
+
+
+def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
+    proc = subprocess.run(
+        ["git", "-C", str(cwd), *args], capture_output=True, text=True, check=False)
+    check(proc.returncode == 0,
+          f"git {' '.join(args)} failed in {cwd}: {proc.stderr.strip()}")
+    return proc
 
 
 def expect(r: dict, v: dict, verdict: str, reason: "str | None" = None) -> dict:
@@ -236,6 +245,50 @@ def t_cli_stale_base_blocks_merge():
     check(code == 0, f"a stale base is a computed not-yet result (stderr: {err})")
     check(json.loads(out) == {"verdict": "not-yet", "reason": "base moved ahead — rebase"},
           f"a CLEAN candidate behind the base must not merge, got {out!r}")
+
+
+def t_cli_ancestry_uses_reviewed_sha_not_moved_worktree_head():
+    """The Stage 3 probe receives row.head_sha even when the worktree has moved to another commit."""
+    real_check = M.B.check_base_ancestry
+    seen: list[tuple[str, str, str, str]] = []
+
+    def probe(worktree: str, base: str, remote: str, candidate_revision: str) -> tuple[str, str]:
+        seen.append((worktree, base, remote, candidate_revision))
+        return "stale", ""
+
+    M.B.check_base_ancestry = probe
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            candidate = Path(d) / "candidate"
+            candidate.mkdir()
+            _git(candidate, "init", "-b", "main")
+            _git(candidate, "config", "user.email", "fixture@example.invalid")
+            _git(candidate, "config", "user.name", "Fixture")
+            (candidate / "f").write_text("reviewed\n", encoding="utf-8")
+            _git(candidate, "add", "f")
+            _git(candidate, "commit", "-m", "reviewed")
+            reviewed = _git(candidate, "rev-parse", "HEAD").stdout.strip()
+            (candidate / "f").write_text("moved\n", encoding="utf-8")
+            _git(candidate, "commit", "-am", "move local head")
+            local_head = _git(candidate, "rev-parse", "HEAD").stdout.strip()
+            check(local_head != reviewed, "fixture requires local HEAD to differ from row.head_sha")
+
+            candidate_row = row(head_sha=reviewed)
+            candidate_row["worktree"] = str(candidate)
+            led = Path(d) / "state.jsonl"
+            L.dump(
+                led, dict(L.HEADER_DEFAULTS, run_id="g1", base_branch="main"), [candidate_row])
+            vjson = Path(d) / "view.json"
+            vjson.write_text(json.dumps(view(headRefOid=reviewed)), encoding="utf-8")
+            code, out, err = capture_cli(
+                M.main, ["check", "--pr", "9", "--file", str(led), "--view-json", str(vjson)])
+    finally:
+        M.B.check_base_ancestry = real_check
+    check(code == 0, f"a stale reviewed SHA is a computed not-yet result (stderr: {err})")
+    check(json.loads(out) == {"verdict": "not-yet", "reason": "base moved ahead — rebase"},
+          f"the stale reviewed SHA must block merge, got {out!r}")
+    check(seen == [(str(candidate), "main", "origin", reviewed)],
+          f"the ancestry probe must receive row.head_sha, not ambient HEAD: {seen!r}")
 
 
 def t_cli_unverified_base_blocks_merge():
@@ -452,6 +505,8 @@ CASES = [
     ("cli-unresolved-base", "a both-`-` unresolved base never merges — the finding #2 false-permissive fix",
      t_cli_unresolved_base_never_merges),
     ("cli-stale-base", "a CLEAN candidate behind refreshed base cannot merge", t_cli_stale_base_blocks_merge),
+    ("cli-pinned-base-ancestry", "Stage 3 checks base ancestry against row.head_sha, not moved worktree HEAD",
+     t_cli_ancestry_uses_reviewed_sha_not_moved_worktree_head),
     ("cli-unverified-base", "an unreadable base ancestry fails closed", t_cli_unverified_base_blocks_merge),
     ("cli-blocked-behind", "a BLOCKED PR behind its base routes to rebase (the #134 fix)",
      t_cli_blocked_behind_rebases),

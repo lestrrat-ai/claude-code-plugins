@@ -58,6 +58,7 @@ class Fake:
                  repo_identity: str = "o/r", mergeable: str = "MERGEABLE",
                  merge_state_status: str = "CLEAN", header_base: "str | None" = None,
                  base_ff_blocked: bool = False, ancestor_ok: bool = True,
+                 worktree_head: str = SHA,
                  plumb_fail: "str | None" = None,
                  staged_paths: "list[str] | None" = None,
                  staged_incoming_paths: "list[str] | None" = None,
@@ -115,6 +116,9 @@ class Fake:
         # resolve through the SAME base-ancestry probe the MERGE path runs (behind -> rebase, current -> park).
         self.mergeable = mergeable
         self.merge_state_status = merge_state_status
+        # The worktree may move after review while the ledger and live PR remain pinned to SHA. Stage 3's
+        # base-ancestry probe must inspect the reviewed SHA, never this ambient checkout tip.
+        self.worktree_head = worktree_head
         # Post-merge base-sync diagnostic knobs, all modeled on checked[0] (the checkout holding the base,
         # which the fixtures set to root). `base_ff_blocked` forces the checked-out-base `merge --ff-only`
         # to fail as git does against uncommitted work. `ancestor_ok` is the `merge-base --is-ancestor HEAD
@@ -181,7 +185,7 @@ class Fake:
             entries.append(f"worktree {self.root}\0HEAD {'b' * 40}\0branch refs/heads/{self.base}\0\0")
         if self.worktree_present:
             entries.append(
-                f"worktree {self.worktree}\0HEAD {SHA}\0branch refs/heads/{self.branch}\0\0")
+                f"worktree {self.worktree}\0HEAD {self.worktree_head}\0branch refs/heads/{self.branch}\0\0")
         return "".join(entries)
 
     def run(self, argv: list[str], *, cwd: "str | None" = None,
@@ -410,6 +414,26 @@ def t_gate_refusals():
             check(f.merged_calls == 0, f"{kwargs} reached merge")
         finally:
             finish(td, real)
+
+
+def t_base_ancestry_uses_reviewed_sha_not_moved_worktree_head():
+    moved_head = "b" * 40
+    td, root, f, led, real = scenario(worktree_head=moved_head)
+    try:
+        check(f.worktree_head != SHA,
+              "fixture requires the local worktree HEAD to differ from the reviewed ledger SHA")
+        code, _result, err = invoke(f, led, root)
+        check(code == 0, f"a base-current reviewed SHA should merge: {err}")
+        expected = [
+            "git", "-C", str(f.worktree), "merge-base", "--is-ancestor",
+            f"origin/{f.base}", SHA,
+        ]
+        probes = [argv for argv, _ in f.calls
+                  if argv[:5] == ["git", "-C", str(f.worktree), "merge-base", "--is-ancestor"]]
+        check(probes == [expected],
+              f"the merge runner must probe the reviewed SHA, not moved local HEAD: {probes!r}")
+    finally:
+        finish(td, real)
 
 
 def t_blocked_probe_rebases_when_behind_parks_when_current():
@@ -1628,6 +1652,8 @@ CASES = [
     ("ownership-matrix", "all worktree/branch ownership combinations clean only owned resources", t_reused_resources_are_left),
     ("root-foreign", "root cleanup and foreign branch are refused before merge", t_root_and_foreign_targets_refused),
     ("gate-refusals", "held, stale, red, pending, and short-tally rows never merge", t_gate_refusals),
+    ("pinned-base-ancestry", "merge ancestry probes row.head_sha when the local worktree HEAD differs",
+     t_base_ancestry_uses_reviewed_sha_not_moved_worktree_head),
     ("blocked-probe-ancestry", "a BLOCKED PROBE resolves via the base-ancestry probe: behind rebases, up-to-date parks; neither merges", t_blocked_probe_rebases_when_behind_parks_when_current),
     ("stale-malformed", "stale live SHA and malformed ownership fail closed", t_stale_head_and_malformed_ownership_refused),
     ("owner-and-view", "another run and uncertain GitHub state fail closed", t_owner_label_and_uncertain_view_refused),

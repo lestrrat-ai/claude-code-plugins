@@ -16,7 +16,7 @@ two enums are crossed, so nobody does it by hand and nobody does it wrong.
 
 `.mergeable = MERGEABLE` is NECESSARY BUT NOT SUFFICIENT: it falls THROUGH to `.mergeStateStatus`, which is
 the only field that yields a preliminary `merge`. Before emitting `merge`, the shared preflight helper
-fetches the ledger base and proves it is an ancestor of the candidate `HEAD`. `BLOCKED` runs that SAME
+fetches the ledger base and proves it is an ancestor of the ledger's reviewed `head_sha`. `BLOCKED` runs that SAME
 ancestry probe before it parks: a BLOCKED PR that is merely BEHIND its base is routed to a rebase (which the
 gate carries forward), not parked on the user; only a BLOCKED PR proven up-to-date is a genuine human/ruleset
 block and parks. The probe NEVER yields a new merge — it can only turn a park into a rebase. Both enums are mapped TOTALLY
@@ -308,7 +308,8 @@ def check(pr: str, ledger_path: Path, repo: "str | None", view_json: "str | None
     # unprotected base, and a BLOCKED PR may merely be BEHIND its base — a rebase fixes both. So re-fetch and
     # compare actual ancestry before the final decision; the shared preflight helper owns the graph check so
     # review dispatch and Stage 3 cannot disagree about what "current base" means.
-    ancestry, detail = B.check_base_ancestry(row.get("worktree"), effective_base, "origin")
+    ancestry, detail = B.check_base_ancestry(
+        row.get("worktree"), effective_base, "origin", row["head_sha"])
     if ancestry == "stale":                       # behind base -> rebase (BOTH paths; never a merge)
         print(json.dumps(_not_yet(REBASE_REASON)))
         return 0

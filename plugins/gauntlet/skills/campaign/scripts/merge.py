@@ -282,14 +282,14 @@ def _base_is_current(row: dict, header: dict) -> None:
         f"refresh of origin/{base} for merge-check",
     )
     probe = _run(
-        ["git", "-C", worktree, "merge-base", "--is-ancestor", f"origin/{base}", "HEAD"])
+        ["git", "-C", worktree, "merge-base", "--is-ancestor", f"origin/{base}", row["head_sha"]])
     if probe.returncode == 1:
         raise Refusal("merge-check: base moved ahead — rebase")
     _require(probe, f"merge-check ancestry against origin/{base}")
 
 
 def _require_ready(row: dict, header: dict, view: dict) -> None:
-    """Delegate policy to merge-check.py, then supply its fetched-base ancestry phase.
+    """Delegate policy to merge-check.py, then check fetched-base ancestry against the reviewed SHA.
 
     merge-check.decide returns MERGE only for CLEAN/HAS_HOOKS; a BLOCKED PR is left as the PROBE sentinel
     because `decide` alone cannot tell a genuine block from one that is merely BEHIND its base. Mirror
