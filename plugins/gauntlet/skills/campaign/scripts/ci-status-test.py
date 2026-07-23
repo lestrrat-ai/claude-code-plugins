@@ -456,13 +456,14 @@ def required_set_cli_cases(ci, tmp: Path) -> list[str]:
             capture_output=True, text=True, check=False, env=env,
         )
 
-    def valid_ledger(path: Path, *, header_required: str, row_required: "str | None" = None) -> None:
+    def valid_ledger(path: Path, *, header_required: str, row_required: "str | None" = None,
+                     base_branch: str = "main") -> None:
         header = dict(ci.LEDGER.HEADER_DEFAULTS)
-        header.update({"run_id": path.stem, "base_branch": "main", "required_set": header_required})
+        header.update({"run_id": path.stem, "base_branch": base_branch, "required_set": header_required})
         rows = []
         if row_required is not None:
             row = dict(ci.LEDGER.ROW_DEFAULTS)
-            row.update({"pr": "1", "base_branch": "main", "required_set": row_required,
+            row.update({"pr": "1", "base_branch": base_branch, "required_set": row_required,
                         "status": "in_review"})
             rows.append(row)
         ci.LEDGER.dump(path, header, rows)
@@ -504,6 +505,8 @@ def required_set_cli_cases(ci, tmp: Path) -> list[str]:
             problems.append(f"[required-set CLI] {name} exited {proc.returncode}, not 2: {proc.stderr!r}")
         if ledger.read_bytes() != before:
             problems.append(f"[required-set CLI] {name} mutated the ledger")
+        if proc.stdout:
+            problems.append(f"[required-set CLI] {name} emitted stdout: {proc.stdout!r}")
         lines = [line for line in proc.stderr.splitlines() if line]
         if "Traceback" in proc.stderr:
             problems.append(f"[required-set CLI] {name} emitted a traceback: {proc.stderr!r}")
@@ -547,6 +550,46 @@ def required_set_cli_cases(ci, tmp: Path) -> list[str]:
     if gh_calls.read_bytes() != calls_before:
         problems.append("[required-set CLI] embedded-space --repo fetched from GitHub")
 
+    overlong_owner_repo = cli_tmp / "overlong-owner-repo.jsonl"
+    valid_ledger(overlong_owner_repo, header_required=ci.SNAP.CANNOT_READ, row_required="-")
+    overlong_owner_before = overlong_owner_repo.read_bytes()
+    calls_before = gh_calls.read_bytes()
+    check_error(
+        "overlong --repo owner",
+        overlong_owner_repo,
+        overlong_owner_before,
+        run_cli(overlong_owner_repo, repo=f"{'o' * 40}/repo", env=denied_env),
+    )
+    if gh_calls.read_bytes() != calls_before:
+        problems.append("[required-set CLI] overlong --repo owner fetched from GitHub")
+
+    overlong_name_repo = cli_tmp / "overlong-name-repo.jsonl"
+    valid_ledger(overlong_name_repo, header_required=ci.SNAP.CANNOT_READ, row_required="-")
+    overlong_name_before = overlong_name_repo.read_bytes()
+    calls_before = gh_calls.read_bytes()
+    check_error(
+        "overlong --repo name",
+        overlong_name_repo,
+        overlong_name_before,
+        run_cli(overlong_name_repo, repo=f"owner/{'r' * 101}", env=denied_env),
+    )
+    if gh_calls.read_bytes() != calls_before:
+        problems.append("[required-set CLI] overlong --repo name fetched from GitHub")
+
+    settled_surrogate = cli_tmp / "settled-surrogate.jsonl"
+    valid_ledger(
+        settled_surrogate,
+        header_required=ci.SNAP.NONE_DECLARED,
+        base_branch="\ud800",
+    )
+    settled_surrogate_before = settled_surrogate.read_bytes()
+    check_error(
+        "unencodable settled output",
+        settled_surrogate,
+        settled_surrogate_before,
+        run_cli(settled_surrogate),
+    )
+
     malformed_cases = {
         "headerless ledger": b'{"type":"row","pr":"1"}\n',
         "duplicate-row ledger": (b'{"type":"header"}\n'
@@ -580,6 +623,33 @@ def required_set_cli_cases(ci, tmp: Path) -> list[str]:
     )
     if gh_calls.read_bytes() != calls_before:
         problems.append("[required-set CLI] malformed row required set fetched from GitHub")
+
+    non_utf_bin = cli_tmp / "non-utf-bin"
+    non_utf_bin.mkdir()
+    non_utf_gh = non_utf_bin / "gh"
+    non_utf_gh.write_text(
+        "#!/bin/sh\nprintf 'called\\n' >> \"$GH_CALLS\"\nprintf '\\377'\n",
+        encoding="utf-8",
+    )
+    non_utf_gh.chmod(0o700)
+    non_utf_env = os.environ.copy()
+    non_utf_env["PATH"] = str(non_utf_bin) + os.pathsep + non_utf_env.get("PATH", "")
+    non_utf_env["GH_CALLS"] = str(gh_calls)
+    non_utf_response = cli_tmp / "non-utf-response.jsonl"
+    valid_ledger(non_utf_response, header_required=ci.SNAP.CANNOT_READ, row_required="-")
+    calls_before = gh_calls.read_bytes()
+    proc = run_cli(non_utf_response, env=non_utf_env)
+    _header, rows = ci.LEDGER.load(non_utf_response)
+    if proc.returncode != 1:
+        problems.append(f"[required-set CLI] non-UTF-8 response exited {proc.returncode}, not 1: "
+                        f"{proc.stderr!r}")
+    elif rows[0]["required_set"] != ci.SNAP.CANNOT_READ:
+        problems.append(f"[required-set CLI] non-UTF-8 response persisted "
+                        f"{rows[0]['required_set']!r}, not `unknown`")
+    elif proc.stderr:
+        problems.append(f"[required-set CLI] non-UTF-8 response emitted stderr: {proc.stderr!r}")
+    if len(gh_calls.read_bytes().splitlines()) != len(calls_before.splitlines()) + 1:
+        problems.append("[required-set CLI] non-UTF-8 response did not make exactly one GitHub call")
 
     if not hasattr(os, "geteuid") or os.geteuid() == 0:
         print("skip     [required-set CLI] chmod cannot make the ledger directory unwritable as this user")
