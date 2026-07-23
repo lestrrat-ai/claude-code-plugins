@@ -228,7 +228,8 @@ defaults", which an old ledger back-fills to. Its run-wide meaning is realized i
 `pr-adopt.py intent-sync`, which folds the current defaults into that PR's `intent-<pr>.md`
 **MANAGED block** inside `## Non-goals` (`pr-adoption.md` OWNS the block's format); `review-pass.py
 intent-check --ledger` refuses a PR whose managed block has drifted from this field before dispatch, and
-`verify --ledger` re-checks it at tally.
+`verify --ledger` compares the dispatch-time `pass_identity.default_non_goals` binding to this field at
+tally (`check_scope`).
 
 Header field notes (the header fields above; per-row fields follow):
 

@@ -288,7 +288,7 @@
   EVERY line of those files whatever produced it — every reviewer event now goes through a door
   (`emit-progress.py`, `emit-finding.py`, `emit-amendment.py`), and a hand-written line is caught on read
   all the same (Stage 2a owns that rule). **A verdict from a pass that does not verify `ok` is NEVER tallied**, and there are
-  **four** kinds of defect that make a pass `unusable` (Stage 2a, "Does this pass
+  **five** kinds of defect that make a pass `unusable` (Stage 2a, "Does this pass
   COUNT?", owns the enumeration):
   - **the active REPORT result is unusable** — missing, empty, truncated, duplicate, nonterminal,
     malformed, from the wrong launch attempt, or missing SATISFIED's exact immediately preceding
@@ -303,6 +303,10 @@
     and so is a `satisfied` that recorded one. `verify` derives the result from the active progress path;
     no caller may retell or override it. DEFERRED is not a verdict: it routes through progress to
     `amended`/`incomplete`, and is `unusable` if the pass is complete with nothing outstanding.
+  - **the pass's bound review SCOPE has DRIFTED** — a well-formed, canonical `pass_identity` whose
+    DISPATCH-TIME `default_non_goals` binding no longer matches the run's live defaults, because the
+    operator moved run scope while the review was in flight; `verify --ledger` voids that verdict exactly
+    as a moved head does (`check_scope`, the scope analogue of the head-SHA check).
   Every one of those rules holds at **both doors** — the same predicate refuses it on write (`emit`) and on
   read (`verify`), so it cannot be enforced at one and not the other. **Every identifier it handles has ONE
   legal form and NO door repairs one** (a unit id is `u01`-shaped; `pr`/`pass`/`launch_attempt` are decimal

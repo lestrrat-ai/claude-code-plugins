@@ -441,15 +441,18 @@ an actor who can really send that reply, and it quotes the PR's purpose verbatim
 through `review-pass.py`'s schema owner, **never** a `printf`, as the
 **first line** of the launch attempt's progress file **before** launching the reviewer process, so that
 file exists from dispatch onward. `pr`, `pass` and `launch_attempt` are taken **from the progress file's
-own name**, so the identity and the file it sits in can never disagree; the only values passed in are the
-head SHA (refused unless it is 40 lowercase hex) and `dispatched_at` (refused unless it is a UTC ISO-8601
+own name**, so the identity and the file it sits in can never disagree; the values passed in are the
+head SHA (refused unless it is 40 lowercase hex), `dispatched_at` (refused unless it is a UTC ISO-8601
 timestamp **that PARSES as a real moment**: `2026-99-99T99:99:99Z` has the exact right shape, and a month
 99 is not a month — the launch deadline is arithmetic on this value, so a shape check alone cannot protect
-it). Three rules depend on it: a late verdict is ignored unless its attempt
+it), and the run's `default_non_goals` — the DISPATCH-TIME review scope this pass's verdict is measured
+against at tally. Four rules depend on it: a late verdict is ignored unless its attempt
 id still matches the active pass; `dispatched_at` is the clock the launch check below measures against;
-and `launch_attempt` is how a *later heartbeat* — possibly a fresh agent — knows which recovery branch
+`launch_attempt` is how a *later heartbeat* — possibly a fresh agent — knows which recovery branch
 this pass has already consumed: the highest `launch_attempt` records how far it has walked the
-`runtime-adapter.md`, **Review preparation mapping** budget. A progress file holding **only** this line is
+`runtime-adapter.md`, **Review preparation mapping** budget; and `verify --ledger` compares the bound
+`default_non_goals` to the run's live defaults at tally (`check_scope`), voiding a verdict earned under a
+scope the operator has since moved. A progress file holding **only** this line is
 therefore evidence that the reviewer has produced nothing — not evidence of a missing file.
 
 **The attempt id is `pr` + `pass` + `head_sha` + `launch_attempt` — all four.** A relaunch keeps the
@@ -606,8 +609,9 @@ intents. It is **local, git-ignored driver bookkeeping**: campaign never writes 
 Its `## Non-goals` also carries the run's **default Non-goals** — the exclusions the operator declared once
 for the whole run — folded in by `pr-adopt.py intent-sync` as a MANAGED block (`pr-adoption.md` owns that
 block's format). `review-pass.py intent-check --ledger` refuses a PR whose managed block has drifted from
-the run header before the reviewer is ever launched, and `verify --ledger` re-checks it at tally so a
-verdict earned under a since-changed scope is not counted ("Does this pass COUNT?" owns that rule).
+the run header before the reviewer is ever launched, and `verify --ledger` compares the immutable
+dispatch-time `pass_identity.default_non_goals` binding to the run's live header at tally (`check_scope`),
+so a verdict earned under a since-changed scope is not counted ("Does this pass COUNT?" owns that rule).
 
 **It is passed to the reviewer VERBATIM**, in the dispatch prompt (`review-dispatch.md`). Three things follow:
 
@@ -784,10 +788,10 @@ pass is a trapdoor, not a disclosure:
 
 | verdict | exit | what it means | what to do |
 |---|---|---|---|
-| `ok` | 0 | the artifacts are sound: one strict result from the active attempt's report; a `pass_identity` naming **this** PR, **this** pass, **this** launch attempt and **the live head SHA**; a **usable intent block** for this PR; every planned unit `done` **once**, with concrete evidence, after a `started` for it; every `done` for a unit that is **actually in the plan**; no unruled amendment; and the parsed result **coheres** with the findings | tally the parsed binary result through `ledger.py verdict` |
+| `ok` | 0 | the artifacts are sound: one strict result from the active attempt's report; a `pass_identity` naming **this** PR, **this** pass, **this** launch attempt, **the live head SHA**, and a bound **`default_non_goals` still equal to the run's live defaults**; a **usable intent block** for this PR; every planned unit `done` **once**, with concrete evidence, after a `started` for it; every `done` for a unit that is **actually in the plan**; no unruled amendment; and the parsed result **coheres** with the findings | tally the parsed binary result through `ledger.py verdict` |
 | `incomplete` | 1 | sound, but a planned unit has no `done` — the pass has not covered its plan | it is still working (or it stopped early — the meaningful-progress rule decides which). **Never tally a verdict from it** |
 | `amended` | 1 | sound, but the reviewer raised a `plan_amendment_request` nobody has ruled on | fold it into the plan and restart the pass, or ignore it with a note — then re-run with `--amendments-ruled N` |
-| `unusable` | 1 | the artifacts are **defective** — the active report is missing, empty, truncated, duplicate, nonterminal, malformed, or lacks SATISFIED's exact residual-risk line; a short SHA or other malformed identifier; invalid progress/identity/findings; **no usable intent block**; a parsed result that does not cohere with findings; or a spurious DEFERRED result | the pass **CANNOT count**. Fix skipped adoption inputs when named; otherwise retry — the same pass, next launch attempt (`runtime-adapter.md`, "Review preparation mapping") — or take the fresh-worker fallback |
+| `unusable` | 1 | the artifacts are **defective** — the active report is missing, empty, truncated, duplicate, nonterminal, malformed, or lacks SATISFIED's exact residual-risk line; a short SHA or other malformed identifier; invalid progress/identity/findings; **no usable intent block**; a bound `default_non_goals` that no longer matches the run's live defaults (scope drift); a parsed result that does not cohere with findings; or a spurious DEFERRED result | the pass **CANNOT count**. Fix skipped adoption inputs when named; otherwise retry — the same pass, next launch attempt (`runtime-adapter.md`, "Review preparation mapping") — or take the fresh-worker fallback |
 
 **`ok` is not SATISFIED.** The tool parses the reviewer's exact terminal result but does not judge the
 report's prose, raise `reviews_ok`, or merge. `ledger.py verdict` remains the only tally writer.

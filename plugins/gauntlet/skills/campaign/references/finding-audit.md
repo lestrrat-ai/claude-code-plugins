@@ -170,7 +170,8 @@ Two things the audit does about it — **a SIGNAL and a hand-off, never a discha
   local intent artifact, needing no repair-pass** — so **future** reviewer rounds bind, and surface the
   residual class to the user as a **non-blocking policy note**, driving the other PRs meanwhile. **Scope
   decides the lever.** A **PR-SPECIFIC** exclusion stays a per-PR edit of that intent's own `## Non-goals`
-  (a bullet OUTSIDE the managed block). A genuinely **RUN-WIDE** class — the same residual attacking several
+  (`pr-adoption.md`, "The run-default Non-goals MANAGED block", owns where a PR-specific bullet sits
+  relative to the managed block). A genuinely **RUN-WIDE** class — the same residual attacking several
   of the run's PRs — is **NOT the driver's to declare**: the run header `default_non_goals` is
   **OPERATOR-DECLARED, never auto-promoted** from the driver's own findings (`review-learnings.md`, "never
   auto-promoted"; `files-and-ledger.md`, "the exclusions the operator declares"), because a store that folds
