@@ -224,7 +224,8 @@ about and one whose partial rejection strands the rest.
    whole point of "self-accepted, not accepted": the driver may take a follow-up up on its own, but the PR
    it produces is **judged by the independent gate, not self-approved** — the driver is not its own gate
    authority. When that PR **merges**, run `followups.py merged --id fuN`: the merged PR is the durable
-   record now, so the entry is deleted (`closed-unmerged` if the PR dies instead — back to open work).
+   record now, so the entry is deleted. If the PR dies instead, apply the pending-ruling sensor; only an
+   entry without a pending rejection runs `closed-unmerged` and returns to open work.
 
 5. **ANY TIER-2 CONDITION FAILS OR IS UNCLEAR → SURFACE AND ASK.** If the fix would touch gate machinery,
    **change user-facing behavior at all** (Tier-2 condition 3 requires it **preserved** — a named test is
@@ -255,12 +256,18 @@ PR's live state and continue with the matching branch.
   followed by `followups.py --file <store> reject --id fuN`. If an existing ledger row already records
   terminal `aborted`, NEVER re-adopt; permanent abort is already complete, so run terminal `reject`
   directly. A PR resolved as merged belongs to the MERGED branch below.
-- **CLOSED WITHOUT MERGING** — run `merge.py run` through its existing terminal close-out
-  (`loop-control.md`, "Step 4 — Merge queued PRs as a serialized drain"). Then run
-  `followups.py --file <store> reject --id fuN`.
-- **MERGED** — run `merge.py run` to finish the existing merge finalization, then run
-  `followups.py --file <store> merged --id fuN`. Do not record `reject`: the merged PR is now the durable
-  record and `merged` removes the queue entry.
+- **CLOSED WITHOUT MERGING** — inspect this run's ledger for the recorded PR. If no row names the recorded
+  PR, the heartbeat stopped after `open-pr` and before adoption created one: treat the live **CLOSED**
+  result as complete campaign disposition. NEVER run `merge.py` or `pr-adopt.py`; run
+  `followups.py --file <store> reject --id fuN` directly. If a row exists, run `merge.py run` through its
+  existing terminal close-out (`loop-control.md`, "Step 4 — Merge queued PRs as a serialized drain"). Then
+  run `followups.py --file <store> reject --id fuN`.
+- **MERGED** — inspect this run's ledger for the recorded PR. If no row names the recorded PR, the heartbeat
+  stopped after `open-pr` and before adoption created one: treat the live **MERGED** result as complete
+  campaign disposition. NEVER run `merge.py` or `pr-adopt.py`; run
+  `followups.py --file <store> merged --id fuN` directly. If a row exists, run `merge.py run` to finish the
+  existing merge finalization, then run `followups.py --file <store> merged --id fuN`. Do not record
+  `reject`: the merged PR is now the durable record and `merged` removes the queue entry.
 
 The existing `reject` edge keeps the recorded `pr`; never clear that history.
 Do not add a follow-up state for campaign disposition. The state set and PR history stay unchanged; the
@@ -294,15 +301,17 @@ time. So:
 
 - While the PR is **open**, the entry **STAYS** (`in-pr`) and records **which PR** is addressing it.
 - The PR **merges** → `merged` deletes the entry. The PR is the record now.
-- The PR is **closed WITHOUT merging** → `closed-unmerged` returns it to **open work** (`reopened`), with
-  its history intact — the finding, the ACT grounds or the user's ruling, and the PR that died. It never
-  vanishes with the PR, and it is never stuck in "being worked on" forever.
+- The PR is **closed WITHOUT merging** and no pending rejection exists → `closed-unmerged` returns it to
+  **open work** (`reopened`), with its history intact — the finding, the ACT grounds or the user's ruling,
+  and the PR that died. A pending rejection stays `in-pr` until campaign disposition finishes and
+  terminal `reject` records the ruling.
 
 **Move it in the heartbeat that SAW the event** — the same rule as recording one the moment it is noticed, and
 for the same reason: the driver's memory of it dies with the driver's context. The heartbeat that opens the PR
-addressing a follow-up runs `open-pr`; the heartbeat that observes that PR **merged** or **closed** runs
-`merged` / `closed-unmerged`. A follow-up whose PR landed three heartbeats ago and still sits in `in-pr` is a
-queue nobody can trust to say what is left to do.
+addressing a follow-up runs `open-pr`; the heartbeat that observes that PR **merged** runs `merged`. The
+heartbeat that observes it **closed** first applies the pending-ruling sensor, then runs `closed-unmerged`
+only when no pending rejection exists. A follow-up whose PR landed three heartbeats ago and still sits in
+`in-pr` is a queue nobody can trust to say what is left to do.
 
 **AND REJECTIONS ARE KEPT.** A `rejected` entry stays in the store — hidden from the default view (nobody
 has anything left to do about it), **never deleted**. This is not an exception to the rule above; it is
@@ -348,7 +357,7 @@ followups.py --file <store> reject-pending --id fuN # user rejected an `in-pr` e
 followups.py --file <store> reject  --id fuN        # user ruled against it; `in-pr` follows "Rejecting an `in-pr` follow-up"
 followups.py --file <store> open-pr --id fuN --pr <ref>    # a PR is addressing it — the entry STAYS
 followups.py --file <store> merged  --id fuN        # that PR LANDED — it is the record now, so the entry is DELETED
-followups.py --file <store> closed-unmerged --id fuN       # that PR died — back to OPEN WORK, nothing recorded it
+followups.py --file <store> closed-unmerged --id fuN       # unmarked PR died — back to OPEN WORK
 followups.py --file <store> publish --id fuN --ref <issue> # TIER 3 — only AFTER the user's accept. The ISSUE
                                                            # is the record now, so the entry is DELETED
 followups.py --file <store> set --id fuN --<field> <value>      # edit the PROSE of the claim — never EMPTY it
