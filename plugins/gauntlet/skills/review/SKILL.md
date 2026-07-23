@@ -446,8 +446,9 @@ or **Adjusted** finding only (skip Refuted and Uncertain), in its own branch off
    it at adoption into `pr_origin` (`campaign/references/pr-adoption.md`). It is what later permits
    campaign to **rescope or restructure the PR autonomously** if the review loop stops converging on it —
    a thing it must **never** do to a PR a human wrote (`campaign/references/repair-pass.md`, "The
-   ownership guardrail"). **Omitting it is safe** (the PR is then treated as someone else's and only its
-   findings are demoted or the PR abandoned); applying it to a PR you did **not** author is not.
+   ownership guardrail"). **Omitting it is safe** (the PR is then treated as someone else's, so a
+   whole-PR repair may only re-author its intent or abort); applying it to a PR you did **not** author is
+   not.
 
 One finding = one PR. Never batch multiple findings into a single PR.
 

@@ -175,6 +175,7 @@ def t_repairing_splits_on_decision():
     check(has(no_dec, "repairing, no decision"), "repairing + no decision → reassess nudge")
     check(has(no_dec, "repair-pass.py bundle"), "reassessment nudge must name the executable bundle door")
     check(not has(no_dec, "dispatch decision"), "no-decision repairing must not say dispatch")
+    # A legacy DEMOTE row is deliberate: nudge remains a generic consumer of durable decisions.
     with_dec = fire([row(7, "repairing", repair_decision="demote@2026-01-01T00:00:00Z")])
     check(has(with_dec, "dispatch decision"), "repairing + decision → dispatch nudge")
     check(not has(with_dec, "no decision"), "decided repairing must not say NO decision")

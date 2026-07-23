@@ -366,7 +366,8 @@ the worker returns, and what never moves into it. The steps below are unchanged 
      through that section's bundle-bound `repair-pass.py decide` command.
    - **a `repair_decision` is recorded** → `ledger.py dispatch-check --pr <N> --action repair`, then
      execute **that** decision and no other work. When the repair has landed, return the row to the gate
-     (`ledger.py … set --pr <N> --status in_review`). `review_rounds` is **not** reset — it never is.
+     (`ledger.py … set --pr <N> --status in_review`). `review_rounds` is **not** reset — it never is. A
+     legacy `demote@…` value follows `repair-pass.md`, **"Complete a legacy DEMOTE"**.
    - **`repair_decision` is `abort@…`** → the row is already terminal (`aborted`): run the abort procedure
      (`bailout-and-final-report.md`) — leave the PR **OPEN**, drop this run's labels, write `abort-<id>.md`.
 

@@ -58,7 +58,7 @@ to say. Do not look for a bug in the reviewer. The bug is that nothing could **c
 ### A cap is a MODE SWITCH, not a doorbell
 
 **It does not stop and ask the user.** The driver stops dispatching targeted fixes and **repairs the PR
-itself, autonomously.** Asking a human is one of the five outcomes, and it is the last resort — not the
+itself, autonomously.** Asking a human is one of the four outcomes, and it is the last resort — not the
 first.
 
 ### The reassessment pass — give the loop the memory it never had
@@ -103,8 +103,10 @@ manifest bound to a different base is refused). **Re-running it while the decisi
 because the bundle is deterministic, an existing prompt/manifest pair whose bytes match the freshly rebuilt
 bundle is REUSED — so a heartbeat that built the bundle and died before `decide` simply resumes — a partial
 pair left by a crash mid-write is regenerated, and a non-matching or symlinked output is refused rather than
-overwritten. Dispatch the exact prompt file to the reassessment worker; NEVER rebuild, reorder, summarize,
-or splice its inputs by hand.
+overwritten. Decision definitions are inside the hashed payload, so a complete unrecorded pair built with
+an older enum fails this match. Delete both refused stale artifacts and rerun `bundle`; NEVER reuse the old
+hash. Dispatch the exact prompt file to the reassessment worker; NEVER rebuild, reorder, summarize, or splice
+its inputs by hand.
 
 It returns **exactly ONE decision from a CLOSED enum**, and the driver executes it **without asking the
 user**:
@@ -113,14 +115,29 @@ user**:
 |---|---|---|
 | **RESCOPE** | the diff has **outgrown its stated purpose** — the findings may all be true, and most of the lines now defend the guards the loop itself added | dispatch a shrink back to intent, then re-gate |
 | **REPAIR-INTENT** | the intent artifact is **missing, vague or wrong**, so the reviewer has nothing to measure against and **nothing can be out of scope** | re-author the **base** (Purpose / Non-goals / Threat model), then **re-run `pr-adopt.py intent-sync` and `review-pass.py intent-check --ledger`** (`pr-adoption.md`) so the run-default managed block is refolded, then re-gate |
-| **DEMOTE** | the findings **anchor to no Purpose line and no Threat-model actor** — true, and not reasons to block this PR | record them as follow-ups, **do NOT fix them**, re-gate |
 | **ROOT-CAUSE** | the findings **share one cause** | run the root-cause pass — **`root-cause-pass.md` already defines it; REUSE it, do not reinvent it** — and fix at the chokepoint |
 | **ABORT** | unsalvageable | the **existing** bailout procedure (`bailout-and-final-report.md`): **leave the PR OPEN**, drop this run's labels, write `abort-<id>.md` |
+
+**DEMOTE is not a current decision.** Every valid cap bundle contains a gating finding, and every gating
+finding has a Purpose or Threat-model actor anchor (`review-pass.py`). The old DEMOTE precondition required
+neither anchor, so no valid current bundle could meet it.
+
+### Complete a legacy DEMOTE
+
+**Preserve an existing `repair_decision = demote@<iso>` row and finish its recorded decision.** Do not
+rerun `decide`, rewrite its repair record, or migrate the ledger. Run
+`ledger.py … dispatch-check --pr <N> --action repair`, record the true findings named by that historical
+record as follow-ups, leave them unfixed, then return the row to `in_review`. Existing review-learning
+entries produced by that decision remain valid legacy data and stay readable through
+`review-learnings.py`.
+
+The final report's **Repaired** entry names the legacy DEMOTE, links its `repair-<pr>-<k>.md`, and lists
+each true finding deliberately left unfixed (`bailout-and-final-report.md`).
 
 The decision is recorded through the tool, and **only** through the tool:
 
 ```
-repair-pass.py --file <state.jsonl> decide --pr <N> --decision <one of the five> \
+repair-pass.py --file <state.jsonl> decide --pr <N> --decision <one of the four> \
   --record <rundir>/repair-<pr>-<k>.md \
   --bundle-manifest <rundir>/repair-<pr>-<k>.prompt.txt.manifest.json
 ```
@@ -176,8 +193,8 @@ branch content wholesale, and doing that to someone else's work uninvited is not
 
 | `pr_origin` | Meaning | Permitted repairs |
 |---|---|---|
-| `gauntlet` | this pipeline opened the PR — it carries the `gauntlet-authored` label, applied by `gauntlet:review`'s handoff when it opens a PR | **all five** |
-| `external` | anything else: the user's PR, a teammate's, a PR adopted by number — **and the DEFAULT** | **DEMOTE / REPAIR-INTENT / ABORT only** |
+| `gauntlet` | this pipeline opened the PR — it carries the `gauntlet-authored` label, applied by `gauntlet:review`'s handoff when it opens a PR | **all four** |
+| `external` | anything else: the user's PR, a teammate's, a PR adopted by number — **and the DEFAULT** | **REPAIR-INTENT / ABORT only** |
 
 **The default is `external`, and it is load-bearing.** A row whose origin was never established can never
 have its owner's branch reshaped. *"I do not know who wrote this"* must never resolve to *"I wrote this"*.

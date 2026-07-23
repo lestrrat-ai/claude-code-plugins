@@ -2,7 +2,7 @@
 """THE DURABLE REVIEW-LEARNINGS STORE — schema-owning accessor for `.gauntlet/review-learnings.jsonl`.
 
 WHY THIS EXISTS, AND WHY IT IS NOT `followups.jsonl`. When the campaign settles a question — a finding
-REFUTED because its mechanism cannot occur, or DEMOTED at a review-loop cap as a true-but-immaterial
+REFUTED because its mechanism cannot occur, or completed under a legacy DEMOTE as a true-but-immaterial
 accepted residual — that answer is worth remembering, so a fresh, stochastic reviewer does not make the
 campaign re-litigate the same class PR after PR. The follow-up store cannot hold it: `followups.md` is a
 work QUEUE whose entries are DELETED the moment the work lands elsewhere ("delete once a durable record
@@ -22,9 +22,9 @@ principle (the user's out-of-checkout global memory, only on explicit request). 
 THE GATE-SAFETY BOUNDARY. A learning is consulted ONLY by the DRIVER — when it authors a new PR's intent
 Non-goals (`pr-adoption.md`) and as non-dispositional precedent for the finding audit (`finding-audit.md`).
 It is NEVER injected into a review pass to tell a reviewer to stand down: that would BLIND the gate. A
-demotion stays safe only because the Non-goal it produces is submitted TO the gate as reviewable content
-that a fresh reviewer re-judges — never held against it. So this store is not gate machinery; it feeds the
-driver's own, always-re-reviewed decision.
+learning never changes a verdict; the driver and user apply the relevance, falsifiability, and
+never-suppress-a-real-guarantee rules before using it to author intent. So this store is not gate
+machinery; it feeds the driver's own decision.
 
 Like the follow-up store this file has MANY writers (every concurrent run) and NO other copy of its data,
 so the read-modify-write is LOCKED and a corrupt line is REFUSED (naming the line), never skipped. Every
@@ -51,7 +51,7 @@ from _gauntlet.modules import load_module_from_path  # noqa: E402
 from _gauntlet.table import config_lines, grid_lines, hidden_notice  # noqa: E402
 
 DESCRIPTION = (
-    "The durable review-learnings store (.gauntlet/review-learnings.jsonl): refuted/demoted finding "
+    "The durable review-learnings store (.gauntlet/review-learnings.jsonl): refuted and legacy-demoted finding "
     "CLASSES the DRIVER consults when authoring intent, so a settled question is not re-litigated. It "
     "ACCUMULATES and never auto-deletes; promotion to a higher tier is the USER's."
 )
@@ -415,11 +415,11 @@ def taken(cmd: str, args: argparse.Namespace) -> "dict[str, str]":
 
 
 def cmd_record(path: Path, args: argparse.Namespace) -> int:
-    """Record a settled refutation/demotion as an ACTIVE learning. The only way in.
+    """Record a settled refutation or completed legacy demotion as an ACTIVE learning. The only way in.
 
     RECORDING NEVER DISCHARGES A FINDING. A learning is written only AFTER a finding is already settled —
-    refuted-and-dropped, or demoted at the cap — and its `provenance` names that settled event. This store
-    is a MEMORY of decisions the gate already made, never a shortcut around one.
+    refuted-and-dropped, or completed under an existing legacy DEMOTE — and its `provenance` names that
+    settled event. This store is a MEMORY of decisions the gate already made, never a shortcut around one.
     """
     values = taken("record", args)
     at = stamp(args)
@@ -619,7 +619,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--file", help="path to the store (.gauntlet/review-learnings.jsonl)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    r = sub.add_parser("record", help="record a settled refutation/demotion as an ACTIVE learning (the only way in)")
+    r = sub.add_parser(
+        "record",
+        help="record a settled refutation or completed legacy demotion as an ACTIVE learning "
+             "(the only way in)",
+    )
     for field, flag in INTAKE["record"].items():
         r.add_argument(flag, dest=field, required=True, help=INTAKE_HELP[field])
     r.add_argument("--at", help="ISO timestamp it was recorded (default: now)")

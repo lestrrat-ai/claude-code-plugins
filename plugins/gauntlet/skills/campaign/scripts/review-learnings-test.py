@@ -192,6 +192,30 @@ def t_store_never_deletes(tmp: Path) -> None:
     check(not is_blank(entry["claim"]), "the kept entry lost its claim")
 
 
+def t_legacy_demote_entry_remains_readable(tmp: Path) -> None:
+    """An entry produced by a legacy DEMOTE remains active and readable without a store migration."""
+    path = write_lines(
+        tmp / "legacy-demote.jsonl",
+        entry_line(
+            id="rl7",
+            claim="legacy accepted residual",
+            anchor="legacy/guard.py",
+            provenance="repair-7-1.md DECISION: demote",
+        ),
+    )
+    code, out, err = run(["--file", str(path), "get", "--id", "rl7"])
+    check(code == 0, f"a legacy DEMOTE learning was unreadable (exit {code}): {err!r}")
+    entry = json.loads(out)
+    check(entry["state"] == "active", f"the legacy learning changed state: {entry['state']!r}")
+    check(entry["provenance"] == "repair-7-1.md DECISION: demote",
+          f"the legacy provenance changed: {entry['provenance']!r}")
+    code, out, err = run([
+        "--file", str(path), "table", "--fields", "id,state,claim,anchor,provenance",
+    ])
+    check(code == 0 and "DECISION: demote" in out,
+          f"the legacy learning disappeared from consultation output (exit {code}): {err!r}")
+
+
 def t_user_ruling_is_unskippable(tmp: Path) -> None:
     """NO DRIVER-ONLY PATH REACHES `revoked` OR WRITES `promoted` — both are the USER's, proved on the graph.
 
@@ -740,6 +764,7 @@ def t_fields_and_lookup(tmp: Path) -> None:
 CASES = [
     ("record-is-the-way-in", "record makes an ACTIVE learning and refuses a rumor — every required field", t_record_is_the_only_way_in),
     ("store-never-deletes", "the store ACCUMULATES — no edge removes an entry; a revoked learning is kept", t_store_never_deletes),
+    ("legacy-demote-readable", "legacy DEMOTE learnings remain readable without migration", t_legacy_demote_entry_remains_readable),
     ("user-ruling-unskippable", "no driver-only path reaches `revoked` or writes `promoted` — proved on the graph", t_user_ruling_is_unskippable),
     ("ruling-recorded", "the USER's ruling is stamped durably; nothing the driver does alone stamps it", t_ruling_is_recorded),
     ("promote-tier-validated", "promotion names a real tier and keeps the learning locally consulted", t_promote_tier_is_validated),

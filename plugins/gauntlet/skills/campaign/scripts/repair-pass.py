@@ -21,9 +21,9 @@ audit artifact.
 
 **A CAP IS A MODE SWITCH, NOT A DOORBELL.** It does not stop and ask the user. The driver stops dispatching
 targeted fixes and REPAIRS THE PR ITSELF — rescopes it back to its stated purpose, re-authors the intent the
-reviewer had nothing to measure against, demotes findings that anchor to no purpose and no writer, fixes at
-the chokepoint instead of playing whack-a-mole, or gives up and leaves the PR open for a human. Only the
-last of those involves the user at all, and it is the last resort, not the first.
+reviewer had nothing to measure against, fixes at the chokepoint instead of playing whack-a-mole, or gives
+up and leaves the PR open for a human. Only the last of those involves the user at all, and it is the last
+resort, not the first.
 
 Three refusals this tool exists to make, all of them things a well-meaning driver would otherwise do:
 
@@ -32,9 +32,9 @@ Three refusals this tool exists to make, all of them things a well-meaning drive
 2. **A repair that REWRITES A PR CAMPAIGN DOES NOT OWN.** Campaign ADOPTS PRs — they may be the user's or a
    third party's. RESCOPE and ROOT-CAUSE reshape branch content wholesale, and doing that to someone else's
    work uninvited is not a repair, it is a hijack. On an `external` PR the permitted decisions are ONLY
-   DEMOTE / REPAIR-INTENT / ABORT, and this tool refuses the other two outright. (Targeted per-finding
-   fixes are NOT affected — campaign has always pushed those to adopted PRs, and that is the workflow the
-   user asked for. What is forbidden is the wholesale reshaping, not the ordinary fix.)
+   REPAIR-INTENT / ABORT, and this tool refuses the other two outright. (Targeted per-finding fixes are NOT
+   affected — campaign has always pushed those to adopted PRs, and that is the workflow the user asked for.
+   What is forbidden is the wholesale reshaping, not the ordinary fix.)
 3. **A THIRD repair.** The mechanism that fixes non-convergence must not itself fail to converge — the
    irony would be fatal. At `REPAIR_CAP` the only decision left is ABORT.
 """
@@ -114,14 +114,14 @@ BUNDLE_MARKER = "BUNDLE-SHA256"
 # The record's machine-readable OUTPUT marker. `BUNDLE_MARKER` binds the record to the exact prompt bytes it
 # was decided AGAINST; this binds it to the exact enum it CHOSE. The record is the sole carrier of the
 # decision across the fresh-heartbeat boundary, so the chosen enum must be a field `decide` can READ — not
-# prose it cannot — or the ledger could record `abort` while the record concluded `demote`.
+# prose it cannot — or the ledger could record `abort` while the record concluded `repair-intent`.
 DECISION_MARKER = "DECISION"
 DECISION_LINE_RE = re.compile(r"^\s*DECISION:\s*(\S.*?)\s*$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}\Z")
 
 # --- the closed enum ----------------------------------------------------------
 #
-# FIVE decisions, and the reassessment agent returns EXACTLY ONE. A closed enum is the point: "think about
+# FOUR decisions, and the reassessment agent returns EXACTLY ONE. A closed enum is the point: "think about
 # it and do something sensible" is what a fresh-context driver holding one finding already does, twenty-one
 # times in a row. Each decision names a DIFFERENT diagnosis of why the loop stopped converging, and the
 # driver executes it without asking the user.
@@ -138,12 +138,6 @@ DECISIONS = {
         "This was the actual root cause of the 2026-07-14 spiral: an open-ended adversarial mandate over a "
         "growing surface has no fixed point, because there is always one more true statement to make."
     ),
-    "demote": (
-        "THE FINDINGS ANCHOR TO NO PURPOSE LINE AND NO THREAT-MODEL ACTOR. They are true and they are not "
-        "reasons to block this PR: a defect in a guard this same loop added, against an input nobody but a "
-        "developer with a text editor can write. RECORD THEM AS FOLLOW-UPS, DO NOT FIX THEM, and re-gate. "
-        "Fixing them adds review surface at the rate it removes it."
-    ),
     "root-cause": (
         "THE FINDINGS SHARE ONE CAUSE. Stop patching sites and fix at the chokepoint: run the root-cause "
         "pass (`root-cause-pass.md` — it already exists; do NOT reinvent it), which maps the whole space "
@@ -157,7 +151,7 @@ DECISIONS = {
 }
 
 # What an `external` PR may take. The two that are missing are the two that REWRITE BRANCH CONTENT.
-EXTERNAL_PERMITTED = ("demote", "repair-intent", "abort")
+EXTERNAL_PERMITTED = ("repair-intent", "abort")
 
 # The repairs that reshape someone's branch wholesale — the ones the ownership guardrail exists for.
 REWRITES_CONTENT = tuple(d for d in DECISIONS if d not in EXTERNAL_PERMITTED)
@@ -169,7 +163,7 @@ REWRITES_CONTENT = tuple(d for d in DECISIONS if d not in EXTERNAL_PERMITTED)
 # `decide`'s staleness check (`validate_decision_bundle`) compares exactly these — binding both guards to
 # this one tuple is what stops them from drifting apart.
 #
-# Falsifiable claim: the five decisions (rescope, repair-intent, demote, root-cause, abort) read no other
+# Falsifiable claim: the four decisions (rescope, repair-intent, root-cause, abort) read no other
 # ledger field, and head_sha/worktree/base_sha are bound and re-verified live at decide time. The
 # liveness/observation fields (ci, reviews_ok, tier, api_approval, settled_strikes, ci_fingerprint, ...) are
 # DELIBERATELY EXCLUDED: they legitimately move during `repairing` under the CI-observation exception, so
@@ -200,7 +194,7 @@ def permitted_for(row: dict) -> "tuple[str, ...]":
     """The decisions this row may actually take — DERIVED, never retyped.
 
     Two independent narrowings, and the budget one wins:
-      * an `external` PR (the default!) may not have its content rewritten -> DEMOTE / REPAIR-INTENT / ABORT
+      * an `external` PR (the default!) may not have its content rewritten -> REPAIR-INTENT / ABORT
       * a PR whose repair budget is SPENT may only ABORT — whatever its origin
     The reassessment agent is TOLD this set by `permitted`, so its prompt can never drift from the rule
     the tool enforces. A closed enum restated in prose is a closed enum that goes stale.
@@ -231,8 +225,8 @@ def permitted_record(row: dict) -> dict:
             if spent else
             "campaign opened this PR, so every repair is permitted" if row["pr_origin"] == "gauntlet" else
             f"pr_origin={row['pr_origin']} — campaign did NOT open this PR, so it may never rewrite its "
-            f"content: {', '.join(REWRITES_CONTENT)} are refused. Record findings, re-author the intent, or "
-            f"leave it for its owner"
+            f"content: {', '.join(REWRITES_CONTENT)} are refused. Re-author the intent or leave it for its "
+            f"owner"
         ),
     }
 
@@ -1048,7 +1042,7 @@ def record_decision(record_text: str, record: Path, allowed: "tuple[str, ...]") 
     `validate_decision_bundle` binds the record to the exact prompt bytes it was decided against; this reads
     the enum it CHOSE. The record is the sole carrier of the decision across the fresh-heartbeat context
     boundary, so without a field `decide` can read, the chosen decision travels only as prose and the ledger
-    could record a terminal `abort` while the record concluded `demote`. Fail CLOSED: exactly one
+    could record a terminal `abort` while the record concluded `repair-intent`. Fail CLOSED: exactly one
     `DECISION: <enum>` line, naming exactly one CURRENTLY-PERMITTED member.
     """
     declared = [match.group(1) for line in record_text.splitlines()
