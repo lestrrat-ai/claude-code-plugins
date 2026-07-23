@@ -890,9 +890,11 @@ FINGERPRINT_FIELDS = {
 def fingerprint(rows: list[dict], head_sha: str) -> str:
     """The liveness digest of a VERIFIED snapshot's evidence rows.
 
-    Callers hand this VERIFIED rows only — an UNUSABLE snapshot has NO fingerprint at all (`derive`
-    emits `fingerprint: null` for it): a strike is a claim that TRUSTED evidence did not move, and
-    nothing rejected is ever hashed.
+    Callers hand this VERIFIED rows only. `derive` also requires them to describe the PR's CURRENT head
+    before calling this function: a moved-head artifact can remain on disk for audit after verification,
+    but `derive` emits `fingerprint: null` because those rows are stale for the PR. An UNUSABLE snapshot
+    has no fingerprint either. A strike is a claim that TRUSTED current-head evidence did not move, and
+    nothing rejected or stale is ever hashed.
 
     Canonical form, pinned exactly by `ci-status-test.py`'s `[fp]` cases: each evidence row becomes its
     tab-joined line, DUPLICATE lines are KEPT (two matrix legs at the same verdict are two lines — a

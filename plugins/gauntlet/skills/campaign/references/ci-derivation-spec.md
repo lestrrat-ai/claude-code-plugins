@@ -117,10 +117,10 @@ gh api --paginate --slurp "repos/<owner>/<repo>/commits/<head_sha>/status" | jq 
 #     refused HERE or not at all. Accepted, it green-lights a context whose state nobody has classified: an
 #     unrecognised value is NOT a benign value. The enum is the one declared in the enum block, below.
 #     `headRefOid` rides along on this SAME call — the PR's current head, read LAST, after both evidence
-#     families (see "A MOVED HEAD FAILS CLOSED", above). It never enters the artifact — and a response that
-#     does NOT carry it is a FAILED fetch, because a head we cannot read makes that fail-closed rule unable
-#     to fire. `statusCheckRollup` must be an ARRAY: `// []` here would turn a response we cannot read into
-#     "no witnesses" — see "An EMPTY rollup is a FACT; a MISSING one is NOT EVIDENCE", below.
+#     families (`stage-2-ci.md`, "A MOVED HEAD FAILS CLOSED"). It never enters the artifact — and a response
+#     that does NOT carry it is a FAILED fetch, because a head we cannot read makes that fail-closed rule
+#     unable to fire. `statusCheckRollup` must be an ARRAY: `// []` here would turn a response we cannot
+#     read into "no witnesses" — see "An EMPTY rollup is a FACT; a MISSING one is NOT EVIDENCE", below.
 #     TWO refusals are NOT expressible here, and they are named rather than quietly omitted — BOTH are
 #     CROSS-SOURCE, and no single-fetch jq can see another fetch's rows: (a) `$sc` (the rollup's
 #     StatusContexts) must be COVERED by family (2); (b) every rollup entry family (1)/(2) DOES report must
@@ -340,6 +340,11 @@ gh pr view <pr> --repo <owner>/<repo> --json statusCheckRollup,headRefOid | jq -
 
 mv "$tmp" "<rundir>/ci-<pr>-<head_sha>.txt"
 ```
+
+This promotion is complete before `derive` applies the producer-only moved-head rule. If the final
+`headRefOid` differs from requested `<head_sha>`, retain this old-commit artifact for audit; the moved-head
+result contract in `stage-2-ci.md` ("A MOVED HEAD FAILS CLOSED") owns whether the current PR may trust it.
+Failed or incomplete fetches never reach this promotion.
 
 The artifact is **JSONL: EVERY line is one JSON object, with NO exceptions** — the header included. There
 is no comment line, no plain-text line, and nothing to special-case: read the file line by line and parse
@@ -815,4 +820,3 @@ ever re-ordered again.
   missing. **`green` now means the required set passed. It carries NO caveat, and it never did license
   one** — the two states that could not support the claim (`CANNOT READ`, a missing declared check) are
   **`pending` bullets above**, not footnotes under this one.
-

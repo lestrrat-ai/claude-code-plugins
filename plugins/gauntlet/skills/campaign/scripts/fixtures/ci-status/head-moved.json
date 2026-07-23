@@ -1,5 +1,5 @@
 {
-  "why": "THE FALSE GREEN INSIDE THE FALSE-GREEN TOOL. The checks on the ledger's head_sha all PASSED — and that commit is no longer the PR's head: someone pushed, and the NEW head has no checks registered yet (the rollup is empty). The evidence is green, complete, and ABOUT THE WRONG COMMIT. It is therefore not evidence about this PR at all: NOT green (it is stale), and not red either (that would be a claim about the wrong commit). FAIL CLOSED, name the moved head, and re-derive against it",
+  "why": "THE FALSE GREEN INSIDE THE FALSE-GREEN TOOL. The checks on the ledger's head_sha all PASSED — and that commit is no longer the PR's head: someone pushed, and the NEW head has no checks registered yet (the rollup is empty). The evidence is green, complete, and ABOUT THE WRONG COMMIT. Retain its promoted artifact for audit, but trust it for no current-PR verdict, fingerprint, or buckets: NOT green (it is stale), and not red either (that would be a claim about the wrong commit). FAIL CLOSED, name the moved head, and re-derive against it",
   "required_set": "none",
   "pr": "35",
   "api": {
@@ -52,6 +52,7 @@
   "expect": {
     "verdict": "unusable",
     "ci": "pending",
-    "needle": "HEAD MOVED"
+    "needle": "HEAD MOVED",
+    "promoted": true
   }
 }

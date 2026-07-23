@@ -147,7 +147,7 @@ def cases(ci) -> list[str]:
     return sorted(p.name for p in ci.FIXTURES.glob("*.json"))
 
 
-def run_fixture(ci, name: str, tmp: Path) -> tuple[dict, dict]:
+def run_fixture(ci, name: str, tmp: Path) -> tuple[dict, dict, Path]:
     """Drive one recorded fixture through the REAL producer.
 
     `required_set` IS MANDATORY IN EVERY FIXTURE, and there is deliberately NO DEFAULT — the same rule
@@ -166,10 +166,10 @@ def run_fixture(ci, name: str, tmp: Path) -> tuple[dict, dict]:
     rundir = tmp / name.replace(".json", "")
     rundir.mkdir(parents=True, exist_ok=True)
     required = ci.SNAP.parse_required_set(fx["required_set"])
-    return fx, ci.derive(ci.fixture_fetch(fx), "o/r", fx.get("pr", "35"), head_sha, rundir, required)
+    return fx, ci.derive(ci.fixture_fetch(fx), "o/r", fx.get("pr", "35"), head_sha, rundir, required), rundir
 
 
-def check_fixture(name: str, got: dict, fx: dict) -> list[str]:
+def check_fixture(name: str, got: dict, fx: dict, rundir: Path) -> list[str]:
     """A fixture must produce its verdict AND its REASON. The reason is the only thing that says WHICH rule
     fired, and a fixture that passes for someone else's reason pins nothing."""
     want = fx["expect"]
@@ -180,8 +180,23 @@ def check_fixture(name: str, got: dict, fx: dict) -> list[str]:
         bad.append(f"right verdict, WRONG RULE: reason does not mention {want['needle']!r} — {got['reason']}")
     if got["ci"] != want["ci"]:
         bad.append(f"ledger ci {got['ci']!r}, expected {want['ci']!r}")
-    if want.get("promoted") is False and got["snapshot"] is not None:
-        bad.append("an artifact was PROMOTED for a fetch that FAILED — a later heartbeat would read it as evidence")
+    if "promoted" in want:
+        promoted = want["promoted"]
+        if not isinstance(promoted, bool):
+            bad.append(f"fixture promotion expectation {promoted!r} is not boolean")
+        else:
+            artifacts = sorted(rundir.glob("ci-*.txt"))
+            reported = Path(got["snapshot"]) if got["snapshot"] is not None else None
+            if promoted and (reported is None or not reported.is_file() or artifacts != [reported]):
+                bad.append(
+                    f"expected one PROMOTED audit artifact reported by `snapshot`; "
+                    f"snapshot={got['snapshot']!r}, artifacts={[str(p) for p in artifacts]!r}"
+                )
+            elif not promoted and (reported is not None or artifacts):
+                bad.append(
+                    f"expected NO promoted artifact after a failed/incomplete fetch; "
+                    f"snapshot={got['snapshot']!r}, artifacts={[str(p) for p in artifacts]!r}"
+                )
     # THE FINGERPRINT INVARIANT HOLDS ON EVERY FIXTURE, no per-fixture expectation needed: a VERIFIED
     # snapshot carries the sha256 the driver compares to `ci_fingerprint`, and an untrusted one carries
     # `null` — nothing rejected is ever hashed, so no strike can accrue against rows nobody believed.
@@ -920,8 +935,8 @@ def run(ci, tmp: Path) -> int:
               f"zero evidence is not green")
         return 1
     for name in names:
-        fx, got = run_fixture(ci, name, tmp)
-        bad = check_fixture(name, got, fx)
+        fx, got, rundir = run_fixture(ci, name, tmp)
+        bad = check_fixture(name, got, fx, rundir)
         if not bad:
             print(f"ok       {name:32} -> {got['verdict']:14} ci={got['ci']:8} ({fx['why']})")
         else:

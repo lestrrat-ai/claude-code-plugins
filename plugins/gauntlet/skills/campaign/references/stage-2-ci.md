@@ -32,9 +32,10 @@ VERIFY (via `scripts/ci-snapshot.py`, which it calls), and DECIDE, all defined i
 value to write to the ledger, the `reason` (**which rule fired, and which row made it fire** — this is what
 `ci_reason` is built from), the evidence counts, `head_moved` + `head_sha_now`, the `required_set` state the
 verdict was decided under, the `fingerprint` of the verified snapshot's evidence rows, the `buckets`
-CLASSIFY tally (`PASS`/`RUNNING`/`FAIL`/`UNKNOWN_VALUE`; both `null` when the snapshot never verified —
-`liveness` reduces `buckets.RUNNING` to the `watch_warranted` fact the watch policy acts on, and reads it
-directly for its SETTLED/RUNNING-STALL split), and the path to the snapshot it left
+CLASSIFY tally (`PASS`/`RUNNING`/`FAIL`/`UNKNOWN_VALUE`; both `null` when the final derivation has no
+trusted evidence for the PR's current head — including a moved-head result whose old-commit artifact is
+retained — while `liveness` reduces `buckets.RUNNING` to the `watch_warranted` fact the watch policy acts
+on, and reads it directly for its SETTLED/RUNNING-STALL split), and the path to the snapshot it left
 behind. It exits `0` **only** on green.
 **Write `ci` from that JSON; never from an impression of some command's output** — and then hand that
 same JSON to `ci-status.py liveness` ("THE BOOKKEEPING IS A COMMAND", below), which records it and does
@@ -52,23 +53,45 @@ it: a derive with neither `--ledger` nor `--required-set` gets an error, and a s
 **exit 2**, never a quiet `none`. `unknown` is a legal value and **can never go green** — which is what makes
 a run that never performed the read merge **nothing** rather than merge everything with a footnote.
 
-**A MOVED HEAD FAILS CLOSED — `head_moved: true` is NEVER a green, and never a red either.** The fetch is
+##### A MOVED HEAD FAILS CLOSED
+
+**`head_moved: true` is NEVER a green, and never a red either.** The fetch is
 pinned to the `head_sha` **the ledger holds**, and a push can land at any moment — including *while the tool
 is fetching*, which is why it reads the PR's current head **LAST**, after both evidence families. If that
 head differs from the one it was pinned to, the snapshot is a **true report about a commit that is no longer
-this PR's head** — so it is not evidence about this PR at all: `verdict = unusable`, **`ci = pending`**, and
-the `reason` **names the new head** (`head_sha_now`). Green would merge a PR on checks that never ran
-against its code; red would blame the new head for the old one's failure. **Do NOT read this as "checks have
-not started"** — that is `verdict = pending` (zero evidence rows), and it means *wait*. This means
-**re-derive**: refresh the PR's `head_sha` into the ledger (`pr-adoption.md`) and derive again, pinned to it.
+this PR's head**. `derive` has already atomically promoted and evaluated the artifact for the requested
+old `head_sha`; its `snapshot` field keeps that path as an audit record. **Retaining the old-commit artifact
+does NOT trust it for the current PR.** The moved-head override emits `verdict = unusable`,
+**`ci = pending`**, `fingerprint: null`, and `buckets: null`; it produces no green or red claim and no
+liveness digest or tally. The `reason` **names the new head** (`head_sha_now`) and records what the stale
+artifact said only for audit.
 
-**EVIDENCE THE TOOL KNOWS IS INCOMPLETE FAILS CLOSED THE SAME WAY, AND FOR THE SAME REASON.** A moved head
-is one way to hold evidence that cannot answer the question; a **short read** and a **rollup entry the REST
-families cannot see** are the others. The FETCH rules (`ci-derivation-spec.md`) define them — each is `verdict = unusable`,
-**`ci = pending`**, **refetch**, and **no snapshot is promoted**. There is deliberately **no `notes` field
-in the output**: the tool used to disclose an incomplete read *beside a green verdict*, and a caveat printed
-next to the answer it contradicts is a trapdoor, not a disclosure. **Anything the tool knows is missing is a
-REFUSAL now** — so `ci = green` from this command means the evidence was complete, not merely annotated.
+This is the machine-checked owner block for the moved-head result:
+
+```text
+moved_head.artifact = promoted for requested head_sha
+moved_head.trust = audit only; not current PR evidence
+moved_head.verdict = unusable
+moved_head.ci = pending
+moved_head.fingerprint = null
+moved_head.buckets = null
+```
+
+**Do NOT read this as "checks have not started"** — that is `verdict = pending` (zero evidence rows), and
+it means *wait*. This means **re-derive**: refresh the PR's `head_sha` into the ledger
+(`pr-adoption.md`) and derive again, pinned to it.
+
+##### FAILED OR INCOMPLETE FETCHES PROMOTE NOTHING
+
+**A failed or incomplete fetch leaves no audit artifact.** A **short read**, a **rollup entry the REST
+families cannot see**, and every other FETCH refusal (`ci-derivation-spec.md`) stop before promotion. Each
+emits `verdict = unusable`, **`ci = pending`**, `snapshot: null`, `fingerprint: null`, and `buckets: null`,
+then requires a **refetch**. This is distinct from a moved head: the moved-head fetch completed and retained
+an artifact about the requested old commit, while a failed or incomplete fetch has no complete artifact to
+retain. There is deliberately **no `notes` field in the output**: the tool used to disclose an incomplete
+read *beside a green verdict*, and a caveat printed next to the answer it contradicts is a trapdoor, not a
+disclosure. **Anything the tool knows is missing is a REFUSAL now** — so `ci = green` from this command
+means the evidence was complete, not merely annotated.
 
 **WHY THIS IS A COMMAND AND NOT A PROCEDURE YOU FOLLOW.** Every rule in this section was already correct,
 and a driver still wrote **`ci = green`** into the ledger for a PR whose checks had **not registered** —
@@ -303,12 +326,14 @@ fingerprint = sha256( head_sha + "\n" + <those lines, sorted bytewise, one per l
 - **IDENTICAL lines are KEPT, and every line — the last included — ends with `\n`, in UTF-8.** Two matrix
   legs at the same verdict are two identical lines, and a third leg arriving at that same verdict **IS**
   motion — dedup would erase it and let the stall clock run through a check set that is visibly changing.
-- **A snapshot that is not VERIFIED has NO fingerprint** — `derive` prints `fingerprint: null` for it.
-  `UNUSABLE` never yields one — its rows were
-  never trusted, so **nothing rejected is ever hashed** and an `UNUSABLE` derivation **NEVER touches
-  `settled_strikes`**: a strike is a claim that *trusted* evidence did not move, and `UNUSABLE` is the
-  **absence** of trusted evidence — the two cannot be counted on the same dial. It gets its **own**
-  persisted counter and its **own** bound: "UNUSABLE — the refetch is BOUNDED" below.
+- **A derivation with no trusted evidence for the PR's current head has NO fingerprint** — `derive` prints
+  `fingerprint: null` for it. `UNUSABLE` and `UNVERIFIABLE` never yield one. A moved-head derivation keeps
+  its promoted old-commit artifact for audit but still yields none, because those rows are not evidence
+  about the current PR. **Nothing rejected or stale is ever hashed**, and an `UNUSABLE` derivation
+  **NEVER touches `settled_strikes`**: a strike is a claim that *trusted* evidence did not move, and
+  `UNUSABLE` is the **absence** of trusted current-head evidence — the two cannot be counted on the same
+  dial. It gets its **own** persisted counter and its **own** bound: "UNUSABLE — the refetch is BOUNDED"
+  below.
 
 ```
 SETTLED        ==  NO evidence row classifies RUNNING     # nothing left that could move on its own
@@ -361,7 +386,8 @@ Two rules the tool enforces that the block's lines cannot show:
   `ledger.py`'s HELD_STATUSES), but on a held row the bounds neither accrue nor fire: a parked row's
   `ci_reason` is the **open question** a human is being asked, and no second park may overwrite it.
 
-Per derivation **on a VERIFIED snapshot** — `fp` below is **the `fingerprint` field of `derive`'s JSON**
+Per derivation **with trusted current-head evidence** — `fp` below is **the `fingerprint` field of
+`derive`'s JSON**
 (an `UNUSABLE` one prints `fingerprint: null`, has no `fp` at all, is handled entirely by "UNUSABLE — the
 refetch is BOUNDED" below, and touches **no liveness counter but its own**) — in this order:
 
@@ -704,7 +730,7 @@ be a bound at all.**
 
 #### UNUSABLE — the refetch is BOUNDED: `unusable_refetches`, the REFETCH CAP
 
-`UNUSABLE` is the one DECIDE outcome (`ci-derivation-spec.md`) with **no fingerprint**, so `settled_strikes` can say nothing
+`UNUSABLE` is the derivation outcome with **no fingerprint**, so `settled_strikes` can say nothing
 about it — and "refetch until it works" is an absorbing state with no exit, which the invariant forbids.
 It gets its own counter, on the same shape — **applied by the same `liveness` command** ("THE BOOKKEEPING
 IS A COMMAND", above), except the `head_sha changed` line, which belongs to the sites that write a new
