@@ -148,7 +148,7 @@ wins") and is never re-evaluated by hand.
 | `red` | `red` | **If the row is HELD (`liveness` reports it), dispatch nothing** — a held PR dispatches nothing until its question is answered (`loop-control.md` step 3, "held-status guard"); the watch still follows "WATCH ONLY WHAT CAN MOVE" below. Otherwise: **stop any review pass in flight on this PR** (the fix will replace its SHA — `loop-control.md` step 3; free the slot), **CLASSIFY the failure from the check logs** ("Classify, then set the model class", below) **before dispatching anything**, and dispatch a **scoped CI-fix subagent** into `<worktree>` — the row's ledger `worktree` value, the single source of truth for this PR's checkout path (`pr-adoption.md`). Its fix commits + pushes to the PR's **own head branch** → apply the gate reset ("Any campaign commit to the PR head resets the gate", below). Watch only while `liveness` reports `watch_warranted` (a still-RUNNING row — "WATCH ONLY WHAT CAN MOVE", below). |
 | `unclassified` | `pending` | `liveness` has parked the PR (`status = awaiting-user`). **Prompt the user** per ESCALATE ("THE PARK MUST DECLARE ITS OWN EXIT", below), naming the offending value from `reason`. Never guess a bucket for it. No watch — the park is the resolution. |
 | `pending` | `pending` | `liveness` reports `watch_warranted` → ensure a live watch ("WATCH ONLY WHAT CAN MOVE", below). Otherwise nothing can move — no watch; the liveness bounds own the wait and `liveness` escalates at a cap. The `pending` sub-cases that waiting can never green (`nothing registered`, `required set unreadable`, `required check missing` — each named in `reason`) resolve through those same bounds; while `required_set` is `unknown`, keep running `required-set` each heartbeat ("WHAT WERE WE EXPECTING TO SEE?", below). |
-| `unusable` / `unverifiable` | `pending` | **Refetch on the next heartbeat** — the heartbeat is the backoff ("UNUSABLE — the refetch is BOUNDED", below); `liveness` counted the attempt and escalates at the REFETCH CAP. `head_moved: true` → refresh the row's `head_sha` (`pr-adoption.md`) and re-derive pinned to it. No watch. |
+| `unusable` / `unverifiable` | `pending` | **Refetch on the next heartbeat** — the heartbeat is the backoff ("NOT VERIFIED — the refetch is BOUNDED", below); `liveness` counted the attempt and escalates at the REFETCH CAP. `head_moved: true` → refresh the row's `head_sha` (`pr-adoption.md`) and re-derive pinned to it. No watch. |
 
 #### WHAT WERE WE EXPECTING TO SEE? — the required-check set
 
@@ -331,10 +331,10 @@ fingerprint = sha256( head_sha + "\n" + <those lines, sorted bytewise, one per l
 - **A derivation with no trusted evidence for the PR's current head has NO fingerprint** — `derive` prints
   `fingerprint: null` for it. `UNUSABLE` and `UNVERIFIABLE` never yield one. A moved-head derivation keeps
   its promoted old-commit artifact for audit but still yields none, because those rows are not evidence
-  about the current PR. **Nothing rejected or stale is ever hashed**, and an `UNUSABLE` derivation
-  **NEVER touches `settled_strikes`**: a strike is a claim that *trusted* evidence did not move, and
-  `UNUSABLE` is the **absence** of trusted current-head evidence — the two cannot be counted on the same
-  dial. It gets its **own** persisted counter and its **own** bound: "UNUSABLE — the refetch is BOUNDED"
+  about the current PR. **Nothing rejected or stale is ever hashed**, and a not-verified derivation
+  **NEVER touches `settled_strikes`**: a strike is a claim that *trusted* evidence did not move, while
+  both exact verdicts mean trusted current-head evidence was not obtained — the two cannot be counted on
+  the same dial. They share one persisted counter and one bound: "NOT VERIFIED — the refetch is BOUNDED"
   below.
 
 ```
@@ -389,9 +389,9 @@ Two rules the tool enforces that the block's lines cannot show:
   `ci_reason` is the **open question** a human is being asked, and no second park may overwrite it.
 
 Per derivation **with trusted current-head evidence** — `fp` below is **the `fingerprint` field of
-`derive`'s JSON**
-(an `UNUSABLE` one prints `fingerprint: null`, has no `fp` at all, is handled entirely by "UNUSABLE — the
-refetch is BOUNDED" below, and touches **no liveness counter but its own**) — in this order:
+`derive`'s JSON** (an `UNUSABLE` or `UNVERIFIABLE` one prints `fingerprint: null`, has no `fp` at all, is
+handled entirely by "NOT VERIFIED — the refetch is BOUNDED" below, and touches **no liveness counter but
+its own**) — in this order:
 
 ```
 fp != ci_fingerprint      -> ci_fingerprint = fp ; settled_strikes = 0 ; ci_stalled_since = -
@@ -509,8 +509,9 @@ blank reason, a terminal row, and a second park over an open question). The non-
 park missing its `ci_reason` is a question nobody can read. Telling the user is the half that stays with
 the driver. It does **not**
 abort the run or close the PR — the run's other PRs keep going. At **this** park — a CI one — `ci_reason` is
-**the DECIDE reason for this snapshot**: the bullet that matched and the row that made it match, never a
-bare restatement of `ci`. (The field itself is **wider than CI**: it is the durable machine-blocker reason,
+**the exact actionable detail for the matched DECIDE outcome**, never a bare restatement of `ci`. Each
+liveness bound's owning section below defines its diagnostic shape. (The field itself is **wider than CI**:
+it is the durable machine-blocker reason,
 and `stage-3-merge.md`'s merge-precondition parks write it with `ci` **green**. `files-and-ledger.md` owns
 that definition.) A park that cannot name its blocker is not actionable.
 
@@ -521,7 +522,7 @@ too.** A park whose exit event never comes is the same wedge, one level up. So t
 
 - **PROMPTS with the blocker and what campaign already spent on it** — the PR, its `ci_reason`, the
   evidence (the fingerprint that did not change; **how long it has not changed** (`ci_stalled_since` →
-  now) when a `RUNNING` row is what stalled; the row, value, or VERIFY rule that made the bullet match),
+  now) when a `RUNNING` row is what stalled; the exact detail in the matched outcome's diagnostic shape),
   and what was already tried (CI-fix attempts, strikes, refetches). **Never a bare "CI is stuck".**
 - **Asks for exactly ONE of two answers, and names them:**
   - **`retry`** — "I changed something **outside** the PR (re-ran the workflow, registered the missing
@@ -606,7 +607,7 @@ VALUE lives at its own single defining site, named here and never retyped:
 | `ci_fingerprint` | CI is genuinely **MOVING** (the fingerprint CHANGED since the last derivation) | *none — motion is not a wait* | — |
 | `settled_strikes` | CI has **SETTLED** and is still not green | **the STRIKE CAP** | "SETTLED", the derivation block above |
 | `ci_stalled_since` | a row still says **RUNNING** but nothing in the check set moves | **the CI STALL CAP** | "RUNNING-STALL", below |
-| `unusable_refetches` | the final derivation has no trusted current-head evidence | **the REFETCH CAP** | "UNUSABLE — the refetch is BOUNDED", below |
+| `unusable_refetches` | the final derivation has no trusted current-head evidence | **the REFETCH CAP** | "NOT VERIFIED — the refetch is BOUNDED", below |
 
 Each ends by itself — in a bounded number of derivations, or a bounded amount of time — and each ends in
 the **same** place: **ESCALATE** (above), the park a human answers. That is what makes every one of them a
@@ -730,13 +731,14 @@ heartbeat; a scheduler-less host keeps the invocation alive and loops after each
 (`loop-control.md` step 5). **A bound that could only be reached by the event it is waiting for would not
 be a bound at all.**
 
-#### UNUSABLE — the refetch is BOUNDED: `unusable_refetches`, the REFETCH CAP
+#### NOT VERIFIED — the refetch is BOUNDED: `unusable_refetches`, the REFETCH CAP
 
 `UNUSABLE` and `UNVERIFIABLE` are final derivation outcomes with **no trusted current-head evidence** and
 therefore no fingerprint, so `settled_strikes` can say nothing about them — and "refetch until it works" is
-an absorbing state with no exit, which the invariant forbids. They get their own counter, on the same
-shape — **applied by the same `liveness` command** ("THE BOOKKEEPING IS A COMMAND", above), except the
-`head_sha changed` line, which belongs to the sites that write a new head ("THE LIVENESS COUNTERS").
+an absorbing state with no exit, which the invariant forbids. Their exact verdicts remain distinct in
+`derive` and `liveness` output, while they share one counter and bound — **applied by the same `liveness`
+command** ("THE BOOKKEEPING IS A COMMAND", above), except the `head_sha changed` line, which belongs to the
+sites that write a new head ("THE LIVENESS COUNTERS").
 
 This is the machine-checked owner block for that counter:
 
@@ -747,6 +749,9 @@ liveness.trusted_current_head_action = unusable_refetches = 0
 liveness.retained_moved_head_artifact = untrusted
 liveness.head_sha_changed_action = reset by ledger accessor
 liveness.refetch_cap = unusable_refetches >= 3
+liveness.refetch_diagnostic = exact verdict + exact derive refusal reason
+liveness.unusable_refusal = snapshot/fetch/head-trust failure; may name VERIFY rule and line/row
+liveness.unverifiable_refusal = witness-identity containment failure; line/row not required
 ```
 
 - **The counter follows the final derivation's trust for the current head, never artifact verification.**
@@ -757,18 +762,19 @@ liveness.refetch_cap = unusable_refetches >= 3
   obtained trusted evidence at all"*, not *"trusted evidence stopped moving"*. Each bound's own question is
   stated at its own defining site, and the owner's table ("THE LIVENESS COUNTERS" above) maps every member
   to that site: **read them there, never restated here.**
-- **The REFETCH CAP is HIGHER than the STRIKE CAP, on purpose.** UNUSABLE is dominated by **transient**
-  causes — a `gh` call failed, the check set changed mid-fetch so a `source` count no longer matches, the
-  snapshot raced a push — and a fresh fetch usually clears them; a SETTLED-but-not-green snapshot is,
-  by construction, **not** transient. The extra headroom buys the transient case free retries, and it
-  still terminates.
-- **The HEARTBEAT is the backoff — never tight-loop inside one.** UNUSABLE gets **no watch** ("WATCH ONLY WHAT
-  CAN MOVE" below), so the next attempt arrives on the scheduled heartbeat, after one bounded wait, or
-  on another task's completion. At most **one** refetch per reconcile.
-- On escalation `ci_reason` names **the VERIFY rule (`ci-derivation-spec.md`) that failed and the line/row that failed it** (not
-  "unusable") — a snapshot campaign could not read once in the REFETCH CAP's worth of consecutive attempts
-  is a real, actionable blocker: a
-  denied read, a wrong-SHA artifact, a fetch that never succeeds.
+- **The REFETCH CAP is HIGHER than the STRIKE CAP, on purpose.** Not-verified outcomes can be
+  **transient**: a `gh` call failed, the check set changed mid-fetch so a `source` count no longer matches,
+  the snapshot raced a push, or a rerun replaced an ambiguous witness identity. A fresh fetch can clear
+  them; a SETTLED-but-not-green snapshot is, by construction, **not** transient. The extra headroom buys
+  the transient case free retries, and it still terminates.
+- **The HEARTBEAT is the backoff — never tight-loop inside one.** Both not-verified verdicts get **no
+  watch** ("WATCH ONLY WHAT CAN MOVE" below), so the next attempt arrives on the scheduled heartbeat,
+  after one bounded wait, or on another task's completion. At most **one** refetch per reconcile.
+- On escalation `ci_reason` preserves **the exact verdict and exact `derive` refusal reason**. An
+  `UNUSABLE` refusal reports the snapshot, fetch, or head-trust failure and may name a VERIFY rule
+  (`ci-derivation-spec.md`) with its offending line/row. An `UNVERIFIABLE` refusal reports the
+  witness-identity containment failure; it may identify a missing or duplicate witness without any
+  line/row. Reaching the REFETCH CAP without trusted current-head evidence is an actionable blocker.
 
 #### WATCH ONLY WHAT CAN MOVE — the relaunch is not free
 
@@ -793,7 +799,7 @@ ranks `UNKNOWN_VALUE` above plain `pending`), yet the park — not a check finis
 | **red** — but some row still `RUNNING` | **YES** — that row can still move; the CI fix runs regardless. |
 | **red** — every row terminal | **NO.** The CI fix moves it, not the watch. |
 | **UNKNOWN_VALUE** | **NO.** The park is the resolution. |
-| **UNUSABLE** | **NO.** Refetch on the **next heartbeat** (the heartbeat *is* the backoff), **bounded by the REFETCH CAP** — then ESCALATE ("UNUSABLE — the refetch is BOUNDED"). |
+| **UNUSABLE** / **UNVERIFIABLE** | **NO.** Preserve the exact verdict, refetch on the **next heartbeat** (the heartbeat *is* the backoff), and bound both through the REFETCH CAP ("NOT VERIFIED — the refetch is BOUNDED"). |
 | **green** | **NO.** |
 
 **NEVER relaunch the watch merely because `ci == pending`.** On a settled PR `gh pr checks --watch`

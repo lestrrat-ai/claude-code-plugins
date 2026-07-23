@@ -415,7 +415,7 @@ Header field notes (the header fields above; per-row fields follow):
   naming the blocker. Reset to `0` on any `head_sha` change (the ledger `set --head-sha` accessor does this
   itself — ledger.py's `apply_head_sha`) or fingerprint change (by `ci-status.py liveness`).
 - `unusable_refetches` — durable refetch-bound state, written only by `ci-status.py liveness` or the
-  `head_sha` accessor. `stage-2-ci.md`, "UNUSABLE — the refetch is BOUNDED", owns the machine-checked
+  `head_sha` accessor. `stage-2-ci.md`, "NOT VERIFIED — the refetch is BOUNDED", owns the machine-checked
   increment/reset contract and the **REFETCH CAP**. Do not infer this field from artifact presence or
   verification; hand `derive`'s unedited result to `liveness`.
 - `ci_stalled_since` — `-`, or the **UTC ISO-8601 timestamp** of the first derivation that saw the check
@@ -443,10 +443,9 @@ Header field notes (the header fields above; per-row fields follow):
   historical and **understates** the field: it is also written at machine-blocker parks where **`ci` is
   `green`**. The name is kept — renaming it would churn the schema and every write site for cosmetics —
   so the definition, not the name, is what binds. Its two write mechanisms:
-  - **CI blockers** (`stage-2-ci.md`, "ESCALATE" — `ci` is `red` or `pending`): the DECIDE bullet that
-    matched and the row that made it match — which required check never registered, which check has been
-    `RUNNING` since when without the check set moving, which enum value was unrecognized, which VERIFY
-    rule the snapshot failed, which read was denied. Written by `ci-status.py liveness`.
+  - **CI blockers** (`stage-2-ci.md`, "ESCALATE" — `ci` is `red` or `pending`): the exact actionable
+    detail for the matched DECIDE outcome. `stage-2-ci.md`'s liveness-bound sections own each diagnostic
+    shape; never reconstruct those shapes here. Written by `ci-status.py liveness`.
   - **NON-CI machine blockers**: every caller writes through `ledger.py … park --pr <N> --reason
     <blocker>`. This includes `base-preflight.py`'s unknown-enum park (`stage-2-review-gate.md`,
     "Preconditions — clear Copilot items, CI, and conflicts before reviewing") and every `— park` reason
@@ -536,7 +535,7 @@ Header field notes (the header fields above; per-row fields follow):
        refetch bound that reached its cap (`unusable_refetches`), a check carrying an **unrecognized enum
        value**, or **any merge precondition `merge-check.py` parks** (any `— park` reason it emits)
        (`stage-2-ci.md`, "SETTLED", "RUNNING-STALL"
-       and "UNUSABLE — the refetch is BOUNDED"; `stage-3-merge.md`, "The merge precondition"). **This is
+       and "NOT VERIFIED — the refetch is BOUNDED"; `stage-3-merge.md`, "The merge precondition"). **This is
        the exit from `pending` — in BOTH of its shapes**, the settled one and the forever-`RUNNING` one;
        without it, a stuck PR spins forever and no one is ever told. **Answered into**
        `blocker_ruling`: `retry@<iso>` → **`ledger.py … unpark --pr <N>`**, which returns the row to
