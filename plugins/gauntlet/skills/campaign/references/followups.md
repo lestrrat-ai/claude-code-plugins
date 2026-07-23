@@ -167,10 +167,12 @@ about and one whose partial rejection strands the rest.
    - **`in-pr`** — a PR is open and named in the entry, but an interrupted heartbeat may have recorded `open-pr`
      **without** finishing ADOPTION. Adoption is a campaign action, not a store edge — no `in-pr`
      transition performs it — so "defer to the graph" strands the PR. On resume, **reconcile the recorded
-     PR against the current run and ADOPT it** (the existing idempotent adoption, step 4) if it lacks a run
-     label or ledger row, **then** wait for `merged`/`closed-unmerged`. An unadopted follow-up PR sits
-     **outside the campaign gate** — the exact thing "fold that PR into the current campaign" exists to
-     prevent.
+     PR against the current run.** If it has no ledger row, or its **non-terminal** row lacks the run label,
+     ADOPT it through step 4. **If its existing row is terminal, NEVER refresh, re-adopt, or relabel it** —
+     surface that terminal campaign result and leave the follow-up lifecycle unchanged. Choosing the next
+     follow-up transition for an aborted-but-open PR is separate lifecycle work; this adoption guard does
+     not invent one. An unadopted follow-up PR with no terminal row sits **outside the campaign gate** —
+     the exact thing "fold that PR into the current campaign" exists to prevent.
    - **`reopened`** — its PR died and it already carries the decision it earned, so it does **not** re-decide:
      it resumes at opening the **replacement** PR. Dispatch the fixer, which opens the replacement PR, then
      `open-pr` records it (→ `in-pr`) and step 4 adopts it — no reconciliation, same as `self-accepted`. The

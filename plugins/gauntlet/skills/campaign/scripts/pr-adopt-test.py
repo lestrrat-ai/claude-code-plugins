@@ -522,6 +522,38 @@ def t_readopt_changed_head_preserves_held_status():
               f"(exit {M.L.EXIT_STOP}); got {dc}")
 
 
+# --- terminal rows are final — an OPEN PR cannot re-adopt them ----------------
+
+def t_readopt_terminal_rows_refused():
+    """Every ledger-owned terminal status refuses before any adoption mutation.
+
+    Bailout may leave the PR OPEN after recording `aborted` and removing its labels. That missing label is
+    not adoption work: the terminal row wins. Drive every member of ledger.py's one terminal-status set so
+    adding a terminal status there automatically adds an executor fixture here.
+    """
+    for status in M.L.TERMINAL_STATUSES:
+        with tempfile.TemporaryDirectory() as dd:
+            d = Path(dd)
+            ledger = d / "state.jsonl"
+            _init_ledger(ledger)
+            _add_row(ledger, 12, head_sha="a" * 40, status=status, tier="HIGH")
+            before = ledger.read_bytes()
+
+            code, _, err, rec = _adopt(d, ledger, view(labels=[]), wroot=d / "wt")
+
+            check(code != 0, f"an OPEN PR with terminal row status={status} must be REFUSED")
+            check("terminal" in err.lower() and status in err,
+                  f"the refusal must name terminal status={status}; got {err!r}")
+            check(ledger.read_bytes() == before,
+                  f"terminal status={status} must leave the ledger byte-identical")
+            check([c["argv"][:3] for c in rec.gh_calls()] == [["gh", "pr", "view"]],
+                  f"terminal status={status} must stop before label create/edit; got {rec.gh_calls()!r}")
+            check(not rec.any_call(lambda a: a[0] == "git"),
+                  f"terminal status={status} must stop before every worktree/git operation")
+            check(not rec.any_call(lambda a: a[0] == "python3"),
+                  f"terminal status={status} must stop before every ledger subprocess mutation")
+
+
 # --- fix 6: the ONE status label mirrors the live gate, mutually exclusive -----
 
 def t_readopt_accepted_unchanged_head_labels():
@@ -1205,6 +1237,7 @@ CASES = [
     ("readopt_unchanged_head_preserves_verdicts", "an unchanged head keeps reviews_ok/ci (fix 5)", t_readopt_unchanged_head_preserves_verdicts),
     ("readopt_changed_head_resets", "a moved head resets reviews_ok/ci and the liveness counters, review_rounds stays (fix 5)", t_readopt_changed_head_resets),
     ("readopt_changed_head_preserves_held_status", "a moved head preserves a held status and stays HELD, resetting only SHA-bound evidence", t_readopt_changed_head_preserves_held_status),
+    ("readopt_terminal_rows_refused", "every terminal row refuses before label, ledger, or worktree mutation", t_readopt_terminal_rows_refused),
     ("readopt_accepted_unchanged_head_labels", "accepted+unchanged head keeps gauntlet-accepted, mutually exclusive (fix 6)", t_readopt_accepted_unchanged_head_labels),
     ("readopt_changed_head_labels", "a moved head returns to gauntlet-reviewing, removes accepted (fix 6)", t_readopt_changed_head_labels),
     ("stale_local_branch_refused", "a worktree off a stale local branch is refused (fix 7)", t_stale_local_branch_refused),

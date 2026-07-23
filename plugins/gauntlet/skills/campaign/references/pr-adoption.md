@@ -10,9 +10,10 @@ Two entry paths feed it (see "Run identity and concurrency" for the full grammar
   from `files-and-ledger.md`, then reconcile PRs already labelled for this run. The executable owner is
   `scripts/reconcile.py fetch`; NEVER reconstruct its GitHub query in prose.
 
-  Every PR returned by the canonical snapshot is already ours — refresh its row from that snapshot.
-  A PR with the label but no row is a re-adoption after an amnesiac heartbeat; a row whose PR is gone
-  (merged/closed) reconciles to its terminal status.
+  Every PR returned by the canonical snapshot is already ours. Refresh it only when its existing row is
+  non-terminal. A PR with the label but no row is a re-adoption after an amnesiac heartbeat. An existing
+  terminal row is final for this run: NEVER refresh, re-adopt, or relabel it, even when the PR is still
+  open. A row whose PR is gone (merged/closed) reconciles to its terminal status.
 
   A fetch refusal produces no discovery input. Keep the previous snapshot untouched and resolve the
   reported blocker before adoption.
@@ -118,7 +119,10 @@ For each `#PR` to adopt:
 3. **Register the ledger row — refresh, never duplicate.** Write the row through
    `scripts/ledger.py` (the schema-owning accessor — `references/files-and-ledger.md`), addressing
    every field **by name**; never hand-edit `state.jsonl` rows by column position. Look the PR up first
-   (`ledger.py --file <state.jsonl> get --pr <N>`): if a row already exists (re-adoption / resume),
+   (`ledger.py --file <state.jsonl> get --pr <N>`). **If the row is terminal, REFUSE before `pr-adopt.py`
+   creates the run label, applies PR labels, refreshes the ledger, or resolves a worktree.** An open PR or
+   missing run label does not revive a row this run already finished or abandoned. If a non-terminal row
+   already exists (re-adoption / resume),
    **refresh it in place** with `ledger.py … set --pr <N> --<field> <val> …` — never append a second
    row for the same PR (`add-row` refuses a duplicate `pr`). Otherwise create it with
    `ledger.py … add-row --pr <N> --<field> <val> …`. Write every field that needs a **COMPUTED** value —
@@ -128,7 +132,8 @@ For each `#PR` to adopt:
    one: the schema lives in the script, and a copy of it retyped here would be stale the next time a row
    field is added.
 
-   **Re-adoption base gate — BEFORE any refresh write.** The recorded row `base_branch` is immutable, and
+   **Re-adoption base gate — AFTER the terminal-row refusal and BEFORE any refresh write.** The recorded
+   row `base_branch` is immutable, and
    the campaign never migrates a row to a new base. On a re-adoption, `pr-adopt.py` first compares the PR's
    live `baseRefName` with the row's `effective_base`; **if they differ it PARKS the row** (machine-blocker,
    `status = awaiting-user`, `ci_reason` = `base changed from <recorded> to <live>; not supported mid-run`,
@@ -168,7 +173,7 @@ For each `#PR` to adopt:
      who wrote this"* is not *"I wrote this"*. It is **NOT** `worktree_owned`/`branch_owned`: those say
      whether campaign created the local checkout and branch, which is a **cleanup** question, and a PR can
      have a campaign-created worktree and still belong entirely to someone else.
-   - **On a REFRESH of an existing row, only re-read `head_sha`/`ci` from ground truth; reset
+   - **On a REFRESH of an existing non-terminal row, only re-read `head_sha`/`ci` from ground truth; reset
      `reviews_ok` to `0` and re-triage `tier` only if** reconciliation detects a PR-content change
      since the recorded `head_sha` (per the gate's SHA-pinning rules). **That reset is a gate-reset
      site: in the same step, reconcile the label by running `label-mirror.py mirror` for the PR**, which
@@ -275,9 +280,9 @@ For each `#PR` to adopt:
 
    **After copying or authoring the base artifact, run `pr-adopt.py intent-sync --file <rundir>/state.jsonl
    --pr <pr>`** to fold in the run defaults (it reports `updated`, `unchanged`, or `pending-intent`).
-   Adoption also runs it automatically at the end of `pr-adopt.py adopt`, so a re-adoption whose intent
-   artifact is present is synced without a separate call; the explicit invocation is for the fresh-adoption
-   path, where the driver authors the base intent first and then syncs.
+   Adoption also runs it automatically at the end of `pr-adopt.py adopt`, so a non-terminal re-adoption
+   whose intent artifact is present is synced without a separate call; the explicit invocation is for the
+   fresh-adoption path, where the driver authors the base intent first and then syncs.
 
    **USABLE means the parser will take it — `review-pass.py` is the definition, and this is the same rule
    stated for a human:** all three headings, **at least one `## Purpose` bullet, AND at least one
@@ -351,14 +356,14 @@ For each `#PR` to adopt:
    consultation only; the store is DRIVER-POPULATED and auto-staling is out of scope). Do not import a Non-goal
    from a learning whose anchor this diff just moved.
 
-   **On a RE-ADOPTION, do not re-author — but DO re-sync.** `intent` is one of the fields the refresh
-   **preserves** (step 3), and the base `intent-<pr>.md` is re-read, never re-derived — a heartbeat is a
-   fresh agent instance, and an intent invented twice is two intents. The run-default managed block IS
+   **On a NON-TERMINAL RE-ADOPTION, do not re-author — but DO re-sync.** `intent` is one of the fields the
+   refresh **preserves** (step 3), and the base `intent-<pr>.md` is re-read, never re-derived — a heartbeat
+   is a fresh agent instance, and an intent invented twice is two intents. The run-default managed block IS
    re-synced, automatically, by `pr-adopt.py adopt` (it runs `intent-sync` at the end), so a header change
-   propagates on the next re-adoption without re-authoring the base. Re-author only if the file is **gone**
-   (a wiped `<rundir>`) — then re-run `intent-sync` and `intent-check` after authoring, exactly as a fresh
-   adoption does — and say so. After a `REPAIR-INTENT` re-authoring (`repair-pass.md`), likewise re-run
-   `intent-sync` and the intent check.
+   propagates on the next eligible re-adoption without re-authoring the base. Re-author only if the file is
+   **gone** (a wiped `<rundir>`) — then re-run `intent-sync` and `intent-check` after authoring, exactly as a
+   fresh adoption does — and say so. After a `REPAIR-INTENT` re-authoring (`repair-pass.md`), likewise
+   re-run `intent-sync` and the intent check.
 
 #### Step 4 — Label it ours, and set the status label from the LIVE gate
 
@@ -376,11 +381,11 @@ For each `#PR` to adopt:
    that you are adopting:
 
    ```
-   # Gate NOT met at the current HEAD — a fresh adoption (reviews_ok = 0), or a re-adoption whose
+   # Gate NOT met at the current HEAD — a fresh adoption (reviews_ok = 0), or a non-terminal re-adoption whose
    # content changed (step 3 just reset reviews_ok). The common case:
    gh pr edit <pr> --add-label gauntlet-run-<run-id> --add-label gauntlet-reviewing --remove-label gauntlet-accepted
 
-   # Gate ALREADY met at the current HEAD — re-adoption of a PR whose content did NOT change, so step 3
+   # Gate ALREADY met at the current HEAD — non-terminal re-adoption of a PR whose content did NOT change, so step 3
    # preserved reviews_ok >= required(tier). Its acceptance is still valid; do not revoke it:
    gh pr edit <pr> --add-label gauntlet-run-<run-id> --add-label gauntlet-accepted --remove-label gauntlet-reviewing
    ```
@@ -462,7 +467,7 @@ For each `#PR` to adopt:
    #### Two fail-closed guarantees the pseudocode leaves implicit
 
    **Two fail-closed guarantees the pseudocode leaves implicit:**
-   - **On a re-adoption of the SAME worktree campaign itself created, PRESERVE its recorded
+   - **On a non-terminal re-adoption of the SAME worktree campaign itself created, PRESERVE its recorded
      `worktree_owned`/`branch_owned`** rather than downgrading them to `no`. A first adopt that **created**
      the worktree recorded `yes`; blanking that to `no` on a later heartbeat would strand the
      campaign-created worktree from Stage-3 cleanup. The `existing is present` branch's `worktree_owned =
@@ -510,10 +515,10 @@ followed by a second. Without this second veto derive the adoption path would
 write a below-floor tier straight through — gate work could start below the emitted floor, an
 under-reviewed stricter tier — the exact hole the heartbeat veto closes; the two paths are symmetric. A
 refusal from EITHER derive leaves the conservative bootstrap in place and blocks gate dispatch until the
-next heartbeat refreshes the worktree/head and derives successfully.
+next heartbeat refreshes the non-terminal row's worktree/head and derives successfully.
 
 **A same-SHA tier change is TWO events by direction** (`stage-2-review-gate.md`, "Status labels mirror the
-review gate", owns the split; depth order TRIVIAL < STANDARD < HIGH), and on an UNCHANGED re-adoption
+review gate", owns the split; depth order TRIVIAL < STANDARD < HIGH), and on an UNCHANGED non-terminal re-adoption
 `pr-adopt.py` PRESERVES `reviews_ok` (>= 1) (it preserves it when the head did not move), so this
 decided-tier write must honour the direction before the mirror:
 - **Depth-raising escalation** (this decision raises the preserved tier to a strictly deeper one —
@@ -531,7 +536,7 @@ decided-tier write must honour the direction before the mirror:
 **Then, in the SAME step, run `label-mirror.py mirror` for the PR** — idempotent, a no-op when the label
 already matches — so the tier, `required(tier)`, and the public status label move together
 (`stage-2-review-gate.md`, "Status labels mirror the review gate", owns the swap and the tool). **Run it
-on an UNCHANGED re-adoption too, NOT only a fresh one:** step 4 labelled against the *preserved* tier
+on an UNCHANGED non-terminal re-adoption too, NOT only a fresh one:** step 4 labelled against the *preserved* tier
 before this decision, so a PR left `gauntlet-accepted` under a preserved lower tier keeps that false label
 until the mirror flips it to `gauntlet-reviewing` (the escalation reset above took the tally below
 `required`). Never skip it as a presumed no-op — a fresh adoption's `reviews_ok=0` is the ONLY case the

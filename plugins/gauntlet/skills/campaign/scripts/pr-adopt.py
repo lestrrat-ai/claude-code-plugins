@@ -14,7 +14,8 @@ under load:
 
   * READ the PR (one `gh pr view` for the fields the ledger row needs, including the cross-repo field);
   * REFUSE fork/foreign/closed PRs — FAIL CLOSED, touching nothing when it refuses (step 2);
-  * REGISTER the ledger row (refresh in place if it exists, never a duplicate `add-row`) (step 3, row);
+  * REGISTER the ledger row (refuse an existing terminal row; otherwise refresh in place if it exists,
+    never a duplicate `add-row`) (step 3, row);
   * RESOLVE the PR-head worktree — DISCOVER the branch's actual checkout via `git worktree list` and REUSE
     it (fast-forwarded, clean), else CREATE one at the default path; fail closed on a dirty/detached/foreign
     checkout or a head-SHA mismatch (step 5);
@@ -344,6 +345,14 @@ def cmd_adopt(args) -> int:
     header, rows = L.load(Path(args.file))
     existing = L.find_row(rows, pr)
 
+    # TERMINAL ROW GATE — runs before every label, ledger and worktree mutation. A terminal row records
+    # that this run already finished or gave up on the PR; an OPEN PR with labels removed is not permission
+    # to revive it. Re-adoption applies only to new or non-terminal rows.
+    if existing is not None and existing.get("status") in L.TERMINAL_STATUSES:
+        status = existing["status"]
+        return _refuse(f"PR {pr} already has terminal ledger status {status}; terminal rows are not "
+                       f"re-adoptable")
+
     # RE-ADOPTION BASE GATE — runs BEFORE any write. The recorded row base is IMMUTABLE (ledger CREATE_ONLY),
     # and the campaign never migrates a row to a new base. If the PR's live base no longer matches the row's
     # `effective_base` (its explicit base, else the legacy header), PARK the row on the user through the
@@ -518,11 +527,12 @@ def cmd_adopt(args) -> int:
         return _refuse(f"`gh pr edit {pr}` (labels) failed: {proc.stderr.strip()} "
                        f"(the ledger row and worktree for PR {pr} were already written)")
 
-    # 7. Fold the run's default Non-goals into the PR's intent managed block. On a RE-ADOPTION the intent
-    # artifact is already present, so this syncs it automatically; on a FRESH adoption it does not exist yet
-    # (the driver authors it next, then runs `intent-sync`), so this reports `pending-intent`. A malformed
-    # ledger/intent surfaces as a refusal rather than a silent skip — but the row and labels already landed,
-    # exactly like a half-adoption, and re-running `intent-sync` recovers it.
+    # 7. Fold the run's default Non-goals into the PR's intent managed block. On an eligible RE-ADOPTION
+    # (terminal rows stopped above) the intent artifact is already present, so this syncs it automatically;
+    # on a FRESH adoption it does not exist yet (the driver authors it next, then runs `intent-sync`), so
+    # this reports `pending-intent`. A malformed ledger/intent surfaces as a refusal rather than a silent
+    # skip — but the row and labels already landed, exactly like a half-adoption, and re-running
+    # `intent-sync` recovers it.
     try:
         intent_sync = sync_intent_defaults(args.file, pr)
     except ValueError as exc:
