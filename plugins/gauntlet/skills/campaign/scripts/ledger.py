@@ -489,7 +489,11 @@ def load(path: Path) -> "tuple[dict, list[dict]]":
     of the accessor uses; a row's `id` is always recomputed from its normalized
     `pr` (never trusted from the file). An unknown `type` is rejected, not dropped.
     """
-    header = dict(HEADER_DEFAULTS)
+    # `object` value type (not `str`): the `default_non_goals` special-case below preserves a PRESENT
+    # malformed value RAW (a bare JSON `null` read as `None`, or a native array read as a `list`) so the
+    # fail-closed decode door sees it un-healed. That transient non-str only lives here until
+    # `parse_default_non_goals` validates it; every other field is still `_coerce_field`-d to `str`.
+    header: dict[str, object] = dict(HEADER_DEFAULTS)
     rows: list[dict] = []
     if not path.exists():
         return header, rows
