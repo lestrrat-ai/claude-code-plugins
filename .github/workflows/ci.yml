@@ -68,8 +68,8 @@ jobs:
       #
       # DELIBERATELY FILE-SCOPED, not repo-wide. The other scripts here are not type-clean yet, and a
       # repo-wide gate would fail builds for reasons that have nothing to do with the change under review —
-      # a gate that is red for everyone is a gate nobody can use. Add or remove the exact `# ci: pyright`
-      # marker in each Python file as its type-clean status changes.
+      # a gate that is red for everyone is a gate nobody can use. Add the exact `# ci: pyright` marker
+      # to each Python file as it becomes type-clean. Never remove the marker from a covered file.
       #
       # The `filesAnalyzed` assertion is the load-bearing half of this step, not a flourish. Pyright can
       # silently skip an explicit input while still reporting "0 errors" and exiting 0. A step that trusted
