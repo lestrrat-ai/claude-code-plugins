@@ -71,10 +71,10 @@ jobs:
       # a gate that is red for everyone is a gate nobody can use. Add or remove the exact `# ci: pyright`
       # marker in each Python file as its type-clean status changes.
       #
-      # The `filesAnalyzed` assertion is the load-bearing half of this step, not a flourish. Pyright analyses
-      # ZERO files IN SILENCE when a path matches nothing it will look at — it prints "0 errors" and exits 0.
-      # A step that trusted the exit code alone would keep reporting success after a rename, while checking
-      # nothing whatsoever. So the count is asserted: this step can only pass by actually having looked.
+      # The `filesAnalyzed` assertion is the load-bearing half of this step, not a flourish. Pyright can
+      # silently skip an explicit input while still reporting "0 errors" and exiting 0. A step that trusted
+      # the exit code alone could therefore pass without covering every file discovered from the marker
+      # inventory. So the count is asserted: every discovered input must actually be analysed.
       - name: Pyright (the type-clean scripts)
         run: |
           set -o pipefail
@@ -107,7 +107,8 @@ jobs:
           echo "filesAnalyzed=${analyzed} expected=${expected}"
           if [ "${analyzed}" != "${expected}" ]; then
             echo "::error::pyright analysed ${analyzed} file(s), not the ${expected} it was pointed at — it checked" \
-                 "nothing and said so quietly. Fix the paths above; a silent no-op is not a passing gate."
+                 "an incomplete marker inventory. Inspect marker discovery and Pyright input handling;" \
+                 " every discovered file must be analysed."
             exit 1
           fi
           rm -f pyright.json
