@@ -2037,10 +2037,11 @@ def parse_moved_head_contract(blocks: list[str]) -> dict[str, str]:
 
 
 def parse_liveness_contract(blocks: list[str]) -> dict[str, str]:
-    """The refetch-counter owner block -> final-result trust, actions, head reset, and cap expression."""
+    """The refetch-counter owner block -> trust, actions, cap, and diagnostic shape."""
     keys = {
         "untrusted_verdicts", "untrusted_action", "trusted_current_head_action",
         "retained_moved_head_artifact", "head_sha_changed_action", "refetch_cap",
+        "refetch_diagnostic", "unusable_refusal", "unverifiable_refusal",
     }
     for block in blocks:
         if "liveness.untrusted_verdicts" not in block:
@@ -2431,6 +2432,15 @@ def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) 
         ("liveness refetch-cap expression", liveness_contract.get("refetch_cap"),
          f"unusable_refetches >= {REFETCH_CAP}",
          "the owner block and the refetch cap used by liveness must agree"),
+        ("liveness refetch diagnostic", liveness_contract.get("refetch_diagnostic"),
+         "exact verdict + exact derive refusal reason",
+         "the cap diagnostic must preserve both fields from the final not-verified derivation"),
+        ("liveness UNUSABLE refusal", liveness_contract.get("unusable_refusal"),
+         "snapshot/fetch/head-trust failure; may name VERIFY rule and line/row",
+         "UNUSABLE structural details may identify an offending row, but do not require one"),
+        ("liveness UNVERIFIABLE refusal", liveness_contract.get("unverifiable_refusal"),
+         "witness-identity containment failure; line/row not required",
+         "witness identity can prevent containment proof without identifying an evidence row"),
         ("the STRIKE CAP", caps.get("STRIKE"), STRIKE_CAP,
          "the bound `liveness` fires at and the bound the doc promises are different numbers"),
         ("the REFETCH CAP", caps.get("REFETCH"), REFETCH_CAP,

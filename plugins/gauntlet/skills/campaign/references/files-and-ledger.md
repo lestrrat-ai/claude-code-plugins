@@ -443,10 +443,9 @@ Header field notes (the header fields above; per-row fields follow):
   historical and **understates** the field: it is also written at machine-blocker parks where **`ci` is
   `green`**. The name is kept — renaming it would churn the schema and every write site for cosmetics —
   so the definition, not the name, is what binds. Its two write mechanisms:
-  - **CI blockers** (`stage-2-ci.md`, "ESCALATE" — `ci` is `red` or `pending`): the DECIDE bullet that
-    matched and the row that made it match — which required check never registered, which check has been
-    `RUNNING` since when without the check set moving, which enum value was unrecognized, which VERIFY
-    rule the snapshot failed, which read was denied. Written by `ci-status.py liveness`.
+  - **CI blockers** (`stage-2-ci.md`, "ESCALATE" — `ci` is `red` or `pending`): the exact actionable
+    detail for the matched DECIDE outcome. `stage-2-ci.md`'s liveness-bound sections own each diagnostic
+    shape; never reconstruct those shapes here. Written by `ci-status.py liveness`.
   - **NON-CI machine blockers**: every caller writes through `ledger.py … park --pr <N> --reason
     <blocker>`. This includes `base-preflight.py`'s unknown-enum park (`stage-2-review-gate.md`,
     "Preconditions — clear Copilot items, CI, and conflicts before reviewing") and every `— park` reason

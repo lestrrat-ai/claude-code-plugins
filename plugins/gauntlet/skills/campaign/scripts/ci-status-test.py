@@ -872,6 +872,38 @@ def liveness_cases(ci, tmp: Path) -> list[str]:
          ("not-verified", "unverifiable", True, "3", True),
          (out["state"], out["verdict"], out["escalated"], r["unusable_refetches"],
           "UNVERIFIABLE at the REFETCH CAP" in r["ci_reason"]))
+
+    # Reach the same cap from the checked-in witness-identity fixture, not a synthesized reason. This
+    # refusal identifies the duplicated witness and containment failure, but has no VERIFY rule or row.
+    duplicate_path = (ci.SNAPSHOT_PY.parent / "fixtures" / "ci-snapshot"
+                      / "duplicate-witness-id.jsonl")
+    duplicate_verdict, duplicate_refusal = ci.SNAP.evaluate(
+        duplicate_path, sha, required=ci.SNAP.NO_REQUIRED, expect_filename_sha=False
+    )
+    duplicate_derived = ci.derive_output({
+        "head_sha": sha,
+        "verdict": duplicate_verdict,
+        "ci": "pending",
+        "reason": duplicate_refusal,
+        "fingerprint": None,
+        "buckets": None,
+    })
+    reset(unusable_refetches="2")
+    out = ci.liveness(ledger, "35", duplicate_derived, "none", now)
+    r = row()
+    expected_refusal = (
+        "witness identity is not unique "
+        "(https://github.com/lestrrat-ai/claude-code-plugins/actions/runs/29263565055/job/1) "
+        "— containment cannot be proven"
+    )
+    expected_cap_reason = (
+        f"UNVERIFIABLE at the REFETCH CAP — 3 consecutive not-verified derivations at head {sha} "
+        f"yielded no trusted current-head evidence. Last refusal: {expected_refusal}"
+    )
+    case("witness-identity refusal reaches the cap without invented row detail",
+         ("unverifiable", expected_refusal, True, "awaiting-user", expected_cap_reason),
+         (duplicate_verdict, duplicate_refusal, out["escalated"], r["status"], r["ci_reason"]))
+
     reset(unusable_refetches="2")
     out = ci.liveness(ledger, "35", derived(), "none", now)
     case("trusted current-head evidence resets the refetch counter", "0", row()["unusable_refetches"])

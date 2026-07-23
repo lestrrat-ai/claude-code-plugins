@@ -509,8 +509,9 @@ blank reason, a terminal row, and a second park over an open question). The non-
 park missing its `ci_reason` is a question nobody can read. Telling the user is the half that stays with
 the driver. It does **not**
 abort the run or close the PR — the run's other PRs keep going. At **this** park — a CI one — `ci_reason` is
-**the DECIDE reason for this snapshot**: the bullet that matched and the row that made it match, never a
-bare restatement of `ci`. (The field itself is **wider than CI**: it is the durable machine-blocker reason,
+**the exact actionable detail for the matched DECIDE outcome**, never a bare restatement of `ci`. Each
+liveness bound's owning section below defines its diagnostic shape. (The field itself is **wider than CI**:
+it is the durable machine-blocker reason,
 and `stage-3-merge.md`'s merge-precondition parks write it with `ci` **green**. `files-and-ledger.md` owns
 that definition.) A park that cannot name its blocker is not actionable.
 
@@ -521,7 +522,7 @@ too.** A park whose exit event never comes is the same wedge, one level up. So t
 
 - **PROMPTS with the blocker and what campaign already spent on it** — the PR, its `ci_reason`, the
   evidence (the fingerprint that did not change; **how long it has not changed** (`ci_stalled_since` →
-  now) when a `RUNNING` row is what stalled; the row, value, or VERIFY rule that made the bullet match),
+  now) when a `RUNNING` row is what stalled; the exact detail in the matched outcome's diagnostic shape),
   and what was already tried (CI-fix attempts, strikes, refetches). **Never a bare "CI is stuck".**
 - **Asks for exactly ONE of two answers, and names them:**
   - **`retry`** — "I changed something **outside** the PR (re-ran the workflow, registered the missing
@@ -748,6 +749,9 @@ liveness.trusted_current_head_action = unusable_refetches = 0
 liveness.retained_moved_head_artifact = untrusted
 liveness.head_sha_changed_action = reset by ledger accessor
 liveness.refetch_cap = unusable_refetches >= 3
+liveness.refetch_diagnostic = exact verdict + exact derive refusal reason
+liveness.unusable_refusal = snapshot/fetch/head-trust failure; may name VERIFY rule and line/row
+liveness.unverifiable_refusal = witness-identity containment failure; line/row not required
 ```
 
 - **The counter follows the final derivation's trust for the current head, never artifact verification.**
@@ -766,11 +770,11 @@ liveness.refetch_cap = unusable_refetches >= 3
 - **The HEARTBEAT is the backoff — never tight-loop inside one.** Both not-verified verdicts get **no
   watch** ("WATCH ONLY WHAT CAN MOVE" below), so the next attempt arrives on the scheduled heartbeat,
   after one bounded wait, or on another task's completion. At most **one** refetch per reconcile.
-- On escalation `ci_reason` names **the actual verdict and refusal reason**: `UNUSABLE` or `UNVERIFIABLE`,
-  plus the VERIFY rule (`ci-derivation-spec.md`) and line/row that refused the snapshot. A snapshot
-  campaign could not trust current-head evidence once in the REFETCH CAP's worth of consecutive attempts
-  is a real, actionable blocker: a denied read, a wrong-SHA artifact, an ambiguous witness identity, or a
-  fetch that never succeeds.
+- On escalation `ci_reason` preserves **the exact verdict and exact `derive` refusal reason**. An
+  `UNUSABLE` refusal reports the snapshot, fetch, or head-trust failure and may name a VERIFY rule
+  (`ci-derivation-spec.md`) with its offending line/row. An `UNVERIFIABLE` refusal reports the
+  witness-identity containment failure; it may identify a missing or duplicate witness without any
+  line/row. Reaching the REFETCH CAP without trusted current-head evidence is an actionable blocker.
 
 #### WATCH ONLY WHAT CAN MOVE — the relaunch is not free
 

@@ -712,8 +712,9 @@ block a merge, this is the line that was wrong.
 
 #### DECIDE — first match wins
 
-> **`ci-status.py derive` EVALUATES THESE BULLETS** — its JSON's `verdict` and `reason` name the bullet
-> that matched and the row that made it match. The bullet LOGIC is the **SPECIFICATION THE TOOL
+> **`ci-status.py derive` EVALUATES THESE BULLETS** — its JSON's `verdict` names the bullet that matched,
+> and `reason` preserves that outcome's exact diagnostic detail. Not every outcome has an evidence row.
+> The bullet LOGIC is the **SPECIFICATION THE TOOL
 > IMPLEMENTS** (`doc-check` pins the bullet order; the `*-outranks-*` fixtures pin it behaviourally):
 > keep it correct, and **NEVER re-evaluate it by hand against a snapshot** — a hand evaluation that
 > disagrees with the JSON is the by-eye derivation this file exists to kill. **The DRIVER ACTION for
