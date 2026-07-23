@@ -152,8 +152,8 @@ For each `#PR` to adopt:
    - **On a NEW row only, initialize:** `base_branch` = the PR's live `baseRefName` (recorded ONCE through
      `add-row --base-branch`, immutable after — this is the per-row base every later action resolves through
      `effective_base`); `reviews_ok` = `0` (no verdicts yet); `ci` = `pending`;
-     `tier` = bootstrap `STANDARD`; after step 5 the orchestrator decides the real tier at or above
-     `triage.py derive`'s floor and writes it;
+     `tier` = bootstrap `STANDARD`; after step 5 follow `stage-2-review-gate.md`, "2a-triage", for the
+     complete procedure;
      `attempts` = `0` (no attempt has run yet —
      `attempts` counts attempts **so far**, and seeding it at `1` silently spends half the retry-once
      budget before any work is dispatched); `started` = now;
