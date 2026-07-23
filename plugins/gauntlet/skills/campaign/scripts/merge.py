@@ -770,7 +770,15 @@ def main(argv: "list[str] | None" = None) -> int:
                          merge_method=args.merge_method)
     except (Refusal, SystemExit) as exc:
         detail = exc if isinstance(exc, Refusal) else "ledger rejected malformed state"
-        print(f"merge: REFUSED — {detail}", file=sys.stderr)
+        # Byte-exact final boundary: detail can carry a surrogateescape-decoded raw git byte (U+DCFF for a
+        # 0xff filename byte under core.quotePath=false — see _ff_detail). A text sys.stderr would apply the
+        # default backslashreplace and emit the 6 ASCII chars `\udcff` instead of the verbatim byte, breaking
+        # the "raw git diagnostic appended verbatim" guarantee at the one surface the CLI user sees. Encode
+        # with surrogateescape and write raw. The tailored JSON path list is pure ASCII (json.dumps,
+        # ensure_ascii=True), so it stays line-safe; only git's own detail round-trips to raw bytes. Flush:
+        # the process returns immediately after.
+        sys.stderr.buffer.write(f"merge: REFUSED — {detail}\n".encode("utf-8", "surrogateescape"))
+        sys.stderr.buffer.flush()
         return 1
     print(json.dumps(result, sort_keys=True))
     return 0

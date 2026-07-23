@@ -153,9 +153,11 @@ unchanged, even if the read-only probe still named candidate paths. **This tailo
 a read-only probe that cannot reproduce git's full fast-forward-blocking decision computes it, so in unusual
 working-tree states (submodule gitlinks, nested untracked repositories, assume-unchanged / skip-worktree /
 sparse-checkout entries) it MAY over- or under-name paths — it is a convenience, never the authority. Every
-refused fast-forward, INCLUDING this tailored refusal, appends git's own diagnostic verbatim as
-`Original Git diagnostic:`, and THAT raw diagnostic — not the tailored list — is the authoritative account of
-what actually blocks the fast-forward.** The command refuses held rows whose live PR is
+refused fast-forward preserves git's own diagnostic verbatim, and THAT raw diagnostic — not the tailored
+list — is the authoritative account of what actually blocks the fast-forward: the tailored overwrite refusal
+appends it under an explicit `Original Git diagnostic:` label, while every other fast-forward failure carries
+the same git detail through the standard refusal wrapper
+(`fast-forward of checked-out base <base> failed (exit <code>): <git diagnostic>`), unlabeled.** The command refuses held rows whose live PR is
 OPEN (a CLOSED held row is closed out to `aborted` — `loop-control.md` Step 4 — and a `MERGED` held row is an
 external merge, resumed to finalize base-sync/owned-cleanup/terminal write; neither is refused), a `--repo`
 that does not name the checkout's own repository, stale gates, uncertain GitHub facts, another run's PR,

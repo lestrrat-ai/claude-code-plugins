@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -1547,6 +1548,79 @@ def t_realgit_stale_index_lock_falls_back_to_raw_error():
               f"git's original lock error must survive to the refusal: {msg!r}")
 
 
+# The child program the boundary fixture below drives. It reproduces the genuine tailored base-sync refusal
+# from REAL git (calling _sync_base on a work dir whose base fast-forward is blocked by a 0xff-byte filename),
+# then makes main()'s `execute` raise that exact Refusal — so the REAL CLI boundary (main's stderr write) is
+# what emits it. `run`'s other args only have to PARSE; the patched execute never reads them.
+_DRIVE_MAIN_CHILD = """\
+import sys
+from pathlib import Path
+scripts_dir, work = Path(sys.argv[1]), Path(sys.argv[2])
+sys.path.insert(0, str(scripts_dir))
+from _gauntlet.modules import load_module_from_path
+M = load_module_from_path("merge_boundary_owner", scripts_dir / "merge.py")
+if M is None:
+    sys.stderr.write("LOAD_FAIL"); raise SystemExit(3)
+try:
+    M._sync_base(work, "main")
+except M.Refusal as exc:
+    ref = exc
+else:
+    sys.stderr.write("NO_REFUSAL"); raise SystemExit(3)
+def _boom(*a, **k):
+    raise ref
+M.execute = _boom
+raise SystemExit(M.main(["run", "--ledger", "x", "--pr", "1", "--project-root", ".", "--repo", "o/r"]))
+"""
+
+
+def t_realgit_main_stderr_preserves_raw_git_byte():
+    # Finding 1, the FINAL boundary: the internal fixtures above prove the Refusal MESSAGE preserves the 0xff
+    # byte, but main() WRITES that message to the CLI user's stderr. A text sys.stderr applies the default
+    # backslashreplace and turns the surrogateescape-decoded U+DCFF into the 6 ASCII chars `\\udcff` — so git's
+    # raw byte NEVER reaches the terminal, breaking the "raw git diagnostic appended verbatim" guarantee at the
+    # ONE surface the user sees. main must write bytes with surrogateescape. Only a real subprocess whose
+    # stderr is captured as BYTES can observe this boundary; the child produces the genuine tailored refusal
+    # from real git, then drives the REAL main so its stderr write is what emits it.
+    odd = b"bad\xffname.txt"
+    with tempfile.TemporaryDirectory() as td:
+        up, work = Path(td) / "up", Path(td) / "work"
+        subprocess.run(["git", "init", "-q", "-b", "main", str(up)],
+                       env=_GIT_ENV, capture_output=True, check=True)
+        _rg_write(up, odd, b"v0\n")
+        _rg_git(up, "add", "-A")
+        _rg_git(up, "commit", "-q", "-m", "C0")
+        c0 = _rg_head(up)
+        _rg_write(up, odd, b"v1\n")                                    # C1 rewrites the odd file -> incoming path
+        _rg_git(up, "add", "-A")
+        _rg_git(up, "commit", "-q", "-m", "C1")
+        subprocess.run(["git", "clone", "-q", str(up), str(work)],
+                       env=_GIT_ENV, capture_output=True, check=True)  # real `origin` remote, origin/main=C1
+        _rg_git(work, "config", "core.quotePath", "false")            # git emits the raw 0xff byte, unquoted
+        _rg_git(work, "reset", "-q", "--hard", c0)                    # local main behind origin/main
+        _rg_write(work, odd, b"local\n")                             # worktree edit to the incoming odd file
+        child = Path(td) / "drive_main.py"
+        child.write_text(_DRIVE_MAIN_CHILD)
+        res = subprocess.run([sys.executable, str(child), str(OWNER.parent), str(work)],
+                             env=_GIT_ENV, capture_output=True, check=False)  # stderr captured as BYTES
+        err = res.stderr
+        check(res.returncode == 1,
+              f"main must exit 1 on the base-sync refusal (not the child's 3): {res.returncode} / {err!r}")
+        check(err.startswith(b"merge: REFUSED"),
+              f"the CLI refusal prefix must be present at the boundary: {err!r}")
+        # (a) git's OWN raw 0xff diagnostic byte survives verbatim to the CLI stderr. With the old text print,
+        #     backslashreplace would have emitted the 6 ASCII chars `\\udcff` and this byte would be ABSENT.
+        check(b"\xff" in err,
+              f"git's raw 0xff diagnostic byte must reach stderr verbatim (finding 1): {err!r}")
+        # (b) the tailored path list stays LINE-SAFE: json.dumps(path) is pure ASCII (ensure_ascii=True) and
+        #     escapes the odd byte as the literal 6-char `\\udcff`, forging no newline. Its exact ASCII list
+        #     item must appear intact — proving the odd byte in the tailored list did NOT round-trip to a raw
+        #     byte or a fabricated line (the raw 0xff in (a) comes only from git's verbatim detail).
+        item = b"  - " + json.dumps(odd.decode("utf-8", "surrogateescape")).encode("ascii")
+        check(item in err,
+              f"the JSON-quoted tailored path must render as one intact ASCII, line-safe item: {err!r}")
+
+
 CASES = [
     ("happy-owned", "exact merge argv, owned cleanup, terminal write", t_happy_owned_cleanup_and_command),
     ("repo-identity", "a --repo that does not name the checkout's own repository is refused before any live view (case-insensitive match)", t_repo_identity_mismatch_refused_before_view),
@@ -1594,4 +1668,5 @@ CASES = [
     ("realgit-staged-equal-incoming", "REAL git: a path staged to exactly its incoming content does not block ff-only and is not named; only the true blocker is (finding 1)", t_realgit_staged_equal_incoming_not_named),
     ("realgit-ff-capture-non-utf8", "REAL git: _sync_base's checked-out-base ff capture survives a non-UTF-8 (0xff) blocking filename under core.quotePath=false — no crash, names the path, preserves git's original diagnostic (finding 2)", t_realgit_ff_capture_survives_non_utf8_filename),
     ("realgit-stale-index-lock-raw", "REAL git: a stale .git/index.lock makes the checked-out-base ff fail for an UNRELATED reason (no `overwritten by merge`); _sync_base does NOT fire the tailored path-list/stash refusal even though the probe still names an overlapping path — it falls back to git's raw lock error", t_realgit_stale_index_lock_falls_back_to_raw_error),
+    ("realgit-main-stderr-raw-byte", "REAL git via a subprocess: main() writes the base-sync refusal to stderr BYTE-EXACT — git's raw 0xff diagnostic byte survives verbatim to the CLI boundary (not backslashreplaced to `\\udcff`), while the JSON-quoted tailored path stays ASCII/line-safe (finding 1)", t_realgit_main_stderr_preserves_raw_git_byte),
 ]
