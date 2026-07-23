@@ -35,9 +35,9 @@ the tier at or above `floor`. **Guard it BEFORE any ledger write:** pass the dec
 `--tier <decided>` on a re-run derive with the IDENTICAL inputs — the command REFUSES (exit 2, no JSON) a
 tier below the floor — and block the ledger write on refusal. Only THEN record the tier through **EXACTLY
 ONE directional `scripts/ledger.py … set`** — never a preliminary generic tier write followed by a second;
-the direction (escalation vs. de-escalation/unchanged/fresh) sets the flags, and
-`loop-control.md`/`pr-adoption.md`, "Adoption-time tier decision", own that split. `TRIVIAL` is
-admissible **only** when `floor` is `null`
+the direction (escalation vs. de-escalation/unchanged/fresh) sets the flags, and `loop-control.md`'s
+re-triage step and `pr-adoption.md`, "Adoption-time tier decision", own that split. `TRIVIAL` is admissible
+**only** when `floor` is `null`
 (every changed file is human prose) **and** you judge it truly human prose.
 
 The floor computation:
