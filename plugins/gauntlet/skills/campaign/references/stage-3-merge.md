@@ -188,7 +188,8 @@ ownership checks and phase order remain in force.
    explicit `base_branch`, else the legacy header — a run may hold PRs on different bases, so it is resolved
    per PR, and `--base` is asserted against it). It fetches `origin/<base>` and requires it to be an ancestor
    of `HEAD` even when GitHub still reports CLEAN. On `recheck`, re-poll and leave the candidate alone. On
-   `rebase-first`, rebase before considering the candidate for another review or merge:
+   `park`, the helper has already sent the unrecognized enum value through `ledger.py park`; leave the
+   now-held candidate alone. On `rebase-first`, rebase before considering the candidate for another review or merge:
    - Clean rebase (no conflicts, PR diff unchanged) → **EXECUTED — not hand-run — by `python3
      scripts/clean-rebase.py run --ledger <state.jsonl> --pr <N> --worktree <worktree> --base <base>`**: it
      does the fetch/rebase/`--force-with-lease` push, verifies the PR's own diff is unchanged, and writes the
