@@ -148,8 +148,8 @@ def t_readopt_escalation_flips_accepted_to_reviewing():
     # An UNCHANGED re-adoption preserves reviews_ok (here 1), and pr-adopt.py's adoption-time labeling
     # applied gauntlet-accepted under the PRESERVED TRIVIAL (required 1). The adoption-time tier DECISION
     # then raises the tier to STANDARD (required 2), so 1/2 is short and the stale, publicly-visible
-    # gauntlet-accepted MUST flip to gauntlet-reviewing — the co-located mirror at pr-adoption.md step 6
-    # (and stage-2-review-gate.md's tier-DECISION row) is what makes that happen. It is NOT a no-op here.
+    # gauntlet-accepted MUST flip to gauntlet-reviewing — the co-located mirror in pr-adoption.md,
+    # "Adoption-time tier decision", is what makes that happen. It is NOT a no-op here.
     with tempfile.TemporaryDirectory() as d:
         led = build_ledger(Path(d), tier="STANDARD", reviews_ok="1")   # 1/2 -> reviewing
         fake = FakeGh(view=view_with("gauntlet-accepted", "gauntlet-run-g1"))

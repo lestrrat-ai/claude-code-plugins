@@ -35,8 +35,9 @@ the tier at or above `floor`. **Guard it BEFORE any ledger write:** pass the dec
 `--tier <decided>` on a re-run derive with the IDENTICAL inputs — the command REFUSES (exit 2, no JSON) a
 tier below the floor — and block the ledger write on refusal. Only THEN record the tier through **EXACTLY
 ONE directional `scripts/ledger.py … set`** — never a preliminary generic tier write followed by a second;
-the direction (escalation vs. de-escalation/unchanged/fresh) sets the flags, and
-`loop-control.md`/`pr-adoption.md` own that split. `TRIVIAL` is admissible **only** when `floor` is `null`
+the direction (escalation vs. de-escalation/unchanged/fresh) sets the flags, and `loop-control.md`'s
+re-triage step and `pr-adoption.md`, "Adoption-time tier decision", own that split. `TRIVIAL` is admissible
+**only** when `floor` is `null`
 (every changed file is human prose) **and** you judge it truly human prose.
 
 The floor computation:
@@ -1030,8 +1031,8 @@ event that drops `reviews_ok` to 0, which now includes a **depth-raising tier es
 | Re-adoption refresh detects changed content | `pr-adoption.md` step 3 (step 4 then sets the status label from the **live** gate — `gauntlet-reviewing` here, but `gauntlet-accepted` for a re-adoption whose content did **not** change and whose verdicts step 3 preserved; either way it removes the other label) |
 | Any other PR-content change on the head branch — formatter/bot commit, manual push | **Loop control step 1's ledger refresh** — the heartbeat that *detects* it resets the gate, so it relabels there |
 | `default_non_goals` **broadening reset** — the operator clears banked credit before REMOVING a run default (the broadening guard refuses the header write while any non-terminal PR holds `reviews_ok > 0`) | **`files-and-ledger.md`, "default_non_goals"** — the operator runs `ledger.py set --pr <N> --reviews-ok 0` per credited PR to re-open it under the broadened scope. That is a `reviews_ok`→0 event on unchanged content (no head SHA moves), so each reset MUST, in the SAME step, run `label-mirror.py mirror` for that PR, restoring `gauntlet-reviewing` because the voided tally no longer meets `required(tier)` |
-| Tier DECISION is a **depth-raising escalation** (orchestrator re-triage raises the tier to a strictly deeper one — TRIVIAL→STANDARD, TRIVIAL→HIGH, STANDARD→HIGH — on unchanged content) | **`loop-control.md` re-triage step, the tier write** — this is a `reviews_ok`→0 event ("Status labels mirror the review gate" owns why): the same re-triage step writes the deeper tier and voids `reviews_ok` in ONE ledger write, requires a fresh tier-sized plan before the next dispatch, and runs `label-mirror.py mirror`, which restores `gauntlet-reviewing` because the voided tally no longer meets `required(tier)`. The adoption-time tier write (`pr-adoption.md` step 6) is the SAME event: an UNCHANGED re-adoption PRESERVES `reviews_ok` (>= 1) (`pr-adopt.py` preserves it when the head did not move), so a depth-raising decision there must void that preserved tally too — it is NOT a case that can be skipped |
-| Tier DECISION is a **de-escalation** that lowers `required(tier)` (STANDARD→TRIVIAL, on unchanged content, so `reviews_ok` is untouched) | **`loop-control.md` re-triage step, the tier write** — the same step runs `label-mirror.py mirror`; the verdicts STAY (they were earned at a deeper depth), and the mirror swaps a standing tally to `gauntlet-accepted` when the lowered `required(tier)` is now met. The adoption-time tier write (`pr-adoption.md` step 6) co-locates the SAME mirror; a FRESH adoption has `reviews_ok=0`, so it is a no-op there, but an UNCHANGED re-adoption whose preserved tally now meets the lowered `required` flips to `gauntlet-accepted` |
+| Tier DECISION is a **depth-raising escalation** (orchestrator re-triage raises the tier to a strictly deeper one — TRIVIAL→STANDARD, TRIVIAL→HIGH, STANDARD→HIGH — on unchanged content) | **`loop-control.md` re-triage step, the tier write** — this is a `reviews_ok`→0 event ("Status labels mirror the review gate" owns why): the same re-triage step writes the deeper tier and voids `reviews_ok` in ONE ledger write, requires a fresh tier-sized plan before the next dispatch, and runs `label-mirror.py mirror`, which restores `gauntlet-reviewing` because the voided tally no longer meets `required(tier)`. The adoption-time tier write (`pr-adoption.md`, "Adoption-time tier decision") is the SAME event: an UNCHANGED re-adoption PRESERVES `reviews_ok` (>= 1) (`pr-adopt.py` preserves it when the head did not move), so a depth-raising decision there must void that preserved tally too — it is NOT a case that can be skipped |
+| Tier DECISION is a **de-escalation** that lowers `required(tier)` (STANDARD→TRIVIAL, on unchanged content, so `reviews_ok` is untouched) | **`loop-control.md` re-triage step, the tier write** — the same step runs `label-mirror.py mirror`; the verdicts STAY (they were earned at a deeper depth), and the mirror swaps a standing tally to `gauntlet-accepted` when the lowered `required(tier)` is now met. The adoption-time tier write (`pr-adoption.md`, "Adoption-time tier decision") co-locates the SAME mirror; a FRESH adoption has `reviews_ok=0`, so it is a no-op there, but an UNCHANGED re-adoption whose preserved tally now meets the lowered `required` flips to `gauntlet-accepted` |
 
 **Every row names a place where the gate PROJECTION changes — `reviews_ok` written to 0, or
 `required(tier)` changed by a tier decision — never "the reconcile pass".** The
@@ -1045,7 +1046,8 @@ tally on unchanged content**), **`ledger.py verdict … --verdict not-satisfied`
 verdict tally, which voids it), and **`ledger.py … set --pr <N> --tier`** (the tier write; a
 **de-escalation** changes `required(tier)` without touching `reviews_ok`, while a **depth-raising
 escalation** carries `--reviews-ok 0` in the SAME atomic write — one `ledger.py set` with both flags, so
-tier and voided tally move together, per `loop-control.md`/`pr-adoption.md`). Search for all three.
+tier and voided tally move together, per `loop-control.md`'s re-triage step and `pr-adoption.md`,
+"Adoption-time tier decision"). Search for all three.
 
 **Exception — a clean base-only rebase** (PR diff unchanged) carries `reviews_ok` forward and therefore
 **keeps** `gauntlet-accepted`. The gate did not reset, so the label does not move. Gate and label stay in
