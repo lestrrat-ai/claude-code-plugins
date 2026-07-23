@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """Fixtures for `reviewer-liveness.py` — the stdout-stream liveness probe.
 
 They live in a SIBLING file, and `reviewer-liveness.py self-test` FAILS LOUDLY if it cannot load them.

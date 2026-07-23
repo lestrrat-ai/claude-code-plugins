@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """SKILL.md's Bundled Scripts table vs scripts/ — the COMPLETE-by-contract claim, executed.
 
 The table in SKILL.md ("Bundled Scripts") declares itself COMPLETE: one row per bundled script,

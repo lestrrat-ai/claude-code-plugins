@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """THE FOLLOW-UP STORE'S CONTRACT, EXECUTED — the fixtures for `followups.py`.
 
 RUN IT THROUGH THE SCRIPT IT TESTS: `python3 followups.py self-test`. That is what CI invokes, and it is

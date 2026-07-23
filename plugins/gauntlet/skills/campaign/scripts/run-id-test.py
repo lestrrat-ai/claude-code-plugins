@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """Fixtures for `run-id.py` — the run-id minter and atomic run-directory creator.
 
 They live in a SIBLING file, and `run-id.py self-test` FAILS LOUDLY if it cannot load them.

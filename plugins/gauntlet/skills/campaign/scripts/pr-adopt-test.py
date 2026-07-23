@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """Fixtures for `pr-adopt.py` — the mechanical PR-adoption decision, pinned WITHOUT live GitHub.
 
 Every case drives the PURE surface (`build_plan` / `slugify`) or the `plan` CLI (via `capture_cli` and a

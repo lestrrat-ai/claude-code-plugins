@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """Emit the mechanical FLOOR and file inventory for one immutable PR-head diff.
 
 ``references/stage-2-review-gate.md`` (``2a-triage``) owns the policy.  This command is a mechanical

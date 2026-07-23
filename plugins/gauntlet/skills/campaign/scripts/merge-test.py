@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """Mocked fixtures for `merge.py`; no fixture contacts GitHub or merges a real PR."""
 
 from __future__ import annotations

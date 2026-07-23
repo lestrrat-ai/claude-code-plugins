@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """Adopt a PR into a run — the MECHANICAL half, as a command instead of a shell block in a doc.
 
 `references/pr-adoption.md` is the authority; this tool performs its steps 1, 2, 4, 5 and the row of

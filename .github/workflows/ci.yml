@@ -68,20 +68,22 @@ jobs:
       #
       # DELIBERATELY FILE-SCOPED, not repo-wide. The other scripts here are not type-clean yet, and a
       # repo-wide gate would fail builds for reasons that have nothing to do with the change under review —
-      # a gate that is red for everyone is a gate nobody can use. Add each file to this list as it is fixed;
-      # the list is the record of what is CLEAN, and nothing may fall back out of it.
+      # a gate that is red for everyone is a gate nobody can use. Add the exact `# ci: pyright` marker
+      # to each Python file as it becomes type-clean. Never remove the marker from a covered file.
       #
-      # The `filesAnalyzed` assertion is the load-bearing half of this step, not a flourish. Pyright analyses
-      # ZERO files IN SILENCE when a path matches nothing it will look at — it prints "0 errors" and exits 0.
-      # A step that trusted the exit code alone would keep reporting success after a rename, while checking
-      # nothing whatsoever. So the count is asserted: this step can only pass by actually having looked.
+      # The `filesAnalyzed` assertion is the load-bearing half of this step, not a flourish. Pyright can
+      # silently skip an explicit input while still reporting "0 errors" and exiting 0. A step that trusted
+      # the exit code alone could therefore pass without covering every file discovered from the marker
+      # inventory. So the count is asserted: every discovered input must actually be analysed.
       - name: Pyright (the type-clean scripts)
         run: |
           set -o pipefail
-          # The list below is the SINGLE SOURCE OF TRUTH for the type-clean set. The expected
-          # filesAnalyzed count is DERIVED from its length (`${#files[@]}`), never hardcoded — add a
-          # file here and the count updates itself, with no second edit and no literal to keep in sync.
-          files=(
+          marker_args=(-e '^# ci: pyright$' -e $'^# ci: pyright\r$')
+
+          # This is the coverage floor: every previously type-clean path must retain the exact marker.
+          # Marker discovery below remains open-ended, so newly type-clean files are analysed without a
+          # second list edit.
+          baseline=(
             plugins/gauntlet/skills/campaign/scripts/_gauntlet/__init__.py
             plugins/gauntlet/skills/campaign/scripts/_gauntlet/argv.py
             plugins/gauntlet/skills/campaign/scripts/_gauntlet/atomic.py
@@ -129,16 +131,59 @@ jobs:
             plugins/gauntlet/skills/campaign/scripts/merge.py
             plugins/gauntlet/skills/campaign/scripts/merge-test.py
           )
-          npx --yes pyright@1.1.410 --outputjson "${files[@]}" | tee pyright.json
+          missing=()
+          for file in "${baseline[@]}"; do
+            if ! git grep -q "${marker_args[@]}" -- "${file}"; then
+              missing+=("${file}")
+            fi
+          done
+          if ((${#missing[@]} != 0)); then
+            printf '::error::covered Python file lacks the exact # ci: pyright marker: %s\n' "${missing[@]}"
+            exit 1
+          fi
+
+          # Exact marker lines, with either LF or CRLF endings, define the current type-clean set.
+          # filesAnalyzed is derived from this discovered set, never from the baseline.
+          discovery_file=$(mktemp "${RUNNER_TEMP}/pyright-markers.XXXXXX")
+          trap 'rm -f "${discovery_file}" pyright.json' EXIT
+          if git grep -l -z "${marker_args[@]}" -- '*.py' > "${discovery_file}"; then
+            mapfile -d '' -t files < "${discovery_file}"
+          else
+            grep_status=$?
+            if [ "${grep_status}" -ne 1 ]; then
+              exit "${grep_status}"
+            fi
+            files=()
+          fi
+          if ((${#files[@]} == 0)); then
+            echo "::error::no Python files carry the exact # ci: pyright marker"
+            exit 1
+          fi
+          crlf_fixture='plugins/gauntlet/skills/campaign/scripts/fixtures/pyright/crlf_marker.txt'
+          if crlf_match=$(git grep -l "${marker_args[@]}" -- "${crlf_fixture}"); then
+            :
+          else
+            grep_status=$?
+            if [ "${grep_status}" -eq 1 ]; then
+              crlf_match=''
+            else
+              exit "${grep_status}"
+            fi
+          fi
+          if [ "${crlf_match}" != "${crlf_fixture}" ]; then
+            echo "::error::the tracked CRLF marker fixture did not match exactly: ${crlf_fixture}"
+            exit 1
+          fi
+          npx --yes pyright@1.1.410 --outputjson "${files[@]/#/./}" | tee pyright.json
           analyzed=$(jq '.summary.filesAnalyzed' pyright.json)
           expected=${#files[@]}
           echo "filesAnalyzed=${analyzed} expected=${expected}"
           if [ "${analyzed}" != "${expected}" ]; then
             echo "::error::pyright analysed ${analyzed} file(s), not the ${expected} it was pointed at — it checked" \
-                 "nothing and said so quietly. Fix the paths above; a silent no-op is not a passing gate."
+                 "an incomplete marker inventory. Inspect marker discovery and Pyright input handling;" \
+                 " every discovered file must be analysed."
             exit 1
           fi
-          rm -f pyright.json
 
       # The CI-snapshot contract, executed. The rules it pins are prose in stage-2-ci.md, and prose
       # cannot be run — three defects shipped in that prose, each of which dies instantly against a

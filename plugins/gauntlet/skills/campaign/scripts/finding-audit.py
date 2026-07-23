@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """Schema-owning accessor for campaign finding audits and review-fix scope.
 
 The reviewer finding schema and gating rule belong to ``review-pass.py``. This accessor imports that

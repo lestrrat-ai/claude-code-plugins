@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """Materialize one complete, host-neutral fix-worker prompt as an atomic artifact bundle.
 
     worker-prompt.py fix --role review|ci-session|ci-economy \
