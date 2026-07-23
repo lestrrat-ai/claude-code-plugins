@@ -1652,7 +1652,8 @@ def check_scope(ident: dict, current: "list[str]") -> None:
 
     So this compares the bound scope to the header's live `default_non_goals`; a mismatch VOIDS the tally
     exactly as a moved head does, and the next heartbeat re-reviews under the new scope. It is symmetric — a
-    mid-flight ADD (scope NARROWS) also voids the pass, which is safe, the re-review being a superset.
+    mid-flight ADD (scope NARROWS) also voids the pass, which is safe: the just-voided pass already covered
+    a superset of the re-review's now-narrower scope, so the re-review is a subset (redundant but safe).
     `check_identity_shape` has already proven the binding is a canonical list, so this only compares.
     """
     bound = ident["default_non_goals"]

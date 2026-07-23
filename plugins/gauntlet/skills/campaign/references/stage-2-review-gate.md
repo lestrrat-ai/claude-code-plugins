@@ -762,7 +762,8 @@ the tally (`pr-adoption.md`, "do not re-author — but DO re-sync"), so a tally 
 pass the instant the intent was resynced, and the stale SATISFIED would count. Binding the scope into
 `pass_identity` at dispatch is immutable and no later re-sync can move it. The pass is superseded and
 re-reviewed under the new scope next heartbeat. Symmetric by design: a mid-flight ADD (scope narrows) also
-voids the pass, which is safe — the re-review is a superset. (`intent-check`'s intent-vs-header scope test
+voids the pass, which is safe — the just-voided completed pass already covered a superset of the narrowed
+re-review scope, so the re-review is a subset (redundant but safe). (`intent-check`'s intent-vs-header scope test
 still runs PRE-DISPATCH, refusing a launch against an already-stale intent; it does not gate the tally.)
 
 **`verify` derives the active attempt's report path from the progress artifact and parses the result.**
