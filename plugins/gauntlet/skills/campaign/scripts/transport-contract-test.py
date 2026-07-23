@@ -51,6 +51,9 @@ TRIAGE_INPUT_BINDINGS = (
     ("--pr", "<pr>"),
 )
 TRIAGE_TIER_BINDING = ("--tier", "<your decided tier>")
+MARKDOWN_LIST_ITEM = re.compile(
+    r"^(?P<prefix>[ \t>]*)(?:[-*+]|\d+[.)]) "
+)
 
 
 def markdown_section(body: str, heading: str) -> str:
@@ -137,19 +140,40 @@ def has_exact_flag(body: str, flag: str) -> bool:
 
 def prose_chunks(body: str) -> list[str]:
     return [
-        chunk for chunk in re.split(r"\n[ \t>]*\n", body)
+        chunk for chunk in re.split(
+            r"\n[ \t>]*\n(?![ \t>]*(?:[-*+]|\d+[.)]) )",
+            body,
+        )
         if chunk.strip()
     ]
 
 
 def markdown_list_chunks(body: str) -> list[str]:
-    return [
-        chunk for chunk in re.split(
-            r"\n[ \t>]*\n|\n(?=[ \t]*[-*+] )",
-            body,
-        )
-        if chunk.strip()
-    ]
+    chunks: list[str] = []
+    current: list[str] = []
+    list_prefix: str | None = None
+
+    def flush() -> None:
+        nonlocal current, list_prefix
+        if current:
+            chunks.append("\n".join(current))
+        current = []
+        list_prefix = None
+
+    for line in body.splitlines():
+        item = MARKDOWN_LIST_ITEM.match(line)
+        if item is not None:
+            prefix = item.group("prefix")
+            if current and (list_prefix is None or list_prefix != prefix):
+                flush()
+            current.append(line)
+            list_prefix = prefix
+        elif line.strip(" \t>"):
+            current.append(line)
+        else:
+            flush()
+    flush()
+    return chunks
 
 
 def normalize_markdown_prose(body: str) -> str:
@@ -157,7 +181,11 @@ def normalize_markdown_prose(body: str) -> str:
 
 
 def contains_triage_derive(body: str) -> bool:
-    return re.search(r"triage\.py\s+derive", normalize_markdown_prose(body)) is not None
+    normalized = normalize_markdown_prose(body)
+    return (
+        re.search(r"(?<![\w-])triage\.py(?![\w.-])", normalized) is not None
+        and re.search(r"\bderive\b", normalized) is not None
+    )
 
 
 def triage_prose_chunks(body: str) -> list[str]:
@@ -318,6 +346,66 @@ INVENTED negative fixture: run `triage.py` `derive` with these caller inputs:
         "reconstructed the campaign triage invocation",
         "split-code-span heartbeat triage caller was accepted",
     )
+
+    consumer_reconstructions = (
+        (
+            "paragraph-plus-list",
+            """
+
+INVENTED negative fixture: run `triage.py` `derive` with these caller inputs:
+
+- `--worktree <worktree>`
+- `--base origin/<base>`
+- `--head-sha <head_sha>`
+- `--file <state.jsonl>`
+- `--pr <pr>`
+""",
+            "reconstructed the campaign triage invocation",
+        ),
+        (
+            "reversed-grammar",
+            (
+                "\n\nINVENTED negative fixture: invoke the `derive` subcommand of `triage.py` "
+                "with `--worktree <worktree>`, `--base origin/<base>`, "
+                "`--head-sha <head_sha>`, `--file <state.jsonl>`, and `--pr <pr>`.\n"
+            ),
+            "reconstructed the campaign triage invocation",
+        ),
+        (
+            "separate-list-item-veto",
+            """
+
+- INVENTED negative fixture: add `--tier <decided>` to the command.
+- Re-run the same derive.
+""",
+            "reconstructed the campaign triage veto re-run",
+        ),
+    )
+    for fixture_name, reconstruction, expected in consumer_reconstructions:
+        reconstructed_adoption = insert_after_once(
+            adoption, insertion_marker, reconstruction
+        )
+        require_rejected(
+            lambda reconstructed_adoption=reconstructed_adoption: (
+                check_campaign_triage_contract(
+                    stage, reconstructed_adoption, loop_control, skill
+                )
+            ),
+            expected,
+            f"{fixture_name} adoption triage caller was accepted",
+        )
+        reconstructed_heartbeat = insert_after_once(
+            loop_control, heartbeat_insertion_marker, reconstruction
+        )
+        require_rejected(
+            lambda reconstructed_heartbeat=reconstructed_heartbeat: (
+                check_campaign_triage_contract(
+                    stage, adoption, reconstructed_heartbeat, skill
+                )
+            ),
+            expected,
+            f"{fixture_name} heartbeat triage caller was accepted",
+        )
 
     distance_padding = " invented neutral padding" * 16
     veto_reconstructions = (
