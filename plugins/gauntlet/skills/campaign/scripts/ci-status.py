@@ -2637,7 +2637,20 @@ def main() -> int:
         return self_test()
 
     if args.cmd == "required-set":
-        out = refresh_required_set(gh_fetch, args.ledger, args.repo)
+        try:
+            out = refresh_required_set(gh_fetch, args.ledger, args.repo)
+        except SystemExit as exc:
+            # ledger.py owns its diagnostic but uses exit 1 for every refusal. At this command boundary,
+            # those are ledger/caller errors (exit 2), never the retryable "some group is unknown" result.
+            # Re-raise every other code unchanged, and do not print a second diagnostic.
+            if exc.code != 1:
+                raise
+            raise SystemExit(2) from None
+        except (OSError, UnicodeError) as exc:
+            # Read/write/spawn failures otherwise escape as tracebacks whose process status happens to be 1,
+            # colliding with the retryable unknown-group result. Undecodable store bytes are the same class:
+            # malformed ledger input, not an unknown required-check read.
+            fail(f"required-set: cannot process --ledger {args.ledger} ({exc})")
         print(json.dumps(out, indent=2, ensure_ascii=False))
         return 0 if out["settled"] else 1
 

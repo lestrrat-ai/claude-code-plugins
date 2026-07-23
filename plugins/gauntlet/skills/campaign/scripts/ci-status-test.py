@@ -41,7 +41,9 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import re
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -439,6 +441,105 @@ def required_set_cases(ci, tmp: Path) -> list[str]:
 
     problems += grouped_required_set_cases(ci, tmp)
     problems += required_set_matrix_cases(ci, tmp)
+    return problems
+
+
+def required_set_cli_cases(ci, tmp: Path) -> list[str]:
+    """Pin the required-set process contract: settled=0, retryable unknown=1, caller/store errors=2."""
+    problems: list[str] = []
+    cli_tmp = tmp / "required-set-cli"
+    cli_tmp.mkdir()
+
+    def run_cli(ledger: Path, *, env: "dict[str, str] | None" = None):
+        return subprocess.run(  # noqa: S603 - this suite drives its sibling command
+            [sys.executable, str(STATUS_PY), "required-set", "--ledger", str(ledger), "--repo", "o/r"],
+            capture_output=True, text=True, check=False, env=env,
+        )
+
+    def valid_ledger(path: Path, *, header_required: str, row_required: "str | None" = None) -> None:
+        header = dict(ci.LEDGER.HEADER_DEFAULTS)
+        header.update({"run_id": path.stem, "base_branch": "main", "required_set": header_required})
+        rows = []
+        if row_required is not None:
+            row = dict(ci.LEDGER.ROW_DEFAULTS)
+            row.update({"pr": "1", "base_branch": "main", "required_set": row_required,
+                        "status": "in_review"})
+            rows.append(row)
+        ci.LEDGER.dump(path, header, rows)
+
+    settled = cli_tmp / "settled.jsonl"
+    valid_ledger(settled, header_required=ci.SNAP.NONE_DECLARED)
+    settled_before = settled.read_bytes()
+    proc = run_cli(settled)
+    if proc.returncode != 0:
+        problems.append(f"[required-set CLI] settled ledger exited {proc.returncode}, not 0: {proc.stderr!r}")
+    elif settled.read_bytes() != settled_before:
+        problems.append("[required-set CLI] settled ledger was rewritten despite needing no read")
+    elif proc.stderr:
+        problems.append(f"[required-set CLI] settled ledger emitted stderr: {proc.stderr!r}")
+
+    fake_bin = cli_tmp / "bin"
+    fake_bin.mkdir()
+    fake_gh = fake_bin / "gh"
+    fake_gh.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    fake_gh.chmod(0o700)
+    denied_env = os.environ.copy()
+    denied_env["PATH"] = str(fake_bin) + os.pathsep + denied_env.get("PATH", "")
+    unknown = cli_tmp / "unknown.jsonl"
+    valid_ledger(unknown, header_required=ci.SNAP.CANNOT_READ, row_required="-")
+    proc = run_cli(unknown, env=denied_env)
+    _header, rows = ci.LEDGER.load(unknown)
+    if proc.returncode != 1:
+        problems.append(f"[required-set CLI] unknown group exited {proc.returncode}, not 1: {proc.stderr!r}")
+    elif rows[0]["required_set"] != ci.SNAP.CANNOT_READ:
+        problems.append(f"[required-set CLI] failed read persisted {rows[0]['required_set']!r}, not `unknown`")
+    elif proc.stderr:
+        problems.append(f"[required-set CLI] retryable unknown emitted stderr: {proc.stderr!r}")
+
+    def check_error(name: str, ledger: Path, before: bytes, proc) -> None:
+        if proc.returncode != 2:
+            problems.append(f"[required-set CLI] {name} exited {proc.returncode}, not 2: {proc.stderr!r}")
+        if ledger.read_bytes() != before:
+            problems.append(f"[required-set CLI] {name} mutated the ledger")
+        lines = [line for line in proc.stderr.splitlines() if line]
+        if "Traceback" in proc.stderr:
+            problems.append(f"[required-set CLI] {name} emitted a traceback: {proc.stderr!r}")
+        elif len(lines) != 1:
+            problems.append(f"[required-set CLI] {name} emitted {len(lines)} diagnostics, not one: "
+                            f"{proc.stderr!r}")
+
+    malformed_cases = {
+        "headerless ledger": b'{"type":"row","pr":"1"}\n',
+        "duplicate-row ledger": (b'{"type":"header"}\n'
+                                 b'{"type":"row","pr":"1"}\n'
+                                 b'{"type":"row","pr":"1"}\n'),
+        "non-UTF-8 ledger": b'{"type":"header"}\n\xff\n',
+    }
+    for slug, (name, body) in enumerate(malformed_cases.items(), start=1):
+        ledger = cli_tmp / f"malformed-{slug}.jsonl"
+        ledger.write_bytes(body)
+        check_error(name, ledger, body, run_cli(ledger))
+
+    malformed_spec = cli_tmp / "malformed-spec.jsonl"
+    valid_ledger(malformed_spec, header_required="not-a-required-set")
+    malformed_before = malformed_spec.read_bytes()
+    check_error("malformed required set", malformed_spec, malformed_before, run_cli(malformed_spec))
+
+    if not hasattr(os, "geteuid") or os.geteuid() == 0:
+        print("skip     [required-set CLI] chmod cannot make the ledger directory unwritable as this user")
+    else:
+        unwritable_dir = cli_tmp / "unwritable"
+        unwritable_dir.mkdir()
+        unwritable = unwritable_dir / "state.jsonl"
+        valid_ledger(unwritable, header_required=ci.SNAP.NONE_DECLARED, row_required="-")
+        unwritable_before = unwritable.read_bytes()
+        unwritable_dir.chmod(0o500)
+        try:
+            proc = run_cli(unwritable)
+        finally:
+            unwritable_dir.chmod(0o700)
+        check_error("unwritable ledger", unwritable, unwritable_before, proc)
+
     return problems
 
 
@@ -1062,6 +1163,14 @@ def run(ci, tmp: Path) -> int:
     if not required_problems:
         print(f"ok       {'required-set producer':32} -> both APIs, strict shapes, canonical ledger state, "
               f"grouped per-base refresh, and derive's row-based resolution")
+
+    required_cli_problems = required_set_cli_cases(ci, tmp)
+    for problem in required_cli_problems:
+        failures += 1
+        print(f"FAIL     {problem}")
+    if not required_cli_problems:
+        print(f"ok       {'required-set CLI exits':32} -> settled=0, unknown=1, caller/store errors=2; "
+              f"errors preserve the ledger and emit one diagnostic without a traceback")
 
     liveness_problems = liveness_cases(ci, tmp)
     for problem in liveness_problems:
