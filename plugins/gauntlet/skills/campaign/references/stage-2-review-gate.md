@@ -36,7 +36,8 @@ the tier at or above `floor`. **Guard it BEFORE any ledger write:** pass the dec
 tier below the floor — and block the ledger write on refusal. Only THEN record the tier through **EXACTLY
 ONE directional `scripts/ledger.py … set`** — never a preliminary generic tier write followed by a second;
 the direction (escalation vs. de-escalation/unchanged/fresh) sets the flags, and
-`loop-control.md`/`pr-adoption.md` own that split. `TRIVIAL` is admissible **only** when `floor` is `null`
+`loop-control.md`/`pr-adoption.md`, "Adoption-time tier decision", own that split. `TRIVIAL` is
+admissible **only** when `floor` is `null`
 (every changed file is human prose) **and** you judge it truly human prose.
 
 The floor computation:
