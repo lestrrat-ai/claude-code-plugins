@@ -2653,10 +2653,10 @@ def health_of(events: "list[dict]", verdict: str, elapsed_s: "float | None",
     return H_WORKING
 
 
-def verify_column(progress: Path, events: "list[dict]", verdict: str) -> str:
+def verify_column(progress: Path, events: "list[dict]") -> str:
     """`evaluate()`'s authoritative verdict for this attempt — the opt-in `--verify` read. It uses the
     pass's OWN recorded `head_sha` as the comparison target (a stateless render knows no other head), and
-    feeds the scraped report verdict so a complete, sound pass reads `ok` rather than `unusable`."""
+    reads the active report itself."""
     ident = pass_identity_of(events)
     head = ident.get("head_sha") if isinstance(ident, dict) else None
     if not isinstance(head, str):
@@ -2735,7 +2735,7 @@ def status_row(progress: Path, now: datetime, want_verify: bool,
 
     cells = [label, f"{done}/{total}", now_unit, finding_counts(progress), elapsed, health, verdict]
     if want_verify:
-        cells.append(verify_column(progress, events, verdict))
+        cells.append(verify_column(progress, events))
     if ledger_rows is not None:
         cells.append(_ledger_cell(pr, ledger_rows))
     return cells
