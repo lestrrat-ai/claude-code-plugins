@@ -1,3 +1,4 @@
+# ci: pyright
 """Argument-vector helpers shared by Gauntlet campaign scripts."""
 
 from __future__ import annotations
