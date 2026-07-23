@@ -186,7 +186,7 @@ ownership checks and phase order remain in force.
    For each **non-parked** open PR, run `python3 scripts/base-preflight.py check --pr <pr> --worktree
    <worktree> --base <base> --file <state.jsonl>`, where `<base>` is that row's **effective base** (its
    explicit `base_branch`, else the legacy header — a run may hold PRs on different bases, so it is resolved
-   per PR, and `--base` is asserted against it). It fetches `origin/<base>` and requires it to be an ancestor
+   per PR, and `--base` is asserted against it). It fetches the base and requires it to be an ancestor
    of `HEAD` even when GitHub still reports CLEAN. On `recheck`, re-poll and leave the candidate alone. On
    `park`, the helper has already sent the unrecognized enum value through `ledger.py park`; leave the
    now-held candidate alone. On `rebase-first`, rebase before considering the candidate for another review or merge:

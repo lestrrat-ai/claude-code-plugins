@@ -317,6 +317,180 @@ def t_clean_view_with_current_base_proceeds():
               f"a current base must permit the candidate, got {out!r}")
 
 
+def t_force_rewritten_base_refreshes_and_rebases():
+    """A rewritten remote base is refreshed before ancestry is decided."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        remote = root / "remote.git"
+        seed = root / "seed"
+        candidate = root / "candidate"
+
+        result = subprocess.run(["git", "init", "--bare", "-b", "main", str(remote)],
+                                capture_output=True, text=True, check=False)
+        check(result.returncode == 0, f"could not create fixture remote: {result.stderr.strip()}")
+        result = subprocess.run(["git", "clone", str(remote), str(seed)],
+                                capture_output=True, text=True, check=False)
+        check(result.returncode == 0, f"could not clone fixture seed: {result.stderr.strip()}")
+        _configure_repo(seed)
+        (seed / "f").write_text("base\n", encoding="utf-8")
+        _git(seed, "add", "f")
+        _git(seed, "commit", "-m", "base")
+        _git(seed, "push", "origin", "main")
+
+        result = subprocess.run(["git", "clone", str(remote), str(candidate)],
+                                capture_output=True, text=True, check=False)
+        check(result.returncode == 0, f"could not clone fixture candidate: {result.stderr.strip()}")
+
+        (seed / "f").write_text("first advance\n", encoding="utf-8")
+        _git(seed, "commit", "-am", "first advance")
+        _git(seed, "push", "origin", "main")
+        _git(candidate, "fetch", "origin", "main")
+        old_base = _git(candidate, "rev-parse", "refs/remotes/origin/main").stdout.strip()
+
+        (seed / "f").write_text("rewritten advance\n", encoding="utf-8")
+        _git(seed, "commit", "--amend", "-am", "rewritten base")
+        rewritten_base = _git(seed, "rev-parse", "HEAD").stdout.strip()
+        _git(seed, "push", "--force", "origin", "HEAD:refs/heads/main")
+        check(old_base != rewritten_base,
+              "fixture setup: the remote base rewrite must differ from the stale tracking ref")
+
+        result = M.check_base_ancestry(str(candidate), "main", "origin")
+        refreshed_base = _git(candidate, "rev-parse", "refs/remotes/origin/main").stdout.strip()
+        check(result == ("stale", ""),
+              f"a candidate based on the replaced base must be sent to rebase, got {result!r}")
+        check(refreshed_base == rewritten_base,
+              "the ancestry check must force-refresh origin/main to the rewritten remote base")
+
+
+def t_literal_head_base_does_not_follow_remote_head_symref():
+    """A branch literally named HEAD must not overwrite the default branch's tracking ref."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        remote = root / "remote.git"
+        seed = root / "seed"
+        candidate = root / "candidate"
+
+        result = subprocess.run(["git", "init", "--bare", "-b", "main", str(remote)],
+                                capture_output=True, text=True, check=False)
+        check(result.returncode == 0, f"could not create fixture remote: {result.stderr.strip()}")
+        result = subprocess.run(["git", "clone", str(remote), str(seed)],
+                                capture_output=True, text=True, check=False)
+        check(result.returncode == 0, f"could not clone fixture seed: {result.stderr.strip()}")
+        _configure_repo(seed)
+        (seed / "f").write_text("main\n", encoding="utf-8")
+        _git(seed, "add", "f")
+        _git(seed, "commit", "-m", "main base")
+        _git(seed, "push", "origin", "main")
+        main_head = _git(seed, "rev-parse", "HEAD").stdout.strip()
+
+        (seed / "f").write_text("literal HEAD branch\n", encoding="utf-8")
+        _git(seed, "commit", "-am", "literal HEAD advance")
+        literal_head = _git(seed, "rev-parse", "HEAD").stdout.strip()
+        _git(seed, "push", "origin", "HEAD:refs/heads/HEAD")
+        check(main_head != literal_head, "fixture setup: main and the literal HEAD branch must differ")
+
+        result = subprocess.run(["git", "clone", str(remote), str(candidate)],
+                                capture_output=True, text=True, check=False)
+        check(result.returncode == 0, f"could not clone fixture candidate: {result.stderr.strip()}")
+        symbolic = _git(candidate, "symbolic-ref", "refs/remotes/origin/HEAD")
+        check(symbolic.returncode == 0
+              and symbolic.stdout.strip() == "refs/remotes/origin/main",
+              "fixture setup: origin/HEAD must be the normal symbolic ref to origin/main")
+        origin_main_before = _git(candidate, "rev-parse", "refs/remotes/origin/main").stdout.strip()
+        check(origin_main_before == main_head, "fixture setup: origin/main must track the remote main branch")
+
+        result = M.check_base_ancestry(str(candidate), "HEAD", "origin")
+        check(result == ("stale", ""),
+              f"a candidate behind the literal HEAD branch must be sent to rebase, got {result!r}")
+        check(_git(candidate, "rev-parse", "refs/remotes/origin/main").stdout.strip() == origin_main_before,
+              "fetching the literal HEAD branch must not follow origin/HEAD and overwrite origin/main")
+        private_refs = _git(
+            candidate, "for-each-ref", "--format=%(objectname)", "refs/gauntlet/base-fetch").stdout.splitlines()
+        check(private_refs == [literal_head],
+              f"the private fetched-base ref must resolve to the literal HEAD branch tip, got {private_refs!r}")
+
+        _git(remote, "update-ref", "-d", "refs/heads/HEAD")
+        result = M.check_base_ancestry(str(candidate), "HEAD", "origin")
+        check(result[0] == "unverified"
+              and result[1].startswith("could not fetch +refs/heads/HEAD:refs/gauntlet/base-fetch/"),
+              f"a failed literal HEAD fetch must name its exact private refspec, got {result!r}")
+        check(_git(candidate, "rev-parse", "refs/remotes/origin/main").stdout.strip() == origin_main_before,
+              "a failed literal HEAD fetch must leave origin/main unchanged")
+
+
+DASH_BASE = "--upload-pack=/bin/false"
+
+
+def _dash_base_ancestry(root: Path, *, current: bool) -> "tuple[int, dict, str, str, str]":
+    """Drive the documented CLI against a legal dash-leading base and a real bare remote."""
+    remote, seed, candidate = root / "remote.git", root / "seed", root / "candidate"
+    result = subprocess.run(["git", "init", "--bare", "-b", "main", str(remote)],
+                            capture_output=True, text=True, check=False)
+    check(result.returncode == 0, f"could not create fixture remote: {result.stderr.strip()}")
+    result = subprocess.run(["git", "clone", str(remote), str(seed)],
+                            capture_output=True, text=True, check=False)
+    check(result.returncode == 0, f"could not clone fixture seed: {result.stderr.strip()}")
+    _configure_repo(seed)
+    (seed / "f").write_text("base\n", encoding="utf-8")
+    _git(seed, "add", "f")
+    _git(seed, "commit", "-m", "base")
+    _git(seed, "push", "origin", "main")
+    dash_head = f"refs/heads/{DASH_BASE}"
+    tracking_ref = f"refs/remotes/origin/{DASH_BASE}"
+    _git(seed, "update-ref", dash_head, "HEAD")
+    _git(seed, "push", "origin", f"{dash_head}:{dash_head}")
+
+    result = subprocess.run(["git", "clone", str(remote), str(candidate)],
+                            capture_output=True, text=True, check=False)
+    check(result.returncode == 0, f"could not clone fixture candidate: {result.stderr.strip()}")
+    _configure_repo(candidate)
+    old_base = _git(candidate, "rev-parse", tracking_ref).stdout.strip()
+
+    (seed / "f").write_text("advanced base\n", encoding="utf-8")
+    _git(seed, "commit", "-am", "advance dash base")
+    advanced_base = _git(seed, "rev-parse", "HEAD").stdout.strip()
+    _git(seed, "push", "origin", f"HEAD:{dash_head}")
+    check(old_base != advanced_base, "fixture setup: the candidate tracking ref must be stale")
+
+    if current:
+        # Import the advanced base through a separate local ref so HEAD contains it while origin/<base>
+        # stays stale until the operation under test refreshes that tracking ref.
+        _git(candidate, "fetch", "origin", f"{dash_head}:refs/heads/current-dash-base")
+        _git(candidate, "checkout", "current-dash-base")
+
+    vjson = root / "clean-view.json"
+    vjson.write_text(json.dumps(view()), encoding="utf-8")
+    code, out, err = capture_cli(
+        M.main,
+        ["check", "--pr", "9", "--view-json", str(vjson), "--worktree", str(candidate),
+         "--base", DASH_BASE],
+    )
+    refreshed_base = _git(candidate, "rev-parse", tracking_ref).stdout.strip()
+    return code, json.loads(out), err, refreshed_base, advanced_base
+
+
+def t_dash_leading_current_base_refreshes_and_proceeds():
+    with tempfile.TemporaryDirectory() as d:
+        code, result, err, refreshed, remote_head = _dash_base_ancestry(Path(d), current=True)
+        check(code == 0,
+              f"a current candidate on a dash-leading base must pass the CLI (code={code}, err={err!r})")
+        check(result == {"verdict": "proceed", "reason": "GitHub merge state permits base check"},
+              f"a current candidate on a dash-leading base must proceed, got {result!r}")
+        check(refreshed == remote_head,
+              "the dash-leading base fetch must refresh its remote-tracking ref before the current verdict")
+
+
+def t_dash_leading_stale_base_refreshes_and_rebases():
+    with tempfile.TemporaryDirectory() as d:
+        code, result, err, refreshed, remote_head = _dash_base_ancestry(Path(d), current=False)
+        check(code != 0,
+              f"a stale candidate on a dash-leading base must stop the CLI (code={code}, err={err!r})")
+        check(result == {"verdict": "rebase-first", "reason": "base has moved ahead — rebase first"},
+              f"a stale candidate on a dash-leading base must request a rebase, got {result!r}")
+        check(refreshed == remote_head,
+              "the dash-leading base fetch must refresh its remote-tracking ref before the stale verdict")
+
+
 # --- `--file`: a real `proceed` RECORDS base_ok_sha on the ledger (the precondition `verdict` enforces) -----
 # base-preflight is the ONLY sanctioned writer of `base_ok_sha`: on a final `proceed`, and only when a ledger
 # is named, it resolves the worktree's HEAD and shells out to `ledger.py base-ok`. `decide()` stays pure;
@@ -646,6 +820,15 @@ CASES = [
      t_clean_view_with_stale_base_rebases),
     ("clean-view-current-base", "a CLEAN candidate containing fetched base proceeds",
      t_clean_view_with_current_base_proceeds),
+    ("force-rewritten-base", "a rewritten remote base is refreshed before ancestry reports stale",
+     t_force_rewritten_base_refreshes_and_rebases),
+    ("literal-head-base",
+     "a literal HEAD base uses a private ref and leaves the symbolic origin/HEAD target unchanged",
+     t_literal_head_base_does_not_follow_remote_head_symref),
+    ("dash-base-current", "a dash-leading base refreshes its tracking ref and reports current ancestry",
+     t_dash_leading_current_base_refreshes_and_proceeds),
+    ("dash-base-stale", "a dash-leading base refreshes its tracking ref and reports stale ancestry",
+     t_dash_leading_stale_base_refreshes_and_rebases),
     ("proceed-file-records-base-ok", "a proceed with --file stamps base_ok_sha = HEAD; without --file writes nothing",
      t_proceed_with_file_records_base_ok),
     ("non-proceed-file-no-stamp", "rebase-first/recheck never stamp base_ok_sha, even with --file",
