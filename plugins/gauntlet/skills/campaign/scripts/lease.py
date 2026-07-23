@@ -21,13 +21,15 @@ would otherwise do:
    wrongly refusing an orphan stalls a run, which staleness and a human both recover.
 2. **`release` refuses unless the token matches.** The prose once said "delete lease.json on normal
    exit" — a superseded driver following that literally deletes the LIVE OWNER'S lease.
-3. **No `--heartbeat-id`, no lease.** The caller must hand over its proof that it has ALREADY armed the
-   heartbeat. This tool never inspects the proof and takes the caller's word for it — which is exactly why
-   it must name something already done. Arming was step 6 of the heartbeat skeleton, after all the interesting
-   work, when an agent believes it is finished; it was skipped for an entire session and nothing noticed.
-   Requiring it here moves the failure from "forgot at the end", which nothing catches, to "cannot start".
-4. **No `--token`, no lease** — and `acquire` never mints one. The heartbeat carries `--token`, so a caller
-   without one demonstrably never armed a heartbeat that identifies it: its proof cannot be real.
+3. **No `--heartbeat-id`, no ownership check.** The caller must hand over its proof that it has ALREADY
+   armed the heartbeat. This tool never inspects the proof and takes the caller's word for it — which is
+   exactly why it must name something already done. Arming was step 6 of the heartbeat skeleton, after all
+   the interesting work, when an agent believes it is finished; it was skipped for an entire session and
+   nothing noticed. Requiring it here moves the failure from "forgot at the end", which nothing catches, to
+   "cannot start". The refusal happens before the lock or lease read, so it cannot claim who drives the run.
+4. **No `--token`, no ownership check.** `acquire`, `refresh`, and `release` all refuse before the lock or
+   lease read, produce no stdout, preserve lease bytes, and say how to recover for that command. `acquire` never
+   mints a token: a first acquire must mint and arm, while an existing owner must reuse its token.
 
 A future `updated` (clock skew) reads as FRESH, not stale — fail closed, same direction as (1).
 """
@@ -325,33 +327,50 @@ def emit(verdict: str, rec: "dict | None", **extra) -> None:
     print(json.dumps(out))
 
 
-# --- the refusal that carries the contract ------------------------------------
+# --- the precondition refusals that carry the contract ------------------------
 #
-# The proof cannot be verified, so the ENFORCEMENT is this refusal and its value is the INSTRUCTION it
-# carries. Modelled on `ledger.py verdict` at a review-loop cap, the strongest rule in the campaign: it
-# exits non-zero and its stderr says what happened, WHAT STATE CHANGED, what NOT to do, and what to do
-# instead. It names no host mechanism — `runtime-adapter.md` owns that mapping — and it offers NO
-# alternative, because the moment it names a way to proceed without a proof, that way becomes the default.
+# These checks run before the lock and lease read, so they decide NO ownership state. Each refusal exits
+# non-zero with no stdout and says that ownership was not checked, that lease state is unchanged, and how
+# THIS command recovers. The heartbeat refusal names no host mechanism — `runtime-adapter.md` owns that
+# mapping — and offers no way to acquire before arming.
 
 NO_HEARTBEAT = """\
-lease: REFUSED — the lease was NOT taken. Nothing was written, and this run is still UNDRIVEN.
-lease: acquire requires --heartbeat-id: your PROOF that you have ALREADY armed the heartbeat for this
-       run. This tool never inspects it and takes your word for it — which is exactly why it must be
-       something you already did, not something you intend to do.
-lease: DO THIS, IN THIS ORDER: (1) arm the heartbeat for this run — schedule its wake via your host's
-       mechanism (`runtime-adapter.md` owns it, and `heartbeat.py callback` prints the exact wake prompt). The
-       wake carries ONLY --run <id> --token <tok>; a resuming heartbeat REFRESHES and needs no proof,
-       so --heartbeat-id is NOT part of it. (2) Re-run THIS command with --heartbeat-id <proof> — the id you
-       recorded for that arming, presented to acquire here, never carried in the wake.
+lease: REFUSED — acquire stopped before the lease read, so ownership was NOT checked. Nothing was written;
+       the lease and ownership state are unchanged.
+lease: acquire requires --heartbeat-id: your PROOF that you have ALREADY armed the heartbeat for this run.
+       This tool never inspects it and takes your word for it — which is exactly why it must be something
+       you already did, not something you intend to do.
+lease: DO THIS, IN THIS ORDER: (1) keep the token you already have and arm the heartbeat for this run —
+       schedule its wake via your host's mechanism (`runtime-adapter.md` owns it, and `heartbeat.py callback`
+       prints the exact wake prompt). The wake carries ONLY --run <id> --token <tok>; a resuming heartbeat
+       REFRESHES and needs no proof, so --heartbeat-id is NOT part of it. (2) Re-run
+       `acquire --token <tok> --heartbeat-id <proof>` with the token and the id recorded for that arming;
+       the proof is presented only to acquire.
 lease: DO NOT take the lease first and arm afterwards. An arm at the end of a heartbeat is the step that gets
        forgotten — that is the entire reason this door refuses."""
 
-NO_TOKEN = """\
-lease: REFUSED — the lease was NOT taken. Nothing was written, and this run is still UNDRIVEN.
-lease: acquire requires --token, and it does NOT mint one for you. The heartbeat carries `--token <tok>`, so
-       the token must exist BEFORE you arm: a caller without one cannot have armed a heartbeat that identifies
-       it, which means its --heartbeat-id cannot name a real heartbeat.
-lease: DO THIS: run `lease.py mint` for a token, arm the heartbeat with it, then acquire with both."""
+NO_TOKEN_ACQUIRE = """\
+lease: REFUSED — acquire stopped before the lease read, so ownership was NOT checked. Nothing was written;
+       the lease and ownership state are unchanged.
+lease: acquire requires --token, and it does NOT mint one for you.
+lease: DO THIS: if this run already has an owner token, recover that SAME token and re-run
+       `acquire --token <tok> --heartbeat-id <proof>`; do NOT mint a replacement. For a first acquire with
+       no token yet, run `lease.py mint`, arm the heartbeat with that token, then acquire with both values."""
+
+NO_TOKEN_REFRESH = """\
+lease: REFUSED — refresh stopped before the lease read, so ownership was NOT checked. Nothing was written;
+       the lease and ownership state are unchanged.
+lease: refresh requires --token.
+lease: DO THIS: recover the SAME owner token carried by this heartbeat or owner session, then re-run
+       `refresh --token <tok>`. Do NOT mint a replacement or switch to acquire; if the owner token is
+       unavailable, stand down and use the documented manual `--run` resume flow."""
+
+NO_TOKEN_RELEASE = """\
+lease: REFUSED — release stopped before the lease read, so ownership was NOT checked. Nothing was written;
+       the lease and ownership state are unchanged.
+lease: release requires --token.
+lease: DO THIS: recover the SAME owner token and re-run `release --token <tok>`. If that token is unavailable,
+       do NOT delete or alter the lease; leave it for the owner or the documented adoption flow."""
 
 
 # --- commands -----------------------------------------------------------------
@@ -363,7 +382,7 @@ def cmd_mint(_path, _args) -> int:
 
 def cmd_acquire(path: Path, args) -> int:
     if not (args.token or "").strip():
-        fail(NO_TOKEN)
+        fail(NO_TOKEN_ACQUIRE)
     if not (args.heartbeat_id or "").strip():
         fail(NO_HEARTBEAT)
     token = args.token
@@ -426,7 +445,7 @@ def cmd_acquire(path: Path, args) -> int:
 def cmd_refresh(path: Path, args) -> int:
     """The heartbeat bump — 'still alive'. It does NOT re-arm, so it takes no proof."""
     if not (args.token or "").strip():
-        fail(NO_TOKEN)
+        fail(NO_TOKEN_REFRESH)
     with claim_lock(path):
         try:
             rec = read_lease(path)
@@ -458,7 +477,7 @@ def cmd_release(path: Path, args) -> int:
     release refuses unless the token matches".
     """
     if not (args.token or "").strip():
-        fail(NO_TOKEN)
+        fail(NO_TOKEN_RELEASE)
     with claim_lock(path):
         try:
             rec = read_lease(path)
@@ -581,24 +600,28 @@ def build_parser() -> argparse.ArgumentParser:
     # NOTE: --token and --heartbeat-id are deliberately NOT argparse-`required`. They ARE required, and
     # this file refuses without them — but argparse's "the following arguments are required:
     # --heartbeat-id" is a DIAGNOSIS, and the whole mechanism here is the INSTRUCTION the refusal carries
-    # (NO_HEARTBEAT / NO_TOKEN). Letting argparse win the race would keep the exit code and throw away the
-    # only part that teaches the caller what to do. `lease-test.py` pins this.
+    # (NO_HEARTBEAT / NO_TOKEN_*). Letting argparse win the race would keep the exit code and throw away the
+    # only part that says ownership was not checked and teaches command-specific recovery. The
+    # NO_HEARTBEAT / NO_TOKEN_* messages own that contract; `lease-test.py` pins it.
     a = sub.add_parser("acquire", help="take or refresh ownership of this run — the door every heartbeat goes "
                                        "through first")
-    a.add_argument("--token", help="REQUIRED. Your agent token (from `mint`). NEVER minted here: a caller "
-                                   "without one cannot have armed a heartbeat that names it")
+    a.add_argument("--token", help="REQUIRED. Existing owners reuse their token; only first-acquire setup "
+                                   "should mint one. Without it, acquire stops before checking ownership")
     a.add_argument("--heartbeat-id",
                    help="REQUIRED. Your PROOF that you have ALREADY armed the heartbeat. Never inspected — "
                         "taken on your word, which is why it must name something already done. "
-                        "`runtime-adapter.md` tells you what your proof is")
+                        "Without it, acquire stops before checking ownership. `runtime-adapter.md` tells "
+                        "you what your proof is")
     a.add_argument("--allow-takeover", action="store_true",
                    help="adopt a run a DIFFERENT live agent holds. Only after a human has agreed to it")
 
     r = sub.add_parser("refresh", help="heartbeat the lease ('still alive'). Does not re-arm, takes no proof")
-    r.add_argument("--token", help="REQUIRED. Your agent token")
+    r.add_argument("--token", help="REQUIRED. The existing owner's token. Without it, refresh stops before "
+                                   "checking ownership; recover the same token and retry")
 
     d = sub.add_parser("release", help="release on normal exit. Refuses unless the token matches")
-    d.add_argument("--token", help="REQUIRED. Your agent token")
+    d.add_argument("--token", help="REQUIRED. The existing owner's token. Without it, release stops before "
+                                   "checking ownership; recover the same token and retry")
 
     sub.add_parser("read", help="ADVISORY read-only status (no lock — may race a write). For discovery "
                                 "bucketing; never decide ownership from it")
