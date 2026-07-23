@@ -491,6 +491,51 @@ def t_dash_leading_stale_base_refreshes_and_rebases():
               "the dash-leading base fetch must refresh its remote-tracking ref before the stale verdict")
 
 
+def t_candidate_revision_is_checked_instead_of_moved_head():
+    """Stage 3 may check a reviewed SHA after the local worktree moves to a different, base-current HEAD."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        remote = root / "remote.git"
+        seed = root / "seed"
+        candidate = root / "candidate"
+
+        result = subprocess.run(["git", "init", "--bare", "-b", "main", str(remote)],
+                                capture_output=True, text=True, check=False)
+        check(result.returncode == 0, f"could not create fixture remote: {result.stderr.strip()}")
+        result = subprocess.run(["git", "clone", str(remote), str(seed)],
+                                capture_output=True, text=True, check=False)
+        check(result.returncode == 0, f"could not clone fixture seed: {result.stderr.strip()}")
+        _configure_repo(seed)
+        (seed / "f").write_text("base\n", encoding="utf-8")
+        _git(seed, "add", "f")
+        _git(seed, "commit", "-m", "base")
+        _git(seed, "push", "origin", "main")
+
+        result = subprocess.run(["git", "clone", str(remote), str(candidate)],
+                                capture_output=True, text=True, check=False)
+        check(result.returncode == 0, f"could not clone candidate worktree: {result.stderr.strip()}")
+        _configure_repo(candidate)
+        _git(candidate, "checkout", "-b", "reviewed")
+        (candidate / "reviewed").write_text("reviewed\n", encoding="utf-8")
+        _git(candidate, "add", "reviewed")
+        _git(candidate, "commit", "-m", "reviewed candidate")
+        reviewed = _git(candidate, "rev-parse", "HEAD").stdout.strip()
+
+        (seed / "advanced").write_text("advanced\n", encoding="utf-8")
+        _git(seed, "add", "advanced")
+        _git(seed, "commit", "-m", "advance base")
+        _git(seed, "push", "origin", "main")
+        _git(candidate, "fetch", "origin", "main")
+        _git(candidate, "checkout", "-B", "moved-local-head", "origin/main")
+        local_head = _git(candidate, "rev-parse", "HEAD").stdout.strip()
+        check(local_head != reviewed, "fixture requires local HEAD to differ from the reviewed SHA")
+
+        check(M.check_base_ancestry(str(candidate), "main", "origin") == ("current", ""),
+              "fixture requires the moved local HEAD to contain the advanced base")
+        check(M.check_base_ancestry(str(candidate), "main", "origin", reviewed) == ("stale", ""),
+              "the reviewed SHA lacks the advanced base and must be reported stale")
+
+
 # --- `--file`: a real `proceed` RECORDS base_ok_sha on the ledger (the precondition `verdict` enforces) -----
 # base-preflight is the ONLY sanctioned writer of `base_ok_sha`: on a final `proceed`, and only when a ledger
 # is named, it resolves the worktree's HEAD and shells out to `ledger.py base-ok`. `decide()` stays pure;
@@ -829,6 +874,8 @@ CASES = [
      t_dash_leading_current_base_refreshes_and_proceeds),
     ("dash-base-stale", "a dash-leading base refreshes its tracking ref and reports stale ancestry",
      t_dash_leading_stale_base_refreshes_and_rebases),
+    ("candidate-revision-not-head", "an explicit candidate revision is checked instead of a moved local HEAD",
+     t_candidate_revision_is_checked_instead_of_moved_head),
     ("proceed-file-records-base-ok", "a proceed with --file stamps base_ok_sha = HEAD; without --file writes nothing",
      t_proceed_with_file_records_base_ok),
     ("non-proceed-file-no-stamp", "rebase-first/recheck never stamp base_ok_sha, even with --file",

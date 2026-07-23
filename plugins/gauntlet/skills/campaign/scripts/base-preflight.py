@@ -116,15 +116,17 @@ def _verdict(verdict: str, reason: str) -> dict:
     return {"verdict": verdict, "reason": reason}
 
 
-def check_base_ancestry(worktree: "str | None", base: "str | None", remote: str) -> tuple[str, str]:
-    """Return ``current``, ``stale``, or ``unverified`` for the fetched base against a PR worktree.
+def check_base_ancestry(worktree: "str | None", base: "str | None", remote: str,
+                        candidate_revision: str = "HEAD") -> tuple[str, str]:
+    """Return ``current``, ``stale``, or ``unverified`` for the fetched base against a candidate revision.
 
     GitHub may keep reporting ``MERGEABLE/CLEAN`` after another campaign PR advances an unprotected base.
     The merge-state enums alone therefore cannot prove that a candidate contains the current base. Fetch the
-    named base through a fully qualified source:tracking-ref refspec and ask Git's ancestry graph directly.
-    A symbolic remote-tracking destination is replaced with a private ref so the fetch cannot update the
-    symbolic ref's target. The qualified source prevents a legal dash-leading base name from being parsed
-    as a Git option. Callers treat ``unverified`` as fail-closed.
+    named base through a fully qualified source:local-ref refspec and ask Git's ancestry graph directly
+    against ``candidate_revision`` (the worktree's ``HEAD`` by default). A symbolic remote-tracking
+    destination is replaced with a private ref so the fetch cannot update the symbolic ref's target. The
+    qualified source prevents a legal dash-leading base name from being parsed as a Git option. The fetch
+    never updates the candidate branch. Callers treat ``unverified`` as fail-closed.
     """
     if not worktree or not base:
         return "unverified", "base ancestry requires --worktree and --base"
@@ -137,13 +139,14 @@ def check_base_ancestry(worktree: "str | None", base: "str | None", remote: str)
     if fetch.returncode != 0:
         return "unverified", f"could not fetch {selected.refspec}: {fetch.stderr.strip()}"
     probe = subprocess.run(  # noqa: S603
-        ["git", "-C", worktree, "merge-base", "--is-ancestor", selected.local_ref, "HEAD"],
+        ["git", "-C", worktree, "merge-base", "--is-ancestor", selected.local_ref, candidate_revision],
         capture_output=True, text=True, check=False)
     if probe.returncode == 0:
         return "current", ""
     if probe.returncode == 1:
         return "stale", ""
-    return "unverified", f"could not compare HEAD with {selected.local_ref}: {probe.stderr.strip()}"
+    return ("unverified",
+            f"could not compare {candidate_revision} with {selected.local_ref}: {probe.stderr.strip()}")
 
 
 def decide(view: dict) -> dict:

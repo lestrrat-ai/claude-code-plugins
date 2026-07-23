@@ -34,7 +34,8 @@ resolves the row's **effective base** (its explicit `base_branch`, else the lega
 base into the PR worktree, and prints `{"verdict":"merge"|"not-yet","reason":…}`.
 It crosses — in ONE place — the held/open/draft/**base-retarget**/stale-head/ci/reviews preconditions and then **BOTH** GitHub enums (`.mergeable` first — `CONFLICTING`
 and `UNKNOWN` decide on their own, `MERGEABLE` falls through — then `.mergeStateStatus`, which alone
-yields `merge`), then confirms `origin/<effective-base>` is an ancestor of `HEAD`. Both enums are crossed
+yields `merge`), then confirms `origin/<effective-base>` is an ancestor of the ledger's reviewed
+`head_sha`. Both enums are crossed
 **TOTALLY**: a value GitHub's schema does not declare **parks**, never guesses. A live `baseRefName` that no
 longer matches the row's recorded base is an unsupported retarget: it fails closed with the shared
 machine-blocker reason (`base changed from <recorded> to <live>; not supported mid-run`), and the next
