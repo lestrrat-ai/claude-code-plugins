@@ -2322,8 +2322,8 @@ def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list
     return problems, copies
 
 
-def backtick_run_is_escaped(text: str, index: int) -> bool:
-    """A Markdown backslash escape consumes an odd run of backslashes before a backtick."""
+def markdown_char_is_escaped(text: str, index: int) -> bool:
+    """A Markdown backslash escape consumes an odd run of backslashes before punctuation."""
     backslashes = 0
     index -= 1
     while index >= 0 and text[index] == "\\":
@@ -2342,7 +2342,7 @@ def matching_backtick_run(text: str, start: int, width: int) -> int | None:
             end = min(end, start + match.start())
     for match in re.finditer(r"`+", text[start:end]):
         index = start + match.start()
-        if len(match.group()) == width and not backtick_run_is_escaped(text, index):
+        if len(match.group()) == width and not markdown_char_is_escaped(text, index):
             return index
     return None
 
@@ -2396,7 +2396,7 @@ def markdown_visible_text(text: str) -> str:
                 while end < len(line) and line[end] == "`":
                     end += 1
                 width = end - index
-                escaped = backtick_run_is_escaped(text, offset + index)
+                escaped = markdown_char_is_escaped(text, offset + index)
                 if inline_ticks == 0 and not escaped and has_matching_backtick_run(text, offset + end, width):
                     inline_ticks = width
                 elif inline_ticks == width and not escaped:
@@ -2404,7 +2404,8 @@ def markdown_visible_text(text: str) -> str:
                 index = end
                 continue
 
-            if inline_ticks == 0 and line.startswith("<!--", index):
+            if (inline_ticks == 0 and line.startswith("<!--", index)
+                    and not markdown_char_is_escaped(text, offset + index)):
                 for position in range(offset + index, offset + index + 4):
                     visible[position] = " "
                 index += 4
@@ -2459,7 +2460,7 @@ def markdown_action_text(text: str) -> str:
             while end < len(line) and line[end] == "`":
                 end += 1
             width = end - index
-            if backtick_run_is_escaped(text, offset + index):
+            if markdown_char_is_escaped(text, offset + index):
                 index = end
                 continue
             closing = matching_backtick_run(text, offset + end, width)
@@ -2486,7 +2487,7 @@ def watch_action_block_problems(path: Path, text: str, anchor: str) -> list[str]
                 f"occur exactly once"]
     start = positions[0]
     end = text.find("\n\n", start)
-    block = " ".join(text[start:end if end >= 0 else len(text)].split())
+    block = " ".join(text[start:end if end >= 0 else len(text)].replace("`", "").split())
     line = text.count("\n", 0, start) + 1
     problems = []
     negator = r"(?:do\s+not|don't|never|must\s+not|should\s+not)"
@@ -2496,16 +2497,24 @@ def watch_action_block_problems(path: Path, text: str, anchor: str) -> list[str]
                  block, re.IGNORECASE):
         problems.append(f"{path}:{line} negates the required ensure/relaunch watch action")
     liveness = re.search(r"\brun\b.{0,20}\bliveness\b", block, re.IGNORECASE)
-    warrant = re.search(r"\bwatch_warranted\b.{0,80}\btrue\b", block, re.IGNORECASE)
-    action = re.search(r"\b(?:ensure|relaunch)\b.{0,80}\bwatch\b", block, re.IGNORECASE)
+    action_pattern = r"\b(?:ensure|relaunch)\b.{0,80}\bwatch\b"
+    condition_pattern = (r"\b(?:only\s+when|if)\b.{0,80}\b(?:the\s+)?returned\b.{0,40}"
+                         r"\bwatch_warranted\b.{0,40}\b(?:is|==|=)\s*\btrue\b")
+    action = re.search(action_pattern, block, re.IGNORECASE)
+    conditional_action = re.search(
+        rf"(?:{action_pattern}.{{0,40}}{condition_pattern}|"
+        rf"{condition_pattern}.{{0,40}}{action_pattern})",
+        block,
+        re.IGNORECASE,
+    )
     if liveness is None:
         problems.append(f"{path}:{line} does not run `liveness`")
-    if warrant is None:
+    if conditional_action is None:
         problems.append(f"{path}:{line} does not act only when returned `watch_warranted` is `true`")
     if action is None:
         problems.append(f"{path}:{line} does not name the ensure/relaunch watch action")
-    if (liveness is not None and warrant is not None and action is not None
-            and liveness.start() > min(warrant.start(), action.start())):
+    if (liveness is not None and conditional_action is not None and action is not None
+            and liveness.start() > min(conditional_action.start(), action.start())):
         problems.append(f"{path}:{line} decides the watch action before running `liveness`")
     if "stage-2-ci.md" not in block or "WATCH ONLY WHAT CAN MOVE" not in block:
         problems.append(f"{path}:{line} does not point to `stage-2-ci.md`, \"WATCH ONLY WHAT CAN MOVE\"")
@@ -2558,6 +2567,10 @@ def watch_formula_problems(path: Path, text: str) -> list[str]:
         text,
         flags=re.IGNORECASE,
     )
+    watch_subject = r"(?:\bwatch\w*|\bwarrant\w*|\bCI\s+(?:watcher|observer)\b)"
+    watch_action = (r"(?:\b(?:launch|relaunch|ensure|start)\b.{0,80}" + watch_subject
+                    + "|" + watch_subject + ")")
+    ci_state = r"(?:==|=|is|remains|becomes|stays)\s*(?:green|red|pending)\b"
     patterns = (
         ("a `buckets.RUNNING` predicate",
          re.compile(r"(?:\bbuckets\b|\[\s*[\"']buckets[\"']\s*\]|"
@@ -2566,49 +2579,61 @@ def watch_formula_problems(path: Path, text: str) -> list[str]:
                     r"\.\s*get\(\s*[\"']RUNNING[\"']\s*(?:,\s*[^()]*)?\))")),
         ("an explicit `watch_warranted` formula", re.compile(r"\bwatch_warranted\s*=")),
         ("a consumer `ci` verdict predicate",
-         re.compile(r"(?:\b(?:launch|relaunch|ensure|start)\b.{0,80}\bwatch\b|"
-                    r"\b(?:watch\w*|warrant\w*)\b).{0,160}"
-                    r"\b(?:when(?:ever)?|if|while)\b.{0,80}\bci\b\s*"
-                    r"(?:==|=|is|remains|becomes)\s*(?:green|red|pending)\b|"
-                    r"\b(?:when(?:ever)?|if|while)\b.{0,80}\bci\b\s*"
-                    r"(?:==|=|is|remains|becomes)\s*(?:green|red|pending)\b.{0,160}"
-                    r"(?:\b(?:launch|relaunch|ensure|start)\b.{0,80}\bwatch\b|"
-                    r"\b(?:watch\w*|warrant\w*)\b)", re.IGNORECASE)),
+         re.compile(watch_action + r".{0,160}\b(?:when(?:ever)?|if|while)\b.{0,80}\bci\b\s*"
+                    + ci_state + r"|"
+                    + r"\b(?:when(?:ever)?|if|while)\b.{0,80}\bci\b\s*" + ci_state
+                    + r".{0,160}" + watch_action, re.IGNORECASE)),
         ("a still-RUNNING watch rule",
-         re.compile(r"(?:\bwatch\w*|\bwarrant\w*).{0,160}\bstill-?\s*RUNNING\b|"
-                    r"\bstill-?\s*RUNNING\b.{0,160}(?:\bwatch\w*|\bwarrant\w*)", re.IGNORECASE)),
+         re.compile(watch_subject + r".{0,160}\bstill-?\s*RUNNING\b|"
+                    r"\bstill-?\s*RUNNING\b.{0,160}" + watch_subject, re.IGNORECASE)),
         ("a can-move watch rule",
-         re.compile(r"(?:\bwatch\w*|\bwarrant\w*).{0,160}"
+         re.compile(watch_subject + r".{0,160}"
                     r"\b(?:can(?:\s+\w+){0,6}\s+(?:still\s+)?move|could\s+move|"
                     r"nothing\s+can\s+move)\b|"
                     r"\b(?:can(?:\s+\w+){0,6}\s+(?:still\s+)?move|could\s+move|"
                     r"nothing\s+can\s+move)\b"
-                    r".{0,160}(?:\bwatch\w*|\bwarrant\w*)",
+                    r".{0,160}" + watch_subject,
                     re.IGNORECASE)),
         ("a negated terminal-status watch rule",
          re.compile(r"\bstatus\b\s*!=\s*[\"']?\bCOMPLETED\b[\"']?|"
                     r"\b(?:any\s+)?(?:check|row)\b.{0,40}"
                     r"\b(?:is\s+not|isn't|not)\s+(?:yet\s+)?terminal\b", re.IGNORECASE)),
         ("a no-moving-row watch rule",
-         re.compile(r"(?:\bwatch\w*|\bwarrant\w*).{0,160}\b(?:nothing is running|no row moving)\b|"
-                    r"\b(?:nothing is running|no row moving)\b.{0,160}(?:\bwatch\w*|\bwarrant\w*)",
+         re.compile(watch_subject + r".{0,160}\b(?:nothing is running|no row moving)\b|"
+                    r"\b(?:nothing is running|no row moving)\b.{0,160}" + watch_subject,
                     re.IGNORECASE)),
         ("an alive-while watch rule",
-         re.compile(r"(?:\bwatch\w*|\bwarrant\w*).{0,160}\balive while\b|"
-                    r"\balive while\b.{0,160}(?:\bwatch\w*|\bwarrant\w*)", re.IGNORECASE)),
+         re.compile(watch_subject + r".{0,160}\balive while\b|"
+                    r"\balive while\b.{0,160}" + watch_subject, re.IGNORECASE)),
     )
+    paragraphs = []
+    start = 0
+    for separator in re.finditer(r"\n\s*\n", text):
+        if text[start:separator.start()].strip():
+            paragraphs.append((start, separator.start()))
+        start = separator.end()
+    if text[start:].strip():
+        paragraphs.append((start, len(text)))
+
+    scans = list(paragraphs)
+    for first, second in zip(paragraphs, paragraphs[1:]):
+        continuation = text[second[0]:second[1]].replace("`", "").lstrip()
+        if re.match(r"(?:(?:do|doing)\s+(?:so|this)|"
+                    r"(?:take|perform)\s+(?:that|this)\s+action)\b",
+                    continuation, re.IGNORECASE):
+            scans.append((first[0], second[1]))
+
     problems = []
-    offset = 0
-    for paragraph in re.split(r"\n\s*\n", text):
-        plain = " ".join(paragraph.replace("`", "").split())
-        if "watch" not in plain.lower():
-            offset += len(paragraph)
+    for scan_start, scan_end in scans:
+        plain = "".join(
+            " " if char.isspace() or char == "`" else char
+            for char in text[scan_start:scan_end]
+        )
+        if re.search(watch_subject, plain, re.IGNORECASE) is None:
             continue
-        start = text.find(paragraph, offset)
-        line = text.count("\n", 0, start) + 1 if start >= 0 else 1
-        offset = start + len(paragraph) if start >= 0 else offset + len(paragraph)
         for what, pattern in patterns:
-            if pattern.search(plain):
+            for match in pattern.finditer(plain):
+                line = text.count("\n", 0, scan_start + match.start()) + 1
                 problems.append(f"{path}:{line} restates {what} outside the watch policy owner")
     return problems
 

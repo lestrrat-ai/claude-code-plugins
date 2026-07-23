@@ -989,6 +989,11 @@ def watch_doc_cases(ci) -> list[str]:
     if not any("watch_warranted" in problem for problem in got):
         problems.append("[watch-doc] a named consumer that omits `watch_warranted` was accepted")
 
+    unconditional = (WATCH_DOC_FIXTURES / "unconditional-action.md").read_text(encoding="utf-8")
+    got = ci.watch_action_block_problems(Path("unconditional-action.md"), unconditional, anchor)
+    if not any("act only when" in problem for problem in got):
+        problems.append("[watch-doc] an unconditional watch action beside returned warrant tokens was accepted")
+
     formula = (WATCH_DOC_FIXTURES / "independent-formula.md").read_text(encoding="utf-8")
     got = ci.watch_formula_problems(Path("independent-formula.md"), formula)
     if not any("buckets.RUNNING" in problem for problem in got):
@@ -1028,6 +1033,17 @@ def watch_doc_cases(ci) -> list[str]:
     got = ci.watch_formula_problems(Path("ci-remains-pending-formula.md"), formula)
     if not any("consumer `ci` verdict predicate" in problem for problem in got):
         problems.append("[watch-doc] a `CI remains pending` watch predicate was accepted")
+
+    for name, description in (
+        ("split-paragraph-formula.md", "split-paragraph"),
+        ("observer-alias-formula.md", "CI observer alias"),
+        ("escaped-comment-opener-formula.md", "escaped comment opener"),
+        ("ci-stays-pending-formula.md", "`CI stays pending`"),
+    ):
+        formula = (WATCH_DOC_FIXTURES / name).read_text(encoding="utf-8")
+        got = ci.watch_formula_problems(Path(name), formula)
+        if not any("consumer `ci` verdict predicate" in problem for problem in got):
+            problems.append(f"[watch-doc] a {description} watch predicate was accepted")
 
     for name in ("inline-comment-token.md", "fenced-comment-token.md"):
         formula = (WATCH_DOC_FIXTURES / name).read_text(encoding="utf-8")
