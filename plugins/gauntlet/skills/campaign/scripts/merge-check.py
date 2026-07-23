@@ -196,7 +196,7 @@ def decide(row: dict, view: dict, *, required, effective_base: str) -> dict:
     mss = view["mergeStateStatus"]
     row_mss = MERGE_STATE_STATUS.get(mss)
     if row_mss is None:
-        return _not_yet(f"unknown merge state {mss} — park, never guess")
+        return _not_yet(f"unknown merge state {mss} — park")
     verdict, reason = row_mss
     if verdict == MERGE:
         return _merge()

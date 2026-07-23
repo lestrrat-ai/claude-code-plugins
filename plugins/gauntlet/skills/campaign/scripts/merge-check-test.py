@@ -65,11 +65,18 @@ def check(cond: bool, msg: str) -> None:
         raise M.SelfTestFailure(msg)
 
 
-def expect(r: dict, v: dict, verdict: str, reason: "str | None" = None) -> None:
+def expect(r: dict, v: dict, verdict: str, reason: "str | None" = None) -> dict:
     got = decide(r, v)
     check(got["verdict"] == verdict, f"expected verdict {verdict!r}, got {got!r}")
     if reason is not None:
         check(got["reason"] == reason, f"expected reason {reason!r}, got {got['reason']!r}")
+    return got
+
+
+def expect_park(r: dict, v: dict, reason: str) -> None:
+    got = expect(r, v, "not-yet", reason)
+    check(got["reason"].endswith(" — park"),
+          f"Stage 3 will not route a park reason without the shared suffix, got {got['reason']!r}")
 
 
 # --- merge verdicts -----------------------------------------------------------
@@ -185,11 +192,11 @@ def t_unknown_mergeable():
 
 def t_unknown_mergestate_value_parks():
     # A value GitHub's schema does not declare — the catch-all parks it, never guesses. Pins TOTALITY.
-    expect(row(), view(mergeStateStatus="FROZEN"), "not-yet", "unknown merge state FROZEN — park, never guess")
+    expect_park(row(), view(mergeStateStatus="FROZEN"), "unknown merge state FROZEN — park")
 
 
 def t_unknown_mergeable_value_parks():
-    expect(row(), view(mergeable="WOBBLY"), "not-yet", "unknown mergeable value WOBBLY — park")
+    expect_park(row(), view(mergeable="WOBBLY"), "unknown mergeable value WOBBLY — park")
 
 
 # --- CLI: a recorded view makes `check` testable without gh --------------------
