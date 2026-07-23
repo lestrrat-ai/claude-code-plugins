@@ -2212,20 +2212,39 @@ def check_gh_invocations(text: str, argv: dict[str, list[str]]) -> list[str]:
 
 
 def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, str]]:
-    """Find wrapped blockquote candidates, stopping at quoted or unquoted blank lines."""
+    """Find wrapped candidates without crossing Markdown paragraph or blockquote boundaries."""
     quote_prefix = r"(?:[ \t]*>[ \t]*)+"
     separator = rf"(?:\s+|[ \t]*\\\r?\n(?:{quote_prefix})?[ \t]*|\r?\n{quote_prefix})"
     needle = re.compile(rf"ci-status\.py{separator}{re.escape(subcommand)}\b")
     copies: list[tuple[Path, int, str]] = []
     for md in sorted(root.rglob("*.md")):
         text = md.read_text(encoding="utf-8")
-        starts = [0]
-        ends = []
-        for boundary in re.finditer(rf"\r?\n(?:[ \t]*|{quote_prefix})\r?\n", text):
-            ends.append(boundary.start())
-            starts.append(boundary.end())
-        ends.append(len(text))
-        for start, end in zip(starts, ends):
+        regions: list[tuple[int, int]] = []
+        start = offset = active_quote_depth = 0
+        for line in text.splitlines(keepends=True):
+            body = line.rstrip("\r\n")
+            prefix = re.match(r"[ \t]*(?:>[ \t]*)*", body)
+            assert prefix is not None
+            quote_depth = prefix.group(0).count(">")
+            content = body[prefix.end():]
+            line_end = offset + len(line)
+            if not content.strip():
+                if start < offset:
+                    regions.append((start, offset))
+                start = line_end
+                active_quote_depth = 0
+            elif quote_depth:
+                if quote_depth != active_quote_depth:
+                    if start < offset:
+                        regions.append((start, offset))
+                    start = offset
+                active_quote_depth = quote_depth
+            # An unquoted nonblank line after a quote may be a lazy continuation, so it keeps the
+            # active quote depth. A later explicit quote at that depth remains in the same paragraph.
+            offset = line_end
+        if start < len(text):
+            regions.append((start, len(text)))
+        for start, end in regions:
             paragraph = text[start:end]
             for match in needle.finditer(paragraph):
                 offset = start + match.start()

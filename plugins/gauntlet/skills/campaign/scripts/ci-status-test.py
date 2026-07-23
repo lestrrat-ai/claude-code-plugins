@@ -813,10 +813,14 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
             f"{quoted_shell_valid}\n>\n{quoted_shell_invalid}\n>\n{quoted_detached}\n",
             encoding="utf-8",
         )
+        (root / "quote-transition.md").write_text(
+            f"{invalid}\n{quoted_detached}\n",
+            encoding="utf-8",
+        )
         found_problems, copies = check(root)
-        if len(copies) != 8:
-            problems.append(f"[doc-copy {subcommand}] found {len(copies)} wrapped copies, expected 8: {copies!r}")
-        if len(found_problems) != 4 or any(problem_needle not in problem for problem in found_problems):
+        if len(copies) != 9:
+            problems.append(f"[doc-copy {subcommand}] found {len(copies)} wrapped copies, expected 9: {copies!r}")
+        if len(found_problems) != 5 or any(problem_needle not in problem for problem in found_problems):
             problems.append(
                 f"[doc-copy {subcommand}] invalid plain and blockquoted copies were not rejected by their "
                 f"own missing flag: "
