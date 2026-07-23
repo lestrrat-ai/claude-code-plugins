@@ -31,7 +31,7 @@ VERIFY (via `scripts/ci-snapshot.py`, which it calls), and DECIDE, all defined i
 `ci-derivation-spec.md` — and prints **JSON**: the `verdict`, the `ci`
 value to write to the ledger, the `reason` (**which rule fired, and which row made it fire** — this is what
 `ci_reason` is built from), the evidence counts, `head_moved` + `head_sha_now`, the `required_set` state the
-verdict was decided under, the `fingerprint` of the verified snapshot's evidence rows, the `buckets`
+verdict was decided under, the `fingerprint` of the trusted current-head evidence rows, the `buckets`
 CLASSIFY tally (`PASS`/`RUNNING`/`FAIL`/`UNKNOWN_VALUE`; both `null` when the final derivation has no
 trusted evidence for the PR's current head — including a moved-head result whose old-commit artifact is
 retained — while `liveness` reduces `buckets.RUNNING` to the `watch_warranted` fact the watch policy acts
@@ -83,15 +83,17 @@ it means *wait*. This means **re-derive**: refresh the PR's `head_sha` into the 
 
 ##### FAILED OR INCOMPLETE FETCHES PROMOTE NOTHING
 
-**A failed or incomplete fetch leaves no audit artifact.** A **short read**, a **rollup entry the REST
-families cannot see**, and every other FETCH refusal (`ci-derivation-spec.md`) stop before promotion. Each
-emits `verdict = unusable`, **`ci = pending`**, `snapshot: null`, `fingerprint: null`, and `buckets: null`,
-then requires a **refetch**. This is distinct from a moved head: the moved-head fetch completed and retained
-an artifact about the requested old commit, while a failed or incomplete fetch has no complete artifact to
-retain. There is deliberately **no `notes` field in the output**: the tool used to disclose an incomplete
-read *beside a green verdict*, and a caveat printed next to the answer it contradicts is a trapdoor, not a
-disclosure. **Anything the tool knows is missing is a REFUSAL now** — so `ci = green` from this command
-means the evidence was complete, not merely annotated.
+**A failed or incomplete fetch promotes no artifact and reports `snapshot: null`.** A **short read**, a
+**rollup entry the REST families cannot see**, and every other FETCH refusal (`ci-derivation-spec.md`) stop
+before promotion. Each emits `verdict = unusable`, **`ci = pending`**, `snapshot: null`,
+`fingerprint: null`, and `buckets: null`, then requires a **refetch**. An older artifact — including one for
+the same PR and `head_sha` — may remain in the persistent rundir; the failed call neither reports it nor
+makes it current evidence. This is distinct from a moved head: the moved-head fetch completed and retained
+its newly promoted artifact about the requested old commit, while a failed or incomplete fetch produced no
+complete replacement. There is deliberately **no `notes` field in the output**: the tool used to disclose
+an incomplete read *beside a green verdict*, and a caveat printed next to the answer it contradicts is a
+trapdoor, not a disclosure. **Anything the tool knows is missing is a REFUSAL now** — so `ci = green` from
+this command means the evidence was complete, not merely annotated.
 
 **WHY THIS IS A COMMAND AND NOT A PROCEDURE YOU FOLLOW.** Every rule in this section was already correct,
 and a driver still wrote **`ci = green`** into the ledger for a PR whose checks had **not registered** —
@@ -296,7 +298,7 @@ The missing concept is **"CI has STOPPED MOVING and the rule is STILL unsatisfie
 cannot express it, because `pending` conflates *still running* with *stuck*.
 
 **The FINGERPRINT COMES OUT OF `derive` — the `fingerprint` field of its JSON. NEVER hash by hand.** It
-is computed (`ci-snapshot.py`'s `fingerprint()`) over the VERIFIED snapshot's EVIDENCE ROWS — the JSONL
+is computed (`ci-snapshot.py`'s `fingerprint()`) over the trusted current-head EVIDENCE ROWS — the JSONL
 the FETCH (`ci-derivation-spec.md`) emits, nothing else — and it exists for the same reason the derivation is a command: a
 hash a driver reassembles from this spec is a hash that drifts, and **every drifted byte reads as "CI
 moved"**, which resets the very counters the fingerprint feeds. The block below is the **SPEC the tool
@@ -604,7 +606,7 @@ VALUE lives at its own single defining site, named here and never retyped:
 | `ci_fingerprint` | CI is genuinely **MOVING** (the fingerprint CHANGED since the last derivation) | *none — motion is not a wait* | — |
 | `settled_strikes` | CI has **SETTLED** and is still not green | **the STRIKE CAP** | "SETTLED", the derivation block above |
 | `ci_stalled_since` | a row still says **RUNNING** but nothing in the check set moves | **the CI STALL CAP** | "RUNNING-STALL", below |
-| `unusable_refetches` | the snapshot never **VERIFIES** | **the REFETCH CAP** | "UNUSABLE — the refetch is BOUNDED", below |
+| `unusable_refetches` | the final derivation has no trusted current-head evidence | **the REFETCH CAP** | "UNUSABLE — the refetch is BOUNDED", below |
 
 Each ends by itself — in a bounded number of derivations, or a bounded amount of time — and each ends in
 the **same** place: **ESCALATE** (above), the park a human answers. That is what makes every one of them a
@@ -730,23 +732,27 @@ be a bound at all.**
 
 #### UNUSABLE — the refetch is BOUNDED: `unusable_refetches`, the REFETCH CAP
 
-`UNUSABLE` is the derivation outcome with **no fingerprint**, so `settled_strikes` can say nothing
-about it — and "refetch until it works" is an absorbing state with no exit, which the invariant forbids.
-It gets its own counter, on the same shape — **applied by the same `liveness` command** ("THE BOOKKEEPING
-IS A COMMAND", above), except the `head_sha changed` line, which belongs to the sites that write a new
-head ("THE LIVENESS COUNTERS"):
+`UNUSABLE` and `UNVERIFIABLE` are final derivation outcomes with **no trusted current-head evidence** and
+therefore no fingerprint, so `settled_strikes` can say nothing about them — and "refetch until it works" is
+an absorbing state with no exit, which the invariant forbids. They get their own counter, on the same
+shape — **applied by the same `liveness` command** ("THE BOOKKEEPING IS A COMMAND", above), except the
+`head_sha changed` line, which belongs to the sites that write a new head ("THE LIVENESS COUNTERS").
 
-```
-snapshot for this head_sha is UNUSABLE  -> unusable_refetches += 1 ; refetch on the NEXT heartbeat
-snapshot for this head_sha is VERIFIED  -> unusable_refetches = 0      # any usable outcome, incl. red/pending
-head_sha changed                        -> unusable_refetches = 0
-unusable_refetches >= 3                 -> ESCALATE (above)  # 3 == THE REFETCH CAP. This line is its ONE
-                                                             # defining site; every other rule says "the
-                                                             # REFETCH CAP".
+This is the machine-checked owner block for that counter:
+
+```text
+liveness.untrusted_verdicts = unusable unverifiable
+liveness.untrusted_action = unusable_refetches += 1
+liveness.trusted_current_head_action = unusable_refetches = 0
+liveness.retained_moved_head_artifact = untrusted
+liveness.head_sha_changed_action = reset by ledger accessor
+liveness.refetch_cap = unusable_refetches >= 3
 ```
 
-- **The counter counts FETCH ATTEMPTS, never evidence.** It stays consistent with "an UNUSABLE snapshot
-  yields no fingerprint": nothing rejected is hashed, nothing rejected is judged. **Every bound answers a
+- **The counter follows the final derivation's trust for the current head, never artifact verification.**
+  A retained moved-head artifact was verified as an artifact for the requested old commit, but the final
+  result is untrusted for the current PR and increments the counter. A trusted current-head result resets
+  it. Nothing untrusted is hashed or judged for the current PR. **Every bound answers a
   DIFFERENT question — which is why no two of them may ever share a dial** — and this one's is *"we never
   obtained trusted evidence at all"*, not *"trusted evidence stopped moving"*. Each bound's own question is
   stated at its own defining site, and the owner's table ("THE LIVENESS COUNTERS" above) maps every member
@@ -769,8 +775,8 @@ unusable_refetches >= 3                 -> ESCALATE (above)  # 3 == THE REFETCH 
 The watch decision is **`liveness`'s `watch_warranted` field** — the driver ACTS on it and NEVER reads
 this table by hand. When it is **true and no watch task is alive**, ensure one (relaunch it in this same
 heartbeat if it has exited); when it is **false**, never launch or relaunch. The field is the mechanical
-reduction `watch_warranted = verified AND verdict != UNCLASSIFIED AND buckets.RUNNING > 0`: a watch is
-warranted by **a row that can still move**, never by the `ci` value.
+reduction `watch_warranted = trusted_current_head AND verdict != UNCLASSIFIED AND buckets.RUNNING > 0`:
+a watch is warranted by **a row that can still move**, never by the `ci` value.
 
 **The table below is the SPEC that field implements** — each row is one case of the predicate, kept so a
 reader can audit the field against the policy. **The `UNKNOWN_VALUE` row is the one a naive

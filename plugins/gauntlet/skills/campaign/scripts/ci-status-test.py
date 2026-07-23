@@ -147,7 +147,15 @@ def cases(ci) -> list[str]:
     return sorted(p.name for p in ci.FIXTURES.glob("*.json"))
 
 
-def run_fixture(ci, name: str, tmp: Path) -> tuple[dict, dict, Path]:
+def artifact_state(rundir: Path) -> dict[str, str]:
+    """The audit-artifact set and content digest, so a failed call cannot hide a replace behind one name."""
+    return {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(rundir.glob("ci-*.txt"))
+    }
+
+
+def run_fixture(ci, name: str, tmp: Path) -> tuple[dict, dict, Path, dict[str, str]]:
     """Drive one recorded fixture through the REAL producer.
 
     `required_set` IS MANDATORY IN EVERY FIXTURE, and there is deliberately NO DEFAULT — the same rule
@@ -165,11 +173,23 @@ def run_fixture(ci, name: str, tmp: Path) -> tuple[dict, dict, Path]:
     head_sha = fx.get("head_sha", ci.FIXTURE_SHA)
     rundir = tmp / name.replace(".json", "")
     rundir.mkdir(parents=True, exist_ok=True)
+    seeded = fx.get("seed_artifacts", {})
+    if not isinstance(seeded, dict):
+        ci.fail(f"{name}: `seed_artifacts` is not an object")
+    for filename, content in seeded.items():
+        if (not isinstance(filename, str) or Path(filename).name != filename
+                or not re.fullmatch(r"ci-[^-]+-[0-9a-f]{40}\.txt", filename)
+                or not isinstance(content, str)):
+            ci.fail(f"{name}: invalid seeded audit artifact {filename!r}")
+        (rundir / filename).write_text(content, encoding="utf-8")
+    before = artifact_state(rundir)
     required = ci.SNAP.parse_required_set(fx["required_set"])
-    return fx, ci.derive(ci.fixture_fetch(fx), "o/r", fx.get("pr", "35"), head_sha, rundir, required), rundir
+    got = ci.derive(ci.fixture_fetch(fx), "o/r", fx.get("pr", "35"), head_sha, rundir, required)
+    return fx, got, rundir, before
 
 
-def check_fixture(name: str, got: dict, fx: dict, rundir: Path) -> list[str]:
+def check_fixture(name: str, got: dict, fx: dict, rundir: Path,
+                  artifacts_before: dict[str, str]) -> list[str]:
     """A fixture must produce its verdict AND its REASON. The reason is the only thing that says WHICH rule
     fired, and a fixture that passes for someone else's reason pins nothing."""
     want = fx["expect"]
@@ -186,20 +206,22 @@ def check_fixture(name: str, got: dict, fx: dict, rundir: Path) -> list[str]:
             bad.append(f"fixture promotion expectation {promoted!r} is not boolean")
         else:
             artifacts = sorted(rundir.glob("ci-*.txt"))
+            artifacts_after = artifact_state(rundir)
             reported = Path(got["snapshot"]) if got["snapshot"] is not None else None
             if promoted and (reported is None or not reported.is_file() or artifacts != [reported]):
                 bad.append(
                     f"expected one PROMOTED audit artifact reported by `snapshot`; "
                     f"snapshot={got['snapshot']!r}, artifacts={[str(p) for p in artifacts]!r}"
                 )
-            elif not promoted and (reported is not None or artifacts):
+            elif not promoted and (reported is not None or artifacts_after != artifacts_before):
                 bad.append(
-                    f"expected NO promoted artifact after a failed/incomplete fetch; "
-                    f"snapshot={got['snapshot']!r}, artifacts={[str(p) for p in artifacts]!r}"
+                    f"expected failed/incomplete fetch to report and promote NO artifact while preserving "
+                    f"the existing set byte-for-byte; snapshot={got['snapshot']!r}, "
+                    f"before={artifacts_before!r}, after={artifacts_after!r}"
                 )
-    # THE FINGERPRINT INVARIANT HOLDS ON EVERY FIXTURE, no per-fixture expectation needed: a VERIFIED
-    # snapshot carries the sha256 the driver compares to `ci_fingerprint`, and an untrusted one carries
-    # `null` — nothing rejected is ever hashed, so no strike can accrue against rows nobody believed.
+    # THE FINGERPRINT INVARIANT HOLDS ON EVERY FIXTURE, no per-fixture expectation needed: a trusted
+    # current-head result carries the sha256 the driver compares to `ci_fingerprint`, and an untrusted one
+    # carries `null` — nothing rejected is ever hashed, so no strike can accrue against rows nobody believed.
     fp = got.get("fingerprint", "ABSENT")
     if fp == "ABSENT":
         bad.append("derive emitted NO `fingerprint` field — the driver would be back to hashing by hand")
@@ -208,8 +230,7 @@ def check_fixture(name: str, got: dict, fx: dict, rundir: Path) -> list[str]:
             bad.append(f"fingerprint {fp!r} on an untrusted ({got['verdict']}) snapshot — nothing rejected "
                        f"is ever hashed")
     elif fp is None or not re.fullmatch(r"[0-9a-f]{64}", fp):
-        bad.append(f"fingerprint {fp!r} on a VERIFIED snapshot — expected the 64-hex sha256 of its "
-                   f"evidence rows")
+        bad.append(f"fingerprint {fp!r} on trusted current-head evidence — expected its 64-hex sha256")
     # And `buckets` rides with it: null exactly when the fingerprint is, the four-key tally otherwise —
     # this is what the watch policy and `liveness`'s SETTLED/RUNNING-STALL split read, so a fixture whose
     # buckets went missing is a fixture whose PR nobody can decide to watch.
@@ -775,12 +796,12 @@ def liveness_cases(ci, tmp: Path) -> list[str]:
 
     def derived(verdict: str = "pending", ci_value: str = "pending", running: int = 1,
                 head_sha: str = sha, fail: int = 0, unknown: int = 0) -> dict:
-        verified = verdict not in ("unusable", "unverifiable")
+        trusted_current_head = verdict not in ("unusable", "unverifiable")
         return ci.derive_output({
             "head_sha": head_sha, "verdict": verdict, "ci": ci_value, "reason": "row X made it fire",
-            "fingerprint": fp1 if verified else None,
+            "fingerprint": fp1 if trusted_current_head else None,
             "buckets": ({"PASS": 1, "RUNNING": running, "FAIL": fail, "UNKNOWN_VALUE": unknown}
-                        if verified else None),
+                        if trusted_current_head else None),
         })
 
     def case(name: str, want: object, got: object) -> None:
@@ -834,7 +855,7 @@ def liveness_cases(ci, tmp: Path) -> list[str]:
          (True, "awaiting-user", True),
          (out["escalated"], r["status"], "STALL CAP" in r["ci_reason"]))
 
-    # UNUSABLE: its own counter, its own cap — and any verified outcome resets it.
+    # UNUSABLE/UNVERIFIABLE: their own counter and cap. Only a trusted current-head result resets it.
     reset()
     for expect in ("1", "2"):
         out = ci.liveness(ledger, "35", derived(verdict="unusable"), "none", now)
@@ -846,7 +867,26 @@ def liveness_cases(ci, tmp: Path) -> list[str]:
          (True, "3", True), (out["escalated"], r["unusable_refetches"], "REFETCH CAP" in r["ci_reason"]))
     reset(unusable_refetches="2")
     out = ci.liveness(ledger, "35", derived(), "none", now)
-    case("a verified snapshot resets the refetch counter", "0", row()["unusable_refetches"])
+    case("trusted current-head evidence resets the refetch counter", "0", row()["unusable_refetches"])
+
+    reset()
+    out = ci.liveness(ledger, "35", derived(verdict="unverifiable"), "none", now)
+    case("an unverifiable derivation increments the refetch counter",
+         ("unusable", "1"), (out["state"], row()["unusable_refetches"]))
+
+    # The cross-step case a synthesized liveness result cannot prove: derive retains a verified artifact
+    # for the requested head, then the moved-head override makes the final result untrusted. Liveness must
+    # count that unedited result even though its audit artifact exists.
+    moved_fx, moved, moved_rundir, _before = run_fixture(
+        ci, "head-moves-mid-fetch.json", tmp / "moved-head-liveness"
+    )
+    reset()
+    out = ci.liveness(ledger, moved_fx.get("pr", "35"), ci.derive_output(moved), "none", now)
+    moved_snapshot = Path(moved["snapshot"]) if moved["snapshot"] is not None else None
+    case("a retained moved-head artifact still increments the refetch counter",
+         (True, True, None, None, "unusable", "1"),
+         (moved["head_moved"], moved_snapshot is not None and moved_snapshot.is_file(),
+          moved["fingerprint"], moved["buckets"], out["state"], row()["unusable_refetches"]))
 
     # A HELD row is observed, never struck: `ci` lands, the counters and the open park question do not
     # move, and no second park can overwrite the first.
@@ -887,8 +927,8 @@ def liveness_cases(ci, tmp: Path) -> list[str]:
           "UNKNOWN VALUE" in r["ci_reason"]))
 
     # WATCH WARRANTED — the mechanical reduction of "WATCH ONLY WHAT CAN MOVE", emitted so the driver never
-    # reads that table by hand: verified AND verdict != unclassified AND buckets.RUNNING > 0. Each case is
-    # one row of the WATCH table, asserted against `watch_warranted` and the fact `watch_reason` names.
+    # reads that table by hand: trusted-current-head AND verdict != unclassified AND buckets.RUNNING > 0.
+    # Each case is one row of the WATCH table, asserted against `watch_warranted` and `watch_reason`.
     def watch(name: str, warranted: bool, needle: str, derv: dict, **reset_fields: str) -> None:
         reset(**reset_fields)
         out = ci.liveness(ledger, "35", derv, "none", now)
@@ -904,8 +944,8 @@ def liveness_cases(ci, tmp: Path) -> list[str]:
           derived(verdict="red", ci_value="red", running=1, fail=1), ci_fingerprint=fp1, ci="red")
     watch("green warrants no watch", False, "nothing can move",
           derived(verdict="green", ci_value="green", running=0), ci_fingerprint=fp1)
-    watch("an unusable derivation warrants no watch — no verified snapshot", False, "no verified snapshot",
-          derived(verdict="unusable"))
+    watch("an unusable derivation warrants no watch — no trusted current-head evidence",
+          False, "no trusted current-head evidence", derived(verdict="unusable"))
     # THE COUNTEREXAMPLE the exclusion exists for: `decide()` ranks UNKNOWN_VALUE above plain `pending`,
     # so an UNCLASSIFIED verdict can carry a still-RUNNING row (buckets RUNNING>0 AND UNKNOWN_VALUE>0). A
     # bare RUNNING>0 reading would warrant a watch; the park is the resolution, so watch_warranted is
@@ -935,8 +975,8 @@ def run(ci, tmp: Path) -> int:
               f"zero evidence is not green")
         return 1
     for name in names:
-        fx, got, rundir = run_fixture(ci, name, tmp)
-        bad = check_fixture(name, got, fx, rundir)
+        fx, got, rundir, artifacts_before = run_fixture(ci, name, tmp)
+        bad = check_fixture(name, got, fx, rundir, artifacts_before)
         if not bad:
             print(f"ok       {name:32} -> {got['verdict']:14} ci={got['ci']:8} ({fx['why']})")
         else:
@@ -968,7 +1008,8 @@ def run(ci, tmp: Path) -> int:
     if not liveness_problems:
         print(f"ok       {'liveness bookkeeping':32} -> every transition of the derivation block: strikes "
               f"to the cap, the stall clock, the refetch cap, machine-action stop, held observation, "
-              f"stale-head refusal, and the watch_warranted reduction (incl. the UNCLASSIFIED exclusion)")
+              f"stale-head refusal, retained moved-head artifact, and the watch_warranted reduction "
+              f"(incl. the UNCLASSIFIED exclusion)")
 
     print()
     print(f"--- doc-check: {ci.SPEC_DOC.name} + {ci.DRIVER_DOC.name} vs the code that runs ---")

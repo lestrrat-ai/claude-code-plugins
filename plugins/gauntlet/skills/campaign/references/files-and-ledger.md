@@ -403,24 +403,21 @@ Header field notes (the header fields above; per-row fields follow):
 - `ci` — `green` / `red` / `pending` for `head_sha`. Recorded by `ci-status.py liveness` from `derive`'s
   JSON (`stage-2-ci.md`, "THE BOOKKEEPING IS A COMMAND"). (**There is no `none`.** It was documented but
   no procedure could ever write it.)
-- `ci_fingerprint` — digest of the last **verified** CI snapshot, written by `ci-status.py liveness`
-  **verbatim from the `fingerprint` field of `derive`'s JSON** (`null` there → the derivation was not
-  verified and this field is not written). **What it covers and exactly how it is serialized is DEFINED in
-  `stage-2-ci.md`, "SETTLED" — and is NEVER restated here**, because a fingerprint reconstructed from a
-  paraphrase is a different fingerprint. **UNCHANGED + nothing RUNNING == SETTLED.**
+- `ci_fingerprint` — digest of the last trusted current-head evidence, written by `ci-status.py liveness`
+  **verbatim from the `fingerprint` field of `derive`'s JSON** (`null` there → the derivation had no trusted
+  current-head evidence and this field is not written). **What it covers and exactly how it is serialized is
+  DEFINED in `stage-2-ci.md`, "SETTLED" — and is NEVER restated here**, because a fingerprint reconstructed
+  from a paraphrase is a different fingerprint. **UNCHANGED + nothing RUNNING == SETTLED.**
 - `settled_strikes` — consecutive derivations seen **SETTLED but not green** *while no machine action was
   due or in flight* for the PR at this `head_sha` (`stage-2-ci.md`, "SETTLED", owns the gate — a PR the
   driver is actively repairing is never struck). Counted by `ci-status.py liveness`, never by hand. At
   the **STRIKE CAP**, escalate: park `awaiting-user`
   naming the blocker. Reset to `0` on any `head_sha` change (the ledger `set --head-sha` accessor does this
   itself — ledger.py's `apply_head_sha`) or fingerprint change (by `ci-status.py liveness`).
-- `unusable_refetches` — consecutive derivations whose snapshot was **UNUSABLE** at this `head_sha`. An
-  UNUSABLE snapshot has **no fingerprint** (its rows were not trusted for the PR's current head), so it
-  can never be a
-  `settled_strike`: it gets its own counter, counted by `ci-status.py liveness`. At the **REFETCH CAP**,
-  escalate the same way. Reset to `0`
-  on any `head_sha` change (the ledger `set --head-sha` accessor does this itself) and on any **VERIFIED**
-  snapshot (by `ci-status.py liveness`) (`stage-2-ci.md`, "UNUSABLE — the refetch is BOUNDED").
+- `unusable_refetches` — durable refetch-bound state, written only by `ci-status.py liveness` or the
+  `head_sha` accessor. `stage-2-ci.md`, "UNUSABLE — the refetch is BOUNDED", owns the machine-checked
+  increment/reset contract and the **REFETCH CAP**. Do not infer this field from artifact presence or
+  verification; hand `derive`'s unedited result to `liveness`.
 - `ci_stalled_since` — `-`, or the **UTC ISO-8601 timestamp** of the first derivation that saw the check
   set **RUNNING-STALLED** at this fingerprint: an evidence row still classifies `RUNNING` **and** the
   fingerprint did **not** change (`stage-2-ci.md`, "RUNNING-STALL" — the definition; the cap lives there
@@ -536,9 +533,9 @@ Header field notes (the header fields above; per-row fields follow):
        Non-exhaustively: **CI has SETTLED and is still not green** (`settled_strikes` at its cap), a check
        that **never stopped `RUNNING`** while nothing in the check set moved (`ci_stalled_since` at the CI
        STALL CAP — a hung runner, a dead reporter, a required check that queues and never starts), a
-       snapshot that stayed **UNUSABLE** (`unusable_refetches` at its cap), a check carrying an
-       **unrecognized enum value**, or **any merge precondition `merge-check.py` parks** (any `— park`
-       reason it emits) (`stage-2-ci.md`, "SETTLED", "RUNNING-STALL"
+       refetch bound that reached its cap (`unusable_refetches`), a check carrying an **unrecognized enum
+       value**, or **any merge precondition `merge-check.py` parks** (any `— park` reason it emits)
+       (`stage-2-ci.md`, "SETTLED", "RUNNING-STALL"
        and "UNUSABLE — the refetch is BOUNDED"; `stage-3-merge.md`, "The merge precondition"). **This is
        the exit from `pending` — in BOTH of its shapes**, the settled one and the forever-`RUNNING` one;
        without it, a stuck PR spins forever and no one is ever told. **Answered into**

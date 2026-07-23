@@ -1519,9 +1519,9 @@ def derive(fetch: Fetch, repo: str, pr: str, head_sha: str, rundir: Path, requir
     try:
         rows, head_now, evidence = build_snapshot(fetch, repo, pr, head_sha)
     except FetchError as exc:
-        # A source that could not be read leaves NO artifact — there is nothing on disk for a later heartbeat to
-        # mistake for evidence, and no verdict is derived from a fetch we know to be incomplete. The
-        # `promote` below is NEVER reached, and that is the whole of the "no partial artifact" rule.
+        # A source that could not be read promotes and reports NO artifact. An older same-head artifact may
+        # remain in the persistent rundir, but this result does not name it as current evidence. The
+        # `promote` below is NEVER reached, and no verdict is derived from a fetch we know to be incomplete.
         return result(pr, head_sha, SNAP.UNUSABLE, f"FETCH FAILED — {exc}", None, {}, None, required,
                       None, None)
 
@@ -1611,7 +1611,7 @@ def result(pr: str, head_sha: str, verdict: str, reason: str, path: Path | None,
         # channel: `unknown` NEVER accompanies a green (it is a `pending` bullet in `decide()`), so this can
         # never become "green, but note that we could not read what was required".
         "required_set": required.state,
-        # THE LIVENESS DIGEST of the verified snapshot's evidence rows (`ci-snapshot.py fingerprint()`;
+        # THE LIVENESS DIGEST of the trusted current-head evidence rows (`ci-snapshot.py fingerprint()`;
         # the spec is `stage-2-ci.md`, "SETTLED"). `liveness` compares it to the ledger's `ci_fingerprint`
         # and applies the SETTLED/RUNNING-STALL rules — nobody recomputes the hash by hand. `null`
         # exactly when the final derivation has no trusted evidence for the PR's current head (fetch failed,
@@ -1619,7 +1619,8 @@ def result(pr: str, head_sha: str, verdict: str, reason: str, path: Path | None,
         # stale evidence has no fingerprint. A derivation that got none touches no liveness counter but
         # `unusable_refetches`.
         "fingerprint": fingerprint,
-        # THE CLASSIFY TALLY of the verified evidence rows — {"PASS","RUNNING","FAIL","UNKNOWN_VALUE"},
+        # THE CLASSIFY TALLY of the trusted current-head evidence rows —
+        # {"PASS","RUNNING","FAIL","UNKNOWN_VALUE"},
         # every key always present. `RUNNING > 0` is the ONE fact the watch policy ("WATCH ONLY WHAT CAN
         # MOVE") and `liveness`'s SETTLED/RUNNING-STALL split need, and emitting it is what spares the
         # driver from ever classifying snapshot rows by eye. `null` exactly when `fingerprint` is: an
@@ -1672,17 +1673,20 @@ def derive_output(raw: object) -> dict:
     if out["ci"] not in LEDGER_CI_VALUES:
         fail(f"liveness: derive JSON `ci` is {out['ci']!r}, not one of {'/'.join(LEDGER_CI_VALUES)}")
     fp, buckets = raw.get("fingerprint"), raw.get("buckets")
-    verified = out["verdict"] not in (SNAP.UNUSABLE, SNAP.UNVERIFIABLE)
-    if verified:
+    trusted_current_head = out["verdict"] not in (SNAP.UNUSABLE, SNAP.UNVERIFIABLE)
+    if trusted_current_head:
         if not isinstance(fp, str) or not re.fullmatch(r"[0-9a-f]{64}", fp):
-            fail(f"liveness: a VERIFIED derivation must carry a 64-hex `fingerprint`; got {fp!r}")
+            fail(f"liveness: a derivation with trusted current-head evidence must carry a 64-hex "
+                 f"`fingerprint`; got {fp!r}")
         if (not isinstance(buckets, dict) or set(buckets) != set(BUCKET_KEYS.values())
                 or any(not isinstance(v, int) or v < 0 for v in buckets.values())):
-            fail(f"liveness: a VERIFIED derivation must carry the four-key `buckets` tally; got {buckets!r}")
+            fail(f"liveness: a derivation with trusted current-head evidence must carry the four-key "
+                 f"`buckets` tally; got {buckets!r}")
     elif fp is not None or buckets is not None:
-        fail(f"liveness: verdict {out['verdict']!r} is not a verified snapshot, yet the JSON carries "
-             f"fingerprint={fp!r} buckets={buckets!r} — that is not `derive`'s output")
-    out["fingerprint"], out["buckets"], out["verified"] = fp, buckets, verified
+        fail(f"liveness: verdict {out['verdict']!r} has no trusted current-head evidence, yet the JSON "
+             f"carries fingerprint={fp!r} buckets={buckets!r} — that is not `derive`'s output")
+    out["fingerprint"], out["buckets"] = fp, buckets
+    out["trusted_current_head"] = trusted_current_head
     return out
 
 
@@ -1727,7 +1731,7 @@ def liveness(ledger_path: Path, pr: str, derived: dict, machine_action: str, now
 
     if held:
         state = "held"
-    elif not derived["verified"]:
+    elif not derived["trusted_current_head"]:
         refetches = LEDGER.counter(row, "unusable_refetches") + 1
         put("unusable_refetches", refetches)
         state = "unusable"
@@ -1792,7 +1796,7 @@ def liveness(ledger_path: Path, pr: str, derived: dict, machine_action: str, now
     # judgment the whole tool exists to remove. What stays the driver's is the ACTION: LAUNCHING the watch
     # task, ensuring one is alive, relaunching an exited one. Deciding WHETHER a watch is warranted is this:
     #
-    #     watch_warranted = VERIFIED  AND  verdict != UNCLASSIFIED  AND  buckets["RUNNING"] > 0
+    #     watch_warranted = TRUSTED_CURRENT_HEAD AND verdict != UNCLASSIFIED AND buckets["RUNNING"] > 0
     #
     # It reads ONLY `derived` — NEVER the row's `status` — so it is UNAFFECTED by held/parked status: a
     # park neither stops a warranted watch nor starts an unwarranted one (`stage-2-ci.md`, "WATCH ONLY WHAT
@@ -1806,7 +1810,7 @@ def liveness(ledger_path: Path, pr: str, derived: dict, machine_action: str, now
     #     CONSTRUCTION: plain `pending` (a RUNNING row) OUTRANKS both required-set bullets, so had a row
     #     been RUNNING the verdict would be plain `pending`, not either of these -> RUNNING == 0 -> false.
     #   * red + a row still RUNNING -> RUNNING > 0 -> TRUE.   red, every row terminal -> RUNNING == 0 -> false.
-    #   * unusable / unverifiable  -> NOT verified (no trusted rows to tally) -> false.
+    #   * unusable / unverifiable  -> no trusted current-head rows to tally -> false.
     #   * UNKNOWN_VALUE            -> false, AND THIS IS THE ONE ROW A BARE `RUNNING > 0` GETS WRONG.
     #     `ci-snapshot.decide()` ranks UNCLASSIFIED ABOVE plain `pending`, so an unclassified verdict CAN
     #     carry a still-RUNNING row (buckets == {RUNNING: 1, UNKNOWN_VALUE: 1} is reachable, and pinned by
@@ -1815,9 +1819,9 @@ def liveness(ledger_path: Path, pr: str, derived: dict, machine_action: str, now
     #     question the unknown value raised. So the predicate EXCLUDES UNCLASSIFIED explicitly. Drop that
     #     term and it would warrant a pointless watch on a parked PR — the counterexample this field exists
     #     to get right.
-    running = derived["buckets"]["RUNNING"] if derived["verified"] else 0
-    if not derived["verified"]:
-        watch_warranted, watch_reason = False, "no verified snapshot"
+    running = derived["buckets"]["RUNNING"] if derived["trusted_current_head"] else 0
+    if not derived["trusted_current_head"]:
+        watch_warranted, watch_reason = False, "no trusted current-head evidence"
     elif derived["verdict"] == SNAP.UNCLASSIFIED:
         watch_warranted, watch_reason = False, "unknown value parked — the park is the resolution, not a watch"
     elif running > 0:
@@ -2021,6 +2025,32 @@ def parse_moved_head_contract(blocks: list[str]) -> dict[str, str]:
         return out
     raise DocError("no moved-head owner block (`moved_head.artifact`) — the retained audit artifact and "
                    "its trust boundary are no longer mechanically documented")
+
+
+def parse_liveness_contract(blocks: list[str]) -> dict[str, str]:
+    """The refetch-counter owner block -> final-result trust, actions, head reset, and cap expression."""
+    keys = {
+        "untrusted_verdicts", "untrusted_action", "trusted_current_head_action",
+        "retained_moved_head_artifact", "head_sha_changed_action", "refetch_cap",
+    }
+    for block in blocks:
+        if "liveness.untrusted_verdicts" not in block:
+            continue
+        out: dict[str, str] = {}
+        for line in block.splitlines():
+            match = re.fullmatch(r"liveness\.([a-z_]+) = (.+)", line)
+            if not match:
+                raise DocError(f"the liveness owner block holds a line this check cannot read: {line!r}")
+            key, value = match.groups()
+            if key in out:
+                raise DocError(f"the liveness owner block defines {key!r} twice")
+            out[key] = value
+        if set(out) != keys:
+            raise DocError(f"the liveness owner block defines {sorted(out)!r}, expected exactly "
+                           f"{sorted(keys)!r}")
+        return out
+    raise DocError("no liveness owner block (`liveness.untrusted_verdicts`) — artifact verification and "
+                   "trusted current-head derivation are no longer mechanically distinguished")
 
 
 def parse_caps(text: str) -> dict[str, int]:
@@ -2291,7 +2321,8 @@ def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) 
       5. the doc's `gh` INVOCATIONS, in every copy of them, against the argv the code really issues — plus
          every copy of the derive and required-set commands and their required ledger inputs.
       6. the moved-head owner block says the old-head artifact is retained for audit but contributes no
-         current-PR verdict, fingerprint, or buckets.
+         current-PR verdict, fingerprint, or buckets; and the liveness owner block says that final
+         untrusted result increments the refetch counter while trusted current-head evidence resets it.
 
     (The doc's three snapshot `jq` filters are executed by `ci-snapshot.py` over recorded, multi-page API
     payloads. The required-set reads are production functions here, covered by `ci-status-test.py`.)
@@ -2314,6 +2345,7 @@ def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) 
         order = parse_decide_order(spec_text)
         fp_spec = parse_fingerprint_spec(fenced_blocks(driver_text))
         moved_head = parse_moved_head_contract(fenced_blocks(driver_text))
+        liveness_contract = parse_liveness_contract(fenced_blocks(driver_text))
         caps = parse_caps(spec_text + "\n" + driver_text)
     except DocError as exc:
         print(f"FAIL     the CI docs cannot be read: {exc}")
@@ -2368,6 +2400,24 @@ def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) 
          "stale evidence contributes no liveness digest"),
         ("moved-head buckets", moved_head.get("buckets"), "null",
          "stale evidence contributes no CLASSIFY tally"),
+        ("liveness untrusted verdicts", set(liveness_contract.get("untrusted_verdicts", "").split()),
+         {SNAP.UNUSABLE, SNAP.UNVERIFIABLE},
+         "every final derivation without trusted current-head evidence must spend the refetch budget"),
+        ("liveness untrusted action", liveness_contract.get("untrusted_action"),
+         "unusable_refetches += 1",
+         "an untrusted final result must increment the refetch counter"),
+        ("liveness trusted action", liveness_contract.get("trusted_current_head_action"),
+         "unusable_refetches = 0",
+         "only a trusted current-head result resets the refetch counter"),
+        ("liveness moved-head artifact", liveness_contract.get("retained_moved_head_artifact"),
+         "untrusted",
+         "verifying and retaining an old-head artifact must not make the final derivation trusted"),
+        ("liveness head change", liveness_contract.get("head_sha_changed_action"),
+         "reset by ledger accessor",
+         "a head change resets the counter at the ledger write door"),
+        ("liveness refetch-cap expression", liveness_contract.get("refetch_cap"),
+         f"unusable_refetches >= {REFETCH_CAP}",
+         "the owner block and the refetch cap used by liveness must agree"),
         ("the STRIKE CAP", caps.get("STRIKE"), STRIKE_CAP,
          "the bound `liveness` fires at and the bound the doc promises are different numbers"),
         ("the REFETCH CAP", caps.get("REFETCH"), REFETCH_CAP,
@@ -2427,7 +2477,7 @@ def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) 
         return 1
     print(f"{len(checks) + len(held)} checks: {spec_doc.name}, {driver_doc.name}, ci-snapshot.py and "
           f"ci-status.py agree — enums, CLASSIFY buckets, TOTALITY, the DECIDE order, the caps, the "
-          f"FINGERPRINT lines, the moved-head artifact contract, and every copy of every command.")
+          f"FINGERPRINT lines, moved-head and liveness contracts, and every copy of every command.")
     return 0
 
 
