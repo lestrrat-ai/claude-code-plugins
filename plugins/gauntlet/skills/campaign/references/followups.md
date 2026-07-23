@@ -166,14 +166,16 @@ about and one whose partial rejection strands the rest.
      its interrupted-heartbeat gap.
    - **`in-pr`** — a PR is open and named in the entry, but an interrupted heartbeat may have recorded `open-pr`
      **without** finishing ADOPTION. Adoption is a campaign action, not a store edge — no `in-pr`
-     transition performs it — so "defer to the graph" strands the PR. On resume, **reconcile the recorded
-     PR against the current run.** If it has no ledger row, or its **non-terminal** row lacks the run label,
-     ADOPT it through step 4. **If its existing row is terminal, NEVER refresh, re-adopt, or relabel it** —
-     surface that terminal campaign result and leave the follow-up lifecycle unchanged. Choosing the next
-     follow-up transition for an aborted-but-open PR is separate lifecycle work; this adoption guard does
-     not invent one. An unadopted follow-up PR with no terminal row sits **outside the campaign gate** —
-     the exact thing "fold that PR into the current campaign" exists to prevent. If the user rejects it,
-     follow **Rejecting an `in-pr` follow-up** below.
+     transition performs it — so "defer to the graph" strands the PR. **Before reconciliation, adoption,
+     or `closed-unmerged`, read the entry's `decided` field and the recorded PR's ledger row.** If `decided`
+     starts with `reject@`, route to **Rejecting an `in-pr` follow-up** below before ordinary adoption,
+     reopening, or replacement. Otherwise, reconcile the recorded PR against the current run. If it has no
+     ledger row, or its **non-terminal** row lacks the run label, ADOPT it through step 4. **If its existing
+     row is terminal, NEVER refresh, re-adopt, or relabel it** — surface that terminal campaign result and
+     leave the follow-up lifecycle unchanged. A terminal row records campaign disposition, not a user
+     ruling, so it never selects rejection. An unadopted follow-up PR with no terminal row sits
+     **outside the campaign gate** — the exact thing "fold that PR into the current campaign" exists to
+     prevent. If the user rejects it, follow **Rejecting an `in-pr` follow-up** below.
    - **`reopened`** — its PR died and it already carries the decision it earned, so it does **not** re-decide:
      it resumes at opening the **replacement** PR. Dispatch the fixer, which opens the replacement PR, then
      `open-pr` records it (→ `in-pr`) and step 4 adopts it — no reconciliation, same as `self-accepted`. The
@@ -231,13 +233,16 @@ about and one whose partial rejection strands the rest.
 
 #### Rejecting an `in-pr` follow-up
 
-**Finish the recorded PR's campaign disposition BEFORE recording `reject`.** `rejected` is terminal, so
-the active loop never resumes it. `reject` records the durable user ruling; it does not finish the
-campaign ledger row or remove campaign labels. Resolve the recorded PR's live state, then use the matching
-sequence:
+**Record `reject-pending` BEFORE starting campaign disposition, then finish disposition BEFORE recording
+terminal `reject`.** `reject-pending` keeps the entry `in-pr` and writes `reject@<iso>` to its existing
+`decided` field. That marker makes a fresh heartbeat return here instead of re-adopting or reopening the
+PR. If `decided` does not already start with `reject@`, run
+`followups.py --file <store> reject-pending --id fuN`. Then resolve the recorded PR's live state and use
+the matching sequence:
 
-**If this procedure is interrupted, resume here, not through the state-resume list.** Re-resolve the
-recorded PR's live state and continue with the matching branch.
+**If this procedure is interrupted, the `in-pr` resume rule routes back here.** Re-resolve the recorded
+PR's live state and continue with the matching branch. A terminal `aborted` or `merged` ledger row is also
+a routing sensor if an older interruption happened before `reject-pending` existed.
 
 - **OPEN** — run the permanent-abort procedure in `bailout-and-final-report.md`, **1-hour cap per task**,
   to completion. Then run `followups.py --file <store> reject --id fuN`.
@@ -249,8 +254,8 @@ recorded PR's live state and continue with the matching branch.
   record and `merged` removes the queue entry.
 
 The existing `reject` edge keeps the recorded `pr`; never clear that history.
-Do not add a follow-up state for campaign disposition. The store graph and PR history stay unchanged;
-ordering the existing campaign procedure before the existing terminal ruling closes the gap.
+Do not add a follow-up state for campaign disposition. The state set and PR history stay unchanged; the
+tagged `decided` value is the durable pending-ruling sensor.
 
 **The two subagents are the load-bearing part.** The investigation reproduces before anything is changed,
 and the fix authors code that the gauntlet judges — never the same worker doing both, and never the driver
@@ -330,6 +335,7 @@ followups.py --file <store> corroborate --id fuN --finding F   # TIER 1 — free
 followups.py --file <store> refute      --id fuN --finding F   # TIER 1 — free. And it stays in the store
 followups.py --file <store> take-up     --id fuN --act-...     # TIER 2 — only with EVERY condition evidenced
 followups.py --file <store> accept  --id fuN        # THE USER AGREED — the only edge into `accepted`
+followups.py --file <store> reject-pending --id fuN # user rejected an `in-pr` entry; stamp BEFORE PR disposition
 followups.py --file <store> reject  --id fuN        # user ruled against it; `in-pr` follows "Rejecting an `in-pr` follow-up"
 followups.py --file <store> open-pr --id fuN --pr <ref>    # a PR is addressing it — the entry STAYS
 followups.py --file <store> merged  --id fuN        # that PR LANDED — it is the record now, so the entry is DELETED
@@ -459,12 +465,13 @@ job is to hold claims a human can audit.
 `accept` is a promise the driver makes, and what the graph buys is that **skipping the user is a
 DELIBERATE act rather than an oversight**. It is a footgun guard, **NOT** a security boundary.
 
-**The user's ruling is DURABLE DATA.** `accept`/`reject` stamp when it was made, for the same reason the
-ledger's `api_approval` records `approved@<iso>` rather than living in the driver's head: **a later heartbeat
-is a fresh agent that never saw the conversation**, and it must not re-ask a question the user already
-answered. **Nothing the driver does alone stamps it** — not an investigation, not a `take-up`, not opening
-a PR, not `publish`. A ruling written by anything but the user would launder the driver's action into the
-user's consent (`ruling-recorded` proves the stamp belongs to `accept`/`reject` and to nothing else).
+**The user's ruling is DURABLE DATA.** `accept`/`reject-pending`/`reject` stamp when it was made, for the
+same reason the ledger's `api_approval` records `approved@<iso>` rather than living in the driver's head:
+**a later heartbeat is a fresh agent that never saw the conversation**, and it must not re-ask a question
+the user already answered. **Nothing the driver does alone stamps it** — not an investigation, not a
+`take-up`, not opening a PR, not `publish`. A ruling written by anything but the user would launder the
+driver's action into the user's consent (`ruling-recorded` proves the stamp belongs to the user-ruling
+commands and to nothing else).
 
 ### WHEN TO RECORD ONE — the moment it is noticed, not at the end
 

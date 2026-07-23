@@ -233,6 +233,7 @@ TRANSITIONS = {
     "refute":          (("candidate", "corroborated", "reopened"), "refuted"),
     "take-up":         (("corroborated",), "self-accepted"),
     "accept":          (("candidate", "corroborated", "refuted", "self-accepted", "reopened"), "accepted"),
+    "reject-pending":  (("in-pr",), "in-pr"),
     "reject":          (("candidate", "corroborated", "refuted", "self-accepted", "accepted", "in-pr",
                         "reopened"), "rejected"),
     "open-pr":         (("accepted", "self-accepted", "reopened"), "in-pr"),
@@ -243,7 +244,12 @@ TRANSITIONS = {
 
 # The transitions that are the USER'S RULING. They are the ones that stamp `decided`, and the ONLY ones —
 # a `decided` written by anything else would launder the driver's action into the user's consent.
-USER_RULINGS = ("accept", "reject")
+USER_RULINGS = ("accept", "reject-pending", "reject")
+
+# A rejection of an `in-pr` entry cannot become terminal until its recorded PR's campaign disposition is
+# finished. The tagged value makes that pending ruling distinguishable from the untagged `accept` stamp
+# an `in-pr` entry may already carry. It uses the existing durable `decided` field, not another state.
+PENDING_REJECTION_PREFIX = "reject@"
 
 # Everything else is the DRIVER's. Derived, never listed: whatever is not the user's ruling is a step the
 # driver can take on its own, and the closure over exactly these edges is what must not reach `accepted`,
@@ -277,6 +283,7 @@ WRITES = {
     "refute":          ("finding",),
     ACT_CMD:           ACT_FLAGS,
     "accept":          ("decided",),
+    "reject-pending":  ("decided",),
     "reject":          ("decided",),
     "open-pr":         ("pr",),
     "closed-unmerged": (),
@@ -398,7 +405,7 @@ WRITE_CMDS = tuple(INTAKE)
 INTAKE_HELP = {
     **FLAG_HELP,
     **{f: f"'{f}' — required on `add`, editable after, NEVER blankable: {BLANK_WHY[f]}" for f in REQUIRED},
-    "decided": "ISO timestamp of this step (default: now)",
+    "decided": "ISO timestamp of this ruling (default: now); `reject-pending` stores it as `reject@<iso>`",
     "found": "ISO timestamp it was found (default: now)",
     "found_run": "the run-id that found it",
 }
@@ -751,7 +758,15 @@ def cmd_transition(path: Path, args) -> int:
         stamp = values.get("decided") or now_iso()
         for field in WRITES[cmd]:
             if field in OPTIONAL:
-                entry[field] = stamp
+                if cmd == "reject-pending":
+                    entry[field] = PENDING_REJECTION_PREFIX + stamp
+                elif cmd == "reject" and entry[field].startswith(PENDING_REJECTION_PREFIX):
+                    # Preserve the moment the user ruled, not the later moment campaign cleanup finished.
+                    # An explicit --at remains meaningful: it replaces the tagged timestamp.
+                    if "decided" in values:
+                        entry[field] = PENDING_REJECTION_PREFIX + stamp
+                else:
+                    entry[field] = stamp
                 continue
             entry[field] = (append_finding(entry[field], to, stamp, values[field]) if field == "finding"
                             else values[field])
