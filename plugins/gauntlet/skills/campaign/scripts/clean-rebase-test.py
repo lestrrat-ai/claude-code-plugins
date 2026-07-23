@@ -93,11 +93,13 @@ def _numbered(overrides: "dict[int, str]") -> str:
 
 PR_NUMBER = "12"
 PR_BRANCH = "pr"
+DASH_BASE = "--upload-pack=/bin/false"
 
 
 class Scenario:
-    def __init__(self, tmp: Path):
+    def __init__(self, tmp: Path, base: str = "main"):
         self.tmp = tmp
+        self.base = base
         self.remote = tmp / "remote.git"
         self.seed = tmp / "seed"
         self.wt = tmp / "wt"
@@ -113,6 +115,10 @@ class Scenario:
         git(self.seed, "add", "f")
         git(self.seed, "commit", "-m", "base")
         git(self.seed, "push", "origin", "main")
+        if self.base != "main":
+            base_ref = f"refs/heads/{self.base}"
+            git(self.seed, "update-ref", base_ref, "HEAD")
+            git(self.seed, "push", "origin", f"{base_ref}:{base_ref}")
         # PR branch: change line 3
         git(self.seed, "checkout", "-b", PR_BRANCH)
         (self.seed / "f").write_text(_numbered({3: "3-PR"}), encoding="utf-8")
@@ -126,9 +132,12 @@ class Scenario:
         check(head(self.wt) == self.orig_head, "precondition: the worktree is at the PR head")
         # ledger: header + row, with reviews_ok earned by real verdicts at the PR head
         _ledger("--file", str(self.ledger), "header", "set", "base_branch", "main")
-        _ledger("--file", str(self.ledger), "add-row", "--pr", PR_NUMBER, "--branch", PR_BRANCH,
-                "--head-sha", self.orig_head, "--worktree", str(self.wt), "--tier", "STANDARD",
-                "--status", status)
+        row_args = ["--file", str(self.ledger), "add-row", "--pr", PR_NUMBER, "--branch", PR_BRANCH,
+                    "--head-sha", self.orig_head, "--worktree", str(self.wt), "--tier", "STANDARD",
+                    "--status", status]
+        if self.base != "main":
+            row_args.append(f"--base-branch={self.base}")
+        _ledger(*row_args)
         # `verdict` refuses unless a base-preflight `proceed` is on record for this head
         # (base_ok_sha == head_sha); stamp it first, as the real flow does (base-preflight.py -> base-ok).
         if reviews_ok:
@@ -139,11 +148,14 @@ class Scenario:
         return self
 
     def advance_base(self, overrides: "dict[int, str]"):
-        """Move remote main ahead by one commit that rewrites the given lines."""
-        git(self.seed, "checkout", "main")
+        """Move the remote base ahead by one commit that rewrites the given lines."""
+        if self.base == "main":
+            git(self.seed, "checkout", "main")
+        else:
+            git(self.seed, "checkout", "--detach", f"refs/heads/{self.base}")
         (self.seed / "f").write_text(_numbered(overrides), encoding="utf-8")
         git(self.seed, "commit", "-am", "base advance")
-        git(self.seed, "push", "origin", "main")
+        git(self.seed, "push", "origin", f"HEAD:refs/heads/{self.base}")
         git(self.seed, "checkout", PR_BRANCH)
 
     def move_remote_pr(self):
@@ -157,8 +169,9 @@ class Scenario:
         return git(self.remote, "rev-parse", f"refs/heads/{PR_BRANCH}").stdout.strip()
 
     def invoke(self, *extra):
-        argv = ["run", "--ledger", str(self.ledger), "--pr", PR_NUMBER, "--worktree", str(self.wt),
-                "--base", "main", *extra]
+        argv = ["run", "--ledger", str(self.ledger), "--pr", PR_NUMBER, "--worktree", str(self.wt)]
+        argv += [f"--base={self.base}"] if self.base.startswith("-") else ["--base", self.base]
+        argv += list(extra)
         return capture_cli(M.main, argv)
 
 
@@ -540,10 +553,11 @@ def t_push_rejected_preserves_local_rebase():
 def t_variant_spelling_rebases_against_row_base():
     # `--base origin/main` against a row whose effective base is `main` is ACCEPTED by `base_agrees` (a
     # leading `origin/` on the argument is stripped). The operational fetch/rebase must target the ROW's
-    # resolved base, so this runs `git fetch origin main` / rebase onto `origin/main` — the SAME clean rebase
-    # as `--base main`, exit 0, remote pushed. Trusting the raw `--base` (the reverted bug) would instead run
-    # `git fetch origin origin/main`, which has no such remote ref → `fetch-failed`, refused at exit 2. This
-    # FAILS if the operational ref is taken from the raw `--base` rather than the row's effective base.
+    # resolved base, so its source/tracking refspec names `refs/heads/main`, then it rebases onto
+    # `origin/main` — the SAME clean rebase as `--base main`, exit 0, remote pushed. Trusting the raw
+    # `--base` (the reverted bug) would instead name the nonexistent source `refs/heads/origin/main` →
+    # `fetch-failed`, refused at exit 2. This FAILS if the operational ref is taken from the raw `--base`
+    # rather than the row's effective base.
     with tempfile.TemporaryDirectory() as tmp:
         s = _scenario(tmp)
         s.advance_base({12: "12-BASE"})  # a clean FAR edit — the rebase itself succeeds
@@ -557,6 +571,45 @@ def t_variant_spelling_rebases_against_row_base():
         check(new_head != s.orig_head, "the clean rebase moved the worktree HEAD")
         check(s.remote_pr_head() == new_head,
               "the remote PR branch was force-with-lease pushed to the rebased head")
+
+
+def t_dash_leading_base_fetch_refreshes_tracking_ref():
+    with tempfile.TemporaryDirectory() as tmp:
+        s = Scenario(Path(tmp), base=DASH_BASE).build()
+        tracking_ref = f"refs/remotes/origin/{DASH_BASE}"
+        stale_base = head(s.wt, tracking_ref)
+        s.advance_base({12: "12-BASE"})
+        remote_base = head(s.remote, f"refs/heads/{DASH_BASE}")
+        check(stale_base != remote_base, "fixture setup: the dash-leading base tracking ref must be stale")
+
+        code, out, err = s.invoke("--dry-run")
+        check(code == M.EXIT_OK, f"dash-leading base dry-run preconditions must pass (code={code}, err={err})")
+        plan = json.loads(out.strip().splitlines()[-1])
+        refspec = f"refs/heads/{DASH_BASE}:refs/remotes/origin/{DASH_BASE}"
+        check(plan["would"].startswith(f"fetch origin {refspec};"),
+              f"the dry-run must show the fully qualified safe refspec, got {plan['would']!r}")
+        check(head(s.wt, tracking_ref) == stale_base,
+              "the dash-leading base dry-run must not refresh the tracking ref")
+
+        code, out, err = s.invoke()
+        check(code == M.EXIT_OK,
+              f"a clean rebase onto a dash-leading base must succeed (code={code}, out={out!r}, err={err!r})")
+        check(head(s.wt, tracking_ref) == remote_base,
+              "the clean-rebase fetch must refresh the dash-leading base tracking ref")
+        check(head(s.wt) != s.orig_head, "the clean rebase onto the refreshed dash-leading base must move HEAD")
+
+
+def t_dash_leading_fetch_failure_names_safe_refspec():
+    with tempfile.TemporaryDirectory() as tmp:
+        s = Scenario(Path(tmp), base=DASH_BASE).build()
+        git(s.remote, "update-ref", "-d", f"refs/heads/{DASH_BASE}")
+        code, out, err = s.invoke()
+        check(code == M.EXIT_PRECONDITION,
+              f"a missing dash-leading base must refuse at exit 2 (code={code}, err={err!r})")
+        detail = json.loads(out.strip().splitlines()[-1])["detail"]
+        refspec = f"refs/heads/{DASH_BASE}:refs/remotes/origin/{DASH_BASE}"
+        check(detail.startswith(f"`git fetch origin {refspec}` failed:"),
+              f"the fetch diagnostic must show the safe fully qualified refspec, got {detail!r}")
 
 
 # --- --dry-run mutates nothing -----------------------------------------------
@@ -607,6 +660,12 @@ CASES = [
     ("variant-spelling-rebases-row-base",
      "an accepted origin/main spelling rebases against the row's effective base 'main', not the raw arg",
      t_variant_spelling_rebases_against_row_base),
+    ("dash-base-safe-fetch",
+     "a dash-leading base uses a fully qualified fetch, refreshes its tracking ref, and rebases cleanly",
+     t_dash_leading_base_fetch_refreshes_tracking_ref),
+    ("dash-base-fetch-diagnostic",
+     "a dash-leading fetch failure reports the fully qualified refspec used",
+     t_dash_leading_fetch_failure_names_safe_refspec),
     ("unresolved-base-refused", "a both-`-` ledger resolves to `-`; the unresolved base is refused as no-base at exit 2",
      t_unresolved_base_refused),
     ("no-remote-refused", "an absent default remote is refused at exit 2", t_absent_remote_refused),

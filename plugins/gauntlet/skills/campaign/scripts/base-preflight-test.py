@@ -317,6 +317,69 @@ def t_clean_view_with_current_base_proceeds():
               f"a current base must permit the candidate, got {out!r}")
 
 
+DASH_BASE = "--upload-pack=/bin/false"
+
+
+def _dash_base_ancestry(root: Path, *, current: bool) -> "tuple[tuple[str, str], str, str]":
+    """Fetch a legal dash-leading base from a real bare remote with a deliberately stale tracking ref."""
+    remote, seed, candidate = root / "remote.git", root / "seed", root / "candidate"
+    result = subprocess.run(["git", "init", "--bare", "-b", "main", str(remote)],
+                            capture_output=True, text=True, check=False)
+    check(result.returncode == 0, f"could not create fixture remote: {result.stderr.strip()}")
+    result = subprocess.run(["git", "clone", str(remote), str(seed)],
+                            capture_output=True, text=True, check=False)
+    check(result.returncode == 0, f"could not clone fixture seed: {result.stderr.strip()}")
+    _configure_repo(seed)
+    (seed / "f").write_text("base\n", encoding="utf-8")
+    _git(seed, "add", "f")
+    _git(seed, "commit", "-m", "base")
+    _git(seed, "push", "origin", "main")
+    dash_head = f"refs/heads/{DASH_BASE}"
+    tracking_ref = f"refs/remotes/origin/{DASH_BASE}"
+    _git(seed, "update-ref", dash_head, "HEAD")
+    _git(seed, "push", "origin", f"{dash_head}:{dash_head}")
+
+    result = subprocess.run(["git", "clone", str(remote), str(candidate)],
+                            capture_output=True, text=True, check=False)
+    check(result.returncode == 0, f"could not clone fixture candidate: {result.stderr.strip()}")
+    _configure_repo(candidate)
+    old_base = _git(candidate, "rev-parse", tracking_ref).stdout.strip()
+
+    (seed / "f").write_text("advanced base\n", encoding="utf-8")
+    _git(seed, "commit", "-am", "advance dash base")
+    advanced_base = _git(seed, "rev-parse", "HEAD").stdout.strip()
+    _git(seed, "push", "origin", f"HEAD:{dash_head}")
+    check(old_base != advanced_base, "fixture setup: the candidate tracking ref must be stale")
+
+    if current:
+        # Import the advanced base through a separate local ref so HEAD contains it while origin/<base>
+        # stays stale until the operation under test refreshes that tracking ref.
+        _git(candidate, "fetch", "origin", f"{dash_head}:refs/heads/current-dash-base")
+        _git(candidate, "checkout", "current-dash-base")
+
+    result = M.check_base_ancestry(str(candidate), DASH_BASE, "origin")
+    refreshed_base = _git(candidate, "rev-parse", tracking_ref).stdout.strip()
+    return result, refreshed_base, advanced_base
+
+
+def t_dash_leading_current_base_refreshes_and_proceeds():
+    with tempfile.TemporaryDirectory() as d:
+        result, refreshed, remote_head = _dash_base_ancestry(Path(d), current=True)
+        check(result == ("current", ""),
+              f"a current candidate on a dash-leading base must pass ancestry, got {result!r}")
+        check(refreshed == remote_head,
+              "the dash-leading base fetch must refresh its remote-tracking ref before the current verdict")
+
+
+def t_dash_leading_stale_base_refreshes_and_rebases():
+    with tempfile.TemporaryDirectory() as d:
+        result, refreshed, remote_head = _dash_base_ancestry(Path(d), current=False)
+        check(result == ("stale", ""),
+              f"a stale candidate on a dash-leading base must fail ancestry, got {result!r}")
+        check(refreshed == remote_head,
+              "the dash-leading base fetch must refresh its remote-tracking ref before the stale verdict")
+
+
 # --- `--file`: a real `proceed` RECORDS base_ok_sha on the ledger (the precondition `verdict` enforces) -----
 # base-preflight is the ONLY sanctioned writer of `base_ok_sha`: on a final `proceed`, and only when a ledger
 # is named, it resolves the worktree's HEAD and shells out to `ledger.py base-ok`. `decide()` stays pure;
@@ -646,6 +709,10 @@ CASES = [
      t_clean_view_with_stale_base_rebases),
     ("clean-view-current-base", "a CLEAN candidate containing fetched base proceeds",
      t_clean_view_with_current_base_proceeds),
+    ("dash-base-current", "a dash-leading base refreshes its tracking ref and reports current ancestry",
+     t_dash_leading_current_base_refreshes_and_proceeds),
+    ("dash-base-stale", "a dash-leading base refreshes its tracking ref and reports stale ancestry",
+     t_dash_leading_stale_base_refreshes_and_rebases),
     ("proceed-file-records-base-ok", "a proceed with --file stamps base_ok_sha = HEAD; without --file writes nothing",
      t_proceed_with_file_records_base_ok),
     ("non-proceed-file-no-stamp", "rebase-first/recheck never stamp base_ok_sha, even with --file",

@@ -173,9 +173,8 @@ def run(args) -> int:
                       f"--base {base!r} disagrees with pr {pr}'s ledger effective base {effective_base!r} — "
                       f"--base is an assertion, not a base source", EXIT_PRECONDITION)
     # Operate on the ROW's resolved base, never the raw `--base` spelling: two spellings `base_agrees`
-    # accepts (`main` vs `origin/main`) fetch/rebase against different refs (`git fetch origin main` vs
-    # `git fetch origin origin/main`), so every operational fetch/rebase/patch-identity below follows the
-    # row, not the caller's argument.
+    # accepts (`main` vs `origin/main`) produce different fully qualified source/tracking refspecs, so every
+    # operational fetch/rebase/patch-identity below follows the row, not the caller's argument.
     base = effective_base
 
     # 2. A HELD PR is FROZEN — no rebase (a mutation) is dispatched on it — and a TERMINAL PR is done.
@@ -236,11 +235,15 @@ def run(args) -> int:
                       f"(`pr-adopt.py adopt`) before rebasing",
                       EXIT_PRECONDITION)
 
+    # Fully qualify both sides of the refspec so a legal dash-leading base is ref data, never a Git option.
+    # The destination is the same remote-tracking ref every later diff/rebase reads.
+    fetch_refspec = f"refs/heads/{base}:refs/remotes/{remote}/{base}"
+
     # --- --dry-run STOPS HERE — before the first mutation (fetch moves a tracking ref) ------------------
     if args.dry_run:
         emit({"dry_run": True, "pr": pr, "worktree": worktree, "base": base, "remote": remote,
               "orig_head": orig_head, "branch": row_branch,
-              "would": f"fetch {remote} {base}; rebase onto {remote}/{base}; verify the PR diff is "
+              "would": f"fetch {remote} {fetch_refspec}; rebase onto {remote}/{base}; verify the PR diff is "
                        f"unchanged; push --force-with-lease; then set head_sha, ci=pending and reset the "
                        f"liveness counters in the ledger"})
         return EXIT_OK
@@ -249,9 +252,10 @@ def run(args) -> int:
 
     # Fetch the base BEFORE computing the comparison target, so both the target and the post-rebase
     # identity are measured against the SAME (updated) base ref.
-    fetch = _git(worktree, "fetch", remote, base)
+    fetch = _git(worktree, "fetch", remote, fetch_refspec)
     if fetch.returncode != 0:
-        return refuse("fetch-failed", f"`git fetch {remote} {base}` failed: {fetch.stderr.strip()}",
+        return refuse("fetch-failed",
+                      f"`git fetch {remote} {fetch_refspec}` failed: {fetch.stderr.strip()}",
                       EXIT_PRECONDITION)
 
     # The COMPARISON TARGET — the PR's patch identity as it stands now, measured against the fetched base.

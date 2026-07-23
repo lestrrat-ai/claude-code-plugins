@@ -119,13 +119,17 @@ def check_base_ancestry(worktree: "str | None", base: "str | None", remote: str)
 
     GitHub may keep reporting ``MERGEABLE/CLEAN`` after another campaign PR advances an unprotected base.
     The merge-state enums alone therefore cannot prove that a candidate contains the current base. Fetch the
-    named base and ask Git's ancestry graph directly; this updates only the remote-tracking ref, never the
-    candidate branch. Callers treat ``unverified`` as fail-closed.
+    named base through a fully qualified source:tracking-ref refspec and ask Git's ancestry graph directly;
+    this updates only the remote-tracking ref, never the candidate branch. The qualified source prevents a
+    legal dash-leading base name from being parsed as a Git option. Callers treat ``unverified`` as
+    fail-closed.
     """
     if not worktree or not base:
         return "unverified", "base ancestry requires --worktree and --base"
+    tracking_refspec = f"refs/heads/{base}:refs/remotes/{remote}/{base}"
     fetch = subprocess.run(  # noqa: S603
-        ["git", "-C", worktree, "fetch", remote, base], capture_output=True, text=True, check=False)
+        ["git", "-C", worktree, "fetch", remote, tracking_refspec],
+        capture_output=True, text=True, check=False)
     if fetch.returncode != 0:
         return "unverified", f"could not fetch {remote}/{base}: {fetch.stderr.strip()}"
     probe = subprocess.run(  # noqa: S603
