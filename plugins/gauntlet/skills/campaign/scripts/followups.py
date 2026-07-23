@@ -751,6 +751,12 @@ def cmd_transition(path: Path, args) -> int:
                 f"{args.id} is '{entry['state']}' — `{cmd}` applies only to: {', '.join(frm)}. "
                 f"A follow-up reaches '{to}' only along the transition graph; nothing else moves `state`."
             )
+        if (cmd == "reject" and entry["state"] == "in-pr"
+                and not entry["decided"].startswith(PENDING_REJECTION_PREFIX)):
+            fail(
+                f"{args.id} is 'in-pr' without a pending rejection marker — run `reject-pending` before "
+                "campaign disposition, then run `reject` only after disposition finishes."
+            )
         # WHEN this step was taken. The user's ruling is DURABLE DATA, exactly like the ledger's
         # `api_approval`: a later run — or a fresh agent that never saw the conversation — reads it and does
         # not re-ask. OMITTED, the stamp defaults to now; SUPPLIED (`--at`), it is a value like any other and
