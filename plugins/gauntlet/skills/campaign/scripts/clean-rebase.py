@@ -99,14 +99,15 @@ def _git(worktree: str, *args: str) -> subprocess.CompletedProcess:
 
 def patch_identity(worktree: str, remote: str, base: str) -> "str | None":
     """The PR's MERGE-BASE-relative patch identity: `git diff <remote>/<base>...HEAD` piped through
-    `git patch-id --stable`. Returns the 40-hex id, `EMPTY_DIFF` for an empty diff, or None if the diff
+    `git patch-id --verbatim`. Verbatim mode preserves whitespace, so an indentation-only context change
+    cannot carry review credit. Returns the 40-hex id, `EMPTY_DIFF` for an empty diff, or None if the diff
     itself could not be computed (a missing ref). Three-dot diff is measured from the merge base, so the
     SAME value is produced whether the PR sits on the old or the new base — which is exactly what lets a
     before/after comparison isolate what the REBASE did to the PR's content."""
     diff = _git(worktree, "diff", f"{remote}/{base}...HEAD")
     if diff.returncode != 0:
         return None
-    pid = _run(["git", "patch-id", "--stable"], cwd=worktree, stdin=diff.stdout)
+    pid = _run(["git", "patch-id", "--verbatim"], cwd=worktree, stdin=diff.stdout)
     out = pid.stdout.strip()
     if not out:
         return EMPTY_DIFF
