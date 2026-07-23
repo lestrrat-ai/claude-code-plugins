@@ -880,13 +880,24 @@ def liveness_cases(ci, tmp: Path) -> list[str]:
     moved_fx, moved, moved_rundir, _before = run_fixture(
         ci, "head-moves-mid-fetch.json", tmp / "moved-head-liveness"
     )
+    moved_artifacts = artifact_state(moved_rundir)
     reset()
-    out = ci.liveness(ledger, moved_fx.get("pr", "35"), ci.derive_output(moved), "none", now)
+    moved_calls = []
+    for _call in range(3):
+        out = ci.liveness(ledger, moved_fx.get("pr", "35"), ci.derive_output(moved), "none", now)
+        moved_calls.append((row()["unusable_refetches"], out["escalated"],
+                            artifact_state(moved_rundir)))
+    r = row()
     moved_snapshot = Path(moved["snapshot"]) if moved["snapshot"] is not None else None
-    case("a retained moved-head artifact still increments the refetch counter",
-         (True, True, None, None, "unusable", "1"),
+    case("a retained moved-head artifact reaches the refetch cap without changing bytes",
+         (True, True, None, None, "unusable",
+          [("1", False, moved_artifacts), ("2", False, moved_artifacts),
+           ("3", True, moved_artifacts)]),
          (moved["head_moved"], moved_snapshot is not None and moved_snapshot.is_file(),
-          moved["fingerprint"], moved["buckets"], out["state"], row()["unusable_refetches"]))
+          moved["fingerprint"], moved["buckets"], out["state"], moved_calls))
+    case("the moved-head cap names missing trusted current-head evidence",
+         (True, "awaiting-user"),
+         ("no trusted current-head evidence" in r["ci_reason"], r["status"]))
 
     # A HELD row is observed, never struck: `ci` lands, the counters and the open park question do not
     # move, and no second park can overwrite the first.

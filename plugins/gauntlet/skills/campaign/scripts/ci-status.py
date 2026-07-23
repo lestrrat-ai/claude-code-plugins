@@ -1737,7 +1737,8 @@ def liveness(ledger_path: Path, pr: str, derived: dict, machine_action: str, now
         state = "unusable"
         if refetches >= REFETCH_CAP:
             escalate_reason = (f"UNUSABLE at the REFETCH CAP — {refetches} consecutive derivations at "
-                               f"head {row['head_sha']} yielded no verifiable snapshot. Last refusal: "
+                               f"head {row['head_sha']} yielded no trusted current-head evidence. "
+                               f"Last refusal: "
                                f"{derived['reason']}")
     else:
         put("unusable_refetches", 0)
