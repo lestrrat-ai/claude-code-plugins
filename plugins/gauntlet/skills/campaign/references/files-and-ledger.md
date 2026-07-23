@@ -444,21 +444,21 @@ Header field notes (the header fields above; per-row fields follow):
   **"`ci` is not green because X" is ONE CLASS of it, not the whole of it.** The `ci_` prefix is
   historical and **understates** the field: it is also written at machine-blocker parks where **`ci` is
   `green`**. The name is kept — renaming it would churn the schema and every write site for cosmetics —
-  so the definition, not the name, is what binds. Its write sites, both classes:
+  so the definition, not the name, is what binds. Its two write mechanisms:
   - **CI blockers** (`stage-2-ci.md`, "ESCALATE" — `ci` is `red` or `pending`): the DECIDE bullet that
     matched and the row that made it match — which required check never registered, which check has been
     `RUNNING` since when without the check set moving, which enum value was unrecognized, which VERIFY
-    rule the snapshot failed, which read was denied.
-  - **MERGE-PRECONDITION blockers** (`stage-3-merge.md`, "The merge precondition" — reached only with
-    **`ci = green`**): any value `merge-check.py` parks (its `MERGEABLE` / `MERGE_STATE_STATUS`
-    catch-alls — any `— park` reason it emits) — the offending value named **verbatim**.
+    rule the snapshot failed, which read was denied. Written by `ci-status.py liveness`.
+  - **NON-CI machine blockers**: every caller writes through `ledger.py … park --pr <N> --reason
+    <blocker>`. This includes `base-preflight.py`'s unknown-enum park (`stage-2-review-gate.md`,
+    "Preconditions — clear Copilot items, CI, and conflicts before reviewing") and every `— park` reason
+    `merge-check.py` emits (`stage-3-merge.md`, "The merge precondition") — the offending value named
+    **verbatim**.
 
-  Those two are the write sites that exist today, **not a bound on the set**: the class is the
+  Those are the write mechanisms that exist today, **not a bound on the set**: the class is the
   **property** — *campaign cannot move this PR without a human* (`status`, below, `awaiting-user` class
   2) — so **any** future park with that property writes its reason here, with no edit to this bullet.
-  Written by the park **tool**, never by hand: `ci-status.py liveness` for a CI park, `ledger.py … park
-  --pr <N> --reason <blocker>` for a non-CI one (both set it in the same atomic write as `status =
-  awaiting-user`).
+  Both set it in the same atomic write as `status = awaiting-user`; never write it by hand.
 - `blocker_ruling` — durable record of the user's answer to a **machine-blocker park** (the `status`
   taxonomy below): `-` (none yet) | `retry@<iso>` | `abort@<iso>`. It is the **answer** to the question
   `ci_reason` **asks**, and it exists for the same reason `api_approval` does: a heartbeat may be a fresh

@@ -596,6 +596,19 @@ def t_file_missing_row_rechecks():
               f"a missing row must recheck and name the PR, got {result!r}")
 
 
+def t_cli_help_names_both_file_writes():
+    """`check --help` names both ledger writes; omitting `--file` is the only pure/no-write form."""
+    code, out, err = capture_cli(M.main, ["check", "--help"])
+    check(code == 0, f"`check --help` must exit successfully (stderr: {err})")
+    help_text = " ".join(out.split())
+    check("`proceed` records base_ok_sha" in help_text,
+          f"`--file` help omitted the proceed stamp: {help_text!r}")
+    check("`park` records the ledger-owned machine blocker" in help_text,
+          f"`--file` help omitted the park transition: {help_text!r}")
+    check("Absent: the pure decider, no write" in help_text,
+          f"`--file` help no longer names the no-write form: {help_text!r}")
+
+
 CASES = [
     ("clean-proceeds", "CLEAN passes the enum screen", t_clean_proceeds),
     ("has-hooks-proceeds", "HAS_HOOKS passes the enum screen", t_has_hooks_proceeds),
@@ -648,4 +661,6 @@ CASES = [
     ("file-legacy-row-header-base", "--file: an old row inherits the header base for the live comparison",
      t_file_legacy_row_inherits_header_base),
     ("file-missing-row", "--file: an unknown PR row fails closed to recheck", t_file_missing_row_rechecks),
+    ("cli-help-file-writes", "check --help names proceed and park writes; absent --file stays pure",
+     t_cli_help_names_both_file_writes),
 ]

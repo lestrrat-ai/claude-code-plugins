@@ -428,9 +428,10 @@ def main(argv: "list[str] | None" = None) -> int:
                                   "that must equal the row's effective base, not an independent base source")
     c.add_argument("--remote", default="origin", help="the worktree remote holding the base (default: origin)")
     c.add_argument("--file", help="the ledger (state.jsonl); resolves the row's effective base (asserting "
-                                  "--base and refusing a live retarget), and on `proceed` records base_ok_sha "
-                                  "for the live head so `ledger.py verdict` can later count. Absent: the pure "
-                                  "decider, no write, --base is the base it fetches")
+                                  "--base and refusing a live retarget), and records the final decision: "
+                                  "`proceed` records base_ok_sha for the live head so `ledger.py verdict` "
+                                  "can later count; `park` records the ledger-owned machine blocker. "
+                                  "Absent: the pure decider, no write, --base is the base it fetches")
 
     sub.add_parser("self-test", help="run every fixture (base-preflight-test.py)")
 
