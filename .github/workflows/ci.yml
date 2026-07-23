@@ -87,7 +87,16 @@ jobs:
             exit 1
           fi
           crlf_fixture='plugins/gauntlet/skills/campaign/scripts/fixtures/pyright/crlf_marker.txt'
-          crlf_match=$(git grep -l -e '^# ci: pyright$' -e $'^# ci: pyright\r$' -- "${crlf_fixture}")
+          if crlf_match=$(git grep -l -e '^# ci: pyright$' -e $'^# ci: pyright\r$' -- "${crlf_fixture}"); then
+            :
+          else
+            grep_status=$?
+            if [ "${grep_status}" -eq 1 ]; then
+              crlf_match=''
+            else
+              exit "${grep_status}"
+            fi
+          fi
           if [ "${crlf_match}" != "${crlf_fixture}" ]; then
             echo "::error::the tracked CRLF marker fixture did not match exactly: ${crlf_fixture}"
             exit 1
