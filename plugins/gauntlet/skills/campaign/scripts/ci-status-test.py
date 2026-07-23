@@ -534,6 +534,19 @@ def required_set_cli_cases(ci, tmp: Path) -> list[str]:
     if gh_calls.read_bytes() != calls_before:
         problems.append("[required-set CLI] whitespace-only --repo fetched from GitHub")
 
+    embedded_space_repo = cli_tmp / "embedded-space-repo.jsonl"
+    valid_ledger(embedded_space_repo, header_required=ci.SNAP.CANNOT_READ, row_required="-")
+    embedded_space_repo_before = embedded_space_repo.read_bytes()
+    calls_before = gh_calls.read_bytes()
+    check_error(
+        "embedded-space --repo owner",
+        embedded_space_repo,
+        embedded_space_repo_before,
+        run_cli(embedded_space_repo, repo="bad owner/repo", env=denied_env),
+    )
+    if gh_calls.read_bytes() != calls_before:
+        problems.append("[required-set CLI] embedded-space --repo fetched from GitHub")
+
     malformed_cases = {
         "headerless ledger": b'{"type":"row","pr":"1"}\n',
         "duplicate-row ledger": (b'{"type":"header"}\n'

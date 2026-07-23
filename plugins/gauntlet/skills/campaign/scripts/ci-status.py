@@ -172,6 +172,11 @@ FIXTURES = HERE / "fixtures" / "ci-status"
 # ERROR (exit 2), never a verdict.
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
+# GitHub repository coordinates are ASCII identifiers. Owners use alphanumerics and single, non-edge
+# hyphens; repository names add `.`, `_`, and unrestricted hyphens.
+OWNER_RE = re.compile(r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*")
+REPOSITORY_RE = re.compile(r"[A-Za-z0-9._-]+")
+
 # "this source's response carried no commit oid" — the artifact's word for it, never a sha we made up.
 NO_OID = "-"
 
@@ -386,8 +391,10 @@ def check_rundir(rundir: Path) -> Path:
 def check_repo(repo: str) -> str:
     """An explicit repository is a caller input, not a GitHub read result."""
     parts = repo.split("/")
-    if len(parts) != 2 or any(not part or part != part.strip() for part in parts):
-        fail(f"--repo {repo!r} is not owner/name without surrounding whitespace")
+    if (len(parts) != 2
+            or OWNER_RE.fullmatch(parts[0]) is None
+            or REPOSITORY_RE.fullmatch(parts[1]) is None):
+        fail(f"--repo {repo!r} is not a valid GitHub owner/name")
     return repo
 
 
