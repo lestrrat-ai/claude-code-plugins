@@ -1070,6 +1070,49 @@ def t_default_non_goals(L: ModuleType, tmp: Path) -> None:
         except ValueError:
             pass
 
+    # An UNRELATED write must NOT heal a present-malformed value. `dump()` used to run this field through
+    # `_coerce_field`, so a `save()` that only changed `reviewer` rewrote a hand-edited `null`/native-`[]`
+    # to the canonical `"[]"` on disk — mutating a fail-closed store into a later false green. Both doors now
+    # share `_header_store_field`: after a `load -> unrelated save -> reload`, the malformed value is still
+    # RAW (never `"[]"`) and STILL fails closed. `raw_key` reads the on-disk header value back verbatim.
+    def raw_key(p: Path) -> object:
+        return json.loads(p.read_text().splitlines()[0])["default_non_goals"]
+
+    for label, raw, on_disk in (("a present JSON null", None, None),
+                                ("a present native JSON array", [], [])):
+        p = write_lines(tmp / "heal.jsonl",
+                        json.dumps({"type": "header", "run_id": "r", "default_non_goals": raw}))
+        header, rows = L.load(p)
+        header["reviewer"] = "codex"           # an UNRELATED field, the pass-5 repro's write
+        L.save(p, header, rows, activity=True)
+        check(raw_key(p) == on_disk,
+              f"an unrelated save HEALED {label} on disk to {raw_key(p)!r} instead of leaving it {on_disk!r}")
+        header2, _ = L.load(p)
+        try:
+            L.default_non_goals(header2)
+            check(False, f"{label} decoded after an unrelated write instead of still failing closed")
+        except ValueError:
+            pass
+
+    # A VALID value survives `load -> unrelated save -> reload` unchanged (the helper only preserves; it
+    # never rewrites a good value), and a MISSING key still back-fills the canonical `"[]"` at every door.
+    valid = write_lines(tmp / "valid-rt.jsonl",
+                        json.dumps({"type": "header", "run_id": "r",
+                                    "default_non_goals": json.dumps(["skip flaky tests"])}))
+    header, rows = L.load(valid)
+    header["reviewer"] = "codex"
+    L.save(valid, header, rows, activity=True)
+    reloaded, _ = L.load(valid)
+    check(L.default_non_goals(reloaded) == ["skip flaky tests"],
+          f"a valid default_non_goals did not survive an unrelated write: {reloaded!r}")
+
+    missing = write_lines(tmp / "missing-rt.jsonl", json.dumps({"type": "header", "run_id": "r"}))
+    header, rows = L.load(missing)          # on-disk header has NO default_non_goals key yet
+    L.save(missing, header, rows, activity=True)
+    check(raw_key(missing) == "[]", f"a MISSING default_non_goals did not back-fill to '[]': {raw_key(missing)!r}")
+    reloaded, _ = L.load(missing)
+    check(L.default_non_goals(reloaded) == [], f"a back-filled default_non_goals did not decode to []: {reloaded!r}")
+
 
 def t_default_non_goals_broadening_guard(L: ModuleType, tmp: Path) -> None:
     """A `default_non_goals` change that BROADENS scope (removes/shrinks a default) is REFUSED while any

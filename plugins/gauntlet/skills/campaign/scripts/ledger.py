@@ -478,6 +478,24 @@ def _coerce_field(value: object, default: str) -> str:
     return default if value is None else str(value)
 
 
+def _header_store_field(src: "dict", f: str) -> object:
+    """The ONE rule for a header field's stored form, shared by `load()` (ingest) and `dump()` (serialize)
+    so NO serialization door heals what another preserves. `default_non_goals` is special: a PRESENT value
+    — even a malformed bare `null` (read as `None`) or native array (read as a `list`) — is kept RAW, so the
+    fail-closed decode door (`parse_default_non_goals`) sees it un-healed and refuses it; only a MISSING key
+    back-fills the default. Every OTHER field coerces `null`->default via `_coerce_field`, as before.
+
+    Missing-vs-present is knowable only at these boundaries, so the rule lives HERE (one owner) rather than
+    per-door: a per-door copy is how `dump()` once healed the `null`/native-`[]` values that `load()`
+    preserved, rewriting a fail-closed store to a false green on any unrelated write. Return type is `object`
+    (NOT `str`) because the raw value may be `None`/`list`/`str`; `json.dumps` accepts `object`, and both
+    call sites hold `dict[str, object]`.
+    """
+    if f == "default_non_goals":
+        return HEADER_DEFAULTS[f] if f not in src else src[f]
+    return _coerce_field(src.get(f), HEADER_DEFAULTS[f])
+
+
 def load(path: Path) -> "tuple[dict, list[dict]]":
     """Return (header, rows). A missing file yields defaults + no rows.
 
@@ -489,10 +507,10 @@ def load(path: Path) -> "tuple[dict, list[dict]]":
     of the accessor uses; a row's `id` is always recomputed from its normalized
     `pr` (never trusted from the file). An unknown `type` is rejected, not dropped.
     """
-    # `object` value type (not `str`): the `default_non_goals` special-case below preserves a PRESENT
-    # malformed value RAW (a bare JSON `null` read as `None`, or a native array read as a `list`) so the
-    # fail-closed decode door sees it un-healed. That transient non-str only lives here until
-    # `parse_default_non_goals` validates it; every other field is still `_coerce_field`-d to `str`.
+    # `object` value type (not `str`): `_header_store_field` preserves a PRESENT `default_non_goals` RAW
+    # (a bare JSON `null` read as `None`, or a native array read as a `list`) so the fail-closed decode door
+    # sees it un-healed. That transient non-str only lives here until `parse_default_non_goals` validates it;
+    # every other field is still `_coerce_field`-d to `str`.
     header: dict[str, object] = dict(HEADER_DEFAULTS)
     rows: list[dict] = []
     if not path.exists():
@@ -512,20 +530,13 @@ def load(path: Path) -> "tuple[dict, list[dict]]":
             elif kind == "header":
                 fail(f"line {n}: unexpected second/out-of-order header record")
             if kind == "header":
-                # coerce every value to str, matching dump()'s write side (null -> default, not "None")
+                # Store each header field through the ONE shared rule (`_header_store_field`): every field
+                # coerces null -> default (matching dump()'s write side), EXCEPT `default_non_goals`, whose
+                # PRESENT value — including a bare JSON `null` or a native array — is preserved RAW so the
+                # fail-closed decode door refuses it un-healed (only a MISSING key back-fills). `dump()` calls
+                # the same helper, so no serialization door can heal what this one preserves.
                 for f in HEADER_FIELDS:
-                    if f == "default_non_goals":
-                        # A MISSING key back-fills the default (an old ledger predates this field). But a
-                        # PRESENT value — including a bare JSON `null` or a native array — is preserved RAW,
-                        # NOT run through the None->default coercion, so the decode door (`parse_default_non_goals`)
-                        # validates it and FAILS CLOSED on anything but a valid JSON-array-STRING. Coercion
-                        # here would HEAL two malformed present values into the canonical empty form: `null`
-                        # (via None->default) and native `[]` (via `str([]) == "[]"`), both of which then decode
-                        # to `[]` and never reach the fail-closed door. Missing-vs-present is knowable only at
-                        # this load boundary, so the special-case lives here and nowhere downstream.
-                        header[f] = HEADER_DEFAULTS[f] if f not in rec else rec[f]
-                    else:
-                        header[f] = _coerce_field(rec.get(f), HEADER_DEFAULTS[f])
+                    header[f] = _header_store_field(rec, f)
             else:  # kind == "row"
                 row = dict(ROW_DEFAULTS)
                 # coerce every value to str first, so 11 and "11" are one key (null -> default, not "None")
@@ -570,8 +581,11 @@ def dump(path: Path, header: dict, rows: list[dict]) -> None:
     and never a byte of anything else. A failure at any point leaves the ORIGINAL untouched and takes the
     temp file with it.
     """
+    # Header fields serialize through the SAME `_header_store_field` rule `load()` ingests with, so a PRESENT
+    # malformed `default_non_goals` (`null` / native `[]`) is written back RAW, never healed to `"[]"`. Coercing
+    # it here (as `_coerce_field` would) is what silently repaired a fail-closed store on any unrelated write.
     out = [json.dumps({"type": "header",
-                       **{f: _coerce_field(header.get(f), HEADER_DEFAULTS[f]) for f in HEADER_FIELDS}})]
+                       **{f: _header_store_field(header, f) for f in HEADER_FIELDS}})]
     for row in rows:
         out.append(json.dumps({"type": "row",
                                **{f: _coerce_field(row.get(f), ROW_DEFAULTS[f]) for f in ROW_FIELDS}}))

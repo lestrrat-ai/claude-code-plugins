@@ -2203,6 +2203,38 @@ def check_intent_door(R: types.ModuleType, tmp: Path) -> int:
         else:
             print(f"ok       [intent-check] {label:24} exit {code}: fails closed")
 
+    # The pass-5 repro: an UNRELATED `ledger.py header set reviewer codex` write against a
+    # `default_non_goals: null` store must NOT flip intent-check from fail-closed to green. `dump()` once
+    # HEALED the malformed value to `"[]"` on that write, so a reload decoded clean and intent-check exited
+    # 0 — a false green over a hand-edited fail-closed store. Run the write through the REAL ledger CLI (a
+    # subprocess, as the campaign does), then assert intent-check STILL exits nonzero and the on-disk value
+    # is still `null` (never healed to `"[]"`).
+    d = tmp / "intent-door-heal-on-write"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / INTENT_FILE).write_text(INTENT, encoding="utf-8")
+    state = d / "state.jsonl"
+    state.write_text(
+        json.dumps({"type": "header", "run_id": "r1", "default_non_goals": None}) + "\n", encoding="utf-8")
+    write = subprocess.run(  # noqa: S603 - our own script
+        [sys.executable, str(HERE / "ledger.py"), "--file", str(state), "header", "set", "reviewer", "codex"],
+        capture_output=True, text=True, check=False)
+    on_disk = json.loads(state.read_text().splitlines()[0]).get("default_non_goals", "<missing>")
+    code, output = run_cli(R, ["intent-check", "--file", str(d / INTENT_FILE), "--ledger", str(state)])
+    if write.returncode != 0:
+        print(f"FAIL     [intent-check] heal-on-write: the unrelated `header set reviewer` failed: "
+              f"{(write.stdout + write.stderr).strip()}")
+        failures += 1
+    elif on_disk is not None:
+        print(f"FAIL     [intent-check] heal-on-write: the unrelated write HEALED default_non_goals on disk "
+              f"to {on_disk!r} instead of leaving it null")
+        failures += 1
+    elif code == 0 or "malformed" not in output:
+        print(f"FAIL     [intent-check] heal-on-write: exit {code} after an unrelated write "
+              f"(expected still-nonzero fail-closed); output: {output.strip()}")
+        failures += 1
+    else:
+        print(f"ok       [intent-check] {'heal-on-write':24} exit {code}: still fails closed after unrelated write")
+
     # The ledger and intent MUST share a run directory — a mismatch is the operator's error (exit 2).
     d = tmp / "intent-door-crossrun"
     (d / "run-a").mkdir(parents=True, exist_ok=True)
