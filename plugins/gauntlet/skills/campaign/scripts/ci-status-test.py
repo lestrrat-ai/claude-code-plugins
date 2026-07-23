@@ -348,6 +348,9 @@ def required_set_cases(ci, tmp: Path) -> list[str]:
     encoded = "feature%2Fx%24%28unsafe%29"
     if len(seen) != 2 or any(encoded not in argv[-1] for _source, argv in seen):
         problems.append(f"[required-set] base branch was not URL-encoded in both scoped reads: {seen!r}")
+    ruleset_argv = next((argv for source, argv in seen if source.endswith("ruleset")), [])
+    if any(flag not in ruleset_argv for flag in ("--paginate", "--slurp")):
+        problems.append(f"[required-set] ruleset read was not paginated and slurped: {ruleset_argv!r}")
 
     no_checks, _ = ci.fetch_required_set(
         lambda source, _argv: {"protection": {"enabled": False}} if source.endswith("classic") else [[]],
