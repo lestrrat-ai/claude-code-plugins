@@ -994,10 +994,21 @@ def watch_doc_cases(ci) -> list[str]:
     if not any("buckets.RUNNING" in problem for problem in got):
         problems.append("[watch-doc] an independent `buckets.RUNNING` watch predicate was accepted")
 
+    formula = (WATCH_DOC_FIXTURES / "nested-mapping-formula.md").read_text(encoding="utf-8")
+    got = ci.watch_formula_problems(Path("nested-mapping-formula.md"), formula)
+    if not any("buckets.RUNNING" in problem for problem in got):
+        problems.append("[watch-doc] a nested mapping `buckets.RUNNING` watch predicate was accepted")
+
     formula = (WATCH_DOC_FIXTURES / "consumer-ci-formula.md").read_text(encoding="utf-8")
     got = ci.watch_formula_problems(Path("consumer-ci-formula.md"), formula)
     if not any("consumer `ci` verdict predicate" in problem for problem in got):
         problems.append("[watch-doc] a consumer `ci == pending` watch predicate was accepted")
+
+    for name in ("inline-comment-token.md", "fenced-comment-token.md"):
+        formula = (WATCH_DOC_FIXTURES / name).read_text(encoding="utf-8")
+        got = ci.watch_formula_problems(Path(name), formula)
+        if not any("consumer `ci` verdict predicate" in problem for problem in got):
+            problems.append(f"[watch-doc] a literal code `<!--` in {name} hid a consumer watch predicate")
 
     hidden = (WATCH_DOC_FIXTURES / "comment-only-requirements.md").read_text(encoding="utf-8")
     action_got = ci.watch_action_block_problems(Path("comment-only-requirements.md"), hidden, anchor)

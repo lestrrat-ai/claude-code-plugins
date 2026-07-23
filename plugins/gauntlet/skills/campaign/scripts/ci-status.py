@@ -2322,13 +2322,67 @@ def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list
 
 
 def markdown_visible_text(text: str) -> str:
-    """Remove HTML comments while preserving offsets and line numbers."""
-    return re.sub(
-        r"<!--.*?(?:-->|$)",
-        lambda match: re.sub(r"[^\n]", " ", match.group(0)),
-        text,
-        flags=re.DOTALL,
-    )
+    """Remove Markdown HTML comments while preserving literal code and source offsets."""
+    visible = list(text)
+    in_comment = False
+    inline_ticks = 0
+    fence: tuple[str, int] | None = None
+    offset = 0
+
+    for line in text.splitlines(keepends=True):
+        body = line.rstrip("\r\n")
+        if not in_comment and inline_ticks == 0:
+            if fence is not None:
+                marker, width = fence
+                if re.fullmatch(rf" {{0,3}}{re.escape(marker)}{{{width},}}[ \t]*", body):
+                    fence = None
+                offset += len(line)
+                continue
+
+            opening = re.match(r" {0,3}(`{3,}|~{3,})(.*)", body)
+            if opening is not None:
+                marker = opening.group(1)
+                info = opening.group(2)
+                if marker[0] != "`" or "`" not in info:
+                    fence = (marker[0], len(marker))
+                    offset += len(line)
+                    continue
+
+        index = 0
+        while index < len(line):
+            if in_comment:
+                width = 3 if line.startswith("-->", index) else 1
+                for position in range(offset + index, offset + index + width):
+                    if visible[position] != "\n":
+                        visible[position] = " "
+                index += width
+                if width == 3:
+                    in_comment = False
+                continue
+
+            if line[index] == "`":
+                end = index + 1
+                while end < len(line) and line[end] == "`":
+                    end += 1
+                width = end - index
+                if inline_ticks == 0:
+                    inline_ticks = width
+                elif inline_ticks == width:
+                    inline_ticks = 0
+                index = end
+                continue
+
+            if inline_ticks == 0 and line.startswith("<!--", index):
+                for position in range(offset + index, offset + index + 4):
+                    visible[position] = " "
+                index += 4
+                in_comment = True
+                continue
+
+            index += 1
+        offset += len(line)
+
+    return "".join(visible)
 
 
 def watch_action_block_problems(path: Path, text: str, anchor: str) -> list[str]:
@@ -2360,7 +2414,9 @@ def watch_formula_problems(path: Path, text: str) -> list[str]:
     """Reject consumer-side watch predicates; stage-2-ci.md and executable tests own those details."""
     text = markdown_visible_text(text)
     patterns = (
-        ("a `buckets.RUNNING` predicate", re.compile(r"\bbuckets(?:\.RUNNING|\[[\"']RUNNING[\"']\])")),
+        ("a `buckets.RUNNING` predicate",
+         re.compile(r"(?:\bbuckets\b|\[\s*[\"']buckets[\"']\s*\])"
+                    r"\s*(?:\.\s*RUNNING\b|\[\s*[\"']RUNNING[\"']\s*\])")),
         ("an explicit `watch_warranted` formula", re.compile(r"\bwatch_warranted\s*=")),
         ("a consumer `ci` verdict predicate",
          re.compile(r"(?:\b(?:launch|relaunch|ensure|start)\b.{0,80}\bwatch\b.{0,160}"
