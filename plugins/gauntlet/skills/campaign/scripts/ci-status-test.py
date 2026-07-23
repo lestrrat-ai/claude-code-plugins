@@ -769,6 +769,51 @@ def required_set_matrix_cases(ci, tmp: Path) -> list[str]:
     return problems
 
 
+def command_copy_cases(ci, tmp: Path) -> list[str]:
+    """Wrapped valid and invalid command copies are both found, without borrowing a later paragraph's flag."""
+    problems: list[str] = []
+    fixtures = {
+        "derive": (
+            ci.check_derive_copies,
+            "Run `scripts/ci-status.py\n  derive --pr 1 --ledger <rundir>/state.jsonl`.",
+            "Run `scripts/ci-status.py\n  derive --pr 1`.",
+            "`--ledger <rundir>/state.jsonl` is discussed separately.",
+            "WITHOUT `--ledger` OR `--required-set`",
+        ),
+        "liveness": (
+            ci.check_liveness_copies,
+            "Run `scripts/ci-status.py\n  liveness --ledger <rundir>/state.jsonl --pr 1 "
+            "--machine-action none`.",
+            "Run `scripts/ci-status.py\n  liveness --ledger <rundir>/state.jsonl --pr 1`.",
+            "`--machine-action none` is discussed separately.",
+            "WITHOUT `--machine-action`",
+        ),
+        "required-set": (
+            ci.check_required_set_copies,
+            "Run `scripts/ci-status.py\n  required-set --ledger <rundir>/state.jsonl`.",
+            "Run `scripts/ci-status.py\n  required-set --ledger <rundir>/other.jsonl`.",
+            "`state.jsonl` is discussed separately.",
+            "without the run ledger's",
+        ),
+    }
+    for subcommand, (check, valid, invalid, detached, problem_needle) in fixtures.items():
+        root = tmp / f"doc-copy-{subcommand}"
+        root.mkdir()
+        (root / "wrapped.md").write_text(
+            f"{valid}\n\n{invalid}\n\n{detached}\n",
+            encoding="utf-8",
+        )
+        found_problems, copies = check(root)
+        if len(copies) != 2:
+            problems.append(f"[doc-copy {subcommand}] found {len(copies)} wrapped copies, expected 2: {copies!r}")
+        if len(found_problems) != 1 or problem_needle not in found_problems[0]:
+            problems.append(
+                f"[doc-copy {subcommand}] invalid wrapped copy was not rejected by its own missing flag: "
+                f"{found_problems!r}"
+            )
+    return problems
+
+
 def liveness_cases(ci, tmp: Path) -> list[str]:
     """Drive `liveness` through every transition the derivation block defines, on a real ledger file.
 
@@ -1062,6 +1107,14 @@ def run(ci, tmp: Path) -> int:
     if not required_problems:
         print(f"ok       {'required-set producer':32} -> both APIs, strict shapes, canonical ledger state, "
               f"grouped per-base refresh, and derive's row-based resolution")
+
+    command_problems = command_copy_cases(ci, tmp)
+    for problem in command_problems:
+        failures += 1
+        print(f"FAIL     {problem}")
+    if not command_problems:
+        print(f"ok       {'wrapped doc command copies':32} -> derive, liveness, and required-set; valid and "
+              f"invalid fixtures stay paragraph-bounded")
 
     liveness_problems = liveness_cases(ci, tmp)
     for problem in liveness_problems:
