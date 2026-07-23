@@ -450,10 +450,11 @@ def required_set_cli_cases(ci, tmp: Path) -> list[str]:
     cli_tmp = tmp / "required-set-cli"
     cli_tmp.mkdir()
 
-    def run_cli(ledger: Path, *, repo: str = "o/r", env: "dict[str, str] | None" = None):
+    def run_cli(ledger: Path, *, repo: str = "o/r", env: "dict[str, str] | None" = None,
+                stdout=subprocess.PIPE):
         return subprocess.run(  # noqa: S603 - this suite drives its sibling command
             [sys.executable, str(STATUS_PY), "required-set", "--ledger", str(ledger), "--repo", repo],
-            capture_output=True, text=True, check=False, env=env,
+            stdout=stdout, stderr=subprocess.PIPE, text=True, check=False, env=env,
         )
 
     def valid_ledger(path: Path, *, header_required: str, row_required: "str | None" = None,
@@ -513,6 +514,20 @@ def required_set_cli_cases(ci, tmp: Path) -> list[str]:
         elif len(lines) != 1:
             problems.append(f"[required-set CLI] {name} emitted {len(lines)} diagnostics, not one: "
                             f"{proc.stderr!r}")
+
+    failed_stdout = cli_tmp / "failed-stdout.jsonl"
+    valid_ledger(failed_stdout, header_required=ci.SNAP.NONE_DECLARED)
+    failed_stdout_before = failed_stdout.read_bytes()
+    with Path("/dev/full").open("w", encoding="utf-8") as sink:
+        proc = run_cli(failed_stdout, stdout=sink)
+    check_error("failed stdout sink", failed_stdout, failed_stdout_before, proc)
+    expected_prefix = f"ci-status: required-set: cannot process --ledger {failed_stdout} ("
+    if not proc.stderr.startswith(expected_prefix):
+        problems.append(f"[required-set CLI] failed stdout sink emitted the wrong diagnostic: "
+                        f"{proc.stderr!r}")
+    if "Exception ignored in:" in proc.stderr or "OSError:" in proc.stderr:
+        problems.append(f"[required-set CLI] failed stdout sink leaked a finalization error: "
+                        f"{proc.stderr!r}")
 
     malformed_repo = cli_tmp / "malformed-repo.jsonl"
     valid_ledger(malformed_repo, header_required=ci.SNAP.CANNOT_READ, row_required="-")

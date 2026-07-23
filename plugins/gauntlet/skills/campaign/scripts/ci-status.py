@@ -2689,8 +2689,14 @@ def main() -> int:
             # malformed ledger input, not an unknown required-check read.
             fail(f"required-set: cannot process --ledger {args.ledger} ({exc})")
         try:
-            print(json.dumps(out, indent=2, ensure_ascii=False))
-        except UnicodeError as exc:
+            print(json.dumps(out, indent=2, ensure_ascii=False), flush=True)
+        except (OSError, UnicodeError) as exc:
+            # A failed buffered flush leaves the bytes pending. Close the stream before `fail()` so
+            # interpreter finalization cannot retry them and replace exit 2 with its own exit 120.
+            try:
+                sys.stdout.close()
+            except (OSError, UnicodeError):
+                pass
             fail(f"required-set: cannot process --ledger {args.ledger} ({exc})")
         return 0 if out["settled"] else 1
 
