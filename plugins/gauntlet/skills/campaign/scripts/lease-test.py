@@ -57,6 +57,39 @@ def acquire(work: Path, **kw):
     return L.run(argv)
 
 
+def run_before_lease_access(argv: "list[str]"):
+    """A missing precondition must refuse before both the claim lock and lease read."""
+    original_lock = L.claim_lock
+    original_read = L.read_lease
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("a precondition refusal reached the claim lock or lease read")
+
+    setattr(L, "claim_lock", forbidden)
+    setattr(L, "read_lease", forbidden)
+    try:
+        return L.run(argv)
+    finally:
+        setattr(L, "claim_lock", original_lock)
+        setattr(L, "read_lease", original_read)
+
+
+def assert_precondition_refusal(code: int, out: str, err: str, path: Path, before: bytes,
+                                command: str) -> None:
+    """Pin the common no-read/no-write contract without replacing command-specific guidance checks."""
+    L.check(code == L.EXIT_REFUSED,
+            f"{command} with a missing precondition must exit {L.EXIT_REFUSED}, got {code}")
+    L.check(out == "", f"{command}'s precondition refusal must print no stdout, got {out!r}")
+    L.check("ownership was NOT checked" in err,
+            f"{command}'s precondition refusal must say it made no ownership decision")
+    L.check("UNDRIVEN" not in err,
+            f"{command}'s precondition refusal must not invent an ownership state")
+    L.check(path.read_bytes() == before,
+            f"{command}'s precondition refusal must leave the lease BYTE-UNCHANGED")
+    L.check(not (path.parent / L.LOCK_NAME).exists(),
+            f"{command}'s precondition refusal must stop before taking the claim lock")
+
+
 def verdict_of(out: str) -> str:
     return json.loads(out)["verdict"]
 
@@ -64,14 +97,19 @@ def verdict_of(out: str) -> str:
 # --- the heartbeat precondition -----------------------------------------------
 
 def t_no_heartbeat_refuses(work: Path) -> None:
-    """The whole point: no proof of arming, no lease."""
-    code, _out, err = acquire(work, token="t1")
-    L.check(code != 0, "acquire with NO --heartbeat-id must REFUSE — that is the entire mechanism")
-    L.check(not lease_path(work).exists(), "a refused acquire must write NOTHING")
+    """No proof stops before ownership is checked, even when the caller already owns a live lease."""
+    p = put(work, {"agent": "t1", "heartbeat": "w0", "updated": L.now()})
+    before = p.read_bytes()
+    code, out, err = run_before_lease_access(
+        ["--file", str(p), "acquire", "--token", "t1"])
+    assert_precondition_refusal(code, out, err, p, before, "acquire without --heartbeat-id")
     L.check("--heartbeat-id" in err and "ALREADY armed" in err,
             "the refusal must say the proof names something ALREADY armed, not something intended")
     L.check("IN THIS ORDER" in err, "the refusal must teach the order (arm, THEN acquire) — an "
                                     "instruction, not a diagnosis")
+    L.check("keep the token you already have" in err and
+            "acquire --token <tok> --heartbeat-id <proof>" in err,
+            "the missing-proof refusal must preserve the existing token and name the exact acquire retry")
     L.check("runtime-adapter" in err, "the refusal must point at the doc that owns the host mapping")
     for host_specific in ("ScheduleWakeup", "CronCreate", "bounded wait"):
         L.check(host_specific not in err,
@@ -111,13 +149,77 @@ def t_argparse_must_not_steal_the_refusal(work: Path) -> None:
     L.check(err.startswith("lease: REFUSED"), "the refusal must be OUR message")
 
 
-def t_no_token_refuses_and_never_mints(work: Path) -> None:
-    """A caller with no token never armed a heartbeat that identifies it: its proof cannot be real."""
-    code, _out, err = acquire(work, heartbeat="hb-1")
-    L.check(code != 0, "acquire with NO --token must REFUSE")
-    L.check(not lease_path(work).exists(), "a refused acquire must write NOTHING — and must NOT mint a "
-                                           "token to make itself succeed")
-    L.check("mint" in err, "the refusal must point at `mint` as step one")
+def t_no_acquire_preconditions_give_complete_recovery(work: Path) -> None:
+    """Neither acquire input still yields complete recovery in one refusal."""
+    p = put(work, {"agent": "t1", "heartbeat": "w0", "updated": L.now()})
+    before = p.read_bytes()
+    code, out, err = run_before_lease_access(["--file", str(p), "acquire"])
+    assert_precondition_refusal(code, out, err, p, before,
+                                "acquire without --token or --heartbeat-id")
+    L.check("requires both --token and --heartbeat-id" in err,
+            "the combined refusal must identify both missing inputs")
+    L.check("if YOU already hold this run" in err and "recover YOUR OWN token" in err and
+            "Do NOT mint a replacement" in err,
+            "a current owner must recover its own token without minting a replacement")
+    L.check("NEVER from `lease.json` or `lease.py read`" in err,
+            "the combined refusal must reject run-scoped token sources")
+    L.check("including when adopting an absent" in err and "or stale run" in err and
+            "lease.py mint" in err,
+            "an absent or stale-run adopter must mint its token")
+    L.check("Arm a new heartbeat for this run with that token" in err and
+            "runtime-adapter.md" in err and "record the id for that arming as the proof" in err,
+            "every caller must be told how to obtain a newly armed heartbeat proof")
+    L.check("acquire --token <tok> --heartbeat-id <proof>" in err,
+            "the combined refusal must name the exact retry with both values")
+
+
+def t_no_token_refuses_with_caller_scoped_recovery(work: Path) -> None:
+    """A missing token must distinguish owner recovery from stale-run adoption."""
+    p = put(work, {
+        "agent": "previous-owner-token",
+        "heartbeat": "w0",
+        "updated": L.now() - L.LEASE_STALE_AFTER - 1,
+    })
+    before = p.read_bytes()
+    code, out, err = run_before_lease_access(
+        ["--file", str(p), "acquire", "--heartbeat-id", "hb-1"])
+    assert_precondition_refusal(code, out, err, p, before, "acquire without --token")
+    L.check("if YOU already hold this run" in err and "YOUR OWN token" in err,
+            "owner recovery must be scoped to the caller, not a token found in run state")
+    L.check("session or from the heartbeat prompt" in err,
+            "owner recovery must name caller-scoped sources for the token")
+    L.check("NEVER from `lease.json` or `lease.py read`" in err,
+            "owner recovery must reject run-scoped sources that may identify the previous holder")
+    L.check("adopting an absent or stale run" in err and "lease.py mint" in err,
+            "a stale-run adopter without its own token must be routed through mint")
+    L.check("do NOT mint a replacement" in err,
+            "a current owner must be told to recover its own token, never mint a replacement")
+    L.check("acquire --token <tok> --heartbeat-id <proof>" in err,
+            "the acquire refusal must name the exact retry")
+
+
+def t_refresh_without_token_refuses_before_ownership_check(work: Path) -> None:
+    """Refresh recovers the heartbeat's owner token; it never mints or changes commands."""
+    p = put(work, {"agent": "t1", "heartbeat": "w0", "updated": L.now()})
+    before = p.read_bytes()
+    code, out, err = run_before_lease_access(["--file", str(p), "refresh"])
+    assert_precondition_refusal(code, out, err, p, before, "refresh without --token")
+    L.check("refresh --token <tok>" in err and "heartbeat or owner session" in err,
+            "refresh must say where to recover the token and name the exact retry")
+    L.check("Do NOT mint a replacement or switch to acquire" in err,
+            "refresh must not redirect a missing-token owner into a different ownership path")
+
+
+def t_release_without_token_refuses_before_ownership_check(work: Path) -> None:
+    """Release recovers the exact owner token or leaves the lease untouched."""
+    p = put(work, {"agent": "t1", "heartbeat": "w0", "updated": L.now()})
+    before = p.read_bytes()
+    code, out, err = run_before_lease_access(["--file", str(p), "release"])
+    assert_precondition_refusal(code, out, err, p, before, "release without --token")
+    L.check("release --token <tok>" in err and "your own token from your session" in err,
+            "release must name the caller-scoped token source and the exact retry")
+    L.check("do NOT delete or alter the lease" in err,
+            "release without the owner token must say to leave the lease untouched")
 
 
 # --- the proof is recorded, never interpreted ---------------------------------
@@ -692,15 +794,22 @@ def t_lost_race_readback_refuses(work: Path) -> None:
 
 
 CASES = [
-    ("no-heartbeat", "no proof of arming, no lease — the entire mechanism", t_no_heartbeat_refuses),
+    ("no-heartbeat", "no proof of arming, no ownership check — the entire mechanism",
+     t_no_heartbeat_refuses),
     ("no-heartbeat-absent", "an ABSENT lease refuses too — a fresh run has no heartbeat yet",
      t_no_heartbeat_refuses_on_an_absent_lease),
     ("blank-heartbeat", "a whitespace proof is refused, never trimmed into a value",
      t_empty_heartbeat_is_not_a_proof),
     ("refusal-is-ours", "argparse must not steal the refusal — the instruction IS the mechanism",
      t_argparse_must_not_steal_the_refusal),
-    ("no-token", "no token, no lease — and acquire never mints one to save itself",
-     t_no_token_refuses_and_never_mints),
+    ("no-acquire-preconditions", "neither acquire input gets complete recovery in one refusal",
+     t_no_acquire_preconditions_give_complete_recovery),
+    ("no-token", "no token, no ownership check — owner recovery and stale adoption stay separate",
+     t_no_token_refuses_with_caller_scoped_recovery),
+    ("refresh-no-token", "refresh without a token checks no ownership and preserves the lease",
+     t_refresh_without_token_refuses_before_ownership_check),
+    ("release-no-token", "release without a token checks no ownership and preserves the lease",
+     t_release_without_token_refuses_before_ownership_check),
     ("proof-verbatim", "the proof is recorded, never parsed or normalized", t_proof_is_stored_verbatim),
     ("proof-not-a-generation", "a new proof is a record, not a generation mismatch",
      t_a_new_proof_is_not_a_generation_mismatch),
