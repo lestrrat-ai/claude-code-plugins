@@ -2211,6 +2211,288 @@ def check_gh_invocations(text: str, argv: dict[str, list[str]]) -> list[str]:
     return problems
 
 
+HTML_BLOCK_TAGS = (
+    "address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|"
+    "dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h1|h2|h3|h4|h5|h6|head|header|"
+    "hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|"
+    "section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul"
+)
+
+
+def markdown_quote_prefix(body: str) -> tuple[int, int]:
+    """Return CommonMark blockquote depth and the first content byte without eating code indentation."""
+    depth = position = 0
+    while marker := re.match(r" {0,3}>", body[position:]):
+        position += marker.end()
+        if position < len(body) and body[position] in " \t":
+            position += 1
+        depth += 1
+    return depth, position
+
+
+def html_block_start(content: str) -> re.Pattern[str] | str | None:
+    """Return an explicit end matcher, `"blank"` for a blank-ended block, or `None` for no HTML block."""
+    if match := re.match(r" {0,3}<(script|pre|style|textarea)(?:[ \t]+|>|$)", content, re.IGNORECASE):
+        return re.compile(rf"</{re.escape(match.group(1))}>", re.IGNORECASE)
+    if re.match(r" {0,3}<!--", content):
+        return re.compile(r"-->")
+    if re.match(r" {0,3}<\?", content):
+        return re.compile(r"\?>")
+    if re.match(r" {0,3}<![A-Z]", content):
+        return re.compile(r">")
+    if re.match(r" {0,3}<!\[CDATA\[", content):
+        return re.compile(r"\]\]>")
+    if re.match(rf" {{0,3}}</?(?:{HTML_BLOCK_TAGS})(?:[ \t]+|/?>|$)", content, re.IGNORECASE):
+        return "blank"
+    return None
+
+
+def markdown_leading_indent(content: str) -> tuple[int, int]:
+    """Return leading whitespace columns and bytes using CommonMark's four-column tab stops."""
+    columns = position = 0
+    while position < len(content) and content[position] in " \t":
+        if content[position] == "\t":
+            columns += 4 - columns % 4
+        else:
+            columns += 1
+        position += 1
+    return columns, position
+
+
+def markdown_remove_indent(content: str, width: int) -> str | None:
+    """Remove `width` indentation columns, preserving columns left by a partially consumed tab."""
+    columns = position = 0
+    while columns < width and position < len(content) and content[position] in " \t":
+        if content[position] == "\t":
+            next_columns = columns + 4 - columns % 4
+        else:
+            next_columns = columns + 1
+        position += 1
+        if next_columns > width:
+            return " " * (next_columns - width) + content[position:]
+        columns = next_columns
+    if columns < width:
+        return None
+    return content[position:]
+
+
+def markdown_list_marker(content: str) -> tuple[int, int, str, int | None] | None:
+    """Return a list marker's indent, content indent, family, and ordered start."""
+    match = re.match(r"( *)([*+-]|[0-9]{1,9}([.)]))([ \t]+)(?=\S)", content)
+    if match is None:
+        return None
+    indent = len(match.group(1))
+    token = match.group(2)
+    marker_end = indent + len(token)
+    padding = len((" " * marker_end + match.group(4)).expandtabs(4)) - marker_end
+    content_indent = indent + len(token) + (padding if padding <= 4 else 1)
+    if token[0].isdigit():
+        return indent, content_indent, f"ordered:{match.group(3)}", int(token[:-1])
+    return indent, content_indent, "unordered", None
+
+
+def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, str]]:
+    """Find wrapped candidates without crossing Markdown paragraph, block, or quote boundaries."""
+    quote_prefix = r"(?:[ \t]*>[ \t]*)+"
+    separator = rf"(?:\s+|[ \t]*\\\r?\n(?:{quote_prefix})?[ \t]*|\r?\n{quote_prefix})"
+    needle = re.compile(rf"ci-status\.py{separator}{re.escape(subcommand)}\b")
+    copies: list[tuple[Path, int, str]] = []
+    for md in sorted(root.rglob("*.md")):
+        text = md.read_text(encoding="utf-8")
+        regions: list[tuple[int, int]] = []
+        start = offset = active_quote_depth = 0
+        active_fence: tuple[str, int] | None = None
+        active_html: re.Pattern[str] | str | None = None
+        active_indented_code = False
+        active_lists: list[tuple[int, int, int, str]] = []
+        list_blank_pending = False
+        for line in text.splitlines(keepends=True):
+            body = line.rstrip("\r\n")
+            outer_quote_depth, content_start = markdown_quote_prefix(body)
+            content = body[content_start:]
+            line_end = offset + len(line)
+            list_marker = markdown_list_marker(content)
+            candidate_same_list = bool(
+                list_marker is not None
+                and any(depth == outer_quote_depth and indent == list_marker[0]
+                        and family == list_marker[2]
+                        for depth, indent, _content_indent, family in active_lists)
+            )
+            candidate_nested_list = bool(
+                list_marker is not None
+                and any(depth == outer_quote_depth and content_indent <= list_marker[0]
+                        for depth, _indent, content_indent, _family in active_lists)
+            )
+            inside_list_item = any(
+                depth == outer_quote_depth and markdown_remove_indent(content, content_indent) is not None
+                for depth, _indent, content_indent, _family in active_lists
+            )
+            if list_blank_pending and content.strip():
+                if not (candidate_same_list or candidate_nested_list or inside_list_item):
+                    active_lists.clear()
+                list_blank_pending = False
+                list_marker = markdown_list_marker(content)
+
+            list_content = content
+            for depth, _indent, content_indent, _family in reversed(active_lists):
+                if depth != outer_quote_depth:
+                    continue
+                stripped = markdown_remove_indent(content, content_indent)
+                if stripped is not None:
+                    list_content = stripped
+                    break
+            nested_quote_depth, nested_content_start = markdown_quote_prefix(list_content)
+            quote_depth = outer_quote_depth + nested_quote_depth
+            block_content = list_content[nested_content_start:]
+
+            # Only ordered marker 1 can interrupt a paragraph to start a list. Later numbers split an
+            # active ordered list, and child markers are measured from the active item's content indent.
+            same_list = bool(
+                list_marker is not None
+                and any(depth == quote_depth and indent == list_marker[0] and family == list_marker[2]
+                        for depth, indent, _content_indent, family in active_lists)
+            )
+            nested_list = bool(
+                list_marker is not None
+                and any(depth == quote_depth and content_indent <= list_marker[0]
+                        for depth, _indent, content_indent, _family in active_lists)
+            )
+            list_starts_block = bool(
+                list_marker is not None
+                and (same_list
+                     or ((list_marker[3] is None or list_marker[3] == 1)
+                         and (list_marker[0] <= 3 or nested_list))
+                     or (start == offset and (list_marker[0] <= 3 or nested_list)))
+            )
+
+            # Fenced and HTML blocks cannot lazily continue after their blockquote container ends. Close
+            # the region before processing the first line outside that container.
+            if ((active_fence is not None or active_html is not None)
+                    and active_quote_depth and quote_depth < active_quote_depth):
+                if start < offset:
+                    regions.append((start, offset))
+                start = offset
+                active_fence = None
+                active_html = None
+                active_quote_depth = 0
+
+            if active_fence is not None:
+                fence_char, fence_length = active_fence
+                if re.match(rf" {{0,3}}{re.escape(fence_char)}{{{fence_length},}}[ \t]*$", block_content):
+                    regions.append((start, line_end))
+                    start = line_end
+                    active_fence = None
+                    active_quote_depth = 0
+                offset = line_end
+                continue
+
+            if active_html is not None:
+                if isinstance(active_html, re.Pattern) and active_html.search(block_content):
+                    regions.append((start, line_end))
+                    start = line_end
+                    active_html = None
+                    active_quote_depth = 0
+                    offset = line_end
+                    continue
+                if block_content.strip():
+                    offset = line_end
+                    continue
+                regions.append((start, offset))
+                start = line_end
+                active_html = None
+                active_quote_depth = 0
+                offset = line_end
+                continue
+
+            if active_indented_code:
+                if not block_content.strip():
+                    list_blank_pending = bool(active_lists)
+                    offset = line_end
+                    continue
+                if markdown_leading_indent(block_content)[0] >= 4:
+                    offset = line_end
+                    continue
+                if start < offset:
+                    regions.append((start, offset))
+                start = offset
+                active_indented_code = False
+                active_quote_depth = 0
+
+            if not block_content.strip():
+                if start < offset:
+                    regions.append((start, offset))
+                start = line_end
+                active_quote_depth = 0
+                list_blank_pending = bool(active_lists)
+            elif (markdown_leading_indent(block_content)[0] >= 4
+                  and start == offset and not list_starts_block):
+                active_indented_code = True
+                active_quote_depth = quote_depth
+            elif re.match(r" {0,3}(?:=+|-+)[ \t]*$", block_content) and start < offset:
+                regions.append((start, line_end))
+                start = line_end
+                active_quote_depth = 0
+            elif re.match(r" {0,3}#{1,6}(?:[ \t]+|$)", block_content):
+                if start < offset:
+                    regions.append((start, offset))
+                regions.append((offset, line_end))
+                start = line_end
+                active_quote_depth = 0
+            elif ((fence := re.match(r" {0,3}(`{3,}|~{3,})(.*)$", block_content)) is not None
+                  and (fence.group(1)[0] == "~" or "`" not in fence.group(2))):
+                if start < offset:
+                    regions.append((start, offset))
+                start = offset
+                active_fence = (fence.group(1)[0], len(fence.group(1)))
+                active_quote_depth = quote_depth
+            elif (html_end := html_block_start(block_content)) is not None:
+                if start < offset:
+                    regions.append((start, offset))
+                start = offset
+                active_html = html_end
+                active_quote_depth = quote_depth
+                if isinstance(html_end, re.Pattern) and html_end.search(block_content[1:]):
+                    regions.append((start, line_end))
+                    start = line_end
+                    active_html = None
+                    active_quote_depth = 0
+            elif re.match(r" {0,3}(?:\*(?:[ \t]*\*){2,}|-(?:[ \t]*-){2,}|_(?:[ \t]*_){2,})[ \t]*$",
+                          block_content):
+                if start < offset:
+                    regions.append((start, offset))
+                regions.append((offset, line_end))
+                start = line_end
+                active_quote_depth = 0
+            elif list_starts_block and list_marker is not None:
+                if start < offset:
+                    regions.append((start, offset))
+                start = offset
+                active_quote_depth = quote_depth
+                while (active_lists
+                       and (active_lists[-1][0] > quote_depth
+                            or (active_lists[-1][0] == quote_depth
+                                and active_lists[-1][1] >= list_marker[0]))):
+                    active_lists.pop()
+                active_lists.append((quote_depth, list_marker[0], list_marker[1], list_marker[2]))
+            elif quote_depth:
+                if quote_depth != active_quote_depth:
+                    if start < offset:
+                        regions.append((start, offset))
+                    start = offset
+                active_quote_depth = quote_depth
+            # An unquoted nonblank line after a quote may be a lazy continuation, so it keeps the
+            # active quote depth. A later explicit quote at that depth remains in the same paragraph.
+            offset = line_end
+        if start < len(text):
+            regions.append((start, len(text)))
+        for start, end in regions:
+            paragraph = text[start:end]
+            for match in needle.finditer(paragraph):
+                offset = start + match.start()
+                copies.append((md, text.count("\n", 0, offset) + 1, paragraph[match.start():]))
+    return copies
+
+
 def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]:
     """EVERY COPY OF THE DERIVE COMMAND, IN EVERY SKILL DOC — not just the one in the doc under test.
 
@@ -2230,22 +2512,17 @@ def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]
     `critical-rules.md`, and a check that cannot find its subject never passes.
     """
     problems, copies = [], []
-    for md in sorted((root or HERE.parent).rglob("*.md")):
-        text = md.read_text(encoding="utf-8")
-        for m in re.finditer(r"ci-status\.py derive", text):
-            end = text.find("\n\n", m.start())
-            command = text[m.start(): end if end > 0 else len(text)]
-            if "--pr" not in command:
-                continue  # prose that NAMES the command, not a copy of it
-            n = text.count("\n", 0, m.start()) + 1
-            copies.append(f"{md.name}:{n}")
-            if "--ledger" not in command and "--required-set" not in command:
-                problems.append(
-                    f"{md.name}:{n} runs `ci-status.py derive` WITHOUT `--ledger` OR `--required-set` — the "
-                    f"flag that makes `green` mean the REQUIRED SET passed. A reader following this copy "
-                    f"issues a command the tool refuses; a reader who 'fixes' it by dropping the set gets a "
-                    f"verdict about the rows that showed up, which is the registration gap, reopened by a recap."
-                )
+    for md, line, command in find_ci_status_copies(root or HERE.parent, "derive"):
+        if "--pr" not in command:
+            continue  # prose that NAMES the command, not a copy of it
+        copies.append(f"{md.name}:{line}")
+        if "--ledger" not in command and "--required-set" not in command:
+            problems.append(
+                f"{md.name}:{line} runs `ci-status.py derive` WITHOUT `--ledger` OR `--required-set` — the "
+                f"flag that makes `green` mean the REQUIRED SET passed. A reader following this copy "
+                f"issues a command the tool refuses; a reader who 'fixes' it by dropping the set gets a "
+                f"verdict about the rows that showed up, which is the registration gap, reopened by a recap."
+            )
     if not copies:
         problems.append(
             "ZERO copies of `ci-status.py derive` were found in the skill's docs — the command is "
@@ -2262,24 +2539,19 @@ def check_liveness_copies(root: Path | None = None) -> tuple[list[str], list[str
     reader who "fixes" it by inventing a default answers the one question the tool deliberately asks.
     """
     problems, copies = [], []
-    for md in sorted((root or HERE.parent).rglob("*.md")):
-        text = md.read_text(encoding="utf-8")
-        for match in re.finditer(r"ci-status\.py liveness", text):
-            end = text.find("\n\n", match.start())
-            command = text[match.start(): end if end > 0 else len(text)]
-            # `--ledger`, not `--pr`, is the runnable-copy gate here: prose about liveness routinely sits
-            # in the same paragraph as a `ledger.py … set --pr` command, and `--pr` alone would condemn
-            # every such mention as a flagless invocation.
-            if "--ledger" not in command:
-                continue  # prose that names the subcommand, not a runnable copy
-            line = text.count("\n", 0, match.start()) + 1
-            copies.append(f"{md.name}:{line}")
-            if "--machine-action" not in command:
-                problems.append(
-                    f"{md.name}:{line} runs `ci-status.py liveness` WITHOUT `--machine-action` — the one "
-                    f"judgment the command asks of its caller. The tool refuses the invocation; a reader "
-                    f"who drops the flag's question strikes the very PR a fix is about to move."
-                )
+    for md, line, command in find_ci_status_copies(root or HERE.parent, "liveness"):
+        # `--ledger`, not `--pr`, is the runnable-copy gate here: prose about liveness routinely sits
+        # in the same paragraph as a `ledger.py … set --pr` command, and `--pr` alone would condemn
+        # every such mention as a flagless invocation.
+        if "--ledger" not in command:
+            continue  # prose that names the subcommand, not a runnable copy
+        copies.append(f"{md.name}:{line}")
+        if "--machine-action" not in command:
+            problems.append(
+                f"{md.name}:{line} runs `ci-status.py liveness` WITHOUT `--machine-action` — the one "
+                f"judgment the command asks of its caller. The tool refuses the invocation; a reader "
+                f"who drops the flag's question strikes the very PR a fix is about to move."
+            )
     if not copies:
         problems.append(
             "ZERO runnable copies of `ci-status.py liveness` were found in the skill's docs — the command "
@@ -2291,20 +2563,15 @@ def check_liveness_copies(root: Path | None = None) -> tuple[list[str], list[str
 def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list[str]]:
     """Every runnable required-set copy names the ledger whose per-row required sets the command persists."""
     problems, copies = [], []
-    for md in sorted((root or HERE.parent).rglob("*.md")):
-        text = md.read_text(encoding="utf-8")
-        for match in re.finditer(r"ci-status\.py required-set", text):
-            end = text.find("\n\n", match.start())
-            command = text[match.start(): end if end > 0 else len(text)]
-            if "--ledger" not in command:
-                continue  # prose that names the subcommand, not a runnable copy
-            line = text.count("\n", 0, match.start()) + 1
-            copies.append(f"{md.name}:{line}")
-            if "state.jsonl" not in command:
-                problems.append(
-                    f"{md.name}:{line} runs `ci-status.py required-set` without the run ledger's "
-                    f"`state.jsonl` — the command must persist the value it read before the value exists"
-                )
+    for md, line, command in find_ci_status_copies(root or HERE.parent, "required-set"):
+        if "--ledger" not in command:
+            continue  # prose that names the subcommand, not a runnable copy
+        copies.append(f"{md.name}:{line}")
+        if "state.jsonl" not in command:
+            problems.append(
+                f"{md.name}:{line} runs `ci-status.py required-set` without the run ledger's "
+                f"`state.jsonl` — the command must persist the value it read before the value exists"
+            )
     if not copies:
         problems.append(
             "ZERO runnable copies of `ci-status.py required-set` were found in the skill's docs — finding "

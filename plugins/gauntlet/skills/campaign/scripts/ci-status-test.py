@@ -769,6 +769,144 @@ def required_set_matrix_cases(ci, tmp: Path) -> list[str]:
     return problems
 
 
+def command_copy_cases(ci, tmp: Path) -> list[str]:
+    """Wrapped copies cannot borrow flags from later paragraphs or interrupting Markdown blocks."""
+    problems: list[str] = []
+    fixtures = {
+        "derive": (
+            ci.check_derive_copies,
+            "Run `scripts/ci-status.py\n  derive --pr 1 --ledger <rundir>/state.jsonl`.",
+            "Run `scripts/ci-status.py\n  derive --pr 1`.",
+            "`--ledger <rundir>/state.jsonl` is discussed separately.",
+            "WITHOUT `--ledger` OR `--required-set`",
+        ),
+        "liveness": (
+            ci.check_liveness_copies,
+            "Run `scripts/ci-status.py\n  liveness --ledger <rundir>/state.jsonl --pr 1 "
+            "--machine-action none`.",
+            "Run `scripts/ci-status.py\n  liveness --ledger <rundir>/state.jsonl --pr 1`.",
+            "`--machine-action none` is discussed separately.",
+            "WITHOUT `--machine-action`",
+        ),
+        "required-set": (
+            ci.check_required_set_copies,
+            "Run `scripts/ci-status.py\n  required-set --ledger <rundir>/state.jsonl`.",
+            "Run `scripts/ci-status.py\n  required-set --ledger <rundir>/other.jsonl`.",
+            "`state.jsonl` is discussed separately.",
+            "without the run ledger's",
+        ),
+    }
+    for subcommand, (check, valid, invalid, detached, problem_needle) in fixtures.items():
+        root = tmp / f"doc-copy-{subcommand}"
+        root.mkdir()
+        shell_valid = valid.replace("ci-status.py\n", "ci-status.py \\\n")
+        shell_invalid = invalid.replace("ci-status.py\n", "ci-status.py \\\n")
+        quoted = lambda command: "\n".join(f"> {line}" for line in command.splitlines())
+        quoted_valid = quoted(valid)
+        quoted_invalid = quoted(invalid)
+        quoted_shell_valid = quoted(shell_valid)
+        quoted_shell_invalid = quoted(shell_invalid)
+        quoted_detached = quoted(detached)
+        inline_invalid = invalid.replace("\n  ", " ")
+        ordered_invalid = invalid.replace("\n", "\n   ")
+        nested_unordered_invalid = invalid.replace("\n", "\n      ")
+        nested_ordered_invalid = invalid.replace("\n", "\n       ")
+        mixed_space_tab_invalid = invalid.replace("\n", "\n \t")
+        nested_item = "- Parent item\n    - "
+        nested_indent = "      "
+        (root / "wrapped.md").write_text(
+            f"{valid}\n\n{invalid}\n\n{shell_valid}\n\n{shell_invalid}\n\n{detached}\n\n"
+            f"{quoted_valid}\n>\n{quoted_invalid}\n>\n{quoted_detached}\n>\n"
+            f"{quoted_shell_valid}\n>\n{quoted_shell_invalid}\n>\n{quoted_detached}\n",
+            encoding="utf-8",
+        )
+        (root / "quote-transition.md").write_text(
+            f"{invalid}\n{quoted_detached}\n",
+            encoding="utf-8",
+        )
+        boundary_fixtures = {
+            "atx-heading.md": (f"{invalid}\n# {detached}\n", 1),
+            "unordered-list.md": (f"{invalid}\n- {detached}\n", 1),
+            "fenced-block.md": (f"{invalid}\n```\n{detached}\n```\n", 1),
+            "thematic-break.md": (f"{invalid}\n* * *\n{detached}\n", 1),
+            "html-block.md": (f"{invalid}\n<div>\n{detached}\n</div>\n", 1),
+            "html-script.md": (f"{invalid}\n<script>\n{detached}\n</script>\n", 1),
+            "html-comment.md": (f"{invalid}\n<!--\n{detached}\n-->\n", 1),
+            "html-processing.md": (f"{invalid}\n<?fixture\n{detached}\n?>\n", 1),
+            "html-declaration.md": (f"{invalid}\n<!FIXTURE>\n{detached}\n", 1),
+            "html-cdata.md": (f"{invalid}\n<![CDATA[\n{detached}\n]]>\n", 1),
+            "html-block-valid.md": (f"{valid}\n<div>\n{detached}\n</div>\n", None),
+            "setext-heading.md": (f"{invalid}\n===\n{detached}\n", 1),
+            "atx-heading-reverse.md": (f"# {inline_invalid}\n{detached}\n", 1),
+            "fenced-block-reverse.md": (f"```\n{inline_invalid}\n```\n{detached}\n", 2),
+            "html-block-reverse.md": (f"<script>\n{inline_invalid}\n</script>\n{detached}\n", 2),
+            "indented-code.md": (f"    {inline_invalid}\n{detached}\n", 1),
+            "quoted-fenced-exit.md": (f"> ```sh\n{quoted_invalid}\n{detached}\n", 2),
+            "quoted-html-exit.md": (f"> <script>\n{quoted_invalid}\n{detached}\n", 2),
+            "ordered-non-one-paragraph.md": (f"{invalid}\n2. {detached}\n", None),
+            "ordered-siblings.md": (f"1. {ordered_invalid}\n2. {detached}\n", 1),
+            "nested-unordered-siblings.md": (
+                f"- Parent item\n    - {nested_unordered_invalid}\n    - {detached}\n", 2
+            ),
+            "nested-ordered-siblings.md": (
+                f"1. Parent item\n    1. {nested_ordered_invalid}\n    2. {detached}\n", 2
+            ),
+            "nested-atx-heading.md": (
+                f"{nested_item}{nested_unordered_invalid}\n{nested_indent}# {detached}\n", 2
+            ),
+            "nested-fenced-block.md": (
+                f"{nested_item}{nested_unordered_invalid}\n{nested_indent}```\n"
+                f"{nested_indent}{detached}\n{nested_indent}```\n", 2
+            ),
+            "nested-thematic-break.md": (
+                f"{nested_item}{nested_unordered_invalid}\n{nested_indent}* * *\n"
+                f"{nested_indent}{detached}\n", 2
+            ),
+            "nested-html-block.md": (
+                f"{nested_item}{nested_unordered_invalid}\n{nested_indent}<div>\n"
+                f"{nested_indent}{detached}\n{nested_indent}</div>\n", 2
+            ),
+            "nested-setext-heading.md": (
+                f"{nested_item}{nested_unordered_invalid}\n{nested_indent}===\n"
+                f"{nested_indent}{detached}\n", 2
+            ),
+            "nested-blockquote.md": (
+                f"{nested_item}{nested_unordered_invalid}\n{nested_indent}> {detached}\n", 2
+            ),
+            "nested-indented-code.md": (
+                f"{nested_item}Item intro\n\n{nested_indent}    {inline_invalid}\n"
+                f"{nested_indent}{detached}\n", 4
+            ),
+            "stale-ordered-list.md": (f"1. Earlier item\n\n{invalid}\n2. {detached}\n", None),
+            "malformed-fence.md": (f"{invalid}\n```bad`info\n{detached}\n", None),
+            "malformed-html-close.md": (
+                f"<script>\n{invalid}\n</script   >\n{detached}\n</script>\n", None
+            ),
+            "blank-indented-code.md": (f"    {inline_invalid}\n\n    {detached}\n", None),
+            "mixed-space-tab-code.md": (
+                f" \t{mixed_space_tab_invalid}\n{detached}\n", 1
+            ),
+        }
+        for name, (text, _problem_line) in boundary_fixtures.items():
+            (root / name).write_text(text, encoding="utf-8")
+        found_problems, copies = check(root)
+        if len(copies) != 43:
+            problems.append(f"[doc-copy {subcommand}] found {len(copies)} wrapped copies, expected 43: {copies!r}")
+        expected_problem_sites = {"wrapped.md:4", "wrapped.md:10", "wrapped.md:18", "wrapped.md:26",
+                                  "quote-transition.md:1",
+                                  *(f"{name}:{problem_line}" for name, (_text, problem_line)
+                                    in boundary_fixtures.items() if problem_line is not None)}
+        problem_sites = {problem.split(" ", 1)[0] for problem in found_problems}
+        if (len(found_problems) != 33 or problem_sites != expected_problem_sites
+                or any(problem_needle not in problem for problem in found_problems)):
+            problems.append(
+                f"[doc-copy {subcommand}] invalid plain, blockquoted, and block-boundary copies were not "
+                f"rejected by their own missing flag: "
+                f"{found_problems!r}"
+            )
+    return problems
+
+
 def liveness_cases(ci, tmp: Path) -> list[str]:
     """Drive `liveness` through every transition the derivation block defines, on a real ledger file.
 
@@ -1062,6 +1200,14 @@ def run(ci, tmp: Path) -> int:
     if not required_problems:
         print(f"ok       {'required-set producer':32} -> both APIs, strict shapes, canonical ledger state, "
               f"grouped per-base refresh, and derive's row-based resolution")
+
+    command_problems = command_copy_cases(ci, tmp)
+    for problem in command_problems:
+        failures += 1
+        print(f"FAIL     {problem}")
+    if not command_problems:
+        print(f"ok       {'wrapped doc command copies':32} -> derive, liveness, and required-set; valid and "
+              f"invalid plain, blockquoted, and interrupting-block fixtures stay paragraph-bounded")
 
     liveness_problems = liveness_cases(ci, tmp)
     for problem in liveness_problems:
