@@ -2211,8 +2211,18 @@ def check_gh_invocations(text: str, argv: dict[str, list[str]]) -> list[str]:
     return problems
 
 
+def starts_interrupting_markdown_block(content: str) -> bool:
+    """Return whether a CommonMark block start interrupts the current paragraph."""
+    return bool(
+        re.match(r" {0,3}#{1,6}(?:[ \t]+|$)", content)
+        or re.match(r" {0,3}(?:[*+-]|1[.)])[ \t]+\S", content)
+        or re.match(r" {0,3}(?:`{3,}|~{3,})", content)
+        or re.match(r" {0,3}(?:\*(?:[ \t]*\*){2,}|-(?:[ \t]*-){2,}|_(?:[ \t]*_){2,})[ \t]*$", content)
+    )
+
+
 def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, str]]:
-    """Find wrapped candidates without crossing Markdown paragraph or blockquote boundaries."""
+    """Find wrapped candidates without crossing Markdown paragraph, block, or quote boundaries."""
     quote_prefix = r"(?:[ \t]*>[ \t]*)+"
     separator = rf"(?:\s+|[ \t]*\\\r?\n(?:{quote_prefix})?[ \t]*|\r?\n{quote_prefix})"
     needle = re.compile(rf"ci-status\.py{separator}{re.escape(subcommand)}\b")
@@ -2233,6 +2243,11 @@ def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, 
                     regions.append((start, offset))
                 start = line_end
                 active_quote_depth = 0
+            elif starts_interrupting_markdown_block(content):
+                if start < offset:
+                    regions.append((start, offset))
+                start = offset
+                active_quote_depth = quote_depth
             elif quote_depth:
                 if quote_depth != active_quote_depth:
                     if start < offset:
