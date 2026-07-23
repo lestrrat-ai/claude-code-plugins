@@ -59,11 +59,19 @@ class Refusal(RuntimeError):
     """A fail-closed boundary or phase failure."""
 
 
-def _run(argv: list[str], *, cwd: "str | None" = None) -> subprocess.CompletedProcess:
+def _run(argv: list[str], *, cwd: "str | None" = None,
+         text: bool = True, env: "dict[str, str] | None" = None) -> subprocess.CompletedProcess:
+    # text defaults to True — every readiness/merge/cleanup call wants decoded str. The NUL-delimited path
+    # plumbing passes text=False to capture RAW BYTES: a path can carry a non-UTF-8 byte (which text=True
+    # would raise UnicodeDecodeError on — a ValueError this handler does not catch) or a CR (which text=True's
+    # universal-newline translation would rewrite to LF, naming a DIFFERENT path). Byte mode does neither; the
+    # caller splits on the NUL byte and decodes each field itself (see _nul_fields).
+    # env defaults to None (inherit the parent environment). _sync_base passes a forced C locale so git's
+    # fast-forward diagnostic is deterministic English — the substring the overwrite-refusal gate matches on.
     try:
-        return subprocess.run(argv, cwd=cwd, capture_output=True, text=True, check=False)  # noqa: S603
+        return subprocess.run(argv, cwd=cwd, capture_output=True, text=text, check=False, env=env)  # noqa: S603
     except OSError as exc:
-        return subprocess.CompletedProcess(argv, 127, "", str(exc))
+        return subprocess.CompletedProcess(argv, 127, "" if text else b"", str(exc) if text else b"")
 
 
 def _require(proc: subprocess.CompletedProcess, what: str) -> str:
@@ -75,6 +83,35 @@ def _require(proc: subprocess.CompletedProcess, what: str) -> str:
 
 def _one_lf(value: str) -> str:
     return value[:-1] if value.endswith("\n") else value
+
+
+def _ff_detail(proc: subprocess.CompletedProcess) -> str:
+    """Decode a BYTE-mode fast-forward capture's diagnostic. The checked-out-base `git merge --ff-only` in
+    _sync_base runs text=False: with core.quotePath=false git emits a blocking filename's raw non-UTF-8 byte
+    in stderr, and a text=True capture would raise UnicodeDecodeError — discarding BOTH the tailored refusal
+    AND git's original error, then re-crashing every resume on the same input. Byte mode never raises;
+    surrogateescape round-trips the odd byte into the message instead. A str stream (a fixture Fake, or a
+    text-mode caller) is accepted verbatim so the same decode serves both surfaces that read the ff detail."""
+    for stream in (proc.stderr, proc.stdout):
+        if stream:
+            decoded = (stream.decode("utf-8", "surrogateescape")
+                       if isinstance(stream, (bytes, bytearray)) else stream)
+            return decoded.strip()
+    return "no diagnostic"
+
+
+def _is_overwrite_refusal(detail: str) -> bool:
+    """Positively identify git's OVERWRITE refusal from a fast-forward's diagnostic. Under a forced C locale
+    (see _sync_base) git's two overwrite refusals — "Your local changes to the following files would be
+    overwritten by merge:" (tracked) and "The following untracked working tree files would be overwritten by
+    merge:" (untracked) — both carry the substring `overwritten by merge`. NO OTHER fast-forward failure does:
+    a stale `.git/index.lock`, a genuine divergence, an unmerged index, or a transient error contains it zero
+    times (verified against git 2.43.0). This is the POSITIVE signal that gates the tailored path-list +
+    stash-recovery refusal: only a fast-forward git actually refused BECAUSE uncommitted work would be
+    overwritten may blame the listed paths and advise a stash. Every other failure — even when the read-only
+    path probe (which does not need the index lock) still names candidate paths — must fall back to git's raw
+    diagnostic, because naming paths and advising a stash that cannot fix an unrelated failure would LIE."""
+    return "overwritten by merge" in detail
 
 
 def resolve_project_root(checkout: Path) -> Path:
@@ -294,6 +331,93 @@ def _worktree_listing(root: Path) -> list[dict[str, str]]:
     return _parse_worktrees(out)
 
 
+def _nul_fields(data: bytes) -> list[str]:
+    """Split BYTE-mode NUL-delimited plumbing output; drop the trailing empty field. The split happens on
+    the NUL byte BEFORE decoding, so no text-mode universal-newline translation can rewrite a CR or CRLF
+    inside a path, and a non-UTF-8 byte cannot raise. NUL cannot appear in a path, so a path carrying
+    spaces, tabs, CR, LF, or CRLF survives as one field and can never be split into two. Each field is then
+    decoded utf-8/surrogateescape, so a non-UTF-8 byte round-trips instead of crashing the probe."""
+    return [field.decode("utf-8", "surrogateescape") for field in data.split(b"\0") if field]
+
+
+def _quote_path(path: str) -> str:
+    """JSON-quote a path so spaces, tabs, and newlines are escaped and can never forge a message line."""
+    return json.dumps(path)
+
+
+def _path_conflicts(path: str, incoming: "set[str]") -> bool:
+    """A staged, unstaged, or untracked path conflicts with the incoming fast-forward when it equals an
+    incoming path or is a file/directory prefix of one (either direction) — the shape git rejects as it
+    updates that path. A change to any OTHER path is left alone by the fast-forward and does not block it."""
+    if path in incoming:
+        return True
+    return any(path.startswith(f"{inc}/") or inc.startswith(f"{path}/") for inc in incoming)
+
+
+def _blocking_uncommitted_paths(checkout: str, base: str) -> "list[str] | None":
+    """After a checked-out-base fast-forward fails, name the uncommitted paths that block it.
+
+    Read-only: runs only git plumbing (merge-base/ls-files/diff-index/diff-files/diff-tree) and mutates
+    nothing. Returns JSON-quoted, deduplicated, sorted paths, or None when this is NOT a diagnosable
+    uncommitted-work block (the graph forbids a fast-forward, the index is unmerged/conflicted, or any
+    plumbing command failed) — in which case the caller keeps the original raw git error rather than
+    replacing it with a secondary failure.
+    """
+    # A fast-forward is only possible when HEAD is already an ancestor of origin/<base>. If it is not,
+    # the failure is a genuine divergence, not an uncommitted-work block — keep the raw refusal.
+    ancestor = _run(["git", "-C", checkout, "merge-base", "--is-ancestor", "HEAD", f"origin/{base}"])
+    if ancestor.returncode != 0:
+        return None
+
+    def plumb(args: "list[str]") -> "list[str] | None":
+        # BYTE mode: a -z path can carry a non-UTF-8 byte or a CR, so capture raw and split on the NUL byte
+        # BEFORE decoding (see _nul_fields). A spawn failure or nonzero exit yields None, so the caller keeps
+        # the original raw fast-forward error rather than a secondary diagnostic failure.
+        proc = _run(["git", "-C", checkout, *args], text=False)
+        if proc.returncode != 0:
+            return None
+        return _nul_fields(proc.stdout)
+
+    # An UNMERGED (conflicted) index makes ff-only fail with git's own unresolved-conflict error, and git
+    # REFUSES both `commit` and `stash` while the index is unmerged — so the tailored recovery advice would
+    # be wrong here. Detect it read-only and decline, preserving git's raw diagnostic. The ancestor guard above
+    # does NOT catch this: a conflicted merge leaves HEAD un-advanced, so HEAD is still an ancestor of
+    # origin/<base>. (A non-empty ls-files --unmerged listing means at least one path is at stage > 0.)
+    unmerged = plumb(["ls-files", "--unmerged", "-z", "--"])
+    if unmerged is None or unmerged:
+        return None
+
+    staged = plumb(["diff-index", "--cached", "--name-only", "-z", "--no-renames", "HEAD", "--"])
+    # A path staged to EXACTLY the incoming target content does NOT block `git merge --ff-only` — git names
+    # only the real blocker, so naming it over-reports. `staged` (index vs HEAD) identifies WHICH paths are
+    # staged; this second probe (index vs origin/<base>) keeps only those whose staged content DIFFERS from
+    # the incoming tree, dropping any already equal to it, BEFORE the incoming-overlap test below.
+    staged_vs_incoming = plumb(
+        ["diff-index", "--cached", "--name-only", "-z", "--no-renames", f"origin/{base}", "--"])
+    unstaged = plumb(["diff-files", "--name-only", "-z", "--no-renames", "--"])
+    untracked = plumb(["ls-files", "--others", "--exclude-standard", "-z", "--"])
+    incoming = plumb(
+        ["diff-tree", "--no-commit-id", "-r", "--name-only", "-z", "--no-renames",
+         "HEAD", f"origin/{base}", "--"])
+    if (staged is None or staged_vs_incoming is None or unstaged is None
+            or untracked is None or incoming is None):
+        return None
+
+    diverged_from_incoming = set(staged_vs_incoming)
+    staged = [path for path in staged if path in diverged_from_incoming]
+
+    incoming_set = set(incoming)
+    # git merge --ff-only rejects a staged, unstaged, OR untracked path only when it overlaps a path the
+    # incoming fast-forward must update. A staged, unstaged, or untracked change to an UNRELATED path does
+    # NOT block the fast-forward (git updates only the incoming paths and leaves the rest alone), so every
+    # category is filtered through the same incoming-overlap test — never added unconditionally.
+    blockers: "set[str]" = set()
+    for path in (*staged, *unstaged, *untracked):
+        if _path_conflicts(path, incoming_set):
+            blockers.add(path)
+    return [_quote_path(path) for path in sorted(blockers)]
+
+
 def _sync_base(root: Path, base: str) -> None:
     remote_ref = f"refs/heads/{base}:refs/remotes/origin/{base}"
     _require(
@@ -313,10 +437,45 @@ def _sync_base(root: Path, base: str) -> None:
         # Downstream diffs/rebases read origin/<base> (freshly fetched above), not this local branch, so a
         # local-ahead checkout poisons nothing; local-ahead means origin is an ancestor of local, i.e. local
         # already contains the merged tip. The dangerous diverged case still fails ff-only and refuses below.
-        _require(
-            _run(["git", "-C", checked[0], "merge", "--ff-only", f"origin/{base}"]),
-            f"fast-forward of checked-out base {base}",
-        )
+        # BYTE mode: with core.quotePath=false git emits a blocking filename's raw non-UTF-8 byte in stderr,
+        # which a text=True capture raises UnicodeDecodeError on (escaping past main and discarding BOTH
+        # diagnostics). Capture raw and decode the detail via _ff_detail at BOTH surfaces that read it.
+        # Forced C locale: git's diagnostic is deterministic English, so _is_overwrite_refusal below can match
+        # the stable `overwritten by merge` substring — the positive signal that this ff failed BECAUSE of
+        # uncommitted work, not some unrelated cause. (It also makes the preserved "Original Git diagnostic"
+        # always English, a diagnostic improvement.)
+        ff = _run(["git", "-C", checked[0], "merge", "--ff-only", f"origin/{base}"],
+                  text=False, env={**os.environ, "LC_ALL": "C"})
+        if ff.returncode != 0:
+            blockers = _blocking_uncommitted_paths(checked[0], base)
+            detail = _ff_detail(ff)
+            # The tailored path-list + stash refusal is gated on a POSITIVELY VERIFIED overwrite failure AND
+            # confident path detection. `blockers` alone is NOT enough: the read-only path probe does not need
+            # the index lock, so an UNRELATED ff failure (a stale `.git/index.lock`, etc.) still yields a
+            # non-empty `blockers` list — and blaming those paths + advising a stash that cannot fix the real
+            # cause would be a false, misleading refusal. Only when git itself refused because uncommitted work
+            # would be overwritten (`_is_overwrite_refusal(detail)`) may this message name paths and propose a
+            # stash. Every other failure falls through to the raw-error backstop below, unchanged.
+            if blockers and _is_overwrite_refusal(detail):
+                listed = "\n".join(f"  - {path}" for path in blockers)
+                # Diagnose-only: name the offending paths and PROPOSE the safe fix. NEVER commit, stash,
+                # reset, restore, checkout, or clean — the campaign does not own these paths.
+                raise Refusal(
+                    f"fast-forward of checked-out base {base!r} at {checked[0]} refused because "
+                    f"uncommitted paths block the update:\n{listed}\n"
+                    "The PR is already merged. Stash the listed changes (use `git stash -u` to include "
+                    "untracked files) — or commit them on a SEPARATE branch and switch back to "
+                    f"{base!r} — then re-run the same merge.py run command to resume the owed base-sync. "
+                    "Do NOT commit on the checked-out base itself: that makes a diverged sibling commit "
+                    "the re-run's fast-forward would refuse. The campaign left these paths untouched.\n"
+                    f"Original Git diagnostic: {detail}")
+            # Not a verified overwrite block (a stale index lock, a divergence, an unmerged index, a plumbing
+            # probe that failed, or any other cause): keep git's raw error.
+            # `ff` is byte-mode, so hand _require the surrogateescape-decoded detail — never raw bytes, whose
+            # repr would leak `b'...'` into the message. _require here always raises (returncode != 0).
+            _require(
+                subprocess.CompletedProcess(ff.args, ff.returncode, "", detail),
+                f"fast-forward of checked-out base {base}")
     else:
         # If the local base ref already EXISTS and already CONTAINS origin/<base> (origin is an ancestor of
         # the local ref — the ref is equal to or LOCAL-AHEAD of origin), it is already synchronized: skip the
@@ -611,7 +770,15 @@ def main(argv: "list[str] | None" = None) -> int:
                          merge_method=args.merge_method)
     except (Refusal, SystemExit) as exc:
         detail = exc if isinstance(exc, Refusal) else "ledger rejected malformed state"
-        print(f"merge: REFUSED — {detail}", file=sys.stderr)
+        # Byte-exact final boundary: detail can carry a surrogateescape-decoded raw git byte (U+DCFF for a
+        # 0xff filename byte under core.quotePath=false — see _ff_detail). A text sys.stderr would apply the
+        # default backslashreplace and emit the 6 ASCII chars `\udcff` instead of the verbatim byte, breaking
+        # the "raw git diagnostic appended verbatim" guarantee at the one surface the CLI user sees. Encode
+        # with surrogateescape and write raw. The tailored JSON path list is pure ASCII (json.dumps,
+        # ensure_ascii=True), so it stays line-safe; only git's own detail round-trips to raw bytes. Flush:
+        # the process returns immediately after.
+        sys.stderr.buffer.write(f"merge: REFUSED — {detail}\n".encode("utf-8", "surrogateescape"))
+        sys.stderr.buffer.flush()
         return 1
     print(json.dumps(result, sort_keys=True))
     return 0

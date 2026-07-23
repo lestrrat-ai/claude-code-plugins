@@ -131,7 +131,33 @@ branch — the repo's "Automatically delete head branches" setting alone governs
 
 Each phase leaves a durable or safely repeatable checkpoint. Re-run the same command after any failure:
 GitHub `MERGED` skips the merge call; base updates are fast-forward-only; absent owned worktrees/branches
-count as completed cleanup; a terminal ledger row is a no-op. The command refuses held rows whose live PR is
+count as completed cleanup; a terminal ledger row is a no-op.
+
+When the checked-out local base is what git fast-forwards and an unrelated actor's **uncommitted** edits in
+that checkout block it, the command **refuses and lists the blocking paths it detected** (each staged, unstaged,
+or untracked path the incoming fast-forward would overwrite — a change to an *unrelated* path, or a path
+already staged to exactly the incoming content, does not block a fast-forward and is not listed), then
+proposes the graph-safe fix:
+**stash the listed work (`git stash -u` to include untracked files), or commit it on a SEPARATE branch and
+switch back to the base — then re-run the same command to resume the owed base-sync.** It **never** tells you
+to commit on the checked-out base itself, which would create a diverged sibling commit the re-run's
+fast-forward would refuse; and it **never** commits, stashes, resets, restores, checks out, or cleans those
+paths — the campaign does not own them. Because the base-sync runs before cleanup and the terminal write,
+those phases stay pending until the re-run. The tailored path-list + stash guidance is emitted **only** when
+git itself refused the fast-forward because uncommitted work would be overwritten (its `overwritten by merge`
+diagnostic, matched under a forced C locale) **and** paths were detected; every other
+fast-forward failure — a genuine divergence, an **unmerged/conflicted index** (which git will not let you
+stash or commit away, so the tailored recovery advice would be wrong), a stale `.git/index.lock`, or a
+diagnostic probe that could not run — falls back to git's original raw error
+unchanged, even if the read-only probe still named candidate paths. **This tailored path-list is best-effort:
+a read-only probe that cannot reproduce git's full fast-forward-blocking decision computes it, so in unusual
+working-tree states (submodule gitlinks, nested untracked repositories, assume-unchanged / skip-worktree /
+sparse-checkout entries) it MAY over- or under-name paths — it is a convenience, never the authority. Every
+refused fast-forward preserves git's own diagnostic verbatim, and THAT raw diagnostic — not the tailored
+list — is the authoritative account of what actually blocks the fast-forward: the tailored overwrite refusal
+appends it under an explicit `Original Git diagnostic:` label, while every other fast-forward failure carries
+the same git detail through the standard refusal wrapper
+(`fast-forward of checked-out base <base> failed (exit <code>): <git diagnostic>`), unlabeled.** The command refuses held rows whose live PR is
 OPEN (a CLOSED held row is closed out to `aborted` — `loop-control.md` Step 4 — and a `MERGED` held row is an
 external merge, resumed to finalize base-sync/owned-cleanup/terminal write; neither is refused), a `--repo`
 that does not name the checkout's own repository, stale gates, uncertain GitHub facts, another run's PR,
