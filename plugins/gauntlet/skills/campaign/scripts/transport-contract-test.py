@@ -41,6 +41,217 @@ def read(name: str) -> str:
     return (REFS / name).read_text(encoding="utf-8")
 
 
+TRIAGE_OWNER = '`stage-2-review-gate.md`, "2a-triage"'
+TRIAGE_INPUT_BINDINGS = (
+    ("--worktree", "<worktree>"),
+    ("--base", "origin/<base>"),
+    ("--head-sha", "<head_sha>"),
+    ("--file", "<state.jsonl>"),
+    ("--pr", "<pr>"),
+)
+
+
+def markdown_section(body: str, heading: str) -> str:
+    require(heading.startswith("#") and heading.lstrip("#").startswith(" "),
+            f"invalid markdown heading fixture: {heading!r}")
+    starts = [match.start() for match in re.finditer(
+        rf"(?m)^{re.escape(heading)}\s*$", body
+    )]
+    require(len(starts) == 1, f"expected exactly one {heading!r} section")
+    start = starts[0]
+    level = len(heading) - len(heading.lstrip("#"))
+    next_heading = re.search(rf"(?m)^#{{1,{level}}} ", body[start + len(heading):])
+    end = len(body) if next_heading is None else start + len(heading) + next_heading.start()
+    return body[start:end]
+
+
+def heartbeat_triage_region(body: str) -> str:
+    regions = re.findall(
+        r"(?ms)^   - any newly-adopted PR whose ledger row lacks a `tier`.*?"
+        r"(?=^   - current tip has )",
+        body,
+    )
+    require(len(regions) == 1,
+            "loop-control.md must contain exactly one heartbeat triage region")
+    return regions[0]
+
+
+def command_argvs(block: str) -> list[list[str]]:
+    logical_lines = re.sub(r"\\\r?\n", " ", block).splitlines()
+    commands: list[list[str]] = []
+    for line in logical_lines:
+        lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|")
+        lexer.whitespace_split = True
+        lexer.commenters = "#"
+        try:
+            tokens = list(lexer)
+        except ValueError as exc:
+            raise AssertionError(f"cannot parse documented command line: {line!r}") from exc
+        argv: list[str] = []
+        for token in tokens:
+            if token and not set(token).difference(";&|"):
+                if argv:
+                    commands.append(argv)
+                    argv = []
+            else:
+                argv.append(token)
+        if argv:
+            commands.append(argv)
+    return commands
+
+
+def is_triage_derive(argv: list[str]) -> bool:
+    return any(
+        token.endswith("triage.py") and index + 1 < len(argv) and argv[index + 1] == "derive"
+        for index, token in enumerate(argv)
+    )
+
+
+def has_binding(argv: list[str], binding: tuple[str, str]) -> bool:
+    return any(tuple(argv[index:index + 2]) == binding for index in range(len(argv) - 1))
+
+
+def has_exact_flag(body: str, flag: str) -> bool:
+    return re.search(rf"(?<![\w-]){re.escape(flag)}(?![\w-])", body) is not None
+
+
+def triage_prose_chunks(body: str) -> list[str]:
+    return [
+        chunk for chunk in re.split(r"\n[ \t>]*\n", body)
+        if re.search(r"triage\.py\s+derive", " ".join(chunk.split()))
+    ]
+
+
+def check_consumer_triage_region(name: str, region: str) -> None:
+    require(TRIAGE_OWNER in region, f"{name} lost its pointer to the campaign triage owner")
+    chunks = [region, *triage_prose_chunks(region)]
+    for chunk in chunks:
+        normalized = " ".join(chunk.split())
+        reconstructs_initial = (
+            re.search(r"triage\.py\s+derive", normalized) is not None
+            and all(has_exact_flag(normalized, flag) for flag, _ in TRIAGE_INPUT_BINDINGS)
+        )
+        require(not reconstructs_initial,
+                f"{name} reconstructed the campaign triage invocation instead of using its owner")
+        for replay in re.finditer(
+            r"(?i)(?:\bagain\b|\bonce more\b|\brepeat(?:s|ed)?\b|"
+            r"\bre-?run\b|\bsecond derive\b|\bveto\b)",
+            normalized,
+        ):
+            require("--tier" not in normalized[replay.end():replay.end() + 240],
+                    f"{name} reconstructed the campaign triage veto re-run instead of using its owner")
+
+
+def check_campaign_triage_contract(stage: str, adoption: str, loop_control: str) -> None:
+    # Stage 2 owns the one runnable campaign triage command. Parse the command itself so comments and
+    # sibling commands in its fence cannot supply bindings that the triage process would never receive.
+    stage_code_blocks = re.findall(r"```[^\n]*\n(.*?)```", stage, flags=re.DOTALL)
+    stage_triage_commands = [
+        argv for block in stage_code_blocks if "triage.py derive" in block
+        for argv in command_argvs(block)
+        if is_triage_derive(argv)
+    ]
+    require(len(stage_triage_commands) == 1,
+            "stage-2-review-gate.md must own exactly one runnable campaign triage invocation")
+    for binding in (("--file", "<state.jsonl>"), ("--pr", "<pr>")):
+        require(has_binding(stage_triage_commands[0], binding),
+                f"stage-2-review-gate.md campaign triage invocation lost {' '.join(binding)}")
+
+    consumer_regions = (
+        ("pr-adoption.md", adoption, markdown_section(adoption, "#### Adoption-time tier decision")),
+        ("loop-control.md", loop_control, heartbeat_triage_region(loop_control)),
+    )
+    for name, body, region in consumer_regions:
+        check_consumer_triage_region(name, region)
+        code_blocks = re.findall(r"```[^\n]*\n(.*?)```", body, flags=re.DOTALL)
+        require(not any(
+            is_triage_derive(argv)
+            for block in code_blocks if "triage.py derive" in block
+            for argv in command_argvs(block)
+        ), f"{name} restored a runnable campaign triage command outside its owner")
+        # Catch a caller copy placed just outside the named region. A complete prose chunk still has
+        # the tool identity and every process binding even when each flag is on a separate line.
+        for chunk in triage_prose_chunks(body):
+            normalized = " ".join(chunk.split())
+            require(not all(has_exact_flag(normalized, flag)
+                            for flag, _ in TRIAGE_INPUT_BINDINGS),
+                    f"{name} reconstructed the campaign triage invocation instead of using its owner")
+
+
+def require_rejected(callback, expected: str, message: str) -> None:
+    try:
+        callback()
+    except AssertionError as exc:
+        require(expected in str(exc),
+                f"{message}: rejected for the wrong reason: {exc}")
+        return
+    raise AssertionError(message)
+
+
+def insert_after_once(body: str, marker: str, insertion: str) -> str:
+    require(body.count(marker) == 1, f"fixture insertion marker drifted: {marker!r}")
+    return body.replace(marker, marker + insertion, 1)
+
+
+def run_triage_contract_fixtures() -> None:
+    stage = read("stage-2-review-gate.md")
+    adoption = read("pr-adoption.md")
+    loop_control = read("loop-control.md")
+
+    # The live pointer-only prose is the positive fixture.
+    check_campaign_triage_contract(stage, adoption, loop_control)
+
+    insertion_marker = "classification policy; do not reconstruct them here."
+    split_caller = insert_after_once(
+        adoption,
+        insertion_marker,
+        """
+
+INVENTED negative fixture: run `triage.py derive` with these caller inputs:
+- `--worktree <worktree>`
+- `--base origin/<base>`
+- `--head-sha <head_sha>`
+- `--file <state.jsonl>`
+- `--pr <pr>`
+""",
+    )
+    require_rejected(
+        lambda: check_campaign_triage_contract(stage, split_caller, loop_control),
+        "reconstructed the campaign triage invocation",
+        "split-line adoption triage caller was accepted",
+    )
+
+    paraphrased_veto = insert_after_once(
+        adoption,
+        insertion_marker,
+        """
+
+INVENTED negative fixture: after choosing the tier, execute the same derive once more.
+Add `--tier <decided>` to that invocation.
+""",
+    )
+    require_rejected(
+        lambda: check_campaign_triage_contract(stage, paraphrased_veto, loop_control),
+        "reconstructed the campaign triage veto re-run",
+        "paraphrased adoption triage veto was accepted",
+    )
+
+    owner_command = (
+        "    --file <state.jsonl> --pr <pr> [--tier <your decided tier>]\n"
+    )
+    decoy_command = (
+        "    [--tier <your decided tier>] ; invented-other-tool --pr <pr>\n"
+        "# INVENTED negative fixture decoy: --file <state.jsonl>\n"
+    )
+    require(stage.count(owner_command) == 1, "triage owner command fixture drifted")
+    unbound_owner = stage.replace(owner_command, decoy_command, 1)
+    require_rejected(
+        lambda: check_campaign_triage_contract(unbound_owner, adoption, loop_control),
+        "campaign triage invocation lost --file <state.jsonl>",
+        "triage owner accepted bindings supplied only by fence decoys",
+    )
+
+
 def check_document_contract() -> None:
     runtime = read("runtime-adapter.md")
     stage = read("stage-2-review-gate.md")
@@ -57,30 +268,7 @@ def check_document_contract() -> None:
     loop_control = read("loop-control.md")
     copilot = (COPILOT / "SKILL.md").read_text(encoding="utf-8")
 
-    # Stage 2 owns the one runnable campaign triage command. Its ledger row binding makes `--base` an
-    # assertion instead of an unbound caller input; adoption and heartbeat point here without rebuilding
-    # either the initial derive or its veto re-run.
-    stage_code_blocks = re.findall(r"```[^\n]*\n(.*?)```", stage, flags=re.DOTALL)
-    stage_triage_commands = [block for block in stage_code_blocks if "triage.py derive" in block]
-    require(len(stage_triage_commands) == 1,
-            "stage-2-review-gate.md must own exactly one runnable campaign triage invocation")
-    for binding in ("--file <state.jsonl>", "--pr <pr>"):
-        require(binding in stage_triage_commands[0],
-                f"stage-2-review-gate.md campaign triage invocation lost {binding}")
-    triage_owner = '`stage-2-review-gate.md`, "2a-triage"'
-    triage_flags = ("--worktree", "--base", "--head-sha", "--file", "--pr")
-    for name, body in (("pr-adoption.md", adoption), ("loop-control.md", loop_control)):
-        require(triage_owner in body, f"{name} lost its pointer to the campaign triage owner")
-        code_blocks = re.findall(r"```[^\n]*\n(.*?)```", body, flags=re.DOTALL)
-        require(not any("triage.py derive" in block for block in code_blocks),
-                f"{name} restored a runnable campaign triage command outside its owner")
-        for line in body.splitlines():
-            if "triage.py derive" in line:
-                require(not any(flag in line for flag in triage_flags),
-                        f"{name} reconstructed the campaign triage invocation instead of using its owner")
-        for rerun_copy in ("`derive --", "IDENTICAL `--worktree`"):
-            require(rerun_copy not in body,
-                    f"{name} reconstructed the campaign triage veto re-run instead of using its owner")
+    check_campaign_triage_contract(stage, adoption, loop_control)
 
     # The canonical prs.json producer is now one executable owner. Only files-and-ledger.md spells the
     # typed invocation; adoption and heartbeat prose point to it and never reconstruct the internal gh
@@ -562,6 +750,7 @@ def run_isolation_transition_fixtures() -> None:
 
 def main() -> int:
     check_document_contract()
+    run_triage_contract_fixtures()
     run_hostile_fixtures()
     run_repository_context_fixtures()
     run_isolation_transition_fixtures()
