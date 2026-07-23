@@ -2233,7 +2233,7 @@ def markdown_quote_prefix(body: str) -> tuple[int, int]:
 def html_block_start(content: str) -> re.Pattern[str] | str | None:
     """Return an explicit end matcher, `"blank"` for a blank-ended block, or `None` for no HTML block."""
     if match := re.match(r" {0,3}<(script|pre|style|textarea)(?:[ \t]+|>|$)", content, re.IGNORECASE):
-        return re.compile(rf"</{re.escape(match.group(1))}[ \t]*>", re.IGNORECASE)
+        return re.compile(rf"</{re.escape(match.group(1))}>", re.IGNORECASE)
     if re.match(r" {0,3}<!--", content):
         return re.compile(r"-->")
     if re.match(r" {0,3}<\?", content):
@@ -2247,6 +2247,35 @@ def html_block_start(content: str) -> re.Pattern[str] | str | None:
     return None
 
 
+def markdown_leading_indent(content: str) -> tuple[int, int]:
+    """Return leading whitespace columns and bytes using CommonMark's four-column tab stops."""
+    columns = position = 0
+    while position < len(content) and content[position] in " \t":
+        if content[position] == "\t":
+            columns += 4 - columns % 4
+        else:
+            columns += 1
+        position += 1
+    return columns, position
+
+
+def markdown_remove_indent(content: str, width: int) -> str | None:
+    """Remove `width` indentation columns, preserving columns left by a partially consumed tab."""
+    columns = position = 0
+    while columns < width and position < len(content) and content[position] in " \t":
+        if content[position] == "\t":
+            next_columns = columns + 4 - columns % 4
+        else:
+            next_columns = columns + 1
+        position += 1
+        if next_columns > width:
+            return " " * (next_columns - width) + content[position:]
+        columns = next_columns
+    if columns < width:
+        return None
+    return content[position:]
+
+
 def markdown_list_marker(content: str) -> tuple[int, int, str, int | None] | None:
     """Return a list marker's indent, content indent, family, and ordered start."""
     match = re.match(r"( *)([*+-]|[0-9]{1,9}([.)]))([ \t]+)(?=\S)", content)
@@ -2254,7 +2283,8 @@ def markdown_list_marker(content: str) -> tuple[int, int, str, int | None] | Non
         return None
     indent = len(match.group(1))
     token = match.group(2)
-    padding = len(match.group(4).expandtabs(4))
+    marker_end = indent + len(token)
+    padding = len((" " * marker_end + match.group(4)).expandtabs(4)) - marker_end
     content_indent = indent + len(token) + (padding if padding <= 4 else 1)
     if token[0].isdigit():
         return indent, content_indent, f"ordered:{match.group(3)}", int(token[:-1])
@@ -2275,12 +2305,46 @@ def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, 
         active_html: re.Pattern[str] | str | None = None
         active_indented_code = False
         active_lists: list[tuple[int, int, int, str]] = []
+        list_blank_pending = False
         for line in text.splitlines(keepends=True):
             body = line.rstrip("\r\n")
-            quote_depth, content_start = markdown_quote_prefix(body)
+            outer_quote_depth, content_start = markdown_quote_prefix(body)
             content = body[content_start:]
             line_end = offset + len(line)
             list_marker = markdown_list_marker(content)
+            candidate_same_list = bool(
+                list_marker is not None
+                and any(depth == outer_quote_depth and indent == list_marker[0]
+                        and family == list_marker[2]
+                        for depth, indent, _content_indent, family in active_lists)
+            )
+            candidate_nested_list = bool(
+                list_marker is not None
+                and any(depth == outer_quote_depth and content_indent <= list_marker[0]
+                        for depth, _indent, content_indent, _family in active_lists)
+            )
+            inside_list_item = any(
+                depth == outer_quote_depth and markdown_remove_indent(content, content_indent) is not None
+                for depth, _indent, content_indent, _family in active_lists
+            )
+            if list_blank_pending and content.strip():
+                if not (candidate_same_list or candidate_nested_list or inside_list_item):
+                    active_lists.clear()
+                list_blank_pending = False
+                list_marker = markdown_list_marker(content)
+
+            list_content = content
+            for depth, _indent, content_indent, _family in reversed(active_lists):
+                if depth != outer_quote_depth:
+                    continue
+                stripped = markdown_remove_indent(content, content_indent)
+                if stripped is not None:
+                    list_content = stripped
+                    break
+            nested_quote_depth, nested_content_start = markdown_quote_prefix(list_content)
+            quote_depth = outer_quote_depth + nested_quote_depth
+            block_content = list_content[nested_content_start:]
+
             # Only ordered marker 1 can interrupt a paragraph to start a list. Later numbers split an
             # active ordered list, and child markers are measured from the active item's content indent.
             same_list = bool(
@@ -2314,7 +2378,7 @@ def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, 
 
             if active_fence is not None:
                 fence_char, fence_length = active_fence
-                if re.match(rf" {{0,3}}{re.escape(fence_char)}{{{fence_length},}}[ \t]*$", content):
+                if re.match(rf" {{0,3}}{re.escape(fence_char)}{{{fence_length},}}[ \t]*$", block_content):
                     regions.append((start, line_end))
                     start = line_end
                     active_fence = None
@@ -2323,14 +2387,14 @@ def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, 
                 continue
 
             if active_html is not None:
-                if isinstance(active_html, re.Pattern) and active_html.search(content):
+                if isinstance(active_html, re.Pattern) and active_html.search(block_content):
                     regions.append((start, line_end))
                     start = line_end
                     active_html = None
                     active_quote_depth = 0
                     offset = line_end
                     continue
-                if content.strip():
+                if block_content.strip():
                     offset = line_end
                     continue
                 regions.append((start, offset))
@@ -2341,7 +2405,11 @@ def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, 
                 continue
 
             if active_indented_code:
-                if content.startswith("    ") or content.startswith("\t"):
+                if not block_content.strip():
+                    list_blank_pending = bool(active_lists)
+                    offset = line_end
+                    continue
+                if markdown_leading_indent(block_content)[0] >= 4:
                     offset = line_end
                     continue
                 if start < offset:
@@ -2350,44 +2418,46 @@ def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, 
                 active_indented_code = False
                 active_quote_depth = 0
 
-            if not content.strip():
+            if not block_content.strip():
                 if start < offset:
                     regions.append((start, offset))
                 start = line_end
                 active_quote_depth = 0
-            elif ((content.startswith("    ") or content.startswith("\t"))
+                list_blank_pending = bool(active_lists)
+            elif (markdown_leading_indent(block_content)[0] >= 4
                   and start == offset and not list_starts_block):
                 active_indented_code = True
                 active_quote_depth = quote_depth
-            elif re.match(r" {0,3}(?:=+|-+)[ \t]*$", content) and start < offset:
+            elif re.match(r" {0,3}(?:=+|-+)[ \t]*$", block_content) and start < offset:
                 regions.append((start, line_end))
                 start = line_end
                 active_quote_depth = 0
-            elif re.match(r" {0,3}#{1,6}(?:[ \t]+|$)", content):
+            elif re.match(r" {0,3}#{1,6}(?:[ \t]+|$)", block_content):
                 if start < offset:
                     regions.append((start, offset))
                 regions.append((offset, line_end))
                 start = line_end
                 active_quote_depth = 0
-            elif fence := re.match(r" {0,3}(`{3,}|~{3,})", content):
+            elif ((fence := re.match(r" {0,3}(`{3,}|~{3,})(.*)$", block_content)) is not None
+                  and (fence.group(1)[0] == "~" or "`" not in fence.group(2))):
                 if start < offset:
                     regions.append((start, offset))
                 start = offset
                 active_fence = (fence.group(1)[0], len(fence.group(1)))
                 active_quote_depth = quote_depth
-            elif (html_end := html_block_start(content)) is not None:
+            elif (html_end := html_block_start(block_content)) is not None:
                 if start < offset:
                     regions.append((start, offset))
                 start = offset
                 active_html = html_end
                 active_quote_depth = quote_depth
-                if isinstance(html_end, re.Pattern) and html_end.search(content[1:]):
+                if isinstance(html_end, re.Pattern) and html_end.search(block_content[1:]):
                     regions.append((start, line_end))
                     start = line_end
                     active_html = None
                     active_quote_depth = 0
             elif re.match(r" {0,3}(?:\*(?:[ \t]*\*){2,}|-(?:[ \t]*-){2,}|_(?:[ \t]*_){2,})[ \t]*$",
-                          content):
+                          block_content):
                 if start < offset:
                     regions.append((start, offset))
                 regions.append((offset, line_end))
