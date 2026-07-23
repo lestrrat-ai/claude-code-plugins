@@ -501,10 +501,11 @@ Header field notes (the header fields above; per-row fields follow):
   enumerated. Never retype that list; ask the tool.** A status added to it is enforced everywhere with no
   edit to any of the sites that consult it.
 
-  **Holding does not change the watch policy either way** (observing is not mutating): the watch follows
-  `stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE" — alive while a row is still `RUNNING`, **not** relaunched
-  once CI has settled. Nor does it stop **reconcile** from reading the PR and recording what it read. The
-  other PRs keep being driven: **a held PR never blocks the loop.**
+  **Held-PR watch action.** Observing is not mutating. Run `liveness`, then ensure or
+  relaunch a watch only when returned `watch_warranted` is `true` (`stage-2-ci.md`, "WATCH ONLY WHAT CAN
+  MOVE"). Parked status does not override that result. Holding also does not stop **reconcile** from
+  reading the PR and recording what it read. The other PRs keep being driven: **a held PR never blocks
+  the loop.**
 
   Held statuses come in **two kinds, and they are cleared by DIFFERENT events — do not collapse them:**
 

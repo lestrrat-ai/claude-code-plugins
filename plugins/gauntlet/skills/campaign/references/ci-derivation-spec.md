@@ -787,21 +787,21 @@ ever re-ordered again.
   - **An unknown value parks the PR AS SOON AS no `FAIL` outranks it** — on this derivation if there is
     no `FAIL`, otherwise on the next one, once the CI fix has cleared the failure. **It is deferred, never
     dropped**, and it outranks `pending`: a still-running row does **not** postpone the park.
-- **pending** → any evidence row classifies `RUNNING` → leave `ci = pending`. **This outcome warrants a
-  watch** (`stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE", owns the whole policy — a `red` verdict with a
-  still-`RUNNING` row is watched too): a row can still move on its own, so if the
-  watch task has exited, **relaunch it in this same heartbeat** — a PR with a still-RUNNING row must never sit
-  unwatched waiting for the fallback heartbeat. **It is also BOUNDED**: "a row can still move" is a claim the row
+- **pending** → any evidence row classifies `RUNNING` → leave `ci = pending`.
+
+  **CI watch action.** Run `liveness`, then ensure or relaunch a watch only when returned
+  `watch_warranted` is `true` (`stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE"). Parked status does not
+  override that result.
+
+  **This outcome is also BOUNDED**: "a row can still move" is a claim the row
   makes, not a promise it keeps, so if the whole check set then sits unchanged for the CI STALL CAP, the
   PR escalates (`stage-2-ci.md`, "RUNNING-STALL"). `pending` is not a place a PR may live forever.
 - **pending (nothing registered)** → the snapshot lists **zero evidence rows**. **Zero evidence rows is NOT
-  green** — it means nothing has registered yet. **Do NOT watch it**: there is no row that could move, so
-  there is nothing to block on. If nothing ever registers, SETTLED (`stage-2-ci.md`) escalates it instead of letting it
-  spin.
+  green** — it means nothing has registered yet. If nothing ever registers, SETTLED (`stage-2-ci.md`)
+  escalates it instead of letting it spin.
 - **pending (required set unreadable)** → `required_set` is **CANNOT READ** (`stage-2-ci.md`, "WHAT WERE WE EXPECTING TO
   SEE?"). We do not know what this commit was supposed to show, so **no snapshot of it can be
-  green** — not even an all-`PASS` one. **Do NOT watch it**: no row moving would answer the question that
-  is open. It is **bounded like every other `pending`**: nothing is RUNNING, so SETTLED (`stage-2-ci.md`) strikes it
+  green** — not even an all-`PASS` one. It is **bounded like every other `pending`**: nothing is RUNNING, so SETTLED (`stage-2-ci.md`) strikes it
   and escalates at the STRIKE CAP, naming the read that failed. Re-attempt the read each heartbeat while it is
   `unknown` — a transient failure clears itself well inside that budget.
 - **pending (required check missing)** → `required_set` is **DECLARED** and a declared required check has
@@ -810,7 +810,7 @@ ever re-ordered again.
   truth about this commit**. **NEVER green.** Bounded the same way: if it never registers, SETTLED (`stage-2-ci.md`)
   escalates with the check **named** (that is exactly the "which check never registered" ESCALATE already
   promises). A declared check that IS present but still running is not this bullet — it is a `RUNNING` row,
-  so plain `pending` above already caught it, and it is watched, as it should be.
+  so plain `pending` above already caught it.
 - **green** → **all three `source` markers are present and hold** (VERIFY above — otherwise you do not know
   what you did not read); **≥1 evidence row**; **every** evidence row classifies `PASS`; containment
   holds **on a usable identity** (every `witness` `.id` non-null and unique); **and the required set is

@@ -69,19 +69,9 @@
 - Work-conserving dispatch is mandatory: every heartbeat scans all PRs and launches every due
   action that fits a free slot before returning. Waiting is allowed only when no useful action is
   launchable anywhere in the run.
-- A PR whose snapshot can still move must ALWAYS have a live watch: if **`liveness` reports
-  `watch_warranted`** — its mechanical reduction of "WATCH ONLY WHAT CAN MOVE": `verified AND verdict !=
-  UNCLASSIFIED AND buckets.RUNNING > 0`, where `buckets.RUNNING` is the CLASSIFY tally
-  (`ci-derivation-spec.md`, "CLASSIFY every row"), an EXPLICIT membership test and
-  **NEVER** "any row is not yet terminal" / `.status != COMPLETED`, which is a negated test: it sweeps up
-  every value GitHub adds tomorrow and silently watches it instead of letting it fall to the
-  `UNKNOWN_VALUE` escalation — and the watch task has exited (including after any rebase/push), relaunch
-  the watch in this same heartbeat — never wait for the next heartbeat.
-- **But NEVER relaunch a watch merely because `ci == pending`.** Once CI has **SETTLED** (no row can
-  still move) there is nothing to block on: `gh pr checks --watch` returns in about **a second**, and a
-  task completion is **itself a heartbeat** — so a settled-but-not-green PR would burn a fresh-context heartbeat
-  **every second, forever**, and observe nothing. A settled PR is resolved by the **`settled_strikes`
-  escalation** (`stage-2-ci.md`, "SETTLED"), not by watching it harder.
+- **CI watch action.** Run `liveness`, then ensure or relaunch a watch only when returned
+  `watch_warranted` is `true` (`stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE"). Parked status does not
+  override that result. When a warranted watch has exited, relaunch it in the same heartbeat.
 - **And the watch is NEVER the bound.** A row that stays `RUNNING` forever (a hung runner, a dead
   reporter) keeps `gh pr checks --watch` blocked forever, so the watch wakes no one and `pending` would
   absorb the PR — the exact wedge. **RUNNING-STALL** ends it: a `RUNNING` row plus a fingerprint that has
@@ -268,10 +258,10 @@
   **merge** and the **post-merge reconcile** (`stage-3-merge.md`) — not merely recorded in the ledger.
   Only the user's answer unparks it (`status` → `in_review`, recorded durably per park class; a declined
   API change or a `blocker_ruling` of `abort` → `aborted`); a parked PR that fell behind its base stays
-  behind until then. **The park does not change the CI watch either way** — observing a PR is not mutating
-  it, so the watch follows the normal policy (`stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE"): alive while a
-  row can still move, **not** relaunched once CI has SETTLED. Parking neither stops a warranted watch nor
-  starts an unwarranted one — and it dispatches no CI fix.
+  behind until then. **Held-PR watch action.** Observing a PR is not mutating it. Run
+  `liveness`, then ensure or relaunch a watch only when returned `watch_warranted` is `true`
+  (`stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE"). Parked status does not override that result. Do not
+  dispatch a CI fix.
 - Reviews are fresh, context-isolated re-rolls: a separate reviewer invocation each pass (the default
   cross-engine reviewer or the user's preferred reviewer, with a native-worker fallback), no shared
   context. `runtime-adapter.md`'s
@@ -431,8 +421,7 @@
   moves `head_sha`, so writing it through the accessor fires the head-move reset at the door
   (`files-and-ledger.md`, the `head_sha` field, "What a genuine head move resets"); re-derive CI
   for the new tip and watch it **only if `liveness` reports `watch_warranted`** (`stage-2-ci.md`, "WATCH
-  ONLY WHAT CAN MOVE" — a watch launched on a tip whose checks have not registered yet has nothing to
-  block on and exits in about a second), and re-enter Stage 2a. NEVER exempt a commit because it "only reformatted".
+  ONLY WHAT CAN MOVE"), and re-enter Stage 2a. NEVER exempt a commit because it "only reformatted".
 - **A `head_sha` change and a gate reset are NOT the same event** — what a genuine head move voids at the
   write door is owned by `files-and-ledger.md`, the `head_sha` field, "What a genuine head move resets";
   the review gate's own reset rules are owned by `stage-2-review-gate.md`, "Status labels mirror the

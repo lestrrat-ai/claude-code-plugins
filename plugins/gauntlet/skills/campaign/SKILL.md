@@ -106,7 +106,7 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
    default Non-goals into its managed block — the row must exist FIRST, because `intent-sync` REFUSES a PR
    with no ledger row (`pr-adoption.md`). Run `triage.py derive` on that resolved worktree for the
    mechanical floor + inventory, decide the SHA-pinned tier at or above that floor, and record it before
-   gate work. Start a CI watch only if a check can still move.
+   gate work. Apply item 21, "CI watch action".
 7. `review-pass.py intent-check --file <rundir>/intent-<pr>.md --ledger <rundir>/state.jsonl`: run
    immediately after writing an intent artifact and syncing it, before dispatching the PR's first review —
    the same parser every pass later loads, plus a check that the managed block is in sync with the run
@@ -132,12 +132,12 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
    derivation this heartbeat.
 10. Mutating action due on a PR -> `ledger.py … dispatch-check --pr <N>`: run before ANY action that
     mutates a PR — it exits non-zero for a HELD one.
-11. `triage.py derive`: re-derive each PR's tier from its `head_sha` — the tool emits the mechanical floor
+11. **Due-work dispatch.** `triage.py derive`: re-derive each PR's tier from its `head_sha` — the tool emits the mechanical floor
     + inventory, the orchestrator decides the tier at or above that floor and never grants TRIVIAL to a
-    diff with a non-prose file (`references/stage-2-review-gate.md`, "2a-triage") — then launch ALL due
-    work up to caps — reviews,
-    CI watches/fixes, precondition clearing, base refresh — skipping HELD PRs, and stop in-flight
-    reviews doomed by a content change.
+    diff with a non-prose file (`references/stage-2-review-gate.md`, "2a-triage"). Then launch ALL due
+    mutating work up to caps — reviews, CI fixes, precondition clearing, base refresh — skipping HELD PRs,
+    and stop in-flight reviews doomed by a content change. CI watches follow item 21's returned
+    `watch_warranted` action, including for HELD PRs.
 12. Before sleeping, audit: re-run the dispatch scan across both concurrency pools and confirm every
     due launch actually happened, every PR at a liveness cap was escalated rather than left spinning,
     and the loop continues per `references/loop-control.md`, "Primary continuity", whenever non-terminal
@@ -197,9 +197,9 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
     NEVER by reading command output and judging it by eye. `ci-status.py liveness` then RECORDS that
     JSON — `ci`, the fingerprint, the strike/stall/refetch counters, and any cap park ("THE BOOKKEEPING
     IS A COMMAND" owns the invocation): the arithmetic is never applied by hand.
-21. A PR with a still-RUNNING check (`derive`'s `buckets.RUNNING > 0`) always has a live watch; a PR
-    whose CI has SETTLED never does
-    ("WATCH ONLY WHAT CAN MOVE"). Completions are heartbeats — the driver never blocks. The bounded
+21. **CI watch action.** Run `liveness`, then ensure or relaunch a watch only when returned
+    `watch_warranted` is `true` (`stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE"). Parked status does not
+    override that result. Completions are heartbeats — the driver never blocks. The bounded
     CI waits and their caps are named in ONE place ("THE LIVENESS COUNTERS"); at any cap, escalate or
     park — never leave a PR spinning on a watch that will never wake anyone.
 22. CI fixes: a formatting/lint failure goes to the `economy` tier (Worker Dispatch below); everything
@@ -211,8 +211,9 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
     `awaiting-api` — waits on a HUMAN) and **`repairing`** (waits on the reassessment pass, which is
     machine work due NOW). The test is "does this mutate the PR?", **not** "is it on a list";
     `HELD_STATUSES` in `scripts/ledger.py` is the one enumeration — never retype it. Sole exception:
-    the CI watch — observing is not mutating, so it follows the normal policy. Keep driving the other
-    PRs. Unpark only on the user's answer, recorded DURABLY per park class; a ruling is durable and
+    the CI watch — observing is not mutating, so parked status does not override item 21's returned
+    `watch_warranted` action. Keep driving the other PRs. Unpark only on the user's answer, recorded
+    DURABLY per park class; a ruling is durable and
     consumed exactly once (`references/stage-2-ci.md`, "THE RULING IS CONSUMED EXACTLY ONCE").
 
 **Merge — stage 3** (`references/stage-3-merge.md`)

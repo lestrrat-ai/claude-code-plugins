@@ -106,9 +106,10 @@ are only examples). Held leaves
 `reviews_ok < required(tier)`, so the review-launch rule MUST read `status` too — otherwise the next
 heartbeat re-reviews a PR that is **waiting on a HUMAN** (a park) and a `SATISFIED` verdict merges it **without
 the user's ruling**, or re-reviews a PR that has **stopped converging** (`repairing`) and spends round 22
-of a loop that has already been told to stop. The park does **not** change its CI watch either way — observing is not mutating, so the
-watch follows the normal policy (`stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE": alive while a row can still
-move, **not** relaunched once CI has SETTLED). Everything else waits for the user's answer.
+of a loop that has already been told to stop. **Held-PR watch action.** Observing is not mutating. Run
+`liveness`, then ensure or relaunch a watch only when returned `watch_warranted` is `true`
+(`stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE"). Parked status does not override that result. Everything
+else waits for the user's answer.
 
 #### Preconditions — clear Copilot items, CI, and conflicts before reviewing
 

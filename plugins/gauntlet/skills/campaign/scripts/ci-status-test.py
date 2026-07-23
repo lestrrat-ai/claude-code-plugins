@@ -49,6 +49,7 @@ from typing import Callable
 
 HERE = Path(__file__).resolve().parent
 STATUS_PY = HERE / "ci-status.py"
+WATCH_DOC_FIXTURES = HERE / "fixtures" / "ci-status-doc-watch"
 
 
 # --- the fingerprint canonicalization, pinned to the BYTE -----------------------------------------
@@ -972,6 +973,132 @@ def liveness_cases(ci, tmp: Path) -> list[str]:
     return problems
 
 
+def watch_doc_cases(ci) -> list[str]:
+    """Focused fixtures pin the consumer action and the ban on a second watch predicate."""
+    problems = []
+    anchor = "**Fixture watch action.**"
+
+    good = (WATCH_DOC_FIXTURES / "good.md").read_text(encoding="utf-8")
+    got = (ci.watch_action_block_problems(Path("good.md"), good, anchor)
+           + ci.watch_formula_problems(Path("good.md"), good))
+    if got:
+        problems.append(f"[watch-doc] valid returned-fact consumer was rejected: {'; '.join(got)}")
+
+    missing = (WATCH_DOC_FIXTURES / "missing-warrant.md").read_text(encoding="utf-8")
+    got = ci.watch_action_block_problems(Path("missing-warrant.md"), missing, anchor)
+    if not any("watch_warranted" in problem for problem in got):
+        problems.append("[watch-doc] a named consumer that omits `watch_warranted` was accepted")
+
+    unconditional = (WATCH_DOC_FIXTURES / "unconditional-action.md").read_text(encoding="utf-8")
+    got = ci.watch_action_block_problems(Path("unconditional-action.md"), unconditional, anchor)
+    if not any("act only when" in problem for problem in got):
+        problems.append("[watch-doc] an unconditional watch action beside returned warrant tokens was accepted")
+
+    formula = (WATCH_DOC_FIXTURES / "independent-formula.md").read_text(encoding="utf-8")
+    got = ci.watch_formula_problems(Path("independent-formula.md"), formula)
+    if not any("buckets.RUNNING" in problem for problem in got):
+        problems.append("[watch-doc] an independent `buckets.RUNNING` watch predicate was accepted")
+
+    formula = (WATCH_DOC_FIXTURES / "nested-mapping-formula.md").read_text(encoding="utf-8")
+    got = ci.watch_formula_problems(Path("nested-mapping-formula.md"), formula)
+    if not any("buckets.RUNNING" in problem for problem in got):
+        problems.append("[watch-doc] a nested mapping `buckets.RUNNING` watch predicate was accepted")
+
+    formula = (WATCH_DOC_FIXTURES / "get-chain-formula.md").read_text(encoding="utf-8")
+    got = ci.watch_formula_problems(Path("get-chain-formula.md"), formula)
+    if not any("buckets.RUNNING" in problem for problem in got):
+        problems.append("[watch-doc] a chained-get `buckets.RUNNING` watch predicate was accepted")
+
+    formula = (WATCH_DOC_FIXTURES / "consumer-ci-formula.md").read_text(encoding="utf-8")
+    got = ci.watch_formula_problems(Path("consumer-ci-formula.md"), formula)
+    if not any("consumer `ci` verdict predicate" in problem for problem in got):
+        problems.append("[watch-doc] a consumer `ci == pending` watch predicate was accepted")
+
+    formula = (WATCH_DOC_FIXTURES / "terminal-status-formula.md").read_text(encoding="utf-8")
+    got = ci.watch_formula_problems(Path("terminal-status-formula.md"), formula)
+    if not any("negated terminal-status watch rule" in problem for problem in got):
+        problems.append("[watch-doc] a negated terminal-status watch predicate was accepted")
+
+    formula = (WATCH_DOC_FIXTURES / "can-any-check-move-formula.md").read_text(encoding="utf-8")
+    got = ci.watch_formula_problems(Path("can-any-check-move-formula.md"), formula)
+    if not any("can-move watch rule" in problem for problem in got):
+        problems.append("[watch-doc] an intervening-subject can-move watch predicate was accepted")
+
+    formula = (WATCH_DOC_FIXTURES / "can-move-without-still-formula.md").read_text(encoding="utf-8")
+    got = ci.watch_formula_problems(Path("can-move-without-still-formula.md"), formula)
+    if not any("can-move watch rule" in problem for problem in got):
+        problems.append("[watch-doc] a conditional can-move watch predicate was accepted")
+
+    formula = (WATCH_DOC_FIXTURES / "ci-remains-pending-formula.md").read_text(encoding="utf-8")
+    got = ci.watch_formula_problems(Path("ci-remains-pending-formula.md"), formula)
+    if not any("consumer `ci` verdict predicate" in problem for problem in got):
+        problems.append("[watch-doc] a `CI remains pending` watch predicate was accepted")
+
+    for name, description in (
+        ("split-paragraph-formula.md", "split-paragraph"),
+        ("observer-alias-formula.md", "CI observer alias"),
+        ("escaped-comment-opener-formula.md", "escaped comment opener"),
+        ("ci-stays-pending-formula.md", "`CI stays pending`"),
+    ):
+        formula = (WATCH_DOC_FIXTURES / name).read_text(encoding="utf-8")
+        got = ci.watch_formula_problems(Path(name), formula)
+        if not any("consumer `ci` verdict predicate" in problem for problem in got):
+            problems.append(f"[watch-doc] a {description} watch predicate was accepted")
+
+    for name in ("inline-comment-token.md", "fenced-comment-token.md"):
+        formula = (WATCH_DOC_FIXTURES / name).read_text(encoding="utf-8")
+        got = ci.watch_formula_problems(Path(name), formula)
+        if not any("consumer `ci` verdict predicate" in problem for problem in got):
+            problems.append(f"[watch-doc] a literal code `<!--` in {name} hid a consumer watch predicate")
+
+    hidden = (WATCH_DOC_FIXTURES / "comment-only-requirements.md").read_text(encoding="utf-8")
+    action_got = ci.watch_action_block_problems(Path("comment-only-requirements.md"), hidden, anchor)
+    if len(action_got) != 5:
+        problems.append("[watch-doc] HTML-comment-only action requirements were accepted")
+    formula_got = ci.watch_formula_problems(Path("comment-only-requirements.md"), hidden)
+    if formula_got:
+        problems.append(f"[watch-doc] an HTML-comment-only formula was treated as visible: "
+                        f"{'; '.join(formula_got)}")
+
+    for name in ("unmatched-backtick-comment-only-requirements.md",
+                 "escaped-backtick-comment-only-requirements.md"):
+        hidden = (WATCH_DOC_FIXTURES / name).read_text(encoding="utf-8")
+        got = ci.watch_action_block_problems(Path(name), hidden, anchor)
+        if len(got) != 5:
+            problems.append(f"[watch-doc] {name} made HTML-comment-only action requirements visible")
+
+    negated = (WATCH_DOC_FIXTURES / "negated-action.md").read_text(encoding="utf-8")
+    got = ci.watch_action_block_problems(Path("negated-action.md"), negated, anchor)
+    if not any("negates" in problem for problem in got):
+        problems.append("[watch-doc] a named consumer with opposite watch instructions was accepted")
+
+    for name in ("fenced-code-only-requirements.md", "inline-code-only-requirements.md"):
+        hidden = (WATCH_DOC_FIXTURES / name).read_text(encoding="utf-8")
+        got = ci.watch_action_block_problems(Path(name), hidden, anchor)
+        if len(got) != 5:
+            problems.append(f"[watch-doc] literal-code-only action requirements in {name} were accepted")
+
+    reversed_action = (WATCH_DOC_FIXTURES / "reversed-action.md").read_text(encoding="utf-8")
+    got = ci.watch_action_block_problems(Path("reversed-action.md"), reversed_action, anchor)
+    if not any("before running `liveness`" in problem for problem in got):
+        problems.append("[watch-doc] a watch decision made before `liveness` was accepted")
+
+    dispatch_anchor = "**Fixture due-work dispatch.**"
+    valid_dispatch = (WATCH_DOC_FIXTURES / "held-dispatch-good.md").read_text(encoding="utf-8")
+    got = ci.watch_dispatch_summary_problems(
+        Path("held-dispatch-good.md"), valid_dispatch, dispatch_anchor
+    )
+    if got:
+        problems.append(f"[watch-doc] valid HELD dispatch summary was rejected: {'; '.join(got)}")
+    invalid_dispatch = (WATCH_DOC_FIXTURES / "held-dispatch-skips-watch.md").read_text(encoding="utf-8")
+    got = ci.watch_dispatch_summary_problems(
+        Path("held-dispatch-skips-watch.md"), invalid_dispatch, dispatch_anchor
+    )
+    if not any("groups CI watches" in problem for problem in got):
+        problems.append("[watch-doc] a HELD dispatch summary that suppresses CI watches was accepted")
+    return problems
+
+
 def run(ci, tmp: Path) -> int:
     """Every fixture, then the seams, then `doc-check`. Non-zero on any failure.
 
@@ -1021,6 +1148,14 @@ def run(ci, tmp: Path) -> int:
               f"to the cap, the stall clock, the refetch cap, machine-action stop, held observation, "
               f"stale-head refusal, retained moved-head artifact, and the watch_warranted reduction "
               f"(incl. the UNCLASSIFIED exclusion)")
+
+    watch_doc_problems = watch_doc_cases(ci)
+    for problem in watch_doc_problems:
+        failures += 1
+        print(f"FAIL     {problem}")
+    if not watch_doc_problems:
+        print(f"ok       {'watch-action doc fixtures':32} -> returned-field consumer accepted; missing field "
+              f"and independent predicate refused")
 
     print()
     print(f"--- doc-check: {ci.SPEC_DOC.name} + {ci.DRIVER_DOC.name} vs the code that runs ---")
