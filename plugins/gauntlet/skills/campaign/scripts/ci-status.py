@@ -2674,6 +2674,8 @@ def main() -> int:
 
     if args.cmd == "required-set":
         repo = check_repo(args.repo) if args.repo is not None else None
+        if sys.stdout is None:
+            fail(f"required-set: cannot process --ledger {args.ledger} (stdout is unavailable)")
         try:
             out = refresh_required_set(gh_fetch, args.ledger, repo)
         except SystemExit as exc:

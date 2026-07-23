@@ -186,8 +186,8 @@ the header base** (the header describes base B for that base alone — never a d
 settle a base off another base's set). So a `-`/`unknown` row on the header base heals from the header's
 settled value with no read, and a failed read cannot knock it back to `unknown`. It
 exits 0 when every group is settled (`declared:…` or `none`), 1 while any group is still `unknown`, and 2
-for a caller or ledger error. A settled group is returned without another GitHub read, and a read that
-fails for one base leaves only that base's unsettled rows `unknown` while the others settle — so the same
+for a caller, ledger, or output error. A settled group is returned without another GitHub read, and a read
+that fails for one base leaves only that base's unsettled rows `unknown` while the others settle — so the same
 command is safe to run on every heartbeat and retries only the `unknown` groups.
 
 The command owns two mandatory reads. They do **not** need the same permission: **`GET

@@ -445,16 +445,17 @@ def required_set_cases(ci, tmp: Path) -> list[str]:
 
 
 def required_set_cli_cases(ci, tmp: Path) -> list[str]:
-    """Pin the required-set process contract: settled=0, retryable unknown=1, caller/store errors=2."""
+    """Pin required-set exits: settled=0, retryable unknown=1, caller/store/output errors=2."""
     problems: list[str] = []
     cli_tmp = tmp / "required-set-cli"
     cli_tmp.mkdir()
 
     def run_cli(ledger: Path, *, repo: str = "o/r", env: "dict[str, str] | None" = None,
-                stdout=subprocess.PIPE):
+                stdout=subprocess.PIPE, preexec_fn=None):
         return subprocess.run(  # noqa: S603 - this suite drives its sibling command
             [sys.executable, str(STATUS_PY), "required-set", "--ledger", str(ledger), "--repo", repo],
             stdout=stdout, stderr=subprocess.PIPE, text=True, check=False, env=env,
+            preexec_fn=preexec_fn,
         )
 
     def valid_ledger(path: Path, *, header_required: str, row_required: "str | None" = None,
@@ -529,6 +530,19 @@ def required_set_cli_cases(ci, tmp: Path) -> list[str]:
                         f"{proc.stderr!r}")
     if "Exception ignored in:" in proc.stderr or "OSError:" in proc.stderr:
         problems.append(f"[required-set CLI] failed stdout sink leaked a finalization error: "
+                        f"{proc.stderr!r}")
+
+    closed_stdout = cli_tmp / "closed-stdout.jsonl"
+    valid_ledger(closed_stdout, header_required=ci.SNAP.NONE_DECLARED)
+    closed_stdout_before = closed_stdout.read_bytes()
+    proc = run_cli(closed_stdout, preexec_fn=lambda: os.close(1))
+    check_error("closed stdout fd", closed_stdout, closed_stdout_before, proc)
+    expected = (
+        f"ci-status: required-set: cannot process --ledger {closed_stdout} "
+        "(stdout is unavailable)\n"
+    )
+    if proc.stderr != expected:
+        problems.append(f"[required-set CLI] closed stdout fd emitted the wrong diagnostic: "
                         f"{proc.stderr!r}")
 
     malformed_repo = cli_tmp / "malformed-repo.jsonl"
@@ -1312,7 +1326,8 @@ def run(ci, tmp: Path) -> int:
         failures += 1
         print(f"FAIL     {problem}")
     if not required_cli_problems:
-        print(f"ok       {'required-set CLI exits':32} -> settled=0, unknown=1, caller/store errors=2; "
+        print(f"ok       {'required-set CLI exits':32} -> settled=0, unknown=1, "
+              f"caller/store/output errors=2; "
               f"errors preserve the ledger and emit one diagnostic without a traceback")
 
     liveness_problems = liveness_cases(ci, tmp)
