@@ -293,11 +293,11 @@ def claim_lock(path: Path):
         fail(f"lease: {lock} is held — another agent is claiming this run right now. Retry shortly.")
     except OSError as exc:
         fail(f"lease: cannot create {lock}: {exc}")
-    # Record the identity of the EXACT directory this call just created. If the stale-sweep of a LATER
-    # process removes our lock and re-creates its own (the documented forward-skew entry hole), the dir
-    # named `claim.lock` at cleanup time is a DIFFERENT one — a foreign process's live lock. Removing it
-    # would cascade a third driver in. So cleanup rmdirs only when the inode still matches ours. Inode
-    # identity needs no marker file inside the dir, so a hand-rolled `rmdir claim.lock` still interoperates.
+    # Record this directory's device/inode identity for a BEST-EFFORT cleanup guard. If a later stale
+    # sweep replaces our lock with a directory whose identity differs, cleanup preserves that foreign
+    # lock. Immediate inode reuse can give a replacement the same identity, so equality cannot prove this
+    # is still our directory and cleanup may remove the replacement. No marker file is added, preserving
+    # interop with hand-rolled `rmdir claim.lock`.
     try:
         st = os.stat(lock)
         mine = (st.st_dev, st.st_ino)
