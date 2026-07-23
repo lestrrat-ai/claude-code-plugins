@@ -1014,9 +1014,11 @@ def t_defaults_backfill(L: ModuleType, tmp: Path) -> None:
 
 
 def t_default_non_goals(L: ModuleType, tmp: Path) -> None:
-    """`default_non_goals` is a schema-owned run field: old headers back-fill `[]`, valid arrays round-trip
-    CANONICALLY, and every malformed value is REFUSED without mutating the ledger. Consumers decode ONLY
-    through the accessor, never the raw header value."""
+    """`default_non_goals` is a schema-owned run field: a MISSING key back-fills `[]`, valid arrays round-trip
+    CANONICALLY, and every malformed value — including a PRESENT `null` or a native JSON array (NOT the
+    JSON-array-STRING form) — is REFUSED without mutating the ledger. Only a genuinely absent key backfills;
+    a present-but-malformed value FAILS CLOSED at the decode door. Consumers decode ONLY through the accessor,
+    never the raw header value."""
     # A header written before the field existed reads back the canonical empty default, both ways.
     old = write_lines(tmp / "old.jsonl", json.dumps({"type": "header", "run_id": "r"}))
     code, out, err = cli(L, ["--file", str(old), "header", "get", "default_non_goals"])
@@ -1051,14 +1053,22 @@ def t_default_non_goals(L: ModuleType, tmp: Path) -> None:
         check(path.read_text() == before, f"a refused set for {why} MUTATED the ledger")
 
     # The accessor FAILS CLOSED on a hand-edited malformed stored value — it never guesses a list.
-    corrupt = write_lines(tmp / "corrupt.jsonl",
-                          json.dumps({"type": "header", "run_id": "r", "default_non_goals": "not-json"}))
-    header, _ = L.load(corrupt)
-    try:
-        L.default_non_goals(header)
-        check(False, "the accessor decoded a malformed stored default_non_goals instead of failing closed")
-    except ValueError:
-        pass
+    # A MISSING key is the ONLY absence that backfills to `[]` (asserted above at the "old header" case). A
+    # PRESENT-but-malformed value must NOT heal to `[]`: a bare JSON `null` (read back as None) and a native
+    # JSON array `[]` (read back as a list) both collide with the canonical empty string `"[]"` if coerced, so
+    # each is preserved RAW by `load()` and refused at the decode door. `"not-json"` covers the present-STRING
+    # malformed case; `null` and native `[]` are the two present values that once failed OPEN.
+    for label, header_extra in (("a present string", {"default_non_goals": "not-json"}),
+                                ("a present JSON null", {"default_non_goals": None}),
+                                ("a present native JSON array", {"default_non_goals": []})):
+        corrupt = write_lines(tmp / "corrupt.jsonl",
+                              json.dumps({"type": "header", "run_id": "r", **header_extra}))
+        header, _ = L.load(corrupt)
+        try:
+            L.default_non_goals(header)
+            check(False, f"the accessor decoded {label} default_non_goals instead of failing closed")
+        except ValueError:
+            pass
 
 
 def t_default_non_goals_broadening_guard(L: ModuleType, tmp: Path) -> None:
@@ -2686,7 +2696,7 @@ CASES = [
     ("id-derived", "id is always pr<pr> — never trusted from the file, never caller-set", t_id_is_derived),
     ("defaults-backfill", "a row written before a field existed still reads back complete", t_defaults_backfill),
     ("values-are-strings", "every ingested value is coerced to str", t_values_are_strings),
-    ("default-non-goals", "default_non_goals: old headers back-fill [], valid arrays canonicalize, malformed values are refused unmutated, decode only through the accessor", t_default_non_goals),
+    ("default-non-goals", "default_non_goals: a MISSING key back-fills [] but a PRESENT value (incl. null/native array) fails closed, valid arrays canonicalize, malformed values are refused unmutated, decode only through the accessor", t_default_non_goals),
     ("default-non-goals-broadening-guard", "a BROADENING default_non_goals change is refused while a non-terminal PR holds review credit; an add, or no active credit, is allowed", t_default_non_goals_broadening_guard),
     ("null-reads-as-default", "a present JSON null reads back as the field default, not the string \"None\"", t_null_reads_as_default),
     ("verdict-counts-rounds", "`verdict` bumps review_rounds on EVERY verdict and applies the tally atomically", t_verdict_counts_rounds),

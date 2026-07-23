@@ -224,7 +224,10 @@ add is always allowed. This banked-credit guard covers a PR that has **already**
 the complementary window — a PR at `reviews_ok = 0` with a review **in flight** — is closed at tally time,
 not here: `verify --ledger` refuses a verdict whose DISPATCH-TIME `pass_identity.default_non_goals` binding
 no longer matches this field (`stage-2-review-gate.md`, "Does this pass COUNT?"). It **defaults to `[]`** — the canonical "no run
-defaults", which an old ledger back-fills to. Its run-wide meaning is realized in each PR by
+defaults", which only a **MISSING** key back-fills to (an old ledger written before this field existed). A
+**PRESENT** value is never healed to that default: `load()` preserves it raw and the decode door validates
+it, so a bare `null` or a native JSON array (not the JSON-array-**STRING** form) **FAILS CLOSED** like any
+other malformed value rather than silently reading as `[]`. Its run-wide meaning is realized in each PR by
 `pr-adopt.py intent-sync`, which folds the current defaults into that PR's `intent-<pr>.md`
 **MANAGED block** inside `## Non-goals` (`pr-adoption.md` OWNS the block's format); `review-pass.py
 intent-check --ledger` refuses a PR whose managed block has drifted from this field before dispatch, and

@@ -121,12 +121,15 @@ HEADER_DEFAULTS = {
     # unique, trimmed, nonempty and single-line — `parse_default_non_goals` is the ONE validator and
     # `default_non_goals(header)` the ONE decode door; no consumer decodes this value itself.
     #
-    # The default is `[]`, the canonical "no run defaults": an old ledger written before this field existed
-    # back-fills to it, so a run with nothing declared folds nothing. `header set default_non_goals` validates
-    # and CANONICALIZES the value; malformed JSON, a non-array, a blank/multiline/duplicate entry is REFUSED
-    # without mutating the ledger (fail closed), and a BROADENING change (a default removed) is refused while
-    # banked review credit stands (`guard_default_non_goals_change`). files-and-ledger.md, "default_non_goals",
-    # owns the field and that lifecycle rule.
+    # The default is `[]`, the canonical "no run defaults". Only a genuinely MISSING key back-fills to it (an
+    # old ledger written before this field existed), so a run with nothing declared folds nothing. A PRESENT
+    # value is NOT healed to the default: `load()` preserves it raw and the decode door validates it, so a bare
+    # `null` or a native JSON array (not the JSON-array-STRING form) FAILS CLOSED like any other malformed value
+    # rather than silently reading as `[]`. `header set default_non_goals` validates and CANONICALIZES the
+    # value; malformed JSON, a non-array, a blank/multiline/duplicate entry is REFUSED without mutating the
+    # ledger (fail closed), and a BROADENING change (a default removed) is refused while banked review credit
+    # stands (`guard_default_non_goals_change`). files-and-ledger.md, "default_non_goals", owns the field and
+    # that lifecycle rule.
     "default_non_goals": "[]",
 }
 
@@ -507,7 +510,18 @@ def load(path: Path) -> "tuple[dict, list[dict]]":
             if kind == "header":
                 # coerce every value to str, matching dump()'s write side (null -> default, not "None")
                 for f in HEADER_FIELDS:
-                    header[f] = _coerce_field(rec.get(f), HEADER_DEFAULTS[f])
+                    if f == "default_non_goals":
+                        # A MISSING key back-fills the default (an old ledger predates this field). But a
+                        # PRESENT value — including a bare JSON `null` or a native array — is preserved RAW,
+                        # NOT run through the None->default coercion, so the decode door (`parse_default_non_goals`)
+                        # validates it and FAILS CLOSED on anything but a valid JSON-array-STRING. Coercion
+                        # here would HEAL two malformed present values into the canonical empty form: `null`
+                        # (via None->default) and native `[]` (via `str([]) == "[]"`), both of which then decode
+                        # to `[]` and never reach the fail-closed door. Missing-vs-present is knowable only at
+                        # this load boundary, so the special-case lives here and nowhere downstream.
+                        header[f] = HEADER_DEFAULTS[f] if f not in rec else rec[f]
+                    else:
+                        header[f] = _coerce_field(rec.get(f), HEADER_DEFAULTS[f])
             else:  # kind == "row"
                 row = dict(ROW_DEFAULTS)
                 # coerce every value to str first, so 11 and "11" are one key (null -> default, not "None")
@@ -785,6 +799,12 @@ def parse_default_non_goals(value: str) -> "list[str]":
     raising `ValueError`, which the write door turns into a fail-closed refusal that never mutates the
     ledger. Returns the canonical (whitespace-trimmed) list in declared order.
     """
+    if not isinstance(value, str):
+        # The stored form is a JSON-array STRING. A non-string here (a bare JSON `null` read back as
+        # `None`, or a native JSON array read back as a `list`) is a malformed store that `load()` now
+        # preserves RAW rather than healing to the canonical `"[]"`. Refuse it explicitly and legibly so
+        # the fail-closed intent is load-bearing, not an incidental `TypeError` leaking Python internals.
+        raise ValueError(f"must be a JSON-array STRING, not {type(value).__name__}")
     try:
         parsed = json.loads(value)
     except (json.JSONDecodeError, TypeError) as exc:

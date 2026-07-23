@@ -2182,17 +2182,26 @@ def check_intent_door(R: types.ModuleType, tmp: Path) -> int:
             print(f"ok       [intent-check] {name:24} exit {code}: {needle}")
 
     # A malformed ledger `default_non_goals` fails CLOSED — the defaults cannot be read, so the intent
-    # cannot be judged against them.
-    d = tmp / "intent-door-malformed-ledger"
-    d.mkdir(parents=True, exist_ok=True)
-    (d / INTENT_FILE).write_text(INTENT, encoding="utf-8")
-    ledger = _write_ledger(d / "state.jsonl", "not-json{")
-    code, output = run_cli(R, ["intent-check", "--file", str(d / INTENT_FILE), "--ledger", str(ledger)])
-    if code != 1 or "malformed" not in output:
-        print(f"FAIL     [intent-check] malformed-ledger: exit {code}, expected 1; output: {output.strip()}")
-        failures += 1
-    else:
-        print(f"ok       [intent-check] {'malformed-ledger':24} exit {code}: fails closed")
+    # cannot be judged against them. `not-json{` is a present STRING that never parses. A present JSON
+    # `null` and a present native JSON array `[]` are the two values that once failed OPEN (both collide
+    # with the canonical `"[]"` if coerced): `load()` now preserves each RAW, so the decode door refuses
+    # them here too. Each is written as a RAW header value (not via `_write_ledger`, which JSON-encodes
+    # lists to the valid string form and so cannot plant a native array). Only a genuinely MISSING key
+    # back-fills to `[]` (covered by the missing-ledger / back-fill cases elsewhere).
+    for label, raw in (("malformed-ledger", "not-json{"),
+                       ("null-ledger", None), ("native-array-ledger", [])):
+        d = tmp / f"intent-door-{label}"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / INTENT_FILE).write_text(INTENT, encoding="utf-8")
+        state = d / "state.jsonl"
+        state.write_text(
+            json.dumps({"type": "header", "run_id": "r1", "default_non_goals": raw}) + "\n", encoding="utf-8")
+        code, output = run_cli(R, ["intent-check", "--file", str(d / INTENT_FILE), "--ledger", str(state)])
+        if code != 1 or "malformed" not in output:
+            print(f"FAIL     [intent-check] {label}: exit {code}, expected 1; output: {output.strip()}")
+            failures += 1
+        else:
+            print(f"ok       [intent-check] {label:24} exit {code}: fails closed")
 
     # The ledger and intent MUST share a run directory — a mismatch is the operator's error (exit 2).
     d = tmp / "intent-door-crossrun"
