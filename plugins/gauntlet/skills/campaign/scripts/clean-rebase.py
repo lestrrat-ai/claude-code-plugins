@@ -24,7 +24,8 @@ PR's patch identity byte-for-byte unchanged.
 Exit codes gate a caller's `$?`:
   0  the clean rebase landed (pushed + ledger written), or a --dry-run whose preconditions all pass
   2  a PRECONDITION refused it — nothing was mutated (no row, held/terminal, bad/dirty/stale worktree,
-     branch mismatch, absent remote). The caller fixes the stated condition and re-runs.
+     branch mismatch, absent remote, or unavailable diff/patch identity). The caller fixes the stated
+     condition and re-runs.
   3  NOT the clean case — a conflict, or the rebase changed the PR's diff. HEAD is restored; nothing
      pushed, ledger untouched. The driver falls back to the JUDGMENT path for BOTH subcases (resolve a
      conflict by hand where there is one, or accept the reshaped diff where there is none), then applies
@@ -99,14 +100,17 @@ def _git(worktree: str, *args: str) -> subprocess.CompletedProcess:
 
 def patch_identity(worktree: str, remote: str, base: str) -> "str | None":
     """The PR's MERGE-BASE-relative patch identity: `git diff <remote>/<base>...HEAD` piped through
-    `git patch-id --stable`. Returns the 40-hex id, `EMPTY_DIFF` for an empty diff, or None if the diff
-    itself could not be computed (a missing ref). Three-dot diff is measured from the merge base, so the
-    SAME value is produced whether the PR sits on the old or the new base — which is exactly what lets a
+    `git patch-id --verbatim`. Verbatim mode preserves whitespace, so an indentation-only context change
+    cannot carry review credit. Returns the 40-hex id, `EMPTY_DIFF` for an empty diff, or None if the diff
+    or patch identity could not be computed. Three-dot diff is measured from the merge base, so the SAME
+    value is produced whether the PR sits on the old or the new base — which is exactly what lets a
     before/after comparison isolate what the REBASE did to the PR's content."""
     diff = _git(worktree, "diff", f"{remote}/{base}...HEAD")
     if diff.returncode != 0:
         return None
-    pid = _run(["git", "patch-id", "--stable"], cwd=worktree, stdin=diff.stdout)
+    pid = _run(["git", "patch-id", "--verbatim"], cwd=worktree, stdin=diff.stdout)
+    if pid.returncode != 0:
+        return None
     out = pid.stdout.strip()
     if not out:
         return EMPTY_DIFF
@@ -255,8 +259,8 @@ def run(args) -> int:
     target_id = patch_identity(worktree, remote, base)
     if target_id is None:
         return refuse("diff-failed",
-                      f"could not diff {remote}/{base}...HEAD in {worktree} (missing ref?) — nothing "
-                      f"rebased", EXIT_PRECONDITION)
+                      f"could not compute the patch identity for {remote}/{base}...HEAD in {worktree} "
+                      f"(git diff or git patch-id failed) — nothing rebased", EXIT_PRECONDITION)
 
     # The rebase. ANY non-zero exit is a conflict this tool NEVER resolves: abort, restore HEAD, hand off.
     rebase = _git(worktree, "rebase", f"{remote}/{base}")
@@ -278,7 +282,8 @@ def run(args) -> int:
     post_id = patch_identity(worktree, remote, base)
     if post_id != target_id:
         # NOT the clean case: the rebase re-wrote the PR's effective patch (e.g. a base edit next to the
-        # PR's hunk). Fail closed — reset to the original head and hand off to the conflict-class path.
+        # PR's hunk), or its post-rebase identity could not be proved. Fail closed — reset to the original
+        # head and hand off to the conflict-class path.
         _git(worktree, "reset", "--hard", orig_head)
         restored = _git(worktree, "rev-parse", "HEAD").stdout.strip()
         if restored != orig_head:
@@ -286,6 +291,11 @@ def run(args) -> int:
                   file=sys.stderr)
             emit({"error": "reset-did-not-restore", "pr": pr, "orig_head": orig_head, "head_now": restored})
             return EXIT_PARTIAL
+        if post_id is None:
+            return refuse("diff-failed",
+                          f"could not compute pr {pr}'s patch identity after rebasing onto "
+                          f"{remote}/{base} — reset to {orig_head}; nothing pushed and the ledger is "
+                          f"untouched", EXIT_PRECONDITION)
         return refuse("diff-changed",
                       f"the rebase applied textually but CHANGED pr {pr}'s diff (patch identity "
                       f"{target_id} -> {post_id}) — reset to {orig_head}. This is not a clean base-only "

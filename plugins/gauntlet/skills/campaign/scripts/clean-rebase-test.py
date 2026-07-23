@@ -9,11 +9,11 @@ REAL `ledger.py` subprocess the tool invokes, so the whole path is exercised end
 `clean-rebase.py self-test` FAILS LOUDLY if it cannot load this file — it can never report health over a
 suite it did not run.
 
-The diff-changed case is CONSTRUCTED, not synthesized: the base edits a line INSIDE the context window of
-the PR's own hunk (line 5 vs the PR's line-3 change). The rebase applies textually — no conflict — but the
-PR's three-dot diff now carries the base's rewritten context line, so `git patch-id --stable` differs
-before and after. That is a genuine "clean textually, but the PR's diff changed" rebase, and the tool must
-refuse it exactly as it refuses a conflict.
+The diff-changed cases are CONSTRUCTED, not synthesized: the base edits a line INSIDE the context window
+of the PR's own hunk (line 5 vs the PR's line-3 change), including a real indentation-only edit. Each
+rebase applies textually — no conflict — but the PR's three-dot diff carries the rewritten context line,
+so `git patch-id --verbatim` differs before and after. These are genuine "clean textually, but the PR's
+diff changed" rebases, and the tool must refuse them exactly as it refuses a conflict.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ import tempfile
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 from _gauntlet.modules import load_module_from_path
 from _gauntlet.testing import capture_cli
@@ -276,6 +277,103 @@ def t_diff_changed_resets_and_refuses():
         check(s.remote_pr_head() == s.orig_head, "the remote PR branch is untouched")
 
 
+def t_indentation_only_context_change_resets_and_refuses():
+    with tempfile.TemporaryDirectory() as tmp:
+        s = _scenario(tmp)
+        ledger_before = s.ledger.read_bytes()
+        remote_pr_before = s.remote_pr_head()
+        # A REAL indentation-only base edit inside the PR hunk's context. The rebase applies without a
+        # conflict, but the PR's three-dot diff changes from context line "5" to "    5".
+        s.advance_base({5: "    5"})
+        code, out, err = s.invoke()
+        check(code == M.EXIT_NOT_CLEAN,
+              f"an indentation-only context change must exit {M.EXIT_NOT_CLEAN} "
+              f"(code={code}, err={err})")
+        check('"refused": "diff-changed"' in out, f"the refusal names diff-changed; got {out!r}")
+        check(head(s.wt) == s.orig_head,
+              "indentation-only diff-changed restores the original local HEAD")
+        check(s.remote_pr_head() == remote_pr_before,
+              "indentation-only diff-changed leaves the remote PR branch untouched")
+        check(s.ledger.read_bytes() == ledger_before,
+              "indentation-only diff-changed leaves the ledger byte-for-byte untouched")
+        check(_field(s.ledger, PR_NUMBER, "reviews_ok") == "2",
+              "the review tally remains banked until the caller applies the required gate reset")
+        check(_ledger("--file", str(s.ledger), "set", "--pr", PR_NUMBER, "--reviews-ok", "0") == 0,
+              "the caller can apply the required gate reset after the refusal")
+        check(_field(s.ledger, PR_NUMBER, "reviews_ok") == "0",
+              "the review tally clears only when the caller resets it")
+
+
+# --- patch-id failure: fail closed before push and ledger write --------------
+
+def t_patch_id_failure_before_rebase_refuses():
+    with tempfile.TemporaryDirectory() as tmp:
+        s = _scenario(tmp)
+        s.advance_base({12: "12-BASE"})
+        ledger_before = s.ledger.read_bytes()
+        remote_pr_before = s.remote_pr_head()
+        patch_inputs = []
+        real_run = M._run
+
+        def fail_patch_id(argv, *, cwd=None, stdin=None):
+            if argv == ["git", "patch-id", "--verbatim"]:
+                patch_inputs.append(stdin)
+                return subprocess.CompletedProcess(argv, 129, "", "error: unknown option `verbatim'\n")
+            return real_run(argv, cwd=cwd, stdin=stdin)
+
+        with patch.object(M, "_run", side_effect=fail_patch_id):
+            code, out, err = s.invoke()
+
+        check(code == M.EXIT_PRECONDITION,
+              f"a pre-rebase patch-id failure must exit {M.EXIT_PRECONDITION} "
+              f"(code={code}, err={err})")
+        check('"refused": "diff-failed"' in out,
+              f"the pre-rebase refusal names the identity failure; got {out!r}")
+        check(len(patch_inputs) == 1 and bool(patch_inputs[0]),
+              "the fixture fails the first patch-id call after it receives the non-empty PR diff")
+        check(head(s.wt) == s.orig_head,
+              "a pre-rebase patch-id failure refuses before rebasing the local branch")
+        check(s.remote_pr_head() == remote_pr_before,
+              "a pre-rebase patch-id failure leaves the remote PR branch untouched")
+        check(s.ledger.read_bytes() == ledger_before,
+              "a pre-rebase patch-id failure leaves the ledger byte-for-byte untouched")
+
+
+def t_patch_id_failure_after_rebase_resets_and_refuses():
+    with tempfile.TemporaryDirectory() as tmp:
+        s = _scenario(tmp)
+        s.advance_base({12: "12-BASE"})
+        ledger_before = s.ledger.read_bytes()
+        remote_pr_before = s.remote_pr_head()
+        patch_inputs = []
+        real_run = M._run
+
+        def fail_second_patch_id(argv, *, cwd=None, stdin=None):
+            if argv == ["git", "patch-id", "--verbatim"]:
+                patch_inputs.append(stdin)
+                if len(patch_inputs) == 2:
+                    return subprocess.CompletedProcess(
+                        argv, 129, "", "error: unknown option `verbatim'\n")
+            return real_run(argv, cwd=cwd, stdin=stdin)
+
+        with patch.object(M, "_run", side_effect=fail_second_patch_id):
+            code, out, err = s.invoke()
+
+        check(code == M.EXIT_PRECONDITION,
+              f"a post-rebase patch-id failure must exit {M.EXIT_PRECONDITION} "
+              f"(code={code}, err={err})")
+        check('"refused": "diff-failed"' in out,
+              f"the post-rebase refusal names the identity failure; got {out!r}")
+        check(len(patch_inputs) == 2 and all(patch_inputs),
+              "the fixture fails only the second patch-id call after both receive non-empty PR diffs")
+        check(head(s.wt) == s.orig_head,
+              "a post-rebase patch-id failure resets the local branch to its original HEAD")
+        check(s.remote_pr_head() == remote_pr_before,
+              "a post-rebase patch-id failure leaves the remote PR branch untouched")
+        check(s.ledger.read_bytes() == ledger_before,
+              "a post-rebase patch-id failure leaves the ledger byte-for-byte untouched")
+
+
 # --- precondition refusals (exit 2, nothing mutated) -------------------------
 
 def t_dirty_worktree_refused():
@@ -487,6 +585,15 @@ CASES = [
      t_conflict_aborts_and_refuses),
     ("diff-changed-resets", "a textually-clean rebase that changes the PR diff resets and refuses (exit 3)",
      t_diff_changed_resets_and_refuses),
+    ("indent-context-diff-changed",
+     "a real indentation-only context change resets locally and refuses without touching remote or ledger",
+     t_indentation_only_context_change_resets_and_refuses),
+    ("patch-id-failure-before-rebase",
+     "a failed pre-rebase patch-id refuses before rebase, push, or ledger write",
+     t_patch_id_failure_before_rebase_refuses),
+    ("patch-id-failure-after-rebase",
+     "a failed post-rebase patch-id restores HEAD and refuses before push or ledger write",
+     t_patch_id_failure_after_rebase_resets_and_refuses),
     ("dirty-refused", "a dirty worktree is refused at exit 2", t_dirty_worktree_refused),
     ("wrong-branch-refused", "a worktree on the wrong branch is refused at exit 2", t_wrong_branch_refused),
     ("head-mismatch-refused", "HEAD != ledger head_sha is refused at exit 2, naming both values",
