@@ -78,16 +78,79 @@ jobs:
       - name: Pyright (the type-clean scripts)
         run: |
           set -o pipefail
-          # Exact `# ci: pyright` marker lines, with either LF or CRLF endings, are the SINGLE SOURCE OF
-          # TRUTH for the type-clean set. The filesAnalyzed count is DERIVED from the discovered set size
-          # (`${#files[@]}`), never hardcoded.
-          mapfile -d '' -t files < <(git grep -l -z -e '^# ci: pyright$' -e $'^# ci: pyright\r$' -- '*.py')
+          marker_args=(-e '^# ci: pyright$' -e $'^# ci: pyright\r$')
+
+          # This is the coverage floor: every previously type-clean path must retain the exact marker.
+          # Marker discovery below remains open-ended, so newly type-clean files are analysed without a
+          # second list edit.
+          baseline=(
+            plugins/gauntlet/skills/campaign/scripts/_gauntlet/__init__.py
+            plugins/gauntlet/skills/campaign/scripts/_gauntlet/argv.py
+            plugins/gauntlet/skills/campaign/scripts/_gauntlet/atomic.py
+            plugins/gauntlet/skills/campaign/scripts/_gauntlet/modules.py
+            plugins/gauntlet/skills/campaign/scripts/_gauntlet/jsonl.py
+            plugins/gauntlet/skills/campaign/scripts/_gauntlet/mutation.py
+            plugins/gauntlet/skills/campaign/scripts/_gauntlet/review_door.py
+            plugins/gauntlet/skills/campaign/scripts/_gauntlet/table.py
+            plugins/gauntlet/skills/campaign/scripts/_gauntlet/testing.py
+            plugins/gauntlet/skills/campaign/scripts/ledger.py
+            plugins/gauntlet/skills/campaign/scripts/ledger-test.py
+            plugins/gauntlet/skills/campaign/scripts/mutate-ci-snapshot.py
+            plugins/gauntlet/skills/campaign/scripts/review-pass.py
+            plugins/gauntlet/skills/campaign/scripts/review-pass-test.py
+            plugins/gauntlet/skills/campaign/scripts/emit-finding.py
+            plugins/gauntlet/skills/campaign/scripts/finding-audit.py
+            plugins/gauntlet/skills/campaign/scripts/finding-audit-test.py
+            plugins/gauntlet/skills/campaign/scripts/repair-pass.py
+            plugins/gauntlet/skills/campaign/scripts/repair-pass-test.py
+            plugins/gauntlet/skills/campaign/scripts/followups.py
+            plugins/gauntlet/skills/campaign/scripts/followups-test.py
+            plugins/gauntlet/skills/campaign/scripts/review-learnings.py
+            plugins/gauntlet/skills/campaign/scripts/review-learnings-test.py
+            plugins/gauntlet/skills/campaign/scripts/nudge.py
+            plugins/gauntlet/skills/campaign/scripts/nudge-test.py
+            plugins/gauntlet/skills/campaign/scripts/pr-adopt.py
+            plugins/gauntlet/skills/campaign/scripts/pr-adopt-test.py
+            plugins/gauntlet/skills/campaign/scripts/triage.py
+            plugins/gauntlet/skills/campaign/scripts/triage-test.py
+            plugins/gauntlet/skills/campaign/scripts/reviewer-liveness.py
+            plugins/gauntlet/skills/campaign/scripts/reviewer-liveness-test.py
+            plugins/gauntlet/skills/campaign/scripts/lease.py
+            plugins/gauntlet/skills/campaign/scripts/lease-test.py
+            plugins/gauntlet/skills/campaign/scripts/heartbeat.py
+            plugins/gauntlet/skills/campaign/scripts/heartbeat-test.py
+            plugins/gauntlet/skills/campaign/scripts/run-id.py
+            plugins/gauntlet/skills/campaign/scripts/run-id-test.py
+            plugins/gauntlet/skills/campaign/scripts/script-table-test.py
+            plugins/gauntlet/skills/campaign/scripts/base-preflight.py
+            plugins/gauntlet/skills/campaign/scripts/base-preflight-test.py
+            plugins/gauntlet/skills/campaign/scripts/worker-prompt.py
+            plugins/gauntlet/skills/campaign/scripts/worker-prompt-test.py
+            plugins/gauntlet/skills/campaign/scripts/merge-check.py
+            plugins/gauntlet/skills/campaign/scripts/merge-check-test.py
+            plugins/gauntlet/skills/campaign/scripts/merge.py
+            plugins/gauntlet/skills/campaign/scripts/merge-test.py
+          )
+          missing=()
+          for file in "${baseline[@]}"; do
+            if ! git grep -q "${marker_args[@]}" -- "${file}"; then
+              missing+=("${file}")
+            fi
+          done
+          if ((${#missing[@]} != 0)); then
+            printf '::error::covered Python file lacks the exact # ci: pyright marker: %s\n' "${missing[@]}"
+            exit 1
+          fi
+
+          # Exact marker lines, with either LF or CRLF endings, define the current type-clean set.
+          # filesAnalyzed is derived from this discovered set, never from the baseline.
+          mapfile -d '' -t files < <(git grep -l -z "${marker_args[@]}" -- '*.py')
           if ((${#files[@]} == 0)); then
             echo "::error::no Python files carry the exact # ci: pyright marker"
             exit 1
           fi
           crlf_fixture='plugins/gauntlet/skills/campaign/scripts/fixtures/pyright/crlf_marker.txt'
-          if crlf_match=$(git grep -l -e '^# ci: pyright$' -e $'^# ci: pyright\r$' -- "${crlf_fixture}"); then
+          if crlf_match=$(git grep -l "${marker_args[@]}" -- "${crlf_fixture}"); then
             :
           else
             grep_status=$?
