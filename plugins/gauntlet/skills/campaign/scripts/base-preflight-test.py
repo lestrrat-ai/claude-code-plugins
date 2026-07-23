@@ -362,6 +362,62 @@ def t_force_rewritten_base_refreshes_and_rebases():
               "the ancestry check must force-refresh origin/main to the rewritten remote base")
 
 
+def t_literal_head_base_does_not_follow_remote_head_symref():
+    """A branch literally named HEAD must not overwrite the default branch's tracking ref."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        remote = root / "remote.git"
+        seed = root / "seed"
+        candidate = root / "candidate"
+
+        result = subprocess.run(["git", "init", "--bare", "-b", "main", str(remote)],
+                                capture_output=True, text=True, check=False)
+        check(result.returncode == 0, f"could not create fixture remote: {result.stderr.strip()}")
+        result = subprocess.run(["git", "clone", str(remote), str(seed)],
+                                capture_output=True, text=True, check=False)
+        check(result.returncode == 0, f"could not clone fixture seed: {result.stderr.strip()}")
+        _configure_repo(seed)
+        (seed / "f").write_text("main\n", encoding="utf-8")
+        _git(seed, "add", "f")
+        _git(seed, "commit", "-m", "main base")
+        _git(seed, "push", "origin", "main")
+        main_head = _git(seed, "rev-parse", "HEAD").stdout.strip()
+
+        (seed / "f").write_text("literal HEAD branch\n", encoding="utf-8")
+        _git(seed, "commit", "-am", "literal HEAD advance")
+        literal_head = _git(seed, "rev-parse", "HEAD").stdout.strip()
+        _git(seed, "push", "origin", "HEAD:refs/heads/HEAD")
+        check(main_head != literal_head, "fixture setup: main and the literal HEAD branch must differ")
+
+        result = subprocess.run(["git", "clone", str(remote), str(candidate)],
+                                capture_output=True, text=True, check=False)
+        check(result.returncode == 0, f"could not clone fixture candidate: {result.stderr.strip()}")
+        symbolic = _git(candidate, "symbolic-ref", "refs/remotes/origin/HEAD")
+        check(symbolic.returncode == 0
+              and symbolic.stdout.strip() == "refs/remotes/origin/main",
+              "fixture setup: origin/HEAD must be the normal symbolic ref to origin/main")
+        origin_main_before = _git(candidate, "rev-parse", "refs/remotes/origin/main").stdout.strip()
+        check(origin_main_before == main_head, "fixture setup: origin/main must track the remote main branch")
+
+        result = M.check_base_ancestry(str(candidate), "HEAD", "origin")
+        check(result == ("stale", ""),
+              f"a candidate behind the literal HEAD branch must be sent to rebase, got {result!r}")
+        check(_git(candidate, "rev-parse", "refs/remotes/origin/main").stdout.strip() == origin_main_before,
+              "fetching the literal HEAD branch must not follow origin/HEAD and overwrite origin/main")
+        private_refs = _git(
+            candidate, "for-each-ref", "--format=%(objectname)", "refs/gauntlet/base-fetch").stdout.splitlines()
+        check(private_refs == [literal_head],
+              f"the private fetched-base ref must resolve to the literal HEAD branch tip, got {private_refs!r}")
+
+        _git(remote, "update-ref", "-d", "refs/heads/HEAD")
+        result = M.check_base_ancestry(str(candidate), "HEAD", "origin")
+        check(result[0] == "unverified"
+              and result[1].startswith("could not fetch +refs/heads/HEAD:refs/gauntlet/base-fetch/"),
+              f"a failed literal HEAD fetch must name its exact private refspec, got {result!r}")
+        check(_git(candidate, "rev-parse", "refs/remotes/origin/main").stdout.strip() == origin_main_before,
+              "a failed literal HEAD fetch must leave origin/main unchanged")
+
+
 DASH_BASE = "--upload-pack=/bin/false"
 
 
@@ -766,6 +822,9 @@ CASES = [
      t_clean_view_with_current_base_proceeds),
     ("force-rewritten-base", "a rewritten remote base is refreshed before ancestry reports stale",
      t_force_rewritten_base_refreshes_and_rebases),
+    ("literal-head-base",
+     "a literal HEAD base uses a private ref and leaves the symbolic origin/HEAD target unchanged",
+     t_literal_head_base_does_not_follow_remote_head_symref),
     ("dash-base-current", "a dash-leading base refreshes its tracking ref and reports current ancestry",
      t_dash_leading_current_base_refreshes_and_proceeds),
     ("dash-base-stale", "a dash-leading base refreshes its tracking ref and reports stale ancestry",

@@ -117,8 +117,13 @@ class Scenario:
         git(self.seed, "push", "origin", "main")
         if self.base != "main":
             base_ref = f"refs/heads/{self.base}"
-            git(self.seed, "update-ref", base_ref, "HEAD")
-            git(self.seed, "push", "origin", f"{base_ref}:{base_ref}")
+            # A local refs/heads/HEAD makes every later plain HEAD revision ambiguous. The real bug only
+            # needs the REMOTE branch with that name, so create it directly from the current commit.
+            if self.base == "HEAD":
+                git(self.seed, "push", "origin", "HEAD:refs/heads/HEAD")
+            else:
+                git(self.seed, "update-ref", base_ref, "HEAD")
+                git(self.seed, "push", "origin", f"{base_ref}:{base_ref}")
         # PR branch: change line 3
         git(self.seed, "checkout", "-b", PR_BRANCH)
         (self.seed / "f").write_text(_numbered({3: "3-PR"}), encoding="utf-8")
@@ -151,6 +156,12 @@ class Scenario:
         """Move the remote base ahead by one commit that rewrites the given lines."""
         if self.base == "main":
             git(self.seed, "checkout", "main")
+        elif self.base == "HEAD":
+            # Keep the literal HEAD branch out of the local heads namespace: a local refs/heads/HEAD would
+            # make the pseudoref HEAD ambiguous and prevent this fixture from reaching clean-rebase.
+            fixture_ref = "refs/heads/literal-head-fixture"
+            git(self.seed, "fetch", "origin", f"refs/heads/HEAD:{fixture_ref}")
+            git(self.seed, "checkout", "--detach", fixture_ref)
         else:
             git(self.seed, "checkout", "--detach", f"refs/heads/{self.base}")
         (self.seed / "f").write_text(_numbered(overrides), encoding="utf-8")
@@ -645,6 +656,57 @@ def t_dash_leading_fetch_failure_names_safe_refspec():
               f"the fetch diagnostic must show the safe fully qualified refspec, got {detail!r}")
 
 
+def t_literal_head_base_uses_private_ref_without_moving_origin_main():
+    with tempfile.TemporaryDirectory() as tmp:
+        s = Scenario(Path(tmp), base="HEAD").build()
+        symbolic = git(s.wt, "symbolic-ref", "refs/remotes/origin/HEAD")
+        check(symbolic.stdout.strip() == "refs/remotes/origin/main",
+              "fixture setup: origin/HEAD must be the normal symbolic ref to origin/main")
+        origin_main_before = head(s.wt, "refs/remotes/origin/main")
+        s.advance_base({12: "12-LITERAL-HEAD"})
+        remote_base = head(s.remote, "refs/heads/HEAD")
+        check(origin_main_before != remote_base,
+              "fixture setup: main and the literal HEAD branch must point to different commits")
+
+        code, out, err = s.invoke("--dry-run")
+        check(code == M.EXIT_OK,
+              f"a literal HEAD dry-run must pass its preconditions (code={code}, out={out!r}, err={err!r})")
+        plan = json.loads(out.strip().splitlines()[-1])
+        check(":refs/remotes/origin/HEAD" not in plan["would"],
+              f"the dry-run must not plan a fetch into the symbolic origin/HEAD ref: {plan['would']!r}")
+        check(":refs/gauntlet/" in plan["would"],
+              f"the dry-run must name the private full destination ref: {plan['would']!r}")
+        check(head(s.wt, "refs/remotes/origin/main") == origin_main_before,
+              "the literal HEAD dry-run must not move origin/main")
+
+        code, out, err = s.invoke()
+        check(code == M.EXIT_OK,
+              f"a clean rebase onto a literal HEAD branch must succeed "
+              f"(code={code}, out={out!r}, err={err!r})")
+        check(head(s.wt, "refs/remotes/origin/main") == origin_main_before,
+              "fetching the literal HEAD branch must not follow origin/HEAD and overwrite origin/main")
+        check(git(s.wt, "merge-base", "--is-ancestor", remote_base, "HEAD").returncode == 0,
+              "the rebased PR must contain the literal HEAD branch tip")
+
+
+def t_literal_head_fetch_failure_names_private_refspec():
+    with tempfile.TemporaryDirectory() as tmp:
+        s = Scenario(Path(tmp), base="HEAD").build()
+        origin_main_before = head(s.wt, "refs/remotes/origin/main")
+        git(s.remote, "update-ref", "-d", "refs/heads/HEAD")
+
+        code, out, err = s.invoke()
+        check(code == M.EXIT_PRECONDITION,
+              f"a missing literal HEAD branch must refuse at exit 2 "
+              f"(code={code}, out={out!r}, err={err!r})")
+        detail = json.loads(out.strip().splitlines()[-1])["detail"]
+        check(detail.startswith(
+            "`git fetch origin +refs/heads/HEAD:refs/gauntlet/base-fetch/"),
+            f"the fetch diagnostic must show the exact private refspec, got {detail!r}")
+        check(head(s.wt, "refs/remotes/origin/main") == origin_main_before,
+              "a failed literal HEAD fetch must leave origin/main unchanged")
+
+
 # --- --dry-run mutates nothing -----------------------------------------------
 
 def t_dry_run_mutates_nothing():
@@ -702,6 +764,12 @@ CASES = [
     ("dash-base-fetch-diagnostic",
      "a dash-leading fetch failure reports the fully qualified refspec used",
      t_dash_leading_fetch_failure_names_safe_refspec),
+    ("literal-head-base",
+     "a literal HEAD base uses one private full ref throughout and leaves origin/main unchanged",
+     t_literal_head_base_uses_private_ref_without_moving_origin_main),
+    ("literal-head-fetch-diagnostic",
+     "a failed literal HEAD fetch reports its exact private refspec and leaves origin/main unchanged",
+     t_literal_head_fetch_failure_names_private_refspec),
     ("unresolved-base-refused", "a both-`-` ledger resolves to `-`; the unresolved base is refused as no-base at exit 2",
      t_unresolved_base_refused),
     ("no-remote-refused", "an absent default remote is refused at exit 2", t_absent_remote_refused),

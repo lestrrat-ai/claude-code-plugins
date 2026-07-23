@@ -24,7 +24,7 @@ block. This file owns the dispatch procedure, not a second copy of prompt text.
 `<base>` is **this PR row's effective base** — its explicit `base_branch`, else the legacy header fallback
 (`ledger.py`'s `effective_base`), never the one header base. With `--file`, the ROW owns the base: `--base`
 is an **assertion** that must equal the row's effective base, and the helper also compares the PR's live
-`baseRefName` against it. It fetches `origin/<base>` and prints ONE of four verdicts, and the action
+`baseRefName` against it. It fetches the base and prints ONE of four verdicts, and the action
 **splits by verdict** — only `proceed` clears the dispatch:
 
 - **`proceed`** → the base is current; **dispatch the fix**. The `--file` makes the `proceed` record

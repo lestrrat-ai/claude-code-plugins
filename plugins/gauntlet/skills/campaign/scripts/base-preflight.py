@@ -46,6 +46,7 @@ import sys
 from pathlib import Path
 
 from _gauntlet.argv import bind_separate_option_value
+from _gauntlet.git_refs import select_base_fetch_refs
 from _gauntlet.modules import load_module_from_path
 
 _HERE = Path(__file__).resolve().parent
@@ -120,28 +121,29 @@ def check_base_ancestry(worktree: "str | None", base: "str | None", remote: str)
 
     GitHub may keep reporting ``MERGEABLE/CLEAN`` after another campaign PR advances an unprotected base.
     The merge-state enums alone therefore cannot prove that a candidate contains the current base. Fetch the
-    named base through a fully qualified source:tracking-ref refspec and ask Git's ancestry graph directly;
-    this updates only the remote-tracking ref, never the candidate branch. The qualified source prevents a
-    legal dash-leading base name from being parsed as a Git option. Callers treat ``unverified`` as
-    fail-closed.
+    named base through a fully qualified source:tracking-ref refspec and ask Git's ancestry graph directly.
+    A symbolic remote-tracking destination is replaced with a private ref so the fetch cannot update the
+    symbolic ref's target. The qualified source prevents a legal dash-leading base name from being parsed
+    as a Git option. Callers treat ``unverified`` as fail-closed.
     """
     if not worktree or not base:
         return "unverified", "base ancestry requires --worktree and --base"
-    # Force-update the remote-tracking destination, matching Git's default remote fetch refspec.
-    tracking_refspec = f"+refs/heads/{base}:refs/remotes/{remote}/{base}"
+    selected, selection_problem = select_base_fetch_refs(worktree, remote, base)
+    if selection_problem is not None or selected is None:
+        return "unverified", selection_problem or "could not select a base fetch destination"
     fetch = subprocess.run(  # noqa: S603
-        ["git", "-C", worktree, "fetch", remote, tracking_refspec],
+        ["git", "-C", worktree, "fetch", remote, selected.refspec],
         capture_output=True, text=True, check=False)
     if fetch.returncode != 0:
-        return "unverified", f"could not fetch {remote}/{base}: {fetch.stderr.strip()}"
+        return "unverified", f"could not fetch {selected.refspec}: {fetch.stderr.strip()}"
     probe = subprocess.run(  # noqa: S603
-        ["git", "-C", worktree, "merge-base", "--is-ancestor", f"{remote}/{base}", "HEAD"],
+        ["git", "-C", worktree, "merge-base", "--is-ancestor", selected.local_ref, "HEAD"],
         capture_output=True, text=True, check=False)
     if probe.returncode == 0:
         return "current", ""
     if probe.returncode == 1:
         return "stale", ""
-    return "unverified", f"could not compare HEAD with {remote}/{base}: {probe.stderr.strip()}"
+    return "unverified", f"could not compare HEAD with {selected.local_ref}: {probe.stderr.strip()}"
 
 
 def decide(view: dict) -> dict:

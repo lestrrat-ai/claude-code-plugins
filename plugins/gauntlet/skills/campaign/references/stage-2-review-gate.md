@@ -136,7 +136,7 @@ review gate"), and the review re-starts on the clean tip:
   scripts/base-preflight.py check --pr <pr> --worktree <worktree> --base <base> --file <state.jsonl>`. With
   `--file`, the ROW owns the base: `--base` is an **assertion** that must equal the row's effective base, and
   the helper also compares the PR's **live** `baseRefName` against it. It checks GitHub's merge states and
-  whether fetched `origin/<base>` is an ancestor of the PR worktree's `HEAD`. A `rebase-first` verdict covers
+  whether the fetched base is an ancestor of the PR worktree's `HEAD`. A `rebase-first` verdict covers
   a conflict, GitHub reporting behind, or a CLEAN PR whose branch lacks the refreshed base — a base that
   merely **ADVANCED** (same branch NAME, new commits). `recheck` covers an uncomputed GitHub value,
   ancestry the helper cannot verify, **or a live retarget** — the PR now targets a different branch
