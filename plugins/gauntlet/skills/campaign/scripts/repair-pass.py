@@ -986,8 +986,20 @@ def validate_decision_bundle(path: Path, header: dict, row: dict, pr: str, recor
         payload = json.loads(prompt_parts[1], object_pairs_hook=RP.strict_object(prompt_path.name, 1))
     except (json.JSONDecodeError, RP.Defect) as exc:
         fail(f"bundle prompt {prompt_path} payload is not strict JSON: {exc}")
-    if (not isinstance(payload, dict) or set(payload) != BUNDLE_KEYS or payload.get("schema") != BUNDLE_SCHEMA
-            or payload.get("pr") != pr or payload.get("head_sha") != row["head_sha"]):
+    if not isinstance(payload, dict):
+        fail(f"bundle prompt {prompt_path} payload is not a JSON object — rebuild the bundle with "
+             f"`repair-pass.py bundle` before retrying `decide`")
+    missing_fields = sorted(BUNDLE_KEYS - set(payload))
+    unexpected_fields = sorted(set(payload) - BUNDLE_KEYS)
+    if missing_fields or unexpected_fields:
+        fail(f"bundle prompt {prompt_path} payload has stale schema fields; "
+             f"missing fields: {', '.join(missing_fields) or '(none)'}; "
+             f"unexpected fields: {', '.join(unexpected_fields) or '(none)'} — rebuild the bundle with "
+             f"`repair-pass.py bundle` before retrying `decide`")
+    if payload.get("schema") != BUNDLE_SCHEMA:
+        fail(f"bundle prompt {prompt_path} payload schema is {payload.get('schema')!r}, expected "
+             f"{BUNDLE_SCHEMA!r} — rebuild the bundle with `repair-pass.py bundle` before retrying `decide`")
+    if payload.get("pr") != pr or payload.get("head_sha") != row["head_sha"]:
         fail(f"bundle prompt {prompt_path} payload is not for this PR and head")
     if canonical_json(payload).encode("utf-8") != prompt_parts[1]:
         fail(f"bundle prompt {prompt_path} payload is not canonical deterministic JSON")

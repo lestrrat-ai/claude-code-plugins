@@ -1252,6 +1252,82 @@ def t_bundle_identity_ignores_liveness_but_not_decision_fields(tmp: Path) -> Non
     check(field(drift["ledger"], "repair_count") == "0", "a stale-bundle decision spent the repair budget")
 
 
+def t_decide_distinguishes_stale_bundle_shape_from_identity_mismatch(tmp: Path) -> None:
+    """A stale payload shape names its missing fields and rebuild action; wrong PR/head keeps its identity error.
+
+    Both prompts carry recomputed valid prompt/bundle hashes and matching manifests, so each refusal reaches
+    payload validation. Neither refusal may mutate the ledger.
+    """
+    def rewrite_payload(record: Path, mutate) -> None:
+        manifest_path = bundle_for(record)
+        manifest = json.loads(manifest_path.read_text())
+        prompt_path = Path(manifest["prompt_path"])
+        _, payload_bytes = prompt_path.read_bytes().split(b"\n\n", 1)
+        payload = json.loads(payload_bytes)
+        mutate(payload)
+        payload_bytes = R.canonical_json(payload).encode()
+        bundle_hash = hashlib.sha256(payload_bytes).hexdigest()
+        marker = f"{R.BUNDLE_MARKER}: {bundle_hash}"
+        prompt_bytes = f"REASSESSMENT PASS\n{marker}\n\n".encode() + payload_bytes
+        prompt_path.write_bytes(prompt_bytes)
+        manifest["bundle_sha256"] = bundle_hash
+        manifest["prompt_sha256"] = hashlib.sha256(prompt_bytes).hexdigest()
+        manifest_path.write_text(R.canonical_json(manifest))
+        record.write_text(f"{marker}\n\nDECISION: demote\n\nPayload validation fixture.\n")
+
+    shape_root = tmp / "stale-shape"
+    shape_root.mkdir()
+    shape_path, shape_record = setup(shape_root, pr_origin="external", decision="demote")
+    rewrite_payload(shape_record, lambda payload: payload.pop("verdictless_rounds"))
+    shape_before = shape_path.read_bytes()
+    code, _, err = decide(shape_path, shape_record, "demote")
+    check(code == 1, f"a stale bundle shape was accepted (exit {code})")
+    check("missing fields: verdictless_rounds" in err,
+          f"the stale-shape refusal did not name its missing BUNDLE_KEYS field: {err!r}")
+    check("rebuild the bundle" in err,
+          f"the stale-shape refusal did not give the supported recovery action: {err!r}")
+    check("payload is not for this PR and head" not in err,
+          f"a stale bundle shape was misclassified as an identity mismatch: {err!r}")
+    check(shape_path.read_bytes() == shape_before, "a stale-shape refusal mutated the ledger")
+
+    unexpected_root = tmp / "unexpected-shape"
+    unexpected_root.mkdir()
+    unexpected_path, unexpected_record = setup(unexpected_root, pr_origin="external", decision="demote")
+    rewrite_payload(unexpected_record, lambda payload: payload.__setitem__("retired_field", None))
+    unexpected_before = unexpected_path.read_bytes()
+    code, _, err = decide(unexpected_path, unexpected_record, "demote")
+    check(code == 1 and "unexpected fields: retired_field" in err,
+          f"the stale-shape refusal did not name its unexpected BUNDLE_KEYS field: {err!r}")
+    check("missing fields: (none)" in err and "rebuild the bundle" in err,
+          f"the unexpected-field refusal did not report the complete shape and recovery: {err!r}")
+    check(unexpected_path.read_bytes() == unexpected_before, "an unexpected-field refusal mutated the ledger")
+
+    schema_root = tmp / "stale-schema"
+    schema_root.mkdir()
+    schema_path, schema_record = setup(schema_root, pr_origin="external", decision="demote")
+    rewrite_payload(schema_record,
+                    lambda payload: payload.__setitem__("schema", f"{R.BUNDLE_SCHEMA}-unsupported"))
+    schema_before = schema_path.read_bytes()
+    code, _, err = decide(schema_path, schema_record, "demote")
+    check(code == 1 and "payload schema is" in err and R.BUNDLE_SCHEMA in err,
+          f"an unsupported bundle schema did not name the expected version: {err!r}")
+    check("rebuild the bundle" in err and "payload is not for this PR and head" not in err,
+          f"an unsupported bundle schema did not give the shape recovery: {err!r}")
+    check(schema_path.read_bytes() == schema_before, "an unsupported-schema refusal mutated the ledger")
+
+    identity_root = tmp / "identity-mismatch"
+    identity_root.mkdir()
+    identity_path, identity_record = setup(identity_root, pr_origin="external", decision="demote")
+    rewrite_payload(identity_record, lambda payload: payload.__setitem__("head_sha", "d" * 40))
+    identity_before = identity_path.read_bytes()
+    code, _, err = decide(identity_path, identity_record, "demote")
+    check(code == 1 and "payload is not for this PR and head" in err,
+          f"an actual PR/head mismatch lost its identity diagnostic: {err!r}")
+    check("rebuild the bundle" not in err,
+          f"an identity mismatch was misclassified as a stale bundle shape: {err!r}")
+    check(identity_path.read_bytes() == identity_before, "an identity-mismatch refusal mutated the ledger")
+
+
 def t_bundle_git_and_atomic_failures_leave_no_output(tmp: Path) -> None:
     """A failed Git read or second promotion leaves neither prompt nor manifest behind."""
     git_case = bundle_setup(tmp / "git-failure")
@@ -1445,6 +1521,7 @@ CASES = [
     ("decide-row-effective-base", "decide re-derives the row's effective base; a header-base manifest is stale", t_decide_uses_row_effective_base_over_header),
     ("bundle-resume", "a bundle rebuilt after context loss reuses or regenerates, never wedges", t_bundle_resumes_after_context_loss),
     ("bundle-identity-scope", "a liveness write never wedges resume; a decision-field drift is still stale", t_bundle_identity_ignores_liveness_but_not_decision_fields),
+    ("decide-bundle-diagnostic", "stale payload shape and actual PR/head mismatch have distinct recovery diagnostics", t_decide_distinguishes_stale_bundle_shape_from_identity_mismatch),
     ("bundle-atomic", "Git and atomic-write failures leave no partial bundle", t_bundle_git_and_atomic_failures_leave_no_output),
     ("decision-bundle-bound", "decide accepts only a record bound to the matching prepared bundle", t_decide_is_bound_to_prepared_bundle),
     ("shared-module-loader", "path loading preserves registration and exception behavior", t_shared_module_loader_preserves_importlib_semantics),
