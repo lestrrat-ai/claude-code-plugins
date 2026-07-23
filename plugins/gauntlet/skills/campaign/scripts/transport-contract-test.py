@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -55,6 +56,31 @@ def check_document_contract() -> None:
     files_ledger = read("files-and-ledger.md")
     loop_control = read("loop-control.md")
     copilot = (COPILOT / "SKILL.md").read_text(encoding="utf-8")
+
+    # Stage 2 owns the one runnable campaign triage command. Its ledger row binding makes `--base` an
+    # assertion instead of an unbound caller input; adoption and heartbeat point here without rebuilding
+    # either the initial derive or its veto re-run.
+    stage_code_blocks = re.findall(r"```[^\n]*\n(.*?)```", stage, flags=re.DOTALL)
+    stage_triage_commands = [block for block in stage_code_blocks if "triage.py derive" in block]
+    require(len(stage_triage_commands) == 1,
+            "stage-2-review-gate.md must own exactly one runnable campaign triage invocation")
+    for binding in ("--file <state.jsonl>", "--pr <pr>"):
+        require(binding in stage_triage_commands[0],
+                f"stage-2-review-gate.md campaign triage invocation lost {binding}")
+    triage_owner = '`stage-2-review-gate.md`, "2a-triage"'
+    triage_flags = ("--worktree", "--base", "--head-sha", "--file", "--pr")
+    for name, body in (("pr-adoption.md", adoption), ("loop-control.md", loop_control)):
+        require(triage_owner in body, f"{name} lost its pointer to the campaign triage owner")
+        code_blocks = re.findall(r"```[^\n]*\n(.*?)```", body, flags=re.DOTALL)
+        require(not any("triage.py derive" in block for block in code_blocks),
+                f"{name} restored a runnable campaign triage command outside its owner")
+        for line in body.splitlines():
+            if "triage.py derive" in line:
+                require(not any(flag in line for flag in triage_flags),
+                        f"{name} reconstructed the campaign triage invocation instead of using its owner")
+        for rerun_copy in ("`derive --", "IDENTICAL `--worktree`"):
+            require(rerun_copy not in body,
+                    f"{name} reconstructed the campaign triage veto re-run instead of using its owner")
 
     # The canonical prs.json producer is now one executable owner. Only files-and-ledger.md spells the
     # typed invocation; adoption and heartbeat prose point to it and never reconstruct the internal gh

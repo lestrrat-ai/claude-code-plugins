@@ -372,15 +372,10 @@ the worker returns, and what never moves into it. The steps below are unchanged 
      (`bailout-and-final-report.md`) — leave the PR **OPEN**, drop this run's labels, write `abort-<id>.md`.
 
    Then, for each PR that is **not held at all**:
-   - any newly-adopted PR whose ledger row lacks a `tier`, and every PR on every heartbeat → **run
-     `triage.py derive --worktree <worktree> --base origin/<base> --head-sha <head_sha>`** for the
-     mechanical inventory and `floor`. `stage-2-review-gate.md`, "2a-triage", owns the complete invocation
-     and policy. Never classify files or modes here. On success, require output `head_sha` to equal the
-     row, **decide the tier at or above `floor`** (`TRIVIAL` only when `floor` is `null` and you judge it
-     truly human prose — the tool never grants it). **VETO FIRST — BEFORE any ledger write:** re-run
-     `derive --tier <decided>` with the IDENTICAL `--worktree`/`--base`/`--head-sha` inputs so the tool
-     vetoes a below-floor mistake; require its success and an output `head_sha` still equal to the row, and
-     BLOCK gate dispatch on refusal (exit 2, no JSON). Only THEN write the tier, with **EXACTLY ONE
+   - any newly-adopted PR whose ledger row lacks a `tier`, and every PR on every heartbeat → **follow
+     `stage-2-review-gate.md`, "2a-triage", for the complete campaign-bound initial derive and veto
+     re-run.** That section owns both invocations, their checks, and the classification policy; do not
+     reconstruct them here. Only THEN write the tier, with **EXACTLY ONE
      directional `ledger.py … set`** — never a preliminary generic tier write followed by a second. **A
      same-SHA tier change is TWO events by direction, and the one write differs by direction**
      (`stage-2-review-gate.md`, "Status labels mirror the review gate", owns the split; depth order

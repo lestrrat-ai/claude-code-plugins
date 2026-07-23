@@ -496,27 +496,15 @@ For each `#PR` to adopt:
 
 #### Adoption-time tier decision
 
-Before starting any gate work, **get the mechanical floor + inventory from the resolved PR-head worktree
-and decide the tier at or above it**:
-
-```text
-python3 <skill-dir>/scripts/triage.py derive \
-    --worktree <ledger worktree> --base origin/<base> --head-sha <headRefOid>
-```
-
-`stage-2-review-gate.md`, "2a-triage", owns the command and classification policy. Require the output
-`head_sha` to equal the adoption snapshot, decide the tier at or above the reported `floor` (`TRIVIAL`
-only as your semantic all-prose call — the tool never grants it). **Then, exactly as the heartbeat
-re-triage path does (`loop-control.md`), and BEFORE the ledger write, re-run `triage.py derive` with the
-IDENTICAL `--worktree`/`--base`/`--head-sha` inputs plus `--tier <decided>` so the tool VETOES a
-below-floor choice**; require its success and an output `head_sha` that still equals the row, and BLOCK
-gate dispatch on refusal (exit 2, no JSON). Only then replace the bootstrap — with **EXACTLY ONE
+Before starting any gate work, **follow `stage-2-review-gate.md`, "2a-triage", for the complete
+campaign-bound initial derive and veto re-run.** That section owns both invocations, their checks, and the
+classification policy; do not reconstruct them here. Only then replace the bootstrap — with **EXACTLY ONE
 directional `ledger.py … set`**, honouring the direction below, never a preliminary generic tier write
 followed by a second. Without this second veto derive the adoption path would
 write a below-floor tier straight through — gate work could start below the emitted floor, an
 under-reviewed stricter tier — the exact hole the heartbeat veto closes; the two paths are symmetric. A
-refusal from EITHER derive leaves the conservative bootstrap in place and blocks gate dispatch until the
-next heartbeat refreshes the non-terminal row's worktree/head and derives successfully.
+refusal from EITHER owner-defined derive leaves the conservative bootstrap in place and blocks gate
+dispatch until the next heartbeat refreshes the non-terminal row's worktree/head and derives successfully.
 
 **A same-SHA tier change is TWO events by direction** (`stage-2-review-gate.md`, "Status labels mirror the
 review gate", owns the split; depth order TRIVIAL < STANDARD < HIGH), and on an UNCHANGED non-terminal re-adoption
