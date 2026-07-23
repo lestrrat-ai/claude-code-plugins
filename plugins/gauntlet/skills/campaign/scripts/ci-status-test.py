@@ -808,6 +808,9 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
         quoted_shell_invalid = quoted(shell_invalid)
         quoted_detached = quoted(detached)
         inline_invalid = invalid.replace("\n  ", " ")
+        ordered_invalid = invalid.replace("\n", "\n   ")
+        nested_unordered_invalid = invalid.replace("\n", "\n      ")
+        nested_ordered_invalid = invalid.replace("\n", "\n       ")
         (root / "wrapped.md").write_text(
             f"{valid}\n\n{invalid}\n\n{shell_valid}\n\n{shell_invalid}\n\n{detached}\n\n"
             f"{quoted_valid}\n>\n{quoted_invalid}\n>\n{quoted_detached}\n>\n"
@@ -835,18 +838,28 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
             "fenced-block-reverse.md": (f"```\n{inline_invalid}\n```\n{detached}\n", 2),
             "html-block-reverse.md": (f"<script>\n{inline_invalid}\n</script>\n{detached}\n", 2),
             "indented-code.md": (f"    {inline_invalid}\n{detached}\n", 1),
+            "quoted-fenced-exit.md": (f"> ```sh\n{quoted_invalid}\n{detached}\n", 2),
+            "quoted-html-exit.md": (f"> <script>\n{quoted_invalid}\n{detached}\n", 2),
+            "ordered-non-one-paragraph.md": (f"{invalid}\n2. {detached}\n", None),
+            "ordered-siblings.md": (f"1. {ordered_invalid}\n2. {detached}\n", 1),
+            "nested-unordered-siblings.md": (
+                f"- Parent item\n    - {nested_unordered_invalid}\n    - {detached}\n", 2
+            ),
+            "nested-ordered-siblings.md": (
+                f"1. Parent item\n    1. {nested_ordered_invalid}\n    2. {detached}\n", 2
+            ),
         }
         for name, (text, _problem_line) in boundary_fixtures.items():
             (root / name).write_text(text, encoding="utf-8")
         found_problems, copies = check(root)
-        if len(copies) != 25:
-            problems.append(f"[doc-copy {subcommand}] found {len(copies)} wrapped copies, expected 25: {copies!r}")
+        if len(copies) != 31:
+            problems.append(f"[doc-copy {subcommand}] found {len(copies)} wrapped copies, expected 31: {copies!r}")
         expected_problem_sites = {"wrapped.md:4", "wrapped.md:10", "wrapped.md:18", "wrapped.md:26",
                                   "quote-transition.md:1",
                                   *(f"{name}:{problem_line}" for name, (_text, problem_line)
                                     in boundary_fixtures.items() if problem_line is not None)}
         problem_sites = {problem.split(" ", 1)[0] for problem in found_problems}
-        if (len(found_problems) != 20 or problem_sites != expected_problem_sites
+        if (len(found_problems) != 25 or problem_sites != expected_problem_sites
                 or any(problem_needle not in problem for problem in found_problems)):
             problems.append(
                 f"[doc-copy {subcommand}] invalid plain, blockquoted, and block-boundary copies were not "

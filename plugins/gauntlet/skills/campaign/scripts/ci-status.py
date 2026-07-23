@@ -2247,6 +2247,20 @@ def html_block_start(content: str) -> re.Pattern[str] | str | None:
     return None
 
 
+def markdown_list_marker(content: str) -> tuple[int, int, str, int | None] | None:
+    """Return a list marker's indent, content indent, family, and ordered start."""
+    match = re.match(r"( *)([*+-]|[0-9]{1,9}([.)]))([ \t]+)(?=\S)", content)
+    if match is None:
+        return None
+    indent = len(match.group(1))
+    token = match.group(2)
+    padding = len(match.group(4).expandtabs(4))
+    content_indent = indent + len(token) + (padding if padding <= 4 else 1)
+    if token[0].isdigit():
+        return indent, content_indent, f"ordered:{match.group(3)}", int(token[:-1])
+    return indent, content_indent, "unordered", None
+
+
 def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, str]]:
     """Find wrapped candidates without crossing Markdown paragraph, block, or quote boundaries."""
     quote_prefix = r"(?:[ \t]*>[ \t]*)+"
@@ -2260,11 +2274,43 @@ def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, 
         active_fence: tuple[str, int] | None = None
         active_html: re.Pattern[str] | str | None = None
         active_indented_code = False
+        active_lists: list[tuple[int, int, int, str]] = []
         for line in text.splitlines(keepends=True):
             body = line.rstrip("\r\n")
             quote_depth, content_start = markdown_quote_prefix(body)
             content = body[content_start:]
             line_end = offset + len(line)
+            list_marker = markdown_list_marker(content)
+            # Only ordered marker 1 can interrupt a paragraph to start a list. Later numbers split an
+            # active ordered list, and child markers are measured from the active item's content indent.
+            same_list = bool(
+                list_marker is not None
+                and any(depth == quote_depth and indent == list_marker[0] and family == list_marker[2]
+                        for depth, indent, _content_indent, family in active_lists)
+            )
+            nested_list = bool(
+                list_marker is not None
+                and any(depth == quote_depth and content_indent <= list_marker[0]
+                        for depth, _indent, content_indent, _family in active_lists)
+            )
+            list_starts_block = bool(
+                list_marker is not None
+                and (same_list
+                     or ((list_marker[3] is None or list_marker[3] == 1)
+                         and (list_marker[0] <= 3 or nested_list))
+                     or (start == offset and (list_marker[0] <= 3 or nested_list)))
+            )
+
+            # Fenced and HTML blocks cannot lazily continue after their blockquote container ends. Close
+            # the region before processing the first line outside that container.
+            if ((active_fence is not None or active_html is not None)
+                    and active_quote_depth and quote_depth < active_quote_depth):
+                if start < offset:
+                    regions.append((start, offset))
+                start = offset
+                active_fence = None
+                active_html = None
+                active_quote_depth = 0
 
             if active_fence is not None:
                 fence_char, fence_length = active_fence
@@ -2309,7 +2355,8 @@ def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, 
                     regions.append((start, offset))
                 start = line_end
                 active_quote_depth = 0
-            elif (content.startswith("    ") or content.startswith("\t")) and start == offset:
+            elif ((content.startswith("    ") or content.startswith("\t"))
+                  and start == offset and not list_starts_block):
                 active_indented_code = True
                 active_quote_depth = quote_depth
             elif re.match(r" {0,3}(?:=+|-+)[ \t]*$", content) and start < offset:
@@ -2346,11 +2393,17 @@ def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, 
                 regions.append((offset, line_end))
                 start = line_end
                 active_quote_depth = 0
-            elif re.match(r" {0,3}(?:[*+-]|1[.)])[ \t]+\S", content):
+            elif list_starts_block and list_marker is not None:
                 if start < offset:
                     regions.append((start, offset))
                 start = offset
                 active_quote_depth = quote_depth
+                while (active_lists
+                       and (active_lists[-1][0] > quote_depth
+                            or (active_lists[-1][0] == quote_depth
+                                and active_lists[-1][1] >= list_marker[0]))):
+                    active_lists.pop()
+                active_lists.append((quote_depth, list_marker[0], list_marker[1], list_marker[2]))
             elif quote_depth:
                 if quote_depth != active_quote_depth:
                     if start < offset:
