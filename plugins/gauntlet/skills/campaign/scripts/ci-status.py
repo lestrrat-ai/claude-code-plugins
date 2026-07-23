@@ -2211,14 +2211,40 @@ def check_gh_invocations(text: str, argv: dict[str, list[str]]) -> list[str]:
     return problems
 
 
-def starts_interrupting_markdown_block(content: str) -> bool:
-    """Return whether a CommonMark block start interrupts the current paragraph."""
-    return bool(
-        re.match(r" {0,3}#{1,6}(?:[ \t]+|$)", content)
-        or re.match(r" {0,3}(?:[*+-]|1[.)])[ \t]+\S", content)
-        or re.match(r" {0,3}(?:`{3,}|~{3,})", content)
-        or re.match(r" {0,3}(?:\*(?:[ \t]*\*){2,}|-(?:[ \t]*-){2,}|_(?:[ \t]*_){2,})[ \t]*$", content)
-    )
+HTML_BLOCK_TAGS = (
+    "address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|"
+    "dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h1|h2|h3|h4|h5|h6|head|header|"
+    "hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|"
+    "section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul"
+)
+
+
+def markdown_quote_prefix(body: str) -> tuple[int, int]:
+    """Return CommonMark blockquote depth and the first content byte without eating code indentation."""
+    depth = position = 0
+    while marker := re.match(r" {0,3}>", body[position:]):
+        position += marker.end()
+        if position < len(body) and body[position] in " \t":
+            position += 1
+        depth += 1
+    return depth, position
+
+
+def html_block_start(content: str) -> re.Pattern[str] | str | None:
+    """Return an explicit end matcher, `"blank"` for a blank-ended block, or `None` for no HTML block."""
+    if match := re.match(r" {0,3}<(script|pre|style|textarea)(?:[ \t]+|>|$)", content, re.IGNORECASE):
+        return re.compile(rf"</{re.escape(match.group(1))}[ \t]*>", re.IGNORECASE)
+    if re.match(r" {0,3}<!--", content):
+        return re.compile(r"-->")
+    if re.match(r" {0,3}<\?", content):
+        return re.compile(r"\?>")
+    if re.match(r" {0,3}<![A-Z]", content):
+        return re.compile(r">")
+    if re.match(r" {0,3}<!\[CDATA\[", content):
+        return re.compile(r"\]\]>")
+    if re.match(rf" {{0,3}}</?(?:{HTML_BLOCK_TAGS})(?:[ \t]+|/?>|$)", content, re.IGNORECASE):
+        return "blank"
+    return None
 
 
 def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, str]]:
@@ -2231,19 +2257,96 @@ def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, 
         text = md.read_text(encoding="utf-8")
         regions: list[tuple[int, int]] = []
         start = offset = active_quote_depth = 0
+        active_fence: tuple[str, int] | None = None
+        active_html: re.Pattern[str] | str | None = None
+        active_indented_code = False
         for line in text.splitlines(keepends=True):
             body = line.rstrip("\r\n")
-            prefix = re.match(r"[ \t]*(?:>[ \t]*)*", body)
-            assert prefix is not None
-            quote_depth = prefix.group(0).count(">")
-            content = body[prefix.end():]
+            quote_depth, content_start = markdown_quote_prefix(body)
+            content = body[content_start:]
             line_end = offset + len(line)
+
+            if active_fence is not None:
+                fence_char, fence_length = active_fence
+                if re.match(rf" {{0,3}}{re.escape(fence_char)}{{{fence_length},}}[ \t]*$", content):
+                    regions.append((start, line_end))
+                    start = line_end
+                    active_fence = None
+                    active_quote_depth = 0
+                offset = line_end
+                continue
+
+            if active_html is not None:
+                if isinstance(active_html, re.Pattern) and active_html.search(content):
+                    regions.append((start, line_end))
+                    start = line_end
+                    active_html = None
+                    active_quote_depth = 0
+                    offset = line_end
+                    continue
+                if content.strip():
+                    offset = line_end
+                    continue
+                regions.append((start, offset))
+                start = line_end
+                active_html = None
+                active_quote_depth = 0
+                offset = line_end
+                continue
+
+            if active_indented_code:
+                if content.startswith("    ") or content.startswith("\t"):
+                    offset = line_end
+                    continue
+                if start < offset:
+                    regions.append((start, offset))
+                start = offset
+                active_indented_code = False
+                active_quote_depth = 0
+
             if not content.strip():
                 if start < offset:
                     regions.append((start, offset))
                 start = line_end
                 active_quote_depth = 0
-            elif starts_interrupting_markdown_block(content):
+            elif (content.startswith("    ") or content.startswith("\t")) and start == offset:
+                active_indented_code = True
+                active_quote_depth = quote_depth
+            elif re.match(r" {0,3}(?:=+|-+)[ \t]*$", content) and start < offset:
+                regions.append((start, line_end))
+                start = line_end
+                active_quote_depth = 0
+            elif re.match(r" {0,3}#{1,6}(?:[ \t]+|$)", content):
+                if start < offset:
+                    regions.append((start, offset))
+                regions.append((offset, line_end))
+                start = line_end
+                active_quote_depth = 0
+            elif fence := re.match(r" {0,3}(`{3,}|~{3,})", content):
+                if start < offset:
+                    regions.append((start, offset))
+                start = offset
+                active_fence = (fence.group(1)[0], len(fence.group(1)))
+                active_quote_depth = quote_depth
+            elif (html_end := html_block_start(content)) is not None:
+                if start < offset:
+                    regions.append((start, offset))
+                start = offset
+                active_html = html_end
+                active_quote_depth = quote_depth
+                if isinstance(html_end, re.Pattern) and html_end.search(content[1:]):
+                    regions.append((start, line_end))
+                    start = line_end
+                    active_html = None
+                    active_quote_depth = 0
+            elif re.match(r" {0,3}(?:\*(?:[ \t]*\*){2,}|-(?:[ \t]*-){2,}|_(?:[ \t]*_){2,})[ \t]*$",
+                          content):
+                if start < offset:
+                    regions.append((start, offset))
+                regions.append((offset, line_end))
+                start = line_end
+                active_quote_depth = 0
+            elif re.match(r" {0,3}(?:[*+-]|1[.)])[ \t]+\S", content):
                 if start < offset:
                     regions.append((start, offset))
                 start = offset

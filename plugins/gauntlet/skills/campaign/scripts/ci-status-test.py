@@ -807,6 +807,7 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
         quoted_shell_valid = quoted(shell_valid)
         quoted_shell_invalid = quoted(shell_invalid)
         quoted_detached = quoted(detached)
+        inline_invalid = invalid.replace("\n  ", " ")
         (root / "wrapped.md").write_text(
             f"{valid}\n\n{invalid}\n\n{shell_valid}\n\n{shell_invalid}\n\n{detached}\n\n"
             f"{quoted_valid}\n>\n{quoted_invalid}\n>\n{quoted_detached}\n>\n"
@@ -818,21 +819,34 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
             encoding="utf-8",
         )
         boundary_fixtures = {
-            "atx-heading.md": f"{invalid}\n# {detached}\n",
-            "unordered-list.md": f"{invalid}\n- {detached}\n",
-            "fenced-block.md": f"{invalid}\n```\n{detached}\n```\n",
-            "thematic-break.md": f"{invalid}\n* * *\n{detached}\n",
+            "atx-heading.md": (f"{invalid}\n# {detached}\n", 1),
+            "unordered-list.md": (f"{invalid}\n- {detached}\n", 1),
+            "fenced-block.md": (f"{invalid}\n```\n{detached}\n```\n", 1),
+            "thematic-break.md": (f"{invalid}\n* * *\n{detached}\n", 1),
+            "html-block.md": (f"{invalid}\n<div>\n{detached}\n</div>\n", 1),
+            "html-script.md": (f"{invalid}\n<script>\n{detached}\n</script>\n", 1),
+            "html-comment.md": (f"{invalid}\n<!--\n{detached}\n-->\n", 1),
+            "html-processing.md": (f"{invalid}\n<?fixture\n{detached}\n?>\n", 1),
+            "html-declaration.md": (f"{invalid}\n<!FIXTURE>\n{detached}\n", 1),
+            "html-cdata.md": (f"{invalid}\n<![CDATA[\n{detached}\n]]>\n", 1),
+            "html-block-valid.md": (f"{valid}\n<div>\n{detached}\n</div>\n", None),
+            "setext-heading.md": (f"{invalid}\n===\n{detached}\n", 1),
+            "atx-heading-reverse.md": (f"# {inline_invalid}\n{detached}\n", 1),
+            "fenced-block-reverse.md": (f"```\n{inline_invalid}\n```\n{detached}\n", 2),
+            "html-block-reverse.md": (f"<script>\n{inline_invalid}\n</script>\n{detached}\n", 2),
+            "indented-code.md": (f"    {inline_invalid}\n{detached}\n", 1),
         }
-        for name, text in boundary_fixtures.items():
+        for name, (text, _problem_line) in boundary_fixtures.items():
             (root / name).write_text(text, encoding="utf-8")
         found_problems, copies = check(root)
-        if len(copies) != 13:
-            problems.append(f"[doc-copy {subcommand}] found {len(copies)} wrapped copies, expected 13: {copies!r}")
+        if len(copies) != 25:
+            problems.append(f"[doc-copy {subcommand}] found {len(copies)} wrapped copies, expected 25: {copies!r}")
         expected_problem_sites = {"wrapped.md:4", "wrapped.md:10", "wrapped.md:18", "wrapped.md:26",
                                   "quote-transition.md:1",
-                                  *(f"{name}:1" for name in boundary_fixtures)}
+                                  *(f"{name}:{problem_line}" for name, (_text, problem_line)
+                                    in boundary_fixtures.items() if problem_line is not None)}
         problem_sites = {problem.split(" ", 1)[0] for problem in found_problems}
-        if (len(found_problems) != 9 or problem_sites != expected_problem_sites
+        if (len(found_problems) != 20 or problem_sites != expected_problem_sites
                 or any(problem_needle not in problem for problem in found_problems)):
             problems.append(
                 f"[doc-copy {subcommand}] invalid plain, blockquoted, and block-boundary copies were not "
