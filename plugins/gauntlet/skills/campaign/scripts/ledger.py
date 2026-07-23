@@ -137,13 +137,13 @@ ROW_FIELDS = (
     "id", "slug", "branch", "worktree", "worktree_owned", "branch_owned", "pr",
     "head_sha", "reviews_ok", "ci", "tier", "attempts", "started",
     "api_approval", "status",
-    # Liveness (stage-2-ci.md, "SETTLED" and "UNUSABLE — the refetch is BOUNDED"). A non-green `ci` is
+    # Liveness (stage-2-ci.md, "SETTLED" and "NOT VERIFIED — the refetch is BOUNDED"). A non-green `ci` is
     # not enough to know whether CI is still MOVING or has STOPPED — these carry that, and they must
     # survive a context loss (a heartbeat may be a fresh agent instance), so they live on disk and not in the
     # driver's head. A counter that dies with the context never reaches its cap.
     "ci_fingerprint",     # digest of last trusted current-head evidence; unchanged + nothing running = SETTLED
     "settled_strikes",    # consecutive derivations seen SETTLED-but-not-green; at the cap -> escalate
-    "unusable_refetches", # consecutive untrusted final derivations (no fingerprint); at the cap -> escalate
+    "unusable_refetches", # consecutive not-verified final derivations; at the cap -> escalate
     # UNCHANGED + a row still RUNNING == RUNNING-STALL: something CLAIMS it can still move, and nothing in
     # the check set has. A TIMESTAMP, not a tally, and that is the point: SLOW and DEAD look identical on a
     # fingerprint, and derivations are driven by heartbeats whose cadence tracks the RUN'S LOAD, not this PR's

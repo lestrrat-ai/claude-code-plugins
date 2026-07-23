@@ -337,7 +337,7 @@ the worker returns, and what never moves into it. The steps below are unchanged 
 
      **The counter reset is part of the unpark, not an optimization**: a `retry` that clears nothing
      re-escalates on its first derivation (`stage-2-ci.md`, "THE LIVENESS COUNTERS" / "SETTLED" /
-     "UNUSABLE — the refetch is BOUNDED", own why). The loop is bounded by the **human**: campaign never
+     "NOT VERIFIED — the refetch is BOUNDED", own why). The loop is bounded by the **human**: campaign never
      re-asks unprompted, and every park is a fresh question backed by a fresh snapshot.
 
      **A `retry` is SPENT when it is consumed — one ruling answers exactly ONE park.** `ledger.py … unpark

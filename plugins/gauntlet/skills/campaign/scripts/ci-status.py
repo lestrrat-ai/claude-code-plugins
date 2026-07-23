@@ -242,7 +242,7 @@ BUCKET_KEYS = {PASS: "PASS", RUNNING: "RUNNING", FAIL: "FAIL", UNKNOWN_VALUE: "U
 # --- the liveness caps -----------------------------------------------------------------------------
 #
 # Each VALUE's one defining site is `stage-2-ci.md` — "SETTLED" (the derivation block) for the STRIKE CAP,
-# "UNUSABLE — the refetch is BOUNDED" for the REFETCH CAP, "THE CI STALL CAP = 6h" for the stall bound —
+# "NOT VERIFIED — the refetch is BOUNDED" for the REFETCH CAP, "THE CI STALL CAP = 6h" for the stall bound —
 # and `doc-check` compares these constants against those sites, so the doc and the tool cannot drift.
 # `liveness()` below is what fires them.
 STRIKE_CAP = 2
@@ -303,8 +303,8 @@ def bucket_counts(rows: list[dict]) -> dict[str, int]:
 # field is how "unusable" and "an enum value nobody has ever classified" would come to be recorded as the
 # same bland `pending` and lose the thing that made them worth escalating.
 #
-# EVERY NON-GREEN, NON-RED OUTCOME IS `pending`, and the doc says so outcome by outcome: UNUSABLE ->
-# "`ci = pending`, refetch"; containment unprovable -> "`ci = pending`"; UNKNOWN_VALUE -> escalate, and an
+# EVERY NON-GREEN, NON-RED OUTCOME IS `pending`, and the doc says so outcome by outcome: UNUSABLE /
+# UNVERIFIABLE -> "`ci = pending`, refetch"; UNKNOWN_VALUE -> escalate, and an
 # unrecognised value is by definition neither a pass nor a failure, so of the three legal column values only
 # `pending` is left. NEVER let an unmapped verdict fall through to a default here: an outcome this table does
 # not name is one nobody has thought about, and guessing `pending` for it is the same "close enough" that
@@ -318,20 +318,25 @@ LEDGER_CI = {
     SNAP.UNCLASSIFIED: "pending",
 }
 
+# These two exact derivation verdicts share one LIVENESS class because neither is trusted for the PR's
+# current head. They remain distinct in every derive/liveness JSON result and in a cap's diagnostic.
+NOT_VERIFIED_VERDICTS = (SNAP.UNUSABLE, SNAP.UNVERIFIABLE)
+NOT_VERIFIED_DECIDE_NAMES = tuple(verdict.upper() for verdict in NOT_VERIFIED_VERDICTS)
+
 
 def ledger_ci(verdict: str) -> str | None:
     """The ledger column this verdict maps to — or None, which `result()` refuses rather than guesses."""
     return LEDGER_CI.get(verdict)
 
 
-# The DECIDE order, as a NAME PER BULLET, in the order `ci-derivation-spec.md` evaluates them. This is a THIRD
-# statement of an order that is already owned twice (the doc's bullets; `ci-snapshot.decide()`'s branches),
+# The DECIDE order, as a NAME PER BULLET, in the order `ci-derivation-spec.md` evaluates them. This is a
+# THIRD statement of an order that is already owned twice (the doc's bullets; `ci-snapshot.evaluate()` /
+# `decide()`),
 # and it is only allowed to exist because it is MECHANICALLY CHECKED AGAINST BOTH:
 #
 #   * against the DOC, textually — `doc-check` parses the DECIDE bullets and asserts this exact sequence;
-#   * against the CODE, BEHAVIOURALLY — the `*-outranks-*` fixtures drive real evidence through the real
-#     `ci-snapshot.decide()` and assert the precedence holds at run time, which no amount of reading either
-#     copy could establish.
+#   * against the CODE, BEHAVIOURALLY — snapshot fixtures pin both refusal verdicts exactly, while the
+#     `*-outranks-*` fixtures drive real evidence through `decide()` and assert its branch precedence.
 #
 # A copy that is checked against both owners is a PIVOT. A copy that is merely written down beside them is
 # the stale restatement this repo keeps killing. Delete either check and this becomes the latter.
@@ -340,8 +345,10 @@ def ledger_ci(verdict: str) -> str | None:
 # the questions no ROW can answer, so they are asked once every row has already passed. `required-set-unreadable.json`
 # and `required-check-absent.json` drive them behaviourally; this line is what pins that the DOC still
 # evaluates them in that order.
-DECIDE_ORDER = ("UNUSABLE", "red", "UNKNOWN_VALUE", "pending", "pending (nothing registered)",
-                "pending (required set unreadable)", "pending (required check missing)", "green")
+DECIDE_ORDER = (
+    "UNUSABLE", "UNVERIFIABLE", "red", "UNKNOWN_VALUE", "pending", "pending (nothing registered)",
+    "pending (required set unreadable)", "pending (required check missing)", "green",
+)
 
 
 class FetchError(Exception):
@@ -1564,7 +1571,7 @@ def derive(fetch: Fetch, repo: str, pr: str, head_sha: str, rundir: Path, requir
     # come off the PROMOTED ARTIFACT, like the verdict — never from the dicts still in memory.
     fp = None
     buckets = None
-    if verdict not in (SNAP.UNUSABLE, SNAP.UNVERIFIABLE):
+    if verdict not in NOT_VERIFIED_VERDICTS:
         trusted = SNAP.parse(path)
         fp = SNAP.fingerprint(trusted, head_sha)
         buckets = bucket_counts(trusted)
@@ -1617,7 +1624,7 @@ def result(pr: str, head_sha: str, verdict: str, reason: str, path: Path | None,
         # exactly when the final derivation has no trusted evidence for the PR's current head (fetch failed,
         # unusable, unverifiable, or head moved). A moved-head artifact can remain on disk for audit, but
         # stale evidence has no fingerprint. A derivation that got none touches no liveness counter but
-        # `unusable_refetches`.
+        # `unusable_refetches`. That persisted field counts both exact not-verified verdicts.
         "fingerprint": fingerprint,
         # THE CLASSIFY TALLY of the trusted current-head evidence rows —
         # {"PASS","RUNNING","FAIL","UNKNOWN_VALUE"},
@@ -1635,7 +1642,7 @@ def result(pr: str, head_sha: str, verdict: str, reason: str, path: Path | None,
     }
 
 
-# --- liveness: the SETTLED / RUNNING-STALL / UNUSABLE bookkeeping, as a command -------------------
+# --- liveness: the SETTLED / RUNNING-STALL / NOT-VERIFIED bookkeeping, as a command ----------------
 
 MACHINE_ACTIONS = ("due", "in-flight", "none")
 LEDGER_CI_VALUES = ("green", "red", "pending")
@@ -1673,7 +1680,7 @@ def derive_output(raw: object) -> dict:
     if out["ci"] not in LEDGER_CI_VALUES:
         fail(f"liveness: derive JSON `ci` is {out['ci']!r}, not one of {'/'.join(LEDGER_CI_VALUES)}")
     fp, buckets = raw.get("fingerprint"), raw.get("buckets")
-    trusted_current_head = out["verdict"] not in (SNAP.UNUSABLE, SNAP.UNVERIFIABLE)
+    trusted_current_head = out["verdict"] not in NOT_VERIFIED_VERDICTS
     if trusted_current_head:
         if not isinstance(fp, str) or not re.fullmatch(r"[0-9a-f]{64}", fp):
             fail(f"liveness: a derivation with trusted current-head evidence must carry a 64-hex "
@@ -1693,7 +1700,7 @@ def derive_output(raw: object) -> dict:
 def liveness(ledger_path: Path, pr: str, derived: dict, machine_action: str, now: datetime) -> dict:
     """Apply the liveness rules to one derivation and write the row — ONE atomic row update.
 
-    THE SPEC IS THE DERIVATION BLOCK IN `stage-2-ci.md` ("SETTLED", "RUNNING-STALL", "UNUSABLE — the
+    THE SPEC IS THE DERIVATION BLOCK IN `stage-2-ci.md` ("SETTLED", "RUNNING-STALL", "NOT VERIFIED — the
     refetch is BOUNDED"). What stays the CALLER's: `--machine-action` — "is work that can move this PR's
     `head_sha` due or in flight?" is a property judgment about the run's dispatch state, which no ledger
     field records; the caller asserts it, this command does every piece of arithmetic that follows from it.
@@ -1734,9 +1741,10 @@ def liveness(ledger_path: Path, pr: str, derived: dict, machine_action: str, now
     elif not derived["trusted_current_head"]:
         refetches = LEDGER.counter(row, "unusable_refetches") + 1
         put("unusable_refetches", refetches)
-        state = "unusable"
+        state = "not-verified"
         if refetches >= REFETCH_CAP:
-            escalate_reason = (f"UNUSABLE at the REFETCH CAP — {refetches} consecutive derivations at "
+            escalate_reason = (f"{derived['verdict'].upper()} at the REFETCH CAP — {refetches} "
+                               f"consecutive not-verified derivations at "
                                f"head {row['head_sha']} yielded no trusted current-head evidence. "
                                f"Last refusal: "
                                f"{derived['reason']}")
@@ -1836,7 +1844,7 @@ def liveness(ledger_path: Path, pr: str, derived: dict, machine_action: str, now
         "head_sha": row["head_sha"],
         "ci": derived["ci"],
         "verdict": derived["verdict"],
-        "state": state,             # moving | settled | running-stall | machine-action | unusable | held
+        "state": state,             # moving | settled | running-stall | machine-action | not-verified | held
         "held": held,
         "machine_action": machine_action,
         "wrote": wrote,             # exactly the fields this call changed, with the values written
@@ -2384,6 +2392,10 @@ def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) 
          enums.get("CheckStatusState"), "the doc and the script's own comment disagree"),
         ("DECIDE order", order, DECIDE_ORDER,
          "the doc evaluates the bullets in a different order than this tool pins"),
+        ("DECIDE not-verified outcomes",
+         tuple(name for name in order if name in NOT_VERIFIED_DECIDE_NAMES),
+         NOT_VERIFIED_DECIDE_NAMES,
+         "the doc must name both exact no-fingerprint verdicts before liveness groups them"),
         ("FINGERPRINT line: checkrun", fp_spec.get("checkrun"), SNAP.FINGERPRINT_FIELDS["checkrun"],
          "the doc's canonical line and the hash `derive` emits disagree — every driver comparing "
          "`fingerprint` against `ci_fingerprint` would see motion that never happened, or none that did"),
@@ -2585,7 +2597,7 @@ def main() -> int:
 
     lv = sub.add_parser(
         "liveness",
-        help="apply the SETTLED/RUNNING-STALL/UNUSABLE liveness rules to one derive result: update the "
+        help="apply the SETTLED/RUNNING-STALL/NOT-VERIFIED liveness rules to one derive result: update the "
              "row's counters through the ledger accessor, and escalate (park) at a cap",
     )
     lv.add_argument("--ledger", required=True, type=Path, help="the run's state.jsonl")
@@ -2662,8 +2674,9 @@ def main() -> int:
 
     out = derive(gh_fetch, repo, args.pr, args.head_sha, args.rundir, required)
     print(json.dumps(out, indent=2, ensure_ascii=False))
-    # green is the ONLY exit-0 verdict. Everything else — pending, red, unusable, an unclassified value —
-    # is NOT a green, and a caller that checks only the exit status must never be told otherwise.
+    # green is the ONLY exit-0 verdict. Everything else — pending, red, either not-verified verdict, an
+    # unclassified value — is NOT a green, and a caller that checks only the exit status must never be told
+    # otherwise.
     return 0 if out["verdict"] == SNAP.GREEN else 1
 
 

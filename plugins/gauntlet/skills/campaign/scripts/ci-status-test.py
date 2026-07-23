@@ -855,24 +855,26 @@ def liveness_cases(ci, tmp: Path) -> list[str]:
          (True, "awaiting-user", True),
          (out["escalated"], r["status"], "STALL CAP" in r["ci_reason"]))
 
-    # UNUSABLE/UNVERIFIABLE: their own counter and cap. Only a trusted current-head result resets it.
+    # NOT VERIFIED: UNUSABLE and UNVERIFIABLE keep their exact verdicts while sharing one neutral
+    # liveness state, one persisted counter, and one cap. Only a trusted current-head result resets it.
     reset()
-    for expect in ("1", "2"):
-        out = ci.liveness(ledger, "35", derived(verdict="unusable"), "none", now)
-        case(f"unusable refetch {expect} does not escalate", (expect, False),
-             (row()["unusable_refetches"], out["escalated"]))
     out = ci.liveness(ledger, "35", derived(verdict="unusable"), "none", now)
+    case("UNUSABLE enters the neutral liveness class without losing its verdict",
+         ("not-verified", "unusable", "1", False),
+         (out["state"], out["verdict"], row()["unusable_refetches"], out["escalated"]))
+    out = ci.liveness(ledger, "35", derived(verdict="unverifiable"), "none", now)
+    case("UNVERIFIABLE shares the counter without losing its verdict",
+         ("not-verified", "unverifiable", "2", False),
+         (out["state"], out["verdict"], row()["unusable_refetches"], out["escalated"]))
+    out = ci.liveness(ledger, "35", derived(verdict="unverifiable"), "none", now)
     r = row()
-    case("the REFETCH CAP escalates",
-         (True, "3", True), (out["escalated"], r["unusable_refetches"], "REFETCH CAP" in r["ci_reason"]))
+    case("UNVERIFIABLE at the REFETCH CAP names the exact verdict",
+         ("not-verified", "unverifiable", True, "3", True),
+         (out["state"], out["verdict"], out["escalated"], r["unusable_refetches"],
+          "UNVERIFIABLE at the REFETCH CAP" in r["ci_reason"]))
     reset(unusable_refetches="2")
     out = ci.liveness(ledger, "35", derived(), "none", now)
     case("trusted current-head evidence resets the refetch counter", "0", row()["unusable_refetches"])
-
-    reset()
-    out = ci.liveness(ledger, "35", derived(verdict="unverifiable"), "none", now)
-    case("an unverifiable derivation increments the refetch counter",
-         ("unusable", "1"), (out["state"], row()["unusable_refetches"]))
 
     # The cross-step case a synthesized liveness result cannot prove: derive retains a verified artifact
     # for the requested head, then the moved-head override makes the final result untrusted. Liveness must
@@ -890,7 +892,7 @@ def liveness_cases(ci, tmp: Path) -> list[str]:
     r = row()
     moved_snapshot = Path(moved["snapshot"]) if moved["snapshot"] is not None else None
     case("a retained moved-head artifact reaches the refetch cap without changing bytes",
-         (True, True, None, None, "unusable",
+         (True, True, None, None, "not-verified",
           [("1", False, moved_artifacts), ("2", False, moved_artifacts),
            ("3", True, moved_artifacts)]),
          (moved["head_moved"], moved_snapshot is not None and moved_snapshot.is_file(),
@@ -957,6 +959,8 @@ def liveness_cases(ci, tmp: Path) -> list[str]:
           derived(verdict="green", ci_value="green", running=0), ci_fingerprint=fp1)
     watch("an unusable derivation warrants no watch — no trusted current-head evidence",
           False, "no trusted current-head evidence", derived(verdict="unusable"))
+    watch("an unverifiable derivation warrants no watch — no trusted current-head evidence",
+          False, "no trusted current-head evidence", derived(verdict="unverifiable"))
     # THE COUNTEREXAMPLE the exclusion exists for: `decide()` ranks UNKNOWN_VALUE above plain `pending`,
     # so an UNCLASSIFIED verdict can carry a still-RUNNING row (buckets RUNNING>0 AND UNKNOWN_VALUE>0). A
     # bare RUNNING>0 reading would warrant a watch; the park is the resolution, so watch_warranted is
@@ -969,6 +973,21 @@ def liveness_cases(ci, tmp: Path) -> list[str]:
     watch("a held row with a RUNNING row still warrants a watch", True, "still RUNNING",
           derived(running=1), status="awaiting-user", ci_reason="the open question", ci_fingerprint=fp1)
 
+    return problems
+
+
+def verdict_doc_cases(ci) -> list[str]:
+    """Pin both no-fingerprint verdicts in the DECIDE doc order independently of `doc-check`."""
+    problems: list[str] = []
+    order = ci.parse_decide_order(ci.SPEC_DOC.read_text(encoding="utf-8"))
+    if order != ci.DECIDE_ORDER:
+        problems.append(f"[verdict docs] parsed DECIDE order {order!r}, expected {ci.DECIDE_ORDER!r}")
+    got = tuple(name for name in order if name in ci.NOT_VERIFIED_DECIDE_NAMES)
+    if got != ci.NOT_VERIFIED_DECIDE_NAMES:
+        problems.append(
+            f"[verdict docs] not-verified outcomes are {got!r}, expected "
+            f"{ci.NOT_VERIFIED_DECIDE_NAMES!r}"
+        )
     return problems
 
 
@@ -1019,8 +1038,16 @@ def run(ci, tmp: Path) -> int:
     if not liveness_problems:
         print(f"ok       {'liveness bookkeeping':32} -> every transition of the derivation block: strikes "
               f"to the cap, the stall clock, the refetch cap, machine-action stop, held observation, "
-              f"stale-head refusal, retained moved-head artifact, and the watch_warranted reduction "
-              f"(incl. the UNCLASSIFIED exclusion)")
+              f"both exact not-verified verdicts, stale-head refusal, retained moved-head artifact, and "
+              f"the watch_warranted reduction (incl. the UNCLASSIFIED exclusion)")
+
+    verdict_doc_problems = verdict_doc_cases(ci)
+    for problem in verdict_doc_problems:
+        failures += 1
+        print(f"FAIL     {problem}")
+    if not verdict_doc_problems:
+        print(f"ok       {'DECIDE verdict terminology':32} -> UNUSABLE and UNVERIFIABLE both remain explicit "
+              f"before liveness groups them")
 
     print()
     print(f"--- doc-check: {ci.SPEC_DOC.name} + {ci.DRIVER_DOC.name} vs the code that runs ---")

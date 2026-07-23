@@ -753,18 +753,22 @@ the intended behavior, and it costs nothing:
 **Why NO ORDER here can produce a false green:** `green` is the **last** bullet and demands that **EVERY**
 evidence row classify `PASS`. An `UNKNOWN_VALUE` row is **not** `PASS`, so **while any unknown value is in
 the snapshot the `green` bullet cannot match — no matter which bullet is evaluated first.** Every earlier
-bullet (`UNUSABLE`, `red`, `UNKNOWN_VALUE`, `pending`) is a **non-merging** outcome. So the ordering can
-only decide *which non-green state* is recorded and *how fast the PR moves*; it can **never** decide
-*green*. That is what makes `red`-first safe, and it is the property to preserve if these bullets are
-ever re-ordered again.
+bullet (`UNUSABLE`, `UNVERIFIABLE`, `red`, `UNKNOWN_VALUE`, `pending`) is a **non-merging** outcome. So the
+ordering can only decide *which non-green state* is recorded and *how fast the PR moves*; it can **never**
+decide *green*. That is what makes `red`-first safe, and it is the property to preserve if these bullets
+are ever re-ordered again.
 
 - **UNUSABLE → `ci = pending`, refetch** → no usable snapshot: any fetch failed, the file is absent, or it
-  **fails ANY rule in VERIFY above** — misnamed, header not first or not alone, a line that does not parse
+  fails a structural, source-completeness, SHA, or exact-containment rule in VERIFY above — misnamed,
+  header not first or not alone, a line that does not parse
   as JSON, an unknown row type, a missing or unexpected field, a field whose **value is not a string**, a
   `.sha` (the `header` row's, **any** evidence row's, or the filename's) that does not match the ledger's
   `head_sha`, **a mandatory `source` marker missing, duplicated, mis-counted, or carrying a sha that is not
-  GitHub's** — or containment **cannot be established**: it fails, **or** a `witness` `.id` is
-  null/duplicated so the test proves nothing.
+  GitHub's** — or containment **fails** because REST is missing a witnessed run.
+- **UNVERIFIABLE → `ci = pending`, refetch** → the snapshot's shape is usable, but containment cannot be
+  decided: a `witness` `.id` is null or duplicated, so the test cannot prove which run was present. This
+  exact verdict remains distinct in `derive` output; it shares only the not-verified liveness policy with
+  `UNUSABLE` (`stage-2-ci.md`, "NOT VERIFIED — the refetch is BOUNDED").
 - **red** → **any** evidence row classifies `FAIL`. Other rows still `RUNNING` does **not** change this —
   a failure is actionable now. The driver's response — the held-PR guard, stopping an in-flight review,
   classifying the failure, the fix dispatch, the gate reset — is `stage-2-ci.md`, "ACT ON THE VERDICT".
