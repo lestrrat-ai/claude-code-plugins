@@ -222,8 +222,9 @@ def t_sensitive_classes_are_high() -> None:
 def t_pulumi_manifests_are_sensitive() -> None:
     """Pulumi's project and stack settings YAML basenames are IaC manifests regardless of case. They must
     classify SENSITIVE, floor HIGH end to end, and veto either tier below that floor."""
-    manifests = ("Pulumi.yaml", "PULUMI.YAML", "config/Pulumi.production.yaml",
-                 "config/pULuMi.dev.us-east.YaMl")
+    manifests = ("Pulumi.yaml", "PULUMI.YAML", "Pulumi.yml", "PULUMI.YML",
+                 "config/Pulumi.production.yaml", "config/pULuMi.dev.us-east.YaMl",
+                 "config/Pulumi.production.yml", "config/pULuMi.dev.us-east.YmL")
     for path in manifests:
         cls, reasons = M._path_class(path, b"name: demo\n")
         check(cls == M.SENSITIVE and "infrastructure-as-code manifest" in reasons,
@@ -232,7 +233,8 @@ def t_pulumi_manifests_are_sensitive() -> None:
     check(cls == M.CODE and not any("infrastructure-as-code" in reason for reason in reasons),
           f"a non-YAML Pulumi-prefixed file is not a canonical Pulumi manifest: {cls}: {reasons}")
 
-    for path in ("Pulumi.yaml", "config/PULUMI.production.YAML"):
+    for path in ("Pulumi.yaml", "config/PULUMI.production.YAML",
+                 "Pulumi.yml", "config/PULUMI.production.YML"):
         with repository() as (repo, base):
             write(repo, path, "name: demo\n")
             head = commit(repo, "Pulumi manifest")

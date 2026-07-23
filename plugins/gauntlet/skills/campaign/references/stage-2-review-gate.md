@@ -60,7 +60,7 @@ content marker is uncertain. `reviews_ok` target = `required(tier)`: **1 if `tie
   double-quoted keys, fails closed to CODE. Agent-docs are CODE, never HUMAN-DOC.
 - **SENSITIVE** (a CODE subset) — CI (`.github/**`), `scripts/**`, executables (`+x`),
   `Dockerfile`/`Makefile`, dependency manifests/lockfiles, IaC (including case-insensitive canonical
-  `Pulumi.yaml` and `Pulumi.<stack>.yaml` basenames), auth/crypto/secret paths.
+  `Pulumi.{yaml,yml}` and `Pulumi.<stack>.{yaml,yml}` basenames), auth/crypto/secret paths.
 
 Classify **every side of the change that exists** — the base content and the head content alike — and keep
 the higher class: a rename classifies its old and new paths, a deletion its old path, and a modification or

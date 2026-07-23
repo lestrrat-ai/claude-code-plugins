@@ -95,7 +95,7 @@ _DEPENDENCY_NAMES = frozenset({
 _DEPENDENCY_SUFFIXES = (".csproj", ".fsproj", ".vbproj")
 _IAC_SUFFIXES = frozenset({".tf", ".tfvars", ".hcl"})
 _IAC_PARTS = frozenset({"terraform", "pulumi", "k8s", "kubernetes", "helm", "ansible"})
-_PULUMI_MANIFEST_RE = re.compile(r"pulumi(?:\.[a-z0-9_.-]+)?\.yaml")
+_PULUMI_MANIFEST_RE = re.compile(r"pulumi(?:\.[a-z0-9_.-]+)?\.ya?ml")
 _SENSITIVE_TOKENS = frozenset({
     "auth", "authentication", "authorization", "oauth", "oidc", "jwt", "crypto", "cryptography",
     "secret", "secrets", "credential", "credentials", "key", "keys", "certificate", "certificates",
