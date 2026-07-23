@@ -172,7 +172,8 @@ about and one whose partial rejection strands the rest.
      surface that terminal campaign result and leave the follow-up lifecycle unchanged. Choosing the next
      follow-up transition for an aborted-but-open PR is separate lifecycle work; this adoption guard does
      not invent one. An unadopted follow-up PR with no terminal row sits **outside the campaign gate** —
-     the exact thing "fold that PR into the current campaign" exists to prevent.
+     the exact thing "fold that PR into the current campaign" exists to prevent. If the user rejects it,
+     follow **Rejecting an `in-pr` follow-up** below.
    - **`reopened`** — its PR died and it already carries the decision it earned, so it does **not** re-decide:
      it resumes at opening the **replacement** PR. Dispatch the fixer, which opens the replacement PR, then
      `open-pr` records it (→ `in-pr`) and step 4 adopts it — no reconciliation, same as `self-accepted`. The
@@ -227,6 +228,27 @@ about and one whose partial rejection strands the rest.
    unsure — it is **not** the driver's to take up. Surface it in the report and let the user rule (`accept` / `reject`). That is
    the normal case, not a failure. And **publishing is never on the autonomous path**: an issue or a
    release always waits for the user's agreement on that specific item (Tier 3).
+
+#### Rejecting an `in-pr` follow-up
+
+**Finish the recorded PR's campaign disposition BEFORE recording `reject`.** `rejected` is terminal, so
+the active loop never resumes it. `reject` records the durable user ruling; it does not finish the
+campaign ledger row or remove campaign labels. Resolve the recorded PR's live state, then use the matching
+sequence:
+
+- **OPEN** — run the permanent-abort procedure in `bailout-and-final-report.md`, **1-hour cap per task**,
+  to completion. Then run `followups.py --file <store> reject --id fuN`.
+- **CLOSED WITHOUT MERGING** — run `merge.py run` through its existing terminal close-out
+  (`loop-control.md`, "Step 4 — Merge queued PRs as a serialized drain"). Then run
+  `followups.py --file <store> closed-unmerged --id fuN`; only after that succeeds run
+  `followups.py --file <store> reject --id fuN`.
+- **MERGED** — run `merge.py run` to finish the existing merge finalization, then run
+  `followups.py --file <store> merged --id fuN`. Do not record `reject`: the merged PR is now the durable
+  record and `merged` removes the queue entry.
+
+The existing `reject` and `closed-unmerged` edges keep the recorded `pr`; never clear that history.
+Do not add a follow-up state for campaign disposition. The store graph and PR history stay unchanged;
+ordering the existing campaign procedure before the existing terminal ruling closes the gap.
 
 **The two subagents are the load-bearing part.** The investigation reproduces before anything is changed,
 and the fix authors code that the gauntlet judges — never the same worker doing both, and never the driver
@@ -306,7 +328,7 @@ followups.py --file <store> corroborate --id fuN --finding F   # TIER 1 — free
 followups.py --file <store> refute      --id fuN --finding F   # TIER 1 — free. And it stays in the store
 followups.py --file <store> take-up     --id fuN --act-...     # TIER 2 — only with EVERY condition evidenced
 followups.py --file <store> accept  --id fuN        # THE USER AGREED — the only edge into `accepted`
-followups.py --file <store> reject  --id fuN        # the user ruled against it — and the entry is KEPT
+followups.py --file <store> reject  --id fuN        # user ruled against it; `in-pr` follows "Rejecting an `in-pr` follow-up"
 followups.py --file <store> open-pr --id fuN --pr <ref>    # a PR is addressing it — the entry STAYS
 followups.py --file <store> merged  --id fuN        # that PR LANDED — it is the record now, so the entry is DELETED
 followups.py --file <store> closed-unmerged --id fuN       # that PR died — back to OPEN WORK, nothing recorded it
