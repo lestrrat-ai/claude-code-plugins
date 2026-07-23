@@ -441,8 +441,9 @@ the worker returns, and what never moves into it. The steps below are unchanged 
      `base-preflight.py check --pr <N> --worktree <worktree> --base <base> --file <state.jsonl>`; only
      `proceed` clears the review launch, and — because a verdict follows — the `--file` is REQUIRED: on
      `proceed` it records `base_ok_sha` for the head, without which `ledger.py verdict` refuses the verdict
-     it later records (Stage 2a, "Recording a verdict"). Rebase on `rebase-first` or re-poll on `recheck` per
-     Stage 2a, then restart this precondition sequence. With `proceed`, evaluate the verdict transport through
+     it later records (Stage 2a, "Recording a verdict"). Rebase on `rebase-first`, re-poll on `recheck`, or
+     leave the ledger-held candidate alone on `park` per Stage 2a, then restart this precondition sequence.
+     With `proceed`, evaluate the verdict transport through
      `runtime-adapter.md`'s capability/transition owner before
      building its record and take only the action it returns;
      missing native cwd/mount/sandbox controls alone are not a machine blocker. Then **ensure the pass's

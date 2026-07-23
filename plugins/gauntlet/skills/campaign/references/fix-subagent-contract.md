@@ -24,8 +24,8 @@ block. This file owns the dispatch procedure, not a second copy of prompt text.
 `<base>` is **this PR row's effective base** — its explicit `base_branch`, else the legacy header fallback
 (`ledger.py`'s `effective_base`), never the one header base. With `--file`, the ROW owns the base: `--base`
 is an **assertion** that must equal the row's effective base, and the helper also compares the PR's live
-`baseRefName` against it. It fetches `origin/<base>` and prints ONE of three verdicts, and the action
-**splits by verdict** — only `proceed` clears the dispatch, and the other two are NOT the same response:
+`baseRefName` against it. It fetches `origin/<base>` and prints ONE of four verdicts, and the action
+**splits by verdict** — only `proceed` clears the dispatch:
 
 - **`proceed`** → the base is current; **dispatch the fix**. The `--file` makes the `proceed` record
   `base_ok_sha` for the current head — the MECHANICAL precondition `ledger.py verdict` enforces
@@ -36,13 +36,16 @@ is an **assertion** that must equal the row's effective base, and the helper als
   `clean-rebase.py` FIRST: a clean base-only rebase (exit 0) PRESERVES the verdicts and label, and only its
   **exit 3** — conflict OR diff-changed — falls back to the JUDGMENT path that resets the gate and re-mirrors
   the label. Then **re-run the pre-flight**.
-- **`recheck`** → mergeability is not computed yet, the view carried an unknown value, base ancestry could
+- **`recheck`** → mergeability is not computed yet, base ancestry could
   not be verified, **or the PR was retargeted** — its live `baseRefName` no longer equals the row's effective
   base (a different branch NAME, not a mere ADVANCE of the same branch). A retarget is an unsupported mid-run
   change: the reason is the machine-blocker wording a reconcile/re-adoption park records (`base changed from
   <recorded> to <live>; not supported mid-run`); **park the row** on the user through that path rather than
-  dispatch. For the other recheck causes, do **NOT** dispatch and do **NOT** rebase — **re-poll**, then
+  dispatch. For the other `recheck` causes, do **NOT** dispatch and do **NOT** rebase — **re-poll**, then
   **re-run the pre-flight**.
+- **`park`** → either GitHub enum carries a value its schema does not declare. With required `--file`, the
+  helper has already written the `ledger.py park` machine-blocker transition, naming the value verbatim.
+  Do **NOT** dispatch or re-poll; leave the held candidate until the user rules on the blocker.
 
 A fix authored on a stale or conflicting base is wasted work: it is re-reviewed against the rebased tip
 anyway, and its diff may not even apply. The tool fetches and decides only — it performs no rebase; the

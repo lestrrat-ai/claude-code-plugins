@@ -7,7 +7,7 @@ report MERGEABLE/CLEAN after another campaign PR advances an unprotected base, s
 merge states with fetched Git ancestry. A fix authored on a stale/conflicting base is wasted — it is
 re-reviewed against the rebased tip anyway. This turns the prose into an enforced check.
 
-It DECIDES one of `proceed` / `rebase-first` / `recheck` from the live PR view plus fetched base ancestry
+It DECIDES one of `proceed` / `rebase-first` / `recheck` / `park` from the live PR view plus fetched base ancestry
 and PERFORMS NO REBASE: the driver rebases when told `rebase-first`, then re-runs this. Deciding and doing
 are two jobs and this is only the first — nothing here runs `git rebase`/`git merge` or edits a branch.
 
@@ -24,14 +24,14 @@ same `BASE_CHANGE_PARK_REASON` wording a re-adoption/reconcile park records and 
 base that merely ADVANCED — same branch, new commits — is NOT a retarget; that stays the ancestry
 `rebase-first` below.)
 
-On a final `proceed`, and ONLY when `--file <ledger>` is given, this records that base check on the ledger row
-by shelling out to `ledger.py base-ok` — resolving the worktree's live `HEAD` and stamping it as
-`base_ok_sha`. That stamp is the MECHANICAL precondition `ledger.py verdict` enforces: a review verdict cannot
-be recorded for a head with no fresh `proceed`. Without `--file` the tool is the pure decider it always was
-(it writes nothing, and `--base` is the base it fetches); `decide()` itself stays pure regardless.
+With `--file <ledger>`, a final `proceed` records that base check through `ledger.py base-ok`, while `park`
+records an unrecognized enum through `ledger.py park`. The latter is the existing machine-blocker transition:
+it atomically sets `status = awaiting-user`, names the unrecognized value in `ci_reason`, and clears
+`blocker_ruling`. Without `--file` the tool is the pure decider it always was (it writes nothing, and `--base`
+is the base it fetches); `decide()` itself stays pure regardless.
 
 The verdict is printed as JSON on stdout, and the EXIT CODE gates a caller's `$?`: 0 for `proceed`, non-zero
-for `rebase-first` and `recheck` (and for a view that could not be fetched or was malformed — those fail
+for `rebase-first`, `recheck`, and `park` (and for a view that could not be fetched or was malformed — those fail
 CLOSED to `recheck`, never `proceed`). The fixture suite is the SIBLING `base-preflight-test.py`, this
 tool's executable contract; `self-test` loads it by a `__file__`-relative path and FAILS LOUDLY if it is
 missing — a self-test that passes because it found no tests is not a passing gate.
@@ -82,12 +82,12 @@ def _base_change_reason(recorded: str, live: str) -> str:
 #
 # `proceed` is the ONLY verdict that clears a review/fix onto this branch; `rebase-first` says the base is
 # stale/conflicting and a rebase must land first; `recheck` is NEVER a verdict — it says the mergeability is
-# not yet computed (or is a value nobody has classified), so re-poll and decide again. Every non-`proceed`
-# outcome fails CLOSED: this tool would rather send the driver back to rebase or re-poll than wave a fix onto
-# a base it could not confirm was current.
+# not yet computed, so re-poll and decide again; `park` says an enum value is unrecognized and records the
+# existing machine-blocker transition when a ledger is supplied. Every non-`proceed` outcome fails CLOSED.
 PROCEED = "proceed"
 REBASE_FIRST = "rebase-first"
 RECHECK = "recheck"
+PARK = "park"
 
 
 # --- the two GitHub enums, as data so `decide` reads ONE source, mapped TOTALLY -------------------
@@ -95,8 +95,8 @@ RECHECK = "recheck"
 # The AUTHORITATIVE value sets are GitHub's schema, as `stage-3-merge.md` records them. The two enums are
 # crossed only as a pre-screen before the Git ancestry check, never for merge-readiness (that is
 # `merge-check.py`'s job, downstream, over the same enums). The mapping below is TOTAL over both sets: every
-# value has a home, and a value in NEITHER set is one GitHub added since — the catch-all in `decide` re-polls
-# it rather than guessing.
+# value has a home, and a value in NEITHER set is one GitHub added since — the catch-all in `decide` parks it
+# through the machine-blocker path rather than guessing or repeatedly polling a stable unknown value.
 MERGEABLE_VALUES = frozenset({"MERGEABLE", "CONFLICTING", "UNKNOWN"})
 MERGE_STATE_STATUS_VALUES = frozenset(
     {"DIRTY", "UNKNOWN", "BLOCKED", "BEHIND", "UNSTABLE", "HAS_HOOKS", "CLEAN"})
@@ -143,22 +143,23 @@ def decide(view: dict) -> dict:
     `validate_view`), so `view["mergeable"]` and `view["mergeStateStatus"]` are present strings.
 
     The order is deliberate and FIRST-MATCHING-RULE-WINS, and it fails safe BEFORE it acts: an unrecognised
-    value of EITHER enum re-polls first, then an uncomputed mergeability re-polls, and only then is a conflict
+    value of EITHER enum parks first, then an uncomputed mergeability re-polls, and only then is a conflict
     or a moved base allowed to say `rebase-first`. This ordering is load-bearing — a view like
     `{mergeable: CONFLICTING, mergeStateStatus: UNKNOWN}` or `{..., mergeStateStatus: FROZEN}` (a value GitHub
     added since) must NOT be steered to `rebase-first` on the half of the view we DO recognise while the other
-    half is uncomputed or unclassified. UNKNOWN/unrecognised WINS: re-poll and decide again on a full view,
-    never guess. A fully computed, recognised, non-conflicting view reaches preliminary `proceed`; `check`
-    then verifies the fetched base graph before emitting final `proceed`.
+    half is uncomputed or unclassified. UNKNOWN re-polls; unrecognised parks. A fully computed, recognised,
+    non-conflicting view reaches preliminary `proceed`; `check` then verifies the fetched base graph before
+    emitting final `proceed`.
     """
     mergeable = view["mergeable"]
     mss = view["mergeStateStatus"]
 
     # 1. UNRECOGNISED VALUE of EITHER enum — a value GitHub's schema does not declare (one it added since).
-    #    Fail safe BEFORE any rebase/proceed decision: re-poll, never guess onto a value nobody classified.
-    if mergeable not in MERGEABLE_VALUES or mss not in MERGE_STATE_STATUS_VALUES:
-        unknown = mergeable if mergeable not in MERGEABLE_VALUES else mss
-        return _verdict(RECHECK, f"unknown merge state {unknown} — re-poll, never guess")
+    #    Fail safe BEFORE any rebase/proceed decision: park through the machine-blocker path.
+    if mergeable not in MERGEABLE_VALUES:
+        return _verdict(PARK, f"unknown mergeable value {mergeable} — park")
+    if mss not in MERGE_STATE_STATUS_VALUES:
+        return _verdict(PARK, f"unknown merge state {mss} — park")
 
     # 2. NOT COMPUTED YET — GitHub has not finished computing mergeability for EITHER enum. NEVER a verdict:
     #    re-poll. This wins over rebase-first: a recognised CONFLICTING/DIRTY/BEHIND on one half cannot decide
@@ -268,6 +269,16 @@ def record_base_ok(ledger_file: str, pr: str, worktree: "str | None") -> "str | 
     return None
 
 
+def record_park(ledger_file: str, pr: str, reason: str) -> "str | None":
+    """Record an unrecognized enum through `ledger.py park`, the machine-blocker transition owner."""
+    parked = subprocess.run(  # noqa: S603
+        [sys.executable, str(LEDGER), "--file", ledger_file, "park", "--pr", str(pr), "--reason", reason],
+        capture_output=True, text=True, check=False)
+    if parked.returncode != 0:
+        return f"`ledger.py park` exited {parked.returncode}: {parked.stderr.strip()}"
+    return None
+
+
 def resolve_ledger_base(ledger_file: str, pr: str, base_arg: "str | None",
                         view: dict) -> "tuple[str | None, dict | None]":
     """When a ledger is named the ROW owns the base — `--base` is only an assertion, never a base source.
@@ -305,11 +316,11 @@ def resolve_ledger_base(ledger_file: str, pr: str, base_arg: "str | None",
 def check(pr: str, repo: "str | None", view_json: "str | None", project_root: "str | None",
           worktree: "str | None", base: "str | None", remote: str, ledger_file: "str | None") -> int:
     """Fetch the live view, decide, print the verdict as JSON. EXIT 0 only on `proceed`; every other outcome
-    (rebase-first, recheck, an unfetchable or malformed view) exits non-zero so a caller can gate on `$?`.
+    (rebase-first, recheck, park, an unfetchable or malformed view) exits non-zero so a caller can gate on
+    `$?`.
 
-    When `--file` is given, a final `proceed` also records `base_ok_sha` for the live head via `ledger.py
-    base-ok` (the mechanical precondition `ledger.py verdict` enforces). A recording failure fails CLOSED to
-    `recheck` — never a bare `proceed` whose verdict the ledger would then refuse. Without `--file`, nothing
+    When `--file` is given, a final `proceed` records `base_ok_sha` for the live head, while `park` records
+    the machine-blocker transition. A recording failure fails CLOSED to `recheck`. Without `--file`, nothing
     is written."""
     try:
         view = load_view(pr, repo, view_json, project_root)
@@ -332,6 +343,12 @@ def check(pr: str, repo: "str | None", view_json: "str | None", project_root: "s
             print(json.dumps(refusal))
             return 1
     result = decide(view)
+    # An unrecognized enum is stable input, not transient UNKNOWN. Stage 3 must park it BEFORE leaving the
+    # candidate, using the same ledger-owned machine-blocker transition as merge-check's park action.
+    if result["verdict"] == PARK and ledger_file is not None:
+        err = record_park(ledger_file, pr, result["reason"])
+        if err is not None:
+            result = _verdict(RECHECK, f"could not record machine-blocker park: {err}")
     if result["verdict"] == PROCEED:
         ancestry, detail = check_base_ancestry(worktree, base, remote)
         if ancestry == "stale":
@@ -411,9 +428,10 @@ def main(argv: "list[str] | None" = None) -> int:
                                   "that must equal the row's effective base, not an independent base source")
     c.add_argument("--remote", default="origin", help="the worktree remote holding the base (default: origin)")
     c.add_argument("--file", help="the ledger (state.jsonl); resolves the row's effective base (asserting "
-                                  "--base and refusing a live retarget), and on `proceed` records base_ok_sha "
-                                  "for the live head so `ledger.py verdict` can later count. Absent: the pure "
-                                  "decider, no write, --base is the base it fetches")
+                                  "--base and refusing a live retarget), and records the final decision: "
+                                  "`proceed` records base_ok_sha for the live head so `ledger.py verdict` "
+                                  "can later count; `park` records the ledger-owned machine blocker. "
+                                  "Absent: the pure decider, no write, --base is the base it fetches")
 
     sub.add_parser("self-test", help="run every fixture (base-preflight-test.py)")
 

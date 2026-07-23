@@ -6,7 +6,7 @@ They live in a SIBLING file, and `base-preflight.py self-test` FAILS LOUDLY if i
 EVERY FIXTURE HAS TEETH. It asserts the EXACT verdict AND, where the wording is load-bearing, the EXACT
 reason — a suite that only checked `verdict == "rebase-first"` would pass against a decider that returned the
 wrong reason, and the reason is what the driver acts on. There is one fixture PER `mergeStateStatus` value so
-the mapping is pinned TOTALLY over the enum, plus the unrecognised-value fixture that pins the catch-all.
+the mapping is pinned TOTALLY over the enum, plus unrecognised-value fixtures that pin the park catch-all.
 """
 
 from __future__ import annotations
@@ -92,7 +92,7 @@ def t_every_mergestate_value_is_mapped():
     # pins that NONE is left unmapped.
     for value in M.MERGE_STATE_STATUS_VALUES:
         got = M.decide(view(mergeStateStatus=value))
-        check(got["verdict"] in (M.PROCEED, M.REBASE_FIRST, M.RECHECK),
+        check(got["verdict"] in (M.PROCEED, M.REBASE_FIRST, M.RECHECK, M.PARK),
               f"mergeStateStatus={value!r} produced a non-verdict {got!r}")
 
 
@@ -111,16 +111,18 @@ def t_unknown_mergeable_rechecks():
 
 # --- the totality catch-all ---------------------------------------------------
 
-def t_unrecognised_mergestate_value_rechecks():
-    # A value GitHub's schema does not declare — the catch-all re-polls it, never guesses `proceed`. Pins
-    # that the mapping is TOTAL: an unclassified value is fail-closed, not silently cleared.
-    expect(view(mergeStateStatus="FROZEN"), "recheck", "unknown merge state FROZEN — re-poll, never guess")
+def t_unrecognised_mergestate_value_parks():
+    expect(view(mergeStateStatus="FROZEN"), "park", "unknown merge state FROZEN — park")
+
+
+def t_unrecognised_mergeable_value_parks():
+    expect(view(mergeable="WOBBLY"), "park", "unknown mergeable value WOBBLY — park")
 
 
 # --- cross-enum precedence: UNKNOWN / unrecognised WINS over a recognised rebase state ------------
 # A view with a recognised CONFLICTING/DIRTY/BEHIND on ONE half and an UNKNOWN or unrecognised value on the
-# OTHER must NOT be steered to `rebase-first` on the half we recognise — the uncomputed/unclassified half
-# wins and we re-poll on a full view. These pin the ordering: fail-safe BEFORE act.
+# OTHER must NOT be steered to `rebase-first` on the half we recognise — the uncomputed half re-polls and
+# the unclassified half parks. These pin the ordering: fail-safe BEFORE act.
 
 def t_conflicting_with_unknown_mergestate_rechecks():
     # CONFLICTING mergeable but mergeStateStatus not yet computed — re-poll, do NOT rebase on half a view.
@@ -128,10 +130,9 @@ def t_conflicting_with_unknown_mergestate_rechecks():
            "mergeability not computed yet — re-poll")
 
 
-def t_conflicting_with_unrecognised_mergestate_rechecks():
-    # CONFLICTING mergeable but an unrecognised merge state (one GitHub added since) — re-poll, never guess.
-    expect(view(mergeable="CONFLICTING", mergeStateStatus="FROZEN"), "recheck",
-           "unknown merge state FROZEN — re-poll, never guess")
+def t_conflicting_with_unrecognised_mergestate_parks():
+    expect(view(mergeable="CONFLICTING", mergeStateStatus="FROZEN"), "park",
+           "unknown merge state FROZEN — park")
 
 
 def t_dirty_with_unknown_mergeable_rechecks():
@@ -348,6 +349,60 @@ def _base_ok_sha(ledger: Path, pr: str) -> str:
     return _run_ledger(ledger, "get", "--pr", pr, "--field", "base_ok_sha").stdout.strip()
 
 
+def _ledger_field(ledger: Path, pr: str, field: str) -> str:
+    return _run_ledger(ledger, "get", "--pr", pr, "--field", field).stdout.strip()
+
+
+def t_frozen_view_with_file_parks_candidate():
+    """Stage 3 sequence: the required preflight sees FROZEN and records the ledger park before returning."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        ledger = root / "state.jsonl"
+        _ledger_row(ledger, "9", "a" * 40)
+        _run_ledger(ledger, "set", "--pr", "9", "--status", "in_review")
+        vjson = root / "frozen.json"
+        vjson.write_text(json.dumps(view(mergeStateStatus="FROZEN")), encoding="utf-8")
+
+        code, out, err = capture_cli(
+            M.main,
+            ["check", "--pr", "9", "--view-json", str(vjson), "--base", "main", "--file", str(ledger)],
+        )
+
+        check(code != 0, f"a parked candidate must not clear preflight (stderr: {err})")
+        check(json.loads(out) == {"verdict": "park", "reason": "unknown merge state FROZEN — park"},
+              f"FROZEN must return the park action, got {out!r}")
+        check(_ledger_field(ledger, "9", "status") == "awaiting-user",
+              "FROZEN did not reach ledger.py park before preflight returned")
+        check(_ledger_field(ledger, "9", "ci_reason") == "unknown merge state FROZEN — park",
+              "the machine-blocker park did not name the unrecognized value")
+        check(_ledger_field(ledger, "9", "blocker_ruling") == "-",
+              "park entry must clear the ruling through ledger.py's atomic transition")
+        check(_base_ok_sha(ledger, "9") == "-",
+              "a machine-blocker park must not stamp the base as cleared")
+
+
+def t_unknown_view_with_file_rechecks_without_park():
+    """Recognized transient UNKNOWN remains a re-poll and leaves the candidate active."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        ledger = root / "state.jsonl"
+        _ledger_row(ledger, "9", "a" * 40)
+        _run_ledger(ledger, "set", "--pr", "9", "--status", "in_review")
+        vjson = root / "unknown.json"
+        vjson.write_text(json.dumps(view(mergeStateStatus="UNKNOWN")), encoding="utf-8")
+
+        code, out, err = capture_cli(
+            M.main,
+            ["check", "--pr", "9", "--view-json", str(vjson), "--base", "main", "--file", str(ledger)],
+        )
+
+        check(code != 0, f"UNKNOWN must not clear preflight (stderr: {err})")
+        check(json.loads(out) == {"verdict": "recheck", "reason": "mergeability not computed yet — re-poll"},
+              f"recognized UNKNOWN must remain the re-poll action, got {out!r}")
+        check(_ledger_field(ledger, "9", "status") == "in_review",
+              "recognized UNKNOWN incorrectly entered the machine-blocker park")
+
+
 def _current_base_worktree(root: Path) -> "tuple[Path, str]":
     """A candidate clone that CONTAINS fetched main (so base-preflight reaches `proceed`). Returns (worktree,
     HEAD sha)."""
@@ -402,8 +457,9 @@ def t_proceed_with_file_records_base_ok():
 
 
 def t_non_proceed_with_file_leaves_base_ok():
-    """`rebase-first` and `recheck` NEVER stamp — even with `--file`. Only the proceed branch records, so a
-    non-proceed decision leaves `base_ok_sha` at `-` and a later verdict stays refused."""
+    """`rebase-first` and `recheck` NEVER stamp — even with `--file`. Only `proceed` stamps `base_ok_sha`, so
+    these non-proceed decisions leave it at `-` and a later verdict stays refused. The Stage 3 park fixture
+    pins the same no-stamp rule while separately proving the machine-blocker write."""
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
         ledger = root / "state.jsonl"
@@ -540,6 +596,19 @@ def t_file_missing_row_rechecks():
               f"a missing row must recheck and name the PR, got {result!r}")
 
 
+def t_cli_help_names_both_file_writes():
+    """`check --help` names both ledger writes; omitting `--file` is the only pure/no-write form."""
+    code, out, err = capture_cli(M.main, ["check", "--help"])
+    check(code == 0, f"`check --help` must exit successfully (stderr: {err})")
+    help_text = " ".join(out.split())
+    check("`proceed` records base_ok_sha" in help_text,
+          f"`--file` help omitted the proceed stamp: {help_text!r}")
+    check("`park` records the ledger-owned machine blocker" in help_text,
+          f"`--file` help omitted the park transition: {help_text!r}")
+    check("Absent: the pure decider, no write" in help_text,
+          f"`--file` help no longer names the no-write form: {help_text!r}")
+
+
 CASES = [
     ("clean-proceeds", "CLEAN passes the enum screen", t_clean_proceeds),
     ("has-hooks-proceeds", "HAS_HOOKS passes the enum screen", t_has_hooks_proceeds),
@@ -552,16 +621,22 @@ CASES = [
      t_every_mergestate_value_is_mapped),
     ("conflicting-rebases", "CONFLICTING decided on .mergeable alone -> rebase-first", t_conflicting_rebases),
     ("unknown-mergeable-rechecks", "UNKNOWN mergeability -> recheck", t_unknown_mergeable_rechecks),
-    ("unrecognised-value-rechecks", "an unrecognised merge state re-polls (totality catch-all)",
-     t_unrecognised_mergestate_value_rechecks),
+    ("unrecognised-mergestate-parks", "an unrecognised merge state parks (totality catch-all)",
+     t_unrecognised_mergestate_value_parks),
+    ("unrecognised-mergeable-parks", "an unrecognised mergeable value parks (totality catch-all)",
+     t_unrecognised_mergeable_value_parks),
     ("conflicting+unknown-rechecks", "CONFLICTING + UNKNOWN merge state re-polls, never rebases",
      t_conflicting_with_unknown_mergestate_rechecks),
-    ("conflicting+unrecognised-rechecks", "CONFLICTING + unrecognised merge state re-polls, never rebases",
-     t_conflicting_with_unrecognised_mergestate_rechecks),
+    ("conflicting+unrecognised-parks", "CONFLICTING + unrecognised merge state parks, never rebases",
+     t_conflicting_with_unrecognised_mergestate_parks),
     ("dirty+unknown-mergeable-rechecks", "DIRTY + UNKNOWN mergeable re-polls, never rebases",
      t_dirty_with_unknown_mergeable_rechecks),
     ("behind+unknown-mergeable-rechecks", "BEHIND + UNKNOWN mergeable re-polls, never rebases",
      t_behind_with_unknown_mergeable_rechecks),
+    ("file-frozen-parks", "Stage 3 preflight routes a FROZEN API view through ledger.py park",
+     t_frozen_view_with_file_parks_candidate),
+    ("file-unknown-rechecks", "Stage 3 preflight leaves recognized UNKNOWN active for re-poll",
+     t_unknown_view_with_file_rechecks_without_park),
     ("cli-missing-ancestry", "a CLEAN view without base ancestry fails closed", t_cli_missing_ancestry_rechecks),
     ("cli-rebase-first", "check --view-json on a DIRTY view exits non-zero with rebase-first", t_cli_rebase_first),
     ("cli-malformed", "a view missing a field fails closed to recheck, never KeyError", t_cli_malformed),
@@ -586,4 +661,6 @@ CASES = [
     ("file-legacy-row-header-base", "--file: an old row inherits the header base for the live comparison",
      t_file_legacy_row_inherits_header_base),
     ("file-missing-row", "--file: an unknown PR row fails closed to recheck", t_file_missing_row_rechecks),
+    ("cli-help-file-writes", "check --help names proceed and park writes; absent --file stays pure",
+     t_cli_help_names_both_file_writes),
 ]

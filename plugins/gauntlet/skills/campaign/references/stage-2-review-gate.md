@@ -138,12 +138,14 @@ review gate"), and the review re-starts on the clean tip:
   the helper also compares the PR's **live** `baseRefName` against it. It checks GitHub's merge states and
   whether fetched `origin/<base>` is an ancestor of the PR worktree's `HEAD`. A `rebase-first` verdict covers
   a conflict, GitHub reporting behind, or a CLEAN PR whose branch lacks the refreshed base — a base that
-  merely **ADVANCED** (same branch NAME, new commits). `recheck` covers an uncomputed/unrecognized GitHub
-  value, ancestry the helper cannot verify, **or a live retarget** — the PR now targets a different branch
+  merely **ADVANCED** (same branch NAME, new commits). `recheck` covers an uncomputed GitHub value,
+  ancestry the helper cannot verify, **or a live retarget** — the PR now targets a different branch
   NAME, an unsupported mid-run change the helper refuses with the same machine-blocker reason a
   reconcile/re-adoption park records (`base changed from <recorded> to <live>; not supported mid-run`); park
   the row through that path and do not proceed. Re-poll and re-run, never dispatch or rebase from incomplete
-  evidence. `base-preflight.py` owns the decision and is the pre-flight gate for every fix subagent
+  evidence. `park` covers an enum value GitHub's schema does not declare; with `--file`, the helper records
+  the existing `ledger.py park` transition before returning, so leave the now-held candidate alone.
+  `base-preflight.py` owns the decision and is the pre-flight gate for every fix subagent
   (`fix-subagent-contract.md`, PRE-FLIGHT). **Run it with `--file <state.jsonl>`:** on `proceed` it records
   `base_ok_sha` for the current head — the MECHANICAL precondition `ledger.py verdict` then enforces
   ("Recording a verdict", below), so a review verdict can never be recorded for a head with no fresh
