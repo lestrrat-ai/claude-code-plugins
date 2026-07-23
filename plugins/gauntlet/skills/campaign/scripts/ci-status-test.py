@@ -770,7 +770,7 @@ def required_set_matrix_cases(ci, tmp: Path) -> list[str]:
 
 
 def command_copy_cases(ci, tmp: Path) -> list[str]:
-    """Wrapped valid and invalid command copies are both found, without borrowing a later paragraph's flag."""
+    """Plain and blockquoted wrapped copies are found without borrowing a later paragraph's flag."""
     problems: list[str] = []
     fixtures = {
         "derive": (
@@ -801,17 +801,25 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
         root.mkdir()
         shell_valid = valid.replace("ci-status.py\n", "ci-status.py \\\n")
         shell_invalid = invalid.replace("ci-status.py\n", "ci-status.py \\\n")
+        quoted = lambda command: "\n".join(f"> {line}" for line in command.splitlines())
+        quoted_valid = quoted(valid)
+        quoted_invalid = quoted(invalid)
+        quoted_shell_valid = quoted(shell_valid)
+        quoted_shell_invalid = quoted(shell_invalid)
+        quoted_detached = quoted(detached)
         (root / "wrapped.md").write_text(
-            f"{valid}\n\n{invalid}\n\n{shell_valid}\n\n{shell_invalid}\n\n{detached}\n",
+            f"{valid}\n\n{invalid}\n\n{shell_valid}\n\n{shell_invalid}\n\n{detached}\n\n"
+            f"{quoted_valid}\n>\n{quoted_invalid}\n>\n{quoted_detached}\n>\n"
+            f"{quoted_shell_valid}\n>\n{quoted_shell_invalid}\n>\n{quoted_detached}\n",
             encoding="utf-8",
         )
         found_problems, copies = check(root)
-        if len(copies) != 4:
-            problems.append(f"[doc-copy {subcommand}] found {len(copies)} wrapped copies, expected 4: {copies!r}")
-        if len(found_problems) != 2 or any(problem_needle not in problem for problem in found_problems):
+        if len(copies) != 8:
+            problems.append(f"[doc-copy {subcommand}] found {len(copies)} wrapped copies, expected 8: {copies!r}")
+        if len(found_problems) != 4 or any(problem_needle not in problem for problem in found_problems):
             problems.append(
-                f"[doc-copy {subcommand}] invalid plain and shell-wrapped copies were not rejected by "
-                f"their own missing flag: "
+                f"[doc-copy {subcommand}] invalid plain and blockquoted copies were not rejected by their "
+                f"own missing flag: "
                 f"{found_problems!r}"
             )
     return problems
@@ -1117,7 +1125,7 @@ def run(ci, tmp: Path) -> int:
         print(f"FAIL     {problem}")
     if not command_problems:
         print(f"ok       {'wrapped doc command copies':32} -> derive, liveness, and required-set; valid and "
-              f"invalid fixtures stay paragraph-bounded")
+              f"invalid plain and blockquoted fixtures stay paragraph-bounded")
 
     liveness_problems = liveness_cases(ci, tmp)
     for problem in liveness_problems:

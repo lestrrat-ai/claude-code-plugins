@@ -2212,15 +2212,16 @@ def check_gh_invocations(text: str, argv: dict[str, list[str]]) -> list[str]:
 
 
 def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, str]]:
-    """Find runnable-command candidates, allowing the subcommand to wrap within its paragraph."""
-    separator = r"(?:\s+|[ \t]+\\\r?\n[ \t]*|[ \t]*\\\r?\n[ \t]+)"
+    """Find wrapped blockquote candidates, stopping at quoted or unquoted blank lines."""
+    quote_prefix = r"(?:[ \t]*>[ \t]*)+"
+    separator = rf"(?:\s+|[ \t]*\\\r?\n(?:{quote_prefix})?[ \t]*|\r?\n{quote_prefix})"
     needle = re.compile(rf"ci-status\.py{separator}{re.escape(subcommand)}\b")
     copies: list[tuple[Path, int, str]] = []
     for md in sorted(root.rglob("*.md")):
         text = md.read_text(encoding="utf-8")
         starts = [0]
         ends = []
-        for boundary in re.finditer(r"\n[ \t]*\n", text):
+        for boundary in re.finditer(rf"\r?\n(?:[ \t]*|{quote_prefix})\r?\n", text):
             ends.append(boundary.start())
             starts.append(boundary.end())
         ends.append(len(text))
