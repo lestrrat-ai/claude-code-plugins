@@ -86,9 +86,10 @@ jobs:
             echo "::error::no Python files carry the exact # ci: pyright marker"
             exit 1
           fi
-          crlf_fixture='plugins/gauntlet/skills/campaign/scripts/fixtures/pyright/crlf_marker.py'
-          if ! printf '%s\n' "${files[@]}" | grep -Fx -- "${crlf_fixture}" >/dev/null; then
-            echo "::error::the tracked CRLF marker fixture was not selected: ${crlf_fixture}"
+          crlf_fixture='plugins/gauntlet/skills/campaign/scripts/fixtures/pyright/crlf_marker.txt'
+          crlf_match=$(git grep -l -e '^# ci: pyright$' -e $'^# ci: pyright\r$' -- "${crlf_fixture}")
+          if [ "${crlf_match}" != "${crlf_fixture}" ]; then
+            echo "::error::the tracked CRLF marker fixture did not match exactly: ${crlf_fixture}"
             exit 1
           fi
           npx --yes pyright@1.1.410 --outputjson "${files[@]}" | tee pyright.json
