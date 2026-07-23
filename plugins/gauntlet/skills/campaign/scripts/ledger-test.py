@@ -1118,7 +1118,8 @@ def t_default_non_goals_broadening_guard(L: ModuleType, tmp: Path) -> None:
     """A `default_non_goals` change that BROADENS scope (removes/shrinks a default) is REFUSED while any
     non-terminal PR still holds banked review credit (`reviews_ok > 0`) — the false-permissive-merge guard.
     A narrowing change (an ADD) is always allowed; a broadening change is allowed once no active row holds
-    credit (its crediting rows are at 0, or terminal)."""
+    credit (its crediting rows are at 0, or terminal). The final report therefore labels the header value
+    as a run-end snapshot, not historical scope."""
     def ledger(name: str, *rows: str) -> Path:
         return write_lines(tmp / name,
                            header_line(L, run_id="r", default_non_goals=json.dumps(["D", "E"])), *rows)
@@ -1146,6 +1147,19 @@ def t_default_non_goals_broadening_guard(L: ModuleType, tmp: Path) -> None:
         check(code == 0, f"a broadening change was refused with only {why}: {err!r}")
         code, out, _ = cli(L, ["--file", str(p), "header", "get", "default_non_goals"])
         check(out == '["E"]\n', f"the broadening change did not land with only {why}: {out!r}")
+
+    # The terminal-row allowance above means the final header can differ from a merged PR's dispatch-time
+    # scope. Pin the report contract beside the behavior that requires it: always emit the run-end value,
+    # spell empty explicitly, and never present the snapshot as per-PR or per-pass history.
+    report_path = HERE.parent / "references" / "bailout-and-final-report.md"
+    report_contract = """
+    - **Run-end default Non-goals snapshot** — **ALWAYS emit** the current terminal-ledger
+    `default_non_goals`. List each value; spell an empty array as `none`. Append this exact caveat:
+    `Run-end snapshot only. Defaults may have changed mid-run. This is not per-PR or per-pass history.`
+    """
+    report_text = report_path.read_text(encoding="utf-8")
+    check(" ".join(report_contract.split()) in " ".join(report_text.split()),
+          f"the final-report run-end default Non-goals contract drifted: {report_path}")
 
 
 def t_values_are_strings(L: ModuleType, tmp: Path) -> None:
