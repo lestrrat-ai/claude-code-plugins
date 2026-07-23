@@ -450,9 +450,9 @@ def required_set_cli_cases(ci, tmp: Path) -> list[str]:
     cli_tmp = tmp / "required-set-cli"
     cli_tmp.mkdir()
 
-    def run_cli(ledger: Path, *, env: "dict[str, str] | None" = None):
+    def run_cli(ledger: Path, *, repo: str = "o/r", env: "dict[str, str] | None" = None):
         return subprocess.run(  # noqa: S603 - this suite drives its sibling command
-            [sys.executable, str(STATUS_PY), "required-set", "--ledger", str(ledger), "--repo", "o/r"],
+            [sys.executable, str(STATUS_PY), "required-set", "--ledger", str(ledger), "--repo", repo],
             capture_output=True, text=True, check=False, env=env,
         )
 
@@ -507,6 +507,16 @@ def required_set_cli_cases(ci, tmp: Path) -> list[str]:
         elif len(lines) != 1:
             problems.append(f"[required-set CLI] {name} emitted {len(lines)} diagnostics, not one: "
                             f"{proc.stderr!r}")
+
+    malformed_repo = cli_tmp / "malformed-repo.jsonl"
+    valid_ledger(malformed_repo, header_required=ci.SNAP.CANNOT_READ, row_required="-")
+    malformed_repo_before = malformed_repo.read_bytes()
+    check_error(
+        "malformed --repo",
+        malformed_repo,
+        malformed_repo_before,
+        run_cli(malformed_repo, repo="invalid", env=denied_env),
+    )
 
     malformed_cases = {
         "headerless ledger": b'{"type":"row","pr":"1"}\n',

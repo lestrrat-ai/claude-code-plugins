@@ -383,6 +383,14 @@ def check_rundir(rundir: Path) -> Path:
     return rundir
 
 
+def check_repo(repo: str) -> str:
+    """An explicit repository is a caller input, not a GitHub read result."""
+    parts = repo.split("/")
+    if len(parts) != 2 or not all(parts):
+        fail(f"--repo {repo!r} is not a non-empty owner/name")
+    return repo
+
+
 def check_required_set(spec: str):
     """The base branch's required set, as the ledger holds it (`declared:<json>` | `none` | `unknown`).
 
@@ -2637,8 +2645,9 @@ def main() -> int:
         return self_test()
 
     if args.cmd == "required-set":
+        repo = check_repo(args.repo) if args.repo is not None else None
         try:
-            out = refresh_required_set(gh_fetch, args.ledger, args.repo)
+            out = refresh_required_set(gh_fetch, args.ledger, repo)
         except SystemExit as exc:
             # ledger.py owns its diagnostic but uses exit 1 for every refusal. At this command boundary,
             # those are ledger/caller errors (exit 2), never the retryable "some group is unknown" result.
