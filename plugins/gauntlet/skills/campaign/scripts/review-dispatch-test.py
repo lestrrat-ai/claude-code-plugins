@@ -69,6 +69,7 @@ def _fixture(
     intent: bytes | None = None,
     base: str = "main",
     file: str | None = None,
+    default_non_goals: str = "[]",
 ) -> SimpleNamespace:
     rundir = root / "run artifacts"
     worktree = root / "candidate worktree"
@@ -87,6 +88,7 @@ def _fixture(
         report_producer=producer,
         head_sha=SHA,
         dispatched_at=STAMP,
+        default_non_goals=default_non_goals,
         intent_file=os.fspath(intent_path),
         file=file,
     )
@@ -520,7 +522,7 @@ module.prepare(SimpleNamespace(**json.loads(sys.argv[2])))
         paths["progress"].write_text(
             json.dumps({
                 "type": "pass_identity", "pr": "41", "pass": "2", "head_sha": SHA,
-                "launch_attempt": "1", "dispatched_at": "2026-07-19T00:00:00Z",
+                "launch_attempt": "1", "dispatched_at": "2026-07-19T00:00:00Z", "default_non_goals": [],
             }, separators=(",", ":")) + "\n",
             encoding="utf-8",
         )
@@ -545,18 +547,18 @@ def t_malformed_lone_identity_is_refused_not_reclaimed() -> None:
     malformed = {
         "bad head_sha": json.dumps({
             "type": "pass_identity", "pr": "41", "pass": "2", "head_sha": "bad",
-            "launch_attempt": "1", "dispatched_at": STAMP,
+            "launch_attempt": "1", "dispatched_at": STAMP, "default_non_goals": [],
         }, separators=(",", ":")),
         "missing dispatched_at": json.dumps({
             "type": "pass_identity", "pr": "41", "pass": "2", "head_sha": SHA,
-            "launch_attempt": "1",
+            "launch_attempt": "1", "default_non_goals": [],
         }, separators=(",", ":")),
         # A duplicate key: json.dumps cannot emit one, so this line is built by hand. json.loads keeps the
         # LAST value and discards the truncated first; strict_object rejects the line outright.
         "duplicate head_sha": (
             '{"type":"pass_identity","pr":"41","pass":"2",'
             '"head_sha":"a3f29c1","head_sha":"' + SHA + '",'
-            '"launch_attempt":"1","dispatched_at":"' + STAMP + '"}'
+            '"launch_attempt":"1","dispatched_at":"' + STAMP + '","default_non_goals":[]}'
         ),
     }
 
@@ -565,7 +567,7 @@ def t_malformed_lone_identity_is_refused_not_reclaimed() -> None:
         progress = D.attempt_paths(Path(args.run_dir), "41", "2", "1")["progress"]
         valid = json.dumps({
             "type": "pass_identity", "pr": "41", "pass": "2", "head_sha": SHA,
-            "launch_attempt": "1", "dispatched_at": STAMP,
+            "launch_attempt": "1", "dispatched_at": STAMP, "default_non_goals": [],
         }, separators=(",", ":"))
         progress.write_text(valid + "\n", encoding="utf-8")
         check(D._identity_only(progress),
@@ -647,7 +649,8 @@ def t_unicode_worktree_delivers_under_ascii_stdout() -> None:
             "prepare", "--run-dir", os.fspath(rundir), "--pr", "41", "--pass", "2",
             "--launch-attempt", "1", "--worktree", os.fspath(worktree), "--base", "main",
             "--route", "native", "--report-producer", "native-worker-write",
-            "--head-sha", SHA, "--dispatched-at", STAMP, "--intent-file", os.fspath(intent_path),
+            "--head-sha", SHA, "--dispatched-at", STAMP, "--default-non-goals", "[]",
+            "--intent-file", os.fspath(intent_path),
         ]
         env = dict(os.environ)
         env["PYTHONIOENCODING"] = "ascii"
@@ -673,7 +676,7 @@ def t_cli_emits_only_canonical_host_neutral_json() -> None:
             "--launch-attempt", args.launch_attempt, "--worktree", args.worktree, "--base", args.base,
             "--route", args.route, "--report-producer", args.report_producer,
             "--head-sha", args.head_sha, "--dispatched-at", args.dispatched_at,
-            "--intent-file", args.intent_file,
+            "--default-non-goals", args.default_non_goals, "--intent-file", args.intent_file,
         ]
         code, out, err = capture_cli(D.main, argv)
         check(code == 0 and err == "", f"prepare CLI failed: code={code}, stderr={err!r}")
@@ -704,6 +707,23 @@ def t_ledger_base_assertion_matches_prepares() -> None:
         args = _fixture(root, base="main", file=os.fspath(ledger))
         payload = D.prepare(args)
         check(payload["transport"]["base"] == "main", f"the matching base must ride the transport: {payload!r}")
+
+
+def t_default_non_goals_binds_into_identity() -> None:
+    """The run's default Non-goals ride `--default-non-goals` and are BOUND into the pass_identity — the
+    immutable, canonical dispatch-time scope the tally measures the verdict against (`check_scope`). A
+    malformed value refuses before any identity is written; a non-canonical one is canonicalized through the
+    ledger's ONE validator, so what lands is exactly what `verify --ledger` compares."""
+    with tempfile.TemporaryDirectory() as raw:
+        args = _fixture(Path(raw), default_non_goals='["  area X  ", "y"]')
+        D.prepare(args)
+        progress = D.attempt_paths(Path(args.run_dir), "41", "2", "1")["progress"]
+        events = D.RP.parse_lines(progress.read_text(encoding="utf-8"), progress.name)
+        ident = D.RP.check_identity(events, "41", "2", "1")
+        check(ident["default_non_goals"] == ["area X", "y"],
+              f"the identity must carry the CANONICAL run defaults, got {ident.get('default_non_goals')!r}")
+    with tempfile.TemporaryDirectory() as raw:
+        _refused(_fixture(Path(raw), default_non_goals="not-json"), "canonical JSON array")
 
 
 def t_ledger_base_assertion_mismatch_refuses() -> None:
@@ -775,6 +795,44 @@ def t_ledger_missing_row_refuses() -> None:
         _refused(args, "no ledger row for pr 41")
 
 
+def _build_ledger_scope(directory: Path, pr: str, base_branch: str, default_non_goals: str) -> Path:
+    """A real ledger (through ledger.py) with one row for `pr` and a header `default_non_goals` set — the
+    LIVE run scope `prepare`'s `--default-non-goals` assertion (F3) is checked against."""
+    ledger = _build_ledger(directory, pr, base_branch)
+    proc = subprocess.run(  # noqa: S603
+        [sys.executable, os.fspath(D.LEDGER), "--file", os.fspath(ledger),
+         "header", "set", "default_non_goals", default_non_goals],
+        capture_output=True, text=True, check=False)
+    check(proc.returncode == 0, f"ledger header set default_non_goals failed: {proc.stderr.strip()}")
+    return ledger
+
+
+def t_ledger_default_non_goals_assertion_matches_prepares() -> None:
+    """F3: with `--file` present, `--default-non-goals` is an ASSERTION against the header's live scope. A
+    value EQUAL to the header's `default_non_goals` passes and binds that scope into the pass_identity."""
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        ledger = _build_ledger_scope(root, "41", "main", '["area X"]')
+        args = _fixture(root, base="main", file=os.fspath(ledger), default_non_goals='["area X"]')
+        D.prepare(args)
+        progress = D.attempt_paths(Path(args.run_dir), "41", "2", "1")["progress"]
+        events = D.RP.parse_lines(progress.read_text(encoding="utf-8"), progress.name)
+        ident = D.RP.check_identity(events, "41", "2", "1")
+        check(ident["default_non_goals"] == ["area X"],
+              f"the matching scope must bind into the identity, got {ident.get('default_non_goals')!r}")
+
+
+def t_ledger_default_non_goals_assertion_mismatch_refuses() -> None:
+    """F3: with `--file` present, a `--default-non-goals` that DISAGREES with the header's live scope refuses
+    — the header owns the scope, `--default-non-goals` only asserts it. Mirrors the base-mismatch refusal one
+    field over; delete the check and a stale scope binds a value the run has since left, unrefused."""
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        ledger = _build_ledger_scope(root, "41", "main", '["area X"]')
+        args = _fixture(root, base="main", file=os.fspath(ledger), default_non_goals="[]")
+        _refused(args, "disagrees with pr 41's ledger header default_non_goals")
+
+
 CASES = [
     (
         "relaunch-path-coherence",
@@ -802,6 +860,8 @@ CASES = [
     ("host-neutral-json", "CLI emits canonical data and never launches", t_cli_emits_only_canonical_host_neutral_json),
     ("ledger-base-match", "--file with a matching row base passes the assertion and prepares",
      t_ledger_base_assertion_matches_prepares),
+    ("scope-binds-into-identity", "the run defaults bind into pass_identity as the canonical dispatch-time scope",
+     t_default_non_goals_binds_into_identity),
     ("ledger-base-mismatch", "--file with a disagreeing row base refuses (--base is an assertion)",
      t_ledger_base_assertion_mismatch_refuses),
     ("ledger-origin-named-base", "a base literally named origin/<x> matches itself; the bare form refuses",
@@ -812,4 +872,10 @@ CASES = [
     ("ledger-unresolved-base", "--file resolving to a `-`/blank effective base refuses before the assertion",
      t_ledger_unresolved_base_refuses),
     ("ledger-missing-row", "--file naming an unknown PR row refuses", t_ledger_missing_row_refuses),
+    ("ledger-default-non-goals-match",
+     "--file with --default-non-goals equal to the header scope prepares and binds it",
+     t_ledger_default_non_goals_assertion_matches_prepares),
+    ("ledger-default-non-goals-mismatch",
+     "--file with --default-non-goals disagreeing with the header scope refuses (an assertion, not a source)",
+     t_ledger_default_non_goals_assertion_mismatch_refuses),
 ]

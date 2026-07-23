@@ -196,8 +196,15 @@ def identity_bytes(
     launch_attempt: str,
     head_sha: str,
     dispatched_at: str,
+    default_non_goals: "list[str]",
 ) -> bytes:
-    """Build bytes accepted by the review-pass schema owner's read door."""
+    """Build bytes accepted by the review-pass schema owner's read door.
+
+    ``default_non_goals`` is the run's current default Non-goals — the DISPATCH-TIME scope this pass's
+    verdict is measured against at tally. It is bound into the immutable ``pass_identity`` here, never
+    inferred later from the mutable ``intent-<pr>.md`` (which per-heartbeat re-adoption re-syncs to the
+    header before the tally). ``verify --ledger`` compares this binding to the run's live defaults.
+    """
     record: "dict[str, object]" = {
         "type": RP.IDENTITY,
         "pr": pr,
@@ -205,6 +212,7 @@ def identity_bytes(
         "head_sha": head_sha,
         "launch_attempt": launch_attempt,
         "dispatched_at": dispatched_at,
+        "default_non_goals": default_non_goals,
     }
     try:
         RP.check_event(record, "review-dispatch pass_identity")
@@ -372,6 +380,16 @@ def prepare(args) -> dict:
     if not args.base.strip():
         refuse("--base must be non-blank text")
 
+    # The DISPATCH-TIME scope binding: the run's current default Non-goals, canonicalized through the
+    # ledger's ONE validator. It is bound into the immutable pass_identity so the tally measures this
+    # pass's verdict against the scope it was dispatched under, never the mutable intent block that
+    # re-adoption re-syncs before the tally (stage-2-review-gate.md, "Does this pass COUNT?").
+    try:
+        default_non_goals = L.parse_default_non_goals(args.default_non_goals)
+    except ValueError as exc:
+        refuse(f"--default-non-goals {args.default_non_goals!r} is not a canonical JSON array of run-default "
+               f"Non-goals ({exc}) — pass the run header's `default_non_goals` value verbatim, `[]` when none")
+
     # The base rides the typed transport as DATA (the reviewer diffs `origin/<base>...HEAD`). When a ledger
     # is supplied, that data is an ASSERTION against the row's source of truth: the row OWNS the base, so
     # `--base` must agree with the selected row's `effective_base` (its explicit `base_branch`, else the
@@ -397,6 +415,20 @@ def prepare(args) -> dict:
         # `base_agrees` accepts (`main` vs `origin/main`) make the reviewer diff `origin/<base>...HEAD`
         # against different refs, so the transport must follow the row, not the caller's argument.
         operational_base = effective_base
+        # …and the SAME assertion, one field over: `--default-non-goals` is bound into the pass_identity, and
+        # when a ledger is supplied that binding must agree with the header's LIVE `default_non_goals` — the
+        # header OWNS the scope, `--default-non-goals` only asserts it. A defense-in-depth mirror of the base
+        # check: the pre-dispatch `intent-check` door already fences the intent block, this fences the bound
+        # value against the same header so a stale `--default-non-goals` cannot bind a scope the run left.
+        try:
+            live_default_non_goals = L.default_non_goals(header)
+        except ValueError as exc:
+            refuse(f"ledger {args.file} header `default_non_goals` is malformed ({exc}) — the run's scope "
+                   f"cannot be read, so the dispatched binding cannot be checked against it")
+        if default_non_goals != live_default_non_goals:
+            refuse(f"--default-non-goals {default_non_goals!r} disagrees with pr {args.pr}'s ledger header "
+                   f"default_non_goals {live_default_non_goals!r} — --default-non-goals is an assertion of "
+                   f"the run's current scope, not a scope source. Pass the header's value verbatim")
 
     if args.route not in ROUTE_PRODUCERS:
         refuse(f"unknown review route {args.route!r}; expected one of {list(ROUTE_PRODUCERS)}")
@@ -451,6 +483,7 @@ def prepare(args) -> dict:
         launch_attempt=args.launch_attempt,
         head_sha=args.head_sha,
         dispatched_at=args.dispatched_at,
+        default_non_goals=default_non_goals,
     )
     recover_inert_prompt(paths, prompt)
     conflicts = [
@@ -530,6 +563,10 @@ def build_parser() -> argparse.ArgumentParser:
                          help="sole report producer; must match the selected route")
     command.add_argument("--head-sha", required=True, help="40-character lowercase review head SHA")
     command.add_argument("--dispatched-at", required=True, help="UTC timestamp YYYY-MM-DDThh:mm:ssZ")
+    command.add_argument("--default-non-goals", required=True,
+                         help="the run header's `default_non_goals` value (a canonical JSON array, `[]` when "
+                              "the run declares none) — the immutable scope this pass's verdict is measured "
+                              "against at tally")
     command.add_argument("--intent-file", required=True, help="absolute path to the derived intent-<pr>.md")
     sub.add_parser("self-test", help="run every sibling fixture")
     return parser

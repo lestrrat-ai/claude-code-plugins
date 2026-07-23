@@ -112,7 +112,7 @@ user**:
 | Decision | When | What the driver does |
 |---|---|---|
 | **RESCOPE** | the diff has **outgrown its stated purpose** — the findings may all be true, and most of the lines now defend the guards the loop itself added | dispatch a shrink back to intent, then re-gate |
-| **REPAIR-INTENT** | the intent artifact is **missing, vague or wrong**, so the reviewer has nothing to measure against and **nothing can be out of scope** | re-author it (Purpose / Non-goals / Threat model), then re-gate |
+| **REPAIR-INTENT** | the intent artifact is **missing, vague or wrong**, so the reviewer has nothing to measure against and **nothing can be out of scope** | re-author the **base** (Purpose / Non-goals / Threat model), then **re-run `pr-adopt.py intent-sync` and `review-pass.py intent-check --ledger`** (`pr-adoption.md`) so the run-default managed block is refolded, then re-gate |
 | **DEMOTE** | the findings **anchor to no Purpose line and no Threat-model actor** — true, and not reasons to block this PR | record them as follow-ups, **do NOT fix them**, re-gate |
 | **ROOT-CAUSE** | the findings **share one cause** | run the root-cause pass — **`root-cause-pass.md` already defines it; REUSE it, do not reinvent it** — and fix at the chokepoint |
 | **ABORT** | unsalvageable | the **existing** bailout procedure (`bailout-and-final-report.md`): **leave the PR OPEN**, drop this run's labels, write `abort-<id>.md` |

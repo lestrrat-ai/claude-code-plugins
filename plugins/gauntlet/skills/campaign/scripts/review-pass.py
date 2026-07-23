@@ -118,7 +118,7 @@ from collections import Counter
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import NoReturn
+from typing import NamedTuple, NoReturn
 
 # --- the contract (stage-2-review-gate.md) ------------------------------------------------------
 
@@ -163,7 +163,8 @@ VERDICT_CHOICES = (SATISFIED, NOT_SATISFIED, DEFERRED)
 # progress events are keyed by (type, status) because a `started` carrying `evidence` is exactly as wrong
 # as a `done` without it — the evidence rule and the no-evidence rule are ONE rule, stated once.
 EVENT_KEYS: "dict[tuple[str, str | None], set[str]]" = {
-    (IDENTITY, None): {"type", "pr", "pass", "head_sha", "launch_attempt", "dispatched_at"},
+    (IDENTITY, None): {"type", "pr", "pass", "head_sha", "launch_attempt", "dispatched_at",
+                       "default_non_goals"},
     (PROGRESS, STARTED): {"type", "unit", "status"},
     (PROGRESS, DONE): {"type", "unit", "status", "evidence"},
     (AMENDMENT, None): {"type", "ts", "reason", "proposed_unit"},
@@ -502,6 +503,13 @@ INTENT_NAME = "intent-{pr}.md"
 # `## Non-goals` is the only thing that can say "this was deliberate, stop reporting it".
 PURPOSE_H, NON_GOALS_H, THREAT_H = "## Purpose", "## Non-goals", "## Threat model"
 INTENT_SECTIONS = (PURPOSE_H, NON_GOALS_H, THREAT_H)
+
+# THE RUN-DEFAULT MANAGED BLOCK — the delimiters that fence the operator's run-wide default Non-goals inside
+# `## Non-goals`. `pr-adopt.py intent-sync` writes/refreshes what is BETWEEN them from the ledger header's
+# `default_non_goals`; everything OUTSIDE them stays PR-specific and driver-owned. `pr-adoption.md` is the
+# OWNER of this block's format; the two constants live here because this file both parses and rewrites it.
+MANAGED_START = "<!-- gauntlet:run-default-non-goals:start -->"
+MANAGED_END = "<!-- gauntlet:run-default-non-goals:end -->"
 
 
 class Defect(Exception):
@@ -843,7 +851,222 @@ def parse_intent(text: str, path: Path) -> "dict[str, list[str]]":
             f"nothing and discharges it. A purpose is a thing the PR must DO; {NO_PURPOSE!r} names none, so it "
             f"is not one. State the line the PR must do, or drop the bullet"
         )
+    # The run-default MANAGED block lives inside `## Non-goals`; validate its STRUCTURE here so a malformed
+    # one is refused at the same door — and for the same reason — as a malformed section. Its bullets are
+    # already counted in `sections[NON_GOALS_H]`; this only proves the fence around them is well-formed.
+    scan_managed_block(text, path)
     return sections
+
+
+class ManagedBlock(NamedTuple):
+    """Where the run-default managed block sits inside an intent, and what it and the section hold.
+
+    `outside` is the `## Non-goals` bullet bodies that are NOT run defaults — the PR-specific exclusions the
+    driver owns and `intent-sync` never touches. `lo`/`hi` are the line indices of the start/end markers
+    (`-1` when the block is absent); `ng_hi` is the line index just past the `## Non-goals` section.
+    """
+    present: bool
+    bullets: "list[str]"
+    lo: int
+    hi: int
+    ng_lo: int
+    ng_hi: int
+    outside: "list[str]"
+
+
+def _bullet_body(raw: str) -> "str | None":
+    """A `- ` bullet's body (trimmed), or None when the line is not a bullet — the ONE reading of a bullet,
+    matching `parse_intent`'s own `line.startswith('- ')` test so the two never disagree about what a
+    Non-goals bullet IS."""
+    line = raw.strip()
+    return line[2:].strip() if line.startswith("- ") else None
+
+
+def scan_managed_block(text: str, path: Path) -> ManagedBlock:
+    """Locate and STRUCTURALLY validate the run-default managed block inside `## Non-goals`.
+
+    The block is `MANAGED_START` … `- ` bullets … `MANAGED_END`, and this is the ONE place its shape is
+    enforced: at most one block, both markers present, the end after the start, the whole block INSIDE the
+    `## Non-goals` section, and nothing but `- ` bullets between the markers. A block that breaks any of
+    those is REFUSED — a reviewer must never be handed an intent whose operator-owned fence is ambiguous.
+    Returns where the block sits and the run-default vs PR-specific bullets, for `merge`/`check` to act on.
+    """
+    lines = text.splitlines()
+    ng_lo = -1
+    for i, raw in enumerate(lines):
+        if raw.strip() == NON_GOALS_H:
+            ng_lo = i
+            break
+    ng_hi = len(lines)
+    if ng_lo != -1:
+        for i in range(ng_lo + 1, len(lines)):
+            if lines[i].strip().startswith("#"):
+                ng_hi = i
+                break
+    starts = [i for i, raw in enumerate(lines) if raw.strip() == MANAGED_START]
+    ends = [i for i, raw in enumerate(lines) if raw.strip() == MANAGED_END]
+    if len(starts) > 1 or len(ends) > 1:
+        # MUTATE:managed-block-duplicate:pass
+        raise Defect(
+            f"{path.name}: the run-default managed block appears more than once "
+            f"({len(starts)} start / {len(ends)} end marker(s)) — there is exactly one, and a second is a "
+            f"nested or duplicated fence `intent-sync` can no longer own. Delete the extra markers and "
+            f"re-run `pr-adopt.py intent-sync`"
+        )
+    if len(starts) != len(ends):
+        # MUTATE:managed-block-unterminated:pass
+        raise Defect(
+            f"{path.name}: the run-default managed block is unterminated — it has "
+            f"{len(starts)} `{MANAGED_START}` and {len(ends)} `{MANAGED_END}` marker(s), and one without "
+            f"the other fences nothing. Restore both markers, or delete both and re-run `pr-adopt.py "
+            f"intent-sync`"
+        )
+    if not starts:
+        outside = [b for i, raw in enumerate(lines) if ng_lo < i < ng_hi
+                   and (b := _bullet_body(raw)) is not None]
+        return ManagedBlock(False, [], -1, -1, ng_lo, ng_hi, outside)
+    lo, hi = starts[0], ends[0]
+    if hi < lo:
+        # MUTATE:managed-block-inverted:pass
+        raise Defect(
+            f"{path.name}: the run-default managed block's `{MANAGED_END}` precedes its `{MANAGED_START}` — "
+            f"the fence is inside out and encloses nothing. Re-run `pr-adopt.py intent-sync`"
+        )
+    if not (ng_lo != -1 and ng_lo < lo and hi < ng_hi):
+        # MUTATE:managed-block-outside-nongoals:pass
+        raise Defect(
+            f"{path.name}: the run-default managed block is NOT inside `{NON_GOALS_H}` — the operator's run "
+            f"defaults are Non-goals and belong in that section alone. Move the block under `{NON_GOALS_H}` "
+            f"and re-run `pr-adopt.py intent-sync`"
+        )
+    bullets: "list[str]" = []
+    for raw in lines[lo + 1:hi]:
+        body = _bullet_body(raw)
+        if body is None:
+            # MUTATE:managed-block-non-bullet:pass
+            raise Defect(
+                f"{path.name}: the run-default managed block holds a non-bullet line ({raw.strip()!r}) — "
+                f"between the markers there are ONLY `- ` run-default bullets, nothing else. Re-run "
+                f"`pr-adopt.py intent-sync`"
+            )
+        bullets.append(body)
+    outside = [b for i, raw in enumerate(lines)
+               if ng_lo < i < ng_hi and not (lo <= i <= hi)
+               and (b := _bullet_body(raw)) is not None]
+    return ManagedBlock(True, bullets, lo, hi, ng_lo, ng_hi, outside)
+
+
+def _desired_managed(block: ManagedBlock, defaults: "list[str]") -> "list[str]":
+    """The run defaults that BELONG in the managed block: the operator's list, minus any that already stand
+    as a PR-specific Non-goal outside the block (never duplicate a bullet the driver already wrote). Order
+    follows the operator's declaration; the ledger accessor has already made the list unique."""
+    outside = set(block.outside)
+    return [d for d in defaults if d not in outside]
+
+
+def merge_default_non_goals(text: str, defaults: "list[str]", path: Path) -> str:
+    """Fold the run's default Non-goals into `text`'s managed block — MECHANICALLY and IDEMPOTENTLY.
+
+    `pr-adopt.py intent-sync` is the sole caller. The rules (owned in prose by `pr-adoption.md`): replace
+    the existing managed block rather than append a second; place a default only when the same bullet is not
+    already a PR-specific Non-goal; leave every bullet OUTSIDE the block untouched; produce byte-identical
+    output on a second application; and leave NO managed block when the default list (after that dedup) is
+    empty. The block is always normalized to the END of the `## Non-goals` section, so re-applying it to its
+    own output is a fixed point.
+    """
+    block = scan_managed_block(text, path)
+    lines = text.splitlines()
+    # Strip the current managed block (its markers and bullets) wherever it sits.
+    if block.present:
+        lines = lines[:block.lo] + lines[block.hi + 1:]
+    # Re-scan section boundaries on the block-free text (indices shifted by the removal).
+    ng_lo = -1
+    for i, raw in enumerate(lines):
+        if raw.strip() == NON_GOALS_H:
+            ng_lo = i
+            break
+    ng_hi = len(lines)
+    if ng_lo != -1:
+        for i in range(ng_lo + 1, len(lines)):
+            if lines[i].strip().startswith("#"):
+                ng_hi = i
+                break
+    desired = _desired_managed(block, defaults)
+    if not desired or ng_lo == -1:
+        # Nothing to fence (empty defaults, or no `## Non-goals` to fence it in): the block-free text is the
+        # answer. A trailing newline is preserved iff the input had one.
+        return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+    # Insert the fresh block AFTER the last non-blank line of the section (so it trails the PR-specific
+    # bullets and precedes any trailing blank lines) — the deterministic spot that makes re-application a
+    # fixed point without disturbing PR content or accreting blank lines.
+    insert = ng_lo + 1
+    for i in range(ng_lo + 1, ng_hi):
+        if lines[i].strip():
+            insert = i + 1
+    block_lines = [MANAGED_START, *(f"- {d}" for d in desired), MANAGED_END]
+    lines = lines[:insert] + block_lines + lines[insert:]
+    return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+
+
+def check_default_non_goals(text: str, defaults: "list[str]", path: Path) -> None:
+    """Confirm `text`'s managed block is IN SYNC with the run defaults — the pre-dispatch enforcement.
+
+    In sync means: the managed block holds EXACTLY the defaults that belong in it (`_desired_managed`), in
+    order and once each — no missing current default, no stale or duplicated one — and an empty default list
+    leaves NO managed block at all. Out of sync is a REFUSAL with the fix (`pr-adopt.py intent-sync`), never
+    a silent pass: a reviewer measured against defaults the operator has since changed is measured against
+    the wrong scope. `scan_managed_block` has already proven the block's STRUCTURE; this judges its CONTENT.
+    """
+    block = scan_managed_block(text, path)
+    desired = _desired_managed(block, defaults)
+    have = block.bullets if block.present else []
+    # In sync = the block holds EXACTLY `desired` AND is present IFF `desired` is nonempty. `have` conflates
+    # an ABSENT block with an empty-but-PRESENT one (both read `[]`), so an empty managed block under empty
+    # defaults must be caught by the presence test, not the bullet test — the format leaves NO block there.
+    if have != desired or block.present != bool(desired):
+        state = f"holds {have!r}" if block.present else "is absent"
+        want = f"{desired!r}" if desired else "NO managed block (empty defaults leave none)"
+        raise Defect(
+            f"{path.name}: the run-default managed block is OUT OF SYNC with the run header — it {state} "
+            f"but the current run defaults call for {want}. Run `pr-adopt.py intent-sync --file "
+            f"<state.jsonl> --pr <n>` to fold the current defaults in, then re-check"
+        )
+
+
+def current_default_non_goals(ledger: Path) -> "list[str]":
+    """The run header's CURRENT default Non-goals, decoded through the ledger's ONE accessor.
+
+    Fails CLOSED (Defect -> `unusable`) on a malformed stored value, so neither the pre-dispatch intent door
+    nor the tally gate is ever run against a run scope that cannot even be read. This is the ONE place
+    `review-pass.py` turns the ledger header into the run's live scope; every consumer here reads it through
+    this, never the raw header value.
+    """
+    Lmod = load_ledger_module()
+    header, _ = Lmod.load(ledger)
+    try:
+        return Lmod.default_non_goals(header)
+    except ValueError as exc:
+        raise Defect(
+            f"{ledger}: header `default_non_goals` is malformed ({exc}) — the run defaults cannot be read, "
+            f"so the run's scope cannot be checked. Repair the ledger header"
+        )
+
+
+def check_intent_scope(intent: Path, ledger: Path) -> "list[str]":
+    """The intent still measures the CURRENT run scope: its run-default managed block matches the ledger
+    header's `default_non_goals`. This is the PRE-DISPATCH door and its ONLY door: `intent-check` runs it
+    BEFORE a reviewer is launched, so a pass never STARTS against stale defaults.
+
+    It does NOT gate the tally. A verdict's scope is bound into the immutable `pass_identity` at dispatch and
+    compared at tally by `check_scope` — never re-derived from this mutable intent block, which per-heartbeat
+    re-adoption RE-SYNCS to the header before the tally (so reading it at tally would let a stale-scope
+    SATISFIED through the moment the intent was resynced). This door only stops a launch against an intent
+    that is already stale; `stage-2-review-gate.md`, "Does this pass COUNT?", owns why the tally is bound,
+    not inferred. Returns the run defaults (their count is all the pre-dispatch door reports).
+    """
+    defaults = current_default_non_goals(ledger)
+    check_default_non_goals(read_text(intent, "intent block"), defaults, intent)
+    return defaults
 
 
 def load_intent(path: Path) -> "dict[str, list[str]]":
@@ -1177,7 +1400,7 @@ def check_event(rec: dict, where: str) -> None:
             + (f"; unexpected key(s) {extra} — nothing reads them, so they are present and NOT COUNTED"
                if extra else "")
         )
-    for field in sorted(keys - {"proposed_unit"}):
+    for field in sorted(keys - {"proposed_unit", "default_non_goals"}):
         if not isinstance(rec[field], str):
             # MUTATE:non-string:continue
             raise Defect(
@@ -1291,15 +1514,35 @@ def walk_progress(events: "list[dict]", units: "dict[str, dict]") -> "tuple[set[
     return announced, done
 
 
+def _canonical_scope(value: object) -> "list[str] | None":
+    """The canonical form of a `pass_identity`'s `default_non_goals` binding, or None when `value` is not one.
+
+    Reuses ledger.py `parse_default_non_goals` — the ONE validator for this list — so the pass's dispatch-time
+    scope binding obeys EXACTLY the rules the run header does. `value` must be a native JSON array ALREADY in
+    canonical form (a list of unique, trimmed, single-line strings in declared order, `[]` when the run
+    declares none); anything else — a non-list, a non-string entry, a blank/multi-line/duplicate one, or a
+    non-canonical ordering — returns None, so the caller fails closed exactly as `head_sha` does on a value
+    that is not a commit id.
+    """
+    if not isinstance(value, list):
+        return None
+    try:
+        canon = load_ledger_module().parse_default_non_goals(json.dumps(value))
+    except ValueError:
+        return None
+    return canon if canon == value else None
+
+
 def check_identity_shape(ident: dict, where: str) -> None:
     """Every VALUE in a `pass_identity`, checked once — and therefore at BOTH doors, because `identity`
     (write) and `check_identity` (read) both call this and there is no second implementation to drift.
 
-    The identity is the pass's attempt id and its dispatch clock, and three rules downstream depend on it:
-    a late verdict is ignored unless its attempt id still matches; the ~5-minute launch deadline is
-    measured from `dispatched_at`; `launch_attempt` is how a *later* heartbeat — possibly a fresh agent — knows
-    how many times the pass was already relaunched. Every one of those is a COMPARISON, and a comparison against a
-    malformed value is not one.
+    The identity is the pass's attempt id, its dispatch clock, AND the run scope it was DISPATCHED under, and
+    four rules downstream depend on it: a late verdict is ignored unless its attempt id still matches; the
+    ~5-minute launch deadline is measured from `dispatched_at`; `launch_attempt` is how a *later* heartbeat —
+    possibly a fresh agent — knows how many times the pass was already relaunched; and `default_non_goals` is
+    the scope the pass's verdict is measured against at tally (`check_scope`). Every one of those is a
+    COMPARISON, and a comparison against a malformed value is not one.
     """
     # FOUR IDENTIFIERS, ONE VALIDATOR. The sha rule and the number rules used to be written out here, and
     # writing a rule out is how it comes to exist in two places: the sha is ALSO what `verify`'s caller
@@ -1321,6 +1564,15 @@ def check_identity_shape(ident: dict, where: str) -> None:
             f"time. A month 99 is not a month. The shape check alone could not fire on this, and the "
             f"deadline it exists to protect is measured by ARITHMETIC on this value: a moment that does "
             f"not exist is one no clock ever passes"
+        )
+    if _canonical_scope(ident["default_non_goals"]) is None:
+        # MUTATE:identity-scope:pass
+        raise Defect(
+            f"{where}: `default_non_goals` is {ident['default_non_goals']!r} — the pass's DISPATCH-TIME scope "
+            f"binding must be a canonical JSON array of run-default Non-goals (a list of unique, trimmed, "
+            f"single-line strings in declared order, `[]` when the run declares none), stored DIRECTLY so "
+            f"`verify --ledger` can compare it to the run's CURRENT defaults (`check_scope`). It is the scope "
+            f"analogue of `head_sha`: an immutable binding, fail-closed on malformed, never repaired"
         )
 
 
@@ -1383,6 +1635,35 @@ def check_head(ident: dict, head_sha: str) -> None:
         raise Defect(
             f"this pass ran on {ident['head_sha']} but the PR's head is {head_sha} — its verdict describes "
             f"content that is no longer there, and PR content changing is exactly what voids a tally"
+        )
+
+
+def check_scope(ident: dict, current: "list[str]") -> None:
+    """The pass's DISPATCH-TIME default-non-goals binding against the run's CURRENT defaults — the scope
+    analogue of `check_head`, and the ONE thing the tally gate measures scope against.
+
+    A verdict counts only if the run's review scope is still the scope the pass was DISPATCHED under, and
+    that scope is BOUND into the immutable `pass_identity` at dispatch — never INFERRED from the mutable
+    `intent-<pr>.md`. That distinction is the whole point: per-heartbeat re-adoption RE-SYNCS the in-flight
+    PR's intent block to the header BEFORE the tally, so a check that read the intent at tally would pass the
+    instant the intent was resynced — and a stale-scope SATISFIED (earned under the OLD defaults) would count,
+    merging an area the operator has since brought back into scope but nobody reviewed. Binding the scope at
+    dispatch closes that: it is fixed the moment the reviewer is launched and no later re-sync can move it.
+
+    So this compares the bound scope to the header's live `default_non_goals`; a mismatch VOIDS the tally
+    exactly as a moved head does, and the next heartbeat re-reviews under the new scope. It is symmetric — a
+    mid-flight ADD (scope NARROWS) also voids the pass, which is safe: the just-voided pass already covered
+    a superset of the re-review's now-narrower scope, so the re-review is a subset (redundant but safe).
+    `check_identity_shape` has already proven the binding is a canonical list, so this only compares.
+    """
+    bound = ident["default_non_goals"]
+    if bound != current:
+        # MUTATE:identity-scope-drift:pass
+        raise Defect(
+            f"this pass was DISPATCHED under default Non-goals {bound!r} but the run's current defaults are "
+            f"{current!r} — the operator changed the run's review scope while this review was in flight, so "
+            f"its verdict describes a scope that has moved. Like a moved head, that voids the tally; the next "
+            f"heartbeat re-reviews under the new scope"
         )
 
 
@@ -1519,7 +1800,8 @@ def plan_path(progress: Path) -> Path:
     return progress.parent / PLAN_NAME.format(pr=pr, **{"pass": npass})
 
 
-def evaluate_detail(progress: Path, head_sha: str, ruled: int = 0) -> \
+def evaluate_detail(progress: Path, head_sha: str, ruled: int = 0,
+                    ledger: "Path | None" = None) -> \
         "tuple[str, str, dict[str, str | None] | None]":
     """The whole read side. Every exception a rule can raise lands here as a VERDICT — never as a crash.
 
@@ -1545,8 +1827,20 @@ def evaluate_detail(progress: Path, head_sha: str, ruled: int = 0) -> \
         report = parse_report(progress)
         events, units = check_progress_file(text=read_text(progress, "progress file"), path=progress,
                                             plan=lambda: load_plan(plan), head_sha=head_sha)
+        ipath = intent_path(progress.parent, pr)
         # MUTATE:intent-required:pass
-        load_intent(intent_path(progress.parent, pr))
+        load_intent(ipath)
+        # A verdict is only countable if the run's review scope is STILL the scope the pass was DISPATCHED
+        # under. When a `--ledger` reaches here (from `verify --ledger`), the pass's DISPATCH-TIME
+        # `pass_identity.default_non_goals` binding is compared to the header's live `default_non_goals`; a
+        # pass whose scope drifted out from under it is refused as `unusable`. The binding — not the mutable
+        # `intent-<pr>.md`, which re-adoption RE-SYNCS before the tally — is what fences the scope here.
+        # `check_scope` owns why.
+        # MUTATE:intent-scope-synced:pass
+        if ledger is not None:
+            # `events[0]` is the `pass_identity`: `check_progress_file` ran `check_identity`, which refuses any
+            # file whose first line is not it, so this is the validated, canonical-scope binding.
+            check_scope(events[0], current_default_non_goals(ledger))
         outcome, reason = decide(events, units, ruled, load_findings(progress), report["verdict"])
         return outcome, reason, report
     except Defect as exc:
@@ -1854,12 +2148,24 @@ def cmd_identity(args) -> int:
             f"line — `verify` refuses the pass for exactly that, so writing here would produce an artifact "
             f"this tool would then refuse to read"
         )
+    # The dispatch-time scope binding: the run's default Non-goals, canonicalized through the ledger's ONE
+    # validator and stored DIRECTLY as a JSON array (never a hash). `verify --ledger` compares this immutable
+    # value to the run's CURRENT defaults, so a scope the operator later moves voids the tally (`check_scope`).
+    try:
+        scope = load_ledger_module().parse_default_non_goals(args.default_non_goals)
+    except ValueError as exc:
+        # MUTATE:identity-scope-flag:scope = []
+        raise Defect(
+            f"--default-non-goals {args.default_non_goals!r} is not a canonical JSON array of run-default "
+            f"Non-goals ({exc}) — pass the run header's `default_non_goals` value verbatim (`[]` when the run "
+            f"declares none). It is the immutable scope this pass's verdict is measured against"
+        )
     rec: "dict[str, object]" = {
         "type": IDENTITY, "pr": pr, "pass": npass, "head_sha": args.head_sha,
-        "launch_attempt": attempt, "dispatched_at": args.dispatched_at,
+        "launch_attempt": attempt, "dispatched_at": args.dispatched_at, "default_non_goals": scope,
     }
     # The SAME two functions the read side runs — so a `pass_identity` this door writes is one `verify`
-    # can never call malformed, and the sha/clock rules exist in exactly one place.
+    # can never call malformed, and the sha/clock/scope rules exist in exactly one place.
     check_event(rec, "the pass_identity you asked to write")
     check_identity_shape(rec, "the pass_identity you asked to write")
     # …and then the file it would PRODUCE, through the read side's own whole-file function. The EMPTY plan
@@ -2025,7 +2331,32 @@ def cmd_verify(args) -> int:
             f"a ruling can only ever answer an amendment that EXISTS, and an over-count would silently "
             f"clear the next one the reviewer raises"
         )
-    verdict, reason, report = evaluate_detail(path, args.head_sha, args.amendments_ruled)
+    # `--ledger` opts into the pre-tally scope check: a pass whose DISPATCH-TIME `pass_identity`
+    # `default_non_goals` binding no longer matches the run's CURRENT `default_non_goals` is not countable
+    # (`check_scope`). The ledger and the pass are two artifacts of ONE run and share its directory; a
+    # `--ledger` from a DIFFERENT run would measure the pass against the wrong scope, so — like `intent-check`
+    # — that pairing is enforced here, as an OPERATOR mistake (exit 2), not a verdict about the pass.
+    ledger: "Path | None" = None
+    if args.ledger is not None:
+        ledger = Path(args.ledger)
+        if ledger.resolve().parent != path.resolve().parent:
+            # MUTATE:verify-ledger-run-dir:pass
+            raise OperatorError(
+                f"--ledger {ledger} and --file {path} are not in the same run directory — a pass is counted "
+                f"against ITS run's current defaults, never another run's. Pass the run's own state.jsonl"
+            )
+        # A same-dir --ledger that DOES NOT EXIST is not "no scope": `ledger.load` back-fills a missing file
+        # to the header defaults (`default_non_goals` `[]`), so a typo'd path would read as ZERO run defaults
+        # and let a scoped pass verify `ok` against an EMPTY scope — silently disabling this gate. A run has
+        # a ledger; a missing one fails closed.
+        if not ledger.is_file():
+            # MUTATE:verify-ledger-exists:pass
+            raise OperatorError(
+                f"--ledger {ledger} does not exist — a missing ledger reads as NO run defaults and would "
+                f"count this pass against an empty scope, disabling the scope check. Pass the run's real "
+                f"state.jsonl"
+            )
+    verdict, reason, report = evaluate_detail(path, args.head_sha, args.amendments_ruled, ledger)
     detail = ""
     if report is not None:
         detail = f" report-verdict={report['verdict']}"
@@ -2037,11 +2368,33 @@ def cmd_verify(args) -> int:
 
 
 def cmd_intent_check(args) -> int:
-    """Refuse an intent artifact now, before a reviewer is launched against it."""
+    """Refuse an intent artifact now, before a reviewer is launched against it — AND confirm its run-default
+    managed block is in sync with the run header's `default_non_goals`."""
     path = Path(args.file)
+    ledger_path = Path(args.ledger)
+    # The ledger and the intent are two artifacts of ONE run, and they must share its directory: checking an
+    # intent against a DIFFERENT run's defaults would measure the reviewer against the wrong scope. This is
+    # the one place the pairing is enforced.
+    if ledger_path.resolve().parent != path.resolve().parent:
+        raise OperatorError(
+            f"--ledger {ledger_path} and --file {path} are not in the same run directory — an intent is "
+            f"checked against ITS run's defaults, never another run's. Pass the run's own state.jsonl"
+        )
+    # A same-dir `--ledger` that does NOT EXIST back-fills to the header defaults (`default_non_goals` `[]`),
+    # so a typo'd path would read as ZERO run defaults and wave a stale managed block through. Fail closed.
+    if not ledger_path.is_file():
+        raise OperatorError(
+            f"--ledger {ledger_path} does not exist — a missing ledger reads as NO run defaults and would "
+            f"check this intent against an empty scope. Pass the run's real state.jsonl"
+        )
     sections = load_intent(path)
+    # The scope-sync check is `check_intent_scope`, the PRE-DISPATCH door: it refuses launching a reviewer
+    # against an intent whose managed block already drifted from the header. The tally gate does NOT re-run
+    # it — a verdict's scope is bound into `pass_identity` at dispatch and compared by `check_scope` — so
+    # this door and the tally judge scope from different, deliberately-separate inputs.
+    defaults = check_intent_scope(path, ledger_path)
     print(
-        f"ok: {path} is a usable intent block "
+        f"ok: {path} is a usable intent block, in sync with {len(defaults)} run default Non-goal(s) "
         f"({len(sections[PURPOSE_H])} purpose, {len(sections[NON_GOALS_H])} non-goal, "
         f"{len(sections[THREAT_H])} threat-model bullet(s))"
     )
@@ -2642,6 +2995,9 @@ def build_parser() -> "tuple[argparse.ArgumentParser, list[str]]":
     i.add_argument("--file", required=True, help="the launch attempt's progress.jsonl — it must not exist yet")
     i.add_argument("--head-sha", required=True, help="`git rev-parse HEAD` — 40 hex, NEVER an abbreviation")
     i.add_argument("--dispatched-at", required=True, help="UTC ISO-8601, e.g. 2026-07-06T00:00:00Z")
+    i.add_argument("--default-non-goals", required=True,
+                   help="the run header's `default_non_goals` value (a canonical JSON array, `[]` when the run "
+                        "declares none) — the immutable scope this pass's verdict is measured against at tally")
 
     a = sub.add_parser("plan-add", help="append one validated unit to a pass's plan")
     a.add_argument("--file", required=True, help="the pass's plan.jsonl")
@@ -2681,8 +3037,12 @@ def build_parser() -> "tuple[argparse.ArgumentParser, list[str]]":
         "finding-add", help="record ONE finding, anchored to the PR's intent (what emit-finding.py calls)"))
 
     intent = sub.add_parser(
-        "intent-check", help="refuse a missing or malformed intent block before review dispatch")
+        "intent-check", help="refuse a missing or malformed intent block — or one whose run-default managed "
+                             "block is out of sync with the run header — before review dispatch")
     intent.add_argument("--file", required=True, help="the PR's intent-<pr>.md artifact")
+    intent.add_argument("--ledger", required=True,
+                        help="the run's state.jsonl (same directory as --file) — its header "
+                             "`default_non_goals` is what the intent's managed block must match")
 
     v = sub.add_parser("verify", help="DOES THIS PASS COUNT? (parses the active report result)")
     v.add_argument("--file", required=True, help="the ACTIVE launch attempt's progress.jsonl")
@@ -2690,6 +3050,12 @@ def build_parser() -> "tuple[argparse.ArgumentParser, list[str]]":
     v.add_argument("--amendments-ruled", type=int, default=0, metavar="N",
                    help="how many of this pass's plan amendments you have already ruled on — a count, so "
                         "N >= 0, and never more than the pass actually raised (default 0)")
+    v.add_argument("--ledger", required=True,
+                   help="the run's state.jsonl (same run directory as --file) — REQUIRED, so the pre-tally "
+                        "scope check ALWAYS runs: a pass whose DISPATCH-TIME `pass_identity.default_non_goals` "
+                        "binding no longer matches the header's current `default_non_goals` is refused as "
+                        "`unusable`, so a verdict measured against superseded defaults is never counted. "
+                        "Loop-control step 2 passes it before recording a verdict")
     # Narrow compatibility only. Older installed prose supplied this value; accepting it avoids an abrupt
     # CLI break while making it unable to influence the gate. `cmd_verify` never reads it. Suppress it from
     # help so new callers use the active report, the sole authority.

@@ -231,10 +231,15 @@ the worker returns, and what never moves into it. The steps below are unchanged 
    uses `.prompt.txt` and writes `review-<pr>-<n>.txt` / `.progress.jsonl` / `.findings.jsonl`; a
    relaunch uses and writes `review-<pr>-<n>.a<k>.*`, and
    only the attempt named in the current `pass_identity` is read or counted (Stage 2a). **Before a
-   review verdict is counted, the pass's artifacts must verify** — run `scripts/review-pass.py verify`
-   against the active attempt's progress file, never parse the report by hand. The tool derives the
-   attempt-scoped report path and prints its strict result; anything but `ok` is not tallied (Stage 2a,
-   "Does this pass COUNT?"). The coherence rule is an if and only if: `not-satisfied` exactly when at least one GATING
+   review verdict is counted, the pass's artifacts must verify** — run `scripts/review-pass.py verify
+   --ledger <rundir>/state.jsonl` against the active attempt's progress file, never parse the report by
+   hand. The tool derives the attempt-scoped report path and prints its strict result; anything but `ok`
+   is not tallied (Stage 2a, "Does this pass COUNT?"). **`--ledger` is a TALLY PRECONDITION, not an
+   option:** it compares the pass's DISPATCH-TIME `pass_identity.default_non_goals` binding to the run
+   header's current `default_non_goals`, so a verdict a reviewer earned under a scope the operator has since
+   changed is refused as `unusable` rather than counted (Stage 2a, "Does this pass COUNT?" owns the rule).
+   The scope is bound at dispatch, not read from the mutable intent, so the step-3 re-sync of the intent
+   cannot let a stale SATISFIED merge an area now in scope but never reviewed. The coherence rule is an if and only if: `not-satisfied` exactly when at least one GATING
    finding stands — a verdict that blocks a PR
    must name what blocks it, and a finding that blocks a PR cannot be waved through by the verdict. Either
    way round is `unusable` (Stage 2a, "Does this pass COUNT?").
@@ -413,7 +418,12 @@ the worker returns, and what never moves into it. The steps below are unchanged 
      without one is `unusable` and its verdict cannot be tallied** — the review would be spent for nothing.
      If the file is
      missing (a wiped `<rundir>`), write it **per `pr-adoption.md` step 3a** and record its provenance in
-     the row's `intent`. Then **ensure the PR-head worktree exists**
+     the row's `intent`. Whether it was just re-authored or already present from adoption, **run
+     `pr-adopt.py intent-sync --file <state.jsonl> --pr <N>` then `review-pass.py intent-check --file
+     <rundir>/intent-<pr>.md --ledger <state.jsonl>` before dispatch** — the sync folds the run's current
+     default Non-goals into the managed block, and the check refuses a stale or malformed one, so the
+     reviewer is never launched against defaults the operator has since changed. Then **ensure the PR-head
+     worktree exists**
      (the reviewer receives `<worktree>` as explicit review input under the transport-specific isolation
      contract in `runtime-adapter.md` — the
      PR row's ledger `worktree` column value, the

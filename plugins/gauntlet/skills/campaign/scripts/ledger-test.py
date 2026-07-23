@@ -1013,6 +1013,141 @@ def t_defaults_backfill(L: ModuleType, tmp: Path) -> None:
         check(out == L.HEADER_DEFAULTS[f] + "\n", f"header default for {f} did not back-fill: {out!r}")
 
 
+def t_default_non_goals(L: ModuleType, tmp: Path) -> None:
+    """`default_non_goals` is a schema-owned run field: a MISSING key back-fills `[]`, valid arrays round-trip
+    CANONICALLY, and every malformed value — including a PRESENT `null` or a native JSON array (NOT the
+    JSON-array-STRING form) — is REFUSED without mutating the ledger. Only a genuinely absent key backfills;
+    a present-but-malformed value FAILS CLOSED at the decode door. Consumers decode ONLY through the accessor,
+    never the raw header value."""
+    # A header written before the field existed reads back the canonical empty default, both ways.
+    old = write_lines(tmp / "old.jsonl", json.dumps({"type": "header", "run_id": "r"}))
+    code, out, err = cli(L, ["--file", str(old), "header", "get", "default_non_goals"])
+    check((code, out) == (0, "[]\n"), f"an old header did not back-fill default_non_goals to []: {out!r} {err!r}")
+    header, _ = L.load(old)
+    check(L.default_non_goals(header) == [], f"the accessor did not decode the back-filled default: {header!r}")
+
+    # A valid array sets, canonicalizes (whitespace trimmed, JSON re-emitted), and the accessor decodes it.
+    path = write_lines(tmp / "dng.jsonl", header_line(L, run_id="r"))
+    code, _, err = cli(L, ["--file", str(path), "header", "set", "default_non_goals", '["  a b  ", "c"]'])
+    check(code == 0, f"a valid default_non_goals array was refused: {err!r}")
+    code, out, _ = cli(L, ["--file", str(path), "header", "get", "default_non_goals"])
+    check(out == '["a b", "c"]\n', f"default_non_goals did not canonicalize on set: {out!r}")
+    header, _ = L.load(path)
+    check(L.default_non_goals(header) == ["a b", "c"],
+          f"the accessor did not decode the stored array: {header!r}")
+
+    # Every malformed value is REFUSED (exit 1) and leaves the stored value EXACTLY as it was.
+    before = path.read_text()
+    # ` ` (a Unicode LINE SEPARATOR) is the case a bare `"\n" in body` check let through: it is not
+    # `\n`/`\r`, so it once parsed and stored, and the downstream managed-block reader's `splitlines()` then
+    # split it into two lines and raised an UNCAUGHT `Defect`. `parse_default_non_goals` now splits with the
+    # SAME `splitlines()`, so this is refused at the door — exit 1, ledger byte-identical, no traceback.
+    for bad, why in (('{"a": 1}', "a non-array"), ('["a", "a"]', "a duplicate entry"),
+                     ('["a", ""]', "a blank entry"), ('["a\\nb"]', "a multi-line entry"),
+                     ('["- prefixed"]', "a `- `-bullet-prefixed entry the fold would double-bullet"),
+                     ('["a b"]', "a U+2028 line-separator entry"),
+                     ('not json', "malformed JSON"), ('[1, 2]', "a non-string entry")):
+        code, _, err = cli(L, ["--file", str(path), "header", "set", "default_non_goals", bad])
+        check(code == 1, f"{why} ({bad!r}) was ACCEPTED (exit {code})")
+        check("default_non_goals" in err and "refused" in err, f"{why} failed for the wrong reason: {err!r}")
+        check(path.read_text() == before, f"a refused set for {why} MUTATED the ledger")
+
+    # The accessor FAILS CLOSED on a hand-edited malformed stored value — it never guesses a list.
+    # A MISSING key is the ONLY absence that backfills to `[]` (asserted above at the "old header" case). A
+    # PRESENT-but-malformed value must NOT heal to `[]`: a bare JSON `null` (read back as None) and a native
+    # JSON array `[]` (read back as a list) both collide with the canonical empty string `"[]"` if coerced, so
+    # each is preserved RAW by `load()` and refused at the decode door. `"not-json"` covers the present-STRING
+    # malformed case; `null` and native `[]` are the two present values that once failed OPEN.
+    for label, header_extra in (("a present string", {"default_non_goals": "not-json"}),
+                                ("a present JSON null", {"default_non_goals": None}),
+                                ("a present native JSON array", {"default_non_goals": []})):
+        corrupt = write_lines(tmp / "corrupt.jsonl",
+                              json.dumps({"type": "header", "run_id": "r", **header_extra}))
+        header, _ = L.load(corrupt)
+        try:
+            L.default_non_goals(header)
+            check(False, f"the accessor decoded {label} default_non_goals instead of failing closed")
+        except ValueError:
+            pass
+
+    # An UNRELATED write must NOT heal a present-malformed value. `dump()` used to run this field through
+    # `_coerce_field`, so a `save()` that only changed `reviewer` rewrote a hand-edited `null`/native-`[]`
+    # to the canonical `"[]"` on disk — mutating a fail-closed store into a later false green. Both doors now
+    # share `_header_store_field`: after a `load -> unrelated save -> reload`, the malformed value is still
+    # RAW (never `"[]"`) and STILL fails closed. `raw_key` reads the on-disk header value back verbatim.
+    def raw_key(p: Path) -> object:
+        return json.loads(p.read_text().splitlines()[0])["default_non_goals"]
+
+    for label, raw, on_disk in (("a present JSON null", None, None),
+                                ("a present native JSON array", [], [])):
+        p = write_lines(tmp / "heal.jsonl",
+                        json.dumps({"type": "header", "run_id": "r", "default_non_goals": raw}))
+        header, rows = L.load(p)
+        header["reviewer"] = "codex"           # an UNRELATED field, the pass-5 repro's write
+        L.save(p, header, rows, activity=True)
+        check(raw_key(p) == on_disk,
+              f"an unrelated save HEALED {label} on disk to {raw_key(p)!r} instead of leaving it {on_disk!r}")
+        header2, _ = L.load(p)
+        try:
+            L.default_non_goals(header2)
+            check(False, f"{label} decoded after an unrelated write instead of still failing closed")
+        except ValueError:
+            pass
+
+    # A VALID value survives `load -> unrelated save -> reload` unchanged (the helper only preserves; it
+    # never rewrites a good value), and a MISSING key still back-fills the canonical `"[]"` at every door.
+    valid = write_lines(tmp / "valid-rt.jsonl",
+                        json.dumps({"type": "header", "run_id": "r",
+                                    "default_non_goals": json.dumps(["skip flaky tests"])}))
+    header, rows = L.load(valid)
+    header["reviewer"] = "codex"
+    L.save(valid, header, rows, activity=True)
+    reloaded, _ = L.load(valid)
+    check(L.default_non_goals(reloaded) == ["skip flaky tests"],
+          f"a valid default_non_goals did not survive an unrelated write: {reloaded!r}")
+
+    missing = write_lines(tmp / "missing-rt.jsonl", json.dumps({"type": "header", "run_id": "r"}))
+    header, rows = L.load(missing)          # on-disk header has NO default_non_goals key yet
+    L.save(missing, header, rows, activity=True)
+    check(raw_key(missing) == "[]", f"a MISSING default_non_goals did not back-fill to '[]': {raw_key(missing)!r}")
+    reloaded, _ = L.load(missing)
+    check(L.default_non_goals(reloaded) == [], f"a back-filled default_non_goals did not decode to []: {reloaded!r}")
+
+
+def t_default_non_goals_broadening_guard(L: ModuleType, tmp: Path) -> None:
+    """A `default_non_goals` change that BROADENS scope (removes/shrinks a default) is REFUSED while any
+    non-terminal PR still holds banked review credit (`reviews_ok > 0`) — the false-permissive-merge guard.
+    A narrowing change (an ADD) is always allowed; a broadening change is allowed once no active row holds
+    credit (its crediting rows are at 0, or terminal)."""
+    def ledger(name: str, *rows: str) -> Path:
+        return write_lines(tmp / name,
+                           header_line(L, run_id="r", default_non_goals=json.dumps(["D", "E"])), *rows)
+
+    # BROADENING (drop "D") while pr 1 (in_review) holds credit -> REFUSED, exit 1, ledger UNCHANGED.
+    path = ledger("credit.jsonl", row_line(L, pr="1", status="in_review", reviews_ok="2"))
+    before = path.read_text()
+    code, _, err = cli(L, ["--file", str(path), "header", "set", "default_non_goals", json.dumps(["E"])])
+    check(code == 1, f"a broadening change while credit stands was ACCEPTED (exit {code})")
+    check("BROADENING" in err and "1" in err, f"the refusal did not name the breach and the PR: {err!r}")
+    check(path.read_text() == before, "a refused broadening change MUTATED the ledger")
+
+    # ADDING a default ("F") NARROWS scope — always allowed, even with credit standing.
+    code, _, err = cli(L, ["--file", str(path), "header", "set", "default_non_goals", json.dumps(["D", "E", "F"])])
+    check(code == 0, f"an add (narrowing) was refused while credit stands: {err!r}")
+    code, out, _ = cli(L, ["--file", str(path), "header", "get", "default_non_goals"])
+    check(out == '["D", "E", "F"]\n', f"the narrowing add did not land canonically: {out!r}")
+
+    # No ACTIVE credit -> the same broadening is allowed. A reviews_ok=0 row and a merged (terminal) row
+    # with a standing tally both leave the guard idle: the next review runs fresh under the wider scope.
+    for n, (why, row) in enumerate((("a zero-credit active row", row_line(L, pr="2", status="in_review", reviews_ok="0")),
+                                    ("a merged terminal row", row_line(L, pr="3", status="merged", reviews_ok="2")))):
+        p = ledger(f"clear-{n}.jsonl", row)
+        code, _, err = cli(L, ["--file", str(p), "header", "set", "default_non_goals", json.dumps(["E"])])
+        check(code == 0, f"a broadening change was refused with only {why}: {err!r}")
+        code, out, _ = cli(L, ["--file", str(p), "header", "get", "default_non_goals"])
+        check(out == '["E"]\n', f"the broadening change did not land with only {why}: {out!r}")
+
+
 def t_values_are_strings(L: ModuleType, tmp: Path) -> None:
     """Every ingested value is coerced to `str`, so the on-disk JSON's type cannot change a comparison."""
     path = write_lines(tmp / "num.jsonl", header_line(L),
@@ -2604,6 +2739,8 @@ CASES = [
     ("id-derived", "id is always pr<pr> — never trusted from the file, never caller-set", t_id_is_derived),
     ("defaults-backfill", "a row written before a field existed still reads back complete", t_defaults_backfill),
     ("values-are-strings", "every ingested value is coerced to str", t_values_are_strings),
+    ("default-non-goals", "default_non_goals: a MISSING key back-fills [] but a PRESENT value (incl. null/native array) fails closed, valid arrays canonicalize, malformed values are refused unmutated, decode only through the accessor", t_default_non_goals),
+    ("default-non-goals-broadening-guard", "a BROADENING default_non_goals change is refused while a non-terminal PR holds review credit; an add, or no active credit, is allowed", t_default_non_goals_broadening_guard),
     ("null-reads-as-default", "a present JSON null reads back as the field default, not the string \"None\"", t_null_reads_as_default),
     ("verdict-counts-rounds", "`verdict` bumps review_rounds on EVERY verdict and applies the tally atomically", t_verdict_counts_rounds),
     ("rounds-never-reset", "NOTHING resets review_rounds/ns_streak — there is no flag, at any door", t_review_rounds_never_reset),

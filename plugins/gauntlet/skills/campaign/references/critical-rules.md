@@ -137,7 +137,9 @@
   achieve its stated Purpose, without breaking anything reachable by an actor named in its Threat model?**
   The open-ended question **has no fixed point** — there is always one more true thing to say about a diff,
   and asking it ran one PR through **21 review rounds** of true, reproduced, irrelevant findings until a
-  human stopped it. **Declared non-goals BIND the reviewer**: a finding that attacks one cannot gate. The
+  human stopped it. **Declared non-goals BIND the reviewer**: a finding that attacks one cannot gate — and
+  "declared non-goals" includes the run's **default Non-goals**, folded into the intent's managed block from
+  the ledger header (`pr-adoption.md`, `files-and-ledger.md`), exactly as much as a PR-specific one. The
   adversarial sweep **stays** — bounded by the threat model rather than by nothing
   (`stage-2-review-gate.md`, "What the review is MEASURED AGAINST").
 - **A finding must ANCHOR, or it does NOT gate.** Every finding is a record written by
@@ -286,7 +288,7 @@
   EVERY line of those files whatever produced it — every reviewer event now goes through a door
   (`emit-progress.py`, `emit-finding.py`, `emit-amendment.py`), and a hand-written line is caught on read
   all the same (Stage 2a owns that rule). **A verdict from a pass that does not verify `ok` is NEVER tallied**, and there are
-  **four** kinds of defect that make a pass `unusable` (Stage 2a, "Does this pass
+  **five** kinds of defect that make a pass `unusable` (Stage 2a, "Does this pass
   COUNT?", owns the enumeration):
   - **the active REPORT result is unusable** — missing, empty, truncated, duplicate, nonterminal,
     malformed, from the wrong launch attempt, or missing SATISFIED's exact immediately preceding
@@ -301,8 +303,15 @@
     and so is a `satisfied` that recorded one. `verify` derives the result from the active progress path;
     no caller may retell or override it. DEFERRED is not a verdict: it routes through progress to
     `amended`/`incomplete`, and is `unusable` if the pass is complete with nothing outstanding.
-  Every one of those rules holds at **both doors** — the same predicate refuses it on write (`emit`) and on
-  read (`verify`), so it cannot be enforced at one and not the other. **Every identifier it handles has ONE
+  - **the pass's bound review SCOPE has DRIFTED** — a well-formed, canonical `pass_identity` whose
+    DISPATCH-TIME `default_non_goals` binding no longer matches the run's live defaults, because the
+    operator moved run scope while the review was in flight; `verify --ledger` voids that verdict exactly
+    as a moved head does (`check_scope`, the scope analogue of the head-SHA check).
+  Most of those rules hold at **both doors** — the same predicate refuses the pass on write (`emit`) and on
+  read (`verify`), so it cannot be enforced at one and not the other. The **two LIVE-WORLD comparisons are
+  the exception**: the scope-drift check just above (`check_scope`) and its head-SHA analogue (`check_head`)
+  compare the pass's binding to the run's live state, which only `verify --ledger` can read — `emit` has no
+  ledger, so it cannot make them; those two hold at the **read door alone**. **Every identifier it handles has ONE
   legal form and NO door repairs one** (a unit id is `u01`-shaped; `pr`/`pass`/`launch_attempt` are decimal
   from 1 up; `head_sha` is 40 lowercase hex): the tool used to strip `emit`'s `--unit` while `plan-add`
   took its `--id` verbatim, so a plan could hold ` u01 ` and `emit` would then call that unit NOT IN THE

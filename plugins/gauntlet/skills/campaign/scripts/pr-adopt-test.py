@@ -974,6 +974,216 @@ def t_mixed_base_end_to_end():
         text = (out_dir / f"{run_id}.md").read_text(encoding="utf-8")
         check("base_branches: [\"main\", \"v3\"]" in text,
               f"the distilled v2 metadata names both release lines: {text!r}")
+# --- fu61: `intent-sync` folds the run's default Non-goals into a PR's intent managed block ------------
+#
+# The mechanical fold: pr-adopt reads defaults ONLY through `L.default_non_goals` and rewrites the managed
+# block ONLY through `RP.merge_default_non_goals` (both exercised here for real), then writes atomically.
+# The block's own format/idempotency rules are pinned in review-pass-test; these pin pr-adopt's boundary —
+# derive the sibling path, refuse a missing row / unusable intent without writing, and report the outcome.
+
+INTENT_BASE = (
+    "# What this PR is for\n\n"
+    "## Purpose\n- do the thing\n\n"
+    "## Non-goals\n- a pr specific exclusion\n\n"
+    "## Threat model\n- Who can write the inputs this code reads: the network\n"
+)
+
+
+def _set_defaults(ledger: Path, *bodies: str) -> None:
+    _ledger("--file", str(ledger), "header", "set", "default_non_goals", json.dumps(list(bodies)))
+
+
+def _write_intent(ledger: Path, pr, text: str = INTENT_BASE) -> Path:
+    p = M.intent_path(str(ledger), str(pr))
+    p.write_text(text, encoding="utf-8")
+    return p
+
+
+def _intent_sync(ledger: Path, pr):
+    return capture_cli(M.main, ["intent-sync", "--file", str(ledger), "--pr", str(pr)])
+
+
+def _managed(text: str) -> "list[str]":
+    """The run-default bullets inside the managed block, via the review-pass scanner the tool itself uses."""
+    return M.RP.scan_managed_block(text, Path("intent.md")).bullets
+
+
+def t_intent_sync_inserts_and_preserves():
+    with tempfile.TemporaryDirectory() as dd:
+        d = Path(dd)
+        ledger = d / "state.jsonl"
+        _init_ledger(ledger)
+        _set_defaults(ledger, "run default A", "run default B")
+        _add_row(ledger, 12, head_sha="a" * 40, tier="HIGH")
+        intent = _write_intent(ledger, 12)
+        code, out, err = _intent_sync(ledger, 12)
+        check(code == 0, f"a fresh intent-sync succeeds (got {code}: {err})")
+        check(json.loads(out)["intent_sync"] == "updated", f"the summary must report `updated`: {out}")
+        text = intent.read_text()
+        check(_managed(text) == ["run default A", "run default B"],
+              f"both run defaults must land in the managed block; got {_managed(text)!r}")
+        check("- a pr specific exclusion" in text, "the PR-specific Non-goal must be preserved untouched")
+
+
+def t_intent_sync_dedup():
+    with tempfile.TemporaryDirectory() as dd:
+        d = Path(dd)
+        ledger = d / "state.jsonl"
+        _init_ledger(ledger)
+        _set_defaults(ledger, "a pr specific exclusion", "run default A")
+        _add_row(ledger, 12, head_sha="a" * 40, tier="HIGH")
+        intent = _write_intent(ledger, 12)
+        code, _, err = _intent_sync(ledger, 12)
+        check(code == 0, f"intent-sync succeeds (got {code}: {err})")
+        text = intent.read_text()
+        check(_managed(text) == ["run default A"],
+              f"a default already stated as a PR-specific Non-goal is NOT duplicated; got {_managed(text)!r}")
+        check(text.count("a pr specific exclusion") == 1, "the shared bullet appears exactly once")
+
+
+def t_intent_sync_idempotent():
+    with tempfile.TemporaryDirectory() as dd:
+        d = Path(dd)
+        ledger = d / "state.jsonl"
+        _init_ledger(ledger)
+        _set_defaults(ledger, "run default A", "run default B")
+        _add_row(ledger, 12, head_sha="a" * 40, tier="HIGH")
+        intent = _write_intent(ledger, 12)
+        _intent_sync(ledger, 12)
+        first = intent.read_text()
+        code, out, err = _intent_sync(ledger, 12)
+        check(code == 0, f"a second intent-sync succeeds (got {code}: {err})")
+        check(json.loads(out)["intent_sync"] == "unchanged",
+              f"the second sync must report `unchanged`: {out}")
+        check(intent.read_text() == first, "a second intent-sync is BYTE-IDENTICAL")
+
+
+def t_intent_sync_change_replaces():
+    with tempfile.TemporaryDirectory() as dd:
+        d = Path(dd)
+        ledger = d / "state.jsonl"
+        _init_ledger(ledger)
+        _set_defaults(ledger, "run default A", "run default B")
+        _add_row(ledger, 12, head_sha="a" * 40, tier="HIGH")
+        intent = _write_intent(ledger, 12)
+        _intent_sync(ledger, 12)
+        # Change the header: A is dropped, C is added; the sync must REPLACE the managed block, not append.
+        _set_defaults(ledger, "run default B", "run default C")
+        code, out, err = _intent_sync(ledger, 12)
+        check(code == 0, f"the re-sync succeeds (got {code}: {err})")
+        check(json.loads(out)["intent_sync"] == "updated", "changing the header updates the block")
+        check(_managed(intent.read_text()) == ["run default B", "run default C"],
+              f"the block must reflect the NEW defaults exactly; got {_managed(intent.read_text())!r}")
+
+
+def t_intent_sync_empty_removes():
+    with tempfile.TemporaryDirectory() as dd:
+        d = Path(dd)
+        ledger = d / "state.jsonl"
+        _init_ledger(ledger)
+        _set_defaults(ledger, "run default A")
+        _add_row(ledger, 12, head_sha="a" * 40, tier="HIGH")
+        intent = _write_intent(ledger, 12)
+        _intent_sync(ledger, 12)
+        check(M.RP.MANAGED_START in intent.read_text(), "precondition: the managed block was inserted")
+        _set_defaults(ledger)  # empty defaults
+        code, _, err = _intent_sync(ledger, 12)
+        check(code == 0, f"emptying the defaults syncs cleanly (got {code}: {err})")
+        text = intent.read_text()
+        check(M.RP.MANAGED_START not in text and M.RP.MANAGED_END not in text,
+              "an empty default list removes the managed block entirely")
+        check("- a pr specific exclusion" in text,
+              "removing the managed block leaves the PR-specific Non-goals untouched")
+
+
+def t_intent_sync_pending_intent():
+    with tempfile.TemporaryDirectory() as dd:
+        d = Path(dd)
+        ledger = d / "state.jsonl"
+        _init_ledger(ledger)
+        _set_defaults(ledger, "run default A")
+        _add_row(ledger, 12, head_sha="a" * 40, tier="HIGH")
+        # No intent artifact authored yet — a visible incomplete adoption, not a failure.
+        code, out, err = _intent_sync(ledger, 12)
+        check(code == 0, f"a missing intent is reported, not an error (got {code}: {err})")
+        check(json.loads(out)["intent_sync"] == "pending-intent",
+              f"the summary must report `pending-intent`: {out}")
+        check(not M.intent_path(str(ledger), 12).exists(), "intent-sync must not CREATE the intent artifact")
+
+
+def t_intent_sync_refuses_missing_row():
+    with tempfile.TemporaryDirectory() as dd:
+        d = Path(dd)
+        ledger = d / "state.jsonl"
+        _init_ledger(ledger)
+        _set_defaults(ledger, "run default A")
+        intent = _write_intent(ledger, 12)  # an intent exists, but no ledger row does
+        before = intent.read_text()
+        code, _, err = _intent_sync(ledger, 12)
+        check(code == 1, f"a missing row must be REFUSED (got {code})")
+        check("no ledger row" in err, f"the refusal must name the missing row: {err!r}")
+        check(intent.read_text() == before, "a refused sync must not write the intent")
+
+
+def t_intent_sync_refuses_unusable_intent():
+    with tempfile.TemporaryDirectory() as dd:
+        d = Path(dd)
+        ledger = d / "state.jsonl"
+        _init_ledger(ledger)
+        _set_defaults(ledger, "run default A")
+        _add_row(ledger, 12, head_sha="a" * 40, tier="HIGH")
+        # missing ## Threat model, and a duplicated managed block — either makes the base intent unusable.
+        bad = "## Purpose\n- do the thing\n\n## Non-goals\n- x\n"
+        intent = _write_intent(ledger, 12, bad)
+        code, _, err = _intent_sync(ledger, 12)
+        check(code == 1, f"an unusable base intent must be REFUSED (got {code})")
+        check("not a usable intent block" in err, f"the refusal must say the intent is unusable: {err!r}")
+        check(intent.read_text() == bad, "a refused sync must not rewrite an unusable intent")
+
+        dup = (INTENT_BASE.replace("- a pr specific exclusion\n",
+                                   "- a pr specific exclusion\n" + M.RP.MANAGED_START + "\n- one\n"
+                                   + M.RP.MANAGED_END + "\n" + M.RP.MANAGED_START + "\n- two\n"
+                                   + M.RP.MANAGED_END + "\n"))
+        intent.write_text(dup, encoding="utf-8")
+        code, _, err = _intent_sync(ledger, 12)
+        check(code == 1, f"a malformed managed block must be REFUSED (got {code})")
+        check(intent.read_text() == dup, "a refused sync must not rewrite a malformed managed block")
+
+
+def t_adopt_readoption_invokes_sync():
+    """cmd_adopt runs intent-sync automatically: a re-adoption whose intent artifact is present gets its
+    managed block folded, and the summary reports it."""
+    with tempfile.TemporaryDirectory() as dd:
+        d = Path(dd)
+        wroot = d / "wt"
+        sha = "a" * 40
+        wt = wroot / "feat-x"
+        wt.mkdir(parents=True)
+        ledger = d / "state.jsonl"
+        _init_ledger(ledger)
+        _set_defaults(ledger, "run default A")
+        _add_row(ledger, 12, head_sha=sha, worktree=str(wt), worktree_owned="yes", branch_owned="yes",
+                 tier="HIGH")
+        intent = _write_intent(ledger, 12)
+        code, out, err, _ = _adopt(d, ledger, view(headRefOid=sha), wroot=wroot, worktree_head=sha,
+                                   checkouts=[(str(wt), "refs/heads/feat-x")])
+        check(code == 0, f"re-adoption succeeds (got {code}: {err})")
+        check(json.loads(out)["intent_sync"] == "updated",
+              f"cmd_adopt must report the intent-sync outcome: {out}")
+        check(_managed(intent.read_text()) == ["run default A"],
+              "re-adoption folds the run default into the present intent artifact")
+        # …and a FRESH adoption (no intent yet) reports pending-intent, authoring nothing. Its ledger sits
+        # in its OWN run dir so the first adoption's intent-12.md is not a sibling of it.
+        run2 = d / "run2"
+        run2.mkdir()
+        ledger2 = run2 / "state.jsonl"
+        _init_ledger(ledger2)
+        _set_defaults(ledger2, "run default A")
+        code2, out2, err2, _ = _adopt(d, ledger2, view(headRefOid=sha), wroot=wroot, worktree_head=sha,
+                                      checkouts=[(str(wt), "refs/heads/feat-x")])
+        check(code2 == 0, f"fresh adoption succeeds (got {code2}: {err2})")
+        check(json.loads(out2)["intent_sync"] == "pending-intent",
+              f"a fresh adoption with no intent reports pending-intent: {out2}")
 
 
 CASES = [
@@ -1010,4 +1220,13 @@ CASES = [
     ("adopt_records_row_base", "a fresh adoption records the live base on the new row (add-row --base-branch)", t_adopt_records_row_base),
     ("readopt_base_mismatch_parks", "a re-adoption whose live base diverges from effective_base parks the row, exact reason, no rewrite", t_readopt_base_mismatch_parks),
     ("readopt_base_mismatch_already_held", "an already-held row keeps its open question on a base mismatch", t_readopt_base_mismatch_already_held_keeps_question),
+    ("intent_sync_inserts_and_preserves", "intent-sync folds all run defaults in, preserving PR-specific Non-goals (fu61)", t_intent_sync_inserts_and_preserves),
+    ("intent_sync_dedup", "a default already stated as a PR-specific Non-goal is not duplicated (fu61)", t_intent_sync_dedup),
+    ("intent_sync_idempotent", "a second intent-sync is byte-identical and reports unchanged (fu61)", t_intent_sync_idempotent),
+    ("intent_sync_change_replaces", "changing the header replaces the managed block, adding and removing defaults (fu61)", t_intent_sync_change_replaces),
+    ("intent_sync_empty_removes", "empty defaults remove the managed block without touching PR-specific Non-goals (fu61)", t_intent_sync_empty_removes),
+    ("intent_sync_pending_intent", "a missing intent is reported pending-intent, never authored (fu61)", t_intent_sync_pending_intent),
+    ("intent_sync_refuses_missing_row", "a missing ledger row is refused without writing (fu61)", t_intent_sync_refuses_missing_row),
+    ("intent_sync_refuses_unusable_intent", "an unusable or malformed-managed intent is refused without writing (fu61)", t_intent_sync_refuses_unusable_intent),
+    ("adopt_readoption_invokes_sync", "cmd_adopt runs intent-sync: re-adoption folds, fresh adoption reports pending-intent (fu61)", t_adopt_readoption_invokes_sync),
 ]

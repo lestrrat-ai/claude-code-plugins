@@ -168,7 +168,18 @@ Two things the audit does about it — **a SIGNAL and a hand-off, never a discha
   reading it as licence to skip the CONFIRMED fix in hand drops that routing (verify against `repair-pass.md`).
   The driver may then author/tighten the intent `## Non-goals` **directly — a plain driver edit of the
   local intent artifact, needing no repair-pass** — so **future** reviewer rounds bind, and surface the
-  residual class to the user as a **non-blocking policy note**, driving the other PRs meanwhile. (The
+  residual class to the user as a **non-blocking policy note**, driving the other PRs meanwhile. **Scope
+  decides the lever.** A **PR-SPECIFIC** exclusion stays a per-PR edit of that intent's own `## Non-goals`
+  (`pr-adoption.md`, "The run-default Non-goals MANAGED block", owns where a PR-specific bullet sits
+  relative to the managed block). A genuinely **RUN-WIDE** class — the same residual attacking several
+  of the run's PRs — is **NOT the driver's to declare**: the run header `default_non_goals` is
+  **OPERATOR-DECLARED, never auto-promoted** from the driver's own findings (`review-learnings.md`, "never
+  auto-promoted"; `files-and-ledger.md`, "the exclusions the operator declares"), because a store that folds
+  a Non-goal into **every** PR of the run is exactly the run-wide gate-blinding those authorities forbid.
+  Here the driver **only surfaces the recurring class to the operator as a non-blocking policy note**
+  (driving the other PRs meanwhile); **ONLY after the operator explicitly declares it** (`ledger.py header
+  set default_non_goals …`, `files-and-ledger.md`) is it folded into every PR by `pr-adopt.py intent-sync`,
+  rather than hand-editing each `intent-<pr>.md`. Either way it is disclosed and describes the class. (The
   cap-level `repair-pass.md` REPAIR-INTENT decision re-authors the whole intent the same way, but is
   reachable only once a review-loop cap sets `status = repairing` — it is NOT the mechanism for this
   early, pre-cap signal.) Three constraints

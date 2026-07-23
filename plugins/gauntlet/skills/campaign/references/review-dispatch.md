@@ -17,6 +17,7 @@ result = run_argv(
          "--worktree", worktree, "--base", base, "--file", ledger,
          "--route", route, "--report-producer", report_producer,
          "--head-sha", head_sha, "--dispatched-at", dispatched_at,
+         "--default-non-goals", ledger_default_non_goals,
          "--intent-file", intent_file],
   cwd: repository.project_root,
   stdin_file: null,
@@ -40,6 +41,11 @@ Inputs have these owners:
   any artifact, so preparation never writes launch files into the candidate worktree. This is a fail-closed
   input check, not an OS boundary.
 - `pr`, `review_pass`, `head_sha`, and `dispatched_at` name this launch attempt.
+- `ledger_default_non_goals` is the run header's `default_non_goals` value (its canonical JSON array, `[]`
+  when the run declares none), read from `<review_root>/state.jsonl`. `prepare` BINDS it into the
+  `pass_identity` as the immutable dispatch-time review scope this pass's verdict is measured against — the
+  tally (`verify --ledger`) compares this binding to the header's live defaults, never the mutable intent
+  block (`stage-2-review-gate.md`, "Does this pass COUNT?"). A malformed value is a controlled refusal.
 - `intent_file` is the absolute derived `<rundir>/intent-<pr>.md` path. The command refuses another path.
 
 The command validates the existing per-pass plan and per-PR intent through `review-pass.py`, derives the

@@ -38,7 +38,7 @@ TEST_PY = HERE / "ledger-test.py"     # the fixture suite — this accessor's ex
 # --- schema (owned here, once) ------------------------------------------------
 
 HEADER_FIELDS = ("run_id", "base_branch", "api_changes", "reviewer", "required_set", "skill_version",
-                 "last_activity", "watchdog_due", "pending_adoption")
+                 "last_activity", "watchdog_due", "pending_adoption", "default_non_goals")
 HEADER_DEFAULTS = {
     "run_id": "-",
     # LEGACY FALLBACK for the base branch. The base a PR merges into is now ROW state (`base_branch` in
@@ -115,6 +115,22 @@ HEADER_DEFAULTS = {
     #
     # The default is `-`: nothing is pending. This is not a sensor and carries no liveness meaning.
     "pending_adoption": "-",
+    # THE RUN-WIDE DEFAULT NON-GOALS — the exclusions the operator declares ONCE for the whole run, folded
+    # into every adopted PR's `intent-<pr>.md` "## Non-goals" as a MANAGED block at adoption/re-adoption
+    # (pr-adoption.md owns that block's format). A JSON ARRAY STRING of bullet BODIES (no `- ` prefix), each
+    # unique, trimmed, nonempty and single-line — `parse_default_non_goals` is the ONE validator and
+    # `default_non_goals(header)` the ONE decode door; no consumer decodes this value itself.
+    #
+    # The default is `[]`, the canonical "no run defaults". Only a genuinely MISSING key back-fills to it (an
+    # old ledger written before this field existed), so a run with nothing declared folds nothing. A PRESENT
+    # value is NOT healed to the default: `load()` preserves it raw and the decode door validates it, so a bare
+    # `null` or a native JSON array (not the JSON-array-STRING form) FAILS CLOSED like any other malformed value
+    # rather than silently reading as `[]`. `header set default_non_goals` validates and CANONICALIZES the
+    # value; malformed JSON, a non-array, a blank/multiline/duplicate entry is REFUSED without mutating the
+    # ledger (fail closed), and a BROADENING change (a default removed) is refused while banked review credit
+    # stands (`guard_default_non_goals_change`). files-and-ledger.md, "default_non_goals", owns the field and
+    # that lifecycle rule.
+    "default_non_goals": "[]",
 }
 
 ROW_FIELDS = (
@@ -399,6 +415,11 @@ REPAIR_STATUS = "repairing"
 # its normal policy, and reconcile still READS a held PR and records what it read.
 HELD_STATUSES = ("awaiting-api", "awaiting-user", REPAIR_STATUS)
 
+# TERMINAL — the statuses in which a row is DONE and out of the live gate: `merged` finished successfully,
+# `aborted` gave up. Named ONCE so any check asking "is this row still ACTIVE?" reads the set instead of
+# retyping the pair (`cmd_park` and the `default_non_goals` broadening guard both resolve through it).
+TERMINAL_STATUSES = ("merged", "aborted")
+
 # `fail()` keeps 1 for "your input was rejected". A HELD/AT-CAP answer is NOT an input error — the command
 # did its job and the answer is STOP — so it gets its own code. A driver that proceeds anyway has a FAILED
 # COMMAND in its transcript, not a defensible judgment call.
@@ -457,6 +478,24 @@ def _coerce_field(value: object, default: str) -> str:
     return default if value is None else str(value)
 
 
+def _header_store_field(src: "dict", f: str) -> object:
+    """The ONE rule for a header field's stored form, shared by `load()` (ingest) and `dump()` (serialize)
+    so NO serialization door heals what another preserves. `default_non_goals` is special: a PRESENT value
+    — even a malformed bare `null` (read as `None`) or native array (read as a `list`) — is kept RAW, so the
+    fail-closed decode door (`parse_default_non_goals`) sees it un-healed and refuses it; only a MISSING key
+    back-fills the default. Every OTHER field coerces `null`->default via `_coerce_field`, as before.
+
+    Missing-vs-present is knowable only at these boundaries, so the rule lives HERE (one owner) rather than
+    per-door: a per-door copy is how `dump()` once healed the `null`/native-`[]` values that `load()`
+    preserved, rewriting a fail-closed store to a false green on any unrelated write. Return type is `object`
+    (NOT `str`) because the raw value may be `None`/`list`/`str`; `json.dumps` accepts `object`, and both
+    call sites hold `dict[str, object]`.
+    """
+    if f == "default_non_goals":
+        return HEADER_DEFAULTS[f] if f not in src else src[f]
+    return _coerce_field(src.get(f), HEADER_DEFAULTS[f])
+
+
 def load(path: Path) -> "tuple[dict, list[dict]]":
     """Return (header, rows). A missing file yields defaults + no rows.
 
@@ -468,7 +507,11 @@ def load(path: Path) -> "tuple[dict, list[dict]]":
     of the accessor uses; a row's `id` is always recomputed from its normalized
     `pr` (never trusted from the file). An unknown `type` is rejected, not dropped.
     """
-    header = dict(HEADER_DEFAULTS)
+    # `object` value type (not `str`): `_header_store_field` preserves a PRESENT `default_non_goals` RAW
+    # (a bare JSON `null` read as `None`, or a native array read as a `list`) so the fail-closed decode door
+    # sees it un-healed. That transient non-str only lives here until `parse_default_non_goals` validates it;
+    # every other field is still `_coerce_field`-d to `str`.
+    header: dict[str, object] = dict(HEADER_DEFAULTS)
     rows: list[dict] = []
     if not path.exists():
         return header, rows
@@ -487,9 +530,13 @@ def load(path: Path) -> "tuple[dict, list[dict]]":
             elif kind == "header":
                 fail(f"line {n}: unexpected second/out-of-order header record")
             if kind == "header":
-                # coerce every value to str, matching dump()'s write side (null -> default, not "None")
+                # Store each header field through the ONE shared rule (`_header_store_field`): every field
+                # coerces null -> default (matching dump()'s write side), EXCEPT `default_non_goals`, whose
+                # PRESENT value — including a bare JSON `null` or a native array — is preserved RAW so the
+                # fail-closed decode door refuses it un-healed (only a MISSING key back-fills). `dump()` calls
+                # the same helper, so no serialization door can heal what this one preserves.
                 for f in HEADER_FIELDS:
-                    header[f] = _coerce_field(rec.get(f), HEADER_DEFAULTS[f])
+                    header[f] = _header_store_field(rec, f)
             else:  # kind == "row"
                 row = dict(ROW_DEFAULTS)
                 # coerce every value to str first, so 11 and "11" are one key (null -> default, not "None")
@@ -534,8 +581,11 @@ def dump(path: Path, header: dict, rows: list[dict]) -> None:
     and never a byte of anything else. A failure at any point leaves the ORIGINAL untouched and takes the
     temp file with it.
     """
+    # Header fields serialize through the SAME `_header_store_field` rule `load()` ingests with, so a PRESENT
+    # malformed `default_non_goals` (`null` / native `[]`) is written back RAW, never healed to `"[]"`. Coercing
+    # it here (as `_coerce_field` would) is what silently repaired a fail-closed store on any unrelated write.
     out = [json.dumps({"type": "header",
-                       **{f: _coerce_field(header.get(f), HEADER_DEFAULTS[f]) for f in HEADER_FIELDS}})]
+                       **{f: _header_store_field(header, f) for f in HEADER_FIELDS}})]
     for row in rows:
         out.append(json.dumps({"type": "row",
                                **{f: _coerce_field(row.get(f), ROW_DEFAULTS[f]) for f in ROW_FIELDS}}))
@@ -758,6 +808,115 @@ def parse_ruling(value: str) -> "tuple[str, str] | None":
     return kind, stamp
 
 
+def parse_default_non_goals(value: str) -> "list[str]":
+    """The run's default Non-goals, as a validated list of bullet BODIES — the ONE parser and validator.
+
+    The stored form is a JSON ARRAY STRING; this decodes it and accepts ONLY a list of unique, trimmed,
+    nonempty, single-line strings (each a `## Non-goals` bullet body WITHOUT the `- ` prefix). Anything else
+    — malformed JSON, a non-array, a non-string / blank / multi-line / duplicate entry — is REFUSED by
+    raising `ValueError`, which the write door turns into a fail-closed refusal that never mutates the
+    ledger. Returns the canonical (whitespace-trimmed) list in declared order.
+    """
+    if not isinstance(value, str):
+        # The stored form is a JSON-array STRING. A non-string here (a bare JSON `null` read back as
+        # `None`, or a native JSON array read back as a `list`) is a malformed store that `load()` now
+        # preserves RAW rather than healing to the canonical `"[]"`. Refuse it explicitly and legibly so
+        # the fail-closed intent is load-bearing, not an incidental `TypeError` leaking Python internals.
+        raise ValueError(f"must be a JSON-array STRING, not {type(value).__name__}")
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise ValueError(f"not valid JSON ({exc})")
+    if not isinstance(parsed, list):
+        raise ValueError(f"must be a JSON array, not {type(parsed).__name__}")
+    out: "list[str]" = []
+    seen: "set[str]" = set()
+    for item in parsed:
+        if not isinstance(item, str):
+            raise ValueError(f"every entry must be a string, not {type(item).__name__}")
+        body = item.strip()
+        if not body:
+            raise ValueError("an entry is blank — an empty exclusion states nothing")
+        if body.startswith("- "):
+            # The managed-block reader renders each body as `- <body>` (`review-pass.py merge_default_non_goals`),
+            # so a body that ITSELF begins with the `- ` bullet delimiter would render `- - <rest>` — a double
+            # bullet the block's own schema forbids ("bodies WITHOUT the `- ` prefix"). Reject it at the door,
+            # never store one that the fold would render malformed. A lone `-`, `-x`, or an internal `a - b`
+            # carries no bullet delimiter and stays valid.
+            raise ValueError(f"entry {item!r} begins with the bullet delimiter `- ` — a Non-goal body is the "
+                             f"bullet's TEXT, not another bullet; drop the leading `- `")
+        if len(body.splitlines()) > 1:
+            # `splitlines` is the EXACT line-splitter the downstream managed-block reader uses
+            # (`review-pass.py scan_managed_block`), so this rejects every separator it would split on —
+            # `\n`/`\r` AND the Unicode ones (U+2028, U+0085, …) a bare `"\n" in body` check let through to
+            # land as an uncaught `Defect` there. `body` is already `.strip()`ed, so this fires on an
+            # INTERNAL separator alone, never a trailing one.
+            raise ValueError(f"entry {item!r} spans multiple lines — one Non-goal is one line")
+        if body in seen:
+            raise ValueError(f"duplicate entry {body!r} — one exclusion cannot be stated twice")
+        seen.add(body)
+        out.append(body)
+    return out
+
+
+def default_non_goals(header: dict) -> "list[str]":
+    """The run's default Non-goals, DECODED — the ONE door every consumer reads them through (never the raw
+    header value). Fails CLOSED (raises `ValueError`) on a malformed stored value; the write door
+    canonicalizes on every `set`, so that only ever happens to a hand-edited store."""
+    return parse_default_non_goals(header.get("default_non_goals", HEADER_DEFAULTS["default_non_goals"]))
+
+
+def prs_with_review_credit(rows: "list[dict]") -> "list[str]":
+    """The PRs of every NON-TERMINAL row that still holds BANKED review credit (`reviews_ok > 0`).
+
+    A `merged`/`aborted` row is DONE and out of the gate (`TERMINAL_STATUSES`), so it is skipped; every
+    other row whose SATISFIED tally is above zero is one whose credit a scope-BROADENING default change would
+    silently preserve. Named as its own door so the broadening guard reads the set and a fixture can pin
+    exactly which rows count."""
+    return [r.get("pr", "-") for r in rows
+            if r.get("status") not in TERMINAL_STATUSES and counter(r, "reviews_ok") > 0]
+
+
+def guard_default_non_goals_change(header: dict, rows: "list[dict]", new_defaults: "list[str]") -> None:
+    """FAIL CLOSED on a `default_non_goals` change that BROADENS the run's review scope while banked review
+    credit still stands. Files-and-ledger.md, "default_non_goals", owns this rule; this is its enforcement.
+
+    A default is an exclusion the reviewer is told CANNOT gate. REMOVING one (or shrinking the set) lifts an
+    exclusion, so the review scope WIDENS. Any `reviews_ok` a PR already banked was earned under the OLD,
+    NARROWER scope — a finding that attacked the now-in-scope area was legitimately discharged as out of
+    scope — and NOTHING in a header write moves a head SHA, so the merge gate never voids that tally. The PR
+    could then merge with the newly in-scope area NEVER reviewed: a genuine false-permissive merge.
+
+    So a broadening change is refused whenever any non-terminal PR holds credit (`prs_with_review_credit`);
+    the operator resets those rows first (`set --pr N --reviews-ok 0`, re-opening them for a fresh review
+    under the wider scope) and, in that same step, runs `label-mirror.py mirror` for each to restore its
+    `gauntlet-reviewing` label (a `reviews_ok`->0 reset owes the relabel; `stage-2-review-gate.md`), then
+    re-declares. The asymmetry is deliberate and load-bearing: ADDING a
+    default NARROWS scope, under which banked credit stays valid, so an add is always allowed. This is ONE
+    guard, not a per-pass versioning subsystem — the single-user operator resets and re-declares.
+
+    A malformed CURRENT stored value cannot be diffed for broadening; that is a hand-edited store the new
+    (validated) value repairs, so the guard steps aside rather than block the repair (single-user residual).
+    """
+    try:
+        old_defaults = default_non_goals(header)
+    except ValueError:
+        return  # current stored value is malformed (hand-edited) — this change repairs it; let it land
+    removed = [d for d in old_defaults if d not in new_defaults]
+    if not removed:
+        return  # nothing removed -> scope only NARROWS (or is unchanged): banked credit stays valid
+    credit_prs = prs_with_review_credit(rows)
+    if not credit_prs:
+        return  # no active row holds credit -> the next review runs fresh under the broadened scope
+    fail(f"default_non_goals change would REMOVE {removed!r}, BROADENING the review scope — but pr(s) "
+         f"{', '.join(credit_prs)} still hold SATISFIED review credit earned under the narrower scope. "
+         f"Nothing here moves a head SHA, so the merge gate would NOT void it, and those PRs could merge "
+         f"with the now-in-scope area never reviewed. Reset each first "
+         f"(`ledger.py set --pr <N> --reviews-ok 0`, re-opening it for a fresh review under the broadened "
+         f"scope) AND, in that same step, run `label-mirror.py mirror --pr <N>` to restore its "
+         f"`gauntlet-reviewing` label; then re-run `header set default_non_goals`. The ledger is unchanged")
+
+
 # --- subcommands --------------------------------------------------------------
 
 def cmd_header(path: Path, args) -> int:
@@ -776,8 +935,20 @@ def cmd_header(path: Path, args) -> int:
     # (nor, by writing an old date, forge "it is stalled" or "the deadline already passed").
     if args.field in NO_SET_HEADER:
         fail(NO_SET_HEADER[args.field])
-    activity = header.get(args.field) != args.value
-    header[args.field] = args.value
+    value = args.value
+    if args.field == "default_non_goals":
+        # VALIDATE and CANONICALIZE through the schema's own parser — the ONE place this field is decoded.
+        # A refusal raises BEFORE `save`, so a malformed value never mutates the ledger (fail closed).
+        try:
+            new_defaults = parse_default_non_goals(args.value)
+        except ValueError as exc:
+            fail(f"default_non_goals {exc} — refused; the ledger is unchanged")
+        value = json.dumps(new_defaults)
+        # A BROADENING change (a default removed) while banked review credit stands is a false-permissive
+        # merge in waiting — refuse it, fail closed, BEFORE `save`. `guard_default_non_goals_change` owns why.
+        guard_default_non_goals_change(header, rows, new_defaults)
+    activity = header.get(args.field) != value
+    header[args.field] = value
     save(path, header, rows, activity=activity)
     return 0
 
@@ -1210,7 +1381,7 @@ def cmd_park(path: Path, args) -> int:
              f"actionable (stage-2-ci.md, ESCALATE). `ci_reason` is the question the user is asked to rule "
              f"on, so an empty or `-` reason parks a PR on a question nobody can read")
     status = row["status"]
-    if status in ("merged", "aborted"):
+    if status in TERMINAL_STATUSES:
         fail(f"pr {pr} is {status} — a terminal row is never parked; nothing waits on a human for it")
     if status == "awaiting-user":
         print(f"ledger: pr {pr} is ALREADY awaiting-user — a park is open and NOT yet answered, so a second "

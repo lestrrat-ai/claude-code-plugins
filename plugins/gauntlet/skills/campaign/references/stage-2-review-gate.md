@@ -205,9 +205,12 @@ the file through a door — unit progress through `emit-progress.py`, findings t
 and a `plan_amendment_request` through `emit-amendment.py`; `pass_identity` is the orchestrator's line,
 and the emit-only rule below governs the whole set.
 It is the schema owner for the review-pass artifact set exactly as
-`ledger.py` is for `state.jsonl`, and it enforces every rule below at **both doors** — where the commands
-enter *and* where the data enters, because a rule enforced only on write is not enforced: the progress
-file is a plaintext file in a directory the reviewer can write to.
+`ledger.py` is for `state.jsonl`, and it enforces every **artifact-shape** rule below at **both doors** —
+where the commands enter *and* where the data enters, because a rule enforced only on write is not
+enforced: the progress file is a plaintext file in a directory the reviewer can write to. The two
+**live-world comparisons** are the exception: the live head SHA (`check_head`) and the live
+`default_non_goals` scope (`check_scope`) read the run's current state through `verify --ledger`, which
+`emit` has no access to, so those two hold at the **read door alone**.
 
 ```text
 # Every line is an argv list passed through runtime-adapter.md's run_argv; fields are data.
@@ -226,16 +229,23 @@ file is a plaintext file in a directory the reviewer can write to.
 ["python3", review_pass_script, "finding-add", "--file", findings_file,
  "--path", path, "--line", line, "--writer", writer, "--purpose", purpose,
  "--repro", repro, "--fix", fix]
-["python3", review_pass_script, "intent-check", "--file", intent_file]
-    # refuse a missing/malformed intent block BEFORE dispatch, not at verify
+["python3", review_pass_script, "intent-check", "--file", intent_file, "--ledger", ledger_file]
+    # the PRE-DISPATCH scope door ONLY: refuse a missing/malformed intent block, or one whose run-default
+    # managed block has drifted from the ledger header default_non_goals, before a reviewer is launched.
+    # It does NOT gate the tally — the tally reads the dispatch-time pass_identity binding, not this intent
 ["python3", review_dispatch_script, "prepare", "--run-dir", review_root,
  "--pr", pr, "--pass", review_pass, "--launch-attempt", launch_attempt,
  "--worktree", worktree, "--base", base, "--route", route,
  "--report-producer", report_producer, "--head-sha", head_sha,
- "--dispatched-at", utc_timestamp, "--intent-file", intent_file]
-    # write identity + exact prompt and return the one typed transport record; review-dispatch.md owns it
+ "--dispatched-at", utc_timestamp, "--default-non-goals", ledger_default_non_goals,
+ "--intent-file", intent_file]
+    # write identity (BINDING the run's default_non_goals as the dispatch-time scope) + exact prompt and
+    # return the one typed transport record; review-dispatch.md owns it
 ["python3", review_pass_script, "verify", "--file", progress_file,
- "--head-sha", live_head_sha, "--amendments-ruled", count]
+ "--head-sha", live_head_sha, "--amendments-ruled", count, "--ledger", ledger_file]
+    # --ledger is a TALLY PRECONDITION: it compares the pass's dispatch-time pass_identity.default_non_goals
+    # binding to the header's current defaults, so a verdict earned under a scope the operator has since
+    # changed is refused as unusable, never counted
 ["python3", review_pass_script, "status", "--run", rundir]
     # ADVISORY read-only glance at in-flight passes; never a gate input
 ["python3", review_pass_script, "self-test"]
@@ -244,7 +254,10 @@ file is a plaintext file in a directory the reviewer can write to.
 `verify` re-derives every rule below from the bytes and refuses a pass whose artifacts break any of them
 — **whether or not the write tool was used**; the `unusable` row of the verify table (below) is the
 refusal list. **`emit` refuses every one of those it can see, by calling the SAME functions** — one
-implementation, both doors, so a rule cannot hold at one and not the other.
+implementation shared across both doors, so no artifact-shape rule can hold at one door and not the other.
+The exception is the pair `emit` **cannot** see: the live-head (`check_head`) and live-scope
+(`check_scope`) comparisons need the run's current state (`verify --ledger`), so they hold at the read
+door alone.
 
 #### EVERY IDENTIFIER HAS ONE LEGAL FORM, AND NO DOOR REPAIRS ONE
 
@@ -412,7 +425,7 @@ the reviewer:
 {"type":"progress","unit":"u01","status":"started"}
 {"type":"progress","unit":"u01","status":"done","evidence":"validate_idc.go:42 `canonicalizeValue`; edge case tested at validate_idc_test.go:88"}
 {"type":"plan_amendment_request","ts":"2026-07-06T00:05:00Z","reason":"diff changes generated docs; add doc consistency unit","proposed_unit":{"type":"unit","id":"u99","kind":"docs","target":"docs/generated.md","checks":["sync with API behavior"]}}
-{"type":"pass_identity","pr":"41","pass":"1","head_sha":"a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c","launch_attempt":"1","dispatched_at":"2026-07-06T00:00:00Z"}
+{"type":"pass_identity","pr":"41","pass":"1","head_sha":"a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c","launch_attempt":"1","dispatched_at":"2026-07-06T00:00:00Z","default_non_goals":[]}
 ```
 
 A **finding** is a record too, and it lives in its own artifact — `review-<pr>-<n>.findings.jsonl`, per
@@ -428,21 +441,24 @@ That example is **the real PR #43 round-11 finding**, and it is the one to keep 
 was **added by an earlier fix round of this very gauntlet**, and it still **GATES** — because `network` names
 an actor who can really send that reply, and it quotes the PR's purpose verbatim.
 
-#### `pass_identity` is the pass's attempt id and its dispatch clock
+#### `pass_identity` is the pass's attempt id, its dispatch clock, and its dispatch-time review scope
 
-**`pass_identity` is the pass's attempt id and its dispatch clock.** `review-dispatch.py prepare` writes it
+**`pass_identity` is the pass's attempt id, its dispatch clock, and the run's dispatch-time review scope (the immutable `default_non_goals` binding this pass's verdict is measured against at tally).** `review-dispatch.py prepare` writes it
 through `review-pass.py`'s schema owner, **never** a `printf`, as the
 **first line** of the launch attempt's progress file **before** launching the reviewer process, so that
 file exists from dispatch onward. `pr`, `pass` and `launch_attempt` are taken **from the progress file's
-own name**, so the identity and the file it sits in can never disagree; the only values passed in are the
-head SHA (refused unless it is 40 lowercase hex) and `dispatched_at` (refused unless it is a UTC ISO-8601
+own name**, so the identity and the file it sits in can never disagree; the values passed in are the
+head SHA (refused unless it is 40 lowercase hex), `dispatched_at` (refused unless it is a UTC ISO-8601
 timestamp **that PARSES as a real moment**: `2026-99-99T99:99:99Z` has the exact right shape, and a month
 99 is not a month — the launch deadline is arithmetic on this value, so a shape check alone cannot protect
-it). Three rules depend on it: a late verdict is ignored unless its attempt
+it), and the run's `default_non_goals` — the DISPATCH-TIME review scope this pass's verdict is measured
+against at tally. Four rules depend on it: a late verdict is ignored unless its attempt
 id still matches the active pass; `dispatched_at` is the clock the launch check below measures against;
-and `launch_attempt` is how a *later heartbeat* — possibly a fresh agent — knows which recovery branch
+`launch_attempt` is how a *later heartbeat* — possibly a fresh agent — knows which recovery branch
 this pass has already consumed: the highest `launch_attempt` records how far it has walked the
-`runtime-adapter.md`, **Review preparation mapping** budget. A progress file holding **only** this line is
+`runtime-adapter.md`, **Review preparation mapping** budget; and `verify --ledger` compares the bound
+`default_non_goals` to the run's live defaults at tally (`check_scope`), voiding a verdict earned under a
+scope the operator has since moved. A progress file holding **only** this line is
 therefore evidence that the reviewer has produced nothing — not evidence of a missing file.
 
 **The attempt id is `pr` + `pass` + `head_sha` + `launch_attempt` — all four.** A relaunch keeps the
@@ -596,9 +612,17 @@ intents. It is **local, git-ignored driver bookkeeping**: campaign never writes 
 - Who cannot: <...>
 ```
 
+Its `## Non-goals` also carries the run's **default Non-goals** — the exclusions the operator declared once
+for the whole run — folded in by `pr-adopt.py intent-sync` as a MANAGED block (`pr-adoption.md` owns that
+block's format). `review-pass.py intent-check --ledger` refuses a PR whose managed block has drifted from
+the run header before the reviewer is ever launched, and `verify --ledger` compares the immutable
+dispatch-time `pass_identity.default_non_goals` binding to the run's live header at tally (`check_scope`),
+so a verdict earned under a since-changed scope is not counted ("Does this pass COUNT?" owns that rule).
+
 **It is passed to the reviewer VERBATIM**, in the dispatch prompt (`review-dispatch.md`). Three things follow:
 
-- **NON-GOALS BIND THE REVIEWER.** A finding that attacks a declared non-goal **cannot gate**. "This PR does
+- **NON-GOALS BIND THE REVIEWER.** A finding that attacks a declared non-goal **cannot gate** — and a run
+  default is a declared non-goal like any other. "This PR does
   not harden its own self-test against a developer editing it" is a *decision*, and re-litigating a decision
   is not review — it is the loop arguing with itself.
 - **EVERY FINDING MUST ANCHOR TO THE INTENT.** It names **either** the `## Purpose` line it defends (quoted
@@ -609,9 +633,10 @@ intents. It is **local, git-ignored driver bookkeeping**: campaign never writes 
   threat model rather than by nothing. Hunt as hostilely as ever; then say who can reach what you found.
 
 **The intent is the DRIVER'S CLAIM unless the PR's author wrote it** (the ledger's `intent` column says
-which: `stated@<iso>` = copied from the PR body, `authored@<iso>` = inferred by the driver from the title,
-body and diff). A wrong intent block silently NARROWS a review, so an `authored` one is named as such in the
-final report. That is a real, disclosed cost — and it is bought against a reviewer that was previously
+which, for the BASE sections only: `stated@<iso>` = base sections copied from the PR body, `authored@<iso>`
+= inferred by the driver from the title, body and diff — either way the managed run-default block is added
+mechanically afterward, so `stated@` does not mean the whole file is verbatim). A wrong intent block
+silently NARROWS a review, so an `authored` one is named as such in the final report. That is a real, disclosed cost — and it is bought against a reviewer that was previously
 measured against **nothing at all**.
 
 ### Findings are RECORDS, not prose — `emit-finding.py` is the ONLY way to report one
@@ -684,8 +709,11 @@ case — the one that **merges the PR**. `verify` derives the PR from the progre
 file's own name and loads `<rundir>/intent-<pr>.md` on **every** pass; anything short of a **usable** block
 makes the pass `unusable` and no verdict is tallied from it. **What "usable" means is NOT restated here** —
 `pr-adoption.md` step 3a states it for the human writing the file, and `review-pass.py`'s parser IS the
-definition (`review-pass.py intent-check --file <rundir>/intent-<pr>.md` is the pre-dispatch form of the
-same check — run it before dispatching rather than discovering the gap at `verify`). A missing intent is
+definition (`review-pass.py intent-check --file <rundir>/intent-<pr>.md --ledger <rundir>/state.jsonl` is
+the pre-dispatch form of the same check, plus the run-default managed-block sync — run it before
+dispatching rather than wasting a review. The tally's scope backstop is separate: `verify --ledger`
+compares the pass's dispatch-time `pass_identity` scope binding to the header, not this intent block;
+"Does this pass COUNT?" owns it. A missing intent is
 the one `unusable` that is **not** a reviewer failure: write the block, then re-dispatch.
 
 The reviewer runs the review contract defined in `review-dispatch.md`, which also owns the dispatch
@@ -713,8 +741,30 @@ the pass that produced it, and deciding "was this pass real?" by eye is the same
 a false `ci = green` — one layer up.
 
 ```
-review-pass.py verify --file <rundir>/<active attempt's progress file> --head-sha <the PR's LIVE head>
+review-pass.py verify --file <rundir>/<active attempt's progress file> --head-sha <the PR's LIVE head> --ledger <rundir>/state.jsonl
 ```
+
+**`--ledger` is a TALLY PRECONDITION, and this section owns why.** A verdict counts only if the run's review
+scope is still the scope the pass was DISPATCHED under — and that scope is BOUND into the immutable
+`pass_identity.default_non_goals` at dispatch, never inferred at tally from the mutable `intent-<pr>.md`.
+`verify` REQUIRES `--ledger` (it errors without it), so the scope check ALWAYS runs: `verify` compares the
+pass's dispatch-time binding to the header's current `default_non_goals` (`check_scope`, the scope analogue
+of the `head_sha` check) and refuses the pass as `unusable` when they have drifted apart, so a verdict
+earned under a scope the operator changed while the review was in flight is never counted. This closes a real window: the operator may BROADEN
+`default_non_goals` (the banked-credit guard in `files-and-ledger.md` allows it while nothing is banked),
+the in-flight reviewer returns SATISFIED against the narrower scope it was dispatched with, and the loop
+tallies that verdict BEFORE the next heartbeat re-reviews — so without this check a stale SATISFIED could
+merge an area now in scope but never reviewed.
+
+**The binding — not the intent — is what fences the scope here, and that distinction is load-bearing.**
+Per-heartbeat re-adoption RE-SYNCS the in-flight PR's `intent-<pr>.md` managed block to the header BEFORE
+the tally (`pr-adoption.md`, "do not re-author — but DO re-sync"), so a tally that read the intent would
+pass the instant the intent was resynced, and the stale SATISFIED would count. Binding the scope into
+`pass_identity` at dispatch is immutable and no later re-sync can move it. The pass is superseded and
+re-reviewed under the new scope next heartbeat. Symmetric by design: a mid-flight ADD (scope narrows) also
+voids the pass, which is safe — the just-voided completed pass already covered a superset of the narrowed
+re-review scope, so the re-review is a subset (redundant but safe). (`intent-check`'s intent-vs-header scope test
+still runs PRE-DISPATCH, refusing a launch against an already-stale intent; it does not gate the tally.)
 
 **`verify` derives the active attempt's report path from the progress artifact and parses the result.**
 It requires exactly one terminal result on the last nonblank line: `VERDICT: SATISFIED`, `VERDICT: NOT
@@ -745,10 +795,10 @@ pass is a trapdoor, not a disclosure:
 
 | verdict | exit | what it means | what to do |
 |---|---|---|---|
-| `ok` | 0 | the artifacts are sound: one strict result from the active attempt's report; a `pass_identity` naming **this** PR, **this** pass, **this** launch attempt and **the live head SHA**; a **usable intent block** for this PR; every planned unit `done` **once**, with concrete evidence, after a `started` for it; every `done` for a unit that is **actually in the plan**; no unruled amendment; and the parsed result **coheres** with the findings | tally the parsed binary result through `ledger.py verdict` |
+| `ok` | 0 | the artifacts are sound: one strict result from the active attempt's report; a `pass_identity` naming **this** PR, **this** pass, **this** launch attempt, **the live head SHA**, and a bound **`default_non_goals` still equal to the run's live defaults**; a **usable intent block** for this PR; every planned unit `done` **once**, with concrete evidence, after a `started` for it; every `done` for a unit that is **actually in the plan**; no unruled amendment; and the parsed result **coheres** with the findings | tally the parsed binary result through `ledger.py verdict` |
 | `incomplete` | 1 | sound, but a planned unit has no `done` — the pass has not covered its plan | it is still working (or it stopped early — the meaningful-progress rule decides which). **Never tally a verdict from it** |
 | `amended` | 1 | sound, but the reviewer raised a `plan_amendment_request` nobody has ruled on | fold it into the plan and restart the pass, or ignore it with a note — then re-run with `--amendments-ruled N` |
-| `unusable` | 1 | the artifacts are **defective** — the active report is missing, empty, truncated, duplicate, nonterminal, malformed, or lacks SATISFIED's exact residual-risk line; a short SHA or other malformed identifier; invalid progress/identity/findings; **no usable intent block**; a parsed result that does not cohere with findings; or a spurious DEFERRED result | the pass **CANNOT count**. Fix skipped adoption inputs when named; otherwise retry — the same pass, next launch attempt (`runtime-adapter.md`, "Review preparation mapping") — or take the fresh-worker fallback |
+| `unusable` | 1 | the artifacts are **defective** — the active report is missing, empty, truncated, duplicate, nonterminal, malformed, or lacks SATISFIED's exact residual-risk line; a short SHA or other malformed identifier; invalid progress/identity/findings; **no usable intent block**; a bound `default_non_goals` that no longer matches the run's live defaults (scope drift); a parsed result that does not cohere with findings; or a spurious DEFERRED result | the pass **CANNOT count**. Fix skipped adoption inputs when named; otherwise retry — the same pass, next launch attempt (`runtime-adapter.md`, "Review preparation mapping") — or take the fresh-worker fallback |
 
 **`ok` is not SATISFIED.** The tool parses the reviewer's exact terminal result but does not judge the
 report's prose, raise `reviews_ok`, or merge. `ledger.py verdict` remains the only tally writer.
@@ -975,6 +1025,7 @@ event that drops `reviews_ok` to 0, which now includes a **depth-raising tier es
 | Judgment-path rebase (conflict-resolving **or** diff-changed) — at **either** of the two sites that rebase a PR | **Stage 2a preconditions, above** (the pre-review rebase of a `CONFLICTING`/`DIRTY`/`BEHIND` PR) **and** `stage-3-merge.md`'s step-6 reconcile. Both `clean-rebase.py` exit-3 subcases reset the gate — a conflict AND a no-conflict rebase that changed the PR's own diff — so naming only the conflict one, or only one of the two sites, is how the relabel goes missing; the *event* owes the relabel, wherever it happens |
 | Re-adoption refresh detects changed content | `pr-adoption.md` step 3 (step 4 then sets the status label from the **live** gate — `gauntlet-reviewing` here, but `gauntlet-accepted` for a re-adoption whose content did **not** change and whose verdicts step 3 preserved; either way it removes the other label) |
 | Any other PR-content change on the head branch — formatter/bot commit, manual push | **Loop control step 1's ledger refresh** — the heartbeat that *detects* it resets the gate, so it relabels there |
+| `default_non_goals` **broadening reset** — the operator clears banked credit before REMOVING a run default (the broadening guard refuses the header write while any non-terminal PR holds `reviews_ok > 0`) | **`files-and-ledger.md`, "default_non_goals"** — the operator runs `ledger.py set --pr <N> --reviews-ok 0` per credited PR to re-open it under the broadened scope. That is a `reviews_ok`→0 event on unchanged content (no head SHA moves), so each reset MUST, in the SAME step, run `label-mirror.py mirror` for that PR, restoring `gauntlet-reviewing` because the voided tally no longer meets `required(tier)` |
 | Tier DECISION is a **depth-raising escalation** (orchestrator re-triage raises the tier to a strictly deeper one — TRIVIAL→STANDARD, TRIVIAL→HIGH, STANDARD→HIGH — on unchanged content) | **`loop-control.md` re-triage step, the tier write** — this is a `reviews_ok`→0 event ("Status labels mirror the review gate" owns why): the same re-triage step writes the deeper tier and voids `reviews_ok` in ONE ledger write, requires a fresh tier-sized plan before the next dispatch, and runs `label-mirror.py mirror`, which restores `gauntlet-reviewing` because the voided tally no longer meets `required(tier)`. The adoption-time tier write (`pr-adoption.md` step 6) is the SAME event: an UNCHANGED re-adoption PRESERVES `reviews_ok` (>= 1) (`pr-adopt.py` preserves it when the head did not move), so a depth-raising decision there must void that preserved tally too — it is NOT a case that can be skipped |
 | Tier DECISION is a **de-escalation** that lowers `required(tier)` (STANDARD→TRIVIAL, on unchanged content, so `reviews_ok` is untouched) | **`loop-control.md` re-triage step, the tier write** — the same step runs `label-mirror.py mirror`; the verdicts STAY (they were earned at a deeper depth), and the mirror swaps a standing tally to `gauntlet-accepted` when the lowered `required(tier)` is now met. The adoption-time tier write (`pr-adoption.md` step 6) co-locates the SAME mirror; a FRESH adoption has `reviews_ok=0`, so it is a no-op there, but an UNCHANGED re-adoption whose preserved tally now meets the lowered `required` flips to `gauntlet-accepted` |
 

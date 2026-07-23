@@ -122,7 +122,11 @@ suppress a real defect in a *different* PR's code the reviewer never independent
      git-ignored intent that is passed to the reviewer VERBATIM and **BINDS** it: a finding that attacks a
      declared Non-goal **cannot gate** (`stage-2-review-gate.md`, "NON-GOALS BIND THE REVIEWER"). The
      reviewer therefore does **NOT** re-judge a Non-goal — so a wrong one is **not caught** by it, it
-     **silently NARROWS** that review.
+     **silently NARROWS** that review. This holds for the run's **default Non-goals** too: those are
+     **OPERATOR-DECLARED** in the ledger header and folded mechanically into every PR (`files-and-ledger.md`,
+     `pr-adoption.md`). A consulted learning INFORMS the driver's judgment about what to declare; it is
+     **never auto-promoted** into `default_non_goals`, because a store that could silently inject a Non-goal
+     across **every** PR of a run is exactly the run-wide gate-blinding this section forbids.
   2. **The finding audit's non-dispositional precedent** (`finding-audit.md`) — a matching learning is
      prior art the audit may **cite**; it does **not** discharge a CONFIRMED finding.
 - **The reviewer is NOT the backstop — the DRIVER and the USER are.** Because a Non-goal BINDS the reviewer
