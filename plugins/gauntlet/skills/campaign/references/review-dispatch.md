@@ -15,7 +15,8 @@ result = run_argv(
          "--run-dir", review_root,
          "--pr", pr, "--pass", review_pass, "--launch-attempt", launch_attempt,
          "--worktree", worktree, "--base", base, "--file", ledger,
-         "--route", route, "--report-producer", report_producer,
+         "--route", route, "--prompt-profile", prompt_profile,
+         "--report-producer", report_producer,
          "--head-sha", head_sha, "--dispatched-at", dispatched_at,
          "--default-non-goals", ledger_default_non_goals,
          "--intent-file", intent_file],
@@ -29,8 +30,9 @@ transport = prepared.transport
 
 Inputs have these owners:
 
-- `route`, `report_producer`, and `launch_attempt` come from `runtime-adapter.md`, **Review preparation
-  mapping**. `prepare` never selects, probes, or changes them.
+- `route`, `prompt_profile`, `report_producer`, and `launch_attempt` come from `runtime-adapter.md`,
+  **Review preparation mapping**. `prepare` never selects, probes, or changes them. It refuses an unknown
+  profile and every route/attempt/profile combination outside that mapping before writing launch artifacts.
 - `review_root`, `worktree`, and `base` come from the invocation's typed `RepositoryContext` and ledger.
   `base` is **this PR row's effective base** — its explicit `base_branch`, else the legacy header fallback
   (`ledger.py`'s `effective_base`), never the one header base. It rides the typed transport as data (the
@@ -79,7 +81,13 @@ bundled `scripts/review-prompt.txt`; `review-dispatch.py` is its only binder. It
 binding, and never rescans inserted bytes. Do not copy the template into prose, build it with a heredoc,
 or substitute record fields into shell source.
 
-The prompt tells every route to review the whole `origin/<base>...HEAD` diff against the intent and plan,
+**Keep one review contract/template for both prompt profiles.** `standard` binds the template directly.
+`codex-recovery` adds the binder-owned repository-maintenance preamble before the same complete template;
+it is valid only for external Codex attempt `2`. The preamble states the concrete local goal through the
+bound Intent and asks for proof from the local diff, repository tests, and fixtures. It never changes,
+shortens, or duplicates the template, and it never asks the reviewer to contact a third-party system.
+
+The shared prompt tells every route to review the whole `origin/<base>...HEAD` diff against the intent and plan,
 record progress/findings/amendments only through the bundled tools, perform the adversarial sweep, obey
 the finding-anchor rule, and return the exact residual-risk/verdict ending. These are prompt contents,
 not a second dispatch procedure; edit and test the bundled template when that contract changes.

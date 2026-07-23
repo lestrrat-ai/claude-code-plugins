@@ -181,11 +181,13 @@ complete the installed contract after its budget does. `reviewer.md` owns the re
 **Map each `ReviewAction` to `review-dispatch.py prepare` inputs through this table.** The action and route
 are different enums:
 
-| `ReviewAction` | `route` | `report_producer` |
-|---|---|---|
-| `launch-external` / `retry-external` | selected capability's external route | `external-process-capture` |
-| `launch-native` / `fallback-native` | `native` | `native-worker-write` |
-| `park-machine-blocker` | no preparation | no preparation |
+| `ReviewAction` | `route` | `report_producer` | `prompt_profile` |
+|---|---|---|---|
+| `launch-external` | selected capability's external route | `external-process-capture` | `standard` |
+| `retry-external` + `external-codex` | `external-codex` | `external-process-capture` | `codex-recovery` |
+| `retry-external` + `external-claude` | `external-claude` | `external-process-capture` | `standard` |
+| `launch-native` / `fallback-native` | `native` | `native-worker-write` | `standard` |
+| `park-machine-blocker` | no preparation | no preparation | no preparation |
 
 Selected capability's external route is exactly `external-codex` or `external-claude`; never pass the
 `ReviewAction` string as `--route`.
@@ -196,6 +198,13 @@ current next number. Once an attempt exists, recovery is fixed: attempt `1` fail
 one retry as attempt `2`; attempt `2` fails → prepare fresh native fallback attempt `3`.
 **A dead or unusable attempt `3` → `park-machine-blocker`.** Never reuse an attempt's artifacts, and never
 allocate attempt `4`.
+
+**Select `prompt_profile` only from the table, never from provider output.** `standard` and
+`codex-recovery` are a closed typed enum. Attempt `1` is always `standard`; the existing external Codex
+attempt `2` is the only `codex-recovery` case; external Claude attempt `2` and native attempt `3` stay
+`standard`. `review-dispatch.py prepare` refuses every other route/attempt/profile combination before
+writing launch artifacts. The profile changes only the retry's opening repository-maintenance framing.
+It adds no attempt, changes no review rule, and selects no route or model.
 
 **A pass number is spent only by a LANDED verdict.** Every relaunch after a dead, unusable, or DEFERRED
 attempt — whatever its route — is the SAME `--pass` with the next `launch_attempt`, never a new pass
@@ -213,6 +222,7 @@ result, then use the returned record unchanged:
 ReviewTransport {
   attempt: { pr: PositiveInt, pass: PositiveInt, launch_attempt: PositiveInt },
   review_root: Path, worktree: Path, base: Text,
+  prompt_profile: "standard" | "codex-recovery",
   prompt_path: Path, plan_path: Path, progress_path: Path, findings_path: Path,
   emit_progress_path: Path, emit_finding_path: Path, emit_amendment_path: Path,
   report: { producer: "native-worker-write" | "external-process-capture", path: Path }

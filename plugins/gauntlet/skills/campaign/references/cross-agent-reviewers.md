@@ -12,6 +12,11 @@ then launches the process from its returned transport as a background task whose
 reconcile. Prompt bytes — including verbatim GitHub-derived intent — and dynamic paths never enter shell
 source.
 
+`runtime-adapter.md`, **Review preparation mapping**, owns retry profile selection. A retry uses the same
+canonical argv below in a fresh process; never resume a failed external session or select a profile by
+matching provider output. The shipped argv has no model-selection member. `codex-recovery` changes only
+the prepared prompt's opening framing and never the process command.
+
 The commands assume a same-repository PR, as required by `pr-adoption.md`. Never add a permission-bypass
 flag to make a failed launch work.
 
@@ -112,4 +117,4 @@ For each direction, report its diversity accurately:
   It is valid when explicitly selected, but it must not be reported as engine diversity.
 
 Record `codex`, `claude`, or the exact configured reviewer in the ledger header. The final report names
-the reviewer and any pass that fell back to the active host's native worker.
+reviewer routing and retry-profile use through `bailout-and-final-report.md`, "Final report".

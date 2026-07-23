@@ -458,8 +458,8 @@
   read (`reviewer.md`, "Selecting the reviewer").
   Apply the same-engine rule in `runtime-adapter.md`. See "The reviewer".
 - Apply `reviewer.md`'s external-review retry budget, then take `runtime-adapter.md`'s owned transition.
-  The gate is unchanged; record the selected route and resulting reviewer in the report. See "The
-  reviewer".
+  The gate is unchanged; report reviewer routing and retry-profile use through
+  `bailout-and-final-report.md`, "Final report". See "The reviewer".
 - **RUN `scripts/ci-status.py required-set --ledger <rundir>/state.jsonl` before CI derivation on every
   heartbeat.** It groups nonterminal rows by `effective_base`, owns both declaration reads per **distinct
   base**, their strict parse and union, and the atomic per-row ledger write. A settled group is reused; only

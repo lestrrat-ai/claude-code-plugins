@@ -128,8 +128,9 @@ exactly what made it lethal. That case is the reassessment pass's, above, and no
 
 When the loop exits, summarize:
 
-- **Reviewer** — the ledger `reviewer` value the run used, plus any review pass where an external
-  reviewer failed and fell back to the active host's native workers (see "The reviewer").
+- **Reviewer** — the ledger `reviewer` value the run used, every pass whose external Codex attempt `2`
+  used the `codex-recovery` prompt profile, plus any review pass where an external reviewer failed and
+  fell back to the active host's native workers (see "The reviewer").
 - **Which rules actually ran** — the ledger header's `skill_version`. **State it every time.** The harness
   loads this skill from the **installed plugin cache**, so a merged, version-bumped rule governs **nothing**
   until that cache refreshes — and one did not, for days, while every report in that window said "reviewer:

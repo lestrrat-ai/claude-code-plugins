@@ -38,6 +38,14 @@ ROUTE_PRODUCERS = {
     "external-claude": "external-process-capture",
 }
 REPORT_PRODUCERS = tuple(sorted(set(ROUTE_PRODUCERS.values())))
+PROMPT_PROFILES = ("standard", "codex-recovery")
+CODEX_RECOVERY_PREAMBLE = (
+    b"REPOSITORY MAINTENANCE REVIEW RETRY\n"
+    b"Review this local repository maintenance change. The concrete local goal is to decide whether "
+    b"the PR fixes the repository failure stated in the bound Intent while preserving the complete "
+    b"review contract below. Use the local diff, repository tests, and fixtures as proof. Do not "
+    b"contact or test third-party systems.\n\n"
+)
 
 
 def _load_review_pass():
@@ -131,6 +139,22 @@ def attempt_paths(rundir: Path, pr: str, review_pass: str, launch_attempt: str) 
     }
 
 
+def validate_prompt_profile(route: str, launch_attempt: str, prompt_profile: str) -> None:
+    """Require the one profile assigned by the runtime action/route mapping."""
+    if prompt_profile not in PROMPT_PROFILES:
+        refuse(f"unknown prompt profile {prompt_profile!r}; expected one of {list(PROMPT_PROFILES)}")
+    required = (
+        "codex-recovery"
+        if route == "external-codex" and launch_attempt == "2"
+        else "standard"
+    )
+    if prompt_profile != required:
+        refuse(
+            f"route {route!r} launch attempt {launch_attempt} requires prompt profile "
+            f"{required!r}, not {prompt_profile!r}"
+        )
+
+
 def build_transport(
     *,
     rundir: Path,
@@ -139,6 +163,7 @@ def build_transport(
     pr: str,
     review_pass: str,
     launch_attempt: str,
+    prompt_profile: str,
     producer: str,
     paths: "dict[str, Path]",
 ) -> dict:
@@ -152,6 +177,7 @@ def build_transport(
         "review_root": os.fspath(rundir),
         "worktree": os.fspath(worktree),
         "base": base,
+        "prompt_profile": prompt_profile,
         "prompt_path": os.fspath(paths["prompt"]),
         "plan_path": os.fspath(paths["plan"]),
         "progress_path": os.fspath(paths["progress"]),
@@ -185,7 +211,17 @@ def bind_prompt(template: bytes, transport: dict, intent: bytes) -> bytes:
             "ReviewTransport text must be valid UTF-8; a filesystem path contains "
             f"non-UTF-8 bytes ({exc})"
         )
-    return before_record + encoded + between + intent + after_intent
+    prompt_profile = transport.get("prompt_profile")
+    if prompt_profile == "standard":
+        preamble = b""
+    elif prompt_profile == "codex-recovery":
+        preamble = CODEX_RECOVERY_PREAMBLE
+    else:
+        refuse(
+            f"ReviewTransport prompt_profile must be one of {list(PROMPT_PROFILES)}, "
+            f"got {prompt_profile!r}"
+        )
+    return preamble + before_record + encoded + between + intent + after_intent
 
 
 def identity_bytes(
@@ -432,6 +468,7 @@ def prepare(args) -> dict:
 
     if args.route not in ROUTE_PRODUCERS:
         refuse(f"unknown review route {args.route!r}; expected one of {list(ROUTE_PRODUCERS)}")
+    validate_prompt_profile(args.route, args.launch_attempt, args.prompt_profile)
     if args.report_producer not in REPORT_PRODUCERS:
         refuse(f"unknown report producer {args.report_producer!r}; expected one of {list(REPORT_PRODUCERS)}")
     required_producer = ROUTE_PRODUCERS[args.route]
@@ -468,6 +505,7 @@ def prepare(args) -> dict:
         pr=args.pr,
         review_pass=args.review_pass,
         launch_attempt=args.launch_attempt,
+        prompt_profile=args.prompt_profile,
         producer=args.report_producer,
         paths=paths,
     )
@@ -559,6 +597,8 @@ def build_parser() -> argparse.ArgumentParser:
                                         "against the selected --pr row's effective base")
     command.add_argument("--route", required=True, choices=tuple(ROUTE_PRODUCERS),
                          help="route already selected by the host adapter")
+    command.add_argument("--prompt-profile", required=True, choices=PROMPT_PROFILES,
+                         help="typed prompt framing selected by the review preparation mapping")
     command.add_argument("--report-producer", required=True, choices=REPORT_PRODUCERS,
                          help="sole report producer; must match the selected route")
     command.add_argument("--head-sha", required=True, help="40-character lowercase review head SHA")
