@@ -18,7 +18,7 @@ resume, reuse the existing dir). Per-run dirs are what keep concurrent runs' fil
 | `review-<pr>-<n>.findings.jsonl` | The FINDINGS of pass `n` (launch attempt 1) — one validated record per finding, written **only** through `scripts/emit-finding.py`. A finding used to be prose in the report, so nothing could check its citation, bound its writer, or ask what it DEFENDED — and therefore nothing could ever **decline** one. Each record ANCHORS to the PR's intent: a `## Purpose` line quoted verbatim, or the actor who can actually write the bad input. `stage-2-review-gate.md` owns the schema and the gating rule |
 | `intent-<pr>.md` | **What this PR is FOR** — a **base** of `## Purpose` / `## Non-goals` / `## Threat model` PLUS the operator's run-default **MANAGED block** inside `## Non-goals` (folded in by `pr-adopt.py intent-sync` from the header `default_non_goals`; `pr-adoption.md` owns its format). The base is written at adoption (`pr-adoption.md`), from the PR body when it carries one and **authored by the driver** from the diff/title/body when it does not; re-read every heartbeat, never re-derived. It is passed to the reviewer **verbatim**, and it is what the **pass** is measured against: `review-pass.py verify` loads it for **every** pass it judges — including one that found nothing — so a PR with no usable block here earns **no verdicts at all** (`stage-2-review-gate.md`, "Does this pass COUNT?"). **LOCAL and git-ignored — campaign NEVER writes it back to the PR** |
 | `review-<pr>-<n>.a<k>.prompt.txt` / `.a<k>.txt` / `.a<k>.progress.jsonl` / `.a<k>.findings.jsonl` | The same four per-attempt artifacts for **launch attempt `k ≥ 2`** — a relaunched pass writes here, never over attempt 1's files, so a killed-but-alive attempt can't corrupt the live one. `review-pass.py verify` derives `.a<k>.txt` from `.a<k>.progress.jsonl`; only that attempt is read or counted. The plan and intent remain per-pass/per-PR |
-| `ci-<pr>-<head_sha>.txt` | Latest **SHA-pinned** CI snapshot for a PR — check runs **AND** commit statuses, written **BY THE HEARTBEAT** running **`scripts/ci-status.py derive`** after the watch completes (**the watch never writes it**), promoted atomically, and **stamped with the `head_sha` it describes** (verify the stamp before parsing). Carries a **`source` completion marker per mandatory source**, so a source that was **never queried** is `unusable`, not a silent green (`ci-derivation-spec.md`). Never the watch stream, and never `gh pr checks` — its output carries **no SHA** |
+| `ci-<pr>-<head_sha>.txt` | Latest **SHA-pinned** CI snapshot for a PR — check runs **AND** commit statuses, written **BY THE HEARTBEAT** running **`scripts/ci-status.py derive`** after the watch completes (**the watch never writes it**), promoted atomically, and **stamped with the `head_sha` it describes** (verify the stamp before parsing). Carries a **`source` completion marker per mandatory source**, so a source that was **never queried** is `unusable`, not a silent green (`ci-derivation-spec.md`). Moved-head trust follows `stage-2-ci.md`, "A MOVED HEAD FAILS CLOSED". Never the watch stream, and never `gh pr checks` — its output carries **no SHA** |
 | `audit-<pr>-<n>.jsonl` | Schema-owned audit of the gating findings from the round pass `n`'s landed verdict produced, and any standoff ruling. Read/written only through `scripts/finding-audit.py`; `finding-audit.md`, **Executable audit artifact**, owns the complete procedure |
 | `repair-<pr>-<k>.prompt.txt` / `.prompt.txt.manifest.json` | Deterministic reassessment prompt and hash manifest written only by `repair-pass.py bundle` (`repair-pass.md`, "Build the complete reassessment bundle"). The manifest is promoted last and is required by `decide`; a prompt without its valid sidecar cannot authorize a decision |
 | `repair-<pr>-<k>.md` | The **reassessment pass**'s decision record for repair `k`: the ONE decision and why (`repair-pass.md`). Written before the decision is recorded, with the matching bundle hash as its first nonblank line and a machine-readable `DECISION: <enum>` line naming the chosen decision. `repair-pass.py decide` refuses a missing/empty record, one not bound to its exact prepared prompt, or one whose `DECISION:` line is absent/duplicated/not-permitted or disagrees with `--decision` |
@@ -403,23 +403,21 @@ Header field notes (the header fields above; per-row fields follow):
 - `ci` — `green` / `red` / `pending` for `head_sha`. Recorded by `ci-status.py liveness` from `derive`'s
   JSON (`stage-2-ci.md`, "THE BOOKKEEPING IS A COMMAND"). (**There is no `none`.** It was documented but
   no procedure could ever write it.)
-- `ci_fingerprint` — digest of the last **verified** CI snapshot, written by `ci-status.py liveness`
-  **verbatim from the `fingerprint` field of `derive`'s JSON** (`null` there → the derivation was not
-  verified and this field is not written). **What it covers and exactly how it is serialized is DEFINED in
-  `stage-2-ci.md`, "SETTLED" — and is NEVER restated here**, because a fingerprint reconstructed from a
-  paraphrase is a different fingerprint. **UNCHANGED + nothing RUNNING == SETTLED.**
+- `ci_fingerprint` — digest of the last trusted current-head evidence, written by `ci-status.py liveness`
+  **verbatim from the `fingerprint` field of `derive`'s JSON** (`null` there → the derivation had no trusted
+  current-head evidence and this field is not written). **What it covers and exactly how it is serialized is
+  DEFINED in `stage-2-ci.md`, "SETTLED" — and is NEVER restated here**, because a fingerprint reconstructed
+  from a paraphrase is a different fingerprint. **UNCHANGED + nothing RUNNING == SETTLED.**
 - `settled_strikes` — consecutive derivations seen **SETTLED but not green** *while no machine action was
   due or in flight* for the PR at this `head_sha` (`stage-2-ci.md`, "SETTLED", owns the gate — a PR the
   driver is actively repairing is never struck). Counted by `ci-status.py liveness`, never by hand. At
   the **STRIKE CAP**, escalate: park `awaiting-user`
   naming the blocker. Reset to `0` on any `head_sha` change (the ledger `set --head-sha` accessor does this
   itself — ledger.py's `apply_head_sha`) or fingerprint change (by `ci-status.py liveness`).
-- `unusable_refetches` — consecutive derivations whose snapshot was **UNUSABLE** at this `head_sha`. An
-  UNUSABLE snapshot has **no fingerprint** (its rows were never trusted), so it can never be a
-  `settled_strike`: it gets its own counter, counted by `ci-status.py liveness`. At the **REFETCH CAP**,
-  escalate the same way. Reset to `0`
-  on any `head_sha` change (the ledger `set --head-sha` accessor does this itself) and on any **VERIFIED**
-  snapshot (by `ci-status.py liveness`) (`stage-2-ci.md`, "UNUSABLE — the refetch is BOUNDED").
+- `unusable_refetches` — durable refetch-bound state, written only by `ci-status.py liveness` or the
+  `head_sha` accessor. `stage-2-ci.md`, "UNUSABLE — the refetch is BOUNDED", owns the machine-checked
+  increment/reset contract and the **REFETCH CAP**. Do not infer this field from artifact presence or
+  verification; hand `derive`'s unedited result to `liveness`.
 - `ci_stalled_since` — `-`, or the **UTC ISO-8601 timestamp** of the first derivation that saw the check
   set **RUNNING-STALLED** at this fingerprint: an evidence row still classifies `RUNNING` **and** the
   fingerprint did **not** change (`stage-2-ci.md`, "RUNNING-STALL" — the definition; the cap lives there
@@ -535,9 +533,9 @@ Header field notes (the header fields above; per-row fields follow):
        Non-exhaustively: **CI has SETTLED and is still not green** (`settled_strikes` at its cap), a check
        that **never stopped `RUNNING`** while nothing in the check set moved (`ci_stalled_since` at the CI
        STALL CAP — a hung runner, a dead reporter, a required check that queues and never starts), a
-       snapshot that stayed **UNUSABLE** (`unusable_refetches` at its cap), a check carrying an
-       **unrecognized enum value**, or **any merge precondition `merge-check.py` parks** (any `— park`
-       reason it emits) (`stage-2-ci.md`, "SETTLED", "RUNNING-STALL"
+       refetch bound that reached its cap (`unusable_refetches`), a check carrying an **unrecognized enum
+       value**, or **any merge precondition `merge-check.py` parks** (any `— park` reason it emits)
+       (`stage-2-ci.md`, "SETTLED", "RUNNING-STALL"
        and "UNUSABLE — the refetch is BOUNDED"; `stage-3-merge.md`, "The merge precondition"). **This is
        the exit from `pending` — in BOTH of its shapes**, the settled one and the forever-`RUNNING` one;
        without it, a stuck PR spins forever and no one is ever told. **Answered into**
