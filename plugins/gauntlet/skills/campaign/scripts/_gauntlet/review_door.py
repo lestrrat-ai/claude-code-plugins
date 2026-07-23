@@ -1,3 +1,4 @@
+# ci: pyright
 """Shared dispatch for the two public reviewer entry-point scripts."""
 
 from __future__ import annotations

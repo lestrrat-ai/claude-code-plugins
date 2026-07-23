@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """Fixtures for `nudge.py` — the sticky-note reminder rules.
 
 They live in a SIBLING file, and `nudge.py --self-test` FAILS LOUDLY if it cannot load them.

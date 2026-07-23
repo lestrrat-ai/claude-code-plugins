@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """Fixtures for `heartbeat.py` — the scheduled heartbeat and session-watchdog wake prompts.
 
 They live in a SIBLING file, and `heartbeat.py self-test` FAILS LOUDLY if it cannot load them.

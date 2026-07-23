@@ -1,3 +1,4 @@
+# ci: pyright
 """Load sibling Gauntlet scripts whose filenames are not importable module names."""
 
 from __future__ import annotations

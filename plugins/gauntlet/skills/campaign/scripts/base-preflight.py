@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """DECIDE whether a PR's branch is current with its base BEFORE a review or a fix is authored on it.
 
 This enforces the rebase-before-review/fix precondition `stage-2-review-gate.md` states in prose: if a PR

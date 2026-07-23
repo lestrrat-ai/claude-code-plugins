@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """Report whether a dispatched reviewer's OUTPUT STREAM is still moving.
 
 The review gate already declares a reviewer stalled when no MEANINGFUL PROGRESS —

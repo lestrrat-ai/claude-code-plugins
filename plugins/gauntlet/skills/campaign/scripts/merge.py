@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """Execute one already-approved campaign merge and its owned local cleanup.
 
 `merge-check.py` remains the owner of merge readiness. This command imports that gate, re-evaluates it

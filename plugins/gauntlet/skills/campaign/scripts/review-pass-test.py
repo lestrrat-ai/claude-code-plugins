@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """THE EXECUTABLE CONTRACT FOR `review-pass.py` — every rule pinned by a fixture, and every fixture proved
 to pin one by DELETING the rule and watching it fail.
 
