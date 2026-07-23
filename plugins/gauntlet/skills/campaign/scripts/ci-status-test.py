@@ -481,10 +481,13 @@ def required_set_cli_cases(ci, tmp: Path) -> list[str]:
     fake_bin = cli_tmp / "bin"
     fake_bin.mkdir()
     fake_gh = fake_bin / "gh"
-    fake_gh.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    fake_gh.write_text("#!/bin/sh\nprintf 'called\\n' >> \"$GH_CALLS\"\nexit 1\n", encoding="utf-8")
     fake_gh.chmod(0o700)
+    gh_calls = cli_tmp / "gh-calls"
+    gh_calls.write_bytes(b"")
     denied_env = os.environ.copy()
     denied_env["PATH"] = str(fake_bin) + os.pathsep + denied_env.get("PATH", "")
+    denied_env["GH_CALLS"] = str(gh_calls)
     unknown = cli_tmp / "unknown.jsonl"
     valid_ledger(unknown, header_required=ci.SNAP.CANNOT_READ, row_required="-")
     proc = run_cli(unknown, env=denied_env)
@@ -518,6 +521,19 @@ def required_set_cli_cases(ci, tmp: Path) -> list[str]:
         run_cli(malformed_repo, repo="invalid", env=denied_env),
     )
 
+    whitespace_repo = cli_tmp / "whitespace-repo.jsonl"
+    valid_ledger(whitespace_repo, header_required=ci.SNAP.CANNOT_READ)
+    whitespace_repo_before = whitespace_repo.read_bytes()
+    calls_before = gh_calls.read_bytes()
+    check_error(
+        "whitespace-only --repo owner/name",
+        whitespace_repo,
+        whitespace_repo_before,
+        run_cli(whitespace_repo, repo=" / ", env=denied_env),
+    )
+    if gh_calls.read_bytes() != calls_before:
+        problems.append("[required-set CLI] whitespace-only --repo fetched from GitHub")
+
     malformed_cases = {
         "headerless ledger": b'{"type":"row","pr":"1"}\n',
         "duplicate-row ledger": (b'{"type":"header"}\n'
@@ -534,6 +550,23 @@ def required_set_cli_cases(ci, tmp: Path) -> list[str]:
     valid_ledger(malformed_spec, header_required="not-a-required-set")
     malformed_before = malformed_spec.read_bytes()
     check_error("malformed required set", malformed_spec, malformed_before, run_cli(malformed_spec))
+
+    malformed_row = cli_tmp / "malformed-row-spec.jsonl"
+    valid_ledger(
+        malformed_row,
+        header_required=ci.SNAP.NONE_DECLARED,
+        row_required="not-a-required-set",
+    )
+    malformed_row_before = malformed_row.read_bytes()
+    calls_before = gh_calls.read_bytes()
+    check_error(
+        "malformed row required set",
+        malformed_row,
+        malformed_row_before,
+        run_cli(malformed_row, env=denied_env),
+    )
+    if gh_calls.read_bytes() != calls_before:
+        problems.append("[required-set CLI] malformed row required set fetched from GitHub")
 
     if not hasattr(os, "geteuid") or os.geteuid() == 0:
         print("skip     [required-set CLI] chmod cannot make the ledger directory unwritable as this user")
