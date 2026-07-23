@@ -47,13 +47,12 @@ gh label create gauntlet-run-<run-id> --color 5319E7 --description "gauntlet: ru
 > The MECHANICAL steps below — **1, 2, 4, 5 and the row of step 3** — are performed by
 > `scripts/pr-adopt.py adopt` (`pr-adopt.py adopt --pr <N> --run-id <id> --file <state.jsonl> --tier <T>
 > --worktrees-root <p> --project-root <p>`). The driver still supplies the two JUDGMENT calls it does not
-> make: the **tier DECISION** (choosing the review tier at or above `triage.py derive`'s mechanical floor)
-> and the PR's **INTENT** (step 3a).
+> make: the **tier DECISION** (`stage-2-review-gate.md`, "2a-triage", owns the complete procedure) and
+> the PR's **INTENT** (step 3a).
 > Adoption needs a row before it has resolved the PR-head worktree, so pass `--tier STANDARD` as the
-> conservative bootstrap value. `pr-adopt.py` launches no gate work. Immediately after step 5, run
-> `triage.py derive` as required below for the floor + inventory, decide the tier at or above that floor,
-> and write it through `ledger.py`; loop control repeats
-> the command before any review. Its decision logic is a pure `build_plan` pinned by `pr-adopt-test.py`.
+> conservative bootstrap value. `pr-adopt.py` launches no gate work. Immediately after step 5, follow
+> the owned 2a-triage procedure before any gate work; loop control points to the same owner. Its decision
+> logic is a pure `build_plan` pinned by `pr-adopt-test.py`.
 > The steps stay below as the spec the tool implements; read them as the authority.
 
 For each `#PR` to adopt:

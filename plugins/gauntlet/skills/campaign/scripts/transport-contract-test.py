@@ -129,7 +129,7 @@ def check_consumer_triage_region(name: str, region: str) -> None:
         normalized = " ".join(chunk.split())
         reconstructs_initial = (
             re.search(r"triage\.py\s+derive", normalized) is not None
-            and all(has_exact_flag(normalized, flag) for flag, _ in TRIAGE_INPUT_BINDINGS)
+            and any(has_exact_flag(normalized, flag) for flag, _ in TRIAGE_INPUT_BINDINGS)
         )
         require(not reconstructs_initial,
                 f"{name} reconstructed the campaign triage invocation instead of using its owner")
@@ -169,11 +169,11 @@ def check_campaign_triage_contract(stage: str, adoption: str, loop_control: str)
             for block in code_blocks if "triage.py derive" in block
             for argv in command_argvs(block)
         ), f"{name} restored a runnable campaign triage command outside its owner")
-        # Catch a caller copy placed just outside the named region. A complete prose chunk still has
-        # the tool identity and every process binding even when each flag is on a separate line.
+        # Catch a caller copy placed just outside the named region. A prose reconstruction starts when
+        # the tool identity appears with any owner-owned process binding, including on separate lines.
         for chunk in triage_prose_chunks(body):
             normalized = " ".join(chunk.split())
-            require(not all(has_exact_flag(normalized, flag)
+            require(not any(has_exact_flag(normalized, flag)
                             for flag, _ in TRIAGE_INPUT_BINDINGS),
                     f"{name} reconstructed the campaign triage invocation instead of using its owner")
 
@@ -219,6 +219,41 @@ INVENTED negative fixture: run `triage.py derive` with these caller inputs:
         lambda: check_campaign_triage_contract(stage, split_caller, loop_control),
         "reconstructed the campaign triage invocation",
         "split-line adoption triage caller was accepted",
+    )
+
+    three_flag_adoption = insert_after_once(
+        adoption,
+        insertion_marker,
+        """
+
+INVENTED negative fixture: run `triage.py derive` with these caller inputs:
+- `--worktree <worktree>`
+- `--base origin/<base>`
+- `--head-sha <head_sha>`
+""",
+    )
+    require_rejected(
+        lambda: check_campaign_triage_contract(stage, three_flag_adoption, loop_control),
+        "reconstructed the campaign triage invocation",
+        "three-flag adoption triage caller was accepted",
+    )
+
+    heartbeat_insertion_marker = "reconstruct them here."
+    three_flag_heartbeat = insert_after_once(
+        loop_control,
+        heartbeat_insertion_marker,
+        """
+
+INVENTED negative fixture: run `triage.py derive` with these caller inputs:
+- `--worktree <worktree>`
+- `--base origin/<base>`
+- `--head-sha <head_sha>`
+""",
+    )
+    require_rejected(
+        lambda: check_campaign_triage_contract(stage, adoption, three_flag_heartbeat),
+        "reconstructed the campaign triage invocation",
+        "three-flag heartbeat triage caller was accepted",
     )
 
     paraphrased_veto = insert_after_once(
