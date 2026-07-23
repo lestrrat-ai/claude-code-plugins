@@ -236,17 +236,19 @@ the active loop never resumes it. `reject` records the durable user ruling; it d
 campaign ledger row or remove campaign labels. Resolve the recorded PR's live state, then use the matching
 sequence:
 
+**If this procedure is interrupted, resume here, not through the state-resume list.** Re-resolve the
+recorded PR's live state and continue with the matching branch.
+
 - **OPEN** — run the permanent-abort procedure in `bailout-and-final-report.md`, **1-hour cap per task**,
   to completion. Then run `followups.py --file <store> reject --id fuN`.
 - **CLOSED WITHOUT MERGING** — run `merge.py run` through its existing terminal close-out
   (`loop-control.md`, "Step 4 — Merge queued PRs as a serialized drain"). Then run
-  `followups.py --file <store> closed-unmerged --id fuN`; only after that succeeds run
   `followups.py --file <store> reject --id fuN`.
 - **MERGED** — run `merge.py run` to finish the existing merge finalization, then run
   `followups.py --file <store> merged --id fuN`. Do not record `reject`: the merged PR is now the durable
   record and `merged` removes the queue entry.
 
-The existing `reject` and `closed-unmerged` edges keep the recorded `pr`; never clear that history.
+The existing `reject` edge keeps the recorded `pr`; never clear that history.
 Do not add a follow-up state for campaign disposition. The store graph and PR history stay unchanged;
 ordering the existing campaign procedure before the existing terminal ruling closes the gap.
 

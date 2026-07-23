@@ -1037,8 +1037,10 @@ def t_in_pr_rejection_finishes_campaign_disposition_first(tmp: Path) -> None:
     body = match.group("body")
     rule = "**Finish the recorded PR's campaign disposition BEFORE recording `reject`.**"
     check(rule in body, f"{heading!r} does not require the PR disposition before the durable rejection")
+    resume_rule = "**If this procedure is interrupted, resume here, not through the state-resume list.**"
+    check(resume_rule in body, f"{heading!r} does not preserve a pending rejection across interruption")
 
-    def ordered(branch: str, next_branch: str, *needles: str) -> None:
+    def ordered(branch: str, next_branch: str, *needles: str) -> str:
         start = body.find(branch)
         check(start >= 0, f"{heading!r} has no {branch!r} branch")
         end = body.find(next_branch, start + len(branch))
@@ -1050,12 +1052,14 @@ def t_in_pr_rejection_finishes_campaign_disposition_first(tmp: Path) -> None:
             check(found >= 0,
                   f"{heading!r} does not place {needle!r} after {branch!r}; the disposition order is lost")
             cursor = found + len(needle)
+        return branch_body
 
     ordered("- **OPEN**", "- **CLOSED WITHOUT MERGING**", "permanent-abort procedure",
             "`followups.py --file <store> reject --id fuN`")
-    ordered("- **CLOSED WITHOUT MERGING**", "- **MERGED**", "`merge.py run`", "terminal close-out",
-            "`followups.py --file <store> closed-unmerged --id fuN`",
-            "`followups.py --file <store> reject --id fuN`")
+    closed_branch = ordered("- **CLOSED WITHOUT MERGING**", "- **MERGED**", "`merge.py run`",
+                            "terminal close-out", "`followups.py --file <store> reject --id fuN`")
+    check("closed-unmerged" not in closed_branch,
+          f"{heading!r} parks a rejected closed PR in resumable open work before recording the ruling")
     ordered("- **MERGED**", "\n\nThe existing", "`merge.py run`",
             "`followups.py --file <store> merged --id fuN`",
             "Do not record `reject`")
