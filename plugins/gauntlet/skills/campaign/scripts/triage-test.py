@@ -127,6 +127,23 @@ def t_top_level_human_doc_names() -> None:
         check(cls == M.HUMAN_DOC, f"{name} must be HUMAN-DOC, got {cls}: {reasons}")
 
 
+def t_benign_extensionless_docs_remain_human() -> None:
+    """Extensionless CHANGELOG/LICENSE files remain HUMAN-DOC when they contain plain prose. Checking those
+    paths for frontmatter must not turn every extensionless prose file into CODE."""
+    with repository() as (repo, base):
+        write(repo, "CHANGELOG", "Release history\n")
+        write(repo, "LICENSE", "License terms\n")
+        head = commit(repo, "benign extensionless docs")
+        result = derive(repo, base)
+        code, out, err = capture_cli(M.main, [
+            "derive", "--worktree", str(repo), "--base", base, "--head-sha", head, "--tier", M.TRIVIAL])
+    check(result["floor"] is None, f"plain extensionless docs must keep the no-floor result: {result!r}")
+    check({row["class"] for row in result["files"]} == {M.HUMAN_DOC},
+          f"plain extensionless docs must remain HUMAN-DOC: {result!r}")
+    check(code == M.EXIT_OK and json.loads(out)["floor"] is None and err == "",
+          f"a decided TRIVIAL tier must remain admissible for plain extensionless docs: {code}/{out!r}/{err!r}")
+
+
 def t_prose_named_source_is_code() -> None:
     """A top-level name that begins with a prose word but carries a source-like or unknown suffix
     (CHANGELOG.py, license.go, LICENSE.exe) is NOT prose: an unbounded stem prefix let it clear the
@@ -200,6 +217,35 @@ def t_sensitive_classes_are_high() -> None:
     for path in cases:
         cls, reasons = M._path_class(path, b"content\n")
         check(cls == M.SENSITIVE and reasons, f"{path} must be mechanically SENSITIVE, got {cls}: {reasons}")
+
+
+def t_pulumi_manifests_are_sensitive() -> None:
+    """Pulumi's project and stack settings YAML basenames are IaC manifests regardless of case. They must
+    classify SENSITIVE, floor HIGH end to end, and veto either tier below that floor."""
+    manifests = ("Pulumi.yaml", "PULUMI.YAML", "config/Pulumi.production.yaml",
+                 "config/pULuMi.dev.us-east.YaMl")
+    for path in manifests:
+        cls, reasons = M._path_class(path, b"name: demo\n")
+        check(cls == M.SENSITIVE and "infrastructure-as-code manifest" in reasons,
+              f"{path} must be a SENSITIVE Pulumi manifest: {cls}: {reasons}")
+    cls, reasons = M._path_class("Pulumi.README.md", b"# Pulumi project\n")
+    check(cls == M.CODE and not any("infrastructure-as-code" in reason for reason in reasons),
+          f"a non-YAML Pulumi-prefixed file is not a canonical Pulumi manifest: {cls}: {reasons}")
+
+    for path in ("Pulumi.yaml", "config/PULUMI.production.YAML"):
+        with repository() as (repo, base):
+            write(repo, path, "name: demo\n")
+            head = commit(repo, "Pulumi manifest")
+            result = derive(repo, base)
+            check(result["floor"] == M.HIGH and one_file(result)["class"] == M.SENSITIVE,
+                  f"{path} must floor HIGH end to end: {result!r}")
+            for below in (M.TRIVIAL, M.STANDARD):
+                code, out, err = capture_cli(M.main, [
+                    "derive", "--worktree", str(repo), "--base", base, "--head-sha", head, "--tier", below])
+                check(code == M.EXIT_REFUSED and out == "",
+                      f"--tier {below} must be vetoed for {path}: {code}/{out!r}")
+                check("below the mechanical floor" in err and "HIGH" in err,
+                      f"the refusal must name {path}'s HIGH floor: {err!r}")
 
 
 def t_mixed_content_uses_highest_class() -> None:
@@ -616,6 +662,31 @@ def t_quoted_frontmatter_keys_are_code() -> None:
     check("below the mechanical floor" in err, f"the refusal must name the floor: {err!r}")
 
 
+def t_escaped_double_quoted_frontmatter_fails_closed() -> None:
+    """The line parser does not decode YAML escapes inside double-quoted keys. Such a key is unparsed, so
+    the whole frontmatter interior fails closed to CODE instead of letting an escaped agent key clear the
+    floor."""
+    doc = '---\n"\\x74ools": [read, write]\n---\nBody\n'
+    keys, accountable = M._frontmatter_top_level_keys(['"\\x74ools": [read, write]'])
+    check(keys == set() and not accountable,
+          f"an escaped double-quoted key must be unparsed: {keys!r}/{accountable!r}")
+    cls, reasons = M._path_class("docs/operator-guide.md", doc.encode("utf-8"))
+    check(cls == M.CODE and any("frontmatter" in reason for reason in reasons),
+          f"escaped double-quoted frontmatter must fail closed to CODE: {cls}: {reasons}")
+
+    with repository() as (repo, base):
+        write(repo, "docs/operator-guide.md", doc)
+        head = commit(repo, "escaped frontmatter key")
+        result = derive(repo, base)
+        code, out, err = capture_cli(M.main, [
+            "derive", "--worktree", str(repo), "--base", base, "--head-sha", head, "--tier", M.TRIVIAL])
+    check(result["floor"] == M.STANDARD and one_file(result)["class"] == M.CODE,
+          f"escaped double-quoted frontmatter must floor STANDARD: {result!r}")
+    check(code == M.EXIT_REFUSED and out == "",
+          f"--tier TRIVIAL must be vetoed for escaped frontmatter: {code}/{out!r}")
+    check("below the mechanical floor" in err, f"the refusal must name the floor: {err!r}")
+
+
 def t_flow_style_frontmatter_is_code() -> None:
     """Flow-style top-level frontmatter — a single ``{...}`` mapping — is valid YAML that the line-based
     block-key scan does not match, so before the root fix it read as prose and cleared the floor. The
@@ -674,6 +745,27 @@ def t_frontmatter_runs_for_all_prose_extensions() -> None:
         row = one_file(result)
         check(row["class"] == M.CODE and result["floor"] == M.STANDARD,
               f"{name} carrying agent frontmatter must be CODE and floor STANDARD: {result!r}")
+
+
+def t_frontmatter_runs_for_extensionless_prose() -> None:
+    """Every path eligible for HUMAN-DOC classification is checked for agent frontmatter, including
+    extensionless CHANGELOG/LICENSE basenames. The check floors those files to STANDARD and vetoes TRIVIAL."""
+    agent_doc = "---\nagent: release-writer\ntools: read\n---\nBody\n"
+    for name in ("CHANGELOG", "LICENSE"):
+        cls, reasons = M._path_class(name, agent_doc.encode("utf-8"))
+        check(cls == M.CODE and any("frontmatter" in reason for reason in reasons),
+              f"{name} carrying agent frontmatter must classify CODE directly: {cls}: {reasons}")
+        with repository() as (repo, base):
+            write(repo, name, agent_doc)
+            head = commit(repo, "extensionless agent frontmatter")
+            result = derive(repo, base)
+            code, out, err = capture_cli(M.main, [
+                "derive", "--worktree", str(repo), "--base", base, "--head-sha", head, "--tier", M.TRIVIAL])
+        check(result["floor"] == M.STANDARD and one_file(result)["class"] == M.CODE,
+              f"{name} carrying agent frontmatter must floor STANDARD: {result!r}")
+        check(code == M.EXIT_REFUSED and out == "",
+              f"--tier TRIVIAL must be vetoed for {name} agent frontmatter: {code}/{out!r}")
+        check("below the mechanical floor" in err, f"the refusal must name {name}'s floor: {err!r}")
 
 
 def t_frontmatter_closing_past_line_100_is_code() -> None:
@@ -848,11 +940,13 @@ def t_ledger_missing_row_refuses() -> None:
 CASES = [
     ("human-doc", "an all-prose diff has no floor — the tool never grants TRIVIAL", t_human_docs_have_no_floor),
     ("human-names", "top-level README/CHANGELOG/LICENSE and prose suffixes are HUMAN-DOC", t_top_level_human_doc_names),
+    ("extensionless-benign", "plain extensionless CHANGELOG/LICENSE files remain HUMAN-DOC", t_benign_extensionless_docs_remain_human),
     ("prose-named-source", "prose-named source suffixes (CHANGELOG.py, license.go) are CODE", t_prose_named_source_is_code),
     ("code-unknown", "source and unknown paths are CODE and floor STANDARD", t_source_and_unknown_are_standard),
     ("agent-frontmatter", "Markdown carrying skill/agent frontmatter is CODE", t_agent_frontmatter_is_code),
     ("agent-paths", "agent instructions, skill references, .claude and prompts are CODE", t_agent_paths_are_code),
     ("sensitive-classes", "CI/scripts/manifests/IaC/auth/build paths are SENSITIVE", t_sensitive_classes_are_high),
+    ("pulumi-manifests", "canonical Pulumi project and stack manifests are SENSITIVE", t_pulumi_manifests_are_sensitive),
     ("pip-conda-manifests", "requirements.in, constraints.txt and conda env manifests are SENSITIVE", t_pip_source_and_conda_manifests_are_sensitive),
     ("mixed", "mixed files use the highest content class", t_mixed_content_uses_highest_class),
     ("executable-mode", "adding or removing executable mode is HIGH", t_executable_mode_add_and_remove_are_high),
@@ -878,9 +972,11 @@ CASES = [
     ("blob-read-fail", "a failed git show on an existing regular side fails closed (exit 2)", t_blob_read_failure_on_existing_side_refuses),
     ("nonregular-read-skip", "a non-regular side is CODE by mode; its blob is never read", t_nonregular_side_read_failure_is_tolerated),
     ("quoted-frontmatter", "quoted YAML frontmatter keys still classify CODE", t_quoted_frontmatter_keys_are_code),
+    ("escaped-frontmatter", "escaped double-quoted YAML keys fail closed to CODE", t_escaped_double_quoted_frontmatter_fails_closed),
     ("flow-frontmatter", "flow-style {..} agent frontmatter fails closed to CODE", t_flow_style_frontmatter_is_code),
     ("unparseable-frontmatter", "frontmatter the extractor cannot fully parse fails closed to CODE", t_unparseable_frontmatter_fails_closed_to_code),
     ("frontmatter-extensions", "the frontmatter check runs for .txt/.rst prose too", t_frontmatter_runs_for_all_prose_extensions),
+    ("frontmatter-extensionless", "the frontmatter check runs for extensionless CHANGELOG/LICENSE prose", t_frontmatter_runs_for_extensionless_prose),
     ("frontmatter-long", "frontmatter closing past line 100 still classifies CODE", t_frontmatter_closing_past_line_100_is_code),
     ("frontmatter-unterminated", "an unterminated frontmatter block fails closed to CODE", t_unterminated_frontmatter_fails_closed_to_code),
     ("ledger-base-assert-pass", "--file --pr with a matching --base passes the assertion and derives",

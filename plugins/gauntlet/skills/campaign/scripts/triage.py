@@ -95,20 +95,23 @@ _DEPENDENCY_NAMES = frozenset({
 _DEPENDENCY_SUFFIXES = (".csproj", ".fsproj", ".vbproj")
 _IAC_SUFFIXES = frozenset({".tf", ".tfvars", ".hcl"})
 _IAC_PARTS = frozenset({"terraform", "pulumi", "k8s", "kubernetes", "helm", "ansible"})
+_PULUMI_MANIFEST_RE = re.compile(r"pulumi(?:\.[a-z0-9_.-]+)?\.yaml")
 _SENSITIVE_TOKENS = frozenset({
     "auth", "authentication", "authorization", "oauth", "oidc", "jwt", "crypto", "cryptography",
     "secret", "secrets", "credential", "credentials", "key", "keys", "certificate", "certificates",
 })
 _FRONTMATTER_AGENT_KEYS = frozenset({"agent", "agents", "model", "tools", "skills"})
 
-# One top-level key of a plain BLOCK-style YAML mapping line: bare (``tools:``), double- or single-quoted
-# (``"tools":`` / ``'name':``), each allowed standard leading indentation. A quoted key is valid YAML that a
-# bare-letter-only match would silently drop, reading agent frontmatter as prose and clearing the floor. This
-# matches a block-mapping key line ONLY; a flow mapping (``{name: …}``) and every other non-block surface
-# form is handled by ``_frontmatter_top_level_keys``, which fails such an interior closed to CODE.
+# One top-level key of a plain BLOCK-style YAML mapping line: bare (``tools:``), unescaped double-quoted, or
+# single-quoted (``"tools":`` / ``'name':``), each allowed standard leading indentation. A quoted key is
+# valid YAML that a bare-letter-only match would silently drop, reading agent frontmatter as prose and
+# clearing the floor. A double-quoted key containing any escape is NOT decoded by this line parser, so it
+# does not match and ``_frontmatter_top_level_keys`` fails the interior closed to CODE. This matches a
+# block-mapping key line ONLY; a flow mapping (``{name: …}``) and every other non-block surface form also
+# fails closed there.
 _FRONTMATTER_KEY_RE = re.compile(
     r"""^\s*
-        (?:"(?P<dq>[^"]+)"
+        (?:"(?P<dq>[^"\\]+)"
           |'(?P<sq>[^']+)'
           |(?P<bare>[A-Za-z][A-Za-z0-9_-]*))
         \s*:
@@ -270,7 +273,8 @@ def _iac_reason(path: str) -> str | None:
     suffix = PurePosixPath(name).suffix.lower()
     if suffix in _IAC_SUFFIXES or any(part in _IAC_PARTS for part in parts):
         return "infrastructure-as-code path"
-    if name == "chart.yaml" or re.fullmatch(r"(?:docker-)?compose(?:\.[^.]+)?\.ya?ml", name):
+    if (_PULUMI_MANIFEST_RE.fullmatch(name) or name == "chart.yaml"
+            or re.fullmatch(r"(?:docker-)?compose(?:\.[^.]+)?\.ya?ml", name)):
         return "infrastructure-as-code manifest"
     return None
 
@@ -440,9 +444,10 @@ def _path_class(path: str, content: bytes | None) -> tuple[str, list[str]]:
     agent = _agent_path_reason(path)
     if agent:
         return CODE, [agent]
-    if PurePosixPath(path).suffix.lower() in _HUMAN_SUFFIXES and _has_agent_frontmatter(content):
+    human_doc = _is_human_doc(path)
+    if human_doc and _has_agent_frontmatter(content):
         return CODE, ["prose file carrying skill or agent frontmatter"]
-    if _is_human_doc(path):
+    if human_doc:
         return HUMAN_DOC, ["human-facing prose"]
     return CODE, ["unrecognized path defaults to CODE"]
 
