@@ -361,7 +361,7 @@
   it can reach — and fix at a **single chokepoint**. **The old "2nd `NOT SATISFIED` forces the pass"
   backstop is GONE — it triggered on history nothing recorded and NEVER FIRED, across 35 review rounds
   on two PRs.** The backstop now is a **counter with a cap** (`repair-pass.md`), and the root-cause pass
-  is one of the five decisions it can reach.
+  is one of the four decisions it can reach.
 - **RECORD EVERY VERDICT WITH `ledger.py verdict` — NEVER hand-set `reviews_ok` for one.** The one atomic
   write also **evaluates the review-loop caps** (at a cap → `status = repairing`, exit non-zero;
   `repair-pass.md`). What else it bumps, why `set` cannot stand in, and the 21-round amnesia it prevents:
@@ -373,7 +373,7 @@
   **A cap is a MODE SWITCH, not a doorbell.**
 - **AUTONOMOUS REPAIR NEVER REWRITES A PR CAMPAIGN DOES NOT OWN.** On a PR with `pr_origin = external` —
   the user's, a teammate's, any PR adopted by number, **and the DEFAULT** — the permitted decisions are
-  **only DEMOTE / REPAIR-INTENT / ABORT**. RESCOPE and ROOT-CAUSE reshape branch content wholesale, and
+  **only REPAIR-INTENT / ABORT**. RESCOPE and ROOT-CAUSE reshape branch content wholesale, and
   `repair-pass.py` refuses them outright. (Ordinary targeted fixes are unaffected — this is about the
   wholesale rewrite.) **A second failed repair ABORTS rather than looping**: the mechanism that fixes
   non-convergence must not itself fail to converge.

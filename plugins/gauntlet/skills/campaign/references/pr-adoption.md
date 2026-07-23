@@ -167,8 +167,8 @@ For each `#PR` to adopt:
      so this costs no extra call.
 
      It decides **which autonomous repairs may ever run on this PR** (`repair-pass.md`, "The ownership
-     guardrail"): an `external` PR may be demoted, re-intented or aborted, but its **branch content is
-     never rewritten** by a repair. **The default is the SAFE one and that is load-bearing** — a PR whose
+     guardrail"): an `external` PR may be re-intented or aborted, but its **branch content is never
+     rewritten** by a repair. **The default is the SAFE one and that is load-bearing** — a PR whose
      origin cannot be established must never be treated as campaign's own work to reshape. *"I do not know
      who wrote this"* is not *"I wrote this"*. It is **NOT** `worktree_owned`/`branch_owned`: those say
      whether campaign created the local checkout and branch, which is a **cleanup** question, and a PR can
@@ -344,7 +344,8 @@ For each `#PR` to adopt:
    `python3 <skill-dir>/scripts/review-learnings.py --file <store> …` form is in `review-learnings.md`. The table shows **active** and **stale** rows (revoked is hidden) — **consult
    only rows whose `state` is `active`**; a stale learning is set aside pending re-evaluation and is not
    consulted. Check those active learnings for a residual class this campaign already
-   refuted or demoted that **THIS diff's own boundaries actually contain**, and state it proactively so a
+   refuted or recorded through a legacy DEMOTE that **THIS diff's own boundaries actually contain**, and
+   state it proactively so a
    fresh reviewer binds to it instead of re-raising it — disclosed `authored`, describing the CLASS, never
    gerrymandered around a single finding. A class this diff does NOT contain is not a Non-goal to import:
    that would narrow a review that should run. This is a driver-side read only: a learning is NEVER injected

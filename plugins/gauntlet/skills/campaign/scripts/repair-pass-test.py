@@ -88,7 +88,8 @@ def decision_repo(tmp: Path) -> "tuple[Path, str]":
     return repo, result.stdout.decode().strip()
 
 
-def setup(tmp: Path, name: str = "state.jsonl", *, decision: str = "demote", **row) -> "tuple[Path, Path]":
+def setup(tmp: Path, name: str = "state.jsonl", *, decision: str = "repair-intent",
+          **row) -> "tuple[Path, Path]":
     """A ledger holding one PR at a cap, plus a written decision record declaring `decision`.
 
     Written RAW (never through `dump()`), because `repair_count` and `review_rounds` have no CLI door —
@@ -119,7 +120,7 @@ def bundle_for(record: Path) -> Path:
 
 
 def bind_record(ledger: Path, record: Path, pr: str, head_sha: str, worktree: Path,
-                decision: str = "demote", base_ref: str = "origin/main",
+                decision: str = "repair-intent", base_ref: str = "origin/main",
                 base_sha: "str | None" = None) -> Path:
     """Create the smallest valid prepared-bundle witness for decision-door fixtures.
 
@@ -196,7 +197,7 @@ def t_external_pr_is_never_rewritten(tmp: Path) -> None:
     Campaign ADOPTS PRs. They may be the user's or a third party's, and reshaping someone else's work
     uninvited is not a repair, it is a hijack. This is the fixture that stands between an autonomous
     mechanism and a stranger's branch, so it checks BOTH directions: the rewrites are refused, and the
-    three that are safe still work — a guardrail that refused everything would just be a broken feature.
+    two that are safe still work — a guardrail that refused everything would just be a broken feature.
     """
     check(set(R.REWRITES_CONTENT) == {"rescope", "root-cause"},
             f"the rewriting decisions are {R.REWRITES_CONTENT} — if a new decision rewrites branch content "
@@ -218,7 +219,7 @@ def t_external_pr_is_never_rewritten(tmp: Path) -> None:
 
 
 def t_gauntlet_pr_takes_every_repair(tmp: Path) -> None:
-    """A PR campaign itself opened may take ALL FIVE decisions — the guardrail is about OWNERSHIP, not fear.
+    """A PR campaign itself opened may take ALL FOUR decisions — the guardrail is about OWNERSHIP, not fear.
 
     Each fixture record DECLARES the decision it will pass, because decide now requires the record's
     `DECISION:` line to equal `--decision`; a generic record shared across every enum would no longer bind.
@@ -299,7 +300,7 @@ def t_only_a_capped_pr_may_be_reassessed(tmp: Path) -> None:
     """A PR that never hit a cap CANNOT be reassessed. The repair is not a way around a review you dislike."""
     for status in ("in_review", "pending", "awaiting-user"):
         path, record = setup(tmp, f"live-{status}.jsonl", status=status, pr_origin="gauntlet")
-        code, _, err = decide(path, record, "demote")
+        code, _, err = decide(path, record, "repair-intent")
         check(code == 1, f"[{status}] a PR that is not repairing took a decision (exit {code})")
         check("has NOT reached a review-loop cap" in err, f"[{status}] wrong reason: {err!r}")
 
@@ -313,14 +314,14 @@ def t_a_decision_needs_a_record(tmp: Path) -> None:
     """
     path, record = setup(tmp, "norec.jsonl", pr_origin="gauntlet")
     missing = path.parent / "nope.md"
-    code, _, err = R.run(["--file", str(path), "decide", "--pr", "1", "--decision", "demote",
+    code, _, err = R.run(["--file", str(path), "decide", "--pr", "1", "--decision", "repair-intent",
                           "--record", str(missing), "--bundle-manifest", str(bundle_for(record))])
     check(code == 1, f"a decision with NO record was accepted (exit {code})")
     check("does not exist or is empty" in err, f"wrong reason: {err!r}")
 
     empty = path.parent / "empty.md"
     empty.write_text("   \n\n")
-    code, _, err = R.run(["--file", str(path), "decide", "--pr", "1", "--decision", "demote",
+    code, _, err = R.run(["--file", str(path), "decide", "--pr", "1", "--decision", "repair-intent",
                           "--record", str(empty), "--bundle-manifest", str(bundle_for(record))])
     check(code == 1, f"a decision with an EMPTY record was accepted (exit {code})")
     check(field(path, "repair_count") == "0", "a refused decision spent the budget anyway")
@@ -330,16 +331,16 @@ def t_record_decision_must_match_the_argument(tmp: Path) -> None:
     """The record's DECLARED decision must equal `--decision`, and the `DECISION:` field must be well-formed.
 
     The record survives the fresh-heartbeat context boundary; `--decision` does not. If decide trusted
-    `--decision` alone, a record concluding DEMOTE could be recorded as a terminal, irreversible ABORT and
+    `--decision` alone, a record concluding REPAIR-INTENT could be recorded as a terminal, irreversible ABORT and
     the ledger would silently disagree with the audit artifact. ABORT is the sharp case — it flips the row to
     `aborted` and the driver drops the labels — so a mismatch must mutate NOTHING. This also pins the
     fail-closed shape of the field itself: absent, duplicated, and not-permitted are each refused.
     """
-    # gauntlet + budget unspent, so BOTH demote and abort are permitted: the refusal is the DECISION
+    # gauntlet + budget unspent, so BOTH repair-intent and abort are permitted: the refusal is the DECISION
     # mismatch itself, not the ownership guardrail or the spent-budget rule.
-    path, record = setup(tmp, "mismatch.jsonl", pr_origin="gauntlet", decision="demote")
+    path, record = setup(tmp, "mismatch.jsonl", pr_origin="gauntlet", decision="repair-intent")
     code, _, err = decide(path, record, "abort")
-    check(code == 1, f"a record declaring DEMOTE was recorded as ABORT (exit {code})")
+    check(code == 1, f"a record declaring REPAIR-INTENT was recorded as ABORT (exit {code})")
     check("declares" in err and "abort" in err, f"refused for the wrong reason: {err!r}")
     check(field(path, "repair_count") == "0", "a refused mismatch spent the repair budget")
     check(field(path, "repair_decision") == "-", "a refused mismatch recorded a decision")
@@ -351,12 +352,13 @@ def t_record_decision_must_match_the_argument(tmp: Path) -> None:
     def decide_record(text: str) -> "tuple[int, str, str]":
         other = tmp / f"variant-{abs(hash(text))}.md"
         other.write_text(text)
-        return R.run(["--file", str(path), "decide", "--pr", "1", "--decision", "demote",
+        return R.run(["--file", str(path), "decide", "--pr", "1", "--decision", "repair-intent",
                       "--record", str(other), "--bundle-manifest", str(bundle_for(record))])
 
     code, _, err = decide_record(f"{marker_line}\n\nno machine-readable decision line here at all.\n")
     check(code == 1 and "exactly one" in err, f"a record with NO DECISION line was accepted: {err!r}")
-    code, _, err = decide_record(f"{marker_line}\n\nDECISION: demote\nDECISION: demote\n")
+    code, _, err = decide_record(
+        f"{marker_line}\n\nDECISION: repair-intent\nDECISION: repair-intent\n")
     check(code == 1 and "exactly one" in err, f"a record with TWO DECISION lines was accepted: {err!r}")
     code, _, err = decide_record(f"{marker_line}\n\nDECISION: teleport\n")
     check(code == 1 and "not a permitted decision" in err, f"an unknown DECISION was accepted: {err!r}")
@@ -364,16 +366,16 @@ def t_record_decision_must_match_the_argument(tmp: Path) -> None:
 
 
 def t_decision_enum_is_closed(tmp: Path) -> None:
-    """The enum is CLOSED — argparse refuses anything else, and the five have a definition each.
+    """The enum is CLOSED — argparse refuses anything else, and the four have a definition each.
 
     "Think about it and do something sensible" is precisely what a fresh-context driver holding one finding
     already did, twenty-one times. A decision outside the enum is not a decision, it is improvisation.
     """
     path, record = setup(tmp, "enum.jsonl", pr_origin="gauntlet")
-    for bogus in ("fix", "retry", "RESCOPE", "rescope-and-merge", ""):
+    for bogus in ("demote", "fix", "retry", "RESCOPE", "rescope-and-merge", ""):
         code, _, _ = decide(path, record, bogus)
         check(code == 2, f"the decision {bogus!r} was not rejected by the parser (exit {code})")
-    check(set(R.DECISIONS) == {"rescope", "repair-intent", "demote", "root-cause", "abort"},
+    check(set(R.DECISIONS) == {"rescope", "repair-intent", "root-cause", "abort"},
             f"the enum changed: {sorted(R.DECISIONS)} — a new decision needs an ownership ruling "
             f"(does it rewrite branch content?) before it can ship")
     for name, why in R.DECISIONS.items():
@@ -862,6 +864,58 @@ def t_bundle_preserves_findings_from_an_older_intent(tmp: Path) -> None:
           "the cap round incorrectly required an audit the NOT-SATISFIED sequence skips")
 
 
+def t_bundle_preserves_non_gating_findings_beside_the_required_gate(tmp: Path) -> None:
+    """One gating finding makes the cap valid; it does not make every bundled finding gating or anchored."""
+    case = bundle_setup(tmp)
+    findings = case["rundir"] / "review-1-1.findings.jsonl"
+    records = [
+        {"type": R.RP.FINDING, **GATING_FINDING},
+        {
+            "type": R.RP.FINDING,
+            "file": "feature.txt",
+            "line": "2",
+            "writer": "dev-time",
+            "purpose": R.RP.NO_PURPOSE,
+            "repro": "edit the local fixture before running the helper",
+            "fix": "add a local-only diagnostic",
+        },
+    ]
+    findings.write_text("".join(json.dumps(record) + "\n" for record in records))
+
+    output = case["rundir"] / "bundle.txt"
+    code, _, err = run_bundle(case, output)
+    check(code == 0, f"a cap bundle rejected a valid non-gating companion row: {err!r}")
+    bundled_round = prompt_payload(output)["rounds"][0]
+    bundled_records = [
+        json.loads(line) for line in bundled_round["findings"]["content"].splitlines() if line
+    ]
+    check(bundled_round["gating_findings"] == 1,
+          f"the cap's gating count changed: {bundled_round['gating_findings']!r}")
+    check(bundled_records == records,
+          f"the bundle did not preserve both finding rows: {bundled_records!r}")
+
+
+def t_docs_recover_legacy_demote_findings_from_the_bound_cap_artifact(tmp: Path) -> None:
+    """The legacy completion path gets its exact final-cap list from validated bundle bytes, not record prose."""
+    del tmp
+    references = OWNER.parent.parent / "references"
+    audit_doc = (references / "finding-audit.md").read_text(encoding="utf-8")
+    repair_doc = (references / "repair-pass.md").read_text(encoding="utf-8")
+    legacy = repair_doc.split("### Complete a legacy DEMOTE", 1)[1].split(
+        "### The repair is dispatched only after its decision is recorded", 1)[0]
+
+    check("Other findings in that bundle may be non-gating and unanchored" in audit_doc,
+          "finding-audit.md lost the mixed-bundle boundary")
+    for needle in (
+        "payload.rounds[-1]",
+        "load_historical_findings",
+        "one follow-up for every row",
+        "same list in the final report",
+        "Park the PR with a machine-blocker reason",
+    ):
+        check(needle in legacy, f"legacy DEMOTE recovery lost required rule {needle!r}")
+
+
 def t_bundle_exempts_every_prior_cap_round(tmp: Path) -> None:
     """A SECOND repair cap builds its bundle — an EARLIER cap round's legitimately absent audit is exempt too.
 
@@ -1136,16 +1190,18 @@ def t_decide_uses_row_effective_base_over_header(tmp: Path) -> None:
     # Accepted: the manifest built from the row's effective base.
     path, head_sha, repo = _row_base_decide_ledger(tmp, "rowbase-ok.jsonl")
     record = tmp / "rowbase-ok.md"
-    bind_record(path, record, "1", head_sha, repo, decision="demote", base_ref="origin/release")
-    code, _, err = decide(path, record, "demote")
+    bind_record(path, record, "1", head_sha, repo, decision="repair-intent", base_ref="origin/release")
+    code, _, err = decide(path, record, "repair-intent")
     check(code == 0, f"decide refused a bundle bound to the row's effective base: {err!r}")
-    check(field(path, "repair_decision").startswith("demote"), "the row-base decision was not recorded")
+    check(field(path, "repair_decision").startswith("repair-intent"),
+          "the row-base decision was not recorded")
 
     # Refused: a manifest bound to the HEADER base is stale against the row's effective base.
     stale_path, stale_head, stale_repo = _row_base_decide_ledger(tmp, "rowbase-stale.jsonl")
     stale_record = tmp / "rowbase-stale.md"
-    bind_record(stale_path, stale_record, "1", stale_head, stale_repo, decision="demote", base_ref="origin/main")
-    code, _, err = decide(stale_path, stale_record, "demote")
+    bind_record(stale_path, stale_record, "1", stale_head, stale_repo, decision="repair-intent",
+                base_ref="origin/main")
+    code, _, err = decide(stale_path, stale_record, "repair-intent")
     check(code == 1, f"a header-base manifest was accepted against a release-base row (exit {code})")
     check("origin/release" in err,
           f"the refusal must name the row's effective base as the expected one: {err!r}")
@@ -1156,7 +1212,8 @@ def t_bundle_resumes_after_context_loss(tmp: Path) -> None:
 
     The documented resume branch re-runs `bundle` whenever `repair_decision == "-"`, and every heartbeat is
     a fresh agent. A complete, matching prompt/manifest pair on disk is reused byte-for-byte; a partial pair
-    left by a crash mid-write is regenerated; a foreign pair is refused rather than overwritten.
+    left by a crash mid-write is regenerated; a pair carrying a legacy decision definition fails its bundle
+    hash and must be rebuilt; a foreign pair is refused rather than overwritten.
     """
     case = bundle_setup(tmp, origin="external")
     output = case["rundir"] / "repair-1-1.prompt.txt"
@@ -1182,6 +1239,37 @@ def t_bundle_resumes_after_context_loss(tmp: Path) -> None:
           "regenerating a partial bundle did not restore the complete deterministic pair")
     check(json.loads(out3)["bundle_sha256"] == json.loads(out1)["bundle_sha256"],
           "the regenerated bundle differs from the deterministic original")
+
+    # A complete pair built under the legacy enum is NOT reusable. Decision definitions are inside the
+    # hashed payload, so removing a decision changes the prepared bundle even when the ledger and head do
+    # not move. The driver follows the refusal's recovery: remove both stale artifacts and rebuild.
+    payload = json.loads(first_prompt.split(b"\n\n", 1)[1])
+    payload["permitted"]["permitted"] = ["demote", *payload["permitted"]["permitted"]]
+    payload["decision_definitions"]["demote"] = "LEGACY DEMOTE fixture definition."
+    legacy_payload = R.canonical_json(payload).encode()
+    legacy_hash = hashlib.sha256(legacy_payload).hexdigest()
+    current_hash = json.loads(out1)["bundle_sha256"]
+    header = first_prompt.split(b"\n\n", 1)[0]
+    legacy_prompt = (
+        header.replace(current_hash.encode(), legacy_hash.encode()) + b"\n\n" + legacy_payload
+    )
+    legacy_manifest = json.loads(first_manifest)
+    legacy_manifest["bundle_sha256"] = legacy_hash
+    legacy_manifest["prompt_sha256"] = hashlib.sha256(legacy_prompt).hexdigest()
+    output.write_bytes(legacy_prompt)
+    manifest_path.write_text(R.canonical_json(legacy_manifest))
+    code, _, err = run_bundle(case, output)
+    check(code == 1 and "does NOT match" in err,
+          f"a prompt with the legacy DEMOTE definition reused the current bundle hash: {err!r}")
+    check(output.read_bytes() == legacy_prompt, "the refused legacy prompt was overwritten")
+    output.unlink()
+    manifest_path.unlink()
+    code, out4, err = run_bundle(case, output)
+    check(code == 0, f"the legacy pair could not be rebuilt after the named recovery: {err!r}")
+    check(output.read_bytes() == first_prompt,
+          "rebuilding the legacy pair did not produce the current deterministic prompt")
+    check(json.loads(out4)["bundle_sha256"] == current_hash,
+          "rebuilding the legacy pair retained its stale definition hash")
 
     # A foreign prompt at the path (bytes that are NOT this bundle) is refused, never reused or overwritten.
     output.write_bytes(b"not the prepared bundle\n")
@@ -1225,12 +1313,13 @@ def t_bundle_identity_ignores_liveness_but_not_decision_fields(tmp: Path) -> Non
 
     # decide still ACCEPTS the bundle after the liveness drift — its staleness check reads only the projection.
     record = case["rundir"] / "repair-1-1.md"
-    record.write_text(f"{R.BUNDLE_MARKER}: {bundle_sha}\n\nDECISION: demote\n\n"
-                      f"The finding is outside the PR's purpose.\n")
-    code, _, err = R.run(["--file", str(case["ledger"]), "decide", "--pr", "1", "--decision", "demote",
+    record.write_text(f"{R.BUNDLE_MARKER}: {bundle_sha}\n\nDECISION: repair-intent\n\n"
+                      f"The intent is missing a stable boundary.\n")
+    code, _, err = R.run(["--file", str(case["ledger"]), "decide", "--pr", "1",
+                          "--decision", "repair-intent",
                           "--record", str(record), "--bundle-manifest", str(manifest_path)])
     check(code == 0, f"decide refused a valid bundle after a mere liveness write: {err!r}")
-    check(field(case["ledger"], "repair_decision").startswith("demote@"),
+    check(field(case["ledger"], "repair_decision").startswith("repair-intent@"),
           "the liveness-drift decision was not recorded")
 
     # Mirror image: a DECISION-field change is a real drift, so the bundle-bound decide refuses it as stale.
@@ -1244,8 +1333,10 @@ def t_bundle_identity_ignores_liveness_but_not_decision_fields(tmp: Path) -> Non
     row["ns_streak"] = str(int(row["ns_streak"]) + 1)  # a decision field moved after the bundle was built
     drift["ledger"].write_text(header_line + "\n" + json.dumps(row) + "\n")
     drift_record = drift["rundir"] / "repair-1-1.md"
-    drift_record.write_text(f"{R.BUNDLE_MARKER}: {drift_sha}\n\nDECISION: demote\n\nStale-bundle demote.\n")
-    code, _, err = R.run(["--file", str(drift["ledger"]), "decide", "--pr", "1", "--decision", "demote",
+    drift_record.write_text(
+        f"{R.BUNDLE_MARKER}: {drift_sha}\n\nDECISION: repair-intent\n\nStale bundle.\n")
+    code, _, err = R.run(["--file", str(drift["ledger"]), "decide", "--pr", "1",
+                          "--decision", "repair-intent",
                           "--record", str(drift_record),
                           "--bundle-manifest", str(R.bundle_manifest_path(drift_output))])
     check(code == 1 and "ns_streak changed" in err, f"a decision-field drift was not caught as stale: {err!r}")
@@ -1258,6 +1349,8 @@ def t_decide_distinguishes_stale_bundle_shape_from_identity_mismatch(tmp: Path) 
     Both prompts carry recomputed valid prompt/bundle hashes and matching manifests, so each refusal reaches
     payload validation. Neither refusal may mutate the ledger.
     """
+    decision = "repair-intent"
+
     def rewrite_payload(record: Path, mutate) -> None:
         manifest_path = bundle_for(record)
         manifest = json.loads(manifest_path.read_text())
@@ -1273,14 +1366,14 @@ def t_decide_distinguishes_stale_bundle_shape_from_identity_mismatch(tmp: Path) 
         manifest["bundle_sha256"] = bundle_hash
         manifest["prompt_sha256"] = hashlib.sha256(prompt_bytes).hexdigest()
         manifest_path.write_text(R.canonical_json(manifest))
-        record.write_text(f"{marker}\n\nDECISION: demote\n\nPayload validation fixture.\n")
+        record.write_text(f"{marker}\n\nDECISION: {decision}\n\nPayload validation fixture.\n")
 
     shape_root = tmp / "stale-shape"
     shape_root.mkdir()
-    shape_path, shape_record = setup(shape_root, pr_origin="external", decision="demote")
+    shape_path, shape_record = setup(shape_root, pr_origin="external", decision=decision)
     rewrite_payload(shape_record, lambda payload: payload.pop("verdictless_rounds"))
     shape_before = shape_path.read_bytes()
-    code, _, err = decide(shape_path, shape_record, "demote")
+    code, _, err = decide(shape_path, shape_record, decision)
     check(code == 1, f"a stale bundle shape was accepted (exit {code})")
     check("missing fields: verdictless_rounds" in err,
           f"the stale-shape refusal did not name its missing BUNDLE_KEYS field: {err!r}")
@@ -1292,10 +1385,10 @@ def t_decide_distinguishes_stale_bundle_shape_from_identity_mismatch(tmp: Path) 
 
     unexpected_root = tmp / "unexpected-shape"
     unexpected_root.mkdir()
-    unexpected_path, unexpected_record = setup(unexpected_root, pr_origin="external", decision="demote")
+    unexpected_path, unexpected_record = setup(unexpected_root, pr_origin="external", decision=decision)
     rewrite_payload(unexpected_record, lambda payload: payload.__setitem__("retired_field", None))
     unexpected_before = unexpected_path.read_bytes()
-    code, _, err = decide(unexpected_path, unexpected_record, "demote")
+    code, _, err = decide(unexpected_path, unexpected_record, decision)
     check(code == 1 and "unexpected fields: retired_field" in err,
           f"the stale-shape refusal did not name its unexpected BUNDLE_KEYS field: {err!r}")
     check("missing fields: (none)" in err and "rebuild the bundle" in err,
@@ -1304,11 +1397,11 @@ def t_decide_distinguishes_stale_bundle_shape_from_identity_mismatch(tmp: Path) 
 
     schema_root = tmp / "stale-schema"
     schema_root.mkdir()
-    schema_path, schema_record = setup(schema_root, pr_origin="external", decision="demote")
+    schema_path, schema_record = setup(schema_root, pr_origin="external", decision=decision)
     rewrite_payload(schema_record,
                     lambda payload: payload.__setitem__("schema", f"{R.BUNDLE_SCHEMA}-unsupported"))
     schema_before = schema_path.read_bytes()
-    code, _, err = decide(schema_path, schema_record, "demote")
+    code, _, err = decide(schema_path, schema_record, decision)
     check(code == 1 and "payload schema is" in err and R.BUNDLE_SCHEMA in err,
           f"an unsupported bundle schema did not name the expected version: {err!r}")
     check("rebuild the bundle" in err and "payload is not for this PR and head" not in err,
@@ -1317,10 +1410,10 @@ def t_decide_distinguishes_stale_bundle_shape_from_identity_mismatch(tmp: Path) 
 
     identity_root = tmp / "identity-mismatch"
     identity_root.mkdir()
-    identity_path, identity_record = setup(identity_root, pr_origin="external", decision="demote")
+    identity_path, identity_record = setup(identity_root, pr_origin="external", decision=decision)
     rewrite_payload(identity_record, lambda payload: payload.__setitem__("head_sha", "d" * 40))
     identity_before = identity_path.read_bytes()
-    code, _, err = decide(identity_path, identity_record, "demote")
+    code, _, err = decide(identity_path, identity_record, decision)
     check(code == 1 and "payload is not for this PR and head" in err,
           f"an actual PR/head mismatch lost its identity diagnostic: {err!r}")
     check("rebuild the bundle" not in err,
@@ -1403,14 +1496,18 @@ def t_decide_is_bound_to_prepared_bundle(tmp: Path) -> None:
     check(code == 0, f"bundle failed: {err!r}")
     manifest = json.loads(out)
     record = case["rundir"] / "repair-1-1.md"
-    record.write_text("BUNDLE-SHA256: " + "0" * 64 + "\n\nDECISION: demote\n\nThe finding is outside purpose.\n")
-    argv = ["--file", str(case["ledger"]), "decide", "--pr", "1", "--decision", "demote",
+    record.write_text(
+        "BUNDLE-SHA256: " + "0" * 64
+        + "\n\nDECISION: repair-intent\n\nThe intent needs a stable boundary.\n")
+    argv = ["--file", str(case["ledger"]), "decide", "--pr", "1",
+            "--decision", "repair-intent",
             "--record", str(record), "--bundle-manifest", manifest["manifest_path"]]
     code, _, err = R.run(argv)
     check(code == 1 and "not bound to this bundle" in err, f"wrong bundle hash was accepted: {err!r}")
     check(field(case["ledger"], "repair_count") == "0", "wrong bundle hash spent the repair budget")
-    record.write_text(f"{R.BUNDLE_MARKER}: {manifest['bundle_sha256']}\n\nDECISION: demote\n\n"
-                      f"It is outside purpose.\n")
+    record.write_text(
+        f"{R.BUNDLE_MARKER}: {manifest['bundle_sha256']}\n\nDECISION: repair-intent\n\n"
+        f"The intent needs a stable boundary.\n")
 
     manifest_path = Path(manifest["manifest_path"])
     manifest_doc = json.loads(manifest_path.read_text())
@@ -1424,7 +1521,7 @@ def t_decide_is_bound_to_prepared_bundle(tmp: Path) -> None:
 
     code, _, err = R.run(argv)
     check(code == 0, f"matching bundle hash was refused: {err!r}")
-    check(field(case["ledger"], "repair_decision").startswith("demote@"),
+    check(field(case["ledger"], "repair_decision").startswith("repair-intent@"),
           "bundle-bound decision was not recorded")
     code, _, err = R.run(argv)
     check(code == 1 and "exactly one decision" in err, f"one bundle was replayed for a second decision: {err!r}")
@@ -1440,9 +1537,10 @@ def t_decide_is_bound_to_prepared_bundle(tmp: Path) -> None:
     git(moved["repo"], "commit", "-q", "-m", "move after bundle")
     moved_record = moved["rundir"] / "repair-1-1.md"
     moved_record.write_text(
-        f"{R.BUNDLE_MARKER}: {moved_manifest['bundle_sha256']}\n\nDECISION: demote\n\nBased on the old head.\n")
+        f"{R.BUNDLE_MARKER}: {moved_manifest['bundle_sha256']}\n\n"
+        f"DECISION: repair-intent\n\nBased on the old head.\n")
     code, _, err = R.run([
-        "--file", str(moved["ledger"]), "decide", "--pr", "1", "--decision", "demote",
+        "--file", str(moved["ledger"]), "decide", "--pr", "1", "--decision", "repair-intent",
         "--record", str(moved_record), "--bundle-manifest", moved_manifest["manifest_path"],
     ])
     check(code == 1 and "worktree HEAD moved" in err, f"decision for a moved head was accepted: {err!r}")
@@ -1494,7 +1592,7 @@ def t_shared_module_loader_preserves_importlib_semantics(tmp: Path) -> None:
 
 
 CASES = [
-    ("external-not-rewritten", "an external PR refuses RESCOPE and ROOT-CAUSE, and takes the other three", t_external_pr_is_never_rewritten),
+    ("external-not-rewritten", "an external PR refuses RESCOPE and ROOT-CAUSE, and takes the other two", t_external_pr_is_never_rewritten),
     ("gauntlet-takes-all", "a campaign-authored PR may take every decision", t_gauntlet_pr_takes_every_repair),
     ("unknown-is-external", "an unset origin is EXTERNAL — the fail-safe direction", t_unknown_origin_is_treated_as_external),
     ("budget-spent", "at REPAIR_CAP the only decision left is abort", t_repair_budget_is_spent),
@@ -1510,6 +1608,8 @@ CASES = [
     ("bundle-deterministic", "bundle bytes/hash are deterministic and hostile payloads stay data", t_bundle_is_deterministic_and_payloads_are_data),
     ("bundle-refusals", "missing, stale, and duplicate active inputs fail before output", t_bundle_refuses_missing_stale_and_duplicate_inputs),
     ("bundle-old-intent", "old intent anchors survive; the cap round may have no audit yet", t_bundle_preserves_findings_from_an_older_intent),
+    ("bundle-mixed-findings", "a gating cap may retain non-gating, unanchored companion findings", t_bundle_preserves_non_gating_findings_beside_the_required_gate),
+    ("legacy-demote-docs", "legacy DEMOTE recovers its exact final-cap list from validated bundle bytes", t_docs_recover_legacy_demote_findings_from_the_bound_cap_artifact),
     ("bundle-prior-cap", "a second cap builds; every earlier cap round's absent audit is exempt", t_bundle_exempts_every_prior_cap_round),
     ("bundle-audit-no-re-anchor", "a historical audit reads back after the intent is re-authored (no re-anchor)", t_bundle_audit_read_does_not_re_anchor),
     ("bundle-audit-header-only", "a header-only (incomplete) audit is refused, not embedded as present", t_bundle_refuses_a_header_only_audit),
@@ -1519,7 +1619,7 @@ CASES = [
     ("bundle-base-sha-pinned", "the base is pinned to one SHA before any read; a racing fetch cannot mix bases", t_bundle_pins_base_sha_against_a_racing_fetch),
     ("bundle-row-effective-base", "the bundle binds the row's effective base, not the one header base", t_bundle_uses_row_effective_base_over_header),
     ("decide-row-effective-base", "decide re-derives the row's effective base; a header-base manifest is stale", t_decide_uses_row_effective_base_over_header),
-    ("bundle-resume", "a bundle rebuilt after context loss reuses or regenerates, never wedges", t_bundle_resumes_after_context_loss),
+    ("bundle-resume", "matching bundles resume; legacy definitions fail their hash and rebuild", t_bundle_resumes_after_context_loss),
     ("bundle-identity-scope", "a liveness write never wedges resume; a decision-field drift is still stale", t_bundle_identity_ignores_liveness_but_not_decision_fields),
     ("decide-bundle-diagnostic", "stale payload shape and actual PR/head mismatch have distinct recovery diagnostics", t_decide_distinguishes_stale_bundle_shape_from_identity_mismatch),
     ("bundle-atomic", "Git and atomic-write failures leave no partial bundle", t_bundle_git_and_atomic_failures_leave_no_output),

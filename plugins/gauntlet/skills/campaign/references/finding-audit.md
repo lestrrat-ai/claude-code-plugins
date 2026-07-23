@@ -118,16 +118,15 @@ A stochastic reviewer keeps raising findings that are TRUE and ANCHORED but are 
 kind `AGENTS.md`/`CLAUDE.md` calls an **accepted single-user residual**. There is a strong temptation to
 let the audit demote such a finding to a follow-up and move on. **The audit MUST NOT.** "Is it MATERIAL
 enough to block this PR?" is a THIRD question, and **the audit NEVER answers it** — its signal is
-non-dispositional, the verdict stays CONFIRMED, and the finding stays on the fix-list. The only shipped
-mechanism that discharges a finding as immaterial is the **repair-pass DEMOTE** decision (`repair-pass.md`,
-`repair-pass.py`), reached at a review-loop cap by a worker handed **the whole history at once**, recorded
-on disk, bounded by `REPAIR_CAP` — and it discharges **only** the findings its own test names: those that
-**anchor to no `## Purpose` line and no Threat-model actor**. That whole-history view — the round-by-round
-shape, the diff-growth curve, which findings are live vs. already-fixed vs. refuted — is the ONLY thing
-that makes even that demotion safe, and it **does not exist at the finding-audit**. At the audit you cannot
-tell an immaterial-isolated finding from the first of a real cluster; #125's "edge of the machinery the
-loop just added" finding looked immaterial and was a REAL below-floor gap. So the invariant above holds
-without exception here: **a CONFIRMED finding is fixed; demotion belongs to the cap, not to this pass.**
+non-dispositional, the verdict stays CONFIRMED, and the finding stays on the fix-list. No current repair
+decision discharges a finding as immaterial: every valid cap bundle contains at least one gating finding,
+and that finding has a Purpose or Threat-model actor anchor. That required anchored finding means the
+bundle as a whole cannot satisfy DEMOTE's old all-findings-unanchored precondition (`repair-pass.md`,
+"DEMOTE is not a current decision"). Other findings in that bundle may be non-gating and unanchored; never
+infer that every bundled finding is anchored. At the audit you cannot tell an immaterial-isolated finding
+from the first of a real cluster; #125's "edge of the machinery the loop just added" finding looked
+immaterial and was a REAL below-floor gap. The invariant holds without exception: **a CONFIRMED finding is
+fixed.**
 
 **Why the reviewer keeps raising them: `## Non-goals` binding is ADVISORY.** The reviewer is handed the
 intent's `## Non-goals` verbatim and told a finding that attacks one cannot gate — but `review-pass.py`'s
@@ -136,13 +135,9 @@ if the stochastic reviewer honors it, and a reviewer that anchors an immaterial 
 `## Purpose` line produces a gating finding the declared Non-goal never stopped. The audit is the first
 INDEPENDENT context to read that finding against the intent, so it is where the mismatch is first visible.
 
-**And such a finding — anchored to a real `## Purpose` line — is OUTSIDE DEMOTE's test, so NOTHING
-discharges it as immaterial today.** DEMOTE requires no Purpose line AND no actor; a Purpose-anchored
-finding meets neither, so even the cap cannot demote it. That leaves the immaterial-but-Purpose-anchored
-finding an **OPEN design question, not a shipped capability**: TODAY it is fixed exactly like any other
-CONFIRMED finding. The driver's only lever is the hand-off below — bounding the intent for **FUTURE**
-rounds — and that changes what the NEXT reviewer measures against; it never discharges the finding in hand.
-Read no sentence in this section as claiming a current mechanism relieves it.
+**An immaterial-but-anchored finding is fixed exactly like any other CONFIRMED finding.** The driver's
+only lever is the hand-off below — bounding the intent for **FUTURE** rounds — and that changes what the
+NEXT reviewer measures against; it never discharges the finding in hand.
 
 Two things the audit does about it — **a SIGNAL and a hand-off, never a discharge:**
 
@@ -163,9 +158,8 @@ Two things the audit does about it — **a SIGNAL and a hand-off, never a discha
   and that `AGENTS.md`/`CLAUDE.md` "bound the intent" case has two realizations: **pre-cap, a
   proactive plain edit of the local intent by the driver** (below), and, **only once a review-loop cap
   is reached, `repair-pass.md`'s cap-level REPAIR-INTENT decision** — never this per-finding audit,
-  which only fixes the finding in hand. DEMOTE, the only record-without-fixing outcome,
-  is reached only at a review-loop cap and only for a finding anchored to no Purpose line and no actor. So
-  reading it as licence to skip the CONFIRMED fix in hand drops that routing (verify against `repair-pass.md`).
+  which only fixes the finding in hand. Reading the hand-off as licence to skip the CONFIRMED fix in hand
+  drops that routing (verify against `repair-pass.md`).
   The driver may then author/tighten the intent `## Non-goals` **directly — a plain driver edit of the
   local intent artifact, needing no repair-pass** — so **future** reviewer rounds bind, and surface the
   residual class to the user as a **non-blocking policy note**, driving the other PRs meanwhile. **Scope
@@ -198,8 +192,9 @@ calibration. The signal above is for the residual class only; it can never reach
 
 **Durable-precedent SIGNAL — non-dispositional, and it NEVER discharges a finding.** When the audit judges
 a gating finding, it may **consult** the durable review-learnings store for an **active** learning whose
-anchor matches — a class this campaign already refuted or demoted as an accepted residual, with the
-justification and its falsifiability condition. Read the fields the consult needs — the `claim`/`anchor`
+anchor matches — a class this campaign already refuted, or that a legacy DEMOTE recorded as an accepted
+residual, with the justification and its falsifiability condition. Read the fields the consult needs —
+the `claim`/`anchor`
 that say WHICH learning is which, and the justification/falsifiability condition, are NOT in the default
 table columns — with
 `review-learnings.py table --fields id,state,claim,anchor,justification,falsifiability,provenance`, or
@@ -214,16 +209,17 @@ on. A learning is consulted here by the DRIVER only; it is **never** injected in
 reviewer to stand down.
 
 **The store is DRIVER-POPULATED — recording and staling are MANUAL driver actions, not auto-steps. This PR
-wires the CONSULTATION only; auto-wiring `record`/`stale` into the audit's REFUTED/DEMOTE code paths is
-explicitly OUT OF SCOPE.** The audit does not record or stale anything on its own. The driver does, with the
-accessor (`review-learnings.md`):
+wires the CONSULTATION only; auto-wiring `record`/`stale` into the audit's REFUTED path is explicitly OUT
+OF SCOPE.** The audit does not record or stale anything on its own. The driver does, with the accessor
+(`review-learnings.md`):
 
 - **Recording a settled class (driver MAY).** When the audit REFUTES a gating finding whose refutation is a
   **repo-class residual** — a KIND of finding that is an accepted residual for this repo, not a fact tied to
-  THIS PR's code (a PR-specific refutation stays the inline comment) — or when a true-but-immaterial finding
-  is **DEMOTED at the review-loop cap**, the driver MAY record that class:
+  THIS PR's code (a PR-specific refutation stays the inline comment) — the driver MAY record that class:
   `review-learnings.py record --claim … --justification … --anchor … --falsifiability … --provenance …`.
   It is written only **after** the gate already settled the finding; recording **never discharges** one.
+  Existing learnings produced by a legacy DEMOTE remain readable; `repair-pass.md`, "Complete a legacy
+  DEMOTE", owns that compatibility path.
 - **Staling a precedent whose anchor moved (driver marks it BEFORE relying on it).** When a consulted
   **active** learning's own `falsifiability` condition **is met by the diff in hand** — the anchored code
   changed enough that the learning may no longer hold — the driver marks it

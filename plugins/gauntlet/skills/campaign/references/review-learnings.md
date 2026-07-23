@@ -4,9 +4,9 @@ The campaign's reviewer is deliberately hostile and **stochastic**: a fresh, con
 raise a finding an earlier run already settled. When that settlement is durable and code-adjacent — a
 REFUTED finding's inline comment in the tree (`finding-audit.md`, "A REFUTED finding is WRITTEN INTO THE
 TREE") — the next reviewer on **that PR** reads it and moves on. But the settlement does **not** travel:
-a *different* PR that touches the same class carries no such comment, so the same true-but-immaterial
-edge case, or the same accepted single-user residual, is re-raised PR after PR. That re-litigation is the
-churn this store exists to end.
+a *different* PR that touches the same class carries no such comment, so the same accepted single-user
+residual is re-raised PR after PR. Historical DEMOTE decisions could also produce class learnings. That
+re-litigation is the churn this store exists to end.
 
 This store holds the **CLASS-level learnings** those settlements produced, so the driver can consult them
 when it prepares a new PR — and it is designed around one hard boundary: **it feeds the DRIVER, never the
@@ -21,7 +21,7 @@ finding — so a queue would discharge and lose it. The two stores are siblings 
 
 | | `followups.jsonl` (`followups.md`) | `review-learnings.jsonl` (this) |
 |---|---|---|
-| what it holds | work the driver found and deferred | a settled refuted/demoted **class** |
+| what it holds | work the driver found and deferred | a settled refuted or legacy-demoted **class** |
 | lifetime | a QUEUE — entries DELETED once recorded elsewhere | ACCUMULATES — **never auto-deleted** |
 | leaves the set by | completion (merged PR / issue) → deletion | the user **revoking** it, or going **stale** — always KEPT |
 | consulted by | the driver, as a work list | the driver, when authoring intent / auditing |
@@ -56,7 +56,7 @@ review-learnings.py` and run it as **`python3 <that path>`** (`SKILL.md`, "Bundl
 ```
 # Run: python3 <skill-dir>/scripts/review-learnings.py --file <store> <subcommand> …
 review-learnings.py --file <store> record --claim C --justification J --anchor A \
-                    --falsifiability F --provenance P     # record a settled refutation/demotion (ACTIVE)
+                    --falsifiability F --provenance P     # record a refutation or completed legacy demotion (ACTIVE)
 review-learnings.py --file <store> stale    --id rlN --reason R    # anchor changed — set aside, re-evaluate
 review-learnings.py --file <store> reaffirm --id rlN --finding F   # a fresh investigation: it still holds
 review-learnings.py --file <store> revoke   --id rlN --reason R    # THE USER overturned it — KEPT for audit
@@ -108,9 +108,10 @@ split a class nor rewrite what the user ruled on. Only a fresh **user ruling** c
 `claim`+`anchor` additionally define the class the twin guard matches on.
 
 Recording a learning **NEVER discharges a finding.** It is written only **after** a finding is already
-settled — refuted-and-dropped, or demoted at a review-loop cap — and its `provenance` names that settled
-event. This store is a **memory of decisions the gate already made**, never a shortcut around one; it is
-**not** a fourth audit disposition beside CONFIRMED / ADJUSTED / REFUTED.
+settled — refuted-and-dropped, or completed under an existing legacy DEMOTE — and its `provenance` names
+that settled event. This store is a **memory of decisions the gate already made**, never a shortcut around
+one; it is **not** a fourth audit disposition beside CONFIRMED / ADJUSTED / REFUTED. Existing legacy
+entries remain valid and require no migration.
 
 ### Gate safety — DRIVER-consulted, never reviewer-injected
 
@@ -130,13 +131,13 @@ suppress a real defect in a *different* PR's code the reviewer never independent
   2. **The finding audit's non-dispositional precedent** (`finding-audit.md`) — a matching learning is
      prior art the audit may **cite**; it does **not** discharge a CONFIRMED finding.
 - **The reviewer is NOT the backstop — the DRIVER and the USER are.** Because a Non-goal BINDS the reviewer
-  rather than being re-judged by it, the safety cannot rest on a fresh reviewer catching a wrong demotion.
+  rather than being re-judged by it, the safety cannot rest on a fresh reviewer catching a wrong learning.
   It rests entirely on: the driver's **relevance** check (the learning must actually apply to THIS PR's
   anchor), the **never-suppress-a-real-guarantee** rule and the **falsifiability** condition (both below),
   and the user-facing **`authored`-intent disclosure** in the final report — the driver names an `authored`
   intent block as such (`stage-2-review-gate.md`), so the USER sees it and can overrule a wrong Non-goal. A
   learning is **never** injected into a review pass's prompt to make a reviewer stand down; the point is
-  that even the Non-goal it produces is bound, not re-reviewed, so the demotion must be made safe
+  that even the Non-goal it produces is bound, not re-reviewed, so the learning must be made safe
   DRIVER-side, before it is ever authored.
 - **Never-suppress classes.** A learning may record only an **accepted residual**. It may **never** be
   recorded for a real-guarantee class — fail-closed on malformed input, a **non-owner's** destructive op,
@@ -180,12 +181,12 @@ promotion only **widens** its reach.
 
 ### Relation to the materiality decision
 
-`finding-audit.md` (and the materiality investigation it records) decides, **within a PR**, that a finding
-is an immaterial accepted residual — by binding it to a declared Non-goal or demoting it at the cap. **This
-store makes that decision durable ACROSS PRs and runs.** The two are complementary and share the same
+`finding-audit.md` decides, **within a PR**, whether a finding is refuted and may signal an accepted
+residual without discharging it. A completed legacy DEMOTE may also have settled a class. **This store
+makes those past decisions durable ACROSS PRs and runs.** The two are complementary and share the same
 guardrails: neither discharges a CONFIRMED finding on the driver's authority, neither is reviewer-facing
-suppression, and both rest on the driver's own never-suppress-a-real-guarantee discipline plus the user —
-not on a reviewer re-judging the demotion, which a bound Non-goal is not. Do not duplicate or contradict
-that owner; a learning is only ever the **memory** of a settlement it already made.
+suppression, and both rest on the driver's own never-suppress-a-real-guarantee discipline plus the user.
+Do not duplicate or contradict that owner; a learning is only ever the **memory** of a settlement already
+made.
 
 ---

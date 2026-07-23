@@ -161,10 +161,10 @@ When the loop exits, summarize:
   **for that base**, nothing merged on it, and any PR that reached it **escalated** — say which base's read
   failed, so the user can fix the access rather than wonder why those PRs stalled.
 - **Repaired** — every PR that reached a review-loop cap: its `review_rounds`, the decision the
-  reassessment pass returned, and a pointer to `repair-<pr>-<k>.md` (`repair-pass.md`). **Report a DEMOTE's
-  demoted findings explicitly** — they are true findings that were deliberately **not fixed**, and burying
-  that is how a report becomes a false claim of cleanliness. This is the run telling the user, in the one
-  place they will read, that it stopped whacking moles and what it did instead.
+  reassessment pass returned, and a pointer to `repair-<pr>-<k>.md` (`repair-pass.md`). For a legacy
+  `demote@…` row, **report each demoted finding explicitly** — they are true findings that were deliberately
+  **not fixed**, and burying that is how a report becomes a false claim of cleanliness. This is the run
+  telling the user, in the one place they will read, that it stopped whacking moles and what it did instead.
 - **Aborted** — PR number + slug, why, pointer to `abort-<id>.md`.
 - **Skipped (API-declined)** — any PR whose API-changing fix the user was asked about and declined,
   with the change each would have needed.

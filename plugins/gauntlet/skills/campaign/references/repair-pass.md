@@ -58,7 +58,7 @@ to say. Do not look for a bug in the reviewer. The bug is that nothing could **c
 ### A cap is a MODE SWITCH, not a doorbell
 
 **It does not stop and ask the user.** The driver stops dispatching targeted fixes and **repairs the PR
-itself, autonomously.** Asking a human is one of the five outcomes, and it is the last resort — not the
+itself, autonomously.** Asking a human is one of the four outcomes, and it is the last resort — not the
 first.
 
 ### The reassessment pass — give the loop the memory it never had
@@ -103,8 +103,10 @@ manifest bound to a different base is refused). **Re-running it while the decisi
 because the bundle is deterministic, an existing prompt/manifest pair whose bytes match the freshly rebuilt
 bundle is REUSED — so a heartbeat that built the bundle and died before `decide` simply resumes — a partial
 pair left by a crash mid-write is regenerated, and a non-matching or symlinked output is refused rather than
-overwritten. Dispatch the exact prompt file to the reassessment worker; NEVER rebuild, reorder, summarize,
-or splice its inputs by hand.
+overwritten. Decision definitions are inside the hashed payload, so a complete unrecorded pair built with
+an older enum fails this match. Delete both refused stale artifacts and rerun `bundle`; NEVER reuse the old
+hash. Dispatch the exact prompt file to the reassessment worker; NEVER rebuild, reorder, summarize, or splice
+its inputs by hand.
 
 It returns **exactly ONE decision from a CLOSED enum**, and the driver executes it **without asking the
 user**:
@@ -113,14 +115,55 @@ user**:
 |---|---|---|
 | **RESCOPE** | the diff has **outgrown its stated purpose** — the findings may all be true, and most of the lines now defend the guards the loop itself added | dispatch a shrink back to intent, then re-gate |
 | **REPAIR-INTENT** | the intent artifact is **missing, vague or wrong**, so the reviewer has nothing to measure against and **nothing can be out of scope** | re-author the **base** (Purpose / Non-goals / Threat model), then **re-run `pr-adopt.py intent-sync` and `review-pass.py intent-check --ledger`** (`pr-adoption.md`) so the run-default managed block is refolded, then re-gate |
-| **DEMOTE** | the findings **anchor to no Purpose line and no Threat-model actor** — true, and not reasons to block this PR | record them as follow-ups, **do NOT fix them**, re-gate |
 | **ROOT-CAUSE** | the findings **share one cause** | run the root-cause pass — **`root-cause-pass.md` already defines it; REUSE it, do not reinvent it** — and fix at the chokepoint |
 | **ABORT** | unsalvageable | the **existing** bailout procedure (`bailout-and-final-report.md`): **leave the PR OPEN**, drop this run's labels, write `abort-<id>.md` |
+
+**DEMOTE is not a current decision.** Every valid cap bundle contains a gating finding, and every gating
+finding has a Purpose or Threat-model actor anchor (`review-pass.py`). The old DEMOTE precondition required
+neither anchor, so no valid current bundle could meet it.
+
+### Complete a legacy DEMOTE
+
+**Preserve an existing `repair_decision = demote@<iso>` row and finish its recorded decision.** Do not
+rerun `decide`, rewrite its repair record, or migrate the ledger. Run
+`ledger.py … dispatch-check --pr <N> --action repair`.
+
+**Recover the final cap's finding list from the bundle-bound historical artifact, never from decision-record
+prose.** A valid legacy record may contain only its bundle hash, `DECISION: demote`, and generic reasoning.
+Use this fail-closed procedure:
+
+1. Read the first nonblank `BUNDLE-SHA256: <hash>` line from `repair-<pr>-<k>.md`. Locate its
+   `repair-<pr>-<k>.prompt.txt` and `.prompt.txt.manifest.json` pair directly inside the same run directory.
+   Require exactly one `DECISION: demote` line in the record.
+   If the expected name is unavailable, accept only the single prompt in that run whose payload hash equals
+   the record marker and whose sidecar names that exact prompt. Zero or multiple matches are lost history.
+2. Validate the historical pair before reading findings: the record marker, prompt marker, manifest
+   `bundle_sha256`, and SHA-256 of the prompt payload bytes must agree; SHA-256 of the complete prompt must
+   equal manifest `prompt_sha256`; and the payload, manifest, and live ledger row must agree on PR and head.
+   The payload and manifest round summaries must also agree. The final `payload.rounds[-1]` entry is the cap
+   round because the bundle orders the validated landed rounds and ends with the round that entered
+   `repairing`.
+3. Use only that final round's `findings` artifact. Require `present = true`; require SHA-256 of its embedded
+   UTF-8 `content` to equal its `sha256`; require its `path` to be the active findings path derived from the
+   final round's progress artifact; and validate each JSONL row through the historical, non-re-anchoring
+   schema path owned by `repair-pass.py`'s `load_historical_findings`. If the active findings file still
+   exists, its bytes must equal the embedded content. If it is absent, the validated embedded content is the
+   bundle-bound source of truth.
+4. Record one follow-up for every row in that recovered final-cap list, leave every row unfixed, and use the
+   same list in the final report. Then return the row to `in_review`.
+
+**Park the PR with a machine-blocker reason when any binding, hash, identity, artifact, or schema check fails,
+or when the final-cap list cannot be recovered.** Never infer missing findings from generic record prose,
+another round, or the current diff. Existing review-learning entries produced by the legacy decision remain
+valid data and stay readable through `review-learnings.py`.
+
+The final report's **Repaired** entry names the legacy DEMOTE, links its `repair-<pr>-<k>.md`, and lists
+each true finding deliberately left unfixed (`bailout-and-final-report.md`).
 
 The decision is recorded through the tool, and **only** through the tool:
 
 ```
-repair-pass.py --file <state.jsonl> decide --pr <N> --decision <one of the five> \
+repair-pass.py --file <state.jsonl> decide --pr <N> --decision <one of the four> \
   --record <rundir>/repair-<pr>-<k>.md \
   --bundle-manifest <rundir>/repair-<pr>-<k>.prompt.txt.manifest.json
 ```
@@ -176,8 +219,8 @@ branch content wholesale, and doing that to someone else's work uninvited is not
 
 | `pr_origin` | Meaning | Permitted repairs |
 |---|---|---|
-| `gauntlet` | this pipeline opened the PR — it carries the `gauntlet-authored` label, applied by `gauntlet:review`'s handoff when it opens a PR | **all five** |
-| `external` | anything else: the user's PR, a teammate's, a PR adopted by number — **and the DEFAULT** | **DEMOTE / REPAIR-INTENT / ABORT only** |
+| `gauntlet` | this pipeline opened the PR — it carries the `gauntlet-authored` label, applied by `gauntlet:review`'s handoff when it opens a PR | **all four** |
+| `external` | anything else: the user's PR, a teammate's, a PR adopted by number — **and the DEFAULT** | **REPAIR-INTENT / ABORT only** |
 
 **The default is `external`, and it is load-bearing.** A row whose origin was never established can never
 have its owner's branch reshaped. *"I do not know who wrote this"* must never resolve to *"I wrote this"*.

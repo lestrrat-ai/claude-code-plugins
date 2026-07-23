@@ -1869,6 +1869,16 @@ def t_dispatch_check_is_the_guard(L: ModuleType, tmp: Path) -> None:
     code, _, err = cli(L, ["--file", str(path), "dispatch-check", "--pr", "1", "--action", "repair"])
     check(code == L.EXIT_STOP, f"repair work was dispatchable on a PR that never hit a cap (exit {code})")
 
+    # Legacy decisions stay dispatchable. The ledger is a generic durable consumer; the current
+    # repair-pass enum must not make an already-recorded decision unreadable or strand its row.
+    legacy = "demote@2026-01-01T00:00:00Z"
+    path = capped_row(L, tmp, "legacy-demote.jsonl", status=L.REPAIR_STATUS,
+                      repair_decision=legacy)
+    code, out, err = cli(L, ["--file", str(path), "dispatch-check", "--pr", "1",
+                             "--action", "repair"])
+    check(code == 0, f"a legacy DEMOTE repair was stranded (exit {code}): {err!r}")
+    check(legacy in out, f"dispatch-check did not preserve the legacy decision: {out!r}")
+
 
 def t_the_repair_bound_has_no_door(L: ModuleType, tmp: Path) -> None:
     """`repair_count` CANNOT BE WRITTEN through `set`/`add-row` — the same mechanism as `review_rounds`.
