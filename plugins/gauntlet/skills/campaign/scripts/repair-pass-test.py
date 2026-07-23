@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """Fixtures for `repair-pass.py` — the reassessment bundle, decision, ownership guardrail, and repair cap.
 
 They live in a SIBLING file, and `repair-pass.py self-test` FAILS LOUDLY if it cannot load them.

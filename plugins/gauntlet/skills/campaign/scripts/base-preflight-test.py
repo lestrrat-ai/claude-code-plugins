@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """Fixtures for `base-preflight.py` — the base-currency decider.
 
 They live in a SIBLING file, and `base-preflight.py self-test` FAILS LOUDLY if it cannot load them.

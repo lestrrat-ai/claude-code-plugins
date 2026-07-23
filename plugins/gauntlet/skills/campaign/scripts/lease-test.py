@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """Fixtures for `lease.py` — the check-and-set, the heartbeat precondition, and the refusals.
 
 They live in a SIBLING file, and `lease.py self-test` FAILS LOUDLY if it cannot load them.

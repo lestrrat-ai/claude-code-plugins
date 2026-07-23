@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """Emit the scheduled heartbeat and session-watchdog wake prompts.
 
 A scheduled wake fires INTO THE SAME LIVE SESSION — it is the SAME owner resuming its own run, one turn

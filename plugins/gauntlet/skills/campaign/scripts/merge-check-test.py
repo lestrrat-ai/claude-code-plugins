@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """Fixtures for `merge-check.py` — the merge-readiness decider.
 
 They live in a SIBLING file, and `merge-check.py self-test` FAILS LOUDLY if it cannot load them.

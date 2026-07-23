@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """The REASSESSMENT PASS's door — the only sanctioned way to record what to do about a PR that has stopped
 converging.
 

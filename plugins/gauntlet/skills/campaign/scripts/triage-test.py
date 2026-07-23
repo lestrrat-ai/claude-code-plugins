@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """Fixtures for ``triage.py`` — the mechanical file inventory and FLOOR tier for one pinned diff.
 
 The suite uses real temporary Git repositories for the file, mode, rename, delete, modification,
