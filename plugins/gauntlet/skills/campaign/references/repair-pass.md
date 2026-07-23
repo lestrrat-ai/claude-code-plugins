@@ -136,6 +136,9 @@ the CI-observation exception, so they are excluded from the bundle bytes), head 
 moved since the bundle was built. It also refuses a record whose `DECISION:` line is **absent, duplicated,
 not permitted, or disagrees with `--decision`** — the record is the sole carrier of the decision across the
 fresh-heartbeat boundary, so the ledger can never record a decision the audit artifact does not name.
+`decide` validates the payload schema and exact key set before PR/head identity. A stale bundle shape names
+its missing/unexpected fields and directs the driver to rebuild through `repair-pass.py bundle`; an actual
+PR/head mismatch keeps the identity refusal.
 
 ### The repair is dispatched only after its decision is recorded
 
