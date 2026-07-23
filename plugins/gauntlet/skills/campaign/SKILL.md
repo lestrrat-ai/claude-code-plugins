@@ -97,9 +97,11 @@ it — no trigger means the step runs unconditionally at that point in the seque
 **Adoption** (`references/pr-adoption.md`) — for each explicit `#PR` arg, and on every heartbeat for
 every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snapshot):
 
-6. Fetch the PR; REFUSE foreign-owned and cross-repo/fork PRs. Register the ledger row (refresh on
-   re-adoption, never duplicate), run label, status label, and worktree. THEN write (or preserve) the
-   PR's **base** intent artifact (`intent-<pr>.md`: `## Purpose` / `## Non-goals` / `## Threat model`;
+6. Fetch the PR; REFUSE foreign-owned and cross-repo/fork PRs. REFUSE an existing terminal row before
+   any refresh, label, worktree, or intent work. For new and existing non-terminal rows, register the
+   ledger row (refresh in place on re-adoption, never duplicate), run label, status label, and worktree.
+   THEN write (or preserve) the PR's **base** intent artifact (`intent-<pr>.md`: `## Purpose` /
+   `## Non-goals` / `## Threat model`;
    local, git-ignored, never written back to the PR) and `pr-adopt.py intent-sync` to fold the run's
    default Non-goals into its managed block — the row must exist FIRST, because `intent-sync` REFUSES a PR
    with no ledger row (`pr-adoption.md`). Run `triage.py derive` on that resolved worktree for the
