@@ -205,9 +205,12 @@ the file through a door — unit progress through `emit-progress.py`, findings t
 and a `plan_amendment_request` through `emit-amendment.py`; `pass_identity` is the orchestrator's line,
 and the emit-only rule below governs the whole set.
 It is the schema owner for the review-pass artifact set exactly as
-`ledger.py` is for `state.jsonl`, and it enforces every rule below at **both doors** — where the commands
-enter *and* where the data enters, because a rule enforced only on write is not enforced: the progress
-file is a plaintext file in a directory the reviewer can write to.
+`ledger.py` is for `state.jsonl`, and it enforces every **artifact-shape** rule below at **both doors** —
+where the commands enter *and* where the data enters, because a rule enforced only on write is not
+enforced: the progress file is a plaintext file in a directory the reviewer can write to. The two
+**live-world comparisons** are the exception: the live head SHA (`check_head`) and the live
+`default_non_goals` scope (`check_scope`) read the run's current state through `verify --ledger`, which
+`emit` has no access to, so those two hold at the **read door alone**.
 
 ```text
 # Every line is an argv list passed through runtime-adapter.md's run_argv; fields are data.
@@ -251,7 +254,10 @@ file is a plaintext file in a directory the reviewer can write to.
 `verify` re-derives every rule below from the bytes and refuses a pass whose artifacts break any of them
 — **whether or not the write tool was used**; the `unusable` row of the verify table (below) is the
 refusal list. **`emit` refuses every one of those it can see, by calling the SAME functions** — one
-implementation, both doors, so a rule cannot hold at one and not the other.
+implementation shared across both doors, so no artifact-shape rule can hold at one door and not the other.
+The exception is the pair `emit` **cannot** see: the live-head (`check_head`) and live-scope
+(`check_scope`) comparisons need the run's current state (`verify --ledger`), so they hold at the read
+door alone.
 
 #### EVERY IDENTIFIER HAS ONE LEGAL FORM, AND NO DOOR REPAIRS ONE
 
@@ -435,9 +441,9 @@ That example is **the real PR #43 round-11 finding**, and it is the one to keep 
 was **added by an earlier fix round of this very gauntlet**, and it still **GATES** — because `network` names
 an actor who can really send that reply, and it quotes the PR's purpose verbatim.
 
-#### `pass_identity` is the pass's attempt id and its dispatch clock
+#### `pass_identity` is the pass's attempt id, its dispatch clock, and its dispatch-time review scope
 
-**`pass_identity` is the pass's attempt id and its dispatch clock.** `review-dispatch.py prepare` writes it
+**`pass_identity` is the pass's attempt id, its dispatch clock, and the run's dispatch-time review scope (the immutable `default_non_goals` binding this pass's verdict is measured against at tally).** `review-dispatch.py prepare` writes it
 through `review-pass.py`'s schema owner, **never** a `printf`, as the
 **first line** of the launch attempt's progress file **before** launching the reviewer process, so that
 file exists from dispatch onward. `pr`, `pass` and `launch_attempt` are taken **from the progress file's

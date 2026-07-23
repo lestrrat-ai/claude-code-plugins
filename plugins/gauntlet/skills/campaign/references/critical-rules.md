@@ -307,8 +307,11 @@
     DISPATCH-TIME `default_non_goals` binding no longer matches the run's live defaults, because the
     operator moved run scope while the review was in flight; `verify --ledger` voids that verdict exactly
     as a moved head does (`check_scope`, the scope analogue of the head-SHA check).
-  Every one of those rules holds at **both doors** — the same predicate refuses it on write (`emit`) and on
-  read (`verify`), so it cannot be enforced at one and not the other. **Every identifier it handles has ONE
+  Most of those rules hold at **both doors** — the same predicate refuses the pass on write (`emit`) and on
+  read (`verify`), so it cannot be enforced at one and not the other. The **two LIVE-WORLD comparisons are
+  the exception**: the scope-drift check just above (`check_scope`) and its head-SHA analogue (`check_head`)
+  compare the pass's binding to the run's live state, which only `verify --ledger` can read — `emit` has no
+  ledger, so it cannot make them; those two hold at the **read door alone**. **Every identifier it handles has ONE
   legal form and NO door repairs one** (a unit id is `u01`-shaped; `pr`/`pass`/`launch_attempt` are decimal
   from 1 up; `head_sha` is 40 lowercase hex): the tool used to strip `emit`'s `--unit` while `plan-add`
   took its `--id` verbatim, so a plan could hold ` u01 ` and `emit` would then call that unit NOT IN THE
