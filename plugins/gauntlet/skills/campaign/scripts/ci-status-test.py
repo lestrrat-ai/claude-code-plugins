@@ -518,7 +518,9 @@ def required_set_cli_cases(ci, tmp: Path) -> list[str]:
     failed_stdout = cli_tmp / "failed-stdout.jsonl"
     valid_ledger(failed_stdout, header_required=ci.SNAP.NONE_DECLARED)
     failed_stdout_before = failed_stdout.read_bytes()
-    with Path("/dev/full").open("w", encoding="utf-8") as sink:
+    read_fd, write_fd = os.pipe()
+    os.close(read_fd)
+    with os.fdopen(write_fd, "w", encoding="utf-8") as sink:
         proc = run_cli(failed_stdout, stdout=sink)
     check_error("failed stdout sink", failed_stdout, failed_stdout_before, proc)
     expected_prefix = f"ci-status: required-set: cannot process --ledger {failed_stdout} ("
