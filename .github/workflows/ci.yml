@@ -78,11 +78,17 @@ jobs:
       - name: Pyright (the type-clean scripts)
         run: |
           set -o pipefail
-          # Exact `# ci: pyright` markers are the SINGLE SOURCE OF TRUTH for the type-clean set. The
-          # filesAnalyzed count is DERIVED from the discovered set size (`${#files[@]}`), never hardcoded.
-          mapfile -t files < <(git grep -l -e '^# ci: pyright$' -- '*.py')
+          # Exact `# ci: pyright` marker lines, with either LF or CRLF endings, are the SINGLE SOURCE OF
+          # TRUTH for the type-clean set. The filesAnalyzed count is DERIVED from the discovered set size
+          # (`${#files[@]}`), never hardcoded.
+          mapfile -t files < <(git grep -l -e '^# ci: pyright$' -e $'^# ci: pyright\r$' -- '*.py')
           if ((${#files[@]} == 0)); then
             echo "::error::no Python files carry the exact # ci: pyright marker"
+            exit 1
+          fi
+          crlf_fixture='plugins/gauntlet/skills/campaign/scripts/fixtures/pyright/crlf_marker.py'
+          if ! printf '%s\n' "${files[@]}" | grep -Fx -- "${crlf_fixture}" >/dev/null; then
+            echo "::error::the tracked CRLF marker fixture was not selected: ${crlf_fixture}"
             exit 1
           fi
           npx --yes pyright@1.1.410 --outputjson "${files[@]}" | tee pyright.json
