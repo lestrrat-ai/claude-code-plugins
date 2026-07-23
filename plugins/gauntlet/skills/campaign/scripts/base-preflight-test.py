@@ -365,8 +365,8 @@ def t_force_rewritten_base_refreshes_and_rebases():
 DASH_BASE = "--upload-pack=/bin/false"
 
 
-def _dash_base_ancestry(root: Path, *, current: bool) -> "tuple[tuple[str, str], str, str]":
-    """Fetch a legal dash-leading base from a real bare remote with a deliberately stale tracking ref."""
+def _dash_base_ancestry(root: Path, *, current: bool) -> "tuple[int, dict, str, str, str]":
+    """Drive the documented CLI against a legal dash-leading base and a real bare remote."""
     remote, seed, candidate = root / "remote.git", root / "seed", root / "candidate"
     result = subprocess.run(["git", "init", "--bare", "-b", "main", str(remote)],
                             capture_output=True, text=True, check=False)
@@ -402,25 +402,35 @@ def _dash_base_ancestry(root: Path, *, current: bool) -> "tuple[tuple[str, str],
         _git(candidate, "fetch", "origin", f"{dash_head}:refs/heads/current-dash-base")
         _git(candidate, "checkout", "current-dash-base")
 
-    result = M.check_base_ancestry(str(candidate), DASH_BASE, "origin")
+    vjson = root / "clean-view.json"
+    vjson.write_text(json.dumps(view()), encoding="utf-8")
+    code, out, err = capture_cli(
+        M.main,
+        ["check", "--pr", "9", "--view-json", str(vjson), "--worktree", str(candidate),
+         "--base", DASH_BASE],
+    )
     refreshed_base = _git(candidate, "rev-parse", tracking_ref).stdout.strip()
-    return result, refreshed_base, advanced_base
+    return code, json.loads(out), err, refreshed_base, advanced_base
 
 
 def t_dash_leading_current_base_refreshes_and_proceeds():
     with tempfile.TemporaryDirectory() as d:
-        result, refreshed, remote_head = _dash_base_ancestry(Path(d), current=True)
-        check(result == ("current", ""),
-              f"a current candidate on a dash-leading base must pass ancestry, got {result!r}")
+        code, result, err, refreshed, remote_head = _dash_base_ancestry(Path(d), current=True)
+        check(code == 0,
+              f"a current candidate on a dash-leading base must pass the CLI (code={code}, err={err!r})")
+        check(result == {"verdict": "proceed", "reason": "GitHub merge state permits base check"},
+              f"a current candidate on a dash-leading base must proceed, got {result!r}")
         check(refreshed == remote_head,
               "the dash-leading base fetch must refresh its remote-tracking ref before the current verdict")
 
 
 def t_dash_leading_stale_base_refreshes_and_rebases():
     with tempfile.TemporaryDirectory() as d:
-        result, refreshed, remote_head = _dash_base_ancestry(Path(d), current=False)
-        check(result == ("stale", ""),
-              f"a stale candidate on a dash-leading base must fail ancestry, got {result!r}")
+        code, result, err, refreshed, remote_head = _dash_base_ancestry(Path(d), current=False)
+        check(code != 0,
+              f"a stale candidate on a dash-leading base must stop the CLI (code={code}, err={err!r})")
+        check(result == {"verdict": "rebase-first", "reason": "base has moved ahead — rebase first"},
+              f"a stale candidate on a dash-leading base must request a rebase, got {result!r}")
         check(refreshed == remote_head,
               "the dash-leading base fetch must refresh its remote-tracking ref before the stale verdict")
 

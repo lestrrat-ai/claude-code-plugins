@@ -181,7 +181,7 @@ class Scenario:
 
     def invoke(self, *extra):
         argv = ["run", "--ledger", str(self.ledger), "--pr", PR_NUMBER, "--worktree", str(self.wt)]
-        argv += [f"--base={self.base}"] if self.base.startswith("-") else ["--base", self.base]
+        argv += ["--base", self.base]
         argv += list(extra)
         return capture_cli(M.main, argv)
 

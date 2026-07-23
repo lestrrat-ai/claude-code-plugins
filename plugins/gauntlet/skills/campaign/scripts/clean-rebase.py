@@ -43,6 +43,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from _gauntlet.argv import bind_separate_option_value
 from _gauntlet.modules import load_module_from_path
 
 DESCRIPTION = next(iter((__doc__ or "").splitlines()), "")
@@ -422,7 +423,7 @@ def main(argv: "list[str] | None" = None) -> int:
 
     sub.add_parser("self-test", help="run every fixture (clean-rebase-test.py)")
 
-    args = p.parse_args(argv)
+    args = p.parse_args(bind_separate_option_value(argv, "--base"))
     if args.cmd == "self-test":
         return self_test()
     return run(args)

@@ -83,6 +83,7 @@ jobs:
           # file here and the count updates itself, with no second edit and no literal to keep in sync.
           files=(
             plugins/gauntlet/skills/campaign/scripts/_gauntlet/__init__.py
+            plugins/gauntlet/skills/campaign/scripts/_gauntlet/argv.py
             plugins/gauntlet/skills/campaign/scripts/_gauntlet/atomic.py
             plugins/gauntlet/skills/campaign/scripts/_gauntlet/modules.py
             plugins/gauntlet/skills/campaign/scripts/_gauntlet/jsonl.py
