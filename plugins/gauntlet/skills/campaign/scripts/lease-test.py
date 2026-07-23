@@ -149,6 +149,30 @@ def t_argparse_must_not_steal_the_refusal(work: Path) -> None:
     L.check(err.startswith("lease: REFUSED"), "the refusal must be OUR message")
 
 
+def t_no_acquire_preconditions_give_complete_recovery(work: Path) -> None:
+    """Neither acquire input still yields complete recovery in one refusal."""
+    p = put(work, {"agent": "t1", "heartbeat": "w0", "updated": L.now()})
+    before = p.read_bytes()
+    code, out, err = run_before_lease_access(["--file", str(p), "acquire"])
+    assert_precondition_refusal(code, out, err, p, before,
+                                "acquire without --token or --heartbeat-id")
+    L.check("requires both --token and --heartbeat-id" in err,
+            "the combined refusal must identify both missing inputs")
+    L.check("if YOU already hold this run" in err and "recover YOUR OWN token" in err and
+            "Do NOT mint a replacement" in err,
+            "a current owner must recover its own token without minting a replacement")
+    L.check("NEVER from `lease.json` or `lease.py read`" in err,
+            "the combined refusal must reject run-scoped token sources")
+    L.check("including when adopting an absent" in err and "or stale run" in err and
+            "lease.py mint" in err,
+            "an absent or stale-run adopter must mint its token")
+    L.check("Arm a new heartbeat for this run with that token" in err and
+            "runtime-adapter.md" in err and "record the id for that arming as the proof" in err,
+            "every caller must be told how to obtain a newly armed heartbeat proof")
+    L.check("acquire --token <tok> --heartbeat-id <proof>" in err,
+            "the combined refusal must name the exact retry with both values")
+
+
 def t_no_token_refuses_with_caller_scoped_recovery(work: Path) -> None:
     """A missing token must distinguish owner recovery from stale-run adoption."""
     p = put(work, {
@@ -778,6 +802,8 @@ CASES = [
      t_empty_heartbeat_is_not_a_proof),
     ("refusal-is-ours", "argparse must not steal the refusal — the instruction IS the mechanism",
      t_argparse_must_not_steal_the_refusal),
+    ("no-acquire-preconditions", "neither acquire input gets complete recovery in one refusal",
+     t_no_acquire_preconditions_give_complete_recovery),
     ("no-token", "no token, no ownership check — owner recovery and stale adoption stay separate",
      t_no_token_refuses_with_caller_scoped_recovery),
     ("refresh-no-token", "refresh without a token checks no ownership and preserves the lease",

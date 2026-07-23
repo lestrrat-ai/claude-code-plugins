@@ -335,6 +335,20 @@ def emit(verdict: str, rec: "dict | None", **extra) -> None:
 # THIS command recovers. The heartbeat refusal names no host mechanism — `runtime-adapter.md` owns that
 # mapping — and offers no way to acquire before arming.
 
+NO_ACQUIRE_PRECONDITIONS = """\
+lease: REFUSED — acquire stopped before the lease read, so ownership was NOT checked. Nothing was written;
+       the lease and ownership state are unchanged.
+lease: acquire requires both --token and --heartbeat-id. The token identifies you; the heartbeat id proves
+       you have ALREADY armed this run's heartbeat with that token.
+lease: DO THIS, IN THIS ORDER: (1) if YOU already hold this run, recover YOUR OWN token from your session
+       or from the heartbeat prompt that carries it — NEVER from `lease.json` or `lease.py read`, which show
+       whoever held the run before. Do NOT mint a replacement. Otherwise, including when adopting an absent
+       or stale run, run `lease.py mint`. (2) Arm a new heartbeat for this run with that token via your host's
+       mechanism (`runtime-adapter.md` owns it, and `heartbeat.py callback` prints the exact wake prompt);
+       record the id for that arming as the proof. (3) Re-run
+       `acquire --token <tok> --heartbeat-id <proof>` with both recorded values.
+lease: DO NOT take the lease first and arm afterwards."""
+
 NO_HEARTBEAT = """\
 lease: REFUSED — acquire stopped before the lease read, so ownership was NOT checked. Nothing was written;
        the lease and ownership state are unchanged.
@@ -386,9 +400,13 @@ def cmd_mint(_path, _args) -> int:
 
 
 def cmd_acquire(path: Path, args) -> int:
-    if not (args.token or "").strip():
+    has_token = bool((args.token or "").strip())
+    has_heartbeat = bool((args.heartbeat_id or "").strip())
+    if not has_token and not has_heartbeat:
+        fail(NO_ACQUIRE_PRECONDITIONS)
+    if not has_token:
         fail(NO_TOKEN_ACQUIRE)
-    if not (args.heartbeat_id or "").strip():
+    if not has_heartbeat:
         fail(NO_HEARTBEAT)
     token = args.token
     with claim_lock(path):
@@ -605,9 +623,9 @@ def build_parser() -> argparse.ArgumentParser:
     # NOTE: --token and --heartbeat-id are deliberately NOT argparse-`required`. They ARE required, and
     # this file refuses without them — but argparse's "the following arguments are required:
     # --heartbeat-id" is a DIAGNOSIS, and the whole mechanism here is the INSTRUCTION the refusal carries
-    # (NO_HEARTBEAT / NO_TOKEN_*). Letting argparse win the race would keep the exit code and throw away the
-    # only part that says ownership was not checked and teaches command-specific recovery. The
-    # NO_HEARTBEAT / NO_TOKEN_* messages own that contract; `lease-test.py` pins it.
+    # (the NO_* messages below). Letting argparse win the race would keep the exit code and throw away the
+    # only part that says ownership was not checked and teaches command-specific recovery. Those messages
+    # own that contract; `lease-test.py` pins it.
     a = sub.add_parser("acquire", help="take or refresh ownership of this run — the door every heartbeat goes "
                                        "through first")
     a.add_argument("--token", help="REQUIRED. A current owner reuses its own token from its session or "
