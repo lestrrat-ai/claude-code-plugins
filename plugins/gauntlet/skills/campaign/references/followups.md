@@ -167,13 +167,15 @@ about and one whose partial rejection strands the rest.
    - **`in-pr`** — a PR is open and named in the entry, but an interrupted heartbeat may have recorded `open-pr`
      **without** finishing ADOPTION. Adoption is a campaign action, not a store edge — no `in-pr`
      transition performs it — so "defer to the graph" strands the PR. **Before reconciliation, adoption,
-     or `closed-unmerged`, read the entry's `decided` field and the recorded PR's ledger row.** If `decided`
-     starts with `reject@`, route to **Rejecting an `in-pr` follow-up** below before ordinary adoption,
-     reopening, or replacement. Otherwise, reconcile the recorded PR against the current run. If it has no
-     ledger row, or its **non-terminal** row lacks the run label, ADOPT it through step 4. **If its existing
-     row is terminal, NEVER refresh, re-adopt, or relabel it** — surface that terminal campaign result and
-     leave the follow-up lifecycle unchanged. A terminal row records campaign disposition, not a user
-     ruling, so it never selects rejection. An unadopted follow-up PR with no terminal row sits
+     or `closed-unmerged`, apply the pending-ruling sensor owned by Rejecting an `in-pr` follow-up.** If it
+     selects rejection, route there before ordinary adoption, reopening, or replacement. Otherwise,
+     reconcile the recorded PR against the current run. If it has no ledger row, or its **non-terminal**
+     row lacks the run label, ADOPT it through step 4. **If its existing row is terminal, NEVER refresh,
+     re-adopt, or relabel it** — surface that terminal campaign result and leave the follow-up lifecycle
+     unchanged. A bare terminal `aborted`/`merged` ledger row records campaign
+     disposition, not a user ruling, so it never selects rejection. If separate legacy evidence says the
+     user rejected the entry but the pending-ruling sensor is absent, **SURFACE the entry to the user**.
+     An unadopted follow-up PR with no terminal row sits
      **outside the campaign gate** — the exact thing "fold that PR into the current campaign" exists to
      prevent. If the user rejects it, follow **Rejecting an `in-pr` follow-up** below.
    - **`reopened`** — its PR died and it already carries the decision it earned, so it does **not** re-decide:
@@ -238,11 +240,12 @@ terminal `reject`.** `reject-pending` keeps the entry `in-pr` and writes `reject
 `decided` field. That marker makes a fresh heartbeat return here instead of re-adopting or reopening the
 PR. If `decided` does not already start with `reject@`, run
 `followups.py --file <store> reject-pending --id fuN`. Then resolve the recorded PR's live state and use
-the matching sequence:
+the matching sequence. **`reject@<iso>` is the only campaign-owned pending-rejection sensor.** A terminal
+ledger row records PR disposition, not a user ruling, and MUST NOT route here by itself. If legacy evidence
+outside the follow-up entry indicates user rejection without the marker, SURFACE the entry to the user.
 
 **If this procedure is interrupted, the `in-pr` resume rule routes back here.** Re-resolve the recorded
-PR's live state and continue with the matching branch. A terminal `aborted` or `merged` ledger row is also
-a routing sensor if an older interruption happened before `reject-pending` existed.
+PR's live state and continue with the matching branch.
 
 - **OPEN** — run the permanent-abort procedure in `bailout-and-final-report.md`, **1-hour cap per task**,
   to completion. Then run `followups.py --file <store> reject --id fuN`.

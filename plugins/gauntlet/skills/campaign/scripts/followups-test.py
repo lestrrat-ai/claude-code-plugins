@@ -1019,7 +1019,8 @@ def t_in_pr_rejection_finishes_campaign_disposition_first(tmp: Path) -> None:
     reopens, or replaces the PR. Terminal `reject` preserves the original ruling stamp after disposition.
 
     This fixture also pins the resume sensor and the disposition order for both interruption outcomes:
-    OPEN after abort must not be re-adopted, and CLOSED must not become `reopened`.
+    OPEN after a marked rejection must not be re-adopted, and CLOSED after a marked rejection must not
+    become `reopened`. An unmarked CLOSED PR follows the ordinary `closed-unmerged` edge to `reopened`.
     """
     check(TRANSITIONS["reject-pending"] == (("in-pr",), "in-pr"),
           "`reject-pending` must durably mark the ruling without inventing another follow-up state")
@@ -1051,6 +1052,20 @@ def t_in_pr_rejection_finishes_campaign_disposition_first(tmp: Path) -> None:
     check(rejected["state"] == "rejected" and rejected["decided"] == marker,
           f"terminal `reject` did not preserve when the user first ruled: {rejected!r}")
 
+    ordinary_store = tmp / "ordinary-closed.jsonl"
+    (ordinary_fid,) = seed(ordinary_store)
+    decided = "2026-07-14T11:00:00Z"
+    run(["--file", str(ordinary_store), "accept", "--id", ordinary_fid, "--at", decided])
+    run(["--file", str(ordinary_store), "open-pr", "--id", ordinary_fid, "--pr", "#1000"])
+    before_close = json.loads(run(["--file", str(ordinary_store), "get", "--id", ordinary_fid])[1])
+    check(before_close["decided"] == decided and not before_close["decided"].startswith(PENDING_REJECTION_PREFIX),
+          f"ordinary accepted follow-up unexpectedly carries a pending-rejection marker: {before_close!r}")
+    code, out, err = run(["--file", str(ordinary_store), "closed-unmerged", "--id", ordinary_fid])
+    check(code == 0, f"ordinary `closed-unmerged` exited {code}: {err!r}")
+    reopened = json.loads(out)
+    check(reopened["state"] == "reopened" and reopened["pr"] == "#1000" and reopened["decided"] == decided,
+          f"an unmarked closed PR did not return to ordinary open work: {reopened!r}")
+
     doc = Path(__file__).resolve().parent.parent / "references" / "followups.md"
     text = doc.read_text()
     resume_start = text.find("   - **`in-pr`**")
@@ -1058,17 +1073,21 @@ def t_in_pr_rejection_finishes_campaign_disposition_first(tmp: Path) -> None:
     check(resume_start >= 0 and resume_end > resume_start,
           f"{doc.name} has no bounded `in-pr` resume rule")
     resume_body = text[resume_start:resume_end]
-    guard = "**Before reconciliation, adoption,\n     or `closed-unmerged`, read"
+    guard = "**Before reconciliation, adoption,\n     or `closed-unmerged`, apply"
     check(guard in resume_body,
           "the `in-pr` resume rule does not inspect rejection sensors before every ordinary resume action")
-    marker_pos = resume_body.find("`reject@`")
-    ledger_pos = resume_body.find("`aborted`/`merged`")
-    route_pos = resume_body.find("route to **Rejecting")
-    ordinary_pos = resume_body.find("Otherwise, reconcile the recorded")
-    check(min(marker_pos, ledger_pos, route_pos) >= 0,
-          "the `in-pr` resume rule cannot sense a pending ruling or terminal campaign disposition")
-    check(max(marker_pos, ledger_pos) < route_pos < ordinary_pos,
+    sensor_pos = resume_body.find("pending-ruling sensor owned by Rejecting")
+    route_pos = resume_body.find("If it\n     selects rejection, route there")
+    ordinary_pos = resume_body.find("Otherwise, reconcile the\n     recorded")
+    check(min(sensor_pos, route_pos, ordinary_pos) >= 0,
+          "the `in-pr` resume rule cannot apply its pending-ruling sensor before ordinary processing")
+    check(sensor_pos < route_pos < ordinary_pos,
           "the `in-pr` resume rule reconciles, adopts, or reopens before routing the pending rejection")
+    check("`aborted`/`merged`" not in resume_body[:ordinary_pos],
+          "the `in-pr` resume rule still treats terminal ledger status as proof of user rejection")
+    check("A bare terminal `aborted`/`merged` ledger row records campaign\n"
+          "     disposition, not a user ruling, so it never selects rejection." in resume_body,
+          "the `in-pr` resume rule does not preserve ordinary handling for an unmarked terminal ledger row")
 
     heading = "#### Rejecting an `in-pr` follow-up"
     match = re.search(
@@ -1086,6 +1105,10 @@ def t_in_pr_rejection_finishes_campaign_disposition_first(tmp: Path) -> None:
           f"{heading!r} starts PR disposition before writing the pending-ruling marker")
     resume_rule = "**If this procedure is interrupted, the `in-pr` resume rule routes back here.**"
     check(resume_rule in body, f"{heading!r} does not preserve a pending rejection across interruption")
+    sensor_rule = "**`reject@<iso>` is the only campaign-owned pending-rejection sensor.**"
+    check(sensor_rule in body, f"{heading!r} does not own an unambiguous pending-rejection sensor")
+    check("A terminal\nledger row records PR disposition, not a user ruling, and MUST NOT route here by itself." in body,
+          f"{heading!r} treats an ambiguous terminal ledger row as a user rejection")
 
     def ordered(branch: str, next_branch: str, *needles: str) -> str:
         start = body.find(branch)
