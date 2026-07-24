@@ -624,7 +624,7 @@ def find(entries: "list[dict]", fid: str) -> "dict | None":
     return None
 
 
-GITHUB_PATH_COMPONENT = r"[^/?#\s]+"
+GITHUB_PATH_COMPONENT = r"(?!(?:\.{1,2})/)[^/?#\s]+"
 
 
 PR_REF_RE = re.compile(
