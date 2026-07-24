@@ -83,6 +83,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import NoReturn
+from urllib.parse import unquote, urlsplit
 
 # The grid is NOT reimplemented here. The private campaign package owns escaping, layout, and omission
 # notices; this file owns only the follow-up schema, lifecycle, and store lifetime.
@@ -624,6 +625,33 @@ def find(entries: "list[dict]", fid: str) -> "dict | None":
     return None
 
 
+GITHUB_PATH_COMPONENT = r"(?!(?:\.{1,2})/)[^/?#\s]+"
+
+
+PR_REF_RE = re.compile(
+    r"(?:"
+    r"(?:#)?(?P<short>[1-9][0-9]*)"
+    rf"|https://github\.com/{GITHUB_PATH_COMPONENT}/{GITHUB_PATH_COMPONENT}/pull/(?P<url>[1-9][0-9]*)/?"
+    r")"
+)
+
+
+def pr_number(ref: str) -> "str | None":
+    """Return the number from a legacy bare, `#N`, or GitHub pull-request reference."""
+    match = PR_REF_RE.fullmatch(ref)
+    if match is None:
+        return None
+    if match.group("url"):
+        decoded_path = (unquote(component) for component in urlsplit(ref).path.split("/"))
+        if any(
+            component in (".", "..")
+            or any(char in "/?#\\" or char.isspace() for char in component)
+            for component in decoded_path
+        ):
+            return None
+    return match.group("short") or match.group("url")
+
+
 def next_id(high: int) -> str:
     """`fu<N>`, one past the highest N EVER HANDED OUT — assigned HERE, never by the caller.
 
@@ -735,6 +763,10 @@ def cmd_transition(path: Path, args) -> int:
     cmd = args.cmd
     frm, to = TRANSITIONS[cmd]
     values = taken(cmd, args)  # THE one door — every caller value, validated (see `taken()`)
+    if cmd == "open-pr":
+        # A PR number is the durable key other campaign tools consume. Keep an opaque caller reference
+        # untouched, but collapse every recognised legacy spelling to that one key before storing it.
+        values["pr"] = pr_number(values["pr"]) or values["pr"]
     with locked(path):
         entries, high = read_store(path)
         entry = find(entries, args.id)
