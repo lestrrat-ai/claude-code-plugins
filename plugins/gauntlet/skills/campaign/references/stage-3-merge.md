@@ -207,7 +207,6 @@ ownership checks and phase order remain in force.
      `liveness`, then ensure or relaunch a watch only when returned `watch_warranted` is `true`
      (`stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE"). Parked status does not override that result. CI must return
      green before merging.
-
    - Judgment-path rebase — a conflict resolved by hand, OR a no-conflict rebase that reshaped the PR's own
      diff (both `clean-rebase.py` exit-3 subcases) → PR content changed → **reset `reviews_ok` to 0 AND, in that
      same step, reconcile the label by running `label-mirror.py mirror` for the PR** (it restores
