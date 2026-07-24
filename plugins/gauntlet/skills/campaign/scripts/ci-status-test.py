@@ -1059,6 +1059,12 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
             "without the run ledger's",
         ),
     }
+    bare_later_commands = {
+        "derive": "Run scripts/ci-status.py derive --pr 1\necho --ledger <rundir>/state.jsonl.",
+        "liveness": "Run scripts/ci-status.py liveness --ledger <rundir>/state.jsonl --pr 1\n"
+                    "echo --machine-action none.",
+        "required-set": "Run scripts/ci-status.py required-set\necho --ledger <rundir>/state.jsonl.",
+    }
     for subcommand, (check, valid, invalid, detached, later_command, problem_needle) in fixtures.items():
         root = tmp / f"doc-copy-{subcommand}"
         root.mkdir()
@@ -1149,6 +1155,7 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
             "list-heading-indented-code.md": (
                 f"- Earlier item\n# Heading\n    {inline_invalid}\n{detached}\n", 3
             ),
+            "bare-later-shell-command.md": (bare_later_commands[subcommand] + "\n", 1),
             "stale-ordered-list.md": (f"1. Earlier item\n\n{invalid}\n2. {detached}\n", None),
             "malformed-fence.md": (f"{invalid}\n```bad`info\n{detached}\n", None),
             "malformed-html-close.md": (
@@ -1162,21 +1169,35 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
         for name, (text, _problem_line) in boundary_fixtures.items():
             (root / name).write_text(text, encoding="utf-8")
         found_problems, copies = check(root)
-        if len(copies) != 48:
-            problems.append(f"[doc-copy {subcommand}] found {len(copies)} wrapped copies, expected 48: {copies!r}")
+        expected_copies = 48 if subcommand == "required-set" else 49
+        if len(copies) != expected_copies:
+            problems.append(f"[doc-copy {subcommand}] found {len(copies)} wrapped copies, expected "
+                            f"{expected_copies}: {copies!r}")
         expected_problem_sites = {"wrapped.md:4", "wrapped.md:10", "wrapped.md:18", "wrapped.md:26",
                                   "quote-transition.md:1",
                                   "same-paragraph.md:1",
                                   "later-command.md:1",
                                   *(f"{name}:{problem_line}" for name, (_text, problem_line)
-                                    in boundary_fixtures.items() if problem_line is not None)}
+                                    in boundary_fixtures.items()
+                                    if problem_line is not None
+                                    and not (subcommand == "required-set"
+                                             and name == "bare-later-shell-command.md"))}
         problem_sites = {problem.split(" ", 1)[0] for problem in found_problems}
-        if (len(found_problems) != 36 or problem_sites != expected_problem_sites
+        expected_problems = 36 if subcommand == "required-set" else 37
+        if (len(found_problems) != expected_problems or problem_sites != expected_problem_sites
                 or any(problem_needle not in problem for problem in found_problems)):
             problems.append(
                 f"[doc-copy {subcommand}] invalid plain, blockquoted, and block-boundary copies were not "
                 f"rejected by their own missing flag: "
                 f"{found_problems!r}"
+            )
+        bare_commands = [command for path, _line, command in ci.find_ci_status_copies(root, subcommand)
+                         if path.name == "bare-later-shell-command.md"]
+        later_flag = "--machine-action" if subcommand == "liveness" else "--ledger"
+        if len(bare_commands) != 1 or later_flag in bare_commands[0]:
+            problems.append(
+                f"[doc-copy {subcommand}] the bare later shell command leaked its flag into the prior "
+                f"ci-status invocation: {bare_commands!r}"
             )
     return problems
 

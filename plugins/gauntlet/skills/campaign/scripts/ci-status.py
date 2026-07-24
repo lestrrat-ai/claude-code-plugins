@@ -2341,6 +2341,12 @@ def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, 
         rf"|\b(?:and[ \t]+then|then|followed[ \t]+by)[ \t]+[A-Za-z_][\w./-]*{separator}\S+\b"
         rf")"
     )
+    # A bare, later shell-command line needs no prose introduction. Limit this to a command word followed
+    # by a long option: that is the only form that can lend a checked flag to the prior invocation, while a
+    # valid wrapped continuation starts with its option instead of a new command word.
+    bare_shell_command_start = re.compile(
+        r"(?:^|\r?\n)(?=[A-Za-z_./])[A-Za-z_./][\w./-]*(?=[ \t]+[^\r\n]*--[A-Za-z][\w-]*\b)"
+    )
     # Markdown backticks delimit a span, not a shell command. An invocation may be followed in the same
     # paragraph by inline code that supplies its required flag, so a backtick is never a command boundary.
     command_delimiter = re.compile(r"&&|\|\||;|\|")
@@ -2553,7 +2559,12 @@ def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, 
             for match in needle.finditer(paragraph):
                 offset = start + match.start()
                 command_end = len(paragraph)
-                if (next_command := command_start.search(paragraph, match.end())) is not None:
+                candidates = (
+                    command_start.search(paragraph, match.end()),
+                    bare_shell_command_start.search(paragraph, match.end()),
+                )
+                if (next_command := min((candidate for candidate in candidates if candidate is not None),
+                                        key=lambda candidate: candidate.start(), default=None)) is not None:
                     command_end = next_command.start()
                 if (delimiter := command_delimiter.search(paragraph, match.end(), command_end)) is not None:
                     command_end = delimiter.start()
