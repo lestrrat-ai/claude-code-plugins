@@ -1381,11 +1381,22 @@ def watch_doc_cases(ci) -> list[str]:
     if not any("negates" in problem for problem in got):
         problems.append("[watch-doc] a named consumer with opposite watch instructions was accepted")
 
-    for name in ("fenced-code-only-requirements.md", "inline-code-only-requirements.md"):
+    for name in (
+        "fenced-code-only-requirements.md",
+        "inline-code-only-requirements.md",
+        "indented-code-only-requirements.md",
+        "raw-pre-code-only-requirements.md",
+        "raw-html-code-only-requirements.md",
+        "split-inline-code-only-requirements.md",
+    ):
         hidden = (WATCH_DOC_FIXTURES / name).read_text(encoding="utf-8")
         got = ci.watch_action_block_problems(Path(name), hidden, anchor)
         if len(got) != 5:
             problems.append(f"[watch-doc] literal-code-only action requirements in {name} were accepted")
+        got = ci.watch_formula_problems(Path(name), hidden)
+        if got:
+            problems.append(f"[watch-doc] literal-code-only formula in {name} was treated as visible: "
+                            f"{'; '.join(got)}")
 
     reversed_action = (WATCH_DOC_FIXTURES / "reversed-action.md").read_text(encoding="utf-8")
     got = ci.watch_action_block_problems(Path("reversed-action.md"), reversed_action, anchor)

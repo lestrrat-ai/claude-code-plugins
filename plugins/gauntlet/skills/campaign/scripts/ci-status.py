@@ -2463,11 +2463,12 @@ def markdown_visible_text(text: str) -> str:
     return "".join(visible)
 
 
-def markdown_action_text(text: str) -> str:
-    """Mask literal-code directives while preserving source offsets and inline identifier references."""
+def markdown_structural_code_text(text: str) -> str:
+    """Mask fenced, indented, and raw-HTML literal code while preserving source offsets."""
     text = markdown_visible_text(text)
     visible = list(text)
     fence: tuple[str, int] | None = None
+    list_content_indent: int | None = None
     offset = 0
 
     def mask(start: int, end: int) -> None:
@@ -2477,6 +2478,15 @@ def markdown_action_text(text: str) -> str:
 
     for line in text.splitlines(keepends=True):
         body = line.rstrip("\r\n")
+        leading = len(body) - len(body.lstrip(" "))
+        list_item = re.match(r" {0,3}(?:[-+*]|\d+[.)])[ \t]+", body) if leading <= 3 else None
+        if list_item is not None:
+            list_content_indent = len(list_item.group())
+        elif not body:
+            list_content_indent = None
+        else:
+            if list_content_indent is not None and leading < list_content_indent:
+                list_content_indent = None
         if fence is not None:
             marker, width = fence
             closing = re.fullmatch(rf" {{0,3}}{re.escape(marker)}{{{width},}}[ \t]*", body)
@@ -2496,30 +2506,100 @@ def markdown_action_text(text: str) -> str:
                 offset += len(line)
                 continue
 
-        index = 0
-        while index < len(line):
-            if line[index] != "`":
-                index += 1
-                continue
-            end = index + 1
-            while end < len(line) and line[end] == "`":
-                end += 1
-            width = end - index
-            if markdown_char_is_escaped(text, offset + index):
-                index = end
-                continue
-            closing = matching_backtick_run(text, offset + end, width)
-            if closing is None:
-                index = end
-                continue
-            content = text[offset + end:closing].strip()
-            # Inline identifiers are operands of surrounding prose, not standalone directives. A
-            # prose-sized code span is only a literal example and cannot satisfy an action requirement.
-            if re.fullmatch(r"[A-Za-z0-9_.:/-]+", content) is None:
-                mask(offset + index, closing + width)
-            index = closing - offset + width
+        if (re.match(r"(?: {4}| {0,3}\t)", body)
+                and (list_content_indent is None or leading >= list_content_indent + 4)):
+            mask(offset, offset + len(line))
         offset += len(line)
 
+    for match in re.finditer(
+            r"<(?P<tag>pre|code)\b[^>]*>.*?</(?P=tag)\s*>", text, re.IGNORECASE | re.DOTALL):
+        mask(match.start(), match.end())
+
+    return "".join(visible)
+
+
+def markdown_inline_code_spans(text: str) -> list[tuple[int, int, str]]:
+    """Return unescaped inline-code spans outside fenced Markdown blocks."""
+    spans = []
+    index = 0
+    while index < len(text):
+        if text[index] != "`":
+            index += 1
+            continue
+        end = index + 1
+        while end < len(text) and text[end] == "`":
+            end += 1
+        width = end - index
+        if markdown_char_is_escaped(text, index):
+            index = end
+            continue
+        closing = matching_backtick_run(text, end, width)
+        if closing is None:
+            index = end
+            continue
+        spans.append((index, closing + width, text[end:closing].strip()))
+        index = closing + width
+    return spans
+
+
+def sentence_forming_inline_code_spans(text: str, spans: list[tuple[int, int, str]]) -> set[int]:
+    """Return identifier spans that join adjacent code spans into a literal action sentence."""
+    literal = set()
+    identifier = re.compile(r"[A-Za-z0-9_.:/-]+$")
+    index = 0
+    while index < len(spans):
+        if identifier.fullmatch(spans[index][2]) is None:
+            index += 1
+            continue
+        group = [index]
+        next_index = index + 1
+        while next_index < len(spans):
+            gap = text[spans[next_index - 1][1]:spans[next_index][0]]
+            if (identifier.fullmatch(spans[next_index][2]) is None
+                    or re.fullmatch(r"[\s,.;:!?()\[\]{}'\"*_~/-]*", gap) is None):
+                break
+            group.append(next_index)
+            next_index += 1
+        words = {spans[item][2].lower() for item in group}
+        if len(group) > 1 and words & {"run", "ensure", "relaunch", "watch"}:
+            literal.update(group)
+        index = next_index
+    return literal
+
+
+def markdown_action_text(text: str) -> str:
+    """Mask literal-code directives while preserving standalone inline identifier references."""
+    text = markdown_structural_code_text(text)
+    visible = list(text)
+
+    def mask(start: int, end: int) -> None:
+        for position in range(start, end):
+            if visible[position] not in "\r\n":
+                visible[position] = " "
+
+    spans = markdown_inline_code_spans(text)
+    sentence_forming = sentence_forming_inline_code_spans(text, spans)
+    for index, (start, end, content) in enumerate(spans):
+        # Inline identifiers are operands of surrounding prose, not standalone directives. A prose-sized
+        # span, or identifier spans joined into a sentence, is a literal example and cannot satisfy an
+        # action requirement.
+        if index in sentence_forming or re.fullmatch(r"[A-Za-z0-9_.:/-]+", content) is None:
+            mask(start, end)
+    return "".join(visible)
+
+
+def markdown_formula_text(text: str) -> str:
+    """Mask structural and sentence-forming literal code before looking for a consumer watch formula."""
+    text = markdown_structural_code_text(text)
+    visible = list(text)
+    spans = markdown_inline_code_spans(text)
+    sentence_forming = sentence_forming_inline_code_spans(text, spans)
+    for index, (start, end, _) in enumerate(spans):
+        if index not in sentence_forming:
+            continue
+        for position in range(start, end):
+            if visible[position] not in "\r\n":
+                visible[position] = " "
     return "".join(visible)
 
 
@@ -2605,7 +2685,7 @@ def watch_dispatch_summary_problems(path: Path, text: str, anchor: str) -> list[
 
 def watch_formula_problems(path: Path, text: str) -> list[str]:
     """Reject consumer-side watch predicates; stage-2-ci.md and executable tests own those details."""
-    text = markdown_visible_text(text)
+    text = markdown_formula_text(text)
     text = re.sub(
         r"[\"“]WATCH\s+ONLY\s+WHAT\s+CAN\s+MOVE[\"”]",
         lambda match: "".join(char if char in "\r\n" else " " for char in match.group()),
