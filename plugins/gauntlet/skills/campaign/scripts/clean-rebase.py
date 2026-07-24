@@ -180,13 +180,23 @@ def run(args) -> int:
     # operational fetch/rebase/patch-identity below follows the row, not the caller's argument.
     base = effective_base
 
-    # 2. A HELD PR is FROZEN — except the recorded repair's required clean base-only rebase. The shared
-    #    ledger accessor owns that narrow decision condition. It does not unhold the row: this rebase only
-    #    prepares the decision's repair, and every other held row remains refused. A TERMINAL PR is done.
+    # 2. A HELD PR is FROZEN — except a non-legacy recorded repair's required clean base-only rebase. The
+    #    shared ledger accessor owns that narrow decision condition. A legacy DEMOTE completes directly
+    #    through repair-pass.md, "Complete a legacy DEMOTE"; this rebase never prepares it. The exception
+    #    does not unhold the row: it only prepares the decision's repair, and every other held row remains
+    #    refused. A TERMINAL PR is done.
     status = row.get("status", "-")
-    if status in L.HELD_STATUSES and not L.has_decided_repair(row):
+    if status == L.REPAIR_STATUS and L.is_legacy_demote_decision(row):
+        return refuse(
+            "legacy-demote",
+            f"pr {pr} has recorded legacy DEMOTE decision {row['repair_decision']!r} — a clean base-only "
+            "rebase is not part of that decision; execute its documented completion through `ledger.py "
+            f"… dispatch-check --pr {pr} --action repair` and repair-pass.md, \"Complete a legacy DEMOTE\"",
+            EXIT_PRECONDITION,
+        )
+    if status in L.HELD_STATUSES and not L.has_clean_rebase_repair(row):
         return refuse("held", f"pr {pr} is {status} — {L.held_reason(status)}; a held PR is never rebased "
-                      "without a recorded reassessment repair decision", EXIT_PRECONDITION)
+                      "without a recorded non-legacy reassessment repair decision", EXIT_PRECONDITION)
     if status in TERMINAL_STATUSES:
         return refuse("terminal", f"pr {pr} is {status} (terminal) — a done PR is never rebased",
                       EXIT_PRECONDITION)

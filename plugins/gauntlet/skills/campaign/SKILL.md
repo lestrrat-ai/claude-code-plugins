@@ -213,8 +213,8 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
     machine work due NOW; its unreconcilable-history exception is in `repair-pass.md`). The test is "does
     this mutate the PR?", **not** "is it on a list";
     `HELD_STATUSES` in `scripts/ledger.py` is the one enumeration — never retype it. Sole exception:
-    a recorded repair's required clean base-only rebase, owned by `repair-pass.md`, **A recorded repair may
-    first take its required clean base-only rebase**. The CI watch is not a mutation, so it follows the normal policy. Keep driving the other
+    a non-legacy recorded repair's required clean base-only rebase, owned by `repair-pass.md`, **A non-legacy
+    recorded repair may first take its required clean base-only rebase**. The CI watch is not a mutation, so it follows the normal policy. Keep driving the other
     PRs. Unpark only on the user's answer, recorded DURABLY per park class; a ruling is durable and
     consumed exactly once (`references/stage-2-ci.md`, "THE RULING IS CONSUMED EXACTLY ONCE").
 

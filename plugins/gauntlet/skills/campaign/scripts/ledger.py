@@ -433,10 +433,25 @@ def has_decided_repair(row: dict[str, str]) -> bool:
     """Whether this row may run work owned by its recorded reassessment decision.
 
     `repair-pass.py decide` is the only writer of `repair_decision`; this accessor keeps every consumer on
-    the same narrow condition. A recorded repair may first take its required clean base-only rebase, then
-    execute that decision. It does not unhold the row or permit ordinary work.
+    the same narrow condition. This includes a legacy DEMOTE, whose documented completion is dispatchable
+    but does not take the clean-base-only-rebase exception. A decision does not unhold the row or permit
+    ordinary work.
     """
     return row["status"] == REPAIR_STATUS and row["repair_decision"] != "-"
+
+
+def is_legacy_demote_decision(row: dict[str, str]) -> bool:
+    """Whether the durable decision is the retired DEMOTE path."""
+    return row["repair_decision"].startswith("demote@")
+
+
+def has_clean_rebase_repair(row: dict[str, str]) -> bool:
+    """Whether this decided repair may take its required clean base-only rebase.
+
+    A non-legacy recorded repair may use that narrow exception before its repair dispatch. A legacy DEMOTE
+    completes directly through `repair-pass.md`, "Complete a legacy DEMOTE".
+    """
+    return has_decided_repair(row) and not is_legacy_demote_decision(row)
 
 # `fail()` keeps 1 for "your input was rejected". A HELD/AT-CAP answer is NOT an input error — the command
 # did its job and the answer is STOP — so it gets its own code. A driver that proceeds anyway has a FAILED

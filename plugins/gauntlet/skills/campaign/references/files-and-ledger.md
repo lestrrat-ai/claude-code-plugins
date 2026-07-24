@@ -495,8 +495,9 @@ Header field notes (the header fields above; per-row fields follow):
   PR.** Never launch a review pass, a CI fix, a review fix, or a merge for it, and never rebase it, refresh
   its base, push to it, or relabel it (`loop-control.md` step 3, "held-status guard" — the property, of
   which those are only examples; `stage-3-merge.md` binds both the merge and the post-merge reconcile).
-  The sole mutating exception is a recorded repair's required clean base-only rebase; `repair-pass.md`,
-  **A recorded repair may first take its required clean base-only rebase**, owns it.
+  The sole mutating exception is a non-legacy recorded repair's required clean base-only rebase;
+  `repair-pass.md`, **A non-legacy recorded repair may first take its required clean base-only rebase**,
+  owns it.
   Being held does not raise `reviews_ok`, so the guard reads **`status`** — never `reviews_ok`/`ci`/
   `mergeable` alone, which would re-review a held PR and merge it without its question ever being answered.
   **It is a command, not a memory exercise**: `ledger.py … dispatch-check --pr <N>` exits non-zero on
@@ -627,8 +628,9 @@ a *commit did*.
 action that MUTATES a PR; it exits non-zero when the row is HELD (`status`, above). `--action repair` is
 the one kind of work a `repairing` row accepts, and it is refused until the reassessment's decision is on
 the row — otherwise a driver could call its next targeted fix "the repair" and go on whacking moles under
-a new name. The recorded repair's required clean base-only rebase is part of that action; `repair-pass.md`,
-**A recorded repair may first take its required clean base-only rebase**, owns the flow.
+a new name. The non-legacy recorded repair's required clean base-only rebase is part of that action;
+`repair-pass.md`, **A non-legacy recorded repair may first take its required clean base-only rebase**, owns
+the flow.
 
 **`park`/`unpark` are the sanctioned writers of the machine-blocker park/unpark TRANSITIONS**, the same
 way `verdict` owns the review counters: a park (`status = awaiting-user`, `ci_reason` = the blocker,

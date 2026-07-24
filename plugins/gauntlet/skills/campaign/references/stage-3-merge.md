@@ -183,8 +183,8 @@ ownership checks and phase order remain in force.
    unparks. **Do NOT drop its row** — it stays in the run, and the park **does not change its CI watch
    either way** (observation, not mutation): the watch follows the normal policy (`stage-2-ci.md`, "WATCH
    ONLY WHAT CAN MOVE") — relaunched while a row is still RUNNING, **not** relaunched once CI has settled.
-   This merge-stage reconcile is ordinary work, never the recorded repair's required clean base-only
-   rebase; `repair-pass.md`, **A recorded repair may first take its required clean base-only rebase**,
+   This merge-stage reconcile is ordinary work, never the non-legacy recorded repair's required clean base-only
+   rebase; `repair-pass.md`, **A non-legacy recorded repair may first take its required clean base-only rebase**,
    owns that separate path.
 
    For each **non-parked** open PR, run `python3 scripts/base-preflight.py check --pr <pr> --worktree

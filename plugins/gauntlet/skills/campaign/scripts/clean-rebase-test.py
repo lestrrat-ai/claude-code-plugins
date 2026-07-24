@@ -95,6 +95,7 @@ PR_NUMBER = "12"
 PR_BRANCH = "pr"
 DASH_BASE = "--upload-pack=/bin/false"
 RECORDED_REPAIR = "root-cause@2026-07-24T04:35:14Z"
+LEGACY_DEMOTE = "demote@2026-07-24T00:00:00Z"
 
 
 class Scenario:
@@ -285,7 +286,7 @@ def t_noop_rebase_echoes_retained_base_ok_sha():
 
 
 def t_decided_repair_rebases_clean_base():
-    """A recorded repair may clear only its clean base precondition while remaining repairing."""
+    """A non-legacy recorded repair may clear only its clean base precondition while repairing."""
     with tempfile.TemporaryDirectory() as tmp:
         s = Scenario(Path(tmp)).build(status=L.REPAIR_STATUS, reviews_ok=0,
                                       repair_decision=RECORDED_REPAIR)
@@ -304,6 +305,26 @@ def t_decided_repair_rebases_clean_base():
               "a prerequisite rebase preserves the recorded repair decision")
         check(_field(s.ledger, PR_NUMBER, "reviews_ok") == "0",
               "a clean base-only rebase does not change the repair's review tally")
+
+
+def t_legacy_demote_refused_on_stale_base():
+    """A legacy DEMOTE completes directly; an advanced base cannot rebase it first."""
+    with tempfile.TemporaryDirectory() as tmp:
+        s = Scenario(Path(tmp)).build(status=L.REPAIR_STATUS, reviews_ok=0,
+                                      repair_decision=LEGACY_DEMOTE)
+        s.advance_base({12: "12-BASE"})
+        ledger_before = s.ledger.read_bytes()
+        remote_pr_before = s.remote_pr_head()
+        code, out, _ = s.invoke()
+        check(code == M.EXIT_PRECONDITION,
+              f"a stale-base legacy DEMOTE must be refused at exit 2 (code={code})")
+        check('"refused": "legacy-demote"' in out,
+              f"the refusal must identify the legacy DEMOTE path; got {out!r}")
+        check("dispatch-check" in out and "Complete a legacy DEMOTE" in out,
+              f"the refusal must route directly to legacy completion; got {out!r}")
+        check(head(s.wt) == s.orig_head, "a legacy DEMOTE is never rebased — HEAD untouched")
+        check(s.remote_pr_head() == remote_pr_before, "a legacy DEMOTE never pushes")
+        check(s.ledger.read_bytes() == ledger_before, "a legacy DEMOTE refusal leaves the ledger untouched")
 
 
 def t_undecided_repair_refused():
@@ -501,8 +522,8 @@ def t_parked_row_refused():
 
 
 def t_decided_repair_exception_is_documented():
-    """Every held-status guide points at the recorded repair's narrow clean-rebase exception."""
-    terms = ("recorded repair", "clean base-only rebase")
+    """Every held-status guide scopes the clean-rebase exception to non-legacy repairs."""
+    terms = ("non-legacy recorded repair", "clean base-only rebase")
     sites = (
         OWNER,
         OWNER.parent / "ledger.py",
@@ -517,7 +538,7 @@ def t_decided_repair_exception_is_documented():
     for site in sites:
         text = site.read_text(encoding="utf-8")
         check(all(term in text for term in terms),
-              f"{site.name} lost the decided-repair clean-rebase exception")
+              f"{site.name} lost the non-legacy decided-repair clean-rebase exception")
 
 
 def t_no_row_refused():
@@ -798,8 +819,11 @@ CASES = [
     ("noop-rebase-retains-base-ok-sha", "a no-op rebase (base unchanged) echoes the RETAINED base_ok_sha, "
      "not a reset — the result JSON reads the actual row", t_noop_rebase_echoes_retained_base_ok_sha),
     ("decided-repair-clean-rebase",
-     "a recorded repair may take its clean base-only rebase while staying repairing",
+     "a non-legacy recorded repair may take its clean base-only rebase while staying repairing",
      t_decided_repair_rebases_clean_base),
+    ("legacy-demote-rebase-refused",
+     "a stale-base legacy DEMOTE is refused and routed directly to its completion path",
+     t_legacy_demote_refused_on_stale_base),
     ("conflict-aborts", "a conflicting rebase aborts, restores HEAD, refuses (exit 3), mutates nothing",
      t_conflict_aborts_and_refuses),
     ("diff-changed-resets", "a textually-clean rebase that changes the PR diff resets and refuses (exit 3)",

@@ -143,8 +143,9 @@ neither anchor, so no valid current bundle could meet it.
 
 ### Complete a legacy DEMOTE
 
-**Preserve an existing `repair_decision = demote@<iso>` row and finish its recorded decision.** Do not
-rerun `decide`, rewrite its repair record, or migrate the ledger. Run
+**Preserve an existing `repair_decision = demote@<iso>` row and finish its recorded decision directly.** Do
+not run `base-preflight.py` or `clean-rebase.py` first, rerun `decide`, rewrite its repair record, or
+migrate the ledger. A legacy DEMOTE has no clean-base-only-rebase exception. Run
 `ledger.py … dispatch-check --pr <N> --action repair`.
 
 **Recover the final cap's finding list from the bundle-bound historical artifact, never from decision-record
@@ -220,14 +221,15 @@ targeted fix "the repair", dispatch it, and **go on whacking moles under a new n
 refuses until a decision is on the row, and prints **which** decision, so the work that follows is the work
 that was decided.
 
-### A recorded repair may first take its required clean base-only rebase
+### A non-legacy recorded repair may first take its required clean base-only rebase
 
-**A recorded repair's required clean base-only rebase is part of that repair, not ordinary gate work.** Run
-`base-preflight.py check` before dispatching the decided repair. On `rebase-first`, run
-`clean-rebase.py run`; it admits this one `repairing` row only when `repair_decision` is recorded. It keeps
-the row `repairing` and preserves the decision, so the rebase prepares that same repair rather than
-unholding the PR. An undecided `repairing` row and every parked row remain refused. A conflict or a
-diff-changing rebase remains outside this exception: `clean-rebase.py` exits 3 and never resolves it.
+**A non-legacy recorded repair's required clean base-only rebase is part of that repair, not ordinary gate
+work.** Run `base-preflight.py check` before dispatching the decided repair. On `rebase-first`, run
+`clean-rebase.py run`; it admits this one `repairing` row only when `repair_decision` is recorded and is
+not `demote@…`. It keeps the row `repairing` and preserves the decision, so the rebase prepares that same
+repair rather than unholding the PR. An undecided `repairing` row, every legacy DEMOTE, and every parked
+row remain refused. A conflict or a diff-changing rebase remains outside this exception:
+`clean-rebase.py` exits 3 and never resolves it.
 
 When the repair has landed, return the row to the gate (`ledger.py … set --pr <N> --status in_review`) and
 let the review gauntlet run again from the top. **`review_rounds` is not reset** — it never is. A PR that
