@@ -178,10 +178,13 @@ ReviewTransition {
 }
 ```
 
-The classifier recognizes relative provider delays such as `retry after 90 seconds` and absolute
-provider reset timestamps such as `resets Jul 27, 9pm (Asia/Tokyo)`. Construct an absolute timestamp in
-the provider-named timezone before calculating the delay. Timer text wins over generic error markers;
-an unrecognized failure is `permanent` and disables this external route for the current session.
+The classifier recognizes non-negative whole-second relative provider delays such as `retry after 90
+seconds` and absolute provider reset timestamps such as `resets Jul 27, 9pm (Asia/Tokyo)`. Construct an
+absolute timestamp in the provider-named timezone, then calculate elapsed time with timezone-aware
+arithmetic. Permanent markers take precedence over timers and transient markers; valid timer text takes
+precedence over generic transient markers. Malformed or unsupported timer text, including fractional or
+unrepresentable delays and unknown zones, is `permanent`. An unrecognized failure is also `permanent` and
+disables this external route for the current session.
 
 `ExternalReviewSessionState` is process/session memory owned by the active orchestrator. Update it only
 from the returned transition or decision. **Never write `external_disabled` or

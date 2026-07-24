@@ -130,9 +130,10 @@ is the absence of a verdict.
 
 **Before any retry or fallback, classify the captured external-process failure through
 `runtime-adapter.md`, "Review failure classification and session backoff".** The helper returns
-`transient`, `timer`, or `permanent`; an unrecognized failure is permanent. Apply the returned transition:
-transient failures may spend the one retry, timer failures wait for the exact provider deadline before
-retrying, and permanent failures disable that external route for this session before native fallback.
+`transient`, `timer`, or `permanent`; permanent markers and malformed or unsupported timer text are
+permanent, and an unrecognized failure is permanent. Apply the returned transition: transient failures may
+spend the one retry, valid timers wait for the exact provider deadline before retrying, and permanent
+failures disable that external route for this session before native fallback.
 The paired CLI absence is a pre-launch capability miss and takes native fallback without a retry. Keep
 the disabled flag and timer deadline in session memory only; never write them to campaign artifacts.
 Note in the final report which cross-engine routes were unavailable and which passes used the recovery

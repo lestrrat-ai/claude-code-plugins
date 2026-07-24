@@ -231,14 +231,15 @@ never the place to look them up.
   reviewer when you invoke the campaign
   (for example, “review with claude”, or a native worker) or record a preference in the orchestrator's own
   trusted state — never in the checkout under review (`references/reviewer.md`, "Selecting the reviewer", owns which sources count).
-  If the paired CLI is absent, or a cross-engine reviewer can't return a verdict, classify the captured
-  failure before retry or fallback using `references/runtime-adapter.md`, "Review failure classification
-  and session backoff". Transient failures may use the one retry, timer failures wait for the exact
-  provider deadline, and permanent or unrecognized failures disable that external route for the current
-  session before native fallback. The retry uses repository-maintenance framing with the same complete
-  review contract and process command; it never resumes the failed session or requires a model switch.
-  Session backoff and disabled state are never durable. Campaign therefore runs with or without the other
-  engine. The fallback uses the disclosed native isolation contract. A reviewer that never
+  If the paired CLI is absent, or a cross-engine reviewer can't return a verdict, use the classification
+  and fallback contract owned by `references/runtime-adapter.md`, "Review failure classification and
+  session backoff". That contract permits one retry for transient failures, waits for valid timers at
+  exact provider deadlines, and sends permanent, malformed, unsupported, or unrecognized failures to
+  native fallback after disabling the external route for this session. Session backoff and disabled state
+  are never durable. The retry uses the same complete review contract and process command; only the mapped
+  Codex recovery profile adds repository-maintenance framing. It never resumes the failed session or
+  requires a model switch. Campaign therefore runs with or without the other engine. The fallback uses the disclosed native isolation contract. A
+  reviewer that never
   gets going at all — hung on input, a bad path, a sandbox
   denial — is caught the same way: every review pass has to write *something* to its progress file
   within about five minutes of being dispatched, and one that writes nothing at all is killed and

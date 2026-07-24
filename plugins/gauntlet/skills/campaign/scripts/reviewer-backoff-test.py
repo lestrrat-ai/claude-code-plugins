@@ -32,6 +32,23 @@ def test_absolute_timer_uses_provider_timezone() -> None:
           "absolute reset was not converted from the provider timezone")
 
 
+def test_absolute_timer_uses_elapsed_time_across_dst() -> None:
+    now = datetime(2026, 3, 8, 1, 30, tzinfo=MODULE.ZoneInfo("America/New_York"))
+    result = MODULE.classify("quota exhausted; resets Mar 8, 3:30am (America/New_York)", now)
+    check(result.kind == MODULE.TIMER, "DST deadline was not classified as a timer")
+    check(result.retry_after_seconds == 3600,
+          "absolute deadline was subtracted as wall-clock time across DST")
+
+
+def test_timer_wait_uses_elapsed_time_across_dst() -> None:
+    now = datetime(2026, 3, 8, 1, 30, tzinfo=MODULE.ZoneInfo("America/New_York"))
+    failure = MODULE.classify("quota exhausted; resets Mar 8, 3:30am (America/New_York)", now)
+    result = MODULE.transition(failure, now=now)
+    check(result.action == MODULE.WAIT_EXTERNAL, "DST timer did not wait")
+    check(result.retry_after_seconds == 3600,
+          "timer wait was subtracted as wall-clock time across DST")
+
+
 def test_relative_timer_waits_exactly() -> None:
     now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
     result = MODULE.decide("rate limited; retry after 90 seconds", now=now)
@@ -58,6 +75,37 @@ def test_transient_retries_immediately() -> None:
     check(result.action == MODULE.RETRY_EXTERNAL, "transient failure did not retry")
 
 
+def test_permanent_marker_precedes_transient_marker() -> None:
+    result = MODULE.classify("permission denied after upstream timeout")
+    check(result.kind == MODULE.PERMANENT,
+          "permanent marker lost to a transient marker")
+
+
+def test_oversized_relative_timer_fails_closed() -> None:
+    result = MODULE.classify("rate limit; retry after " + "9" * 400 + " seconds")
+    check(result.kind == MODULE.PERMANENT,
+          "oversized relative timer did not fail closed")
+
+
+def test_malformed_timer_text_fails_closed() -> None:
+    result = MODULE.classify("rate limit; retry after never seconds")
+    check(result.kind == MODULE.PERMANENT,
+          "malformed timer text selected an immediate retry")
+
+
+def test_unknown_timer_zone_fails_closed() -> None:
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    result = MODULE.classify("rate limit; resets Jul 27, 9pm (Unknown/Zone)", now)
+    check(result.kind == MODULE.PERMANENT,
+          "unknown timer zone selected an immediate retry")
+
+
+def test_fractional_timer_fails_closed() -> None:
+    result = MODULE.classify("rate limit; retry after 1.5 seconds")
+    check(result.kind == MODULE.PERMANENT,
+          "fractional timer was rounded into a retry delay")
+
+
 def test_permanent_disables_external_route_for_session() -> None:
     result = MODULE.decide("permission denied by provider")
     check(result.kind == MODULE.PERMANENT, "permission failure was not permanent")
@@ -78,6 +126,24 @@ def test_unrecognized_typed_failure_fails_closed() -> None:
     result = MODULE.transition(failure)
     check(result.kind == MODULE.PERMANENT, "unknown typed failure was not normalized to permanent")
     check(result.state.external_disabled, "unknown typed failure did not disable the session route")
+
+
+def test_malformed_typed_timer_fails_closed() -> None:
+    deadline = datetime(2026, 7, 25, 12, 1, 30, tzinfo=timezone.utc)
+    failure = MODULE.Failure(MODULE.TIMER, -1, deadline, "malformed timer")
+    result = MODULE.transition(failure, now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc))
+    check(result.kind == MODULE.PERMANENT, "malformed typed timer was not normalized")
+    check(result.action == MODULE.FALLBACK_NATIVE, "malformed typed timer was retried")
+    check(result.state.external_disabled, "malformed typed timer did not disable the session route")
+
+
+def test_malformed_typed_state_fails_closed() -> None:
+    state = MODULE.SessionState(external_disabled="false", external_backoff_until="not-a-timestamp")
+    failure = MODULE.Failure(MODULE.TRANSIENT, None, None, "temporary failure")
+    result = MODULE.transition(failure, now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc), state=state)
+    check(result.kind == MODULE.PERMANENT, "malformed typed state was not normalized")
+    check(result.action == MODULE.FALLBACK_NATIVE, "malformed typed state was retried")
+    check(result.state.external_disabled, "malformed typed state did not disable the session route")
 
 
 def test_disabled_state_is_session_only_and_blocks_new_launches() -> None:
@@ -110,12 +176,21 @@ def test_zero_delay_timer_retries_immediately() -> None:
 
 CASES = [
     ("absolute-provider-timezone", "absolute reset uses provider timezone", test_absolute_timer_uses_provider_timezone),
+    ("absolute-dst-elapsed-time", "absolute deadline uses elapsed time across DST", test_absolute_timer_uses_elapsed_time_across_dst),
+    ("timer-wait-dst-elapsed-time", "timer wait uses elapsed time across DST", test_timer_wait_uses_elapsed_time_across_dst),
     ("relative-exact-wait", "relative delay is preserved exactly", test_relative_timer_waits_exactly),
     ("timer-deadline-retry", "timer retries at its exact deadline", test_timer_retries_at_deadline),
     ("transient-immediate-retry", "transient failure retries immediately", test_transient_retries_immediately),
+    ("permanent-marker-precedence", "permanent marker precedes transient marker", test_permanent_marker_precedes_transient_marker),
+    ("oversized-relative-timer", "oversized timer fails closed", test_oversized_relative_timer_fails_closed),
+    ("malformed-timer", "malformed timer fails closed", test_malformed_timer_text_fails_closed),
+    ("unknown-timer-zone", "unknown timer zone fails closed", test_unknown_timer_zone_fails_closed),
+    ("fractional-timer", "fractional timer fails closed", test_fractional_timer_fails_closed),
     ("permanent-session-disable", "permanent failure disables only this session", test_permanent_disables_external_route_for_session),
     ("unknown-permanent", "unknown failure fails closed", test_unknown_fails_closed_as_permanent),
     ("unknown-typed-permanent", "unknown typed failure fails closed", test_unrecognized_typed_failure_fails_closed),
+    ("malformed-typed-timer", "malformed typed timer fails closed", test_malformed_typed_timer_fails_closed),
+    ("malformed-typed-state", "malformed typed state fails closed", test_malformed_typed_state_fails_closed),
     ("session-state", "disabled state blocks later launches in this session", test_disabled_state_is_session_only_and_blocks_new_launches),
     ("spent-timer-fallback", "spent timer falls back and retains session backoff", test_timer_after_retry_falls_back_but_keeps_timer),
     ("zero-delay-timer", "zero-delay timer retries immediately", test_zero_delay_timer_retries_immediately),
