@@ -66,6 +66,7 @@ def _fixture(
     launch_attempt: str = "1",
     route: str = "native",
     producer: str = "native-worker-write",
+    prompt_profile: str = "standard",
     intent: bytes | None = None,
     base: str = "main",
     file: str | None = None,
@@ -85,6 +86,7 @@ def _fixture(
         worktree=os.fspath(worktree),
         base=base,
         route=route,
+        prompt_profile=prompt_profile,
         report_producer=producer,
         head_sha=SHA,
         dispatched_at=STAMP,
@@ -125,6 +127,8 @@ def t_prepare_attempt_one_materializes_one_record() -> None:
         check(payload["route"] == "native", "prepare must preserve the host-selected route")
         check(transport["attempt"] == {"pr": 41, "pass": 2, "launch_attempt": 1},
               "transport attempt must use JSON PositiveInt values")
+        check(transport["prompt_profile"] == "standard",
+              "attempt 1 must carry the standard prompt profile")
         check(transport["report"]["producer"] == "native-worker-write",
               "native route must carry the native report owner")
         check(Path(transport["prompt_path"]) == paths["prompt"], "transport prompt path drifted")
@@ -175,6 +179,76 @@ def t_route_and_report_owner_must_agree() -> None:
                   "a producer mismatch must create no launch artifacts")
 
 
+def t_prompt_profiles_are_typed_and_route_scoped() -> None:
+    """Only external Codex attempt 2 receives recovery framing; every other route stays standard."""
+    recovery = D.CODEX_RECOVERY_PREAMBLE
+    allowed = (
+        ("external-codex", "1", "standard", "external-process-capture", False),
+        ("external-codex", "2", "codex-recovery", "external-process-capture", True),
+        ("external-claude", "2", "standard", "external-process-capture", False),
+        ("native", "3", "standard", "native-worker-write", False),
+    )
+    for route, launch_attempt, profile, producer, has_recovery in allowed:
+        with tempfile.TemporaryDirectory() as raw:
+            args = _fixture(
+                Path(raw),
+                launch_attempt=launch_attempt,
+                route=route,
+                producer=producer,
+                prompt_profile=profile,
+            )
+            transport = D.prepare(args)["transport"]
+            prompt = Path(transport["prompt_path"]).read_bytes()
+            check(transport["prompt_profile"] == profile, f"{route} attempt {launch_attempt} lost {profile}")
+            check(prompt.startswith(recovery) is has_recovery,
+                  f"{route} attempt {launch_attempt} recovery framing={not has_recovery}")
+            body = prompt[len(recovery):] if has_recovery else prompt
+            check(body.startswith(b"TRANSPORT is this JSON-decoded ReviewTransport record:\n"),
+                  f"{route} attempt {launch_attempt} lost the shared review template")
+            check(body.count(b"THE QUESTION YOU ARE ANSWERING IS:") == 1,
+                  f"{route} attempt {launch_attempt} duplicated or removed the review question")
+            check(Path(args.intent_file).read_bytes() in body,
+                  f"{route} attempt {launch_attempt} lost the verbatim intent")
+            for needle in (
+                b"TRANSPORT.emit_progress_path",
+                b"TRANSPORT.emit_finding_path",
+                b"TRANSPORT.emit_amendment_path",
+                b"VERDICT: SATISFIED",
+                b"VERDICT: NOT SATISFIED",
+            ):
+                check(needle in prompt, f"{route} attempt {launch_attempt} lost contract needle {needle!r}")
+            for needle in (
+                b"local repository maintenance change",
+                b"the PR achieves its stated Purpose",
+                b"local diff, repository tests, and fixtures as proof",
+                b"Do not contact or test third-party systems",
+            ):
+                check((needle in prompt) is has_recovery,
+                      f"{route} attempt {launch_attempt} recovery framing drifted at {needle!r}")
+
+    refused = (
+        ("external-codex", "1", "codex-recovery", "standard"),
+        ("external-codex", "2", "standard", "codex-recovery"),
+        ("external-claude", "2", "codex-recovery", "standard"),
+        ("native", "3", "codex-recovery", "standard"),
+        ("native", "1", "invented", "unknown prompt profile"),
+    )
+    for route, launch_attempt, profile, expected in refused:
+        with tempfile.TemporaryDirectory() as raw:
+            producer = "native-worker-write" if route == "native" else "external-process-capture"
+            args = _fixture(
+                Path(raw),
+                launch_attempt=launch_attempt,
+                route=route,
+                producer=producer,
+                prompt_profile=profile,
+            )
+            _refused(args, expected)
+            rundir = Path(args.run_dir)
+            check(not list(rundir.glob("*.prompt.txt")) and not list(rundir.glob("*.progress.jsonl")),
+                  f"{route} attempt {launch_attempt} invalid profile created launch artifacts")
+
+
 def t_hostile_paths_and_intent_remain_exact_data() -> None:
     with tempfile.TemporaryDirectory(prefix="dispatch ' \" ` $(literal)\n") as raw:
         root = Path(raw)
@@ -200,7 +274,7 @@ def t_hostile_paths_and_intent_remain_exact_data() -> None:
 
 
 def t_template_slots_are_closed_before_payload_binding() -> None:
-    transport = {"payload": "literal <INTENT>"}
+    transport = {"prompt_profile": "standard", "payload": "literal <INTENT>"}
     intent = b"literal <TRANSPORT-RECORD> stays payload"
     template = b"record=<TRANSPORT-RECORD>\nintent=<INTENT>\n"
     bound = D.bind_prompt(template, transport, intent)
@@ -304,6 +378,7 @@ def t_overlapping_run_dir_and_worktree_create_nothing() -> None:
             worktree=os.fspath(worktree),
             base="main",
             route="native",
+            prompt_profile="standard",
             report_producer="native-worker-write",
             head_sha=SHA,
             dispatched_at=STAMP,
@@ -593,11 +668,12 @@ def t_external_attempt_two_has_native_attempt_three_recovery() -> None:
     with tempfile.TemporaryDirectory() as raw:
         args = _fixture(
             Path(raw), launch_attempt="2", route="external-codex",
-            producer="external-process-capture",
+            producer="external-process-capture", prompt_profile="codex-recovery",
         )
         D.prepare(args)
         args.launch_attempt = "3"
         args.route = "native"
+        args.prompt_profile = "standard"
         args.report_producer = "native-worker-write"
         transport = D.prepare(args)["transport"]
         check(transport["attempt"]["launch_attempt"] == 3 and
@@ -623,10 +699,14 @@ def t_external_attempt_two_has_native_attempt_three_recovery() -> None:
 def t_transition_actions_map_directly_to_prepare_inputs() -> None:
     runtime = (OWNER.parent.parent / "references" / "runtime-adapter.md").read_text(encoding="utf-8")
     for row in (
-        "| `launch-external` / `retry-external` | selected capability's external route | "
-        "`external-process-capture` |",
-        "| `launch-native` / `fallback-native` | `native` | `native-worker-write` |",
-        "| `park-machine-blocker` | no preparation | no preparation |",
+        "| `launch-external` | selected capability's external route | "
+        "`external-process-capture` | `standard` |",
+        "| `retry-external` + `external-codex` | `external-codex` | "
+        "`external-process-capture` | `codex-recovery` |",
+        "| `retry-external` + `external-claude` | `external-claude` | "
+        "`external-process-capture` | `standard` |",
+        "| `launch-native` / `fallback-native` | `native` | `native-worker-write` | `standard` |",
+        "| `park-machine-blocker` | no preparation | no preparation | no preparation |",
     ):
         check(row in runtime, f"review_transition mapping row is missing: {row}")
 
@@ -648,7 +728,8 @@ def t_unicode_worktree_delivers_under_ascii_stdout() -> None:
         argv = [
             "prepare", "--run-dir", os.fspath(rundir), "--pr", "41", "--pass", "2",
             "--launch-attempt", "1", "--worktree", os.fspath(worktree), "--base", "main",
-            "--route", "native", "--report-producer", "native-worker-write",
+            "--route", "native", "--prompt-profile", "standard",
+            "--report-producer", "native-worker-write",
             "--head-sha", SHA, "--dispatched-at", STAMP, "--default-non-goals", "[]",
             "--intent-file", os.fspath(intent_path),
         ]
@@ -674,7 +755,8 @@ def t_cli_emits_only_canonical_host_neutral_json() -> None:
         argv = [
             "prepare", "--run-dir", args.run_dir, "--pr", args.pr, "--pass", args.review_pass,
             "--launch-attempt", args.launch_attempt, "--worktree", args.worktree, "--base", args.base,
-            "--route", args.route, "--report-producer", args.report_producer,
+            "--route", args.route, "--prompt-profile", args.prompt_profile,
+            "--report-producer", args.report_producer,
             "--head-sha", args.head_sha, "--dispatched-at", args.dispatched_at,
             "--default-non-goals", args.default_non_goals, "--intent-file", args.intent_file,
         ]
@@ -842,6 +924,8 @@ CASES = [
     ("attempt-one", "prepare materializes one coherent attempt-1 record", t_prepare_attempt_one_materializes_one_record),
     ("later-external-attempt", "later attempts preserve suffix and external ownership", t_later_attempt_uses_external_report_owner),
     ("producer-pairing", "route and sole report producer must agree", t_route_and_report_owner_must_agree),
+    ("prompt-profile", "prompt profiles are typed and scoped to external Codex attempt 2",
+     t_prompt_profiles_are_typed_and_route_scoped),
     ("hostile-data", "hostile paths and intent remain inert exact data", t_hostile_paths_and_intent_remain_exact_data),
     ("closed-template", "template slots close before payload binding", t_template_slots_are_closed_before_payload_binding),
     ("invalid-identifiers", "invalid identity fields create no artifacts", t_invalid_identifiers_create_nothing),
@@ -855,7 +939,8 @@ CASES = [
     ("hard-stop-recovery", "both-files and identity-only hard-stop residue is recoverable", t_hard_stop_residue_is_recoverable),
     ("malformed-identity-refused", "a malformed lone identity is refused, not reclaimed", t_malformed_lone_identity_is_refused_not_reclaimed),
     ("fallback-attempt-three", "external retry failure has a terminal native attempt-3 path", t_external_attempt_two_has_native_attempt_three_recovery),
-    ("transition-mapping", "review actions map directly to route and producer", t_transition_actions_map_directly_to_prepare_inputs),
+    ("transition-mapping", "review actions map directly to route, producer, and prompt profile",
+     t_transition_actions_map_directly_to_prepare_inputs),
     ("unicode-delivery", "a Unicode path is delivered as UTF-8 bytes under ASCII stdout", t_unicode_worktree_delivers_under_ascii_stdout),
     ("host-neutral-json", "CLI emits canonical data and never launches", t_cli_emits_only_canonical_host_neutral_json),
     ("ledger-base-match", "--file with a matching row base passes the assertion and prepares",

@@ -35,6 +35,9 @@ Campaign's exact cross-agent command lines live in
   A cross-engine route launches at native-limitation level whenever the paired CLI is present; the three
   `os_filesystem_isolation` properties are an optional stronger-boundary claim that never blocks launch.
   When the paired CLI is absent, or the process fails after its retry, fall back to a fresh native worker.
+  The existing external Codex retry uses the typed `codex-recovery` prompt profile from **Review
+  preparation mapping**; every other launch uses `standard`. Profiles never add attempts, resume a failed
+  session, weaken the shared review contract, or require a model switch.
 - NEVER silently skip a required capability. Report the missing capability and use the documented fallback.
 - Keep host-specific examples paired unless a section is explicitly host-only.
 - Cross-engine review is the default per host, launched at native-limitation level; explicit or saved

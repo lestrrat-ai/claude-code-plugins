@@ -240,7 +240,8 @@ enforced: the progress file is a plaintext file in a directory the reviewer can 
     # It does NOT gate the tally — the tally reads the dispatch-time pass_identity binding, not this intent
 ["python3", review_dispatch_script, "prepare", "--run-dir", review_root,
  "--pr", pr, "--pass", review_pass, "--launch-attempt", launch_attempt,
- "--worktree", worktree, "--base", base, "--route", route,
+ "--worktree", worktree, "--base", base, "--file", ledger_file,
+ "--route", route, "--prompt-profile", prompt_profile,
  "--report-producer", report_producer, "--head-sha", head_sha,
  "--dispatched-at", utc_timestamp, "--default-non-goals", ledger_default_non_goals,
  "--intent-file", intent_file]

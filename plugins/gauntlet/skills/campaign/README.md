@@ -234,7 +234,9 @@ never the place to look them up.
   trusted state — never in the checkout under review (`references/reviewer.md`, "Selecting the reviewer", owns which sources count).
   If the paired CLI is absent, or a cross-engine reviewer
   can't return a verdict because of a system problem — quota or rate limits, auth, a timeout — it
-  retries once and then falls back to a fresh native worker, so the campaign runs with or without the other
+  retries once and then falls back to a fresh native worker. The existing Codex retry uses
+  repository-maintenance framing with the same complete review contract and process command; it never
+  resumes the failed session or requires a model switch. Campaign therefore runs with or without the other
   engine. The fallback uses the disclosed native isolation contract. A reviewer that never
   gets going at all — hung on input, a bad path, a sandbox
   denial — is caught the same way: every review pass has to write *something* to its progress file

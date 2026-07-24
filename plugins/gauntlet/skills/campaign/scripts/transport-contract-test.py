@@ -54,6 +54,7 @@ def check_document_contract() -> None:
     root_cause = read("root-cause-pass.md")
     files_ledger = read("files-and-ledger.md")
     loop_control = read("loop-control.md")
+    final_report = read("bailout-and-final-report.md")
     copilot = (COPILOT / "SKILL.md").read_text(encoding="utf-8")
 
     # The canonical prs.json producer is now one executable owner. Only files-and-ledger.md spells the
@@ -126,18 +127,25 @@ def check_document_contract() -> None:
         "selected cross-engine route, paired CLI available | `launch-external`",
         "Missing native OS/startup controls alone never select",
         "### Review preparation mapping",
-        "| `launch-external` / `retry-external` | selected capability's external route | "
-        "`external-process-capture` |",
-        "| `launch-native` / `fallback-native` | `native` | `native-worker-write` |",
+        "| `launch-external` | selected capability's external route | "
+        "`external-process-capture` | `standard` |",
+        "| `retry-external` + `external-codex` | `external-codex` | "
+        "`external-process-capture` | `codex-recovery` |",
+        "| `retry-external` + `external-claude` | `external-claude` | "
+        "`external-process-capture` | `standard` |",
+        "| `launch-native` / `fallback-native` | `native` | `native-worker-write` | `standard` |",
         "attempt `2` fails → prepare fresh native fallback attempt `3`",
         "dead or unusable attempt `3` → `park-machine-blocker`",
+        'prompt_profile: "standard" | "codex-recovery"',
     ):
         require(needle in runtime, f"runtime adapter lost typed owner: {needle}")
 
     for needle in (
         '["python3", review_dispatch_script, "prepare"',
+        '"--prompt-profile", prompt_profile',
         "prepared = JSON_DECODE(result.stdout)",
         "scripts/review-prompt.txt",
+        "one review contract/template",
         "using the returned `transport` without reconstructing",
         "Every transport text value must encode as UTF-8",
         "Recover any inert residue of a preparation that never launched a reviewer",
@@ -157,8 +165,24 @@ def check_document_contract() -> None:
 
     require("producer rule applies to initial launch, relaunch, and native fallback" in reviewer,
             "native report producer no longer covers every attempt state")
+    reviewer_flat = " ".join(reviewer.split())
+    require("does not inspect provider error text" in reviewer_flat and
+            "never resumes the failed external session" in reviewer_flat and
+            "does not require a model switch" in reviewer_flat,
+            "reviewer retry recovered provider matching, session resume, or model switching")
+    stage_flat = " ".join(stage.split())
+    require('"--file", ledger_file' in stage_flat and
+            '"--prompt-profile", prompt_profile' in stage_flat,
+            "Stage 2 canonical prepare argv lost ledger or prompt-profile data")
+    require("used the `codex-recovery` prompt profile" in final_report,
+            "final report no longer discloses external Codex recovery-profile use")
     require('"-C", transport.review_root, "-o", transport.report.path, "-"' in cross,
             "external Codex argv contract drifted")
+    codex_argv = cross.split("## Claude Code orchestrator → Codex reviewer", 1)[1].split(
+        "```text", 1
+    )[1].split("```", 1)[0]
+    require(not any(option in codex_argv for option in ('"resume"', '"--model"', '"-m"')),
+            "external Codex retry argv resumed a session or selected an untrusted alternate model")
     require('"--add-dir", transport.worktree' in cross and
             "stdout_file: transport.report.path" in cross,
             "external Claude argv/capture contract drifted")
@@ -270,6 +294,7 @@ def run_hostile_fixtures() -> None:
             pr="58",
             review_pass="5",
             launch_attempt="2",
+            prompt_profile="standard",
             producer="native-worker-write",
             paths=paths,
         )
@@ -281,6 +306,19 @@ def run_hostile_fixtures() -> None:
         intent = b"literal <TRANSPORT-RECORD> and <INTENT> must not be rebound"
         bound = DISPATCH.bind_prompt(template, record, intent)
         require(bound.endswith(intent + b" after"), "prompt binding rescanned inserted intent bytes")
+        recovery_record = dict(record, prompt_profile="codex-recovery")
+        recovery_bound = DISPATCH.bind_prompt(template, recovery_record, intent)
+        before_record, tail = template.split(DISPATCH.TRANSPORT_SLOT, 1)
+        between, after_intent = tail.split(DISPATCH.INTENT_SLOT, 1)
+        recovery_body = (
+            before_record
+            + json.dumps(recovery_record, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            + between
+            + intent
+            + after_intent
+        )
+        require(recovery_bound == DISPATCH.CODEX_RECOVERY_PREAMBLE + recovery_body,
+                "Codex recovery changed the shared template instead of adding its owned framing")
         require(paths["prompt"].name == "review-58-5.a2.prompt.txt" and
                 paths["progress"].name == "review-58-5.a2.progress.jsonl" and
                 paths["findings"].name == "review-58-5.a2.findings.jsonl" and
