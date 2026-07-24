@@ -236,19 +236,16 @@ def _absolute_timer(text: str, now: datetime) -> tuple[int, datetime] | None:
         if ampm == "am" and hour == 12:
             hour = 0
         target = datetime(year, month, int(match.group("day")), hour, minute, tzinfo=zone)
+        target_utc = target.astimezone(timezone.utc)
+        local_now_utc = local_now.astimezone(timezone.utc)
+        if target_utc < local_now_utc:
+            if match.group("year"):
+                return None
+            target = target.replace(year=target.year + 1)
+            target_utc = target.astimezone(timezone.utc)
+        return max(0, _ceil_seconds(target_utc - local_now_utc)), target
     except (KeyError, OverflowError, ValueError, TypeError, ZoneInfoNotFoundError):
         return None
-    target_utc = target.astimezone(timezone.utc)
-    local_now_utc = local_now.astimezone(timezone.utc)
-    if target_utc < local_now_utc:
-        if match.group("year"):
-            return None
-        try:
-            target = target.replace(year=target.year + 1)
-        except ValueError:
-            return None
-        target_utc = target.astimezone(timezone.utc)
-    return max(0, _ceil_seconds(target_utc - local_now_utc)), target
 
 
 def _timer(text: str, now: datetime) -> tuple[int, datetime] | None | object:
@@ -267,6 +264,12 @@ def _timer(text: str, now: datetime) -> tuple[int, datetime] | None | object:
     if TIMER_PHRASE_RE.search(text) is not None:
         return _MALFORMED_TIMER
     return None
+
+
+def _contains_transient_marker(text: str, marker: str) -> bool:
+    if marker.isdigit():
+        return re.search(rf"(?<![\w.]){re.escape(marker)}(?![\w.])", text) is not None
+    return marker in text
 
 
 def timer_seconds(message: str, now: datetime) -> int | None:
@@ -333,7 +336,7 @@ def classify(message: str, now: datetime | None = None) -> ExternalReviewFailure
         delay, retry_at = timer
         return ExternalReviewFailure(TIMER, delay, retry_at, "provider supplied a retry timer")
     for marker in TRANSIENT_MARKERS:
-        if marker in lowered:
+        if _contains_transient_marker(lowered, marker):
             return ExternalReviewFailure(TRANSIENT, None, None, f"transient marker: {marker}")
     return _permanent("no safe retry class or timer was identified")
 

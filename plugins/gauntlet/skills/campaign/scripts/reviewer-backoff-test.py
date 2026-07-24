@@ -100,10 +100,34 @@ def test_unknown_timer_zone_fails_closed() -> None:
           "unknown timer zone selected an immediate retry")
 
 
+def test_unrepresentable_absolute_timer_disables_external_route() -> None:
+    now = datetime(9999, 12, 30, 0, 0, tzinfo=timezone.utc)
+    result = MODULE.decide("rate limit; resets Dec 31, 11pm (Pacific/Pago_Pago)", now=now)
+    check(result.kind == MODULE.PERMANENT,
+          "unrepresentable absolute deadline was not permanent")
+    check(result.action == MODULE.FALLBACK_NATIVE,
+          "unrepresentable absolute deadline did not fall back")
+    check(result.state.external_disabled,
+          "unrepresentable absolute deadline did not disable the session route")
+
+
 def test_fractional_timer_fails_closed() -> None:
     result = MODULE.classify("rate limit; retry after 1.5 seconds")
     check(result.kind == MODULE.PERMANENT,
           "fractional timer was rounded into a retry delay")
+
+
+def test_numeric_transient_marker_requires_complete_token() -> None:
+    result = MODULE.decide(
+        "opaque provider error 1429",
+        now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
+    )
+    check(result.kind == MODULE.PERMANENT,
+          "numeric substring was classified as transient")
+    check(result.action == MODULE.FALLBACK_NATIVE,
+          "numeric substring selected an external retry")
+    check(result.state.external_disabled,
+          "numeric substring did not disable the session route")
 
 
 def test_permanent_disables_external_route_for_session() -> None:
@@ -185,7 +209,9 @@ CASES = [
     ("oversized-relative-timer", "oversized timer fails closed", test_oversized_relative_timer_fails_closed),
     ("malformed-timer", "malformed timer fails closed", test_malformed_timer_text_fails_closed),
     ("unknown-timer-zone", "unknown timer zone fails closed", test_unknown_timer_zone_fails_closed),
+    ("unrepresentable-absolute-timer", "unrepresentable absolute timer disables the session route", test_unrepresentable_absolute_timer_disables_external_route),
     ("fractional-timer", "fractional timer fails closed", test_fractional_timer_fails_closed),
+    ("numeric-marker-token", "numeric transient markers require complete tokens", test_numeric_transient_marker_requires_complete_token),
     ("permanent-session-disable", "permanent failure disables only this session", test_permanent_disables_external_route_for_session),
     ("unknown-permanent", "unknown failure fails closed", test_unknown_fails_closed_as_permanent),
     ("unknown-typed-permanent", "unknown typed failure fails closed", test_unrecognized_typed_failure_fails_closed),
