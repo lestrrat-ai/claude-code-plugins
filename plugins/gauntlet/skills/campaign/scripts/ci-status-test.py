@@ -1080,6 +1080,14 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
         "required-set": "Run scripts/ci-status.py required-set --ledger <rundir>/other.jsonl. Next, run "
                         "echo ledger/state.jsonl.",
     }
+    afterwards_later_commands = {
+        "derive": "Run scripts/ci-status.py derive --pr 1. Afterwards, run echo --ledger "
+                  "<rundir>/state.jsonl.",
+        "liveness": "Run scripts/ci-status.py liveness --ledger <rundir>/state.jsonl --pr 1. Afterwards, "
+                    "run echo --machine-action none.",
+        "required-set": "Run scripts/ci-status.py required-set --ledger <rundir>/other.jsonl. Afterwards, "
+                        "run echo ledger/state.jsonl.",
+    }
     for subcommand, (check, valid, invalid, detached, later_command, problem_needle) in fixtures.items():
         root = tmp / f"doc-copy-{subcommand}"
         root.mkdir()
@@ -1119,6 +1127,9 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
         )
         (root / "next-introduced-command.md").write_text(
             next_later_commands[subcommand] + "\n", encoding="utf-8"
+        )
+        (root / "afterwards-introduced-command.md").write_text(
+            afterwards_later_commands[subcommand] + "\n", encoding="utf-8"
         )
         boundary_fixtures = {
             "atx-heading.md": (f"{invalid}\n# {detached}\n", 1),
@@ -1190,7 +1201,7 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
         for name, (text, _problem_line) in boundary_fixtures.items():
             (root / name).write_text(text, encoding="utf-8")
         found_problems, copies = check(root)
-        expected_copies = 50 if subcommand == "required-set" else 51
+        expected_copies = 51 if subcommand == "required-set" else 52
         if len(copies) != expected_copies:
             problems.append(f"[doc-copy {subcommand}] found {len(copies)} wrapped copies, expected "
                             f"{expected_copies}: {copies!r}")
@@ -1200,13 +1211,14 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
                                   "later-command.md:1",
                                   "inline-introduced-command.md:1",
                                   "next-introduced-command.md:1",
+                                  "afterwards-introduced-command.md:1",
                                   *(f"{name}:{problem_line}" for name, (_text, problem_line)
                                     in boundary_fixtures.items()
                                     if problem_line is not None
                                     and not (subcommand == "required-set"
                                              and name == "bare-later-shell-command.md"))}
         problem_sites = {problem.split(" ", 1)[0] for problem in found_problems}
-        expected_problems = 38 if subcommand == "required-set" else 39
+        expected_problems = 39 if subcommand == "required-set" else 40
         if (len(found_problems) != expected_problems or problem_sites != expected_problem_sites
                 or any(problem_needle not in problem for problem in found_problems)):
             problems.append(
@@ -1236,6 +1248,13 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
             problems.append(
                 f"[doc-copy {subcommand}] the Next-introduced command leaked its required input into "
                 f"the prior ci-status invocation: {next_commands!r}"
+            )
+        afterwards_commands = [command for path, _line, command in ci.find_ci_status_copies(root, subcommand)
+                               if path.name == "afterwards-introduced-command.md"]
+        if len(afterwards_commands) != 1 or inline_later_input in afterwards_commands[0]:
+            problems.append(
+                f"[doc-copy {subcommand}] the Afterwards-introduced command leaked its required input into "
+                f"the prior ci-status invocation: {afterwards_commands!r}"
             )
     return problems
 

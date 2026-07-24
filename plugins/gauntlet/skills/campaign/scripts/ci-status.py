@@ -2334,12 +2334,13 @@ def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, 
     needle = re.compile(rf"ci-status\.py{separator}{re.escape(subcommand)}\b")
     # A later known interpreter or script starts a new span directly. An explicitly introduced later
     # command does too, even when it is not a known interpreter or script. Its flags describe that command,
-    # never the ci-status.py invocation before it. `Next, run` is a sentence-level introduction, so it
-    # must be recognized even though its command starts after prose rather than a Markdown block boundary.
+    # never the ci-status.py invocation before it. `Next, run` and `Afterwards, run` are sentence-level
+    # introductions, so they must be recognized even though their commands start after prose rather than a
+    # Markdown block boundary.
     command_start = re.compile(
         rf"(?:"
         rf"(?<![\w./-])(?:(?:[\w.-]+/)*[\w.-]+\.py|python(?:3)?|bash|sh|gh|git){separator}\S+\b"
-        rf"|\b(?:and[ \t]+then|then|followed[ \t]+by|[Nn]ext,?[ \t]+run)[ \t]+[`]*[A-Za-z_][\w./-]*{separator}\S+\b"
+        rf"|\b(?:and[ \t]+then|then|followed[ \t]+by|(?:[Nn]ext|[Aa]fterwards?),?[ \t]+run)[ \t]+[`]*[A-Za-z_][\w./-]*{separator}\S+\b"
         rf")"
     )
     # A bare, later shell-command line needs no prose introduction. Limit this to a command word followed
