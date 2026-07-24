@@ -133,10 +133,10 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
 10. Mutating action due on a PR -> `ledger.py … dispatch-check --pr <N>`: run before ANY action that
     mutates a PR — it exits non-zero for a HELD one.
 11. **Due-work dispatch.** Follow `references/stage-2-review-gate.md`, "2a-triage", for each non-held
-    PR's complete heartbeat triage procedure, then launch ALL due work up to caps — reviews, CI fixes,
-    precondition clearing, base refresh — with mutating actions skipping HELD PRs, and stop in-flight
-    reviews doomed by a content change. CI watches follow item 21's returned `watch_warranted` action,
-    including for HELD PRs.
+    PR's complete heartbeat triage procedure. Then launch ALL due mutating work up to caps — reviews,
+    CI fixes, precondition clearing, base refresh — with mutating actions skipping HELD PRs, and stop
+    in-flight reviews doomed by a content change. CI watches follow item 21's returned `watch_warranted`
+    action, including for HELD PRs.
 12. Before sleeping, audit: re-run the dispatch scan across both concurrency pools and confirm every
     due launch actually happened, every PR at a liveness cap was escalated rather than left spinning,
     and the loop continues per `references/loop-control.md`, "Primary continuity", whenever non-terminal
