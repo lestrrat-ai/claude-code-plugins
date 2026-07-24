@@ -34,7 +34,11 @@ Campaign's exact cross-agent command lines live in
 - Evaluate cross-engine reviewers through the runtime adapter's `ReviewIsolationCapability` transition.
   A cross-engine route launches at native-limitation level whenever the paired CLI is present; the three
   `os_filesystem_isolation` properties are an optional stronger-boundary claim that never blocks launch.
-  When the paired CLI is absent, or the process fails after its retry, fall back to a fresh native worker.
+  When the paired CLI is absent, use a fresh native worker. When the process fails, classify the captured
+  error through the campaign runtime adapter: transient failures may use the one retry, timer failures
+  wait for the exact provider deadline, and permanent or unrecognized failures disable that external
+  route for the current session before falling back to a fresh native worker. Session backoff is never
+  durable.
   The existing external Codex retry uses the typed `codex-recovery` prompt profile from **Review
   preparation mapping**; every other launch uses `standard`. Profiles never add attempts, resume a failed
   session, weaken the shared review contract, or require a model switch.
