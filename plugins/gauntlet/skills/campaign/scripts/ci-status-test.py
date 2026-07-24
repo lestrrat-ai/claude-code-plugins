@@ -1036,6 +1036,8 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
             "Run `scripts/ci-status.py\n  derive --pr 1 --ledger <rundir>/state.jsonl`.",
             "Run `scripts/ci-status.py\n  derive --pr 1`.",
             "`--ledger <rundir>/state.jsonl` is discussed separately.",
+            "Run scripts/ci-status.py derive --pr 1, then scripts/ledger.py set "
+            "--ledger ledger/state.jsonl.",
             "WITHOUT `--ledger` OR `--required-set`",
         ),
         "liveness": (
@@ -1044,6 +1046,8 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
             "--machine-action none`.",
             "Run `scripts/ci-status.py\n  liveness --ledger <rundir>/state.jsonl --pr 1`.",
             "`--machine-action none` is discussed separately.",
+            "Run scripts/ci-status.py liveness --ledger ledger/state.jsonl --pr 1, then "
+            "scripts/ledger.py set --machine-action none.",
             "WITHOUT `--machine-action`",
         ),
         "required-set": (
@@ -1051,10 +1055,12 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
             "Run `scripts/ci-status.py\n  required-set --ledger <rundir>/state.jsonl`.",
             "Run `scripts/ci-status.py\n  required-set --ledger <rundir>/other.jsonl`.",
             "`state.jsonl` is discussed separately.",
+            "Run scripts/ci-status.py required-set --ledger ledger/other.jsonl, then "
+            "scripts/ledger.py set --ledger ledger/state.jsonl.",
             "without the run ledger's",
         ),
     }
-    for subcommand, (check, valid, invalid, detached, problem_needle) in fixtures.items():
+    for subcommand, (check, valid, invalid, detached, later_command, problem_needle) in fixtures.items():
         root = tmp / f"doc-copy-{subcommand}"
         root.mkdir()
         shell_valid = valid.replace("ci-status.py\n", "ci-status.py \\\n")
@@ -1087,6 +1093,7 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
             f"{inline_invalid} Then run {inline_valid}; run {inline_valid}\n",
             encoding="utf-8",
         )
+        (root / "later-command.md").write_text(later_command + "\n", encoding="utf-8")
         boundary_fixtures = {
             "atx-heading.md": (f"{invalid}\n# {detached}\n", 1),
             "unordered-list.md": (f"{invalid}\n- {detached}\n", 1),
@@ -1153,15 +1160,16 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
         for name, (text, _problem_line) in boundary_fixtures.items():
             (root / name).write_text(text, encoding="utf-8")
         found_problems, copies = check(root)
-        if len(copies) != 46:
-            problems.append(f"[doc-copy {subcommand}] found {len(copies)} wrapped copies, expected 46: {copies!r}")
+        if len(copies) != 47:
+            problems.append(f"[doc-copy {subcommand}] found {len(copies)} wrapped copies, expected 47: {copies!r}")
         expected_problem_sites = {"wrapped.md:4", "wrapped.md:10", "wrapped.md:18", "wrapped.md:26",
                                   "quote-transition.md:1",
                                   "same-paragraph.md:1",
+                                  "later-command.md:1",
                                   *(f"{name}:{problem_line}" for name, (_text, problem_line)
                                     in boundary_fixtures.items() if problem_line is not None)}
         problem_sites = {problem.split(" ", 1)[0] for problem in found_problems}
-        if (len(found_problems) != 34 or problem_sites != expected_problem_sites
+        if (len(found_problems) != 35 or problem_sites != expected_problem_sites
                 or any(problem_needle not in problem for problem in found_problems)):
             problems.append(
                 f"[doc-copy {subcommand}] invalid plain, blockquoted, and block-boundary copies were not "

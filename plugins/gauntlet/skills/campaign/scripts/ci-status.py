@@ -2332,9 +2332,13 @@ def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, 
     quote_prefix = r"(?:[ \t]*>[ \t]*)+"
     separator = rf"(?:\s+|[ \t]*\\\r?\n(?:{quote_prefix})?[ \t]*|\r?\n{quote_prefix})"
     needle = re.compile(rf"ci-status\.py{separator}{re.escape(subcommand)}\b")
-    command_start = re.compile(rf"ci-status\.py{separator}\S+\b")
+    # A later runnable command starts a new span even when it is not ci-status.py. Its flags describe
+    # that command, never the ci-status.py invocation before it.
+    command_start = re.compile(
+        rf"(?<![\w./-])(?:(?:[\w.-]+/)*[\w.-]+\.py|python(?:3)?|bash|sh|gh|git){separator}\S+\b"
+    )
     # Markdown backticks delimit a span, not a shell command. An invocation may be followed in the same
-    # paragraph by inline code that supplies its required flag, so only shell separators end the command.
+    # paragraph by inline code that supplies its required flag, so a backtick is never a command boundary.
     command_delimiter = re.compile(r"&&|\|\||;|\|")
     copies: list[tuple[Path, int, str]] = []
     for md in sorted(root.rglob("*.md")):
@@ -2585,9 +2589,8 @@ def check_liveness_copies(root: Path | None = None) -> tuple[list[str], list[str
     """
     problems, copies = [], []
     for md, line, command in find_ci_status_copies(root or HERE.parent, "liveness"):
-        # `--ledger`, not `--pr`, is the runnable-copy gate here: prose about liveness routinely sits
-        # in the same paragraph as a `ledger.py … set --pr` command, and `--pr` alone would condemn
-        # every such mention as a flagless invocation.
+        # `--ledger`, not `--pr`, is the runnable-copy gate: prose can name a PR without spelling the
+        # ledger input that makes liveness runnable.
         if "--ledger" not in command:
             continue  # prose that names the subcommand, not a runnable copy
         copies.append(f"{md.name}:{line}")
