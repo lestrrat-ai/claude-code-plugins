@@ -842,8 +842,9 @@ the counters mean and why the reader is fused into the door that cannot be skipp
 
 **At a review-loop cap, `verdict` sets `status = repairing` and EXITS NON-ZERO.** The PR has stopped
 converging: **do NOT dispatch a fix subagent and do NOT launch another review pass for it.** Run
-`repair-pass.md`, **"Build the complete reassessment bundle"**, and execute the bundle-bound decision the
-reassessment worker returns. Ordinary work on that PR is refused by
+`repair-pass.md`, **"Build the complete reassessment bundle"**. If it explicitly reports unreconcilable
+history and directs a park, follow **"Unreconcilable capped history"** there; otherwise execute the
+bundle-bound decision the reassessment worker returns. Ordinary work on that PR is refused by
 `ledger.py … dispatch-check --pr <N>` until the repair lands, so this is not a rule you have to remember.
 
 **A `SATISFIED` NEVER trips a cap.** The gate is moving, and a PR one corroborating pass from merging must

@@ -648,6 +648,16 @@ def t_bundle_refuses_unreconcilable_pass_histories(tmp: Path) -> None:
     check(code == 1 and "disagree about" in err, f"a landed surplus pass was not refused: {err!r}")
     check("park the PR for the user" in err,
           f"the landed-surplus refusal names no recovery action: {err!r}")
+    # The bundle's named recovery must reach the sanctioned atomic transition. This is the integration
+    # seam: bundle sees unreconcilable capped history, and ledger.py moves its still-undecided repairing row
+    # to the durable machine-blocker park without hand-editing any campaign state.
+    reason = "review history cannot be reconciled from the capped artifacts"
+    code, out, err = ledger_cli(["--file", str(surplus["ledger"]), "park", "--pr", "1", "--reason", reason])
+    check(code == 0, f"the bundle-directed repair-history park was refused: {err!r}")
+    parked = json.loads(out)
+    check((parked["status"], parked["ci_reason"], parked["blocker_ruling"], parked["repair_decision"])
+          == ("awaiting-user", reason, "-", "-"),
+          f"the bundle-directed machine-blocker park was incomplete: {parked!r}")
 
     # A hole in the artifact pass numbering is lost history, never a skip. Another machine blocker.
     hole = bundle_setup(tmp / "hole", rounds=4)
@@ -911,7 +921,8 @@ def t_docs_recover_legacy_demote_findings_from_the_bound_cap_artifact(tmp: Path)
         "load_historical_findings",
         "one follow-up for every row",
         "same list in the final report",
-        "Park the PR with a machine-blocker reason",
+        "Leave a legacy-DEMOTE row `repairing`",
+        "`ledger.py park` correctly refuses it",
     ):
         check(needle in legacy, f"legacy DEMOTE recovery lost required rule {needle!r}")
 

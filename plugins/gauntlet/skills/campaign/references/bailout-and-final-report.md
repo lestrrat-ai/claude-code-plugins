@@ -98,10 +98,11 @@ LOCAL state against that same PR / its head; the PR itself is left in place.
   What replaces it is a **counter with a cap**, on disk, evaluated by the tool that records the verdict:
   `ledger.py verdict` bumps `review_rounds` / `ns_streak`, and at a cap it sets `status = repairing` and
   **exits non-zero**. The driver runs `repair-pass.md`, **"Build the complete reassessment bundle"**, and
-  dispatches its exact prompt to a context-isolated reassessment worker. The driver executes the returned
-  bundle-bound decision **without asking the user**. **A cap is a MODE SWITCH, not a doorbell.** The
-  root-cause pass remains available through the closed decision set rather than through an unevaluable
-  history rule.
+  dispatches its exact prompt to a context-isolated reassessment worker. A bundle that names
+  unreconcilable capped history and directs a park follows **"Unreconcilable capped history"** there;
+  otherwise the driver executes the returned bundle-bound decision without asking the user. **A cap is a
+  MODE SWITCH, not a doorbell.** The root-cause pass remains available through the closed decision set
+  rather than through an unevaluable history rule.
 
   **ABORT is the only decision that ends the PR, and it lands on the procedure below** (leave the PR OPEN,
   drop this run's labels, write `abort-<id>.md`) — reused, not reinvented. A **second failed repair**
@@ -161,11 +162,14 @@ When the loop exits, summarize:
   unobserved. **NEVER report `unknown` as "no required checks"**: it means campaign **could not read** them
   **for that base**, nothing merged on it, and any PR that reached it **escalated** — say which base's read
   failed, so the user can fix the access rather than wonder why those PRs stalled.
-- **Repaired** — every PR that reached a review-loop cap: its `review_rounds`, the decision the
-  reassessment pass returned, and a pointer to `repair-<pr>-<k>.md` (`repair-pass.md`). For a legacy
+- **Repaired** — every PR that reached a review-loop cap and recorded a reassessment decision: its
+  `review_rounds`, the decision, and a pointer to `repair-<pr>-<k>.md` (`repair-pass.md`). For a legacy
   `demote@…` row, **report each demoted finding explicitly** — they are true findings that were deliberately
   **not fixed**, and burying that is how a report becomes a false claim of cleanliness. This is the run
   telling the user, in the one place they will read, that it stopped whacking moles and what it did instead.
+- **Blocked reassessment history** — every capped PR whose bundle entered the machine-blocker park before
+  recording a decision: the durable `ci_reason` and the `awaiting-user` action. `repair-pass.md`,
+  **Unreconcilable capped history**, owns the transition.
 - **Aborted** — PR number + slug, why, pointer to `abort-<id>.md`.
 - **Skipped (API-declined)** — any PR whose API-changing fix the user was asked about and declined,
   with the change each would have needed.
