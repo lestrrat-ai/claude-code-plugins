@@ -19,11 +19,13 @@ CLOSED enum. `references/repair-pass.md` is the definition; this is its enforcem
 `DECISION: <enum>` field, the same decision `--decision` records — so the ledger can never disagree with the
 audit artifact.
 
-**A CAP IS A MODE SWITCH, NOT A DOORBELL.** It does not stop and ask the user. The driver stops dispatching
-targeted fixes and REPAIRS THE PR ITSELF — rescopes it back to its stated purpose, re-authors the intent the
-reviewer had nothing to measure against, fixes at the chokepoint instead of playing whack-a-mole, or gives
-up and leaves the PR open for a human. Only the last of those involves the user at all, and it is the last
-resort, not the first.
+**A CAP IS A MODE SWITCH, NOT A DOORBELL.** It does not normally stop and ask the user. The driver stops
+dispatching targeted fixes and REPAIRS THE PR ITSELF — rescopes it back to its stated purpose, re-authors the
+intent the reviewer had nothing to measure against, fixes at the chokepoint instead of playing whack-a-mole,
+or gives up and leaves the PR open for a human. The narrow exception is unreconcilable capped history before
+a decision: if `bundle` directs a park, follow `references/repair-pass.md`, **Unreconcilable capped history**,
+and run its required `ledger.py park` command. Other than that machine-blocker park, only the last decision
+involves the user, and it is the last resort, not the first.
 
 Three refusals this tool exists to make, all of them things a well-meaning driver would otherwise do:
 

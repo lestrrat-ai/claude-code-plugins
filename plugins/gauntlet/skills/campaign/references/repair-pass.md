@@ -57,9 +57,9 @@ to say. Do not look for a bug in the reviewer. The bug is that nothing could **c
 
 ### A cap is a MODE SWITCH, not a doorbell
 
-**It does not stop and ask the user.** The driver stops dispatching targeted fixes and **repairs the PR
-itself, autonomously.** Asking a human is one of the four outcomes, and it is the last resort — not the
-first.
+**It does not stop and ask the user for a valid reassessment.** The driver stops dispatching targeted fixes
+and **repairs the PR itself, autonomously.** A bundle that cannot reconcile the capped history is a separate
+machine blocker; its narrow park transition is defined below.
 
 ### The reassessment pass — give the loop the memory it never had
 
@@ -108,6 +108,25 @@ an older enum fails this match. Delete both refused stale artifacts and rerun `b
 hash. Dispatch the exact prompt file to the reassessment worker; NEVER rebuild, reorder, summarize, or splice
 its inputs by hand.
 
+### Unreconcilable capped history
+
+**When `bundle` refuses capped history and explicitly tells the driver to park, record its named blocker through
+the sanctioned transition:**
+
+```text
+ledger.py --file <state.jsonl> park --pr <N> --reason "<named bundle blocker>"
+```
+
+This is the sole machine-blocker exit from `repairing`: `ledger.py park` admits it only while
+`repair_decision = -`, then atomically sets `status = awaiting-user`, records the blocker in `ci_reason`, and
+clears `blocker_ruling`. A bundled history cannot be repaired by guessing missing artifacts or editing the
+ledger. A refusal that names retry, relaunch, rebuild, or another recovery stays `repairing`; follow that
+recovery instead.
+
+**A recorded repair decision is never replaced by this park.** If `repair_decision` is present, execute that
+decision through `dispatch-check --action repair`; `ledger.py park` refuses the transition so a machine
+blocker cannot erase a decision already bound to the reassessment record.
+
 It returns **exactly ONE decision from a CLOSED enum**, and the driver executes it **without asking the
 user**:
 
@@ -152,10 +171,12 @@ Use this fail-closed procedure:
 4. Record one follow-up for every row in that recovered final-cap list, leave every row unfixed, and use the
    same list in the final report. Then return the row to `in_review`.
 
-**Park the PR with a machine-blocker reason when any binding, hash, identity, artifact, or schema check fails,
-or when the final-cap list cannot be recovered.** Never infer missing findings from generic record prose,
-another round, or the current diff. Existing review-learning entries produced by the legacy decision remain
-valid data and stay readable through `review-learnings.py`.
+**Leave a legacy-DEMOTE row `repairing` when any binding, hash, identity, artifact, or schema check fails,
+or when the final-cap list cannot be recovered.** It already has a recorded `repair_decision`, so the
+unreconcilable-history park above is unavailable and `ledger.py park` correctly refuses it. Surface the
+blocker without editing the ledger or inferring missing findings from generic record prose, another round, or
+the current diff. Existing review-learning entries produced by the legacy decision remain valid data and stay
+readable through `review-learnings.py`.
 
 The final report's **Repaired** entry names the legacy DEMOTE, links its `repair-<pr>-<k>.md`, and lists
 each true finding deliberately left unfixed (`bailout-and-final-report.md`).

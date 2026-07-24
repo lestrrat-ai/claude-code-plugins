@@ -253,9 +253,9 @@
 - **A HELD PR IS FROZEN — TAKE NO ACTION THAT MUTATES IT. ASK THE TOOL: `ledger.py … dispatch-check --pr
   <N>` exits non-zero.** A PR is **HELD** when it is **parked on a HUMAN** (`status = awaiting-user`, a
   standoff; `awaiting-api`, API approval) **or `repairing`** — it reached a review-loop cap, has stopped
-  converging, and is being reassessed and repaired (`repair-pass.md`; **that one waits on no human — do
-  NOT prompt the user**). `HELD_STATUSES` in `scripts/ledger.py` is the **one** enumeration; never retype
-  it. The test is **"does this MUTATE the
+  converging, and is normally reassessed and repaired without a human. `repair-pass.md`,
+  **Unreconcilable capped history**, owns the narrow machine-blocker exception. `HELD_STATUSES` in
+  `scripts/ledger.py` is the **one** enumeration; never retype it. The test is **"does this MUTATE the
   PR?"** — **not** "is this action named in a list", because an enumeration will miss a site (it did:
   the guard once named four dispatch sites and missed `stage-3-merge.md` step 6's post-merge rebase).
   **NEVER** launch a review pass, a CI fix, a review fix, or a merge for it; **NEVER** rebase it,
@@ -369,8 +369,9 @@
 - **A PR THAT STOPS CONVERGING IS REPAIRED, NOT PROMPTED.** At a review-loop cap `ledger.py verdict` sets
   `status = repairing` and **exits non-zero**: dispatch **no** further targeted fix and **no** further
   review pass. Run `repair-pass.md`, **"Build the complete reassessment bundle"**, dispatch its exact
-  prompt to the reassessment worker, and execute its bundle-bound decision **without asking the user**.
-  **A cap is a MODE SWITCH, not a doorbell.**
+  prompt to the reassessment worker, and execute its bundle-bound decision. A bundle that explicitly names
+  unreconcilable history and directs a park follows **"Unreconcilable capped history"** there. **A cap is a
+  MODE SWITCH, not a doorbell.**
 - **AUTONOMOUS REPAIR NEVER REWRITES A PR CAMPAIGN DOES NOT OWN.** On a PR with `pr_origin = external` —
   the user's, a teammate's, any PR adopted by number, **and the DEFAULT** — the permitted decisions are
   **only REPAIR-INTENT / ABORT**. RESCOPE and ROOT-CAUSE reshape branch content wholesale, and
@@ -438,11 +439,13 @@
   the review gate's own reset rules are owned by `stage-2-review-gate.md`, "Status labels mirror the
   review gate". Neither is restated here.
 - **A `blocker_ruling` is DURABLE *and* SPENT EXACTLY ONCE** (`stage-2-ci.md`, "THE RULING IS CONSUMED
-  EXACTLY ONCE"): set to `-` when a machine-blocker park is **ENTERED** and when a `retry` is **CONSUMED**,
-  each in the same `ledger.py … set` call as the `status` write. A ruling left on the row answers the
-  **next** park too — the blocker silently self-clears with **no fresh user answer**, which is exactly what
-  the durable record exists to prevent. `abort` is never cleared: it is terminal, and a terminal row is
-  never re-parked.
+  EXACTLY ONCE"): enter every machine-blocker park through `ledger.py … park --pr <N> --reason "<blocker>"`;
+  it atomically clears the ruling. Consume a `retry` through the matching `ledger.py … unpark` transition
+  (`files-and-ledger.md`, "`park`/`unpark` are the sanctioned writers of the machine-blocker park/unpark
+  TRANSITIONS"). Use `set` only to record the user's ruling; the separate review-standoff path also owns its
+  `set` transition (`finding-audit.md`). A ruling left on the row answers the **next** park too — the blocker
+  silently self-clears with **no fresh user answer**, which is exactly what the durable record exists to
+  prevent. `abort` is never cleared: it is terminal, and a terminal row is never re-parked.
 - **The three materializer roles — both CI tiers and review-fix — use the fix-subagent materializer.** Follow
   `fix-subagent-contract.md`; never rebuild its shared contract or role block from this lookup. The
   follow-up fixer that opens a new PR is a separate workflow it names, outside these roles.

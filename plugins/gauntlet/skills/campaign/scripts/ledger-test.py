@@ -2143,6 +2143,53 @@ def t_park_writes_all_three(L: ModuleType, tmp: Path) -> None:
     check(json.loads(got)["status"] == "awaiting-user", f"the park did not land on disk: {got!r}")
 
 
+def t_park_recovers_an_unreconcilable_repair_history(L: ModuleType, tmp: Path) -> None:
+    """An undecided `repairing` row may atomically become the machine-blocker park bundle recovery needs.
+
+    `repair-pass.py bundle` may prove that the capped history cannot be reconciled. It has no decision to
+    execute, so the only truthful next state is the same durable machine-blocker park every other impossible
+    campaign state uses. This fixture drives the real CLI and counts writes: the special entry keeps the
+    unreconciled history visible in `ci_reason`, clears a stale ruling, preserves `repair_decision = -`, and
+    is still one atomic ledger write.
+    """
+    path = write_lines(tmp / "repair-history.jsonl", header_line(L),
+                       row_line(L, status=L.REPAIR_STATUS, repair_decision="-",
+                                blocker_ruling="retry@2026-07-01T00:00:00Z",
+                                **{k: v for k, v in PARK_ROW.items() if k not in ("status",)}))
+    captured: dict = {}
+    reason = "review history cannot be reconciled from the capped artifacts"
+
+    def run() -> None:
+        captured["r"] = cli(L, ["--file", str(path), "park", "--pr", "1", "--reason", reason])
+
+    dumps = count_dumps(L, run)
+    code, out, err = captured["r"]
+    check(code == 0, f"unreconcilable repair history was not parkable: {err!r}")
+    check(dumps == 1, f"repair-history park wrote the store {dumps} times, not once")
+    row = json.loads(out)
+    check((row["status"], row["ci_reason"], row["blocker_ruling"], row["repair_decision"])
+          == ("awaiting-user", reason, "-", "-"),
+          f"repair-history park did not make the required atomic transition: {row!r}")
+    code, got, err = cli(L, ["--file", str(path), "get", "--pr", "1"])
+    check(code == 0, f"repair-history park did not persist: {err!r}")
+    saved = json.loads(got)
+    check((saved["status"], saved["ci_reason"], saved["blocker_ruling"], saved["repair_decision"])
+          == ("awaiting-user", reason, "-", "-"),
+          f"repair-history park is not durable: {saved!r}")
+
+    # This park has no repair that can land. Ordinary work remains refused while it awaits the user.
+    code, _, err = cli(L, ["--file", str(path), "dispatch-check", "--pr", "1"])
+    check(code == L.EXIT_STOP,
+          f"ordinary work ran while unreconcilable repair history awaited the user: exit {code}, {err!r}")
+    code, _, err = cli(L, ["--file", str(path), "set", "--pr", "1", "--blocker-ruling",
+                           "retry@2026-07-14T00:00:00Z"])
+    check(code == 0, f"the user could not record the retry ruling: {err!r}")
+    code, _, err = cli(L, ["--file", str(path), "unpark", "--pr", "1"])
+    check(code == 0, f"the user's retry ruling did not resolve the repair-history park: {err!r}")
+    code, _, err = cli(L, ["--file", str(path), "dispatch-check", "--pr", "1"])
+    check(code == 0, f"ordinary work remained frozen after the user resolved the repair-history park: {err!r}")
+
+
 def t_park_refusals(L: ModuleType, tmp: Path) -> None:
     """Every park refusal writes NOTHING, and the double-park STOPS with the OPEN question surfaced."""
     # no row
@@ -2164,12 +2211,28 @@ def t_park_refusals(L: ModuleType, tmp: Path) -> None:
         check(code == 1 and "name its blocker" in err, f"[{reason!r}] park with no blocker: exit {code}, {err!r}")
         check("awaiting-user" not in path.read_text(), f"[{reason!r}] a refused park still wrote the store")
 
-    # conflicting-owner held states — each names the conflicting status, exit 1, nothing written
-    for status in ("awaiting-api", L.REPAIR_STATUS):
+    # conflicting-owner held state — it names the conflicting status, exits 1, and writes nothing
+    for status in ("awaiting-api",):
         path = write_lines(tmp / f"o-{status}.jsonl", header_line(L), row_line(L, pr="1", status=status))
         code, _, err = cli(L, ["--file", str(path), "park", "--pr", "1", "--reason", "x"])
         check(code == 1 and status in err, f"[{status}] park did not name the conflicting owner: exit {code}, {err!r}")
         check("awaiting-user" not in path.read_text(), f"[{status}] a refused park still wrote the store")
+
+    # A recorded reassessment decision owns a repairing row. The narrow history-recovery park exists only
+    # before a decision, so it cannot discard a decision and replace it with a different question for the user.
+    decision = "root-cause@2026-07-14T00:00:00Z"
+    path = write_lines(tmp / "repair-decided.jsonl", header_line(L),
+                       row_line(L, pr="1", status=L.REPAIR_STATUS, repair_count="1",
+                                repair_decision=decision))
+    code, _, err = cli(L, ["--file", str(path), "park", "--pr", "1", "--reason", "x"])
+    check(code == 1 and decision in err and "recorded reassessment decision" in err,
+          f"a decided repairing row was parkable: exit {code}, {err!r}")
+    code, got, err = cli(L, ["--file", str(path), "get", "--pr", "1"])
+    check(code == 0, f"could not read decided repairing row after refusal: {err!r}")
+    row = json.loads(got)
+    check((row["status"], row["repair_decision"], row["ci_reason"], row["blocker_ruling"])
+          == (L.REPAIR_STATUS, decision, "-", "-"),
+          f"a refused decided repair-history park changed the row: {row!r}")
 
     # DOUBLE PARK — a park is already open. STOP (EXIT_STOP), surface the OPEN ci_reason, overwrite NOTHING.
     open_q = "SETTLED at the STRIKE CAP — nobody is coming"
@@ -2282,6 +2345,32 @@ def t_set_status_transitions_stay_open(L: ModuleType, tmp: Path) -> None:
     code, out, err = cli(L, ["--file", str(path), "set", "--pr", "1", "--blocker-ruling", "retry@2026-07-14T00:00:00Z"])
     check(code == 0 and json.loads(out)["blocker_ruling"] == "retry@2026-07-14T00:00:00Z",
           f"`set --blocker-ruling` was refused — the user's answer cannot be recorded: exit {code}, {err!r}")
+
+
+def t_set_cannot_park_a_decided_repair(L: ModuleType, tmp: Path) -> None:
+    """`set` cannot move a decided `repairing` row to `awaiting-user` and strand its repair dispatch.
+
+    The review-standoff route must retain its `set` transition, but a reassessment decision owns a
+    `repairing` row's next action. Drive the documented bypass through the real CLI, then prove the row
+    remains dispatchable for exactly that recorded repair.
+    """
+    decision = "root-cause@2026-07-14T00:00:00Z"
+    path = capped_row(L, tmp, "set-decided-repair.jsonl", status=L.REPAIR_STATUS,
+                      repair_decision=decision)
+    code, _, err = cli(L, ["--file", str(path), "set", "--pr", "1", "--status", "awaiting-user",
+                         "--ci-reason", "manual park", "--blocker-ruling", "-"])
+    check(code == 1 and decision in err and "dispatch-check --action repair" in err,
+          f"a decided repair was parkable through `set`: exit {code}, {err!r}")
+
+    code, out, err = cli(L, ["--file", str(path), "dispatch-check", "--pr", "1", "--action", "repair"])
+    check(code == 0 and decision in out,
+          f"a rejected set transition stranded the decided repair: exit {code}, {err!r}, {out!r}")
+    code, out, err = cli(L, ["--file", str(path), "get", "--pr", "1"])
+    check(code == 0, f"could not read decided repair after set refusal: {err!r}")
+    row = json.loads(out)
+    check((row["status"], row["repair_decision"], row["ci_reason"], row["blocker_ruling"])
+          == (L.REPAIR_STATUS, decision, "-", "-"),
+          f"a refused set transition changed the decided repair: {row!r}")
 
 
 # --- last_activity: the run's durable "when did anything last move?" sensor -----
@@ -2795,10 +2884,12 @@ CASES = [
     ("repair-decision-cleared", "re-entering a cap CLEARS the stale reassessment decision — the repair budget binds", t_stale_repair_decision_cleared_at_cap),
     ("pr-origin-default", "an unknown origin is `external` — the fail-safe direction", t_pr_origin_defaults_to_external),
     ("park-writes-three", "`park` writes status/ci_reason/blocker_ruling atomically, counters untouched", t_park_writes_all_three),
-    ("park-refusals", "park refuses no-row/terminal/blank-reason/held-owner, and a double-park STOPs", t_park_refusals),
+    ("park-repair-history", "an undecided repairing row parks unreconcilable history atomically", t_park_recovers_an_unreconcilable_repair_history),
+    ("park-refusals", "park refuses no-row/terminal/blank-reason/held-owner/recorded-repair, and a double-park STOPs", t_park_refusals),
     ("unpark-spends-resets", "`unpark` flips status, spends the ruling, resets all four counters — one write", t_unpark_spends_and_resets),
     ("unpark-refusals", "unpark refuses not-parked/unanswered/abort/malformed — writing nothing", t_unpark_refusals),
     ("set-status-stays-open", "set may still write the standoff park/unpark transitions — park/unpark can't serve them", t_set_status_transitions_stay_open),
+    ("set-decided-repair-guard", "set cannot park a decided repair and strand its dispatch", t_set_cannot_park_a_decided_repair),
     ("replay-the-record", "the REAL #42/#43 verdict sequences: it fires, never too early, and says what it costs", t_replay_the_real_record),
     ("activity-stamped-on-change", "a value-changing set stamps last_activity; a no-op set does not", t_activity_stamped_on_a_real_change),
     ("verdict-stamps-activity", "a landed verdict stamps last_activity — it always moves review_rounds", t_verdict_stamps_activity),

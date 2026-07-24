@@ -638,7 +638,7 @@ exactly two kinds of site, and the two RESET THEMSELVES DIFFERENTLY:
    **outside** the PR (they re-ran the workflow, killed the hung runner, registered the missing check), so
    the strikes and the stall clock that measured the old attempt are void. **This reset stays EXPLICIT** —
    there is NO `head_sha` change for the door to fire on, so the unpark writes the counters back to their
-   defaults itself, in the same `ledger.py … set` call that spends the ruling.
+   defaults itself, in the same `ledger.py … unpark --pr <N>` call that spends the ruling.
 
 **`liveness`'s stale-derivation refusal ("THE BOOKKEEPING IS A COMMAND", above) is NOT a substitute for
 the head write doing it — it is the seam that makes that reset SAFE.** The sites above **write the new

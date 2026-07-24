@@ -648,6 +648,16 @@ def t_bundle_refuses_unreconcilable_pass_histories(tmp: Path) -> None:
     check(code == 1 and "disagree about" in err, f"a landed surplus pass was not refused: {err!r}")
     check("park the PR for the user" in err,
           f"the landed-surplus refusal names no recovery action: {err!r}")
+    # The bundle's named recovery must reach the sanctioned atomic transition. This is the integration
+    # seam: bundle sees unreconcilable capped history, and ledger.py moves its still-undecided repairing row
+    # to the durable machine-blocker park without hand-editing any campaign state.
+    reason = "review history cannot be reconciled from the capped artifacts"
+    code, out, err = ledger_cli(["--file", str(surplus["ledger"]), "park", "--pr", "1", "--reason", reason])
+    check(code == 0, f"the bundle-directed repair-history park was refused: {err!r}")
+    parked = json.loads(out)
+    check((parked["status"], parked["ci_reason"], parked["blocker_ruling"], parked["repair_decision"])
+          == ("awaiting-user", reason, "-", "-"),
+          f"the bundle-directed machine-blocker park was incomplete: {parked!r}")
 
     # A hole in the artifact pass numbering is lost history, never a skip. Another machine blocker.
     hole = bundle_setup(tmp / "hole", rounds=4)
@@ -755,6 +765,35 @@ def t_bundle_refuses_unreconcilable_pass_histories(tmp: Path) -> None:
     check(code == 1 and "cannot arbitrate" in err, f"a torn surplus report was not refused: {err!r}")
     check("relaunch pass 2" in err,
           f"the unparseable-surplus refusal names no recovery action: {err!r}")
+
+
+def t_unreconcilable_history_park_is_documented_at_each_boundary(tmp: Path) -> None:
+    """The stage-two, cap, held-status, and bailout guidance name the machine-blocker park.
+
+    The functional seam is covered by `t_bundle_refuses_unreconcilable_pass_histories`; this pins the four
+    summaries that a driver reads before it reaches that seam. They must preserve the owner and the fact that
+    an undecided repairing row can become `awaiting-user` instead of claiming repair always self-clears.
+    """
+    del tmp
+    owner = OWNER.read_text(encoding="utf-8")
+    ledger = (OWNER.parent / "ledger.py").read_text(encoding="utf-8")
+    bailout = (OWNER.parent.parent / "references" / "bailout-and-final-report.md").read_text(encoding="utf-8")
+    stage_two = (OWNER.parent.parent / "references" / "stage-2-review-gate.md").read_text(encoding="utf-8")
+    owner_pointer = '`repair-pass.md`, **Unreconcilable capped history**'
+
+    check("unreconcilable capped history before\na decision" in owner
+          and "required `ledger.py park` command" in owner,
+          "repair-pass.py's cap guide lost the bundle-directed machine-blocker park")
+    check(ledger.count('"Unreconcilable capped history"') == 2
+          and "enter the `awaiting-user` machine-blocker park" in ledger,
+          "ledger.py's REPAIR_STATUS and HELD_STATUSES comments lost the undecided-history exception")
+    check(owner_pointer in bailout and "third exit is an unreconcilable-history machine-blocker park" in bailout
+          and "`awaiting-user`\n    transition" in bailout,
+          "bailout guidance lost repairing's third exit to the owner-defined park")
+    check("`ledger.py … dispatch-check --pr <N>` refuses ordinary\nwork while the row is held" in stage_two
+          and "recorded decision keeps it held until its repair lands" in stage_two
+          and "unreconcilable-history park keeps it held for a user resolution" in stage_two,
+          "stage-two cap guidance lost the user-resolved unreconcilable-history exit")
 
 
 def t_bundle_is_deterministic_and_payloads_are_data(tmp: Path) -> None:
@@ -911,7 +950,8 @@ def t_docs_recover_legacy_demote_findings_from_the_bound_cap_artifact(tmp: Path)
         "load_historical_findings",
         "one follow-up for every row",
         "same list in the final report",
-        "Park the PR with a machine-blocker reason",
+        "Leave a legacy-DEMOTE row `repairing`",
+        "`ledger.py park` correctly refuses it",
     ):
         check(needle in legacy, f"legacy DEMOTE recovery lost required rule {needle!r}")
 
@@ -1605,6 +1645,7 @@ CASES = [
     ("bundle-order-active", "bundle orders rounds numerically and selects only the active relaunch", t_bundle_orders_rounds_and_selects_active_attempt),
     ("bundle-skips-deferred-pass", "a verdictless (DEFERRED) surplus pass is excluded, listed, and never wedges", t_bundle_skips_an_explicitly_deferred_pass),
     ("bundle-pass-history-refusals", "every other pass-numbering drift is refused with the mismatch and recovery named", t_bundle_refuses_unreconcilable_pass_histories),
+    ("unreconcilable-history-park-docs", "the cap, ledger, and bailout guidance retain the machine-blocker park", t_unreconcilable_history_park_is_documented_at_each_boundary),
     ("bundle-deterministic", "bundle bytes/hash are deterministic and hostile payloads stay data", t_bundle_is_deterministic_and_payloads_are_data),
     ("bundle-refusals", "missing, stale, and duplicate active inputs fail before output", t_bundle_refuses_missing_stale_and_duplicate_inputs),
     ("bundle-old-intent", "old intent anchors survive; the cap round may have no audit yet", t_bundle_preserves_findings_from_an_older_intent),

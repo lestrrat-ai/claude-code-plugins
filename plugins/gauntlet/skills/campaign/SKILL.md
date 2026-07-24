@@ -184,9 +184,10 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
 18. Any campaign commit is PR content: it resets the gate, re-triages the tier, and is re-reviewed on
     the new SHA.
 19. At a review-loop cap -> `repair-pass.py bundle` / `decide`: STOP dispatching targeted fixes — a cap
-    is a **mode switch, not a doorbell**. Build and dispatch the exact reassessment bundle, then execute
-    its bundle-bound decision without asking the user (`references/repair-pass.md`). The tool derives and
-    enforces the permitted decision set from PR ownership and remaining repair budget.
+    is a **mode switch, not a doorbell**. Build the exact reassessment bundle. If it names unreconcilable
+    capped history and directs a park, use `references/repair-pass.md`, **Unreconcilable capped history**;
+    otherwise dispatch it and execute its bundle-bound decision without asking the user. The tool derives
+    and enforces the permitted decision set from PR ownership and remaining repair budget.
 
 **CI — stage 2b** (`references/stage-2-ci.md`)
 
@@ -209,7 +210,8 @@ every PR carrying this run's `gauntlet-run-<run-id>` label (from a batched snaps
 
 23. A HELD PR is FROZEN — take no action that MUTATES it. Two kinds: **parked** (`awaiting-user` /
     `awaiting-api` — waits on a HUMAN) and **`repairing`** (waits on the reassessment pass, which is
-    machine work due NOW). The test is "does this mutate the PR?", **not** "is it on a list";
+    machine work due NOW; its unreconcilable-history exception is in `repair-pass.md`). The test is "does
+    this mutate the PR?", **not** "is it on a list";
     `HELD_STATUSES` in `scripts/ledger.py` is the one enumeration — never retype it. Sole exception:
     the CI watch — observing is not mutating, so it follows the normal policy. Keep driving the other
     PRs. Unpark only on the user's answer, recorded DURABLY per park class; a ruling is durable and
