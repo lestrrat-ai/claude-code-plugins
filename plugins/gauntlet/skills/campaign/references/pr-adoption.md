@@ -534,15 +534,12 @@ mirror is a guaranteed no-op.
 python3 <skill-dir>/scripts/label-mirror.py mirror --ledger <state.jsonl> --pr <N> --repo owner/name
 ```
 
-#### Step 6 — Ensure a live CI watch when — and ONLY when — a check can still move
+#### Step 6 — Run liveness, then act on its CI watch warrant
 
-6. **Ensure a live CI watch when — and ONLY when — a check can still move.** The warrant for a watch is a
-   **still-RUNNING evidence row** in the PR's snapshot, **never the `ci` value** (Stage 2b, `stage-2-ci.md`
-   — "WATCH ONLY WHAT CAN MOVE"): a PR whose CI has **SETTLED** gets **no watch**, because
-   `gh pr checks --watch` on it exits in about a second and its completion is itself a heartbeat — a heartbeat per
-   second, forever, observing nothing. A watch on a run that is still moving wakes the driver when it
-   settles. **The backgrounded command is the watch and NOTHING ELSE** — its **ONLY** job is to **block**
-   until the run settles, so that **its completion becomes a heartbeat**:
+6. **CI watch action.** Run `liveness`, then ensure or relaunch a watch only when returned
+   `watch_warranted` is `true` (Stage 2b, `stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE"). Parked status does
+   not override that result. **The backgrounded command is the watch and NOTHING ELSE** — its **ONLY** job
+   is to **block** until the run settles, so that **its completion becomes a heartbeat**:
 
    ```
    # run in background. This is the WHOLE command: it BLOCKS, and that is all it does.
@@ -562,7 +559,8 @@ python3 <skill-dir>/scripts/label-mirror.py mirror --ledger <state.jsonl> --pr <
    Don't launch a duplicate watch for a PR that already has a live one (Loop control tracks in-flight
    watches).
 
-Adoption produces only the registered, labelled row (and a CI watch when due). Reviews, CI fixes, and
-merges are driven by Loop control on later heartbeats — this file just gets each PR **into** the run.
+Adoption produces only the registered, labelled row and the CI watch action: **Run `liveness`, then ensure
+or relaunch a watch only when returned `watch_warranted` is `true`**. Reviews, CI fixes, and merges are
+driven by Loop control on later heartbeats — this file just gets each PR **into** the run.
 
 ---

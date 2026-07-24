@@ -157,8 +157,9 @@ the worker returns, and what never moves into it. The steps below are unchanged 
      default** — the base is per-row now, recorded on each row at adoption from that PR's live
      `baseRefName`, never a run-wide header value (`files-and-ledger.md`, the row `base_branch` field).
      Then **adopt** each PR
-     (ledger row + labels + worktree, and a CI watch **only when one is due** — `pr-adoption.md` owns what
-     adoption produces and when the watch is warranted; adoption fetches **each PR's own base ref**, so a
+     (ledger row + labels + worktree, then **Run `liveness`, then ensure or relaunch a watch only when
+     returned `watch_warranted` is `true`** — `pr-adoption.md`, "Step 6 — Run liveness, then act on its
+     CI watch warrant"; adoption fetches **each PR's own base ref**, so a
      set spanning several bases fetches each of them once at its adoption). A death mid-adoption still
      leaves a discoverable, adoptable run. **When the whole requested set is adopted, clear the checkpoint —
      `ledger.py … header set pending_adoption -`** (this is adoption's final step; a later entry that
@@ -305,11 +306,9 @@ the worker returns, and what never moves into it. The steps below are unchanged 
      applies only to `repairing` after `dispatch-check --action repair` succeeds; `repair-pass.md`, **A
      non-legacy recorded repair may first take its required clean base-only rebase**, owns it. It does not permit a
      conflict-resolving/diff-changing rebase or unhold the row.
-   - **The CI watch is not an exception: OBSERVING a PR is not mutating it.** The park **does not change
-     the watch either way** — it follows the normal policy, `stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE":
-     alive while an evidence row can still `RUN`, **not** relaunched once CI has SETTLED (relaunching a
-     settled PR's watch burns a heartbeat per second and observes nothing). Parking never stops a warranted
-     watch and never starts an unwarranted one. But do **NOT** dispatch a CI *fix*.
+   - **Held-PR watch action.** Observing a PR is not mutating it. Run `liveness`, then ensure
+     or relaunch a watch only when returned `watch_warranted` is `true` (`stage-2-ci.md`, "WATCH ONLY WHAT
+     CAN MOVE"). Parked status does not override that result. Do **NOT** dispatch a CI *fix*.
    - **Recording ground truth is not mutating either.** Reconcile still READS a parked PR (live SHA, CI,
      labels) and writes what it read to the ledger — including a `reviews_ok` reset, and its label
      mirror, when **someone else** pushed to the PR (step 1). Recording a change campaign did not make is
@@ -481,16 +480,11 @@ the worker returns, and what never moves into it. The steps below are unchanged 
      resulting commit **resets the gate** (Stage 2b, "Any campaign commit to the PR head resets the gate").
      Materialize the selected role through `worker-prompt.py fix` (`fix-subagent-contract.md`); its
      template owns the job order and role rules. Different PRs may fix CI concurrently within the cap.
-   - `liveness` reports **`watch_warranted`** (its reduction of "WATCH ONLY WHAT CAN MOVE" — a verified
-     snapshot with a still-`RUNNING` evidence row that is not an `UNKNOWN_VALUE` park; the `RUNNING` is an
-     evidence row that classifies `RUNNING` under Stage 2b CLASSIFY, never "a row that is not terminal") for
-     a PR whose watch task has already exited →
-     **relaunch the watch in this same heartbeat**. A PR whose watch is warranted must never sit
-     unwatched until the fallback heartbeat; the fallback lifecycle is not the mechanism. **But NEVER relaunch
-     it merely because `ci == pending`** — once CI has SETTLED nothing can move, `gh pr checks --watch`
-     exits in about a second, and its completion is itself a heartbeat: that is a heartbeat per second, forever
-     (Stage 2b, "WATCH ONLY WHAT CAN MOVE"). A settled PR is resolved by the `settled_strikes`
-     escalation, not by watching it harder. **And a row that never leaves `RUNNING` is resolved by
+   - **CI watch action.** Run `liveness`, then ensure or relaunch a watch only when returned
+     `watch_warranted` is `true` (`stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE"). Parked status does not
+     override that result. When a warranted watch has exited, relaunch it in this same heartbeat. A
+     warranted watch must never sit unwatched until the fallback heartbeat; the fallback lifecycle is not
+     the mechanism. **A row that never leaves `RUNNING` is resolved by
      RUNNING-STALL** (Stage 2b): its watch blocks forever and completes never, so the escalation lands on
      **this fallback heartbeat**, once `ci_stalled_since` has stood at the same fingerprint for the CI STALL
      CAP. **A watch is never a bound.**
@@ -613,8 +607,8 @@ resume. This block OWNS when the loop continues; every other site points here, n
      - **any in-flight review pass** → `review-pass.py status --run <rundir> --verify`, then apply the
        **Stage 2a launch-deadline and meaningful-progress rules** to it (`stage-2-review-gate.md`) — a
        review that died mid-flight is exactly what a quiet streak hides.
-     - **any row that can still move** → **re-derive CI** (Stage 2b) and apply the CI watch / RUNNING-STALL
-       rules — a watch that wedged wakes no one, and only a swept heartbeat notices.
+     - **each active PR's CI** → **re-derive CI and run `liveness`** (Stage 2b), then apply its returned
+       watch warrant and liveness state. A wedged watch wakes no one; only a swept heartbeat notices.
      - **every parked PR** → **re-surface its question to the user, WITH how long it has waited.** The park
        is not a stall to "fix" (the held-status guard still binds — step 3), but a forgotten question is
        the single most likely reason a run went quiet, so it is what the user needs put back in front of
