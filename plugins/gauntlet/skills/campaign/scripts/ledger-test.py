@@ -2347,6 +2347,32 @@ def t_set_status_transitions_stay_open(L: ModuleType, tmp: Path) -> None:
           f"`set --blocker-ruling` was refused — the user's answer cannot be recorded: exit {code}, {err!r}")
 
 
+def t_set_cannot_park_a_decided_repair(L: ModuleType, tmp: Path) -> None:
+    """`set` cannot move a decided `repairing` row to `awaiting-user` and strand its repair dispatch.
+
+    The review-standoff route must retain its `set` transition, but a reassessment decision owns a
+    `repairing` row's next action. Drive the documented bypass through the real CLI, then prove the row
+    remains dispatchable for exactly that recorded repair.
+    """
+    decision = "root-cause@2026-07-14T00:00:00Z"
+    path = capped_row(L, tmp, "set-decided-repair.jsonl", status=L.REPAIR_STATUS,
+                      repair_decision=decision)
+    code, _, err = cli(L, ["--file", str(path), "set", "--pr", "1", "--status", "awaiting-user",
+                         "--ci-reason", "manual park", "--blocker-ruling", "-"])
+    check(code == 1 and decision in err and "dispatch-check --action repair" in err,
+          f"a decided repair was parkable through `set`: exit {code}, {err!r}")
+
+    code, out, err = cli(L, ["--file", str(path), "dispatch-check", "--pr", "1", "--action", "repair"])
+    check(code == 0 and decision in out,
+          f"a rejected set transition stranded the decided repair: exit {code}, {err!r}, {out!r}")
+    code, out, err = cli(L, ["--file", str(path), "get", "--pr", "1"])
+    check(code == 0, f"could not read decided repair after set refusal: {err!r}")
+    row = json.loads(out)
+    check((row["status"], row["repair_decision"], row["ci_reason"], row["blocker_ruling"])
+          == (L.REPAIR_STATUS, decision, "-", "-"),
+          f"a refused set transition changed the decided repair: {row!r}")
+
+
 # --- last_activity: the run's durable "when did anything last move?" sensor -----
 #
 # Two frozen instants, so a stamp is DETERMINISTIC and a no-op write can be PROVEN not to re-stamp (the
@@ -2863,6 +2889,7 @@ CASES = [
     ("unpark-spends-resets", "`unpark` flips status, spends the ruling, resets all four counters — one write", t_unpark_spends_and_resets),
     ("unpark-refusals", "unpark refuses not-parked/unanswered/abort/malformed — writing nothing", t_unpark_refusals),
     ("set-status-stays-open", "set may still write the standoff park/unpark transitions — park/unpark can't serve them", t_set_status_transitions_stay_open),
+    ("set-decided-repair-guard", "set cannot park a decided repair and strand its dispatch", t_set_cannot_park_a_decided_repair),
     ("replay-the-record", "the REAL #42/#43 verdict sequences: it fires, never too early, and says what it costs", t_replay_the_real_record),
     ("activity-stamped-on-change", "a value-changing set stamps last_activity; a no-op set does not", t_activity_stamped_on_a_real_change),
     ("verdict-stamps-activity", "a landed verdict stamps last_activity — it always moves review_rounds", t_verdict_stamps_activity),

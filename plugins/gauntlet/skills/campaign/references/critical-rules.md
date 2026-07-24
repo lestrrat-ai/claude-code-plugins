@@ -439,11 +439,13 @@
   the review gate's own reset rules are owned by `stage-2-review-gate.md`, "Status labels mirror the
   review gate". Neither is restated here.
 - **A `blocker_ruling` is DURABLE *and* SPENT EXACTLY ONCE** (`stage-2-ci.md`, "THE RULING IS CONSUMED
-  EXACTLY ONCE"): set to `-` when a machine-blocker park is **ENTERED** and when a `retry` is **CONSUMED**,
-  each in the same `ledger.py … set` call as the `status` write. A ruling left on the row answers the
-  **next** park too — the blocker silently self-clears with **no fresh user answer**, which is exactly what
-  the durable record exists to prevent. `abort` is never cleared: it is terminal, and a terminal row is
-  never re-parked.
+  EXACTLY ONCE"): enter every machine-blocker park through `ledger.py … park --pr <N> --reason "<blocker>"`;
+  it atomically clears the ruling. Consume a `retry` through the matching `ledger.py … unpark` transition
+  (`files-and-ledger.md`, "`park`/`unpark` are the sanctioned writers of the machine-blocker park/unpark
+  TRANSITIONS"). Use `set` only to record the user's ruling; the separate review-standoff path also owns its
+  `set` transition (`finding-audit.md`). A ruling left on the row answers the **next** park too — the blocker
+  silently self-clears with **no fresh user answer**, which is exactly what the durable record exists to
+  prevent. `abort` is never cleared: it is terminal, and a terminal row is never re-parked.
 - **The three materializer roles — both CI tiers and review-fix — use the fix-subagent materializer.** Follow
   `fix-subagent-contract.md`; never rebuild its shared contract or role block from this lookup. The
   follow-up fixer that opens a new PR is a separate workflow it names, outside these roles.

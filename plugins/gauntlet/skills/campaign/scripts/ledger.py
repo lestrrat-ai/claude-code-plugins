@@ -353,7 +353,9 @@ CREATE_ONLY = ("base_branch",)
 # those two transitions (stage-2-ci.md, "ESCALATE" / "THE RULING IS CONSUMED EXACTLY ONCE" / "THE LIVENESS
 # COUNTERS"; loop-control.md step 3; stage-3-merge.md).
 #
-# `set` is DELIBERATELY left able to write `status` and `blocker_ruling` — the guard is NOT closed, because:
+# `set` is DELIBERATELY left able to write `status` and `blocker_ruling` — except that a decided
+# `repairing` row may not be hand-parked through `set`, because that would strand the decision its
+# `dispatch-check --action repair` must execute. The guard is otherwise NOT closed, because:
 #   * the REVIEW-STANDOFF park (finding-audit.md) writes `status = awaiting-user` through `set` and is
 #     answered through `finding-audit.py rule-standoff`, NOT `blocker_ruling`; its unpark is a plain `set --status
 #     in_review` carrying no `retry@<iso>` ruling for `unpark` to validate. park/unpark cannot serve that
@@ -1116,6 +1118,14 @@ def cmd_set(path: Path, args) -> int:
     updates = _named_field_values(args, creating=False)
     if not updates:
         fail("set requires at least one --<field> <value>")
+    # The review-standoff park still uses `set --status awaiting-user`, but a recorded repair decision owns
+    # a repairing row's next action. `park` already refuses this transition; keep the same guard at the
+    # generic write door so a hand-assembled `set` cannot strand a repair that dispatch-check permits.
+    if (row["status"] == REPAIR_STATUS and row["repair_decision"] != "-"
+            and updates.get("status") == "awaiting-user"):
+        fail(f"pr {pr} is {REPAIR_STATUS} with recorded reassessment decision {row['repair_decision']} — "
+             "a decided repair may not transition to awaiting-user through `set`. Execute the recorded "
+             "decision through `dispatch-check --action repair`")
     check_tally(updates, row)
     # Decide activity from the updates against the row AS LOADED — before `apply_head_sha`/`row.update`
     # mutate it. A head MOVE counts (head_sha is non-exempt and changes), and the liveness counters that

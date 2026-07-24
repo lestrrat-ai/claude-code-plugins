@@ -636,10 +636,12 @@ park, `stage-3-merge.md`) plus the narrow capped-history transition owned by `re
 **Unreconcilable capped history**; the **CI** parks stay `ci-status.py liveness`'s, which writes the same
 three fields itself (`stage-2-ci.md`, "ESCALATE"). `unpark` consumes a `retry@<iso>` ruling only — it refuses a
 bare `retry`, an unanswered park, an `abort` (that goes terminal through the abort procedure), and a row
-that is not parked. **`set` still writes `status` and `blocker_ruling` and is NOT gated:** the
-review-standoff park/unpark (`finding-audit.md`) is answered through `finding-audit.py rule-standoff`, not
-`blocker_ruling`, so park/unpark cannot serve it and it stays on `set`; and `blocker_ruling` is where the user's **answer** is
-recorded (`set --blocker-ruling retry@<iso>`), which `unpark` then consumes.
+that is not parked. **`set` still writes `status` and `blocker_ruling`, with one decided-repair guard:** it
+refuses `repairing` → `awaiting-user` when `repair_decision` is recorded, so a manual park cannot strand the
+repair that `dispatch-check --action repair` permits. The review-standoff park/unpark (`finding-audit.md`) is
+answered through `finding-audit.py rule-standoff`, not `blocker_ruling`, so its transition stays on `set`; and
+`blocker_ruling` is where the user's **answer** is recorded (`set --blocker-ruling retry@<iso>`), which
+`unpark` then consumes.
 
 `table` is the user-facing status view: the end-of-heartbeat report renders it whenever the run goes back
 to waiting (`loop-control.md`, "Reschedule or exit"). It renders state and makes NO gate decisions; its
