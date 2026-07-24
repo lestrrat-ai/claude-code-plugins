@@ -559,7 +559,8 @@ python3 <skill-dir>/scripts/label-mirror.py mirror --ledger <state.jsonl> --pr <
    Don't launch a duplicate watch for a PR that already has a live one (Loop control tracks in-flight
    watches).
 
-Adoption produces only the registered, labelled row (and a CI watch when due). Reviews, CI fixes, and
-merges are driven by Loop control on later heartbeats — this file just gets each PR **into** the run.
+Adoption produces only the registered, labelled row and the CI watch action: **Run `liveness`, then ensure
+or relaunch a watch only when returned `watch_warranted` is `true`**. Reviews, CI fixes, and merges are
+driven by Loop control on later heartbeats — this file just gets each PR **into** the run.
 
 ---

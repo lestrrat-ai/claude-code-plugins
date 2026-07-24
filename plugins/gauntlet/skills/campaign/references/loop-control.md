@@ -157,8 +157,9 @@ the worker returns, and what never moves into it. The steps below are unchanged 
      default** — the base is per-row now, recorded on each row at adoption from that PR's live
      `baseRefName`, never a run-wide header value (`files-and-ledger.md`, the row `base_branch` field).
      Then **adopt** each PR
-     (ledger row + labels + worktree, and a CI watch **only when one is due** — `pr-adoption.md` owns what
-     adoption produces and when the watch is warranted; adoption fetches **each PR's own base ref**, so a
+     (ledger row + labels + worktree, then **Run `liveness`, then ensure or relaunch a watch only when
+     returned `watch_warranted` is `true`** — `pr-adoption.md`, "Step 6 — Run liveness, then act on its
+     CI watch warrant"; adoption fetches **each PR's own base ref**, so a
      set spanning several bases fetches each of them once at its adoption). A death mid-adoption still
      leaves a discoverable, adoptable run. **When the whole requested set is adopted, clear the checkpoint —
      `ledger.py … header set pending_adoption -`** (this is adoption's final step; a later entry that

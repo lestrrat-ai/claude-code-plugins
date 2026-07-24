@@ -51,6 +51,10 @@ TRIAGE_INPUT_BINDINGS = (
     ("--pr", "<pr>"),
 )
 TRIAGE_TIER_BINDING = ("--tier", "<your decided tier>")
+WATCH_ACTION = (
+    "Run `liveness`, then ensure or relaunch a watch only when returned "
+    "`watch_warranted` is `true`"
+)
 MARKDOWN_LIST_ITEM = re.compile(
     r"^(?P<prefix>[ \t>]*)(?:[-*+]|\d+[.)]) "
 )
@@ -89,6 +93,10 @@ def delimited_region(body: str, start_marker: str, end_marker: str, name: str) -
     start = body.index(start_marker)
     end = body.index(end_marker, start + len(start_marker))
     return body[start:end]
+
+
+def normalized(text: str) -> str:
+    return " ".join(text.split())
 
 
 def command_argvs(block: str) -> list[list[str]]:
@@ -310,6 +318,23 @@ def check_additional_triage_consumers(root_cause: str, pr_adopt: str) -> None:
         ("pr-adopt.py", pr_adopt, SKILL_TRIAGE_OWNER),
     ):
         check_consumer_triage_region(name, body, expected_owner)
+
+
+def check_watch_consumers(adoption: str, loop_control: str) -> None:
+    loop_start = loop_control.index("Then **adopt** each PR")
+    loop_end = loop_control.index("A death mid-adoption still", loop_start)
+    loop_adoption = loop_control[loop_start:loop_end]
+
+    summary_start = adoption.index("Adoption produces only")
+    summary_end = adoption.index("\n\n", summary_start)
+    adoption_summary = adoption[summary_start:summary_end]
+
+    for name, region in (
+        ("loop-control.md adoption consumer", loop_adoption),
+        ("pr-adoption.md summary consumer", adoption_summary),
+    ):
+        require(WATCH_ACTION in normalized(region),
+                f"{name} lost the liveness/watch_warranted gate")
 
 
 def require_rejected(callback, expected: str, message: str) -> None:
@@ -636,6 +661,7 @@ def check_document_contract() -> None:
     copilot = (COPILOT / "SKILL.md").read_text(encoding="utf-8")
 
     check_campaign_triage_contract(stage, adoption, loop_control, skill)
+    check_watch_consumers(adoption, loop_control)
     new_row_summary = delimited_region(
         adoption,
         "   - **On a NEW row only, initialize:**",
