@@ -19,9 +19,12 @@ LOCAL state against that same PR / its head; the PR itself is left in place.
   - **a REPAIR — `status == repairing`** (`repair-pass.md`). The PR has reached a review-loop cap and is
     being reassessed and repaired. It is **bounded by `repair_count`/`REPAIR_CAP`**, and its exit is
     **declared**: the reassessment's decision, and — at the cap — **ABORT**, which lands on this very
-    procedure. **Firing the 1-hour cap here would PRE-EMPT the repair the cap exists to reach**, aborting a
+    procedure. The third exit is an unreconcilable-history machine-blocker park before a decision, when
+    `bundle` directs it; `repair-pass.md`, **Unreconcilable capped history**, owns that `awaiting-user`
+    transition. **Firing the 1-hour cap here would PRE-EMPT the repair the cap exists to reach**, aborting a
     PR that the mechanism was in the middle of saving — the same mistake as firing it inside a live CI
-    liveness bound, for the same reason. A repairing PR always terminates: it repairs, or it aborts.
+    liveness bound, for the same reason. A repairing PR exits by a decision, ABORT, or that machine-blocker
+    park.
   - **a LIVE Stage 2 CI LIVENESS BOUND, still below its cap.** **Read the bounds from their owner —
     `stage-2-ci.md`, "THE LIVENESS COUNTERS", which is the ONE enumeration of the bounded CI waits and
     names each one's cap. NEVER re-list them here, and NEVER key this exemption on a `ci` value.** A bound

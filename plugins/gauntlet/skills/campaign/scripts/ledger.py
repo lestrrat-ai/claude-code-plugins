@@ -399,8 +399,10 @@ ROUND_CAP = 11
 NS_STREAK_CAP = 6
 REPAIR_CAP = 2
 
-# Where a PR goes when it reaches a cap. It is NOT a park: a park waits on a HUMAN and only the user's
-# answer leaves it, while this waits on the reassessment pass and the driver clears it itself.
+# Where a PR goes when it reaches a cap. `repairing` normally is NOT a park: it waits on the reassessment
+# pass and the driver clears it itself. Before a decision, unreconcilable capped history that `bundle`
+# directs to park becomes `awaiting-user`; `repair-pass.md`, "Unreconcilable capped history", owns that
+# machine-blocker transition.
 REPAIR_STATUS = "repairing"
 
 # HELD — the statuses in which campaign MUST NOT dispatch ordinary gate work on a PR (a review pass, a
@@ -411,7 +413,9 @@ REPAIR_STATUS = "repairing"
 #
 #   awaiting-api / awaiting-user   parked on a HUMAN. Only the user's answer unparks.
 #   repairing                      at a review-loop cap. The reassessment pass and the repair it decides
-#                                  clear it — no human is waited on.
+#                                  normally clear it. Before a decision, unreconcilable capped history may
+#                                  enter the `awaiting-user` machine-blocker park; `repair-pass.md`,
+#                                  "Unreconcilable capped history", owns that exception.
 #
 # The ONE exception, for every member alike: OBSERVING a PR is not mutating it, so the CI watch follows
 # its normal policy, and reconcile still READS a held PR and records what it read.
