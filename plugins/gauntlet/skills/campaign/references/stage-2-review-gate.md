@@ -110,6 +110,10 @@ of a loop that has already been told to stop. The park does **not** change its C
 watch follows the normal policy (`stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE": alive while a row can still
 move, **not** relaunched once CI has SETTLED). Everything else waits for the user's answer.
 
+The non-legacy recorded repair's required clean base-only rebase is not a review precondition:
+`repair-pass.md`, **A non-legacy recorded repair may first take its required clean base-only rebase**, owns
+that one decided-repair path.
+
 #### Preconditions — clear Copilot items, CI, and conflicts before reviewing
 
 **Only launch a review pass once all three are clear for the current tip.** Clear Copilot items, CI,

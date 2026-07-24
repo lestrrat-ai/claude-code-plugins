@@ -428,6 +428,31 @@ HELD_STATUSES = ("awaiting-api", "awaiting-user", REPAIR_STATUS)
 # retyping the pair (`cmd_park` and the `default_non_goals` broadening guard both resolve through it).
 TERMINAL_STATUSES = ("merged", "aborted")
 
+
+def has_decided_repair(row: dict[str, str]) -> bool:
+    """Whether this row may run work owned by its recorded reassessment decision.
+
+    `repair-pass.py decide` is the only writer of `repair_decision`; this accessor keeps every consumer on
+    the same narrow condition. This includes a legacy DEMOTE, whose documented completion is dispatchable
+    but does not take the clean-base-only-rebase exception. A decision does not unhold the row or permit
+    ordinary work.
+    """
+    return row["status"] == REPAIR_STATUS and row["repair_decision"] != "-"
+
+
+def is_legacy_demote_decision(row: dict[str, str]) -> bool:
+    """Whether the durable decision is the retired DEMOTE path."""
+    return row["repair_decision"].startswith("demote@")
+
+
+def has_clean_rebase_repair(row: dict[str, str]) -> bool:
+    """Whether this decided repair may take its required clean base-only rebase.
+
+    A non-legacy recorded repair may use that narrow exception before its repair dispatch. A legacy DEMOTE
+    completes directly through `repair-pass.md`, "Complete a legacy DEMOTE".
+    """
+    return has_decided_repair(row) and not is_legacy_demote_decision(row)
+
 # `fail()` keeps 1 for "your input was rejected". A HELD/AT-CAP answer is NOT an input error — the command
 # did its job and the answer is STOP — so it gets its own code. A driver that proceeds anyway has a FAILED
 # COMMAND in its transcript, not a defensible judgment call.
@@ -1330,10 +1355,11 @@ def cmd_dispatch_check(path: Path, args) -> int:
     follows its normal policy, and reconcile still reads a held PR and records what it read.
 
     **`--action repair` is the ONE kind of work a `repairing` row accepts** — and it is refused until a
-    reassessment DECISION is on the row. Without that second half the guard would have a hole exactly
-    where it matters: a driver could call its next fix "the repair", dispatch it, and go right on whacking
-    moles under a new name. The decision must exist first, and the tool prints WHICH one, so the work that
-    follows is the work that was decided.
+    reassessment DECISION is on the row. That decision permits only its repair and its required clean
+    base-only rebase; it does not unhold the row or permit ordinary work. Without that second half the
+    guard would have a hole exactly where it matters: a driver could call its next fix "the repair",
+    dispatch it, and go right on whacking moles under a new name. The decision must exist first, and the
+    tool prints WHICH one, so the work that follows is the work that was decided.
     """
     _, rows = load(path)
     pr = str(args.pr)
@@ -1348,7 +1374,7 @@ def cmd_dispatch_check(path: Path, args) -> int:
                   f"there is no repair to dispatch. Ordinary gate work is what this PR is owed.",
                   file=sys.stderr)
             return EXIT_STOP
-        if decision == "-":
+        if not has_decided_repair(row):
             print(f"refused: pr {pr} is {REPAIR_STATUS} but NO REASSESSMENT DECISION is recorded. Run the "
                   f"`repair-pass.py bundle` reassessment and record its bundle-bound decision with "
                   f"`repair-pass.py decide` FIRST — a repair "
