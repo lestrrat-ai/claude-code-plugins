@@ -379,7 +379,7 @@ def t_ruling_is_recorded(tmp: Path) -> None:
     after = json.loads(run(["--file", str(path), "get", "--id", a])[1])
     check(after["decided"] == "2026-07-14T09:00:00Z",
           f"`open-pr` overwrote the USER's ruling timestamp: {after!r}")
-    check(after["pr"] == "#77", f"open-pr did not record WHICH PR is addressing it: {after!r}")
+    check(after["pr"] == "77", f"open-pr did not record WHICH PR is addressing it: {after!r}")
 
     # …and so does the step that DELETES it: the record it prints is the handoff, and it still says the
     # user ruled, and when.
@@ -752,12 +752,12 @@ def t_deletion_needs_a_durable_record(tmp: Path) -> None:
     check(code == 0, f"open-pr exited {code}: {err!r}")
     entry = json.loads(run(["--file", str(path), "get", "--id", fid])[1])
     check(entry["state"] == "in-pr", f"an open PR did not put the entry in `in-pr`: {entry!r}")
-    check(entry["pr"] == "#123", f"the entry does not say WHICH PR is addressing it: {entry!r}")
+    check(entry["pr"] == "123", f"the entry does not say WHICH PR is addressing it: {entry!r}")
 
     # ON THE MERGE it goes — and it is REALLY gone: not hidden, not tombstoned. Gone from the file.
     code, out, err = run(["--file", str(path), "merged", "--id", fid])
     check(code == 0, f"merged exited {code}: {err!r}")
-    check(json.loads(out)["pr"] == "#123",
+    check(json.loads(out)["pr"] == "123",
           f"the deletion record does not name the PR that is now the record: {out!r}")
     check(load(path) == [], "a MERGED follow-up was KEPT — the queue is an archive, and it only grows")
     check(fid not in path.read_text(),
@@ -800,7 +800,7 @@ def t_a_closed_pr_returns_the_entry_to_open_work(tmp: Path) -> None:
         entry = json.loads(run(["--file", str(path), "get", "--id", fid])[1])
         check(entry["state"] == reopened,
               f"[{lineage}] a PR closed without merging left the entry in {entry['state']!r}: {entry!r}")
-        check(entry["pr"] == "#9", f"[{lineage}] the PR that died was forgotten: {entry!r}")
+        check(entry["pr"] == "9", f"[{lineage}] the PR that died was forgotten: {entry!r}")
         code, out, err = run(["--file", str(path), "list"])
         check((code, out) == (0, f"{fid}\n"),
               f"[{lineage}] the entry left the store when its PR was closed — the work is undone and there "
@@ -1382,11 +1382,10 @@ def t_fields_and_lookup(tmp: Path) -> None:
 
 
 def t_pr_references_keep_legacy_bare_numbers_and_github_urls(tmp: Path) -> None:
-    """The follow-up store recognises all PR forms it has historically recorded.
+    """`open-pr` stores recognised PR forms as their canonical number.
 
-    `open-pr` accepts a caller-provided reference, so older stores can hold a bare number as well as the
-    current `#N` spelling. GitHub pull-request URLs are also accepted, including their optional trailing
-    slash. Other references remain opaque instead of being guessed from a number embedded in free text.
+    The command accepts legacy bare numbers, current `#N` spelling, and GitHub pull-request URLs, including
+    an optional trailing slash. It preserves unrecognised text rather than guessing a number embedded in it.
     """
     accepted = {
         "42": "42",
@@ -1397,7 +1396,7 @@ def t_pr_references_keep_legacy_bare_numbers_and_github_urls(tmp: Path) -> None:
     for ref, expected in accepted.items():
         check(followups.pr_number(ref) == expected,
               f"PR reference {ref!r} parsed as {followups.pr_number(ref)!r}, not {expected!r}")
-    for ref in (
+    opaque = (
         "0",
         "#0",
         "42/",
@@ -1407,9 +1406,24 @@ def t_pr_references_keep_legacy_bare_numbers_and_github_urls(tmp: Path) -> None:
         "https://github.com/acme/repo#fragment/pull/42",
         "https://github.com/acme/repo/issues/42",
         "PR 42",
-    ):
+    )
+    for ref in opaque:
         check(followups.pr_number(ref) is None,
               f"non-PR reference {ref!r} was guessed as {followups.pr_number(ref)!r}")
+
+    # Drive every accepted and opaque form through the only transition that writes `pr`; a parser-only
+    # fixture would still pass if `open-pr` stored its raw argument.
+    expected_refs = {**accepted, **{ref: ref for ref in opaque}}
+    for i, (ref, expected) in enumerate(expected_refs.items()):
+        path = tmp / f"pr-reference-{i}.jsonl"
+        (fid,) = seed(path)
+        code, _, err = run(["--file", str(path), "accept", "--id", fid])
+        check(code == 0, f"setup `accept` for {ref!r} exited {code}: {err!r}")
+        code, _, err = run(["--file", str(path), "open-pr", "--id", fid, "--pr", ref])
+        check(code == 0, f"`open-pr` for {ref!r} exited {code}: {err!r}")
+        entry = json.loads(run(["--file", str(path), "get", "--id", fid])[1])
+        check(entry["pr"] == expected,
+              f"`open-pr` stored {entry['pr']!r} for {ref!r}, not {expected!r}")
 
 
 CASES = [
@@ -1420,7 +1434,7 @@ CASES = [
     ("act-needs-conditions", "the autonomous ACT edge must EVIDENCE every condition, or it is refused", t_act_edge_needs_every_condition),
     ("self-accept-distinct", "a DRIVER-accepted follow-up is never mistaken for a USER-accepted one", t_self_accepted_is_never_mistaken_for_accepted),
     ("doc-and-code-agree", "the ACT conditions the driver READS are the ones the code ENFORCES", t_the_doc_and_the_code_agree),
-    ("pr-reference-parser", "legacy bare numbers, #N, and GitHub pull-request URLs identify the same PR", t_pr_references_keep_legacy_bare_numbers_and_github_urls),
+    ("pr-reference-parser", "open-pr canonicalises recognised PR references and preserves opaque text", t_pr_references_keep_legacy_bare_numbers_and_github_urls),
     ("investigation-evidence", "an investigation shows its work; the finding APPENDS and never clobbers", t_investigation_shows_its_work),
     ("refutation-stays", "a refuted follow-up stays in the store, stays visible, and stays overturnable", t_refutation_stays_in_the_store),
     ("state-not-settable", "`set` writes neither `state` nor any evidence a transition left behind", t_state_and_evidence_are_not_settable),

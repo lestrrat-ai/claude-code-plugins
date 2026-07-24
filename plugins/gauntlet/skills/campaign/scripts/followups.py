@@ -752,6 +752,10 @@ def cmd_transition(path: Path, args) -> int:
     cmd = args.cmd
     frm, to = TRANSITIONS[cmd]
     values = taken(cmd, args)  # THE one door — every caller value, validated (see `taken()`)
+    if cmd == "open-pr":
+        # A PR number is the durable key other campaign tools consume. Keep an opaque caller reference
+        # untouched, but collapse every recognised legacy spelling to that one key before storing it.
+        values["pr"] = pr_number(values["pr"]) or values["pr"]
     with locked(path):
         entries, high = read_store(path)
         entry = find(entries, args.id)
