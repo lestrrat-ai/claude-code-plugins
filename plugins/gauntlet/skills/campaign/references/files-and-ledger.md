@@ -516,10 +516,10 @@ Header field notes (the header fields above; per-row fields follow):
      below — and `loop-control.md` step 3, "Only the user's answer unparks a PR", owns the mapping.
   2. **`repairing` — waiting on the REASSESSMENT PASS, not on a human.** The PR reached a review-loop cap
      (`review_rounds` or `ns_streak`), so it has stopped converging and **must not take another targeted
-     fix or another review pass**. `ledger.py verdict` sets it, and it is **NOT a park**: campaign clears it
-     itself, by reassessing the PR and executing the one decision that comes back (`repair-pass.md` — the
-     owner). **A cap is a MODE SWITCH, not a doorbell**: the driver repairs the PR autonomously and asks the
-     user nothing. Only the ABORT decision involves a human at all, and it is the last resort of five.
+     fix or another review pass**. `ledger.py verdict` sets it, and campaign normally clears it by
+     reassessing the PR and executing the one decision that comes back. A capped history that the bundle
+     cannot reconcile is the one exception: `repair-pass.md`, **Unreconcilable capped history**, owns its
+     machine-blocker park and its `repair_decision` guard. **A cap is a MODE SWITCH, not a doorbell**.
   - `awaiting-api` — parked for the user to approve an API-changing fix. Resolves via `api_approval`:
     `approved` returns the PR to the normal flow, `declined` makes it `aborted` (terminal).
   - `awaiting-user` — parked for the user to adjudicate. **Two CLASSES, each with its OWN durable answer
@@ -632,8 +632,9 @@ way `verdict` owns the review counters: a park (`status = awaiting-user`, `ci_re
 `blocker_ruling = -`) and a retry unpark (`status = in_review`, ruling spent, the four liveness counters
 reset) are each MULTI-FIELD writes coherent only together, so each is ONE atomic call rather than a
 hand-assembled string of `set`s. `park` is for every **non-CI** machine-blocker park (the merge-precondition
-park, `stage-3-merge.md`); the **CI** parks stay `ci-status.py liveness`'s, which writes the same three
-fields itself (`stage-2-ci.md`, "ESCALATE"). `unpark` consumes a `retry@<iso>` ruling only — it refuses a
+park, `stage-3-merge.md`) plus the narrow capped-history transition owned by `repair-pass.md`,
+**Unreconcilable capped history**; the **CI** parks stay `ci-status.py liveness`'s, which writes the same
+three fields itself (`stage-2-ci.md`, "ESCALATE"). `unpark` consumes a `retry@<iso>` ruling only — it refuses a
 bare `retry`, an unanswered park, an `abort` (that goes terminal through the abort procedure), and a row
 that is not parked. **`set` still writes `status` and `blocker_ruling` and is NOT gated:** the
 review-standoff park/unpark (`finding-audit.md`) is answered through `finding-audit.py rule-standoff`, not

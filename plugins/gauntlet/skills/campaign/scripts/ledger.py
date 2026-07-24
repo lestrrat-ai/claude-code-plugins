@@ -361,7 +361,9 @@ CREATE_ONLY = ("base_branch",)
 #   * `blocker_ruling` is where the USER'S ANSWER is recorded (`set --pr N --blocker-ruling retry@<iso>`);
 #     park/unpark own only the park-ENTRY clear and the retry SPEND, never the answer itself.
 # The CI-bound parks are `ci-status.py liveness`'s (it writes the same three fields itself and does NOT call
-# `park`); `park` is the writer for every OTHER machine-blocker park.
+# `park`); `park` is the writer for every OTHER machine-blocker park. One narrow recovery starts from
+# `repairing`: if `repair-pass.py bundle` cannot reconcile the capped history BEFORE a decision exists,
+# `park` converts that machine blocker to `awaiting-user`. A recorded `repair_decision` is never replaced.
 
 # (`unpark` resets every LIVENESS_COUNTERS member — the set defined once, above — to its ROW_DEFAULTS
 # value, never a retyped literal, so a counter added to the set is reset by the retry unpark with NO edit
@@ -397,8 +399,10 @@ ROUND_CAP = 11
 NS_STREAK_CAP = 6
 REPAIR_CAP = 2
 
-# Where a PR goes when it reaches a cap. It is NOT a park: a park waits on a HUMAN and only the user's
-# answer leaves it, while this waits on the reassessment pass and the driver clears it itself.
+# Where a PR goes when it reaches a cap. `repairing` normally is NOT a park: it waits on the reassessment
+# pass and the driver clears it itself. Before a decision, unreconcilable capped history that `bundle`
+# directs to park becomes `awaiting-user`; `repair-pass.md`, "Unreconcilable capped history", owns that
+# machine-blocker transition.
 REPAIR_STATUS = "repairing"
 
 # HELD — the statuses in which campaign MUST NOT dispatch ordinary gate work on a PR (a review pass, a
@@ -409,7 +413,9 @@ REPAIR_STATUS = "repairing"
 #
 #   awaiting-api / awaiting-user   parked on a HUMAN. Only the user's answer unparks.
 #   repairing                      at a review-loop cap. The reassessment pass and the repair it decides
-#                                  clear it — no human is waited on.
+#                                  normally clear it. Before a decision, unreconcilable capped history may
+#                                  enter the `awaiting-user` machine-blocker park; `repair-pass.md`,
+#                                  "Unreconcilable capped history", owns that exception.
 #
 # The ONE exception, for every member alike: OBSERVING a PR is not mutating it, so the CI watch follows
 # its normal policy, and reconcile still READS a held PR and records what it read.
@@ -1290,8 +1296,9 @@ def held_reason(status: str) -> str:
     DERIVED from the status, so a new member of HELD_STATUSES cannot silently inherit a wrong explanation.
     """
     if status == REPAIR_STATUS:
-        return ("at a review-loop cap and awaiting its REASSESSMENT PASS — the reassessment's decision and "
-                "the repair it dispatches clear it (`repair-pass.md`); NO human is waited on")
+        return ("at a review-loop cap and awaiting its REASSESSMENT PASS — its decision and the repair it "
+                "dispatches clear it (`repair-pass.md`), except an unreconcilable bundle history before a "
+                "decision becomes a machine-blocker park")
     if status == "awaiting-api":
         return "parked for the user to approve an API-changing fix — only the user's answer unparks it"
     if status == "awaiting-user":
@@ -1365,7 +1372,10 @@ def cmd_park(path: Path, args) -> int:
     Refusals, none of which write anything:
       * no row, or a TERMINAL row (`merged`/`aborted`) — nothing waits on a human for it — `fail` (exit 1);
       * an empty or `-` reason — a park that cannot name its blocker is not actionable (ESCALATE) — exit 1;
-      * `awaiting-api` / `repairing` — those held states have their OWN owners (`held_reason`) — exit 1;
+      * `awaiting-api` — that held state has its OWN owner (`held_reason`) — exit 1;
+      * `repairing` with a recorded `repair_decision` — the decision owns the next action and may not be
+        replaced by a park — exit 1. With `repair_decision = -`, `repair-pass.py bundle` may convert an
+        unreconcilable capped history into this machine-blocker park;
       * ALREADY `awaiting-user` — a park is open and a SECOND may not overwrite the open question. That is a
         STOP, not an input error: `EXIT_STOP`, and the EXISTING `ci_reason` is surfaced so the driver knows
         which question is already outstanding.
@@ -1387,9 +1397,14 @@ def cmd_park(path: Path, args) -> int:
         print(f"ledger: pr {pr} is ALREADY awaiting-user — a park is open and NOT yet answered, so a second "
               f"park may not overwrite its question. Open blocker: {row['ci_reason']}", file=sys.stderr)
         return EXIT_STOP
-    if status in ("awaiting-api", REPAIR_STATUS):
+    if status == "awaiting-api":
         fail(f"pr {pr} is {status}, not parkable as a machine blocker — that state has its own owner "
              f"({held_reason(status)}). Resolve it through its own path, not a park")
+    if status == REPAIR_STATUS and row["repair_decision"] != "-":
+        fail(f"pr {pr} is {REPAIR_STATUS} with recorded reassessment decision {row['repair_decision']} — "
+             "a machine-blocker park may replace `repairing` only before a decision exists, when "
+             "`repair-pass.py bundle` cannot reconcile capped history. Execute the recorded decision "
+             "through `dispatch-check --action repair`; never overwrite it with a park")
 
     row.update({"status": "awaiting-user", "ci_reason": reason, "blocker_ruling": "-"})
     save(path, header, rows, activity=True)  # a park changes `status` — a non-exempt field, so it is activity
@@ -1684,7 +1699,8 @@ def build_parser() -> argparse.ArgumentParser:
                         "`repairing` row accepts (and only once its decision is recorded)")
 
     pk = sub.add_parser("park", help="park a PR on the user for a MACHINE BLOCKER: status=awaiting-user, "
-                                     "ci_reason=<blocker>, blocker_ruling=- — atomically")
+                                     "ci_reason=<blocker>, blocker_ruling=- — atomically; an undecided "
+                                     "repairing row may park only for unreconcilable reassessment history")
     pk.add_argument("--pr", required=True, help="PR number (row key)")
     pk.add_argument("--reason", required=True,
                     help="the machine blocker, NAMED — the question the user is asked to rule on; becomes "

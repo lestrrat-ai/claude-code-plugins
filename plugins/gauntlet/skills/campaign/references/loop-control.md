@@ -281,11 +281,12 @@ the worker returns, and what never moves into it. The steps below are unchanged 
 
    - **PARKED** (`awaiting-user`, `awaiting-api`) — waiting on a **HUMAN**. No amount of machine work can
      resolve it; only the user's answer unparks it (below).
-   - **`repairing`** — the PR reached a **review-loop cap** and has stopped converging. It is **NOT waiting
-     on a human**: campaign clears it **itself**, by running the reassessment pass and executing the one
-     decision that comes back (`repair-pass.md`). **A cap is a mode switch, not a doorbell — do NOT prompt
-     the user.** Ordinary gate work is refused for it; the **decided repair** is the one thing that may be
-     dispatched, and only once the decision is recorded (`dispatch-check --action repair`).
+   - **`repairing`** — the PR reached a **review-loop cap** and has stopped converging. It normally is **NOT
+     waiting on a human**: campaign clears it by running the reassessment pass and executing its decision.
+     An unreconcilable capped history is the narrow exception; `repair-pass.md`, **Unreconcilable capped
+     history**, owns its machine-blocker park. Ordinary gate work is refused for it; the **decided repair**
+     is the one thing that may be dispatched, and only once the decision is recorded
+     (`dispatch-check --action repair`).
 
    **The test is "does this MUTATE the PR?" — NOT "is this action named in a list?"** *Mutate* = change
    the PR or dispatch work that will: its content, its head commit, its base, its labels, its
@@ -362,8 +363,9 @@ the worker returns, and what never moves into it. The steps below are unchanged 
    other bullets describe.** Do not skip it and do not prompt the user; drive its repair to completion:
 
    - **no `repair_decision` yet** → run `repair-pass.md`, **"Build the complete reassessment bundle"**.
-     Dispatch its exact prompt to one context-isolated **`session`** worker. Record the returned decision
-     through that section's bundle-bound `repair-pass.py decide` command.
+     If it explicitly reports unreconcilable history and directs a park, follow **"Unreconcilable capped
+     history"** there. Otherwise dispatch its exact prompt to one context-isolated **`session`** worker and
+     record the returned decision through that section's bundle-bound `repair-pass.py decide` command.
    - **a `repair_decision` is recorded** → `ledger.py dispatch-check --pr <N> --action repair`, then
      execute **that** decision and no other work. When the repair has landed, return the row to the gate
      (`ledger.py … set --pr <N> --status in_review`). `review_rounds` is **not** reset — it never is. A

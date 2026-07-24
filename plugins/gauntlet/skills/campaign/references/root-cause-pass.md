@@ -22,8 +22,9 @@ different instance — is the same signal arriving late; treat it identically.)
 restore it.** It triggered on a fact about history that nothing recorded, evaluated by a heartbeat that
 remembers nothing, and it **never fired once** across 35 review rounds on two PRs
 (`bailout-and-final-report.md`). What backstops this pass now is a **counter with a cap**: at a review-loop
-cap the PR goes `repairing` and a reassessment pass sees **every round at once** and returns one decision —
-and **ROOT-CAUSE is one of the four** (`repair-pass.md`). So this pass is now reached by **two** doors: the
+cap the PR goes `repairing`. A valid reassessment bundle sees **every round at once** and returns one
+decision — and **ROOT-CAUSE is one of the four**; unreconcilable capped history follows
+`repair-pass.md`, **Unreconcilable capped history**. So this pass is now reached by **two** doors: the
 shape trigger above, which is still the fast one and still the one you should be using, and the
 reassessment, which is the backstop that actually fires. **This file remains the definition of the pass
 itself; the reassessment REUSES it and never reimplements it.**

@@ -253,9 +253,9 @@
 - **A HELD PR IS FROZEN — TAKE NO ACTION THAT MUTATES IT. ASK THE TOOL: `ledger.py … dispatch-check --pr
   <N>` exits non-zero.** A PR is **HELD** when it is **parked on a HUMAN** (`status = awaiting-user`, a
   standoff; `awaiting-api`, API approval) **or `repairing`** — it reached a review-loop cap, has stopped
-  converging, and is being reassessed and repaired (`repair-pass.md`; **that one waits on no human — do
-  NOT prompt the user**). `HELD_STATUSES` in `scripts/ledger.py` is the **one** enumeration; never retype
-  it. The test is **"does this MUTATE the
+  converging, and is normally reassessed and repaired without a human. `repair-pass.md`,
+  **Unreconcilable capped history**, owns the narrow machine-blocker exception. `HELD_STATUSES` in
+  `scripts/ledger.py` is the **one** enumeration; never retype it. The test is **"does this MUTATE the
   PR?"** — **not** "is this action named in a list", because an enumeration will miss a site (it did:
   the guard once named four dispatch sites and missed `stage-3-merge.md` step 6's post-merge rebase).
   **NEVER** launch a review pass, a CI fix, a review fix, or a merge for it; **NEVER** rebase it,
@@ -369,8 +369,9 @@
 - **A PR THAT STOPS CONVERGING IS REPAIRED, NOT PROMPTED.** At a review-loop cap `ledger.py verdict` sets
   `status = repairing` and **exits non-zero**: dispatch **no** further targeted fix and **no** further
   review pass. Run `repair-pass.md`, **"Build the complete reassessment bundle"**, dispatch its exact
-  prompt to the reassessment worker, and execute its bundle-bound decision **without asking the user**.
-  **A cap is a MODE SWITCH, not a doorbell.**
+  prompt to the reassessment worker, and execute its bundle-bound decision. A bundle that explicitly names
+  unreconcilable history and directs a park follows **"Unreconcilable capped history"** there. **A cap is a
+  MODE SWITCH, not a doorbell.**
 - **AUTONOMOUS REPAIR NEVER REWRITES A PR CAMPAIGN DOES NOT OWN.** On a PR with `pr_origin = external` —
   the user's, a teammate's, any PR adopted by number, **and the DEFAULT** — the permitted decisions are
   **only REPAIR-INTENT / ABORT**. RESCOPE and ROOT-CAUSE reshape branch content wholesale, and
