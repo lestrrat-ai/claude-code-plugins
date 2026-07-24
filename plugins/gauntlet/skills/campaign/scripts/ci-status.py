@@ -178,6 +178,9 @@ WATCH_ACTION_CONSUMERS = (
     ("references/stage-3-merge.md", "**Judgment-rebase watch action.**"),
     ("references/critical-rules.md", "- **CI watch action.**"),
     ("references/critical-rules.md", "**Held-PR watch action.**"),
+    ("references/critical-rules.md", "**Refutation CI watch action.**"),
+    ("references/critical-rules.md", "**Campaign-commit CI watch action.**"),
+    ("references/finding-audit.md", "**Refutation CI watch action.**"),
     ("references/files-and-ledger.md", "**Held-PR watch action.**"),
     ("references/loop-control.md", "**Held-PR watch action.**"),
     ("references/loop-control.md", "- **CI watch action.**"),
@@ -2488,10 +2491,8 @@ def markdown_structural_code_text(text: str) -> str:
         list_item = re.match(r" {0,3}(?:[-+*]|\d+[.)])[ \t]+", content) if leading <= 3 else None
         if list_item is not None:
             list_content_indent = len(list_item.group())
-        elif not body:
-            list_content_indent = None
         else:
-            if list_content_indent is not None and leading < list_content_indent:
+            if list_content_indent is not None and body and leading < list_content_indent:
                 list_content_indent = None
         if fence is not None:
             marker, width, container_indent, fence_blockquote_depth = fence

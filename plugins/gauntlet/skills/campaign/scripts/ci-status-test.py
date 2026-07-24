@@ -1411,6 +1411,16 @@ def watch_doc_cases(ci) -> list[str]:
         if literal in ci.markdown_structural_code_text(hidden):
             problems.append(f"[watch-doc] nested-list fenced code in {name} was not masked structurally")
 
+    visible_formula = (WATCH_DOC_FIXTURES / "nested-list-fenced-visible-formula.md").read_text(
+        encoding="utf-8"
+    )
+    literal = "Start a watch whenever ci == pending."
+    if literal not in ci.markdown_structural_code_text(visible_formula):
+        problems.append("[watch-doc] visible prose after nested-list fenced code was masked structurally")
+    got = ci.watch_formula_problems(Path("nested-list-fenced-visible-formula.md"), visible_formula)
+    if not any("consumer `ci` verdict predicate" in problem for problem in got):
+        problems.append("[watch-doc] visible prose after nested-list fenced code hid a watch formula")
+
     reversed_action = (WATCH_DOC_FIXTURES / "reversed-action.md").read_text(encoding="utf-8")
     got = ci.watch_action_block_problems(Path("reversed-action.md"), reversed_action, anchor)
     if not any("before running `liveness`" in problem for problem in got):
@@ -1467,6 +1477,42 @@ def stage3_rebase_watch_doc_cases(ci, tmp: Path) -> list[str]:
             problems.append(
                 f"[stage3 watch-doc] unconditional {name}-rebase watch action was accepted"
             )
+    return problems
+
+
+def post_commit_watch_doc_cases(ci, tmp: Path) -> list[str]:
+    """Source-copy fixtures prove every post-commit watch action remains a named consumer."""
+    problems = []
+    source = ci.HERE.parent
+    cases = (
+        (Path("references") / "finding-audit.md", "**Refutation CI watch action.**"),
+        (Path("references") / "critical-rules.md", "**Refutation CI watch action.**"),
+        (Path("references") / "critical-rules.md", "**Campaign-commit CI watch action.**"),
+    )
+    for index, (relative, anchor) in enumerate(cases):
+        fixture_root = tmp / f"post-commit-watch-action-{index}"
+        shutil.copytree(source, fixture_root, ignore=shutil.ignore_patterns(".tmp", "__pycache__"))
+        path = fixture_root / relative
+        text = path.read_text(encoding="utf-8")
+        start = text.find(anchor)
+        end = text.find("\n\n", start)
+        if start < 0 or end < 0:
+            problems.append(f"[post-commit watch-doc] {relative} lost {anchor}")
+            continue
+        block = text[start:end]
+        changed, count = re.subn(
+            r"`watch_warranted`\s+is\s+`true`",
+            "`watch_warranted` may be `true` or `false`",
+            block,
+            count=1,
+        )
+        if count != 1:
+            problems.append(f"[post-commit watch-doc] {relative} lost {anchor}'s mutation target")
+            continue
+        path.write_text(text[:start] + changed + text[end:], encoding="utf-8")
+        got, _ = ci.check_watch_action_docs(fixture_root)
+        if not any(str(relative) in problem and "act only when" in problem for problem in got):
+            problems.append(f"[post-commit watch-doc] unconditional {anchor} in {relative} was accepted")
     return problems
 
 
@@ -1552,6 +1598,14 @@ def run(ci, tmp: Path) -> int:
     if not stage3_watch_doc_problems:
         print(f"ok       {'stage-3 rebase watch fixtures':32} -> both rebase watch actions reject an "
               f"unconditional launch")
+
+    post_commit_watch_doc_problems = post_commit_watch_doc_cases(ci, tmp)
+    for problem in post_commit_watch_doc_problems:
+        failures += 1
+        print(f"FAIL     {problem}")
+    if not post_commit_watch_doc_problems:
+        print(f"ok       {'post-commit watch fixtures':32} -> every direct post-commit watch action rejects "
+              f"an unconditional launch")
 
     print()
     print(f"--- doc-check: {ci.SPEC_DOC.name} + {ci.DRIVER_DOC.name} vs the code that runs ---")
