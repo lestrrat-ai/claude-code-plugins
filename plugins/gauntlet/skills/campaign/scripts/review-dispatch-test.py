@@ -219,7 +219,7 @@ def t_prompt_profiles_are_typed_and_route_scoped() -> None:
                 check(needle in prompt, f"{route} attempt {launch_attempt} lost contract needle {needle!r}")
             for needle in (
                 b"local repository maintenance change",
-                b"fixes the repository failure stated in the bound Intent",
+                b"the PR achieves its stated Purpose",
                 b"local diff, repository tests, and fixtures as proof",
                 b"Do not contact or test third-party systems",
             ):

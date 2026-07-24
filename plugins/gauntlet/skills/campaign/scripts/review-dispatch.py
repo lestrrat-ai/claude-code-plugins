@@ -42,8 +42,8 @@ PROMPT_PROFILES = ("standard", "codex-recovery")
 CODEX_RECOVERY_PREAMBLE = (
     b"REPOSITORY MAINTENANCE REVIEW RETRY\n"
     b"Review this local repository maintenance change. The concrete local goal is to decide whether "
-    b"the PR fixes the repository failure stated in the bound Intent while preserving the complete "
-    b"review contract below. Use the local diff, repository tests, and fixtures as proof. Do not "
+    b"the PR achieves its stated Purpose while preserving the complete review contract below. Use the "
+    b"local diff, repository tests, and fixtures as proof. Do not "
     b"contact or test third-party systems.\n\n"
 )
 
