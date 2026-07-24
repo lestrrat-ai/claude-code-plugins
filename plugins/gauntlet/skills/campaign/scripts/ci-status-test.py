@@ -1028,7 +1028,7 @@ def required_set_matrix_cases(ci, tmp: Path) -> list[str]:
 
 
 def command_copy_cases(ci, tmp: Path) -> list[str]:
-    """Wrapped copies cannot borrow flags from later paragraphs or interrupting Markdown blocks."""
+    """Wrapped copies cannot borrow flags from later commands, paragraphs, or Markdown blocks."""
     problems: list[str] = []
     fixtures = {
         "derive": (
@@ -1065,7 +1065,8 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
         quoted_shell_valid = quoted(shell_valid)
         quoted_shell_invalid = quoted(shell_invalid)
         quoted_detached = quoted(detached)
-        inline_invalid = invalid.replace("\n  ", " ")
+        inline_invalid = invalid.replace("`", "").replace("\n  ", " ")
+        inline_valid = valid.replace("`", "").replace("\n  ", " ")
         ordered_invalid = invalid.replace("\n", "\n   ")
         nested_unordered_invalid = invalid.replace("\n", "\n      ")
         nested_ordered_invalid = invalid.replace("\n", "\n       ")
@@ -1080,6 +1081,10 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
         )
         (root / "quote-transition.md").write_text(
             f"{invalid}\n{quoted_detached}\n",
+            encoding="utf-8",
+        )
+        (root / "same-paragraph.md").write_text(
+            f"{inline_invalid} Then run {inline_valid}; run {inline_valid}\n",
             encoding="utf-8",
         )
         boundary_fixtures = {
@@ -1148,14 +1153,15 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
         for name, (text, _problem_line) in boundary_fixtures.items():
             (root / name).write_text(text, encoding="utf-8")
         found_problems, copies = check(root)
-        if len(copies) != 43:
-            problems.append(f"[doc-copy {subcommand}] found {len(copies)} wrapped copies, expected 43: {copies!r}")
+        if len(copies) != 46:
+            problems.append(f"[doc-copy {subcommand}] found {len(copies)} wrapped copies, expected 46: {copies!r}")
         expected_problem_sites = {"wrapped.md:4", "wrapped.md:10", "wrapped.md:18", "wrapped.md:26",
                                   "quote-transition.md:1",
+                                  "same-paragraph.md:1",
                                   *(f"{name}:{problem_line}" for name, (_text, problem_line)
                                     in boundary_fixtures.items() if problem_line is not None)}
         problem_sites = {problem.split(" ", 1)[0] for problem in found_problems}
-        if (len(found_problems) != 33 or problem_sites != expected_problem_sites
+        if (len(found_problems) != 34 or problem_sites != expected_problem_sites
                 or any(problem_needle not in problem for problem in found_problems)):
             problems.append(
                 f"[doc-copy {subcommand}] invalid plain, blockquoted, and block-boundary copies were not "

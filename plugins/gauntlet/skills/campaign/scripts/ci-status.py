@@ -2328,10 +2328,12 @@ def markdown_list_marker(content: str) -> tuple[int, int, str, int | None] | Non
 
 
 def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, str]]:
-    """Find wrapped candidates without crossing Markdown paragraph, block, or quote boundaries."""
+    """Find wrapped candidates without crossing Markdown or command boundaries."""
     quote_prefix = r"(?:[ \t]*>[ \t]*)+"
     separator = rf"(?:\s+|[ \t]*\\\r?\n(?:{quote_prefix})?[ \t]*|\r?\n{quote_prefix})"
     needle = re.compile(rf"ci-status\.py{separator}{re.escape(subcommand)}\b")
+    command_start = re.compile(rf"ci-status\.py{separator}\S+\b")
+    command_delimiter = re.compile(r"`|&&|\|\||;|\|")
     copies: list[tuple[Path, int, str]] = []
     for md in sorted(root.rglob("*.md")):
         text = md.read_text(encoding="utf-8")
@@ -2525,7 +2527,12 @@ def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, 
             paragraph = text[start:end]
             for match in needle.finditer(paragraph):
                 offset = start + match.start()
-                copies.append((md, text.count("\n", 0, offset) + 1, paragraph[match.start():]))
+                command_end = len(paragraph)
+                if (next_command := command_start.search(paragraph, match.end())) is not None:
+                    command_end = next_command.start()
+                if (delimiter := command_delimiter.search(paragraph, match.end(), command_end)) is not None:
+                    command_end = delimiter.start()
+                copies.append((md, text.count("\n", 0, offset) + 1, paragraph[match.start():command_end]))
     return copies
 
 
@@ -2542,7 +2549,7 @@ def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]
     A copy is any occurrence that RUNS the command (`ci-status.py derive` carrying `--pr`) — prose that
     merely NAMES the command is not a copy, and is not checked. **THE UNIT IS THE COMMAND, NOT THE LINE**:
     an invocation WRAPS (a shell `\\`, or plain prose reflow), and a line-by-line check would report the
-    continuation line as a violation of itself. So each copy is read to the end of its PARAGRAPH.
+    continuation line as a violation of itself. So each copy is read to its paragraph's next command boundary.
 
     FINDING ZERO COPIES IS A FAILURE: the command is prescribed by at least `stage-2-ci.md` and
     `critical-rules.md`, and a check that cannot find its subject never passes.
