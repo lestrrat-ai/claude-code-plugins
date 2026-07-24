@@ -164,15 +164,12 @@ about and one whose partial rejection strands the rest.
      **publish** path (Tier 3), **not** a fix. If a fresh heartbeat **cannot tell which** the ruling was for,
      **SURFACE the entry to the user** rather than assume a fix. The same-run idempotency note below covers
      its interrupted-heartbeat gap.
-   - **`in-pr`** — a PR is open and named in the entry, but an interrupted heartbeat may have recorded `open-pr`
-     **without** finishing ADOPTION. Adoption is a campaign action, not a store edge — no `in-pr`
-     transition performs it — so "defer to the graph" strands the PR. On resume, **reconcile the recorded
-     PR against the current run.** If it has no ledger row, or its **non-terminal** row lacks the run label,
-     ADOPT it through step 4. **If its existing row is terminal, NEVER refresh, re-adopt, or relabel it** —
-     surface that terminal campaign result and leave the follow-up lifecycle unchanged. Choosing the next
-     follow-up transition for an aborted-but-open PR is separate lifecycle work; this adoption guard does
-     not invent one. An unadopted follow-up PR with no terminal row sits **outside the campaign gate** —
-     the exact thing "fold that PR into the current campaign" exists to prevent.
+   - **`in-pr`** — first read its typed `rejection` phase. `pending` resumes the rejection procedure below;
+     `disposed` goes straight to terminal `reject`; only `-` takes the ordinary path. On that ordinary path,
+     reconcile the recorded PR against the current run. If it has no ledger row, or its **non-terminal** row
+     lacks the run label, ADOPT it through step 4. **If its existing row is terminal, NEVER refresh,
+     re-adopt, or relabel it.** An unadopted follow-up PR with no terminal row sits **outside the campaign
+     gate** — the exact thing "fold that PR into the current campaign" exists to prevent.
    - **`reopened`** — its PR died and it already carries the decision it earned, so it does **not** re-decide:
      it resumes at opening the **replacement** PR. Dispatch the fixer, which opens the replacement PR, then
      `open-pr` records it (→ `in-pr`) and step 4 adopts it — no reconciliation, same as `self-accepted`. The
@@ -185,6 +182,24 @@ about and one whose partial rejection strands the rest.
    one run**. This is the same-run analogue of the cross-run race scoped out under "Scope: one run's driver"
    above — a non-goal for the same reason (the fix needs a `followups.py` store change or a fix-contract
    change), tracked as **a follow-up**, not solved by this documentation.
+
+#### Rejecting an `in-pr` follow-up
+
+**Record `reject-pending` before campaign disposition, then finish disposition before terminal `reject`.**
+The pending phase is the user's ruling on the follow-up. It is separate from a terminal ledger row, which
+records what happened to the PR rather than what the user decided.
+
+1. Run `followups.py --file <store> reject-pending --id fuN` while the entry is `in-pr`. This preserves the
+   PR reference and writes the user's ruling time.
+2. Finish the recorded PR's current campaign disposition. A CLOSED PR uses `closed-unmerged`, which records
+   the disposition directly. A campaign abort or close-out records the matching pending disposition when its
+   ledger row makes a real non-`aborted` → `aborted` transition. A MERGED PR remains the durable record, so
+   use `merged` and do not record rejection.
+3. Once the entry reports `rejection = disposed`, run `followups.py --file <store> reject --id fuN`. It
+   keeps the original `reject-pending` timestamp and retains the PR reference as history.
+
+**Never use an old terminal ledger row as a new rejection signal.** A later pending ruling is a new fact and
+stays pending until its own PR disposition occurs.
 
 2. **NOT APPLICABLE → `refute`.** If the investigation cannot reproduce the claim, or shows the mechanism
    cannot occur, it is **refuted** — and that is its **most valuable** outcome, not a failure. A refuted
@@ -219,7 +234,8 @@ about and one whose partial rejection strands the rest.
    whole point of "self-accepted, not accepted": the driver may take a follow-up up on its own, but the PR
    it produces is **judged by the independent gate, not self-approved** — the driver is not its own gate
    authority. When that PR **merges**, run `followups.py merged --id fuN`: the merged PR is the durable
-   record now, so the entry is deleted (`closed-unmerged` if the PR dies instead — back to open work).
+   record now, so the entry is deleted. If the PR dies, `closed-unmerged` returns ordinary work to the
+   queue; a pending rejection follows the rejection procedure above.
 
 5. **ANY TIER-2 CONDITION FAILS OR IS UNCLEAR → SURFACE AND ASK.** If the fix would touch gate machinery,
    **change user-facing behavior at all** (Tier-2 condition 3 requires it **preserved** — a named test is
@@ -256,9 +272,9 @@ time. So:
 
 - While the PR is **open**, the entry **STAYS** (`in-pr`) and records **which PR** is addressing it.
 - The PR **merges** → `merged` deletes the entry. The PR is the record now.
-- The PR is **closed WITHOUT merging** → `closed-unmerged` returns it to **open work** (`reopened`), with
-  its history intact — the finding, the ACT grounds or the user's ruling, and the PR that died. It never
-  vanishes with the PR, and it is never stuck in "being worked on" forever.
+- The PR is **closed WITHOUT merging** with no pending rejection → `closed-unmerged` returns it to **open
+  work** (`reopened`), with its history intact. With a pending rejection, the same command records
+  `rejection = disposed` and leaves it `in-pr` until terminal `reject` records the user's decision.
 
 **Move it in the heartbeat that SAW the event** — the same rule as recording one the moment it is noticed, and
 for the same reason: the driver's memory of it dies with the driver's context. The heartbeat that opens the PR
@@ -306,10 +322,11 @@ followups.py --file <store> corroborate --id fuN --finding F   # TIER 1 — free
 followups.py --file <store> refute      --id fuN --finding F   # TIER 1 — free. And it stays in the store
 followups.py --file <store> take-up     --id fuN --act-...     # TIER 2 — only with EVERY condition evidenced
 followups.py --file <store> accept  --id fuN        # THE USER AGREED — the only edge into `accepted`
-followups.py --file <store> reject  --id fuN        # the user ruled against it — and the entry is KEPT
+followups.py --file <store> reject-pending --id fuN # user rejected an `in-pr` entry; record typed pending state
+followups.py --file <store> reject  --id fuN        # user ruled against it; `in-pr` requires a disposed PR result
 followups.py --file <store> open-pr --id fuN --pr <ref>    # a PR is addressing it — the entry STAYS
 followups.py --file <store> merged  --id fuN        # that PR LANDED — it is the record now, so the entry is DELETED
-followups.py --file <store> closed-unmerged --id fuN       # that PR died — back to OPEN WORK, nothing recorded it
+followups.py --file <store> closed-unmerged --id fuN       # ordinary PR died → OPEN WORK; pending rejection → disposed
 followups.py --file <store> publish --id fuN --ref <issue> # TIER 3 — only AFTER the user's accept. The ISSUE
                                                            # is the record now, so the entry is DELETED
 followups.py --file <store> set --id fuN --<field> <value>      # edit the PROSE of the claim — never EMPTY it
@@ -338,7 +355,9 @@ fixtures cited below (`user-step-unskippable`, `delete-needs-a-record`, …) are
 **What every field is for** (the schema owns the list; this owns the *why*): an entry carries a stable
 id, a one-line title, the **evidence** (which PR, which review pass, which `file:line`), **why it was
 deferred** rather than folded in, its lifecycle state, which run found it and when, **which PR is
-addressing it**, and — once ruled on — when the user decided. **A follow-up with no evidence is a RUMOR**:
+addressing it**, and — once ruled on — when the user decided. Its typed `rejection` phase separately
+records whether an `in-pr` rejection is pending or that PR's disposition is complete. **A follow-up with no
+evidence is a RUMOR**:
 nobody can audit an entry that says only *"the merge logic looks wrong"*. **Why it was deferred** is
 required on the same terms — without it the next run cannot see why the finding was not simply folded into
 the PR that found it, and re-litigates the decision.
@@ -368,9 +387,9 @@ it can ever take a blank. A stamp (`--at`, `--found`) may be **omitted** — it 
 stamp that is **supplied** and shows nothing is refused like anything else.
 
 **And a flag exists on a subcommand only where that subcommand consumes it.** `--at` is offered by the steps
-that **stamp** something and by no others; passing it elsewhere is an argparse **error**, not a value that
-silently vanishes. `<cmd> --help` names every flag a command takes. Never "document" a dropped value: a
-documented silent discard is still a silent discard.
+that stamp a ruling or finding and by no others; passing it elsewhere is an argparse **error**, not a value
+that silently vanishes. Terminal `reject` keeps the time `reject-pending` already recorded. `<cmd> --help`
+names every flag a command takes.
 
 **The claim's `evidence` and the investigation's `finding` are DIFFERENT FIELDS, and both matter.** One is
 why the driver **raised** it; the other is what happened when somebody actually **looked**. A finding never
@@ -435,12 +454,13 @@ job is to hold claims a human can audit.
 `accept` is a promise the driver makes, and what the graph buys is that **skipping the user is a
 DELIBERATE act rather than an oversight**. It is a footgun guard, **NOT** a security boundary.
 
-**The user's ruling is DURABLE DATA.** `accept`/`reject` stamp when it was made, for the same reason the
-ledger's `api_approval` records `approved@<iso>` rather than living in the driver's head: **a later heartbeat
-is a fresh agent that never saw the conversation**, and it must not re-ask a question the user already
-answered. **Nothing the driver does alone stamps it** — not an investigation, not a `take-up`, not opening
-a PR, not `publish`. A ruling written by anything but the user would launder the driver's action into the
-user's consent (`ruling-recorded` proves the stamp belongs to `accept`/`reject` and to nothing else).
+**The user's ruling is DURABLE DATA.** `accept`, `reject-pending`, and `reject` stamp when it was made, for
+the same reason the ledger's `api_approval` records `approved@<iso>` rather than living in the driver's head:
+**a later heartbeat is a fresh agent that never saw the conversation**, and it must not re-ask a question the
+user already answered. **Nothing the driver does alone stamps it** — not an investigation, not a `take-up`,
+not opening a PR, not `publish`. A ruling written by anything but the user would launder the driver's action
+into the user's consent (`ruling-recorded` proves the stamp belongs to the user-ruling commands and nothing
+else).
 
 ### WHEN TO RECORD ONE — the moment it is noticed, not at the end
 

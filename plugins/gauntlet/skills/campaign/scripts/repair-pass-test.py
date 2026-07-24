@@ -46,6 +46,16 @@ def _load_finding_audit():
 
 FA = _load_finding_audit()
 
+
+def _load_followups():
+    mod = load_module_from_path("repair_pass_test_followups", OWNER.parent / "followups.py")
+    if mod is None:
+        raise RuntimeError(f"cannot load {OWNER.parent / 'followups.py'}")
+    return mod
+
+
+F = _load_followups()
+
 SHA = "c" * 40
 
 
@@ -293,6 +303,38 @@ def t_abort_is_terminal_and_leaves_the_pr_open(tmp: Path) -> None:
     check(field(path, "status") == "aborted", "abort is terminal")
     check("LEAVE THE PR OPEN" in err, f"the abort message must say the PR stays open: {err!r}")
     check("bailout-and-final-report" in err, f"the abort must route into the EXISTING procedure: {err!r}")
+
+
+def t_abort_decision_disposes_matching_pending_followup(tmp: Path) -> None:
+    """A reassessment abort records its matching pending follow-up disposition before terminal reject."""
+    root = tmp / "project"
+    run_dir = root / ".gauntlet" / "tmp" / "g1"
+    run_dir.mkdir(parents=True)
+    ledger, record = setup(run_dir, decision="abort", pr="9", pr_origin="gauntlet")
+    store = root / ".gauntlet" / "followups.jsonl"
+    for argv in (
+        ["--file", str(store), "add", "--title", "pending", "--evidence", "proof",
+         "--deferred-why", "scope"],
+        ["--file", str(store), "accept", "--id", "fu1", "--at", "2026-07-24T10:00:00Z"],
+        ["--file", str(store), "open-pr", "--id", "fu1", "--pr", "#9"],
+        ["--file", str(store), "reject-pending", "--id", "fu1", "--at", "2026-07-24T11:00:00Z"],
+    ):
+        code, _, err = capture_cli(F.main, argv)
+        check(code == 0, f"follow-up setup failed: {argv!r}: {err!r}")
+
+    code, _, err = decide(ledger, record, "abort", pr="9")
+    check(code == 0, f"abort decision failed: {err!r}")
+    code, out, err = capture_cli(F.main, ["--file", str(store), "get", "--id", "fu1"])
+    check(code == 0, f"get pending follow-up failed: {err!r}")
+    entry = json.loads(out)
+    check(entry["rejection"] == F.DISPOSED_REJECTION,
+          f"abort decision did not record the completed follow-up disposition: {entry!r}")
+    code, out, err = capture_cli(F.main, ["--file", str(store), "reject", "--id", "fu1",
+                                          "--at", "2026-07-24T12:00:00Z"])
+    rejected = json.loads(out) if out else {}
+    check(code == 0 and rejected.get("state") == "rejected"
+          and rejected.get("decided") == "2026-07-24T11:00:00Z",
+          f"terminal reject did not consume the abort disposition: {code} {err!r}")
 
 
 # --- the decision is real, recorded, and only for a PR that needs one ----------
@@ -1638,6 +1680,7 @@ CASES = [
     ("unknown-is-external", "an unset origin is EXTERNAL — the fail-safe direction", t_unknown_origin_is_treated_as_external),
     ("budget-spent", "at REPAIR_CAP the only decision left is abort", t_repair_budget_is_spent),
     ("abort-leaves-it-open", "abort is terminal, leaves the PR OPEN, and reuses the existing procedure", t_abort_is_terminal_and_leaves_the_pr_open),
+    ("abort-followup-disposition", "an abort decision records matching pending follow-up disposition before terminal reject", t_abort_decision_disposes_matching_pending_followup),
     ("only-a-capped-pr", "a PR that never hit a cap cannot be reassessed", t_only_a_capped_pr_may_be_reassessed),
     ("decision-needs-record", "no decision without its reasoning on disk", t_a_decision_needs_a_record),
     ("record-decision-binds", "the record's DECISION field must be well-formed and equal --decision", t_record_decision_must_match_the_argument),

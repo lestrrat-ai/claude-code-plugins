@@ -50,9 +50,10 @@ file that grows.
     did we do this"), or it was PUBLISHED as an issue (the issue is then the record).
   * NEVER DELETED ON TAKE-UP. An entry deleted when work STARTS is an entry a closed, abandoned or
     rejected PR takes down with it — the work still undone, and nothing left to remember it. So while a PR
-    is OPEN the entry STAYS and records which PR is addressing it (`in-pr`), and a PR CLOSED WITHOUT
-    MERGING returns it to OPEN WORK (`reopened`) — never a silent vanish, never stuck in "being worked on"
-    forever.
+    is OPEN the entry STAYS and records which PR is addressing it (`in-pr`). A PR CLOSED WITHOUT MERGING
+    normally returns it to OPEN WORK (`reopened`); a pending user rejection instead records that PR's
+    completed disposition before terminal `reject` — never a silent vanish, never stuck in "being worked
+    on" forever.
   * REJECTIONS STAY. A rejection is worth remembering PRECISELY so it is not re-raised: delete it and the
     next run rediscovers the same thing, records it again, and asks the user again. It is hidden from the
     default view; it is not deleted. (A published one CAN be deleted for the same test: the ISSUE is the
@@ -140,8 +141,15 @@ SEQ_TYPE = "followup-seq"
 
 FIELDS = (
     "id", "title", "evidence", "deferred_why", "finding", *ACT_FLAGS,
-    "state", "found_run", "found", "decided", "pr", "published",
+    "state", "found_run", "found", "decided", "rejection", "pr", "published",
 )
+
+# `decided` records the user's ruling time. It cannot also prove that campaign completed the recorded PR's
+# terminal abort, so that independent fact has its own typed, accessor-owned field. No CLI flag writes it.
+NO_REJECTION = PLACEHOLDER
+PENDING_REJECTION = "pending"
+DISPOSED_REJECTION = "disposed"
+REJECTION_VALUES = (NO_REJECTION, PENDING_REJECTION, DISPOSED_REJECTION)
 
 # The fields that name a record OUTSIDE this store — the PR that addresses it, or the issue it was
 # published as. THEY ARE WHAT MAKES DELETION SAFE, and the rule is enforced, not assumed: an entry is
@@ -223,8 +231,10 @@ def project(rec: "dict", where: str = "") -> "dict[str, str]":
 # AND THE END OF AN ENTRY'S LIFE IS ON THE GRAPH TOO. `merged` and `publish` do not move the state — they
 # DELETE the entry, because by then the record lives somewhere else (the merged PR; the issue). Everything
 # in between is a state, and the two that matter most are the ones that keep a started piece of work from
-# being lost: `in-pr` (a PR is open on it — the entry STAYS, and names the PR) and `reopened` (that PR was
-# closed WITHOUT merging — the work is undone, so the entry is OPEN WORK again, with its history intact).
+# being lost: `in-pr` (a PR is open on it — the entry STAYS, and names the PR) and `reopened` (an ordinary
+# PR was closed WITHOUT merging — the work is undone, so the entry is OPEN WORK again, with its history
+# intact). A pending user rejection preserves `in-pr` until its PR disposition is recorded and terminal
+# `reject` stores the ruling.
 #
 # `<subcommand>: (states it may be applied FROM, the state it moves TO — or DELETED)`.
 DELETED = "deleted"  # NOT a state: the entry is REMOVED. It exists only in the CLI's output for that step,
@@ -235,6 +245,7 @@ TRANSITIONS = {
     "refute":          (("candidate", "corroborated", "reopened"), "refuted"),
     "take-up":         (("corroborated",), "self-accepted"),
     "accept":          (("candidate", "corroborated", "refuted", "self-accepted", "reopened"), "accepted"),
+    "reject-pending":  (("in-pr",), "in-pr"),
     "reject":          (("candidate", "corroborated", "refuted", "self-accepted", "accepted", "in-pr",
                         "reopened"), "rejected"),
     "open-pr":         (("accepted", "self-accepted", "reopened"), "in-pr"),
@@ -245,7 +256,7 @@ TRANSITIONS = {
 
 # The transitions that are the USER'S RULING. They are the ones that stamp `decided`, and the ONLY ones —
 # a `decided` written by anything else would launder the driver's action into the user's consent.
-USER_RULINGS = ("accept", "reject")
+USER_RULINGS = ("accept", "reject-pending", "reject")
 
 # Everything else is the DRIVER's. Derived, never listed: whatever is not the user's ruling is a step the
 # driver can take on its own, and the closure over exactly these edges is what must not reach `accepted`,
@@ -279,6 +290,7 @@ WRITES = {
     "refute":          ("finding",),
     ACT_CMD:           ACT_FLAGS,
     "accept":          ("decided",),
+    "reject-pending":  ("decided",),
     "reject":          ("decided",),
     "open-pr":         ("pr",),
     "closed-unmerged": (),
@@ -306,7 +318,9 @@ OPTIONAL = ("decided",)
 STAMPED = ("decided", "finding")
 
 # …so those are the ONLY steps that may OFFER `--at`, and which ones they are is DERIVED from what each edge
-# WRITES — never listed. `--at` used to be offered by EVERY transition and read by only these:
+# WRITES — never listed. Terminal `reject` is the one special case: it consumes a completed disposition but
+# preserves the timestamp `reject-pending` already recorded. `--at` used to be offered by EVERY transition
+# and read by only these:
 # `open-pr --at 1999-01-01T00:00:00Z` exited 0, and that timestamp appeared NOWHERE — not in the entry, not
 # on stdout. The caller believes they set a value; the tool tells them it worked; the value is gone. On a
 # step that stamps nothing, `--at` is therefore not a flag at all, and argparse refuses it.
@@ -338,7 +352,8 @@ FLAG_HELP = {
     "published": "where it was published (issue ref or URL) — the ISSUE is now the record, so the entry "
                  "is DELETED",
     "pr": "the PR addressing it (#N or URL). The entry STAYS while that PR is open: `merged` then deletes "
-          "it (the PR is the record), `closed-unmerged` returns it to open work (nothing recorded it)",
+          "it (the PR is the record), and ordinary `closed-unmerged` returns it to open work (nothing "
+          "recorded it)",
     **{w: f"ACT condition '{c}' — {why}" for c, w, why in ACT_CONDITIONS if w in ACT_FLAGS},
 }
 
@@ -400,7 +415,8 @@ WRITE_CMDS = tuple(INTAKE)
 INTAKE_HELP = {
     **FLAG_HELP,
     **{f: f"'{f}' — required on `add`, editable after, NEVER blankable: {BLANK_WHY[f]}" for f in REQUIRED},
-    "decided": "ISO timestamp of this step (default: now)",
+    "decided": "timestamp of this ruling (default: now); terminal `reject` preserves the original "
+               "`reject-pending` timestamp after campaign disposition",
     "found": "ISO timestamp it was found (default: now)",
     "found_run": "the run-id that found it",
 }
@@ -470,6 +486,14 @@ def entry_error(entry: dict) -> "str | None":
         return f"malformed id {entry['id']!r} (expected fu<N>)"
     if entry["state"] not in STATES:
         return f"unknown state {entry['state']!r}; valid: {', '.join(STATES)}"
+    if entry["rejection"] not in REJECTION_VALUES:
+        return (f"unknown rejection phase {entry['rejection']!r}; valid: "
+                f"{', '.join(REJECTION_VALUES)}")
+    if entry["state"] not in ("in-pr", "rejected") and entry["rejection"] != NO_REJECTION:
+        return (f"rejection phase {entry['rejection']!r} is only valid while an entry is `in-pr` or after "
+                "terminal `reject`")
+    if entry["state"] == "rejected" and entry["rejection"] == PENDING_REJECTION:
+        return "a rejected entry cannot retain an unresolved rejection disposition"
     empty = [f for f in REQUIRED if is_blank(entry[f])]
     if empty:
         return f"{entry['id']} carries no {', '.join(empty)} — {BLANK_WHY[empty[0]]}"
@@ -625,6 +649,37 @@ def find(entries: "list[dict]", fid: str) -> "dict | None":
     return None
 
 
+def rejection_phase(entry: dict) -> str:
+    """Return an active `in-pr` entry's typed rejection phase.
+
+    `decided` is user data. Only the accessor-owned `rejection` field may prove a pending ruling or completed
+    campaign disposition. A rejected entry retains `disposed` as history, but has no active procedure left.
+    """
+    return entry["rejection"] if entry["state"] == "in-pr" else NO_REJECTION
+
+
+def record_completed_rejection_disposition(path: Path, pr: str) -> "tuple[str, ...]":
+    """Record one exact PR's completed abort or close-out on matching pending follow-ups.
+
+    The ledger calls this only after its row made a real non-aborted -> aborted transition. A missing store is
+    normal, and ordinary `in-pr` entries remain untouched. The store lock and atomic dump remain its only
+    write path.
+    """
+    if not path.exists():
+        return ()
+    recorded: list[str] = []
+    with locked(path):
+        entries, high = read_store(path)
+        for entry in entries:
+            if pr_number(entry["pr"]) != pr or rejection_phase(entry) != PENDING_REJECTION:
+                continue
+            entry["rejection"] = DISPOSED_REJECTION
+            recorded.append(entry["id"])
+        if recorded:
+            dump(path, entries, high)
+    return tuple(recorded)
+
+
 GITHUB_PATH_COMPONENT = r"(?!(?:\.{1,2})/)[^/?#\s]+"
 
 
@@ -777,17 +832,44 @@ def cmd_transition(path: Path, args) -> int:
                 f"{args.id} is '{entry['state']}' — `{cmd}` applies only to: {', '.join(frm)}. "
                 f"A follow-up reaches '{to}' only along the transition graph; nothing else moves `state`."
             )
+        phase = rejection_phase(entry)
+        if cmd == "reject" and entry["state"] == "in-pr":
+            if phase == NO_REJECTION:
+                fail(
+                    f"{args.id} is 'in-pr' without a genuine pending rejection — run `reject-pending` before "
+                    "campaign disposition, then run `reject` only after disposition finishes."
+                )
+            if phase == PENDING_REJECTION:
+                fail(
+                    f"{args.id} has a pending rejection whose recorded PR disposition is unresolved — finish "
+                    "campaign disposition before terminal `reject`."
+                )
+        if cmd == "closed-unmerged" and phase == DISPOSED_REJECTION:
+            fail(
+                f"{args.id} already has a completed rejection disposition — run terminal `reject`; do not "
+                "reopen the entry."
+            )
         # WHEN this step was taken. The user's ruling is DURABLE DATA, exactly like the ledger's
         # `api_approval`: a later run — or a fresh agent that never saw the conversation — reads it and does
         # not re-ask. OMITTED, the stamp defaults to now; SUPPLIED (`--at`), it is a value like any other and
-        # `taken()` has already refused a blank. It is offered ONLY where it lands somewhere (`STAMPS`).
+        # `taken()` has already refused a blank. It is offered ONLY where it stamps a ruling (`STAMPS`),
+        # except terminal `reject`, which preserves a completed pending rejection's original ruling time.
         stamp = values.get("decided") or now_iso()
         for field in WRITES[cmd]:
             if field in OPTIONAL:
-                entry[field] = stamp
+                if cmd == "reject-pending":
+                    entry[field] = stamp
+                    entry["rejection"] = PENDING_REJECTION
+                elif cmd == "reject" and phase == DISPOSED_REJECTION:
+                    pass
+                else:
+                    entry[field] = stamp
                 continue
             entry[field] = (append_finding(entry[field], to, stamp, values[field]) if field == "finding"
                             else values[field])
+        if cmd == "closed-unmerged" and phase == PENDING_REJECTION:
+            entry["rejection"] = DISPOSED_REJECTION
+            to = "in-pr"
         if to == DELETED:
             if not deletable(entry):
                 fail(f"{args.id} names no durable record ({', '.join(DURABLE_RECORD)}) — deleting it would "

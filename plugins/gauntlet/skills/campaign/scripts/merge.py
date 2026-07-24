@@ -577,6 +577,8 @@ def _mark_terminal(ledger: Path, pr: str, status: str) -> None:
         row["status"] = status
         try:
             L.save(ledger, header, rows, activity=True)
+            if status == "aborted":
+                L.record_aborted_followup_disposition(ledger, pr)
         except OSError as exc:
             raise Refusal(f"terminal ledger write failed: {exc}") from exc
 
