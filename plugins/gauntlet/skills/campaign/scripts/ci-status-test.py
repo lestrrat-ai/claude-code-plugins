@@ -43,7 +43,6 @@ import io
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -52,7 +51,6 @@ from typing import Callable
 
 HERE = Path(__file__).resolve().parent
 STATUS_PY = HERE / "ci-status.py"
-WATCH_DOC_FIXTURES = HERE / "fixtures" / "ci-status-doc-watch"
 
 
 # --- the fingerprint canonicalization, pinned to the BYTE -----------------------------------------
@@ -1283,267 +1281,72 @@ def verdict_doc_cases(ci) -> list[str]:
     return problems
 
 
-def watch_doc_cases(ci) -> list[str]:
-    """Focused fixtures pin the consumer action and the ban on a second watch predicate."""
+def watch_action_owner_cases(ci, tmp: Path) -> list[str]:
+    """Every registry entry rejects deletion and a direct unconditional-watch mutation."""
     problems = []
-    anchor = "**Fixture watch action.**"
-
-    good = (WATCH_DOC_FIXTURES / "good.md").read_text(encoding="utf-8")
-    got = (ci.watch_action_block_problems(Path("good.md"), good, anchor)
-           + ci.watch_formula_problems(Path("good.md"), good))
-    if got:
-        problems.append(f"[watch-doc] valid returned-fact consumer was rejected: {'; '.join(got)}")
-
-    missing = (WATCH_DOC_FIXTURES / "missing-warrant.md").read_text(encoding="utf-8")
-    got = ci.watch_action_block_problems(Path("missing-warrant.md"), missing, anchor)
-    if not any("watch_warranted" in problem for problem in got):
-        problems.append("[watch-doc] a named consumer that omits `watch_warranted` was accepted")
-
-    unconditional = (WATCH_DOC_FIXTURES / "unconditional-action.md").read_text(encoding="utf-8")
-    got = ci.watch_action_block_problems(Path("unconditional-action.md"), unconditional, anchor)
-    if not any("act only when" in problem for problem in got):
-        problems.append("[watch-doc] an unconditional watch action beside returned warrant tokens was accepted")
-
-    formula = (WATCH_DOC_FIXTURES / "independent-formula.md").read_text(encoding="utf-8")
-    got = ci.watch_formula_problems(Path("independent-formula.md"), formula)
-    if not any("buckets.RUNNING" in problem for problem in got):
-        problems.append("[watch-doc] an independent `buckets.RUNNING` watch predicate was accepted")
-
-    formula = (WATCH_DOC_FIXTURES / "nested-mapping-formula.md").read_text(encoding="utf-8")
-    got = ci.watch_formula_problems(Path("nested-mapping-formula.md"), formula)
-    if not any("buckets.RUNNING" in problem for problem in got):
-        problems.append("[watch-doc] a nested mapping `buckets.RUNNING` watch predicate was accepted")
-
-    formula = (WATCH_DOC_FIXTURES / "get-chain-formula.md").read_text(encoding="utf-8")
-    got = ci.watch_formula_problems(Path("get-chain-formula.md"), formula)
-    if not any("buckets.RUNNING" in problem for problem in got):
-        problems.append("[watch-doc] a chained-get `buckets.RUNNING` watch predicate was accepted")
-
-    formula = (WATCH_DOC_FIXTURES / "consumer-ci-formula.md").read_text(encoding="utf-8")
-    got = ci.watch_formula_problems(Path("consumer-ci-formula.md"), formula)
-    if not any("consumer `ci` verdict predicate" in problem for problem in got):
-        problems.append("[watch-doc] a consumer `ci == pending` watch predicate was accepted")
-
-    formula = (WATCH_DOC_FIXTURES / "terminal-status-formula.md").read_text(encoding="utf-8")
-    got = ci.watch_formula_problems(Path("terminal-status-formula.md"), formula)
-    if not any("negated terminal-status watch rule" in problem for problem in got):
-        problems.append("[watch-doc] a negated terminal-status watch predicate was accepted")
-
-    formula = (WATCH_DOC_FIXTURES / "can-any-check-move-formula.md").read_text(encoding="utf-8")
-    got = ci.watch_formula_problems(Path("can-any-check-move-formula.md"), formula)
-    if not any("can-move watch rule" in problem for problem in got):
-        problems.append("[watch-doc] an intervening-subject can-move watch predicate was accepted")
-
-    formula = (WATCH_DOC_FIXTURES / "can-move-without-still-formula.md").read_text(encoding="utf-8")
-    got = ci.watch_formula_problems(Path("can-move-without-still-formula.md"), formula)
-    if not any("can-move watch rule" in problem for problem in got):
-        problems.append("[watch-doc] a conditional can-move watch predicate was accepted")
-
-    formula = (WATCH_DOC_FIXTURES / "ci-remains-pending-formula.md").read_text(encoding="utf-8")
-    got = ci.watch_formula_problems(Path("ci-remains-pending-formula.md"), formula)
-    if not any("consumer `ci` verdict predicate" in problem for problem in got):
-        problems.append("[watch-doc] a `CI remains pending` watch predicate was accepted")
-
-    for name, description in (
-        ("split-paragraph-formula.md", "split-paragraph"),
-        ("observer-alias-formula.md", "CI observer alias"),
-        ("escaped-comment-opener-formula.md", "escaped comment opener"),
-        ("ci-stays-pending-formula.md", "`CI stays pending`"),
-    ):
-        formula = (WATCH_DOC_FIXTURES / name).read_text(encoding="utf-8")
-        got = ci.watch_formula_problems(Path(name), formula)
-        if not any("consumer `ci` verdict predicate" in problem for problem in got):
-            problems.append(f"[watch-doc] a {description} watch predicate was accepted")
-
-    for name in ("inline-comment-token.md", "fenced-comment-token.md"):
-        formula = (WATCH_DOC_FIXTURES / name).read_text(encoding="utf-8")
-        got = ci.watch_formula_problems(Path(name), formula)
-        if not any("consumer `ci` verdict predicate" in problem for problem in got):
-            problems.append(f"[watch-doc] a literal code `<!--` in {name} hid a consumer watch predicate")
-
-    # Structural literal-code masking MUST precede HTML-comment masking. Each pair covers one Markdown
-    # container: an unclosed literal `<!--` must not hide a following visible formula, while the control
-    # proves that the same formula remains ignored when it is entirely literal code.
-    for name, description in (
-        ("blockquote-backtick-interior-run", "blockquote backtick fence with an interior run"),
-        ("blockquote-tilde", "blockquote tilde fence"),
-        ("list-four-space-tilde", "four-space list tilde fence"),
-        ("nested-list-backtick-interior-run", "nested-list backtick fence with an interior run"),
-        ("nested-list-tilde", "nested-list tilde fence"),
-        ("blockquote-list-tilde", "blockquote-list tilde fence"),
-        ("list-blockquote-tilde", "list-blockquote tilde fence"),
-        ("indented", "indented code"),
-        ("list-indented", "list-indented code"),
-        ("raw-pre", "raw <pre> code"),
-        ("raw-code", "raw <code> code"),
-    ):
-        visible_name = f"{name}-comment-hides-visible-formula.md"
-        visible = (WATCH_DOC_FIXTURES / visible_name).read_text(encoding="utf-8")
-        got = ci.watch_formula_problems(Path(visible_name), visible)
-        if not any("consumer `ci` verdict predicate" in problem for problem in got):
-            problems.append(f"[watch-doc] a literal `<!--` in {description} hid a visible watch formula")
-
-        literal_name = f"{name}-literal-only-control.md"
-        literal = (WATCH_DOC_FIXTURES / literal_name).read_text(encoding="utf-8")
-        got = ci.watch_formula_problems(Path(literal_name), literal)
-        if got:
-            problems.append(f"[watch-doc] literal-only control for {description} was treated as visible: "
-                            f"{'; '.join(got)}")
-
-    hidden = (WATCH_DOC_FIXTURES / "comment-only-requirements.md").read_text(encoding="utf-8")
-    action_got = ci.watch_action_block_problems(Path("comment-only-requirements.md"), hidden, anchor)
-    if len(action_got) != 5:
-        problems.append("[watch-doc] HTML-comment-only action requirements were accepted")
-    formula_got = ci.watch_formula_problems(Path("comment-only-requirements.md"), hidden)
-    if formula_got:
-        problems.append(f"[watch-doc] an HTML-comment-only formula was treated as visible: "
-                        f"{'; '.join(formula_got)}")
-
-    for name in ("unmatched-backtick-comment-only-requirements.md",
-                 "escaped-backtick-comment-only-requirements.md"):
-        hidden = (WATCH_DOC_FIXTURES / name).read_text(encoding="utf-8")
-        got = ci.watch_action_block_problems(Path(name), hidden, anchor)
-        if len(got) != 5:
-            problems.append(f"[watch-doc] {name} made HTML-comment-only action requirements visible")
-
-    negated = (WATCH_DOC_FIXTURES / "negated-action.md").read_text(encoding="utf-8")
-    got = ci.watch_action_block_problems(Path("negated-action.md"), negated, anchor)
-    if not any("negates" in problem for problem in got):
-        problems.append("[watch-doc] a named consumer with opposite watch instructions was accepted")
-
-    for name in (
-        "fenced-code-only-requirements.md",
-        "blockquote-fenced-formula-only-requirements.md",
-        "nested-list-fenced-action-only-requirements.md",
-        "nested-list-fenced-formula-only-requirements.md",
-        "inline-code-only-requirements.md",
-        "indented-code-only-requirements.md",
-        "raw-pre-code-only-requirements.md",
-        "raw-html-code-only-requirements.md",
-        "split-inline-code-only-requirements.md",
-    ):
-        hidden = (WATCH_DOC_FIXTURES / name).read_text(encoding="utf-8")
-        got = ci.watch_action_block_problems(Path(name), hidden, anchor)
-        if len(got) != 5:
-            problems.append(f"[watch-doc] literal-code-only action requirements in {name} were accepted")
-        got = ci.watch_formula_problems(Path(name), hidden)
-        if got:
-            problems.append(f"[watch-doc] literal-code-only formula in {name} was treated as visible: "
-                            f"{'; '.join(got)}")
-
-    for name, literal in (
-        ("blockquote-fenced-formula-only-requirements.md", "Launch a watch whenever ci == pending."),
-        ("nested-list-fenced-action-only-requirements.md", "Run `liveness`"),
-        ("nested-list-fenced-formula-only-requirements.md", "Launch a watch whenever ci == pending."),
-    ):
-        hidden = (WATCH_DOC_FIXTURES / name).read_text(encoding="utf-8")
-        if literal in ci.markdown_structural_code_text(hidden):
-            problems.append(f"[watch-doc] nested-list fenced code in {name} was not masked structurally")
-
-    visible_formula = (WATCH_DOC_FIXTURES / "nested-list-fenced-visible-formula.md").read_text(
-        encoding="utf-8"
-    )
-    literal = "Start a watch whenever ci == pending."
-    if literal not in ci.markdown_structural_code_text(visible_formula):
-        problems.append("[watch-doc] visible prose after nested-list fenced code was masked structurally")
-    got = ci.watch_formula_problems(Path("nested-list-fenced-visible-formula.md"), visible_formula)
-    if not any("consumer `ci` verdict predicate" in problem for problem in got):
-        problems.append("[watch-doc] visible prose after nested-list fenced code hid a watch formula")
-
-    reversed_action = (WATCH_DOC_FIXTURES / "reversed-action.md").read_text(encoding="utf-8")
-    got = ci.watch_action_block_problems(Path("reversed-action.md"), reversed_action, anchor)
-    if not any("before running `liveness`" in problem for problem in got):
-        problems.append("[watch-doc] a watch decision made before `liveness` was accepted")
-
-    dispatch_anchor = "**Fixture due-work dispatch.**"
-    valid_dispatch = (WATCH_DOC_FIXTURES / "held-dispatch-good.md").read_text(encoding="utf-8")
-    got = ci.watch_dispatch_summary_problems(
-        Path("held-dispatch-good.md"), valid_dispatch, dispatch_anchor
-    )
-    if got:
-        problems.append(f"[watch-doc] valid HELD dispatch summary was rejected: {'; '.join(got)}")
-    invalid_dispatch = (WATCH_DOC_FIXTURES / "held-dispatch-skips-watch.md").read_text(encoding="utf-8")
-    got = ci.watch_dispatch_summary_problems(
-        Path("held-dispatch-skips-watch.md"), invalid_dispatch, dispatch_anchor
-    )
-    if not any("groups CI watches" in problem for problem in got):
-        problems.append("[watch-doc] a HELD dispatch summary that suppresses CI watches was accepted")
-    return problems
-
-
-def stage3_rebase_watch_doc_cases(ci, tmp: Path) -> list[str]:
-    """Source-copy fixtures prove both Stage 3 rebase watch actions remain named consumers."""
-    problems = []
+    owners = ci.WATCH_ACTION_CONSUMERS
     source = ci.HERE.parent
-    stage3_relative = Path("references") / "stage-3-merge.md"
-    cases = (
-        ("clean", "**Clean-rebase watch action.**"),
-        ("judgment", "**Judgment-rebase watch action.**"),
-    )
-    fixture_root = tmp / "stage3-rebase-watch-actions"
-    shutil.copytree(source, fixture_root, ignore=shutil.ignore_patterns(".tmp", "__pycache__"))
-    stage3 = fixture_root / stage3_relative
-    text = stage3.read_text(encoding="utf-8")
-    for name, anchor in cases:
-        start = text.find(anchor)
-        end = text.find("\n\n", start)
-        if start < 0 or end < 0:
-            problems.append(f"[stage3 watch-doc] {name} source fixture lost its mutation target")
-            continue
-        block = text[start:end]
-        changed, count = re.subn(
-            r"`watch_warranted`\s+is\s+`true`",
-            "`watch_warranted` may be `true` or `false`",
-            block,
-            count=1,
-        )
-        if count != 1:
-            problems.append(f"[stage3 watch-doc] {name} source fixture lost its mutation target")
-            continue
-        stage3.write_text(text[:start] + changed + text[end:], encoding="utf-8")
-        got, _ = ci.check_watch_action_docs(fixture_root)
-        if not any("stage-3-merge.md" in problem and "act only when" in problem for problem in got):
-            problems.append(
-                f"[stage3 watch-doc] unconditional {name}-rebase watch action was accepted"
+
+    baseline, checked = ci.check_watch_action_docs()
+    if baseline:
+        problems.append(f"[watch owners] current registry rejects a source owner: {'; '.join(baseline)}")
+    if len(checked) != len(owners):
+        problems.append("[watch owners] current registry did not check every entry")
+
+    for index, owner in enumerate(owners):
+        format_name, relative, anchor, condition = owner
+        retained = tuple(candidate for candidate in owners if candidate != owner)
+        removed, _ = ci.check_watch_action_docs(owners=retained, required_owners=owners)
+        if not any("registry omits" in problem and relative in problem and anchor in problem
+                   for problem in removed):
+            problems.append(f"[watch owners] removing {relative}:{anchor} was accepted")
+
+        fixture_root = tmp / f"watch-owner-{index}"
+        fixture_path = fixture_root / relative
+        fixture_path.parent.mkdir(parents=True, exist_ok=True)
+        text = (source / relative).read_text(encoding="utf-8")
+        if format_name == "mermaid":
+            replacement = "WW --> CW[keep a CI watch alive<br/>relaunch it if it exited] --> M"
+            changed, count = text.replace(condition, replacement, 1), text.count(condition)
+        elif format_name == "policy":
+            changed, count = re.subn(
+                re.escape(condition),
+                "Ensure a watch immediately",
+                text,
+                count=1,
             )
-    return problems
-
-
-def post_commit_watch_doc_cases(ci, tmp: Path) -> list[str]:
-    """Source-copy fixtures prove every post-commit watch action remains a named consumer."""
-    problems = []
-    source = ci.HERE.parent
-    cases = (
-        (Path("references") / "finding-audit.md", "**Refutation CI watch action.**"),
-        (Path("references") / "critical-rules.md", "**Refutation CI watch action.**"),
-        (Path("references") / "critical-rules.md", "**Campaign-commit CI watch action.**"),
-    )
-    for index, (relative, anchor) in enumerate(cases):
-        fixture_root = tmp / f"post-commit-watch-action-{index}"
-        shutil.copytree(source, fixture_root, ignore=shutil.ignore_patterns(".tmp", "__pycache__"))
-        path = fixture_root / relative
-        text = path.read_text(encoding="utf-8")
-        start = text.find(anchor)
-        end = text.find("\n\n", start)
-        if start < 0 or end < 0:
-            problems.append(f"[post-commit watch-doc] {relative} lost {anchor}")
-            continue
-        block = text[start:end]
-        changed, count = re.subn(
-            r"`watch_warranted`\s+is\s+`true`",
-            "`watch_warranted` may be `true` or `false`",
-            block,
-            count=1,
-        )
+        else:
+            selected = ci.owner_block(text, anchor)
+            if selected is None:
+                problems.append(f"[watch owners] {relative}:{anchor} lost its mutation target")
+                continue
+            start, block = selected
+            if format_name == "markdown":
+                tick = re.escape(chr(96))
+                pattern = (
+                    rf"only when\s+returned\s+{tick}watch_warranted{tick}\s+is\s+{tick}true{tick}"
+                )
+                replacement = "unconditionally"
+            elif format_name == "summary":
+                pattern = re.escape(condition)
+                replacement = "CI watches launch unconditionally"
+            else:
+                problems.append(f"[watch owners] {relative}:{anchor} has unknown format {format_name!r}")
+                continue
+            mutated_block, count = re.subn(pattern, replacement, block, count=1)
+            changed = text[:start] + mutated_block + text[start + len(block):]
         if count != 1:
-            problems.append(f"[post-commit watch-doc] {relative} lost {anchor}'s mutation target")
+            problems.append(f"[watch owners] {relative}:{anchor} lost its unconditional-watch mutation target")
             continue
-        path.write_text(text[:start] + changed + text[end:], encoding="utf-8")
-        got, _ = ci.check_watch_action_docs(fixture_root)
-        if not any(str(relative) in problem and "act only when" in problem for problem in got):
-            problems.append(f"[post-commit watch-doc] unconditional {anchor} in {relative} was accepted")
+        fixture_path.write_text(changed, encoding="utf-8")
+        mutated, _ = ci.check_watch_action_docs(
+            fixture_root,
+            owners=(owner,),
+            required_owners=(owner,),
+        )
+        if not mutated:
+            problems.append(f"[watch owners] unconditional action at {relative}:{anchor} was accepted")
     return problems
-
 
 def run(ci, tmp: Path) -> int:
     """Every fixture, then the seams, then `doc-check`. Non-zero on any failure.
@@ -1612,29 +1415,13 @@ def run(ci, tmp: Path) -> int:
         print(f"ok       {'DECIDE verdict terminology':32} -> UNUSABLE and UNVERIFIABLE both remain explicit "
               f"before liveness groups them")
 
-    watch_doc_problems = watch_doc_cases(ci)
-    for problem in watch_doc_problems:
+    watch_owner_problems = watch_action_owner_cases(ci, tmp)
+    for problem in watch_owner_problems:
         failures += 1
         print(f"FAIL     {problem}")
-    if not watch_doc_problems:
-        print(f"ok       {'watch-action doc fixtures':32} -> returned-field consumer accepted; missing field "
-              f"and independent predicate refused")
-
-    stage3_watch_doc_problems = stage3_rebase_watch_doc_cases(ci, tmp)
-    for problem in stage3_watch_doc_problems:
-        failures += 1
-        print(f"FAIL     {problem}")
-    if not stage3_watch_doc_problems:
-        print(f"ok       {'stage-3 rebase watch fixtures':32} -> both rebase watch actions reject an "
-              f"unconditional launch")
-
-    post_commit_watch_doc_problems = post_commit_watch_doc_cases(ci, tmp)
-    for problem in post_commit_watch_doc_problems:
-        failures += 1
-        print(f"FAIL     {problem}")
-    if not post_commit_watch_doc_problems:
-        print(f"ok       {'post-commit watch fixtures':32} -> every direct post-commit watch action rejects "
-              f"an unconditional launch")
+    if not watch_owner_problems:
+        print(f"ok       {'watch-action owner mutations':32} -> every registered owner rejects removal and "
+              f"an unconditional action")
 
     print()
     print(f"--- doc-check: {ci.SPEC_DOC.name} + {ci.DRIVER_DOC.name} vs the code that runs ---")
