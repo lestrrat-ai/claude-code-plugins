@@ -83,6 +83,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import NoReturn
+from urllib.parse import unquote, urlsplit
 
 # The grid is NOT reimplemented here. The private campaign package owns escaping, layout, and omission
 # notices; this file owns only the follow-up schema, lifecycle, and store lifetime.
@@ -638,7 +639,13 @@ PR_REF_RE = re.compile(
 def pr_number(ref: str) -> "str | None":
     """Return the number from a legacy bare, `#N`, or GitHub pull-request reference."""
     match = PR_REF_RE.fullmatch(ref)
-    return None if match is None else (match.group("short") or match.group("url"))
+    if match is None:
+        return None
+    if match.group("url"):
+        decoded_path = (unquote(component) for component in urlsplit(ref).path.split("/"))
+        if any(component in (".", "..") or "/" in component for component in decoded_path):
+            return None
+    return match.group("short") or match.group("url")
 
 
 def next_id(high: int) -> str:
