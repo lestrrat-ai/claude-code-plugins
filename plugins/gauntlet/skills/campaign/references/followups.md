@@ -167,14 +167,14 @@ about and one whose partial rejection strands the rest.
    - **`in-pr`** — a PR is open and named in the entry, but an interrupted heartbeat may have recorded `open-pr`
      **without** finishing ADOPTION. Adoption is a campaign action, not a store edge — no `in-pr`
      transition performs it — so "defer to the graph" strands the PR. **Before reconciliation, adoption,
-     or `closed-unmerged`, apply the pending-ruling sensor owned by Rejecting an `in-pr` follow-up.** If it
-     selects rejection, route there before ordinary adoption, reopening, or replacement. Otherwise,
+     or `closed-unmerged`, apply the typed pending-ruling sensor owned by Rejecting an `in-pr` follow-up.** If
+     it selects rejection, route there before ordinary adoption, reopening, or replacement. Otherwise,
      reconcile the recorded PR against the current run. If it has no ledger row, or its **non-terminal**
      row lacks the run label, ADOPT it through step 4. **If its existing row is terminal, NEVER refresh,
      re-adopt, or relabel it** — surface that terminal campaign result and leave the follow-up lifecycle
      unchanged. A bare terminal `aborted`/`merged` ledger row records campaign
      disposition, not a user ruling, so it never selects rejection. If separate legacy evidence says the
-     user rejected the entry but the pending-ruling sensor is absent, **SURFACE the entry to the user**.
+     user rejected the entry but the typed pending-ruling sensor is absent, **SURFACE the entry to the user**.
      An unadopted follow-up PR with no terminal row sits
      **outside the campaign gate** — the exact thing "fold that PR into the current campaign" exists to
      prevent. If the user rejects it, follow **Rejecting an `in-pr` follow-up** below.
@@ -237,13 +237,15 @@ about and one whose partial rejection strands the rest.
 #### Rejecting an `in-pr` follow-up
 
 **Record `reject-pending` BEFORE starting campaign disposition, then finish disposition BEFORE recording
-terminal `reject`.** `reject-pending` keeps the entry `in-pr` and writes `reject@<iso>` to its existing
-`decided` field. That marker makes a fresh heartbeat return here before ordinary adoption or reopening.
-If `decided` does not already start with `reject@`, run
-`followups.py --file <store> reject-pending --id fuN`. Then resolve the recorded PR's live state and use
-the matching sequence. **`reject@<iso>` is the only campaign-owned pending-rejection sensor.** A terminal
-ledger row records PR disposition, not a user ruling, and MUST NOT route here by itself. If legacy evidence
-outside the follow-up entry indicates user rejection without the marker, SURFACE the entry to the user.
+terminal `reject`.** `reject-pending` keeps the entry `in-pr`, preserves the user's ruling time in
+`decided`, and writes the accessor-owned `rejection = pending` phase. That typed phase makes a fresh
+heartbeat return here before ordinary adoption or reopening. If the entry's `rejection` phase is not
+`pending`, run `followups.py --file <store> reject-pending --id fuN`. Then resolve the recorded PR's live
+state and use the matching sequence. **Only the typed `rejection` phase is a campaign-owned
+pending-rejection sensor.** A `decided` value — including a legacy `reject@…` value — is user timestamp data,
+not proof of a pending rejection. A terminal ledger row records PR disposition, not a user ruling, and MUST
+NOT route here by itself. If legacy evidence indicates user rejection without the typed phase, SURFACE the
+entry to the user.
 
 **If this procedure is interrupted, the `in-pr` resume rule routes back here.** Re-resolve the recorded
 PR's live state and continue with the matching branch.
@@ -252,17 +254,22 @@ PR's live state and continue with the matching branch.
   owner label or ledger row and no existing row records terminal disposition, complete the existing
   idempotent ADOPTION (step 4) solely to establish the ownership records required by the permanent-abort
   procedure. This is the `open-pr`-before-ADOPTION interruption path; do not start review work. Then run
-  the permanent-abort procedure in `bailout-and-final-report.md`, **1-hour cap per task**, to completion,
-  followed by `followups.py --file <store> reject --id fuN`. If an existing ledger row already records
-  terminal `aborted`, NEVER re-adopt; permanent abort is already complete, so run terminal `reject`
-  directly. A PR resolved as merged belongs to the MERGED branch below.
+  the permanent-abort procedure in `bailout-and-final-report.md`, **1-hour cap per task**, to completion.
+  Its terminal `status = aborted` write records `rejection = disposed` for matching pending follow-ups; then
+  run `followups.py --file <store> reject --id fuN`. If an existing ledger row already records terminal
+  `aborted`, NEVER re-adopt; refresh that row through `ledger.py set --pr <N> --status aborted` before
+  terminal `reject`, so the accessor records any pending follow-up disposition. A PR resolved as merged
+  belongs to the MERGED branch below.
 - **CLOSED WITHOUT MERGING** — inspect this run's ledger for the recorded PR. If no row names the recorded
-  PR, the heartbeat stopped after `open-pr` and before adoption created one: treat the live **CLOSED**
-  result as complete campaign disposition. NEVER run `merge.py` or `pr-adopt.py`; run
-  `followups.py --file <store> reject --id fuN` directly. If a row exists with nonterminal status, run
-  `merge.py run` through its existing terminal close-out (`loop-control.md`, "Step 4 — Merge queued PRs as
-  a serialized drain"). If its status is already terminal `aborted`, campaign disposition is complete: do
-  not run `merge.py`; run `followups.py --file <store> reject --id fuN` directly.
+  PR, the heartbeat stopped after `open-pr` and before adoption created one: the observed close is the
+  completed disposition. NEVER run `merge.py` or `pr-adopt.py`; run
+  `followups.py --file <store> closed-unmerged --id fuN` to record it, then run
+  `followups.py --file <store> reject --id fuN`. If a row exists with nonterminal status, run `merge.py run`
+  through its existing terminal close-out
+  (`loop-control.md`, "Step 4 — Merge queued PRs as a serialized drain"); its terminal `aborted` write
+  records the disposition. If its status is already terminal `aborted`, do not run `merge.py`; refresh it
+  through `ledger.py set --pr <N> --status aborted`, then run
+  `followups.py --file <store> reject --id fuN`.
 - **MERGED** — inspect this run's ledger for the recorded PR. If no row names the recorded PR, the heartbeat
   stopped after `open-pr` and before adoption created one: treat the live **MERGED** result as complete
   campaign disposition. NEVER run `merge.py` or `pr-adopt.py`; run
@@ -274,8 +281,9 @@ PR's live state and continue with the matching branch.
 
 The existing `reject` edge keeps the recorded `pr`; never clear that history.
 Do not add a follow-up state for campaign disposition. The state set and PR history stay unchanged; the
-tagged `decided` value is the durable pending-ruling sensor. Its timestamp is the user's ruling time, so
-terminal `reject` preserves it even when that terminal command receives a later `--at`.
+typed `rejection` phase is the durable pending-ruling sensor. Its `pending` phase becomes `disposed` only
+when `closed-unmerged` observes a close or the ledger records `aborted`; terminal `reject` consumes only
+`disposed` and preserves `decided` even when it receives a later `--at`.
 
 **The two subagents are the load-bearing part.** The investigation reproduces before anything is changed,
 and the fix authors code that the gauntlet judges — never the same worker doing both, and never the driver
@@ -307,15 +315,15 @@ time. So:
 - The PR **merges** → `merged` deletes the entry. The PR is the record now.
 - The PR is **closed WITHOUT merging** and no pending rejection exists → `closed-unmerged` returns it to
   **open work** (`reopened`), with its history intact — the finding, the ACT grounds or the user's ruling,
-  and the PR that died. A pending rejection stays `in-pr` until campaign disposition finishes and
-  terminal `reject` records the ruling.
+  and the PR that died. A pending rejection makes that same command record `rejection = disposed` and keep
+  the entry `in-pr`; terminal `reject` then records the ruling.
 
 **Move it in the heartbeat that SAW the event** — the same rule as recording one the moment it is noticed, and
 for the same reason: the driver's memory of it dies with the driver's context. The heartbeat that opens the PR
 addressing a follow-up runs `open-pr`; the heartbeat that observes that PR **merged** runs `merged`. The
-heartbeat that observes it **closed** first applies the pending-ruling sensor, then runs `closed-unmerged`
-only when no pending rejection exists. A follow-up whose PR landed three heartbeats ago and still sits in
-`in-pr` is a queue nobody can trust to say what is left to do.
+heartbeat that observes it **closed** runs `closed-unmerged`: it reopens ordinary work and records the
+completed disposition for a pending rejection. A follow-up whose PR landed three heartbeats ago and still
+sits in `in-pr` is a queue nobody can trust to say what is left to do.
 
 **AND REJECTIONS ARE KEPT.** A `rejected` entry stays in the store — hidden from the default view (nobody
 has anything left to do about it), **never deleted**. This is not an exception to the rule above; it is
@@ -357,11 +365,11 @@ followups.py --file <store> corroborate --id fuN --finding F   # TIER 1 — free
 followups.py --file <store> refute      --id fuN --finding F   # TIER 1 — free. And it stays in the store
 followups.py --file <store> take-up     --id fuN --act-...     # TIER 2 — only with EVERY condition evidenced
 followups.py --file <store> accept  --id fuN        # THE USER AGREED — the only edge into `accepted`
-followups.py --file <store> reject-pending --id fuN # user rejected an `in-pr` entry; stamp BEFORE PR disposition
-followups.py --file <store> reject  --id fuN        # user ruled against it; `in-pr` follows "Rejecting an `in-pr` follow-up"
+followups.py --file <store> reject-pending --id fuN # user rejected an `in-pr` entry; record typed pending state
+followups.py --file <store> reject  --id fuN        # user ruled against it; `in-pr` requires a disposed PR result
 followups.py --file <store> open-pr --id fuN --pr <ref>    # a PR is addressing it — the entry STAYS
 followups.py --file <store> merged  --id fuN        # that PR LANDED — it is the record now, so the entry is DELETED
-followups.py --file <store> closed-unmerged --id fuN       # unmarked PR died — back to OPEN WORK
+followups.py --file <store> closed-unmerged --id fuN       # ordinary PR died → OPEN WORK; pending rejection → disposed
 followups.py --file <store> publish --id fuN --ref <issue> # TIER 3 — only AFTER the user's accept. The ISSUE
                                                            # is the record now, so the entry is DELETED
 followups.py --file <store> set --id fuN --<field> <value>      # edit the PROSE of the claim — never EMPTY it
@@ -422,7 +430,7 @@ stamp that is **supplied** and shows nothing is refused like anything else.
 **And a flag exists on a subcommand only where that subcommand consumes it.** `--at` is offered by the steps
 that **stamp** a ruling and by no others; passing it elsewhere is an argparse **error**, not a value that
 silently vanishes. Terminal `reject` is the one completed-disposition case: it accepts a later `--at` but
-preserves the existing `reject@<iso>` ruling time. `<cmd> --help` names every flag a command takes.
+preserves the existing `decided` ruling time. `<cmd> --help` names every flag a command takes.
 
 **The claim's `evidence` and the investigation's `finding` are DIFFERENT FIELDS, and both matter.** One is
 why the driver **raised** it; the other is what happened when somebody actually **looked**. A finding never

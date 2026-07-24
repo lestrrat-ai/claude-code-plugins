@@ -34,6 +34,42 @@ DESCRIPTION = "Schema-owning accessor for the campaign ledger (state.jsonl)."
 
 HERE = Path(__file__).resolve().parent
 TEST_PY = HERE / "ledger-test.py"     # the fixture suite — this accessor's executable contract
+FOLLOWUPS_PY = HERE / "followups.py"
+
+
+def _followup_store_for(path: Path) -> "Path | None":
+    """The shared follow-up store for a standard `<project>/.gauntlet/runs/<id>/state.jsonl` ledger.
+
+    A ledger CLI may also operate on an arbitrary fixture or recovery file. Those paths have no documented
+    relationship to a follow-up store, so they deliberately receive no side effect. The campaign's durable
+    layout is the one place the relationship is defined.
+    """
+    run_dir = path.parent
+    if (path.name != "state.jsonl" or run_dir.parent.name != "runs"
+            or run_dir.parent.parent.name != ".gauntlet"):
+        return None
+    return run_dir.parent.parent / "followups.jsonl"
+
+
+def _complete_aborted_followups(path: Path, rows: "list[dict]") -> None:
+    """Let an aborted ledger row complete matching genuine pending follow-up rejections.
+
+    `status = aborted` is campaign's durable completion of the OPEN abort and CLOSED close-out workflows.
+    The follow-up accessor owns its own store and lock, so this bridge only derives the standard store path
+    and asks that accessor to record the typed disposition. A missing store is normal: no follow-up was
+    recorded for this project yet.
+    """
+    store = _followup_store_for(path)
+    if store is None or not store.exists() or not any(r["status"] == "aborted" for r in rows):
+        return
+    spec = importlib.util.spec_from_file_location("ledger_followups", FOLLOWUPS_PY)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load follow-up accessor at {FOLLOWUPS_PY}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    for row in rows:
+        if row["status"] == "aborted":
+            module.record_completed_rejection_disposition(store, row["pr"])
 
 # --- schema (owned here, once) ------------------------------------------------
 
@@ -727,6 +763,7 @@ def save(path: Path, header: dict, rows: list[dict], *, activity: bool) -> None:
     if activity:
         header["last_activity"] = now_activity()
     dump(path, header, rows)
+    _complete_aborted_followups(path, rows)
 
 
 def find_row(rows: list[dict], pr: str) -> "dict | None":

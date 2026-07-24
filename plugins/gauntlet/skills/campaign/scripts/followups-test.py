@@ -47,8 +47,8 @@ check = ledger_test.check
 import followups  # noqa: E402
 from followups import (  # noqa: E402
     ACT_CMD, ACT_CONDITIONS, ACT_FLAGS, ACT_WITNESSES, BLANK_WHY, DEFAULTS, DELETED, DELETING,
-    DRIVER_STEPS, DURABLE_RECORD, EDITABLE, ENTRY_TYPE, EVIDENCE_FIELDS, FIELDS, FLAG, INTAKE,
-    INVESTIGATION, OPTIONAL, PENDING_REJECTION_PREFIX, PLACEHOLDER, REQUIRED, SEQ_TYPE, STATES,
+    DISPOSED_REJECTION, DRIVER_STEPS, DURABLE_RECORD, EDITABLE, ENTRY_TYPE, EVIDENCE_FIELDS, FIELDS, FLAG,
+    INTAKE, INVESTIGATION, NO_REJECTION, OPTIONAL, PENDING_REJECTION, PLACEHOLDER, REQUIRED, SEQ_TYPE, STATES,
     TABLE_ALL_HIDDEN_MARKER, TABLE_DEFAULT_FIELDS, TABLE_EMPTY_MARKER, TABLE_HIDDEN_STATES, TABLE_MARKERS,
     TERMINAL, TRANSITIONS, USER_RULINGS, WRITE_CMDS, WRITES, build_parser, deletable, find, is_blank, load,
 )
@@ -66,7 +66,7 @@ def entry_line(**over: object) -> str:
     once. A fixture that wants a DEFECTIVE entry blanks a field on purpose — that is what `**over` is for.
     """
     rec = {"type": ENTRY_TYPE, **DEFAULTS,
-           **{f: f"<{f}>" for f in FIELDS if f not in ("id", "state")}, **over}
+           **{f: f"<{f}>" for f in FIELDS if f not in ("id", "state", "rejection")}, **over}
     return json.dumps(rec)
 
 
@@ -312,9 +312,9 @@ def t_transition_graph(tmp: Path) -> None:
     must not move. A new state or edge is covered the moment it is added to `TRANSITIONS`: this fixture
     reads the graph rather than restating it, so it cannot go stale behind it.
 
-    Two `in-pr` edges have pending-ruling preconditions. `reject` requires the marker because campaign
-    disposition must start only after `reject-pending` writes it. `closed-unmerged` requires no marker
-    because a pending rejection must finish disposition and become `rejected`, never `reopened`.
+    Two `in-pr` edges have pending-ruling preconditions. `reject` requires a completed typed disposition;
+    `closed-unmerged` turns a genuine pending rejection into that completed disposition instead of reopening
+    work the user rejected.
 
     A DELETING edge is checked the same way, on its own terms: from an allowed state the entry is GONE (and
     the store still LOADS); from a forbidden one it is untouched. Nothing else may remove an entry.
@@ -322,9 +322,8 @@ def t_transition_graph(tmp: Path) -> None:
     for cmd, (frm, to) in TRANSITIONS.items():
         for state in STATES:
             path = tmp / f"{cmd}-{state}.jsonl"
-            decided = (PENDING_REJECTION_PREFIX + "2026-07-14T08:00:00Z"
-                       if cmd == "reject" and state == "in-pr" else "<decided>")
-            write_lines(path, entry_line(id="fu1", state=state, decided=decided))
+            rejection = DISPOSED_REJECTION if cmd == "reject" and state == "in-pr" else NO_REJECTION
+            write_lines(path, entry_line(id="fu1", state=state, decided="<decided>", rejection=rejection))
             code, _, err = run(["--file", str(path), cmd, "--id", "fu1", *transition_args(cmd)])
             if state in frm:
                 check(code == 0, f"`{cmd}` was refused from the ALLOWED state {state!r}: {err!r}")
@@ -386,12 +385,14 @@ def t_ruling_is_recorded(tmp: Path) -> None:
           f"`open-pr` overwrote the USER's ruling timestamp: {after!r}")
     check(after["pr"] == "#77", f"open-pr did not record WHICH PR is addressing it: {after!r}")
 
-    # …and changing that ruling while a PR is open first records a pending rejection before terminal
-    # `reject`. The marker makes campaign disposition resumable.
+    # …and changing that ruling while a PR is open first records a typed pending rejection before terminal
+    # `reject`. The completed disposition makes the rejection resumable without reusing user timestamp data.
     code, _, err = run([
         "--file", str(path), "reject-pending", "--id", a, "--at", "2026-07-14T10:30:00Z",
     ])
     check(code == 0, f"reject-pending exited {code}: {err!r}")
+    code, _, err = run(["--file", str(path), "closed-unmerged", "--id", a])
+    check(code == 0, f"closed-unmerged did not record the pending disposition: {err!r}")
     code, out, err = run(["--file", str(path), "reject", "--id", a, "--at", "2026-07-14T11:00:00Z"])
     check(code == 0, f"reject exited {code}: {err!r}")
     (b2,) = seed(path)
@@ -1023,10 +1024,10 @@ def t_the_doc_and_the_code_agree(tmp: Path) -> None:
 def t_in_pr_rejection_finishes_campaign_disposition_first(tmp: Path) -> None:
     """REJECTING AN `in-pr` FOLLOW-UP PERSISTS THE RULING BEFORE CAMPAIGN DISPOSITION STARTS.
 
-    `reject-pending` keeps the entry resumable as `in-pr`, but marks the user's ruling distinctly from an
-    earlier acceptance. A fresh heartbeat can therefore route to the rejection procedure before ordinary
-    adoption, reopening, or replacement. Terminal `reject` preserves the original ruling stamp after
-    disposition.
+    `reject-pending` keeps the entry resumable as `in-pr`, but records a typed pending rejection separately
+    from the user's timestamp. A fresh heartbeat can therefore route to the rejection procedure before
+    ordinary adoption, reopening, or replacement. Terminal `reject` needs that disposition to complete and
+    preserves the original ruling stamp.
 
     This fixture also pins the resume sensor and disposition order for both interruption outcomes. OPEN
     after `open-pr` but before adoption completes missing adoption only to create the permanent-abort
@@ -1052,23 +1053,27 @@ def t_in_pr_rejection_finishes_campaign_disposition_first(tmp: Path) -> None:
     ])
     check(code == 0, f"`reject-pending` exited {code}: {err!r}")
     pending = json.loads(out)
-    marker = PENDING_REJECTION_PREFIX + "2026-07-14T10:00:00Z"
+    marker = "2026-07-14T10:00:00Z"
     check(pending["state"] == "in-pr" and pending["pr"] == "#999",
           f"`reject-pending` lost the resumable PR record: {pending!r}")
-    check(pending["decided"] == marker,
-          f"`reject-pending` did not leave a distinct durable routing marker: {pending!r}")
-    code, _, err = run(["--file", str(store), "closed-unmerged", "--id", fid])
-    check(code == 1,
-          f"`closed-unmerged` reopened a pending rejection before campaign disposition (exit {code})")
-    check("finish campaign disposition" in err and "`reject`" in err,
-          f"`closed-unmerged` refused the pending rejection without naming its required next step: {err!r}")
-    after_close_refusal = json.loads(run(["--file", str(store), "get", "--id", fid])[1])
-    check(after_close_refusal == pending,
-          f"refused `closed-unmerged` changed the pending rejection: {after_close_refusal!r}")
+    check(pending["decided"] == marker and pending["rejection"] == PENDING_REJECTION,
+          f"`reject-pending` did not leave typed pending-rejection data: {pending!r}")
     code, out, err = run([
         "--file", str(store), "reject", "--id", fid, "--at", "2026-07-14T11:00:00Z",
     ])
-    check(code == 0, f"terminal `reject` exited {code}: {err!r}")
+    check(code == 1 and "disposition is unresolved" in err,
+          f"terminal `reject` accepted an unresolved pending rejection: code={code} err={err!r}")
+    unresolved = json.loads(run(["--file", str(store), "get", "--id", fid])[1])
+    check(unresolved == pending, f"refused terminal `reject` changed the pending entry: {unresolved!r}")
+    code, out, err = run(["--file", str(store), "closed-unmerged", "--id", fid])
+    check(code == 0, f"pending `closed-unmerged` exited {code}: {err!r}")
+    disposed = json.loads(out)
+    check(disposed["state"] == "in-pr" and disposed["rejection"] == DISPOSED_REJECTION,
+          f"closed PR did not record the completed rejection disposition: {disposed!r}")
+    code, out, err = run([
+        "--file", str(store), "reject", "--id", fid, "--at", "2026-07-14T11:00:00Z",
+    ])
+    check(code == 0, f"terminal `reject` after disposition exited {code}: {err!r}")
     rejected = json.loads(out)
     check(rejected["state"] == "rejected" and rejected["decided"] == marker,
           f"terminal `reject --at` replaced when the user first ruled: {rejected!r}")
@@ -1079,8 +1084,8 @@ def t_in_pr_rejection_finishes_campaign_disposition_first(tmp: Path) -> None:
     run(["--file", str(ordinary_store), "accept", "--id", ordinary_fid, "--at", decided])
     run(["--file", str(ordinary_store), "open-pr", "--id", ordinary_fid, "--pr", "#1000"])
     before_close = json.loads(run(["--file", str(ordinary_store), "get", "--id", ordinary_fid])[1])
-    check(before_close["decided"] == decided and not before_close["decided"].startswith(PENDING_REJECTION_PREFIX),
-          f"ordinary accepted follow-up unexpectedly carries a pending-rejection marker: {before_close!r}")
+    check(before_close["decided"] == decided and before_close["rejection"] == NO_REJECTION,
+          f"ordinary accepted follow-up unexpectedly carries a pending rejection: {before_close!r}")
     code, _, err = run(["--file", str(ordinary_store), "reject", "--id", ordinary_fid])
     check(code == 1,
           f"direct `reject` hid an ordinary live PR without disposition (exit {code})")
@@ -1095,6 +1100,46 @@ def t_in_pr_rejection_finishes_campaign_disposition_first(tmp: Path) -> None:
     check(reopened["state"] == "reopened" and reopened["pr"] == "#1000" and reopened["decided"] == decided,
           f"an unmarked closed PR did not return to ordinary open work: {reopened!r}")
 
+    # `decided` is user data. An accepted value that happens to begin with the former marker spelling is
+    # neither a pending rejection nor proof that this PR was disposed. It must take every ordinary PR path.
+    spoof_store = tmp / "spoofed-accept.jsonl"
+    (spoof_fid,) = seed(spoof_store)
+    spoofed = "reject@spoofed-accept"
+    run(["--file", str(spoof_store), "accept", "--id", spoof_fid, "--at", spoofed])
+    run(["--file", str(spoof_store), "open-pr", "--id", spoof_fid, "--pr", "#1001"])
+    spoof_entry = json.loads(run(["--file", str(spoof_store), "get", "--id", spoof_fid])[1])
+    check(spoof_entry["decided"] == spoofed and spoof_entry["rejection"] == NO_REJECTION,
+          f"accepted marker-shaped timestamp was classified as a pending rejection: {spoof_entry!r}")
+    code, _, err = run(["--file", str(spoof_store), "reject", "--id", spoof_fid])
+    check(code == 1 and "without a genuine pending rejection" in err,
+          f"marker-shaped accepted timestamp allowed terminal reject: code={code} err={err!r}")
+    code, out, err = run(["--file", str(spoof_store), "closed-unmerged", "--id", spoof_fid])
+    check(code == 0, f"marker-shaped accepted timestamp blocked ordinary close handling: {err!r}")
+    check(json.loads(out)["state"] == "reopened",
+          f"marker-shaped accepted timestamp did not reopen after the PR closed: {out!r}")
+    run(["--file", str(spoof_store), "open-pr", "--id", spoof_fid, "--pr", "#1002"])
+    code, _, err = run(["--file", str(spoof_store), "merged", "--id", spoof_fid])
+    check(code == 0 and load(spoof_store) == [],
+          f"marker-shaped accepted timestamp blocked normal merged deletion: code={code} err={err!r}")
+
+    merged_store = tmp / "pending-merged.jsonl"
+    (merged_fid,) = seed(merged_store)
+    run(["--file", str(merged_store), "accept", "--id", merged_fid, "--at", "2026-07-14T12:00:00Z"])
+    run(["--file", str(merged_store), "open-pr", "--id", merged_fid, "--pr", "#1003"])
+    run(["--file", str(merged_store), "reject-pending", "--id", merged_fid,
+         "--at", "2026-07-14T13:00:00Z"])
+    code, _, err = run(["--file", str(merged_store), "merged", "--id", merged_fid])
+    check(code == 0 and load(merged_store) == [],
+          f"a merged PR did not remain the durable record for a pending rejection: code={code} err={err!r}")
+
+    non_pr_store = tmp / "ordinary-reject.jsonl"
+    (non_pr_fid,) = seed(non_pr_store)
+    ordinary_stamp = "2026-07-14T14:00:00Z"
+    code, out, err = run(["--file", str(non_pr_store), "reject", "--id", non_pr_fid,
+                          "--at", ordinary_stamp])
+    check(code == 0 and json.loads(out)["decided"] == ordinary_stamp,
+          f"ordinary terminal reject no longer accepts and records a supplied timestamp: code={code} err={err!r}")
+
     doc = Path(__file__).resolve().parent.parent / "references" / "followups.md"
     text = doc.read_text()
     resume_start = text.find("   - **`in-pr`**")
@@ -1105,8 +1150,8 @@ def t_in_pr_rejection_finishes_campaign_disposition_first(tmp: Path) -> None:
     guard = "**Before reconciliation, adoption,\n     or `closed-unmerged`, apply"
     check(guard in resume_body,
           "the `in-pr` resume rule does not inspect rejection sensors before every ordinary resume action")
-    sensor_pos = resume_body.find("pending-ruling sensor owned by Rejecting")
-    route_pos = resume_body.find("If it\n     selects rejection, route there")
+    sensor_pos = resume_body.find("typed pending-ruling sensor owned by Rejecting")
+    route_pos = resume_body.find("it selects rejection, route there")
     ordinary_pos = resume_body.find("Otherwise,\n     reconcile the recorded")
     check(min(sensor_pos, route_pos, ordinary_pos) >= 0,
           "the `in-pr` resume rule cannot apply its pending-ruling sensor before ordinary processing")
@@ -1132,13 +1177,15 @@ def t_in_pr_rejection_finishes_campaign_disposition_first(tmp: Path) -> None:
     rule = "**Record `reject-pending` BEFORE starting campaign disposition, then finish disposition BEFORE recording\nterminal `reject`.**"
     check(rule in body, f"{heading!r} does not persist the ruling before PR disposition")
     marker_cmd = "`followups.py --file <store> reject-pending --id fuN`"
-    check(0 <= body.find(marker_cmd) < body.find("Then resolve the recorded PR's live state"),
+    check(0 <= body.find(marker_cmd) < body.find("Then resolve the recorded PR's live"),
           f"{heading!r} starts PR disposition before writing the pending-ruling marker")
     resume_rule = "**If this procedure is interrupted, the `in-pr` resume rule routes back here.**"
     check(resume_rule in body, f"{heading!r} does not preserve a pending rejection across interruption")
-    sensor_rule = "**`reject@<iso>` is the only campaign-owned pending-rejection sensor.**"
-    check(sensor_rule in body, f"{heading!r} does not own an unambiguous pending-rejection sensor")
-    check("A terminal\nledger row records PR disposition, not a user ruling, and MUST NOT route here by itself." in body,
+    check("**Only the typed `rejection` phase is a campaign-owned\n"
+          "pending-rejection sensor.**" in body,
+          f"{heading!r} does not own an unambiguous pending-rejection sensor")
+    check("A terminal ledger row records PR disposition, not a user ruling, and MUST\n"
+          "NOT route here by itself." in body,
           f"{heading!r} treats an ambiguous terminal ledger row as a user rejection")
 
     def ordered(branch: str, next_branch: str, *needles: str) -> str:
@@ -1163,29 +1210,30 @@ def t_in_pr_rejection_finishes_campaign_disposition_first(tmp: Path) -> None:
         "idempotent ADOPTION",
         "solely to establish the ownership records",
         "permanent-abort procedure",
+        "status = aborted",
+        "records `rejection = disposed`",
         "`followups.py --file <store> reject --id fuN`",
     )
-    check("If an existing ledger row already records" in open_branch
-          and "terminal `aborted`, NEVER re-adopt" in open_branch,
+    check("If an existing ledger row already records terminal" in open_branch
+          and "refresh that row through `ledger.py set --pr <N> --status aborted`" in open_branch,
           f"{heading!r} does not preserve terminal disposition during interrupted rejection")
     closed_branch = ordered(
         "- **CLOSED WITHOUT MERGING**", "- **MERGED**",
         "inspect this run's ledger",
         "If no row names the recorded\n  PR",
-        "live **CLOSED**",
-        "complete campaign disposition",
         "NEVER run `merge.py` or `pr-adopt.py`",
-        "`followups.py --file <store> reject --id fuN`",
+        "`followups.py --file <store> closed-unmerged --id fuN`",
         "If a row exists",
         "nonterminal status",
         "`merge.py run`",
-        "terminal close-out",
-        "terminal `aborted`",
-        "do\n  not run `merge.py`",
+        "terminal `aborted` write",
+        "records the disposition",
+        "If its status is already terminal",
+        "ledger.py set --pr <N> --status aborted",
         "`followups.py --file <store> reject --id fuN`",
     )
-    check("closed-unmerged" not in closed_branch,
-          f"{heading!r} parks a rejected closed PR in resumable open work before recording the ruling")
+    check("closed-unmerged" in closed_branch,
+          f"{heading!r} does not record a rejected closed PR's completed disposition")
     ordered(
         "- **MERGED**", "\n\nThe existing",
         "inspect this run's ledger",

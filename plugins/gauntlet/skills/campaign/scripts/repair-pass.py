@@ -1115,7 +1115,10 @@ def cmd_decide(path: Path, args) -> int:
         # Terminal. The driver still runs the abort PROCEDURE (leave the PR OPEN, drop this run's labels,
         # write abort-<id>.md) — `bailout-and-final-report.md` owns it, and this does not replace it.
         row["status"] = "aborted"
-    L.dump(path, header, rows)
+    # A recorded decision is real campaign activity. `save()` is also the ledger's single completion hook
+    # for a terminal abort, which records the matching pending follow-up's PR disposition before terminal
+    # `reject` may consume it.
+    L.save(path, header, rows, activity=True)
     print(json.dumps({f: row[f] for f in L.ROW_FIELDS}))
 
     if args.decision == "abort":
