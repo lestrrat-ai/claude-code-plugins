@@ -768,9 +768,9 @@ def t_bundle_refuses_unreconcilable_pass_histories(tmp: Path) -> None:
 
 
 def t_unreconcilable_history_park_is_documented_at_each_boundary(tmp: Path) -> None:
-    """The cap, held-status, and bailout guidance name the bundle-directed machine-blocker park.
+    """The stage-two, cap, held-status, and bailout guidance name the machine-blocker park.
 
-    The functional seam is covered by `t_bundle_refuses_unreconcilable_pass_histories`; this pins the three
+    The functional seam is covered by `t_bundle_refuses_unreconcilable_pass_histories`; this pins the four
     summaries that a driver reads before it reaches that seam. They must preserve the owner and the fact that
     an undecided repairing row can become `awaiting-user` instead of claiming repair always self-clears.
     """
@@ -778,6 +778,7 @@ def t_unreconcilable_history_park_is_documented_at_each_boundary(tmp: Path) -> N
     owner = OWNER.read_text(encoding="utf-8")
     ledger = (OWNER.parent / "ledger.py").read_text(encoding="utf-8")
     bailout = (OWNER.parent.parent / "references" / "bailout-and-final-report.md").read_text(encoding="utf-8")
+    stage_two = (OWNER.parent.parent / "references" / "stage-2-review-gate.md").read_text(encoding="utf-8")
     owner_pointer = '`repair-pass.md`, **Unreconcilable capped history**'
 
     check("unreconcilable capped history before\na decision" in owner
@@ -789,6 +790,10 @@ def t_unreconcilable_history_park_is_documented_at_each_boundary(tmp: Path) -> N
     check(owner_pointer in bailout and "third exit is an unreconcilable-history machine-blocker park" in bailout
           and "`awaiting-user`\n    transition" in bailout,
           "bailout guidance lost repairing's third exit to the owner-defined park")
+    check("`ledger.py … dispatch-check --pr <N>` refuses ordinary\nwork while the row is held" in stage_two
+          and "recorded decision keeps it held until its repair lands" in stage_two
+          and "unreconcilable-history park keeps it held for a user resolution" in stage_two,
+          "stage-two cap guidance lost the user-resolved unreconcilable-history exit")
 
 
 def t_bundle_is_deterministic_and_payloads_are_data(tmp: Path) -> None:

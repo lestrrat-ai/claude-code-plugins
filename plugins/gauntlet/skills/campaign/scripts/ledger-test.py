@@ -2177,6 +2177,18 @@ def t_park_recovers_an_unreconcilable_repair_history(L: ModuleType, tmp: Path) -
           == ("awaiting-user", reason, "-", "-"),
           f"repair-history park is not durable: {saved!r}")
 
+    # This park has no repair that can land. Ordinary work remains refused while it awaits the user.
+    code, _, err = cli(L, ["--file", str(path), "dispatch-check", "--pr", "1"])
+    check(code == L.EXIT_STOP,
+          f"ordinary work ran while unreconcilable repair history awaited the user: exit {code}, {err!r}")
+    code, _, err = cli(L, ["--file", str(path), "set", "--pr", "1", "--blocker-ruling",
+                           "retry@2026-07-14T00:00:00Z"])
+    check(code == 0, f"the user could not record the retry ruling: {err!r}")
+    code, _, err = cli(L, ["--file", str(path), "unpark", "--pr", "1"])
+    check(code == 0, f"the user's retry ruling did not resolve the repair-history park: {err!r}")
+    code, _, err = cli(L, ["--file", str(path), "dispatch-check", "--pr", "1"])
+    check(code == 0, f"ordinary work remained frozen after the user resolved the repair-history park: {err!r}")
+
 
 def t_park_refusals(L: ModuleType, tmp: Path) -> None:
     """Every park refusal writes NOTHING, and the double-park STOPS with the OPEN question surfaced."""
