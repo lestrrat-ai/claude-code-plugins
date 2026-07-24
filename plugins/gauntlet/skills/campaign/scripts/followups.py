@@ -624,17 +624,20 @@ def find(entries: "list[dict]", fid: str) -> "dict | None":
     return None
 
 
+GITHUB_PATH_COMPONENT = r"[^/?#\s]+"
+
+
 PR_REF_RE = re.compile(
-    r"^(?:"
+    r"(?:"
     r"(?:#)?(?P<short>[1-9][0-9]*)"
-    r"|https://github\.com/[^/]+/[^/]+/pull/(?P<url>[1-9][0-9]*)/?"
-    r")$"
+    rf"|https://github\.com/{GITHUB_PATH_COMPONENT}/{GITHUB_PATH_COMPONENT}/pull/(?P<url>[1-9][0-9]*)/?"
+    r")"
 )
 
 
 def pr_number(ref: str) -> "str | None":
     """Return the number from a legacy bare, `#N`, or GitHub pull-request reference."""
-    match = PR_REF_RE.match(ref)
+    match = PR_REF_RE.fullmatch(ref)
     return None if match is None else (match.group("short") or match.group("url"))
 
 
