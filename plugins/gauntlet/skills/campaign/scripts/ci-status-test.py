@@ -1027,6 +1027,63 @@ def required_set_matrix_cases(ci, tmp: Path) -> list[str]:
     return problems
 
 
+def command_copy_cases(ci, tmp: Path) -> list[str]:
+    """Check the two documented command-copy forms and their own required inputs."""
+    problems: list[str] = []
+    forms = {
+        "derive": (
+            ci.check_derive_copies,
+            "--pr 1 --ledger <rundir>/state.jsonl",
+            "--pr 1",
+            "WITHOUT `--ledger` OR `--required-set`",
+        ),
+        "liveness": (
+            ci.check_liveness_copies,
+            "--ledger <rundir>/state.jsonl --pr 1 --machine-action none",
+            "--ledger <rundir>/state.jsonl --pr 1",
+            "WITHOUT `--machine-action`",
+        ),
+        "required-set": (
+            ci.check_required_set_copies,
+            "--ledger <rundir>/state.jsonl",
+            "",
+            "without the run ledger's",
+        ),
+    }
+    for subcommand, (check, valid, invalid, needle) in forms.items():
+        root = tmp / f"command-copy-{subcommand}"
+        root.mkdir()
+        shell_wrap = chr(92) + "\n"
+        fenced_valid = valid.replace(" ", f" {shell_wrap}  ", 1)
+        fenced_invalid = invalid.replace(" ", f" {shell_wrap}  ", 1) if invalid else invalid
+        (root / "commands.md").write_text(
+            f"Prose mentions ci-status.py {subcommand} {valid}; it is not a command copy.\n\n"
+            f"`scripts/ci-status.py\n  {subcommand} {valid}`\n\n"
+            f"```sh\npython3 <skill>/scripts/ci-status.py {subcommand} {fenced_valid}\n```\n\n"
+            f"`scripts/ci-status.py\n  {subcommand} {invalid}`\n\n"
+            f"```sh\npython3 <skill>/scripts/ci-status.py {subcommand} {fenced_invalid}\n```\n",
+            encoding="utf-8",
+        )
+        copies = ci.documented_ci_status_copies(root, subcommand)
+        found_problems, checked = check(root)
+        if len(copies) != 4 or len(checked) != 4:
+            problems.append(
+                f"[command copy {subcommand}] expected four documented copies, got "
+                f"{len(copies)} extracted and {len(checked)} checked"
+            )
+        if len(found_problems) != 2 or any(needle not in problem for problem in found_problems):
+            problems.append(
+                f"[command copy {subcommand}] wrapped copies did not reject only their own missing input: "
+                f"{found_problems!r}"
+            )
+        if not any("\n" in command for _path, _line, command in copies):
+            problems.append(f"[command copy {subcommand}] inline wrapped command was not preserved")
+        if not any(valid in " ".join(command.split()) and "\n" not in command
+                   for _path, _line, command in copies):
+            problems.append(f"[command copy {subcommand}] fenced shell continuation was not joined")
+    return problems
+
+
 def liveness_cases(ci, tmp: Path) -> list[str]:
     """Drive `liveness` through every transition the derivation block defines, on a real ledger file.
 
@@ -1329,6 +1386,14 @@ def run(ci, tmp: Path) -> int:
         print(f"ok       {'required-set CLI exits':32} -> settled=0, unknown=1, "
               f"caller/store/output errors=2; "
               f"errors preserve the ledger and emit one diagnostic without a traceback")
+
+    command_copy_problems = command_copy_cases(ci, tmp)
+    for problem in command_copy_problems:
+        failures += 1
+        print(f"FAIL     {problem}")
+    if not command_copy_problems:
+        print(f"ok       {'wrapped doc command copies':32} -> inline literals and fenced shell commands; "
+              f"each valid copy keeps its inputs and each invalid copy fails on its own missing input")
 
     liveness_problems = liveness_cases(ci, tmp)
     for problem in liveness_problems:

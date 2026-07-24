@@ -2247,8 +2247,54 @@ def check_gh_invocations(text: str, argv: dict[str, list[str]]) -> list[str]:
     return problems
 
 
+def documented_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, str]]:
+    """Return supported command copies: inline literals and fenced shell commands.
+
+    The command-copy guard owns two documentation forms. Inline literals carry a complete command, even
+    when Markdown wraps the literal. Fenced shell blocks carry one shell command, whose continued lines end
+    in ``\\``. Other prose and Markdown constructs are deliberately outside this guard's scope.
+    """
+    command = re.compile(rf"ci-status\.py\s+{re.escape(subcommand)}\b")
+    fenced_command = re.compile(
+        rf"(?m)^[ \t]*(?:\$[ \t]+)?(?:python3?[ \t]+)?(?:\S*/)?ci-status\.py\s+"
+        rf"{re.escape(subcommand)}\b"
+    )
+    fence = re.compile(r"(?ms)^```(?:sh|bash|shell)?[ \t]*\n(?P<body>.*?)^```[ \t]*$")
+    inline = re.compile(r"`(?P<body>[^`]*?)`", re.DOTALL)
+    copies: list[tuple[Path, int, str]] = []
+    for md in sorted(root.rglob("*.md")):
+        text = md.read_text(encoding="utf-8")
+        blocks = list(fence.finditer(text))
+        for literal in inline.finditer(text):
+            if any(block.start() <= literal.start() < block.end() for block in blocks):
+                continue
+            match = command.search(literal.group("body"))
+            if match is None:
+                continue
+            offset = literal.start("body") + match.start()
+            copies.append((md, text.count("\n", 0, offset) + 1, literal.group("body")[match.start():]))
+        for block in blocks:
+            body = block.group("body")
+            for match in fenced_command.finditer(body):
+                line_end = body.find("\n", match.start())
+                if line_end < 0:
+                    line_end = len(body)
+                command_end = line_end
+                while body[command_end - 1:command_end].rstrip().endswith("\\"):
+                    next_end = body.find("\n", command_end + 1)
+                    if next_end < 0:
+                        command_end = len(body)
+                        break
+                    command_end = next_end
+                offset = block.start("body") + match.start()
+                span = body[match.start():command_end]
+                copies.append((md, text.count("\n", 0, offset) + 1,
+                               re.sub(r"\\\n[ \t]*", " ", span)))
+    return copies
+
+
 def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]:
-    """EVERY COPY OF THE DERIVE COMMAND, IN EVERY SKILL DOC — not just the one in the doc under test.
+    """Every supported documented derive command copy names its required-set input.
 
     THE FLAG THAT NAMES THE REQUIRED SET MUST NOT BE DROPPABLE BY A RECAP. The required set is what makes
     `green` mean *the required set passed*, and it is now the ROW's `effective_required_set`: a copy names it
@@ -2257,31 +2303,25 @@ def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]
     the class TWICE: a fourth copy of a canonical command that had gone stale, and a doc recap that dropped
     `,headRefOid` from the rollup fetch.
 
-    A copy is any occurrence that RUNS the command (`ci-status.py derive` carrying `--pr`) — prose that
-    merely NAMES the command is not a copy, and is not checked. **THE UNIT IS THE COMMAND, NOT THE LINE**:
-    an invocation WRAPS (a shell `\\`, or plain prose reflow), and a line-by-line check would report the
-    continuation line as a violation of itself. So each copy is read to the end of its PARAGRAPH.
+    A copy is a command in an inline literal or a fenced shell block. Inline literals may wrap across
+    Markdown lines; fenced shell commands may wrap with a trailing `\\`. Other prose is not an invocation,
+    so this guard does not parse it.
 
     FINDING ZERO COPIES IS A FAILURE: the command is prescribed by at least `stage-2-ci.md` and
     `critical-rules.md`, and a check that cannot find its subject never passes.
     """
     problems, copies = [], []
-    for md in sorted((root or HERE.parent).rglob("*.md")):
-        text = md.read_text(encoding="utf-8")
-        for m in re.finditer(r"ci-status\.py derive", text):
-            end = text.find("\n\n", m.start())
-            command = text[m.start(): end if end > 0 else len(text)]
-            if "--pr" not in command:
-                continue  # prose that NAMES the command, not a copy of it
-            n = text.count("\n", 0, m.start()) + 1
-            copies.append(f"{md.name}:{n}")
-            if "--ledger" not in command and "--required-set" not in command:
-                problems.append(
-                    f"{md.name}:{n} runs `ci-status.py derive` WITHOUT `--ledger` OR `--required-set` — the "
-                    f"flag that makes `green` mean the REQUIRED SET passed. A reader following this copy "
-                    f"issues a command the tool refuses; a reader who 'fixes' it by dropping the set gets a "
-                    f"verdict about the rows that showed up, which is the registration gap, reopened by a recap."
-                )
+    for md, line, command in documented_ci_status_copies(root or HERE.parent, "derive"):
+        if "--pr" not in command:
+            continue  # prose that NAMES the command, not a copy of it
+        copies.append(f"{md.name}:{line}")
+        if "--ledger" not in command and "--required-set" not in command:
+            problems.append(
+                f"{md.name}:{line} runs `ci-status.py derive` WITHOUT `--ledger` OR `--required-set` — the "
+                f"flag that makes `green` mean the REQUIRED SET passed. A reader following this copy "
+                f"issues a command the tool refuses; a reader who 'fixes' it by dropping the set gets a "
+                f"verdict about the rows that showed up, which is the registration gap, reopened by a recap."
+            )
     if not copies:
         problems.append(
             "ZERO copies of `ci-status.py derive` were found in the skill's docs — the command is "
@@ -2294,28 +2334,23 @@ def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]
 def check_liveness_copies(root: Path | None = None) -> tuple[list[str], list[str]]:
     """Every runnable liveness copy carries `--machine-action` — the judgment flag a recap must not drop.
 
-    Same class as `check_derive_copies`: a copy without the flag is a command the tool refuses, and a
-    reader who "fixes" it by inventing a default answers the one question the tool deliberately asks.
+    The supported forms are `documented_ci_status_copies`' inline literal and fenced shell command. A copy
+    without the flag is a command the tool refuses, and a reader who "fixes" it by inventing a default
+    answers the one question the tool deliberately asks.
     """
     problems, copies = [], []
-    for md in sorted((root or HERE.parent).rglob("*.md")):
-        text = md.read_text(encoding="utf-8")
-        for match in re.finditer(r"ci-status\.py liveness", text):
-            end = text.find("\n\n", match.start())
-            command = text[match.start(): end if end > 0 else len(text)]
-            # `--ledger`, not `--pr`, is the runnable-copy gate here: prose about liveness routinely sits
-            # in the same paragraph as a `ledger.py … set --pr` command, and `--pr` alone would condemn
-            # every such mention as a flagless invocation.
-            if "--ledger" not in command:
-                continue  # prose that names the subcommand, not a runnable copy
-            line = text.count("\n", 0, match.start()) + 1
-            copies.append(f"{md.name}:{line}")
-            if "--machine-action" not in command:
-                problems.append(
-                    f"{md.name}:{line} runs `ci-status.py liveness` WITHOUT `--machine-action` — the one "
-                    f"judgment the command asks of its caller. The tool refuses the invocation; a reader "
-                    f"who drops the flag's question strikes the very PR a fix is about to move."
-                )
+    for md, line, command in documented_ci_status_copies(root or HERE.parent, "liveness"):
+        # `--ledger`, not `--pr`, is the runnable-copy gate: prose can name a PR without spelling the
+        # ledger input that makes liveness runnable.
+        if "--ledger" not in command:
+            continue  # prose that names the subcommand, not a runnable copy
+        copies.append(f"{md.name}:{line}")
+        if "--machine-action" not in command:
+            problems.append(
+                f"{md.name}:{line} runs `ci-status.py liveness` WITHOUT `--machine-action` — the one "
+                f"judgment the command asks of its caller. The tool refuses the invocation; a reader "
+                f"who drops the flag's question strikes the very PR a fix is about to move."
+            )
     if not copies:
         problems.append(
             "ZERO runnable copies of `ci-status.py liveness` were found in the skill's docs — the command "
@@ -2325,22 +2360,15 @@ def check_liveness_copies(root: Path | None = None) -> tuple[list[str], list[str
 
 
 def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list[str]]:
-    """Every runnable required-set copy names the ledger whose per-row required sets the command persists."""
+    """Every supported required-set command copy names the ledger it persists."""
     problems, copies = [], []
-    for md in sorted((root or HERE.parent).rglob("*.md")):
-        text = md.read_text(encoding="utf-8")
-        for match in re.finditer(r"ci-status\.py required-set", text):
-            end = text.find("\n\n", match.start())
-            command = text[match.start(): end if end > 0 else len(text)]
-            if "--ledger" not in command:
-                continue  # prose that names the subcommand, not a runnable copy
-            line = text.count("\n", 0, match.start()) + 1
-            copies.append(f"{md.name}:{line}")
-            if "state.jsonl" not in command:
-                problems.append(
-                    f"{md.name}:{line} runs `ci-status.py required-set` without the run ledger's "
-                    f"`state.jsonl` — the command must persist the value it read before the value exists"
-                )
+    for md, line, command in documented_ci_status_copies(root or HERE.parent, "required-set"):
+        copies.append(f"{md.name}:{line}")
+        if "--ledger" not in command or "state.jsonl" not in command:
+            problems.append(
+                f"{md.name}:{line} runs `ci-status.py required-set` without the run ledger's "
+                f"`state.jsonl` — the command must persist the value it read before the value exists"
+            )
     if not copies:
         problems.append(
             "ZERO runnable copies of `ci-status.py required-set` were found in the skill's docs — finding "
