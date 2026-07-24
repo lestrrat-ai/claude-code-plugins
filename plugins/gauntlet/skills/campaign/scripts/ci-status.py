@@ -2338,7 +2338,7 @@ def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, 
     command_start = re.compile(
         rf"(?:"
         rf"(?<![\w./-])(?:(?:[\w.-]+/)*[\w.-]+\.py|python(?:3)?|bash|sh|gh|git){separator}\S+\b"
-        rf"|\b(?:and[ \t]+then|then|followed[ \t]+by)[ \t]+[A-Za-z_][\w./-]*{separator}\S+\b"
+        rf"|\b(?:and[ \t]+then|then|followed[ \t]+by)[ \t]+[`]*[A-Za-z_][\w./-]*{separator}\S+\b"
         rf")"
     )
     # A bare, later shell-command line needs no prose introduction. Limit this to a command word followed
@@ -2347,8 +2347,8 @@ def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, 
     bare_shell_command_start = re.compile(
         r"(?:^|\r?\n)(?=[A-Za-z_./])[A-Za-z_./][\w./-]*(?=[ \t]+[^\r\n]*--[A-Za-z][\w-]*\b)"
     )
-    # Markdown backticks delimit a span, not a shell command. An invocation may be followed in the same
-    # paragraph by inline code that supplies its required flag, so a backtick is never a command boundary.
+    # A Markdown backtick alone does not start a command. An explicit prose introduction followed by inline
+    # code does: the later command's flags must not extend the ci-status.py invocation before it.
     command_delimiter = re.compile(r"&&|\|\||;|\|")
     copies: list[tuple[Path, int, str]] = []
     for md in sorted(root.rglob("*.md")):
