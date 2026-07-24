@@ -2329,42 +2329,99 @@ def markdown_list_marker(content: str) -> tuple[int, int, str, int | None] | Non
 
 def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, str]]:
     """Find wrapped candidates without crossing Markdown or command boundaries."""
-    quote_prefix = r"(?:[ \t]*>[ \t]*)+"
-    separator = rf"(?:\s+|[ \t]*\\\r?\n(?:{quote_prefix})?[ \t]*|\r?\n{quote_prefix})"
+    separator = r"(?:\s+|[ \t]*\\\r?\n[ \t]*)"
     needle = re.compile(rf"ci-status\.py{separator}{re.escape(subcommand)}\b")
     # A later known interpreter or script starts a new span directly. An explicitly introduced later
     # command does too, even when it is not a known interpreter or script. Its flags describe that command,
     # never the ci-status.py invocation before it. `Next, run` and `Afterwards, run` are sentence-level
     # introductions, so they must be recognized even though their commands start after prose rather than a
     # Markdown block boundary.
-    command_start = re.compile(
+    named_command_start = re.compile(
         rf"(?:"
         rf"(?<![\w./-])(?:(?P<script>(?:[\w.-]+/)*[\w.-]+\.py)|python(?:3)?|bash|sh|gh|git){separator}\S+\b"
         rf"|\b(?:and[ \t]+then|then|followed[ \t]+by|(?:[Nn]ext|[Aa]fterwards?),?[ \t]+run)[ \t]+[`]*[A-Za-z_][\w./-]*{separator}\S+\b"
         rf")"
     )
-    option_value_before_script = re.compile(r"(?:^|\s)--[A-Za-z][\w-]*(?:=[^\s]*)?\s*$")
-
-    def later_command_start(paragraph: str, offset: int) -> re.Match[str] | None:
-        """Find a later command, preserving a `.py` value supplied to a long option."""
-        for candidate in command_start.finditer(paragraph, offset):
-            # `--derive-json result.py` is one invocation argument, not a new command.  A later script
-            # command can still begin after an option value, so keep looking when this candidate is one.
-            if (candidate.group("script") is not None
-                    and option_value_before_script.search(paragraph[:candidate.start()])):
-                continue
-            return candidate
-        return None
-    # A bare, later shell-command line needs no prose introduction. Limit this to a command word followed
-    # by a long option: that is the only form that can lend a checked flag to the prior invocation, while a
-    # valid wrapped continuation starts with its option instead of a new command word.
-    bare_shell_command_start = re.compile(
-        r"(?:^|\r?\n)(?:[ \t]*\$[ \t]+)?(?=[A-Za-z_./])[A-Za-z_./][\w./-]*"
-        r"(?=[ \t]+[^\r\n]*--[A-Za-z][\w-]*\b)"
+    # A bare command may have only an operand, not a long option. It starts only on a new logical line:
+    # inline literals stay literal unless prose explicitly introduces another runnable command.
+    bare_command_start = re.compile(
+        r"(?:^|\r?\n)[ \t]*(?:\$[ \t]+)?(?P<command>[A-Za-z_./][\w./-]*)"
+        r"(?=[ \t]+[^\r\n]*\S)"
     )
     # A Markdown backtick alone does not start a command. An explicit prose introduction followed by inline
     # code does: the later command's flags must not extend the ci-status.py invocation before it.
     command_delimiter = re.compile(r"&&|\|\||;|\|")
+
+    def normalize_markdown_prefixes(paragraph: str) -> tuple[str, list[int]]:
+        """Remove active quote markers while retaining each logical byte's source offset."""
+        logical, source_offsets = [], []
+        offset = 0
+        for line in paragraph.splitlines(keepends=True):
+            prefix = re.match(r"(?:[ \t]*>[ \t]*)+", line)
+            content_start = prefix.end() if prefix is not None else 0
+            logical.extend(line[content_start:])
+            source_offsets.extend(range(offset + content_start, offset + len(line)))
+            offset += len(line)
+        return "".join(logical), source_offsets
+
+    def option_awaits_value(logical: str, command_start: int, candidate_start: int) -> bool:
+        """Track the current command's long-option value slot across an allowed wrap."""
+        awaiting_value = False
+        for token in re.finditer(r"\S+", logical[command_start:candidate_start]):
+            value = token.group(0)
+            if value in ("$", "\\"):
+                continue
+            if awaiting_value:
+                awaiting_value = False
+                continue
+            if value.startswith("--") and value != "--":
+                awaiting_value = "=" not in value
+        return awaiting_value
+
+    def inside_inline_code(logical: str, position: int) -> bool:
+        """Keep a newline inside one inline literal from becoming a shell boundary."""
+        marker: str | None = None
+        index = 0
+        while index < position:
+            if logical[index] != "`":
+                index += 1
+                continue
+            end = index
+            while end < len(logical) and logical[end] == "`":
+                end += 1
+            run = logical[index:end]
+            line_start = logical.rfind("\n", 0, index) + 1
+            if len(run) >= 3 and not logical[line_start:index].strip(" \t"):
+                index = end
+                continue
+            if marker is None:
+                marker = run
+            elif marker == run:
+                marker = None
+            index = end
+        return marker is not None
+
+    def command_span_end(logical: str, command_start: int) -> int:
+        """Return the first real later-command boundary in normalized Markdown text."""
+        candidates: list[int] = []
+        for candidate in named_command_start.finditer(logical, command_start):
+            if (not inside_inline_code(logical, candidate.start())
+                    and not option_awaits_value(logical, command_start, candidate.start())):
+                candidates.append(candidate.start())
+                break
+        for candidate in bare_command_start.finditer(logical, command_start):
+            line_start = candidate.start()
+            if line_start and logical[:line_start].rstrip(" \t").endswith("\\"):
+                continue
+            if (inside_inline_code(logical, candidate.start("command"))
+                    or option_awaits_value(logical, command_start, candidate.start("command"))):
+                continue
+            candidates.append(line_start)
+            break
+        if not candidates:
+            return len(logical)
+        return min(candidates)
+
     copies: list[tuple[Path, int, str]] = []
     for md in sorted(root.rglob("*.md")):
         text = md.read_text(encoding="utf-8")
@@ -2571,19 +2628,16 @@ def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, 
             regions.append((start, len(text)))
         for start, end in regions:
             paragraph = text[start:end]
-            for match in needle.finditer(paragraph):
-                offset = start + match.start()
-                command_end = len(paragraph)
-                candidates = (
-                    later_command_start(paragraph, match.end()),
-                    bare_shell_command_start.search(paragraph, match.end()),
-                )
-                if (next_command := min((candidate for candidate in candidates if candidate is not None),
-                                        key=lambda candidate: candidate.start(), default=None)) is not None:
-                    command_end = next_command.start()
-                if (delimiter := command_delimiter.search(paragraph, match.end(), command_end)) is not None:
+            logical, source_offsets = normalize_markdown_prefixes(paragraph)
+            for match in needle.finditer(logical):
+                command_end = command_span_end(logical, match.end())
+                if (delimiter := command_delimiter.search(logical, match.end(), command_end)) is not None:
                     command_end = delimiter.start()
-                copies.append((md, text.count("\n", 0, offset) + 1, paragraph[match.start():command_end]))
+                source_start = source_offsets[match.start()]
+                source_end = len(paragraph) if command_end == len(logical) else source_offsets[command_end]
+                offset = start + source_start
+                copies.append((md, text.count("\n", 0, offset) + 1,
+                               paragraph[source_start:source_end]))
     return copies
 
 

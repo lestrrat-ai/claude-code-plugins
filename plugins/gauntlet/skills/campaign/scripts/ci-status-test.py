@@ -1299,6 +1299,147 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
     return problems
 
 
+def command_span_root_cause_cases(ci, tmp: Path) -> list[str]:
+    """Pin every mapped command-boundary gap and its literal-code controls."""
+    problems: list[str] = []
+
+    def case(name: str, subcommand: str, check, text: str, expect_problem: bool,
+             contains: tuple[str, ...], excludes: tuple[str, ...] = ()) -> None:
+        root = tmp / f"command-span-{name}"
+        root.mkdir()
+        (root / "fixture.md").write_text(text, encoding="utf-8")
+        found_problems, copies = check(root)
+        commands = [command for _path, _line, command in ci.find_ci_status_copies(root, subcommand)]
+        if len(commands) != 1:
+            problems.append(f"[command span {name}] found {len(commands)} copies: {commands!r}")
+            return
+        command = commands[0]
+        if bool(found_problems) != expect_problem:
+            problems.append(
+                f"[command span {name}] problems {found_problems!r}, expected "
+                f"{'one' if expect_problem else 'none'}"
+            )
+        if len(copies) != 1:
+            problems.append(f"[command span {name}] runnable copies {copies!r}, expected one")
+        missing = tuple(value for value in contains if value not in command)
+        present = tuple(value for value in excludes if value in command)
+        if missing or present:
+            problems.append(
+                f"[command span {name}] command {command!r}, missing {missing!r}, included {present!r}"
+            )
+
+    # Each option value remains attached to the preceding command across a prose reflow. The liveness
+    # script path is separate because a value ending in .py used to be mistaken for a later command.
+    case(
+        "wrapped-value-derive", "derive", ci.check_derive_copies,
+        "Run scripts/ci-status.py derive --ledger\n<rundir>/state.jsonl --pr 1.\n",
+        False, ("<rundir>/state.jsonl --pr 1",),
+    )
+    case(
+        "wrapped-value-liveness-plain", "liveness", ci.check_liveness_copies,
+        "Run scripts/ci-status.py liveness --ledger\n"
+        "<rundir>/state.jsonl --pr 1 --machine-action none.\n",
+        False, ("<rundir>/state.jsonl --pr 1 --machine-action none",),
+    )
+    case(
+        "wrapped-value-liveness-script", "liveness", ci.check_liveness_copies,
+        "Run scripts/ci-status.py liveness --ledger <rundir>/state.jsonl --pr 1 --derive-json\n"
+        "result.py --machine-action none.\n",
+        False, ("result.py --machine-action none",),
+    )
+    case(
+        "wrapped-value-required-set", "required-set", ci.check_required_set_copies,
+        "Run scripts/ci-status.py required-set --ledger\n<rundir>/state.jsonl --repo owner/repo.\n",
+        False, ("<rundir>/state.jsonl --repo owner/repo",),
+    )
+
+    # A generic later command may carry only an operand, with or without a shell prompt. It must not lend
+    # state.jsonl to an earlier required-set command that names another ledger.
+    case(
+        "operand-bare-required-set", "required-set", ci.check_required_set_copies,
+        "Run scripts/ci-status.py required-set --ledger <rundir>/other.jsonl\n"
+        "echo <rundir>/state.jsonl.\n",
+        True, ("other.jsonl",), ("echo", "state.jsonl"),
+    )
+    case(
+        "operand-prompt-required-set", "required-set", ci.check_required_set_copies,
+        "Run scripts/ci-status.py required-set --ledger <rundir>/other.jsonl\n"
+        "$ echo <rundir>/state.jsonl.\n",
+        True, ("other.jsonl",), ("echo", "state.jsonl"),
+    )
+
+    # Quote prefixes, fences, and raw HTML change the physical line but not a runnable later command.
+    case(
+        "quoted-bare-derive", "derive", ci.check_derive_copies,
+        "> Run scripts/ci-status.py derive --pr 1\n"
+        "> echo --ledger <rundir>/state.jsonl.\n",
+        True, ("--pr 1",), ("echo", "--ledger"),
+    )
+    case(
+        "quoted-bare-liveness", "liveness", ci.check_liveness_copies,
+        "> Run scripts/ci-status.py liveness --ledger <rundir>/state.jsonl --pr 1\n"
+        "> echo --machine-action none.\n",
+        True, ("--pr 1",), ("echo", "--machine-action"),
+    )
+    case(
+        "quoted-bare-required-set", "required-set", ci.check_required_set_copies,
+        "> Run scripts/ci-status.py required-set --ledger <rundir>/other.jsonl\n"
+        "> echo <rundir>/state.jsonl.\n",
+        True, ("other.jsonl",), ("echo", "state.jsonl"),
+    )
+    case(
+        "fenced-bare-required-set", "required-set", ci.check_required_set_copies,
+        "```sh\nRun scripts/ci-status.py required-set --ledger <rundir>/other.jsonl\n"
+        "echo <rundir>/state.jsonl.\n```\n",
+        True, ("other.jsonl",), ("echo", "state.jsonl"),
+    )
+    case(
+        "raw-html-bare-required-set", "required-set", ci.check_required_set_copies,
+        "<script>\nRun scripts/ci-status.py required-set --ledger <rundir>/other.jsonl\n"
+        "echo <rundir>/state.jsonl.\n</script>\n",
+        True, ("other.jsonl",), ("echo", "state.jsonl"),
+    )
+
+    # A newline inside an inline literal is not a shell boundary. A prose-introduced later inline command
+    # is one. These paired controls keep the generic line rule from changing either established behavior.
+    case(
+        "literal-operand-derive", "derive", ci.check_derive_copies,
+        "Run `scripts/ci-status.py derive --pr 1 --ledger <rundir>/state.jsonl\n"
+        "echo literal-operand`.\n",
+        False, ("echo literal-operand",),
+    )
+    case(
+        "literal-operand-liveness", "liveness", ci.check_liveness_copies,
+        "Run `scripts/ci-status.py liveness --ledger <rundir>/state.jsonl --pr 1 "
+        "--machine-action none\necho literal-operand`.\n",
+        False, ("echo literal-operand",),
+    )
+    case(
+        "literal-operand-required-set", "required-set", ci.check_required_set_copies,
+        "Run `scripts/ci-status.py required-set --ledger <rundir>/state.jsonl\n"
+        "echo literal-operand`.\n",
+        False, ("echo literal-operand",),
+    )
+    case(
+        "literal-introduced-derive", "derive", ci.check_derive_copies,
+        "Run scripts/ci-status.py derive --pr 1, then `echo --ledger <rundir>/state.jsonl`.\n",
+        True, ("--pr 1",), ("echo", "--ledger"),
+    )
+    case(
+        "literal-introduced-liveness", "liveness", ci.check_liveness_copies,
+        "Run scripts/ci-status.py liveness --ledger <rundir>/state.jsonl --pr 1, then "
+        "`echo --machine-action none`.\n",
+        True, ("--pr 1",), ("echo", "--machine-action"),
+    )
+    case(
+        "literal-introduced-required-set", "required-set", ci.check_required_set_copies,
+        "Run scripts/ci-status.py required-set --ledger <rundir>/other.jsonl, then "
+        "`echo <rundir>/state.jsonl`.\n",
+        True, ("other.jsonl",), ("echo", "state.jsonl"),
+    )
+    return problems
+
+
 def liveness_cases(ci, tmp: Path) -> list[str]:
     """Drive `liveness` through every transition the derivation block defines, on a real ledger file.
 
@@ -1609,6 +1750,14 @@ def run(ci, tmp: Path) -> int:
     if not command_problems:
         print(f"ok       {'wrapped doc command copies':32} -> derive, liveness, and required-set; valid and "
               f"invalid plain, blockquoted, and interrupting-block fixtures stay paragraph-bounded")
+
+    command_span_problems = command_span_root_cause_cases(ci, tmp)
+    for problem in command_span_problems:
+        failures += 1
+        print(f"FAIL     {problem}")
+    if not command_span_problems:
+        print(f"ok       {'command span root-cause map':32} -> wrapped option values, bare operand commands, "
+              f"quote, fence, HTML, and inline-literal boundaries")
 
     liveness_problems = liveness_cases(ci, tmp)
     for problem in liveness_problems:
