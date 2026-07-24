@@ -190,7 +190,8 @@ def reminders(header: dict, rows: list, n_followups: int, rundir: "Path | None",
             if r.get("repair_decision", "-") == "-":
                 out.append(f"PR {pr}: repairing, no decision — run `repair-pass.py bundle`.")
             else:
-                out.append(f"PR {pr}: repairing — dispatch decision ({r['repair_decision']}), nothing else.")
+                out.append(f"PR {pr}: repairing — prepare then dispatch decision ({r['repair_decision']}), "
+                           "nothing else.")
         elif status in HELD:  # awaiting-user / awaiting-api
             why = r.get("ci_reason", "-")
             tail = f" ({why})" if why and why != "-" else ""

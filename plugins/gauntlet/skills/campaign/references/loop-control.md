@@ -286,7 +286,9 @@ the worker returns, and what never moves into it. The steps below are unchanged 
      An unreconcilable capped history is the narrow exception; `repair-pass.md`, **Unreconcilable capped
      history**, owns its machine-blocker park. Ordinary gate work is refused for it; the **decided repair**
      is the one thing that may be dispatched, and only once the decision is recorded
-     (`dispatch-check --action repair`).
+     (`dispatch-check --action repair`). Its recorded repair's required clean base-only rebase is part of
+     that decision; `repair-pass.md`, **A recorded repair may first take its required clean base-only
+     rebase**, owns the exception.
 
    **The test is "does this MUTATE the PR?" — NOT "is this action named in a list?"** *Mutate* = change
    the PR or dispatch work that will: its content, its head commit, its base, its labels, its
@@ -299,7 +301,11 @@ the worker returns, and what never moves into it. The steps below are unchanged 
    PR's `head_sha`, reset its gate, and **changed the very PR content the user was parked to
    adjudicate**. Any site the skill grows later is covered the moment it would mutate a held PR, with
    no edit to this list. When unsure whether an action mutates, treat it as mutating and skip it.
-   - **The ONE exception is the CI watch: OBSERVING a PR is not mutating it.** The park **does not change
+   - **The sole mutating exception is a recorded repair's required clean base-only rebase.** It applies
+     only to `repairing` after `dispatch-check --action repair` succeeds; `repair-pass.md`, **A recorded
+     repair may first take its required clean base-only rebase**, owns it. It does not permit a
+     conflict-resolving/diff-changing rebase or unhold the row.
+   - **The CI watch is not an exception: OBSERVING a PR is not mutating it.** The park **does not change
      the watch either way** — it follows the normal policy, `stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE":
      alive while an evidence row can still `RUN`, **not** relaunched once CI has SETTLED (relaunching a
      settled PR's watch burns a heartbeat per second and observes nothing). Parking never stops a warranted
@@ -366,8 +372,10 @@ the worker returns, and what never moves into it. The steps below are unchanged 
      If it explicitly reports unreconcilable history and directs a park, follow **"Unreconcilable capped
      history"** there. Otherwise dispatch its exact prompt to one context-isolated **`session`** worker and
      record the returned decision through that section's bundle-bound `repair-pass.py decide` command.
-   - **a `repair_decision` is recorded** → `ledger.py dispatch-check --pr <N> --action repair`, then
-     execute **that** decision and no other work. When the repair has landed, return the row to the gate
+   - **a `repair_decision` is recorded** → `ledger.py dispatch-check --pr <N> --action repair`, then clear
+     the decision's base precondition. On `rebase-first`, follow `repair-pass.md`, **A recorded repair may
+     first take its required clean base-only rebase**; otherwise execute **that** decision and no other
+     work. When the repair has landed, return the row to the gate
      (`ledger.py … set --pr <N> --status in_review`). `review_rounds` is **not** reset — it never is. A
      legacy `demote@…` value follows `repair-pass.md`, **"Complete a legacy DEMOTE"**.
    - **`repair_decision` is `abort@…`** → the row is already terminal (`aborted`): run the abort procedure

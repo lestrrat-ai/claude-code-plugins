@@ -94,6 +94,7 @@ def _numbered(overrides: "dict[int, str]") -> str:
 PR_NUMBER = "12"
 PR_BRANCH = "pr"
 DASH_BASE = "--upload-pack=/bin/false"
+RECORDED_REPAIR = "root-cause@2026-07-24T04:35:14Z"
 
 
 class Scenario:
@@ -106,7 +107,7 @@ class Scenario:
         self.ledger = tmp / "state.jsonl"
         self.orig_head = ""
 
-    def build(self, *, status="in_review", reviews_ok=2):
+    def build(self, *, status="in_review", reviews_ok=2, repair_decision="-"):
         _run(["git", "init", "--bare", "-b", "main", str(self.remote)])
         _run(["git", "clone", str(self.remote), str(self.seed)])
         _cfg(self.seed)
@@ -143,6 +144,15 @@ class Scenario:
         if self.base != "main":
             row_args.append(f"--base-branch={self.base}")
         _ledger(*row_args)
+        if repair_decision != "-":
+            # `repair-pass.py decide` is the sole production writer. This fixture prepares its durable
+            # output directly so the clean-rebase contract can consume it without duplicating the
+            # reassessment bundle's unrelated setup.
+            header, rows = L.load(self.ledger)
+            row = L.find_row(rows, PR_NUMBER)
+            check(row is not None, "fixture setup: the repair row exists before recording its decision")
+            row["repair_decision"] = repair_decision
+            L.save(self.ledger, header, rows, activity=True)
         # `verdict` refuses unless a base-preflight `proceed` is on record for this head
         # (base_ok_sha == head_sha); stamp it first, as the real flow does (base-preflight.py -> base-ok).
         if reviews_ok:
@@ -272,6 +282,44 @@ def t_noop_rebase_echoes_retained_base_ok_sha():
         check(result["ledger"]["base_ok_sha"] == s.orig_head,
               f"the no-op echoes the RETAINED base_ok_sha (the original stamp), not the fresh-head '-'; "
               f"got {result['ledger'].get('base_ok_sha')!r}")
+
+
+def t_decided_repair_rebases_clean_base():
+    """A recorded repair may clear only its clean base precondition while remaining repairing."""
+    with tempfile.TemporaryDirectory() as tmp:
+        s = Scenario(Path(tmp)).build(status=L.REPAIR_STATUS, reviews_ok=0,
+                                      repair_decision=RECORDED_REPAIR)
+        s.advance_base({12: "12-BASE"})
+        code, out, err = s.invoke()
+        check(code == M.EXIT_OK,
+              f"a decided repair's clean base-only rebase must exit 0 (code={code}, err={err})")
+        new_head = head(s.wt)
+        check(new_head != s.orig_head, "the decided repair's clean rebase moves the PR head")
+        check(s.remote_pr_head() == new_head, "the decided repair's clean rebase force-pushes its new head")
+        check(_field(s.ledger, PR_NUMBER, "head_sha") == new_head,
+              "the decided repair's clean rebase records the new head")
+        check(_field(s.ledger, PR_NUMBER, "status") == L.REPAIR_STATUS,
+              "a prerequisite rebase does not unhold the decided repair")
+        check(_field(s.ledger, PR_NUMBER, "repair_decision") == RECORDED_REPAIR,
+              "a prerequisite rebase preserves the recorded repair decision")
+        check(_field(s.ledger, PR_NUMBER, "reviews_ok") == "0",
+              "a clean base-only rebase does not change the repair's review tally")
+
+
+def t_undecided_repair_refused():
+    """A repairing row without a decision remains frozen, even when its base moved."""
+    with tempfile.TemporaryDirectory() as tmp:
+        s = Scenario(Path(tmp)).build(status=L.REPAIR_STATUS, reviews_ok=0)
+        s.advance_base({12: "12-BASE"})
+        ledger_before = s.ledger.read_bytes()
+        remote_pr_before = s.remote_pr_head()
+        code, out, _ = s.invoke()
+        check(code == M.EXIT_PRECONDITION,
+              f"an undecided repairing row must be refused at exit 2 (code={code})")
+        check('"refused": "held"' in out, f"the refusal names the held row; got {out!r}")
+        check(head(s.wt) == s.orig_head, "an undecided repair is never rebased — HEAD untouched")
+        check(s.remote_pr_head() == remote_pr_before, "an undecided repair never pushes")
+        check(s.ledger.read_bytes() == ledger_before, "an undecided repair leaves the ledger untouched")
 
 
 # --- a CONFLICT: abort, restore, refuse (exit 3), touch nothing ---------------
@@ -441,15 +489,35 @@ def t_head_mismatch_refused():
               "the refusal names BOTH the worktree HEAD and the ledger head_sha")
 
 
-def t_held_row_refused():
+def t_parked_row_refused():
     with tempfile.TemporaryDirectory() as tmp:
         s = Scenario(Path(tmp)).build(status="awaiting-user")
         s.advance_base({12: "12-BASE"})
         code, out, _ = s.invoke()
         check(code == M.EXIT_PRECONDITION, f"a held row is refused at exit 2 (code={code})")
         check('"refused": "held"' in out, f"the refusal names the held status; got {out!r}")
-        check(head(s.wt) == s.orig_head, "a held PR is never rebased — HEAD untouched")
+        check(head(s.wt) == s.orig_head, "a parked PR is never rebased — HEAD untouched")
         check(s.remote_pr_head() == s.orig_head, "and the remote PR branch is untouched")
+
+
+def t_decided_repair_exception_is_documented():
+    """Every held-status guide points at the recorded repair's narrow clean-rebase exception."""
+    terms = ("recorded repair", "clean base-only rebase")
+    sites = (
+        OWNER,
+        OWNER.parent / "ledger.py",
+        OWNER.parent.parent / "references" / "repair-pass.md",
+        OWNER.parent.parent / "references" / "loop-control.md",
+        OWNER.parent.parent / "references" / "files-and-ledger.md",
+        OWNER.parent.parent / "references" / "stage-2-review-gate.md",
+        OWNER.parent.parent / "references" / "critical-rules.md",
+        OWNER.parent.parent / "references" / "stage-3-merge.md",
+        OWNER.parent.parent / "SKILL.md",
+    )
+    for site in sites:
+        text = site.read_text(encoding="utf-8")
+        check(all(term in text for term in terms),
+              f"{site.name} lost the decided-repair clean-rebase exception")
 
 
 def t_no_row_refused():
@@ -729,6 +797,9 @@ CASES = [
      t_clean_rebase_end_to_end),
     ("noop-rebase-retains-base-ok-sha", "a no-op rebase (base unchanged) echoes the RETAINED base_ok_sha, "
      "not a reset — the result JSON reads the actual row", t_noop_rebase_echoes_retained_base_ok_sha),
+    ("decided-repair-clean-rebase",
+     "a recorded repair may take its clean base-only rebase while staying repairing",
+     t_decided_repair_rebases_clean_base),
     ("conflict-aborts", "a conflicting rebase aborts, restores HEAD, refuses (exit 3), mutates nothing",
      t_conflict_aborts_and_refuses),
     ("diff-changed-resets", "a textually-clean rebase that changes the PR diff resets and refuses (exit 3)",
@@ -746,7 +817,11 @@ CASES = [
     ("wrong-branch-refused", "a worktree on the wrong branch is refused at exit 2", t_wrong_branch_refused),
     ("head-mismatch-refused", "HEAD != ledger head_sha is refused at exit 2, naming both values",
      t_head_mismatch_refused),
-    ("held-refused", "a held row is refused at exit 2 and never rebased", t_held_row_refused),
+    ("undecided-repair-refused", "an undecided repairing row is refused at exit 2 and never rebased",
+     t_undecided_repair_refused),
+    ("parked-refused", "a parked row is refused at exit 2 and never rebased", t_parked_row_refused),
+    ("decided-repair-docs", "every held-status guide names the decided-repair clean-rebase exception",
+     t_decided_repair_exception_is_documented),
     ("no-row-refused", "a PR with no ledger row is refused at exit 2", t_no_row_refused),
     ("origin-named-base-agrees", "a base literally named origin/<x> matches itself; the bare form disagrees",
      t_origin_named_base_agrees),

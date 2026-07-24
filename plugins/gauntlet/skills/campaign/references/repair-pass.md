@@ -220,6 +220,15 @@ targeted fix "the repair", dispatch it, and **go on whacking moles under a new n
 refuses until a decision is on the row, and prints **which** decision, so the work that follows is the work
 that was decided.
 
+### A recorded repair may first take its required clean base-only rebase
+
+**A recorded repair's required clean base-only rebase is part of that repair, not ordinary gate work.** Run
+`base-preflight.py check` before dispatching the decided repair. On `rebase-first`, run
+`clean-rebase.py run`; it admits this one `repairing` row only when `repair_decision` is recorded. It keeps
+the row `repairing` and preserves the decision, so the rebase prepares that same repair rather than
+unholding the PR. An undecided `repairing` row and every parked row remain refused. A conflict or a
+diff-changing rebase remains outside this exception: `clean-rebase.py` exits 3 and never resolves it.
+
 When the repair has landed, return the row to the gate (`ledger.py … set --pr <N> --status in_review`) and
 let the review gauntlet run again from the top. **`review_rounds` is not reset** — it never is. A PR that
 comes back to a cap has spent another repair.

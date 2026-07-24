@@ -260,7 +260,9 @@
   the guard once named four dispatch sites and missed `stage-3-merge.md` step 6's post-merge rebase).
   **NEVER** launch a review pass, a CI fix, a review fix, or a merge for it; **NEVER** rebase it,
   refresh its base, push to it, relabel it, or change its content in any other way — **and nothing
-  absent from that list either**. Skip it and keep driving the run's other PRs. Being held does **not**
+  absent from that list either**. A recorded repair's required clean base-only rebase is the sole
+  decided-repair exception; `repair-pass.md`, **A recorded repair may first take its required clean
+  base-only rebase**, owns it. Skip every other held action and keep driving the run's other PRs. Being held does **not**
   raise `reviews_ok`, so a dispatch or merge rule that reads only `reviews_ok`/`ci`/`mergeable` would
   re-review a held PR and let a `SATISFIED` verdict merge it **without the user's ruling** — and a
   post-merge rebase would change the very content the user is adjudicating. The guard MUST be enforced
