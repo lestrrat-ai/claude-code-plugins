@@ -2403,7 +2403,7 @@ def has_matching_backtick_run(text: str, start: int, width: int) -> bool:
 
 
 def markdown_visible_text(text: str) -> str:
-    """Remove Markdown HTML comments while preserving literal code and source offsets."""
+    """Remove visible Markdown HTML comments while preserving literal code and source offsets."""
     visible = list(text)
     in_comment = False
     inline_ticks = 0
@@ -2469,8 +2469,7 @@ def markdown_visible_text(text: str) -> str:
 
 
 def markdown_structural_code_text(text: str) -> str:
-    """Mask fenced, indented, and raw-HTML literal code while preserving source offsets."""
-    text = markdown_visible_text(text)
+    """Mask structural literal code before removing visible HTML comments."""
     visible = list(text)
     fence: tuple[str, int, int, int] | None = None
     list_content_indent: int | None = None
@@ -2484,15 +2483,24 @@ def markdown_structural_code_text(text: str) -> str:
     for line in text.splitlines(keepends=True):
         body = line.rstrip("\r\n")
         blockquote = re.match(r" {0,3}(?:>[ \t]?)+", body)
+        list_prefix_indent = 0
+        if blockquote is None and list_content_indent is not None:
+            leading_body = len(body) - len(body.lstrip(" "))
+            if leading_body >= list_content_indent:
+                nested = body[list_content_indent:]
+                blockquote = re.match(r" {0,3}(?:>[ \t]?)+", nested)
+                if blockquote is not None:
+                    list_prefix_indent = list_content_indent
         blockquote_prefix = blockquote.group() if blockquote is not None else ""
         blockquote_depth = blockquote_prefix.count(">")
-        content = body[len(blockquote_prefix):]
+        content = body[list_prefix_indent + len(blockquote_prefix):]
         leading = len(content) - len(content.lstrip(" "))
         list_item = re.match(r" {0,3}(?:[-+*]|\d+[.)])[ \t]+", content) if leading <= 3 else None
         if list_item is not None:
             list_content_indent = len(list_item.group())
         else:
-            if list_content_indent is not None and body and leading < list_content_indent:
+            if (list_content_indent is not None and body and list_prefix_indent == 0
+                    and leading < list_content_indent):
                 list_content_indent = None
         if fence is not None:
             marker, width, container_indent, fence_blockquote_depth = fence
@@ -2507,8 +2515,8 @@ def markdown_structural_code_text(text: str) -> str:
             offset += len(line)
             continue
 
-        container_indent = (list_content_indent
-                            if list_content_indent is not None and leading >= list_content_indent else 0)
+        container_indent = (list_content_indent if list_prefix_indent == 0
+                            and list_content_indent is not None and leading >= list_content_indent else 0)
         opening_body = content[container_indent:]
         opening = re.match(r" {0,3}(`{3,}|~{3,})(.*)", opening_body)
         if opening is not None:
@@ -2529,7 +2537,10 @@ def markdown_structural_code_text(text: str) -> str:
             r"<(?P<tag>pre|code)\b[^>]*>.*?</(?P=tag)\s*>", text, re.IGNORECASE | re.DOTALL):
         mask(match.start(), match.end())
 
-    return "".join(visible)
+    # A literal `<!--` must not start a document comment. Mask every structural-code form first, then let
+    # the comment pass inspect only the remaining visible Markdown. Keeping offsets stable lets the callers
+    # still report the source line that contains a real formula.
+    return markdown_visible_text("".join(visible))
 
 
 def markdown_inline_code_spans(text: str) -> list[tuple[int, int, str]]:

@@ -1361,6 +1361,35 @@ def watch_doc_cases(ci) -> list[str]:
         if not any("consumer `ci` verdict predicate" in problem for problem in got):
             problems.append(f"[watch-doc] a literal code `<!--` in {name} hid a consumer watch predicate")
 
+    # Structural literal-code masking MUST precede HTML-comment masking. Each pair covers one Markdown
+    # container: an unclosed literal `<!--` must not hide a following visible formula, while the control
+    # proves that the same formula remains ignored when it is entirely literal code.
+    for name, description in (
+        ("blockquote-backtick-interior-run", "blockquote backtick fence with an interior run"),
+        ("blockquote-tilde", "blockquote tilde fence"),
+        ("list-four-space-tilde", "four-space list tilde fence"),
+        ("nested-list-backtick-interior-run", "nested-list backtick fence with an interior run"),
+        ("nested-list-tilde", "nested-list tilde fence"),
+        ("blockquote-list-tilde", "blockquote-list tilde fence"),
+        ("list-blockquote-tilde", "list-blockquote tilde fence"),
+        ("indented", "indented code"),
+        ("list-indented", "list-indented code"),
+        ("raw-pre", "raw <pre> code"),
+        ("raw-code", "raw <code> code"),
+    ):
+        visible_name = f"{name}-comment-hides-visible-formula.md"
+        visible = (WATCH_DOC_FIXTURES / visible_name).read_text(encoding="utf-8")
+        got = ci.watch_formula_problems(Path(visible_name), visible)
+        if not any("consumer `ci` verdict predicate" in problem for problem in got):
+            problems.append(f"[watch-doc] a literal `<!--` in {description} hid a visible watch formula")
+
+        literal_name = f"{name}-literal-only-control.md"
+        literal = (WATCH_DOC_FIXTURES / literal_name).read_text(encoding="utf-8")
+        got = ci.watch_formula_problems(Path(literal_name), literal)
+        if got:
+            problems.append(f"[watch-doc] literal-only control for {description} was treated as visible: "
+                            f"{'; '.join(got)}")
+
     hidden = (WATCH_DOC_FIXTURES / "comment-only-requirements.md").read_text(encoding="utf-8")
     action_got = ci.watch_action_block_problems(Path("comment-only-requirements.md"), hidden, anchor)
     if len(action_got) != 5:
