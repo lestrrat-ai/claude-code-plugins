@@ -624,6 +624,20 @@ def find(entries: "list[dict]", fid: str) -> "dict | None":
     return None
 
 
+PR_REF_RE = re.compile(
+    r"^(?:"
+    r"(?:#)?(?P<short>[1-9][0-9]*)"
+    r"|https://github\.com/[^/]+/[^/]+/pull/(?P<url>[1-9][0-9]*)/?"
+    r")$"
+)
+
+
+def pr_number(ref: str) -> "str | None":
+    """Return the number from a legacy bare, `#N`, or GitHub pull-request reference."""
+    match = PR_REF_RE.match(ref)
+    return None if match is None else (match.group("short") or match.group("url"))
+
+
 def next_id(high: int) -> str:
     """`fu<N>`, one past the highest N EVER HANDED OUT — assigned HERE, never by the caller.
 

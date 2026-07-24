@@ -1381,6 +1381,27 @@ def t_fields_and_lookup(tmp: Path) -> None:
     check(out == "", f"--where matched a state the entry has left: {out!r}")
 
 
+def t_pr_references_keep_legacy_bare_numbers_and_github_urls(tmp: Path) -> None:
+    """The follow-up store recognises all PR forms it has historically recorded.
+
+    `open-pr` accepts a caller-provided reference, so older stores can hold a bare number as well as the
+    current `#N` spelling. GitHub pull-request URLs are also accepted, including their optional trailing
+    slash. Other references remain opaque instead of being guessed from a number embedded in free text.
+    """
+    accepted = {
+        "42": "42",
+        "#42": "42",
+        "https://github.com/acme/repo/pull/42": "42",
+        "https://github.com/acme/repo/pull/42/": "42",
+    }
+    for ref, expected in accepted.items():
+        check(followups.pr_number(ref) == expected,
+              f"PR reference {ref!r} parsed as {followups.pr_number(ref)!r}, not {expected!r}")
+    for ref in ("0", "#0", "42/", "https://github.com/acme/repo/issues/42", "PR 42"):
+        check(followups.pr_number(ref) is None,
+              f"non-PR reference {ref!r} was guessed as {followups.pr_number(ref)!r}")
+
+
 CASES = [
     ("user-step-unskippable", "no driver-only path reaches `accepted`, nor any state `publish` leaves from — proved on the graph", t_user_ruling_is_unskippable),
     ("delete-needs-a-record", "an entry is deleted only once a DURABLE RECORD exists elsewhere — never on take-up", t_deletion_needs_a_durable_record),
@@ -1389,6 +1410,7 @@ CASES = [
     ("act-needs-conditions", "the autonomous ACT edge must EVIDENCE every condition, or it is refused", t_act_edge_needs_every_condition),
     ("self-accept-distinct", "a DRIVER-accepted follow-up is never mistaken for a USER-accepted one", t_self_accepted_is_never_mistaken_for_accepted),
     ("doc-and-code-agree", "the ACT conditions the driver READS are the ones the code ENFORCES", t_the_doc_and_the_code_agree),
+    ("pr-reference-parser", "legacy bare numbers, #N, and GitHub pull-request URLs identify the same PR", t_pr_references_keep_legacy_bare_numbers_and_github_urls),
     ("investigation-evidence", "an investigation shows its work; the finding APPENDS and never clobbers", t_investigation_shows_its_work),
     ("refutation-stays", "a refuted follow-up stays in the store, stays visible, and stays overturnable", t_refutation_stays_in_the_store),
     ("state-not-settable", "`set` writes neither `state` nor any evidence a transition left behind", t_state_and_evidence_are_not_settable),
