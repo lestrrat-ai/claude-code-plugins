@@ -174,6 +174,8 @@ WATCH_ACTION_CONSUMERS = (
     ("SKILL.md", "**CI watch action.**"),
     ("references/ci-derivation-spec.md", "**CI watch action.**"),
     ("references/stage-3-merge.md", "**Held-PR watch action.**"),
+    ("references/stage-3-merge.md", "**Clean-rebase watch action.**"),
+    ("references/stage-3-merge.md", "**Judgment-rebase watch action.**"),
     ("references/critical-rules.md", "- **CI watch action.**"),
     ("references/critical-rules.md", "**Held-PR watch action.**"),
     ("references/files-and-ledger.md", "**Held-PR watch action.**"),

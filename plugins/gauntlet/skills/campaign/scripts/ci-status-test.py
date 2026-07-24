@@ -43,6 +43,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -1419,6 +1420,44 @@ def watch_doc_cases(ci) -> list[str]:
     return problems
 
 
+def stage3_rebase_watch_doc_cases(ci, tmp: Path) -> list[str]:
+    """Source-copy fixtures prove both Stage 3 rebase watch actions remain named consumers."""
+    problems = []
+    source = ci.HERE.parent
+    stage3_relative = Path("references") / "stage-3-merge.md"
+    cases = (
+        ("clean", "**Clean-rebase watch action.**"),
+        ("judgment", "**Judgment-rebase watch action.**"),
+    )
+    fixture_root = tmp / "stage3-rebase-watch-actions"
+    shutil.copytree(source, fixture_root, ignore=shutil.ignore_patterns(".tmp", "__pycache__"))
+    stage3 = fixture_root / stage3_relative
+    text = stage3.read_text(encoding="utf-8")
+    for name, anchor in cases:
+        start = text.find(anchor)
+        end = text.find("\n\n", start)
+        if start < 0 or end < 0:
+            problems.append(f"[stage3 watch-doc] {name} source fixture lost its mutation target")
+            continue
+        block = text[start:end]
+        changed, count = re.subn(
+            r"`watch_warranted`\s+is\s+`true`",
+            "`watch_warranted` may be `true` or `false`",
+            block,
+            count=1,
+        )
+        if count != 1:
+            problems.append(f"[stage3 watch-doc] {name} source fixture lost its mutation target")
+            continue
+        stage3.write_text(text[:start] + changed + text[end:], encoding="utf-8")
+        got, _ = ci.check_watch_action_docs(fixture_root)
+        if not any("stage-3-merge.md" in problem and "act only when" in problem for problem in got):
+            problems.append(
+                f"[stage3 watch-doc] unconditional {name}-rebase watch action was accepted"
+            )
+    return problems
+
+
 def run(ci, tmp: Path) -> int:
     """Every fixture, then the seams, then `doc-check`. Non-zero on any failure.
 
@@ -1493,6 +1532,14 @@ def run(ci, tmp: Path) -> int:
     if not watch_doc_problems:
         print(f"ok       {'watch-action doc fixtures':32} -> returned-field consumer accepted; missing field "
               f"and independent predicate refused")
+
+    stage3_watch_doc_problems = stage3_rebase_watch_doc_cases(ci, tmp)
+    for problem in stage3_watch_doc_problems:
+        failures += 1
+        print(f"FAIL     {problem}")
+    if not stage3_watch_doc_problems:
+        print(f"ok       {'stage-3 rebase watch fixtures':32} -> both rebase watch actions reject an "
+              f"unconditional launch")
 
     print()
     print(f"--- doc-check: {ci.SPEC_DOC.name} + {ci.DRIVER_DOC.name} vs the code that runs ---")
