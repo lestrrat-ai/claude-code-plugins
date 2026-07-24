@@ -172,6 +172,14 @@ FIXTURES = HERE / "fixtures" / "ci-status"
 # ERROR (exit 2), never a verdict.
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
+# GitHub repository coordinates are ASCII identifiers. Owners use alphanumerics and single, non-edge
+# hyphens; repository names add `.`, `_`, and unrestricted hyphens. GitHub owns both length limits; the
+# named constants below are this tool's defining sites for them.
+OWNER_RE = re.compile(r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*")
+REPOSITORY_RE = re.compile(r"[A-Za-z0-9._-]+")
+OWNER_MAX_LENGTH = 39
+REPOSITORY_MAX_LENGTH = 100
+
 # "this source's response carried no commit oid" — the artifact's word for it, never a sha we made up.
 NO_OID = "-"
 
@@ -383,6 +391,18 @@ def check_rundir(rundir: Path) -> Path:
     return rundir
 
 
+def check_repo(repo: str) -> str:
+    """An explicit repository is a caller input, not a GitHub read result."""
+    parts = repo.split("/")
+    if (len(parts) != 2
+            or not 1 <= len(parts[0]) <= OWNER_MAX_LENGTH
+            or not 1 <= len(parts[1]) <= REPOSITORY_MAX_LENGTH
+            or OWNER_RE.fullmatch(parts[0]) is None
+            or REPOSITORY_RE.fullmatch(parts[1]) is None):
+        fail(f"--repo {repo!r} is not a valid GitHub owner/name")
+    return repo
+
+
 def check_required_set(spec: str):
     """The base branch's required set, as the ledger holds it (`declared:<json>` | `none` | `unknown`).
 
@@ -510,14 +530,12 @@ TERMINAL_STATUSES = ("merged", "aborted")
 
 
 def _read_needed(spec: str) -> bool:
-    """Does this required-set spec still need a (re)read? `unknown` does, and so does a value we cannot even
-    parse (forced to re-read rather than trusted — the same fail-closed stance the header path always took).
-    `declared:<json>` and `none` are SETTLED reads and are never re-read: the head-SHA liveness checks are
-    the freshness boundary, NOT a policy-revision field (stage-2-ci.md, "WHAT WERE WE EXPECTING TO SEE?")."""
-    try:
-        return SNAP.parse_required_set(spec).state == SNAP.CANNOT_READ
-    except SNAP.SpecError:
+    """Does a validated required-set value still need a (re)read? The row-only `-` sentinel and `unknown`
+    do; `declared:<json>` and `none` are SETTLED reads and are never re-read. The head-SHA liveness checks
+    are the freshness boundary, NOT a policy-revision field (stage-2-ci.md, "WHAT WERE WE EXPECTING TO SEE?")."""
+    if spec == LEDGER.ROW_DEFAULTS["required_set"]:
         return True
+    return SNAP.parse_required_set(spec).state == SNAP.CANNOT_READ
 
 
 def refresh_required_set(fetch: Fetch, ledger_path: Path, repo: str | None = None) -> dict:
@@ -543,6 +561,21 @@ def refresh_required_set(fetch: Fetch, ledger_path: Path, repo: str | None = Non
         SNAP.parse_required_set(header_spec)
     except SNAP.SpecError as exc:
         fail(f"ledger required_set {header_spec!r} is malformed ({exc}); refusing to overwrite it")
+
+    # A row may hold the row-only `-` sentinel or one of the parser-owned required-set states. Validate every
+    # row before grouping, including terminal rows: malformed stored input is a ledger error to preserve,
+    # never an unsettled value to replace.
+    for row in rows:
+        row_spec = row.get("required_set", LEDGER.ROW_DEFAULTS["required_set"])
+        if row_spec == LEDGER.ROW_DEFAULTS["required_set"]:
+            continue
+        try:
+            SNAP.parse_required_set(row_spec)
+        except SNAP.SpecError as exc:
+            fail(
+                f"ledger row for pr {row.get('pr', '?')} required_set {row_spec!r} is malformed "
+                f"({exc}); refusing to overwrite it"
+            )
 
     # Explicit-base rows STORE their own `required_set`; group them by that base. Legacy `-` rows inherit the
     # header, so they are NOT grouped here — the header channel below is their storage.
@@ -809,7 +842,10 @@ def gh_fetch(source: str, argv: list[str]) -> object:
     command that prints valid JSON and exits 1, and one that prints garbage and exits 0. A rule on the only
     code path that talks to GitHub is the last rule that may go untested.
     """
-    proc = subprocess.run(argv, capture_output=True, text=True, check=False)  # noqa: S603
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, check=False)  # noqa: S603
+    except UnicodeDecodeError as exc:
+        raise FetchError(f"{source}: response is not UTF-8 ({exc})") from exc
     if proc.returncode != 0:
         raise FetchError(f"{source}: `{' '.join(argv[:3])} …` exited {proc.returncode}: {proc.stderr.strip()}")
     try:
@@ -2637,8 +2673,33 @@ def main() -> int:
         return self_test()
 
     if args.cmd == "required-set":
-        out = refresh_required_set(gh_fetch, args.ledger, args.repo)
-        print(json.dumps(out, indent=2, ensure_ascii=False))
+        repo = check_repo(args.repo) if args.repo is not None else None
+        if sys.stdout is None:
+            fail(f"required-set: cannot process --ledger {args.ledger} (stdout is unavailable)")
+        try:
+            out = refresh_required_set(gh_fetch, args.ledger, repo)
+        except SystemExit as exc:
+            # ledger.py owns its diagnostic but uses exit 1 for every refusal. At this command boundary,
+            # those are ledger/caller errors (exit 2), never the retryable "some group is unknown" result.
+            # Re-raise every other code unchanged, and do not print a second diagnostic.
+            if exc.code != 1:
+                raise
+            raise SystemExit(2) from None
+        except (OSError, UnicodeError) as exc:
+            # Read/write/spawn failures otherwise escape as tracebacks whose process status happens to be 1,
+            # colliding with the retryable unknown-group result. Undecodable store bytes are the same class:
+            # malformed ledger input, not an unknown required-check read.
+            fail(f"required-set: cannot process --ledger {args.ledger} ({exc})")
+        try:
+            print(json.dumps(out, indent=2, ensure_ascii=False), flush=True)
+        except (OSError, UnicodeError) as exc:
+            # A failed buffered flush leaves the bytes pending. Close the stream before `fail()` so
+            # interpreter finalization cannot retry them and replace exit 2 with its own exit 120.
+            try:
+                sys.stdout.close()
+            except (OSError, UnicodeError):
+                pass
+            fail(f"required-set: cannot process --ledger {args.ledger} ({exc})")
         return 0 if out["settled"] else 1
 
     if args.cmd == "liveness":
