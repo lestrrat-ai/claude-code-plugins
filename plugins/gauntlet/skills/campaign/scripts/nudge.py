@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """The nudge printer — sticky-note reminders the campaign orchestrator prints at the top of every heartbeat.
 
 Every heartbeat is a fresh agent instance, and the campaign's obligations live in prose it re-derives by hand.

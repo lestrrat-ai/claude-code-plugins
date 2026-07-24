@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """THE DURABLE REVIEW-LEARNINGS STORE'S CONTRACT, EXECUTED — the fixtures for `review-learnings.py`.
 
 RUN IT THROUGH THE SCRIPT IT TESTS: `python3 review-learnings.py self-test`. That is what CI invokes, and

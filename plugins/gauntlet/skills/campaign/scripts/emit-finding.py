@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """Record ONE review finding — the reviewer's door into `review-pass.py`, and the ONLY way to report one.
 
 **A FINDING USED TO BE A PARAGRAPH.** It was prose in `review-<pr>-<n>.txt`: no schema, no citation rule,

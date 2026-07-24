@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """Schema-owning accessor for the FOLLOW-UP ledger (.gauntlet/followups.jsonl).
 
 A follow-up is work the campaign DISCOVERED and deliberately did not do: a defect out of scope for the

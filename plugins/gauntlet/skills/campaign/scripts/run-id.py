@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """Mint a campaign run-id and ATOMICALLY create its run directory.
 
 A run-id namespaces everything a run owns — its `<rundir>`, its ledger, and its `gauntlet-run-<run-id>`

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 # THE EXEC BIT: mode 100644 is DELIBERATE, and TWO separate reviews have now proposed `chmod +x` here. The
 # answer is the same both times: nothing invokes this as `./review-pass.py`. Every caller runs it as
 # `python3 <path>` — CI does (`.github/workflows/ci.yml`), and so does the reviewer's emit call — so the

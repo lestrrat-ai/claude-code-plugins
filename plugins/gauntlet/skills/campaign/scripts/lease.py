@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """Schema-owning accessor for the campaign run lease (lease.json).
 
 The lease is what stops two agents driving one run — `run-identity-and-lease.md` calls that "the bug this

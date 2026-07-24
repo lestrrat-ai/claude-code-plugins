@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """DECIDE whether a PR may merge — from its ledger row, live GitHub view, and fetched base ancestry. GATE MACHINERY.
 
 It prints ONE verdict: `merge` (every precondition met) or `not-yet` with a concrete `reason`. It NEVER

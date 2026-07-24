@@ -1,3 +1,4 @@
+# ci: pyright
 """Shared rendering for human-readable Gauntlet state tables."""
 
 from __future__ import annotations

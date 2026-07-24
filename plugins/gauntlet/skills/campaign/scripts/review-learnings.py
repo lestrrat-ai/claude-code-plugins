@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """THE DURABLE REVIEW-LEARNINGS STORE — schema-owning accessor for `.gauntlet/review-learnings.jsonl`.
 
 WHY THIS EXISTS, AND WHY IT IS NOT `followups.jsonl`. When the campaign settles a question — a finding

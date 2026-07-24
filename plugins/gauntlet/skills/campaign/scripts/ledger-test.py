@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """THE EXECUTABLE CONTRACT FOR `ledger.py` — every rule the accessor claims, pinned by a fixture.
 
 Run it through the tool it tests (this is what CI runs):
@@ -2106,7 +2107,7 @@ def count_dumps(L: ModuleType, fn) -> int:
         return real(*a, **k)
 
     # `setattr`, not `L.dump = spy`: assigning through the ModuleType attribute is a Pyright error on the
-    # type-clean list, and this is a test seam, not a schema write.
+    # type-clean set, and this is a test seam, not a schema write.
     setattr(L, "dump", spy)
     try:
         fn()

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """Mutation test for `ci-snapshot.py`: WHICH RULES ARE PINNED BY NO FIXTURE?
 
 `ci-snapshot.py self-test` answers "do the fixtures still produce their expected verdicts?" — and a suite

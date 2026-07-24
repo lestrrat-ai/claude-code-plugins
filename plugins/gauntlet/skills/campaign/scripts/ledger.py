@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ci: pyright
 """Schema-owning accessor for the campaign ledger (state.jsonl).
 
 The store is a plaintext, cat/grep/jq-able JSONL file: one JSON object per line.
