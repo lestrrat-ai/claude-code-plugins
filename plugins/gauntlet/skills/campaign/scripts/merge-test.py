@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 
 from _gauntlet.modules import load_module_from_path
+from _gauntlet.testing import capture_cli
 
 OWNER = Path(__file__).resolve().parent / "merge.py"
 
@@ -34,11 +35,20 @@ def _load_reconcile():
     return mod
 
 
+def _load_followups():
+    path = OWNER.parent / "followups.py"
+    mod = load_module_from_path("merge_test_followups", path)
+    if mod is None:
+        raise RuntimeError(f"cannot load {path}")
+    return mod
+
+
 M = _load_owner()
 L = M.L
 # The reconcile detector. The routing-decision fixture drives BOTH tools: the fact reconcile emits, and the
 # `merge.py run` finalizer that fact routes to.
 RECON = _load_reconcile()
+F = _load_followups()
 
 SHA = "a" * 40
 
@@ -46,6 +56,10 @@ SHA = "a" * 40
 def check(cond: bool, msg: str) -> None:
     if not cond:
         raise M.SelfTestFailure(msg)
+
+
+def followup(argv: list[str]) -> tuple[int, str, str]:
+    return capture_cli(F.main, argv)
 
 
 class Fake:
@@ -869,6 +883,37 @@ def t_absent_snapshot_closed_row_terminates():
         finish(td, real)
 
 
+def t_closed_out_ledger_disposes_matching_pending_followup():
+    """The close-out's real terminal transition disposes only its matching pending rejection."""
+    td, root, f, _unused, real = scenario(state="CLOSED")
+    try:
+        ledger = root / ".gauntlet" / "tmp" / "g1" / "state.jsonl"
+        f.ledger(ledger)
+        store = root / ".gauntlet" / "followups.jsonl"
+        for argv in (
+            ["--file", str(store), "add", "--title", "pending", "--evidence", "proof",
+             "--deferred-why", "scope"],
+            ["--file", str(store), "accept", "--id", "fu1", "--at", "2026-07-24T10:00:00Z"],
+            ["--file", str(store), "open-pr", "--id", "fu1", "--pr", "#9"],
+            ["--file", str(store), "reject-pending", "--id", "fu1", "--at", "2026-07-24T11:00:00Z"],
+        ):
+            code, _, err = followup(argv)
+            check(code == 0, f"follow-up setup failed: {argv!r}: {err!r}")
+        code, result, err = invoke(f, ledger, root)
+        check(code == 0 and result is not None and result["status"] == "closed-unmerged", err)
+        entry = json.loads(followup(["--file", str(store), "get", "--id", "fu1"])[1])
+        check(entry["rejection"] == F.DISPOSED_REJECTION,
+              f"close-out did not record the completed follow-up disposition: {entry!r}")
+        code, out, err = followup(["--file", str(store), "reject", "--id", "fu1",
+                                   "--at", "2026-07-24T12:00:00Z"])
+        rejected = json.loads(out) if out else {}
+        check(code == 0 and rejected.get("state") == "rejected"
+              and rejected.get("decided") == "2026-07-24T11:00:00Z",
+              f"terminal reject did not consume the close-out disposition: {code} {err!r}")
+    finally:
+        finish(td, real)
+
+
 def t_half_adopted_closed_row_closes_out_without_cleanup_fields():
     # A HALF-ADOPTION: pr-adopt.py registers the ledger row (step 4) BEFORE it resolves the worktree
     # (step 5), and its documented git-failure path returns with worktree/worktree_owned/branch_owned left
@@ -1673,6 +1718,7 @@ CASES = [
     ("merge-method", "merge method is a validated input; squash-disabled repo has a prevailing-method recourse", t_merge_method_input_validated_and_applied),
     ("absent-resume", "an absent-but-unfinalized MERGED row resumes its remaining phases through run", t_absent_snapshot_merged_row_resumes_via_run),
     ("absent-closed", "an absent-but-unfinalized CLOSED-without-merge row terminates as aborted with no cleanup", t_absent_snapshot_closed_row_terminates),
+    ("closed-followup-disposition", "a terminal CLOSED close-out records the matching pending follow-up disposition before terminal reject", t_closed_out_ledger_disposes_matching_pending_followup),
     ("half-adopted-closed", "a half-adopted CLOSED row closes out to aborted without requiring the cleanup-ownership fields", t_half_adopted_closed_row_closes_out_without_cleanup_fields),
     ("closed-out-moved-refs", "the CLOSED close-out terminates as aborted despite a moved head, base, or branch", t_closed_out_terminates_despite_moved_head_base_or_branch),
     ("closed-out-held-statuses", "a CLOSED PR closes out every held status to aborted; merged+CLOSED stays refused", t_closed_out_terminates_every_held_status),

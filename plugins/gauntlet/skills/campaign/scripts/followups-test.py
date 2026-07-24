@@ -48,10 +48,12 @@ check = ledger_test.check
 import followups  # noqa: E402
 from followups import (  # noqa: E402
     ACT_CMD, ACT_CONDITIONS, ACT_FLAGS, ACT_WITNESSES, BLANK_WHY, DEFAULTS, DELETED, DELETING,
-    DRIVER_STEPS, DURABLE_RECORD, EDITABLE, ENTRY_TYPE, EVIDENCE_FIELDS, FIELDS, FLAG, INTAKE,
+    DISPOSED_REJECTION, DRIVER_STEPS, DURABLE_RECORD, EDITABLE, ENTRY_TYPE, EVIDENCE_FIELDS, FIELDS, FLAG,
+    INTAKE,
     INVESTIGATION, OPTIONAL, PLACEHOLDER, REQUIRED, SEQ_TYPE, STATES, TABLE_ALL_HIDDEN_MARKER,
-    TABLE_DEFAULT_FIELDS, TABLE_EMPTY_MARKER, TABLE_HIDDEN_STATES, TABLE_MARKERS, TERMINAL, TRANSITIONS,
-    USER_RULINGS, WRITE_CMDS, WRITES, build_parser, deletable, find, is_blank, load,
+    NO_REJECTION, PENDING_REJECTION, REJECTION_VALUES, TABLE_DEFAULT_FIELDS, TABLE_EMPTY_MARKER,
+    TABLE_HIDDEN_STATES, TABLE_MARKERS, TERMINAL, TRANSITIONS, USER_RULINGS, WRITE_CMDS, WRITES,
+    build_parser, deletable, find, is_blank, load,
 )
 
 
@@ -67,7 +69,7 @@ def entry_line(**over: object) -> str:
     once. A fixture that wants a DEFECTIVE entry blanks a field on purpose — that is what `**over` is for.
     """
     rec = {"type": ENTRY_TYPE, **DEFAULTS,
-           **{f: f"<{f}>" for f in FIELDS if f not in ("id", "state")}, **over}
+           **{f: f"<{f}>" for f in FIELDS if f not in ("id", "state", "rejection")}, **over}
     return json.dumps(rec)
 
 
@@ -319,7 +321,10 @@ def t_transition_graph(tmp: Path) -> None:
     for cmd, (frm, to) in TRANSITIONS.items():
         for state in STATES:
             path = tmp / f"{cmd}-{state}.jsonl"
-            write_lines(path, entry_line(id="fu1", state=state))
+            entry = {"id": "fu1", "state": state}
+            if cmd == "reject" and state == "in-pr":
+                entry["rejection"] = DISPOSED_REJECTION
+            write_lines(path, entry_line(**entry))
             code, _, err = run(["--file", str(path), cmd, "--id", "fu1", *transition_args(cmd)])
             if state in frm:
                 check(code == 0, f"`{cmd}` was refused from the ALLOWED state {state!r}: {err!r}")
@@ -381,15 +386,21 @@ def t_ruling_is_recorded(tmp: Path) -> None:
           f"`open-pr` overwrote the USER's ruling timestamp: {after!r}")
     check(after["pr"] == "77", f"open-pr did not record WHICH PR is addressing it: {after!r}")
 
-    # …and so does the step that DELETES it: the record it prints is the handoff, and it still says the
-    # user ruled, and when.
-    code, out, err = run(["--file", str(path), "reject", "--id", a, "--at", "2026-07-14T11:00:00Z"])
-    check(code == 0, f"reject exited {code}: {err!r}")  # the user changed their mind while the PR was open
+    # Changing the ruling while a PR is open is durable before the campaign disposition. A closed PR records
+    # that disposition; terminal reject then retains the time the user first ruled.
+    code, _, err = run(["--file", str(path), "reject-pending", "--id", a, "--at", "2026-07-14T11:00:00Z"])
+    check(code == 0, f"reject-pending exited {code}: {err!r}")
+    code, _, err = run(["--file", str(path), "closed-unmerged", "--id", a])
+    check(code == 0, f"closed-unmerged exited {code}: {err!r}")
+    code, out, err = run(["--file", str(path), "reject", "--id", a, "--at", "2026-07-14T12:00:00Z"])
+    check(code == 0, f"terminal reject exited {code}: {err!r}")
+    check(json.loads(out)["decided"] == "2026-07-14T11:00:00Z",
+          "terminal reject replaced the pending ruling timestamp")
     (b2,) = seed(path)
-    run(["--file", str(path), "accept", "--id", b2, "--at", "2026-07-14T12:00:00Z"])
+    run(["--file", str(path), "accept", "--id", b2, "--at", "2026-07-14T13:00:00Z"])
     code, out, _ = run(["--file", str(path), "publish", "--id", b2, "--ref", "#88"])
     gone = json.loads(out)
-    check(gone["decided"] == "2026-07-14T12:00:00Z",
+    check(gone["decided"] == "2026-07-14T13:00:00Z",
           f"the deletion record lost the USER's ruling — nothing says the publish was theirs: {gone!r}")
     check(gone["published"] == "#88", f"publish did not record WHERE: {gone!r}")
 
@@ -705,7 +716,9 @@ def t_deletion_needs_a_durable_record(tmp: Path) -> None:
         if set(WRITES[cmd]) & set(DURABLE_RECORD):
             continue  # the deleting step itself records where the follow-up now lives
         for state in frm:
-            ins = [c for c, (_, to) in TRANSITIONS.items() if to == state]
+            # A self-loop preserves an already-present state; it does not provide a path INTO that state and
+            # therefore does not need to write the durable record that an earlier ingress already wrote.
+            ins = [c for c, (from_states, to) in TRANSITIONS.items() if to == state and state not in from_states]
             check(ins, f"`{cmd}` deletes a {state!r} entry, and NOTHING reaches {state!r} — an entry that "
                        f"is there was hand-written, and carries no record of anything")
             for into in ins:
@@ -1381,6 +1394,54 @@ def t_fields_and_lookup(tmp: Path) -> None:
     check(out == "", f"--where matched a state the entry has left: {out!r}")
 
 
+def t_in_pr_rejection_needs_one_typed_completed_disposition(tmp: Path) -> None:
+    """An `in-pr` rejection stays pending until that PR's exact terminal disposition is recorded.
+
+    The user ruling and campaign result are different facts. A typed field holds the latter, so a free-form
+    timestamp cannot accidentally stand in for it. Only the matching PR moves pending -> disposed; terminal
+    reject then preserves the earlier ruling time.
+    """
+    store = tmp / "followups.jsonl"
+    first, second = seed(store, 2)
+    for fid, pr in ((first, "#42"), (second, "https://github.com/acme/repo/pull/43")):
+        code, _, err = run(["--file", str(store), "accept", "--id", fid, "--at", "2026-07-24T10:00:00Z"])
+        check(code == 0, f"accept setup failed: {err!r}")
+        code, _, err = run(["--file", str(store), "open-pr", "--id", fid, "--pr", pr])
+        check(code == 0, f"open-pr setup failed: {err!r}")
+        code, _, err = run(["--file", str(store), "reject-pending", "--id", fid,
+                            "--at", "2026-07-24T11:00:00Z"])
+        check(code == 0, f"reject-pending setup failed: {err!r}")
+
+    pending = json.loads(run(["--file", str(store), "get", "--id", first])[1])
+    check(pending["state"] == "in-pr" and pending["rejection"] == PENDING_REJECTION,
+          f"reject-pending did not preserve the open PR and typed pending phase: {pending!r}")
+    code, _, err = run(["--file", str(store), "reject", "--id", first])
+    check(code == 1 and "disposition is unresolved" in err,
+          f"terminal reject accepted an unresolved pending rejection: {code} {err!r}")
+
+    recorded = followups.record_completed_rejection_disposition(store, "42")
+    check(recorded == (first,), f"exact PR disposition recorded {recorded!r}, not only {first!r}")
+    first_entry = json.loads(run(["--file", str(store), "get", "--id", first])[1])
+    second_entry = json.loads(run(["--file", str(store), "get", "--id", second])[1])
+    check(first_entry["rejection"] == DISPOSED_REJECTION,
+          f"matching pending rejection was not disposed: {first_entry!r}")
+    check(second_entry["rejection"] == PENDING_REJECTION,
+          f"another PR's pending rejection was disposed: {second_entry!r}")
+
+    code, out, err = run(["--file", str(store), "reject", "--id", first,
+                          "--at", "2026-07-24T12:00:00Z"])
+    entry = json.loads(out) if out else {}
+    check(code == 0 and entry.get("state") == "rejected" and entry.get("decided") == "2026-07-24T11:00:00Z",
+          f"terminal reject did not preserve its original user ruling: {code} {err!r}")
+
+    for phase in REJECTION_VALUES:
+        path = tmp / f"phase-{phase}.jsonl"
+        state = "in-pr" if phase != DISPOSED_REJECTION else "rejected"
+        write_lines(path, entry_line(id="fu1", state=state, rejection=phase))
+        code, _, err = run(["--file", str(path), "list"])
+        check(code == 0, f"valid rejection phase {phase!r} was refused: {err!r}")
+
+
 def t_pr_references_keep_legacy_bare_numbers_and_github_urls(tmp: Path) -> None:
     """`open-pr` stores recognised PR forms as their canonical number.
 
@@ -1443,6 +1504,7 @@ CASES = [
     ("act-needs-conditions", "the autonomous ACT edge must EVIDENCE every condition, or it is refused", t_act_edge_needs_every_condition),
     ("self-accept-distinct", "a DRIVER-accepted follow-up is never mistaken for a USER-accepted one", t_self_accepted_is_never_mistaken_for_accepted),
     ("doc-and-code-agree", "the ACT conditions the driver READS are the ones the code ENFORCES", t_the_doc_and_the_code_agree),
+    ("in-pr-reject-orders-pr", "an `in-pr` rejection is durable before PR disposition and terminal only after it", t_in_pr_rejection_needs_one_typed_completed_disposition),
     ("pr-reference-parser", "open-pr canonicalises recognised PR references and preserves opaque text", t_pr_references_keep_legacy_bare_numbers_and_github_urls),
     ("investigation-evidence", "an investigation shows its work; the finding APPENDS and never clobbers", t_investigation_shows_its_work),
     ("refutation-stays", "a refuted follow-up stays in the store, stays visible, and stays overturnable", t_refutation_stays_in_the_store),

@@ -35,6 +35,37 @@ DESCRIPTION = "Schema-owning accessor for the campaign ledger (state.jsonl)."
 
 HERE = Path(__file__).resolve().parent
 TEST_PY = HERE / "ledger-test.py"     # the fixture suite — this accessor's executable contract
+FOLLOWUPS_PY = HERE / "followups.py"
+
+
+def _followup_store_for(path: Path) -> "Path | None":
+    """Return the shared follow-up store for a standard `<project>/.gauntlet/tmp/<id>/state.jsonl` ledger.
+
+    A ledger command may operate on an arbitrary fixture or recovery file. Those paths carry no defined
+    relation to a follow-up store, so they never receive a side effect.
+    """
+    run_dir = path.parent
+    if (path.name != "state.jsonl" or run_dir.parent.name != "tmp"
+            or run_dir.parent.parent.name != ".gauntlet"):
+        return None
+    return run_dir.parent.parent / "followups.jsonl"
+
+
+def record_aborted_followup_disposition(path: Path, pr: str) -> "tuple[str, ...]":
+    """Record one exact PR's pending follow-up disposition after a real terminal-abort transition.
+
+    Callers own the transition check. This helper never scans ledger rows, so an unrelated save or repeated
+    `status=aborted` write cannot consume a rejection that was marked pending later.
+    """
+    store = _followup_store_for(path)
+    if store is None or not store.exists():
+        return ()
+    spec = importlib.util.spec_from_file_location("ledger_followups", FOLLOWUPS_PY)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load follow-up accessor at {FOLLOWUPS_PY}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.record_completed_rejection_disposition(store, pr)
 
 # --- schema (owned here, once) ------------------------------------------------
 
@@ -1144,6 +1175,7 @@ def cmd_set(path: Path, args) -> int:
     updates = _named_field_values(args, creating=False)
     if not updates:
         fail("set requires at least one --<field> <value>")
+    was_aborted = row["status"] == "aborted"
     # The review-standoff park still uses `set --status awaiting-user`, but a recorded repair decision owns
     # a repairing row's next action. `park` already refuses this transition; keep the same guard at the
     # generic write door so a hand-assembled `set` cannot strand a repair that dispatch-check permits.
@@ -1164,6 +1196,8 @@ def cmd_set(path: Path, args) -> int:
         apply_head_sha(row, updates.pop("head_sha"))
     row.update(updates)  # by NAME — never by column position
     save(path, header, rows, activity=activity)
+    if not was_aborted and row["status"] == "aborted":
+        record_aborted_followup_disposition(path, pr)
     print(json.dumps(row))
     return 0
 
