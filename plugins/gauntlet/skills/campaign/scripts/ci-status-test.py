@@ -1027,6 +1027,33 @@ def required_set_matrix_cases(ci, tmp: Path) -> list[str]:
     return problems
 
 
+def command_boundary_cases(ci, tmp: Path) -> list[str]:
+    """Ignore filenames that merely contain the documented executable name."""
+    problems: list[str] = []
+    forms = {
+        "derive": (ci.check_derive_copies, "derive --pr 1 --ledger <rundir>/state.jsonl"),
+        "liveness": (ci.check_liveness_copies,
+                     "liveness --ledger <rundir>/state.jsonl --pr 1 --machine-action none"),
+        "required-set": (ci.check_required_set_copies,
+                          "required-set --ledger <rundir>/state.jsonl"),
+    }
+    for subcommand, (check, valid) in forms.items():
+        root = tmp / f"command-boundary-{subcommand}"
+        root.mkdir()
+        (root / "commands.md").write_text(
+            f"`not-ci-status.py {valid}` is a filename, not an invocation.\n\n"
+            f"`ci-status.py {valid}`\n",
+            encoding="utf-8",
+        )
+        found_problems, copies = check(root)
+        if found_problems:
+            problems.append(f"[command boundary {subcommand}] false executable name was checked: "
+                            f"{found_problems!r}")
+        if len(copies) != 1:
+            problems.append(f"[command boundary {subcommand}] expected one copy, got {copies!r}")
+    return problems
+
+
 def liveness_cases(ci, tmp: Path) -> list[str]:
     """Drive `liveness` through every transition the derivation block defines, on a real ledger file.
 
@@ -1329,6 +1356,14 @@ def run(ci, tmp: Path) -> int:
         print(f"ok       {'required-set CLI exits':32} -> settled=0, unknown=1, "
               f"caller/store/output errors=2; "
               f"errors preserve the ledger and emit one diagnostic without a traceback")
+
+    command_boundary_problems = command_boundary_cases(ci, tmp)
+    for problem in command_boundary_problems:
+        failures += 1
+        print(f"FAIL     {problem}")
+    if not command_boundary_problems:
+        print(f"ok       {'command name boundaries':32} -> filenames containing ci-status.py are not treated "
+              f"as executable copies")
 
     liveness_problems = liveness_cases(ci, tmp)
     for problem in liveness_problems:
