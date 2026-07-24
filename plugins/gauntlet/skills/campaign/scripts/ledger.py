@@ -52,7 +52,7 @@ def _followup_store_for(path: Path) -> "Path | None":
 
 
 def record_aborted_followup_disposition(path: Path, pr: str) -> "tuple[str, ...]":
-    """Record one exact PR's pending follow-up disposition after a real terminal-abort transition.
+    """Record one exact PR's pending follow-up disposition after a real non-terminal -> aborted transition.
 
     Callers own the transition check. This helper never scans ledger rows, so an unrelated save or repeated
     `status=aborted` write cannot consume a rejection that was marked pending later.
@@ -1175,7 +1175,7 @@ def cmd_set(path: Path, args) -> int:
     updates = _named_field_values(args, creating=False)
     if not updates:
         fail("set requires at least one --<field> <value>")
-    was_aborted = row["status"] == "aborted"
+    was_terminal = row["status"] in TERMINAL_STATUSES
     # The review-standoff park still uses `set --status awaiting-user`, but a recorded repair decision owns
     # a repairing row's next action. `park` already refuses this transition; keep the same guard at the
     # generic write door so a hand-assembled `set` cannot strand a repair that dispatch-check permits.
@@ -1196,7 +1196,7 @@ def cmd_set(path: Path, args) -> int:
         apply_head_sha(row, updates.pop("head_sha"))
     row.update(updates)  # by NAME — never by column position
     save(path, header, rows, activity=activity)
-    if not was_aborted and row["status"] == "aborted":
+    if not was_terminal and row["status"] == "aborted":
         record_aborted_followup_disposition(path, pr)
     print(json.dumps(row))
     return 0

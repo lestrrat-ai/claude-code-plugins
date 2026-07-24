@@ -193,7 +193,7 @@ records what happened to the PR rather than what the user decided.
    PR reference and writes the user's ruling time.
 2. Finish the recorded PR's current campaign disposition. A CLOSED PR uses `closed-unmerged`, which records
    the disposition directly. A campaign abort or close-out records the matching pending disposition when its
-   ledger row makes a real non-`aborted` → `aborted` transition. A MERGED PR remains the durable record, so
+   non-terminal ledger row makes a real `aborted` transition. A MERGED PR remains the durable record, so
    use `merged` and do not record rejection.
 3. Once the entry reports `rejection = disposed`, run `followups.py --file <store> reject --id fuN`. It
    keeps the original `reject-pending` timestamp and retains the PR reference as history.

@@ -2375,10 +2375,10 @@ def t_set_cannot_park_a_decided_repair(L: ModuleType, tmp: Path) -> None:
 
 
 def t_aborted_transition_disposes_only_its_existing_pending_followup(L: ModuleType, tmp: Path) -> None:
-    """Only a real non-aborted -> aborted row transition disposes that PR's already-pending rejection.
+    """Only a real non-terminal -> aborted row transition disposes that PR's already-pending rejection.
 
     This is deliberately driven through `set`: a repeat of the same value and an unrelated save both pass
-    through the generic ledger writer. Neither may scan old aborted rows and consume a later user ruling.
+    through the generic ledger writer. Neither may scan terminal rows and consume a later user ruling.
     """
     spec = importlib.util.spec_from_file_location("ledger_test_followups", HERE / "followups.py")
     if spec is None or spec.loader is None:
@@ -2417,6 +2417,21 @@ def t_aborted_transition_disposes_only_its_existing_pending_followup(L: ModuleTy
     second = followups.find(followups.load(store), "fu2")
     check(second is not None and second["rejection"] == followups.PENDING_REJECTION,
           f"a stale aborted row or unrelated save disposed a later pending rejection: {second!r}")
+
+    # `merged` is also terminal. Changing it to `aborted` through the generic writer must not invent an
+    # abort event and consume a pending rejection from a later ruling.
+    merged_ledger_path = root / ".gauntlet" / "tmp" / "g2" / "state.jsonl"
+    merged_ledger_path.parent.mkdir(parents=True)
+    write_lines(merged_ledger_path, header_line(L, run_id="g2"), row_line(L, pr="42", status="merged"))
+    pending("fu3", "#42")
+    code, _, err = cli(L, ["--file", str(merged_ledger_path), "set", "--pr", "42", "--status", "aborted"])
+    check(code == 0, f"merged-to-aborted terminal write failed: {err!r}")
+    third = followups.find(followups.load(store), "fu3")
+    check(third is not None and third["rejection"] == followups.PENDING_REJECTION,
+          f"a merged row invented an abort event and disposed a later pending rejection: {third!r}")
+    code, _, err = capture_cli(followups.main, ["--file", str(store), "reject", "--id", "fu3"])
+    check(code == 1 and "disposition is unresolved" in err,
+          f"a merged-to-aborted write let terminal reject bypass disposition: {code} {err!r}")
 
 
 # --- last_activity: the run's durable "when did anything last move?" sensor -----
@@ -2936,7 +2951,7 @@ CASES = [
     ("unpark-refusals", "unpark refuses not-parked/unanswered/abort/malformed — writing nothing", t_unpark_refusals),
     ("set-status-stays-open", "set may still write the standoff park/unpark transitions — park/unpark can't serve them", t_set_status_transitions_stay_open),
     ("set-decided-repair-guard", "set cannot park a decided repair and strand its dispatch", t_set_cannot_park_a_decided_repair),
-    ("aborted-followup-transition", "only a real non-aborted -> aborted transition disposes that PR's existing pending follow-up", t_aborted_transition_disposes_only_its_existing_pending_followup),
+    ("aborted-followup-transition", "only a real non-terminal -> aborted transition disposes that PR's existing pending follow-up", t_aborted_transition_disposes_only_its_existing_pending_followup),
     ("replay-the-record", "the REAL #42/#43 verdict sequences: it fires, never too early, and says what it costs", t_replay_the_real_record),
     ("activity-stamped-on-change", "a value-changing set stamps last_activity; a no-op set does not", t_activity_stamped_on_a_real_change),
     ("verdict-stamps-activity", "a landed verdict stamps last_activity — it always moves review_rounds", t_verdict_stamps_activity),

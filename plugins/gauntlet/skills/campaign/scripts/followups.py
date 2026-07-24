@@ -661,7 +661,7 @@ def rejection_phase(entry: dict) -> str:
 def record_completed_rejection_disposition(path: Path, pr: str) -> "tuple[str, ...]":
     """Record one exact PR's completed abort or close-out on matching pending follow-ups.
 
-    The ledger calls this only after its row made a real non-aborted -> aborted transition. A missing store is
+    The ledger calls this only after its row made a real non-terminal -> aborted transition. A missing store is
     normal, and ordinary `in-pr` entries remain untouched. The store lock and atomic dump remain its only
     write path.
     """
