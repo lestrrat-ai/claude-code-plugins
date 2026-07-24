@@ -1028,415 +1028,59 @@ def required_set_matrix_cases(ci, tmp: Path) -> list[str]:
 
 
 def command_copy_cases(ci, tmp: Path) -> list[str]:
-    """Wrapped copies cannot borrow flags from later commands, paragraphs, or Markdown blocks."""
+    """Check the two documented command-copy forms and their own required inputs."""
     problems: list[str] = []
-    fixtures = {
+    forms = {
         "derive": (
             ci.check_derive_copies,
-            "Run `scripts/ci-status.py\n  derive --pr 1 --ledger <rundir>/state.jsonl`.",
-            "Run `scripts/ci-status.py\n  derive --pr 1`.",
-            "`--ledger <rundir>/state.jsonl` is discussed separately.",
-            "Run scripts/ci-status.py derive --pr 1, then echo --ledger ledger/state.jsonl.",
+            "--pr 1 --ledger <rundir>/state.jsonl",
+            "--pr 1",
             "WITHOUT `--ledger` OR `--required-set`",
         ),
         "liveness": (
             ci.check_liveness_copies,
-            "Run `scripts/ci-status.py\n  liveness --ledger <rundir>/state.jsonl --pr 1 "
-            "--machine-action none`.",
-            "Run `scripts/ci-status.py\n  liveness --ledger <rundir>/state.jsonl --pr 1`.",
-            "`--machine-action none` is discussed separately.",
-            "Run scripts/ci-status.py liveness --ledger ledger/state.jsonl --pr 1, then "
-            "echo --machine-action none.",
+            "--ledger <rundir>/state.jsonl --pr 1 --machine-action none",
+            "--ledger <rundir>/state.jsonl --pr 1",
             "WITHOUT `--machine-action`",
         ),
         "required-set": (
             ci.check_required_set_copies,
-            "Run `scripts/ci-status.py\n  required-set --ledger <rundir>/state.jsonl`.",
-            "Run `scripts/ci-status.py\n  required-set --ledger <rundir>/other.jsonl`.",
-            "`state.jsonl` is discussed separately.",
-            "Run scripts/ci-status.py required-set --ledger ledger/other.jsonl, then "
-            "echo ledger/state.jsonl.",
+            "--ledger <rundir>/state.jsonl",
+            "--ledger <rundir>/other.jsonl",
             "without the run ledger's",
         ),
     }
-    bare_later_commands = {
-        "derive": "Run scripts/ci-status.py derive --pr 1\necho --ledger <rundir>/state.jsonl.",
-        "liveness": "Run scripts/ci-status.py liveness --ledger <rundir>/state.jsonl --pr 1\n"
-                    "echo --machine-action none.",
-        "required-set": "Run scripts/ci-status.py required-set\necho --ledger <rundir>/state.jsonl.",
-    }
-    prompted_later_commands = {
-        "derive": "Run scripts/ci-status.py derive --pr 1\n$ echo --ledger <rundir>/state.jsonl.",
-        "liveness": "Run scripts/ci-status.py liveness --ledger <rundir>/state.jsonl --pr 1\n"
-                    "$ echo --machine-action none.",
-    }
-    derive_json_path_commands = {
-        "liveness": "Run scripts/ci-status.py liveness --ledger <rundir>/state.jsonl --pr 1 "
-                    "--derive-json result.py --machine-action none.",
-    }
-    inline_later_commands = {
-        "derive": "Run scripts/ci-status.py derive --pr 1, then `echo --ledger <rundir>/state.jsonl`.",
-        "liveness": "Run scripts/ci-status.py liveness --ledger <rundir>/state.jsonl --pr 1, then "
-                    "`echo --machine-action none`.",
-        "required-set": "Run scripts/ci-status.py required-set --ledger <rundir>/other.jsonl, then "
-                        "`echo ledger/state.jsonl`.",
-    }
-    next_later_commands = {
-        "derive": "Run scripts/ci-status.py derive --pr 1. Next, run echo --ledger "
-                  "<rundir>/state.jsonl.",
-        "liveness": "Run scripts/ci-status.py liveness --ledger <rundir>/state.jsonl --pr 1. Next, run "
-                    "echo --machine-action none.",
-        "required-set": "Run scripts/ci-status.py required-set --ledger <rundir>/other.jsonl. Next, run "
-                        "echo ledger/state.jsonl.",
-    }
-    afterwards_later_commands = {
-        "derive": "Run scripts/ci-status.py derive --pr 1. Afterwards, run echo --ledger "
-                  "<rundir>/state.jsonl.",
-        "liveness": "Run scripts/ci-status.py liveness --ledger <rundir>/state.jsonl --pr 1. Afterwards, "
-                    "run echo --machine-action none.",
-        "required-set": "Run scripts/ci-status.py required-set --ledger <rundir>/other.jsonl. Afterwards, "
-                        "run echo ledger/state.jsonl.",
-    }
-    for subcommand, (check, valid, invalid, detached, later_command, problem_needle) in fixtures.items():
-        root = tmp / f"doc-copy-{subcommand}"
+    for subcommand, (check, valid, invalid, needle) in forms.items():
+        root = tmp / f"command-copy-{subcommand}"
         root.mkdir()
-        shell_valid = valid.replace("ci-status.py\n", "ci-status.py \\\n")
-        shell_invalid = invalid.replace("ci-status.py\n", "ci-status.py \\\n")
-        quoted = lambda command: "\n".join(f"> {line}" for line in command.splitlines())
-        quoted_valid = quoted(valid)
-        quoted_invalid = quoted(invalid)
-        quoted_shell_valid = quoted(shell_valid)
-        quoted_shell_invalid = quoted(shell_invalid)
-        quoted_detached = quoted(detached)
-        inline_invalid = invalid.replace("`", "").replace("\n  ", " ")
-        inline_valid = valid.replace("`", "").replace("\n  ", " ")
-        ordered_invalid = invalid.replace("\n", "\n   ")
-        nested_unordered_invalid = invalid.replace("\n", "\n      ")
-        nested_ordered_invalid = invalid.replace("\n", "\n       ")
-        mixed_space_tab_invalid = invalid.replace("\n", "\n \t")
-        nested_item = "- Parent item\n    - "
-        nested_indent = "      "
-        (root / "wrapped.md").write_text(
-            f"{valid}\n\n{invalid}\n\n{shell_valid}\n\n{shell_invalid}\n\n{detached}\n\n"
-            f"{quoted_valid}\n>\n{quoted_invalid}\n>\n{quoted_detached}\n>\n"
-            f"{quoted_shell_valid}\n>\n{quoted_shell_invalid}\n>\n{quoted_detached}\n",
+        shell_wrap = chr(92) + "\n"
+        fenced_valid = valid.replace(" ", f" {shell_wrap}  ", 1)
+        fenced_invalid = invalid.replace(" ", f" {shell_wrap}  ", 1)
+        (root / "commands.md").write_text(
+            f"Prose mentions ci-status.py {subcommand} {valid}; it is not a command copy.\n\n"
+            f"`scripts/ci-status.py\n  {subcommand} {valid}`\n\n"
+            f"```sh\npython3 <skill>/scripts/ci-status.py {subcommand} {fenced_valid}\n```\n\n"
+            f"`scripts/ci-status.py\n  {subcommand} {invalid}`\n\n"
+            f"```sh\npython3 <skill>/scripts/ci-status.py {subcommand} {fenced_invalid}\n```\n",
             encoding="utf-8",
         )
-        (root / "quote-transition.md").write_text(
-            f"{invalid}\n{quoted_detached}\n",
-            encoding="utf-8",
-        )
-        (root / "same-paragraph.md").write_text(
-            f"{inline_invalid} Then run {inline_valid}; run {inline_valid}\n",
-            encoding="utf-8",
-        )
-        (root / "later-command.md").write_text(later_command + "\n", encoding="utf-8")
-        if subcommand in prompted_later_commands:
-            (root / "prompted-later-shell-command.md").write_text(
-                prompted_later_commands[subcommand] + "\n", encoding="utf-8"
-            )
-        if subcommand in derive_json_path_commands:
-            (root / "derive-json-path.md").write_text(
-                derive_json_path_commands[subcommand] + "\n", encoding="utf-8"
-            )
-        (root / "inline-introduced-command.md").write_text(
-            inline_later_commands[subcommand] + "\n", encoding="utf-8"
-        )
-        (root / "next-introduced-command.md").write_text(
-            next_later_commands[subcommand] + "\n", encoding="utf-8"
-        )
-        (root / "afterwards-introduced-command.md").write_text(
-            afterwards_later_commands[subcommand] + "\n", encoding="utf-8"
-        )
-        boundary_fixtures = {
-            "atx-heading.md": (f"{invalid}\n# {detached}\n", 1),
-            "unordered-list.md": (f"{invalid}\n- {detached}\n", 1),
-            "fenced-block.md": (f"{invalid}\n```\n{detached}\n```\n", 1),
-            "thematic-break.md": (f"{invalid}\n* * *\n{detached}\n", 1),
-            "html-block.md": (f"{invalid}\n<div>\n{detached}\n</div>\n", 1),
-            "html-script.md": (f"{invalid}\n<script>\n{detached}\n</script>\n", 1),
-            "html-comment.md": (f"{invalid}\n<!--\n{detached}\n-->\n", 1),
-            "html-processing.md": (f"{invalid}\n<?fixture\n{detached}\n?>\n", 1),
-            "html-declaration.md": (f"{invalid}\n<!FIXTURE>\n{detached}\n", 1),
-            "html-cdata.md": (f"{invalid}\n<![CDATA[\n{detached}\n]]>\n", 1),
-            "html-block-valid.md": (f"{valid}\n<div>\n{detached}\n</div>\n", None),
-            "setext-heading.md": (f"{invalid}\n===\n{detached}\n", 1),
-            "atx-heading-reverse.md": (f"# {inline_invalid}\n{detached}\n", 1),
-            "fenced-block-reverse.md": (f"```\n{inline_invalid}\n```\n{detached}\n", 2),
-            "html-block-reverse.md": (f"<script>\n{inline_invalid}\n</script>\n{detached}\n", 2),
-            "indented-code.md": (f"    {inline_invalid}\n{detached}\n", 1),
-            "quoted-fenced-exit.md": (f"> ```sh\n{quoted_invalid}\n{detached}\n", 2),
-            "quoted-html-exit.md": (f"> <script>\n{quoted_invalid}\n{detached}\n", 2),
-            "ordered-non-one-paragraph.md": (f"{invalid}\n2. {detached}\n", None),
-            "ordered-siblings.md": (f"1. {ordered_invalid}\n2. {detached}\n", 1),
-            "nested-unordered-siblings.md": (
-                f"- Parent item\n    - {nested_unordered_invalid}\n    - {detached}\n", 2
-            ),
-            "nested-ordered-siblings.md": (
-                f"1. Parent item\n    1. {nested_ordered_invalid}\n    2. {detached}\n", 2
-            ),
-            "nested-atx-heading.md": (
-                f"{nested_item}{nested_unordered_invalid}\n{nested_indent}# {detached}\n", 2
-            ),
-            "nested-fenced-block.md": (
-                f"{nested_item}{nested_unordered_invalid}\n{nested_indent}```\n"
-                f"{nested_indent}{detached}\n{nested_indent}```\n", 2
-            ),
-            "nested-thematic-break.md": (
-                f"{nested_item}{nested_unordered_invalid}\n{nested_indent}* * *\n"
-                f"{nested_indent}{detached}\n", 2
-            ),
-            "nested-html-block.md": (
-                f"{nested_item}{nested_unordered_invalid}\n{nested_indent}<div>\n"
-                f"{nested_indent}{detached}\n{nested_indent}</div>\n", 2
-            ),
-            "nested-setext-heading.md": (
-                f"{nested_item}{nested_unordered_invalid}\n{nested_indent}===\n"
-                f"{nested_indent}{detached}\n", 2
-            ),
-            "nested-blockquote.md": (
-                f"{nested_item}{nested_unordered_invalid}\n{nested_indent}> {detached}\n", 2
-            ),
-            "nested-indented-code.md": (
-                f"{nested_item}Item intro\n\n{nested_indent}    {inline_invalid}\n"
-                f"{nested_indent}{detached}\n", 4
-            ),
-            "list-heading-indented-code.md": (
-                f"- Earlier item\n# Heading\n    {inline_invalid}\n{detached}\n", 3
-            ),
-            "bare-later-shell-command.md": (bare_later_commands[subcommand] + "\n", 1),
-            "stale-ordered-list.md": (f"1. Earlier item\n\n{invalid}\n2. {detached}\n", None),
-            "malformed-fence.md": (f"{invalid}\n```bad`info\n{detached}\n", None),
-            "malformed-html-close.md": (
-                f"<script>\n{invalid}\n</script   >\n{detached}\n</script>\n", None
-            ),
-            "blank-indented-code.md": (f"    {inline_invalid}\n\n    {detached}\n", None),
-            "mixed-space-tab-code.md": (
-                f" \t{mixed_space_tab_invalid}\n{detached}\n", 1
-            ),
-        }
-        for name, (text, _problem_line) in boundary_fixtures.items():
-            (root / name).write_text(text, encoding="utf-8")
-        found_problems, copies = check(root)
-        expected_copies = (51 if subcommand == "required-set" else 52) + (
-            1 if subcommand in prompted_later_commands else 0
-        ) + (1 if subcommand in derive_json_path_commands else 0)
-        if len(copies) != expected_copies:
-            problems.append(f"[doc-copy {subcommand}] found {len(copies)} wrapped copies, expected "
-                            f"{expected_copies}: {copies!r}")
-        expected_problem_sites = {"wrapped.md:4", "wrapped.md:10", "wrapped.md:18", "wrapped.md:26",
-                                  "quote-transition.md:1",
-                                  "same-paragraph.md:1",
-                                  "later-command.md:1",
-                                  "inline-introduced-command.md:1",
-                                  "next-introduced-command.md:1",
-                                  "afterwards-introduced-command.md:1",
-                                  *(f"{name}:{problem_line}" for name, (_text, problem_line)
-                                    in boundary_fixtures.items()
-                                    if problem_line is not None
-                                    and not (subcommand == "required-set"
-                                             and name == "bare-later-shell-command.md")),
-                                  *({"prompted-later-shell-command.md:1"}
-                                    if subcommand in prompted_later_commands else set())}
-        problem_sites = {problem.split(" ", 1)[0] for problem in found_problems}
-        expected_problems = (39 if subcommand == "required-set" else 40) + (
-            1 if subcommand in prompted_later_commands else 0
-        )
-        if (len(found_problems) != expected_problems or problem_sites != expected_problem_sites
-                or any(problem_needle not in problem for problem in found_problems)):
+        copies = ci.documented_ci_status_copies(root, subcommand)
+        found_problems, checked = check(root)
+        if len(copies) != 4 or len(checked) != 4:
             problems.append(
-                f"[doc-copy {subcommand}] invalid plain, blockquoted, and block-boundary copies were not "
-                f"rejected by their own missing flag: "
+                f"[command copy {subcommand}] expected four documented copies, got "
+                f"{len(copies)} extracted and {len(checked)} checked"
+            )
+        if len(found_problems) != 2 or any(needle not in problem for problem in found_problems):
+            problems.append(
+                f"[command copy {subcommand}] wrapped copies did not reject only their own missing input: "
                 f"{found_problems!r}"
             )
-        bare_commands = [command for path, _line, command in ci.find_ci_status_copies(root, subcommand)
-                         if path.name == "bare-later-shell-command.md"]
-        later_flag = "--machine-action" if subcommand == "liveness" else "--ledger"
-        if len(bare_commands) != 1 or later_flag in bare_commands[0]:
-            problems.append(
-                f"[doc-copy {subcommand}] the bare later shell command leaked its flag into the prior "
-                f"ci-status invocation: {bare_commands!r}"
-            )
-        if subcommand in prompted_later_commands:
-            prompted_commands = [command for path, _line, command in ci.find_ci_status_copies(root, subcommand)
-                                 if path.name == "prompted-later-shell-command.md"]
-            if len(prompted_commands) != 1 or later_flag in prompted_commands[0]:
-                problems.append(
-                    f"[doc-copy {subcommand}] the prompted later shell command leaked its flag into the "
-                    f"prior ci-status invocation: {prompted_commands!r}"
-                )
-        if subcommand in derive_json_path_commands:
-            derive_json_commands = [command for path, _line, command in ci.find_ci_status_copies(root, subcommand)
-                                    if path.name == "derive-json-path.md"]
-            if (len(derive_json_commands) != 1
-                    or "result.py --machine-action none" not in derive_json_commands[0]):
-                problems.append(
-                    f"[doc-copy {subcommand}] a --derive-json .py value cut off later arguments: "
-                    f"{derive_json_commands!r}"
-                )
-        inline_commands = [command for path, _line, command in ci.find_ci_status_copies(root, subcommand)
-                           if path.name == "inline-introduced-command.md"]
-        inline_later_input = "state.jsonl" if subcommand == "required-set" else later_flag
-        if len(inline_commands) != 1 or inline_later_input in inline_commands[0]:
-            problems.append(
-                f"[doc-copy {subcommand}] the inline introduced command leaked its required input into "
-                f"the prior ci-status invocation: {inline_commands!r}"
-            )
-        next_commands = [command for path, _line, command in ci.find_ci_status_copies(root, subcommand)
-                         if path.name == "next-introduced-command.md"]
-        if len(next_commands) != 1 or inline_later_input in next_commands[0]:
-            problems.append(
-                f"[doc-copy {subcommand}] the Next-introduced command leaked its required input into "
-                f"the prior ci-status invocation: {next_commands!r}"
-            )
-        afterwards_commands = [command for path, _line, command in ci.find_ci_status_copies(root, subcommand)
-                               if path.name == "afterwards-introduced-command.md"]
-        if len(afterwards_commands) != 1 or inline_later_input in afterwards_commands[0]:
-            problems.append(
-                f"[doc-copy {subcommand}] the Afterwards-introduced command leaked its required input into "
-                f"the prior ci-status invocation: {afterwards_commands!r}"
-            )
-    return problems
-
-
-def command_span_root_cause_cases(ci, tmp: Path) -> list[str]:
-    """Pin every mapped command-boundary gap and its literal-code controls."""
-    problems: list[str] = []
-
-    def case(name: str, subcommand: str, check, text: str, expect_problem: bool,
-             contains: tuple[str, ...], excludes: tuple[str, ...] = ()) -> None:
-        root = tmp / f"command-span-{name}"
-        root.mkdir()
-        (root / "fixture.md").write_text(text, encoding="utf-8")
-        found_problems, copies = check(root)
-        commands = [command for _path, _line, command in ci.find_ci_status_copies(root, subcommand)]
-        if len(commands) != 1:
-            problems.append(f"[command span {name}] found {len(commands)} copies: {commands!r}")
-            return
-        command = commands[0]
-        if bool(found_problems) != expect_problem:
-            problems.append(
-                f"[command span {name}] problems {found_problems!r}, expected "
-                f"{'one' if expect_problem else 'none'}"
-            )
-        if len(copies) != 1:
-            problems.append(f"[command span {name}] runnable copies {copies!r}, expected one")
-        missing = tuple(value for value in contains if value not in command)
-        present = tuple(value for value in excludes if value in command)
-        if missing or present:
-            problems.append(
-                f"[command span {name}] command {command!r}, missing {missing!r}, included {present!r}"
-            )
-
-    # Each option value remains attached to the preceding command across a prose reflow. The liveness
-    # script path is separate because a value ending in .py used to be mistaken for a later command.
-    case(
-        "wrapped-value-derive", "derive", ci.check_derive_copies,
-        "Run scripts/ci-status.py derive --ledger\n<rundir>/state.jsonl --pr 1.\n",
-        False, ("<rundir>/state.jsonl --pr 1",),
-    )
-    case(
-        "wrapped-value-liveness-plain", "liveness", ci.check_liveness_copies,
-        "Run scripts/ci-status.py liveness --ledger\n"
-        "<rundir>/state.jsonl --pr 1 --machine-action none.\n",
-        False, ("<rundir>/state.jsonl --pr 1 --machine-action none",),
-    )
-    case(
-        "wrapped-value-liveness-script", "liveness", ci.check_liveness_copies,
-        "Run scripts/ci-status.py liveness --ledger <rundir>/state.jsonl --pr 1 --derive-json\n"
-        "result.py --machine-action none.\n",
-        False, ("result.py --machine-action none",),
-    )
-    case(
-        "wrapped-value-required-set", "required-set", ci.check_required_set_copies,
-        "Run scripts/ci-status.py required-set --ledger\n<rundir>/state.jsonl --repo owner/repo.\n",
-        False, ("<rundir>/state.jsonl --repo owner/repo",),
-    )
-
-    # A generic later command may carry only an operand, with or without a shell prompt. It must not lend
-    # state.jsonl to an earlier required-set command that names another ledger.
-    case(
-        "operand-bare-required-set", "required-set", ci.check_required_set_copies,
-        "Run scripts/ci-status.py required-set --ledger <rundir>/other.jsonl\n"
-        "echo <rundir>/state.jsonl.\n",
-        True, ("other.jsonl",), ("echo", "state.jsonl"),
-    )
-    case(
-        "operand-prompt-required-set", "required-set", ci.check_required_set_copies,
-        "Run scripts/ci-status.py required-set --ledger <rundir>/other.jsonl\n"
-        "$ echo <rundir>/state.jsonl.\n",
-        True, ("other.jsonl",), ("echo", "state.jsonl"),
-    )
-
-    # Quote prefixes, fences, and raw HTML change the physical line but not a runnable later command.
-    case(
-        "quoted-bare-derive", "derive", ci.check_derive_copies,
-        "> Run scripts/ci-status.py derive --pr 1\n"
-        "> echo --ledger <rundir>/state.jsonl.\n",
-        True, ("--pr 1",), ("echo", "--ledger"),
-    )
-    case(
-        "quoted-bare-liveness", "liveness", ci.check_liveness_copies,
-        "> Run scripts/ci-status.py liveness --ledger <rundir>/state.jsonl --pr 1\n"
-        "> echo --machine-action none.\n",
-        True, ("--pr 1",), ("echo", "--machine-action"),
-    )
-    case(
-        "quoted-bare-required-set", "required-set", ci.check_required_set_copies,
-        "> Run scripts/ci-status.py required-set --ledger <rundir>/other.jsonl\n"
-        "> echo <rundir>/state.jsonl.\n",
-        True, ("other.jsonl",), ("echo", "state.jsonl"),
-    )
-    case(
-        "fenced-bare-required-set", "required-set", ci.check_required_set_copies,
-        "```sh\nRun scripts/ci-status.py required-set --ledger <rundir>/other.jsonl\n"
-        "echo <rundir>/state.jsonl.\n```\n",
-        True, ("other.jsonl",), ("echo", "state.jsonl"),
-    )
-    case(
-        "raw-html-bare-required-set", "required-set", ci.check_required_set_copies,
-        "<script>\nRun scripts/ci-status.py required-set --ledger <rundir>/other.jsonl\n"
-        "echo <rundir>/state.jsonl.\n</script>\n",
-        True, ("other.jsonl",), ("echo", "state.jsonl"),
-    )
-
-    # A newline inside an inline literal is not a shell boundary. A prose-introduced later inline command
-    # is one. These paired controls keep the generic line rule from changing either established behavior.
-    case(
-        "literal-operand-derive", "derive", ci.check_derive_copies,
-        "Run `scripts/ci-status.py derive --pr 1 --ledger <rundir>/state.jsonl\n"
-        "echo literal-operand`.\n",
-        False, ("echo literal-operand",),
-    )
-    case(
-        "literal-operand-liveness", "liveness", ci.check_liveness_copies,
-        "Run `scripts/ci-status.py liveness --ledger <rundir>/state.jsonl --pr 1 "
-        "--machine-action none\necho literal-operand`.\n",
-        False, ("echo literal-operand",),
-    )
-    case(
-        "literal-operand-required-set", "required-set", ci.check_required_set_copies,
-        "Run `scripts/ci-status.py required-set --ledger <rundir>/state.jsonl\n"
-        "echo literal-operand`.\n",
-        False, ("echo literal-operand",),
-    )
-    case(
-        "literal-introduced-derive", "derive", ci.check_derive_copies,
-        "Run scripts/ci-status.py derive --pr 1, then `echo --ledger <rundir>/state.jsonl`.\n",
-        True, ("--pr 1",), ("echo", "--ledger"),
-    )
-    case(
-        "literal-introduced-liveness", "liveness", ci.check_liveness_copies,
-        "Run scripts/ci-status.py liveness --ledger <rundir>/state.jsonl --pr 1, then "
-        "`echo --machine-action none`.\n",
-        True, ("--pr 1",), ("echo", "--machine-action"),
-    )
-    case(
-        "literal-introduced-required-set", "required-set", ci.check_required_set_copies,
-        "Run scripts/ci-status.py required-set --ledger <rundir>/other.jsonl, then "
-        "`echo <rundir>/state.jsonl`.\n",
-        True, ("other.jsonl",), ("echo", "state.jsonl"),
-    )
+        if not any("\n" in command for _path, _line, command in copies):
+            problems.append(f"[command copy {subcommand}] inline wrapped command was not preserved")
+        if not any(valid in " ".join(command.split()) and "\n" not in command
+                   for _path, _line, command in copies):
+            problems.append(f"[command copy {subcommand}] fenced shell continuation was not joined")
     return problems
 
 
@@ -1748,16 +1392,8 @@ def run(ci, tmp: Path) -> int:
         failures += 1
         print(f"FAIL     {problem}")
     if not command_problems:
-        print(f"ok       {'wrapped doc command copies':32} -> derive, liveness, and required-set; valid and "
-              f"invalid plain, blockquoted, and interrupting-block fixtures stay paragraph-bounded")
-
-    command_span_problems = command_span_root_cause_cases(ci, tmp)
-    for problem in command_span_problems:
-        failures += 1
-        print(f"FAIL     {problem}")
-    if not command_span_problems:
-        print(f"ok       {'command span root-cause map':32} -> wrapped option values, bare operand commands, "
-              f"quote, fence, HTML, and inline-literal boundaries")
+        print(f"ok       {'wrapped doc command copies':32} -> inline literals and fenced shell commands; "
+              f"each valid copy keeps its inputs and each invalid copy fails on its own missing input")
 
     liveness_problems = liveness_cases(ci, tmp)
     for problem in liveness_problems:

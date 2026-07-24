@@ -2247,402 +2247,55 @@ def check_gh_invocations(text: str, argv: dict[str, list[str]]) -> list[str]:
     return problems
 
 
-HTML_BLOCK_TAGS = (
-    "address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|"
-    "dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h1|h2|h3|h4|h5|h6|head|header|"
-    "hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|"
-    "section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul"
-)
+def documented_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, str]]:
+    """Return supported command copies: inline literals and fenced shell commands.
 
-
-def markdown_quote_prefix(body: str) -> tuple[int, int]:
-    """Return CommonMark blockquote depth and the first content byte without eating code indentation."""
-    depth = position = 0
-    while marker := re.match(r" {0,3}>", body[position:]):
-        position += marker.end()
-        if position < len(body) and body[position] in " \t":
-            position += 1
-        depth += 1
-    return depth, position
-
-
-def html_block_start(content: str) -> re.Pattern[str] | str | None:
-    """Return an explicit end matcher, `"blank"` for a blank-ended block, or `None` for no HTML block."""
-    if match := re.match(r" {0,3}<(script|pre|style|textarea)(?:[ \t]+|>|$)", content, re.IGNORECASE):
-        return re.compile(rf"</{re.escape(match.group(1))}>", re.IGNORECASE)
-    if re.match(r" {0,3}<!--", content):
-        return re.compile(r"-->")
-    if re.match(r" {0,3}<\?", content):
-        return re.compile(r"\?>")
-    if re.match(r" {0,3}<![A-Z]", content):
-        return re.compile(r">")
-    if re.match(r" {0,3}<!\[CDATA\[", content):
-        return re.compile(r"\]\]>")
-    if re.match(rf" {{0,3}}</?(?:{HTML_BLOCK_TAGS})(?:[ \t]+|/?>|$)", content, re.IGNORECASE):
-        return "blank"
-    return None
-
-
-def markdown_leading_indent(content: str) -> tuple[int, int]:
-    """Return leading whitespace columns and bytes using CommonMark's four-column tab stops."""
-    columns = position = 0
-    while position < len(content) and content[position] in " \t":
-        if content[position] == "\t":
-            columns += 4 - columns % 4
-        else:
-            columns += 1
-        position += 1
-    return columns, position
-
-
-def markdown_remove_indent(content: str, width: int) -> str | None:
-    """Remove `width` indentation columns, preserving columns left by a partially consumed tab."""
-    columns = position = 0
-    while columns < width and position < len(content) and content[position] in " \t":
-        if content[position] == "\t":
-            next_columns = columns + 4 - columns % 4
-        else:
-            next_columns = columns + 1
-        position += 1
-        if next_columns > width:
-            return " " * (next_columns - width) + content[position:]
-        columns = next_columns
-    if columns < width:
-        return None
-    return content[position:]
-
-
-def markdown_list_marker(content: str) -> tuple[int, int, str, int | None] | None:
-    """Return a list marker's indent, content indent, family, and ordered start."""
-    match = re.match(r"( *)([*+-]|[0-9]{1,9}([.)]))([ \t]+)(?=\S)", content)
-    if match is None:
-        return None
-    indent = len(match.group(1))
-    token = match.group(2)
-    marker_end = indent + len(token)
-    padding = len((" " * marker_end + match.group(4)).expandtabs(4)) - marker_end
-    content_indent = indent + len(token) + (padding if padding <= 4 else 1)
-    if token[0].isdigit():
-        return indent, content_indent, f"ordered:{match.group(3)}", int(token[:-1])
-    return indent, content_indent, "unordered", None
-
-
-def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, str]]:
-    """Find wrapped candidates without crossing Markdown or command boundaries."""
-    separator = r"(?:\s+|[ \t]*\\\r?\n[ \t]*)"
-    needle = re.compile(rf"ci-status\.py{separator}{re.escape(subcommand)}\b")
-    # A later known interpreter or script starts a new span directly. An explicitly introduced later
-    # command does too, even when it is not a known interpreter or script. Its flags describe that command,
-    # never the ci-status.py invocation before it. `Next, run` and `Afterwards, run` are sentence-level
-    # introductions, so they must be recognized even though their commands start after prose rather than a
-    # Markdown block boundary.
-    named_command_start = re.compile(
-        rf"(?:"
-        rf"(?<![\w./-])(?:(?P<script>(?:[\w.-]+/)*[\w.-]+\.py)|python(?:3)?|bash|sh|gh|git){separator}\S+\b"
-        rf"|\b(?:and[ \t]+then|then|followed[ \t]+by|(?:[Nn]ext|[Aa]fterwards?),?[ \t]+run)[ \t]+[`]*[A-Za-z_][\w./-]*{separator}\S+\b"
-        rf")"
+    The command-copy guard owns two documentation forms. Inline literals carry a complete command, even
+    when Markdown wraps the literal. Fenced shell blocks carry one shell command, whose continued lines end
+    in ``\\``. Other prose and Markdown constructs are deliberately outside this guard's scope.
+    """
+    command = re.compile(rf"ci-status\.py\s+{re.escape(subcommand)}\b")
+    fenced_command = re.compile(
+        rf"(?m)^[ \t]*(?:\$[ \t]+)?(?:python3?[ \t]+)?(?:\S*/)?ci-status\.py\s+"
+        rf"{re.escape(subcommand)}\b"
     )
-    # A bare command may have only an operand, not a long option. It starts only on a new logical line:
-    # inline literals stay literal unless prose explicitly introduces another runnable command.
-    bare_command_start = re.compile(
-        r"(?:^|\r?\n)[ \t]*(?:\$[ \t]+)?(?P<command>[A-Za-z_./][\w./-]*)"
-        r"(?=[ \t]+[^\r\n]*\S)"
-    )
-    # A Markdown backtick alone does not start a command. An explicit prose introduction followed by inline
-    # code does: the later command's flags must not extend the ci-status.py invocation before it.
-    command_delimiter = re.compile(r"&&|\|\||;|\|")
-
-    def normalize_markdown_prefixes(paragraph: str) -> tuple[str, list[int]]:
-        """Remove active quote markers while retaining each logical byte's source offset."""
-        logical, source_offsets = [], []
-        offset = 0
-        for line in paragraph.splitlines(keepends=True):
-            prefix = re.match(r"(?:[ \t]*>[ \t]*)+", line)
-            content_start = prefix.end() if prefix is not None else 0
-            logical.extend(line[content_start:])
-            source_offsets.extend(range(offset + content_start, offset + len(line)))
-            offset += len(line)
-        return "".join(logical), source_offsets
-
-    def option_awaits_value(logical: str, command_start: int, candidate_start: int) -> bool:
-        """Track the current command's long-option value slot across an allowed wrap."""
-        awaiting_value = False
-        for token in re.finditer(r"\S+", logical[command_start:candidate_start]):
-            value = token.group(0)
-            if value in ("$", "\\"):
-                continue
-            if awaiting_value:
-                awaiting_value = False
-                continue
-            if value.startswith("--") and value != "--":
-                awaiting_value = "=" not in value
-        return awaiting_value
-
-    def inside_inline_code(logical: str, position: int) -> bool:
-        """Keep a newline inside one inline literal from becoming a shell boundary."""
-        marker: str | None = None
-        index = 0
-        while index < position:
-            if logical[index] != "`":
-                index += 1
-                continue
-            end = index
-            while end < len(logical) and logical[end] == "`":
-                end += 1
-            run = logical[index:end]
-            line_start = logical.rfind("\n", 0, index) + 1
-            if len(run) >= 3 and not logical[line_start:index].strip(" \t"):
-                index = end
-                continue
-            if marker is None:
-                marker = run
-            elif marker == run:
-                marker = None
-            index = end
-        return marker is not None
-
-    def command_span_end(logical: str, command_start: int) -> int:
-        """Return the first real later-command boundary in normalized Markdown text."""
-        candidates: list[int] = []
-        for candidate in named_command_start.finditer(logical, command_start):
-            if (not inside_inline_code(logical, candidate.start())
-                    and not option_awaits_value(logical, command_start, candidate.start())):
-                candidates.append(candidate.start())
-                break
-        for candidate in bare_command_start.finditer(logical, command_start):
-            line_start = candidate.start()
-            if line_start and logical[:line_start].rstrip(" \t").endswith("\\"):
-                continue
-            if (inside_inline_code(logical, candidate.start("command"))
-                    or option_awaits_value(logical, command_start, candidate.start("command"))):
-                continue
-            candidates.append(line_start)
-            break
-        if not candidates:
-            return len(logical)
-        return min(candidates)
-
+    fence = re.compile(r"(?ms)^```(?:sh|bash|shell)?[ \t]*\n(?P<body>.*?)^```[ \t]*$")
+    inline = re.compile(r"`(?P<body>[^`]*?)`", re.DOTALL)
     copies: list[tuple[Path, int, str]] = []
     for md in sorted(root.rglob("*.md")):
         text = md.read_text(encoding="utf-8")
-        regions: list[tuple[int, int]] = []
-        start = offset = active_quote_depth = 0
-        active_fence: tuple[str, int] | None = None
-        active_html: re.Pattern[str] | str | None = None
-        active_indented_code = False
-        active_lists: list[tuple[int, int, int, str]] = []
-        list_blank_pending = False
-        for line in text.splitlines(keepends=True):
-            body = line.rstrip("\r\n")
-            outer_quote_depth, content_start = markdown_quote_prefix(body)
-            content = body[content_start:]
-            line_end = offset + len(line)
-            list_marker = markdown_list_marker(content)
-            candidate_same_list = bool(
-                list_marker is not None
-                and any(depth == outer_quote_depth and indent == list_marker[0]
-                        and family == list_marker[2]
-                        for depth, indent, _content_indent, family in active_lists)
-            )
-            candidate_nested_list = bool(
-                list_marker is not None
-                and any(depth == outer_quote_depth and content_indent <= list_marker[0]
-                        for depth, _indent, content_indent, _family in active_lists)
-            )
-            inside_list_item = any(
-                depth == outer_quote_depth and markdown_remove_indent(content, content_indent) is not None
-                for depth, _indent, content_indent, _family in active_lists
-            )
-            if list_blank_pending and content.strip():
-                if not (candidate_same_list or candidate_nested_list or inside_list_item):
-                    active_lists.clear()
-                list_blank_pending = False
-                list_marker = markdown_list_marker(content)
-
-            list_content = content
-            for depth, _indent, content_indent, _family in reversed(active_lists):
-                if depth != outer_quote_depth:
-                    continue
-                stripped = markdown_remove_indent(content, content_indent)
-                if stripped is not None:
-                    list_content = stripped
-                    break
-            nested_quote_depth, nested_content_start = markdown_quote_prefix(list_content)
-            quote_depth = outer_quote_depth + nested_quote_depth
-            block_content = list_content[nested_content_start:]
-
-            # Only ordered marker 1 can interrupt a paragraph to start a list. Later numbers split an
-            # active ordered list, and child markers are measured from the active item's content indent.
-            same_list = bool(
-                list_marker is not None
-                and any(depth == quote_depth and indent == list_marker[0] and family == list_marker[2]
-                        for depth, indent, _content_indent, family in active_lists)
-            )
-            nested_list = bool(
-                list_marker is not None
-                and any(depth == quote_depth and content_indent <= list_marker[0]
-                        for depth, _indent, content_indent, _family in active_lists)
-            )
-            list_starts_block = bool(
-                list_marker is not None
-                and (same_list
-                     or ((list_marker[3] is None or list_marker[3] == 1)
-                         and (list_marker[0] <= 3 or nested_list))
-                     or (start == offset and (list_marker[0] <= 3 or nested_list)))
-            )
-            # A block outside the list's content indentation ends the list. Clear its state before a later
-            # top-level indented block can be mistaken for list text.
-            block_ends_active_list = bool(active_lists and not inside_list_item)
-
-            # Fenced and HTML blocks cannot lazily continue after their blockquote container ends. Close
-            # the region before processing the first line outside that container.
-            if ((active_fence is not None or active_html is not None)
-                    and active_quote_depth and quote_depth < active_quote_depth):
-                if start < offset:
-                    regions.append((start, offset))
-                start = offset
-                active_fence = None
-                active_html = None
-                active_quote_depth = 0
-
-            if active_fence is not None:
-                fence_char, fence_length = active_fence
-                if re.match(rf" {{0,3}}{re.escape(fence_char)}{{{fence_length},}}[ \t]*$", block_content):
-                    regions.append((start, line_end))
-                    start = line_end
-                    active_fence = None
-                    active_quote_depth = 0
-                offset = line_end
+        blocks = list(fence.finditer(text))
+        for literal in inline.finditer(text):
+            if any(block.start() <= literal.start() < block.end() for block in blocks):
                 continue
-
-            if active_html is not None:
-                if isinstance(active_html, re.Pattern) and active_html.search(block_content):
-                    regions.append((start, line_end))
-                    start = line_end
-                    active_html = None
-                    active_quote_depth = 0
-                    offset = line_end
-                    continue
-                if block_content.strip():
-                    offset = line_end
-                    continue
-                regions.append((start, offset))
-                start = line_end
-                active_html = None
-                active_quote_depth = 0
-                offset = line_end
+            match = command.search(literal.group("body"))
+            if match is None:
                 continue
-
-            if active_indented_code:
-                if not block_content.strip():
-                    list_blank_pending = bool(active_lists)
-                    offset = line_end
-                    continue
-                if markdown_leading_indent(block_content)[0] >= 4:
-                    offset = line_end
-                    continue
-                if start < offset:
-                    regions.append((start, offset))
-                start = offset
-                active_indented_code = False
-                active_quote_depth = 0
-
-            if not block_content.strip():
-                if start < offset:
-                    regions.append((start, offset))
-                start = line_end
-                active_quote_depth = 0
-                list_blank_pending = bool(active_lists)
-            elif (markdown_leading_indent(block_content)[0] >= 4
-                  and start == offset and not list_starts_block):
-                active_indented_code = True
-                active_quote_depth = quote_depth
-            elif re.match(r" {0,3}(?:=+|-+)[ \t]*$", block_content) and start < offset:
-                if block_ends_active_list:
-                    active_lists.clear()
-                regions.append((start, line_end))
-                start = line_end
-                active_quote_depth = 0
-            elif re.match(r" {0,3}#{1,6}(?:[ \t]+|$)", block_content):
-                if block_ends_active_list:
-                    active_lists.clear()
-                if start < offset:
-                    regions.append((start, offset))
-                regions.append((offset, line_end))
-                start = line_end
-                active_quote_depth = 0
-            elif ((fence := re.match(r" {0,3}(`{3,}|~{3,})(.*)$", block_content)) is not None
-                  and (fence.group(1)[0] == "~" or "`" not in fence.group(2))):
-                if block_ends_active_list:
-                    active_lists.clear()
-                if start < offset:
-                    regions.append((start, offset))
-                start = offset
-                active_fence = (fence.group(1)[0], len(fence.group(1)))
-                active_quote_depth = quote_depth
-            elif (html_end := html_block_start(block_content)) is not None:
-                if block_ends_active_list:
-                    active_lists.clear()
-                if start < offset:
-                    regions.append((start, offset))
-                start = offset
-                active_html = html_end
-                active_quote_depth = quote_depth
-                if isinstance(html_end, re.Pattern) and html_end.search(block_content[1:]):
-                    regions.append((start, line_end))
-                    start = line_end
-                    active_html = None
-                    active_quote_depth = 0
-            elif re.match(r" {0,3}(?:\*(?:[ \t]*\*){2,}|-(?:[ \t]*-){2,}|_(?:[ \t]*_){2,})[ \t]*$",
-                          block_content):
-                if block_ends_active_list:
-                    active_lists.clear()
-                if start < offset:
-                    regions.append((start, offset))
-                regions.append((offset, line_end))
-                start = line_end
-                active_quote_depth = 0
-            elif list_starts_block and list_marker is not None:
-                if start < offset:
-                    regions.append((start, offset))
-                start = offset
-                active_quote_depth = quote_depth
-                while (active_lists
-                       and (active_lists[-1][0] > quote_depth
-                            or (active_lists[-1][0] == quote_depth
-                                and active_lists[-1][1] >= list_marker[0]))):
-                    active_lists.pop()
-                active_lists.append((quote_depth, list_marker[0], list_marker[1], list_marker[2]))
-            elif quote_depth:
-                if block_ends_active_list:
-                    active_lists.clear()
-                if quote_depth != active_quote_depth:
-                    if start < offset:
-                        regions.append((start, offset))
-                    start = offset
-                active_quote_depth = quote_depth
-            # An unquoted nonblank line after a quote may be a lazy continuation, so it keeps the
-            # active quote depth. A later explicit quote at that depth remains in the same paragraph.
-            offset = line_end
-        if start < len(text):
-            regions.append((start, len(text)))
-        for start, end in regions:
-            paragraph = text[start:end]
-            logical, source_offsets = normalize_markdown_prefixes(paragraph)
-            for match in needle.finditer(logical):
-                command_end = command_span_end(logical, match.end())
-                if (delimiter := command_delimiter.search(logical, match.end(), command_end)) is not None:
-                    command_end = delimiter.start()
-                source_start = source_offsets[match.start()]
-                source_end = len(paragraph) if command_end == len(logical) else source_offsets[command_end]
-                offset = start + source_start
+            offset = literal.start("body") + match.start()
+            copies.append((md, text.count("\n", 0, offset) + 1, literal.group("body")[match.start():]))
+        for block in blocks:
+            body = block.group("body")
+            for match in fenced_command.finditer(body):
+                line_end = body.find("\n", match.start())
+                if line_end < 0:
+                    line_end = len(body)
+                command_end = line_end
+                while body[command_end - 1:command_end].rstrip().endswith("\\"):
+                    next_end = body.find("\n", command_end + 1)
+                    if next_end < 0:
+                        command_end = len(body)
+                        break
+                    command_end = next_end
+                offset = block.start("body") + match.start()
+                span = body[match.start():command_end]
                 copies.append((md, text.count("\n", 0, offset) + 1,
-                               paragraph[source_start:source_end]))
+                               re.sub(r"\\\n[ \t]*", " ", span)))
     return copies
 
 
+
 def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]:
-    """EVERY COPY OF THE DERIVE COMMAND, IN EVERY SKILL DOC — not just the one in the doc under test.
+    """Every supported documented derive command copy names its required-set input.
 
     THE FLAG THAT NAMES THE REQUIRED SET MUST NOT BE DROPPABLE BY A RECAP. The required set is what makes
     `green` mean *the required set passed*, and it is now the ROW's `effective_required_set`: a copy names it
@@ -2651,16 +2304,15 @@ def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]
     the class TWICE: a fourth copy of a canonical command that had gone stale, and a doc recap that dropped
     `,headRefOid` from the rollup fetch.
 
-    A copy is any occurrence that RUNS the command (`ci-status.py derive` carrying `--pr`) — prose that
-    merely NAMES the command is not a copy, and is not checked. **THE UNIT IS THE COMMAND, NOT THE LINE**:
-    an invocation WRAPS (a shell `\\`, or plain prose reflow), and a line-by-line check would report the
-    continuation line as a violation of itself. So each copy is read to its paragraph's next command boundary.
+    A copy is a command in an inline literal or a fenced shell block. Inline literals may wrap across
+    Markdown lines; fenced shell commands may wrap with a trailing `\\`. Other prose is not an invocation,
+    so this guard does not parse it.
 
     FINDING ZERO COPIES IS A FAILURE: the command is prescribed by at least `stage-2-ci.md` and
     `critical-rules.md`, and a check that cannot find its subject never passes.
     """
     problems, copies = [], []
-    for md, line, command in find_ci_status_copies(root or HERE.parent, "derive"):
+    for md, line, command in documented_ci_status_copies(root or HERE.parent, "derive"):
         if "--pr" not in command:
             continue  # prose that NAMES the command, not a copy of it
         copies.append(f"{md.name}:{line}")
@@ -2683,11 +2335,12 @@ def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]
 def check_liveness_copies(root: Path | None = None) -> tuple[list[str], list[str]]:
     """Every runnable liveness copy carries `--machine-action` — the judgment flag a recap must not drop.
 
-    Same class as `check_derive_copies`: a copy without the flag is a command the tool refuses, and a
-    reader who "fixes" it by inventing a default answers the one question the tool deliberately asks.
+    The supported forms are `documented_ci_status_copies`' inline literal and fenced shell command. A copy
+    without the flag is a command the tool refuses, and a reader who "fixes" it by inventing a default
+    answers the one question the tool deliberately asks.
     """
     problems, copies = [], []
-    for md, line, command in find_ci_status_copies(root or HERE.parent, "liveness"):
+    for md, line, command in documented_ci_status_copies(root or HERE.parent, "liveness"):
         # `--ledger`, not `--pr`, is the runnable-copy gate: prose can name a PR without spelling the
         # ledger input that makes liveness runnable.
         if "--ledger" not in command:
@@ -2708,9 +2361,9 @@ def check_liveness_copies(root: Path | None = None) -> tuple[list[str], list[str
 
 
 def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list[str]]:
-    """Every runnable required-set copy names the ledger whose per-row required sets the command persists."""
+    """Every supported required-set command copy names the ledger it persists."""
     problems, copies = [], []
-    for md, line, command in find_ci_status_copies(root or HERE.parent, "required-set"):
+    for md, line, command in documented_ci_status_copies(root or HERE.parent, "required-set"):
         if "--ledger" not in command:
             continue  # prose that names the subcommand, not a runnable copy
         copies.append(f"{md.name}:{line}")
@@ -2743,7 +2396,7 @@ def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) 
          paragraphs. A value in a hole matches NO branch: not green, not red, not pending — the PR can never
          resolve, and it WEDGES. This is the check that catches that, and nothing else in the repo does.
       5. the doc's `gh` INVOCATIONS, in every copy of them, against the argv the code really issues — plus
-         every copy of the derive and required-set commands and their required ledger inputs.
+         the supported derive and required-set command copies and their required ledger inputs.
       6. the moved-head owner block says the old-head artifact is retained for audit but contributes no
          current-PR verdict, fingerprint, or buckets; and the liveness owner block says that final
          untrusted result increments the refetch counter while trusted current-head evidence resets it.
