@@ -2333,7 +2333,9 @@ def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, 
     separator = rf"(?:\s+|[ \t]*\\\r?\n(?:{quote_prefix})?[ \t]*|\r?\n{quote_prefix})"
     needle = re.compile(rf"ci-status\.py{separator}{re.escape(subcommand)}\b")
     command_start = re.compile(rf"ci-status\.py{separator}\S+\b")
-    command_delimiter = re.compile(r"`|&&|\|\||;|\|")
+    # Markdown backticks delimit a span, not a shell command. An invocation may be followed in the same
+    # paragraph by inline code that supplies its required flag, so only shell separators end the command.
+    command_delimiter = re.compile(r"&&|\|\||;|\|")
     copies: list[tuple[Path, int, str]] = []
     for md in sorted(root.rglob("*.md")):
         text = md.read_text(encoding="utf-8")
