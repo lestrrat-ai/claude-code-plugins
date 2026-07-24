@@ -152,27 +152,75 @@ startup/cwd/mount/sandbox controls. A cross-engine record is identical in shape:
 true`, `launch_mechanism_present = true` when the paired CLI is present, the three properties false, no
 stronger-boundary claim. Both are available routes with the disclosed behavioral constraints below.
 
+### Review failure classification and session backoff
+
+**Classify every external process failure before choosing retry or fallback.** Feed the captured
+process error text to `reviewer-backoff.py`'s typed classifier, or to an equivalent host adapter that
+implements this same contract. A returned `ExternalReviewFailure` is data passed to the transition; raw
+provider text never selects a route, profile, model, or argv member.
+
+```text
+ExternalReviewFailure {
+  kind: "transient" | "timer" | "permanent",
+  retry_after_seconds: NonNegativeInt | null,
+  retry_at: Timestamp | null,
+  reason: Text
+}
+
+ExternalReviewSessionState {
+  external_disabled: Bool,
+  external_backoff_until: Timestamp | null
+}
+
+ReviewTransition {
+  action: ReviewAction,
+  session: ExternalReviewSessionState
+}
+```
+
+The classifier recognizes relative provider delays such as `retry after 90 seconds` and absolute
+provider reset timestamps such as `resets Jul 27, 9pm (Asia/Tokyo)`. Construct an absolute timestamp in
+the provider-named timezone before calculating the delay. Timer text wins over generic error markers;
+an unrecognized failure is `permanent` and disables this external route for the current session.
+
+`ExternalReviewSessionState` is process/session memory owned by the active orchestrator. Update it only
+from the returned transition or decision. **Never write `external_disabled` or
+`external_backoff_until` to the ledger, history, preferences, run artifacts, or any other durable
+campaign record.** A new session starts with an empty state.
+
 ```text
 review_transition(
   capability: ReviewIsolationCapability,
   event: "selected" | "external-system-failure" | "native-system-failure",
+  failure: ExternalReviewFailure | null,
+  session: ExternalReviewSessionState,
   external_retry_spent: Bool,
+  now: Timestamp,
   native_attempts_exhausted: Bool
-) -> ReviewAction
+) -> ReviewTransition
 ```
 
 This operation owns every route change:
 
 | Input | Action |
 |---|---|
-| selected cross-engine route, paired CLI available | `launch-external` at native-limitation level (no stronger-boundary claim) |
-| `external-system-failure`, external retry not spent | re-evaluate capability, then `retry-external` only if still available |
-| selected cross-engine route unavailable before launch (paired CLI absent), or `external-system-failure` after retry | report the failure, then `fallback-native` (disclosed) |
+| selected cross-engine route, paired CLI available, and session state clear | `launch-external` at native-limitation level (no stronger-boundary claim) |
+| selected cross-engine route unavailable before launch, or session `external_disabled` is true | report the boundary, then `fallback-native` (disclosed) |
+| external failure classified `transient`, retry not spent | `retry-external` immediately |
+| external failure classified `timer`, retry not spent, and `now` is before its deadline | `wait-external` until the exact provider deadline; do not launch before it |
+| external failure classified `timer`, retry not spent, and `now` has reached its deadline | `retry-external` immediately |
+| external failure classified `permanent`, or classification is unrecognized | set session `external_disabled`, then `fallback-native` |
+| external failure after retry, regardless of class | `fallback-native`; retain any timer backoff for other launches in this session |
+| session timer backoff is active for another PR | use `fallback-native` for that PR; do not shorten or ignore the timer |
 | native route/fallback can follow the installed contract | `launch-native` with the native limitations below |
 | native attempts cannot follow the installed contract or produce valid artifacts and their budget is exhausted | `park-machine-blocker` |
 
-A pre-launch cross-engine capability miss (the paired CLI is absent) has no process to relaunch, so it
-consumes no retry and takes the fresh native fallback immediately.
+`wait-external` is a session action, not a process launch: it consumes no `launch_attempt` and calls
+no `review-dispatch.py prepare`. Use the heartbeat or another bounded wait to reach the returned
+timestamp, then re-enter this transition with the same typed failure and current time. A pre-launch
+cross-engine capability miss has no process to relaunch, so it consumes no retry and takes the fresh
+native fallback immediately. A timer or permanent provider error does not change the policy in a later
+session.
 Missing native OS/startup controls alone never select `park-machine-blocker`; only actual inability to
 complete the installed contract after its budget does. `reviewer.md` owns the retry budget, while this table owns the transition meaning.
 
@@ -186,16 +234,19 @@ are different enums:
 | `launch-external` | selected capability's external route | `external-process-capture` | `standard` |
 | `retry-external` + `external-codex` | `external-codex` | `external-process-capture` | `codex-recovery` |
 | `retry-external` + `external-claude` | `external-claude` | `external-process-capture` | `standard` |
+| `wait-external` | no preparation | no preparation | no preparation |
 | `launch-native` / `fallback-native` | `native` | `native-worker-write` | `standard` |
 | `park-machine-blocker` | no preparation | no preparation | no preparation |
 
 Selected capability's external route is exactly `external-codex` or `external-claude`; never pass the
 `ReviewAction` string as `--route`.
 
-**Allocate `launch_attempt` monotonically for every reviewer launch passed to `prepare`.** An unavailable
-external route is never prepared and consumes no number, so its immediate native fallback takes the
-current next number. Once an attempt exists, recovery is fixed: attempt `1` fails → prepare the selected route's
-one retry as attempt `2`; attempt `2` fails → prepare fresh native fallback attempt `3`.
+**Allocate `launch_attempt` monotonically for every reviewer launch passed to `prepare`.** A
+`wait-external` action is not a launch and consumes no number. An unavailable external route is never
+prepared and consumes no number, so its native fallback takes the current next number. Once an attempt
+exists, recovery is fixed: attempt `1` fails → classify it, then prepare the selected route's one retry
+only when the transition permits it; a timer retry waits for its exact `retry_at`; attempt `2` fails →
+prepare fresh native fallback attempt `3`.
 **A dead or unusable attempt `3` → `park-machine-blocker`.** Never reuse an attempt's artifacts, and never
 allocate attempt `4`.
 
@@ -474,6 +525,6 @@ section states only the per-host default and where the transport pieces live:
 
 The cross-engine route launches at the **same native-limitation level** as a native worker whenever the
 paired CLI is present ("Review isolation capability and transition" above). Capability-gated cross-engine
-argv lives in `cross-agent-reviewers.md`; the external-reviewer retry budget in `reviewer.md`; the
-transition itself in `ReviewIsolationCapability` above. “Fallback” always means a fresh native worker on
-the active host.
+argv lives in `cross-agent-reviewers.md`; failure classification and session backoff in "Review failure
+classification and session backoff" above; the retry budget in `reviewer.md`; the transition itself in
+`ReviewIsolationCapability` above. “Fallback” always means a fresh native worker on the active host.

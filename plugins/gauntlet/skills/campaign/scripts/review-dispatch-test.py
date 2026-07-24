@@ -684,8 +684,8 @@ def t_external_attempt_two_has_native_attempt_three_recovery() -> None:
     runtime = (refs / "runtime-adapter.md").read_text(encoding="utf-8")
     stage = (refs / "stage-2-review-gate.md").read_text(encoding="utf-8")
     loop = (refs / "loop-control.md").read_text(encoding="utf-8")
-    check("attempt `2` fails → prepare fresh native fallback attempt `3`" in runtime,
-          "runtime owner does not allocate attempt 3 after failed attempt 2")
+    check("attempt `2` fails →" in runtime and "classify it" in runtime,
+          "runtime owner does not classify attempt 2 before attempt-3 recovery")
     check("dead or unusable attempt `3` → `park-machine-blocker`" in runtime,
           "runtime owner does not terminate failed native fallback attempt 3")
     stale_attempt_two_terminal = "`2` → " + "fresh-worker fallback"
