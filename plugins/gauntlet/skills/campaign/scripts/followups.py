@@ -311,7 +311,9 @@ OPTIONAL = ("decided",)
 STAMPED = ("decided", "finding")
 
 # …so those are the ONLY steps that may OFFER `--at`, and which ones they are is DERIVED from what each edge
-# WRITES — never listed. `--at` used to be offered by EVERY transition and read by only these:
+# WRITES — never listed. A terminal `reject` of an existing pending-rejection marker is the one special
+# case: it completes campaign disposition but preserves that marker's original ruling time. `--at` used to
+# be offered by EVERY transition and read by only these:
 # `open-pr --at 1999-01-01T00:00:00Z` exited 0, and that timestamp appeared NOWHERE — not in the entry, not
 # on stdout. The caller believes they set a value; the tool tells them it worked; the value is gone. On a
 # step that stamps nothing, `--at` is therefore not a flag at all, and argparse refuses it.
@@ -406,7 +408,8 @@ WRITE_CMDS = tuple(INTAKE)
 INTAKE_HELP = {
     **FLAG_HELP,
     **{f: f"'{f}' — required on `add`, editable after, NEVER blankable: {BLANK_WHY[f]}" for f in REQUIRED},
-    "decided": "ISO timestamp of this ruling (default: now); `reject-pending` stores it as `reject@<iso>`",
+    "decided": "ISO timestamp of this ruling (default: now); `reject-pending` stores it as `reject@<iso>`, "
+               "which terminal `reject` preserves",
     "found": "ISO timestamp it was found (default: now)",
     "found_run": "the run-id that found it",
 }
@@ -767,17 +770,18 @@ def cmd_transition(path: Path, args) -> int:
         # WHEN this step was taken. The user's ruling is DURABLE DATA, exactly like the ledger's
         # `api_approval`: a later run — or a fresh agent that never saw the conversation — reads it and does
         # not re-ask. OMITTED, the stamp defaults to now; SUPPLIED (`--at`), it is a value like any other and
-        # `taken()` has already refused a blank. It is offered ONLY where it lands somewhere (`STAMPS`).
+        # `taken()` has already refused a blank. It is offered ONLY where it stamps a ruling (`STAMPS`),
+        # except terminal `reject`, which preserves an existing pending-rejection marker.
         stamp = values.get("decided") or now_iso()
         for field in WRITES[cmd]:
             if field in OPTIONAL:
                 if cmd == "reject-pending":
                     entry[field] = PENDING_REJECTION_PREFIX + stamp
                 elif cmd == "reject" and entry[field].startswith(PENDING_REJECTION_PREFIX):
-                    # Preserve the moment the user ruled, not the later moment campaign cleanup finished.
-                    # An explicit --at remains meaningful: it replaces the tagged timestamp.
-                    if "decided" in values:
-                        entry[field] = PENDING_REJECTION_PREFIX + stamp
+                    # The marker records WHEN the user rejected the follow-up. Terminal `reject` records
+                    # only that the required campaign disposition has finished, so it must preserve that
+                    # ruling even when a later caller supplies --at for the completion attempt.
+                    pass
                 else:
                     entry[field] = stamp
                 continue

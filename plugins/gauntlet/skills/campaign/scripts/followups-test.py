@@ -1065,11 +1065,13 @@ def t_in_pr_rejection_finishes_campaign_disposition_first(tmp: Path) -> None:
     after_close_refusal = json.loads(run(["--file", str(store), "get", "--id", fid])[1])
     check(after_close_refusal == pending,
           f"refused `closed-unmerged` changed the pending rejection: {after_close_refusal!r}")
-    code, out, err = run(["--file", str(store), "reject", "--id", fid])
+    code, out, err = run([
+        "--file", str(store), "reject", "--id", fid, "--at", "2026-07-14T11:00:00Z",
+    ])
     check(code == 0, f"terminal `reject` exited {code}: {err!r}")
     rejected = json.loads(out)
     check(rejected["state"] == "rejected" and rejected["decided"] == marker,
-          f"terminal `reject` did not preserve when the user first ruled: {rejected!r}")
+          f"terminal `reject --at` replaced when the user first ruled: {rejected!r}")
 
     ordinary_store = tmp / "ordinary-closed.jsonl"
     (ordinary_fid,) = seed(ordinary_store)
@@ -1175,8 +1177,11 @@ def t_in_pr_rejection_finishes_campaign_disposition_first(tmp: Path) -> None:
         "NEVER run `merge.py` or `pr-adopt.py`",
         "`followups.py --file <store> reject --id fuN`",
         "If a row exists",
+        "nonterminal status",
         "`merge.py run`",
         "terminal close-out",
+        "terminal `aborted`",
+        "do\n  not run `merge.py`",
         "`followups.py --file <store> reject --id fuN`",
     )
     check("closed-unmerged" not in closed_branch,
@@ -1190,9 +1195,13 @@ def t_in_pr_rejection_finishes_campaign_disposition_first(tmp: Path) -> None:
         "NEVER run `merge.py` or `pr-adopt.py`",
         "`followups.py --file <store> merged --id fuN`",
         "If a row exists",
+        "nonterminal status",
         "`merge.py run`",
         "`followups.py --file <store> merged --id fuN`",
-        "Do not record\n  `reject`",
+        "already terminal (`merged` or `aborted`)",
+        "do not run `merge.py`",
+        "`followups.py --file <store> merged --id fuN`",
+        "Do not record `reject`",
     )
 
 

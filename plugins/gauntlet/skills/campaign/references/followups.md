@@ -259,19 +259,23 @@ PR's live state and continue with the matching branch.
 - **CLOSED WITHOUT MERGING** — inspect this run's ledger for the recorded PR. If no row names the recorded
   PR, the heartbeat stopped after `open-pr` and before adoption created one: treat the live **CLOSED**
   result as complete campaign disposition. NEVER run `merge.py` or `pr-adopt.py`; run
-  `followups.py --file <store> reject --id fuN` directly. If a row exists, run `merge.py run` through its
-  existing terminal close-out (`loop-control.md`, "Step 4 — Merge queued PRs as a serialized drain"). Then
-  run `followups.py --file <store> reject --id fuN`.
+  `followups.py --file <store> reject --id fuN` directly. If a row exists with nonterminal status, run
+  `merge.py run` through its existing terminal close-out (`loop-control.md`, "Step 4 — Merge queued PRs as
+  a serialized drain"). If its status is already terminal `aborted`, campaign disposition is complete: do
+  not run `merge.py`; run `followups.py --file <store> reject --id fuN` directly.
 - **MERGED** — inspect this run's ledger for the recorded PR. If no row names the recorded PR, the heartbeat
   stopped after `open-pr` and before adoption created one: treat the live **MERGED** result as complete
   campaign disposition. NEVER run `merge.py` or `pr-adopt.py`; run
-  `followups.py --file <store> merged --id fuN` directly. If a row exists, run `merge.py run` to finish the
-  existing merge finalization, then run `followups.py --file <store> merged --id fuN`. Do not record
-  `reject`: the merged PR is now the durable record and `merged` removes the queue entry.
+  `followups.py --file <store> merged --id fuN` directly. If a row exists with nonterminal status, run
+  `merge.py run` to finish the existing merge finalization, then run
+  `followups.py --file <store> merged --id fuN`. If its status is already terminal (`merged` or `aborted`),
+  do not run `merge.py`; run `followups.py --file <store> merged --id fuN` directly. The live **MERGED** PR
+  is the durable record, and `merged` removes the queue entry. Do not record `reject`.
 
 The existing `reject` edge keeps the recorded `pr`; never clear that history.
 Do not add a follow-up state for campaign disposition. The state set and PR history stay unchanged; the
-tagged `decided` value is the durable pending-ruling sensor.
+tagged `decided` value is the durable pending-ruling sensor. Its timestamp is the user's ruling time, so
+terminal `reject` preserves it even when that terminal command receives a later `--at`.
 
 **The two subagents are the load-bearing part.** The investigation reproduces before anything is changed,
 and the fix authors code that the gauntlet judges — never the same worker doing both, and never the driver
@@ -416,9 +420,9 @@ it can ever take a blank. A stamp (`--at`, `--found`) may be **omitted** — it 
 stamp that is **supplied** and shows nothing is refused like anything else.
 
 **And a flag exists on a subcommand only where that subcommand consumes it.** `--at` is offered by the steps
-that **stamp** something and by no others; passing it elsewhere is an argparse **error**, not a value that
-silently vanishes. `<cmd> --help` names every flag a command takes. Never "document" a dropped value: a
-documented silent discard is still a silent discard.
+that **stamp** a ruling and by no others; passing it elsewhere is an argparse **error**, not a value that
+silently vanishes. Terminal `reject` is the one completed-disposition case: it accepts a later `--at` but
+preserves the existing `reject@<iso>` ruling time. `<cmd> --help` names every flag a command takes.
 
 **The claim's `evidence` and the investigation's `finding` are DIFFERENT FIELDS, and both matter.** One is
 why the driver **raised** it; the other is what happened when somebody actually **looked**. A finding never
