@@ -47,13 +47,12 @@ gh label create gauntlet-run-<run-id> --color 5319E7 --description "gauntlet: ru
 > The MECHANICAL steps below — **1, 2, 4, 5 and the row of step 3** — are performed by
 > `scripts/pr-adopt.py adopt` (`pr-adopt.py adopt --pr <N> --run-id <id> --file <state.jsonl> --tier <T>
 > --worktrees-root <p> --project-root <p>`). The driver still supplies the two JUDGMENT calls it does not
-> make: the **tier DECISION** (choosing the review tier at or above `triage.py derive`'s mechanical floor)
-> and the PR's **INTENT** (step 3a).
+> make: the **tier DECISION** (`stage-2-review-gate.md`, "2a-triage", owns the complete procedure) and
+> the PR's **INTENT** (step 3a).
 > Adoption needs a row before it has resolved the PR-head worktree, so pass `--tier STANDARD` as the
-> conservative bootstrap value. `pr-adopt.py` launches no gate work. Immediately after step 5, run
-> `triage.py derive` as required below for the floor + inventory, decide the tier at or above that floor,
-> and write it through `ledger.py`; loop control repeats
-> the command before any review. Its decision logic is a pure `build_plan` pinned by `pr-adopt-test.py`.
+> conservative bootstrap value. `pr-adopt.py` launches no gate work. Immediately after step 5, follow
+> the owned 2a-triage procedure before any gate work; loop control points to the same owner. Its decision
+> logic is a pure `build_plan` pinned by `pr-adopt-test.py`.
 > The steps stay below as the spec the tool implements; read them as the authority.
 
 For each `#PR` to adopt:
@@ -153,8 +152,8 @@ For each `#PR` to adopt:
    - **On a NEW row only, initialize:** `base_branch` = the PR's live `baseRefName` (recorded ONCE through
      `add-row --base-branch`, immutable after — this is the per-row base every later action resolves through
      `effective_base`); `reviews_ok` = `0` (no verdicts yet); `ci` = `pending`;
-     `tier` = bootstrap `STANDARD`; after step 5 the orchestrator decides the real tier at or above
-     `triage.py derive`'s floor and writes it;
+     `tier` = bootstrap `STANDARD`; after step 5 follow `stage-2-review-gate.md`, "2a-triage", for the
+     complete procedure;
      `attempts` = `0` (no attempt has run yet —
      `attempts` counts attempts **so far**, and seeding it at `1` silently spends half the retry-once
      budget before any work is dispatched); `started` = now;
@@ -496,27 +495,15 @@ For each `#PR` to adopt:
 
 #### Adoption-time tier decision
 
-Before starting any gate work, **get the mechanical floor + inventory from the resolved PR-head worktree
-and decide the tier at or above it**:
-
-```text
-python3 <skill-dir>/scripts/triage.py derive \
-    --worktree <ledger worktree> --base origin/<base> --head-sha <headRefOid>
-```
-
-`stage-2-review-gate.md`, "2a-triage", owns the command and classification policy. Require the output
-`head_sha` to equal the adoption snapshot, decide the tier at or above the reported `floor` (`TRIVIAL`
-only as your semantic all-prose call — the tool never grants it). **Then, exactly as the heartbeat
-re-triage path does (`loop-control.md`), and BEFORE the ledger write, re-run `triage.py derive` with the
-IDENTICAL `--worktree`/`--base`/`--head-sha` inputs plus `--tier <decided>` so the tool VETOES a
-below-floor choice**; require its success and an output `head_sha` that still equals the row, and BLOCK
-gate dispatch on refusal (exit 2, no JSON). Only then replace the bootstrap — with **EXACTLY ONE
+Before starting any gate work, **follow `stage-2-review-gate.md`, "2a-triage", for the complete
+campaign-bound initial derive and veto re-run.** That section owns both invocations, their checks, and the
+classification policy; do not reconstruct them here. Only then replace the bootstrap — with **EXACTLY ONE
 directional `ledger.py … set`**, honouring the direction below, never a preliminary generic tier write
 followed by a second. Without this second veto derive the adoption path would
 write a below-floor tier straight through — gate work could start below the emitted floor, an
 under-reviewed stricter tier — the exact hole the heartbeat veto closes; the two paths are symmetric. A
-refusal from EITHER derive leaves the conservative bootstrap in place and blocks gate dispatch until the
-next heartbeat refreshes the non-terminal row's worktree/head and derives successfully.
+refusal from EITHER owner-defined derive leaves the conservative bootstrap in place and blocks gate
+dispatch until the next heartbeat refreshes the non-terminal row's worktree/head and derives successfully.
 
 **A same-SHA tier change is TWO events by direction** (`stage-2-review-gate.md`, "Status labels mirror the
 review gate", owns the split; depth order TRIVIAL < STANDARD < HIGH), and on an UNCHANGED non-terminal re-adoption

@@ -3,9 +3,9 @@
 
 `references/pr-adoption.md` is the authority; this tool performs its steps 1, 2, 4, 5 and the row of
 step 3. It does NOT decide the review TIER: adoption passes a conservative `STANDARD` bootstrap because the
-PR-head worktree does not exist until this command resolves it, then — after step 5 — `triage.py derive`
-supplies the mechanical floor and the orchestrator decides the tier at or above it before gate work. It does
-NOT author the PR's INTENT (step 3a — the driver's working note about what the PR
+PR-head worktree does not exist until this command resolves it. After step 5, follow
+`references/stage-2-review-gate.md`, "2a-triage", for the complete procedure before gate work. It does NOT
+author the PR's INTENT (step 3a — the driver's working note about what the PR
 is for): the driver decides Purpose, PR-specific Non-goals, Threat model and provenance. What this tool
 DOES do for intent is MECHANICAL — `intent-sync` folds the operator's run-wide default Non-goals (the
 ledger header `default_non_goals`) into the PR's `intent-<pr>.md` managed block, idempotently, deciding no
@@ -562,8 +562,8 @@ def main(argv: "list[str] | None" = None) -> int:
     p.add_argument("--view-json", required=True, help="path to a parsed `gh pr view` JSON document")
     p.add_argument("--run-id", required=True, help="this run's id (the owner label is gauntlet-run-<id>)")
     p.add_argument("--tier", required=True,
-                   help="bootstrap tier; adoption passes STANDARD, then the orchestrator decides the real "
-                        "tier at or above triage.py's floor before gate work")
+                   help="bootstrap tier; adoption passes STANDARD before stage-2-review-gate.md "
+                        "2a-triage")
     p.add_argument("--worktrees-root", default=".worktrees", help="root under which the head worktree sits")
 
     a = sub.add_parser("adopt", help="the real thing: read the PR, refuse/register/worktree/label")
@@ -571,8 +571,8 @@ def main(argv: "list[str] | None" = None) -> int:
     a.add_argument("--run-id", required=True, help="this run's id")
     a.add_argument("--file", required=True, help="the run ledger (<rundir>/state.jsonl)")
     a.add_argument("--tier", required=True,
-                   help="bootstrap tier; adoption passes STANDARD, then the orchestrator decides the real "
-                        "tier at or above triage.py's floor before gate work")
+                   help="bootstrap tier; adoption passes STANDARD before stage-2-review-gate.md "
+                        "2a-triage")
     a.add_argument("--worktrees-root", required=True, help="root under which the head worktree sits")
     a.add_argument("--project-root", required=True, help="the repo checkout git/ledger commands run in")
     a.add_argument("--repo", help="owner/name (default: the project-root checkout's)")
