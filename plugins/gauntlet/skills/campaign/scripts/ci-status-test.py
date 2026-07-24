@@ -1065,6 +1065,15 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
                     "echo --machine-action none.",
         "required-set": "Run scripts/ci-status.py required-set\necho --ledger <rundir>/state.jsonl.",
     }
+    prompted_later_commands = {
+        "derive": "Run scripts/ci-status.py derive --pr 1\n$ echo --ledger <rundir>/state.jsonl.",
+        "liveness": "Run scripts/ci-status.py liveness --ledger <rundir>/state.jsonl --pr 1\n"
+                    "$ echo --machine-action none.",
+    }
+    derive_json_path_commands = {
+        "liveness": "Run scripts/ci-status.py liveness --ledger <rundir>/state.jsonl --pr 1 "
+                    "--derive-json result.py --machine-action none.",
+    }
     inline_later_commands = {
         "derive": "Run scripts/ci-status.py derive --pr 1, then `echo --ledger <rundir>/state.jsonl`.",
         "liveness": "Run scripts/ci-status.py liveness --ledger <rundir>/state.jsonl --pr 1, then "
@@ -1122,6 +1131,14 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
             encoding="utf-8",
         )
         (root / "later-command.md").write_text(later_command + "\n", encoding="utf-8")
+        if subcommand in prompted_later_commands:
+            (root / "prompted-later-shell-command.md").write_text(
+                prompted_later_commands[subcommand] + "\n", encoding="utf-8"
+            )
+        if subcommand in derive_json_path_commands:
+            (root / "derive-json-path.md").write_text(
+                derive_json_path_commands[subcommand] + "\n", encoding="utf-8"
+            )
         (root / "inline-introduced-command.md").write_text(
             inline_later_commands[subcommand] + "\n", encoding="utf-8"
         )
@@ -1201,7 +1218,9 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
         for name, (text, _problem_line) in boundary_fixtures.items():
             (root / name).write_text(text, encoding="utf-8")
         found_problems, copies = check(root)
-        expected_copies = 51 if subcommand == "required-set" else 52
+        expected_copies = (51 if subcommand == "required-set" else 52) + (
+            1 if subcommand in prompted_later_commands else 0
+        ) + (1 if subcommand in derive_json_path_commands else 0)
         if len(copies) != expected_copies:
             problems.append(f"[doc-copy {subcommand}] found {len(copies)} wrapped copies, expected "
                             f"{expected_copies}: {copies!r}")
@@ -1216,9 +1235,13 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
                                     in boundary_fixtures.items()
                                     if problem_line is not None
                                     and not (subcommand == "required-set"
-                                             and name == "bare-later-shell-command.md"))}
+                                             and name == "bare-later-shell-command.md")),
+                                  *({"prompted-later-shell-command.md:1"}
+                                    if subcommand in prompted_later_commands else set())}
         problem_sites = {problem.split(" ", 1)[0] for problem in found_problems}
-        expected_problems = 39 if subcommand == "required-set" else 40
+        expected_problems = (39 if subcommand == "required-set" else 40) + (
+            1 if subcommand in prompted_later_commands else 0
+        )
         if (len(found_problems) != expected_problems or problem_sites != expected_problem_sites
                 or any(problem_needle not in problem for problem in found_problems)):
             problems.append(
@@ -1234,6 +1257,23 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
                 f"[doc-copy {subcommand}] the bare later shell command leaked its flag into the prior "
                 f"ci-status invocation: {bare_commands!r}"
             )
+        if subcommand in prompted_later_commands:
+            prompted_commands = [command for path, _line, command in ci.find_ci_status_copies(root, subcommand)
+                                 if path.name == "prompted-later-shell-command.md"]
+            if len(prompted_commands) != 1 or later_flag in prompted_commands[0]:
+                problems.append(
+                    f"[doc-copy {subcommand}] the prompted later shell command leaked its flag into the "
+                    f"prior ci-status invocation: {prompted_commands!r}"
+                )
+        if subcommand in derive_json_path_commands:
+            derive_json_commands = [command for path, _line, command in ci.find_ci_status_copies(root, subcommand)
+                                    if path.name == "derive-json-path.md"]
+            if (len(derive_json_commands) != 1
+                    or "result.py --machine-action none" not in derive_json_commands[0]):
+                problems.append(
+                    f"[doc-copy {subcommand}] a --derive-json .py value cut off later arguments: "
+                    f"{derive_json_commands!r}"
+                )
         inline_commands = [command for path, _line, command in ci.find_ci_status_copies(root, subcommand)
                            if path.name == "inline-introduced-command.md"]
         inline_later_input = "state.jsonl" if subcommand == "required-set" else later_flag

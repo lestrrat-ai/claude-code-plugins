@@ -2339,15 +2339,28 @@ def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, 
     # Markdown block boundary.
     command_start = re.compile(
         rf"(?:"
-        rf"(?<![\w./-])(?:(?:[\w.-]+/)*[\w.-]+\.py|python(?:3)?|bash|sh|gh|git){separator}\S+\b"
+        rf"(?<![\w./-])(?:(?P<script>(?:[\w.-]+/)*[\w.-]+\.py)|python(?:3)?|bash|sh|gh|git){separator}\S+\b"
         rf"|\b(?:and[ \t]+then|then|followed[ \t]+by|(?:[Nn]ext|[Aa]fterwards?),?[ \t]+run)[ \t]+[`]*[A-Za-z_][\w./-]*{separator}\S+\b"
         rf")"
     )
+    option_value_before_script = re.compile(r"(?:^|\s)--[A-Za-z][\w-]*(?:=[^\s]*)?\s*$")
+
+    def later_command_start(paragraph: str, offset: int) -> re.Match[str] | None:
+        """Find a later command, preserving a `.py` value supplied to a long option."""
+        for candidate in command_start.finditer(paragraph, offset):
+            # `--derive-json result.py` is one invocation argument, not a new command.  A later script
+            # command can still begin after an option value, so keep looking when this candidate is one.
+            if (candidate.group("script") is not None
+                    and option_value_before_script.search(paragraph[:candidate.start()])):
+                continue
+            return candidate
+        return None
     # A bare, later shell-command line needs no prose introduction. Limit this to a command word followed
     # by a long option: that is the only form that can lend a checked flag to the prior invocation, while a
     # valid wrapped continuation starts with its option instead of a new command word.
     bare_shell_command_start = re.compile(
-        r"(?:^|\r?\n)(?=[A-Za-z_./])[A-Za-z_./][\w./-]*(?=[ \t]+[^\r\n]*--[A-Za-z][\w-]*\b)"
+        r"(?:^|\r?\n)(?:[ \t]*\$[ \t]+)?(?=[A-Za-z_./])[A-Za-z_./][\w./-]*"
+        r"(?=[ \t]+[^\r\n]*--[A-Za-z][\w-]*\b)"
     )
     # A Markdown backtick alone does not start a command. An explicit prose introduction followed by inline
     # code does: the later command's flags must not extend the ci-status.py invocation before it.
@@ -2562,7 +2575,7 @@ def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, 
                 offset = start + match.start()
                 command_end = len(paragraph)
                 candidates = (
-                    command_start.search(paragraph, match.end()),
+                    later_command_start(paragraph, match.end()),
                     bare_shell_command_start.search(paragraph, match.end()),
                 )
                 if (next_command := min((candidate for candidate in candidates if candidate is not None),
