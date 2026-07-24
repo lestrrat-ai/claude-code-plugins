@@ -1384,6 +1384,8 @@ def watch_doc_cases(ci) -> list[str]:
 
     for name in (
         "fenced-code-only-requirements.md",
+        "nested-list-fenced-action-only-requirements.md",
+        "nested-list-fenced-formula-only-requirements.md",
         "inline-code-only-requirements.md",
         "indented-code-only-requirements.md",
         "raw-pre-code-only-requirements.md",
@@ -1398,6 +1400,14 @@ def watch_doc_cases(ci) -> list[str]:
         if got:
             problems.append(f"[watch-doc] literal-code-only formula in {name} was treated as visible: "
                             f"{'; '.join(got)}")
+
+    for name, literal in (
+        ("nested-list-fenced-action-only-requirements.md", "Run `liveness`"),
+        ("nested-list-fenced-formula-only-requirements.md", "Launch a watch whenever ci == pending."),
+    ):
+        hidden = (WATCH_DOC_FIXTURES / name).read_text(encoding="utf-8")
+        if literal in ci.markdown_structural_code_text(hidden):
+            problems.append(f"[watch-doc] nested-list fenced code in {name} was not masked structurally")
 
     reversed_action = (WATCH_DOC_FIXTURES / "reversed-action.md").read_text(encoding="utf-8")
     got = ci.watch_action_block_problems(Path("reversed-action.md"), reversed_action, anchor)

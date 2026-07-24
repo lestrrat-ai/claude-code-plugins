@@ -2469,7 +2469,7 @@ def markdown_structural_code_text(text: str) -> str:
     """Mask fenced, indented, and raw-HTML literal code while preserving source offsets."""
     text = markdown_visible_text(text)
     visible = list(text)
-    fence: tuple[str, int] | None = None
+    fence: tuple[str, int, int] | None = None
     list_content_indent: int | None = None
     offset = 0
 
@@ -2490,20 +2490,26 @@ def markdown_structural_code_text(text: str) -> str:
             if list_content_indent is not None and leading < list_content_indent:
                 list_content_indent = None
         if fence is not None:
-            marker, width = fence
-            closing = re.fullmatch(rf" {{0,3}}{re.escape(marker)}{{{width},}}[ \t]*", body)
+            marker, width, container_indent = fence
+            closing_body = (body[container_indent:]
+                            if body.startswith(" " * container_indent) else "")
+            closing = re.fullmatch(
+                rf" {{0,3}}{re.escape(marker)}{{{width},}}[ \t]*", closing_body)
             mask(offset, offset + len(line))
             if closing is not None:
                 fence = None
             offset += len(line)
             continue
 
-        opening = re.match(r" {0,3}(`{3,}|~{3,})(.*)", body)
+        container_indent = (list_content_indent
+                            if list_content_indent is not None and leading >= list_content_indent else 0)
+        opening_body = body[container_indent:]
+        opening = re.match(r" {0,3}(`{3,}|~{3,})(.*)", opening_body)
         if opening is not None:
             marker = opening.group(1)
             info = opening.group(2)
             if marker[0] != "`" or "`" not in info:
-                fence = (marker[0], len(marker))
+                fence = (marker[0], len(marker), container_indent)
                 mask(offset, offset + len(line))
                 offset += len(line)
                 continue
