@@ -280,8 +280,10 @@ On REFUTED:
 - **Commit it.** The refutation commit is a **PR-content change**, so it **RESETS THE GATE** exactly like
   any other campaign commit: route it through the existing "any campaign commit to the PR head resets the
   gate" rule (`reviews_ok` → 0, restore `gauntlet-reviewing` — "Status labels mirror the review gate" —
-  re-derive CI for the new tip and watch it only if `liveness` reports `watch_warranted`, re-enter Stage 2a on the new
-  tip). Do **NOT** invent a second mechanism.
+  re-derive CI for the new tip). **Refutation CI watch action.** Run `liveness`, then ensure or relaunch
+  a watch only when returned `watch_warranted` is `true` (`stage-2-ci.md`, "WATCH ONLY WHAT CAN MOVE").
+  Parked status does not override that result. Re-enter Stage 2a on the new tip. Do **NOT** invent a
+  second mechanism.
 - CONFIRMED / ADJUSTED findings from the same round still go to the scoped fix subagent; the refutation
   comment rides along in the same round's work.
 
