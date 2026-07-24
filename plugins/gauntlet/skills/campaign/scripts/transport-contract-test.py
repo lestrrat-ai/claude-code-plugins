@@ -168,6 +168,26 @@ def markdown_list_chunks(body: str) -> list[str]:
     return chunks
 
 
+def markdown_list_parent_child_chunks(body: str) -> list[tuple[str, str]]:
+    lines = body.splitlines()
+    chunks: list[tuple[str, str]] = []
+    for parent_index, parent_line in enumerate(lines):
+        parent = MARKDOWN_LIST_ITEM.match(parent_line)
+        if parent is None:
+            continue
+        parent_prefix = parent.group("prefix")
+        children: list[str] = []
+        for child_line in lines[parent_index + 1:]:
+            child = MARKDOWN_LIST_ITEM.match(child_line)
+            if child is not None:
+                if len(child.group("prefix")) <= len(parent_prefix):
+                    break
+                children.append(child_line)
+        if children:
+            chunks.append((parent_line, "\n".join(children)))
+    return chunks
+
+
 def normalize_markdown_prose(body: str) -> str:
     return " ".join(body.replace("`", " ").split())
 
@@ -191,6 +211,17 @@ def reconstructs_triage_invocation(body: str) -> bool:
     )
 
 
+def reconstructs_triage_veto(tier_prose: str, replay_prose: str) -> bool:
+    return (
+        has_exact_flag(normalize_markdown_prose(tier_prose), TRIAGE_TIER_BINDING[0])
+        and re.search(
+            r"(?i)(?:\bagain\b|\bonce more\b|\brepeat(?:s|ed)?\b|"
+            r"\bre-?run\b|\bsecond derive\b|\bveto\b)",
+            normalize_markdown_prose(replay_prose),
+        ) is not None
+    )
+
+
 def check_consumer_triage_region(
     name: str,
     region: str,
@@ -206,16 +237,10 @@ def check_consumer_triage_region(
     require(not reconstructs_triage_invocation(region),
             f"{name} reconstructed the campaign triage invocation instead of using its owner")
     for chunk in markdown_list_chunks(region):
-        normalized = normalize_markdown_prose(chunk)
-        reconstructs_veto = (
-            has_exact_flag(normalized, TRIAGE_TIER_BINDING[0])
-            and re.search(
-                r"(?i)(?:\bagain\b|\bonce more\b|\brepeat(?:s|ed)?\b|"
-                r"\bre-?run\b|\bsecond derive\b|\bveto\b)",
-                normalized,
-            ) is not None
-        )
-        require(not reconstructs_veto,
+        require(not reconstructs_triage_veto(chunk, chunk),
+                f"{name} reconstructed the campaign triage veto re-run instead of using its owner")
+    for parent, children in markdown_list_parent_child_chunks(region):
+        require(not reconstructs_triage_veto(parent, children),
                 f"{name} reconstructed the campaign triage veto re-run instead of using its owner")
 
 
@@ -393,6 +418,15 @@ INVENTED negative fixture: run `triage.py` `derive` with these caller inputs:
 
 - INVENTED negative fixture: add `--tier <decided>` to the command.
 - Re-run the same derive.
+""",
+            "reconstructed the campaign triage veto re-run",
+        ),
+        (
+            "nested-list-item-veto",
+            """
+
+- INVENTED negative fixture: add `--tier <decided>` to the command.
+  - Re-run the same derive with the identical inputs to veto a below-floor tier.
 """,
             "reconstructed the campaign triage veto re-run",
         ),
