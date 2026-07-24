@@ -643,7 +643,11 @@ def pr_number(ref: str) -> "str | None":
         return None
     if match.group("url"):
         decoded_path = (unquote(component) for component in urlsplit(ref).path.split("/"))
-        if any(component in (".", "..") or "/" in component for component in decoded_path):
+        if any(
+            component in (".", "..")
+            or any(char in "/?#\\" or char.isspace() for char in component)
+            for component in decoded_path
+        ):
             return None
     return match.group("short") or match.group("url")
 

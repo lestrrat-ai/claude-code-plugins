@@ -1413,6 +1413,11 @@ def t_pr_references_keep_legacy_bare_numbers_and_github_urls(tmp: Path) -> None:
         "https://github.com/acme/%2e/pull/42",
         "https://github.com/acme%2frepo/repo/pull/42",
         "https://github.com/acme/repo%2F/pull/42",
+        "https://github.com/acme%3Fbad/repo/pull/42",
+        "https://github.com/acme%23bad/repo/pull/42",
+        "https://github.com/acme%0Abad/repo/pull/42",
+        "https://github.com/acme%20bad/repo/pull/42",
+        "https://github.com/acme%5Cbad/repo/pull/42",
         "https://github.com/acme/repo/issues/42",
         "PR 42",
     )
