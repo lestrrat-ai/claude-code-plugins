@@ -2469,7 +2469,7 @@ def markdown_structural_code_text(text: str) -> str:
     """Mask fenced, indented, and raw-HTML literal code while preserving source offsets."""
     text = markdown_visible_text(text)
     visible = list(text)
-    fence: tuple[str, int, int] | None = None
+    fence: tuple[str, int, int, int] | None = None
     list_content_indent: int | None = None
     offset = 0
 
@@ -2480,8 +2480,12 @@ def markdown_structural_code_text(text: str) -> str:
 
     for line in text.splitlines(keepends=True):
         body = line.rstrip("\r\n")
-        leading = len(body) - len(body.lstrip(" "))
-        list_item = re.match(r" {0,3}(?:[-+*]|\d+[.)])[ \t]+", body) if leading <= 3 else None
+        blockquote = re.match(r" {0,3}(?:>[ \t]?)+", body)
+        blockquote_prefix = blockquote.group() if blockquote is not None else ""
+        blockquote_depth = blockquote_prefix.count(">")
+        content = body[len(blockquote_prefix):]
+        leading = len(content) - len(content.lstrip(" "))
+        list_item = re.match(r" {0,3}(?:[-+*]|\d+[.)])[ \t]+", content) if leading <= 3 else None
         if list_item is not None:
             list_content_indent = len(list_item.group())
         elif not body:
@@ -2490,9 +2494,10 @@ def markdown_structural_code_text(text: str) -> str:
             if list_content_indent is not None and leading < list_content_indent:
                 list_content_indent = None
         if fence is not None:
-            marker, width, container_indent = fence
-            closing_body = (body[container_indent:]
-                            if body.startswith(" " * container_indent) else "")
+            marker, width, container_indent, fence_blockquote_depth = fence
+            closing_body = (content[container_indent:]
+                            if (blockquote_depth == fence_blockquote_depth
+                                and content.startswith(" " * container_indent)) else "")
             closing = re.fullmatch(
                 rf" {{0,3}}{re.escape(marker)}{{{width},}}[ \t]*", closing_body)
             mask(offset, offset + len(line))
@@ -2503,18 +2508,18 @@ def markdown_structural_code_text(text: str) -> str:
 
         container_indent = (list_content_indent
                             if list_content_indent is not None and leading >= list_content_indent else 0)
-        opening_body = body[container_indent:]
+        opening_body = content[container_indent:]
         opening = re.match(r" {0,3}(`{3,}|~{3,})(.*)", opening_body)
         if opening is not None:
             marker = opening.group(1)
             info = opening.group(2)
             if marker[0] != "`" or "`" not in info:
-                fence = (marker[0], len(marker), container_indent)
+                fence = (marker[0], len(marker), container_indent, blockquote_depth)
                 mask(offset, offset + len(line))
                 offset += len(line)
                 continue
 
-        if (re.match(r"(?: {4}| {0,3}\t)", body)
+        if (re.match(r"(?: {4}| {0,3}\t)", content)
                 and (list_content_indent is None or leading >= list_content_indent + 4)):
             mask(offset, offset + len(line))
         offset += len(line)

@@ -1384,6 +1384,7 @@ def watch_doc_cases(ci) -> list[str]:
 
     for name in (
         "fenced-code-only-requirements.md",
+        "blockquote-fenced-formula-only-requirements.md",
         "nested-list-fenced-action-only-requirements.md",
         "nested-list-fenced-formula-only-requirements.md",
         "inline-code-only-requirements.md",
@@ -1402,6 +1403,7 @@ def watch_doc_cases(ci) -> list[str]:
                             f"{'; '.join(got)}")
 
     for name, literal in (
+        ("blockquote-fenced-formula-only-requirements.md", "Launch a watch whenever ci == pending."),
         ("nested-list-fenced-action-only-requirements.md", "Run `liveness`"),
         ("nested-list-fenced-formula-only-requirements.md", "Launch a watch whenever ci == pending."),
     ):
