@@ -2332,10 +2332,14 @@ def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, 
     quote_prefix = r"(?:[ \t]*>[ \t]*)+"
     separator = rf"(?:\s+|[ \t]*\\\r?\n(?:{quote_prefix})?[ \t]*|\r?\n{quote_prefix})"
     needle = re.compile(rf"ci-status\.py{separator}{re.escape(subcommand)}\b")
-    # A later runnable command starts a new span even when it is not ci-status.py. Its flags describe
-    # that command, never the ci-status.py invocation before it.
+    # A later known interpreter or script starts a new span directly. An explicitly introduced later
+    # command does too, even when it is not a known interpreter or script. Its flags describe that command,
+    # never the ci-status.py invocation before it.
     command_start = re.compile(
+        rf"(?:"
         rf"(?<![\w./-])(?:(?:[\w.-]+/)*[\w.-]+\.py|python(?:3)?|bash|sh|gh|git){separator}\S+\b"
+        rf"|\b(?:and[ \t]+then|then|followed[ \t]+by)[ \t]+[A-Za-z_][\w./-]*{separator}\S+\b"
+        rf")"
     )
     # Markdown backticks delimit a span, not a shell command. An invocation may be followed in the same
     # paragraph by inline code that supplies its required flag, so a backtick is never a command boundary.
@@ -2408,6 +2412,9 @@ def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, 
                          and (list_marker[0] <= 3 or nested_list))
                      or (start == offset and (list_marker[0] <= 3 or nested_list)))
             )
+            # A block outside the list's content indentation ends the list. Clear its state before a later
+            # top-level indented block can be mistaken for list text.
+            block_ends_active_list = bool(active_lists and not inside_list_item)
 
             # Fenced and HTML blocks cannot lazily continue after their blockquote container ends. Close
             # the region before processing the first line outside that container.
@@ -2473,10 +2480,14 @@ def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, 
                 active_indented_code = True
                 active_quote_depth = quote_depth
             elif re.match(r" {0,3}(?:=+|-+)[ \t]*$", block_content) and start < offset:
+                if block_ends_active_list:
+                    active_lists.clear()
                 regions.append((start, line_end))
                 start = line_end
                 active_quote_depth = 0
             elif re.match(r" {0,3}#{1,6}(?:[ \t]+|$)", block_content):
+                if block_ends_active_list:
+                    active_lists.clear()
                 if start < offset:
                     regions.append((start, offset))
                 regions.append((offset, line_end))
@@ -2484,12 +2495,16 @@ def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, 
                 active_quote_depth = 0
             elif ((fence := re.match(r" {0,3}(`{3,}|~{3,})(.*)$", block_content)) is not None
                   and (fence.group(1)[0] == "~" or "`" not in fence.group(2))):
+                if block_ends_active_list:
+                    active_lists.clear()
                 if start < offset:
                     regions.append((start, offset))
                 start = offset
                 active_fence = (fence.group(1)[0], len(fence.group(1)))
                 active_quote_depth = quote_depth
             elif (html_end := html_block_start(block_content)) is not None:
+                if block_ends_active_list:
+                    active_lists.clear()
                 if start < offset:
                     regions.append((start, offset))
                 start = offset
@@ -2502,6 +2517,8 @@ def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, 
                     active_quote_depth = 0
             elif re.match(r" {0,3}(?:\*(?:[ \t]*\*){2,}|-(?:[ \t]*-){2,}|_(?:[ \t]*_){2,})[ \t]*$",
                           block_content):
+                if block_ends_active_list:
+                    active_lists.clear()
                 if start < offset:
                     regions.append((start, offset))
                 regions.append((offset, line_end))
@@ -2519,6 +2536,8 @@ def find_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, 
                     active_lists.pop()
                 active_lists.append((quote_depth, list_marker[0], list_marker[1], list_marker[2]))
             elif quote_depth:
+                if block_ends_active_list:
+                    active_lists.clear()
                 if quote_depth != active_quote_depth:
                     if start < offset:
                         regions.append((start, offset))

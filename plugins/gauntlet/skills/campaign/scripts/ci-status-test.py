@@ -1036,8 +1036,7 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
             "Run `scripts/ci-status.py\n  derive --pr 1 --ledger <rundir>/state.jsonl`.",
             "Run `scripts/ci-status.py\n  derive --pr 1`.",
             "`--ledger <rundir>/state.jsonl` is discussed separately.",
-            "Run scripts/ci-status.py derive --pr 1, then scripts/ledger.py set "
-            "--ledger ledger/state.jsonl.",
+            "Run scripts/ci-status.py derive --pr 1, then echo --ledger ledger/state.jsonl.",
             "WITHOUT `--ledger` OR `--required-set`",
         ),
         "liveness": (
@@ -1047,7 +1046,7 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
             "Run `scripts/ci-status.py\n  liveness --ledger <rundir>/state.jsonl --pr 1`.",
             "`--machine-action none` is discussed separately.",
             "Run scripts/ci-status.py liveness --ledger ledger/state.jsonl --pr 1, then "
-            "scripts/ledger.py set --machine-action none.",
+            "echo --machine-action none.",
             "WITHOUT `--machine-action`",
         ),
         "required-set": (
@@ -1056,7 +1055,7 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
             "Run `scripts/ci-status.py\n  required-set --ledger <rundir>/other.jsonl`.",
             "`state.jsonl` is discussed separately.",
             "Run scripts/ci-status.py required-set --ledger ledger/other.jsonl, then "
-            "scripts/ledger.py set --ledger ledger/state.jsonl.",
+            "echo ledger/state.jsonl.",
             "without the run ledger's",
         ),
     }
@@ -1147,6 +1146,9 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
                 f"{nested_item}Item intro\n\n{nested_indent}    {inline_invalid}\n"
                 f"{nested_indent}{detached}\n", 4
             ),
+            "list-heading-indented-code.md": (
+                f"- Earlier item\n# Heading\n    {inline_invalid}\n{detached}\n", 3
+            ),
             "stale-ordered-list.md": (f"1. Earlier item\n\n{invalid}\n2. {detached}\n", None),
             "malformed-fence.md": (f"{invalid}\n```bad`info\n{detached}\n", None),
             "malformed-html-close.md": (
@@ -1160,8 +1162,8 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
         for name, (text, _problem_line) in boundary_fixtures.items():
             (root / name).write_text(text, encoding="utf-8")
         found_problems, copies = check(root)
-        if len(copies) != 47:
-            problems.append(f"[doc-copy {subcommand}] found {len(copies)} wrapped copies, expected 47: {copies!r}")
+        if len(copies) != 48:
+            problems.append(f"[doc-copy {subcommand}] found {len(copies)} wrapped copies, expected 48: {copies!r}")
         expected_problem_sites = {"wrapped.md:4", "wrapped.md:10", "wrapped.md:18", "wrapped.md:26",
                                   "quote-transition.md:1",
                                   "same-paragraph.md:1",
@@ -1169,7 +1171,7 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
                                   *(f"{name}:{problem_line}" for name, (_text, problem_line)
                                     in boundary_fixtures.items() if problem_line is not None)}
         problem_sites = {problem.split(" ", 1)[0] for problem in found_problems}
-        if (len(found_problems) != 35 or problem_sites != expected_problem_sites
+        if (len(found_problems) != 36 or problem_sites != expected_problem_sites
                 or any(problem_needle not in problem for problem in found_problems)):
             problems.append(
                 f"[doc-copy {subcommand}] invalid plain, blockquoted, and block-boundary copies were not "
