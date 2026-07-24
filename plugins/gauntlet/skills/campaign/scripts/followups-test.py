@@ -48,9 +48,9 @@ import followups  # noqa: E402
 from followups import (  # noqa: E402
     ACT_CMD, ACT_CONDITIONS, ACT_FLAGS, ACT_WITNESSES, BLANK_WHY, DEFAULTS, DELETED, DELETING,
     DRIVER_STEPS, DURABLE_RECORD, EDITABLE, ENTRY_TYPE, EVIDENCE_FIELDS, FIELDS, FLAG, INTAKE,
-    INVESTIGATION, OPTIONAL, PLACEHOLDER, REQUIRED, SEQ_TYPE, STATES, TABLE_ALL_HIDDEN_MARKER,
-    TABLE_DEFAULT_FIELDS, TABLE_EMPTY_MARKER, TABLE_HIDDEN_STATES, TABLE_MARKERS, TERMINAL, TRANSITIONS,
-    USER_RULINGS, WRITE_CMDS, WRITES, build_parser, deletable, find, is_blank, load,
+    INVESTIGATION, OPTIONAL, PENDING_REJECTION_PREFIX, PLACEHOLDER, REQUIRED, SEQ_TYPE, STATES,
+    TABLE_ALL_HIDDEN_MARKER, TABLE_DEFAULT_FIELDS, TABLE_EMPTY_MARKER, TABLE_HIDDEN_STATES, TABLE_MARKERS,
+    TERMINAL, TRANSITIONS, USER_RULINGS, WRITE_CMDS, WRITES, build_parser, deletable, find, is_blank, load,
 )
 
 
@@ -312,13 +312,19 @@ def t_transition_graph(tmp: Path) -> None:
     must not move. A new state or edge is covered the moment it is added to `TRANSITIONS`: this fixture
     reads the graph rather than restating it, so it cannot go stale behind it.
 
+    Two `in-pr` edges have pending-ruling preconditions. `reject` requires the marker because campaign
+    disposition must start only after `reject-pending` writes it. `closed-unmerged` requires no marker
+    because a pending rejection must finish disposition and become `rejected`, never `reopened`.
+
     A DELETING edge is checked the same way, on its own terms: from an allowed state the entry is GONE (and
     the store still LOADS); from a forbidden one it is untouched. Nothing else may remove an entry.
     """
     for cmd, (frm, to) in TRANSITIONS.items():
         for state in STATES:
             path = tmp / f"{cmd}-{state}.jsonl"
-            write_lines(path, entry_line(id="fu1", state=state))
+            decided = (PENDING_REJECTION_PREFIX + "2026-07-14T08:00:00Z"
+                       if cmd == "reject" and state == "in-pr" else "<decided>")
+            write_lines(path, entry_line(id="fu1", state=state, decided=decided))
             code, _, err = run(["--file", str(path), cmd, "--id", "fu1", *transition_args(cmd)])
             if state in frm:
                 check(code == 0, f"`{cmd}` was refused from the ALLOWED state {state!r}: {err!r}")
@@ -380,10 +386,14 @@ def t_ruling_is_recorded(tmp: Path) -> None:
           f"`open-pr` overwrote the USER's ruling timestamp: {after!r}")
     check(after["pr"] == "#77", f"open-pr did not record WHICH PR is addressing it: {after!r}")
 
-    # …and so does the step that DELETES it: the record it prints is the handoff, and it still says the
-    # user ruled, and when.
+    # …and changing that ruling while a PR is open first records a pending rejection before terminal
+    # `reject`. The marker makes campaign disposition resumable.
+    code, _, err = run([
+        "--file", str(path), "reject-pending", "--id", a, "--at", "2026-07-14T10:30:00Z",
+    ])
+    check(code == 0, f"reject-pending exited {code}: {err!r}")
     code, out, err = run(["--file", str(path), "reject", "--id", a, "--at", "2026-07-14T11:00:00Z"])
-    check(code == 0, f"reject exited {code}: {err!r}")  # the user changed their mind while the PR was open
+    check(code == 0, f"reject exited {code}: {err!r}")
     (b2,) = seed(path)
     run(["--file", str(path), "accept", "--id", b2, "--at", "2026-07-14T12:00:00Z"])
     code, out, _ = run(["--file", str(path), "publish", "--id", b2, "--ref", "#88"])
@@ -704,7 +714,10 @@ def t_deletion_needs_a_durable_record(tmp: Path) -> None:
         if set(WRITES[cmd]) & set(DURABLE_RECORD):
             continue  # the deleting step itself records where the follow-up now lives
         for state in frm:
-            ins = [c for c, (_, to) in TRANSITIONS.items() if to == state]
+            # A self-loop preserves a state whose durable record already exists; only edges arriving from
+            # another state must establish that record.
+            ins = [c for c, (sources, to) in TRANSITIONS.items()
+                   if to == state and any(source != state for source in sources)]
             check(ins, f"`{cmd}` deletes a {state!r} entry, and NOTHING reaches {state!r} — an entry that "
                        f"is there was hand-written, and carries no record of anything")
             for into in ins:
@@ -766,14 +779,13 @@ def t_deletion_needs_a_durable_record(tmp: Path) -> None:
 
 
 def t_a_closed_pr_returns_the_entry_to_open_work(tmp: Path) -> None:
-    """A PR CLOSED WITHOUT MERGING RETURNS THE ENTRY TO OPEN WORK — it does not vanish, and it does not sit
-    in `in-pr` forever.
+    """A PR CLOSED WITHOUT MERGING AND WITHOUT A PENDING REJECTION RETURNS TO OPEN WORK.
 
     This is what buys the right to delete on the merge. A PR can be closed, abandoned or rejected in review,
     and the work is then exactly as undone as it was before anyone touched it — so the entry goes back to
     being work, with its history (the finding, the ACT grounds or the user's ruling, and the PR that DIED)
-    intact. Two failure modes are both refused here: the entry silently VANISHING with the PR, and the entry
-    STUCK in "being worked on" with no way out.
+    intact. The pending-rejection path is covered separately: its PR disposition must finish before terminal
+    `reject`, so `closed-unmerged` must not reopen it.
     """
     reopened = TRANSITIONS["closed-unmerged"][1]
     check(reopened != DELETED,
@@ -1006,6 +1018,182 @@ def t_the_doc_and_the_code_agree(tmp: Path) -> None:
         check(cmd in text,
               f"`{cmd}` is a step the store enforces and {doc.name} never names — the driver cannot take a "
               f"step it has not been told exists")
+
+
+def t_in_pr_rejection_finishes_campaign_disposition_first(tmp: Path) -> None:
+    """REJECTING AN `in-pr` FOLLOW-UP PERSISTS THE RULING BEFORE CAMPAIGN DISPOSITION STARTS.
+
+    `reject-pending` keeps the entry resumable as `in-pr`, but marks the user's ruling distinctly from an
+    earlier acceptance. A fresh heartbeat can therefore route to the rejection procedure before ordinary
+    adoption, reopening, or replacement. Terminal `reject` preserves the original ruling stamp after
+    disposition.
+
+    This fixture also pins the resume sensor and disposition order for both interruption outcomes. OPEN
+    after `open-pr` but before adoption completes missing adoption only to create the permanent-abort
+    records; an existing terminal abort is never re-adopted. CLOSED after a marked rejection must not
+    become `reopened`. An unmarked CLOSED PR follows the ordinary `closed-unmerged` edge to `reopened`.
+    """
+    check(TRANSITIONS["reject-pending"] == (("in-pr",), "in-pr"),
+          "`reject-pending` must durably mark the ruling without inventing another follow-up state")
+    check("reject-pending" in USER_RULINGS,
+          "`reject-pending` is not a user ruling — the driver could manufacture a rejection marker")
+    check("in-pr" in TRANSITIONS["reject"][0] and "reopened" in TRANSITIONS["reject"][0],
+          "the rejection procedure changed the store graph instead of preserving the `in-pr`/`reopened` "
+          "edges and their PR history")
+    check("rejected" in TERMINAL,
+          "`rejected` is not terminal — this fixture's ordering requirement no longer describes the graph")
+
+    store = tmp / "pending-rejection.jsonl"
+    (fid,) = seed(store)
+    run(["--file", str(store), "accept", "--id", fid, "--at", "2026-07-14T09:00:00Z"])
+    run(["--file", str(store), "open-pr", "--id", fid, "--pr", "#999"])
+    code, out, err = run([
+        "--file", str(store), "reject-pending", "--id", fid, "--at", "2026-07-14T10:00:00Z",
+    ])
+    check(code == 0, f"`reject-pending` exited {code}: {err!r}")
+    pending = json.loads(out)
+    marker = PENDING_REJECTION_PREFIX + "2026-07-14T10:00:00Z"
+    check(pending["state"] == "in-pr" and pending["pr"] == "#999",
+          f"`reject-pending` lost the resumable PR record: {pending!r}")
+    check(pending["decided"] == marker,
+          f"`reject-pending` did not leave a distinct durable routing marker: {pending!r}")
+    code, _, err = run(["--file", str(store), "closed-unmerged", "--id", fid])
+    check(code == 1,
+          f"`closed-unmerged` reopened a pending rejection before campaign disposition (exit {code})")
+    check("finish campaign disposition" in err and "`reject`" in err,
+          f"`closed-unmerged` refused the pending rejection without naming its required next step: {err!r}")
+    after_close_refusal = json.loads(run(["--file", str(store), "get", "--id", fid])[1])
+    check(after_close_refusal == pending,
+          f"refused `closed-unmerged` changed the pending rejection: {after_close_refusal!r}")
+    code, out, err = run(["--file", str(store), "reject", "--id", fid])
+    check(code == 0, f"terminal `reject` exited {code}: {err!r}")
+    rejected = json.loads(out)
+    check(rejected["state"] == "rejected" and rejected["decided"] == marker,
+          f"terminal `reject` did not preserve when the user first ruled: {rejected!r}")
+
+    ordinary_store = tmp / "ordinary-closed.jsonl"
+    (ordinary_fid,) = seed(ordinary_store)
+    decided = "2026-07-14T11:00:00Z"
+    run(["--file", str(ordinary_store), "accept", "--id", ordinary_fid, "--at", decided])
+    run(["--file", str(ordinary_store), "open-pr", "--id", ordinary_fid, "--pr", "#1000"])
+    before_close = json.loads(run(["--file", str(ordinary_store), "get", "--id", ordinary_fid])[1])
+    check(before_close["decided"] == decided and not before_close["decided"].startswith(PENDING_REJECTION_PREFIX),
+          f"ordinary accepted follow-up unexpectedly carries a pending-rejection marker: {before_close!r}")
+    code, _, err = run(["--file", str(ordinary_store), "reject", "--id", ordinary_fid])
+    check(code == 1,
+          f"direct `reject` hid an ordinary live PR without disposition (exit {code})")
+    check("run `reject-pending` before campaign disposition" in err,
+          f"direct `reject` failed without naming the required disposition order: {err!r}")
+    after_refusal = json.loads(run(["--file", str(ordinary_store), "get", "--id", ordinary_fid])[1])
+    check(after_refusal == before_close,
+          f"refused direct `reject` changed the ordinary live PR entry: {after_refusal!r}")
+    code, out, err = run(["--file", str(ordinary_store), "closed-unmerged", "--id", ordinary_fid])
+    check(code == 0, f"ordinary `closed-unmerged` exited {code}: {err!r}")
+    reopened = json.loads(out)
+    check(reopened["state"] == "reopened" and reopened["pr"] == "#1000" and reopened["decided"] == decided,
+          f"an unmarked closed PR did not return to ordinary open work: {reopened!r}")
+
+    doc = Path(__file__).resolve().parent.parent / "references" / "followups.md"
+    text = doc.read_text()
+    resume_start = text.find("   - **`in-pr`**")
+    resume_end = text.find("   - **`reopened`**", resume_start)
+    check(resume_start >= 0 and resume_end > resume_start,
+          f"{doc.name} has no bounded `in-pr` resume rule")
+    resume_body = text[resume_start:resume_end]
+    guard = "**Before reconciliation, adoption,\n     or `closed-unmerged`, apply"
+    check(guard in resume_body,
+          "the `in-pr` resume rule does not inspect rejection sensors before every ordinary resume action")
+    sensor_pos = resume_body.find("pending-ruling sensor owned by Rejecting")
+    route_pos = resume_body.find("If it\n     selects rejection, route there")
+    ordinary_pos = resume_body.find("Otherwise,\n     reconcile the recorded")
+    check(min(sensor_pos, route_pos, ordinary_pos) >= 0,
+          "the `in-pr` resume rule cannot apply its pending-ruling sensor before ordinary processing")
+    check(sensor_pos < route_pos < ordinary_pos,
+          "the `in-pr` resume rule reconciles, adopts, or reopens before routing the pending rejection")
+    check("NEVER re-adopt" not in resume_body[:ordinary_pos],
+          "the `in-pr` resume rule blocks the rejection procedure from completing interrupted adoption")
+    check("`aborted`/`merged`" not in resume_body[:ordinary_pos],
+          "the `in-pr` resume rule still treats terminal ledger status as proof of user rejection")
+    check("A bare terminal `aborted`/`merged` ledger row records campaign\n"
+          "     disposition, not a user ruling, so it never selects rejection." in resume_body,
+          "the `in-pr` resume rule does not preserve ordinary handling for an unmarked terminal ledger row")
+
+    heading = "#### Rejecting an `in-pr` follow-up"
+    match = re.search(
+        rf"^{re.escape(heading)}\n(?P<body>.*?)(?=^#{{1,4}} |\Z)",
+        text,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    if match is None:
+        raise SelfTestFailure(f"{doc.name} has no canonical {heading!r} procedure")
+    body = match.group("body")
+    rule = "**Record `reject-pending` BEFORE starting campaign disposition, then finish disposition BEFORE recording\nterminal `reject`.**"
+    check(rule in body, f"{heading!r} does not persist the ruling before PR disposition")
+    marker_cmd = "`followups.py --file <store> reject-pending --id fuN`"
+    check(0 <= body.find(marker_cmd) < body.find("Then resolve the recorded PR's live state"),
+          f"{heading!r} starts PR disposition before writing the pending-ruling marker")
+    resume_rule = "**If this procedure is interrupted, the `in-pr` resume rule routes back here.**"
+    check(resume_rule in body, f"{heading!r} does not preserve a pending rejection across interruption")
+    sensor_rule = "**`reject@<iso>` is the only campaign-owned pending-rejection sensor.**"
+    check(sensor_rule in body, f"{heading!r} does not own an unambiguous pending-rejection sensor")
+    check("A terminal\nledger row records PR disposition, not a user ruling, and MUST NOT route here by itself." in body,
+          f"{heading!r} treats an ambiguous terminal ledger row as a user rejection")
+
+    def ordered(branch: str, next_branch: str, *needles: str) -> str:
+        start = body.find(branch)
+        check(start >= 0, f"{heading!r} has no {branch!r} branch")
+        end = body.find(next_branch, start + len(branch))
+        check(end > start, f"{heading!r} has no end marker {next_branch!r} after {branch!r}")
+        branch_body = body[start:end]
+        cursor = 0
+        for needle in needles:
+            found = branch_body.find(needle, cursor)
+            check(found >= 0,
+                  f"{heading!r} does not place {needle!r} after {branch!r}; the disposition order is lost")
+            cursor = found + len(needle)
+        return branch_body
+
+    open_branch = ordered(
+        "- **OPEN**", "- **CLOSED WITHOUT MERGING**",
+        "If the PR lacks this run's",
+        "owner label or ledger row",
+        "complete the existing",
+        "idempotent ADOPTION",
+        "solely to establish the ownership records",
+        "permanent-abort procedure",
+        "`followups.py --file <store> reject --id fuN`",
+    )
+    check("If an existing ledger row already records" in open_branch
+          and "terminal `aborted`, NEVER re-adopt" in open_branch,
+          f"{heading!r} does not preserve terminal disposition during interrupted rejection")
+    closed_branch = ordered(
+        "- **CLOSED WITHOUT MERGING**", "- **MERGED**",
+        "inspect this run's ledger",
+        "If no row names the recorded\n  PR",
+        "live **CLOSED**",
+        "complete campaign disposition",
+        "NEVER run `merge.py` or `pr-adopt.py`",
+        "`followups.py --file <store> reject --id fuN`",
+        "If a row exists",
+        "`merge.py run`",
+        "terminal close-out",
+        "`followups.py --file <store> reject --id fuN`",
+    )
+    check("closed-unmerged" not in closed_branch,
+          f"{heading!r} parks a rejected closed PR in resumable open work before recording the ruling")
+    ordered(
+        "- **MERGED**", "\n\nThe existing",
+        "inspect this run's ledger",
+        "If no row names the recorded PR",
+        "live **MERGED**",
+        "complete\n  campaign disposition",
+        "NEVER run `merge.py` or `pr-adopt.py`",
+        "`followups.py --file <store> merged --id fuN`",
+        "If a row exists",
+        "`merge.py run`",
+        "`followups.py --file <store> merged --id fuN`",
+        "Do not record\n  `reject`",
+    )
 
 
 def t_ids_are_assigned_and_never_reused(tmp: Path) -> None:
@@ -1383,11 +1571,12 @@ def t_fields_and_lookup(tmp: Path) -> None:
 CASES = [
     ("user-step-unskippable", "no driver-only path reaches `accepted`, nor any state `publish` leaves from — proved on the graph", t_user_ruling_is_unskippable),
     ("delete-needs-a-record", "an entry is deleted only once a DURABLE RECORD exists elsewhere — never on take-up", t_deletion_needs_a_durable_record),
-    ("closed-pr-reopens", "a PR closed WITHOUT merging returns the entry to open work — it never vanishes with it", t_a_closed_pr_returns_the_entry_to_open_work),
+    ("closed-pr-reopens", "an unmarked PR closed WITHOUT merging returns to open work; pending rejection does not", t_a_closed_pr_returns_the_entry_to_open_work),
     ("rejection-kept", "a REJECTED follow-up is kept — deleting it is how the next run re-raises it", t_a_rejection_is_never_deleted),
     ("act-needs-conditions", "the autonomous ACT edge must EVIDENCE every condition, or it is refused", t_act_edge_needs_every_condition),
     ("self-accept-distinct", "a DRIVER-accepted follow-up is never mistaken for a USER-accepted one", t_self_accepted_is_never_mistaken_for_accepted),
     ("doc-and-code-agree", "the ACT conditions the driver READS are the ones the code ENFORCES", t_the_doc_and_the_code_agree),
+    ("in-pr-reject-orders-pr", "an `in-pr` rejection is durable before PR disposition and terminal only after it", t_in_pr_rejection_finishes_campaign_disposition_first),
     ("investigation-evidence", "an investigation shows its work; the finding APPENDS and never clobbers", t_investigation_shows_its_work),
     ("refutation-stays", "a refuted follow-up stays in the store, stays visible, and stays overturnable", t_refutation_stays_in_the_store),
     ("state-not-settable", "`set` writes neither `state` nor any evidence a transition left behind", t_state_and_evidence_are_not_settable),

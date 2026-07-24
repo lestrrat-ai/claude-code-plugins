@@ -49,9 +49,9 @@ file that grows.
     did we do this"), or it was PUBLISHED as an issue (the issue is then the record).
   * NEVER DELETED ON TAKE-UP. An entry deleted when work STARTS is an entry a closed, abandoned or
     rejected PR takes down with it — the work still undone, and nothing left to remember it. So while a PR
-    is OPEN the entry STAYS and records which PR is addressing it (`in-pr`), and a PR CLOSED WITHOUT
-    MERGING returns it to OPEN WORK (`reopened`) — never a silent vanish, never stuck in "being worked on"
-    forever.
+    is OPEN the entry STAYS and records which PR is addressing it (`in-pr`). A PR CLOSED WITHOUT MERGING
+    returns it to OPEN WORK (`reopened`) only when no pending rejection exists; a pending rejection keeps
+    it `in-pr` until campaign disposition finishes and terminal `reject` records the ruling.
   * REJECTIONS STAY. A rejection is worth remembering PRECISELY so it is not re-raised: delete it and the
     next run rediscovers the same thing, records it again, and asks the user again. It is hidden from the
     default view; it is not deleted. (A published one CAN be deleted for the same test: the ISSUE is the
@@ -233,6 +233,7 @@ TRANSITIONS = {
     "refute":          (("candidate", "corroborated", "reopened"), "refuted"),
     "take-up":         (("corroborated",), "self-accepted"),
     "accept":          (("candidate", "corroborated", "refuted", "self-accepted", "reopened"), "accepted"),
+    "reject-pending":  (("in-pr",), "in-pr"),
     "reject":          (("candidate", "corroborated", "refuted", "self-accepted", "accepted", "in-pr",
                         "reopened"), "rejected"),
     "open-pr":         (("accepted", "self-accepted", "reopened"), "in-pr"),
@@ -243,7 +244,12 @@ TRANSITIONS = {
 
 # The transitions that are the USER'S RULING. They are the ones that stamp `decided`, and the ONLY ones —
 # a `decided` written by anything else would launder the driver's action into the user's consent.
-USER_RULINGS = ("accept", "reject")
+USER_RULINGS = ("accept", "reject-pending", "reject")
+
+# A rejection of an `in-pr` entry cannot become terminal until its recorded PR's campaign disposition is
+# finished. The tagged value makes that pending ruling distinguishable from the untagged `accept` stamp
+# an `in-pr` entry may already carry. It uses the existing durable `decided` field, not another state.
+PENDING_REJECTION_PREFIX = "reject@"
 
 # Everything else is the DRIVER's. Derived, never listed: whatever is not the user's ruling is a step the
 # driver can take on its own, and the closure over exactly these edges is what must not reach `accepted`,
@@ -277,6 +283,7 @@ WRITES = {
     "refute":          ("finding",),
     ACT_CMD:           ACT_FLAGS,
     "accept":          ("decided",),
+    "reject-pending":  ("decided",),
     "reject":          ("decided",),
     "open-pr":         ("pr",),
     "closed-unmerged": (),
@@ -336,7 +343,8 @@ FLAG_HELP = {
     "published": "where it was published (issue ref or URL) — the ISSUE is now the record, so the entry "
                  "is DELETED",
     "pr": "the PR addressing it (#N or URL). The entry STAYS while that PR is open: `merged` then deletes "
-          "it (the PR is the record), `closed-unmerged` returns it to open work (nothing recorded it)",
+          "it (the PR is the record); without a pending rejection, `closed-unmerged` returns it to open "
+          "work (nothing recorded it)",
     **{w: f"ACT condition '{c}' — {why}" for c, w, why in ACT_CONDITIONS if w in ACT_FLAGS},
 }
 
@@ -398,7 +406,7 @@ WRITE_CMDS = tuple(INTAKE)
 INTAKE_HELP = {
     **FLAG_HELP,
     **{f: f"'{f}' — required on `add`, editable after, NEVER blankable: {BLANK_WHY[f]}" for f in REQUIRED},
-    "decided": "ISO timestamp of this step (default: now)",
+    "decided": "ISO timestamp of this ruling (default: now); `reject-pending` stores it as `reject@<iso>`",
     "found": "ISO timestamp it was found (default: now)",
     "found_run": "the run-id that found it",
 }
@@ -744,6 +752,18 @@ def cmd_transition(path: Path, args) -> int:
                 f"{args.id} is '{entry['state']}' — `{cmd}` applies only to: {', '.join(frm)}. "
                 f"A follow-up reaches '{to}' only along the transition graph; nothing else moves `state`."
             )
+        if (cmd == "reject" and entry["state"] == "in-pr"
+                and not entry["decided"].startswith(PENDING_REJECTION_PREFIX)):
+            fail(
+                f"{args.id} is 'in-pr' without a pending rejection marker — run `reject-pending` before "
+                "campaign disposition, then run `reject` only after disposition finishes."
+            )
+        if (cmd == "closed-unmerged"
+                and entry["decided"].startswith(PENDING_REJECTION_PREFIX)):
+            fail(
+                f"{args.id} has a pending rejection marker — finish campaign disposition, then run "
+                "`reject`; `closed-unmerged` applies only when no pending rejection exists."
+            )
         # WHEN this step was taken. The user's ruling is DURABLE DATA, exactly like the ledger's
         # `api_approval`: a later run — or a fresh agent that never saw the conversation — reads it and does
         # not re-ask. OMITTED, the stamp defaults to now; SUPPLIED (`--at`), it is a value like any other and
@@ -751,7 +771,15 @@ def cmd_transition(path: Path, args) -> int:
         stamp = values.get("decided") or now_iso()
         for field in WRITES[cmd]:
             if field in OPTIONAL:
-                entry[field] = stamp
+                if cmd == "reject-pending":
+                    entry[field] = PENDING_REJECTION_PREFIX + stamp
+                elif cmd == "reject" and entry[field].startswith(PENDING_REJECTION_PREFIX):
+                    # Preserve the moment the user ruled, not the later moment campaign cleanup finished.
+                    # An explicit --at remains meaningful: it replaces the tagged timestamp.
+                    if "decided" in values:
+                        entry[field] = PENDING_REJECTION_PREFIX + stamp
+                else:
+                    entry[field] = stamp
                 continue
             entry[field] = (append_finding(entry[field], to, stamp, values[field]) if field == "finding"
                             else values[field])
