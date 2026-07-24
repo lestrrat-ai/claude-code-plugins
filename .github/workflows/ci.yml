@@ -69,18 +69,18 @@ jobs:
       # DELIBERATELY FILE-SCOPED, not repo-wide. The other scripts here are not type-clean yet, and a
       # repo-wide gate would fail builds for reasons that have nothing to do with the change under review —
       # a gate that is red for everyone is a gate nobody can use. Add the exact `# ci: pyright` marker
-      # to each Python file as it becomes type-clean. Never remove the marker from a covered file.
+      # to each Python source or stub file as it becomes type-clean. Never remove the marker from a covered file.
       #
       # The `filesAnalyzed` assertion is the load-bearing half of this step, not a flourish. Pyright can
       # silently skip an explicit input while still reporting "0 errors" and exiting 0. A step that trusted
       # the exit code alone could therefore pass without covering every file discovered from the marker
       # inventory. So the count is asserted: every discovered input must actually be analysed.
-      - name: Pyright (the type-clean scripts)
+      - name: Pyright (the type-clean files)
         run: |
           set -o pipefail
           marker_args=(-e '^# ci: pyright$' -e $'^# ci: pyright\r$')
 
-          # This is the coverage floor: every previously type-clean path must retain the exact marker.
+          # This is the coverage floor: every previously type-clean source or stub file must retain the exact marker.
           # Marker discovery below remains open-ended, so newly type-clean files are analysed without a
           # second list edit.
           baseline=(
@@ -121,6 +121,7 @@ jobs:
             plugins/gauntlet/skills/campaign/scripts/heartbeat-test.py
             plugins/gauntlet/skills/campaign/scripts/run-id.py
             plugins/gauntlet/skills/campaign/scripts/run-id-test.py
+            plugins/gauntlet/skills/campaign/scripts/fixtures/pyright/marked_stub.pyi
             plugins/gauntlet/skills/campaign/scripts/script-table-test.py
             plugins/gauntlet/skills/campaign/scripts/base-preflight.py
             plugins/gauntlet/skills/campaign/scripts/base-preflight-test.py
@@ -138,15 +139,15 @@ jobs:
             fi
           done
           if ((${#missing[@]} != 0)); then
-            printf '::error::covered Python file lacks the exact # ci: pyright marker: %s\n' "${missing[@]}"
+            printf '::error::covered Python source or stub file lacks the exact # ci: pyright marker: %s\n' "${missing[@]}"
             exit 1
           fi
 
-          # Exact marker lines, with either LF or CRLF endings, define the current type-clean set.
+          # Exact marker lines, with either LF or CRLF endings, define the current type-clean source and stub set.
           # filesAnalyzed is derived from this discovered set, never from the baseline.
           discovery_file=$(mktemp "${RUNNER_TEMP}/pyright-markers.XXXXXX")
           trap 'rm -f "${discovery_file}" pyright.json' EXIT
-          if git grep -l -z "${marker_args[@]}" -- '*.py' > "${discovery_file}"; then
+          if git grep -l -z "${marker_args[@]}" -- '*.py' '*.pyi' > "${discovery_file}"; then
             mapfile -d '' -t files < "${discovery_file}"
           else
             grep_status=$?
@@ -156,7 +157,21 @@ jobs:
             files=()
           fi
           if ((${#files[@]} == 0)); then
-            echo "::error::no Python files carry the exact # ci: pyright marker"
+            echo "::error::no Python source or stub files carry the exact # ci: pyright marker"
+            exit 1
+          fi
+          declare -A discovered
+          for file in "${files[@]}"; do
+            discovered["${file}"]=1
+          done
+          missing_from_discovery=()
+          for file in "${baseline[@]}"; do
+            if [[ ! -v discovered["${file}"] ]]; then
+              missing_from_discovery+=("${file}")
+            fi
+          done
+          if ((${#missing_from_discovery[@]} != 0)); then
+            printf '::error::covered Python source or stub file was not discovered: %s\n' "${missing_from_discovery[@]}"
             exit 1
           fi
           crlf_fixture='plugins/gauntlet/skills/campaign/scripts/fixtures/pyright/crlf_marker.txt'
