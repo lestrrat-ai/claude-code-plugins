@@ -1395,6 +1395,24 @@ def watch_action_owner_cases(ci, tmp: Path) -> list[str]:
         if not any("parked-status watch rule" in problem for problem in parked_mutated):
             problems.append(f"[watch owners] contradictory parked action at {relative}:{anchor} was accepted")
 
+    mermaid_owner = next(owner for owner in owners if owner[0] == "mermaid")
+    relative, anchor = mermaid_owner[1], mermaid_owner[2]
+    fixture_root = tmp / "watch-owner-mermaid-contradictory"
+    fixture_path = fixture_root / relative
+    fixture_path.parent.mkdir(parents=True, exist_ok=True)
+    source_text = (source / relative).read_text(encoding="utf-8")
+    fixture_path.write_text(
+        source_text + "\nCI -- pending --> CW2[launch a CI watch]\n",
+        encoding="utf-8",
+    )
+    mermaid_mutated, _ = ci.check_watch_action_docs(
+        fixture_root,
+        owners=(mermaid_owner,),
+        required_owners=(mermaid_owner,),
+    )
+    if not any("contradictory ci/status-based" in problem for problem in mermaid_mutated):
+        problems.append(f"[watch owners] Mermaid status edge at {relative}:{anchor} was accepted")
+
     contradictory_owner = next(
         owner for owner in owners
         if owner[0] == "markdown" and owner[1] == "SKILL.md" and owner[2] == "21. **CI watch action.**"
@@ -1447,6 +1465,52 @@ def watch_action_owner_cases(ci, tmp: Path) -> list[str]:
         )
         if not any("contradictory ci/status-based" in problem for problem in means_mutated):
             problems.append(f"[watch owners] status-means action at {relative}:{anchor} was accepted")
+
+        for suffix, name in (
+            (" If `ci` is `pending`, launch a watch.", "backticked-status"),
+            (" Pending CI triggers a watch.", "status-triggers"),
+            (" Pending CI causes a watch.", "status-causes"),
+            (" Pending CI controls a watch.", "status-controls"),
+        ):
+            causal_fixture_root = tmp / f"watch-owner-{name}"
+            causal_fixture_path = causal_fixture_root / relative
+            causal_fixture_path.parent.mkdir(parents=True, exist_ok=True)
+            causal_fixture_path.write_text(
+                source_text[:start] + block + suffix + source_text[start + len(block):],
+                encoding="utf-8",
+            )
+            causal_mutated, _ = ci.check_watch_action_docs(
+                causal_fixture_root,
+                owners=(contradictory_owner,),
+                required_owners=(contradictory_owner,),
+            )
+            if not any("contradictory ci/status-based" in problem for problem in causal_mutated):
+                problems.append(f"[watch owners] {name} action at {relative}:{anchor} was accepted")
+
+        semicolon_fixture_root = tmp / "watch-owner-semicolon-contradictory"
+        semicolon_fixture_path = semicolon_fixture_root / relative
+        semicolon_fixture_path.parent.mkdir(parents=True, exist_ok=True)
+        parked_pattern = r"\s+".join(re.escape(part) for part in ci.PARKED_WATCH_RULE.split())
+        semicolon_block, semicolon_count = re.subn(
+            parked_pattern,
+            "Parked status does not override that result; If ci == pending, launch a watch.",
+            block,
+            count=1,
+        )
+        if semicolon_count != 1:
+            problems.append(f"[watch owners] {relative}:{anchor} lost its semicolon mutation target")
+        else:
+            semicolon_fixture_path.write_text(
+                source_text[:start] + semicolon_block + source_text[start + len(block):],
+                encoding="utf-8",
+            )
+            semicolon_mutated, _ = ci.check_watch_action_docs(
+                semicolon_fixture_root,
+                owners=(contradictory_owner,),
+                required_owners=(contradictory_owner,),
+            )
+            if not any("contradictory ci/status-based" in problem for problem in semicolon_mutated):
+                problems.append(f"[watch owners] semicolon action at {relative}:{anchor} was accepted")
 
     arrow_owner = next(
         owner for owner in owners

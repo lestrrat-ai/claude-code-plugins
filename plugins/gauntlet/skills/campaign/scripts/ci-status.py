@@ -225,19 +225,35 @@ README_ADOPTION_WATCH_ACTION = (
     'C[adopt each PR: ledger row + run label,<br/>run liveness<br/>act on watch_warranted]'
 )
 PARKED_WATCH_RULE = "Parked status does not override that result."
+STATUS_SUBJECT_PATTERN = r"(?:`(?:ci|status)`|(?<!\w)(?:ci|status)(?!\w))"
+WATCH_ACTION_WORDS = r"(?:watch|launch|relaunch|ensure)"
 WATCH_ACTION_CONTRADICTIONS = (
     ("ci/status-based", re.compile(
         # The status subject may be qualified before the noun (for example, "pending CI").
         r"(?:\b(?:if|when|while)\s+"
         r"(?:(?:the|row(?:'s)?|value\s+of)\s+)*(?:(?:[\w-]+\s+){0,2})"
-        r"(?:ci|status)\b"
-        r"[^.!?]*\b(?:watch|launch|relaunch|ensure)\b|"
-        r"\b(?:watch|launch|relaunch|ensure)\b[^.!?]*\b(?:if|when|while)\s+"
-        r"(?:(?:the|row(?:'s)?|value\s+of)\s+)*(?:ci|status)\b|"
-        r"\b(?:ci|status)\b\s*(?:==|=|is)\s*[^.!?]*?->\s*"
-        r"(?:watch|launch|relaunch|ensure)\b|"
-        r"\b(?:ci|status)\b[^.!?]*\bmeans\b[^.!?]*"
-        r"\b(?:watch|launch|relaunch|ensure)\b)",
+        + STATUS_SUBJECT_PATTERN
+        + r"[^.!?]*\b"
+        + WATCH_ACTION_WORDS
+        + r"\b|"
+        r"\b"
+        + WATCH_ACTION_WORDS
+        + r"\b[^.!?]*\b(?:if|when|while)\s+"
+        r"(?:(?:the|row(?:'s)?|value\s+of)\s+)*"
+        + STATUS_SUBJECT_PATTERN
+        + r"|"
+        + STATUS_SUBJECT_PATTERN
+        + r"\s*(?:==|=|is)\s*[^.!?]*?->\s*\b"
+        + WATCH_ACTION_WORDS
+        + r"\b|"
+        + STATUS_SUBJECT_PATTERN
+        + r"[^.!?]*\b(?:means|triggers?|causes?|controls?)\b[^.!?]*\b"
+        + WATCH_ACTION_WORDS
+        + r"\b|"
+        + STATUS_SUBJECT_PATTERN
+        + r"\s*--[^.!?]*?-->\s*[^.!?]*\b"
+        + WATCH_ACTION_WORDS
+        + r"\b)",
         re.IGNORECASE,
     )),
     ("unconditional", re.compile(
@@ -2445,12 +2461,8 @@ def watch_action_contradiction_problems(relative: str, line: int, plain: str) ->
     """Reject a second watch rule that bypasses the registered liveness warrant."""
     for kind, pattern in WATCH_ACTION_CONTRADICTIONS:
         for match in pattern.finditer(plain):
-            sentence_start = max(
-                plain.rfind(".", 0, match.start()),
-                plain.rfind("!", 0, match.start()),
-                plain.rfind("?", 0, match.start()),
-            )
-            prefix = plain[sentence_start + 1:match.start()]
+            clause_start = max(plain.rfind(boundary, 0, match.start()) for boundary in ".!?;")
+            prefix = plain[clause_start + 1:match.start()]
             if not re.search(r"\b(?:never|do not|don't|not)\b", prefix, re.IGNORECASE):
                 return [f"{relative}:{line} adds a contradictory {kind} watch rule"]
     return []
@@ -2467,8 +2479,11 @@ def watch_action_owner_problems(owner: tuple[str, str, str, str], base: Path) ->
     if format_name == "mermaid":
         required = (anchor, condition, "WW -- false --> CB{still within its bounds?}",
                     README_ADOPTION_WATCH_ACTION)
-        return [f"{relative} omits {item!r} from the CI watch flowchart"
-                for item in required if text.count(item) != 1]
+        problems = [f"{relative} omits {item!r} from the CI watch flowchart"
+                    for item in required if text.count(item) != 1]
+        line = text.count("\n", 0, text.find(anchor)) + 1
+        problems += watch_action_contradiction_problems(relative, line, " ".join(text.split()))
+        return problems
 
     if format_name == "policy":
         required = (anchor, "The watch decision is **`liveness`'s `watch_warranted` field**", condition,
