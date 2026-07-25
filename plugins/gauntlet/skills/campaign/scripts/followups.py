@@ -353,7 +353,8 @@ FLAG_HELP = {
                  "is DELETED",
     "pr": "the PR addressing it (#N or N; GitHub URLs are refused because repository identity cannot be "
           "validated). The entry STAYS while that PR is open: `merged` then deletes it (the PR is the "
-          "record), and ordinary `closed-unmerged` returns it to open work (nothing recorded it)",
+          "record), ordinary `closed-unmerged` returns it to open work (nothing recorded it), and a pending "
+          "rejection is disposed only by the verified terminal campaign callback",
     **{w: f"ACT condition '{c}' — {why}" for c, w, why in ACT_CONDITIONS if w in ACT_FLAGS},
 }
 
@@ -662,10 +663,11 @@ def record_completed_rejection_disposition(path: Path, pr: str) -> "tuple[str, .
     """Record one exact PR's completed abort or close-out on matching pending follow-ups.
 
     The ledger calls this only after its row made a real non-terminal -> aborted transition. A missing store is
-    normal, and ordinary `in-pr` entries remain untouched. The callback must be a canonical numeric PR
-    reference, and the stored reference must be that same canonical number. GitHub URLs are not accepted at
-    `open-pr`, and legacy URL records therefore cannot be reduced to a number here. The store lock and atomic
-    dump remain its only write path.
+    normal, and ordinary `in-pr` entries remain untouched. This is the only path that may mark a pending
+    rejection disposed; the `closed-unmerged` CLI transition refuses to do that itself. The callback must be
+    a canonical numeric PR reference, and the stored reference must be that same canonical number. GitHub
+    URLs are not accepted at `open-pr`, and legacy URL records therefore cannot be reduced to a number here.
+    The store lock and atomic dump remain its only write path.
     """
     if not path.exists():
         return ()
@@ -849,6 +851,12 @@ def cmd_transition(path: Path, args) -> int:
                 f"{args.id} already has a completed rejection disposition — run terminal `reject`; do not "
                 "reopen the entry."
             )
+        if cmd == "closed-unmerged" and phase == PENDING_REJECTION:
+            fail(
+                f"{args.id} has a pending rejection whose PR disposition is unresolved — `closed-unmerged` "
+                "cannot mark it disposed; the verified terminal campaign disposition callback must record "
+                "the PR first."
+            )
         # WHEN this step was taken. The user's ruling is DURABLE DATA, exactly like the ledger's
         # `api_approval`: a later run — or a fresh agent that never saw the conversation — reads it and does
         # not re-ask. OMITTED, the stamp defaults to now; SUPPLIED (`--at`), it is a value like any other and
@@ -867,9 +875,6 @@ def cmd_transition(path: Path, args) -> int:
                 continue
             entry[field] = (append_finding(entry[field], to, stamp, values[field]) if field == "finding"
                             else values[field])
-        if cmd == "closed-unmerged" and phase == PENDING_REJECTION:
-            entry["rejection"] = DISPOSED_REJECTION
-            to = "in-pr"
         if to == DELETED:
             if not deletable(entry):
                 fail(f"{args.id} names no durable record ({', '.join(DURABLE_RECORD)}) — deleting it would "

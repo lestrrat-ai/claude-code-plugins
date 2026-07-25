@@ -386,12 +386,12 @@ def t_ruling_is_recorded(tmp: Path) -> None:
           f"`open-pr` overwrote the USER's ruling timestamp: {after!r}")
     check(after["pr"] == "77", f"open-pr did not record WHICH PR is addressing it: {after!r}")
 
-    # Changing the ruling while a PR is open is durable before the campaign disposition. A closed PR records
-    # that disposition; terminal reject then retains the time the user first ruled.
+    # Changing the ruling while a PR is open is durable before the campaign disposition. The verified terminal
+    # callback records a closed PR's disposition; terminal reject then retains the time the user first ruled.
     code, _, err = run(["--file", str(path), "reject-pending", "--id", a, "--at", "2026-07-14T11:00:00Z"])
     check(code == 0, f"reject-pending exited {code}: {err!r}")
-    code, _, err = run(["--file", str(path), "closed-unmerged", "--id", a])
-    check(code == 0, f"closed-unmerged exited {code}: {err!r}")
+    recorded = followups.record_completed_rejection_disposition(path, "77")
+    check(recorded == (a,), f"the terminal callback did not record PR 77's disposition: {recorded!r}")
     code, out, err = run(["--file", str(path), "reject", "--id", a, "--at", "2026-07-14T12:00:00Z"])
     check(code == 0, f"terminal reject exited {code}: {err!r}")
     check(json.loads(out)["decided"] == "2026-07-14T11:00:00Z",
@@ -1418,6 +1418,13 @@ def t_in_pr_rejection_needs_one_typed_completed_disposition(tmp: Path) -> None:
     code, _, err = run(["--file", str(store), "reject", "--id", first])
     check(code == 1 and "disposition is unresolved" in err,
           f"terminal reject accepted an unresolved pending rejection: {code} {err!r}")
+
+    code, _, err = run(["--file", str(store), "closed-unmerged", "--id", first])
+    check(code == 1 and "verified terminal campaign disposition callback" in err,
+          f"follow-up CLI disposed a pending rejection without terminal PR evidence: {code} {err!r}")
+    still_pending = json.loads(run(["--file", str(store), "get", "--id", first])[1])
+    check(still_pending["state"] == "in-pr" and still_pending["rejection"] == PENDING_REJECTION,
+          f"a refused closed-unmerged transition changed the pending rejection: {still_pending!r}")
 
     recorded = followups.record_completed_rejection_disposition(store, "42")
     check(recorded == (first,), f"exact PR disposition recorded {recorded!r}, not only {first!r}")
