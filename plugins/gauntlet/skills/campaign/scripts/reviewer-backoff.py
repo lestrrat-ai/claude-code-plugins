@@ -33,7 +33,8 @@ FALLBACK_NATIVE = "fallback-native"
 
 RETRY_AFTER_RE = re.compile(
     r"\bretry[\s-]+after\s*:?[\s]*(?P<value>\d+)(?![\d.])"
-    r"(?:\s*(?P<unit>seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d))?\b",
+    r"(?:\s*(?P<unit>seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d)\b"
+    r"|(?!\s*[A-Za-z]))",
     re.IGNORECASE,
 )
 DURATION_RE = re.compile(
@@ -202,7 +203,9 @@ def _unit_seconds(unit: str | None) -> int:
         return 60
     if unit.startswith("h"):
         return 3600
-    return 86400
+    if unit.startswith("d"):
+        return 86400
+    raise ValueError(f"unsupported retry timer unit: {unit}")
 
 
 def _relative_timer(text: str) -> int | None | object:
@@ -394,7 +397,13 @@ def transition(
     if current is None:
         failure = _permanent("external transition had an invalid timestamp")
         current = datetime.now(timezone.utc)
+    prior_deadline_active = (
+        prior.external_backoff_until is not None
+        and _utc(prior.external_backoff_until) > _utc(current)
+    )
     deadline = _max_deadline(prior.external_backoff_until, failure.retry_at if failure.kind == TIMER else None)
+    if prior_deadline_active:
+        deadline = prior.external_backoff_until
     next_state = ExternalReviewSessionState(prior.external_disabled, deadline)
 
     if prior.external_disabled:

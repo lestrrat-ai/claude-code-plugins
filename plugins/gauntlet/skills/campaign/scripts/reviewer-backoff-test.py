@@ -60,6 +60,49 @@ def test_relative_timer_waits_exactly() -> None:
           "timer state was not returned for the live session")
 
 
+def test_unitless_relative_timer_defaults_to_seconds() -> None:
+    result = MODULE.classify(
+        "rate limited; retry after 90",
+        now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
+    )
+    check(result.kind == MODULE.TIMER,
+          "unitless relative timer was not classified as a timer")
+    check(result.retry_after_seconds == 90,
+          "unitless relative timer did not default to seconds")
+
+
+def test_unsupported_relative_timer_unit_fails_closed() -> None:
+    result = MODULE.decide(
+        "rate limited; retry after 90 bananas",
+        now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
+    )
+    check(result.kind == MODULE.PERMANENT,
+          "unsupported relative timer unit was accepted")
+    check(result.action == MODULE.FALLBACK_NATIVE,
+          "unsupported relative timer unit did not fall back")
+    check(result.state.external_disabled,
+          "unsupported relative timer unit did not disable the session route")
+
+
+def test_session_timer_deadline_is_not_extended_on_reentry() -> None:
+    first_now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    first = MODULE.decide("retry after 90 seconds", now=first_now)
+    second = MODULE.decide(
+        "retry after 90 seconds",
+        now=first_now.replace(second=30),
+        state=first.state,
+    )
+    expected_deadline = datetime(2026, 7, 25, 12, 1, 30, tzinfo=timezone.utc)
+    check(first.state.external_backoff_until == expected_deadline,
+          "initial timer did not create the expected session deadline")
+    check(second.action == MODULE.WAIT_EXTERNAL,
+          "active session timer did not keep the external route waiting")
+    check(second.retry_after_seconds == 60,
+          "re-entry did not wait for the remaining session timer")
+    check(second.state.external_backoff_until == expected_deadline,
+          "re-entry extended the active session deadline")
+
+
 def test_timer_retries_at_deadline() -> None:
     now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
     deadline = datetime(2026, 7, 25, 12, 1, 30, tzinfo=timezone.utc)
@@ -203,6 +246,9 @@ CASES = [
     ("absolute-dst-elapsed-time", "absolute deadline uses elapsed time across DST", test_absolute_timer_uses_elapsed_time_across_dst),
     ("timer-wait-dst-elapsed-time", "timer wait uses elapsed time across DST", test_timer_wait_uses_elapsed_time_across_dst),
     ("relative-exact-wait", "relative delay is preserved exactly", test_relative_timer_waits_exactly),
+    ("unitless-relative-timer", "unitless timers default to seconds", test_unitless_relative_timer_defaults_to_seconds),
+    ("unsupported-relative-unit", "unsupported timer units fail closed", test_unsupported_relative_timer_unit_fails_closed),
+    ("session-deadline-reentry", "active session deadline is preserved on re-entry", test_session_timer_deadline_is_not_extended_on_reentry),
     ("timer-deadline-retry", "timer retries at its exact deadline", test_timer_retries_at_deadline),
     ("transient-immediate-retry", "transient failure retries immediately", test_transient_retries_immediately),
     ("permanent-marker-precedence", "permanent marker precedes transient marker", test_permanent_marker_precedes_transient_marker),
