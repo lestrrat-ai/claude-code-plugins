@@ -626,6 +626,24 @@ def test_transient_wrapped_availability_timer_waits() -> None:
           "transient-wrapped availability delay changed")
 
 
+def test_service_unavailable_timer_waits_until_exact_deadline() -> None:
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    for connector in ("for", "in"):
+        result = MODULE.decide(
+            f"service unavailable {connector} 90 seconds",
+            now=now,
+            pr_number=188,
+        )
+        check(result.kind == MODULE.TIMER,
+              f"service-unavailable timer was not classified as a timer: {connector}")
+        check(result.action == MODULE.WAIT_EXTERNAL,
+              f"service-unavailable timer did not wait: {connector}")
+        check(result.retry_after_seconds == 90,
+              f"service-unavailable timer delay changed: {connector}")
+        check(result.retry_at == "2026-07-25T12:01:30+00:00",
+              f"service-unavailable timer deadline changed: {connector}")
+
+
 def test_malformed_availability_timer_fails_closed() -> None:
     result = MODULE.decide(
         "temporarily unavailable; available in 90 bananas",
@@ -637,6 +655,21 @@ def test_malformed_availability_timer_fails_closed() -> None:
           "malformed availability timer retried")
     check(result.state.external_disabled,
           "malformed availability timer did not disable the session route")
+
+
+def test_malformed_service_unavailable_timer_fails_closed() -> None:
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    for connector in ("for", "in"):
+        result = MODULE.decide(
+            f"service unavailable {connector} 90 bananas",
+            now=now,
+        )
+        check(result.kind == MODULE.PERMANENT,
+              f"malformed service-unavailable timer was accepted: {connector}")
+        check(result.action == MODULE.FALLBACK_NATIVE,
+              f"malformed service-unavailable timer did not fall back: {connector}")
+        check(result.state.external_disabled,
+              f"malformed service-unavailable timer did not disable the session route: {connector}")
 
 
 def test_permanent_marker_precedes_transient_marker() -> None:
@@ -899,7 +932,9 @@ CASES = [
     ("connection-reset-transient", "connection reset by peer retries immediately", test_connection_reset_by_peer_retries_immediately),
     ("standalone-availability", "standalone availability timer waits", test_standalone_availability_timer_waits),
     ("wrapped-availability", "transient-wrapped availability timer waits", test_transient_wrapped_availability_timer_waits),
+    ("service-unavailable-timer", "service unavailable timers wait until their exact deadline", test_service_unavailable_timer_waits_until_exact_deadline),
     ("malformed-availability", "malformed availability timer fails closed", test_malformed_availability_timer_fails_closed),
+    ("malformed-service-unavailable", "malformed service unavailable timers fail closed", test_malformed_service_unavailable_timer_fails_closed),
     ("permanent-marker-precedence", "permanent marker precedes transient marker", test_permanent_marker_precedes_transient_marker),
     ("oversized-relative-timer", "oversized timer fails closed", test_oversized_relative_timer_fails_closed),
     ("malformed-timer", "malformed timer fails closed", test_malformed_timer_text_fails_closed),
