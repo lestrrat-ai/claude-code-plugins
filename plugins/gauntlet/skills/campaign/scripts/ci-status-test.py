@@ -1101,6 +1101,14 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
             ),
             "WITHOUT `--machine-action`",
         ),
+        "required-set": (
+            ci.check_required_set_copies,
+            (
+                "--ledger-not-real",
+                "--ledger-not-real # --ledger <rundir>/state.jsonl",
+            ),
+            "without the run ledger's",
+        ),
     }
     for subcommand, (check, invalid_commands, needle) in boundary_forms.items():
         root = tmp / f"command-copy-boundaries-{subcommand}"
@@ -1117,6 +1125,103 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
                 f"[command copy {subcommand}] suffixed and commented options were not rejected: "
                 f"{found_problems!r}, checked={checked!r}"
             )
+
+    equals_forms = {
+        "derive": (
+            ci.check_derive_copies,
+            "--pr=2",
+            "WITHOUT `--ledger` OR `--required-set`",
+        ),
+        "liveness": (
+            ci.check_liveness_copies,
+            "--ledger=<rundir>/state.jsonl --pr 2",
+            "WITHOUT `--machine-action`",
+        ),
+    }
+    for subcommand, (check, invalid, needle) in equals_forms.items():
+        root = tmp / f"command-copy-equals-{subcommand}"
+        root.mkdir()
+        (root / "equals.md").write_text(
+            f"`scripts/ci-status.py {subcommand} {invalid}`\n",
+            encoding="utf-8",
+        )
+        found_problems, checked = check(root)
+        if len(checked) != 1 or len(found_problems) != 1 or needle not in found_problems[0]:
+            problems.append(
+                f"[command copy {subcommand}] argparse equals-form options were not checked: "
+                f"{found_problems!r}, checked={checked!r}"
+            )
+
+    wrapper_cases = {
+        "derive": (
+            ci.check_derive_copies,
+            "--pr 1 --ledger <rundir>/state.jsonl",
+            (
+                "--pr=2",
+                "--pr=2 --required-set-not-real",
+            ),
+            "WITHOUT `--ledger` OR `--required-set`",
+        ),
+        "liveness": (
+            ci.check_liveness_copies,
+            "--ledger <rundir>/state.jsonl --pr 1 --machine-action none",
+            (
+                "--ledger=<rundir>/state.jsonl --pr 2",
+                "--ledger=<rundir>/state.jsonl --pr 2 --machine-action-no",
+            ),
+            "WITHOUT `--machine-action`",
+        ),
+        "required-set": (
+            ci.check_required_set_copies,
+            "--ledger <rundir>/state.jsonl",
+            (
+                "",
+                "--ledger-not-real",
+            ),
+            "without the run ledger's",
+        ),
+    }
+    for subcommand, (check, valid, invalid_args, needle) in wrapper_cases.items():
+        root = tmp / f"command-copy-wrappers-{subcommand}"
+        root.mkdir()
+        quoted = f'python3 "<skill>/scripts/ci-status.py" {subcommand} {invalid_args[0]}'.rstrip()
+        grouped = f"( python3 <skill>/scripts/ci-status.py {subcommand} {invalid_args[1]} )"
+        substituted = f"$(python3 <skill>/scripts/ci-status.py {subcommand} {invalid_args[1]})"
+        (root / "wrappers.md").write_text(
+            "```sh\n"
+            f"python3 <skill>/scripts/ci-status.py {subcommand} {valid}\n"
+            f"{quoted}\n"
+            f"{grouped}\n"
+            f"{substituted}\n"
+            "```\n",
+            encoding="utf-8",
+        )
+        copies = ci.documented_ci_status_copies(root, subcommand)
+        found_problems, checked = check(root)
+        if (len(copies) != 4 or len(checked) != 4 or len(found_problems) != 3
+                or any(needle not in problem for problem in found_problems)):
+            problems.append(
+                f"[command copy {subcommand}] quoted, grouped, and substituted wrappers were not "
+                f"validated independently: copies={copies!r}, problems={found_problems!r}, checked={checked!r}"
+            )
+
+    chain_root = tmp / "command-copy-chain-required-set"
+    chain_root.mkdir()
+    (chain_root / "chain.md").write_text(
+        "```sh\n"
+        "python3 <skill>/scripts/ci-status.py required-set --ledger <rundir>/state.jsonl && "
+        "python3 <skill>/scripts/ci-status.py required-set\n"
+        "```\n",
+        encoding="utf-8",
+    )
+    chain_copies = ci.documented_ci_status_copies(chain_root, "required-set")
+    chain_problems, chain_checked = ci.check_required_set_copies(chain_root)
+    if (len(chain_copies) != 2 or len(chain_checked) != 2 or len(chain_problems) != 1
+            or "without the run ledger's" not in chain_problems[0]):
+        problems.append(
+            f"[command copy required-set] chained commands shared flags: copies={chain_copies!r}, "
+            f"problems={chain_problems!r}, checked={chain_checked!r}"
+        )
     return problems
 
 
