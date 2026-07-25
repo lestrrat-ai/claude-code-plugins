@@ -1199,6 +1199,13 @@ def review_action(capability: Mapping[str, object], *, event: str = "selected",
         require(event == "selected", f"unsupported external review event: {event}")
         if session is not None and session.external_disabled:
             return "fallback-native"
+        if session is not None and session.external_backoff_until is not None:
+            require(current_time is not None, "active session backoff did not carry current time")
+            require(pr is not None, "active session backoff did not carry PR ownership")
+            if session.external_backoff_pr != pr:
+                return "fallback-native"
+            if BACKOFF._utc(session.external_backoff_until) > BACKOFF._utc(current_time):
+                return "wait-external"
         return "launch-external"
     # Native is the last-resort route: if it cannot launch (unavailable — no fresh conversation or no
     # launch mechanism), there is nothing left to fall back to, which is exactly `park-machine-blocker`.
@@ -1278,6 +1285,21 @@ def run_isolation_transition_fixtures() -> None:
             current_time=deadline,
             pr=188,
         ) == "retry-external", f"{route} did not retry at the provider deadline")
+
+        require(review_action(
+            shipped,
+            event="selected",
+            session=timer_state.state,
+            current_time=now,
+            pr=188,
+        ) == "wait-external", f"{route} selected owner ignored the active session deadline")
+        require(review_action(
+            shipped,
+            event="selected",
+            session=timer_state.state,
+            current_time=now,
+            pr=189,
+        ) == "fallback-native", f"{route} selected other PR ignored the timer owner")
 
         other_pr_failure = BACKOFF.classify("rate limited; retry after 30 seconds", now)
         require(review_action(
