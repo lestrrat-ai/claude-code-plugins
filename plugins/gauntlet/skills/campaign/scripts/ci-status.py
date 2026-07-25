@@ -148,7 +148,6 @@ import importlib.util
 import json
 import os
 import re
-import shlex
 import subprocess
 import sys
 import textwrap
@@ -2248,103 +2247,19 @@ def check_gh_invocations(text: str, argv: dict[str, list[str]]) -> list[str]:
     return problems
 
 
-def _shell_command_spans(text: str, *, split_newlines: bool) -> list[tuple[int, int]]:
-    """Split shell text at command boundaries outside quotes, escapes, and comments.
-
-    Markdown placeholders may contain apostrophes, such as the invented ``<a placeholder's value>``.
-    They are not shell quotes, so an apostrophe inside an angle-bracket placeholder must not hide a later
-    newline. An unquoted ``#`` starts a shell comment at a word boundary, so separators, quotes, and
-    newlines inside that comment must not affect command boundaries.
-    """
-    spans: list[tuple[int, int]] = []
-    start = 0
-    quote: str | None = None
-    escaped = False
-    comment = False
-    index = 0
-
-    def add(end: int) -> None:
-        nonlocal start
-        if text[start:end].strip():
-            spans.append((start, end))
-        start = end + 1
-
-    while index < len(text):
-        char = text[index]
-        if comment:
-            if char == "\n":
-                comment = False
-                if split_newlines:
-                    add(index)
-            index += 1
-            continue
-        if escaped:
-            escaped = False
-            index += 1
-            continue
-        if char == "\\":
-            escaped = True
-            index += 1
-            continue
-        if quote is not None:
-            if char == quote:
-                quote = None
-            index += 1
-            continue
-        placeholder_start = text.rfind("<", 0, index)
-        placeholder_end = text.rfind(">", 0, index)
-        if char in "'\"" and not (char == "'" and placeholder_start > placeholder_end):
-            quote = char
-            index += 1
-            continue
-        if char == "#" and (index == 0 or text[index - 1].isspace() or text[index - 1] in "()|&;"):
-            comment = True
-            index += 1
-            continue
-        if split_newlines and char == "\n":
-            add(index)
-            index += 1
-            continue
-        if char in "()":
-            add(index)
-            index += 1
-            continue
-        if text.startswith(("&&", "||"), index):
-            end = index + 1
-            if text[start:end].strip():
-                spans.append((start, index))
-            start = end + 1
-            index += 2
-            continue
-        if char in ";|&":
-            add(index)
-        index += 1
-    if text[start:].strip():
-        spans.append((start, len(text)))
-    return spans
-
-
-def _documented_ci_status_argv(command: str, subcommand: str) -> list[str] | None:
-    """Return argv for a supported Python/path wrapper whose subcommand token is exact."""
-    argv = documented_command_argv(command)
-    if argv and argv[0] == "$":
-        argv = argv[1:]
-    path_index = 1 if argv and argv[0] in ("python", "python3") else 0
-    if (path_index >= len(argv) or not argv[path_index].endswith("ci-status.py")
-            or path_index + 1 >= len(argv) or argv[path_index + 1] != subcommand):
-        return None
-    return argv
-
-
 def documented_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, str]]:
     """Return supported command copies: inline literals and fenced shell commands.
 
     The command-copy guard owns two documentation forms. Inline literals carry a complete command, even
-    when Markdown wraps the literal. Fenced shell blocks carry shell commands, including shell comments,
-    commands joined by operators, and commands wrapped in grouping and substitution. Other prose and
-    Markdown constructs are deliberately outside this guard's scope.
+    when Markdown wraps the literal. Fenced shell blocks carry one shell command, whose continued lines end
+    in ``\\``. Other prose and Markdown constructs are deliberately outside this guard's scope.
     """
-    fence = re.compile(r"(?ms)^[ ]{0,3}```(?:sh|bash|shell)?[ \t]*\n(?P<body>.*?)^[ ]{0,3}```[ \t]*$")
+    command = re.compile(rf"ci-status\.py\s+{re.escape(subcommand)}\b")
+    fenced_command = re.compile(
+        rf"(?m)^[ \t]*(?:\$[ \t]+)?(?:python3?[ \t]+)?(?:\S*/)?ci-status\.py\s+"
+        rf"{re.escape(subcommand)}\b"
+    )
+    fence = re.compile(r"(?ms)^```(?:sh|bash|shell)?[ \t]*\n(?P<body>.*?)^```[ \t]*$")
     inline = re.compile(r"`(?P<body>[^`]*?)`", re.DOTALL)
     copies: list[tuple[Path, int, str]] = []
     for md in sorted(root.rglob("*.md")):
@@ -2353,40 +2268,29 @@ def documented_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path,
         for literal in inline.finditer(text):
             if any(block.start() <= literal.start() < block.end() for block in blocks):
                 continue
-            body = literal.group("body")
-            for start, end in _shell_command_spans(body, split_newlines=False):
-                command_text = body[start:end].strip()
-                if _documented_ci_status_argv(command_text, subcommand) is None:
-                    continue
-                offset = literal.start("body") + start + len(body[start:end]) - len(body[start:end].lstrip())
-                copies.append((md, text.count("\n", 0, offset) + 1, command_text))
+            match = command.search(literal.group("body"))
+            if match is None:
+                continue
+            offset = literal.start("body") + match.start()
+            copies.append((md, text.count("\n", 0, offset) + 1, literal.group("body")[match.start():]))
         for block in blocks:
             body = block.group("body")
-            for start, end in _shell_command_spans(body, split_newlines=True):
-                command_text = re.sub(r"\\\n[ \t]*", " ", body[start:end].strip())
-                if _documented_ci_status_argv(command_text, subcommand) is None:
-                    continue
-                offset = block.start("body") + start + len(body[start:end]) - len(body[start:end].lstrip())
-                copies.append((md, text.count("\n", 0, offset) + 1, command_text))
+            for match in fenced_command.finditer(body):
+                line_end = body.find("\n", match.start())
+                if line_end < 0:
+                    line_end = len(body)
+                command_end = line_end
+                while body[command_end - 1:command_end].rstrip().endswith("\\"):
+                    next_end = body.find("\n", command_end + 1)
+                    if next_end < 0:
+                        command_end = len(body)
+                        break
+                    command_end = next_end
+                offset = block.start("body") + match.start()
+                span = body[match.start():command_end]
+                copies.append((md, text.count("\n", 0, offset) + 1,
+                               re.sub(r"\\\n[ \t]*", " ", span)))
     return copies
-
-
-def documented_command_argv(command: str) -> list[str]:
-    """Tokenize a documented shell command and ignore shell comments."""
-    try:
-        return shlex.split(command, comments=True)
-    except ValueError:
-        # Documentation placeholders can contain apostrophes, such as `<the ledger's>`, without
-        # representing shell quoting. Non-POSIX tokenization still honors comments and recovers flags.
-        try:
-            return shlex.split(command, comments=True, posix=False)
-        except ValueError:
-            return []
-
-
-def documented_option_present(argv: list[str], option: str) -> bool:
-    """Return whether argparse receives an option in either separated or equals form."""
-    return any(token == option or token.startswith(f"{option}=") for token in argv)
 
 
 def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]:
@@ -2408,12 +2312,10 @@ def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]
     """
     problems, copies = [], []
     for md, line, command in documented_ci_status_copies(root or HERE.parent, "derive"):
-        argv = documented_command_argv(command)
-        if not documented_option_present(argv, "--pr"):
+        if "--pr" not in command:
             continue  # prose that NAMES the command, not a copy of it
         copies.append(f"{md.name}:{line}")
-        if (not documented_option_present(argv, "--ledger")
-                and not documented_option_present(argv, "--required-set")):
+        if "--ledger" not in command and "--required-set" not in command:
             problems.append(
                 f"{md.name}:{line} runs `ci-status.py derive` WITHOUT `--ledger` OR `--required-set` — the "
                 f"flag that makes `green` mean the REQUIRED SET passed. A reader following this copy "
@@ -2438,13 +2340,12 @@ def check_liveness_copies(root: Path | None = None) -> tuple[list[str], list[str
     """
     problems, copies = [], []
     for md, line, command in documented_ci_status_copies(root or HERE.parent, "liveness"):
-        argv = documented_command_argv(command)
         # `--ledger`, not `--pr`, is the runnable-copy gate: prose can name a PR without spelling the
         # ledger input that makes liveness runnable.
-        if not documented_option_present(argv, "--ledger"):
+        if "--ledger" not in command:
             continue  # prose that names the subcommand, not a runnable copy
         copies.append(f"{md.name}:{line}")
-        if not documented_option_present(argv, "--machine-action"):
+        if "--machine-action" not in command:
             problems.append(
                 f"{md.name}:{line} runs `ci-status.py liveness` WITHOUT `--machine-action` — the one "
                 f"judgment the command asks of its caller. The tool refuses the invocation; a reader "
@@ -2463,20 +2364,7 @@ def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list
     problems, copies = [], []
     for md, line, command in documented_ci_status_copies(root or HERE.parent, "required-set"):
         copies.append(f"{md.name}:{line}")
-        argv = documented_command_argv(command)
-        has_ledger_path = any(
-            (
-                token == "--ledger"
-                and index + 1 < len(argv)
-                and argv[index + 1].endswith("state.jsonl")
-            )
-            or (
-                token.startswith("--ledger=")
-                and token.partition("=")[2].endswith("state.jsonl")
-            )
-            for index, token in enumerate(argv)
-        )
-        if not has_ledger_path:
+        if "--ledger" not in command or "state.jsonl" not in command:
             problems.append(
                 f"{md.name}:{line} runs `ci-status.py required-set` without the run ledger's "
                 f"`state.jsonl` — the command must persist the value it read before the value exists"
