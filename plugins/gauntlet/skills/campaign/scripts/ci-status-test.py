@@ -1282,10 +1282,11 @@ def verdict_doc_cases(ci) -> list[str]:
 
 
 def watch_action_owner_cases(ci, tmp: Path) -> list[str]:
-    """Every registry entry rejects deletion and unconditional-watch mutations."""
+    """Every registry entry rejects deletion, unconditional-watch, and status-based mutations."""
     problems = []
     owners = ci.WATCH_ACTION_CONSUMERS
     source = ci.HERE.parent
+    status_watch_rule = " ".join(("ci", "==", "pending", "->", "ensure", "a", "watch"))
 
     baseline, checked = ci.check_watch_action_docs()
     if baseline:
@@ -1354,6 +1355,29 @@ def watch_action_owner_cases(ci, tmp: Path) -> list[str]:
         )
         if not mutated:
             problems.append(f"[watch owners] unconditional action at {relative}:{anchor} was accepted")
+        if format_name == "formula":
+            status_fixture_root = tmp / f"watch-owner-{index}-status-based"
+            status_fixture_path = status_fixture_root / relative
+            status_fixture_path.parent.mkdir(parents=True, exist_ok=True)
+            status_block, status_count = re.subn(
+                pattern,
+                status_watch_rule,
+                block,
+                count=1,
+            )
+            if status_count != 1:
+                problems.append(f"[watch owners] {relative}:{anchor} lost its status-based mutation target")
+            else:
+                status_fixture_path.write_text(
+                    text[:start] + status_block + text[start + len(block):], encoding="utf-8"
+                )
+                status_mutated, _ = ci.check_watch_action_docs(
+                    status_fixture_root,
+                    owners=(owner,),
+                    required_owners=(owner,),
+                )
+                if not any("contradictory ci/status-based" in problem for problem in status_mutated):
+                    problems.append(f"[watch owners] status-based action at {relative}:{anchor} was accepted")
         if format_name != "markdown":
             continue
         if parked_count != 1:
@@ -1409,6 +1433,31 @@ def watch_action_owner_cases(ci, tmp: Path) -> list[str]:
         )
         if not any("contradictory" in problem for problem in subject_first):
             problems.append(f"[watch owners] subject-first CI rule at {relative}:{anchor} was accepted")
+
+    arrow_owner = next(
+        owner for owner in owners
+        if owner[0] == "formula" and owner[1] == "references/pr-adoption.md"
+    )
+    relative, anchor = arrow_owner[1], arrow_owner[2]
+    fixture_root = tmp / "watch-owner-pr-adoption-arrow-status"
+    fixture_path = fixture_root / relative
+    fixture_path.parent.mkdir(parents=True, exist_ok=True)
+    source_text = (source / relative).read_text(encoding="utf-8")
+    selected = ci.owner_block(source_text, anchor)
+    if selected is None:
+        problems.append(f"[watch owners] {relative}:{anchor} lost its arrow contradiction target")
+    else:
+        start, block = selected
+        changed = (source_text[:start] + block + " " + status_watch_rule
+                   + source_text[start + len(block):])
+        fixture_path.write_text(changed, encoding="utf-8")
+        contradictory, _ = ci.check_watch_action_docs(
+            fixture_root,
+            owners=(arrow_owner,),
+            required_owners=(arrow_owner,),
+        )
+        if not any("contradictory ci/status-based" in problem for problem in contradictory):
+            problems.append(f"[watch owners] arrow CI rule at {relative}:{anchor} was accepted")
     return problems
 
 def run(ci, tmp: Path) -> int:
@@ -1483,8 +1532,9 @@ def run(ci, tmp: Path) -> int:
         failures += 1
         print(f"FAIL     {problem}")
     if not watch_owner_problems:
-        print(f"ok       {'watch-action owner mutations':32} -> every registered owner rejects removal and "
-              f"an unconditional action, and Markdown owners reject contradictory parked status")
+        print(f"ok       {'watch-action owner mutations':32} -> every registered owner rejects removal, "
+              f"unconditional actions, and status-based actions; Markdown owners reject contradictory "
+              f"parked status")
 
     print()
     print(f"--- doc-check: {ci.SPEC_DOC.name} + {ci.DRIVER_DOC.name} vs the code that runs ---")

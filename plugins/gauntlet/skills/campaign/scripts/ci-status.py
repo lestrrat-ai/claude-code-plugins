@@ -212,6 +212,11 @@ WATCH_ACTION_CONSUMERS = (
      "`watch_warranted` is `true`"),
     ("markdown", "references/stage-2-review-gate.md", "**Held-PR watch action.**",
      "`watch_warranted` is `true`"),
+    ("formula", "references/stage-2-ci.md", "| `pending` | `pending` |",
+     "liveness` reports `watch_warranted` → ensure a live watch"),
+    ("formula", "references/stage-2-ci.md",
+     "| **pending** — an evidence row classifies `RUNNING` |",
+     "**YES** — ensure a watch task is alive; relaunch it in this same heartbeat if it has exited."),
     ("formula", "references/stage-2-ci.md",
      "- **re-derive `ci` from a fresh snapshot for the NEW `head_sha`",
      "`liveness` then reports `watch_warranted`"),
@@ -228,7 +233,9 @@ WATCH_ACTION_CONTRADICTIONS = (
         r"(?:ci|status)\b"
         r"[^.!?]*\b(?:watch|launch|relaunch|ensure)\b|"
         r"\b(?:watch|launch|relaunch|ensure)\b[^.!?]*\b(?:if|when|while)\s+"
-        r"(?:(?:the|row(?:'s)?|value\s+of)\s+)*(?:ci|status)\b)",
+        r"(?:(?:the|row(?:'s)?|value\s+of)\s+)*(?:ci|status)\b|"
+        r"\b(?:ci|status)\b\s*(?:==|=|is)\s*[^.!?]*?->\s*"
+        r"(?:watch|launch|relaunch|ensure)\b)",
         re.IGNORECASE,
     )),
     ("unconditional", re.compile(
