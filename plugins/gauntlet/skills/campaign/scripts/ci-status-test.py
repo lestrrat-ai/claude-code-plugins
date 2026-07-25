@@ -1028,7 +1028,7 @@ def required_set_matrix_cases(ci, tmp: Path) -> list[str]:
 
 
 def command_copy_cases(ci, tmp: Path) -> list[str]:
-    """Check the two documented command-copy forms and their own required inputs."""
+    """Check supported command-copy forms and their own required inputs."""
     problems: list[str] = []
     forms = {
         "derive": (
@@ -1104,6 +1104,25 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
         problems.append(
             f"[command copy required-set] four-backtick copy did not report its missing ledger: "
             f"{found_problems!r}"
+        )
+
+    root = tmp / "command-copy-required-set-indented-code"
+    root.mkdir()
+    (root / "commands.md").write_text(
+        "```sh\n"
+        "python3 <skill>/scripts/ci-status.py required-set --ledger <rundir>/state.jsonl\n"
+        "```\n\n"
+        "    ```sh\n"
+        "    ci-status.py required-set\n"
+        "    ```\n",
+        encoding="utf-8",
+    )
+    copies = ci.documented_ci_status_copies(root, "required-set")
+    found_problems, checked = ci.check_required_set_copies(root)
+    if len(copies) != 1 or checked != ["commands.md:2"] or found_problems:
+        problems.append(
+            f"[command copy required-set] indented code was treated as a command copy: "
+            f"copies={copies!r}, problems={found_problems!r}, checked={checked!r}"
         )
     return problems
 
@@ -1417,7 +1436,8 @@ def run(ci, tmp: Path) -> int:
         print(f"FAIL     {problem}")
     if not command_copy_problems:
         print(f"ok       {'wrapped doc command copies':32} -> inline literals and fenced shell commands; "
-              f"each valid copy keeps its inputs and each invalid copy fails on its own missing input")
+              f"indented code blocks stay excluded; each valid copy keeps its inputs and each invalid copy "
+              f"fails on its own missing input")
 
     liveness_problems = liveness_cases(ci, tmp)
     for problem in liveness_problems:

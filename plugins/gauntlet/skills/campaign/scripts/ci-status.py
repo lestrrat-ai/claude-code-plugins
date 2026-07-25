@@ -2280,12 +2280,52 @@ def _markdown_fenced_blocks(text: str) -> list[tuple[int, int, int, int, bool]]:
     return blocks
 
 
+def _markdown_indented_code_blocks(text: str) -> list[tuple[int, int]]:
+    """Return CommonMark indented code blocks as (block start, block end)."""
+    def block_boundary(content: str) -> bool:
+        return bool(
+            re.match(r"^ {0,3}(?:#{1,6}(?:[ \t]|$)|>|[`~]{3,})", content)
+            or re.match(r"^ {0,3}(?:[*_-][ \t]*){3,}$", content)
+            or re.match(r"^ {0,3}(?:=+|-+)[ \t]*$", content)
+        )
+
+    blocks: list[tuple[int, int]] = []
+    block_start: int | None = None
+    block_end: int | None = None
+    can_start = True
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        content = line.rstrip("\r\n")
+        blank = not content.strip(" \t")
+        indented = content.startswith("    ") or content.startswith("\t")
+        if block_start is None:
+            if indented and can_start:
+                block_start = offset
+                block_end = offset + len(line)
+            elif blank:
+                can_start = True
+            else:
+                can_start = block_boundary(content)
+        elif indented or blank:
+            block_end = offset + len(line)
+        else:
+            blocks.append((block_start, block_end))
+            block_start = None
+            block_end = None
+            can_start = block_boundary(content)
+        offset += len(line)
+    if block_start is not None and block_end is not None:
+        blocks.append((block_start, block_end))
+    return blocks
+
+
 def documented_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, str]]:
     """Return supported command copies: inline literals and fenced shell commands.
 
     The command-copy guard owns two documentation forms. Inline literals carry a complete command, even
     when Markdown wraps the literal. Fenced shell blocks carry one shell command, whose continued lines end
-    in ``\\``. Other prose and Markdown constructs are deliberately outside this guard's scope.
+    in ``\\``. Indented code blocks and other Markdown constructs are deliberately outside this guard's
+    scope.
     """
     command = re.compile(rf"ci-status\.py\s+{re.escape(subcommand)}\b")
     fenced_command = re.compile(
@@ -2297,8 +2337,10 @@ def documented_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path,
     for md in sorted(root.rglob("*.md")):
         text = md.read_text(encoding="utf-8")
         blocks = _markdown_fenced_blocks(text)
+        excluded = [(start, end) for start, end, _body_start, _body_end, _shell in blocks]
+        excluded.extend(_markdown_indented_code_blocks(text))
         for literal in inline.finditer(text):
-            if any(start <= literal.start() < end for start, end, _body_start, _body_end, _shell in blocks):
+            if any(start <= literal.start() < end for start, end in excluded):
                 continue
             match = command.search(literal.group("body"))
             if match is None:
@@ -2337,8 +2379,8 @@ def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]
     `,headRefOid` from the rollup fetch.
 
     A copy is a command in an inline literal or a fenced shell block. Inline literals may wrap across
-    Markdown lines; fenced shell commands may wrap with a trailing `\\`. Other prose is not an invocation,
-    so this guard does not parse it.
+    Markdown lines; fenced shell commands may wrap with a trailing `\\`. Indented code blocks and other
+    prose are not invocations, so this guard does not parse them.
 
     FINDING ZERO COPIES IS A FAILURE: the command is prescribed by at least `stage-2-ci.md` and
     `critical-rules.md`, and a check that cannot find its subject never passes.
@@ -2367,8 +2409,9 @@ def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]
 def check_liveness_copies(root: Path | None = None) -> tuple[list[str], list[str]]:
     """Every runnable liveness copy carries `--machine-action` — the judgment flag a recap must not drop.
 
-    The supported forms are `documented_ci_status_copies`' inline literal and fenced shell command. A copy
-    without the flag is a command the tool refuses, and a reader who "fixes" it by inventing a default
+    The supported forms are the inline literal and fenced shell command forms owned by
+    `documented_ci_status_copies`. Indented code blocks and other prose are not invocations. A copy without
+    the flag is a command the tool refuses, and a reader who "fixes" it by inventing a default
     answers the one question the tool deliberately asks.
     """
     problems, copies = [], []
