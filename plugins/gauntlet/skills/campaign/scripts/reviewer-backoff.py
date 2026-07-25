@@ -48,6 +48,13 @@ TIMER_PHRASE_RE = re.compile(
     r"\b(?:retry(?:ing)?|try\s+again|backoff|wait|available)\b",
     re.IGNORECASE,
 )
+ABSOLUTE_TIMER_PREFIX_RE = re.compile(
+    r"\b(?:reset(?:s)?|available|retry(?:ing)?|try\s+again)\s+"
+    r"(?:(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|"
+    r"jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|"
+    r"nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}|\d{1,2}\b)",
+    re.IGNORECASE,
+)
 MONTHS = {
     "jan": 1, "january": 1,
     "feb": 2, "february": 2,
@@ -214,22 +221,36 @@ def _timer_identity(value: str) -> str:
     return " ".join(value.casefold().split())
 
 
-def _relative_timer(text: str) -> tuple[int, str] | None | object:
+@dataclass(frozen=True)
+class _TimerCandidate:
+    start: int
+    end: int
+    delay: int
+    retry_at: datetime
+    identity: str
+
+
+def _relative_candidates(text: str, now: datetime) -> list[_TimerCandidate] | object:
     matches = list(RETRY_AFTER_RE.finditer(text)) + list(DURATION_RE.finditer(text))
-    if not matches:
-        return None
-    match = min(matches, key=lambda item: item.start())
-    try:
-        return (
-            int(match.group("value")) * _unit_seconds(match.groupdict().get("unit")),
-            _timer_identity(match.group(0)),
-        )
-    except (OverflowError, ValueError):
-        return _MALFORMED_TIMER
+    candidates: list[_TimerCandidate] = []
+    seen_spans: set[tuple[int, int]] = set()
+    for match in sorted(matches, key=lambda item: item.start()):
+        span = (match.start(), match.end())
+        if span in seen_spans:
+            continue
+        seen_spans.add(span)
+        try:
+            delay = int(match.group("value")) * _unit_seconds(match.groupdict().get("unit"))
+            retry_at = (_utc(now) + timedelta(seconds=delay)).astimezone(now.tzinfo)
+        except (OverflowError, ValueError):
+            return _MALFORMED_TIMER
+        candidates.append(_TimerCandidate(
+            match.start(), match.end(), delay, retry_at, _timer_identity(match.group(0))
+        ))
+    return candidates
 
 
-def _absolute_timer(text: str, now: datetime) -> tuple[int, datetime, str] | None:
-    match = ABSOLUTE_RE.search(text)
+def _absolute_timer_match(match: re.Match[str] | None, now: datetime) -> tuple[int, datetime, str] | None:
     if match is None:
         return None
     zone_name = match.group("zone")
@@ -260,23 +281,43 @@ def _absolute_timer(text: str, now: datetime) -> tuple[int, datetime, str] | Non
         return None
 
 
-def _timer(text: str, now: datetime) -> tuple[int, datetime, str] | None | object:
-    relative = _relative_timer(text)
+def _absolute_timer(text: str, now: datetime) -> tuple[int, datetime, str] | None:
+    return _absolute_timer_match(ABSOLUTE_RE.search(text), now)
+
+
+def _timer_candidates(text: str, now: datetime) -> list[_TimerCandidate] | object:
+    relative = _relative_candidates(text, now)
     if relative is _MALFORMED_TIMER:
         return _MALFORMED_TIMER
-    if relative is not None:
-        delay, timer_identity = relative
-        try:
-            retry_at = (_utc(now) + timedelta(seconds=delay)).astimezone(now.tzinfo)
-            return delay, retry_at, timer_identity
-        except (OverflowError, ValueError):
+
+    candidates = list(relative)
+    for match in ABSOLUTE_RE.finditer(text):
+        absolute = _absolute_timer_match(match, now)
+        if absolute is None:
             return _MALFORMED_TIMER
-    if ABSOLUTE_RE.search(text) is not None:
-        absolute = _absolute_timer(text, now)
-        return _MALFORMED_TIMER if absolute is None else absolute
-    if TIMER_PHRASE_RE.search(text) is not None:
+        delay, retry_at, identity = absolute
+        candidates.append(_TimerCandidate(
+            match.start(), match.end(), delay, retry_at, identity
+        ))
+
+    valid_spans = [(candidate.start, candidate.end) for candidate in candidates]
+    for match in TIMER_PHRASE_RE.finditer(text):
+        if not any(start <= match.start() < end for start, end in valid_spans):
+            return _MALFORMED_TIMER
+    for match in ABSOLUTE_TIMER_PREFIX_RE.finditer(text):
+        if not any(start <= match.start() < end for start, end in valid_spans):
+            return _MALFORMED_TIMER
+    return candidates
+
+
+def _timer(text: str, now: datetime) -> tuple[int, datetime, str] | None | object:
+    candidates = _timer_candidates(text, now)
+    if candidates is _MALFORMED_TIMER:
         return _MALFORMED_TIMER
-    return None
+    if not candidates:
+        return None
+    candidate = min(candidates, key=lambda item: item.start)
+    return candidate.delay, candidate.retry_at, candidate.identity
 
 
 def _contains_transient_marker(text: str, marker: str) -> bool:
@@ -429,22 +470,38 @@ def transition(
         prior.external_backoff_until is not None
         and _utc(prior.external_backoff_until) == _utc(current)
     )
+    same_timer_identity = (
+        failure.kind == TIMER
+        and failure.timer_identity is not None
+        and failure.timer_identity == prior.external_backoff_timer_id
+    )
     same_timer_reentry = (
         prior_deadline_exact
-        and failure.kind == TIMER
+        and same_timer_identity
         and failure.retry_at is not None
         and _utc(failure.retry_at) == _utc(prior.external_backoff_until)
     )
     deadline = _max_deadline(prior.external_backoff_until, failure.retry_at if failure.kind == TIMER else None)
     timer_id = failure.timer_identity if failure.kind == TIMER else prior.external_backoff_timer_id
-    if prior_deadline_active:
-        if not (prior_deadline_exact and not same_timer_reentry):
+    if failure.kind == TIMER and prior.external_backoff_until is not None:
+        incoming_deadline = failure.retry_at
+        if same_timer_reentry:
             deadline = prior.external_backoff_until
             timer_id = prior.external_backoff_timer_id
-        if same_timer_reentry:
             failure = ExternalReviewFailure(
                 TIMER, 0, prior.external_backoff_until, failure.reason, failure.timer_identity
             )
+        elif (
+            prior_deadline_active
+            and same_timer_identity
+            and not prior_deadline_exact
+        ) or (
+            incoming_deadline is not None
+            and _utc(incoming_deadline) <= _utc(prior.external_backoff_until)
+        ):
+            deadline = prior.external_backoff_until
+            if prior.external_backoff_timer_id is not None:
+                timer_id = prior.external_backoff_timer_id
     next_state = ExternalReviewSessionState(prior.external_disabled, deadline, timer_id)
 
     if prior.external_disabled:

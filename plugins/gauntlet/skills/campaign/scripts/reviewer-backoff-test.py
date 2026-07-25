@@ -84,6 +84,32 @@ def test_unsupported_relative_timer_unit_fails_closed() -> None:
           "unsupported relative timer unit did not disable the session route")
 
 
+def test_incomplete_absolute_reset_fails_closed() -> None:
+    result = MODULE.decide(
+        "rate limit; resets Jul 27",
+        now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
+    )
+    check(result.kind == MODULE.PERMANENT,
+          "incomplete absolute reset was accepted as a transient failure")
+    check(result.action == MODULE.FALLBACK_NATIVE,
+          "incomplete absolute reset did not fall back")
+    check(result.state.external_disabled,
+          "incomplete absolute reset did not disable the session route")
+
+
+def test_malformed_timer_before_valid_timer_fails_closed() -> None:
+    result = MODULE.decide(
+        "rate limit; retry after never seconds; retry after 90 seconds",
+        now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
+    )
+    check(result.kind == MODULE.PERMANENT,
+          "malformed earlier timer clause was ignored")
+    check(result.action == MODULE.FALLBACK_NATIVE,
+          "mixed malformed and valid timers did not fall back")
+    check(result.state.external_disabled,
+          "mixed malformed and valid timers did not disable the session route")
+
+
 def test_session_timer_deadline_is_not_extended_on_reentry() -> None:
     first_now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
     first = MODULE.decide("retry after 90 seconds", now=first_now)
@@ -101,6 +127,23 @@ def test_session_timer_deadline_is_not_extended_on_reentry() -> None:
           "re-entry did not wait for the remaining session timer")
     check(second.state.external_backoff_until == expected_deadline,
           "re-entry extended the active session deadline")
+
+
+def test_active_later_timer_replaces_deadline_and_identity() -> None:
+    first_now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    first = MODULE.decide("retry after 90 seconds", now=first_now)
+    later_now = first_now.replace(second=10)
+    later_failure = MODULE.classify("retry after 2 minutes", later_now)
+    result = MODULE.transition(later_failure, now=later_now, state=first.state)
+    expected_deadline = datetime(2026, 7, 25, 12, 2, 10, tzinfo=timezone.utc)
+    check(result.action == MODULE.WAIT_EXTERNAL,
+          "active later timer did not keep the external route waiting")
+    check(result.retry_after_seconds == 120,
+          "active later timer was shortened to the earlier deadline")
+    check(result.state.external_backoff_until == expected_deadline,
+          "active later timer did not replace the earlier deadline")
+    check(result.state.external_backoff_timer_id == later_failure.timer_identity,
+          "active later timer did not retain its timer identity")
 
 
 def test_session_timer_retries_at_exact_reentry_deadline() -> None:
@@ -338,7 +381,10 @@ CASES = [
     ("relative-exact-wait", "relative delay is preserved exactly", test_relative_timer_waits_exactly),
     ("unitless-relative-timer", "unitless timers default to seconds", test_unitless_relative_timer_defaults_to_seconds),
     ("unsupported-relative-unit", "unsupported timer units fail closed", test_unsupported_relative_timer_unit_fails_closed),
+    ("incomplete-absolute-reset", "incomplete absolute reset fails closed", test_incomplete_absolute_reset_fails_closed),
+    ("malformed-before-valid-timer", "malformed timer before valid timer fails closed", test_malformed_timer_before_valid_timer_fails_closed),
     ("session-deadline-reentry", "active session deadline is preserved on re-entry", test_session_timer_deadline_is_not_extended_on_reentry),
+    ("active-later-deadline", "active later timer replaces deadline and identity", test_active_later_timer_replaces_deadline_and_identity),
     ("session-deadline-exact-reentry", "exact deadline re-entry retries without extension", test_session_timer_retries_at_exact_reentry_deadline),
     ("expired-deadline-identical-timer", "identical-text new timer replaces an expired session deadline", test_identical_text_new_timer_replaces_expired_session_deadline),
     ("expired-deadline-new-timer", "new timer replaces an expired session deadline", test_new_timer_replaces_expired_session_deadline),
