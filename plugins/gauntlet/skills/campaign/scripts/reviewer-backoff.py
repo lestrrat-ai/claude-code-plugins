@@ -460,6 +460,18 @@ def _valid_state(value: object) -> bool:
             value.external_backoff_pr is None
             or (type(value.external_backoff_pr) is int and value.external_backoff_pr > 0)
         )
+        and (
+            (
+                value.external_backoff_until is None
+                and value.external_backoff_timer_id is None
+                and value.external_backoff_pr is None
+            )
+            or (
+                value.external_backoff_until is not None
+                and type(value.external_backoff_pr) is int
+                and value.external_backoff_pr > 0
+            )
+        )
     )
 
 
@@ -595,10 +607,14 @@ def transition(
         failure = _permanent("unrecognized external failure classification")
     elif not _valid_failure(failure):
         failure = _permanent("external failure classification was malformed")
+    elif failure.kind == TIMER and pr_number is None:
+        failure = _permanent("external review PR number is required for a timer transition")
     current = _as_aware(now if now is not None else datetime.now(timezone.utc))
     if current is None:
         failure = _permanent("external transition had an invalid timestamp")
         current = datetime.now(timezone.utc)
+    if prior.external_disabled:
+        return _decision(FALLBACK_NATIVE, failure, prior, "external route is disabled for this session")
     prior_deadline_active = (
         prior.external_backoff_until is not None
         and _utc(prior.external_backoff_until) > _utc(current)
@@ -652,9 +668,6 @@ def transition(
             if prior.external_backoff_timer_id is not None:
                 timer_id = prior.external_backoff_timer_id
     next_state = ExternalReviewSessionState(prior.external_disabled, deadline, timer_id, timer_pr)
-
-    if prior.external_disabled:
-        return _decision(FALLBACK_NATIVE, failure, next_state, "external route is disabled for this session")
 
     if failure.kind == PERMANENT:
         next_state = ExternalReviewSessionState(True, deadline, timer_id, timer_pr)

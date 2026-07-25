@@ -761,7 +761,7 @@ def check_document_contract() -> None:
         "selected cross-engine route, paired CLI available, and session state clear | `launch-external`",
         "external failure classified `timer`, retry not spent, and `now` is before its deadline | `wait-external`",
         "external failure classified `permanent`, or classification is unrecognized",
-        "shared-session transition without the current positive PR number | treat as malformed",
+        "timer transition without the current positive PR number, including initial empty state | treat as malformed",
         "numeric offset that is invalid for",
         "A named zone's valid offsets include both sides",
         "of a DST fold.",

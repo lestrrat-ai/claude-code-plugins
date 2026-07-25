@@ -61,7 +61,7 @@ def test_absolute_timer_uses_elapsed_time_across_dst() -> None:
 def test_timer_wait_uses_elapsed_time_across_dst() -> None:
     now = datetime(2026, 3, 8, 1, 30, tzinfo=MODULE.ZoneInfo("America/New_York"))
     failure = MODULE.classify("quota exhausted; resets Mar 8, 3:30am (America/New_York)", now)
-    result = MODULE.transition(failure, now=now)
+    result = MODULE.transition(failure, now=now, pr_number=188)
     check(result.action == MODULE.WAIT_EXTERNAL, "DST timer did not wait")
     check(result.retry_after_seconds == 3600,
           "timer wait was subtracted as wall-clock time across DST")
@@ -88,6 +88,7 @@ def test_absolute_timer_explicit_offset_resolves_dst_fold() -> None:
     result = MODULE.decide(
         "quota exhausted; resets Nov 1, 1:30am -05:00 (America/New_York)",
         now=now,
+        pr_number=188,
     )
     check(result.kind == MODULE.TIMER, "explicit offset did not resolve the DST fold")
     check(result.retry_at == "2026-11-01T01:30:00-05:00",
@@ -100,6 +101,7 @@ def test_absolute_timer_explicit_offset_resolves_both_dst_fold_offsets() -> None
         result = MODULE.decide(
             f"quota exhausted; resets Nov 1, 1:30am {offset} (America/New_York)",
             now=now,
+            pr_number=188,
         )
         check(result.kind == MODULE.TIMER,
               f"valid DST fold offset {offset} was rejected")
@@ -133,7 +135,7 @@ def test_malformed_absolute_12_hour_field_fails_closed() -> None:
 
 def test_relative_timer_waits_exactly() -> None:
     now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
-    result = MODULE.decide("rate limited; retry after 90 seconds", now=now)
+    result = MODULE.decide("rate limited; retry after 90 seconds", now=now, pr_number=188)
     check(result.action == MODULE.WAIT_EXTERNAL, "relative timer did not wait")
     check(result.retry_after_seconds == 90, "relative timer delay changed")
     check(result.retry_at == "2026-07-25T12:01:30+00:00", "relative retry timestamp changed")
@@ -583,6 +585,7 @@ def test_standalone_availability_timer_waits() -> None:
     result = MODULE.decide(
         "available in 90 seconds",
         now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
+        pr_number=188,
     )
     check(result.kind == MODULE.TIMER, "standalone availability was not classified as a timer")
     check(result.action == MODULE.WAIT_EXTERNAL, "standalone availability did not wait")
@@ -593,6 +596,7 @@ def test_transient_wrapped_availability_timer_waits() -> None:
     result = MODULE.decide(
         "temporarily unavailable; available in 90 seconds",
         now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
+        pr_number=188,
     )
     check(result.kind == MODULE.TIMER,
           "transient-wrapped availability was not classified as a timer")
@@ -728,6 +732,7 @@ def test_timer_after_retry_falls_back_but_keeps_timer() -> None:
         "retry after 2 minutes",
         retry_spent=True,
         now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
+        pr_number=188,
     )
     check(result.action == MODULE.FALLBACK_NATIVE, "spent timer retry did not fall back")
     check(result.kind == MODULE.TIMER and result.retry_after_seconds == 120,
@@ -755,8 +760,63 @@ def test_active_timer_without_pr_fails_closed() -> None:
           "malformed session transition lost the existing timer owner")
 
 
+def test_initial_timer_without_pr_fails_closed_before_storage() -> None:
+    first_now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    first = MODULE.decide("retry after 90 seconds", now=first_now)
+    check(first.kind == MODULE.PERMANENT,
+          "initial timer without a PR owner was not classified as permanent")
+    check(first.action == MODULE.FALLBACK_NATIVE,
+          "initial timer without a PR owner did not fall back natively")
+    check(first.external_disabled,
+          "initial timer without a PR owner did not disable the external route")
+    check(first.state.external_backoff_until is None,
+          "initial ownerless timer stored a session deadline")
+    check(first.state.external_backoff_timer_id is None,
+          "initial ownerless timer stored a timer identity")
+    check(first.state.external_backoff_pr is None,
+          "initial ownerless timer stored an ownerless PR field")
+
+    later = MODULE.decide(
+        "retry after 30 seconds",
+        now=first_now.replace(second=10),
+        state=first.state,
+        pr_number=189,
+    )
+    check(later.action == MODULE.FALLBACK_NATIVE,
+          "later PR inherited the failed ownerless session transition")
+    check(later.state.external_backoff_until is None,
+          "later PR inherited an ownerless session deadline")
+
+
+def test_ownerless_state_fails_closed_before_cross_pr_use() -> None:
+    deadline = datetime(2026, 7, 25, 12, 1, 30, tzinfo=timezone.utc)
+    ownerless = MODULE.SessionState(
+        external_backoff_until=deadline,
+        external_backoff_timer_id="retry after 90 seconds",
+    )
+    result = MODULE.decide(
+        "retry after 30 seconds",
+        now=datetime(2026, 7, 25, 12, 0, 10, tzinfo=timezone.utc),
+        state=ownerless,
+        pr_number=189,
+    )
+    check(result.kind == MODULE.PERMANENT,
+          "ownerless session state was accepted for a later PR")
+    check(result.action == MODULE.FALLBACK_NATIVE,
+          "ownerless session state did not fail closed")
+    check(result.external_disabled,
+          "ownerless session state did not disable the external route")
+    check(result.state.external_backoff_until is None,
+          "ownerless session deadline survived state validation")
+    check(result.state.external_backoff_timer_id is None,
+          "ownerless timer identity survived state validation")
+    check(result.state.external_backoff_pr is None,
+          "ownerless PR survived state validation")
+
+
 def test_zero_delay_timer_retries_immediately() -> None:
-    result = MODULE.decide("retry-after: 0", now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc))
+    result = MODULE.decide("retry-after: 0", now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
+                           pr_number=188)
     check(result.kind == MODULE.TIMER and result.action == MODULE.RETRY_EXTERNAL,
           "zero-delay timer was not an immediate retry")
 
@@ -814,6 +874,8 @@ CASES = [
     ("session-state", "disabled state blocks later launches in this session", test_disabled_state_is_session_only_and_blocks_new_launches),
     ("spent-timer-fallback", "spent timer falls back and retains session backoff", test_timer_after_retry_falls_back_but_keeps_timer),
     ("active-timer-missing-pr", "active timer without a PR number fails closed", test_active_timer_without_pr_fails_closed),
+    ("initial-timer-missing-pr", "initial timer without a PR owner is never stored", test_initial_timer_without_pr_fails_closed_before_storage),
+    ("ownerless-state", "ownerless session state fails closed before cross-PR use", test_ownerless_state_fails_closed_before_cross_pr_use),
     ("zero-delay-timer", "zero-delay timer retries immediately", test_zero_delay_timer_retries_immediately),
 ]
 

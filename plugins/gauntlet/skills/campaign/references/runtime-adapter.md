@@ -198,7 +198,9 @@ preferences, run artifacts, or any other durable campaign record. `timer_identit
 `external_backoff_timer_id` are opaque session-memory values. While a session deadline is active, a new
 timer for the same PR owns its `retry_at`, even when earlier; a timer for another PR falls back natively
 and retains the existing deadline and owner. Matching timer text and deadline alone never prove re-entry.
-A new session starts with an empty state.
+A new session starts with an empty state. **Require the current positive `pr_number` before storing any
+timer, including on the initial empty-state transition.** A missing or malformed PR owner is permanent,
+disables the external route for the session, and stores no deadline or timer identity.
 
 ```text
 review_transition(
@@ -223,7 +225,7 @@ This operation owns every route change:
 | external failure classified `timer`, retry not spent, and `now` is before its deadline | `wait-external` until the exact provider deadline; do not launch before it |
 | external failure classified `timer`, retry not spent, and `now` has reached its deadline | `retry-external` immediately |
 | external failure classified `permanent`, or classification is unrecognized | set session `external_disabled`, then `fallback-native` |
-| shared-session transition without the current positive PR number | treat as malformed, set session `external_disabled`, then `fallback-native` |
+| timer transition without the current positive PR number, including initial empty state | treat as malformed, set session `external_disabled`, then `fallback-native` without storing a deadline or timer identity |
 | external failure after retry, regardless of class | `fallback-native`; retain any timer backoff for other launches in this session |
 | session timer backoff is active for another PR | use `fallback-native` for that PR; do not shorten or ignore the timer |
 | native route/fallback can follow the installed contract | `launch-native` with the native limitations below |
