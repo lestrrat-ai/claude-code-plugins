@@ -227,6 +227,7 @@ README_ADOPTION_WATCH_ACTION = (
 PARKED_WATCH_RULE = "Parked status does not override that result."
 STATUS_SUBJECT_PATTERN = r"(?:`(?:ci|status)`|(?<!\w)(?:ci|status)(?!\w))"
 WATCH_ACTION_WORDS = r"(?:watch|launch|relaunch|ensure)"
+WATCH_ACTION_VERBS = r"(?:launch|relaunch|ensure)"
 WATCH_ACTION_CONTRADICTIONS = (
     ("ci/status-based", re.compile(
         # The status subject may be qualified before the noun (for example, "pending CI").
@@ -236,6 +237,11 @@ WATCH_ACTION_CONTRADICTIONS = (
         + r"[^.!?]*\b"
         + WATCH_ACTION_WORDS
         + r"\b|"
+        r"\b(?:[\w-]+\s+){0,2}"
+        + STATUS_SUBJECT_PATTERN
+        + r"\s+"
+        + WATCH_ACTION_VERBS
+        + r"(?:es|s|ed|ing)?\b[^.!?]*\bwatch\b|"
         r"\b"
         + WATCH_ACTION_WORDS
         + r"\b[^.!?]*\b(?:if|when|while)\s+"

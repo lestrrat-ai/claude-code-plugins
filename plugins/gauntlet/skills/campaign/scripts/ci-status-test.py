@@ -1471,6 +1471,7 @@ def watch_action_owner_cases(ci, tmp: Path) -> list[str]:
             (" Pending CI triggers a watch.", "status-triggers"),
             (" Pending CI causes a watch.", "status-causes"),
             (" Pending CI controls a watch.", "status-controls"),
+            (" Pending CI launches a watch.", "status-direct-verb"),
         ):
             causal_fixture_root = tmp / f"watch-owner-{name}"
             causal_fixture_path = causal_fixture_root / relative
