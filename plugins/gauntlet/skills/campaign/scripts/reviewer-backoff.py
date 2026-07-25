@@ -399,11 +399,13 @@ def transition(
         current = datetime.now(timezone.utc)
     prior_deadline_active = (
         prior.external_backoff_until is not None
-        and _utc(prior.external_backoff_until) > _utc(current)
+        and _utc(prior.external_backoff_until) >= _utc(current)
     )
     deadline = _max_deadline(prior.external_backoff_until, failure.retry_at if failure.kind == TIMER else None)
     if prior_deadline_active:
         deadline = prior.external_backoff_until
+        if _utc(prior.external_backoff_until) == _utc(current) and failure.kind == TIMER:
+            failure = ExternalReviewFailure(TIMER, 0, prior.external_backoff_until, failure.reason)
     next_state = ExternalReviewSessionState(prior.external_disabled, deadline)
 
     if prior.external_disabled:
