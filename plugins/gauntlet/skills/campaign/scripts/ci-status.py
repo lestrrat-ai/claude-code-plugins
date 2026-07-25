@@ -2282,6 +2282,17 @@ def _markdown_fenced_blocks(text: str) -> list[tuple[int, int, int, int, bool]]:
 
 def _markdown_indented_code_blocks(text: str) -> list[tuple[int, int]]:
     """Return CommonMark indented code blocks as (block start, block end)."""
+    def indent_columns(content: str) -> int:
+        columns = 0
+        for char in content:
+            if char == " ":
+                columns += 1
+            elif char == "\t":
+                columns += 4 - (columns % 4)
+            else:
+                break
+        return columns
+
     def block_boundary(content: str) -> bool:
         return bool(
             re.match(r"^ {0,3}(?:#{1,6}(?:[ \t]|$)|>|[`~]{3,})", content)
@@ -2297,7 +2308,7 @@ def _markdown_indented_code_blocks(text: str) -> list[tuple[int, int]]:
     for line in text.splitlines(keepends=True):
         content = line.rstrip("\r\n")
         blank = not content.strip(" \t")
-        indented = content.startswith("    ") or content.startswith("\t")
+        indented = indent_columns(content) >= 4
         if block_start is None:
             if indented and can_start:
                 block_start = offset

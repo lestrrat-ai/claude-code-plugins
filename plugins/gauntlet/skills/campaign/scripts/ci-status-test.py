@@ -1106,6 +1106,23 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
             f"{found_problems!r}"
         )
 
+    root = tmp / "command-copy-required-set-mixed-indent"
+    root.mkdir()
+    (root / "commands.md").write_text(
+        "```sh\n"
+        "ci-status.py required-set --ledger <rundir>/state.jsonl\n"
+        "```\n\n"
+        "   \t`ci-status.py required-set`\n",
+        encoding="utf-8",
+    )
+    copies = ci.documented_ci_status_copies(root, "required-set")
+    found_problems, checked = ci.check_required_set_copies(root)
+    if len(copies) != 1 or checked != ["commands.md:2"] or found_problems:
+        problems.append(
+            f"[command copy required-set] three spaces plus a tab was not excluded as indented code: "
+            f"copies={copies!r}, problems={found_problems!r}, checked={checked!r}"
+        )
+
     root = tmp / "command-copy-required-set-indented-code"
     root.mkdir()
     (root / "commands.md").write_text(
