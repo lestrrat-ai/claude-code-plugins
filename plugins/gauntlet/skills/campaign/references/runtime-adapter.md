@@ -186,8 +186,10 @@ seconds` and `available in 90 seconds`, plus absolute provider reset timestamps 
 9pm (Asia/Tokyo)`. Construct an absolute timestamp in the provider-named timezone, then calculate elapsed
 time with timezone-aware arithmetic. Permanent markers take precedence over timers and transient markers;
 valid timer text takes precedence over generic transient markers. Malformed or unsupported timer text,
-including fractional or unrepresentable delays and unknown zones, is `permanent`. An unrecognized failure
-is also `permanent` and disables this external route for the current session.
+including fractional or unrepresentable delays, unknown zones, and a numeric offset that is invalid for
+the named zone at the target local time, is `permanent`. A named zone's valid offsets include both sides
+of a DST fold. An unrecognized failure is also `permanent` and disables this external route for the
+current session.
 
 `ExternalReviewSessionState` is process/session memory owned by the active orchestrator. Update it only
 from the returned transition or decision. **Never write `external_disabled` or
@@ -201,6 +203,7 @@ A new session starts with an empty state.
 ```text
 review_transition(
   capability: ReviewIsolationCapability,
+  pr_number: PositiveInt,
   event: "selected" | "external-system-failure" | "native-system-failure",
   failure: ExternalReviewFailure | null,
   session: ExternalReviewSessionState,
@@ -220,6 +223,7 @@ This operation owns every route change:
 | external failure classified `timer`, retry not spent, and `now` is before its deadline | `wait-external` until the exact provider deadline; do not launch before it |
 | external failure classified `timer`, retry not spent, and `now` has reached its deadline | `retry-external` immediately |
 | external failure classified `permanent`, or classification is unrecognized | set session `external_disabled`, then `fallback-native` |
+| shared-session transition without the current positive PR number | treat as malformed, set session `external_disabled`, then `fallback-native` |
 | external failure after retry, regardless of class | `fallback-native`; retain any timer backoff for other launches in this session |
 | session timer backoff is active for another PR | use `fallback-native` for that PR; do not shorten or ignore the timer |
 | native route/fallback can follow the installed contract | `launch-native` with the native limitations below |

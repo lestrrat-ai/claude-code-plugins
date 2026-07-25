@@ -94,6 +94,31 @@ def test_absolute_timer_explicit_offset_resolves_dst_fold() -> None:
           "explicit offset changed the absolute provider deadline")
 
 
+def test_absolute_timer_explicit_offset_resolves_both_dst_fold_offsets() -> None:
+    now = datetime(2026, 3, 1, 12, 0, tzinfo=MODULE.ZoneInfo("America/New_York"))
+    for offset in ("-04:00", "-05:00"):
+        result = MODULE.decide(
+            f"quota exhausted; resets Nov 1, 1:30am {offset} (America/New_York)",
+            now=now,
+        )
+        check(result.kind == MODULE.TIMER,
+              f"valid DST fold offset {offset} was rejected")
+
+
+def test_absolute_timer_rejects_contradictory_named_zone_offset() -> None:
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    result = MODULE.decide(
+        "rate limit; resets Jul 27, 9pm +14:00 (Asia/Tokyo)",
+        now=now,
+    )
+    check(result.kind == MODULE.PERMANENT,
+          "contradictory named-zone offset was accepted as a timer")
+    check(result.action == MODULE.FALLBACK_NATIVE,
+          "contradictory named-zone offset did not fall back natively")
+    check(result.external_disabled,
+          "contradictory named-zone offset did not disable the external route")
+
+
 def test_relative_timer_waits_exactly() -> None:
     now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
     result = MODULE.decide("rate limited; retry after 90 seconds", now=now)
@@ -219,11 +244,12 @@ def test_malformed_reset_timer_fails_closed() -> None:
 def test_session_timer_deadline_is_not_extended_on_reentry() -> None:
     first_now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
     failure = MODULE.classify("retry after 90 seconds", now=first_now)
-    first = MODULE.transition(failure, now=first_now)
+    first = MODULE.transition(failure, now=first_now, pr_number=188)
     second = MODULE.transition(
         failure,
         now=first_now.replace(second=30),
         state=first.state,
+        pr_number=188,
     )
     expected_deadline = datetime(2026, 7, 25, 12, 1, 30, tzinfo=timezone.utc)
     check(first.state.external_backoff_until == expected_deadline,
@@ -238,10 +264,10 @@ def test_session_timer_deadline_is_not_extended_on_reentry() -> None:
 
 def test_active_identical_new_timer_replaces_deadline() -> None:
     first_now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
-    first = MODULE.decide("retry after 90 seconds", now=first_now)
+    first = MODULE.decide("retry after 90 seconds", now=first_now, pr_number=188)
     later_now = first_now.replace(second=30)
     later_failure = MODULE.classify("retry after 90 seconds", later_now)
-    result = MODULE.transition(later_failure, now=later_now, state=first.state)
+    result = MODULE.transition(later_failure, now=later_now, state=first.state, pr_number=188)
     expected_deadline = datetime(2026, 7, 25, 12, 2, tzinfo=timezone.utc)
     check(result.action == MODULE.WAIT_EXTERNAL,
           "active identical fresh timer did not keep the external route waiting")
@@ -253,10 +279,10 @@ def test_active_identical_new_timer_replaces_deadline() -> None:
 
 def test_active_later_timer_replaces_deadline_and_identity() -> None:
     first_now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
-    first = MODULE.decide("retry after 90 seconds", now=first_now)
+    first = MODULE.decide("retry after 90 seconds", now=first_now, pr_number=188)
     later_now = first_now.replace(second=10)
     later_failure = MODULE.classify("retry after 2 minutes", later_now)
-    result = MODULE.transition(later_failure, now=later_now, state=first.state)
+    result = MODULE.transition(later_failure, now=later_now, state=first.state, pr_number=188)
     expected_deadline = datetime(2026, 7, 25, 12, 2, 10, tzinfo=timezone.utc)
     check(result.action == MODULE.WAIT_EXTERNAL,
           "active later timer did not keep the external route waiting")
@@ -313,9 +339,9 @@ def test_active_timer_for_another_pr_falls_back_and_retains_owner() -> None:
 def test_session_timer_retries_at_exact_reentry_deadline() -> None:
     first_now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
     failure = MODULE.classify("retry after 90 seconds", now=first_now)
-    first = MODULE.transition(failure, now=first_now)
+    first = MODULE.transition(failure, now=first_now, pr_number=188)
     deadline = first_now.replace(minute=1, second=30)
-    result = MODULE.transition(failure, now=deadline, state=first.state)
+    result = MODULE.transition(failure, now=deadline, state=first.state, pr_number=188)
     check(result.action == MODULE.RETRY_EXTERNAL,
           "re-entry at the session deadline did not retry")
     check(result.retry_after_seconds == 0,
@@ -415,12 +441,13 @@ def test_cli_invalid_utf8_message_file_falls_back() -> None:
 
 def test_identical_text_new_timer_replaces_expired_session_deadline() -> None:
     first_now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
-    first = MODULE.decide("retry after 90 seconds", now=first_now)
+    first = MODULE.decide("retry after 90 seconds", now=first_now, pr_number=188)
     deadline = first_now.replace(minute=1, second=30)
     result = MODULE.decide(
         "retry after 90 seconds",
         now=deadline,
         state=first.state,
+        pr_number=188,
     )
     expected_deadline = datetime(2026, 7, 25, 12, 3, tzinfo=timezone.utc)
     check(result.action == MODULE.WAIT_EXTERNAL,
@@ -433,12 +460,13 @@ def test_identical_text_new_timer_replaces_expired_session_deadline() -> None:
 
 def test_new_timer_replaces_expired_session_deadline() -> None:
     first_now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
-    first = MODULE.decide("retry after 90 seconds", now=first_now)
+    first = MODULE.decide("retry after 90 seconds", now=first_now, pr_number=188)
     deadline = first_now.replace(minute=1, second=30)
     result = MODULE.decide(
         "retry after 45 seconds",
         now=deadline,
         state=first.state,
+        pr_number=188,
     )
     expected_deadline = datetime(2026, 7, 25, 12, 2, 15, tzinfo=timezone.utc)
     check(result.action == MODULE.WAIT_EXTERNAL,
@@ -456,7 +484,9 @@ def test_timer_retries_at_deadline() -> None:
     deadline = datetime(2026, 7, 25, 12, 1, 30, tzinfo=timezone.utc)
     failure = MODULE.classify("retry after 90 seconds", now=now)
     result = MODULE.transition(failure, now=deadline,
-                               state=MODULE.SessionState(external_backoff_until=deadline))
+                               state=MODULE.SessionState(external_backoff_until=deadline,
+                                                          external_backoff_pr=188),
+                               pr_number=188)
     check(result.action == MODULE.RETRY_EXTERNAL, "timer did not retry at the exact deadline")
 
 
@@ -591,7 +621,12 @@ def test_malformed_typed_timer_fails_closed() -> None:
 def test_malformed_typed_state_fails_closed() -> None:
     state = MODULE.SessionState(external_disabled="false", external_backoff_until="not-a-timestamp")
     failure = MODULE.Failure(MODULE.TRANSIENT, None, None, "temporary failure")
-    result = MODULE.transition(failure, now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc), state=state)
+    result = MODULE.transition(
+        failure,
+        now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
+        state=state,
+        pr_number=188,
+    )
     check(result.kind == MODULE.PERMANENT, "malformed typed state was not normalized")
     check(result.action == MODULE.FALLBACK_NATIVE, "malformed typed state was retried")
     check(result.state.external_disabled, "malformed typed state did not disable the session route")
@@ -600,7 +635,7 @@ def test_malformed_typed_state_fails_closed() -> None:
 def test_disabled_state_is_session_only_and_blocks_new_launches() -> None:
     state = MODULE.SessionState(external_disabled=True)
     result = MODULE.decide("temporary failure", now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
-                           state=state)
+                           state=state, pr_number=188)
     check(result.action == MODULE.FALLBACK_NATIVE, "disabled session route was retried")
     check(result.state == state, "disabled state was changed outside the caller's session state")
 
@@ -619,6 +654,24 @@ def test_timer_after_retry_falls_back_but_keeps_timer() -> None:
     check(not result.external_disabled, "timer failure incorrectly disabled external review")
 
 
+def test_active_timer_without_pr_fails_closed() -> None:
+    first_now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    first = MODULE.decide("retry after 90 seconds", now=first_now, pr_number=188)
+    result = MODULE.decide(
+        "retry after 2 minutes",
+        now=first_now.replace(second=10),
+        state=first.state,
+    )
+    check(result.kind == MODULE.PERMANENT,
+          "session transition without a PR number was not malformed")
+    check(result.action == MODULE.FALLBACK_NATIVE,
+          "session transition without a PR number did not fall back natively")
+    check(result.external_disabled,
+          "session transition without a PR number did not disable the external route")
+    check(result.state.external_backoff_pr == 188,
+          "malformed session transition lost the existing timer owner")
+
+
 def test_zero_delay_timer_retries_immediately() -> None:
     result = MODULE.decide("retry-after: 0", now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc))
     check(result.kind == MODULE.TIMER and result.action == MODULE.RETRY_EXTERNAL,
@@ -632,6 +685,8 @@ CASES = [
     ("absolute-dst-gap", "DST gap fails closed", test_absolute_timer_dst_gap_fails_closed),
     ("absolute-dst-fold", "DST fold fails closed without an offset", test_absolute_timer_dst_fold_fails_closed),
     ("absolute-dst-explicit-offset", "explicit offset resolves a DST fold", test_absolute_timer_explicit_offset_resolves_dst_fold),
+    ("absolute-dst-both-explicit-offsets", "both valid DST fold offsets are accepted", test_absolute_timer_explicit_offset_resolves_both_dst_fold_offsets),
+    ("absolute-contradictory-offset", "contradictory named-zone offsets fail closed", test_absolute_timer_rejects_contradictory_named_zone_offset),
     ("relative-exact-wait", "relative delay is preserved exactly", test_relative_timer_waits_exactly),
     ("unitless-relative-timer", "unitless timers default to seconds", test_unitless_relative_timer_defaults_to_seconds),
     ("comma-grouped-relative-timer", "comma-grouped timers fail closed", test_comma_grouped_relative_timer_fails_closed),
@@ -670,6 +725,7 @@ CASES = [
     ("malformed-typed-state", "malformed typed state fails closed", test_malformed_typed_state_fails_closed),
     ("session-state", "disabled state blocks later launches in this session", test_disabled_state_is_session_only_and_blocks_new_launches),
     ("spent-timer-fallback", "spent timer falls back and retains session backoff", test_timer_after_retry_falls_back_but_keeps_timer),
+    ("active-timer-missing-pr", "active timer without a PR number fails closed", test_active_timer_without_pr_fails_closed),
     ("zero-delay-timer", "zero-delay timer retries immediately", test_zero_delay_timer_retries_immediately),
 ]
 

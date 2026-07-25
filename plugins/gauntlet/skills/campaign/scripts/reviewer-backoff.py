@@ -252,8 +252,26 @@ def _parse_offset(value: str | None) -> timezone | None | object:
         return _MALFORMED_TIMER
 
 
-def _resolve_local_deadline(local: datetime, zone: object, explicit_offset: timezone | None) -> datetime | None:
+def _resolve_local_deadline(
+    local: datetime,
+    zone: object,
+    explicit_offset: timezone | None,
+    *,
+    validate_explicit_offset: bool = False,
+) -> datetime | None:
     if explicit_offset is not None:
+        if validate_explicit_offset:
+            valid_offsets: set[timedelta] = set()
+            for fold in (0, 1):
+                candidate = local.replace(tzinfo=zone, fold=fold)
+                candidate_utc = candidate.astimezone(timezone.utc)
+                round_trip = candidate_utc.astimezone(zone)
+                if round_trip.replace(tzinfo=None) == local:
+                    candidate_offset = candidate.utcoffset()
+                    if candidate_offset is not None:
+                        valid_offsets.add(candidate_offset)
+            if explicit_offset.utcoffset(None) not in valid_offsets:
+                return None
         return local.replace(tzinfo=explicit_offset)
     candidates: dict[datetime, datetime] = {}
     for fold in (0, 1):
@@ -324,7 +342,12 @@ def _absolute_timer_match(match: re.Match[str] | None, now: datetime) -> tuple[i
         target_local = datetime(year, month, int(match.group("day")), hour, minute)
         if not match.group("year") and target_local < local_now.replace(tzinfo=None):
             target_local = target_local.replace(year=target_local.year + 1)
-        target = _resolve_local_deadline(target_local, zone, explicit_offset)
+        target = _resolve_local_deadline(
+            target_local,
+            zone,
+            explicit_offset,
+            validate_explicit_offset=zone_name is not None,
+        )
         if target is None:
             return None
         target_utc = target.astimezone(timezone.utc)
@@ -482,7 +505,8 @@ def classify(message: str, now: datetime | None = None) -> ExternalReviewFailure
     """Classify every external-process error before route selection.
 
     Permanent markers take precedence. Valid whole-second timer text wins over transient markers;
-    malformed or unsupported timer text is permanent for this session.
+    malformed or unsupported timer text is permanent for this session. A numeric offset paired with
+    a named timezone must match that zone's valid offset for the target local time.
     """
 
     if not isinstance(message, str):
@@ -555,6 +579,8 @@ def transition(
     if not _valid_state(prior):
         prior = ExternalReviewSessionState(external_disabled=True)
         failure = _permanent("external session state was malformed")
+    elif state is not None and pr_number is None:
+        failure = _permanent("external review PR number was omitted for a session transition")
     elif pr_number is not None and (type(pr_number) is not int or pr_number <= 0):
         failure = _permanent("external review PR number was malformed")
         pr_number = None
@@ -596,7 +622,9 @@ def transition(
     )
     deadline = _max_deadline(prior.external_backoff_until, failure.retry_at if failure.kind == TIMER else None)
     timer_id = failure.timer_identity if failure.kind == TIMER else prior.external_backoff_timer_id
-    timer_pr = pr_number if pr_number is not None else prior.external_backoff_pr
+    timer_pr = prior.external_backoff_pr
+    if failure.kind == TIMER and pr_number is not None:
+        timer_pr = pr_number
     if failure.kind == TIMER and prior.external_backoff_until is not None:
         incoming_deadline = failure.retry_at
         if same_timer_reentry:
