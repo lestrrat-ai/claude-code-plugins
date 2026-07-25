@@ -432,16 +432,8 @@ def transition(
     same_timer_reentry = (
         prior_deadline_exact
         and failure.kind == TIMER
-        and (
-            (
-                failure.retry_at is not None
-                and _utc(failure.retry_at) == _utc(prior.external_backoff_until)
-            )
-            or (
-                failure.timer_identity is not None
-                and failure.timer_identity == prior.external_backoff_timer_id
-            )
-        )
+        and failure.retry_at is not None
+        and _utc(failure.retry_at) == _utc(prior.external_backoff_until)
     )
     deadline = _max_deadline(prior.external_backoff_until, failure.retry_at if failure.kind == TIMER else None)
     timer_id = failure.timer_identity if failure.kind == TIMER else prior.external_backoff_timer_id

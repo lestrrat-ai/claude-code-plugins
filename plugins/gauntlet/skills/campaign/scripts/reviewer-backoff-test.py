@@ -105,9 +105,10 @@ def test_session_timer_deadline_is_not_extended_on_reentry() -> None:
 
 def test_session_timer_retries_at_exact_reentry_deadline() -> None:
     first_now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
-    first = MODULE.decide("retry after 90 seconds", now=first_now)
+    failure = MODULE.classify("retry after 90 seconds", now=first_now)
+    first = MODULE.transition(failure, now=first_now)
     deadline = first_now.replace(minute=1, second=30)
-    result = MODULE.decide("retry after 90 seconds", now=deadline, state=first.state)
+    result = MODULE.transition(failure, now=deadline, state=first.state)
     check(result.action == MODULE.RETRY_EXTERNAL,
           "re-entry at the session deadline did not retry")
     check(result.retry_after_seconds == 0,
@@ -116,6 +117,24 @@ def test_session_timer_retries_at_exact_reentry_deadline() -> None:
           "exact-deadline re-entry changed the stored deadline")
     check(result.state.external_backoff_timer_id == first.state.external_backoff_timer_id,
           "exact-deadline re-entry changed the session timer identity")
+
+
+def test_identical_text_new_timer_replaces_expired_session_deadline() -> None:
+    first_now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    first = MODULE.decide("retry after 90 seconds", now=first_now)
+    deadline = first_now.replace(minute=1, second=30)
+    result = MODULE.decide(
+        "retry after 90 seconds",
+        now=deadline,
+        state=first.state,
+    )
+    expected_deadline = datetime(2026, 7, 25, 12, 3, tzinfo=timezone.utc)
+    check(result.action == MODULE.WAIT_EXTERNAL,
+          "identical-text new timer at the exact old deadline did not wait")
+    check(result.retry_after_seconds == 90,
+          "identical-text new timer did not use its new delay")
+    check(result.state.external_backoff_until == expected_deadline,
+          "identical-text new timer did not replace the expired session deadline")
 
 
 def test_new_timer_replaces_expired_session_deadline() -> None:
@@ -321,6 +340,7 @@ CASES = [
     ("unsupported-relative-unit", "unsupported timer units fail closed", test_unsupported_relative_timer_unit_fails_closed),
     ("session-deadline-reentry", "active session deadline is preserved on re-entry", test_session_timer_deadline_is_not_extended_on_reentry),
     ("session-deadline-exact-reentry", "exact deadline re-entry retries without extension", test_session_timer_retries_at_exact_reentry_deadline),
+    ("expired-deadline-identical-timer", "identical-text new timer replaces an expired session deadline", test_identical_text_new_timer_replaces_expired_session_deadline),
     ("expired-deadline-new-timer", "new timer replaces an expired session deadline", test_new_timer_replaces_expired_session_deadline),
     ("timer-deadline-retry", "timer retries at its exact deadline", test_timer_retries_at_deadline),
     ("transient-immediate-retry", "transient failure retries immediately", test_transient_retries_immediately),

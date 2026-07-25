@@ -193,8 +193,8 @@ from the returned transition or decision. **Never write `external_disabled` or
 `external_backoff_until` or `external_backoff_timer_id` to the ledger, history, preferences, run artifacts,
 or any other durable campaign record. `timer_identity` and `external_backoff_timer_id` are opaque
 session-memory values. At an exact existing deadline, preserve the old deadline only when the typed
-failure or matching session timer identity proves re-entry; a newly classified timer owns its new
-`retry_at`. A new session starts with an empty state.
+failure's `retry_at` matches that deadline; matching timer text alone never proves re-entry, and a newly
+classified timer owns its new `retry_at`. A new session starts with an empty state.
 
 ```text
 review_transition(
@@ -226,7 +226,7 @@ This operation owns every route change:
 `wait-external` is a session action, not a process launch: it consumes no `launch_attempt` and calls
 no `review-dispatch.py prepare`. Use the heartbeat or another bounded wait to reach the returned
 timestamp, then re-enter this transition with the same typed failure, live session state, and current time;
-the exact-deadline identity rule above decides whether the timer is a re-entry. A pre-launch
+the exact-deadline re-entry rule above decides whether the timer is a re-entry. A pre-launch
 cross-engine capability miss has no process to relaunch, so it consumes no retry and takes the fresh
 native fallback immediately. A timer or permanent provider error does not change the policy in a later
 session.
