@@ -31,11 +31,12 @@ RETRY_EXTERNAL = "retry-external"
 WAIT_EXTERNAL = "wait-external"
 FALLBACK_NATIVE = "fallback-native"
 
+_TIMER_END = r"(?:\Z|[.;:!?]|,(?!\d))"
 RETRY_AFTER_RE = re.compile(
     r"\bretry[\s-]+after\s*:?[\s]*(?P<value>\d+)(?![\d.])"
-    r"(?:\s*(?P<unit>seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d)"
-    r"(?=\s*(?:\Z|[.,;:!?]))"
-    r"|(?=\s*(?:\Z|[.,;:!?])))",
+    rf"(?:\s*(?P<unit>seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d)"
+    rf"(?=\s*{_TIMER_END})"
+    rf"|(?=\s*{_TIMER_END}))",
     re.IGNORECASE,
 )
 DURATION_RE = re.compile(
@@ -43,7 +44,7 @@ DURATION_RE = re.compile(
     r"\s*(?:after|in|for|:)?\s*"
     r"(?P<value>\d+)(?![\d.])\s*"
     r"(?P<unit>seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d)"
-    r"(?=\s*(?:\Z|[.,;:!?]))",
+    rf"(?=\s*{_TIMER_END})",
     re.IGNORECASE,
 )
 TIMER_PHRASE_RE = re.compile(

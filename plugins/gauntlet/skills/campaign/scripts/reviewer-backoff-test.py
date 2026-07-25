@@ -89,6 +89,19 @@ def test_unitless_relative_timer_defaults_to_seconds() -> None:
           "unitless relative timer did not default to seconds")
 
 
+def test_comma_grouped_relative_timer_fails_closed() -> None:
+    result = MODULE.decide(
+        "rate limited; retry after 90,000 seconds",
+        now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
+    )
+    check(result.kind == MODULE.PERMANENT,
+          "comma-grouped relative timer was accepted")
+    check(result.action == MODULE.FALLBACK_NATIVE,
+          "comma-grouped relative timer did not fall back")
+    check(result.state.external_disabled,
+          "comma-grouped relative timer did not disable the session route")
+
+
 def test_unsupported_relative_timer_unit_fails_closed() -> None:
     result = MODULE.decide(
         "rate limited; retry after 90 bananas",
@@ -497,6 +510,7 @@ CASES = [
     ("timer-wait-dst-elapsed-time", "timer wait uses elapsed time across DST", test_timer_wait_uses_elapsed_time_across_dst),
     ("relative-exact-wait", "relative delay is preserved exactly", test_relative_timer_waits_exactly),
     ("unitless-relative-timer", "unitless timers default to seconds", test_unitless_relative_timer_defaults_to_seconds),
+    ("comma-grouped-relative-timer", "comma-grouped timers fail closed", test_comma_grouped_relative_timer_fails_closed),
     ("unsupported-relative-unit", "unsupported timer units fail closed", test_unsupported_relative_timer_unit_fails_closed),
     ("unsupported-relative-punctuation", "unsupported timer punctuation fails closed", test_unsupported_relative_timer_punctuation_fails_closed),
     ("incomplete-absolute-reset", "incomplete absolute reset fails closed", test_incomplete_absolute_reset_fails_closed),
