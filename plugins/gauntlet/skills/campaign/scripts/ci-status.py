@@ -2251,24 +2251,86 @@ def _markdown_fenced_blocks(text: str) -> list[tuple[int, int, int, int, bool]]:
     """Return CommonMark-style fenced blocks as (block start, block end, body start, body end, shell info).
 
     Fences use matching backtick or tilde markers of at least three characters and allow up to three
-    spaces of indentation. Non-shell blocks are returned too, so inline literals inside them stay out of
-    the command-copy scan.
+    spaces of indentation relative to their container. Fences inside list items use the list item's
+    content indentation as their container. Non-shell blocks are returned too, so inline code spans inside
+    them stay out of the command-copy scan.
     """
     blocks: list[tuple[int, int, int, int, bool]] = []
-    opening: tuple[str, int, bool, int, int] | None = None
+    opening: tuple[str, int, bool, int, int, tuple[int, int] | None] | None = None
+    list_contexts: list[tuple[int, int]] = []
+
+    def indent_columns(content: str) -> int:
+        columns = 0
+        for char in content:
+            if char == " ":
+                columns += 1
+            elif char == "\t":
+                columns += 4 - (columns % 4)
+            else:
+                break
+        return columns
+
+    def strip_columns(content: str, wanted: int) -> str | None:
+        columns = 0
+        index = 0
+        while index < len(content) and columns < wanted:
+            char = content[index]
+            if char == " ":
+                columns += 1
+            elif char == "\t":
+                columns += 4 - (columns % 4)
+            else:
+                return None
+            index += 1
+        return content[index:] if columns >= wanted else None
+
+    def list_item(content: str) -> re.Match[str] | None:
+        return re.match(r"^(?P<indent>[ \t]*)(?P<marker>[-+*]|\d{1,9}[.)])(?P<space>[ \t]+)"
+                        r"(?P<rest>.*)$",
+                        content)
+
+    def candidates(content: str, contexts: list[tuple[int, int]],
+                   item: re.Match[str] | None) -> list[tuple[str, tuple[int, int] | None]]:
+        result: list[tuple[str, tuple[int, int] | None]] = []
+        if item is not None:
+            item_indent = indent_columns(item.group("indent"))
+            content_indent = item_indent + len(item.group("marker")) + indent_columns(item.group("space"))
+            result.append((item.group("rest"), (item_indent, content_indent)))
+        for context in reversed(contexts):
+            stripped = strip_columns(content, context[1])
+            if stripped is not None:
+                result.append((stripped, context))
+        result.append((content, None))
+        return result
+
     offset = 0
     for line in text.splitlines(keepends=True):
         content = line.rstrip("\r\n")
         if opening is None:
-            match = re.match(r"^ {0,3}(?P<markers>[`~]{3,})(?P<info>[^\r\n]*)$", content)
-            if match is not None:
+            item = list_item(content)
+            if item is not None:
+                item_indent = indent_columns(item.group("indent"))
+                list_contexts = [context for context in list_contexts if context[0] < item_indent]
+                content_indent = item_indent + len(item.group("marker")) + indent_columns(item.group("space"))
+                list_contexts.append((item_indent, content_indent))
+            elif content.strip(" \t"):
+                leading = indent_columns(content)
+                list_contexts = [context for context in list_contexts if leading > context[0]]
+            for logical, context in candidates(content, list_contexts, item):
+                match = re.match(r"^ {0,3}(?P<markers>[`~]{3,})(?P<info>[^\r\n]*)$", logical)
+                if match is None:
+                    continue
                 markers = match.group("markers")
                 info = match.group("info").strip()
                 if len(set(markers)) == 1 and not (markers[0] == "`" and "`" in info):
                     opening = (markers[0], len(markers), info in ("", "sh", "bash", "shell"),
-                               offset + len(line), offset)
+                               offset + len(line), offset, context)
+                    break
         else:
-            close = re.match(r"^ {0,3}(?P<markers>[`~]{3,})[ \t]*$", content)
+            context = opening[5]
+            logical = content if context is None else strip_columns(content, context[1])
+            close = (None if logical is None else
+                     re.match(r"^ {0,3}(?P<markers>[`~]{3,})[ \t]*$", logical))
             if (close is not None and len(set(close.group("markers"))) == 1
                     and close.group("markers")[0] == opening[0]
                     and len(close.group("markers")) >= opening[1]):
@@ -2278,6 +2340,27 @@ def _markdown_fenced_blocks(text: str) -> list[tuple[int, int, int, int, bool]]:
     if opening is not None:
         blocks.append((opening[4], len(text), opening[3], len(text), opening[2]))
     return blocks
+
+
+def _markdown_inline_code_spans(text: str) -> list[tuple[int, int, int]]:
+    """Return CommonMark inline code spans as (span start, body start, body end)."""
+    delimiters = list(re.finditer(r"`+", text))
+    spans: list[tuple[int, int, int]] = []
+    index = 0
+    while index < len(delimiters):
+        opening = delimiters[index]
+        length = len(opening.group())
+        closing_index = index + 1
+        while closing_index < len(delimiters):
+            closing = delimiters[closing_index]
+            if len(closing.group()) == length:
+                spans.append((opening.start(), opening.end(), closing.start()))
+                index = closing_index + 1
+                break
+            closing_index += 1
+        else:
+            index += 1
+    return spans
 
 
 def _markdown_indented_code_blocks(text: str) -> list[tuple[int, int]]:
@@ -2331,33 +2414,37 @@ def _markdown_indented_code_blocks(text: str) -> list[tuple[int, int]]:
 
 
 def documented_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, str]]:
-    """Return supported command copies: inline literals and fenced shell commands.
+    """Return supported command copies: inline code spans and fenced shell commands.
 
-    The command-copy guard owns two documentation forms. Inline literals carry a complete command, even
-    when Markdown wraps the literal. Fenced shell blocks carry one shell command, whose continued lines end
-    in ``\\``. Indented code blocks and other Markdown constructs are deliberately outside this guard's
-    scope.
+    The command-copy guard owns two documentation forms. Inline code spans carry a complete command, even
+    when Markdown wraps the literal or uses a multi-backtick delimiter. Fenced shell blocks carry one shell
+    command, whose continued lines end in ``\\``; fences nested in list-item containers are included too.
+    Indented code blocks and other Markdown constructs are deliberately outside this guard's scope.
     """
     command = re.compile(rf"ci-status\.py\s+{re.escape(subcommand)}\b")
     fenced_command = re.compile(
         rf"(?m)^[ \t]*(?:\$[ \t]+)?(?:python3?[ \t]+)?(?:\S*/)?ci-status\.py\s+"
         rf"{re.escape(subcommand)}\b"
     )
-    inline = re.compile(r"`(?P<body>[^`]*?)`", re.DOTALL)
     copies: list[tuple[Path, int, str]] = []
     for md in sorted(root.rglob("*.md")):
         text = md.read_text(encoding="utf-8")
         blocks = _markdown_fenced_blocks(text)
-        excluded = [(start, end) for start, end, _body_start, _body_end, _shell in blocks]
-        excluded.extend(_markdown_indented_code_blocks(text))
-        for literal in inline.finditer(text):
-            if any(start <= literal.start() < end for start, end in excluded):
+        fenced_ranges = [(start, end) for start, end, _body_start, _body_end, _shell in blocks]
+        excluded = list(fenced_ranges)
+        for start, end in _markdown_indented_code_blocks(text):
+            if any(fenced_start <= start and end <= fenced_end for fenced_start, fenced_end in fenced_ranges):
                 continue
-            match = command.search(literal.group("body"))
+            excluded.append((start, end))
+        for literal_start, body_start, body_end in _markdown_inline_code_spans(text):
+            if any(start <= literal_start < end for start, end in excluded):
+                continue
+            body = text[body_start:body_end]
+            match = command.search(body)
             if match is None:
                 continue
-            offset = literal.start("body") + match.start()
-            copies.append((md, text.count("\n", 0, offset) + 1, literal.group("body")[match.start():]))
+            offset = body_start + match.start()
+            copies.append((md, text.count("\n", 0, offset) + 1, body[match.start():]))
         for _block_start, _block_end, body_start, body_end, shell in blocks:
             if not shell:
                 continue
@@ -2389,9 +2476,10 @@ def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]
     the class TWICE: a fourth copy of a canonical command that had gone stale, and a doc recap that dropped
     `,headRefOid` from the rollup fetch.
 
-    A copy is a command in an inline literal or a fenced shell block. Inline literals may wrap across
-    Markdown lines; fenced shell commands may wrap with a trailing `\\`. Indented code blocks and other
-    prose are not invocations, so this guard does not parse them.
+    A copy is a command in an inline code span or a fenced shell block. Inline spans may use a multi-backtick
+    delimiter and wrap across Markdown lines; fenced shell commands may wrap with a trailing `\\`, including
+    fences nested in list-item containers. Indented code blocks and other prose are not invocations, so this
+    guard does not parse them.
 
     FINDING ZERO COPIES IS A FAILURE: the command is prescribed by at least `stage-2-ci.md` and
     `critical-rules.md`, and a check that cannot find its subject never passes.
@@ -2420,9 +2508,10 @@ def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]
 def check_liveness_copies(root: Path | None = None) -> tuple[list[str], list[str]]:
     """Every runnable liveness copy carries `--machine-action` — the judgment flag a recap must not drop.
 
-    The supported forms are the inline literal and fenced shell command forms owned by
-    `documented_ci_status_copies`. Indented code blocks and other prose are not invocations. A copy without
-    the flag is a command the tool refuses, and a reader who "fixes" it by inventing a default
+    The supported forms are the inline code span and fenced shell command forms owned by
+    `documented_ci_status_copies`. Multi-backtick spans and list-contained fences are included; indented
+    code blocks and other prose are not invocations. A copy without the flag is a command the tool refuses,
+    and a reader who "fixes" it by inventing a default
     answers the one question the tool deliberately asks.
     """
     problems, copies = [], []

@@ -1123,6 +1123,53 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
             f"copies={copies!r}, problems={found_problems!r}, checked={checked!r}"
         )
 
+    root = tmp / "command-copy-required-set-double-backtick"
+    root.mkdir()
+    (root / "commands.md").write_text(
+        "```sh\n"
+        "ci-status.py required-set --ledger <rundir>/state.jsonl\n"
+        "```\n\n"
+        "``ci-status.py required-set``\n",
+        encoding="utf-8",
+    )
+    copies = ci.documented_ci_status_copies(root, "required-set")
+    found_problems, checked = ci.check_required_set_copies(root)
+    if len(copies) != 2 or sorted(checked) != ["commands.md:2", "commands.md:5"]:
+        problems.append(
+            f"[command copy required-set] a multi-backtick inline copy was not discovered: "
+            f"copies={copies!r}, checked={checked!r}"
+        )
+    if len(found_problems) != 1 or "commands.md:5" not in found_problems[0]:
+        problems.append(
+            f"[command copy required-set] the multi-backtick copy did not report its missing ledger: "
+            f"{found_problems!r}"
+        )
+
+    root = tmp / "command-copy-required-set-list-fence"
+    root.mkdir()
+    (root / "commands.md").write_text(
+        "```sh\n"
+        "ci-status.py required-set --ledger <rundir>/state.jsonl\n"
+        "```\n\n"
+        "- Nested example:\n\n"
+        "    ~~~sh\n"
+        "    ci-status.py required-set\n"
+        "    ~~~\n",
+        encoding="utf-8",
+    )
+    copies = ci.documented_ci_status_copies(root, "required-set")
+    found_problems, checked = ci.check_required_set_copies(root)
+    if len(copies) != 2 or sorted(checked) != ["commands.md:2", "commands.md:8"]:
+        problems.append(
+            f"[command copy required-set] a list-contained fence was not discovered: "
+            f"copies={copies!r}, checked={checked!r}"
+        )
+    if len(found_problems) != 1 or "commands.md:8" not in found_problems[0]:
+        problems.append(
+            f"[command copy required-set] the list-contained fence did not report its missing ledger: "
+            f"{found_problems!r}"
+        )
+
     root = tmp / "command-copy-required-set-indented-code"
     root.mkdir()
     (root / "commands.md").write_text(
@@ -1452,9 +1499,9 @@ def run(ci, tmp: Path) -> int:
         failures += 1
         print(f"FAIL     {problem}")
     if not command_copy_problems:
-        print(f"ok       {'wrapped doc command copies':32} -> inline literals and fenced shell commands; "
-              f"indented code blocks stay excluded; each valid copy keeps its inputs and each invalid copy "
-              f"fails on its own missing input")
+        print(f"ok       {'wrapped doc command copies':32} -> inline code spans and list-contained fenced shell "
+              f"commands; indented code blocks stay excluded; each valid copy keeps its inputs and each "
+              f"invalid copy fails on its own missing input")
 
     liveness_problems = liveness_cases(ci, tmp)
     for problem in liveness_problems:
