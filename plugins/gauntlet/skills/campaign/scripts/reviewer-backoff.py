@@ -48,7 +48,7 @@ DURATION_RE = re.compile(
     re.IGNORECASE,
 )
 TIMER_PHRASE_RE = re.compile(
-    r"\b(?:retry(?:ing)?|try\s+again|backoff|wait|available)\b",
+    r"\b(?:retry(?:ing)?|try\s+again|backoff|wait|reset(?:s)?|available)\b",
     re.IGNORECASE,
 )
 ABSOLUTE_TIMER_PREFIX_RE = re.compile(
@@ -80,7 +80,8 @@ ABSOLUTE_RE = re.compile(
     r"(?P<day>\d{1,2})(?:,\s*|\s+)"
     r"(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<ampm>am|pm)"
     r"(?:\s+(?P<year>\d{4}))?\s*"
-    r"(?:\((?P<zone>[^)\s]+)\))?",
+    r"(?:\((?P<zone>[^)\s]+)\))?"
+    rf"(?=\s*{_TIMER_END})",
     re.IGNORECASE,
 )
 
@@ -516,17 +517,13 @@ def transition(
         prior.external_backoff_until is not None
         and _utc(prior.external_backoff_until) >= _utc(current)
     )
-    prior_deadline_exact = (
-        prior.external_backoff_until is not None
-        and _utc(prior.external_backoff_until) == _utc(current)
-    )
     same_timer_identity = (
         failure.kind == TIMER
         and failure.timer_identity is not None
         and failure.timer_identity == prior.external_backoff_timer_id
     )
     same_timer_reentry = (
-        prior_deadline_exact
+        prior_deadline_active
         and same_timer_identity
         and failure.retry_at is not None
         and _utc(failure.retry_at) == _utc(prior.external_backoff_until)
@@ -542,10 +539,6 @@ def transition(
                 TIMER, 0, prior.external_backoff_until, failure.reason, failure.timer_identity
             )
         elif (
-            prior_deadline_active
-            and same_timer_identity
-            and not prior_deadline_exact
-        ) or (
             incoming_deadline is not None
             and _utc(incoming_deadline) <= _utc(prior.external_backoff_until)
         ):

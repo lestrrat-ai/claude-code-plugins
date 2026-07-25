@@ -146,6 +146,19 @@ def test_incomplete_absolute_reset_fails_closed() -> None:
           "incomplete absolute reset did not disable the session route")
 
 
+def test_absolute_timer_suffix_fails_closed() -> None:
+    result = MODULE.decide(
+        "rate limit; resets Jul 27, 9pm (Asia/Tokyo)%",
+        now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
+    )
+    check(result.kind == MODULE.PERMANENT,
+          "absolute timer with an unsupported suffix was accepted")
+    check(result.action == MODULE.FALLBACK_NATIVE,
+          "absolute timer with an unsupported suffix did not fall back")
+    check(result.state.external_disabled,
+          "absolute timer with an unsupported suffix did not disable the session route")
+
+
 def test_malformed_timer_before_valid_timer_fails_closed() -> None:
     result = MODULE.decide(
         "rate limit; retry after never seconds; retry after 90 seconds",
@@ -159,11 +172,29 @@ def test_malformed_timer_before_valid_timer_fails_closed() -> None:
           "mixed malformed and valid timers did not disable the session route")
 
 
+def test_malformed_reset_timer_fails_closed() -> None:
+    for message in (
+        "temporarily unavailable; reset after 90 bananas",
+        "temporarily unavailable; reset after 1.5 seconds",
+    ):
+        result = MODULE.decide(
+            message,
+            now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
+        )
+        check(result.kind == MODULE.PERMANENT,
+              f"malformed reset timer was accepted: {message!r}")
+        check(result.action == MODULE.FALLBACK_NATIVE,
+              f"malformed reset timer did not fall back: {message!r}")
+        check(result.state.external_disabled,
+              f"malformed reset timer did not disable the session route: {message!r}")
+
+
 def test_session_timer_deadline_is_not_extended_on_reentry() -> None:
     first_now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
-    first = MODULE.decide("retry after 90 seconds", now=first_now)
-    second = MODULE.decide(
-        "retry after 90 seconds",
+    failure = MODULE.classify("retry after 90 seconds", now=first_now)
+    first = MODULE.transition(failure, now=first_now)
+    second = MODULE.transition(
+        failure,
         now=first_now.replace(second=30),
         state=first.state,
     )
@@ -176,6 +207,21 @@ def test_session_timer_deadline_is_not_extended_on_reentry() -> None:
           "re-entry did not wait for the remaining session timer")
     check(second.state.external_backoff_until == expected_deadline,
           "re-entry extended the active session deadline")
+
+
+def test_active_identical_new_timer_replaces_deadline() -> None:
+    first_now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    first = MODULE.decide("retry after 90 seconds", now=first_now)
+    later_now = first_now.replace(second=30)
+    later_failure = MODULE.classify("retry after 90 seconds", later_now)
+    result = MODULE.transition(later_failure, now=later_now, state=first.state)
+    expected_deadline = datetime(2026, 7, 25, 12, 2, tzinfo=timezone.utc)
+    check(result.action == MODULE.WAIT_EXTERNAL,
+          "active identical fresh timer did not keep the external route waiting")
+    check(result.retry_after_seconds == 90,
+          "active identical fresh timer was shortened to the old deadline")
+    check(result.state.external_backoff_until == expected_deadline,
+          "active identical fresh timer did not replace the old deadline")
 
 
 def test_active_later_timer_replaces_deadline_and_identity() -> None:
@@ -514,8 +560,11 @@ CASES = [
     ("unsupported-relative-unit", "unsupported timer units fail closed", test_unsupported_relative_timer_unit_fails_closed),
     ("unsupported-relative-punctuation", "unsupported timer punctuation fails closed", test_unsupported_relative_timer_punctuation_fails_closed),
     ("incomplete-absolute-reset", "incomplete absolute reset fails closed", test_incomplete_absolute_reset_fails_closed),
+    ("absolute-timer-suffix", "absolute timer suffix fails closed", test_absolute_timer_suffix_fails_closed),
     ("malformed-before-valid-timer", "malformed timer before valid timer fails closed", test_malformed_timer_before_valid_timer_fails_closed),
+    ("malformed-reset-timer", "malformed reset timer fails closed", test_malformed_reset_timer_fails_closed),
     ("session-deadline-reentry", "active session deadline is preserved on re-entry", test_session_timer_deadline_is_not_extended_on_reentry),
+    ("active-identical-timer", "active identical fresh timer replaces deadline", test_active_identical_new_timer_replaces_deadline),
     ("active-later-deadline", "active later timer replaces deadline and identity", test_active_later_timer_replaces_deadline_and_identity),
     ("session-deadline-exact-reentry", "exact deadline re-entry retries without extension", test_session_timer_retries_at_exact_reentry_deadline),
     ("cli-typed-reentry", "CLI preserves typed timer re-entry", test_cli_preserves_typed_timer_across_reentry),
