@@ -1434,6 +1434,20 @@ def watch_action_owner_cases(ci, tmp: Path) -> list[str]:
         if not any("contradictory" in problem for problem in subject_first):
             problems.append(f"[watch owners] subject-first CI rule at {relative}:{anchor} was accepted")
 
+        means_fixture_root = tmp / "watch-owner-status-means"
+        means_fixture_path = means_fixture_root / relative
+        means_fixture_path.parent.mkdir(parents=True, exist_ok=True)
+        means_changed = (source_text[:start] + block + " Pending CI means relaunch the watch."
+                         + source_text[start + len(block):])
+        means_fixture_path.write_text(means_changed, encoding="utf-8")
+        means_mutated, _ = ci.check_watch_action_docs(
+            means_fixture_root,
+            owners=(contradictory_owner,),
+            required_owners=(contradictory_owner,),
+        )
+        if not any("contradictory ci/status-based" in problem for problem in means_mutated):
+            problems.append(f"[watch owners] status-means action at {relative}:{anchor} was accepted")
+
     arrow_owner = next(
         owner for owner in owners
         if owner[0] == "formula" and owner[1] == "references/pr-adoption.md"

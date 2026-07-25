@@ -235,7 +235,9 @@ WATCH_ACTION_CONTRADICTIONS = (
         r"\b(?:watch|launch|relaunch|ensure)\b[^.!?]*\b(?:if|when|while)\s+"
         r"(?:(?:the|row(?:'s)?|value\s+of)\s+)*(?:ci|status)\b|"
         r"\b(?:ci|status)\b\s*(?:==|=|is)\s*[^.!?]*?->\s*"
-        r"(?:watch|launch|relaunch|ensure)\b)",
+        r"(?:watch|launch|relaunch|ensure)\b|"
+        r"\b(?:ci|status)\b[^.!?]*\bmeans\b[^.!?]*"
+        r"\b(?:watch|launch|relaunch|ensure)\b)",
         re.IGNORECASE,
     )),
     ("unconditional", re.compile(
