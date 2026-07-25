@@ -1046,7 +1046,7 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
         "required-set": (
             ci.check_required_set_copies,
             "--ledger <rundir>/state.jsonl",
-            "",
+            "# --ledger <rundir>/state.jsonl",
             "without the run ledger's",
         ),
     }

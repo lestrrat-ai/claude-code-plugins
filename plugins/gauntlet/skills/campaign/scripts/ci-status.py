@@ -148,6 +148,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import textwrap
@@ -2364,7 +2365,23 @@ def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list
     problems, copies = [], []
     for md, line, command in documented_ci_status_copies(root or HERE.parent, "required-set"):
         copies.append(f"{md.name}:{line}")
-        if "--ledger" not in command or "state.jsonl" not in command:
+        try:
+            argv = shlex.split(command, comments=True)
+        except ValueError:
+            argv = []
+        has_ledger_path = any(
+            (
+                token == "--ledger"
+                and index + 1 < len(argv)
+                and argv[index + 1].endswith("state.jsonl")
+            )
+            or (
+                token.startswith("--ledger=")
+                and token.partition("=")[2].endswith("state.jsonl")
+            )
+            for index, token in enumerate(argv)
+        )
+        if not has_ledger_path:
             problems.append(
                 f"{md.name}:{line} runs `ci-status.py required-set` without the run ledger's "
                 f"`state.jsonl` — the command must persist the value it read before the value exists"
