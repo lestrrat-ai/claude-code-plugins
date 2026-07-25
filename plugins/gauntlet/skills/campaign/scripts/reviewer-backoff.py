@@ -636,7 +636,7 @@ def transition(
         elif same_timer_owner and incoming_deadline is not None:
             deadline = incoming_deadline
             timer_id = failure.timer_identity
-        elif different_timer_owner:
+        elif different_timer_owner and prior_deadline_active:
             deadline = prior.external_backoff_until
             timer_id = prior.external_backoff_timer_id
             timer_pr = prior.external_backoff_pr

@@ -336,6 +336,29 @@ def test_active_timer_for_another_pr_falls_back_and_retains_owner() -> None:
           "another PR replaced the existing session timer owner")
 
 
+def test_expired_timer_for_another_pr_replaces_deadline_and_waits() -> None:
+    first_now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    first = MODULE.decide("retry after 120 seconds", now=first_now, pr_number=188)
+    later_now = datetime(2026, 7, 25, 12, 2, 1, tzinfo=timezone.utc)
+    result = MODULE.decide(
+        "retry after 30 seconds",
+        now=later_now,
+        state=first.state,
+        pr_number=189,
+    )
+    expected_deadline = datetime(2026, 7, 25, 12, 2, 31, tzinfo=timezone.utc)
+    check(result.action == MODULE.WAIT_EXTERNAL,
+          "another PR did not wait on its timer after the prior deadline expired")
+    check(result.retry_after_seconds == 30,
+          "another PR did not retain its provider timer after the prior deadline expired")
+    check(result.state.external_backoff_until == expected_deadline,
+          "another PR retained the expired session backoff")
+    check(result.state.external_backoff_timer_id != first.state.external_backoff_timer_id,
+          "another PR reused the expired session timer identity")
+    check(result.state.external_backoff_pr == 189,
+          "another PR did not become the owner after the prior deadline expired")
+
+
 def test_session_timer_retries_at_exact_reentry_deadline() -> None:
     first_now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
     failure = MODULE.classify("retry after 90 seconds", now=first_now)
@@ -701,6 +724,7 @@ CASES = [
     ("active-later-deadline", "active later timer replaces deadline and identity", test_active_later_timer_replaces_deadline_and_identity),
     ("active-earlier-same-pr", "active earlier timer replaces deadline for the same PR", test_active_earlier_timer_replaces_deadline_for_same_pr),
     ("active-timer-other-pr", "active timer for another PR falls back and retains ownership", test_active_timer_for_another_pr_falls_back_and_retains_owner),
+    ("expired-timer-other-pr", "expired timer for another PR replaces deadline and waits", test_expired_timer_for_another_pr_replaces_deadline_and_waits),
     ("session-deadline-exact-reentry", "exact deadline re-entry retries without extension", test_session_timer_retries_at_exact_reentry_deadline),
     ("cli-typed-reentry", "CLI preserves typed timer re-entry", test_cli_preserves_typed_timer_across_reentry),
     ("cli-invalid-utf8", "CLI invalid UTF-8 message file falls back", test_cli_invalid_utf8_message_file_falls_back),
