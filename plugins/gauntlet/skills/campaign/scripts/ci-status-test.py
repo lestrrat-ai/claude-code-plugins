@@ -1047,7 +1047,7 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
             ci.check_required_set_copies,
             "--ledger <rundir>/state.jsonl",
             "",
-            "without the run ledger's",
+            "only its supported options",
         ),
     }
     for subcommand, (check, valid, invalid, needle) in forms.items():
@@ -1125,6 +1125,63 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
     if len(found_problems) != 1 or "commands.md:2" not in found_problems[0]:
         problems.append(
             f"[command copy required-set] extra state.jsonl argument was accepted: {found_problems!r}"
+        )
+
+    root = tmp / "command-copy-required-set-double-quoted-continuation"
+    root.mkdir()
+    quoted_ledger = tmp / "quoted" / "state.jsonl"
+    (root / "commands.md").write_text(
+        "```sh\n"
+        "ci-status.py required-set --ledger \""
+        + str(quoted_ledger.with_name("state."))
+        + chr(92)
+        + "\njsonl\"\n"
+        "```\n",
+        encoding="utf-8",
+    )
+    copies = ci.documented_ci_status_copies(root, "required-set")
+    found_problems, checked = ci.check_required_set_copies(root)
+    expected_command = f'ci-status.py required-set --ledger "{quoted_ledger}"'
+    if (len(copies) != 1 or copies[0][2] != expected_command
+            or checked != ["commands.md:2"] or found_problems):
+        problems.append(
+            f"[command copy required-set] double-quoted continuation changed the ledger path: "
+            f"copies={copies!r}, problems={found_problems!r}"
+        )
+
+    root = tmp / "command-copy-required-set-continued-extra-argv"
+    root.mkdir()
+    (root / "commands.md").write_text(
+        "```sh\n"
+        "ci-status.py required-set --ledger <rundir>/state.jsonl " + chr(92) + "\n"
+        "extra-argument\n"
+        "```\n",
+        encoding="utf-8",
+    )
+    copies = ci.documented_ci_status_copies(root, "required-set")
+    found_problems, checked = ci.check_required_set_copies(root)
+    if len(copies) != 1 or checked != ["commands.md:2"] or len(found_problems) != 1:
+        problems.append(
+            f"[command copy required-set] continued extra argv was accepted: "
+            f"copies={copies!r}, problems={found_problems!r}"
+        )
+
+    root = tmp / "command-copy-required-set-directory-shaped-ledger"
+    root.mkdir()
+    directory_ledger = root / "state.jsonl"
+    directory_ledger.mkdir()
+    (root / "commands.md").write_text(
+        "```sh\n"
+        "ci-status.py required-set --ledger " + str(directory_ledger) + "\n"
+        "```\n",
+        encoding="utf-8",
+    )
+    copies = ci.documented_ci_status_copies(root, "required-set")
+    found_problems, checked = ci.check_required_set_copies(root)
+    if len(copies) != 1 or checked != ["commands.md:2"] or len(found_problems) != 1:
+        problems.append(
+            f"[command copy required-set] directory-shaped ledger was accepted: "
+            f"copies={copies!r}, problems={found_problems!r}"
         )
 
     root = tmp / "command-copy-required-set-mixed-indent"

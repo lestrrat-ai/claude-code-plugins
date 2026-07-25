@@ -2414,6 +2414,35 @@ def _markdown_indented_code_blocks(text: str) -> list[tuple[int, int]]:
     return blocks
 
 
+def _join_shell_continuations(span: str) -> str:
+    """Join continued shell lines while preserving shell quote semantics."""
+    joined: list[str] = []
+    quote: str | None = None
+    escaped = False
+    index = 0
+    while index < len(span):
+        char = span[index]
+        if char == "\\" and index + 1 < len(span) and span[index + 1] == "\n" and quote != "'":
+            joined.append("" if quote == '"' else " ")
+            index += 2
+            while index < len(span) and span[index] in " \t":
+                index += 1
+            escaped = False
+            continue
+        joined.append(char)
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote != "'":
+            escaped = True
+        elif char in "'\"":
+            if quote is None:
+                quote = char
+            elif quote == char:
+                quote = None
+        index += 1
+    return "".join(joined)
+
+
 def documented_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, str]]:
     """Return supported command copies: inline code spans and fenced shell commands.
 
@@ -2463,7 +2492,7 @@ def documented_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path,
                     command_end = next_end
                 span = body[match.start():command_end]
                 copies.append((md, text.count("\n", 0, body_start + match.start()) + 1,
-                               re.sub(r"\\\n[ \t]*", " ", span)))
+                               _join_shell_continuations(span)))
     return copies
 
 
@@ -2537,7 +2566,7 @@ def check_liveness_copies(root: Path | None = None) -> tuple[list[str], list[str
 
 
 def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list[str]]:
-    """Every supported required-set command copy names one state.jsonl ledger argument."""
+    """Every supported required-set command copy has the complete runnable argv."""
     problems, copies = [], []
     for md, line, command in documented_ci_status_copies(root or HERE.parent, "required-set"):
         copies.append(f"{md.name}:{line}")
@@ -2545,15 +2574,45 @@ def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list
             argv = shlex.split(command)
         except ValueError:
             argv = []
-        ledger_positions = [index for index, token in enumerate(argv) if token == "--ledger"]
-        ledger_values = [argv[index + 1] for index in ledger_positions if index + 1 < len(argv)]
-        valid_ledger = (len(ledger_positions) == 1 and len(ledger_values) == 1
-                        and Path(ledger_values[0]).name == "state.jsonl")
+        subcommand_positions = [index for index, token in enumerate(argv) if token == "required-set"]
+        args = argv[subcommand_positions[0] + 1:] if len(subcommand_positions) == 1 else []
+        # The stage-2 command uses `[--repo <owner>/<repo>]` to show its optional argument. Normalize that
+        # documentation notation before validating the same options the real CLI accepts.
+        if (len(args) >= 2 and args[-2] == "[--repo" and args[-1].endswith("]")):
+            args = args[:-2] + ["--repo", args[-1][:-1]]
+        values: dict[str, str] = {}
+        index = 0
+        while args and index < len(args):
+            token = args[index]
+            if token in ("--ledger", "--repo"):
+                if (index + 1 >= len(args) or args[index + 1].startswith("-")
+                        or token in values):
+                    values = {}
+                    break
+                values[token] = args[index + 1]
+                index += 2
+            elif token.startswith("--ledger=") or token.startswith("--repo="):
+                option, value = token.split("=", 1)
+                if not value or option in values:
+                    values = {}
+                    break
+                values[option] = value
+                index += 1
+            else:
+                values = {}
+                break
+        ledger = values.get("--ledger")
+        directory_suffixes = (os.sep, os.sep + ".", os.sep + "..")
+        valid_ledger = (ledger is not None
+                        and not (ledger.endswith(directory_suffixes) or Path(ledger).is_dir())
+                        and Path(ledger).name == "state.jsonl")
+        if len(subcommand_positions) != 1:
+            valid_ledger = False
         if not valid_ledger:
             problems.append(
-                f"{md.name}:{line} runs `ci-status.py required-set` without the run ledger's "
-                f"single `state.jsonl` path immediately after `--ledger` — the command must persist the "
-                f"value it read before the value exists"
+                f"{md.name}:{line} does not run `ci-status.py required-set` with only its supported options "
+                f"and one file-shaped `state.jsonl` path after `--ledger` — the command must be runnable "
+                f"before the value it reads exists"
             )
     if not copies:
         problems.append(
