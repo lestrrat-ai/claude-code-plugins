@@ -686,12 +686,12 @@ def test_numeric_transient_marker_requires_complete_token() -> None:
         "opaque provider error 1429",
         now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
     )
-    check(result.kind == MODULE.PERMANENT,
-          "numeric substring was classified as transient")
+    check(result.kind == MODULE.UNRECOGNIZED,
+          "numeric substring was classified as a transient marker")
     check(result.action == MODULE.FALLBACK_NATIVE,
-          "numeric substring selected an external retry")
-    check(result.state.external_disabled,
-          "numeric substring did not disable the session route")
+          "numeric substring did not fall back natively")
+    check(not result.state.external_disabled,
+          "numeric substring incorrectly disabled the session route")
 
 
 def test_permanent_disables_external_route_for_session() -> None:
@@ -702,18 +702,27 @@ def test_permanent_disables_external_route_for_session() -> None:
           "permanent failure did not disable the session route")
 
 
-def test_unknown_fails_closed_as_permanent() -> None:
-    result = MODULE.decide("opaque provider failure")
-    check(result.kind == MODULE.PERMANENT, "unknown failure was not permanent")
+def test_unknown_falls_back_as_unrecognized() -> None:
+    result = MODULE.decide(
+        "opaque provider failure",
+        now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
+        pr_number=188,
+    )
+    check(result.kind == MODULE.UNRECOGNIZED, "unknown failure was reported as permanent")
     check(result.action == MODULE.FALLBACK_NATIVE, "unknown failure did not fall back")
-    check(result.state.external_disabled, "unknown failure did not disable the session route")
+    check(not result.state.external_disabled,
+          "unknown failure incorrectly disabled the session route")
 
 
-def test_unrecognized_typed_failure_fails_closed() -> None:
+def test_unrecognized_typed_failure_falls_back() -> None:
     failure = MODULE.Failure("future-kind", None, None, "future provider classification")
     result = MODULE.transition(failure)
-    check(result.kind == MODULE.PERMANENT, "unknown typed failure was not normalized to permanent")
-    check(result.state.external_disabled, "unknown typed failure did not disable the session route")
+    check(result.kind == MODULE.UNRECOGNIZED,
+          "unknown typed failure was not normalized to unrecognized")
+    check(result.action == MODULE.FALLBACK_NATIVE,
+          "unknown typed failure did not fall back natively")
+    check(not result.state.external_disabled,
+          "unknown typed failure incorrectly disabled the session route")
 
 
 def test_malformed_typed_timer_fails_closed() -> None:
@@ -888,8 +897,8 @@ CASES = [
     ("fractional-timer", "fractional timer fails closed", test_fractional_timer_fails_closed),
     ("numeric-marker-token", "numeric transient markers require complete tokens", test_numeric_transient_marker_requires_complete_token),
     ("permanent-session-disable", "permanent failure disables only this session", test_permanent_disables_external_route_for_session),
-    ("unknown-permanent", "unknown failure fails closed", test_unknown_fails_closed_as_permanent),
-    ("unknown-typed-permanent", "unknown typed failure fails closed", test_unrecognized_typed_failure_fails_closed),
+    ("unknown-unrecognized", "unknown failure falls back without permanent classification", test_unknown_falls_back_as_unrecognized),
+    ("unknown-typed-unrecognized", "unknown typed failure falls back without disabling the route", test_unrecognized_typed_failure_falls_back),
     ("malformed-typed-timer", "malformed typed timer fails closed", test_malformed_typed_timer_fails_closed),
     ("malformed-typed-state", "malformed typed state fails closed", test_malformed_typed_state_fails_closed),
     ("session-state", "disabled state blocks later launches in this session", test_disabled_state_is_session_only_and_blocks_new_launches),
