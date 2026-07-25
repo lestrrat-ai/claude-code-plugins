@@ -519,7 +519,10 @@ INVENTED negative fixture: run `triage.py` `derive` with these caller inputs:
 
     skill_fixtures = (
         ("adoption", "for the complete adoption-time procedure."),
-        ("heartbeat", "triage procedure, then launch ALL due work up to caps"),
+        (
+            "heartbeat",
+            "complete heartbeat triage procedure. Then launch ALL due mutating work up to caps",
+        ),
     )
     runnable_reconstruction = """
 

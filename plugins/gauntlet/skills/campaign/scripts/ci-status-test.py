@@ -1328,7 +1328,7 @@ def watch_action_owner_cases(ci, tmp: Path) -> list[str]:
                 )
                 replacement = "unconditionally"
             elif format_name == "summary":
-                pattern = re.escape(condition)
+                pattern = r"\s+".join(re.escape(part) for part in condition.split())
                 replacement = "CI watches launch unconditionally"
             else:
                 problems.append(f"[watch owners] {relative}:{anchor} has unknown format {format_name!r}")
