@@ -1222,6 +1222,44 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
             f"[command copy required-set] chained commands shared flags: copies={chain_copies!r}, "
             f"problems={chain_problems!r}, checked={chain_checked!r}"
         )
+
+    indented_root = tmp / "command-copy-indented-fence-required-set"
+    indented_root.mkdir()
+    (indented_root / "indented.md").write_text(
+        "`scripts/ci-status.py required-set --ledger <rundir>/state.jsonl`\n\n"
+        "   ```sh\n"
+        "   python3 <skill>/scripts/ci-status.py required-set\n"
+        "   ```\n",
+        encoding="utf-8",
+    )
+    indented_copies = ci.documented_ci_status_copies(indented_root, "required-set")
+    indented_problems, indented_checked = ci.check_required_set_copies(indented_root)
+    if (len(indented_copies) != 2 or len(indented_checked) != 2 or len(indented_problems) != 1
+            or "without the run ledger's" not in indented_problems[0]):
+        problems.append(
+            f"[command copy required-set] three-space-indented fenced copies were not checked: "
+            f"copies={indented_copies!r}, problems={indented_problems!r}, checked={indented_checked!r}"
+        )
+
+    apostrophe_root = tmp / "command-copy-placeholder-apostrophe-required-set"
+    apostrophe_root.mkdir()
+    (apostrophe_root / "placeholder.md").write_text(
+        "`scripts/ci-status.py required-set --ledger <rundir>/state.jsonl`\n\n"
+        "```sh\n"
+        "python3 <skill>/scripts/ci-status.py derive --pr 1 --head-sha <the LEDGER's head_sha> "
+        "--rundir <rundir> --ledger <rundir>/state.jsonl\n"
+        "python3 <skill>/scripts/ci-status.py required-set\n"
+        "```\n",
+        encoding="utf-8",
+    )
+    apostrophe_copies = ci.documented_ci_status_copies(apostrophe_root, "required-set")
+    apostrophe_problems, apostrophe_checked = ci.check_required_set_copies(apostrophe_root)
+    if (len(apostrophe_copies) != 2 or len(apostrophe_checked) != 2 or len(apostrophe_problems) != 1
+            or "without the run ledger's" not in apostrophe_problems[0]):
+        problems.append(
+            f"[command copy required-set] placeholder apostrophes hid a later command: "
+            f"copies={apostrophe_copies!r}, problems={apostrophe_problems!r}, checked={apostrophe_checked!r}"
+        )
     return problems
 
 

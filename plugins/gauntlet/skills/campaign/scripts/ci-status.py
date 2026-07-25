@@ -2249,7 +2249,12 @@ def check_gh_invocations(text: str, argv: dict[str, list[str]]) -> list[str]:
 
 
 def _shell_command_spans(text: str, *, split_newlines: bool) -> list[tuple[int, int]]:
-    """Split shell text at command boundaries outside quotes and escaped characters."""
+    """Split shell text at command boundaries outside quotes and escaped characters.
+
+    Markdown placeholders may contain apostrophes, such as the invented ``<a placeholder's value>``.
+    They are not shell quotes, so an apostrophe inside an angle-bracket placeholder must not hide a later
+    newline.
+    """
     spans: list[tuple[int, int]] = []
     start = 0
     quote: str | None = None
@@ -2277,7 +2282,9 @@ def _shell_command_spans(text: str, *, split_newlines: bool) -> list[tuple[int, 
                 quote = None
             index += 1
             continue
-        if char in "'\"":
+        placeholder_start = text.rfind("<", 0, index)
+        placeholder_end = text.rfind(">", 0, index)
+        if char in "'\"" and not (char == "'" and placeholder_start > placeholder_end):
             quote = char
             index += 1
             continue
@@ -2324,7 +2331,7 @@ def documented_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path,
     operators or wrapped in grouping and substitution. Other prose and Markdown constructs are deliberately
     outside this guard's scope.
     """
-    fence = re.compile(r"(?ms)^```(?:sh|bash|shell)?[ \t]*\n(?P<body>.*?)^```[ \t]*$")
+    fence = re.compile(r"(?ms)^[ ]{0,3}```(?:sh|bash|shell)?[ \t]*\n(?P<body>.*?)^[ ]{0,3}```[ \t]*$")
     inline = re.compile(r"`(?P<body>[^`]*?)`", re.DOTALL)
     copies: list[tuple[Path, int, str]] = []
     for md in sorted(root.rglob("*.md")):
