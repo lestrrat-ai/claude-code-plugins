@@ -119,6 +119,18 @@ def test_absolute_timer_rejects_contradictory_named_zone_offset() -> None:
           "contradictory named-zone offset did not disable the external route")
 
 
+def test_malformed_absolute_12_hour_field_fails_closed() -> None:
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    for clock in ("0pm", "13am"):
+        result = MODULE.decide(f"rate limit; resets Jul 27, {clock}", now=now)
+        check(result.kind == MODULE.PERMANENT,
+              f"malformed 12-hour field was accepted as a timer: {clock}")
+        check(result.action == MODULE.FALLBACK_NATIVE,
+              f"malformed 12-hour field did not fall back: {clock}")
+        check(result.state.external_disabled,
+              f"malformed 12-hour field did not disable the session route: {clock}")
+
+
 def test_relative_timer_waits_exactly() -> None:
     now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
     result = MODULE.decide("rate limited; retry after 90 seconds", now=now)
@@ -553,6 +565,20 @@ def test_transient_retries_immediately() -> None:
     check(result.action == MODULE.RETRY_EXTERNAL, "transient failure did not retry")
 
 
+def test_connection_reset_by_peer_retries_immediately() -> None:
+    result = MODULE.decide(
+        "connection reset by peer",
+        now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
+        pr_number=188,
+    )
+    check(result.kind == MODULE.TRANSIENT,
+          "connection reset by peer was not classified as transient")
+    check(result.action == MODULE.RETRY_EXTERNAL,
+          "connection reset by peer did not spend the one retry")
+    check(not result.external_disabled,
+          "connection reset by peer disabled the external route")
+
+
 def test_standalone_availability_timer_waits() -> None:
     result = MODULE.decide(
         "available in 90 seconds",
@@ -744,6 +770,7 @@ CASES = [
     ("absolute-dst-explicit-offset", "explicit offset resolves a DST fold", test_absolute_timer_explicit_offset_resolves_dst_fold),
     ("absolute-dst-both-explicit-offsets", "both valid DST fold offsets are accepted", test_absolute_timer_explicit_offset_resolves_both_dst_fold_offsets),
     ("absolute-contradictory-offset", "contradictory named-zone offsets fail closed", test_absolute_timer_rejects_contradictory_named_zone_offset),
+    ("malformed-12-hour-field", "malformed 12-hour fields fail closed", test_malformed_absolute_12_hour_field_fails_closed),
     ("relative-exact-wait", "relative delay is preserved exactly", test_relative_timer_waits_exactly),
     ("unitless-relative-timer", "unitless timers default to seconds", test_unitless_relative_timer_defaults_to_seconds),
     ("unitless-colon-timer", "colon-formatted unitless timers fail closed", test_colon_after_unitless_timer_fails_closed),
@@ -768,6 +795,7 @@ CASES = [
     ("expired-deadline-new-timer", "new timer replaces an expired session deadline", test_new_timer_replaces_expired_session_deadline),
     ("timer-deadline-retry", "timer retries at its exact deadline", test_timer_retries_at_deadline),
     ("transient-immediate-retry", "transient failure retries immediately", test_transient_retries_immediately),
+    ("connection-reset-transient", "connection reset by peer retries immediately", test_connection_reset_by_peer_retries_immediately),
     ("standalone-availability", "standalone availability timer waits", test_standalone_availability_timer_waits),
     ("wrapped-availability", "transient-wrapped availability timer waits", test_transient_wrapped_availability_timer_waits),
     ("malformed-availability", "malformed availability timer fails closed", test_malformed_availability_timer_fails_closed),

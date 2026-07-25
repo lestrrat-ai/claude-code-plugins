@@ -49,7 +49,9 @@ DURATION_RE = re.compile(
     re.IGNORECASE,
 )
 TIMER_PHRASE_RE = re.compile(
-    r"\b(?:retry(?:ing)?|try\s+again|backoff|wait|reset(?:s)?|available)\b",
+    r"\b(?:retry(?:ing)?|try\s+again|backoff|wait)\b"
+    r"|\b(?:reset(?:s)?|available)\b"
+    r"(?=\s*(?:after|in|for)\b|\s*:\s*|\s+\d)",
     re.IGNORECASE,
 )
 ABSOLUTE_TIMER_PREFIX_RE = re.compile(
@@ -335,6 +337,8 @@ def _absolute_timer_match(match: re.Match[str] | None, now: datetime) -> tuple[i
         year = int(match.group("year") or local_now.year)
         minute = int(match.group("minute") or 0)
         hour = int(match.group("hour"))
+        if not 1 <= hour <= 12:
+            return None
         ampm = match.group("ampm").lower()
         if ampm == "pm" and hour != 12:
             hour += 12
