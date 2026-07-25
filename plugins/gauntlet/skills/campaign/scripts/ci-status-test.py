@@ -1028,7 +1028,7 @@ def required_set_matrix_cases(ci, tmp: Path) -> list[str]:
 
 
 def command_boundary_cases(ci, tmp: Path) -> list[str]:
-    """Recognize command-token boundaries without matching filenames that merely contain the executable name."""
+    """Recognize shell command starts without matching filenames that merely contain the executable name."""
     problems: list[str] = []
     forms = {
         "derive": (ci.check_derive_copies, "derive --pr 1 --ledger <rundir>/state.jsonl"),
@@ -1037,21 +1037,55 @@ def command_boundary_cases(ci, tmp: Path) -> list[str]:
         "required-set": (ci.check_required_set_copies,
                           "required-set --ledger <rundir>/state.jsonl"),
     }
-    false_prefixes = ("foo+", "foo@", "foo–", "foo(", "foo:")
-    valid_prefixes = ("", " ", "'", '"', "`", "bin/", "bin\\")
     for subcommand, (check, valid) in forms.items():
         root = tmp / f"command-boundary-{subcommand}"
         root.mkdir()
-        false_commands = [f"{prefix}ci-status.py {valid}" for prefix in false_prefixes]
-        valid_commands = [f"{prefix}ci-status.py {valid}" for prefix in valid_prefixes]
-        (root / "commands.md").write_text("\n\n".join(false_commands + valid_commands) + "\n",
+        false_commands = [
+            f"foo ci-status.py {valid}",
+            f'"foo ci-status.py {valid}"',
+            f"'foo ci-status.py {valid}'",
+            f"foo(ci-status.py {valid})",
+            f"foo+ci-status.py {valid}",
+            f"foo@ci-status.py {valid}",
+            f"foo–ci-status.py {valid}",
+            f"foo:ci-status.py {valid}",
+        ]
+        valid_commands = [
+            f"ci-status.py {valid}",
+            f"  ci-status.py {valid}",
+            f"'ci-status.py {valid}'",
+            f'"ci-status.py {valid}"',
+            f"`ci-status.py {valid}`",
+            f"bin/ci-status.py {valid}",
+            f"bin\\ci-status.py {valid}",
+            f"$(ci-status.py {valid})",
+            f"(ci-status.py {valid})",
+            f"true && ci-status.py {valid}",
+        ]
+        missing_flag_commands = {
+            "derive": [
+                "$(ci-status.py derive --pr 2)",
+                "(ci-status.py derive --pr 3)",
+            ],
+            "liveness": [
+                "$(ci-status.py liveness --ledger state.jsonl --pr 2)",
+                "(ci-status.py liveness --ledger state.jsonl --pr 3)",
+            ],
+            "required-set": [
+                "$(ci-status.py required-set --ledger ledger.jsonl)",
+                "(ci-status.py required-set --ledger ledger.jsonl)",
+            ],
+        }[subcommand]
+        (root / "commands.md").write_text("\n\n".join(false_commands + valid_commands + missing_flag_commands) + "\n",
                                             encoding="utf-8")
         found_problems, copies = check(root)
-        if found_problems:
-            problems.append(f"[command boundary {subcommand}] false executable name was checked: "
-                            f"{found_problems!r}")
-        if len(copies) != len(valid_prefixes):
-            problems.append(f"[command boundary {subcommand}] expected {len(valid_prefixes)} valid copies, "
+        expected_problems = len(missing_flag_commands)
+        if len(found_problems) != expected_problems:
+            problems.append(f"[command boundary {subcommand}] expected {expected_problems} missing-flag "
+                            f"problems, got {found_problems!r}")
+        expected_copies = len(valid_commands) + len(missing_flag_commands)
+        if len(copies) != expected_copies:
+            problems.append(f"[command boundary {subcommand}] expected {expected_copies} executable copies, "
                             f"got {copies!r}")
     return problems
 

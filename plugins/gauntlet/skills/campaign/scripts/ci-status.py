@@ -157,7 +157,7 @@ from typing import Callable, NamedTuple, NoReturn
 from urllib.parse import quote
 
 HERE = Path(__file__).resolve().parent
-COMMAND_TOKEN_BOUNDARY = r'''(?<![^\s"'`/\\])'''
+SHELL_COMMAND_SEPARATORS = frozenset("\n;|&")
 SNAPSHOT_PY = HERE / "ci-snapshot.py"
 LEDGER_PY = HERE / "ledger.py"
 TEST_PY = HERE / "ci-status-test.py"     # the fixture suite — this tool's executable contract
@@ -2248,6 +2248,56 @@ def check_gh_invocations(text: str, argv: dict[str, list[str]]) -> list[str]:
     return problems
 
 
+def _markdown_line_is_command_start(text: str, index: int) -> bool:
+    """Allow an indented or list-item command at the start of a Markdown line."""
+    line_start = text.rfind("\n", 0, index) + 1
+    prefix = text[line_start:index].strip()
+    return not prefix or bool(re.fullmatch(r"(?:[-*+]\s*|\d+[.)]\s*)", prefix))
+
+
+def _shell_delimiter_before(text: str, index: int) -> bool:
+    """Return whether the character at ``index`` starts a shell command boundary."""
+    cursor = index - 1
+    while cursor >= 0 and text[cursor].isspace():
+        cursor -= 1
+    return cursor < 0 or text[cursor] in SHELL_COMMAND_SEPARATORS or _markdown_line_is_command_start(text, index)
+
+
+def _command_token_boundary(text: str, index: int) -> bool:
+    """Recognize command starts without treating a filename mention as an executable copy.
+
+    Slash-separated paths remain valid because the docs prescribe paths such as ``scripts/ci-status.py``.
+    Shell operators, command substitutions, grouped commands, and Markdown code delimiters mark executable
+    starts. A bare whitespace boundary does not: ``foo ci-status.py`` is a filename or an argument, not a
+    copy of the command.
+    """
+    if index == 0:
+        return True
+    previous = text[index - 1]
+    if previous in "/\\" or previous == "`":
+        return True
+    if previous in "'\"":
+        return _shell_delimiter_before(text, index - 1)
+    if previous == "(":
+        return index >= 2 and text[index - 2] == "$" or _shell_delimiter_before(text, index - 1)
+    if not previous.isspace():
+        return False
+    return _shell_delimiter_before(text, index - 1)
+
+
+def _command_matches(text: str, subcommand: str):
+    """Yield command occurrences whose executable token begins at a shell-aware boundary."""
+    needle = f"ci-status.py {subcommand}"
+    offset = 0
+    while True:
+        index = text.find(needle, offset)
+        if index < 0:
+            return
+        if _command_token_boundary(text, index):
+            yield index
+        offset = index + 1
+
+
 def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]:
     """EVERY COPY OF THE DERIVE COMMAND, IN EVERY SKILL DOC — not just the one in the doc under test.
 
@@ -2269,12 +2319,12 @@ def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]
     problems, copies = [], []
     for md in sorted((root or HERE.parent).rglob("*.md")):
         text = md.read_text(encoding="utf-8")
-        for m in re.finditer(COMMAND_TOKEN_BOUNDARY + r"ci-status\.py derive", text):
-            end = text.find("\n\n", m.start())
-            command = text[m.start(): end if end > 0 else len(text)]
+        for index in _command_matches(text, "derive"):
+            end = text.find("\n\n", index)
+            command = text[index: end if end > 0 else len(text)]
             if "--pr" not in command:
                 continue  # prose that NAMES the command, not a copy of it
-            n = text.count("\n", 0, m.start()) + 1
+            n = text.count("\n", 0, index) + 1
             copies.append(f"{md.name}:{n}")
             if "--ledger" not in command and "--required-set" not in command:
                 problems.append(
@@ -2301,15 +2351,15 @@ def check_liveness_copies(root: Path | None = None) -> tuple[list[str], list[str
     problems, copies = [], []
     for md in sorted((root or HERE.parent).rglob("*.md")):
         text = md.read_text(encoding="utf-8")
-        for match in re.finditer(COMMAND_TOKEN_BOUNDARY + r"ci-status\.py liveness", text):
-            end = text.find("\n\n", match.start())
-            command = text[match.start(): end if end > 0 else len(text)]
+        for index in _command_matches(text, "liveness"):
+            end = text.find("\n\n", index)
+            command = text[index: end if end > 0 else len(text)]
             # `--ledger`, not `--pr`, is the runnable-copy gate here: prose about liveness routinely sits
             # in the same paragraph as a `ledger.py … set --pr` command, and `--pr` alone would condemn
             # every such mention as a flagless invocation.
             if "--ledger" not in command:
                 continue  # prose that names the subcommand, not a runnable copy
-            line = text.count("\n", 0, match.start()) + 1
+            line = text.count("\n", 0, index) + 1
             copies.append(f"{md.name}:{line}")
             if "--machine-action" not in command:
                 problems.append(
@@ -2330,12 +2380,12 @@ def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list
     problems, copies = [], []
     for md in sorted((root or HERE.parent).rglob("*.md")):
         text = md.read_text(encoding="utf-8")
-        for match in re.finditer(COMMAND_TOKEN_BOUNDARY + r"ci-status\.py required-set", text):
-            end = text.find("\n\n", match.start())
-            command = text[match.start(): end if end > 0 else len(text)]
+        for index in _command_matches(text, "required-set"):
+            end = text.find("\n\n", index)
+            command = text[index: end if end > 0 else len(text)]
             if "--ledger" not in command:
                 continue  # prose that names the subcommand, not a runnable copy
-            line = text.count("\n", 0, match.start()) + 1
+            line = text.count("\n", 0, index) + 1
             copies.append(f"{md.name}:{line}")
             if "state.jsonl" not in command:
                 problems.append(
