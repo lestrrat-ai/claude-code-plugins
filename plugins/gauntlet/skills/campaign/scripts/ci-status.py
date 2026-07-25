@@ -2287,7 +2287,6 @@ def _shell_quote_before(text: str, index: int) -> str | None:
                 cursor = line_end + (line_end < index)
                 continue
         if fence is None and not line.strip():
-            quote = None
             cursor = line_end + (line_end < index)
             continue
         while cursor < line_end:

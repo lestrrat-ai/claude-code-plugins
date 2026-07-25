@@ -1146,6 +1146,15 @@ def command_boundary_cases(ci, tmp: Path) -> list[str]:
         if len(found_problems) != 1 or len(copies) != 2:
             problems.append(f"[possessive command {subcommand}] expected one problem and two copies, "
                             f"got problems={found_problems!r}, copies={copies!r}")
+
+        blank_line_root = tmp / f"blank-line-quoted-command-{subcommand}"
+        blank_line_root.mkdir()
+        (blank_line_root / "commands.md").write_text(
+            f"echo 'open shell quote\n\nci-status.py {valid}'\nci-status.py {valid}\n", encoding="utf-8")
+        found_problems, copies = check(blank_line_root)
+        if found_problems or copies != ["commands.md:4"]:
+            problems.append(f"[blank line in quote {subcommand}] expected only the executable line, "
+                            f"got problems={found_problems!r}, copies={copies!r}")
     return problems
 
 
