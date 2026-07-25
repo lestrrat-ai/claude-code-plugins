@@ -158,6 +158,7 @@ from urllib.parse import quote
 
 HERE = Path(__file__).resolve().parent
 SHELL_COMMAND_SEPARATORS = frozenset("\n;|&")
+SHELL_COMPOUND_COMMAND_KEYWORDS = frozenset(("then", "else", "do", "elif"))
 SNAPSHOT_PY = HERE / "ci-snapshot.py"
 LEDGER_PY = HERE / "ledger.py"
 TEST_PY = HERE / "ci-status-test.py"     # the fixture suite — this tool's executable contract
@@ -2255,34 +2256,96 @@ def _markdown_line_is_command_start(text: str, index: int) -> bool:
     return not prefix or bool(re.fullmatch(r"(?:[-*+]\s*|\d+[.)]\s*)", prefix))
 
 
+def _shell_is_escaped(text: str, index: int) -> bool:
+    """Return whether the character at ``index`` has an odd backslash prefix."""
+    backslashes = 0
+    cursor = index - 1
+    while cursor >= 0 and text[cursor] == "\\":
+        backslashes += 1
+        cursor -= 1
+    return bool(backslashes % 2)
+
+
+def _shell_quote_before(text: str, index: int) -> str | None:
+    """Return the active shell quote immediately before ``index``, if any."""
+    quote: str | None = None
+    cursor = 0
+    while cursor < index:
+        char = text[cursor]
+        if quote == "'":
+            if char == "'":
+                quote = None
+            cursor += 1
+            continue
+        if quote == '"':
+            if char == "\\":
+                cursor += 2
+            elif char == '"':
+                quote = None
+                cursor += 1
+            else:
+                cursor += 1
+            continue
+        if char == "\\":
+            cursor += 2
+        elif char in "'\"":
+            quote = char
+            cursor += 1
+        else:
+            cursor += 1
+    return quote
+
+
+def _shell_operator_is_active(text: str, index: int) -> bool:
+    """Return whether a separator at ``index`` is outside quotes and not backslash-escaped."""
+    return _shell_quote_before(text, index) is None and not _shell_is_escaped(text, index)
+
+
 def _shell_delimiter_before(text: str, index: int) -> bool:
     """Return whether the character at ``index`` starts a shell command boundary."""
     newline = text.rfind("\n", 0, index)
-    if newline > 0 and text[newline - 1] == "\\":
+    if newline >= 0 and _shell_quote_before(text, newline) is not None:
+        return False
+    if newline > 0 and text[newline - 1] == "\\" and _shell_is_escaped(text, newline):
         slash = newline - 1
-        backslashes = 0
         while slash >= 0 and text[slash] == "\\":
-            backslashes += 1
             slash -= 1
-        if backslashes % 2:
-            while slash >= 0 and text[slash].isspace():
-                slash -= 1
-            return slash < 0 or text[slash] in SHELL_COMMAND_SEPARATORS
+        while slash >= 0 and text[slash].isspace():
+            slash -= 1
+        return slash < 0 or (text[slash] in SHELL_COMMAND_SEPARATORS
+                             and _shell_operator_is_active(text, slash))
 
     cursor = index - 1
     while cursor >= 0 and text[cursor].isspace():
         cursor -= 1
-    return cursor < 0 or text[cursor] in SHELL_COMMAND_SEPARATORS or _markdown_line_is_command_start(text, index)
+    if cursor < 0:
+        return True
+    if text[cursor] in SHELL_COMMAND_SEPARATORS:
+        return _shell_operator_is_active(text, cursor)
+    return _shell_quote_before(text, index) is None and _markdown_line_is_command_start(text, index)
+
+
+def _shell_compound_keyword_before(text: str, index: int) -> bool:
+    """Return whether a shell compound-command keyword immediately precedes ``index``."""
+    cursor = index - 1
+    while cursor >= 0 and text[cursor].isspace():
+        cursor -= 1
+    end = cursor + 1
+    while cursor >= 0 and (text[cursor].isalnum() or text[cursor] == "_"):
+        cursor -= 1
+    keyword = text[cursor + 1:end]
+    return keyword in SHELL_COMPOUND_COMMAND_KEYWORDS and _shell_delimiter_before(text, cursor + 1)
 
 
 def _command_token_boundary(text: str, index: int) -> bool:
     """Recognize command starts without treating a filename mention as an executable copy.
 
     Slash-separated paths remain valid because the docs prescribe paths such as ``scripts/ci-status.py``.
-    Shell operators, command substitutions, grouped commands, and Markdown code delimiters mark executable
-    starts. An unescaped newline is also a boundary, while an escaped-newline continuation still needs a
-    shell separator before the backslash. A bare space boundary does not: ``foo ci-status.py`` is a filename
-    or an argument, not a copy of the command.
+    Active shell operators, command substitutions, grouped commands, compound-command keywords, and Markdown
+    code delimiters mark executable starts. Operators inside quotes or preceded by an odd number of backslashes
+    are text, not boundaries. An unescaped newline is also a boundary, while an escaped-newline continuation
+    still needs a shell separator before the backslash. A bare space boundary does not: ``foo ci-status.py``
+    is a filename or an argument, not a copy of the command.
     """
     if index == 0:
         return True
@@ -2290,7 +2353,7 @@ def _command_token_boundary(text: str, index: int) -> bool:
     if previous in SHELL_COMMAND_SEPARATORS:
         if previous == "\n":
             return _shell_delimiter_before(text, index)
-        return True
+        return _shell_operator_is_active(text, index - 1)
     if previous in "/\\" or previous == "`":
         return True
     if previous in "'\"":
@@ -2299,7 +2362,8 @@ def _command_token_boundary(text: str, index: int) -> bool:
         return index >= 2 and text[index - 2] == "$" or _shell_delimiter_before(text, index - 1)
     if not previous.isspace():
         return False
-    return _shell_delimiter_before(text, index - 1)
+    return (_shell_delimiter_before(text, index - 1)
+            or _shell_compound_keyword_before(text, index))
 
 
 def _command_matches(text: str, subcommand: str):

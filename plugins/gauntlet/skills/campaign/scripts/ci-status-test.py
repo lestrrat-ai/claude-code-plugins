@@ -1050,6 +1050,12 @@ def command_boundary_cases(ci, tmp: Path) -> list[str]:
             f"foo@ci-status.py {valid}",
             f"foo–ci-status.py {valid}",
             f"foo:ci-status.py {valid}",
+            f"foo\\;ci-status.py {valid}",
+            f"foo\\&ci-status.py {valid}",
+            f"foo\\|ci-status.py {valid}",
+            f'echo "foo;ci-status.py {valid}"',
+            f'echo "foo&ci-status.py {valid}"',
+            f'echo "foo|ci-status.py {valid}"',
             f"echo \\\n  ci-status.py {valid}",
         ]
         valid_commands = [
@@ -1067,20 +1073,33 @@ def command_boundary_cases(ci, tmp: Path) -> list[str]:
             f"true;ci-status.py {valid}",
             f"true&&ci-status.py {valid}",
             f"true|ci-status.py {valid}",
+            f"foo\\\\;ci-status.py {valid}",
             f"```sh\nci-status.py {valid}\n```",
         ]
         missing_flag_commands = {
             "derive": [
                 "$(ci-status.py derive --pr 2)",
                 "(ci-status.py derive --pr 3)",
+                "if true; then ci-status.py derive --pr 4; fi",
+                "if false; then true; else ci-status.py derive --pr 5; fi",
+                "for item in one; do ci-status.py derive --pr 6; done",
+                "if false; elif ci-status.py derive --pr 7; then true; fi",
             ],
             "liveness": [
                 "$(ci-status.py liveness --ledger state.jsonl --pr 2)",
                 "(ci-status.py liveness --ledger state.jsonl --pr 3)",
+                "if true; then ci-status.py liveness --ledger state.jsonl --pr 4; fi",
+                "if false; then true; else ci-status.py liveness --ledger state.jsonl --pr 5; fi",
+                "for item in one; do ci-status.py liveness --ledger state.jsonl --pr 6; done",
+                "if false; elif ci-status.py liveness --ledger state.jsonl --pr 7; then true; fi",
             ],
             "required-set": [
                 "$(ci-status.py required-set --ledger ledger.jsonl)",
                 "(ci-status.py required-set --ledger ledger.jsonl)",
+                "if true; then ci-status.py required-set --ledger ledger.jsonl",
+                "if false; then true; else ci-status.py required-set --ledger ledger.jsonl",
+                "for item in one; do ci-status.py required-set --ledger ledger.jsonl",
+                "if false; elif ci-status.py required-set --ledger ledger.jsonl; then true; fi",
             ],
         }[subcommand]
         (root / "commands.md").write_text("\n\n".join(false_commands + valid_commands + missing_flag_commands) + "\n",
