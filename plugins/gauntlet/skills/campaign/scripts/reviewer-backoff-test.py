@@ -50,6 +50,21 @@ def test_absolute_timer_uses_provider_timezone() -> None:
           "absolute reset was not converted from the provider timezone")
 
 
+def test_absolute_timer_accepts_at_and_on_connectors() -> None:
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    for message in (
+        "rate limit; resets at Jul 27, 9pm (Asia/Tokyo)",
+        "rate limit; available on Jul 27, 9pm (Asia/Tokyo)",
+    ):
+        result = MODULE.decide(message, now=now, pr_number=188)
+        check(result.kind == MODULE.TIMER,
+              f"absolute timer connector was not classified as a timer: {message!r}")
+        check(result.action == MODULE.WAIT_EXTERNAL,
+              f"absolute timer connector did not wait: {message!r}")
+        check(result.retry_after_seconds == 172800,
+              f"absolute timer connector delay changed: {message!r}")
+
+
 def test_absolute_timer_uses_elapsed_time_across_dst() -> None:
     now = datetime(2026, 3, 8, 1, 30, tzinfo=MODULE.ZoneInfo("America/New_York"))
     result = MODULE.classify("quota exhausted; resets Mar 8, 3:30am (America/New_York)", now)
@@ -213,16 +228,21 @@ def test_unsupported_relative_timer_punctuation_fails_closed() -> None:
 
 
 def test_incomplete_absolute_reset_fails_closed() -> None:
-    result = MODULE.decide(
+    for message in (
         "rate limit; resets Jul 27",
-        now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
-    )
-    check(result.kind == MODULE.PERMANENT,
-          "incomplete absolute reset was accepted as a transient failure")
-    check(result.action == MODULE.FALLBACK_NATIVE,
-          "incomplete absolute reset did not fall back")
-    check(result.state.external_disabled,
-          "incomplete absolute reset did not disable the session route")
+        "rate limit; resets at Jul 27",
+        "rate limit; available on Jul 27",
+    ):
+        result = MODULE.decide(
+            message,
+            now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
+        )
+        check(result.kind == MODULE.PERMANENT,
+              f"incomplete absolute timer was accepted as transient: {message!r}")
+        check(result.action == MODULE.FALLBACK_NATIVE,
+              f"incomplete absolute timer did not fall back: {message!r}")
+        check(result.state.external_disabled,
+              f"incomplete absolute timer did not disable the session route: {message!r}")
 
 
 def test_absolute_timer_suffix_fails_closed() -> None:
@@ -823,6 +843,7 @@ def test_zero_delay_timer_retries_immediately() -> None:
 
 CASES = [
     ("absolute-provider-timezone", "absolute reset uses provider timezone", test_absolute_timer_uses_provider_timezone),
+    ("absolute-at-on-connectors", "absolute timers accept at/on connectors", test_absolute_timer_accepts_at_and_on_connectors),
     ("absolute-dst-elapsed-time", "absolute deadline uses elapsed time across DST", test_absolute_timer_uses_elapsed_time_across_dst),
     ("timer-wait-dst-elapsed-time", "timer wait uses elapsed time across DST", test_timer_wait_uses_elapsed_time_across_dst),
     ("absolute-dst-gap", "DST gap fails closed", test_absolute_timer_dst_gap_fails_closed),
