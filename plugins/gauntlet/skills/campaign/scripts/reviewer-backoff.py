@@ -32,11 +32,12 @@ WAIT_EXTERNAL = "wait-external"
 FALLBACK_NATIVE = "fallback-native"
 
 _TIMER_END = r"(?:\Z|[.;:!?]|,(?!\d))"
+_UNITLESS_TIMER_END = r"(?:\Z|[.;!?]|,(?!\d))"
 RETRY_AFTER_RE = re.compile(
     r"\bretry[\s-]+after\s*:?[\s]*(?P<value>\d+)(?![\d.])"
     rf"(?:\s*(?P<unit>seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d)"
     rf"(?=\s*{_TIMER_END})"
-    rf"|(?=\s*{_TIMER_END}))",
+    rf"|(?=\s*{_UNITLESS_TIMER_END}))",
     re.IGNORECASE,
 )
 DURATION_RE = re.compile(
@@ -596,7 +597,7 @@ def transition(
         current = datetime.now(timezone.utc)
     prior_deadline_active = (
         prior.external_backoff_until is not None
-        and _utc(prior.external_backoff_until) >= _utc(current)
+        and _utc(prior.external_backoff_until) > _utc(current)
     )
     same_timer_identity = (
         failure.kind == TIMER
@@ -614,8 +615,7 @@ def transition(
         and prior.external_backoff_pr != pr_number
     )
     same_timer_reentry = (
-        prior_deadline_active
-        and same_timer_owner
+        same_timer_owner
         and same_timer_identity
         and failure.retry_at is not None
         and _utc(failure.retry_at) == _utc(prior.external_backoff_until)

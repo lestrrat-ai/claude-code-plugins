@@ -141,6 +141,19 @@ def test_unitless_relative_timer_defaults_to_seconds() -> None:
           "unitless relative timer did not default to seconds")
 
 
+def test_colon_after_unitless_timer_fails_closed() -> None:
+    result = MODULE.decide(
+        "rate limited; retry after 90:00",
+        now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
+    )
+    check(result.kind == MODULE.PERMANENT,
+          "colon-formatted unitless timer was accepted")
+    check(result.action == MODULE.FALLBACK_NATIVE,
+          "colon-formatted unitless timer did not fall back")
+    check(result.state.external_disabled,
+          "colon-formatted unitless timer did not disable the session route")
+
+
 def test_comma_grouped_relative_timer_fails_closed() -> None:
     result = MODULE.decide(
         "rate limited; retry after 90,000 seconds",
@@ -357,6 +370,27 @@ def test_expired_timer_for_another_pr_replaces_deadline_and_waits() -> None:
           "another PR reused the expired session timer identity")
     check(result.state.external_backoff_pr == 189,
           "another PR did not become the owner after the prior deadline expired")
+
+
+def test_exactly_expiring_timer_for_another_pr_replaces_deadline_and_waits() -> None:
+    first_now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    first = MODULE.decide("retry after 90 seconds", now=first_now, pr_number=188)
+    deadline = datetime(2026, 7, 25, 12, 1, 30, tzinfo=timezone.utc)
+    result = MODULE.decide(
+        "retry after 30 seconds",
+        now=deadline,
+        state=first.state,
+        pr_number=189,
+    )
+    expected_deadline = datetime(2026, 7, 25, 12, 2, tzinfo=timezone.utc)
+    check(result.action == MODULE.WAIT_EXTERNAL,
+          "another PR did not wait when the prior deadline expired exactly")
+    check(result.retry_after_seconds == 30,
+          "another PR did not retain its provider timer at exact expiry")
+    check(result.state.external_backoff_until == expected_deadline,
+          "another PR did not replace the exactly expired session deadline")
+    check(result.state.external_backoff_pr == 189,
+          "another PR did not become the owner at exact expiry")
 
 
 def test_session_timer_retries_at_exact_reentry_deadline() -> None:
@@ -712,6 +746,7 @@ CASES = [
     ("absolute-contradictory-offset", "contradictory named-zone offsets fail closed", test_absolute_timer_rejects_contradictory_named_zone_offset),
     ("relative-exact-wait", "relative delay is preserved exactly", test_relative_timer_waits_exactly),
     ("unitless-relative-timer", "unitless timers default to seconds", test_unitless_relative_timer_defaults_to_seconds),
+    ("unitless-colon-timer", "colon-formatted unitless timers fail closed", test_colon_after_unitless_timer_fails_closed),
     ("comma-grouped-relative-timer", "comma-grouped timers fail closed", test_comma_grouped_relative_timer_fails_closed),
     ("unsupported-relative-unit", "unsupported timer units fail closed", test_unsupported_relative_timer_unit_fails_closed),
     ("unsupported-relative-punctuation", "unsupported timer punctuation fails closed", test_unsupported_relative_timer_punctuation_fails_closed),
@@ -725,6 +760,7 @@ CASES = [
     ("active-earlier-same-pr", "active earlier timer replaces deadline for the same PR", test_active_earlier_timer_replaces_deadline_for_same_pr),
     ("active-timer-other-pr", "active timer for another PR falls back and retains ownership", test_active_timer_for_another_pr_falls_back_and_retains_owner),
     ("expired-timer-other-pr", "expired timer for another PR replaces deadline and waits", test_expired_timer_for_another_pr_replaces_deadline_and_waits),
+    ("exact-expiry-timer-other-pr", "exactly expired timer for another PR replaces deadline and waits", test_exactly_expiring_timer_for_another_pr_replaces_deadline_and_waits),
     ("session-deadline-exact-reentry", "exact deadline re-entry retries without extension", test_session_timer_retries_at_exact_reentry_deadline),
     ("cli-typed-reentry", "CLI preserves typed timer re-entry", test_cli_preserves_typed_timer_across_reentry),
     ("cli-invalid-utf8", "CLI invalid UTF-8 message file falls back", test_cli_invalid_utf8_message_file_falls_back),
