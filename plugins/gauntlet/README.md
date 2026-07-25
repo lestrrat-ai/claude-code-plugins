@@ -71,8 +71,9 @@ record a preference in the orchestrator's own trusted state — never in the che
 reviewer can't return a verdict, use the classification and fallback contract owned by
 `skills/campaign/references/runtime-adapter.md`, "Review failure classification and session backoff".
 That contract permits one retry for transient failures, waits for valid timers at exact provider
-deadlines, and sends permanent, malformed, or unsupported failures to native fallback after disabling the
-external route for this session. Unrecognized failures use native fallback without disabling the route.
+deadlines, and treats malformed or unsupported timer text as permanent before sending it to native fallback
+and disabling the external route for this session. Unrecognized typed failure kinds use native fallback
+without disabling the route.
 Session backoff and disabled state are never durable. The retry uses the same full review contract and process
 command; only the mapped Codex recovery
 profile adds repository-maintenance framing. It never resumes the failed session or requires a model
