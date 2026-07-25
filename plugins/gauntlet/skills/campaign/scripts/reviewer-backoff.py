@@ -42,7 +42,7 @@ RETRY_AFTER_RE = re.compile(
     re.IGNORECASE,
 )
 DURATION_RE = re.compile(
-    r"\b(?:retry(?:ing)?|try\s+again|backoff|wait|reset(?:s)?|available)"
+    r"\b(?:retry(?:ing)?|try\s+again|backoff|wait|reset(?:s)?|available|unavailable)"
     r"\s*(?:after|in|for|:)?\s*"
     r"(?P<value>\d+)(?![\d.])\s*"
     r"(?P<unit>seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d)"
@@ -51,7 +51,7 @@ DURATION_RE = re.compile(
 )
 TIMER_PHRASE_RE = re.compile(
     r"\b(?:retry(?:ing)?|try\s+again|backoff|wait)\b"
-    r"|\b(?:reset(?:s)?|available)\b"
+    r"|\b(?:reset(?:s)?|available|unavailable)\b"
     r"(?=\s*(?:after|in|for|at|on)\b|\s*:\s*|\s+\d)",
     re.IGNORECASE,
 )
