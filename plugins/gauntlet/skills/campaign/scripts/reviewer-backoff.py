@@ -51,11 +51,12 @@ DURATION_RE = re.compile(
 TIMER_PHRASE_RE = re.compile(
     r"\b(?:retry(?:ing)?|try\s+again|backoff|wait)\b"
     r"|\b(?:reset(?:s)?|available)\b"
-    r"(?=\s*(?:after|in|for)\b|\s*:\s*|\s+\d)",
+    r"(?=\s*(?:after|in|for|at|on)\b|\s*:\s*|\s+\d)",
     re.IGNORECASE,
 )
 ABSOLUTE_TIMER_PREFIX_RE = re.compile(
     r"\b(?:reset(?:s)?|available|retry(?:ing)?|try\s+again)\s+"
+    r"(?:(?:at|on)\s+)?"
     r"(?:(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|"
     r"jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|"
     r"nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}|\d{1,2}\b)",
@@ -77,6 +78,7 @@ MONTHS = {
 }
 ABSOLUTE_RE = re.compile(
     r"\b(?:reset(?:s)?|available|retry(?:ing)?|try\s+again)\s+"
+    r"(?:(?:at|on)\s+)?"
     r"(?P<month>jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|"
     r"jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|"
     r"nov(?:ember)?|dec(?:ember)?)\s+"
