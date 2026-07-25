@@ -1028,7 +1028,7 @@ def required_set_matrix_cases(ci, tmp: Path) -> list[str]:
 
 
 def command_boundary_cases(ci, tmp: Path) -> list[str]:
-    """Ignore filenames that merely contain the documented executable name."""
+    """Recognize command-token boundaries without matching filenames that merely contain the executable name."""
     problems: list[str] = []
     forms = {
         "derive": (ci.check_derive_copies, "derive --pr 1 --ledger <rundir>/state.jsonl"),
@@ -1037,20 +1037,22 @@ def command_boundary_cases(ci, tmp: Path) -> list[str]:
         "required-set": (ci.check_required_set_copies,
                           "required-set --ledger <rundir>/state.jsonl"),
     }
+    false_prefixes = ("foo+", "foo@", "foo–", "foo(", "foo:")
+    valid_prefixes = ("", " ", "'", '"', "`", "bin/", "bin\\")
     for subcommand, (check, valid) in forms.items():
         root = tmp / f"command-boundary-{subcommand}"
         root.mkdir()
-        (root / "commands.md").write_text(
-            f"`not-ci-status.py {valid}` is a filename, not an invocation.\n\n"
-            f"`ci-status.py {valid}`\n",
-            encoding="utf-8",
-        )
+        false_commands = [f"{prefix}ci-status.py {valid}" for prefix in false_prefixes]
+        valid_commands = [f"{prefix}ci-status.py {valid}" for prefix in valid_prefixes]
+        (root / "commands.md").write_text("\n\n".join(false_commands + valid_commands) + "\n",
+                                            encoding="utf-8")
         found_problems, copies = check(root)
         if found_problems:
             problems.append(f"[command boundary {subcommand}] false executable name was checked: "
                             f"{found_problems!r}")
-        if len(copies) != 1:
-            problems.append(f"[command boundary {subcommand}] expected one copy, got {copies!r}")
+        if len(copies) != len(valid_prefixes):
+            problems.append(f"[command boundary {subcommand}] expected {len(valid_prefixes)} valid copies, "
+                            f"got {copies!r}")
     return problems
 
 

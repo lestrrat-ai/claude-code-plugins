@@ -157,6 +157,7 @@ from typing import Callable, NamedTuple, NoReturn
 from urllib.parse import quote
 
 HERE = Path(__file__).resolve().parent
+COMMAND_TOKEN_BOUNDARY = r'''(?<![^\s"'`/\\])'''
 SNAPSHOT_PY = HERE / "ci-snapshot.py"
 LEDGER_PY = HERE / "ledger.py"
 TEST_PY = HERE / "ci-status-test.py"     # the fixture suite — this tool's executable contract
@@ -2268,7 +2269,7 @@ def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]
     problems, copies = [], []
     for md in sorted((root or HERE.parent).rglob("*.md")):
         text = md.read_text(encoding="utf-8")
-        for m in re.finditer(r"(?<![\w.-])ci-status\.py derive", text):
+        for m in re.finditer(COMMAND_TOKEN_BOUNDARY + r"ci-status\.py derive", text):
             end = text.find("\n\n", m.start())
             command = text[m.start(): end if end > 0 else len(text)]
             if "--pr" not in command:
@@ -2300,7 +2301,7 @@ def check_liveness_copies(root: Path | None = None) -> tuple[list[str], list[str
     problems, copies = [], []
     for md in sorted((root or HERE.parent).rglob("*.md")):
         text = md.read_text(encoding="utf-8")
-        for match in re.finditer(r"(?<![\w.-])ci-status\.py liveness", text):
+        for match in re.finditer(COMMAND_TOKEN_BOUNDARY + r"ci-status\.py liveness", text):
             end = text.find("\n\n", match.start())
             command = text[match.start(): end if end > 0 else len(text)]
             # `--ledger`, not `--pr`, is the runnable-copy gate here: prose about liveness routinely sits
@@ -2329,7 +2330,7 @@ def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list
     problems, copies = [], []
     for md in sorted((root or HERE.parent).rglob("*.md")):
         text = md.read_text(encoding="utf-8")
-        for match in re.finditer(r"(?<![\w.-])ci-status\.py required-set", text):
+        for match in re.finditer(COMMAND_TOKEN_BOUNDARY + r"ci-status\.py required-set", text):
             end = text.find("\n\n", match.start())
             command = text[match.start(): end if end > 0 else len(text)]
             if "--ledger" not in command:
