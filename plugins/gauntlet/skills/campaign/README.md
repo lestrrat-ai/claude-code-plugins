@@ -231,15 +231,16 @@ never the place to look them up.
   reviewer when you invoke the campaign
   (for example, “review with claude”, or a native worker) or record a preference in the orchestrator's own
   trusted state — never in the checkout under review (`references/reviewer.md`, "Selecting the reviewer", owns which sources count).
-  If the paired CLI is absent, or a cross-engine reviewer
-  can't return a verdict because of a system problem — quota or rate limits, auth, a timeout — follow
-  [`references/runtime-adapter.md`](./references/runtime-adapter.md), "Review failure classification and session backoff".
-  That owner classifies the failure as transient for one immediate retry, timer for an exact-deadline wait
-  before retrying, permanent for immediate native fallback with session disable, or unrecognized for native
-  fallback without session disable. The existing Codex retry uses
-  repository-maintenance framing with the same complete review contract and process command; it never
-  resumes the failed session or requires a model switch. Campaign therefore runs with or without the other
-  engine. The fallback uses the disclosed native isolation contract. A reviewer that never
+  If the paired CLI is absent, or a cross-engine reviewer can't return a verdict, follow the classification
+  and fallback contract owned by [`references/runtime-adapter.md`](./references/runtime-adapter.md),
+  "Review failure classification and session backoff". That contract permits one retry for transient
+  failures, waits for valid timers at exact provider deadlines, and sends permanent, malformed, unsupported,
+  or unrecognized failures to native fallback. Permanent failures disable the external route for this
+  session; unrecognized failures use native fallback without disabling it. Session backoff and disabled
+  state are never durable. The retry uses the same complete review contract and process command; only the
+  mapped Codex recovery profile adds repository-maintenance framing. It never resumes the failed session
+  or requires a model switch. Campaign therefore runs with or without the other engine. The fallback uses
+  the disclosed native isolation contract. A reviewer that never
   gets going at all — hung on input, a bad path, a sandbox
   denial — is caught the same way: every review pass has to write *something* to its progress file
   within about five minutes of being dispatched, and one that writes nothing at all is killed and
