@@ -2280,12 +2280,17 @@ def _command_token_boundary(text: str, index: int) -> bool:
 
     Slash-separated paths remain valid because the docs prescribe paths such as ``scripts/ci-status.py``.
     Shell operators, command substitutions, grouped commands, and Markdown code delimiters mark executable
-    starts. A bare whitespace boundary does not: ``foo ci-status.py`` is a filename or an argument, not a
-    copy of the command.
+    starts. An unescaped newline is also a boundary, while an escaped-newline continuation still needs a
+    shell separator before the backslash. A bare space boundary does not: ``foo ci-status.py`` is a filename
+    or an argument, not a copy of the command.
     """
     if index == 0:
         return True
     previous = text[index - 1]
+    if previous in SHELL_COMMAND_SEPARATORS:
+        if previous == "\n":
+            return _shell_delimiter_before(text, index)
+        return True
     if previous in "/\\" or previous == "`":
         return True
     if previous in "'\"":

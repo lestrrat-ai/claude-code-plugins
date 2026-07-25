@@ -1050,6 +1050,7 @@ def command_boundary_cases(ci, tmp: Path) -> list[str]:
             f"foo@ci-status.py {valid}",
             f"foo–ci-status.py {valid}",
             f"foo:ci-status.py {valid}",
+            f"echo \\\n  ci-status.py {valid}",
         ]
         valid_commands = [
             f"ci-status.py {valid}",
@@ -1063,6 +1064,10 @@ def command_boundary_cases(ci, tmp: Path) -> list[str]:
             f"(ci-status.py {valid})",
             f"true && ci-status.py {valid}",
             f"true && \\\n+  ci-status.py {valid}",
+            f"true;ci-status.py {valid}",
+            f"true&&ci-status.py {valid}",
+            f"true|ci-status.py {valid}",
+            f"```sh\nci-status.py {valid}\n```",
         ]
         missing_flag_commands = {
             "derive": [
