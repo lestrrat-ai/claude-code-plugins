@@ -84,7 +84,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import NoReturn
-from urllib.parse import unquote, urlsplit
+from urllib.parse import urlsplit
 
 # The grid is NOT reimplemented here. The private campaign package owns escaping, layout, and omission
 # notices; this file owns only the follow-up schema, lifecycle, and store lifetime.
@@ -351,9 +351,9 @@ FLAG_HELP = {
                "evidence nor an earlier investigation's finding",
     "published": "where it was published (issue ref or URL) — the ISSUE is now the record, so the entry "
                  "is DELETED",
-    "pr": "the PR addressing it (#N or URL). The entry STAYS while that PR is open: `merged` then deletes "
-          "it (the PR is the record), and ordinary `closed-unmerged` returns it to open work (nothing "
-          "recorded it)",
+    "pr": "the PR addressing it (#N or N; GitHub URLs are refused because repository identity cannot be "
+          "validated). The entry STAYS while that PR is open: `merged` then deletes it (the PR is the "
+          "record), and ordinary `closed-unmerged` returns it to open work (nothing recorded it)",
     **{w: f"ACT condition '{c}' — {why}" for c, w, why in ACT_CONDITIONS if w in ACT_FLAGS},
 }
 
@@ -662,16 +662,21 @@ def record_completed_rejection_disposition(path: Path, pr: str) -> "tuple[str, .
     """Record one exact PR's completed abort or close-out on matching pending follow-ups.
 
     The ledger calls this only after its row made a real non-terminal -> aborted transition. A missing store is
-    normal, and ordinary `in-pr` entries remain untouched. The store lock and atomic dump remain its only
-    write path.
+    normal, and ordinary `in-pr` entries remain untouched. The callback must be a canonical numeric PR
+    reference, and the stored reference must be that same canonical number. GitHub URLs are not accepted at
+    `open-pr`, and legacy URL records therefore cannot be reduced to a number here. The store lock and atomic
+    dump remain its only write path.
     """
     if not path.exists():
+        return ()
+    canonical = pr_number(pr)
+    if canonical is None:
         return ()
     recorded: list[str] = []
     with locked(path):
         entries, high = read_store(path)
         for entry in entries:
-            if pr_number(entry["pr"]) != pr or rejection_phase(entry) != PENDING_REJECTION:
+            if entry["pr"] != canonical or rejection_phase(entry) != PENDING_REJECTION:
                 continue
             entry["rejection"] = DISPOSED_REJECTION
             recorded.append(entry["id"])
@@ -680,31 +685,24 @@ def record_completed_rejection_disposition(path: Path, pr: str) -> "tuple[str, .
     return tuple(recorded)
 
 
-GITHUB_PATH_COMPONENT = r"(?!(?:\.{1,2})/)[^/?#\s]+"
+PR_REF_RE = re.compile(r"(?:#)?(?P<short>[1-9][0-9]*)")
 
 
-PR_REF_RE = re.compile(
-    r"(?:"
-    r"(?:#)?(?P<short>[1-9][0-9]*)"
-    rf"|https://github\.com/{GITHUB_PATH_COMPONENT}/{GITHUB_PATH_COMPONENT}/pull/(?P<url>[1-9][0-9]*)/?"
-    r")"
-)
+def is_github_url(ref: str) -> bool:
+    """Return whether `ref` names the GitHub host, whose repository identity this store cannot validate."""
+    try:
+        host = urlsplit(ref).hostname
+    except ValueError:
+        return False
+    return host is not None and host.lower() == "github.com"
 
 
 def pr_number(ref: str) -> "str | None":
-    """Return the number from a legacy bare, `#N`, or GitHub pull-request reference."""
+    """Return the number from a legacy bare or `#N` pull-request reference."""
     match = PR_REF_RE.fullmatch(ref)
     if match is None:
         return None
-    if match.group("url"):
-        decoded_path = (unquote(component) for component in urlsplit(ref).path.split("/"))
-        if any(
-            component in (".", "..")
-            or any(char in "/?#\\" or char.isspace() for char in component)
-            for component in decoded_path
-        ):
-            return None
-    return match.group("short") or match.group("url")
+    return match.group("short")
 
 
 def next_id(high: int) -> str:
@@ -819,6 +817,8 @@ def cmd_transition(path: Path, args) -> int:
     frm, to = TRANSITIONS[cmd]
     values = taken(cmd, args)  # THE one door — every caller value, validated (see `taken()`)
     if cmd == "open-pr":
+        if is_github_url(values["pr"]):
+            fail("open-pr refuses GitHub URLs because this store cannot validate repository identity; pass #N or N")
         # A PR number is the durable key other campaign tools consume. Keep an opaque caller reference
         # untouched, but collapse every recognised legacy spelling to that one key before storing it.
         values["pr"] = pr_number(values["pr"]) or values["pr"]

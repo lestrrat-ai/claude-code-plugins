@@ -1403,7 +1403,7 @@ def t_in_pr_rejection_needs_one_typed_completed_disposition(tmp: Path) -> None:
     """
     store = tmp / "followups.jsonl"
     first, second = seed(store, 2)
-    for fid, pr in ((first, "#42"), (second, "https://github.com/acme/repo/pull/43")):
+    for fid, pr in ((first, "#42"), (second, "#43")):
         code, _, err = run(["--file", str(store), "accept", "--id", fid, "--at", "2026-07-24T10:00:00Z"])
         check(code == 0, f"accept setup failed: {err!r}")
         code, _, err = run(["--file", str(store), "open-pr", "--id", fid, "--pr", pr])
@@ -1428,6 +1428,17 @@ def t_in_pr_rejection_needs_one_typed_completed_disposition(tmp: Path) -> None:
     check(second_entry["rejection"] == PENDING_REJECTION,
           f"another PR's pending rejection was disposed: {second_entry!r}")
 
+    # A legacy URL record must not be reduced to its number by the callback. This is the pre-fix on-disk
+    # shape that caused a foreign repository's PR to consume the local numeric callback.
+    legacy_url = tmp / "legacy-url.jsonl"
+    write_lines(legacy_url, entry_line(
+        id="fu1", state="in-pr", rejection=PENDING_REJECTION,
+        pr="https://github.com/other-owner/other-repo/pull/42"))
+    recorded = followups.record_completed_rejection_disposition(legacy_url, "42")
+    legacy_entry = followups.find(followups.load(legacy_url), "fu1")
+    check(recorded == () and legacy_entry["rejection"] == PENDING_REJECTION,
+          f"a legacy URL was matched by number-only disposition: {recorded!r}, {legacy_entry!r}")
+
     code, out, err = run(["--file", str(store), "reject", "--id", first,
                           "--at", "2026-07-24T12:00:00Z"])
     entry = json.loads(out) if out else {}
@@ -1442,17 +1453,16 @@ def t_in_pr_rejection_needs_one_typed_completed_disposition(tmp: Path) -> None:
         check(code == 0, f"valid rejection phase {phase!r} was refused: {err!r}")
 
 
-def t_pr_references_keep_legacy_bare_numbers_and_github_urls(tmp: Path) -> None:
-    """`open-pr` stores recognised PR forms as their canonical number.
+def t_pr_references_require_numeric_refs(tmp: Path) -> None:
+    """`open-pr` stores recognised numeric PR forms as their canonical number and refuses GitHub URLs.
 
-    The command accepts legacy bare numbers, current `#N` spelling, and GitHub pull-request URLs, including
-    an optional trailing slash. It preserves unrecognised text rather than guessing a number embedded in it.
+    The command accepts legacy bare numbers and current `#N` spelling. It refuses GitHub URLs because their
+    repository identity cannot be validated here, and preserves non-GitHub opaque text rather than guessing
+    a number embedded in it.
     """
     accepted = {
         "42": "42",
         "#42": "42",
-        "https://github.com/acme/repo/pull/42": "42",
-        "https://github.com/acme/repo/pull/42/": "42",
     }
     for ref, expected in accepted.items():
         check(followups.pr_number(ref) == expected,
@@ -1462,29 +1472,31 @@ def t_pr_references_keep_legacy_bare_numbers_and_github_urls(tmp: Path) -> None:
         "#0",
         "42/",
         "#42\n",
-        "https://github.com/acme/repo/pull/42\n",
-        "https://github.com/acme?x/repo/pull/42",
-        "https://github.com/acme/repo#fragment/pull/42",
-        "https://github.com/./repo/pull/42",
-        "https://github.com/../repo/pull/42",
-        "https://github.com/acme/./pull/42",
-        "https://github.com/acme/../pull/42",
-        "https://github.com/%2e/repo/pull/42",
-        "https://github.com/%2E%2e/repo/pull/42",
-        "https://github.com/acme/%2e/pull/42",
-        "https://github.com/acme%2frepo/repo/pull/42",
-        "https://github.com/acme/repo%2F/pull/42",
-        "https://github.com/acme%3Fbad/repo/pull/42",
-        "https://github.com/acme%23bad/repo/pull/42",
-        "https://github.com/acme%0Abad/repo/pull/42",
-        "https://github.com/acme%20bad/repo/pull/42",
-        "https://github.com/acme%5Cbad/repo/pull/42",
-        "https://github.com/acme/repo/issues/42",
         "PR 42",
     )
     for ref in opaque:
         check(followups.pr_number(ref) is None,
               f"non-PR reference {ref!r} was guessed as {followups.pr_number(ref)!r}")
+
+    rejected_urls = (
+        "https://github.com/acme/repo/pull/42",
+        "https://github.com/acme/repo/pull/42/",
+        "https://github.com/acme/repo/pull/42\n",
+        "https://github.com/acme/repo/issues/42",
+        "https://github.com/acme?x/repo/pull/42",
+    )
+    for ref in rejected_urls:
+        check(followups.pr_number(ref) is None,
+              f"GitHub URL {ref!r} was parsed as {followups.pr_number(ref)!r}")
+        path = tmp / f"rejected-pr-reference-{len(ref)}.jsonl"
+        (fid,) = seed(path)
+        check(run(["--file", str(path), "accept", "--id", fid])[0] == 0,
+              f"setup accept for rejected URL {ref!r} failed")
+        code, _, err = run(["--file", str(path), "open-pr", "--id", fid, "--pr", ref])
+        check(code == 1 and "repository identity" in err,
+              f"`open-pr` accepted GitHub URL {ref!r}: {code} {err!r}")
+        check(json.loads(run(["--file", str(path), "get", "--id", fid])[1])["pr"] == PLACEHOLDER,
+              f"refused GitHub URL {ref!r} changed the stored PR")
 
     # Drive every accepted and opaque form through the only transition that writes `pr`; a parser-only
     # fixture would still pass if `open-pr` stored its raw argument.
@@ -1510,7 +1522,7 @@ CASES = [
     ("self-accept-distinct", "a DRIVER-accepted follow-up is never mistaken for a USER-accepted one", t_self_accepted_is_never_mistaken_for_accepted),
     ("doc-and-code-agree", "the ACT conditions the driver READS are the ones the code ENFORCES", t_the_doc_and_the_code_agree),
     ("in-pr-reject-orders-pr", "an `in-pr` rejection is durable before PR disposition and terminal only after it", t_in_pr_rejection_needs_one_typed_completed_disposition),
-    ("pr-reference-parser", "open-pr canonicalises recognised PR references and preserves opaque text", t_pr_references_keep_legacy_bare_numbers_and_github_urls),
+    ("pr-reference-parser", "open-pr canonicalises numeric PR references, refuses GitHub URLs, and preserves other opaque text", t_pr_references_require_numeric_refs),
     ("investigation-evidence", "an investigation shows its work; the finding APPENDS and never clobbers", t_investigation_shows_its_work),
     ("refutation-stays", "a refuted follow-up stays in the store, stays visible, and stays overturnable", t_refutation_stays_in_the_store),
     ("state-not-settable", "`set` writes neither `state` nor any evidence a transition left behind", t_state_and_evidence_are_not_settable),

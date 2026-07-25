@@ -225,7 +225,8 @@ stays pending until its own PR disposition occurs.
    **`gauntlet-authored`** and adopted into the current run so `pr-adoption.md` reads it as
    `pr_origin=gauntlet` — without the label it defaults to `external`, which then blocks campaign's own
    later autonomous repair of the very PR it authored. Record the PR with `followups.py open-pr --id fuN
-   --pr <ref>`; the entry stays `in-pr` and names which PR is addressing it.
+   --pr <N>`; use a bare number or `#N`. GitHub URLs are refused because this store cannot validate their
+   repository identity, and the entry stays `in-pr` naming which PR is addressing it.
 
 4. **FOLD THE PR INTO THE CURRENT CAMPAIGN.** The follow-up's PR — which step 3 admitted on its own
    recorded base — is **adopted into this run** like any other
@@ -324,7 +325,7 @@ followups.py --file <store> take-up     --id fuN --act-...     # TIER 2 — only
 followups.py --file <store> accept  --id fuN        # THE USER AGREED — the only edge into `accepted`
 followups.py --file <store> reject-pending --id fuN # user rejected an `in-pr` entry; record typed pending state
 followups.py --file <store> reject  --id fuN        # user ruled against it; `in-pr` requires a disposed PR result
-followups.py --file <store> open-pr --id fuN --pr <ref>    # a PR is addressing it — the entry STAYS
+followups.py --file <store> open-pr --id fuN --pr <N>      # a PR is addressing it — the entry STAYS
 followups.py --file <store> merged  --id fuN        # that PR LANDED — it is the record now, so the entry is DELETED
 followups.py --file <store> closed-unmerged --id fuN       # ordinary PR died → OPEN WORK; pending rejection → disposed
 followups.py --file <store> publish --id fuN --ref <issue> # TIER 3 — only AFTER the user's accept. The ISSUE
