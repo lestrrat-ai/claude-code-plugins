@@ -2269,33 +2269,83 @@ def _shell_is_escaped(text: str, index: int) -> bool:
 
 
 def _shell_quote_before(text: str, index: int) -> str | None:
-    """Return the active shell quote on the Markdown line immediately before ``index``, if any."""
+    """Return the active shell quote in the Markdown block immediately before ``index``, if any."""
     quote: str | None = None
-    cursor = text.rfind("\n", 0, index) + 1
+    fence: str | None = None
+    cursor = 0
     while cursor < index:
-        char = text[cursor]
-        if quote == "'":
-            if char == "'":
+        line_end = text.find("\n", cursor, index)
+        if line_end < 0:
+            line_end = index
+        line = text[cursor:line_end]
+        fence_match = re.match(r"^\s*(`{3,}|~{3,})", line)
+        if fence_match:
+            marker = fence_match.group(1)[0]
+            if fence is None or fence == marker:
+                fence = None if fence == marker else marker
                 quote = None
-            cursor += 1
+                cursor = line_end + (line_end < index)
+                continue
+        if fence is None and not line.strip():
+            quote = None
+            cursor = line_end + (line_end < index)
             continue
-        if quote == '"':
+        while cursor < line_end:
+            char = text[cursor]
+            if quote == "'":
+                if char == "'":
+                    quote = None
+                cursor += 1
+                continue
+            if quote == '"':
+                if char == "\\":
+                    cursor += 2
+                elif char == '"':
+                    quote = None
+                    cursor += 1
+                else:
+                    cursor += 1
+                continue
             if char == "\\":
                 cursor += 2
-            elif char == '"':
-                quote = None
+            elif char == "'" and cursor > 0 and cursor + 1 < line_end \
+                    and text[cursor - 1].isalnum() and text[cursor + 1].isalnum():
+                cursor += 1
+            elif char in "'\"":
+                quote = char
                 cursor += 1
             else:
                 cursor += 1
-            continue
-        if char == "\\":
-            cursor += 2
-        elif char in "'\"":
-            quote = char
-            cursor += 1
+        if line_end < index:
+            cursor = line_end + 1
         else:
-            cursor += 1
+            break
     return quote
+
+
+_SHELL_REDIRECTION_PREFIX = re.compile(
+    r"^(?:(?:[-*+]\s*|\d+[.)]\s*)|(?:then|else|do|elif)\s+)?"
+    r"(?:(?:\d*(?:<<<|<<-|<<|<>|>&|<&|>>|>|<)|&>>|&>|&<)\s*"
+    r"(?:'[^']*'|\"(?:\\.|[^\"])*\"|(?:\\.|[^\s]))+\s*)+$"
+)
+
+
+def _shell_redirection_before(text: str, index: int) -> bool:
+    """Return whether leading redirections form the command prefix before ``index``."""
+    line_start = text.rfind("\n", 0, index) + 1
+    while line_start > 0 and _shell_line_continues(text, line_start - 1):
+        line_start = text.rfind("\n", 0, line_start - 1) + 1
+    prefix = re.sub(r"\\\n\s*", " ", text[line_start:index])
+    segment_start = 0
+    for cursor, char in enumerate(prefix):
+        if char not in SHELL_COMMAND_SEPARATORS | SHELL_GROUP_DELIMITERS | SHELL_CASE_PATTERN_DELIMITERS:
+            continue
+        if char == "&" and cursor > 0 and prefix[cursor - 1] in "<>":
+            continue
+        if _shell_is_escaped(prefix, cursor):
+            continue
+        segment_start = cursor + 1
+    return bool(_SHELL_REDIRECTION_PREFIX.fullmatch(prefix[segment_start:].strip()))
 
 
 def _shell_line_continues(text: str, newline: int) -> bool:
@@ -2321,7 +2371,8 @@ def _shell_delimiter_before(text: str, index: int) -> bool:
         while slash >= 0 and text[slash].isspace():
             slash -= 1
         return slash < 0 or (text[slash] in SHELL_COMMAND_SEPARATORS
-                             and _shell_operator_is_active(text, slash))
+                             and _shell_operator_is_active(text, slash)) \
+            or _shell_redirection_before(text, index)
 
     cursor = index - 1
     while cursor >= 0 and text[cursor].isspace():
@@ -2332,7 +2383,9 @@ def _shell_delimiter_before(text: str, index: int) -> bool:
             or text[cursor] in SHELL_GROUP_DELIMITERS
             or text[cursor] in SHELL_CASE_PATTERN_DELIMITERS):
         return _shell_operator_is_active(text, cursor)
-    return _shell_quote_before(text, index) is None and _markdown_line_is_command_start(text, index)
+    return (_shell_quote_before(text, index) is None
+            and (_shell_redirection_before(text, index)
+                 or _markdown_line_is_command_start(text, index)))
 
 
 def _shell_compound_keyword_before(text: str, index: int) -> bool:

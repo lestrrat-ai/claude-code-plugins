@@ -1056,12 +1056,15 @@ def command_boundary_cases(ci, tmp: Path) -> list[str]:
             f'echo "foo;ci-status.py {valid}"',
             f'echo "foo&ci-status.py {valid}"',
             f'echo "foo|ci-status.py {valid}"',
+            f'echo "foo\nci-status.py {valid}"',
+            f"not-ci-status.py {valid}",
             f"echo `foo`ci-status.py {valid}",
             f"echo \\\n  ci-status.py {valid}",
         ]
         valid_commands = [
             f"ci-status.py {valid}",
             f"  ci-status.py {valid}",
+            f"> logfile ci-status.py {valid}",
             f"'ci-status.py {valid}'",
             f'"ci-status.py {valid}"',
             f"`ci-status.py {valid}`",
