@@ -169,7 +169,8 @@ FIXTURES = HERE / "fixtures" / "ci-status"
 
 # Every driver-facing site that launches or relaunches a CI watch. The tuple is the complete registry;
 # `doc-check` asserts each listed site directly and the fixture suite mutates every entry. Each entry is
-# `(format, relative path, unique anchor, required condition)`.
+# `(format, relative path, unique anchor, required condition)`. `formula` owners are direct consumers
+# whose block states the liveness condition without restating the complete item-21 wording.
 WATCH_ACTION_CONSUMERS = (
     ("mermaid", "README.md", 'R -- "pending / unreadable" --> CM[run liveness] --> WW{watch_warranted?}',
      "WW -- true --> CW[keep a CI watch alive<br/>relaunch it if it exited] --> M"),
@@ -202,15 +203,39 @@ WATCH_ACTION_CONSUMERS = (
      "`watch_warranted` is `true`"),
     ("markdown", "references/loop-control.md", "- **CI watch action.**",
      "`watch_warranted` is `true`"),
+    ("formula", "references/loop-control.md", "Then **adopt** each PR",
+     "returned `watch_warranted` is `true`"),
     ("markdown", "references/pr-adoption.md", "**CI watch action.**",
+     "`watch_warranted` is `true`"),
+    ("formula", "references/pr-adoption.md",
+     "Adoption produces only the registered, labelled row and the CI watch action:",
      "`watch_warranted` is `true`"),
     ("markdown", "references/stage-2-review-gate.md", "**Held-PR watch action.**",
      "`watch_warranted` is `true`"),
+    ("formula", "references/stage-2-ci.md",
+     "- **re-derive `ci` from a fresh snapshot for the NEW `head_sha`",
+     "`liveness` then reports `watch_warranted`"),
 )
 README_ADOPTION_WATCH_ACTION = (
     'C[adopt each PR: ledger row + run label,<br/>run liveness<br/>act on watch_warranted]'
 )
 PARKED_WATCH_RULE = "Parked status does not override that result."
+WATCH_ACTION_CONTRADICTIONS = (
+    ("ci/status-based", re.compile(
+        r"(?:\b(?:if|when|while)\s+(?:(?:the|row(?:'s)?|value\s+of)\s+)*"
+        r"(?:ci|status)\b[^.!?]*\b(?:watch|launch|relaunch|ensure)\b|"
+        r"\b(?:watch|launch|relaunch|ensure)\b[^.!?]*\b(?:if|when|while)\s+"
+        r"(?:(?:the|row(?:'s)?|value\s+of)\s+)*(?:ci|status)\b)",
+        re.IGNORECASE,
+    )),
+    ("unconditional", re.compile(
+        r"(?:\b(?:watch|launch|relaunch|ensure)\b[^.!?]*"
+        r"\b(?:unconditionally|regardless|anyway|always)\b|"
+        r"\b(?:unconditionally|regardless|anyway|always)\b[^.!?]*"
+        r"\b(?:watch|launch|relaunch|ensure)\b)",
+        re.IGNORECASE,
+    )),
+)
 
 # A git object id, as GitHub returns it: 40 LOWERCASE hex. Same rule, same reason, as `ci-snapshot.py` —
 # a `--head-sha` of any other shape makes every comparison downstream unfalsifiable, so it is an OPERATOR
@@ -2404,6 +2429,21 @@ def owner_block(text: str, anchor: str) -> tuple[int, str] | None:
     return start, text[start:end if end >= 0 else len(text)]
 
 
+def watch_action_contradiction_problems(relative: str, line: int, plain: str) -> list[str]:
+    """Reject a second watch rule that bypasses the registered liveness warrant."""
+    for kind, pattern in WATCH_ACTION_CONTRADICTIONS:
+        for match in pattern.finditer(plain):
+            sentence_start = max(
+                plain.rfind(".", 0, match.start()),
+                plain.rfind("!", 0, match.start()),
+                plain.rfind("?", 0, match.start()),
+            )
+            prefix = plain[sentence_start + 1:match.start()]
+            if not re.search(r"\b(?:never|do not|don't|not)\b", prefix, re.IGNORECASE):
+                return [f"{relative}:{line} adds a contradictory {kind} watch rule"]
+    return []
+
+
 def watch_action_owner_problems(owner: tuple[str, str, str, str], base: Path) -> list[str]:
     """Check one registered watch-action owner with the syntax that owner actually uses."""
     format_name, relative, anchor, condition = owner
@@ -2421,8 +2461,11 @@ def watch_action_owner_problems(owner: tuple[str, str, str, str], base: Path) ->
     if format_name == "policy":
         required = (anchor, "The watch decision is **`liveness`'s `watch_warranted` field**", condition,
                     "when it is **false**, never launch or relaunch")
-        return [f"{relative} omits {item!r} from the CI watch policy"
-                for item in required if text.count(item) != 1]
+        problems = [f"{relative} omits {item!r} from the CI watch policy"
+                    for item in required if text.count(item) != 1]
+        line = text.count("\n", 0, text.find(anchor)) + 1
+        problems += watch_action_contradiction_problems(relative, line, " ".join(text.split()))
+        return problems
 
     selected = owner_block(text, anchor)
     if selected is None:
@@ -2430,10 +2473,11 @@ def watch_action_owner_problems(owner: tuple[str, str, str, str], base: Path) ->
     start, block = selected
     line = text.count("\n", 0, start) + 1
     plain = " ".join(block.split())
-    if format_name == "summary":
+    if format_name in ("summary", "formula"):
+        problems = watch_action_contradiction_problems(relative, line, plain)
         if condition not in plain:
-            return [f"{relative}:{line} does not dispatch CI watches from item 21's returned warrant"]
-        return []
+            problems.append(f"{relative}:{line} does not dispatch CI watches from its registered warrant")
+        return problems
     if format_name != "markdown":
         return [f"{relative}:{line} has unknown watch-action format {format_name!r}"]
 
@@ -2443,7 +2487,7 @@ def watch_action_owner_problems(owner: tuple[str, str, str, str], base: Path) ->
         f"{tick}watch_warranted{tick} is {tick}true{tick}"
     )
     required_parked_rule = PARKED_WATCH_RULE
-    problems = []
+    problems = watch_action_contradiction_problems(relative, line, plain)
     if required_action not in plain:
         problems.append(f"{relative}:{line} does not make the watch action depend on liveness's returned warrant")
     if condition not in plain:
