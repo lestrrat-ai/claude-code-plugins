@@ -26,6 +26,7 @@ SIBLING = HERE / "reviewer-backoff-test.py"
 TRANSIENT = "transient"
 TIMER = "timer"
 PERMANENT = "permanent"
+UNRECOGNIZED = "unrecognized"
 
 RETRY_EXTERNAL = "retry-external"
 WAIT_EXTERNAL = "wait-external"
@@ -427,10 +428,14 @@ def _permanent(reason: str) -> ExternalReviewFailure:
     return ExternalReviewFailure(PERMANENT, None, None, reason)
 
 
+def _unrecognized(reason: str) -> ExternalReviewFailure:
+    return ExternalReviewFailure(UNRECOGNIZED, None, None, reason)
+
+
 def _valid_failure(value: object) -> bool:
     if not isinstance(value, ExternalReviewFailure) or not isinstance(value.reason, str):
         return False
-    if value.kind in (TRANSIENT, PERMANENT):
+    if value.kind in (TRANSIENT, PERMANENT, UNRECOGNIZED):
         return (
             value.retry_after_seconds is None
             and value.retry_at is None
@@ -524,8 +529,9 @@ def classify(message: str, now: datetime | None = None) -> ExternalReviewFailure
     """Classify every external-process error before route selection.
 
     Permanent markers take precedence. Valid whole-second timer text wins over transient markers;
-    malformed or unsupported timer text is permanent for this session. A numeric offset paired with
-    a named timezone must match that zone's valid offset for the target local time.
+    malformed or unsupported timer text is permanent for this session. Opaque text is unrecognized
+    and falls back without disabling the external route. A numeric offset paired with a named timezone
+    must match that zone's valid offset for the target local time.
     """
 
     if not isinstance(message, str):
@@ -551,7 +557,7 @@ def classify(message: str, now: datetime | None = None) -> ExternalReviewFailure
     for marker in TRANSIENT_MARKERS:
         if _contains_transient_marker(lowered, marker):
             return ExternalReviewFailure(TRANSIENT, None, None, f"transient marker: {marker}")
-    return _permanent("no safe retry class or timer was identified")
+    return _unrecognized("no recognized retry class or timer was identified")
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -605,8 +611,8 @@ def transition(
         pr_number = None
     elif not isinstance(failure, ExternalReviewFailure):
         failure = _permanent("external failure classification was malformed")
-    elif failure.kind not in (TRANSIENT, TIMER, PERMANENT):
-        failure = _permanent("unrecognized external failure classification")
+    elif failure.kind not in (TRANSIENT, TIMER, PERMANENT, UNRECOGNIZED):
+        failure = _unrecognized("unrecognized external failure classification")
     elif not _valid_failure(failure):
         failure = _permanent("external failure classification was malformed")
     elif failure.kind == TIMER and pr_number is None:

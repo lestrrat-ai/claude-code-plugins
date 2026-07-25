@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Mapping
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from _gauntlet.modules import load_module_from_path
@@ -20,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REFS = ROOT / "references"
 COPILOT = ROOT.parent / "copilot-address-reviews"
 DISPATCH_PATH = ROOT / "scripts" / "review-dispatch.py"
+BACKOFF_PATH = ROOT / "scripts" / "reviewer-backoff.py"
 
 
 def _load_dispatch():
@@ -30,6 +32,16 @@ def _load_dispatch():
 
 
 DISPATCH = _load_dispatch()
+
+
+def _load_backoff():
+    mod = load_module_from_path("transport_contract_reviewer_backoff", BACKOFF_PATH, register=True)
+    if mod is None:
+        raise RuntimeError(f"cannot load reviewer backoff owner at {BACKOFF_PATH}")
+    return mod
+
+
+BACKOFF = _load_backoff()
 
 
 def require(condition: bool, message: str) -> None:
@@ -747,6 +759,7 @@ def check_document_contract() -> None:
         "ExternalReviewFailure",
         "ExternalReviewSessionState",
         "reviewer-backoff.py",
+        'kind: "transient" | "timer" | "permanent" | "unrecognized"',
         "retry_after_seconds: NonNegativeInt | null",
         "external_backoff_until: Timestamp | null",
         "external_backoff_timer_id: Text | null",
@@ -755,12 +768,17 @@ def check_document_contract() -> None:
         "external_retry_spent: Bool",
         "pr_number: PositiveInt",
         'event: "selected" | "external-system-failure" | "native-system-failure"',
+        "failure: ExternalReviewFailure | null",
+        "now: Timestamp",
+        "reviewer-backoff.py classify(provider_text, now)",
+        "reviewer-backoff.py transition(failure",
         "current Claude Code and Codex adapters",
         "launch_mechanism_present",
         "Their absence NEVER blocks launch",
         "selected cross-engine route, paired CLI available, and session state clear | `launch-external`",
         "external failure classified `timer`, retry not spent, and `now` is before its deadline | `wait-external`",
-        "external failure classified `permanent`, or classification is unrecognized",
+        "external failure classified `permanent` | set session `external_disabled`",
+        "external failure classified `unrecognized` | use `fallback-native` without setting session `external_disabled`",
         "timer transition without the current positive PR number, including initial empty state | treat as malformed",
         "numeric offset that is invalid for",
         "A named zone's valid offsets include both sides",
@@ -821,10 +839,11 @@ def check_document_contract() -> None:
             "native report producer no longer covers every attempt state")
     reviewer_flat = " ".join(reviewer.split())
     require("Before any retry or fallback, classify the captured external-process failure" in reviewer_flat and
-            "unrecognized failure is permanent" in reviewer_flat and
+            "unrecognized failures use native fallback without disabling the external route" in reviewer_flat and
+            "never chooses a prompt profile from provider error text" in reviewer_flat and
             "never resumes the failed external session" in reviewer_flat and
             "does not require a model switch" in reviewer_flat,
-            "reviewer retry lost failure classification, session fallback, or model boundary")
+            "reviewer retry lost failure classification, session fallback, profile selection, session resume, or model boundary")
     stage_flat = " ".join(stage.split())
     require('"--file", ledger_file' in stage_flat and
             '"--prompt-profile", prompt_profile' in stage_flat,
@@ -1144,10 +1163,13 @@ def run_repository_context_fixtures() -> None:
                 "repository Git argv shifted a hostile ref")
 
 
-def review_action(capability: Mapping[str, object], external_retry_spent: bool = False,
-                  external_failed: bool = False, external_failure_kind: str | None = None,
-                  session_disabled: bool = False, session_backoff_active: bool = False,
-                  timer_expired: bool = False, native_exhausted: bool = False) -> str:
+def review_action(capability: Mapping[str, object], *, event: str = "selected",
+                  external_retry_spent: bool = False,
+                  native_attempts_exhausted: bool = False,
+                  external_failure: object | None = None,
+                  session: object | None = None,
+                  current_time: object | None = None,
+                  pr: object | None = None) -> str:
     # Every route launches on `fresh_conversation` + `launch_mechanism_present` alone. The three
     # `os_filesystem_isolation` properties are an optional stronger-boundary CLAIM and MUST NOT gate
     # launch — the function deliberately never reads them.
@@ -1156,22 +1178,35 @@ def review_action(capability: Mapping[str, object], external_retry_spent: bool =
     if route.startswith("external-"):
         if not launchable:
             return "fallback-native"
-        if session_disabled or session_backoff_active:
+        if event == "external-system-failure":
+            require(external_failure is not None, "external failure did not carry a typed failure")
+            require(session is not None, "external failure did not carry session state")
+            require(current_time is not None, "external failure did not carry current time")
+            require(pr is not None, "external failure did not carry PR ownership")
+            decision = BACKOFF.transition(
+                external_failure,
+                retry_spent=external_retry_spent,
+                now=current_time,
+                state=session,
+                pr_number=pr,
+            )
+            require(decision.action in (
+                BACKOFF.RETRY_EXTERNAL,
+                BACKOFF.WAIT_EXTERNAL,
+                BACKOFF.FALLBACK_NATIVE,
+            ), f"reviewer backoff returned an unmapped action: {decision.action}")
+            return decision.action
+        require(event == "selected", f"unsupported external review event: {event}")
+        if session is not None and session.external_disabled:
             return "fallback-native"
-        if external_failed:
-            if external_failure_kind not in ("transient", "timer", "permanent"):
-                return "fallback-native"
-            if external_failure_kind == "permanent":
-                return "fallback-native"
-            if external_failure_kind == "timer" and not timer_expired:
-                return "wait-external" if not external_retry_spent else "fallback-native"
-            return "fallback-native" if external_retry_spent else "retry-external"
         return "launch-external"
     # Native is the last-resort route: if it cannot launch (unavailable — no fresh conversation or no
     # launch mechanism), there is nothing left to fall back to, which is exactly `park-machine-blocker`.
     if not launchable:
         return "park-machine-blocker"
-    if native_exhausted:
+    require(event in ("selected", "native-system-failure"),
+            f"unsupported native review event: {event}")
+    if native_attempts_exhausted:
         return "park-machine-blocker"
     return "launch-native"
 
@@ -1196,24 +1231,75 @@ def run_isolation_transition_fixtures() -> None:
         }
         require(review_action(shipped) == "launch-external",
                 f"shipped {route} did not launch cross-engine at native-limitation level")
-        require(review_action(shipped, external_failed=True, external_failure_kind="transient") == "retry-external",
-                f"{route} first failure lost its retry")
-        require(review_action(shipped, external_failed=True, external_failure_kind="transient",
-                             external_retry_spent=True) == "fallback-native",
-                f"{route} retry failure did not fall back to native")
-        require(review_action(shipped, external_failed=True) == "fallback-native",
-                f"{route} retried an unclassified failure")
-        require(review_action(shipped, external_failed=True, external_failure_kind="timer") == "wait-external",
-                f"{route} timer failure did not wait")
-        require(review_action(shipped, external_failed=True, external_failure_kind="timer",
-                             timer_expired=True) == "retry-external",
-                f"{route} timer failure did not retry at its deadline")
-        require(review_action(shipped, external_failed=True, external_failure_kind="permanent") == "fallback-native",
-                f"{route} permanent failure did not fall back")
-        require(review_action(shipped, session_disabled=True) == "fallback-native",
-                f"{route} session-disabled state launched external review")
-        require(review_action(shipped, session_backoff_active=True) == "fallback-native",
-                f"{route} active session backoff launched external review")
+        require(review_action(
+            shipped,
+            session=BACKOFF.SessionState(external_disabled=True),
+            pr=188,
+        ) == "fallback-native", f"{route} ignored a disabled external session")
+        now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+        transient = BACKOFF.classify("upstream timeout", now)
+        require(review_action(
+            shipped,
+            event="external-system-failure",
+            external_failure=transient,
+            session=BACKOFF.SessionState(),
+            current_time=now,
+            pr=188,
+        ) == "retry-external", f"{route} first failure lost its retry")
+        require(review_action(
+            shipped,
+            event="external-system-failure",
+            external_failure=transient,
+            session=BACKOFF.SessionState(),
+            current_time=now,
+            pr=188,
+            external_retry_spent=True,
+        ) == "fallback-native", f"{route} retry failure did not fall back to native")
+
+        timer_failure = BACKOFF.classify("rate limited; retry after 90 seconds", now)
+        timer_state = BACKOFF.transition(timer_failure, now=now, pr_number=188)
+        require(timer_state.action == "wait-external" and timer_state.retry_after_seconds == 90,
+                f"{route} fixture did not establish the provider deadline")
+        require(review_action(
+            shipped,
+            event="external-system-failure",
+            external_failure=timer_failure,
+            session=BACKOFF.SessionState(),
+            current_time=now,
+            pr=188,
+        ) == "wait-external", f"{route} ignored the provider deadline")
+        deadline = timer_state.state.external_backoff_until
+        require(deadline is not None, f"{route} lost the provider deadline")
+        require(review_action(
+            shipped,
+            event="external-system-failure",
+            external_failure=timer_failure,
+            session=timer_state.state,
+            current_time=deadline,
+            pr=188,
+        ) == "retry-external", f"{route} did not retry at the provider deadline")
+
+        other_pr_failure = BACKOFF.classify("rate limited; retry after 30 seconds", now)
+        require(review_action(
+            shipped,
+            event="external-system-failure",
+            external_failure=other_pr_failure,
+            session=timer_state.state,
+            current_time=now + timedelta(seconds=10),
+            pr=189,
+        ) == "fallback-native", f"{route} ignored the session timer owner")
+
+        opaque = BACKOFF.classify("opaque provider failure", now)
+        require(opaque.kind == BACKOFF.UNRECOGNIZED,
+                f"{route} opaque provider failure was classified as permanent")
+        require(review_action(
+            shipped,
+            event="external-system-failure",
+            external_failure=opaque,
+            session=BACKOFF.SessionState(),
+            current_time=now,
+            pr=188,
+        ) == "fallback-native", f"{route} opaque provider failure did not fall back")
 
         # Paired CLI absent -> unavailable -> immediate native fallback, no retry consumed.
         absent = dict(shipped, launch_mechanism_present=False)
@@ -1238,7 +1324,7 @@ def run_isolation_transition_fixtures() -> None:
     }
     require(review_action(native) == "launch-native",
             "native limitations incorrectly parked an available pass")
-    require(review_action(native, native_exhausted=True) == "park-machine-blocker",
+    require(review_action(native, native_attempts_exhausted=True) == "park-machine-blocker",
             "exhausted invalid native route did not park")
 
     # A native route that is `unavailable` (no launch mechanism, or no fresh conversation) CANNOT launch.

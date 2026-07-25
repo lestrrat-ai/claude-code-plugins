@@ -161,7 +161,7 @@ provider text never selects a route, profile, model, or argv member.
 
 ```text
 ExternalReviewFailure {
-  kind: "transient" | "timer" | "permanent",
+  kind: "transient" | "timer" | "permanent" | "unrecognized",
   retry_after_seconds: NonNegativeInt | null,
   retry_at: Timestamp | null,
   reason: Text,
@@ -188,8 +188,8 @@ time with timezone-aware arithmetic. Permanent markers take precedence over time
 valid timer text takes precedence over generic transient markers. Malformed or unsupported timer text,
 including fractional or unrepresentable delays, unknown zones, and a numeric offset that is invalid for
 the named zone at the target local time, is `permanent`. A named zone's valid offsets include both sides
-of a DST fold. An unrecognized failure is also `permanent` and disables this external route for the
-current session.
+of a DST fold. An unrecognized failure is opaque text that falls back natively without disabling this
+external route for the current session.
 
 `ExternalReviewSessionState` is process/session memory owned by the active orchestrator. Update it only
 from the returned transition or decision. **Never write `external_disabled` or
@@ -215,6 +215,15 @@ review_transition(
 ) -> ReviewTransition
 ```
 
+`ExternalReviewFailure` and `ExternalReviewSessionState` are the typed values owned by
+`reviewer-backoff.py`. On `external-system-failure`, capture provider text and run
+`reviewer-backoff.py classify(provider_text, now)`, then run
+`reviewer-backoff.py transition(failure, retry_spent=external_retry_spent, now=now,
+state=session, pr_number=pr_number)`. Replace `session` with the returned transition state before the next
+transition. The helper keeps `unrecognized` opaque failures separate from `permanent` failures:
+opaque text falls back natively without disabling the external route, while known permanent markers and
+malformed timers retain the session-disable path owned there.
+
 This operation owns every route change:
 
 | Input | Action |
@@ -224,9 +233,10 @@ This operation owns every route change:
 | external failure classified `transient`, retry not spent | `retry-external` immediately |
 | external failure classified `timer`, retry not spent, and `now` is before its deadline | `wait-external` until the exact provider deadline; do not launch before it |
 | external failure classified `timer`, retry not spent, and `now` has reached its deadline | `retry-external` immediately |
-| external failure classified `permanent`, or classification is unrecognized | set session `external_disabled`, then `fallback-native` |
+| external failure classified `permanent` | set session `external_disabled`, then `fallback-native` |
+| external failure classified `unrecognized` | use `fallback-native` without setting session `external_disabled` |
 | timer transition without the current positive PR number, including initial empty state | treat as malformed, set session `external_disabled`, then `fallback-native` without storing a deadline or timer identity |
-| external failure after retry, regardless of class | `fallback-native`; retain any timer backoff for other launches in this session |
+| external failure after retry, regardless of class | `fallback-native`; preserve the helper's disable decision and retain any timer backoff for other launches in this session |
 | session timer backoff is active for another PR | use `fallback-native` for that PR; do not shorten or ignore the timer |
 | native route/fallback can follow the installed contract | `launch-native` with the native limitations below |
 | native attempts cannot follow the installed contract or produce valid artifacts and their budget is exhausted | `park-machine-blocker` |
@@ -236,8 +246,7 @@ no `review-dispatch.py prepare`. Use the heartbeat or another bounded wait to re
 timestamp, then re-enter this transition with the same typed failure, live session state, and current time;
 the active-deadline re-entry rule above decides whether the stored deadline is preserved. A pre-launch
 cross-engine capability miss has no process to relaunch, so it consumes no retry and takes the fresh
-native fallback immediately. A timer or permanent provider error does not change the policy in a later
-session.
+native fallback immediately. A provider error does not change the policy in a later session.
 Missing native OS/startup controls alone never select `park-machine-blocker`; only actual inability to
 complete the installed contract after its budget does. `reviewer.md` owns the retry budget, while this table owns the transition meaning.
 

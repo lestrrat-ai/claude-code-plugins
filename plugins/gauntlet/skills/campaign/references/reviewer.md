@@ -130,10 +130,11 @@ is the absence of a verdict.
 
 **Before any retry or fallback, classify the captured external-process failure through
 `runtime-adapter.md`, "Review failure classification and session backoff".** The helper returns
-`transient`, `timer`, or `permanent`; permanent markers and malformed or unsupported timer text are
-permanent, and an unrecognized failure is permanent. Apply the returned transition: transient failures may
-spend the one retry, valid timers wait for the exact provider deadline before retrying, and permanent
-failures disable that external route for this session before native fallback.
+`transient`, `timer`, `permanent`, or `unrecognized`; permanent markers and malformed or unsupported
+timer text are permanent, while opaque text is unrecognized. Apply the returned transition: transient
+failures may spend the one retry, valid timers wait for the exact provider deadline before retrying,
+permanent failures disable that external route for this session, and unrecognized failures use native
+fallback without disabling the external route.
 The paired CLI absence is a pre-launch capability miss and takes native fallback without a retry. Keep
 the session backoff state in memory only; never write it to campaign artifacts.
 Note in the final report which cross-engine routes were unavailable and which passes used the recovery
@@ -141,12 +142,14 @@ profile or ran on the native-worker fallback. The gate is unchanged: a worker pa
 context-isolated re-roll that counts toward the review gate exactly like an external pass. The runtime
 owner defines the native limitations and the only machine-blocker transition; do not restate them here.
 
-**Prepare every retry from `runtime-adapter.md`, "Review preparation mapping".** The transition does not
-select a profile from provider output: it assigns `codex-recovery` to the existing external Codex attempt
-`2` and `standard` to every other route. The retry always starts a fresh process and never resumes the
-failed external session. The profile changes only the opening framing, does not require a model switch,
-and keeps the complete shared prompt contract, attempt budget, producer, and canonical argv. The shipped
-adapter has no trusted alternate-model mapping, so it passes no model-selection argument.
+**Prepare every retry from `runtime-adapter.md`, "Review preparation mapping".** `reviewer-backoff.py`
+classifies provider text and owns the session retry or deadline decision. The transition never chooses a
+prompt profile from provider error text: it assigns `codex-recovery` to the existing external Codex
+attempt `2` and `standard` to every other route. The retry always starts a fresh process and never
+resumes the failed external session. The profile changes only the opening framing, does not require a
+model switch, and keeps the complete shared prompt contract, attempt budget, producer, and canonical
+argv. The shipped adapter has no trusted alternate-model mapping, so it passes no model-selection
+argument.
 
 A reviewer that **never starts** is a distinct failure — it produces not even a partial result — and
 has its own guard: the Stage 2a **launch check** kills any pass that has written **no launch evidence**
