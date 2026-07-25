@@ -1260,6 +1260,25 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
             f"[command copy required-set] placeholder apostrophes hid a later command: "
             f"copies={apostrophe_copies!r}, problems={apostrophe_problems!r}, checked={apostrophe_checked!r}"
         )
+
+    comment_root = tmp / "command-copy-comment-required-set"
+    comment_root.mkdir()
+    (comment_root / "comment.md").write_text(
+        "```sh\n"
+        "python3 <skill>/scripts/ci-status.py required-set --ledger <rundir>/state.jsonl "
+        "# reader's note; \"quoted\" | still prose\n"
+        "python3 <skill>/scripts/ci-status.py required-set\n"
+        "```\n",
+        encoding="utf-8",
+    )
+    comment_copies = ci.documented_ci_status_copies(comment_root, "required-set")
+    comment_problems, comment_checked = ci.check_required_set_copies(comment_root)
+    if (len(comment_copies) != 2 or len(comment_checked) != 2 or len(comment_problems) != 1
+            or "without the run ledger's" not in comment_problems[0]):
+        problems.append(
+            f"[command copy required-set] fenced shell comments merged command copies: "
+            f"copies={comment_copies!r}, problems={comment_problems!r}, checked={comment_checked!r}"
+        )
     return problems
 
 

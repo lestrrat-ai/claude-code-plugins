@@ -2249,16 +2249,18 @@ def check_gh_invocations(text: str, argv: dict[str, list[str]]) -> list[str]:
 
 
 def _shell_command_spans(text: str, *, split_newlines: bool) -> list[tuple[int, int]]:
-    """Split shell text at command boundaries outside quotes and escaped characters.
+    """Split shell text at command boundaries outside quotes, escapes, and comments.
 
     Markdown placeholders may contain apostrophes, such as the invented ``<a placeholder's value>``.
     They are not shell quotes, so an apostrophe inside an angle-bracket placeholder must not hide a later
-    newline.
+    newline. An unquoted ``#`` starts a shell comment at a word boundary, so separators, quotes, and
+    newlines inside that comment must not affect command boundaries.
     """
     spans: list[tuple[int, int]] = []
     start = 0
     quote: str | None = None
     escaped = False
+    comment = False
     index = 0
 
     def add(end: int) -> None:
@@ -2269,6 +2271,13 @@ def _shell_command_spans(text: str, *, split_newlines: bool) -> list[tuple[int, 
 
     while index < len(text):
         char = text[index]
+        if comment:
+            if char == "\n":
+                comment = False
+                if split_newlines:
+                    add(index)
+            index += 1
+            continue
         if escaped:
             escaped = False
             index += 1
@@ -2286,6 +2295,10 @@ def _shell_command_spans(text: str, *, split_newlines: bool) -> list[tuple[int, 
         placeholder_end = text.rfind(">", 0, index)
         if char in "'\"" and not (char == "'" and placeholder_start > placeholder_end):
             quote = char
+            index += 1
+            continue
+        if char == "#" and (index == 0 or text[index - 1].isspace() or text[index - 1] in "()|&;"):
+            comment = True
             index += 1
             continue
         if split_newlines and char == "\n":
@@ -2327,9 +2340,9 @@ def documented_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path,
     """Return supported command copies: inline literals and fenced shell commands.
 
     The command-copy guard owns two documentation forms. Inline literals carry a complete command, even
-    when Markdown wraps the literal. Fenced shell blocks carry shell commands, including commands joined by
-    operators or wrapped in grouping and substitution. Other prose and Markdown constructs are deliberately
-    outside this guard's scope.
+    when Markdown wraps the literal. Fenced shell blocks carry shell commands, including shell comments,
+    commands joined by operators, and commands wrapped in grouping and substitution. Other prose and
+    Markdown constructs are deliberately outside this guard's scope.
     """
     fence = re.compile(r"(?ms)^[ ]{0,3}```(?:sh|bash|shell)?[ \t]*\n(?P<body>.*?)^[ ]{0,3}```[ \t]*$")
     inline = re.compile(r"`(?P<body>[^`]*?)`", re.DOTALL)
