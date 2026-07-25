@@ -2257,6 +2257,18 @@ def _markdown_line_is_command_start(text: str, index: int) -> bool:
 
 def _shell_delimiter_before(text: str, index: int) -> bool:
     """Return whether the character at ``index`` starts a shell command boundary."""
+    newline = text.rfind("\n", 0, index)
+    if newline > 0 and text[newline - 1] == "\\":
+        slash = newline - 1
+        backslashes = 0
+        while slash >= 0 and text[slash] == "\\":
+            backslashes += 1
+            slash -= 1
+        if backslashes % 2:
+            while slash >= 0 and text[slash].isspace():
+                slash -= 1
+            return slash < 0 or text[slash] in SHELL_COMMAND_SEPARATORS
+
     cursor = index - 1
     while cursor >= 0 and text[cursor].isspace():
         cursor -= 1
