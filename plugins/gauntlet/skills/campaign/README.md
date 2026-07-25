@@ -234,10 +234,12 @@ never the place to look them up.
   If the paired CLI is absent, or a cross-engine reviewer can't return a verdict, follow the classification
   and fallback contract owned by [`references/runtime-adapter.md`](./references/runtime-adapter.md),
   "Review failure classification and session backoff". That contract permits one retry for transient
-  failures, waits for valid timers at exact provider deadlines, and treats malformed or unsupported timer
-  text as permanent. Permanent failures go to native fallback and disable the external route for this
-  session; unrecognized typed failure kinds use native fallback without disabling it. Session backoff and disabled
-  state are never durable. The retry uses the same complete review contract and process command; only the
+  failures. A valid timer waits at the exact provider deadline only while the retry is unspent and the
+  current time is before that deadline; after the retry is spent, native fallback is immediate while session
+  backoff is retained for other launches. Permanent failures, including malformed or unsupported timer text,
+  go to native fallback and disable the external route for this session. Opaque or unrecognized typed failure
+  kinds use native fallback without disabling it. Session backoff and disabled state are never durable. The
+  retry uses the same complete review contract and process command; only the
   mapped Codex recovery profile adds repository-maintenance framing. It never resumes the failed session
   or requires a model switch. Campaign therefore runs with or without the other engine. The fallback uses
   the disclosed native isolation contract. A reviewer that never
