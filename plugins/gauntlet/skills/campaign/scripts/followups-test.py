@@ -1436,7 +1436,7 @@ def t_in_pr_rejection_needs_one_typed_completed_disposition(tmp: Path) -> None:
         pr="https://github.com/other-owner/other-repo/pull/42"))
     recorded = followups.record_completed_rejection_disposition(legacy_url, "42")
     legacy_entry = followups.find(followups.load(legacy_url), "fu1")
-    check(recorded == () and legacy_entry["rejection"] == PENDING_REJECTION,
+    check(recorded == () and legacy_entry is not None and legacy_entry["rejection"] == PENDING_REJECTION,
           f"a legacy URL was matched by number-only disposition: {recorded!r}, {legacy_entry!r}")
 
     code, out, err = run(["--file", str(store), "reject", "--id", first,
