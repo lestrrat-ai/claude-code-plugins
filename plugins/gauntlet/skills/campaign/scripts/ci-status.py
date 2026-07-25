@@ -210,6 +210,7 @@ WATCH_ACTION_CONSUMERS = (
 README_ADOPTION_WATCH_ACTION = (
     'C[adopt each PR: ledger row + run label,<br/>run liveness<br/>act on watch_warranted]'
 )
+PARKED_WATCH_RULE = "Parked status does not override that result."
 
 # A git object id, as GitHub returns it: 40 LOWERCASE hex. Same rule, same reason, as `ci-snapshot.py` —
 # a `--head-sha` of any other shape makes every comparison downstream unfalsifiable, so it is an OPERATOR
@@ -2441,11 +2442,14 @@ def watch_action_owner_problems(owner: tuple[str, str, str, str], base: Path) ->
         f"Run {tick}liveness{tick}, then ensure or relaunch a watch only when returned "
         f"{tick}watch_warranted{tick} is {tick}true{tick}"
     )
+    required_parked_rule = PARKED_WATCH_RULE
     problems = []
     if required_action not in plain:
         problems.append(f"{relative}:{line} does not make the watch action depend on liveness's returned warrant")
     if condition not in plain:
         problems.append(f"{relative}:{line} omits its registered true-warrant condition")
+    if required_parked_rule not in plain:
+        problems.append(f"{relative}:{line} omits the parked-status watch rule")
     return problems
 
 

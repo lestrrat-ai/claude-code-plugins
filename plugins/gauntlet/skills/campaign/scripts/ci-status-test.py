@@ -1282,7 +1282,7 @@ def verdict_doc_cases(ci) -> list[str]:
 
 
 def watch_action_owner_cases(ci, tmp: Path) -> list[str]:
-    """Every registry entry rejects deletion and a direct unconditional-watch mutation."""
+    """Every registry entry rejects deletion and unconditional-watch mutations."""
     problems = []
     owners = ci.WATCH_ACTION_CONSUMERS
     source = ci.HERE.parent
@@ -1327,6 +1327,14 @@ def watch_action_owner_cases(ci, tmp: Path) -> list[str]:
                     rf"only when\s+returned\s+{tick}watch_warranted{tick}\s+is\s+{tick}true{tick}"
                 )
                 replacement = "unconditionally"
+                parked_pattern = r"\s+".join(re.escape(part) for part in ci.PARKED_WATCH_RULE.split())
+                parked_block, parked_count = re.subn(
+                    parked_pattern,
+                    "Parked status overrides the watch result.",
+                    block,
+                    count=1,
+                )
+                parked_changed = text[:start] + parked_block + text[start + len(block):]
             elif format_name == "summary":
                 pattern = r"\s+".join(re.escape(part) for part in condition.split())
                 replacement = "CI watches launch unconditionally"
@@ -1346,6 +1354,22 @@ def watch_action_owner_cases(ci, tmp: Path) -> list[str]:
         )
         if not mutated:
             problems.append(f"[watch owners] unconditional action at {relative}:{anchor} was accepted")
+        if format_name != "markdown":
+            continue
+        if parked_count != 1:
+            problems.append(f"[watch owners] {relative}:{anchor} lost its parked-status mutation target")
+            continue
+        parked_fixture_root = tmp / f"watch-owner-{index}-parked"
+        parked_fixture_path = parked_fixture_root / relative
+        parked_fixture_path.parent.mkdir(parents=True, exist_ok=True)
+        parked_fixture_path.write_text(parked_changed, encoding="utf-8")
+        parked_mutated, _ = ci.check_watch_action_docs(
+            parked_fixture_root,
+            owners=(owner,),
+            required_owners=(owner,),
+        )
+        if not any("parked-status watch rule" in problem for problem in parked_mutated):
+            problems.append(f"[watch owners] contradictory parked action at {relative}:{anchor} was accepted")
     return problems
 
 def run(ci, tmp: Path) -> int:
@@ -1421,7 +1445,7 @@ def run(ci, tmp: Path) -> int:
         print(f"FAIL     {problem}")
     if not watch_owner_problems:
         print(f"ok       {'watch-action owner mutations':32} -> every registered owner rejects removal and "
-              f"an unconditional action")
+              f"an unconditional action, and Markdown owners reject contradictory parked status")
 
     print()
     print(f"--- doc-check: {ci.SPEC_DOC.name} + {ci.DRIVER_DOC.name} vs the code that runs ---")
