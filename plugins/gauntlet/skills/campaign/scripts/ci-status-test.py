@@ -1056,6 +1056,7 @@ def command_boundary_cases(ci, tmp: Path) -> list[str]:
             f'echo "foo;ci-status.py {valid}"',
             f'echo "foo&ci-status.py {valid}"',
             f'echo "foo|ci-status.py {valid}"',
+            f"echo `foo`ci-status.py {valid}",
             f"echo \\\n  ci-status.py {valid}",
         ]
         valid_commands = [
@@ -1084,6 +1085,8 @@ def command_boundary_cases(ci, tmp: Path) -> list[str]:
                 "if false; then true; else ci-status.py derive --pr 5; fi",
                 "for item in one; do ci-status.py derive --pr 6; done",
                 "if false; elif ci-status.py derive --pr 7; then true; fi",
+                "{ ci-status.py derive --pr 8; }",
+                'case "$item" in ready) ci-status.py derive --pr 9;; esac',
             ],
             "liveness": [
                 "$(ci-status.py liveness --ledger state.jsonl --pr 2)",
@@ -1092,6 +1095,8 @@ def command_boundary_cases(ci, tmp: Path) -> list[str]:
                 "if false; then true; else ci-status.py liveness --ledger state.jsonl --pr 5; fi",
                 "for item in one; do ci-status.py liveness --ledger state.jsonl --pr 6; done",
                 "if false; elif ci-status.py liveness --ledger state.jsonl --pr 7; then true; fi",
+                "{ ci-status.py liveness --ledger state.jsonl --pr 8; }",
+                'case "$item" in ready) ci-status.py liveness --ledger state.jsonl --pr 9;; esac',
             ],
             "required-set": [
                 "$(ci-status.py required-set --ledger ledger.jsonl)",
@@ -1100,6 +1105,8 @@ def command_boundary_cases(ci, tmp: Path) -> list[str]:
                 "if false; then true; else ci-status.py required-set --ledger ledger.jsonl",
                 "for item in one; do ci-status.py required-set --ledger ledger.jsonl",
                 "if false; elif ci-status.py required-set --ledger ledger.jsonl; then true; fi",
+                "{ ci-status.py required-set --ledger ledger.jsonl; }",
+                'case "$item" in ready) ci-status.py required-set --ledger ledger.jsonl;; esac',
             ],
         }[subcommand]
         (root / "commands.md").write_text("\n\n".join(false_commands + valid_commands + missing_flag_commands) + "\n",
@@ -1113,6 +1120,29 @@ def command_boundary_cases(ci, tmp: Path) -> list[str]:
         if len(copies) != expected_copies:
             problems.append(f"[command boundary {subcommand}] expected {expected_copies} executable copies, "
                             f"got {copies!r}")
+
+        adjacent_root = tmp / f"adjacent-command-{subcommand}"
+        adjacent_root.mkdir()
+        adjacent_missing = {
+            "derive": "ci-status.py derive --pr 10",
+            "liveness": "ci-status.py liveness --ledger state.jsonl --pr 10",
+            "required-set": "ci-status.py required-set --ledger missing.jsonl",
+        }[subcommand]
+        (adjacent_root / "commands.md").write_text(
+            f"{adjacent_missing}\nci-status.py {valid}\n", encoding="utf-8")
+        found_problems, copies = check(adjacent_root)
+        if len(found_problems) != 1 or len(copies) != 2:
+            problems.append(f"[adjacent command {subcommand}] expected one problem and two copies, "
+                            f"got problems={found_problems!r}, copies={copies!r}")
+
+        possessive_root = tmp / f"possessive-command-{subcommand}"
+        possessive_root.mkdir()
+        (possessive_root / "commands.md").write_text(
+            f"ci-status.py {valid}\nThe driver's command:\n{adjacent_missing}\n", encoding="utf-8")
+        found_problems, copies = check(possessive_root)
+        if len(found_problems) != 1 or len(copies) != 2:
+            problems.append(f"[possessive command {subcommand}] expected one problem and two copies, "
+                            f"got problems={found_problems!r}, copies={copies!r}")
     return problems
 
 

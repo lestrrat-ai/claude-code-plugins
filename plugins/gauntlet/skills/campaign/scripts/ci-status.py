@@ -159,6 +159,8 @@ from urllib.parse import quote
 HERE = Path(__file__).resolve().parent
 SHELL_COMMAND_SEPARATORS = frozenset("\n;|&")
 SHELL_COMPOUND_COMMAND_KEYWORDS = frozenset(("then", "else", "do", "elif"))
+SHELL_GROUP_DELIMITERS = frozenset("{}")
+SHELL_CASE_PATTERN_DELIMITERS = frozenset(")")
 SNAPSHOT_PY = HERE / "ci-snapshot.py"
 LEDGER_PY = HERE / "ledger.py"
 TEST_PY = HERE / "ci-status-test.py"     # the fixture suite — this tool's executable contract
@@ -2267,9 +2269,9 @@ def _shell_is_escaped(text: str, index: int) -> bool:
 
 
 def _shell_quote_before(text: str, index: int) -> str | None:
-    """Return the active shell quote immediately before ``index``, if any."""
+    """Return the active shell quote on the Markdown line immediately before ``index``, if any."""
     quote: str | None = None
-    cursor = 0
+    cursor = text.rfind("\n", 0, index) + 1
     while cursor < index:
         char = text[cursor]
         if quote == "'":
@@ -2296,6 +2298,12 @@ def _shell_quote_before(text: str, index: int) -> str | None:
     return quote
 
 
+def _shell_line_continues(text: str, newline: int) -> bool:
+    """Return whether a newline is escaped as a shell continuation."""
+    return (newline > 0 and text[newline - 1] == "\\"
+            and _shell_is_escaped(text, newline))
+
+
 def _shell_operator_is_active(text: str, index: int) -> bool:
     """Return whether a separator at ``index`` is outside quotes and not backslash-escaped."""
     return _shell_quote_before(text, index) is None and not _shell_is_escaped(text, index)
@@ -2304,9 +2312,9 @@ def _shell_operator_is_active(text: str, index: int) -> bool:
 def _shell_delimiter_before(text: str, index: int) -> bool:
     """Return whether the character at ``index`` starts a shell command boundary."""
     newline = text.rfind("\n", 0, index)
-    if newline >= 0 and _shell_quote_before(text, newline) is not None:
+    if _shell_line_continues(text, newline) and _shell_quote_before(text, newline) is not None:
         return False
-    if newline > 0 and text[newline - 1] == "\\" and _shell_is_escaped(text, newline):
+    if _shell_line_continues(text, newline):
         slash = newline - 1
         while slash >= 0 and text[slash] == "\\":
             slash -= 1
@@ -2320,7 +2328,9 @@ def _shell_delimiter_before(text: str, index: int) -> bool:
         cursor -= 1
     if cursor < 0:
         return True
-    if text[cursor] in SHELL_COMMAND_SEPARATORS:
+    if (text[cursor] in SHELL_COMMAND_SEPARATORS
+            or text[cursor] in SHELL_GROUP_DELIMITERS
+            or text[cursor] in SHELL_CASE_PATTERN_DELIMITERS):
         return _shell_operator_is_active(text, cursor)
     return _shell_quote_before(text, index) is None and _markdown_line_is_command_start(text, index)
 
@@ -2335,6 +2345,16 @@ def _shell_compound_keyword_before(text: str, index: int) -> bool:
         cursor -= 1
     keyword = text[cursor + 1:end]
     return keyword in SHELL_COMPOUND_COMMAND_KEYWORDS and _shell_delimiter_before(text, cursor + 1)
+
+
+def _backtick_is_opening(text: str, index: int) -> bool:
+    """Return whether the unescaped backtick at ``index`` opens its current line's span."""
+    line_start = text.rfind("\n", 0, index) + 1
+    count = 0
+    for cursor in range(line_start, index + 1):
+        if text[cursor] == "`" and not _shell_is_escaped(text, cursor):
+            count += 1
+    return bool(count % 2)
 
 
 def _command_token_boundary(text: str, index: int) -> bool:
@@ -2354,12 +2374,16 @@ def _command_token_boundary(text: str, index: int) -> bool:
         if previous == "\n":
             return _shell_delimiter_before(text, index)
         return _shell_operator_is_active(text, index - 1)
-    if previous in "/\\" or previous == "`":
+    if previous in "/\\":
         return True
+    if previous == "`":
+        return _backtick_is_opening(text, index - 1)
     if previous in "'\"":
         return _shell_delimiter_before(text, index - 1)
     if previous == "(":
         return index >= 2 and text[index - 2] == "$" or _shell_delimiter_before(text, index - 1)
+    if previous in SHELL_GROUP_DELIMITERS or previous in SHELL_CASE_PATTERN_DELIMITERS:
+        return _shell_operator_is_active(text, index - 1)
     if not previous.isspace():
         return False
     return (_shell_delimiter_before(text, index - 1)
@@ -2379,6 +2403,23 @@ def _command_matches(text: str, subcommand: str):
         offset = index + 1
 
 
+def _next_command_start(text: str, index: int) -> int:
+    """Return the next executable ``ci-status.py`` start after ``index``."""
+    for match in re.finditer(r"ci-status\.py(?=[ \t]+\S)", text[index + 1:]):
+        candidate = index + 1 + match.start()
+        if _command_token_boundary(text, candidate):
+            return candidate
+    return len(text)
+
+
+def _command_end(text: str, index: int) -> int:
+    """Return the earlier of the next executable command and the paragraph boundary."""
+    paragraph_end = text.find("\n\n", index)
+    if paragraph_end < 0:
+        paragraph_end = len(text)
+    return min(paragraph_end, _next_command_start(text, index))
+
+
 def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]:
     """EVERY COPY OF THE DERIVE COMMAND, IN EVERY SKILL DOC — not just the one in the doc under test.
 
@@ -2392,7 +2433,8 @@ def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]
     A copy is any occurrence that RUNS the command (`ci-status.py derive` carrying `--pr`) — prose that
     merely NAMES the command is not a copy, and is not checked. **THE UNIT IS THE COMMAND, NOT THE LINE**:
     an invocation WRAPS (a shell `\\`, or plain prose reflow), and a line-by-line check would report the
-    continuation line as a violation of itself. So each copy is read to the end of its PARAGRAPH.
+    continuation line as a violation of itself. So each copy is read to the next executable command or the
+    end of its PARAGRAPH.
 
     FINDING ZERO COPIES IS A FAILURE: the command is prescribed by at least `stage-2-ci.md` and
     `critical-rules.md`, and a check that cannot find its subject never passes.
@@ -2401,8 +2443,7 @@ def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]
     for md in sorted((root or HERE.parent).rglob("*.md")):
         text = md.read_text(encoding="utf-8")
         for index in _command_matches(text, "derive"):
-            end = text.find("\n\n", index)
-            command = text[index: end if end > 0 else len(text)]
+            command = text[index:_command_end(text, index)]
             if "--pr" not in command:
                 continue  # prose that NAMES the command, not a copy of it
             n = text.count("\n", 0, index) + 1
@@ -2433,8 +2474,7 @@ def check_liveness_copies(root: Path | None = None) -> tuple[list[str], list[str
     for md in sorted((root or HERE.parent).rglob("*.md")):
         text = md.read_text(encoding="utf-8")
         for index in _command_matches(text, "liveness"):
-            end = text.find("\n\n", index)
-            command = text[index: end if end > 0 else len(text)]
+            command = text[index:_command_end(text, index)]
             # `--ledger`, not `--pr`, is the runnable-copy gate here: prose about liveness routinely sits
             # in the same paragraph as a `ledger.py … set --pr` command, and `--pr` alone would condemn
             # every such mention as a flagless invocation.
@@ -2462,8 +2502,7 @@ def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list
     for md in sorted((root or HERE.parent).rglob("*.md")):
         text = md.read_text(encoding="utf-8")
         for index in _command_matches(text, "required-set"):
-            end = text.find("\n\n", index)
-            command = text[index: end if end > 0 else len(text)]
+            command = text[index:_command_end(text, index)]
             if "--ledger" not in command:
                 continue  # prose that names the subcommand, not a runnable copy
             line = text.count("\n", 0, index) + 1
