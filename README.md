@@ -53,9 +53,9 @@ Optional when Claude Code is the orchestrator:
   engine catches defects a same-model re-roll misses. It launches at native-limitation level; engine
   diversity needs no OS sandbox. Before retry or fallback, use the campaign runtime adapter's
   classification and fallback contract. Transient failures may use the one retry, valid timers wait for
-  exact provider deadlines, and permanent, malformed, unsupported, or unrecognized failures disable that
-  external route for the current session before campaign falls back to a fresh native worker under the
-  documented native limitations.
+  exact provider deadlines, and permanent, malformed, or unsupported failures disable that external route
+  for the current session. Unrecognized failures fall back to a fresh native worker without disabling the
+  route under the documented native limitations.
   Session backoff is never durable, so the campaign runs with or without Codex. An explicit selection or
   saved preference overrides the default (you can
   force a native reviewer). Missing native filesystem/startup controls alone never park a pass.
