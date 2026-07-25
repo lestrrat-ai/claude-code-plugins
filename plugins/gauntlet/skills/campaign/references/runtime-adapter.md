@@ -164,12 +164,14 @@ ExternalReviewFailure {
   kind: "transient" | "timer" | "permanent",
   retry_after_seconds: NonNegativeInt | null,
   retry_at: Timestamp | null,
-  reason: Text
+  reason: Text,
+  timer_identity: Text | null
 }
 
 ExternalReviewSessionState {
   external_disabled: Bool,
-  external_backoff_until: Timestamp | null
+  external_backoff_until: Timestamp | null,
+  external_backoff_timer_id: Text | null
 }
 
 ReviewTransition {
@@ -179,17 +181,20 @@ ReviewTransition {
 ```
 
 The classifier recognizes non-negative whole-second relative provider delays such as `retry after 90
-seconds` and absolute provider reset timestamps such as `resets Jul 27, 9pm (Asia/Tokyo)`. Construct an
-absolute timestamp in the provider-named timezone, then calculate elapsed time with timezone-aware
-arithmetic. Permanent markers take precedence over timers and transient markers; valid timer text takes
-precedence over generic transient markers. Malformed or unsupported timer text, including fractional or
-unrepresentable delays and unknown zones, is `permanent`. An unrecognized failure is also `permanent` and
-disables this external route for the current session.
+seconds` and `available in 90 seconds`, plus absolute provider reset timestamps such as `resets Jul 27,
+9pm (Asia/Tokyo)`. Construct an absolute timestamp in the provider-named timezone, then calculate elapsed
+time with timezone-aware arithmetic. Permanent markers take precedence over timers and transient markers;
+valid timer text takes precedence over generic transient markers. Malformed or unsupported timer text,
+including fractional or unrepresentable delays and unknown zones, is `permanent`. An unrecognized failure
+is also `permanent` and disables this external route for the current session.
 
 `ExternalReviewSessionState` is process/session memory owned by the active orchestrator. Update it only
 from the returned transition or decision. **Never write `external_disabled` or
-`external_backoff_until` to the ledger, history, preferences, run artifacts, or any other durable
-campaign record.** A new session starts with an empty state.
+`external_backoff_until` or `external_backoff_timer_id` to the ledger, history, preferences, run artifacts,
+or any other durable campaign record. `timer_identity` and `external_backoff_timer_id` are opaque
+session-memory values. At an exact existing deadline, preserve the old deadline only when the typed
+failure or matching session timer identity proves re-entry; a newly classified timer owns its new
+`retry_at`. A new session starts with an empty state.
 
 ```text
 review_transition(
@@ -220,7 +225,8 @@ This operation owns every route change:
 
 `wait-external` is a session action, not a process launch: it consumes no `launch_attempt` and calls
 no `review-dispatch.py prepare`. Use the heartbeat or another bounded wait to reach the returned
-timestamp, then re-enter this transition with the same typed failure and current time. A pre-launch
+timestamp, then re-enter this transition with the same typed failure, live session state, and current time;
+the exact-deadline identity rule above decides whether the timer is a re-entry. A pre-launch
 cross-engine capability miss has no process to relaunch, so it consumes no retry and takes the fresh
 native fallback immediately. A timer or permanent provider error does not change the policy in a later
 session.

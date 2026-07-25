@@ -135,7 +135,7 @@ permanent, and an unrecognized failure is permanent. Apply the returned transiti
 spend the one retry, valid timers wait for the exact provider deadline before retrying, and permanent
 failures disable that external route for this session before native fallback.
 The paired CLI absence is a pre-launch capability miss and takes native fallback without a retry. Keep
-the disabled flag and timer deadline in session memory only; never write them to campaign artifacts.
+the session backoff state in memory only; never write it to campaign artifacts.
 Note in the final report which cross-engine routes were unavailable and which passes used the recovery
 profile or ran on the native-worker fallback. The gate is unchanged: a worker pass is a fresh,
 context-isolated re-roll that counts toward the review gate exactly like an external pass. The runtime

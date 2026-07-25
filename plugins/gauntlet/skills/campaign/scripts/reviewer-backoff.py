@@ -38,14 +38,14 @@ RETRY_AFTER_RE = re.compile(
     re.IGNORECASE,
 )
 DURATION_RE = re.compile(
-    r"\b(?:retry(?:ing)?|try\s+again|backoff|wait|reset(?:s)?)"
+    r"\b(?:retry(?:ing)?|try\s+again|backoff|wait|reset(?:s)?|available)"
     r"\s*(?:after|in|for|:)?\s*"
     r"(?P<value>\d+)(?![\d.])\s*"
     r"(?P<unit>seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d)\b",
     re.IGNORECASE,
 )
 TIMER_PHRASE_RE = re.compile(
-    r"\b(?:retry(?:ing)?|try\s+again|backoff|wait)\b",
+    r"\b(?:retry(?:ing)?|try\s+again|backoff|wait|available)\b",
     re.IGNORECASE,
 )
 MONTHS = {
@@ -121,6 +121,7 @@ class ExternalReviewFailure:
     retry_after_seconds: int | None
     retry_at: datetime | None
     reason: str
+    timer_identity: str | None = None
 
 
 @dataclass(frozen=True)
@@ -129,6 +130,7 @@ class ExternalReviewSessionState:
 
     external_disabled: bool = False
     external_backoff_until: datetime | None = None
+    external_backoff_timer_id: str | None = None
 
 
 # Keep the short name used by the runtime-adapter contract and existing callers.
@@ -208,18 +210,25 @@ def _unit_seconds(unit: str | None) -> int:
     raise ValueError(f"unsupported retry timer unit: {unit}")
 
 
-def _relative_timer(text: str) -> int | None | object:
+def _timer_identity(value: str) -> str:
+    return " ".join(value.casefold().split())
+
+
+def _relative_timer(text: str) -> tuple[int, str] | None | object:
     matches = list(RETRY_AFTER_RE.finditer(text)) + list(DURATION_RE.finditer(text))
     if not matches:
         return None
     match = min(matches, key=lambda item: item.start())
     try:
-        return int(match.group("value")) * _unit_seconds(match.groupdict().get("unit"))
+        return (
+            int(match.group("value")) * _unit_seconds(match.groupdict().get("unit")),
+            _timer_identity(match.group(0)),
+        )
     except (OverflowError, ValueError):
         return _MALFORMED_TIMER
 
 
-def _absolute_timer(text: str, now: datetime) -> tuple[int, datetime] | None:
+def _absolute_timer(text: str, now: datetime) -> tuple[int, datetime, str] | None:
     match = ABSOLUTE_RE.search(text)
     if match is None:
         return None
@@ -246,19 +255,20 @@ def _absolute_timer(text: str, now: datetime) -> tuple[int, datetime] | None:
                 return None
             target = target.replace(year=target.year + 1)
             target_utc = target.astimezone(timezone.utc)
-        return max(0, _ceil_seconds(target_utc - local_now_utc)), target
+        return max(0, _ceil_seconds(target_utc - local_now_utc)), target, _timer_identity(match.group(0))
     except (KeyError, OverflowError, ValueError, TypeError, ZoneInfoNotFoundError):
         return None
 
 
-def _timer(text: str, now: datetime) -> tuple[int, datetime] | None | object:
+def _timer(text: str, now: datetime) -> tuple[int, datetime, str] | None | object:
     relative = _relative_timer(text)
     if relative is _MALFORMED_TIMER:
         return _MALFORMED_TIMER
     if relative is not None:
+        delay, timer_identity = relative
         try:
-            retry_at = (_utc(now) + timedelta(seconds=relative)).astimezone(now.tzinfo)
-            return relative, retry_at
+            retry_at = (_utc(now) + timedelta(seconds=delay)).astimezone(now.tzinfo)
+            return delay, retry_at, timer_identity
         except (OverflowError, ValueError):
             return _MALFORMED_TIMER
     if ABSOLUTE_RE.search(text) is not None:
@@ -295,13 +305,21 @@ def _valid_failure(value: object) -> bool:
     if not isinstance(value, ExternalReviewFailure) or not isinstance(value.reason, str):
         return False
     if value.kind in (TRANSIENT, PERMANENT):
-        return value.retry_after_seconds is None and value.retry_at is None
+        return (
+            value.retry_after_seconds is None
+            and value.retry_at is None
+            and value.timer_identity is None
+        )
     if value.kind != TIMER:
         return False
     return (
         type(value.retry_after_seconds) is int
         and value.retry_after_seconds >= 0
         and _is_aware(value.retry_at)
+        and (
+            value.timer_identity is None
+            or (type(value.timer_identity) is str and bool(value.timer_identity))
+        )
     )
 
 
@@ -310,6 +328,10 @@ def _valid_state(value: object) -> bool:
         isinstance(value, ExternalReviewSessionState)
         and type(value.external_disabled) is bool
         and (value.external_backoff_until is None or _is_aware(value.external_backoff_until))
+        and (
+            value.external_backoff_timer_id is None
+            or (type(value.external_backoff_timer_id) is str and bool(value.external_backoff_timer_id))
+        )
     )
 
 
@@ -336,8 +358,10 @@ def classify(message: str, now: datetime | None = None) -> ExternalReviewFailure
     if timer is _MALFORMED_TIMER:
         return _permanent("provider supplied an invalid retry timer")
     if timer is not None:
-        delay, retry_at = timer
-        return ExternalReviewFailure(TIMER, delay, retry_at, "provider supplied a retry timer")
+        delay, retry_at, timer_identity = timer
+        return ExternalReviewFailure(
+            TIMER, delay, retry_at, "provider supplied a retry timer", timer_identity
+        )
     for marker in TRANSIENT_MARKERS:
         if _contains_transient_marker(lowered, marker):
             return ExternalReviewFailure(TRANSIENT, None, None, f"transient marker: {marker}")
@@ -401,18 +425,41 @@ def transition(
         prior.external_backoff_until is not None
         and _utc(prior.external_backoff_until) >= _utc(current)
     )
+    prior_deadline_exact = (
+        prior.external_backoff_until is not None
+        and _utc(prior.external_backoff_until) == _utc(current)
+    )
+    same_timer_reentry = (
+        prior_deadline_exact
+        and failure.kind == TIMER
+        and (
+            (
+                failure.retry_at is not None
+                and _utc(failure.retry_at) == _utc(prior.external_backoff_until)
+            )
+            or (
+                failure.timer_identity is not None
+                and failure.timer_identity == prior.external_backoff_timer_id
+            )
+        )
+    )
     deadline = _max_deadline(prior.external_backoff_until, failure.retry_at if failure.kind == TIMER else None)
+    timer_id = failure.timer_identity if failure.kind == TIMER else prior.external_backoff_timer_id
     if prior_deadline_active:
-        deadline = prior.external_backoff_until
-        if _utc(prior.external_backoff_until) == _utc(current) and failure.kind == TIMER:
-            failure = ExternalReviewFailure(TIMER, 0, prior.external_backoff_until, failure.reason)
-    next_state = ExternalReviewSessionState(prior.external_disabled, deadline)
+        if not (prior_deadline_exact and not same_timer_reentry):
+            deadline = prior.external_backoff_until
+            timer_id = prior.external_backoff_timer_id
+        if same_timer_reentry:
+            failure = ExternalReviewFailure(
+                TIMER, 0, prior.external_backoff_until, failure.reason, failure.timer_identity
+            )
+    next_state = ExternalReviewSessionState(prior.external_disabled, deadline, timer_id)
 
     if prior.external_disabled:
         return _decision(FALLBACK_NATIVE, failure, next_state, "external route is disabled for this session")
 
     if failure.kind == PERMANENT:
-        next_state = ExternalReviewSessionState(True, deadline)
+        next_state = ExternalReviewSessionState(True, deadline, timer_id)
         return _decision(FALLBACK_NATIVE, failure, next_state, failure.reason)
 
     if deadline is not None and _utc(deadline) > _utc(current):

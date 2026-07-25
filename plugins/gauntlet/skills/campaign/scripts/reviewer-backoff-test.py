@@ -114,6 +114,28 @@ def test_session_timer_retries_at_exact_reentry_deadline() -> None:
           "exact-deadline re-entry retained a stale timer delay")
     check(result.state.external_backoff_until == deadline,
           "exact-deadline re-entry changed the stored deadline")
+    check(result.state.external_backoff_timer_id == first.state.external_backoff_timer_id,
+          "exact-deadline re-entry changed the session timer identity")
+
+
+def test_new_timer_replaces_expired_session_deadline() -> None:
+    first_now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    first = MODULE.decide("retry after 90 seconds", now=first_now)
+    deadline = first_now.replace(minute=1, second=30)
+    result = MODULE.decide(
+        "retry after 45 seconds",
+        now=deadline,
+        state=first.state,
+    )
+    expected_deadline = datetime(2026, 7, 25, 12, 2, 15, tzinfo=timezone.utc)
+    check(result.action == MODULE.WAIT_EXTERNAL,
+          "new timer at the exact old deadline did not wait")
+    check(result.retry_after_seconds == 45,
+          "new timer at the exact old deadline was discarded")
+    check(result.state.external_backoff_until == expected_deadline,
+          "new timer did not replace the expired session deadline")
+    check(result.state.external_backoff_timer_id != first.state.external_backoff_timer_id,
+          "new timer reused the expired session timer identity")
 
 
 def test_timer_retries_at_deadline() -> None:
@@ -129,6 +151,42 @@ def test_transient_retries_immediately() -> None:
     result = MODULE.decide("upstream timeout")
     check(result.kind == MODULE.TRANSIENT, "timeout was not transient")
     check(result.action == MODULE.RETRY_EXTERNAL, "transient failure did not retry")
+
+
+def test_standalone_availability_timer_waits() -> None:
+    result = MODULE.decide(
+        "available in 90 seconds",
+        now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
+    )
+    check(result.kind == MODULE.TIMER, "standalone availability was not classified as a timer")
+    check(result.action == MODULE.WAIT_EXTERNAL, "standalone availability did not wait")
+    check(result.retry_after_seconds == 90, "standalone availability delay changed")
+
+
+def test_transient_wrapped_availability_timer_waits() -> None:
+    result = MODULE.decide(
+        "temporarily unavailable; available in 90 seconds",
+        now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
+    )
+    check(result.kind == MODULE.TIMER,
+          "transient-wrapped availability was not classified as a timer")
+    check(result.action == MODULE.WAIT_EXTERNAL,
+          "transient-wrapped availability retried immediately")
+    check(result.retry_after_seconds == 90,
+          "transient-wrapped availability delay changed")
+
+
+def test_malformed_availability_timer_fails_closed() -> None:
+    result = MODULE.decide(
+        "temporarily unavailable; available in 90 bananas",
+        now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
+    )
+    check(result.kind == MODULE.PERMANENT,
+          "malformed availability timer was accepted")
+    check(result.action == MODULE.FALLBACK_NATIVE,
+          "malformed availability timer retried")
+    check(result.state.external_disabled,
+          "malformed availability timer did not disable the session route")
 
 
 def test_permanent_marker_precedes_transient_marker() -> None:
@@ -263,8 +321,12 @@ CASES = [
     ("unsupported-relative-unit", "unsupported timer units fail closed", test_unsupported_relative_timer_unit_fails_closed),
     ("session-deadline-reentry", "active session deadline is preserved on re-entry", test_session_timer_deadline_is_not_extended_on_reentry),
     ("session-deadline-exact-reentry", "exact deadline re-entry retries without extension", test_session_timer_retries_at_exact_reentry_deadline),
+    ("expired-deadline-new-timer", "new timer replaces an expired session deadline", test_new_timer_replaces_expired_session_deadline),
     ("timer-deadline-retry", "timer retries at its exact deadline", test_timer_retries_at_deadline),
     ("transient-immediate-retry", "transient failure retries immediately", test_transient_retries_immediately),
+    ("standalone-availability", "standalone availability timer waits", test_standalone_availability_timer_waits),
+    ("wrapped-availability", "transient-wrapped availability timer waits", test_transient_wrapped_availability_timer_waits),
+    ("malformed-availability", "malformed availability timer fails closed", test_malformed_availability_timer_fails_closed),
     ("permanent-marker-precedence", "permanent marker precedes transient marker", test_permanent_marker_precedes_transient_marker),
     ("oversized-relative-timer", "oversized timer fails closed", test_oversized_relative_timer_fails_closed),
     ("malformed-timer", "malformed timer fails closed", test_malformed_timer_text_fails_closed),
