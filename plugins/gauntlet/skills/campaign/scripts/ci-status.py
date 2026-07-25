@@ -158,7 +158,7 @@ from urllib.parse import quote
 
 HERE = Path(__file__).resolve().parent
 SHELL_COMMAND_SEPARATORS = frozenset("\n;|&")
-SHELL_COMPOUND_COMMAND_KEYWORDS = frozenset(("then", "else", "do", "elif"))
+SHELL_COMPOUND_COMMAND_KEYWORDS = frozenset(("if", "while", "until", "then", "else", "do", "elif"))
 SHELL_GROUP_DELIMITERS = frozenset("{}")
 SHELL_CASE_PATTERN_DELIMITERS = frozenset(")")
 SNAPSHOT_PY = HERE / "ci-snapshot.py"
@@ -2399,6 +2399,154 @@ def _shell_compound_keyword_before(text: str, index: int) -> bool:
     return keyword in SHELL_COMPOUND_COMMAND_KEYWORDS and _shell_delimiter_before(text, cursor + 1)
 
 
+def _shell_previous_significant(text: str, index: int) -> int:
+    """Return the previous shell-significant character, preserving active newlines."""
+    cursor = index - 1
+    while cursor >= 0:
+        while cursor >= 0 and text[cursor] in " \t\r\f\v":
+            cursor -= 1
+        if cursor >= 0 and text[cursor] == "\n":
+            if _shell_line_continues(text, cursor):
+                cursor -= 1
+                continue
+            return cursor
+        if cursor >= 0 and cursor + 1 < len(text) and text[cursor] == "\\" \
+                and _shell_line_continues(text, cursor + 1):
+            cursor -= 1
+            continue
+        return cursor
+    return -1
+
+
+def _shell_token_start(text: str, index: int) -> int:
+    """Return the start of the shell word containing ``index``."""
+    cursor = index
+    while cursor > 0:
+        previous = text[cursor - 1]
+        if previous.isspace():
+            break
+        if previous in SHELL_COMMAND_SEPARATORS | SHELL_GROUP_DELIMITERS | SHELL_CASE_PATTERN_DELIMITERS \
+                and not _shell_is_escaped(text, cursor - 1):
+            break
+        if previous in "'\"`" and not _shell_is_escaped(text, cursor - 1):
+            break
+        cursor -= 1
+    return cursor
+
+
+def _shell_quote_open_before(text: str, index: int, quote: str) -> int:
+    """Return the active quote's opening position before ``index``."""
+    cursor = index - 1
+    while cursor >= 0:
+        if text[cursor] == quote and not _shell_is_escaped(text, cursor):
+            return cursor
+        cursor -= 1
+    return -1
+
+
+def _shell_parenthesis_kind_at(text: str, index: int) -> str | None:
+    """Return the kind of shell parenthesis closed at ``index``, if it has an opener."""
+    stack: list[str] = []
+    quote: str | None = None
+    backtick = False
+    cursor = 0
+    while cursor <= index:
+        char = text[cursor]
+        if quote == "'":
+            if char == "'":
+                quote = None
+            cursor += 1
+            continue
+        if quote == '"':
+            if char == "\\":
+                cursor += 2
+            elif char == '"':
+                quote = None
+                cursor += 1
+            else:
+                cursor += 1
+            continue
+        if backtick:
+            if char == "\\":
+                cursor += 2
+            elif char == "`":
+                backtick = False
+                cursor += 1
+            else:
+                cursor += 1
+            continue
+        if char == "\\":
+            cursor += 2
+        elif char in "'\"":
+            quote = char
+            cursor += 1
+        elif char == "`":
+            backtick = True
+            cursor += 1
+        elif char == "(":
+            stack.append("substitution" if cursor > 0 and text[cursor - 1] == "$" else "group")
+            cursor += 1
+        elif char == ")":
+            kind = stack.pop() if stack else None
+            if cursor == index:
+                return kind
+            cursor += 1
+        else:
+            cursor += 1
+    return None
+
+
+def _shell_redirection_operand(text: str, index: int) -> bool:
+    """Return whether the shell word at ``index`` is directly after a redirection operator."""
+    previous = _shell_previous_significant(text, index)
+    return (previous >= 0 and text[previous] in "<>"
+            and _shell_operator_is_active(text, previous))
+
+
+def _shell_command_word_boundary(text: str, index: int) -> bool:
+    """Return whether the whole shell word containing ``index`` is its segment's command word."""
+    quote = _shell_quote_before(text, index)
+    if quote is not None:
+        opening = _shell_quote_open_before(text, index, quote)
+        token_start = _shell_token_start(text, index)
+        if (opening < 0 or _shell_redirection_operand(text, opening)
+                or text[opening + 1:token_start].strip()):
+            return False
+        return _shell_delimiter_before(text, opening)
+
+    token_start = _shell_token_start(text, index)
+    if _shell_redirection_operand(text, token_start):
+        return False
+    previous = _shell_previous_significant(text, token_start)
+    if previous < 0:
+        return _shell_delimiter_before(text, token_start)
+
+    previous_char = text[previous]
+    if previous_char == ")" and _shell_parenthesis_kind_at(text, previous) is not None:
+        return False
+    if _shell_compound_keyword_before(text, token_start):
+        return True
+    if _shell_redirection_before(text, index):
+        return True
+    if previous_char in SHELL_COMMAND_SEPARATORS | SHELL_GROUP_DELIMITERS:
+        return _shell_operator_is_active(text, previous)
+    if previous_char == ")":
+        return _shell_operator_is_active(text, previous)
+    if previous_char == "`":
+        return _backtick_is_opening(text, previous)
+    if previous_char in "'\"":
+        return False
+    if previous_char in "-*+" and _shell_line_continues(text, text.rfind("\n", 0, token_start)):
+        return False
+    if previous_char.isalnum() or previous_char == "_":
+        word_end = previous + 1
+        word_start = _shell_token_start(text, word_end)
+        if text[word_start:word_end] in {"python", "python3"}:
+            return _shell_command_word_boundary(text, word_start)
+        return False
+    return _shell_delimiter_before(text, token_start)
+
+
 def _backtick_is_opening(text: str, index: int) -> bool:
     """Return whether the unescaped backtick at ``index`` opens its current line's span."""
     line_start = text.rfind("\n", 0, index) + 1
@@ -2412,12 +2560,14 @@ def _backtick_is_opening(text: str, index: int) -> bool:
 def _command_token_boundary(text: str, index: int) -> bool:
     """Recognize command starts without treating a filename mention as an executable copy.
 
-    Slash-separated paths remain valid because the docs prescribe paths such as ``scripts/ci-status.py``.
-    Active shell operators, command substitutions, grouped commands, compound-command keywords, and Markdown
-    code delimiters mark executable starts. Operators inside quotes or preceded by an odd number of backslashes
-    are text, not boundaries. An unescaped newline is also a boundary, while an escaped-newline continuation
-    still needs a shell separator before the backslash. A bare space boundary does not: ``foo ci-status.py``
-    is a filename or an argument, not a copy of the command.
+    A path-qualified executable is valid only when its whole shell word is the segment's command word;
+    path text in an argument, redirection operand, or command-substitution result is not a copy. The
+    documented ``python3 <skill>/scripts/ci-status.py`` wrapper is also a runnable copy when ``python3``
+    begins the segment. Active shell operators, command substitutions, grouped commands, compound-command
+    keywords, and Markdown code delimiters mark executable starts. Operators inside quotes or preceded by an
+    odd number of backslashes are text, not boundaries. An unescaped newline is also a boundary, while an
+    escaped-newline continuation still needs a shell separator before the backslash. A bare space boundary
+    does not: ``foo ci-status.py`` is a filename or an argument, not a copy of the command.
     """
     if index == 0:
         return True
@@ -2427,19 +2577,22 @@ def _command_token_boundary(text: str, index: int) -> bool:
             return _shell_delimiter_before(text, index)
         return _shell_operator_is_active(text, index - 1)
     if previous in "/\\":
-        return True
+        return _shell_command_word_boundary(text, index)
     if previous == "`":
         return _backtick_is_opening(text, index - 1)
     if previous in "'\"":
         return _shell_delimiter_before(text, index - 1)
     if previous == "(":
+        if _shell_quote_before(text, index - 1) == "'":
+            return False
         return index >= 2 and text[index - 2] == "$" or _shell_delimiter_before(text, index - 1)
     if previous in SHELL_GROUP_DELIMITERS or previous in SHELL_CASE_PATTERN_DELIMITERS:
+        if previous == ")" and _shell_parenthesis_kind_at(text, index - 1) is not None:
+            return False
         return _shell_operator_is_active(text, index - 1)
     if not previous.isspace():
         return False
-    return (_shell_delimiter_before(text, index - 1)
-            or _shell_compound_keyword_before(text, index))
+    return _shell_command_word_boundary(text, index)
 
 
 def _command_matches(text: str, subcommand: str):
