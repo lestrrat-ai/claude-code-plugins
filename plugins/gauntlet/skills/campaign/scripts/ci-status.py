@@ -228,6 +228,11 @@ PARKED_WATCH_RULE = "Parked status does not override that result."
 STATUS_SUBJECT_PATTERN = r"(?:`(?:ci|status)`|(?<!\w)(?:ci|status)(?!\w))"
 WATCH_ACTION_WORDS = r"(?:watch|launch|relaunch|ensure)"
 WATCH_ACTION_VERBS = r"(?:launch|relaunch|ensure)"
+STATUS_EQUALITY_ARROWS = r"(?:->|→)"
+POSITIVE_WATCH_ACTION = re.compile(
+    r"\b" + WATCH_ACTION_VERBS + r"\b[^.!?;]*?\bwatch\b",
+    re.IGNORECASE,
+)
 WATCH_ACTION_CONTRADICTIONS = (
     ("ci/status-based", re.compile(
         # The status subject may be qualified before the noun (for example, "pending CI").
@@ -249,7 +254,7 @@ WATCH_ACTION_CONTRADICTIONS = (
         + STATUS_SUBJECT_PATTERN
         + r"|"
         + STATUS_SUBJECT_PATTERN
-        + r"\s*(?:==|=|is)\s*[^.!?]*?->\s*\b"
+        + r"\s*(?:==|=|is)\s*[^.!?]*?" + STATUS_EQUALITY_ARROWS + r"\s*\b"
         + WATCH_ACTION_WORDS
         + r"\b|"
         + STATUS_SUBJECT_PATTERN
@@ -2510,6 +2515,8 @@ def watch_action_owner_problems(owner: tuple[str, str, str, str], base: Path) ->
         problems = watch_action_contradiction_problems(relative, line, plain)
         if condition not in plain:
             problems.append(f"{relative}:{line} does not dispatch CI watches from its registered warrant")
+        if format_name == "formula" and not POSITIVE_WATCH_ACTION.search(plain):
+            problems.append(f"{relative}:{line} omits the positive watch action")
         return problems
     if format_name != "markdown":
         return [f"{relative}:{line} has unknown watch-action format {format_name!r}"]

@@ -1537,6 +1537,52 @@ def watch_action_owner_cases(ci, tmp: Path) -> list[str]:
         )
         if not any("contradictory ci/status-based" in problem for problem in contradictory):
             problems.append(f"[watch owners] arrow CI rule at {relative}:{anchor} was accepted")
+
+    unicode_fixture_root = tmp / "watch-owner-pr-adoption-unicode-arrow-status"
+    unicode_fixture_path = unicode_fixture_root / relative
+    unicode_fixture_path.parent.mkdir(parents=True, exist_ok=True)
+    unicode_fixture_path.write_text(
+        source_text[:start] + block + " ci == pending → ensure a watch" + source_text[start + len(block):],
+        encoding="utf-8",
+    )
+    unicode_contradictory, _ = ci.check_watch_action_docs(
+        unicode_fixture_root,
+        owners=(arrow_owner,),
+        required_owners=(arrow_owner,),
+    )
+    if not any("contradictory ci/status-based" in problem for problem in unicode_contradictory):
+        problems.append(f"[watch owners] Unicode-arrow CI rule at {relative}:{anchor} was accepted")
+
+    formula_owner = next(
+        owner for owner in owners
+        if owner[0] == "formula" and owner[1] == "references/loop-control.md"
+    )
+    relative, anchor = formula_owner[1], formula_owner[2]
+    source_text = (source / relative).read_text(encoding="utf-8")
+    selected = ci.owner_block(source_text, anchor)
+    if selected is None:
+        problems.append(f"[watch owners] {relative}:{anchor} lost its positive-action target")
+    else:
+        start, block = selected
+        action_text = "ensure or relaunch a watch "
+        missing_action_block = block.replace(action_text, "", 1)
+        if missing_action_block == block:
+            problems.append(f"[watch owners] {relative}:{anchor} lost its positive-action mutation target")
+        else:
+            fixture_root = tmp / "watch-owner-formula-missing-positive-action"
+            fixture_path = fixture_root / relative
+            fixture_path.parent.mkdir(parents=True, exist_ok=True)
+            fixture_path.write_text(
+                source_text[:start] + missing_action_block + source_text[start + len(block):],
+                encoding="utf-8",
+            )
+            missing_action, _ = ci.check_watch_action_docs(
+                fixture_root,
+                owners=(formula_owner,),
+                required_owners=(formula_owner,),
+            )
+            if not any("positive watch action" in problem for problem in missing_action):
+                problems.append(f"[watch owners] missing positive action at {relative}:{anchor} was accepted")
     return problems
 
 def run(ci, tmp: Path) -> int:
