@@ -132,8 +132,10 @@ is the absence of a verdict.
 `runtime-adapter.md`, "Review failure classification and session backoff".** The helper returns
 `transient`, `timer`, `permanent`, or `unrecognized`; permanent markers and malformed or unsupported
 timer text are permanent, while opaque text is unrecognized. Apply the returned transition: transient
-failures may spend the one retry, valid timers wait for the exact provider deadline before retrying,
-permanent failures disable that external route for this session, and unrecognized failures use native
+failures may spend the one retry. A valid timer waits for the exact provider deadline only while the retry
+is unspent and the current time is before that deadline; after the retry is spent, fall back immediately
+while retaining session backoff for other launches. Permanent failures, including malformed or unsupported
+timer text, disable that external route for this session, and opaque or unrecognized failures use native
 fallback without disabling the external route.
 The paired CLI absence is a pre-launch capability miss and takes native fallback without a retry. Keep
 the session backoff state in memory only; never write it to campaign artifacts.

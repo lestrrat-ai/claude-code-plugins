@@ -14,7 +14,7 @@ adapter; keep workflow rules shared.
 | Agent dispatch | Agent tool and configured agent types | Available Codex multi-agent controls | Describe worker scope, permissions, model class, and output; do not require a host tool name. |
 | Model selection | Claude model aliases may be available | Session model or configured Codex agents | State required capability; map named models only inside host adapter. |
 | Heartbeat/resume | `ScheduleWakeup` where available | wakes its thread where available; bounded foreground wait otherwise | Persist state before waiting and provide an exact resume path. |
-| Other-agent reviewer | Default: review with `codex exec` | Default: review with `claude -p` | Cross-engine is the default, launched at native-limitation level when the paired CLI is present. Fall back to a fresh native worker when it is absent or fails. Explicit or saved user choice overrides. |
+| Other-agent reviewer | Default: review with `codex exec` | Default: review with `claude -p` | Cross-engine is the default, launched at native-limitation level when the paired CLI is present. Classify failures before retry or fallback: a valid timer waits only while the retry is unspent and the current time is before its deadline; after the retry is spent, fall back immediately while retaining session backoff. Disable the external route only for permanent failures, including malformed or unsupported timer text; unrecognized failures use a fresh native worker without disabling it. Explicit or saved user choice overrides. |
 
 Campaign's exact cross-agent command lines live in
 [`plugins/gauntlet/skills/campaign/references/cross-agent-reviewers.md`](../plugins/gauntlet/skills/campaign/references/cross-agent-reviewers.md).
@@ -34,7 +34,13 @@ Campaign's exact cross-agent command lines live in
 - Evaluate cross-engine reviewers through the runtime adapter's `ReviewIsolationCapability` transition.
   A cross-engine route launches at native-limitation level whenever the paired CLI is present; the three
   `os_filesystem_isolation` properties are an optional stronger-boundary claim that never blocks launch.
-  When the paired CLI is absent, or the process fails after its retry, fall back to a fresh native worker.
+  When the paired CLI is absent, use a fresh native worker. When the process fails, use the campaign
+  runtime adapter's classification and fallback contract: transient failures may use the one retry. A valid
+  timer waits for the exact provider deadline only while the retry is unspent and the current time is before
+  that deadline; after the retry is spent, fall back immediately while retaining session backoff for other
+  launches. Permanent failures, including malformed or unsupported timer text, disable that external route
+  for the current session before falling back to a fresh native worker. Opaque or unrecognized failures fall
+  back to a fresh native worker without disabling that route. Session backoff is never durable.
   The existing external Codex retry uses the typed `codex-recovery` prompt profile from **Review
   preparation mapping**; every other launch uses `standard`. Profiles never add attempts, resume a failed
   session, weaken the shared review contract, or require a model switch.

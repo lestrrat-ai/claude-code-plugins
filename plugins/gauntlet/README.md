@@ -68,10 +68,17 @@ native-limitation level whenever the paired CLI is present — engine diversity 
 You can override the default: name a reviewer when you invoke the campaign (including a native worker), or
 record a preference in the orchestrator's own trusted state — never in the checkout under review
 (`skills/campaign/references/reviewer.md`, "Selecting the reviewer", owns which sources count). If the paired CLI is absent, or a cross-engine
-reviewer can't return a verdict because of a system problem (quota, auth, timeout), the pipeline retries
-once and then falls back to a fresh native worker. The existing Codex retry uses repository-maintenance
-framing with the same full review contract and process command; it does not resume the failed session or
-switch models. Campaign therefore runs with or without the other engine.
+reviewer can't return a verdict, use the classification and fallback contract owned by
+`skills/campaign/references/runtime-adapter.md`, "Review failure classification and session backoff".
+That contract permits one retry for transient failures. A valid timer waits at the exact provider deadline
+only while the retry is unspent and the current time is before that deadline; after the retry is spent,
+native fallback is immediate while session backoff is retained for other launches. Malformed or unsupported
+timer text is permanent and disables the external route for this session before native fallback. Opaque or
+unrecognized typed failure kinds use native fallback without disabling the route.
+Session backoff and disabled state are never durable. The retry uses the same full review contract and process
+command; only the mapped Codex recovery
+profile adds repository-maintenance framing. It never resumes the failed session or requires a model
+switch. Campaign therefore runs with or without the other engine.
 The cross-engine and native routes both keep fresh conversational context and disclose the host's
 filesystem/startup-instruction limitations; a future adapter that proves an OS boundary can claim more.
 
