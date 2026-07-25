@@ -232,8 +232,11 @@ never the place to look them up.
   (for example, “review with claude”, or a native worker) or record a preference in the orchestrator's own
   trusted state — never in the checkout under review (`references/reviewer.md`, "Selecting the reviewer", owns which sources count).
   If the paired CLI is absent, or a cross-engine reviewer
-  can't return a verdict because of a system problem — quota or rate limits, auth, a timeout — it
-  retries once and then falls back to a fresh native worker. The existing Codex retry uses
+  can't return a verdict because of a system problem — quota or rate limits, auth, a timeout — follow
+  [`references/runtime-adapter.md`](./references/runtime-adapter.md), "Review failure classification and session backoff".
+  That owner classifies the failure as transient for one immediate retry, timer for an exact-deadline wait
+  before retrying, permanent for immediate native fallback with session disable, or unrecognized for native
+  fallback without session disable. The existing Codex retry uses
   repository-maintenance framing with the same complete review contract and process command; it never
   resumes the failed session or requires a model switch. Campaign therefore runs with or without the other
   engine. The fallback uses the disclosed native isolation contract. A reviewer that never

@@ -664,6 +664,17 @@ def test_unknown_timer_zone_fails_closed() -> None:
           "unknown timer zone selected an immediate retry")
 
 
+def test_unknown_timer_month_fails_closed() -> None:
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    result = MODULE.decide("rate limit; resets Jax 27, 9pm", now=now, pr_number=188)
+    check(result.kind == MODULE.PERMANENT,
+          "unknown timer month selected an immediate retry")
+    check(result.action == MODULE.FALLBACK_NATIVE,
+          "unknown timer month did not fall back natively")
+    check(result.state.external_disabled,
+          "unknown timer month did not disable the session route")
+
+
 def test_unrepresentable_absolute_timer_disables_external_route() -> None:
     now = datetime(9999, 12, 30, 0, 0, tzinfo=timezone.utc)
     result = MODULE.decide("rate limit; resets Dec 31, 11pm (Pacific/Pago_Pago)", now=now)
@@ -893,6 +904,7 @@ CASES = [
     ("oversized-relative-timer", "oversized timer fails closed", test_oversized_relative_timer_fails_closed),
     ("malformed-timer", "malformed timer fails closed", test_malformed_timer_text_fails_closed),
     ("unknown-timer-zone", "unknown timer zone fails closed", test_unknown_timer_zone_fails_closed),
+    ("unknown-timer-month", "unknown timer month fails closed", test_unknown_timer_month_fails_closed),
     ("unrepresentable-absolute-timer", "unrepresentable absolute timer disables the session route", test_unrepresentable_absolute_timer_disables_external_route),
     ("fractional-timer", "fractional timer fails closed", test_fractional_timer_fails_closed),
     ("numeric-marker-token", "numeric transient markers require complete tokens", test_numeric_transient_marker_requires_complete_token),
