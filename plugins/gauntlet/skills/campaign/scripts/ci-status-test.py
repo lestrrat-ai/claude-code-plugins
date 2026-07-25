@@ -1395,6 +1395,20 @@ def watch_action_owner_cases(ci, tmp: Path) -> list[str]:
         )
         if not any("contradictory" in problem for problem in contradictory):
             problems.append(f"[watch owners] contradictory CI rule at {relative}:{anchor} was accepted")
+
+        subject_first_fixture_root = tmp / "watch-owner-subject-first"
+        subject_first_fixture_path = subject_first_fixture_root / relative
+        subject_first_fixture_path.parent.mkdir(parents=True, exist_ok=True)
+        subject_first_changed = (source_text[:start] + block + " If pending CI, launch a watch."
+                                 + source_text[start + len(block):])
+        subject_first_fixture_path.write_text(subject_first_changed, encoding="utf-8")
+        subject_first, _ = ci.check_watch_action_docs(
+            subject_first_fixture_root,
+            owners=(contradictory_owner,),
+            required_owners=(contradictory_owner,),
+        )
+        if not any("contradictory" in problem for problem in subject_first):
+            problems.append(f"[watch owners] subject-first CI rule at {relative}:{anchor} was accepted")
     return problems
 
 def run(ci, tmp: Path) -> int:
