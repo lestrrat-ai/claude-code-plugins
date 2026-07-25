@@ -36,9 +36,10 @@ Campaign's exact cross-agent command lines live in
   `os_filesystem_isolation` properties are an optional stronger-boundary claim that never blocks launch.
   When the paired CLI is absent, use a fresh native worker. When the process fails, use the campaign
   runtime adapter's classification and fallback contract: transient failures may use the one retry, valid
-  timers wait for exact provider deadlines, and permanent, malformed, unsupported, or unrecognized
+  timers wait for exact provider deadlines, and permanent failures or malformed or unsupported timer
   failures disable that external route for the current session before falling back to a fresh native
-  worker. Session backoff is never durable.
+  worker. Unrecognized failures fall back to a fresh native worker without disabling that route. Session
+  backoff is never durable.
   The existing external Codex retry uses the typed `codex-recovery` prompt profile from **Review
   preparation mapping**; every other launch uses `standard`. Profiles never add attempts, resume a failed
   session, weaken the shared review contract, or require a model switch.
