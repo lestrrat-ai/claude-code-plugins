@@ -1106,6 +1106,27 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
             f"{found_problems!r}"
         )
 
+    root = tmp / "command-copy-required-set-borrowed-state"
+    root.mkdir()
+    (root / "commands.md").write_text(
+        "```sh\n"
+        + "ci-status.py required-set --ledger " + chr(92) * 4 + "\n"
+        + "echo state.jsonl\n"
+        + "```\n",
+        encoding="utf-8",
+    )
+    copies = ci.documented_ci_status_copies(root, "required-set")
+    found_problems, checked = ci.check_required_set_copies(root)
+    if len(copies) != 1 or checked != ["commands.md:2"]:
+        problems.append(
+            f"[command copy required-set] borrowed-state continuation was not extracted: "
+            f"copies={copies!r}, checked={checked!r}"
+        )
+    if len(found_problems) != 1 or "commands.md:2" not in found_problems[0]:
+        problems.append(
+            f"[command copy required-set] extra state.jsonl argument was accepted: {found_problems!r}"
+        )
+
     root = tmp / "command-copy-required-set-mixed-indent"
     root.mkdir()
     (root / "commands.md").write_text(
