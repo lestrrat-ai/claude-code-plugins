@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -34,11 +35,11 @@ def check(condition: bool, message: str) -> None:
 
 
 def has_attempt_two_fresh_native_attempt_three(text: str) -> bool:
-    flat = " ".join(text.split())
-    attempt_two = "attempt `2` fails →"
-    fresh_native_attempt_three = "prepare fresh native fallback attempt `3`"
-    start = flat.find(attempt_two)
-    return start >= 0 and flat.find(fresh_native_attempt_three, start + len(attempt_two)) >= 0
+    return re.search(
+        r"attempt `2` fails[ \t]*→[ \t]*(?:\r?\n[ \t]*)?"
+        r"prepare fresh native fallback attempt `3`(?:[.!?]|$)",
+        text,
+    ) is not None
 
 
 SHA = "a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c"
@@ -705,12 +706,18 @@ def t_external_attempt_two_has_native_attempt_three_recovery() -> None:
 
 
 def t_attempt_two_recovery_relation_rejects_wrong_attempt() -> None:
-    valid = "attempt `2` fails → classify it,\nthen prepare fresh native fallback attempt `3`."
+    valid = "attempt `2` fails →\nprepare fresh native fallback attempt `3`."
     invalid = "attempt `2` fails → classify it, then prepare fresh native fallback attempt `4`."
+    separated = (
+        "attempt `2` fails → classify it, but do not prepare a native fallback for this path.\n\n"
+        "A separate unavailable-route paragraph says prepare fresh native fallback attempt `3`."
+    )
     check(has_attempt_two_fresh_native_attempt_three(valid),
-          "attempt-2 recovery assertion does not allow normalized classification text")
+          "attempt-2 recovery assertion does not allow the direct fallback clause")
     check(not has_attempt_two_fresh_native_attempt_three(invalid),
           "attempt-2 recovery assertion accepts the wrong native fallback attempt")
+    check(not has_attempt_two_fresh_native_attempt_three(separated),
+          "attempt-2 recovery assertion joins separated failure and fallback clauses")
 
 
 def t_transition_actions_map_directly_to_prepare_inputs() -> None:

@@ -100,11 +100,11 @@ def normalized(text: str) -> str:
 
 
 def has_attempt_two_fresh_native_attempt_three(text: str) -> bool:
-    flat = normalized(text)
-    attempt_two = "attempt `2` fails →"
-    fresh_native_attempt_three = "prepare fresh native fallback attempt `3`"
-    start = flat.find(attempt_two)
-    return start >= 0 and flat.find(fresh_native_attempt_three, start + len(attempt_two)) >= 0
+    return re.search(
+        r"attempt `2` fails[ \t]*→[ \t]*(?:\r?\n[ \t]*)?"
+        r"prepare fresh native fallback attempt `3`(?:[.!?]|$)",
+        text,
+    ) is not None
 
 
 def command_argvs(block: str) -> list[list[str]]:
@@ -784,11 +784,15 @@ def check_document_contract() -> None:
     require(has_attempt_two_fresh_native_attempt_three(runtime),
             "runtime adapter does not relate attempt 2 failure to fresh native attempt 3")
     require(has_attempt_two_fresh_native_attempt_three(
-        "attempt `2` fails → classify it,\nthen prepare fresh native fallback attempt `3`."
-    ), "attempt-2 recovery assertion does not allow normalized classification text")
+        "attempt `2` fails →\nprepare fresh native fallback attempt `3`."
+    ), "attempt-2 recovery assertion does not allow the direct fallback clause")
     require(not has_attempt_two_fresh_native_attempt_three(
         "attempt `2` fails → classify it, then prepare fresh native fallback attempt `4`."
     ), "attempt-2 recovery assertion accepts the wrong native fallback attempt")
+    require(not has_attempt_two_fresh_native_attempt_three(
+        "attempt `2` fails → classify it, but do not prepare a native fallback for this path.\n\n"
+        "A separate unavailable-route paragraph says prepare fresh native fallback attempt `3`."
+    ), "attempt-2 recovery assertion joins separated failure and fallback clauses")
 
     for needle in (
         '["python3", review_dispatch_script, "prepare"',
