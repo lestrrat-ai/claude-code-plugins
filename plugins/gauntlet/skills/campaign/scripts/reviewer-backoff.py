@@ -33,15 +33,17 @@ FALLBACK_NATIVE = "fallback-native"
 
 RETRY_AFTER_RE = re.compile(
     r"\bretry[\s-]+after\s*:?[\s]*(?P<value>\d+)(?![\d.])"
-    r"(?:\s*(?P<unit>seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d)\b"
-    r"|(?!\s*[A-Za-z]))",
+    r"(?:\s*(?P<unit>seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d)"
+    r"(?=\s*(?:\Z|[.,;:!?]))"
+    r"|(?=\s*(?:\Z|[.,;:!?])))",
     re.IGNORECASE,
 )
 DURATION_RE = re.compile(
     r"\b(?:retry(?:ing)?|try\s+again|backoff|wait|reset(?:s)?|available)"
     r"\s*(?:after|in|for|:)?\s*"
     r"(?P<value>\d+)(?![\d.])\s*"
-    r"(?P<unit>seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d)\b",
+    r"(?P<unit>seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d)"
+    r"(?=\s*(?:\Z|[.,;:!?]))",
     re.IGNORECASE,
 )
 TIMER_PHRASE_RE = re.compile(
@@ -115,6 +117,10 @@ PERMANENT_MARKERS = (
 
 class BackoffError(ValueError):
     """A caller supplied an invalid backoff input."""
+
+
+class InvalidMessageFile(BackoffError):
+    """The message file could not be decoded as UTF-8."""
 
 
 _MALFORMED_TIMER = object()
@@ -376,6 +382,49 @@ def _valid_state(value: object) -> bool:
     )
 
 
+def _read_failure(path: Path) -> ExternalReviewFailure:
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        _fail(f"cannot read --failure-file: {exc}")
+    except UnicodeDecodeError as exc:
+        _fail(f"--failure-file is not valid UTF-8: {exc}")
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        _fail(f"--failure-file is not valid JSON: {exc}")
+    if not isinstance(payload, dict):
+        _fail("--failure-file must contain one ExternalReviewFailure object")
+    expected = {"kind", "retry_after_seconds", "retry_at", "reason", "timer_identity"}
+    if set(payload) != expected:
+        _fail("--failure-file has the wrong ExternalReviewFailure fields")
+
+    kind = payload["kind"]
+    retry_after_seconds = payload["retry_after_seconds"]
+    retry_at_value = payload["retry_at"]
+    reason = payload["reason"]
+    timer_identity = payload["timer_identity"]
+    if not isinstance(kind, str) or not isinstance(reason, str):
+        _fail("--failure-file has non-text kind or reason")
+    if retry_after_seconds is not None and type(retry_after_seconds) is not int:
+        _fail("--failure-file has a non-integer retry_after_seconds")
+    if retry_at_value is not None and not isinstance(retry_at_value, str):
+        _fail("--failure-file has a non-text retry_at")
+    if timer_identity is not None and not isinstance(timer_identity, str):
+        _fail("--failure-file has a non-text timer_identity")
+    retry_at = parse_now(retry_at_value) if retry_at_value is not None else None
+    failure = ExternalReviewFailure(
+        kind,
+        retry_after_seconds,
+        retry_at,
+        reason,
+        timer_identity,
+    )
+    if not _valid_failure(failure):
+        _fail("--failure-file contains a malformed ExternalReviewFailure")
+    return failure
+
+
 def classify(message: str, now: datetime | None = None) -> ExternalReviewFailure:
     """Classify every external-process error before route selection.
 
@@ -576,8 +625,20 @@ def _message(args: argparse.Namespace, parser: argparse.ArgumentParser) -> str:
         parser.error("provide exactly one of --message or --message-file")
     try:
         return args.message if args.message is not None else args.message_file.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise InvalidMessageFile(f"--message-file is not valid UTF-8: {exc}") from exc
     except OSError as exc:
         _fail(f"cannot read --message-file: {exc}")
+
+
+def _state_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> ExternalReviewSessionState:
+    if args.backoff_timer_id is not None and args.backoff_until is None:
+        parser.error("--backoff-timer-id requires --backoff-until")
+    return ExternalReviewSessionState(
+        external_disabled=args.external_disabled,
+        external_backoff_until=parse_now(args.backoff_until) if args.backoff_until else None,
+        external_backoff_timer_id=args.backoff_timer_id,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -594,23 +655,37 @@ def main(argv: list[str] | None = None) -> int:
     decide_parser.add_argument("--retry-spent", action="store_true")
     decide_parser.add_argument("--external-disabled", action="store_true")
     decide_parser.add_argument("--backoff-until")
+    decide_parser.add_argument("--backoff-timer-id")
+    decide_parser.add_argument("--failure-file", type=Path)
     sub.add_parser("self-test")
     args = parser.parse_args(argv)
     if args.command == "self-test":
         return self_test()
-    message = _message(args, parser)
     now = parse_now(args.now)
     if args.command == "classify":
-        result = classify(message, now)
+        try:
+            result = classify(_message(args, parser), now)
+        except InvalidMessageFile as exc:
+            result = _permanent(str(exc))
     else:
-        result = decide(
-            message,
+        if args.failure_file is not None and (args.message is not None or args.message_file is not None):
+            parser.error("provide --failure-file instead of --message or --message-file")
+        if args.backoff_until is not None and args.failure_file is None:
+            parser.error("--backoff-until requires --failure-file to preserve the typed failure")
+        state = _state_from_args(args, parser)
+        try:
+            failure = (
+                _read_failure(args.failure_file)
+                if args.failure_file is not None
+                else classify(_message(args, parser), now)
+            )
+        except InvalidMessageFile as exc:
+            failure = _permanent(str(exc))
+        result = transition(
+            failure,
             retry_spent=args.retry_spent,
             now=now,
-            state=ExternalReviewSessionState(
-                external_disabled=args.external_disabled,
-                external_backoff_until=parse_now(args.backoff_until) if args.backoff_until else None,
-            ),
+            state=state,
         )
     print(json.dumps(asdict(result), default=lambda value: value.isoformat(), sort_keys=True))
     return 0

@@ -4,7 +4,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 from pathlib import Path
+import subprocess
+import sys
+import tempfile
 
 from _gauntlet.modules import load_module_from_path
 
@@ -18,6 +22,20 @@ if MODULE is None:
 def check(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
+
+
+def run_cli(*args: str) -> dict[str, object]:
+    completed = subprocess.run(
+        [sys.executable, str(OWNER), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    check(completed.returncode == 0,
+          f"reviewer-backoff CLI failed ({completed.returncode}): {completed.stderr!r}")
+    payload = json.loads(completed.stdout)
+    check(isinstance(payload, dict), f"reviewer-backoff CLI returned non-object JSON: {payload!r}")
+    return payload
 
 
 def test_absolute_timer_uses_provider_timezone() -> None:
@@ -82,6 +100,24 @@ def test_unsupported_relative_timer_unit_fails_closed() -> None:
           "unsupported relative timer unit did not fall back")
     check(result.state.external_disabled,
           "unsupported relative timer unit did not disable the session route")
+
+
+def test_unsupported_relative_timer_punctuation_fails_closed() -> None:
+    for message in (
+        "rate limited; retry after 90%",
+        "rate limited; retry after 90 seconds%",
+        "rate limited; available in 90 seconds%",
+    ):
+        result = MODULE.decide(
+            message,
+            now=datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc),
+        )
+        check(result.kind == MODULE.PERMANENT,
+              f"unsupported relative timer punctuation was accepted: {message!r}")
+        check(result.action == MODULE.FALLBACK_NATIVE,
+              f"unsupported relative timer punctuation did not fall back: {message!r}")
+        check(result.state.external_disabled,
+              f"unsupported relative timer punctuation did not disable the session route: {message!r}")
 
 
 def test_incomplete_absolute_reset_fails_closed() -> None:
@@ -160,6 +196,87 @@ def test_session_timer_retries_at_exact_reentry_deadline() -> None:
           "exact-deadline re-entry changed the stored deadline")
     check(result.state.external_backoff_timer_id == first.state.external_backoff_timer_id,
           "exact-deadline re-entry changed the session timer identity")
+
+
+def test_cli_preserves_typed_timer_across_reentry() -> None:
+    first_now = "2026-07-25T12:00:00+00:00"
+    deadline = "2026-07-25T12:01:30+00:00"
+    failure = run_cli(
+        "classify",
+        "--message", "rate limited; retry after 90 seconds",
+        "--now", first_now,
+    )
+    check(failure["kind"] == MODULE.TIMER, "CLI classifier did not return a timer failure")
+    check(failure["retry_at"] == deadline, "CLI classifier changed the provider deadline")
+    timer_id = failure["timer_identity"]
+    check(isinstance(timer_id, str) and timer_id, "CLI classifier lost the timer identity")
+
+    with tempfile.TemporaryDirectory(prefix="reviewer backoff ") as directory:
+        failure_file = Path(directory) / "failure.json"
+        failure_file.write_text(json.dumps(failure), encoding="utf-8")
+        waiting = run_cli(
+            "decide",
+            "--failure-file", str(failure_file),
+            "--now", first_now,
+            "--backoff-until", deadline,
+            "--backoff-timer-id", timer_id,
+        )
+        check(waiting["action"] == MODULE.WAIT_EXTERNAL,
+              "CLI typed timer did not wait before its deadline")
+        check(waiting["state"]["external_backoff_timer_id"] == timer_id,
+              "CLI wait dropped the timer identity")
+
+        raw_reentry = subprocess.run(
+            [sys.executable, str(OWNER), "decide",
+             "--message", "rate limited; retry after 90 seconds",
+             "--now", deadline, "--backoff-until", deadline,
+             "--backoff-timer-id", timer_id],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        check(raw_reentry.returncode != 0 and "--failure-file" in raw_reentry.stderr,
+              "CLI allowed raw-message re-entry to reclassify the timer")
+
+        reentry = run_cli(
+            "decide",
+            "--failure-file", str(failure_file),
+            "--now", deadline,
+            "--backoff-until", deadline,
+            "--backoff-timer-id", timer_id,
+        )
+    check(reentry["action"] == MODULE.RETRY_EXTERNAL,
+          "CLI exact-deadline re-entry did not retry immediately")
+    check(reentry["retry_after_seconds"] == 0,
+          "CLI exact-deadline re-entry retained a stale timer delay")
+    check(reentry["retry_at"] == deadline,
+          "CLI exact-deadline re-entry changed the typed provider deadline")
+    check(reentry["state"]["external_backoff_timer_id"] == timer_id,
+          "CLI exact-deadline re-entry changed the timer identity")
+
+
+def test_cli_invalid_utf8_message_file_falls_back() -> None:
+    with tempfile.TemporaryDirectory(prefix="reviewer backoff ") as directory:
+        message_file = Path(directory) / "message.bin"
+        message_file.write_bytes(b"rate limited; retry after 90 seconds \xff")
+        completed = subprocess.run(
+            [sys.executable, str(OWNER), "decide", "--message-file", str(message_file),
+             "--now", "2026-07-25T12:00:00+00:00"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    check(completed.returncode == 0,
+          f"invalid UTF-8 message file was not handled: {completed.stderr!r}")
+    result = json.loads(completed.stdout)
+    check(result["kind"] == MODULE.PERMANENT,
+          "invalid UTF-8 message file was not classified as permanent")
+    check(result["action"] == MODULE.FALLBACK_NATIVE,
+          "invalid UTF-8 message file did not fall back")
+    check(result["external_disabled"],
+          "invalid UTF-8 message file did not disable the external route")
+    check("Traceback" not in completed.stderr,
+          "invalid UTF-8 message file emitted a traceback")
 
 
 def test_identical_text_new_timer_replaces_expired_session_deadline() -> None:
@@ -381,11 +498,14 @@ CASES = [
     ("relative-exact-wait", "relative delay is preserved exactly", test_relative_timer_waits_exactly),
     ("unitless-relative-timer", "unitless timers default to seconds", test_unitless_relative_timer_defaults_to_seconds),
     ("unsupported-relative-unit", "unsupported timer units fail closed", test_unsupported_relative_timer_unit_fails_closed),
+    ("unsupported-relative-punctuation", "unsupported timer punctuation fails closed", test_unsupported_relative_timer_punctuation_fails_closed),
     ("incomplete-absolute-reset", "incomplete absolute reset fails closed", test_incomplete_absolute_reset_fails_closed),
     ("malformed-before-valid-timer", "malformed timer before valid timer fails closed", test_malformed_timer_before_valid_timer_fails_closed),
     ("session-deadline-reentry", "active session deadline is preserved on re-entry", test_session_timer_deadline_is_not_extended_on_reentry),
     ("active-later-deadline", "active later timer replaces deadline and identity", test_active_later_timer_replaces_deadline_and_identity),
     ("session-deadline-exact-reentry", "exact deadline re-entry retries without extension", test_session_timer_retries_at_exact_reentry_deadline),
+    ("cli-typed-reentry", "CLI preserves typed timer re-entry", test_cli_preserves_typed_timer_across_reentry),
+    ("cli-invalid-utf8", "CLI invalid UTF-8 message file falls back", test_cli_invalid_utf8_message_file_falls_back),
     ("expired-deadline-identical-timer", "identical-text new timer replaces an expired session deadline", test_identical_text_new_timer_replaces_expired_session_deadline),
     ("expired-deadline-new-timer", "new timer replaces an expired session deadline", test_new_timer_replaces_expired_session_deadline),
     ("timer-deadline-retry", "timer retries at its exact deadline", test_timer_retries_at_deadline),
