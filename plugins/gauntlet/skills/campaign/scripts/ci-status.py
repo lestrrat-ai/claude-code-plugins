@@ -248,7 +248,7 @@ WATCH_ACTION_CONTRADICTIONS = (
         + WATCH_ACTION_VERBS
         + r"(?:es|s|ed|ing)?\b[^.!?]*\bwatch\b|"
         r"\b"
-        + WATCH_ACTION_WORDS
+        + WATCH_ACTION_VERBS
         + r"\b[^.!?]*\b(?:if|when|while)\s+"
         r"(?:(?:the|row(?:'s)?|value\s+of)\s+)*"
         + STATUS_SUBJECT_PATTERN
@@ -2472,7 +2472,9 @@ def watch_action_contradiction_problems(relative: str, line: int, plain: str) ->
     """Reject a second watch rule that bypasses the registered liveness warrant."""
     for kind, pattern in WATCH_ACTION_CONTRADICTIONS:
         for match in pattern.finditer(plain):
-            clause_start = max(plain.rfind(boundary, 0, match.start()) for boundary in ".!?;")
+            # A negation must belong to the matched status/watch clause; a comma can join an unrelated
+            # preceding instruction to that clause without changing its meaning.
+            clause_start = max(plain.rfind(boundary, 0, match.start()) for boundary in ".!?;,")
             prefix = plain[clause_start + 1:match.start()]
             if not re.search(r"\b(?:never|do not|don't|not)\b", prefix, re.IGNORECASE):
                 return [f"{relative}:{line} adds a contradictory {kind} watch rule"]

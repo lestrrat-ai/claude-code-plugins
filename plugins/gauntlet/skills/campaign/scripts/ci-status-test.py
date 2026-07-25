@@ -1513,6 +1513,31 @@ def watch_action_owner_cases(ci, tmp: Path) -> list[str]:
             if not any("contradictory ci/status-based" in problem for problem in semicolon_mutated):
                 problems.append(f"[watch owners] semicolon action at {relative}:{anchor} was accepted")
 
+        comma_fixture_root = tmp / "watch-owner-comma-linked-negation"
+        comma_fixture_path = comma_fixture_root / relative
+        comma_fixture_path.parent.mkdir(parents=True, exist_ok=True)
+        comma_block, comma_count = re.subn(
+            r"never leave a PR spinning on a watch that will never wake anyone\.",
+            "never leave a PR spinning on a watch that will never wake anyone, if ci == pending, "
+            "launch a watch.",
+            block,
+            count=1,
+        )
+        if comma_count != 1:
+            problems.append(f"[watch owners] {relative}:{anchor} lost its comma mutation target")
+        else:
+            comma_fixture_path.write_text(
+                source_text[:start] + comma_block + source_text[start + len(block):],
+                encoding="utf-8",
+            )
+            comma_mutated, _ = ci.check_watch_action_docs(
+                comma_fixture_root,
+                owners=(contradictory_owner,),
+                required_owners=(contradictory_owner,),
+            )
+            if not any("contradictory ci/status-based" in problem for problem in comma_mutated):
+                problems.append(f"[watch owners] comma-linked negation at {relative}:{anchor} was accepted")
+
     arrow_owner = next(
         owner for owner in owners
         if owner[0] == "formula" and owner[1] == "references/pr-adoption.md"
