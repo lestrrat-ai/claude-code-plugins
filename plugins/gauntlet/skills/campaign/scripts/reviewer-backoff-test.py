@@ -67,6 +67,33 @@ def test_timer_wait_uses_elapsed_time_across_dst() -> None:
           "timer wait was subtracted as wall-clock time across DST")
 
 
+def test_absolute_timer_dst_gap_fails_closed() -> None:
+    now = datetime(2026, 3, 1, 12, 0, tzinfo=MODULE.ZoneInfo("America/New_York"))
+    result = MODULE.decide("quota exhausted; resets Mar 8, 2:30am (America/New_York)", now=now)
+    check(result.kind == MODULE.PERMANENT, "DST gap was accepted as an absolute timer")
+    check(result.action == MODULE.FALLBACK_NATIVE, "DST gap did not fall back natively")
+    check(result.external_disabled, "DST gap did not disable the external route")
+
+
+def test_absolute_timer_dst_fold_fails_closed() -> None:
+    now = datetime(2026, 3, 1, 12, 0, tzinfo=MODULE.ZoneInfo("America/New_York"))
+    result = MODULE.decide("quota exhausted; resets Nov 1, 1:30am (America/New_York)", now=now)
+    check(result.kind == MODULE.PERMANENT, "DST fold was accepted without an explicit offset")
+    check(result.action == MODULE.FALLBACK_NATIVE, "DST fold did not fall back natively")
+    check(result.external_disabled, "DST fold did not disable the external route")
+
+
+def test_absolute_timer_explicit_offset_resolves_dst_fold() -> None:
+    now = datetime(2026, 3, 1, 12, 0, tzinfo=MODULE.ZoneInfo("America/New_York"))
+    result = MODULE.decide(
+        "quota exhausted; resets Nov 1, 1:30am -05:00 (America/New_York)",
+        now=now,
+    )
+    check(result.kind == MODULE.TIMER, "explicit offset did not resolve the DST fold")
+    check(result.retry_at == "2026-11-01T01:30:00-05:00",
+          "explicit offset changed the absolute provider deadline")
+
+
 def test_relative_timer_waits_exactly() -> None:
     now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
     result = MODULE.decide("rate limited; retry after 90 seconds", now=now)
@@ -241,6 +268,48 @@ def test_active_later_timer_replaces_deadline_and_identity() -> None:
           "active later timer did not retain its timer identity")
 
 
+def test_active_earlier_timer_replaces_deadline_for_same_pr() -> None:
+    first_now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    first = MODULE.decide("retry after 120 seconds", now=first_now, pr_number=188)
+    later_now = first_now.replace(second=10)
+    result = MODULE.decide(
+        "retry after 30 seconds",
+        now=later_now,
+        state=first.state,
+        pr_number=188,
+    )
+    expected_deadline = datetime(2026, 7, 25, 12, 0, 40, tzinfo=timezone.utc)
+    check(result.action == MODULE.WAIT_EXTERNAL,
+          "same-PR earlier timer did not keep the external route waiting")
+    check(result.retry_after_seconds == 30,
+          "same-PR earlier timer retained the old delay")
+    check(result.state.external_backoff_until == expected_deadline,
+          "same-PR earlier timer retained the old deadline")
+    check(result.state.external_backoff_pr == 188,
+          "same-PR timer did not retain its PR owner")
+
+
+def test_active_timer_for_another_pr_falls_back_and_retains_owner() -> None:
+    first_now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    first = MODULE.decide("retry after 120 seconds", now=first_now, pr_number=188)
+    later_now = first_now.replace(second=10)
+    result = MODULE.decide(
+        "retry after 30 seconds",
+        now=later_now,
+        state=first.state,
+        pr_number=189,
+    )
+    expected_deadline = datetime(2026, 7, 25, 12, 2, tzinfo=timezone.utc)
+    check(result.action == MODULE.FALLBACK_NATIVE,
+          "another PR was allowed to use the active external timer")
+    check(result.retry_after_seconds == 30,
+          "another PR lost its provider timer while falling back")
+    check(result.state.external_backoff_until == expected_deadline,
+          "another PR changed the existing session backoff")
+    check(result.state.external_backoff_pr == 188,
+          "another PR replaced the existing session timer owner")
+
+
 def test_session_timer_retries_at_exact_reentry_deadline() -> None:
     first_now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
     failure = MODULE.classify("retry after 90 seconds", now=first_now)
@@ -279,17 +348,21 @@ def test_cli_preserves_typed_timer_across_reentry() -> None:
             "--now", first_now,
             "--backoff-until", deadline,
             "--backoff-timer-id", timer_id,
+            "--backoff-pr", "188",
+            "--pr", "188",
         )
         check(waiting["action"] == MODULE.WAIT_EXTERNAL,
               "CLI typed timer did not wait before its deadline")
         check(waiting["state"]["external_backoff_timer_id"] == timer_id,
               "CLI wait dropped the timer identity")
+        check(waiting["state"]["external_backoff_pr"] == 188,
+              "CLI wait dropped the timer PR owner")
 
         raw_reentry = subprocess.run(
             [sys.executable, str(OWNER), "decide",
              "--message", "rate limited; retry after 90 seconds",
              "--now", deadline, "--backoff-until", deadline,
-             "--backoff-timer-id", timer_id],
+             "--backoff-timer-id", timer_id, "--backoff-pr", "188", "--pr", "188"],
             capture_output=True,
             text=True,
             check=False,
@@ -303,6 +376,8 @@ def test_cli_preserves_typed_timer_across_reentry() -> None:
             "--now", deadline,
             "--backoff-until", deadline,
             "--backoff-timer-id", timer_id,
+            "--backoff-pr", "188",
+            "--pr", "188",
         )
     check(reentry["action"] == MODULE.RETRY_EXTERNAL,
           "CLI exact-deadline re-entry did not retry immediately")
@@ -554,6 +629,9 @@ CASES = [
     ("absolute-provider-timezone", "absolute reset uses provider timezone", test_absolute_timer_uses_provider_timezone),
     ("absolute-dst-elapsed-time", "absolute deadline uses elapsed time across DST", test_absolute_timer_uses_elapsed_time_across_dst),
     ("timer-wait-dst-elapsed-time", "timer wait uses elapsed time across DST", test_timer_wait_uses_elapsed_time_across_dst),
+    ("absolute-dst-gap", "DST gap fails closed", test_absolute_timer_dst_gap_fails_closed),
+    ("absolute-dst-fold", "DST fold fails closed without an offset", test_absolute_timer_dst_fold_fails_closed),
+    ("absolute-dst-explicit-offset", "explicit offset resolves a DST fold", test_absolute_timer_explicit_offset_resolves_dst_fold),
     ("relative-exact-wait", "relative delay is preserved exactly", test_relative_timer_waits_exactly),
     ("unitless-relative-timer", "unitless timers default to seconds", test_unitless_relative_timer_defaults_to_seconds),
     ("comma-grouped-relative-timer", "comma-grouped timers fail closed", test_comma_grouped_relative_timer_fails_closed),
@@ -566,6 +644,8 @@ CASES = [
     ("session-deadline-reentry", "active session deadline is preserved on re-entry", test_session_timer_deadline_is_not_extended_on_reentry),
     ("active-identical-timer", "active identical fresh timer replaces deadline", test_active_identical_new_timer_replaces_deadline),
     ("active-later-deadline", "active later timer replaces deadline and identity", test_active_later_timer_replaces_deadline_and_identity),
+    ("active-earlier-same-pr", "active earlier timer replaces deadline for the same PR", test_active_earlier_timer_replaces_deadline_for_same_pr),
+    ("active-timer-other-pr", "active timer for another PR falls back and retains ownership", test_active_timer_for_another_pr_falls_back_and_retains_owner),
     ("session-deadline-exact-reentry", "exact deadline re-entry retries without extension", test_session_timer_retries_at_exact_reentry_deadline),
     ("cli-typed-reentry", "CLI preserves typed timer re-entry", test_cli_preserves_typed_timer_across_reentry),
     ("cli-invalid-utf8", "CLI invalid UTF-8 message file falls back", test_cli_invalid_utf8_message_file_falls_back),

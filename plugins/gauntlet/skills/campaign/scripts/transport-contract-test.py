@@ -750,6 +750,7 @@ def check_document_contract() -> None:
         "retry_after_seconds: NonNegativeInt | null",
         "external_backoff_until: Timestamp | null",
         "external_backoff_timer_id: Text | null",
+        "external_backoff_pr: PositiveInt | null",
         "timer_identity: Text | null",
         "external_retry_spent: Bool",
         'event: "selected" | "external-system-failure" | "native-system-failure"',

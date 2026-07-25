@@ -79,8 +79,9 @@ ABSOLUTE_RE = re.compile(
     r"nov(?:ember)?|dec(?:ember)?)\s+"
     r"(?P<day>\d{1,2})(?:,\s*|\s+)"
     r"(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<ampm>am|pm)"
+    r"(?:\s*(?P<offset>Z|[+-]\d{2}:?\d{2}))?"
     r"(?:\s+(?P<year>\d{4}))?\s*"
-    r"(?:\((?P<zone>[^)\s]+)\))?"
+    r"(?:\s*\((?P<zone>[^)\s,]+)(?:\s*,?\s*(?P<zone_offset>Z|[+-]\d{2}:?\d{2}))?\))?"
     rf"(?=\s*{_TIMER_END})",
     re.IGNORECASE,
 )
@@ -146,6 +147,7 @@ class ExternalReviewSessionState:
     external_disabled: bool = False
     external_backoff_until: datetime | None = None
     external_backoff_timer_id: str | None = None
+    external_backoff_pr: int | None = None
 
 
 # Keep the short name used by the runtime-adapter contract and existing callers.
@@ -229,6 +231,42 @@ def _timer_identity(value: str) -> str:
     return " ".join(value.casefold().split())
 
 
+def _parse_offset(value: str | None) -> timezone | None | object:
+    if value is None:
+        return None
+    if value.upper() == "Z":
+        return timezone.utc
+    match = re.fullmatch(r"([+-])(\d{2}):?(\d{2})", value)
+    if match is None:
+        return _MALFORMED_TIMER
+    hours = int(match.group(2))
+    minutes = int(match.group(3))
+    if hours > 23 or minutes > 59:
+        return _MALFORMED_TIMER
+    delta = timedelta(hours=hours, minutes=minutes)
+    if match.group(1) == "-":
+        delta = -delta
+    try:
+        return timezone(delta)
+    except ValueError:
+        return _MALFORMED_TIMER
+
+
+def _resolve_local_deadline(local: datetime, zone: object, explicit_offset: timezone | None) -> datetime | None:
+    if explicit_offset is not None:
+        return local.replace(tzinfo=explicit_offset)
+    candidates: dict[datetime, datetime] = {}
+    for fold in (0, 1):
+        candidate = local.replace(tzinfo=zone, fold=fold)
+        candidate_utc = candidate.astimezone(timezone.utc)
+        round_trip = candidate_utc.astimezone(zone)
+        if round_trip.replace(tzinfo=None) == local:
+            candidates.setdefault(candidate_utc, candidate)
+    if len(candidates) != 1:
+        return None
+    return next(iter(candidates.values()))
+
+
 @dataclass(frozen=True)
 class _TimerCandidate:
     start: int
@@ -263,7 +301,14 @@ def _absolute_timer_match(match: re.Match[str] | None, now: datetime) -> tuple[i
         return None
     zone_name = match.group("zone")
     try:
-        zone = ZoneInfo(zone_name) if zone_name else _require_aware(now).tzinfo
+        offset = _parse_offset(match.group("offset"))
+        zone_offset = _parse_offset(match.group("zone_offset"))
+        if offset is _MALFORMED_TIMER or zone_offset is _MALFORMED_TIMER:
+            return None
+        if offset is not None and zone_offset is not None and offset != zone_offset:
+            return None
+        explicit_offset = zone_offset if zone_offset is not None else offset
+        zone = ZoneInfo(zone_name) if zone_name else (explicit_offset or _require_aware(now).tzinfo)
         if zone is None:
             return None
         local_now = now.astimezone(zone)
@@ -276,14 +321,16 @@ def _absolute_timer_match(match: re.Match[str] | None, now: datetime) -> tuple[i
             hour += 12
         if ampm == "am" and hour == 12:
             hour = 0
-        target = datetime(year, month, int(match.group("day")), hour, minute, tzinfo=zone)
+        target_local = datetime(year, month, int(match.group("day")), hour, minute)
+        if not match.group("year") and target_local < local_now.replace(tzinfo=None):
+            target_local = target_local.replace(year=target_local.year + 1)
+        target = _resolve_local_deadline(target_local, zone, explicit_offset)
+        if target is None:
+            return None
         target_utc = target.astimezone(timezone.utc)
         local_now_utc = local_now.astimezone(timezone.utc)
-        if target_utc < local_now_utc:
-            if match.group("year"):
-                return None
-            target = target.replace(year=target.year + 1)
-            target_utc = target.astimezone(timezone.utc)
+        if target_utc < local_now_utc and match.group("year"):
+            return None
         return max(0, _ceil_seconds(target_utc - local_now_utc)), target, _timer_identity(match.group(0))
     except (KeyError, OverflowError, ValueError, TypeError, ZoneInfoNotFoundError):
         return None
@@ -380,6 +427,10 @@ def _valid_state(value: object) -> bool:
         and (
             value.external_backoff_timer_id is None
             or (type(value.external_backoff_timer_id) is str and bool(value.external_backoff_timer_id))
+        )
+        and (
+            value.external_backoff_pr is None
+            or (type(value.external_backoff_pr) is int and value.external_backoff_pr > 0)
         )
     )
 
@@ -496,6 +547,7 @@ def transition(
     retry_spent: bool = False,
     now: datetime | None = None,
     state: ExternalReviewSessionState | None = None,
+    pr_number: int | None = None,
 ) -> Decision:
     """Apply one typed failure to session state and return the next recovery action."""
 
@@ -503,6 +555,9 @@ def transition(
     if not _valid_state(prior):
         prior = ExternalReviewSessionState(external_disabled=True)
         failure = _permanent("external session state was malformed")
+    elif pr_number is not None and (type(pr_number) is not int or pr_number <= 0):
+        failure = _permanent("external review PR number was malformed")
+        pr_number = None
     elif not isinstance(failure, ExternalReviewFailure):
         failure = _permanent("external failure classification was malformed")
     elif failure.kind not in (TRANSIENT, TIMER, PERMANENT):
@@ -522,14 +577,26 @@ def transition(
         and failure.timer_identity is not None
         and failure.timer_identity == prior.external_backoff_timer_id
     )
+    same_timer_owner = (
+        failure.kind == TIMER
+        and prior.external_backoff_pr == pr_number
+    )
+    different_timer_owner = (
+        failure.kind == TIMER
+        and prior.external_backoff_pr is not None
+        and pr_number is not None
+        and prior.external_backoff_pr != pr_number
+    )
     same_timer_reentry = (
         prior_deadline_active
+        and same_timer_owner
         and same_timer_identity
         and failure.retry_at is not None
         and _utc(failure.retry_at) == _utc(prior.external_backoff_until)
     )
     deadline = _max_deadline(prior.external_backoff_until, failure.retry_at if failure.kind == TIMER else None)
     timer_id = failure.timer_identity if failure.kind == TIMER else prior.external_backoff_timer_id
+    timer_pr = pr_number if pr_number is not None else prior.external_backoff_pr
     if failure.kind == TIMER and prior.external_backoff_until is not None:
         incoming_deadline = failure.retry_at
         if same_timer_reentry:
@@ -538,6 +605,13 @@ def transition(
             failure = ExternalReviewFailure(
                 TIMER, 0, prior.external_backoff_until, failure.reason, failure.timer_identity
             )
+        elif same_timer_owner and incoming_deadline is not None:
+            deadline = incoming_deadline
+            timer_id = failure.timer_identity
+        elif different_timer_owner:
+            deadline = prior.external_backoff_until
+            timer_id = prior.external_backoff_timer_id
+            timer_pr = prior.external_backoff_pr
         elif (
             incoming_deadline is not None
             and _utc(incoming_deadline) <= _utc(prior.external_backoff_until)
@@ -545,14 +619,18 @@ def transition(
             deadline = prior.external_backoff_until
             if prior.external_backoff_timer_id is not None:
                 timer_id = prior.external_backoff_timer_id
-    next_state = ExternalReviewSessionState(prior.external_disabled, deadline, timer_id)
+    next_state = ExternalReviewSessionState(prior.external_disabled, deadline, timer_id, timer_pr)
 
     if prior.external_disabled:
         return _decision(FALLBACK_NATIVE, failure, next_state, "external route is disabled for this session")
 
     if failure.kind == PERMANENT:
-        next_state = ExternalReviewSessionState(True, deadline, timer_id)
+        next_state = ExternalReviewSessionState(True, deadline, timer_id, timer_pr)
         return _decision(FALLBACK_NATIVE, failure, next_state, failure.reason)
+
+    if different_timer_owner and prior_deadline_active:
+        return _decision(FALLBACK_NATIVE, failure, next_state,
+                         "session external backoff belongs to another PR")
 
     if deadline is not None and _utc(deadline) > _utc(current):
         if retry_spent or failure.kind != TIMER:
@@ -573,11 +651,15 @@ def decide(
     retry_spent: bool = False,
     now: datetime | None = None,
     state: ExternalReviewSessionState | None = None,
+    pr_number: int | None = None,
 ) -> Decision:
     """Classify one failure, then return retry, exact-timer wait, or native fallback."""
 
     current = now if now is not None else datetime.now(timezone.utc)
-    return transition(classify(message, current), retry_spent=retry_spent, now=current, state=state)
+    return transition(
+        classify(message, current), retry_spent=retry_spent, now=current, state=state,
+        pr_number=pr_number,
+    )
 
 
 def sibling_cases() -> list[tuple[str, str, object]]:
@@ -628,10 +710,13 @@ def _message(args: argparse.Namespace, parser: argparse.ArgumentParser) -> str:
 def _state_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> ExternalReviewSessionState:
     if args.backoff_timer_id is not None and args.backoff_until is None:
         parser.error("--backoff-timer-id requires --backoff-until")
+    if args.backoff_pr is not None and args.backoff_until is None:
+        parser.error("--backoff-pr requires --backoff-until")
     return ExternalReviewSessionState(
         external_disabled=args.external_disabled,
         external_backoff_until=parse_now(args.backoff_until) if args.backoff_until else None,
         external_backoff_timer_id=args.backoff_timer_id,
+        external_backoff_pr=args.backoff_pr,
     )
 
 
@@ -650,6 +735,8 @@ def main(argv: list[str] | None = None) -> int:
     decide_parser.add_argument("--external-disabled", action="store_true")
     decide_parser.add_argument("--backoff-until")
     decide_parser.add_argument("--backoff-timer-id")
+    decide_parser.add_argument("--backoff-pr", type=int)
+    decide_parser.add_argument("--pr", "--pr-number", dest="pr_number", type=int)
     decide_parser.add_argument("--failure-file", type=Path)
     sub.add_parser("self-test")
     args = parser.parse_args(argv)
@@ -680,6 +767,7 @@ def main(argv: list[str] | None = None) -> int:
             retry_spent=args.retry_spent,
             now=now,
             state=state,
+            pr_number=args.pr_number,
         )
     print(json.dumps(asdict(result), default=lambda value: value.isoformat(), sort_keys=True))
     return 0

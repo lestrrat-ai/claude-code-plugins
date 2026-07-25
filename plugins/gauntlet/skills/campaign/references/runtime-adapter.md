@@ -171,7 +171,8 @@ ExternalReviewFailure {
 ExternalReviewSessionState {
   external_disabled: Bool,
   external_backoff_until: Timestamp | null,
-  external_backoff_timer_id: Text | null
+  external_backoff_timer_id: Text | null,
+  external_backoff_pr: PositiveInt | null
 }
 
 ReviewTransition {
@@ -190,11 +191,12 @@ is also `permanent` and disables this external route for the current session.
 
 `ExternalReviewSessionState` is process/session memory owned by the active orchestrator. Update it only
 from the returned transition or decision. **Never write `external_disabled` or
-`external_backoff_until` or `external_backoff_timer_id` to the ledger, history, preferences, run artifacts,
-or any other durable campaign record. `timer_identity` and `external_backoff_timer_id` are opaque
-session-memory values. While a session deadline is active, preserve it only when the typed failure's
-`retry_at` matches that deadline; matching timer text alone never proves re-entry, and a newly classified
-timer owns its new `retry_at`. A new session starts with an empty state.
+`external_backoff_until` or `external_backoff_timer_id` or `external_backoff_pr` to the ledger, history,
+preferences, run artifacts, or any other durable campaign record. `timer_identity` and
+`external_backoff_timer_id` are opaque session-memory values. While a session deadline is active, a new
+timer for the same PR owns its `retry_at`, even when earlier; a timer for another PR falls back natively
+and retains the existing deadline and owner. Matching timer text and deadline alone never prove re-entry.
+A new session starts with an empty state.
 
 ```text
 review_transition(
