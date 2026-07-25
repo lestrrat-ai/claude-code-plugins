@@ -226,8 +226,10 @@ README_ADOPTION_WATCH_ACTION = (
 )
 PARKED_WATCH_RULE = "Parked status does not override that result."
 STATUS_SUBJECT_PATTERN = r"(?:`(?:ci|status)`|(?<!\w)(?:ci|status)(?!\w))"
-WATCH_ACTION_WORDS = r"(?:watch|launch|relaunch|ensure)"
+WATCH_ACTION_WORDS = r"(?:watch|launch|relaunch|ensure|warrant)"
+WATCH_ACTION_STATUS_WORDS = WATCH_ACTION_WORDS + r"(?:es|s|ed|ing)?"
 WATCH_ACTION_VERBS = r"(?:launch|relaunch|ensure)"
+WATCH_ACTION_STATUS_VERBS = r"(?:launch|relaunch|ensure|warrant)(?:es|s|ed|ing)?"
 STATUS_EQUALITY_ARROWS = r"(?:->|→)"
 POSITIVE_WATCH_ACTION = re.compile(
     r"\b" + WATCH_ACTION_VERBS + r"\b[^.!?;]*?\bwatch\b",
@@ -240,13 +242,13 @@ WATCH_ACTION_CONTRADICTIONS = (
         r"(?:(?:the|row(?:'s)?|value\s+of)\s+)*(?:(?:[\w-]+\s+){0,2})"
         + STATUS_SUBJECT_PATTERN
         + r"[^.!?]*\b"
-        + WATCH_ACTION_WORDS
+        + WATCH_ACTION_STATUS_WORDS
         + r"\b|"
         r"\b(?:[\w-]+\s+){0,2}"
         + STATUS_SUBJECT_PATTERN
         + r"\s+"
-        + WATCH_ACTION_VERBS
-        + r"(?:es|s|ed|ing)?\b[^.!?]*\bwatch\b|"
+        + WATCH_ACTION_STATUS_VERBS
+        + r"\b[^.!?]*\bwatch\b|"
         r"\b"
         + WATCH_ACTION_VERBS
         + r"\b[^.!?]*\b(?:if|when|while)\s+"
@@ -255,23 +257,23 @@ WATCH_ACTION_CONTRADICTIONS = (
         + r"|"
         + STATUS_SUBJECT_PATTERN
         + r"\s*(?:==|=|is)\s*[^.!?]*?" + STATUS_EQUALITY_ARROWS + r"\s*\b"
-        + WATCH_ACTION_WORDS
+        + WATCH_ACTION_STATUS_WORDS
         + r"\b|"
         + STATUS_SUBJECT_PATTERN
         + r"[^.!?]*\b(?:means|triggers?|causes?|controls?)\b[^.!?]*\b"
-        + WATCH_ACTION_WORDS
+        + WATCH_ACTION_STATUS_WORDS
         + r"\b|"
         + STATUS_SUBJECT_PATTERN
         + r"\s*--[^.!?]*?-->\s*[^.!?]*\b"
-        + WATCH_ACTION_WORDS
+        + WATCH_ACTION_STATUS_WORDS
         + r"\b)",
         re.IGNORECASE,
     )),
     ("unconditional", re.compile(
-        r"(?:\b(?:watch|launch|relaunch|ensure)\b[^.!?]*"
+        r"(?:\b" + WATCH_ACTION_STATUS_WORDS + r"\b[^.!?]*"
         r"\b(?:unconditionally|regardless|anyway|always)\b|"
         r"\b(?:unconditionally|regardless|anyway|always)\b[^.!?]*"
-        r"\b(?:watch|launch|relaunch|ensure)\b)",
+        r"\b" + WATCH_ACTION_STATUS_WORDS + r"\b)",
         re.IGNORECASE,
     )),
 )
@@ -2468,8 +2470,9 @@ def owner_block(text: str, anchor: str) -> tuple[int, str] | None:
     return start, text[start:end if end >= 0 else len(text)]
 
 
-def watch_action_contradiction_problems(relative: str, line: int, plain: str) -> list[str]:
-    """Reject a second watch rule that bypasses the registered liveness warrant."""
+def watch_action_contradiction_matches(plain: str) -> list[tuple[str, re.Match[str]]]:
+    """Return unnegated watch-action matches, preserving the registry's clause-boundary rule."""
+    matches = []
     for kind, pattern in WATCH_ACTION_CONTRADICTIONS:
         for match in pattern.finditer(plain):
             # A negation must belong to the matched status/watch clause; a comma can join an unrelated
@@ -2477,7 +2480,14 @@ def watch_action_contradiction_problems(relative: str, line: int, plain: str) ->
             clause_start = max(plain.rfind(boundary, 0, match.start()) for boundary in ".!?;,")
             prefix = plain[clause_start + 1:match.start()]
             if not re.search(r"\b(?:never|do not|don't|not)\b", prefix, re.IGNORECASE):
-                return [f"{relative}:{line} adds a contradictory {kind} watch rule"]
+                matches.append((kind, match))
+    return matches
+
+
+def watch_action_contradiction_problems(relative: str, line: int, plain: str) -> list[str]:
+    """Reject a second watch rule that bypasses the registered liveness warrant."""
+    for kind, _ in watch_action_contradiction_matches(plain):
+        return [f"{relative}:{line} adds a contradictory {kind} watch rule"]
     return []
 
 
@@ -2539,6 +2549,59 @@ def watch_action_owner_problems(owner: tuple[str, str, str, str], base: Path) ->
     return problems
 
 
+def watch_action_owner_span(owner: tuple[str, str, str, str], base: Path) -> tuple[int, int] | None:
+    """Return the source span owned by one registry entry, or None when its anchor is malformed."""
+    format_name, relative, anchor, _ = owner
+    path = base / relative
+    if not path.exists():
+        return None
+    text = path.read_text(encoding="utf-8")
+    positions = [match.start() for match in re.finditer(re.escape(anchor), text)]
+    if len(positions) != 1:
+        return None
+    start = positions[0]
+    if format_name == "mermaid":
+        fence_start = text.rfind("```mermaid", 0, start)
+        fence_end = text.find("\n```", start)
+        if fence_start < 0 or fence_end < 0:
+            return None
+        return fence_start, fence_end + len("\n```")
+    if format_name == "policy":
+        next_heading = re.search(r"(?m)^#{1,6}\s", text[start + len(anchor):])
+        end = start + len(anchor) + next_heading.start() if next_heading else len(text)
+        return start, end
+    selected = owner_block(text, anchor)
+    if selected is None:
+        return None
+    owner_start, block = selected
+    return owner_start, owner_start + len(block)
+
+
+def unregistered_watch_action_problems(
+        base: Path, owners: tuple[tuple[str, str, str, str], ...]
+) -> list[str]:
+    """Reject unnegated status/watch instructions outside the registered owner spans."""
+    spans_by_path: dict[str, list[tuple[int, int]]] = {}
+    for owner in owners:
+        span = watch_action_owner_span(owner, base)
+        if span is not None:
+            spans_by_path.setdefault(owner[1], []).append(span)
+
+    problems = []
+    for path in sorted(base.rglob("*.md")):
+        relative = path.relative_to(base).as_posix()
+        text = path.read_text(encoding="utf-8")
+        masked = list(text)
+        for start, end in spans_by_path.get(relative, []):
+            for index in range(start, end):
+                if masked[index] != "\n":
+                    masked[index] = "."
+        for kind, match in watch_action_contradiction_matches("".join(masked)):
+            line = text.count("\n", 0, match.start()) + 1
+            problems.append(f"{relative}:{line} adds an unregistered {kind} watch rule")
+    return problems
+
+
 def check_watch_action_docs(
         root: Path | None = None,
         owners: tuple[tuple[str, str, str, str], ...] | None = None,
@@ -2560,6 +2623,7 @@ def check_watch_action_docs(
         problems += found
         if not found:
             checked.append(f"{owner[1]}:{owner[2]}")
+    problems += unregistered_watch_action_problems(base, selected)
     return problems, checked
 
 def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) -> int:

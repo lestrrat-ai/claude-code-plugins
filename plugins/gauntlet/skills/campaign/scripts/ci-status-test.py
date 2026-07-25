@@ -1468,6 +1468,7 @@ def watch_action_owner_cases(ci, tmp: Path) -> list[str]:
 
         for suffix, name in (
             (" If `ci` is `pending`, launch a watch.", "backticked-status"),
+            (" Pending CI warrants a watch.", "status-warrants"),
             (" Pending CI triggers a watch.", "status-triggers"),
             (" Pending CI causes a watch.", "status-causes"),
             (" Pending CI controls a watch.", "status-controls"),
@@ -1537,6 +1538,21 @@ def watch_action_owner_cases(ci, tmp: Path) -> list[str]:
             )
             if not any("contradictory ci/status-based" in problem for problem in comma_mutated):
                 problems.append(f"[watch owners] comma-linked negation at {relative}:{anchor} was accepted")
+
+    for relative, suffix, name in (
+        ("references/stage-2-review-gate.md", "\n\nIf ci == pending, launch a watch.\n", "stage-2-review-gate"),
+        ("references/runtime-adapter.md", "\n\nPending CI launches a watch.\n", "runtime-adapter"),
+    ):
+        fixture_root = tmp / f"watch-unregistered-{name}"
+        for path in source.rglob("*.md"):
+            destination = fixture_root / path.relative_to(source)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+        fixture_path = fixture_root / relative
+        fixture_path.write_text(fixture_path.read_text(encoding="utf-8") + suffix, encoding="utf-8")
+        unregistered, _ = ci.check_watch_action_docs(fixture_root)
+        if not any("unregistered" in problem and relative in problem for problem in unregistered):
+            problems.append(f"[watch owners] unregistered action in {relative} was accepted")
 
     arrow_owner = next(
         owner for owner in owners
