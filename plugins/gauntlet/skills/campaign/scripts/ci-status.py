@@ -2247,6 +2247,39 @@ def check_gh_invocations(text: str, argv: dict[str, list[str]]) -> list[str]:
     return problems
 
 
+def _markdown_fenced_blocks(text: str) -> list[tuple[int, int, int, int, bool]]:
+    """Return CommonMark-style fenced blocks as (block start, block end, body start, body end, shell info).
+
+    Fences use matching backtick or tilde markers of at least three characters and allow up to three
+    spaces of indentation. Non-shell blocks are returned too, so inline literals inside them stay out of
+    the command-copy scan.
+    """
+    blocks: list[tuple[int, int, int, int, bool]] = []
+    opening: tuple[str, int, bool, int, int] | None = None
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        content = line.rstrip("\r\n")
+        if opening is None:
+            match = re.match(r"^ {0,3}(?P<markers>[`~]{3,})(?P<info>[^\r\n]*)$", content)
+            if match is not None:
+                markers = match.group("markers")
+                info = match.group("info").strip()
+                if len(set(markers)) == 1 and not (markers[0] == "`" and "`" in info):
+                    opening = (markers[0], len(markers), info in ("", "sh", "bash", "shell"),
+                               offset + len(line), offset)
+        else:
+            close = re.match(r"^ {0,3}(?P<markers>[`~]{3,})[ \t]*$", content)
+            if (close is not None and len(set(close.group("markers"))) == 1
+                    and close.group("markers")[0] == opening[0]
+                    and len(close.group("markers")) >= opening[1]):
+                blocks.append((opening[4], offset + len(line), opening[3], offset, opening[2]))
+                opening = None
+        offset += len(line)
+    if opening is not None:
+        blocks.append((opening[4], len(text), opening[3], len(text), opening[2]))
+    return blocks
+
+
 def documented_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path, int, str]]:
     """Return supported command copies: inline literals and fenced shell commands.
 
@@ -2259,22 +2292,23 @@ def documented_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path,
         rf"(?m)^[ \t]*(?:\$[ \t]+)?(?:python3?[ \t]+)?(?:\S*/)?ci-status\.py\s+"
         rf"{re.escape(subcommand)}\b"
     )
-    fence = re.compile(r"(?ms)^```(?:sh|bash|shell)?[ \t]*\n(?P<body>.*?)^```[ \t]*$")
     inline = re.compile(r"`(?P<body>[^`]*?)`", re.DOTALL)
     copies: list[tuple[Path, int, str]] = []
     for md in sorted(root.rglob("*.md")):
         text = md.read_text(encoding="utf-8")
-        blocks = list(fence.finditer(text))
+        blocks = _markdown_fenced_blocks(text)
         for literal in inline.finditer(text):
-            if any(block.start() <= literal.start() < block.end() for block in blocks):
+            if any(start <= literal.start() < end for start, end, _body_start, _body_end, _shell in blocks):
                 continue
             match = command.search(literal.group("body"))
             if match is None:
                 continue
             offset = literal.start("body") + match.start()
             copies.append((md, text.count("\n", 0, offset) + 1, literal.group("body")[match.start():]))
-        for block in blocks:
-            body = block.group("body")
+        for _block_start, _block_end, body_start, body_end, shell in blocks:
+            if not shell:
+                continue
+            body = text[body_start:body_end]
             for match in fenced_command.finditer(body):
                 line_end = body.find("\n", match.start())
                 if line_end < 0:
@@ -2286,9 +2320,8 @@ def documented_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path,
                         command_end = len(body)
                         break
                     command_end = next_end
-                offset = block.start("body") + match.start()
                 span = body[match.start():command_end]
-                copies.append((md, text.count("\n", 0, offset) + 1,
+                copies.append((md, text.count("\n", 0, body_start + match.start()) + 1,
                                re.sub(r"\\\n[ \t]*", " ", span)))
     return copies
 
