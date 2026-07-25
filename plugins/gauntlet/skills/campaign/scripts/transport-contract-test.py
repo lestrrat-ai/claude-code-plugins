@@ -99,6 +99,14 @@ def normalized(text: str) -> str:
     return " ".join(text.split())
 
 
+def has_attempt_two_fresh_native_attempt_three(text: str) -> bool:
+    flat = normalized(text)
+    attempt_two = "attempt `2` fails →"
+    fresh_native_attempt_three = "prepare fresh native fallback attempt `3`"
+    start = flat.find(attempt_two)
+    return start >= 0 and flat.find(fresh_native_attempt_three, start + len(attempt_two)) >= 0
+
+
 def command_argvs(block: str) -> list[list[str]]:
     logical_lines = re.sub(r"\\\r?\n", " ", block).splitlines()
     commands: list[list[str]] = []
@@ -763,11 +771,18 @@ def check_document_contract() -> None:
         "`external-process-capture` | `standard` |",
         "| `wait-external` | no preparation | no preparation | no preparation |",
         "| `launch-native` / `fallback-native` | `native` | `native-worker-write` | `standard` |",
-        "attempt `2` fails →",
         "dead or unusable attempt `3` → `park-machine-blocker`",
         'prompt_profile: "standard" | "codex-recovery"',
     ):
         require(needle in runtime, f"runtime adapter lost typed owner: {needle}")
+    require(has_attempt_two_fresh_native_attempt_three(runtime),
+            "runtime adapter does not relate attempt 2 failure to fresh native attempt 3")
+    require(has_attempt_two_fresh_native_attempt_three(
+        "attempt `2` fails → classify it,\nthen prepare fresh native fallback attempt `3`."
+    ), "attempt-2 recovery assertion does not allow normalized classification text")
+    require(not has_attempt_two_fresh_native_attempt_three(
+        "attempt `2` fails → classify it, then prepare fresh native fallback attempt `4`."
+    ), "attempt-2 recovery assertion accepts the wrong native fallback attempt")
 
     for needle in (
         '["python3", review_dispatch_script, "prepare"',
