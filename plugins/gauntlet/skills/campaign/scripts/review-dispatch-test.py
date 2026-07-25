@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -31,6 +32,14 @@ D = _load_owner()
 def check(condition: bool, message: str) -> None:
     if not condition:
         raise D.SelfTestFailure(message)
+
+
+def has_attempt_two_fresh_native_attempt_three(text: str) -> bool:
+    return re.search(
+        r"attempt `2` fails[ \t]*→[ \t]*(?:\r?\n[ \t]*)?"
+        r"prepare fresh native fallback attempt `3`(?:[.!?]|$)",
+        text,
+    ) is not None
 
 
 SHA = "a3f29c1b7d4e6f8091a2b3c4d5e6f708192a3b4c"
@@ -684,8 +693,8 @@ def t_external_attempt_two_has_native_attempt_three_recovery() -> None:
     runtime = (refs / "runtime-adapter.md").read_text(encoding="utf-8")
     stage = (refs / "stage-2-review-gate.md").read_text(encoding="utf-8")
     loop = (refs / "loop-control.md").read_text(encoding="utf-8")
-    check("attempt `2` fails → prepare fresh native fallback attempt `3`" in runtime,
-          "runtime owner does not allocate attempt 3 after failed attempt 2")
+    check(has_attempt_two_fresh_native_attempt_three(runtime),
+          "runtime owner does not relate attempt 2 failure to fresh native attempt 3")
     check("dead or unusable attempt `3` → `park-machine-blocker`" in runtime,
           "runtime owner does not terminate failed native fallback attempt 3")
     stale_attempt_two_terminal = "`2` → " + "fresh-worker fallback"
@@ -694,6 +703,21 @@ def t_external_attempt_two_has_native_attempt_three_recovery() -> None:
               f"{name} recovery does not point to the attempt-3 owner")
         check(stale_attempt_two_terminal not in text,
               f"{name} recovery retains the stale attempt-2 terminal rule")
+
+
+def t_attempt_two_recovery_relation_rejects_wrong_attempt() -> None:
+    valid = "attempt `2` fails →\nprepare fresh native fallback attempt `3`."
+    invalid = "attempt `2` fails → classify it, then prepare fresh native fallback attempt `4`."
+    separated = (
+        "attempt `2` fails → classify it, but do not prepare a native fallback for this path.\n\n"
+        "A separate unavailable-route paragraph says prepare fresh native fallback attempt `3`."
+    )
+    check(has_attempt_two_fresh_native_attempt_three(valid),
+          "attempt-2 recovery assertion does not allow the direct fallback clause")
+    check(not has_attempt_two_fresh_native_attempt_three(invalid),
+          "attempt-2 recovery assertion accepts the wrong native fallback attempt")
+    check(not has_attempt_two_fresh_native_attempt_three(separated),
+          "attempt-2 recovery assertion joins separated failure and fallback clauses")
 
 
 def t_transition_actions_map_directly_to_prepare_inputs() -> None:
@@ -939,6 +963,8 @@ CASES = [
     ("hard-stop-recovery", "both-files and identity-only hard-stop residue is recoverable", t_hard_stop_residue_is_recoverable),
     ("malformed-identity-refused", "a malformed lone identity is refused, not reclaimed", t_malformed_lone_identity_is_refused_not_reclaimed),
     ("fallback-attempt-three", "external retry failure has a terminal native attempt-3 path", t_external_attempt_two_has_native_attempt_three_recovery),
+    ("attempt-three-contract", "attempt-2 recovery requires fresh native attempt 3",
+     t_attempt_two_recovery_relation_rejects_wrong_attempt),
     ("transition-mapping", "review actions map directly to route, producer, and prompt profile",
      t_transition_actions_map_directly_to_prepare_inputs),
     ("unicode-delivery", "a Unicode path is delivered as UTF-8 bytes under ASCII stdout", t_unicode_worktree_delivers_under_ascii_stdout),
