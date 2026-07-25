@@ -1081,6 +1081,42 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
         if not any(valid in " ".join(command.split()) and "\n" not in command
                    for _path, _line, command in copies):
             problems.append(f"[command copy {subcommand}] fenced shell continuation was not joined")
+
+    boundary_forms = {
+        "derive": (
+            ci.check_derive_copies,
+            (
+                "--pr 1 --ledger-not-real",
+                "--pr 1 --required-set-not-real",
+                "--pr 1 --ledger-not-real # --ledger <rundir>/state.jsonl",
+                "--pr 1 --required-set-not-real # --required-set none",
+            ),
+            "WITHOUT `--ledger` OR `--required-set`",
+        ),
+        "liveness": (
+            ci.check_liveness_copies,
+            (
+                "--ledger <rundir>/state.jsonl --pr 1 --machine-action-no",
+                "--ledger <rundir>/state.jsonl --pr 1 --machine-action-no # --machine-action none",
+            ),
+            "WITHOUT `--machine-action`",
+        ),
+    }
+    for subcommand, (check, invalid_commands, needle) in boundary_forms.items():
+        root = tmp / f"command-copy-boundaries-{subcommand}"
+        root.mkdir()
+        (root / "audit.md").write_text(
+            "\n\n".join(f"`scripts/ci-status.py {subcommand} {command}`"
+                           for command in invalid_commands) + "\n",
+            encoding="utf-8",
+        )
+        found_problems, checked = check(root)
+        if (len(checked) != len(invalid_commands) or len(found_problems) != len(invalid_commands)
+                or any(needle not in problem for problem in found_problems)):
+            problems.append(
+                f"[command copy {subcommand}] suffixed and commented options were not rejected: "
+                f"{found_problems!r}, checked={checked!r}"
+            )
     return problems
 
 

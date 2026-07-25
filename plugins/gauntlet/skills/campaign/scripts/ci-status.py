@@ -2294,6 +2294,19 @@ def documented_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path,
     return copies
 
 
+def documented_command_argv(command: str) -> list[str]:
+    """Tokenize a documented shell command and ignore shell comments."""
+    try:
+        return shlex.split(command, comments=True)
+    except ValueError:
+        # Documentation placeholders can contain apostrophes, such as `<the ledger's>`, without
+        # representing shell quoting. Non-POSIX tokenization still honors comments and recovers flags.
+        try:
+            return shlex.split(command, comments=True, posix=False)
+        except ValueError:
+            return []
+
+
 def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]:
     """Every supported documented derive command copy names its required-set input.
 
@@ -2313,10 +2326,11 @@ def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]
     """
     problems, copies = [], []
     for md, line, command in documented_ci_status_copies(root or HERE.parent, "derive"):
-        if "--pr" not in command:
+        argv = documented_command_argv(command)
+        if "--pr" not in argv:
             continue  # prose that NAMES the command, not a copy of it
         copies.append(f"{md.name}:{line}")
-        if "--ledger" not in command and "--required-set" not in command:
+        if "--ledger" not in argv and "--required-set" not in argv:
             problems.append(
                 f"{md.name}:{line} runs `ci-status.py derive` WITHOUT `--ledger` OR `--required-set` — the "
                 f"flag that makes `green` mean the REQUIRED SET passed. A reader following this copy "
@@ -2341,12 +2355,13 @@ def check_liveness_copies(root: Path | None = None) -> tuple[list[str], list[str
     """
     problems, copies = [], []
     for md, line, command in documented_ci_status_copies(root or HERE.parent, "liveness"):
+        argv = documented_command_argv(command)
         # `--ledger`, not `--pr`, is the runnable-copy gate: prose can name a PR without spelling the
         # ledger input that makes liveness runnable.
-        if "--ledger" not in command:
+        if "--ledger" not in argv:
             continue  # prose that names the subcommand, not a runnable copy
         copies.append(f"{md.name}:{line}")
-        if "--machine-action" not in command:
+        if "--machine-action" not in argv:
             problems.append(
                 f"{md.name}:{line} runs `ci-status.py liveness` WITHOUT `--machine-action` — the one "
                 f"judgment the command asks of its caller. The tool refuses the invocation; a reader "
@@ -2365,10 +2380,7 @@ def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list
     problems, copies = [], []
     for md, line, command in documented_ci_status_copies(root or HERE.parent, "required-set"):
         copies.append(f"{md.name}:{line}")
-        try:
-            argv = shlex.split(command, comments=True)
-        except ValueError:
-            argv = []
+        argv = documented_command_argv(command)
         has_ledger_path = any(
             (
                 token == "--ledger"
