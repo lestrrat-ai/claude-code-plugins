@@ -231,9 +231,11 @@ stays pending until its own PR disposition occurs.
    **`gauntlet-authored`** and adopted into the current run so `pr-adoption.md` reads it as
    `pr_origin=gauntlet` — without the label it defaults to `external`, which then blocks campaign's own
    later autonomous repair of the very PR it authored. Record the PR with `followups.py open-pr --id fuN
-   --pr <N> --repo <owner/name>`; use a bare number or `#N`. GitHub URLs are refused because this store
-   cannot validate their repository identity. Legacy rows without a stored repository stay pending until
-   the user explicitly runs `followups.py relink-pr --id fuN --repo <owner/name>`.
+   --pr <N> --repo <owner/name>`; use a positive bare number or `#N`. Zero, embedded text, unsafe URLs,
+   and opaque references are refused because terminal callbacks require a canonical numeric identity. An
+   exact legacy `https://github.com/<owner>/<name>/pull/<N>` URL remains relinkable when its repository
+   matches `--repo`; relink also normalizes already-linked legacy rows. Legacy rows without a stored
+   repository stay pending until the user explicitly runs `followups.py relink-pr --id fuN --repo <owner/name>`.
 
 4. **FOLD THE PR INTO THE CURRENT CAMPAIGN.** The follow-up's PR — which step 3 admitted on its own
    recorded base — is **adopted into this run** like any other

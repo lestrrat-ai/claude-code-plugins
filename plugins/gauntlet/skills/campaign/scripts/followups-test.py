@@ -98,7 +98,8 @@ def transition_args(cmd: str) -> "list[str]":
     for field in WRITES[cmd]:
         if field in OPTIONAL:
             continue
-        argv += [FLAG[field], TEST_REPO if field == "pr_repo" else f"{cmd}:{field}"]
+        value = TEST_REPO if field == "pr_repo" else "#42" if field == "pr" else f"{cmd}:{field}"
+        argv += [FLAG[field], value]
     return argv
 
 
@@ -1638,65 +1639,145 @@ def t_merged_disposition_rejects_reject_terminal_command(tmp: Path) -> None:
 
 
 def t_pr_references_require_numeric_refs(tmp: Path) -> None:
-    """`open-pr` stores recognised numeric PR forms as their canonical number and refuses GitHub URLs.
-
-    The command accepts legacy bare numbers and current `#N` spelling. It refuses GitHub URLs because their
-    repository identity cannot be validated here, and preserves non-GitHub opaque text rather than guessing
-    a number embedded in it.
-    """
-    accepted = {
-        "42": "42",
-        "#42": "42",
+    """`open-pr` accepts only canonical positive numbers and refuses every unsafe reference form."""
+    references = {
+        "42": ("42", None),
+        "#42": ("42", None),
+        "https://github.com/acme/repo/pull/42": ("42", "acme/repo"),
+        "https://github.com/acme/repo/pull/42/": ("42", "acme/repo"),
+        "0": None,
+        "#0": None,
+        "01": None,
+        "#01": None,
+        "-1": None,
+        "#-1": None,
+        "42/": None,
+        "#42\n": None,
+        " 42": None,
+        "42 ": None,
+        "PR 42": None,
+        "https://www.github.com/acme/repo/pull/42": None,
+        "https://github.com/acme/repo/issues/42": None,
+        "https://example.test/acme/repo/pull/42": None,
+        "opaque reference": None,
     }
-    for ref, expected in accepted.items():
-        check(followups.pr_number(ref) == expected,
-              f"PR reference {ref!r} parsed as {followups.pr_number(ref)!r}, not {expected!r}")
-    opaque = (
-        "0",
-        "#0",
-        "42/",
-        "#42\n",
-        "PR 42",
-    )
-    for ref in opaque:
-        check(followups.pr_number(ref) is None,
-              f"non-PR reference {ref!r} was guessed as {followups.pr_number(ref)!r}")
+    for ref, expected in references.items():
+        check(followups.normalize_pr_reference(ref) == expected,
+              f"PR reference {ref!r} normalized as {followups.normalize_pr_reference(ref)!r}, not {expected!r}")
 
-    rejected_urls = (
-        "https://github.com/acme/repo/pull/42",
-        "https://github.com/acme/repo/pull/42/",
-        "https://github.com/acme/repo/pull/42\n",
-        "https://github.com/acme/repo/issues/42",
-        "https://github.com/acme?x/repo/pull/42",
-    )
-    for ref in rejected_urls:
-        check(followups.pr_number(ref) is None,
-              f"GitHub URL {ref!r} was parsed as {followups.pr_number(ref)!r}")
-        path = tmp / f"rejected-pr-reference-{len(ref)}.jsonl"
-        (fid,) = seed(path)
-        check(run(["--file", str(path), "accept", "--id", fid])[0] == 0,
-              f"setup accept for rejected URL {ref!r} failed")
-        code, _, err = run(["--file", str(path), "open-pr", "--id", fid, "--pr", ref,
-                            "--repo", TEST_REPO])
-        check(code == 1 and "repository identity" in err,
-              f"`open-pr` accepted GitHub URL {ref!r}: {code} {err!r}")
-        check(json.loads(run(["--file", str(path), "get", "--id", fid])[1])["pr"] == PLACEHOLDER,
-              f"refused GitHub URL {ref!r} changed the stored PR")
-
-    # Drive every accepted and opaque form through the only transition that writes `pr`; a parser-only
-    # fixture would still pass if `open-pr` stored its raw argument.
-    expected_refs = {**accepted, **{ref: ref for ref in opaque}}
-    for i, (ref, expected) in enumerate(expected_refs.items()):
+    for i, (ref, expected) in enumerate(references.items()):
         path = tmp / f"pr-reference-{i}.jsonl"
         (fid,) = seed(path)
         code, _, err = run(["--file", str(path), "accept", "--id", fid])
         check(code == 0, f"setup `accept` for {ref!r} exited {code}: {err!r}")
         code, _, err = run(["--file", str(path), "open-pr", "--id", fid, "--pr", ref,
                             "--repo", TEST_REPO])
-        check(code == 0, f"`open-pr` for {ref!r} exited {code}: {err!r}")
+        check(code == (0 if expected is not None and expected[1] is None else 1),
+              f"`open-pr` for {ref!r} exited {code}: {err!r}")
         entry = json.loads(run(["--file", str(path), "get", "--id", fid])[1])
-        check(entry["pr"] == expected,
-              f"`open-pr` stored {entry['pr']!r} for {ref!r}, not {expected!r}")
+        if expected is None or expected[1] is not None:
+            check(entry["pr"] == PLACEHOLDER and entry["state"] == "accepted",
+                  f"refused `open-pr` for {ref!r} changed the entry: {entry!r}")
+        else:
+            check(entry["pr"] == expected[0] and entry["pr_repo"] == TEST_REPO,
+                  f"`open-pr` stored {entry['pr']!r} for {ref!r}, not canonical identity")
+
+
+def t_terminal_callbacks_normalize_legacy_references(tmp: Path) -> None:
+    """Callbacks normalize safe legacy rows and leave unsafe or foreign references pending."""
+    safe = (
+        "#42",
+        "https://github.com/owner/repo/pull/42",
+    )
+    for i, ref in enumerate(safe):
+        path = tmp / f"callback-legacy-{i}.jsonl"
+        write_lines(path, entry_line(id="fu1", state="in-pr", rejection=PENDING_REJECTION,
+                                     pr=ref, pr_repo=TEST_REPO))
+        recorded = followups.record_completed_rejection_disposition(path, "#42", TEST_REPO)
+        entry = find(load(path), "fu1")
+        check(recorded == ("fu1",) and entry is not None
+              and entry["pr"] == "42"
+              and entry["rejection"] == DISPOSED_REJECTION
+              and entry["disposition"] == CLOSED_DISPOSITION,
+              f"callback did not normalize and dispose legacy reference {ref!r}: {recorded!r}, {entry!r}")
+
+    unsafe = (
+        "0",
+        "#0",
+        "01",
+        "#01",
+        "-1",
+        "#-1",
+        "42/",
+        "PR 42",
+        " 42",
+        "42 ",
+        "https://www.github.com/owner/repo/pull/42",
+        "https://example.test/owner/repo/pull/42",
+        "opaque reference",
+    )
+    for i, ref in enumerate(unsafe):
+        path = tmp / f"callback-unsafe-{i}.jsonl"
+        write_lines(path, entry_line(id="fu1", state="in-pr", rejection=PENDING_REJECTION,
+                                     pr=ref, pr_repo=TEST_REPO))
+        recorded = followups.record_completed_rejection_disposition(path, "42", TEST_REPO)
+        entry = find(load(path), "fu1")
+        check(recorded == () and entry is not None
+              and entry["pr"] == ref
+              and entry["rejection"] == PENDING_REJECTION
+              and entry["disposition"] == PLACEHOLDER,
+              f"callback guessed unsafe reference {ref!r}: {recorded!r}, {entry!r}")
+
+    foreign = tmp / "callback-foreign-legacy-url.jsonl"
+    write_lines(foreign, entry_line(id="fu1", state="in-pr", rejection=PENDING_REJECTION,
+                                    pr="https://github.com/other/repo/pull/42", pr_repo=TEST_REPO))
+    recorded = followups.record_completed_rejection_disposition(foreign, "42", TEST_REPO)
+    entry = find(load(foreign), "fu1")
+    check(recorded == () and entry is not None and entry["rejection"] == PENDING_REJECTION,
+          f"callback consumed a foreign legacy URL: {recorded!r}, {entry!r}")
+
+
+def t_relink_normalizes_legacy_references_and_rejects_unsafe(tmp: Path) -> None:
+    """Relink preserves exact legacy URL repair, normalizes linked rows, and fails closed otherwise."""
+    linked = (
+        "#42",
+        "https://github.com/owner/repo/pull/42",
+    )
+    for i, ref in enumerate(linked):
+        path = tmp / f"relink-linked-{i}.jsonl"
+        write_lines(path, entry_line(id="fu1", state="in-pr", pr=ref, pr_repo=TEST_REPO))
+        code, out, err = run(["--file", str(path), RELINK_CMD, "--id", "fu1", "--repo", TEST_REPO])
+        check(code == 0, f"relink of already-linked {ref!r} failed: {err!r}")
+        entry = json.loads(out)
+        check(entry["pr"] == "42" and entry["pr_repo"] == TEST_REPO,
+              f"relink did not normalize already-linked {ref!r}: {entry!r}")
+
+    exact_url = tmp / "relink-exact-url.jsonl"
+    write_lines(exact_url, entry_line(id="fu1", state="in-pr",
+                                      pr="https://github.com/owner/repo/pull/42"))
+    code, out, err = run(["--file", str(exact_url), RELINK_CMD, "--id", "fu1", "--repo", TEST_REPO])
+    check(code == 0, f"exact legacy URL relink failed: {err!r}")
+    entry = json.loads(out)
+    check(entry["pr"] == "42" and entry["pr_repo"] == TEST_REPO,
+          f"exact legacy URL relink did not attach canonical identity: {entry!r}")
+
+    unsafe = (
+        "https://www.github.com/owner/repo/pull/42",
+        "https://example.test/owner/repo/pull/42",
+        "0",
+        "01",
+        "-1",
+        "PR 42",
+    )
+    for i, ref in enumerate(unsafe):
+        path = tmp / f"relink-unsafe-{i}.jsonl"
+        write_lines(path, entry_line(id="fu1", state="in-pr", pr=ref))
+        code, _, err = run(["--file", str(path), RELINK_CMD, "--id", "fu1", "--repo", TEST_REPO])
+        check(code == 1 and "no relinkable PR reference" in err,
+              f"relink accepted unsafe reference {ref!r}: {code} {err!r}")
+        entry = find(load(path), "fu1")
+        check(entry is not None and entry["pr"] == ref and entry["pr_repo"] == PLACEHOLDER,
+              f"unsafe relink changed {ref!r}: {entry!r}")
 
 
 CASES = [
@@ -1712,7 +1793,9 @@ CASES = [
     ("r2-merged-before-ruling", "a prior MERGED callback cannot be reused by a later rejection ruling", t_merged_callback_before_rejection_ruling_is_not_reusable),
     ("r3-closed-not-merged", "a CLOSED disposition refuses the MERGED terminal command", t_closed_disposition_rejects_merged_terminal_command),
     ("r4-merged-not-reject", "a MERGED disposition refuses the terminal reject command", t_merged_disposition_rejects_reject_terminal_command),
-    ("pr-reference-parser", "open-pr canonicalises numeric PR references, refuses GitHub URLs, and preserves other opaque text", t_pr_references_require_numeric_refs),
+    ("pr-reference-normalization", "open-pr accepts only canonical numeric PR references and rejects unsafe forms", t_pr_references_require_numeric_refs),
+    ("callback-legacy-normalization", "terminal callbacks normalize safe legacy references and reject unsafe or foreign forms", t_terminal_callbacks_normalize_legacy_references),
+    ("relink-legacy-normalization", "relink normalizes linked legacy references and preserves exact URL repair", t_relink_normalizes_legacy_references_and_rejects_unsafe),
     ("investigation-evidence", "an investigation shows its work; the finding APPENDS and never clobbers", t_investigation_shows_its_work),
     ("refutation-stays", "a refuted follow-up stays in the store, stays visible, and stays overturnable", t_refutation_stays_in_the_store),
     ("state-not-settable", "`set` writes neither `state` nor any evidence a transition left behind", t_state_and_evidence_are_not_settable),

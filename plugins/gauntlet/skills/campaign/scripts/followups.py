@@ -362,8 +362,8 @@ FLAG_HELP = {
                "evidence nor an earlier investigation's finding",
     "published": "where it was published (issue ref or URL) — the ISSUE is now the record, so the entry "
                  "is DELETED",
-    "pr": "the PR addressing it (#N or N; GitHub URLs are refused because repository identity cannot be "
-          "validated). The entry STAYS while that PR is open: `merged` then deletes it (the PR is the "
+    "pr": "the PR addressing it (#N or N; unsafe URLs and opaque references are refused because the "
+          "terminal callback requires a canonical number). The entry STAYS while that PR is open: `merged` then deletes it (the PR is the "
           "record), ordinary `closed-unmerged` returns it to open work (nothing recorded it), and a pending "
           "rejection is disposed only by the verified terminal campaign callback, which records CLOSED "
           "or MERGED before the matching terminal command",
@@ -707,25 +707,36 @@ def _record_completed_followup_disposition(path: Path, pr: str, repo: str,
     `reject-pending` cannot attach a new ruling to an old terminal event. When a rejection is pending, the same
     write marks it disposed. The callback must identify both the canonical numeric PR reference and its
     owner/name repository. Legacy rows without `pr_repo` therefore remain pending until the user explicitly
-    relinks them. The store lock and atomic dump remain its only write path.
+    relinks them. Legacy numeric spellings and exact legacy GitHub URLs are normalized when they match; unsafe
+    opaque references remain unmatched. The store lock and atomic dump remain its only write path.
     """
     if disposition not in (CLOSED_DISPOSITION, MERGED_DISPOSITION):
         raise ValueError(f"unknown terminal disposition {disposition!r}")
     if not path.exists():
         return ()
-    canonical = pr_number(pr)
+    callback = normalize_pr_reference(pr)
     identity = canonical_repo(repo)
-    if canonical is None or identity is None:
+    if callback is None or identity is None:
+        return ()
+    canonical, callback_repo = callback
+    if callback_repo is not None and callback_repo.casefold() != identity.casefold():
         return ()
     recorded: list[str] = []
     changed = False
     with locked(path):
         entries, high = read_store(path)
         for entry in entries:
-            if (entry["state"] != "in-pr" or entry["pr"] != canonical
-                    or is_blank(entry["pr_repo"])
+            if (entry["state"] != "in-pr" or is_blank(entry["pr_repo"])
                     or entry["pr_repo"].casefold() != identity.casefold()):
                 continue
+            stored = normalize_pr_reference(entry["pr"])
+            if stored is None or stored[0] != canonical:
+                continue
+            if stored[1] is not None and stored[1].casefold() != entry["pr_repo"].casefold():
+                continue
+            if entry["pr"] != canonical:
+                entry["pr"] = canonical
+                changed = True
             phase = rejection_phase(entry)
             current = terminal_disposition(entry)
             if current != NO_DISPOSITION:
@@ -770,13 +781,30 @@ def legacy_github_pr(ref: str) -> "tuple[str, str] | None":
     return f"{match.group('owner')}/{match.group('name')}", match.group("number")
 
 
+def normalize_pr_reference(ref: str) -> "tuple[str, str | None] | None":
+    """Return `(number, legacy_repository)` for a trusted PR reference, or None.
+
+    Bare and `#N` references carry no repository identity. An exact legacy GitHub PR URL carries the
+    repository it names and is accepted only by explicit legacy-repair paths; callers that take new PR
+    references must reject the non-None repository component. Every other URL or opaque spelling is unsafe
+    because terminal callbacks cannot prove which PR it identifies.
+    """
+    numeric = pr_number(ref)
+    if numeric is not None:
+        return numeric, None
+    legacy = legacy_github_pr(ref)
+    if legacy is not None:
+        return legacy[1], legacy[0]
+    return None
+
+
 def is_github_url(ref: str) -> bool:
     """Return whether `ref` names the GitHub host, whose repository identity this store cannot validate."""
     try:
         host = urlsplit(ref).hostname
     except ValueError:
         return False
-    return host is not None and host.lower() == "github.com"
+    return host is not None and host.lower() in ("github.com", "www.github.com")
 
 
 def pr_number(ref: str) -> "str | None":
@@ -893,21 +921,22 @@ def cmd_relink(path: Path, args) -> int:
             fail(f"no follow-up {args.id}")
         if entry["state"] != "in-pr":
             fail(f"{args.id} is '{entry['state']}' — `{RELINK_CMD}` applies only to: in-pr")
+        normalized = normalize_pr_reference(entry["pr"])
+        if normalized is None:
+            fail(f"{args.id} has no relinkable PR reference for repository {identity!r}")
+        numeric, referenced_repo = normalized
+        if referenced_repo is not None and referenced_repo.casefold() != identity.casefold():
+            fail(f"{args.id} has no relinkable PR reference for repository {identity!r}")
         current = entry["pr_repo"]
-        if not is_blank(current):
-            if current.casefold() != identity.casefold():
-                fail(f"{args.id} is already linked to PR repository {current!r}")
-            print(json.dumps(entry))
-            return 0
-        numeric = pr_number(entry["pr"])
-        if numeric is None:
-            legacy = legacy_github_pr(entry["pr"])
-            if legacy is None or legacy[0].casefold() != identity.casefold():
-                fail(f"{args.id} has no relinkable PR reference for repository {identity!r}")
-            numeric = legacy[1]
-            entry["pr"] = numeric
-        entry["pr_repo"] = identity
-        dump(path, entries, high)
+        if not is_blank(current) and current.casefold() != identity.casefold():
+            fail(f"{args.id} is already linked to PR repository {current!r}")
+        changed = entry["pr"] != numeric
+        entry["pr"] = numeric
+        if is_blank(current):
+            entry["pr_repo"] = identity
+            changed = True
+        if changed:
+            dump(path, entries, high)
     print(json.dumps(entry))
     return 0
 
@@ -931,15 +960,18 @@ def cmd_transition(path: Path, args) -> int:
     frm, to = TRANSITIONS[cmd]
     values = taken(cmd, args)  # THE one door — every caller value, validated (see `taken()`)
     if cmd == "open-pr":
-        if is_github_url(values["pr"]):
-            fail("open-pr refuses GitHub URLs because this store cannot validate repository identity; pass #N or N")
         identity = canonical_repo(values["pr_repo"])
         if identity is None:
             fail("open-pr requires --repo with a GitHub owner/name repository identity")
-        # A PR number is the durable key other campaign tools consume. Keep an opaque caller reference
-        # untouched, but collapse every recognised legacy spelling to that one key before storing it beside
-        # the owner/name repository identity.
-        values["pr"] = pr_number(values["pr"]) or values["pr"]
+        normalized = normalize_pr_reference(values["pr"])
+        if normalized is None:
+            if is_github_url(values["pr"]):
+                fail("open-pr refuses GitHub URLs because this store cannot validate repository identity; pass #N or N")
+            fail("open-pr requires a positive PR number as N or #N; unsafe URLs and opaque references are refused")
+        number, referenced_repo = normalized
+        if referenced_repo is not None:
+            fail("open-pr refuses GitHub URLs because this store cannot validate repository identity; pass #N or N")
+        values["pr"] = number
         values["pr_repo"] = identity
     with locked(path):
         entries, high = read_store(path)
