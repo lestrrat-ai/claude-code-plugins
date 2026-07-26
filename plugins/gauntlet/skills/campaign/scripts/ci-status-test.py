@@ -1282,7 +1282,7 @@ def verdict_doc_cases(ci) -> list[str]:
 
 
 def watch_action_owner_cases(ci, tmp: Path) -> list[str]:
-    """Every registry entry rejects deletion, unconditional-watch, status-based, and bucket mutations."""
+    """Every registry entry rejects deletion, unconditional-watch, status-based, bucket, and extra positive-action mutations."""
     problems = []
     owners = ci.WATCH_ACTION_CONSUMERS
     source = ci.HERE.parent
@@ -1550,6 +1550,8 @@ def watch_action_owner_cases(ci, tmp: Path) -> list[str]:
         ("references/stage-2-review-gate.md", "\n\nIf ci == pending, launch a watch.\n", "stage-2-review-gate"),
         ("references/stage-2-review-gate.md", "\n\nStart a CI watch for this PR without running liveness first.\n",
          "stage-2-review-gate-positive"),
+        ("references/stage-3-merge.md", '\n\nThe watch rule is `ci = pending` → "relaunch the CI watch".\n',
+         "stage-3-merge-backtick-formula"),
         ("references/runtime-adapter.md", "\n\nPending CI launches a watch.\n", "runtime-adapter"),
         ("references/runtime-adapter.md", "\n\nIf buckets.RUNNING > 0, launch a watch.\n", "runtime-adapter-bucket-formula"),
     ):
@@ -1682,6 +1684,37 @@ def watch_action_owner_cases(ci, tmp: Path) -> list[str]:
         )
         if not any("outside its registered warrant" in problem for problem in extra_action):
             problems.append(f"[watch owners] extra positive action at {relative}:{anchor} was accepted")
+
+    for index, owner in enumerate(owners):
+        format_name, relative, anchor, _ = owner
+        if format_name not in ("mermaid", "policy", "summary", "markdown"):
+            continue
+        source_text = (source / relative).read_text(encoding="utf-8")
+        selected = ci.watch_action_owner_span(owner, source)
+        if selected is None:
+            problems.append(f"[watch owners] {relative}:{anchor} lost its extra-action target")
+            continue
+        _, owner_end = selected
+        if format_name == "mermaid":
+            closing_fence = owner_end - len("\n```")
+            changed = (source_text[:closing_fence]
+                       + "\nXX[launch a watch after any liveness result]"
+                       + source_text[closing_fence:])
+        else:
+            changed = (source_text[:owner_end]
+                       + "\nLaunch a watch after any liveness result.\n"
+                       + source_text[owner_end:])
+        fixture_root = tmp / f"watch-owner-{index}-extra-positive-action"
+        fixture_path = fixture_root / relative
+        fixture_path.parent.mkdir(parents=True, exist_ok=True)
+        fixture_path.write_text(changed, encoding="utf-8")
+        extra_action, _ = ci.check_watch_action_docs(
+            fixture_root,
+            owners=(owner,),
+            required_owners=(owner,),
+        )
+        if not any("outside its registered warrant" in problem for problem in extra_action):
+            problems.append(f"[watch owners] extra positive action at {relative}:{anchor} was accepted")
     return problems
 
 def run(ci, tmp: Path) -> int:
@@ -1757,8 +1790,9 @@ def run(ci, tmp: Path) -> int:
         print(f"FAIL     {problem}")
     if not watch_owner_problems:
         print(f"ok       {'watch-action owner mutations':32} -> every registered owner rejects removal, "
-              f"unconditional actions, status-based actions, and bucket formulas; Markdown owners reject "
-              f"parked-status contradictions; Mermaid and policy requirements stay inside their owner spans")
+              f"unconditional actions, status-based actions, bucket formulas, and positive actions outside "
+              f"their registered warrants; Markdown owners reject parked-status contradictions; Mermaid and "
+              f"policy requirements stay inside their owner spans")
 
     print()
     print(f"--- doc-check: {ci.SPEC_DOC.name} + {ci.DRIVER_DOC.name} vs the code that runs ---")

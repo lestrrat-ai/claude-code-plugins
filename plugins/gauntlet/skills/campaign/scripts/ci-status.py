@@ -236,7 +236,7 @@ WATCH_ACTION_STATUS_VERBS = r"(?:launch|relaunch|ensure|warrant)(?:es|s|ed|ing)?
 WATCH_ACTION_START_VERBS = r"(?:start|launch|relaunch|ensure)(?:s|ed|ing)?"
 STATUS_EQUALITY_ARROWS = r"(?:->|→)"
 POSITIVE_WATCH_ACTION = re.compile(
-    r"\b" + WATCH_ACTION_START_VERBS + r"\b[^.!?;]*?\bwatch\b",
+    r"\b" + WATCH_ACTION_START_VERBS + r"\b(?:\s+\w+){0,3}\s+\bwatch\b",
     re.IGNORECASE,
 )
 WATCH_ACTION_CONTRADICTIONS = (
@@ -267,6 +267,11 @@ WATCH_ACTION_CONTRADICTIONS = (
         + r"|"
         + STATUS_SUBJECT_PATTERN
         + r"\s*(?:==|=|is)\s*[^.!?]*?" + STATUS_EQUALITY_ARROWS + r"\s*\b"
+        + WATCH_ACTION_STATUS_WORDS
+        + r"\b|"
+        r"`(?:ci|status)\s*(?:==|=|is)\s*[^`]+`(?![^.!?]*\bLIVELOCKS\b)\s*"
+        + STATUS_EQUALITY_ARROWS
+        + r"\s*[^.!?]*?[\"']?\b"
         + WATCH_ACTION_STATUS_WORDS
         + r"\b|"
         + STATUS_SUBJECT_PATTERN
@@ -2532,6 +2537,25 @@ def watch_action_contradiction_problems(relative: str, line: int, plain: str) ->
     return []
 
 
+def positive_watch_action_problems(
+        relative: str, line: int, plain: str, condition: str, *, require_action: bool = False
+) -> list[str]:
+    """Keep positive watch actions in the punctuation-delimited clause that carries their warrant."""
+    positive_matches = positive_watch_action_matches(plain)
+    problems = []
+    if require_action and not positive_matches:
+        problems.append(f"{relative}:{line} omits the positive watch action")
+    condition_starts = [match.start() for match in re.finditer(re.escape(condition), plain)]
+    for match in positive_matches:
+        if not any(
+                watch_action_clause_start(plain, match.start())
+                == watch_action_clause_start(plain, condition_start)
+                for condition_start in condition_starts
+        ):
+            problems.append(f"{relative}:{line} adds a positive watch action outside its registered warrant")
+    return problems
+
+
 def watch_action_owner_problems(owner: tuple[str, str, str, str], base: Path) -> list[str]:
     """Check one registered watch-action owner with the syntax that owner actually uses."""
     format_name, relative, anchor, condition = owner
@@ -2552,6 +2576,15 @@ def watch_action_owner_problems(owner: tuple[str, str, str, str], base: Path) ->
                     for item in required if owner_text.count(item) != 1]
         line = text.count("\n", 0, text.find(anchor)) + 1
         problems += watch_action_contradiction_problems(relative, line, " ".join(owner_text.split()))
+        owner_line = text.count("\n", 0, owner_start) + 1
+        for owner_offset, raw_line in enumerate(owner_text.splitlines()):
+            plain_line = " ".join(raw_line.split())
+            condition_start = plain_line.find(condition)
+            for match in positive_watch_action_matches(plain_line):
+                if condition_start < 0 or not condition_start <= match.start() < condition_start + len(condition):
+                    problems.append(
+                        f"{relative}:{owner_line + owner_offset} adds a positive watch action outside its registered warrant"
+                    )
         return problems
 
     if format_name == "policy":
@@ -2566,6 +2599,18 @@ def watch_action_owner_problems(owner: tuple[str, str, str, str], base: Path) ->
                     for item in required if owner_text.count(item) != 1]
         line = text.count("\n", 0, text.find(anchor)) + 1
         problems += watch_action_contradiction_problems(relative, line, " ".join(owner_text.split()))
+        owner_line = text.count("\n", 0, owner_start) + 1
+        for offset, raw_line in enumerate(owner_text.splitlines()):
+            stripped = raw_line.lstrip()
+            if stripped.startswith(("#", "|")):
+                continue
+            without_quotes = re.sub(r'"[^"\n]*"', "", raw_line)
+            problems += positive_watch_action_problems(
+                relative,
+                owner_line + offset,
+                " ".join(without_quotes.split()),
+                condition,
+            )
         return problems
 
     selected = owner_block(text, anchor)
@@ -2578,20 +2623,9 @@ def watch_action_owner_problems(owner: tuple[str, str, str, str], base: Path) ->
         problems = watch_action_contradiction_problems(relative, line, plain)
         if condition not in plain:
             problems.append(f"{relative}:{line} does not dispatch CI watches from its registered warrant")
-        if format_name == "formula":
-            positive_matches = positive_watch_action_matches(plain)
-            if not positive_matches:
-                problems.append(f"{relative}:{line} omits the positive watch action")
-            condition_starts = [match.start() for match in re.finditer(re.escape(condition), plain)]
-            for match in positive_matches:
-                if not any(
-                        watch_action_clause_start(plain, match.start())
-                        == watch_action_clause_start(plain, condition_start)
-                        for condition_start in condition_starts
-                ):
-                    problems.append(
-                        f"{relative}:{line} adds a positive watch action outside its registered warrant"
-                    )
+        problems += positive_watch_action_problems(
+            relative, line, plain, condition, require_action=format_name == "formula"
+        )
         return problems
     if format_name != "markdown":
         return [f"{relative}:{line} has unknown watch-action format {format_name!r}"]
@@ -2609,6 +2643,7 @@ def watch_action_owner_problems(owner: tuple[str, str, str, str], base: Path) ->
         problems.append(f"{relative}:{line} omits its registered true-warrant condition")
     if required_parked_rule not in plain:
         problems.append(f"{relative}:{line} omits the parked-status watch rule")
+    problems += positive_watch_action_problems(relative, line, plain, condition)
     return problems
 
 
