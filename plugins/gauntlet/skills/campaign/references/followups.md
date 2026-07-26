@@ -164,9 +164,11 @@ about and one whose partial rejection strands the rest.
      **publish** path (Tier 3), **not** a fix. If a fresh heartbeat **cannot tell which** the ruling was for,
      **SURFACE the entry to the user** rather than assume a fix. The same-run idempotency note below covers
      its interrupted-heartbeat gap.
-   - **`in-pr`** — first read its typed `rejection` phase. `pending` resumes the rejection procedure below;
-     after a verified disposition, use `reject` for CLOSED or `merged` for MERGED; only `-` takes the
-     ordinary path. On that ordinary path, reconcile the recorded repository and PR against the current run. If it has no
+   - **`in-pr`** — first read its typed `rejection` phase and verified terminal `disposition`. A pending
+     rejection resumes the rejection procedure below; `rejection = disposed` uses `reject` only for
+     `disposition = closed` and `merged` only for `disposition = merged`. With no pending rejection, a
+     `disposition = closed` result uses `closed-unmerged`, while `disposition = merged` uses `merged`; only
+     no disposition takes the ordinary path. On that ordinary path, reconcile the recorded repository and PR against the current run. If it has no
      ledger row, or its **non-terminal** row lacks the run label, ADOPT it through step 4. **If its existing row is terminal, NEVER refresh,
      re-adopt, or relabel it.** An unadopted follow-up PR with no terminal row sits **outside the campaign
      gate** — the exact thing "fold that PR into the current campaign" exists to prevent.
@@ -190,14 +192,15 @@ The pending phase is the user's ruling on the follow-up. It is separate from a t
 records what happened to the PR rather than what the user decided.
 
 1. Run `followups.py --file <store> reject-pending --id fuN` while the entry is `in-pr` with
-   `rejection = -`. A pending or completed rejection disposition refuses this command. This preserves the PR
-   identity and writes the user's ruling time.
+   `rejection = -` and no verified terminal `disposition`. A pending or completed rejection disposition, and
+   a terminal callback that arrived before the ruling, refuse this command. This preserves the PR identity
+   and writes the user's ruling time.
 2. Finish the recorded repository and PR's current campaign disposition. A CLOSED PR with no pending rejection
    uses `closed-unmerged`. A pending rejection waits for the verified terminal campaign disposition callback to
    record the matching repository and PR first; do not run `closed-unmerged` or `merged` directly before that callback. A
    verified CLOSED result then uses `reject`; a verified MERGED result uses `merged`, because the PR is the
    durable record.
-3. For a verified CLOSED result, once the entry reports `rejection = disposed`, run
+3. For a verified CLOSED result, once the entry reports `rejection = disposed` and `disposition = closed`, run
    `followups.py --file <store> reject --id fuN`. It keeps the original `reject-pending` timestamp and
    retains the repository and PR identity as history.
 
@@ -280,8 +283,8 @@ time. So:
   the entry. The PR is the record now.
 - The PR is **closed WITHOUT merging** with no pending rejection → `closed-unmerged` returns it to **open
   work** (`reopened`), with its history intact. With a pending rejection, the verified terminal campaign
-  disposition callback records `rejection = disposed` and leaves it `in-pr` until terminal `reject` records
-  the user's decision; direct `closed-unmerged` refuses.
+  disposition callback records `rejection = disposed` and `disposition = closed`, and leaves it `in-pr`
+  until terminal `reject` records the user's decision; direct `closed-unmerged` refuses.
 
 **Move it in the heartbeat that SAW the event** — the same rule as recording one the moment it is noticed, and
 for the same reason: the driver's memory of it dies with the driver's context. The heartbeat that opens the PR
@@ -331,8 +334,8 @@ followups.py --file <store> corroborate --id fuN --finding F   # TIER 1 — free
 followups.py --file <store> refute      --id fuN --finding F   # TIER 1 — free. And it stays in the store
 followups.py --file <store> take-up     --id fuN --act-...     # TIER 2 — only with EVERY condition evidenced
 followups.py --file <store> accept  --id fuN        # THE USER AGREED — the only edge into `accepted`
-followups.py --file <store> reject-pending --id fuN # user rejected an `in-pr` entry with no existing rejection phase
-followups.py --file <store> reject  --id fuN        # user ruled against it; `in-pr` requires a disposed PR result
+followups.py --file <store> reject-pending --id fuN # user rejected an `in-pr` entry with no rejection or terminal disposition
+followups.py --file <store> reject  --id fuN        # user ruled against it; `in-pr` requires disposed + closed
 followups.py --file <store> open-pr --id fuN --pr <N> --repo <owner/name>  # repository and PR address it
 followups.py --file <store> relink-pr --id fuN --repo <owner/name>          # user links a legacy PR record
 followups.py --file <store> merged  --id fuN        # after verified MERGED callback; that PR is the record, so the entry is DELETED
@@ -366,8 +369,8 @@ fixtures cited below (`user-step-unskippable`, `delete-needs-a-record`, …) are
 id, a one-line title, the **evidence** (which PR, which review pass, which `file:line`), **why it was
 deferred** rather than folded in, its lifecycle state, which run found it and when, **which PR is
 addressing it and which repository owns that PR**, and — once ruled on — when the user decided. Its typed
-`rejection` phase separately records whether an `in-pr` rejection is pending or that repository and PR's
-disposition is complete. **A follow-up with no
+`rejection` phase separately records whether an `in-pr` rejection is pending or complete. A typed terminal
+`disposition` records whether the verified repository and PR result was CLOSED or MERGED. **A follow-up with no
 evidence is a RUMOR**:
 nobody can audit an entry that says only *"the merge logic looks wrong"*. **Why it was deferred** is
 required on the same terms — without it the next run cannot see why the finding was not simply folded into

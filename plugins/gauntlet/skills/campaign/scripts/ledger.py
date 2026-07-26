@@ -52,7 +52,7 @@ def _followup_store_for(path: Path) -> "Path | None":
 
 
 def _record_completed_followup_disposition(path: Path, pr: str, repo: str, callback: str) -> "tuple[str, ...]":
-    """Record one exact repository and PR's pending follow-up disposition through a verified terminal callback."""
+    """Record one exact repository and PR's terminal follow-up disposition through a verified callback."""
 
     store = _followup_store_for(path)
     if store is None or not store.exists():
@@ -66,20 +66,20 @@ def _record_completed_followup_disposition(path: Path, pr: str, repo: str, callb
 
 
 def record_completed_rejection_disposition(path: Path, pr: str, repo: str) -> "tuple[str, ...]":
-    """Record one exact repository and PR's pending follow-up disposition after verified CLOSED close-out.
+    """Record one exact repository and PR's CLOSED result after verified close-out.
 
-    The caller owns proof that GitHub reported the matching repository and PR CLOSED. This helper never scans ledger rows,
-    so a local abort decision, generic status write, or repeated terminal write cannot consume a rejection
-    before that proof exists.
+    The caller owns proof that GitHub reported the matching repository and PR CLOSED. This helper never scans
+    ledger rows, so a local abort decision or generic status write cannot create a terminal result without that
+    proof. A repeated verified callback is idempotent.
     """
     return _record_completed_followup_disposition(path, pr, repo, "record_completed_rejection_disposition")
 
 
 def record_completed_merge_disposition(path: Path, pr: str, repo: str) -> "tuple[str, ...]":
-    """Record one exact repository and PR's pending follow-up disposition after verified MERGED result.
+    """Record one exact repository and PR's MERGED result after verified close-out.
 
-    The caller owns proof that GitHub reported the matching repository and PR MERGED. A generic ledger status write cannot
-    consume a rejection before that proof exists.
+    The caller owns proof that GitHub reported the matching repository and PR MERGED. A generic ledger status
+    write cannot create a terminal result before that proof exists. A repeated verified callback is idempotent.
     """
     return _record_completed_followup_disposition(path, pr, repo, "record_completed_merge_disposition")
 

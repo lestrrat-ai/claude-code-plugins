@@ -142,15 +142,19 @@ SEQ_TYPE = "followup-seq"
 
 FIELDS = (
     "id", "title", "evidence", "deferred_why", "finding", *ACT_FLAGS,
-    "state", "found_run", "found", "decided", "rejection", "pr", "pr_repo", "published",
+    "state", "found_run", "found", "decided", "rejection", "disposition", "pr", "pr_repo", "published",
 )
 
 # `decided` records the user's ruling time. It cannot also prove that campaign completed the recorded PR's
-# terminal abort, so that independent fact has its own typed, accessor-owned field. No CLI flag writes it.
+# terminal result, so that independent fact has its own typed, accessor-owned field. No CLI flag writes it.
 NO_REJECTION = PLACEHOLDER
 PENDING_REJECTION = "pending"
 DISPOSED_REJECTION = "disposed"
 REJECTION_VALUES = (NO_REJECTION, PENDING_REJECTION, DISPOSED_REJECTION)
+NO_DISPOSITION = PLACEHOLDER
+CLOSED_DISPOSITION = "closed"
+MERGED_DISPOSITION = "merged"
+DISPOSITION_VALUES = (NO_DISPOSITION, CLOSED_DISPOSITION, MERGED_DISPOSITION)
 RELINK_CMD = "relink-pr"
 
 # The fields that name a record OUTSIDE this store — the PR that addresses it, or the issue it was
@@ -235,8 +239,9 @@ def project(rec: "dict", where: str = "") -> "dict[str, str]":
 # in between is a state, and the two that matter most are the ones that keep a started piece of work from
 # being lost: `in-pr` (a PR is open on it — the entry STAYS, and names its repository and number) and `reopened` (an ordinary
 # PR was closed WITHOUT merging — the work is undone, so the entry is OPEN WORK again, with its history
-# intact). A pending user rejection preserves `in-pr` until its PR disposition is recorded; terminal `reject`
-# stores the ruling for CLOSED, while `merged` deletes the entry after a verified MERGED result.
+# intact). A pending user rejection preserves `in-pr` until its PR disposition is recorded; `disposition`
+# records whether that verified result was CLOSED or MERGED. Terminal `reject` stores the ruling for CLOSED,
+# while `merged` deletes the entry after a verified MERGED result.
 #
 # `<subcommand>: (states it may be applied FROM, the state it moves TO — or DELETED)`.
 DELETED = "deleted"  # NOT a state: the entry is REMOVED. It exists only in the CLI's output for that step,
@@ -360,8 +365,8 @@ FLAG_HELP = {
     "pr": "the PR addressing it (#N or N; GitHub URLs are refused because repository identity cannot be "
           "validated). The entry STAYS while that PR is open: `merged` then deletes it (the PR is the "
           "record), ordinary `closed-unmerged` returns it to open work (nothing recorded it), and a pending "
-          "rejection is disposed only by the verified terminal campaign callback before terminal `reject` "
-          "or `merged`",
+          "rejection is disposed only by the verified terminal campaign callback, which records CLOSED "
+          "or MERGED before the matching terminal command",
     "pr_repo": "the PR's owner/name repository; terminal disposition matches this identity together with its "
                "number",
     **{w: f"ACT condition '{c}' — {why}" for c, w, why in ACT_CONDITIONS if w in ACT_FLAGS},
@@ -501,11 +506,22 @@ def entry_error(entry: dict) -> "str | None":
     if entry["rejection"] not in REJECTION_VALUES:
         return (f"unknown rejection phase {entry['rejection']!r}; valid: "
                 f"{', '.join(REJECTION_VALUES)}")
+    if entry["disposition"] not in DISPOSITION_VALUES:
+        return (f"unknown terminal disposition {entry['disposition']!r}; valid: "
+                f"{', '.join(DISPOSITION_VALUES)}")
     if entry["state"] not in ("in-pr", "rejected") and entry["rejection"] != NO_REJECTION:
         return (f"rejection phase {entry['rejection']!r} is only valid while an entry is `in-pr` or after "
                 "terminal `reject`")
+    if entry["state"] not in ("in-pr", "rejected") and entry["disposition"] != NO_DISPOSITION:
+        return (f"terminal disposition {entry['disposition']!r} is only valid while an entry is `in-pr` or "
+                "after terminal `reject`")
     if entry["state"] == "rejected" and entry["rejection"] == PENDING_REJECTION:
         return "a rejected entry cannot retain an unresolved rejection disposition"
+    if entry["rejection"] == PENDING_REJECTION and entry["disposition"] != NO_DISPOSITION:
+        return "a pending rejection cannot already carry a terminal disposition"
+    if entry["state"] == "rejected" and entry["disposition"] != NO_DISPOSITION \
+            and entry["rejection"] != DISPOSED_REJECTION:
+        return "a rejected entry with a terminal disposition must retain a disposed rejection"
     if not is_blank(entry["pr_repo"]) and canonical_repo(entry["pr_repo"]) is None:
         return f"{entry['id']} carries invalid PR repository {entry['pr_repo']!r} (expected owner/name)"
     empty = [f for f in REQUIRED if is_blank(entry[f])]
@@ -666,21 +682,35 @@ def find(entries: "list[dict]", fid: str) -> "dict | None":
 def rejection_phase(entry: dict) -> str:
     """Return an active `in-pr` entry's typed rejection phase.
 
-    `decided` is user data. Only the accessor-owned `rejection` field may prove a pending ruling or completed
-    campaign disposition. A rejected entry retains `disposed` as history, but has no active procedure left.
+    `decided` is user data. The accessor-owned `rejection` field proves the user's pending or completed phase;
+    `terminal_disposition` proves which verified PR result completed it. A rejected entry retains `disposed` and
+    its terminal `disposition` as history, but has no active procedure left.
     """
     return entry["rejection"] if entry["state"] == "in-pr" else NO_REJECTION
 
 
-def _record_completed_rejection_disposition(path: Path, pr: str, repo: str) -> "tuple[str, ...]":
-    """Record one exact repository and PR's verified terminal result on matching pending follow-ups.
+def terminal_disposition(entry: dict) -> str:
+    """Return the verified terminal result for an active or terminally rejected follow-up.
 
-    A missing store is normal, and ordinary `in-pr` entries remain untouched. This is the only path that may
-    mark a pending rejection disposed; the CLI transitions refuse to do that themselves. The callback must
-    identify both the canonical numeric PR reference and its owner/name repository. Legacy rows without
-    `pr_repo` therefore remain pending until the user explicitly relinks them. The store lock and atomic dump
-    remain its only write path.
+    The callback records this independently of the user's rejection phase. That preserves a terminal result
+    observed before `reject-pending` and prevents a later ruling from being mistaken for the result of the
+    already-finished PR.
     """
+    return entry["disposition"] if entry["state"] in ("in-pr", "rejected") else NO_DISPOSITION
+
+
+def _record_completed_followup_disposition(path: Path, pr: str, repo: str,
+                                           disposition: str) -> "tuple[str, ...]":
+    """Record one exact repository and PR's verified terminal result through the shared lifecycle chokepoint.
+
+    A missing store is normal. The callback persists the result even when no rejection is pending, so a later
+    `reject-pending` cannot attach a new ruling to an old terminal event. When a rejection is pending, the same
+    write marks it disposed. The callback must identify both the canonical numeric PR reference and its
+    owner/name repository. Legacy rows without `pr_repo` therefore remain pending until the user explicitly
+    relinks them. The store lock and atomic dump remain its only write path.
+    """
+    if disposition not in (CLOSED_DISPOSITION, MERGED_DISPOSITION):
+        raise ValueError(f"unknown terminal disposition {disposition!r}")
     if not path.exists():
         return ()
     canonical = pr_number(pr)
@@ -688,28 +718,36 @@ def _record_completed_rejection_disposition(path: Path, pr: str, repo: str) -> "
     if canonical is None or identity is None:
         return ()
     recorded: list[str] = []
+    changed = False
     with locked(path):
         entries, high = read_store(path)
         for entry in entries:
-            if (entry["pr"] != canonical or is_blank(entry["pr_repo"])
-                    or entry["pr_repo"].casefold() != identity.casefold()
-                    or rejection_phase(entry) != PENDING_REJECTION):
+            if (entry["state"] != "in-pr" or entry["pr"] != canonical
+                    or is_blank(entry["pr_repo"])
+                    or entry["pr_repo"].casefold() != identity.casefold()):
                 continue
-            entry["rejection"] = DISPOSED_REJECTION
-            recorded.append(entry["id"])
-        if recorded:
+            phase = rejection_phase(entry)
+            current = terminal_disposition(entry)
+            if current != NO_DISPOSITION:
+                continue
+            entry["disposition"] = disposition
+            changed = True
+            if phase == PENDING_REJECTION:
+                entry["rejection"] = DISPOSED_REJECTION
+                recorded.append(entry["id"])
+        if changed:
             dump(path, entries, high)
     return tuple(recorded)
 
 
 def record_completed_rejection_disposition(path: Path, pr: str, repo: str) -> "tuple[str, ...]":
-    """Record one exact repository and PR's verified CLOSED close-out on matching pending follow-ups."""
-    return _record_completed_rejection_disposition(path, pr, repo)
+    """Record one exact repository and PR's verified CLOSED result on matching follow-ups."""
+    return _record_completed_followup_disposition(path, pr, repo, CLOSED_DISPOSITION)
 
 
 def record_completed_merge_disposition(path: Path, pr: str, repo: str) -> "tuple[str, ...]":
-    """Record one exact repository and PR's verified MERGED result on matching pending follow-ups."""
-    return _record_completed_rejection_disposition(path, pr, repo)
+    """Record one exact repository and PR's verified MERGED result on matching follow-ups."""
+    return _record_completed_followup_disposition(path, pr, repo, MERGED_DISPOSITION)
 
 
 PR_REF_RE = re.compile(r"(?:#)?(?P<short>[1-9][0-9]*)")
@@ -914,6 +952,7 @@ def cmd_transition(path: Path, args) -> int:
                 f"A follow-up reaches '{to}' only along the transition graph; nothing else moves `state`."
             )
         phase = rejection_phase(entry)
+        disposition = terminal_disposition(entry)
         if cmd == "reject-pending" and phase == PENDING_REJECTION:
             fail(
                 f"{args.id} already has a pending rejection — `reject-pending` cannot replace an existing "
@@ -923,6 +962,11 @@ def cmd_transition(path: Path, args) -> int:
             fail(
                 f"{args.id} already has a completed rejection disposition — `reject-pending` cannot replace "
                 "the terminal campaign result."
+            )
+        if cmd == "reject-pending" and disposition != NO_DISPOSITION:
+            fail(
+                f"{args.id} already has a verified {disposition.upper()} terminal disposition — `reject-pending` "
+                "cannot attach a new ruling after the PR's terminal result."
             )
         if cmd == "reject" and entry["state"] == "in-pr":
             if phase == NO_REJECTION:
@@ -935,10 +979,20 @@ def cmd_transition(path: Path, args) -> int:
                     f"{args.id} has a pending rejection whose recorded PR disposition is unresolved — finish "
                     "campaign disposition before terminal `reject`."
                 )
+            if phase == DISPOSED_REJECTION and disposition == MERGED_DISPOSITION:
+                fail(
+                    f"{args.id} has a verified MERGED disposition — use terminal `merged`, not `reject`."
+                )
+            if phase == DISPOSED_REJECTION and disposition != CLOSED_DISPOSITION:
+                fail(
+                    f"{args.id} has an untyped terminal disposition — refuse `reject` until a verified CLOSED "
+                    "result is recorded."
+                )
         if cmd == "closed-unmerged" and phase == DISPOSED_REJECTION:
+            terminal_cmd = "reject" if disposition == CLOSED_DISPOSITION else "merged"
             fail(
-                f"{args.id} already has a completed rejection disposition — run terminal `reject`; do not "
-                "reopen the entry."
+                f"{args.id} already has a completed rejection disposition — run terminal `{terminal_cmd}`; "
+                "do not reopen the entry."
             )
         if cmd == "merged" and phase == PENDING_REJECTION:
             fail(
@@ -946,11 +1000,25 @@ def cmd_transition(path: Path, args) -> int:
                 "delete it until the verified terminal campaign disposition callback records the matching "
                 "repository and MERGED PR."
             )
+        if cmd == "merged" and disposition == CLOSED_DISPOSITION:
+            fail(
+                f"{args.id} has a verified CLOSED disposition — use `closed-unmerged` or terminal `reject`, "
+                "not `merged`."
+            )
+        if cmd == "merged" and phase == DISPOSED_REJECTION and disposition != MERGED_DISPOSITION:
+            fail(
+                f"{args.id} has an untyped terminal disposition — refuse `merged` until a verified MERGED "
+                "result is recorded."
+            )
         if cmd == "closed-unmerged" and phase == PENDING_REJECTION:
             fail(
                 f"{args.id} has a pending rejection whose repository and PR disposition is unresolved — `closed-unmerged` "
                 "cannot mark it disposed; the verified terminal campaign disposition callback must record "
                 "the repository and PR first."
+            )
+        if cmd == "closed-unmerged" and disposition == MERGED_DISPOSITION:
+            fail(
+                f"{args.id} has a verified MERGED disposition — use `merged`, not `closed-unmerged`."
             )
         # WHEN this step was taken. The user's ruling is DURABLE DATA, exactly like the ledger's
         # `api_approval`: a later run — or a fresh agent that never saw the conversation — reads it and does
@@ -979,6 +1047,8 @@ def cmd_transition(path: Path, args) -> int:
             # carrying it must never reach `dump()` — `load()` would refuse the whole store.
             entries = [e for e in entries if e["id"] != entry["id"]]
         entry["state"] = to
+        if cmd == "closed-unmerged":
+            entry["disposition"] = NO_DISPOSITION
         dump(path, entries, high)  # the mark outlives the entry, so its id is never handed out again
     print(json.dumps(entry))
     return 0

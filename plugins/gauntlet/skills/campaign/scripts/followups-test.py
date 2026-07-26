@@ -48,10 +48,11 @@ check = ledger_test.check
 import followups  # noqa: E402
 from followups import (  # noqa: E402
     ACT_CMD, ACT_CONDITIONS, ACT_FLAGS, ACT_WITNESSES, BLANK_WHY, DEFAULTS, DELETED, DELETING,
-    DISPOSED_REJECTION, DRIVER_STEPS, DURABLE_RECORD, EDITABLE, ENTRY_TYPE, EVIDENCE_FIELDS, FIELDS, FLAG,
+    CLOSED_DISPOSITION, DISPOSED_REJECTION, DRIVER_STEPS, DURABLE_RECORD, EDITABLE, ENTRY_TYPE,
+    EVIDENCE_FIELDS, FIELDS, FLAG,
     INTAKE,
     INVESTIGATION, OPTIONAL, PLACEHOLDER, REQUIRED, SEQ_TYPE, STATES, TABLE_ALL_HIDDEN_MARKER,
-    PENDING_REJECTION, REJECTION_VALUES, RELINK_CMD, TABLE_DEFAULT_FIELDS, TABLE_EMPTY_MARKER,
+    MERGED_DISPOSITION, PENDING_REJECTION, REJECTION_VALUES, RELINK_CMD, TABLE_DEFAULT_FIELDS, TABLE_EMPTY_MARKER,
     TABLE_HIDDEN_STATES, TABLE_MARKERS, TERMINAL, TRANSITIONS, USER_RULINGS, WRITE_CMDS, WRITES,
     build_parser, deletable, find, is_blank, load,
 )
@@ -71,7 +72,7 @@ def entry_line(**over: object) -> str:
     once. A fixture that wants a DEFECTIVE entry blanks a field on purpose — that is what `**over` is for.
     """
     rec = {"type": ENTRY_TYPE, **DEFAULTS,
-           **{f: f"<{f}>" for f in FIELDS if f not in ("id", "state", "rejection", "pr_repo")}, **over}
+           **{f: f"<{f}>" for f in FIELDS if f not in ("id", "state", "rejection", "disposition", "pr_repo")}, **over}
     return json.dumps(rec)
 
 
@@ -326,6 +327,7 @@ def t_transition_graph(tmp: Path) -> None:
             entry = {"id": "fu1", "state": state}
             if cmd == "reject" and state == "in-pr":
                 entry["rejection"] = DISPOSED_REJECTION
+                entry["disposition"] = CLOSED_DISPOSITION
             write_lines(path, entry_line(**entry))
             code, _, err = run(["--file", str(path), cmd, "--id", "fu1", *transition_args(cmd)])
             if state in frm:
@@ -395,6 +397,9 @@ def t_ruling_is_recorded(tmp: Path) -> None:
     check(code == 0, f"reject-pending exited {code}: {err!r}")
     recorded = followups.record_completed_rejection_disposition(path, "77", TEST_REPO)
     check(recorded == (a,), f"the terminal callback did not record repository and PR 77's disposition: {recorded!r}")
+    closed = json.loads(run(["--file", str(path), "get", "--id", a])[1])
+    check(closed["disposition"] == CLOSED_DISPOSITION,
+          f"the CLOSED callback did not preserve its terminal result: {closed!r}")
     code, out, err = run(["--file", str(path), "reject", "--id", a, "--at", "2026-07-14T12:00:00Z"])
     check(code == 0, f"terminal reject exited {code}: {err!r}")
     check(json.loads(out)["decided"] == "2026-07-14T11:00:00Z",
@@ -1449,7 +1454,8 @@ def t_in_pr_rejection_needs_one_typed_completed_disposition(tmp: Path) -> None:
     check(recorded == (first,), f"exact repository and PR disposition recorded {recorded!r}, not only {first!r}")
     first_entry = json.loads(run(["--file", str(store), "get", "--id", first])[1])
     second_entry = json.loads(run(["--file", str(store), "get", "--id", second])[1])
-    check(first_entry["rejection"] == DISPOSED_REJECTION,
+    check(first_entry["rejection"] == DISPOSED_REJECTION
+          and first_entry["disposition"] == CLOSED_DISPOSITION,
           f"matching pending rejection was not disposed: {first_entry!r}")
     check(second_entry["rejection"] == PENDING_REJECTION,
           f"another PR's pending rejection was disposed: {second_entry!r}")
@@ -1485,7 +1491,9 @@ def t_in_pr_rejection_needs_one_typed_completed_disposition(tmp: Path) -> None:
     check(code == 0, f"explicit legacy PR relink failed: {err!r}")
     recorded = followups.record_completed_rejection_disposition(legacy_numeric, "42", TEST_REPO)
     relinked = followups.find(followups.load(legacy_numeric), "fu1")
-    check(recorded == ("fu1",) and relinked is not None and relinked["rejection"] == DISPOSED_REJECTION,
+    check(recorded == ("fu1",) and relinked is not None
+          and relinked["rejection"] == DISPOSED_REJECTION
+          and relinked["disposition"] == CLOSED_DISPOSITION,
           f"an explicitly relinked legacy PR was not disposed: {recorded!r}, {relinked!r}")
 
     # The repository is part of the callback key. A same-number PR in another repository stays pending.
@@ -1499,7 +1507,10 @@ def t_in_pr_rejection_needs_one_typed_completed_disposition(tmp: Path) -> None:
     local = followups.find(followups.load(collision), "fu1")
     foreign = followups.find(followups.load(collision), "fu2")
     check(recorded == ("fu1",) and local is not None and foreign is not None
-          and local["rejection"] == DISPOSED_REJECTION and foreign["rejection"] == PENDING_REJECTION,
+          and local["rejection"] == DISPOSED_REJECTION
+          and local["disposition"] == CLOSED_DISPOSITION
+          and foreign["rejection"] == PENDING_REJECTION
+          and foreign["disposition"] == PLACEHOLDER,
           f"repository-qualified callback matched the wrong PR: {recorded!r}, {local!r}, {foreign!r}")
 
     code, out, err = run(["--file", str(store), "reject", "--id", first,
@@ -1522,6 +1533,9 @@ def t_in_pr_rejection_needs_one_typed_completed_disposition(tmp: Path) -> None:
     recorded = followups.record_completed_merge_disposition(merged_store, "44", TEST_REPO)
     check(recorded == (merged_fid,),
           f"verified MERGED callback did not record the matching repository and PR: {recorded!r}")
+    merged_entry = json.loads(run(["--file", str(merged_store), "get", "--id", merged_fid])[1])
+    check(merged_entry["disposition"] == MERGED_DISPOSITION,
+          f"the MERGED callback did not preserve its terminal result: {merged_entry!r}")
     code, out, err = run(["--file", str(merged_store), "merged", "--id", merged_fid])
     check(code == 0 and json.loads(out)["pr"] == "44" and load(merged_store) == [],
           f"verified MERGED disposition did not permit close-out: {code} {err!r}")
@@ -1532,6 +1546,95 @@ def t_in_pr_rejection_needs_one_typed_completed_disposition(tmp: Path) -> None:
         write_lines(path, entry_line(id="fu1", state=state, rejection=phase))
         code, _, err = run(["--file", str(path), "list"])
         check(code == 0, f"valid rejection phase {phase!r} was refused: {err!r}")
+
+
+def _pending_in_pr_rejection(tmp: Path, name: str) -> tuple[Path, str]:
+    path = tmp / f"{name}.jsonl"
+    (fid,) = seed(path)
+    for argv in (
+        ["accept", "--id", fid, "--at", "2026-07-26T00:00:00Z"],
+        ["open-pr", "--id", fid, "--pr", "#42", "--repo", TEST_REPO],
+        ["reject-pending", "--id", fid, "--at", "2026-07-26T01:00:00Z"],
+    ):
+        code, _, err = run(["--file", str(path), *argv])
+        check(code == 0, f"{name} setup failed for {argv!r}: {err!r}")
+    return path, fid
+
+
+def t_closed_callback_before_rejection_ruling_is_not_reusable(tmp: Path) -> None:
+    """R1: a verified CLOSED result before `reject-pending` blocks that later ruling."""
+    path = tmp / "r1.jsonl"
+    (fid,) = seed(path)
+    for argv in (
+        ["accept", "--id", fid, "--at", "2026-07-26T00:00:00Z"],
+        ["open-pr", "--id", fid, "--pr", "#42", "--repo", TEST_REPO],
+    ):
+        code, _, err = run(["--file", str(path), *argv])
+        check(code == 0, f"R1 setup failed for {argv!r}: {err!r}")
+    check(followups.record_completed_rejection_disposition(path, "42", TEST_REPO) == (),
+          "R1's callback before a user ruling must not report a consumed rejection")
+    recorded = json.loads(run(["--file", str(path), "get", "--id", fid])[1])
+    check(recorded["rejection"] == PLACEHOLDER and recorded["disposition"] == CLOSED_DISPOSITION,
+          f"R1 did not preserve the verified CLOSED result: {recorded!r}")
+    code, _, err = run(["--file", str(path), "reject-pending", "--id", fid,
+                        "--at", "2026-07-26T01:00:00Z"])
+    check(code == 1 and "terminal disposition" in err,
+          f"R1 accepted a rejection after a prior CLOSED callback: {code} {err!r}")
+    unchanged = json.loads(run(["--file", str(path), "get", "--id", fid])[1])
+    check(unchanged == recorded, f"R1 refusal changed the stored lifecycle: {unchanged!r}")
+
+
+def t_merged_callback_before_rejection_ruling_is_not_reusable(tmp: Path) -> None:
+    """R2: a verified MERGED result before `reject-pending` blocks that later ruling."""
+    path = tmp / "r2.jsonl"
+    (fid,) = seed(path)
+    for argv in (
+        ["accept", "--id", fid, "--at", "2026-07-26T00:00:00Z"],
+        ["open-pr", "--id", fid, "--pr", "#42", "--repo", TEST_REPO],
+    ):
+        code, _, err = run(["--file", str(path), *argv])
+        check(code == 0, f"R2 setup failed for {argv!r}: {err!r}")
+    check(followups.record_completed_merge_disposition(path, "42", TEST_REPO) == (),
+          "R2's callback before a user ruling must not report a consumed rejection")
+    recorded = json.loads(run(["--file", str(path), "get", "--id", fid])[1])
+    check(recorded["rejection"] == PLACEHOLDER and recorded["disposition"] == MERGED_DISPOSITION,
+          f"R2 did not preserve the verified MERGED result: {recorded!r}")
+    code, _, err = run(["--file", str(path), "reject-pending", "--id", fid,
+                        "--at", "2026-07-26T01:00:00Z"])
+    check(code == 1 and "terminal disposition" in err,
+          f"R2 accepted a rejection after a prior MERGED callback: {code} {err!r}")
+    unchanged = json.loads(run(["--file", str(path), "get", "--id", fid])[1])
+    check(unchanged == recorded, f"R2 refusal changed the stored lifecycle: {unchanged!r}")
+
+
+def t_closed_disposition_rejects_merged_terminal_command(tmp: Path) -> None:
+    """R3: a verified CLOSED result cannot be consumed by the `merged` command."""
+    path, fid = _pending_in_pr_rejection(tmp, "r3")
+    check(followups.record_completed_rejection_disposition(path, "42", TEST_REPO) == (fid,),
+          "R3 did not record the matching CLOSED disposition")
+    recorded = json.loads(run(["--file", str(path), "get", "--id", fid])[1])
+    check(recorded["rejection"] == DISPOSED_REJECTION and recorded["disposition"] == CLOSED_DISPOSITION,
+          f"R3 stored the wrong terminal disposition: {recorded!r}")
+    code, _, err = run(["--file", str(path), "merged", "--id", fid])
+    check(code == 1 and "CLOSED" in err,
+          f"R3 accepted `merged` after a CLOSED result: {code} {err!r}")
+    unchanged = json.loads(run(["--file", str(path), "get", "--id", fid])[1])
+    check(unchanged == recorded, f"R3 refusal changed the stored lifecycle: {unchanged!r}")
+
+
+def t_merged_disposition_rejects_reject_terminal_command(tmp: Path) -> None:
+    """R4: a verified MERGED result cannot be consumed by the terminal `reject` command."""
+    path, fid = _pending_in_pr_rejection(tmp, "r4")
+    check(followups.record_completed_merge_disposition(path, "42", TEST_REPO) == (fid,),
+          "R4 did not record the matching MERGED disposition")
+    recorded = json.loads(run(["--file", str(path), "get", "--id", fid])[1])
+    check(recorded["rejection"] == DISPOSED_REJECTION and recorded["disposition"] == MERGED_DISPOSITION,
+          f"R4 stored the wrong terminal disposition: {recorded!r}")
+    code, _, err = run(["--file", str(path), "reject", "--id", fid])
+    check(code == 1 and "MERGED" in err,
+          f"R4 accepted `reject` after a MERGED result: {code} {err!r}")
+    unchanged = json.loads(run(["--file", str(path), "get", "--id", fid])[1])
+    check(unchanged == recorded, f"R4 refusal changed the stored lifecycle: {unchanged!r}")
 
 
 def t_pr_references_require_numeric_refs(tmp: Path) -> None:
@@ -1605,6 +1708,10 @@ CASES = [
     ("self-accept-distinct", "a DRIVER-accepted follow-up is never mistaken for a USER-accepted one", t_self_accepted_is_never_mistaken_for_accepted),
     ("doc-and-code-agree", "the ACT conditions the driver READS are the ones the code ENFORCES", t_the_doc_and_the_code_agree),
     ("in-pr-reject-orders-pr", "an `in-pr` rejection is durable before PR disposition and terminal only after it", t_in_pr_rejection_needs_one_typed_completed_disposition),
+    ("r1-closed-before-ruling", "a prior CLOSED callback cannot be reused by a later rejection ruling", t_closed_callback_before_rejection_ruling_is_not_reusable),
+    ("r2-merged-before-ruling", "a prior MERGED callback cannot be reused by a later rejection ruling", t_merged_callback_before_rejection_ruling_is_not_reusable),
+    ("r3-closed-not-merged", "a CLOSED disposition refuses the MERGED terminal command", t_closed_disposition_rejects_merged_terminal_command),
+    ("r4-merged-not-reject", "a MERGED disposition refuses the terminal reject command", t_merged_disposition_rejects_reject_terminal_command),
     ("pr-reference-parser", "open-pr canonicalises numeric PR references, refuses GitHub URLs, and preserves other opaque text", t_pr_references_require_numeric_refs),
     ("investigation-evidence", "an investigation shows its work; the finding APPENDS and never clobbers", t_investigation_shows_its_work),
     ("refutation-stays", "a refuted follow-up stays in the store, stays visible, and stays overturnable", t_refutation_stays_in_the_store),

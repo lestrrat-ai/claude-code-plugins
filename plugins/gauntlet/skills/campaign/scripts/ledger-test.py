@@ -2406,7 +2406,8 @@ def t_aborted_transition_does_not_dispose_pending_followup(L: ModuleType, tmp: P
     code, _, err = cli(L, ["--file", str(ledger_path), "set", "--pr", "42", "--status", "aborted"])
     check(code == 0, f"local status transition failed: {err!r}")
     first = followups.find(followups.load(store), "fu1")
-    check(first is not None and first["rejection"] == followups.PENDING_REJECTION,
+    check(first is not None and first["rejection"] == followups.PENDING_REJECTION
+          and first["disposition"] == followups.NO_DISPOSITION,
           f"a local abort disposed a pending rejection without a CLOSED PR: {first!r}")
     code, _, err = capture_cli(followups.main, ["--file", str(store), "reject", "--id", "fu1"])
     check(code == 1 and "disposition is unresolved" in err,
@@ -2418,7 +2419,8 @@ def t_aborted_transition_does_not_dispose_pending_followup(L: ModuleType, tmp: P
     code, _, err = cli(L, ["--file", str(ledger_path), "set", "--pr", "42", "--ci", "green"])
     check(code == 0, f"unrelated ledger write failed: {err!r}")
     second = followups.find(followups.load(store), "fu2")
-    check(second is not None and second["rejection"] == followups.PENDING_REJECTION,
+    check(second is not None and second["rejection"] == followups.PENDING_REJECTION
+          and second["disposition"] == followups.NO_DISPOSITION,
           f"a stale aborted row or unrelated save disposed a later pending rejection: {second!r}")
 
     # `merged` is also terminal. Changing it to `aborted` through the generic writer must not invent an
@@ -2430,7 +2432,8 @@ def t_aborted_transition_does_not_dispose_pending_followup(L: ModuleType, tmp: P
     code, _, err = cli(L, ["--file", str(merged_ledger_path), "set", "--pr", "42", "--status", "aborted"])
     check(code == 0, f"merged-to-aborted terminal write failed: {err!r}")
     third = followups.find(followups.load(store), "fu3")
-    check(third is not None and third["rejection"] == followups.PENDING_REJECTION,
+    check(third is not None and third["rejection"] == followups.PENDING_REJECTION
+          and third["disposition"] == followups.NO_DISPOSITION,
           f"a merged row invented an abort event and disposed a later pending rejection: {third!r}")
     code, _, err = capture_cli(followups.main, ["--file", str(store), "reject", "--id", "fu3"])
     check(code == 1 and "disposition is unresolved" in err,

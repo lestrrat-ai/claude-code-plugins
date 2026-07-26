@@ -327,7 +327,7 @@ def t_abort_decision_leaves_pending_followup_until_pr_closes(tmp: Path) -> None:
     code, out, err = capture_cli(F.main, ["--file", str(store), "get", "--id", "fu1"])
     check(code == 0, f"get pending follow-up failed: {err!r}")
     entry = json.loads(out)
-    check(entry["rejection"] == F.PENDING_REJECTION,
+    check(entry["rejection"] == F.PENDING_REJECTION and entry["disposition"] == F.NO_DISPOSITION,
           f"an OPEN PR's abort disposed its pending rejection: {entry!r}")
     code, _, err = capture_cli(F.main, ["--file", str(store), "reject", "--id", "fu1",
                                         "--at", "2026-07-24T12:00:00Z"])

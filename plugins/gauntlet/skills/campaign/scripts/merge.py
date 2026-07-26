@@ -582,7 +582,7 @@ def _mark_terminal(ledger: Path, pr: str, status: str) -> None:
 
 
 def _record_closeout_followup(ledger: Path, pr: str, repo: str) -> None:
-    """Record a pending rejection only after the live repository and PR view proved CLOSED."""
+    """Record the verified CLOSED result before close-out can consume a pending rejection."""
     try:
         L.record_completed_rejection_disposition(ledger, pr, repo)
     except OSError as exc:
@@ -590,7 +590,7 @@ def _record_closeout_followup(ledger: Path, pr: str, repo: str) -> None:
 
 
 def _record_merge_followup(ledger: Path, pr: str, repo: str) -> None:
-    """Record a pending rejection only after the live repository and PR view proved MERGED."""
+    """Record the verified MERGED result before terminal merge can consume a pending rejection."""
     try:
         L.record_completed_merge_disposition(ledger, pr, repo)
     except OSError as exc:

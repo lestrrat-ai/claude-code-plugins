@@ -902,7 +902,8 @@ def t_closed_out_ledger_disposes_matching_pending_followup():
         code, result, err = invoke(f, ledger, root)
         check(code == 0 and result is not None and result["status"] == "closed-unmerged", err)
         entry = json.loads(followup(["--file", str(store), "get", "--id", "fu1"])[1])
-        check(entry["rejection"] == F.DISPOSED_REJECTION,
+        check(entry["rejection"] == F.DISPOSED_REJECTION
+              and entry["disposition"] == F.CLOSED_DISPOSITION,
               f"close-out did not record the completed follow-up disposition: {entry!r}")
         code, out, err = followup(["--file", str(store), "reject", "--id", "fu1",
                                    "--at", "2026-07-24T12:00:00Z"])
@@ -933,7 +934,8 @@ def t_merged_out_ledger_disposes_matching_pending_followup():
         code, result, err = invoke(f, ledger, root)
         check(code == 0 and result is not None and result["status"] == "merged", err)
         entry = json.loads(followup(["--file", str(store), "get", "--id", "fu1"])[1])
-        check(entry["rejection"] == F.DISPOSED_REJECTION,
+        check(entry["rejection"] == F.DISPOSED_REJECTION
+              and entry["disposition"] == F.MERGED_DISPOSITION,
               f"verified MERGED close-out did not record the pending disposition: {entry!r}")
         code, out, err = followup(["--file", str(store), "merged", "--id", "fu1"])
         check(code == 0 and json.loads(out)["pr"] == "9" and F.load(store) == [],
@@ -961,7 +963,8 @@ def t_aborted_repeat_disposes_pending_followup_after_closed_verification():
         code, result, err = invoke(f, ledger, root)
         check(code == 0 and result is not None and result["status"] == "already-complete", err)
         entry = json.loads(followup(["--file", str(store), "get", "--id", "fu1"])[1])
-        check(entry["rejection"] == F.DISPOSED_REJECTION,
+        check(entry["rejection"] == F.DISPOSED_REJECTION
+              and entry["disposition"] == F.CLOSED_DISPOSITION,
               f"verified CLOSED repeat did not dispose the pending rejection: {entry!r}")
         code, out, err = followup(["--file", str(store), "reject", "--id", "fu1",
                                    "--at", "2026-07-24T12:00:00Z"])
