@@ -1028,7 +1028,7 @@ def required_set_matrix_cases(ci, tmp: Path) -> list[str]:
 
 
 def command_boundary_cases(ci, tmp: Path) -> list[str]:
-    """Ignore filenames that merely contain the documented executable name."""
+    """Pin one shared Markdown/shell command-token matrix across all three validators."""
     problems: list[str] = []
     forms = {
         "derive": (ci.check_derive_copies, "derive --pr 1 --ledger <rundir>/state.jsonl"),
@@ -1037,20 +1037,137 @@ def command_boundary_cases(ci, tmp: Path) -> list[str]:
         "required-set": (ci.check_required_set_copies,
                           "required-set --ledger <rundir>/state.jsonl"),
     }
+
+    def source_for(command: str, kind: str = "inline") -> str:
+        if kind == "fenced":
+            return f"```sh\n{command}\n```\n"
+        if kind == "indented":
+            return f"    {command}\n"
+        return f"`{command}`\n"
+
     for subcommand, (check, valid) in forms.items():
-        root = tmp / f"command-boundary-{subcommand}"
-        root.mkdir()
-        (root / "commands.md").write_text(
-            f"`not-ci-status.py {valid}` is a filename, not an invocation.\n\n"
-            f"`ci-status.py {valid}`\n",
-            encoding="utf-8",
+        case_root = tmp / f"command-boundary-{subcommand}"
+        case_root.mkdir()
+
+        def run_case(name: str, source: str, expected_copies: int, expected_problems: int) -> None:
+            root = case_root / name
+            root.mkdir()
+            if expected_copies == 0:
+                source += f"\n{source_for(f'ci-status.py {valid}')}"
+                expected_copies = 1
+            (root / "commands.md").write_bytes(source.encode("utf-8"))
+            found, copies = check(root)
+            if len(copies) != expected_copies or len(found) != expected_problems:
+                problems.append(
+                    f"[command boundary {subcommand}:{name}] expected "
+                    f"copies={expected_copies}, problems={expected_problems}; "
+                    f"got copies={copies!r}, problems={found!r}"
+                )
+
+        split_flag = {
+            "derive": ("--pr", "--\\\npr"),
+            "liveness": ("--machine-action", "--machine-\\\naction"),
+            "required-set": ("state.jsonl", "state.\\\njsonl"),
+        }[subcommand]
+        continued_flag = valid.replace(split_flag[0], split_flag[1], 1)
+        valid_commands = [
+            ("bare", f"ci-status.py {valid}"),
+            ("path", f"./bin/ci-status.py {valid}"),
+            ("single-quoted-executable", f"'ci-status.py' {valid}"),
+            ("double-quoted-path", f'"bin/ci-status.py" {valid}'),
+            ("concatenated-quoted-path", f'bin/"ci-status.py" {valid}'),
+            ("escaped-executable", f"ci-status\\.py {valid}"),
+            ("time-wrapper", f"time -p ci-status.py {valid}"),
+            ("env-wrapper", f"env -i ci-status.py {valid}"),
+            ("command-wrapper", f"command -- ci-status.py {valid}"),
+            ("sudo-wrapper", f"sudo -n ci-status.py {valid}"),
+            ("nice-wrapper", f"nice -n 5 ci-status.py {valid}"),
+            ("assignment-prefix", f"FOO=bar ci-status.py {valid}"),
+            ("leading-redirection", f"> logfile 2>&1 ci-status.py {valid}"),
+            ("negation", f"! ci-status.py {valid}"),
+            ("semicolon", f"true; ci-status.py {valid}"),
+            ("and", f"true && ci-status.py {valid}"),
+            ("or", f"false || ci-status.py {valid}"),
+            ("pipe", f"true | ci-status.py {valid}"),
+            ("pipe-ampersand", f"true |& ci-status.py {valid}"),
+            ("background", f"true & ci-status.py {valid}"),
+            ("group", f"( ci-status.py {valid} )"),
+            ("brace-group", f"{{ ci-status.py {valid}; }}"),
+            ("if", f"if ci-status.py {valid}; then true; fi"),
+            ("while", f"while ci-status.py {valid}; do true; done"),
+            ("until", f"until ci-status.py {valid}; do true; done"),
+            ("case", f"case x in ready) ci-status.py {valid};; esac"),
+            ("python-script", f"python3 -u ci-status.py {valid}"),
+            ("dollar-substitution", f"echo $(ci-status.py {valid})"),
+            ("backtick-substitution", f"echo ``ci-status.py {valid}``"),
+            ("continued-subcommand", f"ci-status.py \\\n{valid}"),
+            ("continued-word", f"ci-status.py {subcommand[:2]}\\\n{subcommand[2:]} "
+                               f"{valid.split(' ', 1)[1]}"),
+            ("continued-flag", f"ci-status.py {continued_flag}"),
+            ("continued-path", f"ci-status.py {valid.replace('state.jsonl', 'state.\\\njsonl')}"),
+        ]
+        for name, command in valid_commands:
+            kind = "fenced" if name == "continued-path" else "inline"
+            if name == "backtick-substitution":
+                source = f"``echo `ci-status.py {valid}` ``\n"
+            else:
+                source = source_for(command, kind)
+            run_case(name, source, 1, 0)
+
+        run_case("fenced-command", source_for(f"ci-status.py {valid}", "fenced"), 1, 0)
+        run_case("indented-command", source_for(f"ci-status.py {valid}", "indented"), 1, 0)
+        run_case("crlf-command", source_for(f"ci-status.py {valid}", "fenced").replace("\n", "\r\n"), 1, 0)
+
+        false_commands = [
+            ("argument", f"echo ci-status.py {valid}"),
+            ("argument-path", f"echo bin/ci-status.py {valid}"),
+            ("lookalike-word", f"myci-status.py {valid}"),
+            ("lookalike-dot", f"ci-status.py.bak {valid}"),
+            ("continued-lookalike", f"not-\\\nci-status.py {valid}"),
+            ("single-quoted-literal", f"echo 'ci-status.py {valid}'"),
+            ("double-quoted-literal", f'echo "ci-status.py {valid}"'),
+            ("literal-substitution", f"echo '$(ci-status.py {valid})'"),
+            ("escaped-semicolon", f"echo done\\; ci-status.py {valid}"),
+            ("escaped-pipe", f"echo done\\|ci-status.py {valid}"),
+            ("escaped-ampersand", f"echo done\\&ci-status.py {valid}"),
+            ("redirection-target", f"> ci-status.py {valid}"),
+            ("fd-redirection-target", f"2>ci-status.py {valid}"),
+            ("argument-redirection-target", f"echo > ci-status.py {valid}"),
+            ("assignment-value", f"FOO=ci-status.py {valid}"),
+            ("quoted-assignment-value", f"FOO='ci-status.py {valid}'"),
+            ("python-module", f"python3 -m ci-status.py {valid}"),
+            ("python-version", f"python3 --version ci-status.py {valid}"),
+            ("python-code", f"python3 -c 'ci-status.py {valid}'"),
+            ("shell-comment", source_for(f"true # ci-status.py {valid}", "fenced")),
+            ("multiline-quote", source_for(f'echo "not a command\nci-status.py {valid}\n"', "fenced")),
+            ("blank-line-quote", source_for(f'echo "not a command\n\nci-status.py {valid}\n"', "fenced")),
+            ("malformed-crlf-continuation", source_for(
+                f"```sh\r\nci-status.py \\\r\n{valid}\r\n```\r\n")),
+        ]
+        for name, command in false_commands:
+            run_case(name, command if command.startswith("```") else source_for(command), 0, 0)
+
+        non_code = (
+            f"prose; ci-status.py {valid}\n"
+            f"| ci-status.py {valid} | not code |\n"
+            f"- ci-status.py {valid}\n"
+            f"> ci-status.py {valid}\n"
+            f"[ci-status.py {valid}](https://example.invalid)\n"
+            f"<!-- ci-status.py {valid} -->\n"
         )
-        found_problems, copies = check(root)
-        if found_problems:
-            problems.append(f"[command boundary {subcommand}] false executable name was checked: "
-                            f"{found_problems!r}")
-        if len(copies) != 1:
-            problems.append(f"[command boundary {subcommand}] expected one copy, got {copies!r}")
+        run_case("non-code-markdown", non_code, 0, 0)
+
+        missing = {
+            "derive": "derive --pr 10",
+            "liveness": "liveness --ledger state.jsonl --pr 10",
+            "required-set": "required-set --ledger ledger.jsonl",
+        }[subcommand]
+        unrelated = {
+            "derive": "--ledger state.jsonl",
+            "liveness": "--machine-action none",
+            "required-set": "state.jsonl",
+        }[subcommand]
+        run_case("same-paragraph-only", f"`ci-status.py {missing}` and then `{unrelated}`\n", 1, 1)
     return problems
 
 

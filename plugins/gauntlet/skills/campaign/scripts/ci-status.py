@@ -1903,6 +1903,469 @@ class DocError(Exception):
     """The doc could not be read the way this check needs to read it. NEVER a pass."""
 
 
+class _ShellToken(NamedTuple):
+    kind: str
+    value: str
+    start: int
+    end: int
+
+
+class _CommandCopy(NamedTuple):
+    start: int
+    words: tuple[str, ...]
+
+
+_SHELL_CONTROL_WORDS = frozenset(("if", "then", "else", "elif", "while", "until", "do"))
+_SHELL_WRAPPERS = frozenset(("command", "env", "exec", "nice", "sudo", "time"))
+_SHELL_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.DOTALL)
+
+
+def _shell_substitution_end(text: str, start: int) -> int | None:
+    """Return the closing index of an unquoted ``$(...)`` starting at ``start``."""
+    depth = 1
+    quote: str | None = None
+    cursor = start + 2
+    while cursor < len(text):
+        char = text[cursor]
+        if quote == "'":
+            if char == "'":
+                quote = None
+            cursor += 1
+            continue
+        if quote == '"':
+            if char == "\\":
+                cursor += 2
+            elif char == '"':
+                quote = None
+                cursor += 1
+            else:
+                cursor += 1
+            continue
+        if char == "\\":
+            cursor += 2
+        elif char in "'\"":
+            quote = char
+            cursor += 1
+        elif text.startswith("$(", cursor):
+            depth += 1
+            cursor += 2
+        elif char == "(":
+            depth += 1
+            cursor += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return cursor
+            cursor += 1
+        else:
+            cursor += 1
+    return None
+
+
+def _shell_backtick_end(text: str, start: int) -> int | None:
+    """Return the closing index of an unescaped shell backtick."""
+    cursor = start + 1
+    while cursor < len(text):
+        if text[cursor] == "\\":
+            cursor += 2
+        elif text[cursor] == "`":
+            return cursor
+        else:
+            cursor += 1
+    return None
+
+
+def _shell_redirection_end(text: str, start: int) -> int:
+    """Return the first index after one shell redirection operator."""
+    cursor = start
+    if text[cursor].isdigit():
+        while cursor < len(text) and text[cursor].isdigit():
+            cursor += 1
+    if text[cursor:cursor + 3] in ("<<<", "<<-", "&>>"):
+        return cursor + 3
+    if text[cursor:cursor + 2] in ("<<", ">>", ">|", ">&", "<&", "&>", "&<", "<>"):
+        return cursor + 2
+    return cursor + 1
+
+
+def _shell_lexer(text: str) -> tuple[list[_ShellToken], list[tuple[int, int]]]:
+    """Tokenize shell text and return nested command-substitution spans."""
+    tokens: list[_ShellToken] = []
+    substitutions: list[tuple[int, int]] = []
+    value: list[str] = []
+    word_start = -1
+    cursor = 0
+    group_depth = 0
+
+    def flush(end: int) -> None:
+        nonlocal value, word_start
+        if value:
+            tokens.append(_ShellToken("word", "".join(value), word_start, end))
+            value = []
+            word_start = -1
+
+    def start_word(index: int) -> None:
+        nonlocal word_start
+        if word_start < 0:
+            word_start = index
+
+    def prior_values() -> list[str]:
+        return [token.value for token in tokens if token.kind == "word"]
+
+    quote: str | None = None
+    while cursor < len(text):
+        char = text[cursor]
+        if quote == "'":
+            start_word(cursor)
+            if char == "'":
+                quote = None
+            else:
+                value.append(char)
+            cursor += 1
+            continue
+        if quote == '"':
+            start_word(cursor)
+            if char == '"':
+                quote = None
+                cursor += 1
+                continue
+            if char == "\\":
+                if cursor + 1 < len(text) and text[cursor + 1] == "\n":
+                    cursor += 2
+                elif cursor + 2 < len(text) and text[cursor + 1:cursor + 3] == "\r\n":
+                    value.append("\r")
+                    cursor += 2
+                elif cursor + 1 < len(text):
+                    value.append(text[cursor + 1])
+                    cursor += 2
+                else:
+                    cursor += 1
+                continue
+            if text.startswith("$(", cursor):
+                end = _shell_substitution_end(text, cursor)
+                if end is not None:
+                    substitutions.append((cursor + 2, end))
+                    value.append("\x00")
+                    cursor = end + 1
+                    continue
+            if char == "`":
+                end = _shell_backtick_end(text, cursor)
+                if end is not None:
+                    substitutions.append((cursor + 1, end))
+                    value.append("\x00")
+                    cursor = end + 1
+                    continue
+            value.append(char)
+            cursor += 1
+            continue
+
+        if char == "\\":
+            start_word(cursor)
+            if cursor + 1 < len(text) and text[cursor + 1] == "\n":
+                cursor += 2
+            elif cursor + 2 < len(text) and text[cursor + 1:cursor + 3] == "\r\n":
+                value.append("\r")
+                cursor += 2
+            elif cursor + 1 < len(text):
+                value.append(text[cursor + 1])
+                cursor += 2
+            else:
+                value.append("\\")
+                cursor += 1
+            continue
+        if char == "'":
+            start_word(cursor)
+            quote = "'"
+            cursor += 1
+            continue
+        if char == '"':
+            start_word(cursor)
+            quote = '"'
+            cursor += 1
+            continue
+        if text.startswith("$(", cursor):
+            end = _shell_substitution_end(text, cursor)
+            if end is not None:
+                start_word(cursor)
+                substitutions.append((cursor + 2, end))
+                value.append("\x00")
+                cursor = end + 1
+                continue
+        if char == "`":
+            end = _shell_backtick_end(text, cursor)
+            if end is not None:
+                start_word(cursor)
+                substitutions.append((cursor + 1, end))
+                value.append("\x00")
+                cursor = end + 1
+                continue
+        if char in " \t\r\f\v":
+            flush(cursor)
+            cursor += 1
+            continue
+        if char == "#" and not value:
+            while cursor < len(text) and text[cursor] != "\n":
+                cursor += 1
+            continue
+        if char == "\n":
+            flush(cursor)
+            tokens.append(_ShellToken("boundary", "\n", cursor, cursor + 1))
+            cursor += 1
+            continue
+        if char.isdigit() and not value and cursor + 1 < len(text) and text[cursor + 1] in "<>":
+            flush(cursor)
+            end = _shell_redirection_end(text, cursor)
+            tokens.append(_ShellToken("redirection", text[cursor:end], cursor, end))
+            cursor = end
+            continue
+        if char == "<" and re.match(r"<[^>\n]*>", text[cursor:]):
+            match = re.match(r"<[^>\n]*>", text[cursor:])
+            assert match is not None
+            start_word(cursor)
+            value.append(match.group(0))
+            cursor += len(match.group(0))
+            continue
+        if char in "<>":
+            flush(cursor)
+            end = _shell_redirection_end(text, cursor)
+            tokens.append(_ShellToken("redirection", text[cursor:end], cursor, end))
+            cursor = end
+            continue
+        if char in ";|&":
+            flush(cursor)
+            if text[cursor:cursor + 2] in ("&&", "||", "|&"):
+                end = cursor + 2
+            else:
+                end = cursor + 1
+            tokens.append(_ShellToken("boundary", text[cursor:end], cursor, end))
+            cursor = end
+            continue
+        if char == "(" and not value:
+            flush(cursor)
+            tokens.append(_ShellToken("boundary", "(", cursor, cursor + 1))
+            group_depth += 1
+            cursor += 1
+            continue
+        if char == "{" and not value:
+            flush(cursor)
+            tokens.append(_ShellToken("boundary", "{", cursor, cursor + 1))
+            group_depth += 1
+            cursor += 1
+            continue
+        if char == ")" and (group_depth or ("case" in prior_values() and "in" in prior_values())):
+            flush(cursor)
+            tokens.append(_ShellToken("boundary", ")", cursor, cursor + 1))
+            group_depth = max(0, group_depth - 1)
+            cursor += 1
+            continue
+        if char == "}" and group_depth:
+            flush(cursor)
+            tokens.append(_ShellToken("boundary", "}", cursor, cursor + 1))
+            group_depth = max(0, group_depth - 1)
+            cursor += 1
+            continue
+        start_word(cursor)
+        value.append(char)
+        cursor += 1
+    flush(len(text))
+    return tokens, substitutions
+
+
+def _shell_executable(value: str) -> bool:
+    """Return whether a shell word is a path-qualified ci-status executable."""
+    return value == "ci-status.py" or value.endswith(("/ci-status.py", "\\ci-status.py"))
+
+
+def _skip_redirection(tokens: list[_ShellToken], index: int) -> int:
+    """Skip a redirection and its operand."""
+    index += 1
+    if index < len(tokens) and tokens[index].kind == "word":
+        index += 1
+    return index
+
+
+def _skip_wrapper_options(tokens: list[_ShellToken], index: int, wrapper: str) -> int:
+    """Skip options and assignments belonging to one supported shell wrapper."""
+    takes_value = {"env": {"-u", "--unset"}, "nice": {"-n", "--adjustment"},
+                   "sudo": {"-u", "--user", "-g", "--group"}}.get(wrapper, set())
+    while index < len(tokens):
+        token = tokens[index]
+        if token.kind == "redirection":
+            index = _skip_redirection(tokens, index)
+            continue
+        if token.kind != "word":
+            break
+        if _SHELL_ASSIGNMENT_RE.fullmatch(token.value):
+            index += 1
+            continue
+        if token.value == "--":
+            return index + 1
+        if token.value in takes_value:
+            index += 2
+            continue
+        if token.value.startswith("-"):
+            index += 1
+            continue
+        break
+    return index
+
+
+def _command_copy_in_segment(tokens: list[_ShellToken], subcommand: str) -> _CommandCopy | None:
+    """Find one real ci-status invocation in one shell command segment."""
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token.kind == "redirection":
+            index = _skip_redirection(tokens, index)
+        elif token.kind == "word" and (token.value in _SHELL_CONTROL_WORDS or token.value in ("!", "for")):
+            index += 1
+        elif token.kind == "word" and _SHELL_ASSIGNMENT_RE.fullmatch(token.value):
+            index += 1
+        else:
+            break
+    while index < len(tokens) and tokens[index].kind == "word" and tokens[index].value in _SHELL_WRAPPERS:
+        wrapper = tokens[index].value
+        index = _skip_wrapper_options(tokens, index + 1, wrapper)
+    if index >= len(tokens) or tokens[index].kind != "word":
+        return None
+    if tokens[index].value in ("python", "python3"):
+        python_index = index + 1
+        blocked = False
+        while python_index < len(tokens):
+            token = tokens[python_index]
+            if token.kind != "word":
+                if token.kind == "redirection":
+                    python_index = _skip_redirection(tokens, python_index)
+                    continue
+                break
+            if token.value in ("-m", "-c", "--version", "-V") or token.value.startswith(("-m", "-c")):
+                blocked = True
+            if token.value == "--":
+                blocked = False
+                python_index += 1
+                break
+            if not token.value.startswith("-"):
+                if not blocked and _shell_executable(token.value) and python_index + 1 < len(tokens) \
+                        and tokens[python_index + 1].kind == "word" \
+                        and tokens[python_index + 1].value == subcommand:
+                    return _CommandCopy(token.start, tuple(t.value for t in tokens[python_index:]
+                                                          if t.kind == "word"))
+                return None
+            python_index += 1
+        return None
+    if not _shell_executable(tokens[index].value):
+        return None
+    if index + 1 >= len(tokens) or tokens[index + 1].kind != "word" \
+            or tokens[index + 1].value != subcommand:
+        return None
+    return _CommandCopy(tokens[index].start, tuple(t.value for t in tokens[index:] if t.kind == "word"))
+
+
+def _scan_shell_commands(text: str, subcommand: str, base: int = 0) -> list[_CommandCopy]:
+    """Extract command copies from shell text, including actual nested substitutions."""
+    tokens, substitutions = _shell_lexer(text)
+    copies = []
+    for start, end in substitutions:
+        copies.extend(_scan_shell_commands(text[start:end], subcommand, base + start))
+    segment: list[_ShellToken] = []
+    for token in tokens:
+        if token.kind == "boundary":
+            copy = _command_copy_in_segment(segment, subcommand)
+            if copy is not None:
+                copies.append(_CommandCopy(base + copy.start, copy.words))
+            segment = []
+        else:
+            segment.append(token)
+    copy = _command_copy_in_segment(segment, subcommand)
+    if copy is not None:
+        copies.append(_CommandCopy(base + copy.start, copy.words))
+    return copies
+
+
+def _markdown_shell_fragments(text: str) -> list[tuple[int, str, bool]]:
+    """Return only fenced, indented, and inline Markdown code, never surrounding prose."""
+    lines = list(re.finditer(r"[^\n]*(?:\n|$)", text))
+    covered: list[tuple[int, int]] = []
+    fragments: list[tuple[int, str, bool]] = []
+    cursor = 0
+    while cursor < len(lines):
+        line = lines[cursor]
+        raw = line.group(0)
+        content = raw.rstrip("\n")
+        fence = re.match(r"^ {0,3}(`{3,}|~{3,})", content)
+        if fence:
+            marker = fence.group(1)[0]
+            length = len(fence.group(1))
+            end_line = cursor + 1
+            while end_line < len(lines):
+                close = lines[end_line].group(0).rstrip("\n")
+                if re.match(rf"^ {{0,3}}{re.escape(marker)}{{{length},}}\s*$", close):
+                    break
+                end_line += 1
+            body_start = line.end()
+            body_end = lines[end_line].start() if end_line < len(lines) else len(text)
+            fragments.append((body_start, text[body_start:body_end], False))
+            covered.append((line.start(), lines[end_line].end() if end_line < len(lines) else len(text)))
+            cursor = end_line + 1
+            continue
+        if re.match(r"^(?: {4}|\t)", content):
+            block_start = line.start()
+            body: list[str] = []
+            end_line = cursor
+            while end_line < len(lines):
+                current = lines[end_line].group(0)
+                current_no_nl = current.rstrip("\n")
+                if not current_no_nl.strip():
+                    body.append("")
+                elif re.match(r"^(?: {4}|\t)", current_no_nl):
+                    body.append(current[4:] if current_no_nl.startswith("    ") else current[1:])
+                else:
+                    break
+                end_line += 1
+            fragments.append((block_start, "\n".join(body), False))
+            covered.append((block_start, lines[end_line - 1].end()))
+            cursor = end_line
+            continue
+        cursor += 1
+
+    def is_covered(index: int) -> bool:
+        return any(start <= index < end for start, end in covered)
+
+    cursor = 0
+    while cursor < len(text):
+        if is_covered(cursor) or text.startswith("<!--", cursor):
+            end = text.find("-->", cursor + 4) if text.startswith("<!--", cursor) else next(
+                end for start, end in covered if start <= cursor < end)
+            cursor = len(text) if end < 0 else end + (3 if text.startswith("<!--", cursor) else 0)
+            continue
+        if text[cursor] != "`" or (cursor and text[cursor - 1] == "\\"):
+            cursor += 1
+            continue
+        run_end = cursor
+        while run_end < len(text) and text[run_end] == "`":
+            run_end += 1
+        marker = text[cursor:run_end]
+        close = text.find(marker, run_end)
+        while close >= 0 and close > 0 and text[close - 1] == "\\":
+            close = text.find(marker, close + 1)
+        if close < 0:
+            cursor = run_end
+            continue
+        fragments.append((run_end, text[run_end:close], True))
+        cursor = close + len(marker)
+    return fragments
+
+
+def _markdown_command_copies(text: str, subcommand: str) -> list[_CommandCopy]:
+    """Extract executable command copies from the shared Markdown/shell token space."""
+    copies: list[_CommandCopy] = []
+    for base, fragment, inline in _markdown_shell_fragments(text):
+        if inline:
+            fragment = re.sub(r"(?<!\\)\r?\n[ \t]*", " ", fragment)
+        copies.extend(_scan_shell_commands(fragment, subcommand, base))
+    return copies
+
+
 def fenced_blocks(text: str) -> list[str]:
     return re.findall(r"^```[a-z]*\n(.*?)^```", text, re.MULTILINE | re.DOTALL)
 
@@ -2257,25 +2720,23 @@ def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]
     the class TWICE: a fourth copy of a canonical command that had gone stale, and a doc recap that dropped
     `,headRefOid` from the rollup fetch.
 
-    A copy is any occurrence that RUNS the command (`ci-status.py derive` carrying `--pr`) — prose that
-    merely NAMES the command is not a copy, and is not checked. **THE UNIT IS THE COMMAND, NOT THE LINE**:
-    an invocation WRAPS (a shell `\\`, or plain prose reflow), and a line-by-line check would report the
-    continuation line as a violation of itself. So each copy is read to the end of its PARAGRAPH.
+    A copy is any executable occurrence that RUNS the command (`ci-status.py derive` carrying `--pr`) —
+    prose that merely NAMES the command is not a copy, and is not checked. **THE UNIT IS THE COMMAND, NOT
+    THE LINE**: the shared Markdown/shell extractor joins inline reflow and shell continuations, then checks
+    flags only inside that tokenized command.
 
     FINDING ZERO COPIES IS A FAILURE: the command is prescribed by at least `stage-2-ci.md` and
     `critical-rules.md`, and a check that cannot find its subject never passes.
     """
     problems, copies = [], []
     for md in sorted((root or HERE.parent).rglob("*.md")):
-        text = md.read_text(encoding="utf-8")
-        for m in re.finditer(r"(?<![\w.-])ci-status\.py derive", text):
-            end = text.find("\n\n", m.start())
-            command = text[m.start(): end if end > 0 else len(text)]
-            if "--pr" not in command:
-                continue  # prose that NAMES the command, not a copy of it
-            n = text.count("\n", 0, m.start()) + 1
+        text = md.read_bytes().decode("utf-8")
+        for copy in _markdown_command_copies(text, "derive"):
+            if "--pr" not in copy.words:
+                continue
+            n = text.count("\n", 0, copy.start) + 1
             copies.append(f"{md.name}:{n}")
-            if "--ledger" not in command and "--required-set" not in command:
+            if "--ledger" not in copy.words and "--required-set" not in copy.words:
                 problems.append(
                     f"{md.name}:{n} runs `ci-status.py derive` WITHOUT `--ledger` OR `--required-set` — the "
                     f"flag that makes `green` mean the REQUIRED SET passed. A reader following this copy "
@@ -2299,18 +2760,16 @@ def check_liveness_copies(root: Path | None = None) -> tuple[list[str], list[str
     """
     problems, copies = [], []
     for md in sorted((root or HERE.parent).rglob("*.md")):
-        text = md.read_text(encoding="utf-8")
-        for match in re.finditer(r"(?<![\w.-])ci-status\.py liveness", text):
-            end = text.find("\n\n", match.start())
-            command = text[match.start(): end if end > 0 else len(text)]
+        text = md.read_bytes().decode("utf-8")
+        for copy in _markdown_command_copies(text, "liveness"):
             # `--ledger`, not `--pr`, is the runnable-copy gate here: prose about liveness routinely sits
             # in the same paragraph as a `ledger.py … set --pr` command, and `--pr` alone would condemn
             # every such mention as a flagless invocation.
-            if "--ledger" not in command:
-                continue  # prose that names the subcommand, not a runnable copy
-            line = text.count("\n", 0, match.start()) + 1
+            if "--ledger" not in copy.words:
+                continue
+            line = text.count("\n", 0, copy.start) + 1
             copies.append(f"{md.name}:{line}")
-            if "--machine-action" not in command:
+            if "--machine-action" not in copy.words:
                 problems.append(
                     f"{md.name}:{line} runs `ci-status.py liveness` WITHOUT `--machine-action` — the one "
                     f"judgment the command asks of its caller. The tool refuses the invocation; a reader "
@@ -2328,15 +2787,13 @@ def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list
     """Every runnable required-set copy names the ledger whose per-row required sets the command persists."""
     problems, copies = [], []
     for md in sorted((root or HERE.parent).rglob("*.md")):
-        text = md.read_text(encoding="utf-8")
-        for match in re.finditer(r"(?<![\w.-])ci-status\.py required-set", text):
-            end = text.find("\n\n", match.start())
-            command = text[match.start(): end if end > 0 else len(text)]
-            if "--ledger" not in command:
-                continue  # prose that names the subcommand, not a runnable copy
-            line = text.count("\n", 0, match.start()) + 1
+        text = md.read_bytes().decode("utf-8")
+        for copy in _markdown_command_copies(text, "required-set"):
+            if "--ledger" not in copy.words:
+                continue
+            line = text.count("\n", 0, copy.start) + 1
             copies.append(f"{md.name}:{line}")
-            if "state.jsonl" not in command:
+            if not any(word.endswith("state.jsonl") for word in copy.words):
                 problems.append(
                     f"{md.name}:{line} runs `ci-status.py required-set` without the run ledger's "
                     f"`state.jsonl` — the command must persist the value it read before the value exists"
