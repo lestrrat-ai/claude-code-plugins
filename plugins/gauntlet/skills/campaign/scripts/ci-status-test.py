@@ -1282,7 +1282,7 @@ def verdict_doc_cases(ci) -> list[str]:
 
 
 def watch_action_owner_cases(ci, tmp: Path) -> list[str]:
-    """Every registry entry rejects deletion, unconditional-watch, and status-based mutations."""
+    """Every registry entry rejects deletion, unconditional-watch, status-based, and bucket mutations."""
     problems = []
     owners = ci.WATCH_ACTION_CONSUMERS
     source = ci.HERE.parent
@@ -1410,7 +1410,10 @@ def watch_action_owner_cases(ci, tmp: Path) -> list[str]:
         owners=(mermaid_owner,),
         required_owners=(mermaid_owner,),
     )
-    if not any("contradictory ci/status-based" in problem for problem in mermaid_mutated):
+    if not any(
+        any(marker in problem for marker in ("contradictory ci/status-based", "unregistered ci/status-based"))
+        for problem in mermaid_mutated
+    ):
         problems.append(f"[watch owners] Mermaid status edge at {relative}:{anchor} was accepted")
 
     contradictory_owner = next(
@@ -1542,6 +1545,7 @@ def watch_action_owner_cases(ci, tmp: Path) -> list[str]:
     for relative, suffix, name in (
         ("references/stage-2-review-gate.md", "\n\nIf ci == pending, launch a watch.\n", "stage-2-review-gate"),
         ("references/runtime-adapter.md", "\n\nPending CI launches a watch.\n", "runtime-adapter"),
+        ("references/runtime-adapter.md", "\n\nIf buckets.RUNNING > 0, launch a watch.\n", "runtime-adapter-bucket-formula"),
     ):
         fixture_root = tmp / f"watch-unregistered-{name}"
         for path in source.rglob("*.md"):
@@ -1553,6 +1557,38 @@ def watch_action_owner_cases(ci, tmp: Path) -> list[str]:
         unregistered, _ = ci.check_watch_action_docs(fixture_root)
         if not any("unregistered" in problem and relative in problem for problem in unregistered):
             problems.append(f"[watch owners] unregistered action in {relative} was accepted")
+
+    for owner, name in (
+        (next(owner for owner in owners if owner[0] == "mermaid"), "mermaid"),
+        (next(owner for owner in owners if owner[0] == "policy"), "policy"),
+    ):
+        relative, anchor, condition = owner[1], owner[2], owner[3]
+        source_text = (source / relative).read_text(encoding="utf-8")
+        selected = ci.watch_action_owner_span(owner, source)
+        if selected is None:
+            problems.append(f"[watch owners] {relative}:{anchor} lost its relocation target")
+            continue
+        start, end = selected
+        owner_text = source_text[start:end]
+        moved_owner_text, moved_count = owner_text.replace(condition, "", 1), owner_text.count(condition)
+        if moved_count != 1:
+            problems.append(f"[watch owners] {relative}:{anchor} lost its relocation condition")
+            continue
+        changed = source_text[:start] + moved_owner_text + source_text[end:]
+        if end == len(source_text):
+            changed += "\n\n# Outside the registered watch owner\n"
+        changed += "\n" + condition + "\n"
+        fixture_root = tmp / f"watch-owner-{name}-relocated"
+        fixture_path = fixture_root / relative
+        fixture_path.parent.mkdir(parents=True, exist_ok=True)
+        fixture_path.write_text(changed, encoding="utf-8")
+        relocated, _ = ci.check_watch_action_docs(
+            fixture_root,
+            owners=(owner,),
+            required_owners=(owner,),
+        )
+        if not any("omits" in problem and relative in problem for problem in relocated):
+            problems.append(f"[watch owners] relocated {name} condition was accepted")
 
     arrow_owner = next(
         owner for owner in owners
@@ -1699,8 +1735,8 @@ def run(ci, tmp: Path) -> int:
         print(f"FAIL     {problem}")
     if not watch_owner_problems:
         print(f"ok       {'watch-action owner mutations':32} -> every registered owner rejects removal, "
-              f"unconditional actions, and status-based actions; Markdown owners reject contradictory "
-              f"parked status")
+              f"unconditional actions, status-based actions, and bucket formulas; Markdown owners reject "
+              f"parked-status contradictions; Mermaid and policy requirements stay inside their owner spans")
 
     print()
     print(f"--- doc-check: {ci.SPEC_DOC.name} + {ci.DRIVER_DOC.name} vs the code that runs ---")

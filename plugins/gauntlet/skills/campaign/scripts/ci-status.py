@@ -277,6 +277,14 @@ WATCH_ACTION_CONTRADICTIONS = (
         re.IGNORECASE,
     )),
 )
+# The registered policy owner may explain this reduction; only the unregistered scan treats it as a
+# bypass of liveness's returned warrant.
+BUCKET_RUNNING_FORMULA = r"`?buckets\.RUNNING`?\s*>\s*0\b"
+BUCKET_WATCH_ACTION_CONTRADICTION = ("bucket-based", re.compile(
+    r"(?:\b" + WATCH_ACTION_STATUS_WORDS + r"\b[^.!?;]*?" + BUCKET_RUNNING_FORMULA + r"|"
+    + BUCKET_RUNNING_FORMULA + r"[^.!?;]*?\b" + WATCH_ACTION_STATUS_WORDS + r"\b)",
+    re.IGNORECASE,
+))
 
 # A git object id, as GitHub returns it: 40 LOWERCASE hex. Same rule, same reason, as `ci-snapshot.py` —
 # a `--head-sha` of any other shape makes every comparison downstream unfalsifiable, so it is an OPERATOR
@@ -2470,10 +2478,15 @@ def owner_block(text: str, anchor: str) -> tuple[int, str] | None:
     return start, text[start:end if end >= 0 else len(text)]
 
 
-def watch_action_contradiction_matches(plain: str) -> list[tuple[str, re.Match[str]]]:
+def watch_action_contradiction_matches(
+        plain: str, *, include_bucket_formulas: bool = False
+) -> list[tuple[str, re.Match[str]]]:
     """Return unnegated watch-action matches, preserving the registry's clause-boundary rule."""
+    patterns = WATCH_ACTION_CONTRADICTIONS
+    if include_bucket_formulas:
+        patterns += (BUCKET_WATCH_ACTION_CONTRADICTION,)
     matches = []
-    for kind, pattern in WATCH_ACTION_CONTRADICTIONS:
+    for kind, pattern in patterns:
         for match in pattern.finditer(plain):
             # A negation must belong to the matched status/watch clause; a comma can join an unrelated
             # preceding instruction to that clause without changing its meaning.
@@ -2500,21 +2513,31 @@ def watch_action_owner_problems(owner: tuple[str, str, str, str], base: Path) ->
     text = path.read_text(encoding="utf-8")
 
     if format_name == "mermaid":
+        selected = watch_action_owner_span(owner, base)
+        if selected is None:
+            return [f"{relative}:{anchor!r} must occur exactly once within its Mermaid owner span"]
+        owner_start, owner_end = selected
+        owner_text = text[owner_start:owner_end]
         required = (anchor, condition, "WW -- false --> CB{still within its bounds?}",
                     README_ADOPTION_WATCH_ACTION)
         problems = [f"{relative} omits {item!r} from the CI watch flowchart"
-                    for item in required if text.count(item) != 1]
+                    for item in required if owner_text.count(item) != 1]
         line = text.count("\n", 0, text.find(anchor)) + 1
-        problems += watch_action_contradiction_problems(relative, line, " ".join(text.split()))
+        problems += watch_action_contradiction_problems(relative, line, " ".join(owner_text.split()))
         return problems
 
     if format_name == "policy":
+        selected = watch_action_owner_span(owner, base)
+        if selected is None:
+            return [f"{relative}:{anchor!r} must occur exactly once within its policy owner span"]
+        owner_start, owner_end = selected
+        owner_text = text[owner_start:owner_end]
         required = (anchor, "The watch decision is **`liveness`'s `watch_warranted` field**", condition,
                     "when it is **false**, never launch or relaunch")
         problems = [f"{relative} omits {item!r} from the CI watch policy"
-                    for item in required if text.count(item) != 1]
+                    for item in required if owner_text.count(item) != 1]
         line = text.count("\n", 0, text.find(anchor)) + 1
-        problems += watch_action_contradiction_problems(relative, line, " ".join(text.split()))
+        problems += watch_action_contradiction_problems(relative, line, " ".join(owner_text.split()))
         return problems
 
     selected = owner_block(text, anchor)
@@ -2596,7 +2619,9 @@ def unregistered_watch_action_problems(
             for index in range(start, end):
                 if masked[index] != "\n":
                     masked[index] = "."
-        for kind, match in watch_action_contradiction_matches("".join(masked)):
+        for kind, match in watch_action_contradiction_matches(
+                "".join(masked), include_bucket_formulas=True
+        ):
             line = text.count("\n", 0, match.start()) + 1
             problems.append(f"{relative}:{line} adds an unregistered {kind} watch rule")
     return problems
