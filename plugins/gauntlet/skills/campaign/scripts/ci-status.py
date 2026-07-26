@@ -2428,10 +2428,8 @@ def _join_shell_continuations(span: str) -> str:
     while index < len(span):
         char = span[index]
         if char == "\\" and index + 1 < len(span) and span[index + 1] == "\n" and quote != "'":
-            joined.append("" if quote == '"' else " ")
+            joined.append("")
             index += 2
-            while index < len(span) and span[index] in " \t":
-                index += 1
             escaped = False
             continue
         joined.append(char)

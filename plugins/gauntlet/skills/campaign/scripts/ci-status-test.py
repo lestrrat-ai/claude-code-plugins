@@ -1203,6 +1203,45 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
             f"copies={copies!r}, problems={found_problems!r}"
         )
 
+    root = tmp / "command-copy-required-set-no-separator-continuation"
+    root.mkdir()
+    (root / "commands.md").write_text(
+        "```sh\n"
+        "ci-status.py required-set --ledger state.jsonl" + chr(92) + "\n"
+        "--repo owner/repo\n"
+        "```\n",
+        encoding="utf-8",
+    )
+    copies = ci.documented_ci_status_copies(root, "required-set")
+    found_problems, checked = ci.check_required_set_copies(root)
+    expected_command = "ci-status.py required-set --ledger state.jsonl--repo owner/repo"
+    if (len(copies) != 1 or copies[0][2] != expected_command
+            or checked != ["commands.md:2"] or len(found_problems) != 1):
+        problems.append(
+            f"[command copy required-set] no-separator continuation was changed into a new argument: "
+            f"copies={copies!r}, problems={found_problems!r}"
+        )
+
+    root = tmp / "command-copy-required-set-indented-double-quoted-ledger"
+    root.mkdir()
+    indented_ledger = tmp / "quoted" / "state.jsonl"
+    (root / "commands.md").write_text(
+        "```sh\n"
+        "ci-status.py required-set --ledger \"" + chr(92) + "\n    "
+        + str(indented_ledger) + "\"\n"
+        "```\n",
+        encoding="utf-8",
+    )
+    copies = ci.documented_ci_status_copies(root, "required-set")
+    found_problems, checked = ci.check_required_set_copies(root)
+    expected_command = f'ci-status.py required-set --ledger "    {indented_ledger}"'
+    if (len(copies) != 1 or copies[0][2] != expected_command
+            or checked != ["commands.md:2"] or found_problems):
+        problems.append(
+            f"[command copy required-set] indented double-quoted ledger path was changed: "
+            f"copies={copies!r}, problems={found_problems!r}"
+        )
+
     root = tmp / "command-copy-required-set-continued-extra-argv"
     root.mkdir()
     (root / "commands.md").write_text(
