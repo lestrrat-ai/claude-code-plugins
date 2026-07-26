@@ -581,18 +581,18 @@ def _mark_terminal(ledger: Path, pr: str, status: str) -> None:
             raise Refusal(f"terminal ledger write failed: {exc}") from exc
 
 
-def _record_closeout_followup(ledger: Path, pr: str) -> None:
-    """Record a pending rejection only after the live PR view proved CLOSED."""
+def _record_closeout_followup(ledger: Path, pr: str, repo: str) -> None:
+    """Record a pending rejection only after the live repository and PR view proved CLOSED."""
     try:
-        L.record_completed_rejection_disposition(ledger, pr)
+        L.record_completed_rejection_disposition(ledger, pr, repo)
     except OSError as exc:
         raise Refusal(f"close-out follow-up disposition failed: {exc}") from exc
 
 
-def _record_merge_followup(ledger: Path, pr: str) -> None:
-    """Record a pending rejection only after the live PR view proved MERGED."""
+def _record_merge_followup(ledger: Path, pr: str, repo: str) -> None:
+    """Record a pending rejection only after the live repository and PR view proved MERGED."""
     try:
-        L.record_completed_merge_disposition(ledger, pr)
+        L.record_completed_merge_disposition(ledger, pr, repo)
     except OSError as exc:
         raise Refusal(f"merge follow-up disposition failed: {exc}") from exc
 
@@ -653,7 +653,7 @@ def execute(ledger: Path, pr: str, project_root: Path, repo: str,
                     require_own_label=merge_initiating)
     if close_out:
         _mark_terminal(ledger, pr, "aborted")
-        _record_closeout_followup(ledger, pr)
+        _record_closeout_followup(ledger, pr, repo)
         return {"status": "closed-unmerged", "pr": pr, "cleanup": {}}
 
     if row["status"] == "aborted":
@@ -664,14 +664,14 @@ def execute(ledger: Path, pr: str, project_root: Path, repo: str,
         if view["state"] != "CLOSED":
             raise Refusal(
                 f"terminal ledger row says aborted but GitHub state is {view['state']!r}, not CLOSED")
-        _record_closeout_followup(ledger, pr)
+        _record_closeout_followup(ledger, pr, repo)
         return {"status": "already-complete", "pr": pr, "cleanup": {}}
 
     if row["status"] == "merged":
         if view["state"] != "MERGED":
             raise Refusal(
                 f"terminal ledger row says merged but GitHub state is {view['state']!r}")
-        _record_merge_followup(ledger, pr)
+        _record_merge_followup(ledger, pr, repo)
         return {"status": "already-complete", "pr": pr, "cleanup": {}}
 
     # Only NONTERMINAL rows (in_review or a held status) remain. Classify by the LIVE state, not the row
@@ -730,7 +730,7 @@ def execute(ledger: Path, pr: str, project_root: Path, repo: str,
     _sync_base(root, L.effective_base(header, row))
     cleanup = _cleanup(root, row)
     _mark_terminal(ledger, pr, "merged")
-    _record_merge_followup(ledger, pr)
+    _record_merge_followup(ledger, pr, repo)
     return {"status": "merged", "pr": pr, "cleanup": cleanup}
 
 

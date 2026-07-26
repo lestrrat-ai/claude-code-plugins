@@ -51,10 +51,12 @@ from followups import (  # noqa: E402
     DISPOSED_REJECTION, DRIVER_STEPS, DURABLE_RECORD, EDITABLE, ENTRY_TYPE, EVIDENCE_FIELDS, FIELDS, FLAG,
     INTAKE,
     INVESTIGATION, OPTIONAL, PLACEHOLDER, REQUIRED, SEQ_TYPE, STATES, TABLE_ALL_HIDDEN_MARKER,
-    PENDING_REJECTION, REJECTION_VALUES, TABLE_DEFAULT_FIELDS, TABLE_EMPTY_MARKER,
+    PENDING_REJECTION, REJECTION_VALUES, RELINK_CMD, TABLE_DEFAULT_FIELDS, TABLE_EMPTY_MARKER,
     TABLE_HIDDEN_STATES, TABLE_MARKERS, TERMINAL, TRANSITIONS, USER_RULINGS, WRITE_CMDS, WRITES,
     build_parser, deletable, find, is_blank, load,
 )
+
+TEST_REPO = "owner/repo"
 
 
 def run(argv: "list[str]") -> "tuple[int, str, str]":
@@ -69,7 +71,7 @@ def entry_line(**over: object) -> str:
     once. A fixture that wants a DEFECTIVE entry blanks a field on purpose — that is what `**over` is for.
     """
     rec = {"type": ENTRY_TYPE, **DEFAULTS,
-           **{f: f"<{f}>" for f in FIELDS if f not in ("id", "state", "rejection")}, **over}
+           **{f: f"<{f}>" for f in FIELDS if f not in ("id", "state", "rejection", "pr_repo")}, **over}
     return json.dumps(rec)
 
 
@@ -95,7 +97,7 @@ def transition_args(cmd: str) -> "list[str]":
     for field in WRITES[cmd]:
         if field in OPTIONAL:
             continue
-        argv += [FLAG[field], f"{cmd}:{field}"]
+        argv += [FLAG[field], TEST_REPO if field == "pr_repo" else f"{cmd}:{field}"]
     return argv
 
 
@@ -380,18 +382,19 @@ def t_ruling_is_recorded(tmp: Path) -> None:
           "reject did not record the ruling")
 
     # …and a driver-only transition leaves the user's ruling exactly as the user left it.
-    run(["--file", str(path), "open-pr", "--id", a, "--pr", "#77"])
+    run(["--file", str(path), "open-pr", "--id", a, "--pr", "#77", "--repo", TEST_REPO])
     after = json.loads(run(["--file", str(path), "get", "--id", a])[1])
     check(after["decided"] == "2026-07-14T09:00:00Z",
           f"`open-pr` overwrote the USER's ruling timestamp: {after!r}")
-    check(after["pr"] == "77", f"open-pr did not record WHICH PR is addressing it: {after!r}")
+    check(after["pr"] == "77" and after["pr_repo"] == TEST_REPO,
+          f"open-pr did not record WHICH repository and PR are addressing it: {after!r}")
 
     # Changing the ruling while a PR is open is durable before the campaign disposition. The verified terminal
     # callback records a closed PR's disposition; terminal reject then retains the time the user first ruled.
     code, _, err = run(["--file", str(path), "reject-pending", "--id", a, "--at", "2026-07-14T11:00:00Z"])
     check(code == 0, f"reject-pending exited {code}: {err!r}")
-    recorded = followups.record_completed_rejection_disposition(path, "77")
-    check(recorded == (a,), f"the terminal callback did not record PR 77's disposition: {recorded!r}")
+    recorded = followups.record_completed_rejection_disposition(path, "77", TEST_REPO)
+    check(recorded == (a,), f"the terminal callback did not record repository and PR 77's disposition: {recorded!r}")
     code, out, err = run(["--file", str(path), "reject", "--id", a, "--at", "2026-07-14T12:00:00Z"])
     check(code == 0, f"terminal reject exited {code}: {err!r}")
     check(json.loads(out)["decided"] == "2026-07-14T11:00:00Z",
@@ -761,7 +764,7 @@ def t_deletion_needs_a_durable_record(tmp: Path) -> None:
           f"does not exist yet, and a PR that never lands would take the entry with it")
 
     # NOR WHEN THE PR MERELY OPENS: the entry stays, and it names WHICH PR is addressing it.
-    code, _, err = run(["--file", str(path), "open-pr", "--id", fid, "--pr", "#123"])
+    code, _, err = run(["--file", str(path), "open-pr", "--id", fid, "--pr", "#123", "--repo", TEST_REPO])
     check(code == 0, f"open-pr exited {code}: {err!r}")
     entry = json.loads(run(["--file", str(path), "get", "--id", fid])[1])
     check(entry["state"] == "in-pr", f"an open PR did not put the entry in `in-pr`: {entry!r}")
@@ -806,7 +809,7 @@ def t_a_closed_pr_returns_the_entry_to_open_work(tmp: Path) -> None:
         for cmd in setup:
             code, _, err = run(["--file", str(path), cmd, "--id", fid, *transition_args(cmd)])
             check(code == 0, f"[{lineage}] setup `{cmd}` exited {code}: {err!r}")
-        run(["--file", str(path), "open-pr", "--id", fid, "--pr", "#9"])
+        run(["--file", str(path), "open-pr", "--id", fid, "--pr", "#9", "--repo", TEST_REPO])
         code, _, err = run(["--file", str(path), "closed-unmerged", "--id", fid])
         check(code == 0, f"[{lineage}] `closed-unmerged` exited {code}: {err!r}")
 
@@ -820,7 +823,7 @@ def t_a_closed_pr_returns_the_entry_to_open_work(tmp: Path) -> None:
               f"is now NOTHING that remembers it: {code} {out!r} {err!r}")
 
         # …and it is REACHABLE work: a second PR can be opened on it, and THAT one deletes it when it lands.
-        code, _, err = run(["--file", str(path), "open-pr", "--id", fid, "--pr", "#10"])
+        code, _, err = run(["--file", str(path), "open-pr", "--id", fid, "--pr", "#10", "--repo", TEST_REPO])
         check(code == 0, f"[{lineage}] a reopened follow-up cannot be worked again: {err!r}")
         code, _, err = run(["--file", str(path), "merged", "--id", fid])
         check(code == 0, f"[{lineage}] `merged` exited {code}: {err!r}")
@@ -969,8 +972,8 @@ def t_self_accepted_is_never_mistaken_for_accepted(tmp: Path) -> None:
 
     # …and once both are IN A PR — the one state both lineages reach — the entries still say which is which.
     shared = TRANSITIONS["open-pr"][1]
-    run(["--file", str(driven), "open-pr", "--id", a, "--pr", "#1"])
-    run(["--file", str(ruled), "open-pr", "--id", b, "--pr", "#2"])
+    run(["--file", str(driven), "open-pr", "--id", a, "--pr", "#1", "--repo", TEST_REPO])
+    run(["--file", str(ruled), "open-pr", "--id", b, "--pr", "#2", "--repo", TEST_REPO])
     d = json.loads(run(["--file", str(driven), "get", "--id", a])[1])
     u = json.loads(run(["--file", str(ruled), "get", "--id", b])[1])
     check(state_of(driven, a) == state_of(ruled, b) == shared, "both lineages must be able to open a PR")
@@ -1395,10 +1398,10 @@ def t_fields_and_lookup(tmp: Path) -> None:
 
 
 def t_in_pr_rejection_needs_one_typed_completed_disposition(tmp: Path) -> None:
-    """An `in-pr` rejection stays pending until that PR's exact terminal disposition is recorded.
+    """An `in-pr` rejection stays pending until that repository and PR's exact terminal disposition is recorded.
 
     The user ruling and campaign result are different facts. A typed field holds the latter, so a free-form
-    timestamp cannot accidentally stand in for it. Only the matching PR moves pending -> disposed; terminal
+    timestamp cannot accidentally stand in for it. Only the matching repository and PR move pending -> disposed; terminal
     reject then preserves the earlier ruling time.
     """
     store = tmp / "followups.jsonl"
@@ -1406,7 +1409,8 @@ def t_in_pr_rejection_needs_one_typed_completed_disposition(tmp: Path) -> None:
     for fid, pr in ((first, "#42"), (second, "#43")):
         code, _, err = run(["--file", str(store), "accept", "--id", fid, "--at", "2026-07-24T10:00:00Z"])
         check(code == 0, f"accept setup failed: {err!r}")
-        code, _, err = run(["--file", str(store), "open-pr", "--id", fid, "--pr", pr])
+        code, _, err = run(["--file", str(store), "open-pr", "--id", fid, "--pr", pr,
+                            "--repo", TEST_REPO])
         check(code == 0, f"open-pr setup failed: {err!r}")
         code, _, err = run(["--file", str(store), "reject-pending", "--id", fid,
                             "--at", "2026-07-24T11:00:00Z"])
@@ -1434,8 +1438,8 @@ def t_in_pr_rejection_needs_one_typed_completed_disposition(tmp: Path) -> None:
     check(still_pending["state"] == "in-pr" and still_pending["rejection"] == PENDING_REJECTION,
           f"a refused merged transition changed the pending rejection: {still_pending!r}")
 
-    recorded = followups.record_completed_rejection_disposition(store, "42")
-    check(recorded == (first,), f"exact PR disposition recorded {recorded!r}, not only {first!r}")
+    recorded = followups.record_completed_rejection_disposition(store, "42", TEST_REPO)
+    check(recorded == (first,), f"exact repository and PR disposition recorded {recorded!r}, not only {first!r}")
     first_entry = json.loads(run(["--file", str(store), "get", "--id", first])[1])
     second_entry = json.loads(run(["--file", str(store), "get", "--id", second])[1])
     check(first_entry["rejection"] == DISPOSED_REJECTION,
@@ -1449,10 +1453,40 @@ def t_in_pr_rejection_needs_one_typed_completed_disposition(tmp: Path) -> None:
     write_lines(legacy_url, entry_line(
         id="fu1", state="in-pr", rejection=PENDING_REJECTION,
         pr="https://github.com/other-owner/other-repo/pull/42"))
-    recorded = followups.record_completed_rejection_disposition(legacy_url, "42")
+    recorded = followups.record_completed_rejection_disposition(legacy_url, "42", TEST_REPO)
     legacy_entry = followups.find(followups.load(legacy_url), "fu1")
     check(recorded == () and legacy_entry is not None and legacy_entry["rejection"] == PENDING_REJECTION,
           f"a legacy URL was matched by number-only disposition: {recorded!r}, {legacy_entry!r}")
+
+    # A legacy URL that was already reduced to a number is ambiguous too. It stays pending until the user
+    # explicitly relinks it with the intended repository identity.
+    legacy_numeric = tmp / "legacy-numeric.jsonl"
+    write_lines(legacy_numeric, entry_line(
+        id="fu1", state="in-pr", rejection=PENDING_REJECTION, pr="42"))
+    recorded = followups.record_completed_rejection_disposition(legacy_numeric, "42", TEST_REPO)
+    legacy_entry = followups.find(followups.load(legacy_numeric), "fu1")
+    check(recorded == () and legacy_entry is not None and legacy_entry["rejection"] == PENDING_REJECTION,
+          f"an ambiguous legacy number was matched before relinking: {recorded!r}, {legacy_entry!r}")
+    code, _, err = run(["--file", str(legacy_numeric), RELINK_CMD, "--id", "fu1", "--repo", TEST_REPO])
+    check(code == 0, f"explicit legacy PR relink failed: {err!r}")
+    recorded = followups.record_completed_rejection_disposition(legacy_numeric, "42", TEST_REPO)
+    relinked = followups.find(followups.load(legacy_numeric), "fu1")
+    check(recorded == ("fu1",) and relinked is not None and relinked["rejection"] == DISPOSED_REJECTION,
+          f"an explicitly relinked legacy PR was not disposed: {recorded!r}, {relinked!r}")
+
+    # The repository is part of the callback key. A same-number PR in another repository stays pending.
+    collision = tmp / "repository-collision.jsonl"
+    write_lines(
+        collision,
+        entry_line(id="fu1", state="in-pr", rejection=PENDING_REJECTION, pr="42", pr_repo=TEST_REPO),
+        entry_line(id="fu2", state="in-pr", rejection=PENDING_REJECTION, pr="42", pr_repo="other/repo"),
+    )
+    recorded = followups.record_completed_rejection_disposition(collision, "42", TEST_REPO)
+    local = followups.find(followups.load(collision), "fu1")
+    foreign = followups.find(followups.load(collision), "fu2")
+    check(recorded == ("fu1",) and local is not None and foreign is not None
+          and local["rejection"] == DISPOSED_REJECTION and foreign["rejection"] == PENDING_REJECTION,
+          f"repository-qualified callback matched the wrong PR: {recorded!r}, {local!r}, {foreign!r}")
 
     code, out, err = run(["--file", str(store), "reject", "--id", first,
                           "--at", "2026-07-24T12:00:00Z"])
@@ -1464,14 +1498,16 @@ def t_in_pr_rejection_needs_one_typed_completed_disposition(tmp: Path) -> None:
     (merged_fid,) = seed(merged_store)
     for argv in (
         ["--file", str(merged_store), "accept", "--id", merged_fid, "--at", "2026-07-24T10:00:00Z"],
-        ["--file", str(merged_store), "open-pr", "--id", merged_fid, "--pr", "#44"],
+        ["--file", str(merged_store), "open-pr", "--id", merged_fid, "--pr", "#44",
+         "--repo", TEST_REPO],
         ["--file", str(merged_store), "reject-pending", "--id", merged_fid,
          "--at", "2026-07-24T11:00:00Z"],
     ):
         code, _, err = run(argv)
         check(code == 0, f"MERGED follow-up setup failed: {argv!r}: {err!r}")
-    recorded = followups.record_completed_merge_disposition(merged_store, "44")
-    check(recorded == (merged_fid,), f"verified MERGED callback did not record the matching PR: {recorded!r}")
+    recorded = followups.record_completed_merge_disposition(merged_store, "44", TEST_REPO)
+    check(recorded == (merged_fid,),
+          f"verified MERGED callback did not record the matching repository and PR: {recorded!r}")
     code, out, err = run(["--file", str(merged_store), "merged", "--id", merged_fid])
     check(code == 0 and json.loads(out)["pr"] == "44" and load(merged_store) == [],
           f"verified MERGED disposition did not permit close-out: {code} {err!r}")
@@ -1523,7 +1559,8 @@ def t_pr_references_require_numeric_refs(tmp: Path) -> None:
         (fid,) = seed(path)
         check(run(["--file", str(path), "accept", "--id", fid])[0] == 0,
               f"setup accept for rejected URL {ref!r} failed")
-        code, _, err = run(["--file", str(path), "open-pr", "--id", fid, "--pr", ref])
+        code, _, err = run(["--file", str(path), "open-pr", "--id", fid, "--pr", ref,
+                            "--repo", TEST_REPO])
         check(code == 1 and "repository identity" in err,
               f"`open-pr` accepted GitHub URL {ref!r}: {code} {err!r}")
         check(json.loads(run(["--file", str(path), "get", "--id", fid])[1])["pr"] == PLACEHOLDER,
@@ -1537,7 +1574,8 @@ def t_pr_references_require_numeric_refs(tmp: Path) -> None:
         (fid,) = seed(path)
         code, _, err = run(["--file", str(path), "accept", "--id", fid])
         check(code == 0, f"setup `accept` for {ref!r} exited {code}: {err!r}")
-        code, _, err = run(["--file", str(path), "open-pr", "--id", fid, "--pr", ref])
+        code, _, err = run(["--file", str(path), "open-pr", "--id", fid, "--pr", ref,
+                            "--repo", TEST_REPO])
         check(code == 0, f"`open-pr` for {ref!r} exited {code}: {err!r}")
         entry = json.loads(run(["--file", str(path), "get", "--id", fid])[1])
         check(entry["pr"] == expected,

@@ -50,7 +50,7 @@ file that grows.
     did we do this"), or it was PUBLISHED as an issue (the issue is then the record).
   * NEVER DELETED ON TAKE-UP. An entry deleted when work STARTS is an entry a closed, abandoned or
     rejected PR takes down with it — the work still undone, and nothing left to remember it. So while a PR
-    is OPEN the entry STAYS and records which PR is addressing it (`in-pr`). A PR CLOSED WITHOUT MERGING
+    is OPEN the entry STAYS and records the repository and PR addressing it (`in-pr`). A PR CLOSED WITHOUT MERGING
     normally returns it to OPEN WORK (`reopened`); a pending user rejection instead records that PR's
     completed disposition before terminal close-out (`reject` for CLOSED, `merged` for MERGED) — never a
     silent vanish, never stuck in "being worked on" forever.
@@ -142,7 +142,7 @@ SEQ_TYPE = "followup-seq"
 
 FIELDS = (
     "id", "title", "evidence", "deferred_why", "finding", *ACT_FLAGS,
-    "state", "found_run", "found", "decided", "rejection", "pr", "published",
+    "state", "found_run", "found", "decided", "rejection", "pr", "pr_repo", "published",
 )
 
 # `decided` records the user's ruling time. It cannot also prove that campaign completed the recorded PR's
@@ -151,6 +151,7 @@ NO_REJECTION = PLACEHOLDER
 PENDING_REJECTION = "pending"
 DISPOSED_REJECTION = "disposed"
 REJECTION_VALUES = (NO_REJECTION, PENDING_REJECTION, DISPOSED_REJECTION)
+RELINK_CMD = "relink-pr"
 
 # The fields that name a record OUTSIDE this store — the PR that addresses it, or the issue it was
 # published as. THEY ARE WHAT MAKES DELETION SAFE, and the rule is enforced, not assumed: an entry is
@@ -232,7 +233,7 @@ def project(rec: "dict", where: str = "") -> "dict[str, str]":
 # AND THE END OF AN ENTRY'S LIFE IS ON THE GRAPH TOO. `merged` and `publish` do not move the state — they
 # DELETE the entry, because by then the record lives somewhere else (the merged PR; the issue). Everything
 # in between is a state, and the two that matter most are the ones that keep a started piece of work from
-# being lost: `in-pr` (a PR is open on it — the entry STAYS, and names the PR) and `reopened` (an ordinary
+# being lost: `in-pr` (a PR is open on it — the entry STAYS, and names its repository and number) and `reopened` (an ordinary
 # PR was closed WITHOUT merging — the work is undone, so the entry is OPEN WORK again, with its history
 # intact). A pending user rejection preserves `in-pr` until its PR disposition is recorded; terminal `reject`
 # stores the ruling for CLOSED, while `merged` deletes the entry after a verified MERGED result.
@@ -281,11 +282,12 @@ STATES = ("candidate",) + tuple(dict.fromkeys(to for _, to in TRANSITIONS.values
 # `accepted`, because there is still something to do about them.
 TERMINAL = tuple(s for s in STATES if not any(s in frm for frm, _ in TRANSITIONS.values()))
 
-# --- evidence: what each transition MUST write --------------------------------
+# --- evidence: what each transition or identity repair MUST write --------------
 #
-# The EVIDENCE a transition is required to leave behind. ONE OWNER: `build_parser()` wires the CLI from it,
-# `cmd_transition()` writes from it, and the fixtures derive their argv from it — so an evidence-bearing
-# edge cannot be added with a flag the fixtures do not know to pass.
+# The EVIDENCE a transition is required to leave behind, plus the identity field an explicit legacy repair
+# writes. ONE OWNER: `build_parser()` wires the CLI from it, transition and repair handlers write from it,
+# and the fixtures derive their argv from it — so a write cannot be added with a flag the fixtures do not
+# know to pass.
 WRITES = {
     "corroborate":     ("finding",),
     "refute":          ("finding",),
@@ -293,7 +295,8 @@ WRITES = {
     "accept":          ("decided",),
     "reject-pending":  ("decided",),
     "reject":          ("decided",),
-    "open-pr":         ("pr",),
+    "open-pr":         ("pr", "pr_repo"),
+    RELINK_CMD:         ("pr_repo",),
     "closed-unmerged": (),
     "merged":          (),   # the PR it merged is ALREADY in the entry — `open-pr` is what wrote it
     "publish":         ("published",),
@@ -308,6 +311,7 @@ def flag_of(field: str) -> str:
 # The flag that carries each evidence field in. `decided` is the one that may be OMITTED — a timestamp
 # defaults to now; EVIDENCE never defaults to anything.
 FLAG = {"finding": "--finding", "published": "--ref", "decided": "--at", "pr": "--pr",
+        "pr_repo": "--repo",
         **{f: flag_of(f) for f in ACT_FLAGS}}
 OPTIONAL = ("decided",)
 
@@ -335,6 +339,7 @@ BLANK_WHY = {
     "published": "a published follow-up must name WHERE it was published",
     "pr": "the PR is the DURABLE RECORD this entry's deletion will rest on — an entry that says one is "
           "addressing it must name WHICH",
+    "pr_repo": "the PR's repository identity is required to match terminal callbacks safely",
     "decided": "a step is stamped with WHEN it was taken — the USER's ruling into `decided`, an "
                "investigation's into its `finding` record. Omit --at and it stamps now",
     "found": "a follow-up records WHEN it was found — omit --found and it stamps now",
@@ -357,6 +362,8 @@ FLAG_HELP = {
           "record), ordinary `closed-unmerged` returns it to open work (nothing recorded it), and a pending "
           "rejection is disposed only by the verified terminal campaign callback before terminal `reject` "
           "or `merged`",
+    "pr_repo": "the PR's owner/name repository; terminal disposition matches this identity together with its "
+               "number",
     **{w: f"ACT condition '{c}' — {why}" for c, w, why in ACT_CONDITIONS if w in ACT_FLAGS},
 }
 
@@ -407,6 +414,7 @@ INTAKE = {
     # the door ACCEPTS and THROWS AWAY, so it is not a flag there at all.
     **{cmd: {**{f: FLAG[f] for f in WRITES[cmd]},
              **({"decided": FLAG["decided"]} if cmd in STAMPS else {})} for cmd in TRANSITIONS},
+    RELINK_CMD: {"pr_repo": FLAG["pr_repo"]},
 }
 
 # Every door that WRITES. Derived — a subcommand is a write door because it takes values in, not because a
@@ -420,6 +428,7 @@ INTAKE_HELP = {
     **{f: f"'{f}' — required on `add`, editable after, NEVER blankable: {BLANK_WHY[f]}" for f in REQUIRED},
     "decided": "timestamp of this ruling (default: now); terminal `reject` preserves the original "
                "`reject-pending` timestamp after campaign disposition",
+    "pr_repo": "owner/name repository identity paired with the PR number",
     "found": "ISO timestamp it was found (default: now)",
     "found_run": "the run-id that found it",
 }
@@ -497,6 +506,8 @@ def entry_error(entry: dict) -> "str | None":
                 "terminal `reject`")
     if entry["state"] == "rejected" and entry["rejection"] == PENDING_REJECTION:
         return "a rejected entry cannot retain an unresolved rejection disposition"
+    if not is_blank(entry["pr_repo"]) and canonical_repo(entry["pr_repo"]) is None:
+        return f"{entry['id']} carries invalid PR repository {entry['pr_repo']!r} (expected owner/name)"
     empty = [f for f in REQUIRED if is_blank(entry[f])]
     if empty:
         return f"{entry['id']} carries no {', '.join(empty)} — {BLANK_WHY[empty[0]]}"
@@ -661,25 +672,28 @@ def rejection_phase(entry: dict) -> str:
     return entry["rejection"] if entry["state"] == "in-pr" else NO_REJECTION
 
 
-def _record_completed_rejection_disposition(path: Path, pr: str) -> "tuple[str, ...]":
-    """Record one exact PR's verified terminal result on matching pending follow-ups.
+def _record_completed_rejection_disposition(path: Path, pr: str, repo: str) -> "tuple[str, ...]":
+    """Record one exact repository and PR's verified terminal result on matching pending follow-ups.
 
     A missing store is normal, and ordinary `in-pr` entries remain untouched. This is the only path that may
     mark a pending rejection disposed; the CLI transitions refuse to do that themselves. The callback must
-    be a canonical numeric PR reference, and the stored reference must be that same canonical number. GitHub
-    URLs are not accepted at `open-pr`, and legacy URL records therefore cannot be reduced to a number here.
-    The store lock and atomic dump remain its only write path.
+    identify both the canonical numeric PR reference and its owner/name repository. Legacy rows without
+    `pr_repo` therefore remain pending until the user explicitly relinks them. The store lock and atomic dump
+    remain its only write path.
     """
     if not path.exists():
         return ()
     canonical = pr_number(pr)
-    if canonical is None:
+    identity = canonical_repo(repo)
+    if canonical is None or identity is None:
         return ()
     recorded: list[str] = []
     with locked(path):
         entries, high = read_store(path)
         for entry in entries:
-            if entry["pr"] != canonical or rejection_phase(entry) != PENDING_REJECTION:
+            if (entry["pr"] != canonical or is_blank(entry["pr_repo"])
+                    or entry["pr_repo"].casefold() != identity.casefold()
+                    or rejection_phase(entry) != PENDING_REJECTION):
                 continue
             entry["rejection"] = DISPOSED_REJECTION
             recorded.append(entry["id"])
@@ -688,17 +702,34 @@ def _record_completed_rejection_disposition(path: Path, pr: str) -> "tuple[str, 
     return tuple(recorded)
 
 
-def record_completed_rejection_disposition(path: Path, pr: str) -> "tuple[str, ...]":
-    """Record one exact PR's verified CLOSED close-out on matching pending follow-ups."""
-    return _record_completed_rejection_disposition(path, pr)
+def record_completed_rejection_disposition(path: Path, pr: str, repo: str) -> "tuple[str, ...]":
+    """Record one exact repository and PR's verified CLOSED close-out on matching pending follow-ups."""
+    return _record_completed_rejection_disposition(path, pr, repo)
 
 
-def record_completed_merge_disposition(path: Path, pr: str) -> "tuple[str, ...]":
-    """Record one exact PR's verified MERGED result on matching pending follow-ups."""
-    return _record_completed_rejection_disposition(path, pr)
+def record_completed_merge_disposition(path: Path, pr: str, repo: str) -> "tuple[str, ...]":
+    """Record one exact repository and PR's verified MERGED result on matching pending follow-ups."""
+    return _record_completed_rejection_disposition(path, pr, repo)
 
 
 PR_REF_RE = re.compile(r"(?:#)?(?P<short>[1-9][0-9]*)")
+GITHUB_PR_RE = re.compile(
+    r"https://github\.com/(?P<owner>[^/?#\s]+)/(?P<name>[^/?#\s]+)/pull/(?P<number>[1-9][0-9]*)/?"
+)
+REPO_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*")
+
+
+def canonical_repo(ref: str) -> "str | None":
+    """Return a GitHub owner/name identity, or None for an untrusted repository reference."""
+    return ref if REPO_RE.fullmatch(ref) else None
+
+
+def legacy_github_pr(ref: str) -> "tuple[str, str] | None":
+    """Return the repository and number from a safe legacy GitHub PR URL."""
+    match = GITHUB_PR_RE.fullmatch(ref)
+    if match is None:
+        return None
+    return f"{match.group('owner')}/{match.group('name')}", match.group("number")
 
 
 def is_github_url(ref: str) -> bool:
@@ -811,6 +842,38 @@ def append_finding(existing: str, outcome: str, at: str, text: str) -> str:
     return record if is_blank(existing) else existing + "\n" + record
 
 
+def cmd_relink(path: Path, args) -> int:
+    """Attach an owner/name repository to one legacy in-pr record by explicit user action."""
+    values = taken(RELINK_CMD, args)
+    identity = canonical_repo(values["pr_repo"])
+    if identity is None:
+        fail("--repo must be a GitHub owner/name repository identity")
+    with locked(path):
+        entries, high = read_store(path)
+        entry = find(entries, args.id)
+        if entry is None:
+            fail(f"no follow-up {args.id}")
+        if entry["state"] != "in-pr":
+            fail(f"{args.id} is '{entry['state']}' — `{RELINK_CMD}` applies only to: in-pr")
+        current = entry["pr_repo"]
+        if not is_blank(current):
+            if current.casefold() != identity.casefold():
+                fail(f"{args.id} is already linked to PR repository {current!r}")
+            print(json.dumps(entry))
+            return 0
+        numeric = pr_number(entry["pr"])
+        if numeric is None:
+            legacy = legacy_github_pr(entry["pr"])
+            if legacy is None or legacy[0].casefold() != identity.casefold():
+                fail(f"{args.id} has no relinkable PR reference for repository {identity!r}")
+            numeric = legacy[1]
+            entry["pr"] = numeric
+        entry["pr_repo"] = identity
+        dump(path, entries, high)
+    print(json.dumps(entry))
+    return 0
+
+
 def cmd_transition(path: Path, args) -> int:
     """The ONLY things that move `state` — or END an entry — and every one checks the state it comes FROM.
 
@@ -832,9 +895,14 @@ def cmd_transition(path: Path, args) -> int:
     if cmd == "open-pr":
         if is_github_url(values["pr"]):
             fail("open-pr refuses GitHub URLs because this store cannot validate repository identity; pass #N or N")
+        identity = canonical_repo(values["pr_repo"])
+        if identity is None:
+            fail("open-pr requires --repo with a GitHub owner/name repository identity")
         # A PR number is the durable key other campaign tools consume. Keep an opaque caller reference
-        # untouched, but collapse every recognised legacy spelling to that one key before storing it.
+        # untouched, but collapse every recognised legacy spelling to that one key before storing it beside
+        # the owner/name repository identity.
         values["pr"] = pr_number(values["pr"]) or values["pr"]
+        values["pr_repo"] = identity
     with locked(path):
         entries, high = read_store(path)
         entry = find(entries, args.id)
@@ -864,15 +932,15 @@ def cmd_transition(path: Path, args) -> int:
             )
         if cmd == "merged" and phase == PENDING_REJECTION:
             fail(
-                f"{args.id} has a pending rejection whose PR disposition is unresolved — `merged` cannot "
+                f"{args.id} has a pending rejection whose repository and PR disposition is unresolved — `merged` cannot "
                 "delete it until the verified terminal campaign disposition callback records the matching "
-                "MERGED PR."
+                "repository and MERGED PR."
             )
         if cmd == "closed-unmerged" and phase == PENDING_REJECTION:
             fail(
-                f"{args.id} has a pending rejection whose PR disposition is unresolved — `closed-unmerged` "
+                f"{args.id} has a pending rejection whose repository and PR disposition is unresolved — `closed-unmerged` "
                 "cannot mark it disposed; the verified terminal campaign disposition callback must record "
-                "the PR first."
+                "the repository and PR first."
             )
         # WHEN this step was taken. The user's ruling is DURABLE DATA, exactly like the ledger's
         # `api_approval`: a later run — or a fresh agent that never saw the conversation — reads it and does
@@ -1024,6 +1092,10 @@ def build_parser() -> argparse.ArgumentParser:
         for field, flag in INTAKE[cmd].items():
             t.add_argument(flag, dest=field, required=field not in OPTIONAL, help=INTAKE_HELP[field])
 
+    r = sub.add_parser(RELINK_CMD, help="attach a repository identity to one legacy in-pr PR record")
+    r.add_argument("--id", required=True)
+    r.add_argument("--repo", dest="pr_repo", required=True, help=INTAKE_HELP["pr_repo"])
+
     g = sub.add_parser("get", help="print a follow-up as JSON, or one field")
     g.add_argument("--id", required=True)
     g.add_argument("--field", help="print only this field")
@@ -1051,7 +1123,8 @@ def main(argv: "list[str]") -> int:
     path = Path(args.file)
     if args.cmd in TRANSITIONS:
         return cmd_transition(path, args)
-    handlers = {"add": cmd_add, "set": cmd_set, "get": cmd_get, "list": cmd_list, "table": cmd_table}
+    handlers = {"add": cmd_add, "set": cmd_set, "get": cmd_get, "list": cmd_list, "table": cmd_table,
+                RELINK_CMD: cmd_relink}
     return handlers[args.cmd](path, args)
 
 

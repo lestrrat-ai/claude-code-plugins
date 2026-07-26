@@ -51,8 +51,8 @@ def _followup_store_for(path: Path) -> "Path | None":
     return run_dir.parent.parent / "followups.jsonl"
 
 
-def _record_completed_followup_disposition(path: Path, pr: str, callback: str) -> "tuple[str, ...]":
-    """Record one exact PR's pending follow-up disposition through a verified terminal callback."""
+def _record_completed_followup_disposition(path: Path, pr: str, repo: str, callback: str) -> "tuple[str, ...]":
+    """Record one exact repository and PR's pending follow-up disposition through a verified terminal callback."""
 
     store = _followup_store_for(path)
     if store is None or not store.exists():
@@ -62,26 +62,26 @@ def _record_completed_followup_disposition(path: Path, pr: str, callback: str) -
         raise RuntimeError(f"cannot load follow-up accessor at {FOLLOWUPS_PY}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return getattr(module, callback)(store, pr)
+    return getattr(module, callback)(store, pr, repo)
 
 
-def record_completed_rejection_disposition(path: Path, pr: str) -> "tuple[str, ...]":
-    """Record one exact PR's pending follow-up disposition after verified CLOSED close-out.
+def record_completed_rejection_disposition(path: Path, pr: str, repo: str) -> "tuple[str, ...]":
+    """Record one exact repository and PR's pending follow-up disposition after verified CLOSED close-out.
 
-    The caller owns proof that GitHub reported the matching PR CLOSED. This helper never scans ledger rows,
+    The caller owns proof that GitHub reported the matching repository and PR CLOSED. This helper never scans ledger rows,
     so a local abort decision, generic status write, or repeated terminal write cannot consume a rejection
     before that proof exists.
     """
-    return _record_completed_followup_disposition(path, pr, "record_completed_rejection_disposition")
+    return _record_completed_followup_disposition(path, pr, repo, "record_completed_rejection_disposition")
 
 
-def record_completed_merge_disposition(path: Path, pr: str) -> "tuple[str, ...]":
-    """Record one exact PR's pending follow-up disposition after verified MERGED result.
+def record_completed_merge_disposition(path: Path, pr: str, repo: str) -> "tuple[str, ...]":
+    """Record one exact repository and PR's pending follow-up disposition after verified MERGED result.
 
-    The caller owns proof that GitHub reported the matching PR MERGED. A generic ledger status write cannot
+    The caller owns proof that GitHub reported the matching repository and PR MERGED. A generic ledger status write cannot
     consume a rejection before that proof exists.
     """
-    return _record_completed_followup_disposition(path, pr, "record_completed_merge_disposition")
+    return _record_completed_followup_disposition(path, pr, repo, "record_completed_merge_disposition")
 
 # --- schema (owned here, once) ------------------------------------------------
 

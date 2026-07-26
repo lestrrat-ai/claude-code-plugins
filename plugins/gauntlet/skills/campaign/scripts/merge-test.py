@@ -894,7 +894,7 @@ def t_closed_out_ledger_disposes_matching_pending_followup():
             ["--file", str(store), "add", "--title", "pending", "--evidence", "proof",
              "--deferred-why", "scope"],
             ["--file", str(store), "accept", "--id", "fu1", "--at", "2026-07-24T10:00:00Z"],
-            ["--file", str(store), "open-pr", "--id", "fu1", "--pr", "#9"],
+            ["--file", str(store), "open-pr", "--id", "fu1", "--pr", "#9", "--repo", "o/r"],
             ["--file", str(store), "reject-pending", "--id", "fu1", "--at", "2026-07-24T11:00:00Z"],
         ):
             code, _, err = followup(argv)
@@ -925,7 +925,7 @@ def t_merged_out_ledger_disposes_matching_pending_followup():
             ["--file", str(store), "add", "--title", "pending", "--evidence", "proof",
              "--deferred-why", "scope"],
             ["--file", str(store), "accept", "--id", "fu1", "--at", "2026-07-24T10:00:00Z"],
-            ["--file", str(store), "open-pr", "--id", "fu1", "--pr", "#9"],
+            ["--file", str(store), "open-pr", "--id", "fu1", "--pr", "#9", "--repo", "o/r"],
             ["--file", str(store), "reject-pending", "--id", "fu1", "--at", "2026-07-24T11:00:00Z"],
         ):
             code, _, err = followup(argv)
@@ -953,7 +953,7 @@ def t_aborted_repeat_disposes_pending_followup_after_closed_verification():
             ["--file", str(store), "add", "--title", "pending", "--evidence", "proof",
              "--deferred-why", "scope"],
             ["--file", str(store), "accept", "--id", "fu1", "--at", "2026-07-24T10:00:00Z"],
-            ["--file", str(store), "open-pr", "--id", "fu1", "--pr", "#9"],
+            ["--file", str(store), "open-pr", "--id", "fu1", "--pr", "#9", "--repo", "o/r"],
             ["--file", str(store), "reject-pending", "--id", "fu1", "--at", "2026-07-24T11:00:00Z"],
         ):
             code, _, err = followup(argv)

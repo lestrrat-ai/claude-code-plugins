@@ -2396,7 +2396,7 @@ def t_aborted_transition_does_not_dispose_pending_followup(L: ModuleType, tmp: P
         for argv in (
             ["--file", str(store), "add", "--title", fid, "--evidence", "proof", "--deferred-why", "scope"],
             ["--file", str(store), "accept", "--id", fid, "--at", "2026-07-24T10:00:00Z"],
-            ["--file", str(store), "open-pr", "--id", fid, "--pr", pr],
+            ["--file", str(store), "open-pr", "--id", fid, "--pr", pr, "--repo", "o/r"],
             ["--file", str(store), "reject-pending", "--id", fid, "--at", "2026-07-24T11:00:00Z"],
         ):
             code, _, err = capture_cli(followups.main, argv)

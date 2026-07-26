@@ -147,7 +147,7 @@ about and one whose partial rejection strands the rest.
    - **`refuted`** — re-investigated **only** when new evidence may overturn it, and that re-investigation
      succeeds by `corroborate`, never `refute`.
    - **`self-accepted`** — the driver already took it up; the entry has **no PR yet** (a `self-accepted`
-     entry stores no PR reference — `open-pr` is the step that first writes one). So resume at **step 3**:
+     entry stores no PR identity — `open-pr` is the step that first writes one). So resume at **step 3**:
      dispatch the scoped fix subagent, which authors the fix and **opens the PR**; `open-pr` then records it
      (→ `in-pr`) and step 4 adopts it into the run. Do **not** try to "look up" or reconcile an
      already-created PR first — there is **no durable fuN→PR key** to look one up by (no PR field before
@@ -166,7 +166,7 @@ about and one whose partial rejection strands the rest.
      its interrupted-heartbeat gap.
    - **`in-pr`** — first read its typed `rejection` phase. `pending` resumes the rejection procedure below;
      after a verified disposition, use `reject` for CLOSED or `merged` for MERGED; only `-` takes the
-     ordinary path. On that ordinary path, reconcile the recorded PR against the current run. If it has no
+     ordinary path. On that ordinary path, reconcile the recorded repository and PR against the current run. If it has no
      ledger row, or its **non-terminal** row lacks the run label, ADOPT it through step 4. **If its existing row is terminal, NEVER refresh,
      re-adopt, or relabel it.** An unadopted follow-up PR with no terminal row sits **outside the campaign
      gate** — the exact thing "fold that PR into the current campaign" exists to prevent.
@@ -190,15 +190,15 @@ The pending phase is the user's ruling on the follow-up. It is separate from a t
 records what happened to the PR rather than what the user decided.
 
 1. Run `followups.py --file <store> reject-pending --id fuN` while the entry is `in-pr`. This preserves the
-   PR reference and writes the user's ruling time.
-2. Finish the recorded PR's current campaign disposition. A CLOSED PR with no pending rejection uses
-   `closed-unmerged`. A pending rejection waits for the verified terminal campaign disposition callback to
-   record the matching PR first; do not run `closed-unmerged` or `merged` directly before that callback. A
+   PR identity and writes the user's ruling time.
+2. Finish the recorded repository and PR's current campaign disposition. A CLOSED PR with no pending rejection
+   uses `closed-unmerged`. A pending rejection waits for the verified terminal campaign disposition callback to
+   record the matching repository and PR first; do not run `closed-unmerged` or `merged` directly before that callback. A
    verified CLOSED result then uses `reject`; a verified MERGED result uses `merged`, because the PR is the
    durable record.
 3. For a verified CLOSED result, once the entry reports `rejection = disposed`, run
    `followups.py --file <store> reject --id fuN`. It keeps the original `reject-pending` timestamp and
-   retains the PR reference as history.
+   retains the repository and PR identity as history.
 
 **Never use an old terminal ledger row as a new rejection signal.** A later pending ruling is a new fact and
 stays pending until its own PR disposition occurs.
@@ -227,8 +227,9 @@ stays pending until its own PR disposition occurs.
    **`gauntlet-authored`** and adopted into the current run so `pr-adoption.md` reads it as
    `pr_origin=gauntlet` — without the label it defaults to `external`, which then blocks campaign's own
    later autonomous repair of the very PR it authored. Record the PR with `followups.py open-pr --id fuN
-   --pr <N>`; use a bare number or `#N`. GitHub URLs are refused because this store cannot validate their
-   repository identity, and the entry stays `in-pr` naming which PR is addressing it.
+   --pr <N> --repo <owner/name>`; use a bare number or `#N`. GitHub URLs are refused because this store
+   cannot validate their repository identity. Legacy rows without a stored repository stay pending until
+   the user explicitly runs `followups.py relink-pr --id fuN --repo <owner/name>`.
 
 4. **FOLD THE PR INTO THE CURRENT CAMPAIGN.** The follow-up's PR — which step 3 admitted on its own
    recorded base — is **adopted into this run** like any other
@@ -273,7 +274,7 @@ is **closed, abandoned, or rejected in review** takes down with it — the work 
 left to remember it*. That is the exact permanent loss this store exists to prevent, just moved later in
 time. So:
 
-- While the PR is **open**, the entry **STAYS** (`in-pr`) and records **which PR** is addressing it.
+- While the PR is **open**, the entry **STAYS** (`in-pr`) and records **which repository and PR** are addressing it.
 - The PR **merges** → the verified campaign callback records any pending disposition, then `merged` deletes
   the entry. The PR is the record now.
 - The PR is **closed WITHOUT merging** with no pending rejection → `closed-unmerged` returns it to **open
@@ -331,7 +332,8 @@ followups.py --file <store> take-up     --id fuN --act-...     # TIER 2 — only
 followups.py --file <store> accept  --id fuN        # THE USER AGREED — the only edge into `accepted`
 followups.py --file <store> reject-pending --id fuN # user rejected an `in-pr` entry; record typed pending state
 followups.py --file <store> reject  --id fuN        # user ruled against it; `in-pr` requires a disposed PR result
-followups.py --file <store> open-pr --id fuN --pr <N>      # a PR is addressing it — the entry STAYS
+followups.py --file <store> open-pr --id fuN --pr <N> --repo <owner/name>  # repository and PR address it
+followups.py --file <store> relink-pr --id fuN --repo <owner/name>          # user links a legacy PR record
 followups.py --file <store> merged  --id fuN        # after verified MERGED callback; that PR is the record, so the entry is DELETED
 followups.py --file <store> closed-unmerged --id fuN       # ordinary PR died → OPEN WORK; pending rejection → terminal callback, then `reject`
 followups.py --file <store> publish --id fuN --ref <issue> # TIER 3 — only AFTER the user's accept. The ISSUE
@@ -362,8 +364,9 @@ fixtures cited below (`user-step-unskippable`, `delete-needs-a-record`, …) are
 **What every field is for** (the schema owns the list; this owns the *why*): an entry carries a stable
 id, a one-line title, the **evidence** (which PR, which review pass, which `file:line`), **why it was
 deferred** rather than folded in, its lifecycle state, which run found it and when, **which PR is
-addressing it**, and — once ruled on — when the user decided. Its typed `rejection` phase separately
-records whether an `in-pr` rejection is pending or that PR's disposition is complete. **A follow-up with no
+addressing it and which repository owns that PR**, and — once ruled on — when the user decided. Its typed
+`rejection` phase separately records whether an `in-pr` rejection is pending or that repository and PR's
+disposition is complete. **A follow-up with no
 evidence is a RUMOR**:
 nobody can audit an entry that says only *"the merge logic looks wrong"*. **Why it was deferred** is
 required on the same terms — without it the next run cannot see why the finding was not simply folded into
