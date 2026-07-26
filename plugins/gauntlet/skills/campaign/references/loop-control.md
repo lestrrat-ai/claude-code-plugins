@@ -519,6 +519,10 @@ the worker returns, and what never moves into it. The steps below are unchanged 
   `aborted` status and does **no merge and no cleanup** — the branch content never reached `<base>`, so its
   owned worktree/branch are left untouched for the user. Either way `merge.py run` is the single finalizer;
   Step 1 only ROUTES the absent fact here, it does not finalize it itself.
+
+  **An already-terminal `aborted` row is also resumable when a later live view verifies `MERGED`.** The same
+  command resumes base-sync and owned cleanup, then records `merged`; a later `CLOSED` view remains the
+  already-complete abort no-op.
 ### Step 5 — Reschedule or exit
 
 #### Primary continuity

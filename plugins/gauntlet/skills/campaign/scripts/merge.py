@@ -642,12 +642,14 @@ def execute(ledger: Path, pr: str, project_root: Path, repo: str,
     if row["status"] == "aborted":
         # Terminal-repeat, symmetric with the `merged` no-op below (both terminal statuses are safe to
         # repeat). A CLOSED live state confirms the recorded abort still holds -> the same already-complete
-        # no-op, no ledger write. A live OPEN or MERGED state CONTRADICTS the terminal `aborted` row (the PR
-        # is no longer closed-without-merge); refuse naming the mismatch, never a silent no-op.
-        if view["state"] != "CLOSED":
+        # no-op, no ledger write. A later verified MERGED state is a new durable result: fall through to the
+        # MERGED finalization below so base-sync, cleanup, and the terminal ledger update can resume. Only a
+        # live OPEN state contradicts the terminal `aborted` row.
+        if view["state"] == "CLOSED":
+            return {"status": "already-complete", "pr": pr, "cleanup": {}}
+        if view["state"] != "MERGED":
             raise Refusal(
                 f"terminal ledger row says aborted but GitHub state is {view['state']!r}, not CLOSED")
-        return {"status": "already-complete", "pr": pr, "cleanup": {}}
 
     if row["status"] == "merged":
         if view["state"] != "MERGED":
@@ -655,14 +657,15 @@ def execute(ledger: Path, pr: str, project_root: Path, repo: str,
                 f"terminal ledger row says merged but GitHub state is {view['state']!r}")
         return {"status": "already-complete", "pr": pr, "cleanup": {}}
 
-    # Only NONTERMINAL rows (in_review or a held status) remain. Classify by the LIVE state, not the row
-    # status, so an EXTERNAL merge finalizes the landed work regardless of a held row.
+    # Only rows without a completed live result remain. Classify by the LIVE state, not the row status, so an
+    # EXTERNAL merge finalizes landed work regardless of whether the row is nonterminal or was previously
+    # aborted before the PR later merged.
     if view["state"] == "MERGED":
         # A maintainer merged the exact reviewed head while this row was still nonterminal — in_review OR
-        # held (`L.HELD_STATUSES`). The full ownership validation above confirmed our reviewed head/base/
-        # branch on our owned resources, so the work LANDED: fall through to resume the owed base-sync /
-        # owned cleanup / terminal write. This is the ONLY way a held row proceeds; the campaign still never
-        # INITIATES a merge on a held (or OPEN) PR — that stays refused just below.
+        # held (`L.HELD_STATUSES`) — or after an earlier abort. The full ownership validation above confirmed
+        # our reviewed head/base/branch on our owned resources, so the work LANDED: fall through to resume the
+        # owed base-sync / owned cleanup / terminal write. This is the ONLY way a held row proceeds; the campaign
+        # still never INITIATES a merge on a held (or OPEN) PR — that stays refused just below.
         pass
     elif row["status"] != "in_review":
         # A nonterminal, non-MERGED row that is not in_review is HELD (or malformed). The campaign must

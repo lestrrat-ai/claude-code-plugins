@@ -757,10 +757,10 @@ def t_repeat_after_closed_terminal_is_noop():
         finally:
             finish(td, real)
 
-    # Guardrail: an `aborted` row whose live PR is OPEN or MERGED is a CONTRADICTION, not a no-op — the PR is
-    # no longer closed-without-merge. It must REFUSE naming the mismatch (not the generic "not in_review"),
-    # mirroring the merged+non-MERGED guard.
-    for live_state in ("OPEN", "MERGED"):
+    # Guardrail: an `aborted` row whose live PR is OPEN is a CONTRADICTION, not a no-op — the PR is no longer
+    # closed-without-merge. It must REFUSE naming the mismatch (not the generic "not in_review"), mirroring
+    # the merged+non-MERGED guard.
+    for live_state in ("OPEN",):
         td, root, f, led, real = scenario(state=live_state, status="aborted")
         try:
             code, _result, err = invoke(f, led, root)
@@ -769,6 +769,28 @@ def t_repeat_after_closed_terminal_is_noop():
             check(f.merged_calls == 0, f"aborted+{live_state} contradiction must not merge")
         finally:
             finish(td, real)
+
+
+def t_aborted_row_resumes_after_later_verified_merge():
+    """A later verified MERGED result supersedes an earlier abort and finalizes the campaign row."""
+    td, root, f, led, real = scenario(state="CLOSED")
+    try:
+        first, _, err = invoke(f, led, root)
+        check(first == 0 and status(led) == "aborted", f"abort close-out did not finish: {err}")
+        check(f.worktree_present and f.branch_present, "abort close-out must preserve unmerged resources")
+
+        f.state = "MERGED"
+        before = len(f.calls)
+        second, result, err = invoke(f, led, root)
+        check(second == 0 and result is not None and result["status"] == "merged",
+              f"later verified MERGED result did not finalize the aborted row: {err}")
+        check(status(led) == "merged", "later verified MERGED result did not update the terminal row")
+        check(result["cleanup"] == {"worktree": "removed", "branch": "removed"},
+              f"later MERGED finalization did not clean owned resources: {result}")
+        check(not any(argv[:3] == ["gh", "pr", "merge"] for argv, _ in f.calls[before:]),
+              "later verified MERGED result attempted a second merge")
+    finally:
+        finish(td, real)
 
 
 def t_head_race_between_view_and_merge_refuses_before_landing():
@@ -1668,7 +1690,8 @@ CASES = [
     ("merge-accepted", "MERGED confirmation outranks a lost merge response", t_merge_transport_failure_after_acceptance_continues),
     ("terminal-write-resume", "a failed terminal write resumes after already-completed cleanup", t_terminal_write_failure_resumes_after_cleanup),
     ("terminal-repeat", "repeated invocation after terminal state is a no-op", t_repeat_after_terminal_is_noop),
-    ("aborted-terminal-repeat", "repeating after a CLOSED close-out is an already-complete no-op (moved refs tolerated); aborted+OPEN/MERGED refuses as a contradiction", t_repeat_after_closed_terminal_is_noop),
+    ("aborted-terminal-repeat", "repeating after a CLOSED close-out is an already-complete no-op (moved refs tolerated); aborted+OPEN refuses as a contradiction", t_repeat_after_closed_terminal_is_noop),
+    ("aborted-later-merge", "a later verified MERGED result resumes an earlier aborted row without re-merging", t_aborted_row_resumes_after_later_verified_merge),
     ("head-race", "--match-head-commit refuses a tip that advanced before the merge landed", t_head_race_between_view_and_merge_refuses_before_landing),
     ("merge-method", "merge method is a validated input; squash-disabled repo has a prevailing-method recourse", t_merge_method_input_validated_and_applied),
     ("absent-resume", "an absent-but-unfinalized MERGED row resumes its remaining phases through run", t_absent_snapshot_merged_row_resumes_via_run),

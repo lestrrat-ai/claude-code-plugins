@@ -132,7 +132,8 @@ branch — the repo's "Automatically delete head branches" setting alone governs
 
 Each phase leaves a durable or safely repeatable checkpoint. Re-run the same command after any failure:
 GitHub `MERGED` skips the merge call; base updates are fast-forward-only; absent owned worktrees/branches
-count as completed cleanup; a terminal ledger row is a no-op.
+count as completed cleanup; a terminal ledger row is a no-op, except an `aborted` row whose later live view
+verifies `MERGED`, which resumes post-merge finalization and records `merged`.
 
 When the checked-out local base is what git fast-forwards and an unrelated actor's **uncommitted** edits in
 that checkout block it, the command **refuses and lists the blocking paths it detected** (each staged, unstaged,
