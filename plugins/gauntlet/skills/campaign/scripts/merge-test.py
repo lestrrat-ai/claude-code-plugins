@@ -757,16 +757,19 @@ def t_repeat_after_closed_terminal_is_noop():
         finally:
             finish(td, real)
 
-    # Guardrail: an `aborted` row whose live PR is OPEN is a CONTRADICTION, not a no-op — the PR is no longer
-    # closed-without-merge. It must REFUSE naming the mismatch (not the generic "not in_review"), mirroring
-    # the merged+non-MERGED guard.
+    # Guardrail: a normal abort leaves the PR OPEN and removes this run's labels. The terminal row is already
+    # decided, so the follow-up is an expected no-op: it must preserve the abort and never merge or clean the
+    # unmerged resources. This is the OPEN counterpart to the CLOSED terminal repeat above.
     for live_state in ("OPEN",):
         td, root, f, led, real = scenario(state=live_state, status="aborted")
         try:
-            code, _result, err = invoke(f, led, root)
-            check(code != 0 and "aborted but GitHub state is" in err,
-                  f"aborted+{live_state} must refuse as a contradiction, got code={code} err={err!r}")
-            check(f.merged_calls == 0, f"aborted+{live_state} contradiction must not merge")
+            code, result, err = invoke(f, led, root)
+            check(code == 0 and result is not None and result["status"] == "already-complete",
+                  f"aborted+{live_state} must be an expected no-op, got code={code} result={result} err={err!r}")
+            check(status(led) == "aborted", f"aborted+{live_state} changed the terminal ledger row")
+            check(f.merged_calls == 0, f"aborted+{live_state} no-op must not merge")
+            check(f.worktree_present and f.branch_present,
+                  f"aborted+{live_state} no-op destroyed unmerged resources")
         finally:
             finish(td, real)
 
@@ -1036,6 +1039,30 @@ def t_terminal_aborted_follow_up_routes_later_merge():
         check(status(led) == "merged", "the verified later merge did not update the terminal row")
         check(not any(argv[:3] == ["gh", "pr", "merge"] for argv, _ in f.calls),
               "the terminal aborted follow-up attempted a second merge")
+    finally:
+        finish(td, real)
+
+
+def t_terminal_aborted_open_follow_up_is_noop():
+    # The normal abort procedure leaves the PR OPEN, removes this run's labels, and records `aborted`. The
+    # run-scoped snapshot is therefore empty, but the one live verification must preserve the terminal row
+    # and let the finished-run path proceed without merging or cleaning the unmerged work.
+    td, root, f, led, real = scenario(state="OPEN", status="aborted", labels=[])
+    try:
+        prs = root / "prs.json"
+        prs.write_text("[]", encoding="utf-8")
+        facts = RECON.detect(led, prs, "g1")
+        row_fact = facts["rows"]["9"]
+        check(row_fact == {"terminal": "aborted", "absent_from_snapshot": True},
+              f"normal abort follow-up fact drifted: {row_fact}")
+        code, result, err = invoke(f, led, root)
+        check(code == 0, f"normal abort follow-up did not stay terminal: {err}")
+        check(result == {"status": "already-complete", "pr": "9", "cleanup": {}},
+              f"normal abort follow-up returned {result}")
+        check(status(led) == "aborted", "normal abort follow-up changed the terminal row")
+        check(f.merged_calls == 0, "normal abort follow-up attempted a merge")
+        check(f.worktree_present and f.branch_present,
+              "normal abort follow-up cleaned resources holding unmerged work")
     finally:
         finish(td, real)
 
@@ -1716,7 +1743,7 @@ CASES = [
     ("merge-accepted", "MERGED confirmation outranks a lost merge response", t_merge_transport_failure_after_acceptance_continues),
     ("terminal-write-resume", "a failed terminal write resumes after already-completed cleanup", t_terminal_write_failure_resumes_after_cleanup),
     ("terminal-repeat", "repeated invocation after terminal state is a no-op", t_repeat_after_terminal_is_noop),
-    ("aborted-terminal-repeat", "repeating after a CLOSED close-out is an already-complete no-op (moved refs tolerated); aborted+OPEN refuses as a contradiction", t_repeat_after_closed_terminal_is_noop),
+    ("aborted-terminal-repeat", "repeating after a CLOSED close-out or normal OPEN abort is an already-complete no-op (moved refs tolerated)", t_repeat_after_closed_terminal_is_noop),
     ("aborted-later-merge", "a later verified MERGED result resumes an earlier aborted row without re-merging", t_aborted_row_resumes_after_later_verified_merge),
     ("head-race", "--match-head-commit refuses a tip that advanced before the merge landed", t_head_race_between_view_and_merge_refuses_before_landing),
     ("merge-method", "merge method is a validated input; squash-disabled repo has a prevailing-method recourse", t_merge_method_input_validated_and_applied),
@@ -1728,6 +1755,8 @@ CASES = [
     ("absent-routing", "the absent fact routes reconcile -> merge.py run, which finalizes MERGED and CLOSED sides", t_absent_routing_decision),
     ("terminal-aborted-follow-up", "an absent aborted row routes a later MERGED view through merge.py run without re-merging",
      t_terminal_aborted_follow_up_routes_later_merge),
+    ("terminal-aborted-open-follow-up", "an absent normal OPEN abort stays aborted through merge.py run without merge or cleanup",
+     t_terminal_aborted_open_follow_up_is_noop),
     ("label-free-half-adopted-closed", "a half-adopted CLOSED row with no own label closes out to aborted; a foreign label still refuses", t_label_free_half_adopted_closed_out),
     ("external-merge-held-resume", "an external MERGE of a held row resumes to merged for every held status; OPEN+held stays refused", t_external_merge_while_held_resumes),
     ("absent-held-merge-routing", "an absent held row externally MERGED routes reconcile -> merge.py run, which resumes it to merged", t_absent_held_row_external_merge_routes_to_resume),

@@ -366,10 +366,10 @@ def detect(ledger_path: Path, prs_path: Path, run_id: str) -> dict:
         pr = row["pr"]
         status = row["status"]
         if status == "aborted" and pr not in by_pr:
-            # An aborted row normally remains CLOSED and absent after its terminal close-out. Report the
-            # absence as a follow-up fact so loop-control can run the existing single live verification
-            # before terminal completion. That verifier preserves the CLOSED no-op and routes a verified
-            # MERGED result through merge.py run; an OPEN contradiction remains a refusal there.
+            # An aborted row may remain OPEN and absent after the normal abort procedure, or remain CLOSED
+            # and absent after a terminal close-out. Report the absence as a follow-up fact so loop-control
+            # can run the single live verification before terminal completion. That verifier preserves the
+            # OPEN/CLOSED no-op and routes a verified MERGED result through merge.py run.
             result_rows[pr] = {"terminal": "aborted", "absent_from_snapshot": True}
             terminal_n += 1
             absent_n += 1

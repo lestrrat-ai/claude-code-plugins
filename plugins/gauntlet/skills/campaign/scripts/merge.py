@@ -9,8 +9,8 @@ ledger row) or safe to repeat. A rerun therefore resumes after interruption with
 
 It is also the FINALIZER for an absent-from-snapshot row loop-control.md Step 4 routes here after a merge
 that landed but never finished: the single live view distinguishes MERGED (resume the owed base-sync /
-cleanup / terminal-write phases) from CLOSED-without-merge (the terminal close-out — record `aborted`, no
-merge, no cleanup, because unmerged branch content must never be destroyed).
+cleanup / terminal-write phases) from an OPEN/CLOSED terminal-aborted no-op or CLOSED-without-merge (record
+or preserve `aborted`, no merge, no cleanup, because unmerged branch content must never be destroyed).
 
     merge.py run --ledger <state.jsonl> --pr <N> --project-root <dir> --repo <owner/name> \
         [--merge-method squash|merge|rebase]
@@ -189,9 +189,9 @@ def _validate_state(header: dict, row: dict, pr: str, root: Path, view: dict,
     # between a bug and a destroyed worktree is never relaxed.
     #   * `check_live_refs=False` drops the live head/base/branch equality pins — the checks a MERGE needs to
     #     land on the exact reviewed tip, and the head pin a MERGED-resume keeps to confirm OUR reviewed head
-    #     is what landed. Only the CLOSED terminal paths drop it: a push or a base/branch rename before a
-    #     CLOSE is irrelevant to a row that only records terminal `aborted`, and a CLOSED PR never re-enters
-    #     the open snapshot to have its head_sha refreshed, so pinning it there would wedge the row forever.
+    #     is what landed. Terminal aborted no-op paths drop it: a push or a base/branch rename before the
+    #     terminal result is irrelevant to a row that records `aborted`, and pinning it there would wedge the
+    #     row forever.
     #   * `require_resolved_ownership=False` drops the fail-closed that BOTH ownership fields are RESOLVED
     #     (∈{yes,no}). That fail-closed is a MERGE-INITIATING sanity gate: a HALF-ADOPTION (pr-adopt.py
     #     registers the ledger row BEFORE it resolves the worktree, so its documented git-failure path leaves
@@ -617,13 +617,14 @@ def execute(ledger: Path, pr: str, project_root: Path, repo: str,
     #     (`L.HELD_STATUSES`) — is a real close-out: a CLOSED PR moots every held reason, and a human closing
     #     a parked PR IS the resolution. Only a `merged` row with a CLOSED live state is a contradiction (a
     #     merged PR reports MERGED, not CLOSED), left to the terminal status gate below.
-    #   * aborted_repeat: an already-`aborted` row whose PR is still CLOSED — the terminal-repeat no-op,
-    #     symmetric with the `merged`-repeat below.
+    #   * aborted_repeat: an already-`aborted` row whose PR is still OPEN or CLOSED — the terminal-repeat
+    #     no-op, symmetric with the `merged`-repeat below. OPEN is the normal abort result: bailout leaves
+    #     the PR open and removes this run's labels, so it drops out of the run-scoped snapshot.
     #   Both are LEDGER-ONLY (record `aborted`/no-op, merge and clean nothing), so both drop the live
-    #   head/base/branch pins (`check_live_refs=False`): a push or base/branch rename before the CLOSE must
-    #   not wedge a settled row, and a CLOSED PR never re-enters the open snapshot to be re-gated.
+    #   head/base/branch pins (`check_live_refs=False`): a push or base/branch rename before the terminal
+    #   result must not wedge a settled row, and neither terminal no-op state re-enters this run's gate.
     close_out = view["state"] == "CLOSED" and row["status"] not in ("merged", "aborted")
-    aborted_repeat = row["status"] == "aborted" and view["state"] == "CLOSED"
+    aborted_repeat = row["status"] == "aborted" and view["state"] in ("OPEN", "CLOSED")
     ledger_only = close_out or aborted_repeat
     # merge_initiating is the ONE path that STARTS a merge — a live OPEN state on an in_review row. It is the
     # only path that requires the full merge-tip pins, RESOLVED ownership, and this run's OWN-label presence:
@@ -641,15 +642,16 @@ def execute(ledger: Path, pr: str, project_root: Path, repo: str,
 
     if row["status"] == "aborted":
         # Terminal-repeat, symmetric with the `merged` no-op below (both terminal statuses are safe to
-        # repeat). A CLOSED live state confirms the recorded abort still holds -> the same already-complete
-        # no-op, no ledger write. A later verified MERGED state is a new durable result: fall through to the
-        # MERGED finalization below so base-sync, cleanup, and the terminal ledger update can resume. Only a
-        # live OPEN state contradicts the terminal `aborted` row.
-        if view["state"] == "CLOSED":
+        # repeat). An OPEN or CLOSED live state confirms the recorded abort still holds -> the same
+        # already-complete no-op, no ledger write. A later verified MERGED state is a new durable result:
+        # fall through to the MERGED finalization below so base-sync, cleanup, and the terminal ledger update
+        # can resume.
+        if view["state"] in ("OPEN", "CLOSED"):
             return {"status": "already-complete", "pr": pr, "cleanup": {}}
         if view["state"] != "MERGED":
             raise Refusal(
-                f"terminal ledger row says aborted but GitHub state is {view['state']!r}, not CLOSED")
+                f"terminal ledger row says aborted but GitHub state is {view['state']!r}; "
+                "expected OPEN, CLOSED, or MERGED")
 
     if row["status"] == "merged":
         if view["state"] != "MERGED":

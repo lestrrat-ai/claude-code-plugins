@@ -39,8 +39,9 @@ the worker returns, and what never moves into it. The steps below are unchanged 
      **OR** any non-terminal row in this run's `state.jsonl` (any status that is not terminal `merged`/`aborted`).
      Terminal `aborted` rows are not live gate work, but they do require the one terminal follow-up below before
      this run may take the finished branch: fetch the canonical snapshot, route each absent terminal-aborted
-     fact through Step 4, and only then decide whether the run is finished. A CLOSED verification keeps the
-     abort; a verified MERGED result updates the row and any existing carryover projection. Three cases:
+     fact through Step 4, and only then decide whether the run is finished. An OPEN or CLOSED verification
+     keeps the abort as a terminal no-op; a verified MERGED result updates the row and any existing carryover
+     projection. Three cases:
 
    - **This run has live work → resume.** Resolve a dead review pass — no verdict, no live task — from its
      highest-numbered `launch_attempt` through `runtime-adapter.md`, **Review preparation mapping**, **NOT
@@ -526,8 +527,9 @@ the worker returns, and what never moves into it. The steps below are unchanged 
   owned worktree/branch are left untouched for the user. Either way `merge.py run` is the single finalizer;
   Step 1 only ROUTES the absent fact here, it does not finalize it itself. An absent terminal `aborted`
   row takes this same route before terminal completion: run the one live verification through
-  `merge.py run`; a CLOSED result stays the existing abort no-op, an OPEN contradiction remains a
-  refusal, and only a verified MERGED result changes the ledger to `merged`.
+  `merge.py run`; an OPEN or CLOSED result stays the existing abort no-op, and only a verified MERGED result
+  changes the ledger to `merged`. The no-op performs no merge or cleanup, so normal aborts can reach the
+  finished-run path with their unmerged local resources preserved.
 
   **An already-terminal `aborted` row routed by Step 1 is also resumable when its later live view verifies
   `MERGED`.** The same command resumes base-sync and owned cleanup, then records `merged`; a later `CLOSED`
