@@ -392,14 +392,19 @@ def check_rundir(rundir: Path) -> Path:
     return rundir
 
 
+def valid_repo_coordinate(repo: str) -> bool:
+    """Return whether a repository coordinate has the same shape the CLI accepts."""
+    parts = repo.split("/")
+    return (len(parts) == 2
+            and 1 <= len(parts[0]) <= OWNER_MAX_LENGTH
+            and 1 <= len(parts[1]) <= REPOSITORY_MAX_LENGTH
+            and OWNER_RE.fullmatch(parts[0]) is not None
+            and REPOSITORY_RE.fullmatch(parts[1]) is not None)
+
+
 def check_repo(repo: str) -> str:
     """An explicit repository is a caller input, not a GitHub read result."""
-    parts = repo.split("/")
-    if (len(parts) != 2
-            or not 1 <= len(parts[0]) <= OWNER_MAX_LENGTH
-            or not 1 <= len(parts[1]) <= REPOSITORY_MAX_LENGTH
-            or OWNER_RE.fullmatch(parts[0]) is None
-            or REPOSITORY_RE.fullmatch(parts[1]) is None):
+    if not valid_repo_coordinate(repo):
         fail(f"--repo {repo!r} is not a valid GitHub owner/name")
     return repo
 
@@ -2452,11 +2457,12 @@ def documented_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path,
     in list-item containers are included too. Indented code blocks and other Markdown constructs are
     deliberately outside this guard's scope.
     """
-    command = re.compile(rf"ci-status\.py\s+{re.escape(subcommand)}\b")
-    fenced_command = re.compile(
-        rf"(?m)^[ \t]*(?:\$[ \t]+)?(?:command[ \t]+)?(?:python3?[ \t]+)?(?:\S*/)?ci-status\.py\s+"
+    supported_command = (
+        rf"[ \t]*(?:\$[ \t]+)?(?:command[ \t]+)?(?:python3?[ \t]+)?(?:\S*/)?ci-status\.py\s+"
         rf"{re.escape(subcommand)}\b"
     )
+    inline_command = re.compile(rf"^{supported_command}")
+    fenced_command = re.compile(rf"(?m)^{supported_command}")
     copies: list[tuple[Path, int, str]] = []
     for md in sorted(root.rglob("*.md")):
         text = md.read_bytes().decode("utf-8")
@@ -2471,7 +2477,7 @@ def documented_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path,
             if any(start <= literal_start < end for start, end in excluded):
                 continue
             body = text[body_start:body_end]
-            match = command.search(body)
+            match = inline_command.match(body)
             if match is None:
                 continue
             offset = body_start + match.start()
@@ -2603,6 +2609,7 @@ def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list
                 values = {}
                 break
         ledger = values.get("--ledger")
+        repo = values.get("--repo")
         directory_suffixes = (os.sep, os.sep + ".", os.sep + "..")
         valid_ledger = (ledger is not None
                         and not (ledger.endswith(directory_suffixes) or Path(ledger).is_dir())
@@ -2614,6 +2621,12 @@ def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list
                 f"{md.name}:{line} does not run `ci-status.py required-set` with only its supported options "
                 f"and one file-shaped `state.jsonl` path after `--ledger` — the command must be runnable "
                 f"before the value it reads exists"
+            )
+        if (repo is not None and repo != "<owner>/<repo>"
+                and not valid_repo_coordinate(repo)):
+            problems.append(
+                f"{md.name}:{line} passes --repo {repo!r}, which is not a valid GitHub owner/name — "
+                f"documented values must use the same repository-coordinate rules as the CLI"
             )
     if not copies:
         problems.append(

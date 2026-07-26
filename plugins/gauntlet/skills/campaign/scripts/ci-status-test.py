@@ -1302,6 +1302,38 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
             f"{found_problems!r}"
         )
 
+    root = tmp / "command-copy-required-set-invalid-repo"
+    root.mkdir()
+    (root / "commands.md").write_text(
+        "```sh\n"
+        "ci-status.py required-set --ledger <rundir>/state.jsonl --repo \"bad repo\"\n"
+        "```\n",
+        encoding="utf-8",
+    )
+    copies = ci.documented_ci_status_copies(root, "required-set")
+    found_problems, checked = ci.check_required_set_copies(root)
+    if (len(copies) != 1 or checked != ["commands.md:2"] or len(found_problems) != 1
+            or "not a valid GitHub owner/name" not in found_problems[0]):
+        problems.append(
+            f"[command copy required-set] invalid --repo value was accepted: "
+            f"copies={copies!r}, problems={found_problems!r}, checked={checked!r}"
+        )
+
+    root = tmp / "command-copy-required-set-inline-shell-wrapper"
+    root.mkdir()
+    (root / "commands.md").write_text(
+        "`echo ci-status.py required-set --ledger <rundir>/state.jsonl`\n",
+        encoding="utf-8",
+    )
+    copies = ci.documented_ci_status_copies(root, "required-set")
+    found_problems, checked = ci.check_required_set_copies(root)
+    if (copies or checked or len(found_problems) != 1
+            or "ZERO runnable copies" not in found_problems[0]):
+        problems.append(
+            f"[command copy required-set] echo-wrapped inline text satisfied the guard: "
+            f"copies={copies!r}, problems={found_problems!r}, checked={checked!r}"
+        )
+
     root = tmp / "command-copy-required-set-indented-code"
     root.mkdir()
     (root / "commands.md").write_text(
