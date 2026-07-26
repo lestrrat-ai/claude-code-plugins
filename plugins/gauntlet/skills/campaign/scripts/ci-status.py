@@ -2249,7 +2249,7 @@ def check_gh_invocations(text: str, argv: dict[str, list[str]]) -> list[str]:
 
 def _has_long_option(command: str, option: str) -> bool:
     """Recognize one long-option token, including argparse's ``--name=value`` form."""
-    return re.search(rf"(?<![\w-]){re.escape(option)}(?![\w-])", command) is not None
+    return re.search(rf"(?<![\w-]){re.escape(option)}(?=[=\s]|$)", command) is not None
 
 
 def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]:

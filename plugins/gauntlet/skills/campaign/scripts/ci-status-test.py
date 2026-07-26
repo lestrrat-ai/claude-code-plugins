@@ -1291,6 +1291,12 @@ def documentation_option_form_cases(ci, tmp: Path) -> list[str]:
             "ci-status.py derive --pr=1 --required-set=unknown",
             "ci-status.py derive --pr=1",
             "--practical",
+            (
+                "--pr/foo=1",
+                "--pr:1",
+                "--pr=1 --required-set/foo=unknown",
+                "--pr=1 --required-set:unknown",
+            ),
         ),
         (
             "liveness",
@@ -1298,6 +1304,12 @@ def documentation_option_form_cases(ci, tmp: Path) -> list[str]:
             "ci-status.py liveness --ledger=run/state.jsonl --pr=1 --machine-action=none",
             "ci-status.py liveness --ledger=run/state.jsonl --pr=1",
             "--ledger-file",
+            (
+                "--ledger/run/state.jsonl --pr=1 --machine-action=none",
+                "--ledger:run/state.jsonl --pr=1 --machine-action=none",
+                "--ledger=run/state.jsonl --pr=1 --machine-action/foo=none",
+                "--ledger=run/state.jsonl --pr=1 --machine-action:none",
+            ),
         ),
         (
             "required-set",
@@ -1305,9 +1317,13 @@ def documentation_option_form_cases(ci, tmp: Path) -> list[str]:
             "ci-status.py required-set --ledger=run/state.jsonl",
             "ci-status.py required-set --ledger=",
             "--ledger-file",
+            (
+                "--ledger/run/state.jsonl",
+                "--ledger:run/state.jsonl",
+            ),
         ),
     ]
-    for name, check, valid, missing, lookalike in cases:
+    for name, check, valid, missing, lookalike, invalid_forms in cases:
         valid_root = tmp / f"documentation-options-{name}-valid"
         valid_root.mkdir()
         (valid_root / "commands.md").write_text(f"`{valid}`\n", encoding="utf-8")
@@ -1339,6 +1355,19 @@ def documentation_option_form_cases(ci, tmp: Path) -> list[str]:
                 f"[documentation options {name}:lookalike] expected no accepted copy; "
                 f"got copies={copies!r}, problems={found!r}"
             )
+
+        for invalid in invalid_forms:
+            invalid_root = tmp / f"documentation-options-{name}-{invalid.replace('/', '-')}"
+            invalid_root.mkdir()
+            (invalid_root / "commands.md").write_text(
+                f"`ci-status.py {name} {invalid}`\n", encoding="utf-8"
+            )
+            found, copies = check(invalid_root)
+            if not found:
+                problems.append(
+                    f"[documentation options {name}:invalid-boundary {invalid!r}] expected the "
+                    f"punctuation-separated form to be rejected; got copies={copies!r}, problems={found!r}"
+                )
     return problems
 
 
