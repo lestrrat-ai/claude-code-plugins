@@ -157,12 +157,6 @@ from typing import Callable, NamedTuple, NoReturn
 from urllib.parse import quote
 
 HERE = Path(__file__).resolve().parent
-SHELL_COMMAND_SEPARATORS = frozenset("\n;|&")
-SHELL_COMPOUND_COMMAND_KEYWORDS = frozenset(("if", "while", "until", "then", "else", "do", "elif"))
-SHELL_COMMAND_PREFIXES = frozenset(("command", "env", "python", "python3", "time"))
-SHELL_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
-SHELL_GROUP_DELIMITERS = frozenset("{}")
-SHELL_CASE_PATTERN_DELIMITERS = frozenset(")")
 SNAPSHOT_PY = HERE / "ci-snapshot.py"
 LEDGER_PY = HERE / "ledger.py"
 TEST_PY = HERE / "ci-status-test.py"     # the fixture suite — this tool's executable contract
@@ -2253,525 +2247,6 @@ def check_gh_invocations(text: str, argv: dict[str, list[str]]) -> list[str]:
     return problems
 
 
-def _markdown_line_is_command_start(text: str, index: int) -> bool:
-    """Allow an indented or list-item command at the start of a Markdown line."""
-    line_start = text.rfind("\n", 0, index) + 1
-    prefix = text[line_start:index].strip()
-    return not prefix or bool(re.fullmatch(r"(?:[-*+]\s*|\d+[.)]\s*)", prefix))
-
-
-def _shell_is_escaped(text: str, index: int) -> bool:
-    """Return whether the character at ``index`` has an odd backslash prefix."""
-    backslashes = 0
-    cursor = index - 1
-    while cursor >= 0 and text[cursor] == "\\":
-        backslashes += 1
-        cursor -= 1
-    return bool(backslashes % 2)
-
-
-def _shell_quote_before(text: str, index: int) -> str | None:
-    """Return the active shell quote in the Markdown block immediately before ``index``, if any."""
-    quote: str | None = None
-    fence: str | None = None
-    cursor = 0
-    while cursor < index:
-        line_end = text.find("\n", cursor, index)
-        if line_end < 0:
-            line_end = index
-        line = text[cursor:line_end]
-        fence_match = re.match(r"^\s*(`{3,}|~{3,})", line)
-        if fence_match:
-            marker = fence_match.group(1)[0]
-            if fence is None or fence == marker:
-                fence = None if fence == marker else marker
-                quote = None
-                cursor = line_end + (line_end < index)
-                continue
-        if fence is None and not line.strip():
-            cursor = line_end + (line_end < index)
-            continue
-        while cursor < line_end:
-            char = text[cursor]
-            if quote == "'":
-                if char == "'":
-                    quote = None
-                cursor += 1
-                continue
-            if quote == '"':
-                if char == "\\":
-                    cursor += 2
-                elif char == '"':
-                    quote = None
-                    cursor += 1
-                else:
-                    cursor += 1
-                continue
-            if char == "\\":
-                cursor += 2
-            elif char == "'" and cursor > 0 and cursor + 1 < line_end \
-                    and text[cursor - 1].isalnum() and text[cursor + 1].isalnum():
-                cursor += 1
-            elif char in "'\"":
-                quote = char
-                cursor += 1
-            else:
-                cursor += 1
-        if line_end < index:
-            cursor = line_end + 1
-        else:
-            break
-    return quote
-
-
-def _shell_comment_before(text: str, index: int) -> bool:
-    """Return whether ``index`` is after a shell comment on its line."""
-    line_start = text.rfind("\n", 0, index) + 1
-    quote: str | None = None
-    cursor = line_start
-    while cursor < index:
-        char = text[cursor]
-        if quote == "'":
-            if char == "'":
-                quote = None
-            cursor += 1
-            continue
-        if quote == '"':
-            if char == "\\":
-                cursor += 2
-            elif char == '"':
-                quote = None
-                cursor += 1
-            else:
-                cursor += 1
-            continue
-        if char == "\\":
-            cursor += 2
-            continue
-        if char in "'\"":
-            quote = char
-            cursor += 1
-            continue
-        if char == "#" and (cursor == line_start or text[cursor - 1].isspace()):
-            return True
-        cursor += 1
-    return False
-
-
-def _shell_segment_before(text: str, index: int) -> str:
-    """Return the current shell segment before ``index``, excluding prior separators."""
-    line_start = text.rfind("\n", 0, index) + 1
-    segment_start = line_start
-    cursor = line_start
-    while cursor < index:
-        char = text[cursor]
-        if char in SHELL_COMMAND_SEPARATORS and not _shell_is_escaped(text, cursor) \
-                and _shell_quote_before(text, cursor) is None:
-            segment_start = cursor + 1
-        cursor += 1
-    return text[segment_start:index].strip()
-
-
-def _shell_segment_looks_like_command(segment: str) -> bool:
-    """Return whether a shell segment has command syntax rather than ordinary prose."""
-    segment = re.sub(r"^(?:[-*+]\s*|\d+[.)]\s*)", "", segment).strip()
-    if not segment:
-        return False
-    first = re.match(r"(?:'[^']*'|\"(?:\\.|[^\"])*\"|\S+)", segment)
-    if first is None:
-        return False
-    token = first.group(0).strip("'\"")
-    if not any(char.isspace() for char in segment):
-        return True
-    return token in {
-        "case", "do", "echo", "elif", "else", "exec", "exit", "false", "fi", "for", "function",
-        "gh", "git", "if", "printf", "python", "python3", "read", "return", "select", "set", "sh",
-        "source", "then", "trap", "true", "until", "wait", "while",
-    }
-
-
-def _shell_operator_has_context(text: str, index: int) -> bool:
-    """Return whether an active separator belongs to a shell command segment."""
-    if _shell_comment_before(text, index):
-        return False
-    operator_start = index
-    if index > 0 and text[index] in "|&" and text[index - 1] == text[index]:
-        operator_start -= 1
-    return _shell_segment_looks_like_command(_shell_segment_before(text, operator_start))
-
-
-_SHELL_REDIRECTION_PREFIX = re.compile(
-    r"^(?:(?:[-*+]\s*|\d+[.)]\s*)|(?:then|else|do|elif)\s+)?"
-    r"(?:(?:\d*(?:<<<|<<-|<<|<>|>&|<&|>>|>|<)|&>>|&>|&<)\s*"
-    r"(?:'[^']*'|\"(?:\\.|[^\"])*\"|(?:\\.|[^\s]))+\s*)+$"
-)
-
-
-def _shell_redirection_before(text: str, index: int) -> bool:
-    """Return whether leading redirections form the command prefix before ``index``."""
-    line_start = text.rfind("\n", 0, index) + 1
-    while line_start > 0 and _shell_line_continues(text, line_start - 1):
-        line_start = text.rfind("\n", 0, line_start - 1) + 1
-    prefix = re.sub(r"\\\n\s*", " ", text[line_start:index])
-    segment_start = 0
-    for cursor, char in enumerate(prefix):
-        if char not in SHELL_COMMAND_SEPARATORS | SHELL_GROUP_DELIMITERS | SHELL_CASE_PATTERN_DELIMITERS:
-            continue
-        if char == "&" and cursor > 0 and prefix[cursor - 1] in "<>":
-            continue
-        if _shell_is_escaped(prefix, cursor):
-            continue
-        segment_start = cursor + 1
-    return bool(_SHELL_REDIRECTION_PREFIX.fullmatch(prefix[segment_start:].strip()))
-
-
-def _shell_line_continues(text: str, newline: int) -> bool:
-    """Return whether a newline is escaped as a shell continuation."""
-    return (newline > 0 and text[newline - 1] == "\\"
-            and _shell_is_escaped(text, newline))
-
-
-def _shell_operator_is_active(text: str, index: int) -> bool:
-    """Return whether a separator at ``index`` is outside quotes and not backslash-escaped."""
-    if text[index] not in SHELL_COMMAND_SEPARATORS:
-        return (_shell_quote_before(text, index) is None and not _shell_is_escaped(text, index)
-                and not _shell_comment_before(text, index))
-    return (_shell_quote_before(text, index) is None and not _shell_is_escaped(text, index)
-            and _shell_operator_has_context(text, index))
-
-
-def _shell_group_delimiter_is_active(text: str, index: int) -> bool:
-    """Return whether a brace is a shell group delimiter, not prose punctuation."""
-    if _shell_quote_before(text, index) is not None or _shell_is_escaped(text, index) \
-            or _shell_comment_before(text, index):
-        return False
-    if text[index] == "{":
-        previous = _shell_previous_significant(text, index)
-        if previous < 0 or text[previous] == "\n":
-            return _markdown_line_is_command_start(text, index)
-        if text[previous] in SHELL_COMMAND_SEPARATORS:
-            return _shell_operator_is_active(text, previous)
-        return _shell_compound_keyword_before(text, index)
-    if text[index] != "}":
-        return False
-    depth = 0
-    for cursor, char in enumerate(text[:index + 1]):
-        if char not in "{}" or not _shell_operator_is_active(text, cursor):
-            continue
-        if char == "{":
-            if _shell_group_delimiter_is_active(text, cursor):
-                depth += 1
-        elif depth:
-            depth -= 1
-            if cursor == index:
-                return True
-    return False
-
-
-def _shell_case_pattern_delimiter_is_active(text: str, index: int) -> bool:
-    """Return whether ``)`` closes a shell ``case`` pattern before a command."""
-    if (text[index] != ")" or _shell_quote_before(text, index) is not None
-            or _shell_is_escaped(text, index) or _shell_comment_before(text, index)):
-        return False
-    prefix = text[text.rfind("\n", 0, index) + 1:index]
-    prefix = re.sub(r"^\s*(?:[-*+]\s*|\d+[.)]\s*)", "", prefix)
-    return bool(re.match(r"case\b.*\bin\b[^)]*$", prefix))
-
-
-def _shell_delimiter_before(text: str, index: int) -> bool:
-    """Return whether the character at ``index`` starts a shell command boundary."""
-    newline = text.rfind("\n", 0, index)
-    if _shell_line_continues(text, newline) and _shell_quote_before(text, newline) is not None:
-        return False
-    if _shell_line_continues(text, newline):
-        slash = newline - 1
-        while slash >= 0 and text[slash] == "\\":
-            slash -= 1
-        while slash >= 0 and text[slash].isspace():
-            slash -= 1
-        return slash < 0 or (text[slash] in SHELL_COMMAND_SEPARATORS
-                             and _shell_operator_is_active(text, slash)) \
-            or _shell_redirection_before(text, index)
-
-    cursor = index - 1
-    while cursor >= 0 and text[cursor] in " \t\r\f\v":
-        cursor -= 1
-    if cursor < 0:
-        return True
-    if text[cursor] == "\n":
-        return _shell_quote_before(text, cursor) is None and not _shell_is_escaped(text, cursor)
-    if text[cursor] in SHELL_COMMAND_SEPARATORS:
-        return _shell_operator_is_active(text, cursor)
-    if text[cursor] in SHELL_GROUP_DELIMITERS:
-        return _shell_group_delimiter_is_active(text, cursor)
-    if text[cursor] in SHELL_CASE_PATTERN_DELIMITERS:
-        return _shell_case_pattern_delimiter_is_active(text, cursor)
-    return (_shell_quote_before(text, index) is None
-            and (_shell_redirection_before(text, index)
-                 or _markdown_line_is_command_start(text, index)))
-
-
-def _shell_compound_keyword_before(text: str, index: int) -> bool:
-    """Return whether a shell compound-command keyword immediately precedes ``index``."""
-    cursor = index - 1
-    while cursor >= 0 and text[cursor].isspace():
-        cursor -= 1
-    end = cursor + 1
-    while cursor >= 0 and (text[cursor].isalnum() or text[cursor] == "_"):
-        cursor -= 1
-    keyword = text[cursor + 1:end]
-    return keyword in SHELL_COMPOUND_COMMAND_KEYWORDS and _shell_delimiter_before(text, cursor + 1)
-
-
-def _shell_option_wrapper_boundary(text: str, index: int) -> bool:
-    """Return whether option words before ``index`` belong to a supported command wrapper."""
-    cursor = index
-    while True:
-        previous = _shell_previous_significant(text, cursor)
-        if previous < 0 or not (text[previous].isalnum() or text[previous] == "_"):
-            return False
-        word_end = previous + 1
-        word_start = _shell_token_start(text, word_end)
-        word = text[word_start:word_end]
-        if word in SHELL_COMMAND_PREFIXES:
-            return _shell_command_word_boundary(text, word_start)
-        if not word.startswith("-"):
-            return False
-        cursor = word_start
-
-
-def _shell_previous_significant(text: str, index: int) -> int:
-    """Return the previous shell-significant character, preserving active newlines."""
-    cursor = index - 1
-    while cursor >= 0:
-        while cursor >= 0 and text[cursor] in " \t\r\f\v":
-            cursor -= 1
-        if cursor >= 0 and text[cursor] == "\n":
-            if _shell_line_continues(text, cursor):
-                cursor -= 1
-                continue
-            return cursor
-        if cursor >= 0 and cursor + 1 < len(text) and text[cursor] == "\\" \
-                and _shell_line_continues(text, cursor + 1):
-            cursor -= 1
-            continue
-        return cursor
-    return -1
-
-
-def _shell_token_start(text: str, index: int) -> int:
-    """Return the start of the shell word containing ``index``."""
-    cursor = index
-    while cursor > 0:
-        previous = text[cursor - 1]
-        if previous.isspace():
-            break
-        if previous in SHELL_COMMAND_SEPARATORS | SHELL_GROUP_DELIMITERS | SHELL_CASE_PATTERN_DELIMITERS \
-                and not _shell_is_escaped(text, cursor - 1):
-            break
-        if previous in "'\"`" and not _shell_is_escaped(text, cursor - 1):
-            break
-        cursor -= 1
-    return cursor
-
-
-def _shell_quote_open_before(text: str, index: int, quote: str) -> int:
-    """Return the active quote's opening position before ``index``."""
-    cursor = index - 1
-    while cursor >= 0:
-        if text[cursor] == quote and not _shell_is_escaped(text, cursor):
-            return cursor
-        cursor -= 1
-    return -1
-
-
-def _shell_parenthesis_kind_at(text: str, index: int) -> str | None:
-    """Return the kind of shell parenthesis closed at ``index``, if it has an opener."""
-    stack: list[str] = []
-    quote: str | None = None
-    backtick = False
-    cursor = 0
-    while cursor <= index:
-        char = text[cursor]
-        if quote == "'":
-            if char == "'":
-                quote = None
-            cursor += 1
-            continue
-        if quote == '"':
-            if char == "\\":
-                cursor += 2
-            elif char == '"':
-                quote = None
-                cursor += 1
-            else:
-                cursor += 1
-            continue
-        if backtick:
-            if char == "\\":
-                cursor += 2
-            elif char == "`":
-                backtick = False
-                cursor += 1
-            else:
-                cursor += 1
-            continue
-        if char == "\\":
-            cursor += 2
-        elif char in "'\"":
-            quote = char
-            cursor += 1
-        elif char == "`":
-            backtick = True
-            cursor += 1
-        elif char == "(":
-            stack.append("substitution" if cursor > 0 and text[cursor - 1] == "$" else "group")
-            cursor += 1
-        elif char == ")":
-            kind = stack.pop() if stack else None
-            if cursor == index:
-                return kind
-            cursor += 1
-        else:
-            cursor += 1
-    return None
-
-
-def _shell_redirection_operand(text: str, index: int) -> bool:
-    """Return whether the shell word at ``index`` is directly after a redirection operator."""
-    previous = _shell_previous_significant(text, index)
-    return (previous >= 0 and text[previous] in "<>"
-            and _shell_operator_is_active(text, previous))
-
-
-def _shell_command_word_boundary(text: str, index: int) -> bool:
-    """Return whether the whole shell word containing ``index`` is its segment's command word."""
-    quote = _shell_quote_before(text, index)
-    if quote is not None:
-        opening = _shell_quote_open_before(text, index, quote)
-        token_start = _shell_token_start(text, index)
-        if (opening < 0 or _shell_redirection_operand(text, opening)
-                or text[opening + 1:token_start].strip()):
-            return False
-        return _shell_delimiter_before(text, opening)
-
-    token_start = _shell_token_start(text, index)
-    if _shell_redirection_operand(text, token_start):
-        return False
-    previous = _shell_previous_significant(text, token_start)
-    if previous < 0:
-        return _shell_delimiter_before(text, token_start)
-
-    previous_char = text[previous]
-    if previous_char == ")" and _shell_parenthesis_kind_at(text, previous) is not None:
-        return False
-    if _shell_compound_keyword_before(text, token_start):
-        return True
-    if _shell_redirection_before(text, index):
-        return True
-    if previous_char in SHELL_COMMAND_SEPARATORS:
-        if previous_char == "\n":
-            return _shell_delimiter_before(text, token_start)
-        return _shell_operator_is_active(text, previous)
-    if previous_char in SHELL_GROUP_DELIMITERS:
-        return _shell_group_delimiter_is_active(text, previous)
-    if previous_char == ")":
-        return _shell_case_pattern_delimiter_is_active(text, previous)
-    if previous_char == "`":
-        return _backtick_is_opening(text, previous)
-    if previous_char == "!":
-        return _shell_command_word_boundary(text, previous)
-    if previous_char in "'\"":
-        return False
-    if previous_char in "-*+" and _shell_line_continues(text, text.rfind("\n", 0, token_start)):
-        return False
-    if previous_char.isalnum() or previous_char == "_":
-        word_end = previous + 1
-        word_start = _shell_token_start(text, word_end)
-        word = text[word_start:word_end]
-        if word in SHELL_COMMAND_PREFIXES or SHELL_ASSIGNMENT_RE.fullmatch(word):
-            return _shell_command_word_boundary(text, word_start)
-        if word.startswith("-"):
-            return _shell_option_wrapper_boundary(text, word_start)
-        return False
-    return _shell_delimiter_before(text, token_start)
-
-
-def _backtick_is_opening(text: str, index: int) -> bool:
-    """Return whether the unescaped backtick at ``index`` opens its current line's span."""
-    line_start = text.rfind("\n", 0, index) + 1
-    count = 0
-    for cursor in range(line_start, index + 1):
-        if text[cursor] == "`" and not _shell_is_escaped(text, cursor):
-            count += 1
-    return bool(count % 2)
-
-
-def _command_token_boundary(text: str, index: int) -> bool:
-    """Recognize command starts without treating a filename mention as an executable copy.
-
-    A path-qualified executable is valid only when its whole shell word is the segment's command word;
-    path text in an argument, redirection operand, or command-substitution result is not a copy. Supported
-    wrappers and leading assignments are also runnable copies when they precede the command word. Active
-    shell operators, command substitutions, grouped commands, compound-command keywords, and Markdown
-    code delimiters mark executable starts. Operators inside quotes or preceded by an odd number of
-    backslashes are text, not boundaries. An unescaped newline is also a boundary, while an escaped-newline
-    continuation still needs a shell separator before the backslash. A bare space boundary does not:
-    ``foo ci-status.py`` is a filename or an argument, not a copy of the command.
-    """
-    if index == 0:
-        return True
-    previous = text[index - 1]
-    if previous in SHELL_COMMAND_SEPARATORS:
-        if previous == "\n":
-            return _shell_delimiter_before(text, index)
-        return _shell_operator_is_active(text, index - 1)
-    if previous in "/\\":
-        return _shell_command_word_boundary(text, index)
-    if previous == "`":
-        return _backtick_is_opening(text, index - 1)
-    if previous in "'\"":
-        return _shell_delimiter_before(text, index - 1)
-    if previous == "(":
-        if _shell_quote_before(text, index - 1) == "'":
-            return False
-        return index >= 2 and text[index - 2] == "$" or _shell_delimiter_before(text, index - 1)
-    if previous in SHELL_GROUP_DELIMITERS:
-        return _shell_group_delimiter_is_active(text, index - 1)
-    if previous in SHELL_CASE_PATTERN_DELIMITERS:
-        if _shell_parenthesis_kind_at(text, index - 1) is not None:
-            return False
-        return _shell_case_pattern_delimiter_is_active(text, index - 1)
-    if not previous.isspace():
-        return False
-    return _shell_command_word_boundary(text, index)
-
-
-def _command_matches(text: str, subcommand: str):
-    """Yield command occurrences whose executable token begins at a shell-aware boundary."""
-    pattern = re.compile(rf"ci-status\.py(?:[ \t]+|['\"][ \t]+){re.escape(subcommand)}(?=[ \t\r\n]|$)")
-    for match in pattern.finditer(text):
-        if _command_token_boundary(text, match.start()):
-            yield match.start()
-
-
-def _next_command_start(text: str, index: int) -> int:
-    """Return the next executable ``ci-status.py`` start after ``index``."""
-    for match in re.finditer(r"ci-status\.py(?:[ \t]+|['\"][ \t]+)\S", text[index + 1:]):
-        candidate = index + 1 + match.start()
-        if _command_token_boundary(text, candidate):
-            return candidate
-    return len(text)
-
-
-def _command_end(text: str, index: int) -> int:
-    """Return the earlier of the next executable command and the paragraph boundary."""
-    paragraph_end = text.find("\n\n", index)
-    if paragraph_end < 0:
-        paragraph_end = len(text)
-    return min(paragraph_end, _next_command_start(text, index))
-
-
 def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]:
     """EVERY COPY OF THE DERIVE COMMAND, IN EVERY SKILL DOC — not just the one in the doc under test.
 
@@ -2785,8 +2260,7 @@ def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]
     A copy is any occurrence that RUNS the command (`ci-status.py derive` carrying `--pr`) — prose that
     merely NAMES the command is not a copy, and is not checked. **THE UNIT IS THE COMMAND, NOT THE LINE**:
     an invocation WRAPS (a shell `\\`, or plain prose reflow), and a line-by-line check would report the
-    continuation line as a violation of itself. So each copy is read to the next executable command or the
-    end of its PARAGRAPH.
+    continuation line as a violation of itself. So each copy is read to the end of its PARAGRAPH.
 
     FINDING ZERO COPIES IS A FAILURE: the command is prescribed by at least `stage-2-ci.md` and
     `critical-rules.md`, and a check that cannot find its subject never passes.
@@ -2794,11 +2268,12 @@ def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]
     problems, copies = [], []
     for md in sorted((root or HERE.parent).rglob("*.md")):
         text = md.read_text(encoding="utf-8")
-        for index in _command_matches(text, "derive"):
-            command = text[index:_command_end(text, index)]
+        for m in re.finditer(r"(?<![\w.-])ci-status\.py derive", text):
+            end = text.find("\n\n", m.start())
+            command = text[m.start(): end if end > 0 else len(text)]
             if "--pr" not in command:
                 continue  # prose that NAMES the command, not a copy of it
-            n = text.count("\n", 0, index) + 1
+            n = text.count("\n", 0, m.start()) + 1
             copies.append(f"{md.name}:{n}")
             if "--ledger" not in command and "--required-set" not in command:
                 problems.append(
@@ -2825,14 +2300,15 @@ def check_liveness_copies(root: Path | None = None) -> tuple[list[str], list[str
     problems, copies = [], []
     for md in sorted((root or HERE.parent).rglob("*.md")):
         text = md.read_text(encoding="utf-8")
-        for index in _command_matches(text, "liveness"):
-            command = text[index:_command_end(text, index)]
+        for match in re.finditer(r"(?<![\w.-])ci-status\.py liveness", text):
+            end = text.find("\n\n", match.start())
+            command = text[match.start(): end if end > 0 else len(text)]
             # `--ledger`, not `--pr`, is the runnable-copy gate here: prose about liveness routinely sits
             # in the same paragraph as a `ledger.py … set --pr` command, and `--pr` alone would condemn
             # every such mention as a flagless invocation.
             if "--ledger" not in command:
                 continue  # prose that names the subcommand, not a runnable copy
-            line = text.count("\n", 0, index) + 1
+            line = text.count("\n", 0, match.start()) + 1
             copies.append(f"{md.name}:{line}")
             if "--machine-action" not in command:
                 problems.append(
@@ -2853,11 +2329,12 @@ def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list
     problems, copies = [], []
     for md in sorted((root or HERE.parent).rglob("*.md")):
         text = md.read_text(encoding="utf-8")
-        for index in _command_matches(text, "required-set"):
-            command = text[index:_command_end(text, index)]
+        for match in re.finditer(r"(?<![\w.-])ci-status\.py required-set", text):
+            end = text.find("\n\n", match.start())
+            command = text[match.start(): end if end > 0 else len(text)]
             if "--ledger" not in command:
                 continue  # prose that names the subcommand, not a runnable copy
-            line = text.count("\n", 0, index) + 1
+            line = text.count("\n", 0, match.start()) + 1
             copies.append(f"{md.name}:{line}")
             if "state.jsonl" not in command:
                 problems.append(
