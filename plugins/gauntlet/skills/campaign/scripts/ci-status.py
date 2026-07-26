@@ -2448,17 +2448,18 @@ def documented_ci_status_copies(root: Path, subcommand: str) -> list[tuple[Path,
 
     The command-copy guard owns two documentation forms. Inline code spans carry a complete command, even
     when Markdown wraps the literal or uses a multi-backtick delimiter. Fenced shell blocks carry one shell
-    command, whose continued lines end in ``\\``; fences nested in list-item containers are included too.
-    Indented code blocks and other Markdown constructs are deliberately outside this guard's scope.
+    command, optionally prefixed by ``$`` or ``command``, whose continued lines end in ``\\``; fences nested
+    in list-item containers are included too. Indented code blocks and other Markdown constructs are
+    deliberately outside this guard's scope.
     """
     command = re.compile(rf"ci-status\.py\s+{re.escape(subcommand)}\b")
     fenced_command = re.compile(
-        rf"(?m)^[ \t]*(?:\$[ \t]+)?(?:python3?[ \t]+)?(?:\S*/)?ci-status\.py\s+"
+        rf"(?m)^[ \t]*(?:\$[ \t]+)?(?:command[ \t]+)?(?:python3?[ \t]+)?(?:\S*/)?ci-status\.py\s+"
         rf"{re.escape(subcommand)}\b"
     )
     copies: list[tuple[Path, int, str]] = []
     for md in sorted(root.rglob("*.md")):
-        text = md.read_text(encoding="utf-8")
+        text = md.read_bytes().decode("utf-8")
         blocks = _markdown_fenced_blocks(text)
         fenced_ranges = [(start, end) for start, end, _body_start, _body_end, _shell in blocks]
         excluded = list(fenced_ranges)
@@ -2571,7 +2572,7 @@ def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list
     for md, line, command in documented_ci_status_copies(root or HERE.parent, "required-set"):
         copies.append(f"{md.name}:{line}")
         try:
-            argv = shlex.split(command)
+            argv = shlex.split(command, comments=True)
         except ValueError:
             argv = []
         subcommand_positions = [index for index, token in enumerate(argv) if token == "required-set"]

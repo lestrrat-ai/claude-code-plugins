@@ -1106,6 +1106,60 @@ def command_copy_cases(ci, tmp: Path) -> list[str]:
             f"{found_problems!r}"
         )
 
+    root = tmp / "command-copy-required-set-shell-wrapper"
+    root.mkdir()
+    (root / "commands.md").write_text(
+        "```sh\n"
+        "ci-status.py required-set --ledger <rundir>/state.jsonl\n"
+        "command ci-status.py required-set\n"
+        "```\n",
+        encoding="utf-8",
+    )
+    copies = ci.documented_ci_status_copies(root, "required-set")
+    found_problems, checked = ci.check_required_set_copies(root)
+    if len(copies) != 2 or checked != ["commands.md:2", "commands.md:3"]:
+        problems.append(
+            f"[command copy required-set] shell-wrapped copies were not both discovered: "
+            f"copies={copies!r}, checked={checked!r}"
+        )
+    if len(found_problems) != 1 or "commands.md:3" not in found_problems[0]:
+        problems.append(
+            f"[command copy required-set] shell-wrapped missing ledger was accepted: "
+            f"{found_problems!r}"
+        )
+
+    root = tmp / "command-copy-required-set-shell-comment"
+    root.mkdir()
+    (root / "commands.md").write_text(
+        "```sh\n"
+        "ci-status.py required-set --ledger <rundir>/state.jsonl # refresh first\n"
+        "```\n",
+        encoding="utf-8",
+    )
+    copies = ci.documented_ci_status_copies(root, "required-set")
+    found_problems, checked = ci.check_required_set_copies(root)
+    if len(copies) != 1 or checked != ["commands.md:2"] or found_problems:
+        problems.append(
+            f"[command copy required-set] shell comment changed a valid ledger command: "
+            f"copies={copies!r}, problems={found_problems!r}, checked={checked!r}"
+        )
+
+    root = tmp / "command-copy-required-set-crlf-continuation"
+    root.mkdir()
+    (root / "commands.md").write_bytes(
+        b"```sh\r\n"
+        b"ci-status.py required-set --ledger \\\r\n"
+        b"<rundir>/state.jsonl\r\n"
+        b"```\r\n"
+    )
+    copies = ci.documented_ci_status_copies(root, "required-set")
+    found_problems, checked = ci.check_required_set_copies(root)
+    if len(copies) != 1 or checked != ["commands.md:2"] or len(found_problems) != 1:
+        problems.append(
+            f"[command copy required-set] CRLF continuation passed as a complete command: "
+            f"copies={copies!r}, problems={found_problems!r}, checked={checked!r}"
+        )
+
     root = tmp / "command-copy-required-set-borrowed-state"
     root.mkdir()
     (root / "commands.md").write_text(
