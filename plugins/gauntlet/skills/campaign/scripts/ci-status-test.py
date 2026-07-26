@@ -1548,6 +1548,8 @@ def watch_action_owner_cases(ci, tmp: Path) -> list[str]:
 
     for relative, suffix, name in (
         ("references/stage-2-review-gate.md", "\n\nIf ci == pending, launch a watch.\n", "stage-2-review-gate"),
+        ("references/stage-2-review-gate.md", "\n\nStart a CI watch for this PR without running liveness first.\n",
+         "stage-2-review-gate-positive"),
         ("references/runtime-adapter.md", "\n\nPending CI launches a watch.\n", "runtime-adapter"),
         ("references/runtime-adapter.md", "\n\nIf buckets.RUNNING > 0, launch a watch.\n", "runtime-adapter-bucket-formula"),
     ):
@@ -1664,6 +1666,22 @@ def watch_action_owner_cases(ci, tmp: Path) -> list[str]:
             )
             if not any("positive watch action" in problem for problem in missing_action):
                 problems.append(f"[watch owners] missing positive action at {relative}:{anchor} was accepted")
+
+        extra_action_fixture_root = tmp / "watch-owner-formula-extra-positive-action"
+        extra_action_fixture_path = extra_action_fixture_root / relative
+        extra_action_fixture_path.parent.mkdir(parents=True, exist_ok=True)
+        extra_action_fixture_path.write_text(
+            source_text[:start] + block + " Ensure a live watch at every heartbeat."
+            + source_text[start + len(block):],
+            encoding="utf-8",
+        )
+        extra_action, _ = ci.check_watch_action_docs(
+            extra_action_fixture_root,
+            owners=(formula_owner,),
+            required_owners=(formula_owner,),
+        )
+        if not any("outside its registered warrant" in problem for problem in extra_action):
+            problems.append(f"[watch owners] extra positive action at {relative}:{anchor} was accepted")
     return problems
 
 def run(ci, tmp: Path) -> int:

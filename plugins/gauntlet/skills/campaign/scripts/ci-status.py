@@ -233,9 +233,10 @@ WATCH_ACTION_WORDS = r"(?:watch|launch|relaunch|ensure|warrant)"
 WATCH_ACTION_STATUS_WORDS = WATCH_ACTION_WORDS + r"(?:es|s|ed|ing)?"
 WATCH_ACTION_VERBS = r"(?:launch|relaunch|ensure)"
 WATCH_ACTION_STATUS_VERBS = r"(?:launch|relaunch|ensure|warrant)(?:es|s|ed|ing)?"
+WATCH_ACTION_START_VERBS = r"(?:start|launch|relaunch|ensure)(?:s|ed|ing)?"
 STATUS_EQUALITY_ARROWS = r"(?:->|→)"
 POSITIVE_WATCH_ACTION = re.compile(
-    r"\b" + WATCH_ACTION_VERBS + r"\b[^.!?;]*?\bwatch\b",
+    r"\b" + WATCH_ACTION_START_VERBS + r"\b[^.!?;]*?\bwatch\b",
     re.IGNORECASE,
 )
 WATCH_ACTION_CONTRADICTIONS = (
@@ -2506,6 +2507,24 @@ def watch_action_contradiction_matches(
     return matches
 
 
+def positive_watch_action_matches(plain: str) -> list[re.Match[str]]:
+    """Return unnegated positive watch actions, preserving the registry's clause-boundary rule."""
+    matches = []
+    for match in POSITIVE_WATCH_ACTION.finditer(plain):
+        if match.start() and plain[match.start() - 1] in "\"'`“‘":
+            continue
+        clause_start = max(plain.rfind(boundary, 0, match.start()) for boundary in ".!?;|")
+        prefix = plain[clause_start + 1:match.start()]
+        if not re.search(r"\b(?:never|do not|don't|not)\b", prefix, re.IGNORECASE):
+            matches.append(match)
+    return matches
+
+
+def watch_action_clause_start(plain: str, position: int) -> int:
+    """Return the start of the punctuation-delimited clause containing one watch action."""
+    return max(plain.rfind(boundary, 0, position) for boundary in ".!?;|")
+
+
 def watch_action_contradiction_problems(relative: str, line: int, plain: str) -> list[str]:
     """Reject a second watch rule that bypasses the registered liveness warrant."""
     for kind, _ in watch_action_contradiction_matches(plain):
@@ -2559,8 +2578,20 @@ def watch_action_owner_problems(owner: tuple[str, str, str, str], base: Path) ->
         problems = watch_action_contradiction_problems(relative, line, plain)
         if condition not in plain:
             problems.append(f"{relative}:{line} does not dispatch CI watches from its registered warrant")
-        if format_name == "formula" and not POSITIVE_WATCH_ACTION.search(plain):
-            problems.append(f"{relative}:{line} omits the positive watch action")
+        if format_name == "formula":
+            positive_matches = positive_watch_action_matches(plain)
+            if not positive_matches:
+                problems.append(f"{relative}:{line} omits the positive watch action")
+            condition_starts = [match.start() for match in re.finditer(re.escape(condition), plain)]
+            for match in positive_matches:
+                if not any(
+                        watch_action_clause_start(plain, match.start())
+                        == watch_action_clause_start(plain, condition_start)
+                        for condition_start in condition_starts
+                ):
+                    problems.append(
+                        f"{relative}:{line} adds a positive watch action outside its registered warrant"
+                    )
         return problems
     if format_name != "markdown":
         return [f"{relative}:{line} has unknown watch-action format {format_name!r}"]
@@ -2628,11 +2659,13 @@ def unregistered_watch_action_problems(
             for index in range(start, end):
                 if masked[index] != "\n":
                     masked[index] = "."
-        for kind, match in watch_action_contradiction_matches(
-                "".join(masked), include_bucket_formulas=True
-        ):
+        masked_text = "".join(masked)
+        for kind, match in watch_action_contradiction_matches(masked_text, include_bucket_formulas=True):
             line = text.count("\n", 0, match.start()) + 1
             problems.append(f"{relative}:{line} adds an unregistered {kind} watch rule")
+        for match in positive_watch_action_matches(masked_text):
+            line = text.count("\n", 0, match.start()) + 1
+            problems.append(f"{relative}:{line} adds an unregistered positive watch action")
     return problems
 
 
