@@ -165,9 +165,9 @@ about and one whose partial rejection strands the rest.
      **SURFACE the entry to the user** rather than assume a fix. The same-run idempotency note below covers
      its interrupted-heartbeat gap.
    - **`in-pr`** — first read its typed `rejection` phase. `pending` resumes the rejection procedure below;
-     `disposed` goes straight to terminal `reject`; only `-` takes the ordinary path. On that ordinary path,
-     reconcile the recorded PR against the current run. If it has no ledger row, or its **non-terminal** row
-     lacks the run label, ADOPT it through step 4. **If its existing row is terminal, NEVER refresh,
+     after a verified disposition, use `reject` for CLOSED or `merged` for MERGED; only `-` takes the
+     ordinary path. On that ordinary path, reconcile the recorded PR against the current run. If it has no
+     ledger row, or its **non-terminal** row lacks the run label, ADOPT it through step 4. **If its existing row is terminal, NEVER refresh,
      re-adopt, or relabel it.** An unadopted follow-up PR with no terminal row sits **outside the campaign
      gate** — the exact thing "fold that PR into the current campaign" exists to prevent.
    - **`reopened`** — its PR died and it already carries the decision it earned, so it does **not** re-decide:
@@ -185,18 +185,20 @@ about and one whose partial rejection strands the rest.
 
 #### Rejecting an `in-pr` follow-up
 
-**Record `reject-pending` before campaign disposition, then finish disposition before terminal `reject`.**
+**Record `reject-pending` before campaign disposition, then finish disposition before terminal close-out.**
 The pending phase is the user's ruling on the follow-up. It is separate from a terminal ledger row, which
 records what happened to the PR rather than what the user decided.
 
 1. Run `followups.py --file <store> reject-pending --id fuN` while the entry is `in-pr`. This preserves the
    PR reference and writes the user's ruling time.
 2. Finish the recorded PR's current campaign disposition. A CLOSED PR with no pending rejection uses
-   `closed-unmerged`. For a pending rejection, the verified terminal campaign disposition callback records
-   the matching PR first; do not run `closed-unmerged` directly. A MERGED PR remains the durable record, so
-   use `merged` and do not record rejection.
-3. Once the entry reports `rejection = disposed`, run `followups.py --file <store> reject --id fuN`. It
-   keeps the original `reject-pending` timestamp and retains the PR reference as history.
+   `closed-unmerged`. A pending rejection waits for the verified terminal campaign disposition callback to
+   record the matching PR first; do not run `closed-unmerged` or `merged` directly before that callback. A
+   verified CLOSED result then uses `reject`; a verified MERGED result uses `merged`, because the PR is the
+   durable record.
+3. For a verified CLOSED result, once the entry reports `rejection = disposed`, run
+   `followups.py --file <store> reject --id fuN`. It keeps the original `reject-pending` timestamp and
+   retains the PR reference as history.
 
 **Never use an old terminal ledger row as a new rejection signal.** A later pending ruling is a new fact and
 stays pending until its own PR disposition occurs.
@@ -234,9 +236,9 @@ stays pending until its own PR disposition occurs.
    review gauntlet**. This is the
    whole point of "self-accepted, not accepted": the driver may take a follow-up up on its own, but the PR
    it produces is **judged by the independent gate, not self-approved** — the driver is not its own gate
-   authority. When that PR **merges**, run `followups.py merged --id fuN`: the merged PR is the durable
-   record now, so the entry is deleted. If the PR dies, `closed-unmerged` returns ordinary work to the
-   queue; a pending rejection follows the rejection procedure above.
+   authority. When that PR **merges**, its verified campaign finalizer records any pending disposition before
+   `followups.py merged --id fuN` deletes the entry. If the PR dies, `closed-unmerged` returns ordinary work
+   to the queue; a pending rejection follows the rejection procedure above.
 
 5. **ANY TIER-2 CONDITION FAILS OR IS UNCLEAR → SURFACE AND ASK.** If the fix would touch gate machinery,
    **change user-facing behavior at all** (Tier-2 condition 3 requires it **preserved** — a named test is
@@ -272,7 +274,8 @@ left to remember it*. That is the exact permanent loss this store exists to prev
 time. So:
 
 - While the PR is **open**, the entry **STAYS** (`in-pr`) and records **which PR** is addressing it.
-- The PR **merges** → `merged` deletes the entry. The PR is the record now.
+- The PR **merges** → the verified campaign callback records any pending disposition, then `merged` deletes
+  the entry. The PR is the record now.
 - The PR is **closed WITHOUT merging** with no pending rejection → `closed-unmerged` returns it to **open
   work** (`reopened`), with its history intact. With a pending rejection, the verified terminal campaign
   disposition callback records `rejection = disposed` and leaves it `in-pr` until terminal `reject` records
@@ -281,8 +284,9 @@ time. So:
 **Move it in the heartbeat that SAW the event** — the same rule as recording one the moment it is noticed, and
 for the same reason: the driver's memory of it dies with the driver's context. The heartbeat that opens the PR
 addressing a follow-up runs `open-pr`; the heartbeat that observes that PR **merged** or **closed** runs the
-matching disposition path — `merged`, or the verified terminal callback for a pending rejection and
-`closed-unmerged` otherwise. A follow-up whose PR landed three heartbeats ago and still sits in `in-pr` is a
+matching disposition path — the verified merge callback before `merged`, or the verified terminal callback
+before `reject` for a pending rejection; use `closed-unmerged` otherwise. A follow-up whose PR landed three
+heartbeats ago and still sits in `in-pr` is a
 queue nobody can trust to say what is left to do.
 
 **AND REJECTIONS ARE KEPT.** A `rejected` entry stays in the store — hidden from the default view (nobody
@@ -328,7 +332,7 @@ followups.py --file <store> accept  --id fuN        # THE USER AGREED — the on
 followups.py --file <store> reject-pending --id fuN # user rejected an `in-pr` entry; record typed pending state
 followups.py --file <store> reject  --id fuN        # user ruled against it; `in-pr` requires a disposed PR result
 followups.py --file <store> open-pr --id fuN --pr <N>      # a PR is addressing it — the entry STAYS
-followups.py --file <store> merged  --id fuN        # that PR LANDED — it is the record now, so the entry is DELETED
+followups.py --file <store> merged  --id fuN        # after verified MERGED callback; that PR is the record, so the entry is DELETED
 followups.py --file <store> closed-unmerged --id fuN       # ordinary PR died → OPEN WORK; pending rejection → terminal callback, then `reject`
 followups.py --file <store> publish --id fuN --ref <issue> # TIER 3 — only AFTER the user's accept. The ISSUE
                                                            # is the record now, so the entry is DELETED

@@ -52,12 +52,13 @@ file that grows.
     rejected PR takes down with it — the work still undone, and nothing left to remember it. So while a PR
     is OPEN the entry STAYS and records which PR is addressing it (`in-pr`). A PR CLOSED WITHOUT MERGING
     normally returns it to OPEN WORK (`reopened`); a pending user rejection instead records that PR's
-    completed disposition before terminal `reject` — never a silent vanish, never stuck in "being worked
-    on" forever.
-  * REJECTIONS STAY. A rejection is worth remembering PRECISELY so it is not re-raised: delete it and the
-    next run rediscovers the same thing, records it again, and asks the user again. It is hidden from the
-    default view; it is not deleted. (A published one CAN be deleted for the same test: the ISSUE is the
-    external record that stops the re-raise. A rejection has no external record — that is the asymmetry.)
+    completed disposition before terminal close-out (`reject` for CLOSED, `merged` for MERGED) — never a
+    silent vanish, never stuck in "being worked on" forever.
+  * TERMINAL REJECTIONS STAY. A `rejected` entry is worth remembering PRECISELY so it is not re-raised:
+    delete it and the next run rediscovers the same thing, records it again, and asks the user again. It is
+    hidden from the default view; it is not deleted. (A published one CAN be deleted for the same test: the
+    ISSUE is the external record that stops the re-raise. A terminal rejection has no external record — that
+    is the asymmetry.)
 
 TWO PROPERTIES ARE STILL LOAD-BEARING AND ARE NOT SIMPLIFIED AWAY:
 
@@ -233,8 +234,8 @@ def project(rec: "dict", where: str = "") -> "dict[str, str]":
 # in between is a state, and the two that matter most are the ones that keep a started piece of work from
 # being lost: `in-pr` (a PR is open on it — the entry STAYS, and names the PR) and `reopened` (an ordinary
 # PR was closed WITHOUT merging — the work is undone, so the entry is OPEN WORK again, with its history
-# intact). A pending user rejection preserves `in-pr` until its PR disposition is recorded and terminal
-# `reject` stores the ruling.
+# intact). A pending user rejection preserves `in-pr` until its PR disposition is recorded; terminal `reject`
+# stores the ruling for CLOSED, while `merged` deletes the entry after a verified MERGED result.
 #
 # `<subcommand>: (states it may be applied FROM, the state it moves TO — or DELETED)`.
 DELETED = "deleted"  # NOT a state: the entry is REMOVED. It exists only in the CLI's output for that step,
@@ -354,7 +355,8 @@ FLAG_HELP = {
     "pr": "the PR addressing it (#N or N; GitHub URLs are refused because repository identity cannot be "
           "validated). The entry STAYS while that PR is open: `merged` then deletes it (the PR is the "
           "record), ordinary `closed-unmerged` returns it to open work (nothing recorded it), and a pending "
-          "rejection is disposed only by the verified terminal campaign callback",
+          "rejection is disposed only by the verified terminal campaign callback before terminal `reject` "
+          "or `merged`",
     **{w: f"ACT condition '{c}' — {why}" for c, w, why in ACT_CONDITIONS if w in ACT_FLAGS},
 }
 
@@ -659,14 +661,13 @@ def rejection_phase(entry: dict) -> str:
     return entry["rejection"] if entry["state"] == "in-pr" else NO_REJECTION
 
 
-def record_completed_rejection_disposition(path: Path, pr: str) -> "tuple[str, ...]":
-    """Record one exact PR's verified CLOSED close-out on matching pending follow-ups.
+def _record_completed_rejection_disposition(path: Path, pr: str) -> "tuple[str, ...]":
+    """Record one exact PR's verified terminal result on matching pending follow-ups.
 
     A missing store is normal, and ordinary `in-pr` entries remain untouched. This is the only path that may
-    mark a pending rejection disposed; the `closed-unmerged` CLI transition refuses to do that itself. The
-    callback must be a canonical numeric PR reference, and the stored reference must be that same canonical
-    number. GitHub URLs are not accepted at `open-pr`, and legacy URL records therefore cannot be reduced to
-    a number here.
+    mark a pending rejection disposed; the CLI transitions refuse to do that themselves. The callback must
+    be a canonical numeric PR reference, and the stored reference must be that same canonical number. GitHub
+    URLs are not accepted at `open-pr`, and legacy URL records therefore cannot be reduced to a number here.
     The store lock and atomic dump remain its only write path.
     """
     if not path.exists():
@@ -685,6 +686,16 @@ def record_completed_rejection_disposition(path: Path, pr: str) -> "tuple[str, .
         if recorded:
             dump(path, entries, high)
     return tuple(recorded)
+
+
+def record_completed_rejection_disposition(path: Path, pr: str) -> "tuple[str, ...]":
+    """Record one exact PR's verified CLOSED close-out on matching pending follow-ups."""
+    return _record_completed_rejection_disposition(path, pr)
+
+
+def record_completed_merge_disposition(path: Path, pr: str) -> "tuple[str, ...]":
+    """Record one exact PR's verified MERGED result on matching pending follow-ups."""
+    return _record_completed_rejection_disposition(path, pr)
 
 
 PR_REF_RE = re.compile(r"(?:#)?(?P<short>[1-9][0-9]*)")
@@ -850,6 +861,12 @@ def cmd_transition(path: Path, args) -> int:
             fail(
                 f"{args.id} already has a completed rejection disposition — run terminal `reject`; do not "
                 "reopen the entry."
+            )
+        if cmd == "merged" and phase == PENDING_REJECTION:
+            fail(
+                f"{args.id} has a pending rejection whose PR disposition is unresolved — `merged` cannot "
+                "delete it until the verified terminal campaign disposition callback records the matching "
+                "MERGED PR."
             )
         if cmd == "closed-unmerged" and phase == PENDING_REJECTION:
             fail(

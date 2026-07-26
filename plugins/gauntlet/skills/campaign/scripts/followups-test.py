@@ -1426,6 +1426,14 @@ def t_in_pr_rejection_needs_one_typed_completed_disposition(tmp: Path) -> None:
     check(still_pending["state"] == "in-pr" and still_pending["rejection"] == PENDING_REJECTION,
           f"a refused closed-unmerged transition changed the pending rejection: {still_pending!r}")
 
+    code, _, err = run(["--file", str(store), "merged", "--id", first])
+    check(code == 1 and "verified terminal campaign disposition callback" in err
+          and "MERGED PR" in err,
+          f"follow-up CLI deleted a pending rejection without verified MERGED evidence: {code} {err!r}")
+    still_pending = json.loads(run(["--file", str(store), "get", "--id", first])[1])
+    check(still_pending["state"] == "in-pr" and still_pending["rejection"] == PENDING_REJECTION,
+          f"a refused merged transition changed the pending rejection: {still_pending!r}")
+
     recorded = followups.record_completed_rejection_disposition(store, "42")
     check(recorded == (first,), f"exact PR disposition recorded {recorded!r}, not only {first!r}")
     first_entry = json.loads(run(["--file", str(store), "get", "--id", first])[1])
@@ -1451,6 +1459,22 @@ def t_in_pr_rejection_needs_one_typed_completed_disposition(tmp: Path) -> None:
     entry = json.loads(out) if out else {}
     check(code == 0 and entry.get("state") == "rejected" and entry.get("decided") == "2026-07-24T11:00:00Z",
           f"terminal reject did not preserve its original user ruling: {code} {err!r}")
+
+    merged_store = tmp / "merged-disposition.jsonl"
+    (merged_fid,) = seed(merged_store)
+    for argv in (
+        ["--file", str(merged_store), "accept", "--id", merged_fid, "--at", "2026-07-24T10:00:00Z"],
+        ["--file", str(merged_store), "open-pr", "--id", merged_fid, "--pr", "#44"],
+        ["--file", str(merged_store), "reject-pending", "--id", merged_fid,
+         "--at", "2026-07-24T11:00:00Z"],
+    ):
+        code, _, err = run(argv)
+        check(code == 0, f"MERGED follow-up setup failed: {argv!r}: {err!r}")
+    recorded = followups.record_completed_merge_disposition(merged_store, "44")
+    check(recorded == (merged_fid,), f"verified MERGED callback did not record the matching PR: {recorded!r}")
+    code, out, err = run(["--file", str(merged_store), "merged", "--id", merged_fid])
+    check(code == 0 and json.loads(out)["pr"] == "44" and load(merged_store) == [],
+          f"verified MERGED disposition did not permit close-out: {code} {err!r}")
 
     for phase in REJECTION_VALUES:
         path = tmp / f"phase-{phase}.jsonl"

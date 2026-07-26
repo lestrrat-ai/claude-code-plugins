@@ -914,6 +914,34 @@ def t_closed_out_ledger_disposes_matching_pending_followup():
         finish(td, real)
 
 
+def t_merged_out_ledger_disposes_matching_pending_followup():
+    """A verified MERGED result records the matching pending follow-up before its CLI deletion."""
+    td, root, f, _unused, real = scenario(state="MERGED")
+    try:
+        ledger = root / ".gauntlet" / "tmp" / "g1" / "state.jsonl"
+        f.ledger(ledger)
+        store = root / ".gauntlet" / "followups.jsonl"
+        for argv in (
+            ["--file", str(store), "add", "--title", "pending", "--evidence", "proof",
+             "--deferred-why", "scope"],
+            ["--file", str(store), "accept", "--id", "fu1", "--at", "2026-07-24T10:00:00Z"],
+            ["--file", str(store), "open-pr", "--id", "fu1", "--pr", "#9"],
+            ["--file", str(store), "reject-pending", "--id", "fu1", "--at", "2026-07-24T11:00:00Z"],
+        ):
+            code, _, err = followup(argv)
+            check(code == 0, f"follow-up setup failed: {argv!r}: {err!r}")
+        code, result, err = invoke(f, ledger, root)
+        check(code == 0 and result is not None and result["status"] == "merged", err)
+        entry = json.loads(followup(["--file", str(store), "get", "--id", "fu1"])[1])
+        check(entry["rejection"] == F.DISPOSED_REJECTION,
+              f"verified MERGED close-out did not record the pending disposition: {entry!r}")
+        code, out, err = followup(["--file", str(store), "merged", "--id", "fu1"])
+        check(code == 0 and json.loads(out)["pr"] == "9" and F.load(store) == [],
+              f"verified MERGED follow-up was not deletable: {code} {err!r}")
+    finally:
+        finish(td, real)
+
+
 def t_aborted_repeat_disposes_pending_followup_after_closed_verification():
     """An already-aborted row gets its pending rejection disposed when a later live view proves CLOSED."""
     td, root, f, _unused, real = scenario(state="CLOSED", status="aborted")
@@ -1750,6 +1778,7 @@ CASES = [
     ("absent-resume", "an absent-but-unfinalized MERGED row resumes its remaining phases through run", t_absent_snapshot_merged_row_resumes_via_run),
     ("absent-closed", "an absent-but-unfinalized CLOSED-without-merge row terminates as aborted with no cleanup", t_absent_snapshot_closed_row_terminates),
     ("closed-followup-disposition", "a terminal CLOSED close-out records the matching pending follow-up disposition before terminal reject", t_closed_out_ledger_disposes_matching_pending_followup),
+    ("merged-followup-disposition", "a terminal MERGED close-out records the matching pending follow-up disposition before merged deletion", t_merged_out_ledger_disposes_matching_pending_followup),
     ("aborted-repeat-followup-disposition", "an already-aborted row records its pending follow-up after a verified CLOSED repeat", t_aborted_repeat_disposes_pending_followup_after_closed_verification),
     ("half-adopted-closed", "a half-adopted CLOSED row closes out to aborted without requiring the cleanup-ownership fields", t_half_adopted_closed_row_closes_out_without_cleanup_fields),
     ("closed-out-moved-refs", "the CLOSED close-out terminates as aborted despite a moved head, base, or branch", t_closed_out_terminates_despite_moved_head_base_or_branch),
