@@ -226,6 +226,9 @@ README_ADOPTION_WATCH_ACTION = (
 )
 PARKED_WATCH_RULE = "Parked status does not override that result."
 STATUS_SUBJECT_PATTERN = r"(?:`(?:ci|status)`|(?<!\w)(?:ci|status)(?!\w))"
+STATUS_CONDITION_CONNECTORS = r"(?:if|when|while)"
+STATUS_CAUSAL_CONNECTORS = r"(?:because|as|since|due to)"
+STATUS_WATCH_CONNECTORS = r"(?:if|when|while|because|as|since|due to)"
 WATCH_ACTION_WORDS = r"(?:watch|launch|relaunch|ensure|warrant)"
 WATCH_ACTION_STATUS_WORDS = WATCH_ACTION_WORDS + r"(?:es|s|ed|ing)?"
 WATCH_ACTION_VERBS = r"(?:launch|relaunch|ensure)"
@@ -238,12 +241,18 @@ POSITIVE_WATCH_ACTION = re.compile(
 WATCH_ACTION_CONTRADICTIONS = (
     ("ci/status-based", re.compile(
         # The status subject may be qualified before the noun (for example, "pending CI").
-        r"(?:\b(?:if|when|while)\s+"
+        r"(?:\b" + STATUS_CONDITION_CONNECTORS + r"\s+"
         r"(?:(?:the|row(?:'s)?|value\s+of)\s+)*(?:(?:[\w-]+\s+){0,2})"
         + STATUS_SUBJECT_PATTERN
         + r"[^.!?]*\b"
         + WATCH_ACTION_STATUS_WORDS
         + r"\b|"
+        r"\b" + STATUS_CAUSAL_CONNECTORS + r"\s+"
+        r"(?:(?:the|row(?:'s)?|value\s+of)\s+)*(?:(?:[\w-]+\s+){0,2})"
+        + STATUS_SUBJECT_PATTERN
+        + r"[^.!?]*\b"
+        + WATCH_ACTION_STATUS_VERBS
+        + r"\b[^.!?]*\bwatch\b|"
         r"\b(?:[\w-]+\s+){0,2}"
         + STATUS_SUBJECT_PATTERN
         + r"\s+"
@@ -251,7 +260,7 @@ WATCH_ACTION_CONTRADICTIONS = (
         + r"\b[^.!?]*\bwatch\b|"
         r"\b"
         + WATCH_ACTION_VERBS
-        + r"\b[^.!?]*\b(?:if|when|while)\s+"
+        + r"\b[^.!?]*\b" + STATUS_WATCH_CONNECTORS + r"\s+"
         r"(?:(?:the|row(?:'s)?|value\s+of)\s+)*"
         + STATUS_SUBJECT_PATTERN
         + r"|"
