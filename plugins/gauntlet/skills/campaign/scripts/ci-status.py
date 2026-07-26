@@ -2247,6 +2247,11 @@ def check_gh_invocations(text: str, argv: dict[str, list[str]]) -> list[str]:
     return problems
 
 
+def _has_long_option(command: str, option: str) -> bool:
+    """Recognize one long-option token, including argparse's ``--name=value`` form."""
+    return re.search(rf"(?<![\w-]){re.escape(option)}(?![\w-])", command) is not None
+
+
 def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]:
     """EVERY COPY OF THE DERIVE COMMAND, IN EVERY SKILL DOC — not just the one in the doc under test.
 
@@ -2271,11 +2276,11 @@ def check_derive_copies(root: Path | None = None) -> tuple[list[str], list[str]]
         for m in re.finditer(r"ci-status\.py derive", text):
             end = text.find("\n\n", m.start())
             command = text[m.start(): end if end > 0 else len(text)]
-            if "--pr" not in command:
+            if not _has_long_option(command, "--pr"):
                 continue  # prose that NAMES the command, not a copy of it
             n = text.count("\n", 0, m.start()) + 1
             copies.append(f"{md.name}:{n}")
-            if "--ledger" not in command and "--required-set" not in command:
+            if not _has_long_option(command, "--ledger") and not _has_long_option(command, "--required-set"):
                 problems.append(
                     f"{md.name}:{n} runs `ci-status.py derive` WITHOUT `--ledger` OR `--required-set` — the "
                     f"flag that makes `green` mean the REQUIRED SET passed. A reader following this copy "
@@ -2306,11 +2311,11 @@ def check_liveness_copies(root: Path | None = None) -> tuple[list[str], list[str
             # `--ledger`, not `--pr`, is the runnable-copy gate here: prose about liveness routinely sits
             # in the same paragraph as a `ledger.py … set --pr` command, and `--pr` alone would condemn
             # every such mention as a flagless invocation.
-            if "--ledger" not in command:
+            if not _has_long_option(command, "--ledger"):
                 continue  # prose that names the subcommand, not a runnable copy
             line = text.count("\n", 0, match.start()) + 1
             copies.append(f"{md.name}:{line}")
-            if "--machine-action" not in command:
+            if not _has_long_option(command, "--machine-action"):
                 problems.append(
                     f"{md.name}:{line} runs `ci-status.py liveness` WITHOUT `--machine-action` — the one "
                     f"judgment the command asks of its caller. The tool refuses the invocation; a reader "
@@ -2332,7 +2337,7 @@ def check_required_set_copies(root: Path | None = None) -> tuple[list[str], list
         for match in re.finditer(r"ci-status\.py required-set", text):
             end = text.find("\n\n", match.start())
             command = text[match.start(): end if end > 0 else len(text)]
-            if "--ledger" not in command:
+            if not _has_long_option(command, "--ledger"):
                 continue  # prose that names the subcommand, not a runnable copy
             line = text.count("\n", 0, match.start()) + 1
             copies.append(f"{md.name}:{line}")

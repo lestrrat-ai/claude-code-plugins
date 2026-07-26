@@ -1281,6 +1281,67 @@ def verdict_doc_cases(ci) -> list[str]:
     return problems
 
 
+def documentation_option_form_cases(ci, tmp: Path) -> list[str]:
+    """Pin standalone and ``--name=value`` forms in all three documentation validators."""
+    problems: list[str] = []
+    cases = [
+        (
+            "derive",
+            ci.check_derive_copies,
+            "ci-status.py derive --pr=1 --required-set=unknown",
+            "ci-status.py derive --pr=1",
+            "--practical",
+        ),
+        (
+            "liveness",
+            ci.check_liveness_copies,
+            "ci-status.py liveness --ledger=run/state.jsonl --pr=1 --machine-action=none",
+            "ci-status.py liveness --ledger=run/state.jsonl --pr=1",
+            "--ledger-file",
+        ),
+        (
+            "required-set",
+            ci.check_required_set_copies,
+            "ci-status.py required-set --ledger=run/state.jsonl",
+            "ci-status.py required-set --ledger=",
+            "--ledger-file",
+        ),
+    ]
+    for name, check, valid, missing, lookalike in cases:
+        valid_root = tmp / f"documentation-options-{name}-valid"
+        valid_root.mkdir()
+        (valid_root / "commands.md").write_text(f"`{valid}`\n", encoding="utf-8")
+        found, copies = check(valid_root)
+        if found or copies != ["commands.md:1"]:
+            problems.append(
+                f"[documentation options {name}:valid] expected one accepted copy; "
+                f"got copies={copies!r}, problems={found!r}"
+            )
+
+        missing_root = tmp / f"documentation-options-{name}-missing"
+        missing_root.mkdir()
+        (missing_root / "commands.md").write_text(f"`{missing}`\n", encoding="utf-8")
+        found, copies = check(missing_root)
+        if len(found) != 1 or copies != ["commands.md:1"]:
+            problems.append(
+                f"[documentation options {name}:missing] expected one reported copy; "
+                f"got copies={copies!r}, problems={found!r}"
+            )
+
+        lookalike_root = tmp / f"documentation-options-{name}-lookalike"
+        lookalike_root.mkdir()
+        (lookalike_root / "commands.md").write_text(
+            f"`ci-status.py {name} {lookalike}=value`\n", encoding="utf-8"
+        )
+        found, copies = check(lookalike_root)
+        if len(found) != 1 or copies:
+            problems.append(
+                f"[documentation options {name}:lookalike] expected no accepted copy; "
+                f"got copies={copies!r}, problems={found!r}"
+            )
+    return problems
+
+
 def run(ci, tmp: Path) -> int:
     """Every fixture, then the seams, then `doc-check`. Non-zero on any failure.
 
@@ -1347,6 +1408,14 @@ def run(ci, tmp: Path) -> int:
     if not verdict_doc_problems:
         print(f"ok       {'DECIDE verdict terminology':32} -> UNUSABLE and UNVERIFIABLE both remain explicit "
               f"before liveness groups them")
+
+    documentation_option_problems = documentation_option_form_cases(ci, tmp)
+    for problem in documentation_option_problems:
+        failures += 1
+        print(f"FAIL     {problem}")
+    if not documentation_option_problems:
+        print(f"ok       {'documentation option forms':32} -> standalone and --name=value forms are "
+              f"recognized without accepting option-name lookalikes")
 
     print()
     print(f"--- doc-check: {ci.SPEC_DOC.name} + {ci.DRIVER_DOC.name} vs the code that runs ---")
