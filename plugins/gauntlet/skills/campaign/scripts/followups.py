@@ -914,6 +914,16 @@ def cmd_transition(path: Path, args) -> int:
                 f"A follow-up reaches '{to}' only along the transition graph; nothing else moves `state`."
             )
         phase = rejection_phase(entry)
+        if cmd == "reject-pending" and phase == PENDING_REJECTION:
+            fail(
+                f"{args.id} already has a pending rejection — `reject-pending` cannot replace an existing "
+                "ruling before its recorded PR disposition is complete."
+            )
+        if cmd == "reject-pending" and phase == DISPOSED_REJECTION:
+            fail(
+                f"{args.id} already has a completed rejection disposition — `reject-pending` cannot replace "
+                "the terminal campaign result."
+            )
         if cmd == "reject" and entry["state"] == "in-pr":
             if phase == NO_REJECTION:
                 fail(

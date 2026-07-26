@@ -1419,6 +1419,13 @@ def t_in_pr_rejection_needs_one_typed_completed_disposition(tmp: Path) -> None:
     pending = json.loads(run(["--file", str(store), "get", "--id", first])[1])
     check(pending["state"] == "in-pr" and pending["rejection"] == PENDING_REJECTION,
           f"reject-pending did not preserve the open PR and typed pending phase: {pending!r}")
+    code, _, err = run(["--file", str(store), "reject-pending", "--id", first,
+                        "--at", "2026-07-24T11:30:00Z"])
+    check(code == 1 and "already has a pending rejection" in err,
+          f"reject-pending replaced an existing pending ruling: {code} {err!r}")
+    unchanged = json.loads(run(["--file", str(store), "get", "--id", first])[1])
+    check(unchanged == pending,
+          f"a refused repeat reject-pending changed the pending entry: {unchanged!r}")
     code, _, err = run(["--file", str(store), "reject", "--id", first])
     check(code == 1 and "disposition is unresolved" in err,
           f"terminal reject accepted an unresolved pending rejection: {code} {err!r}")
@@ -1446,6 +1453,13 @@ def t_in_pr_rejection_needs_one_typed_completed_disposition(tmp: Path) -> None:
           f"matching pending rejection was not disposed: {first_entry!r}")
     check(second_entry["rejection"] == PENDING_REJECTION,
           f"another PR's pending rejection was disposed: {second_entry!r}")
+    code, _, err = run(["--file", str(store), "reject-pending", "--id", first,
+                        "--at", "2026-07-24T12:30:00Z"])
+    check(code == 1 and "completed rejection disposition" in err,
+          f"reject-pending replaced a completed terminal result: {code} {err!r}")
+    unchanged = json.loads(run(["--file", str(store), "get", "--id", first])[1])
+    check(unchanged == first_entry,
+          f"a refused reject-pending changed the completed terminal result: {unchanged!r}")
 
     # A legacy URL record must not be reduced to its number by the callback. This is the pre-fix on-disk
     # shape that caused a foreign repository's PR to consume the local numeric callback.

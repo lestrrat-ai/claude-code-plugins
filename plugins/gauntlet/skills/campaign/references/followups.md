@@ -189,8 +189,9 @@ about and one whose partial rejection strands the rest.
 The pending phase is the user's ruling on the follow-up. It is separate from a terminal ledger row, which
 records what happened to the PR rather than what the user decided.
 
-1. Run `followups.py --file <store> reject-pending --id fuN` while the entry is `in-pr`. This preserves the
-   PR identity and writes the user's ruling time.
+1. Run `followups.py --file <store> reject-pending --id fuN` while the entry is `in-pr` with
+   `rejection = -`. A pending or completed rejection disposition refuses this command. This preserves the PR
+   identity and writes the user's ruling time.
 2. Finish the recorded repository and PR's current campaign disposition. A CLOSED PR with no pending rejection
    uses `closed-unmerged`. A pending rejection waits for the verified terminal campaign disposition callback to
    record the matching repository and PR first; do not run `closed-unmerged` or `merged` directly before that callback. A
@@ -330,7 +331,7 @@ followups.py --file <store> corroborate --id fuN --finding F   # TIER 1 — free
 followups.py --file <store> refute      --id fuN --finding F   # TIER 1 — free. And it stays in the store
 followups.py --file <store> take-up     --id fuN --act-...     # TIER 2 — only with EVERY condition evidenced
 followups.py --file <store> accept  --id fuN        # THE USER AGREED — the only edge into `accepted`
-followups.py --file <store> reject-pending --id fuN # user rejected an `in-pr` entry; record typed pending state
+followups.py --file <store> reject-pending --id fuN # user rejected an `in-pr` entry with no existing rejection phase
 followups.py --file <store> reject  --id fuN        # user ruled against it; `in-pr` requires a disposed PR result
 followups.py --file <store> open-pr --id fuN --pr <N> --repo <owner/name>  # repository and PR address it
 followups.py --file <store> relink-pr --id fuN --repo <owner/name>          # user links a legacy PR record
