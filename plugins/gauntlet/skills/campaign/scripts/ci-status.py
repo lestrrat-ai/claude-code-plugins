@@ -2322,6 +2322,82 @@ def _shell_quote_before(text: str, index: int) -> str | None:
     return quote
 
 
+def _shell_comment_before(text: str, index: int) -> bool:
+    """Return whether ``index`` is after a shell comment on its line."""
+    line_start = text.rfind("\n", 0, index) + 1
+    quote: str | None = None
+    cursor = line_start
+    while cursor < index:
+        char = text[cursor]
+        if quote == "'":
+            if char == "'":
+                quote = None
+            cursor += 1
+            continue
+        if quote == '"':
+            if char == "\\":
+                cursor += 2
+            elif char == '"':
+                quote = None
+                cursor += 1
+            else:
+                cursor += 1
+            continue
+        if char == "\\":
+            cursor += 2
+            continue
+        if char in "'\"":
+            quote = char
+            cursor += 1
+            continue
+        if char == "#" and (cursor == line_start or text[cursor - 1].isspace()):
+            return True
+        cursor += 1
+    return False
+
+
+def _shell_segment_before(text: str, index: int) -> str:
+    """Return the current shell segment before ``index``, excluding prior separators."""
+    line_start = text.rfind("\n", 0, index) + 1
+    segment_start = line_start
+    cursor = line_start
+    while cursor < index:
+        char = text[cursor]
+        if char in SHELL_COMMAND_SEPARATORS and not _shell_is_escaped(text, cursor) \
+                and _shell_quote_before(text, cursor) is None:
+            segment_start = cursor + 1
+        cursor += 1
+    return text[segment_start:index].strip()
+
+
+def _shell_segment_looks_like_command(segment: str) -> bool:
+    """Return whether a shell segment has command syntax rather than ordinary prose."""
+    segment = re.sub(r"^(?:[-*+]\s*|\d+[.)]\s*)", "", segment).strip()
+    if not segment:
+        return False
+    first = re.match(r"(?:'[^']*'|\"(?:\\.|[^\"])*\"|\S+)", segment)
+    if first is None:
+        return False
+    token = first.group(0).strip("'\"")
+    if not any(char.isspace() for char in segment):
+        return True
+    return token in {
+        "case", "do", "echo", "elif", "else", "exec", "exit", "false", "fi", "for", "function",
+        "gh", "git", "if", "printf", "python", "python3", "read", "return", "select", "set", "sh",
+        "source", "then", "trap", "true", "until", "wait", "while",
+    }
+
+
+def _shell_operator_has_context(text: str, index: int) -> bool:
+    """Return whether an active separator belongs to a shell command segment."""
+    if _shell_comment_before(text, index):
+        return False
+    operator_start = index
+    if index > 0 and text[index] in "|&" and text[index - 1] == text[index]:
+        operator_start -= 1
+    return _shell_segment_looks_like_command(_shell_segment_before(text, operator_start))
+
+
 _SHELL_REDIRECTION_PREFIX = re.compile(
     r"^(?:(?:[-*+]\s*|\d+[.)]\s*)|(?:then|else|do|elif)\s+)?"
     r"(?:(?:\d*(?:<<<|<<-|<<|<>|>&|<&|>>|>|<)|&>>|&>|&<)\s*"
@@ -2355,7 +2431,49 @@ def _shell_line_continues(text: str, newline: int) -> bool:
 
 def _shell_operator_is_active(text: str, index: int) -> bool:
     """Return whether a separator at ``index`` is outside quotes and not backslash-escaped."""
-    return _shell_quote_before(text, index) is None and not _shell_is_escaped(text, index)
+    if text[index] not in SHELL_COMMAND_SEPARATORS:
+        return (_shell_quote_before(text, index) is None and not _shell_is_escaped(text, index)
+                and not _shell_comment_before(text, index))
+    return (_shell_quote_before(text, index) is None and not _shell_is_escaped(text, index)
+            and _shell_operator_has_context(text, index))
+
+
+def _shell_group_delimiter_is_active(text: str, index: int) -> bool:
+    """Return whether a brace is a shell group delimiter, not prose punctuation."""
+    if _shell_quote_before(text, index) is not None or _shell_is_escaped(text, index) \
+            or _shell_comment_before(text, index):
+        return False
+    if text[index] == "{":
+        previous = _shell_previous_significant(text, index)
+        if previous < 0 or text[previous] == "\n":
+            return _markdown_line_is_command_start(text, index)
+        if text[previous] in SHELL_COMMAND_SEPARATORS:
+            return _shell_operator_is_active(text, previous)
+        return _shell_compound_keyword_before(text, index)
+    if text[index] != "}":
+        return False
+    depth = 0
+    for cursor, char in enumerate(text[:index + 1]):
+        if char not in "{}" or not _shell_operator_is_active(text, cursor):
+            continue
+        if char == "{":
+            if _shell_group_delimiter_is_active(text, cursor):
+                depth += 1
+        elif depth:
+            depth -= 1
+            if cursor == index:
+                return True
+    return False
+
+
+def _shell_case_pattern_delimiter_is_active(text: str, index: int) -> bool:
+    """Return whether ``)`` closes a shell ``case`` pattern before a command."""
+    if (text[index] != ")" or _shell_quote_before(text, index) is not None
+            or _shell_is_escaped(text, index) or _shell_comment_before(text, index)):
+        return False
+    prefix = text[text.rfind("\n", 0, index) + 1:index]
+    prefix = re.sub(r"^\s*(?:[-*+]\s*|\d+[.)]\s*)", "", prefix)
+    return bool(re.match(r"case\b.*\bin\b[^)]*$", prefix))
 
 
 def _shell_delimiter_before(text: str, index: int) -> bool:
@@ -2374,14 +2492,18 @@ def _shell_delimiter_before(text: str, index: int) -> bool:
             or _shell_redirection_before(text, index)
 
     cursor = index - 1
-    while cursor >= 0 and text[cursor].isspace():
+    while cursor >= 0 and text[cursor] in " \t\r\f\v":
         cursor -= 1
     if cursor < 0:
         return True
-    if (text[cursor] in SHELL_COMMAND_SEPARATORS
-            or text[cursor] in SHELL_GROUP_DELIMITERS
-            or text[cursor] in SHELL_CASE_PATTERN_DELIMITERS):
+    if text[cursor] == "\n":
+        return _shell_quote_before(text, cursor) is None and not _shell_is_escaped(text, cursor)
+    if text[cursor] in SHELL_COMMAND_SEPARATORS:
         return _shell_operator_is_active(text, cursor)
+    if text[cursor] in SHELL_GROUP_DELIMITERS:
+        return _shell_group_delimiter_is_active(text, cursor)
+    if text[cursor] in SHELL_CASE_PATTERN_DELIMITERS:
+        return _shell_case_pattern_delimiter_is_active(text, cursor)
     return (_shell_quote_before(text, index) is None
             and (_shell_redirection_before(text, index)
                  or _markdown_line_is_command_start(text, index)))
@@ -2528,10 +2650,14 @@ def _shell_command_word_boundary(text: str, index: int) -> bool:
         return True
     if _shell_redirection_before(text, index):
         return True
-    if previous_char in SHELL_COMMAND_SEPARATORS | SHELL_GROUP_DELIMITERS:
+    if previous_char in SHELL_COMMAND_SEPARATORS:
+        if previous_char == "\n":
+            return _shell_delimiter_before(text, token_start)
         return _shell_operator_is_active(text, previous)
+    if previous_char in SHELL_GROUP_DELIMITERS:
+        return _shell_group_delimiter_is_active(text, previous)
     if previous_char == ")":
-        return _shell_operator_is_active(text, previous)
+        return _shell_case_pattern_delimiter_is_active(text, previous)
     if previous_char == "`":
         return _backtick_is_opening(text, previous)
     if previous_char in "'\"":
@@ -2586,10 +2712,12 @@ def _command_token_boundary(text: str, index: int) -> bool:
         if _shell_quote_before(text, index - 1) == "'":
             return False
         return index >= 2 and text[index - 2] == "$" or _shell_delimiter_before(text, index - 1)
-    if previous in SHELL_GROUP_DELIMITERS or previous in SHELL_CASE_PATTERN_DELIMITERS:
-        if previous == ")" and _shell_parenthesis_kind_at(text, index - 1) is not None:
+    if previous in SHELL_GROUP_DELIMITERS:
+        return _shell_group_delimiter_is_active(text, index - 1)
+    if previous in SHELL_CASE_PATTERN_DELIMITERS:
+        if _shell_parenthesis_kind_at(text, index - 1) is not None:
             return False
-        return _shell_operator_is_active(text, index - 1)
+        return _shell_case_pattern_delimiter_is_active(text, index - 1)
     if not previous.isspace():
         return False
     return _shell_command_word_boundary(text, index)

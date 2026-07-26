@@ -1163,6 +1163,24 @@ def command_boundary_cases(ci, tmp: Path) -> list[str]:
         if found_problems or copies != ["commands.md:4"]:
             problems.append(f"[blank line in quote {subcommand}] expected only the executable line, "
                             f"got problems={found_problems!r}, copies={copies!r}")
+
+        prose_cases = [
+            ("unmatched-close-paren", f"A prose sentence ends here) ci-status.py {valid}"),
+            ("unmatched-close-brace", f"A prose sentence ends here}} ci-status.py {valid}"),
+            ("unmatched-open-brace", f"A prose sentence starts here {{ ci-status.py {valid}"),
+            ("semicolon", f"A prose sentence ends here; ci-status.py {valid}"),
+            ("table-pipe", f"| ci-status.py {valid} |"),
+            ("ampersand", f"A prose sentence ends here & ci-status.py {valid}"),
+            ("shell-comment", f"```sh\n# shell comment; ci-status.py {valid}\n```"),
+        ]
+        for name, prose in prose_cases:
+            prose_root = tmp / f"prose-command-{subcommand}-{name}"
+            prose_root.mkdir()
+            (prose_root / "commands.md").write_text(prose + "\n", encoding="utf-8")
+            found_problems, copies = check(prose_root)
+            if not found_problems or copies:
+                problems.append(f"[prose boundary {subcommand}/{name}] expected zero copies and the "
+                                f"zero-copy diagnostic, got problems={found_problems!r}, copies={copies!r}")
     return problems
 
 
