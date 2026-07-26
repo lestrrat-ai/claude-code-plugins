@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -54,6 +55,23 @@ TRIAGE_TIER_BINDING = ("--tier", "<your decided tier>")
 WATCH_ACTION = (
     "Run `liveness`, then ensure or relaunch a watch only when returned "
     "`watch_warranted` is `true`"
+)
+WATCH_MAINTENANCE_VERBS = r"(?:keep|maintain|start|launch|relaunch|ensure)(?:s|ed|ing)?"
+WATCH_STATUS_VALUES = r"(?:pending|red|green|unknown|unusable|unverifiable)"
+WATCH_STATUS_CONDITION = (
+    r"\b(?:ci(?:\s+status)?|status)\b\s*(?:is|=|==|:)\s*"
+    + WATCH_STATUS_VALUES
+    + r"\b"
+)
+WATCH_MAINTENANCE_ACTION = (
+    r"\b"
+    + WATCH_MAINTENANCE_VERBS
+    + r"\b(?:\s+\w+){0,6}\s+\bwatch(?:es|ed|ing)?\b"
+)
+STATUS_WATCH_MAINTENANCE = re.compile(
+    rf"(?:{WATCH_MAINTENANCE_ACTION}[^.!?;|]{{0,120}}{WATCH_STATUS_CONDITION}|"
+    rf"{WATCH_STATUS_CONDITION}[^.!?;|]{{0,120}}{WATCH_MAINTENANCE_ACTION})",
+    re.IGNORECASE,
 )
 MARKDOWN_LIST_ITEM = re.compile(
     r"^(?P<prefix>[ \t>]*)(?:[-*+]|\d+[.)]) "
@@ -335,6 +353,69 @@ def check_watch_consumers(adoption: str, loop_control: str) -> None:
     ):
         require(WATCH_ACTION in normalized(region),
                 f"{name} lost the liveness/watch_warranted gate")
+
+
+def check_status_watch_maintenance_docs(root: Path = ROOT) -> list[str]:
+    """Reject status-conditioned watch maintenance that does not use `watch_warranted`."""
+    problems: list[str] = []
+    for document in sorted(root.rglob("*.md")):
+        text = document.read_text(encoding="utf-8")
+        for match in STATUS_WATCH_MAINTENANCE.finditer(text):
+            clause_start = max(text.rfind(boundary, 0, match.start())
+                               for boundary in ".!?;|") + 1
+            clause_end_candidates = [text.find(boundary, match.end())
+                                     for boundary in ".!?;|"
+                                     if text.find(boundary, match.end()) >= 0]
+            clause_end = min(clause_end_candidates) if clause_end_candidates else len(text)
+            clause = text[clause_start:clause_end]
+            action = re.search(WATCH_MAINTENANCE_ACTION, clause, re.IGNORECASE)
+            if action is None:
+                continue
+            if re.search(r"\b(?:never|do not|don't|not)\b", clause[:action.start()], re.IGNORECASE):
+                continue
+            if re.search(r"\bLIVELOCKS\b", clause, re.IGNORECASE):
+                continue
+            if "watch_warranted" in clause:
+                continue
+            line = text.count("\n", 0, match.start()) + 1
+            relative = document.relative_to(root).as_posix()
+            problems.append(
+                f"{relative}:{line} adds status-based watch maintenance without `watch_warranted`"
+            )
+    return problems
+
+
+def run_watch_action_fixtures() -> None:
+    require(not check_status_watch_maintenance_docs(),
+            "current campaign docs contain an unregistered status-based watch action")
+
+    fixture_parent = ROOT.parents[4] / ".tmp"
+    fixture_parent.mkdir(exist_ok=True)
+    allowed = (
+        "Run liveness and keep a watch alive while CI is pending only when "
+        "`watch_warranted` is `true`."
+    )
+    for name, addition, expected in (
+        ("unregistered-keep", "Run liveness and keep a watch alive while CI is pending.", True),
+        ("unregistered-maintain", "Run liveness and maintain a watch while CI is pending.", True),
+        ("registered", allowed, False),
+    ):
+        with tempfile.TemporaryDirectory(dir=fixture_parent) as temporary:
+            fixture_root = Path(temporary) / "campaign"
+            shutil.copytree(ROOT, fixture_root)
+            document = fixture_root / "references" / "stage-2-review-gate.md"
+            document.write_text(
+                document.read_text(encoding="utf-8") + "\n\n" + addition + "\n",
+                encoding="utf-8",
+            )
+            problems = check_status_watch_maintenance_docs(fixture_root)
+            found = any(
+                "stage-2-review-gate.md" in problem
+                and "status-based watch maintenance" in problem
+                for problem in problems
+            )
+            require(found is expected,
+                    f"{name} status-based watch maintenance fixture had the wrong result")
 
 
 def require_rejected(callback, expected: str, message: str) -> None:
@@ -662,6 +743,8 @@ def check_document_contract() -> None:
 
     check_campaign_triage_contract(stage, adoption, loop_control, skill)
     check_watch_consumers(adoption, loop_control)
+    require(not check_status_watch_maintenance_docs(),
+            "campaign docs contain an unregistered status-based watch action")
     new_row_summary = delimited_region(
         adoption,
         "   - **On a NEW row only, initialize:**",
@@ -1191,6 +1274,7 @@ def run_isolation_transition_fixtures() -> None:
 
 def main() -> int:
     check_document_contract()
+    run_watch_action_fixtures()
     run_triage_contract_fixtures()
     run_hostile_fixtures()
     run_repository_context_fixtures()
