@@ -62,12 +62,12 @@ WATCH_STATUS_CONDITION = (
     r"\b(?:ci(?:\s+status)?|status)\b\s*(?:is|=|==|:)\s*"
     r"(?:[`\"']\s*)?(?:quoted\s+)?"
     + WATCH_STATUS_VALUES
-    + r"\b\s*[`\"']?(?=\s|[.!?;|,)\]}]|$)"
+    + r"\b\s*[`\"']?(?=\s|[.!?;:|,)\]}]|$)"
 )
 WATCH_ACTIVE_MAINTENANCE_ACTION = (
     r"\b"
     + WATCH_MAINTENANCE_VERBS
-    + r"\b(?:\s+[\w-]+){0,8}\s+\bwatch(?:es|ed|ing)?\b"
+    + r"\b(?:\s+[\w-]+){0,8}?\s+\bwatch(?:es|ed|ing)?\b(?:\s+alive)?"
 )
 WATCH_PASSIVE_MAINTENANCE_ACTION = (
     r"\bwatch(?:es|ed|ing)?\b"
@@ -87,17 +87,32 @@ WATCH_WARRANTED_TRUE_GUARD_RE = re.compile(
     r"`?watch_warranted`?\s*(?:is|=|==|:)\s*`?true`?\b",
     re.IGNORECASE,
 )
-WATCH_NEGATED_ACTION_RE = re.compile(
-    r"\b(?:never|do\s+not|don't|doesn't|no\s+need\s+to|"
-    r"unnecessary\s+to|not\s+(?:required|necessary)\s+to)\b",
+WATCH_NEGATED_BEFORE_ACTION_RE = re.compile(
+    r"(?:\bnever\b|\bdo\s+not\b|\bdon't\b|\bdoesn't\b|"
+    r"\bno\s+need\s+to\b|\bunnecessary\s+to\b|"
+    r"\bnot(?:\s+(?:required|necessary))?\s+to\b|\bnot\b)\s*$",
     re.IGNORECASE,
 )
 WATCH_NEGATED_AFTER_ACTION_RE = re.compile(
-    r"\b(?:is|are|becomes?|seems?)\s+(?:unnecessary|"
+    r"^\s*(?:is|are|becomes?|seems?)\s+(?:unnecessary|"
     r"not\s+(?:required|necessary))\b",
     re.IGNORECASE,
 )
-WATCH_QUOTED_SPAN_RE = re.compile(r"`[^`\n]*`|\"[^\"\n]*\"|“[^”\n]*”|‘[^’\n]*’")
+WATCH_QUOTED_SPAN_RE = re.compile(
+    r"`[^`\n]*`|\"[^\"\n]*\"|(?<!\w)'[^'\n]*'(?!\w)|“[^”\n]*”|‘[^’\n]*’"
+)
+WATCH_GUARD_BEFORE_ACTION_GAP_RE = re.compile(
+    r"^\s*[,;:()\[\]-]*(?:(?:then|and)\s+)?[,;:()\[\]-]*\s*$",
+    re.IGNORECASE,
+)
+WATCH_GUARD_AFTER_ACTION_GAP_RE = re.compile(
+    r"^\s*[,;:()\[\]-]*(?:only|then|and)?[,;:()\[\]-]*\s*$",
+    re.IGNORECASE,
+)
+WATCH_STATUS_GUARD_AFTER_ACTION_GAP_RE = re.compile(
+    rf"^\s*(?:when|if|while)\s+{WATCH_STATUS_CONDITION}(?:\s+only)?\s*$",
+    re.IGNORECASE,
+)
 MARKDOWN_LIST_ITEM = re.compile(
     r"^(?P<prefix>[ \t>]*)(?:[-*+]|\d+[.)]) "
 )
@@ -428,19 +443,47 @@ def watch_action_is_negated(clause: str, action: re.Match[str]) -> bool:
     before = clause[:action.start()]
     after = clause[action.end():]
     return (
-        WATCH_NEGATED_ACTION_RE.search(before) is not None
-        or WATCH_NEGATED_AFTER_ACTION_RE.search(after) is not None
+        WATCH_NEGATED_BEFORE_ACTION_RE.search(before) is not None
+        or WATCH_NEGATED_AFTER_ACTION_RE.match(after) is not None
     )
+
+
+def watch_guard_prefix_is_conditional(clause: str, guard: re.Match[str]) -> bool:
+    prefix = clause[:guard.start()]
+    prefix = WATCH_STATUS_CONDITION_RE.sub("", prefix)
+    return re.fullmatch(
+        r"\s*[,;:()\[\]-]*(?:(?:then|and|only)\s+)?[,;:()\[\]-]*\s*",
+        prefix,
+        re.IGNORECASE,
+    ) is not None
 
 
 def watch_action_has_true_warrant_guard(
     clause: str,
     action: re.Match[str],
 ) -> bool:
-    return any(
-        guard.end() <= action.start() or action.end() <= guard.start()
-        for guard in WATCH_WARRANTED_TRUE_GUARD_RE.finditer(clause)
-    )
+    quoted_spans = list(WATCH_QUOTED_SPAN_RE.finditer(clause))
+    for guard in WATCH_WARRANTED_TRUE_GUARD_RE.finditer(clause):
+        if any(
+            quoted.start() <= guard.start() and guard.end() <= quoted.end()
+            for quoted in quoted_spans
+        ):
+            continue
+        if guard.end() <= action.start():
+            gap = clause[guard.end():action.start()]
+            if (
+                WATCH_GUARD_BEFORE_ACTION_GAP_RE.fullmatch(gap)
+                and watch_guard_prefix_is_conditional(clause, guard)
+            ):
+                return True
+        elif action.end() <= guard.start():
+            gap = clause[action.end():guard.start()]
+            if (
+                WATCH_GUARD_AFTER_ACTION_GAP_RE.fullmatch(gap)
+                or WATCH_STATUS_GUARD_AFTER_ACTION_GAP_RE.fullmatch(gap)
+            ):
+                return True
+    return False
 
 
 def check_status_watch_maintenance_docs(root: Path = ROOT) -> list[str]:
@@ -451,12 +494,13 @@ def check_status_watch_maintenance_docs(root: Path = ROOT) -> list[str]:
         for clause, line in markdown_watch_clauses(text):
             if WATCH_STATUS_CONDITION_RE.search(clause) is None:
                 continue
-            action = WATCH_MAINTENANCE_ACTION_RE.search(clause)
-            if action is None or watch_action_is_quoted(clause, action):
-                continue
-            if watch_action_is_negated(clause, action):
-                continue
-            if watch_action_has_true_warrant_guard(clause, action):
+            actions = WATCH_MAINTENANCE_ACTION_RE.finditer(clause)
+            if all(
+                watch_action_is_quoted(clause, action)
+                or watch_action_is_negated(clause, action)
+                or watch_action_has_true_warrant_guard(clause, action)
+                for action in actions
+            ):
                 continue
             relative = document.relative_to(root).as_posix()
             problems.append(
@@ -514,6 +558,16 @@ def run_watch_action_fixtures() -> None:
             True,
         ),
         (
+            "quoted-warrant-guard-mention",
+            'CI status is pending, ensure a watch as documented by "when watch_warranted is true".',
+            True,
+        ),
+        (
+            "explanatory-warrant-guard-mention",
+            "CI status is pending, ensure a watch as documented by when watch_warranted is true.",
+            True,
+        ),
+        (
             "true-watch-warranted-guard",
             "Ensure a watch when CI status is pending only when returned watch_warranted is true.",
             False,
@@ -528,6 +582,8 @@ def run_watch_action_fixtures() -> None:
         ("quoted-status", 'Ensure a watch when CI status is "pending".', True),
         ("code-status", "Ensure a watch when CI status is `pending`.", True),
         ("quoted-word-status", "Ensure a watch when CI status is quoted pending.", True),
+        ("colon-status", "CI status is pending: keep a watch.", True),
+        ("quoted-action", "CI status is pending, 'keep a watch'.", False),
         ("no-need-negation", "No need to keep a watch when CI status is pending.", False),
         (
             "unnecessary-negation",
@@ -538,6 +594,21 @@ def run_watch_action_fixtures() -> None:
             "not-required-negation",
             "It is not required to keep a watch when CI status is pending.",
             False,
+        ),
+        (
+            "unrelated-negation",
+            "It is not required to merge, but keep a watch when CI status is pending.",
+            True,
+        ),
+        (
+            "negated-then-positive-action",
+            "CI status is pending, do not keep a watch but ensure a watch.",
+            True,
+        ),
+        (
+            "contractions-are-not-quotes",
+            "CI status is pending, don't keep a watch, ensure a watch, don't stop.",
+            True,
         ),
         ("separate-list-items", "- CI status is pending\n- Keep a watch.", False),
         ("separate-sentences", "CI status is pending. Keep a watch.", False),
