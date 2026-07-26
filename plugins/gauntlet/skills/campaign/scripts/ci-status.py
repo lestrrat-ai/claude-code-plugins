@@ -2754,6 +2754,10 @@ def doc_check(spec_doc: "Path | None" = None, driver_doc: "Path | None" = None) 
     """
     spec_doc = spec_doc or SPEC_DOC
     driver_doc = driver_doc or DRIVER_DOC
+    if spec_doc.resolve() != SPEC_DOC.resolve() or driver_doc.resolve() != DRIVER_DOC.resolve():
+        print("FAIL     custom doc paths are unsupported: the watch-owner registry is checked only "
+              "against the canonical campaign docs")
+        return 1
     for doc in (spec_doc, driver_doc):
         if not doc.exists():
             print(f"FAIL     the doc is not at {doc} — a check that cannot find its subject NEVER passes")
@@ -3040,10 +3044,10 @@ def main() -> int:
                          "(stage-2-ci.md, MACHINE ACTION — the one judgment the caller supplies)")
     lv.add_argument("--now", help="ISO-8601 override of the clock (tests and reproduction only)")
 
-    c = sub.add_parser("doc-check", help="assert the CI docs (ci-derivation-spec.md + stage-2-ci.md) "
+    c = sub.add_parser("doc-check", help="assert the canonical CI docs (ci-derivation-spec.md + stage-2-ci.md) "
                                          "agree with the code that runs — enums, CLASSIFY, DECIDE order, "
                                          "caps, fingerprint, moved-head artifact contract, and every copy "
-                                         "of every command")
+                                         "of every command; custom doc paths are rejected")
     c.add_argument("--spec-doc", type=Path, default=SPEC_DOC)
     c.add_argument("--driver-doc", type=Path, default=DRIVER_DOC)
 

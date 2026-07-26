@@ -1281,6 +1281,33 @@ def verdict_doc_cases(ci) -> list[str]:
     return problems
 
 
+def doc_override_cases(ci, tmp: Path) -> list[str]:
+    """Reject document overrides before the watch-owner checker can fall back to canonical files."""
+    problems: list[str] = []
+    override_dir = tmp / "doc-check-override" / "references"
+    override_dir.mkdir(parents=True, exist_ok=True)
+    spec_doc = override_dir / ci.SPEC_DOC.name
+    driver_doc = override_dir / ci.DRIVER_DOC.name
+    spec_doc.write_text(ci.SPEC_DOC.read_text(encoding="utf-8"), encoding="utf-8")
+    changed_driver = ci.DRIVER_DOC.read_text(encoding="utf-8").replace(
+        "The watch decision is **`liveness`'s `watch_warranted` field**",
+        "The watch decision is **ci == pending**",
+        1,
+    )
+    if changed_driver == ci.DRIVER_DOC.read_text(encoding="utf-8"):
+        return ["[doc-check overrides] watch-rule mutation target was not found"]
+    driver_doc.write_text(changed_driver, encoding="utf-8")
+
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        result = ci.doc_check(spec_doc, driver_doc)
+    if result == 0:
+        problems.append("[doc-check overrides] a changed scratch driver was accepted")
+    if "custom doc paths are unsupported" not in output.getvalue():
+        problems.append("[doc-check overrides] rejection did not identify custom doc paths")
+    return problems
+
+
 def watch_action_owner_cases(ci, tmp: Path) -> list[str]:
     """Every registry entry rejects deletion, unconditional-watch, status-based, bucket, and extra positive-action mutations."""
     problems = []
@@ -1783,6 +1810,13 @@ def run(ci, tmp: Path) -> int:
     if not verdict_doc_problems:
         print(f"ok       {'DECIDE verdict terminology':32} -> UNUSABLE and UNVERIFIABLE both remain explicit "
               f"before liveness groups them")
+
+    doc_override_problems = doc_override_cases(ci, tmp)
+    for problem in doc_override_problems:
+        failures += 1
+        print(f"FAIL     {problem}")
+    if not doc_override_problems:
+        print(f"ok       {'doc-check overrides':32} -> changed custom docs are rejected before watch-owner checks")
 
     watch_owner_problems = watch_action_owner_cases(ci, tmp)
     for problem in watch_owner_problems:
